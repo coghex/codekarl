@@ -6,6 +6,21 @@ use ck_window::{Answer, CloseSource, LoopEnd, NativeEvent, PresenterReport, UiEv
 
 use crate::fakes::{DEADLINE, Rig, at, lock, owned, scenario};
 
+fn escape_pair() -> [NativeEvent; 2] {
+    [
+        NativeEvent::Key {
+            key: ck_input::Key::Escape,
+            down: true,
+            repeat: false,
+        },
+        NativeEvent::Key {
+            key: ck_input::Key::Escape,
+            down: false,
+            repeat: false,
+        },
+    ]
+}
+
 fn press(source: CloseSource) -> UiEvent {
     UiEvent::CloseRequested { source }
 }
@@ -51,9 +66,7 @@ fn decline_keeps_the_window_open_and_a_new_press_is_a_new_request() {
                 let mut rig = Rig::new();
                 rig.backend.script.push_back(vec![NativeEvent::CloseButton]);
                 rig.backend.script.push_back(Vec::new());
-                rig.backend
-                    .script
-                    .push_back(vec![NativeEvent::EscapePressed]);
+                rig.backend.script.push_back(escape_pair().into());
                 lock(&rig.ui.close_answers).extend([Answer::Decline, Answer::Accept]);
                 rig.run_collect()
             };
@@ -85,9 +98,7 @@ fn not_registered_means_accept() {
             let _scenario = scenario();
             let ran = {
                 let mut rig = Rig::new();
-                rig.backend
-                    .script
-                    .push_back(vec![NativeEvent::EscapePressed]);
+                rig.backend.script.push_back(escape_pair().into());
                 lock(&rig.ui.close_answers).push_back(Answer::NotRegistered);
                 rig.run_collect()
             };
@@ -171,14 +182,30 @@ fn a_burst_of_presses_leaves_one_outstanding_until_it_is_answered() {
                 let mut rig = Rig::new();
                 rig.backend.script.push_back(vec![
                     NativeEvent::CloseButton,
-                    NativeEvent::EscapePressed,
-                    NativeEvent::EscapePressed,
+                    NativeEvent::Key {
+                        key: ck_input::Key::Escape,
+                        down: true,
+                        repeat: false,
+                    },
+                    NativeEvent::Key {
+                        key: ck_input::Key::Escape,
+                        down: false,
+                        repeat: false,
+                    },
+                    NativeEvent::Key {
+                        key: ck_input::Key::Escape,
+                        down: true,
+                        repeat: false,
+                    },
+                    NativeEvent::Key {
+                        key: ck_input::Key::Escape,
+                        down: false,
+                        repeat: false,
+                    },
                     NativeEvent::CloseButton,
                 ]);
                 // Key repeat while the request is still outstanding.
-                rig.backend
-                    .script
-                    .push_back(vec![NativeEvent::EscapePressed]);
+                rig.backend.script.push_back(escape_pair().into());
                 rig.quit_at_pump(4);
                 // The request is declined, but only after the second batch has been absorbed.
                 lock(&rig.ui.close_answers).push_back(Answer::Decline);
@@ -276,9 +303,7 @@ fn a_full_link_keeps_at_most_one_close_request_and_one_opened_and_posts_them_lat
                 let mut rig = Rig::new();
                 lock(&rig.presenter.reports).push_back(PresenterReport::FirstFrameQueued);
                 rig.backend.script.push_back(vec![NativeEvent::CloseButton]);
-                rig.backend
-                    .script
-                    .push_back(vec![NativeEvent::EscapePressed]);
+                rig.backend.script.push_back(escape_pair().into());
                 rig.backend.script.push_back(vec![NativeEvent::CloseButton]);
                 rig.ui.blocked.store(true, Ordering::SeqCst);
                 lock(&rig.ui.close_answers).push_back(Answer::Accept);

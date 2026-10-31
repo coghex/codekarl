@@ -59,13 +59,40 @@ fn absorbed_presses_are_counted_in_one_debug_record_per_pass() {
                 let mut rig = Rig::new();
                 rig.backend.script.push_back(vec![
                     NativeEvent::CloseButton,
-                    NativeEvent::EscapePressed,
-                    NativeEvent::EscapePressed,
+                    NativeEvent::Key {
+                        key: ck_input::Key::Escape,
+                        down: true,
+                        repeat: false,
+                    },
+                    NativeEvent::Key {
+                        key: ck_input::Key::Escape,
+                        down: false,
+                        repeat: false,
+                    },
+                    NativeEvent::Key {
+                        key: ck_input::Key::Escape,
+                        down: true,
+                        repeat: false,
+                    },
+                    NativeEvent::Key {
+                        key: ck_input::Key::Escape,
+                        down: false,
+                        repeat: false,
+                    },
                     NativeEvent::CloseButton,
                 ]);
-                rig.backend
-                    .script
-                    .push_back(vec![NativeEvent::EscapePressed]);
+                rig.backend.script.push_back(vec![
+                    NativeEvent::Key {
+                        key: ck_input::Key::Escape,
+                        down: true,
+                        repeat: false,
+                    },
+                    NativeEvent::Key {
+                        key: ck_input::Key::Escape,
+                        down: false,
+                        repeat: false,
+                    },
+                ]);
                 rig.quit_at_pump(3);
                 rig.run_collect()
             };

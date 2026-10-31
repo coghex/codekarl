@@ -548,7 +548,18 @@ fn drive_held_callback(backend: &mut FakeBackend, dir: &Path, held: Held) {
                 pending
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push_back(ck_window::NativeEvent::EscapePressed);
+                    .extend([
+                        ck_window::NativeEvent::Key {
+                            key: ck_window::Key::Escape,
+                            down: true,
+                            repeat: false,
+                        },
+                        ck_window::NativeEvent::Key {
+                            key: ck_window::Key::Escape,
+                            down: false,
+                            repeat: false,
+                        },
+                    ]);
                 pushed_at = Some(pump);
             }
             Some(at) if pump > at => {

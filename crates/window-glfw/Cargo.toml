@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+ck-input = { path = "../input" }
 ck-window = { path = "../window" }
 ck-log = { path = "../log" }
 

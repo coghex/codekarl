@@ -136,6 +136,7 @@ dependencies = [
 name = "ck-window-glfw"
 version = "0.1.0"
 dependencies = [
+ "ck-input",
  "ck-log",
  "ck-window",
 ]

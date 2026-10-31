@@ -12,9 +12,6 @@ use crate::notifier::NativeWake;
 pub enum NativeEvent {
     /// The close button was pressed.
     CloseButton,
-    /// Escape was pressed (including key repeat). Only the GLFW backend still reports it, until milestone 5.5 gives
-    /// it normalised keys: the native macOS backend reports [`Key`](Self::Key) and the close action is a binding.
-    EscapePressed,
     /// A physical key changed state, normalised on the main thread. `repeat` is the system's auto-repeat flag. The
     /// loop feeds these to its `ck-input` mapper in the order they arrive.
     Key {

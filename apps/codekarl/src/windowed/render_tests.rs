@@ -241,7 +241,18 @@ fn the_demo_script_closes_on_escape_with_a_clean_run_end_and_places_its_quad() {
                     queue
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
-                        .push_back(NativeEvent::EscapePressed);
+                        .extend([
+                            NativeEvent::Key {
+                                key: ck_window::Key::Escape,
+                                down: true,
+                                repeat: false,
+                            },
+                            NativeEvent::Key {
+                                key: ck_window::Key::Escape,
+                                down: false,
+                                repeat: false,
+                            },
+                        ]);
                 }
             }));
             Ok(backend)

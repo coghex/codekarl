@@ -40,8 +40,8 @@
 //!
 //! # The close protocol (design §6)
 //!
-//! A close button press, a rising edge of the `close` action (Escape by default; the loop's `ck-input` mapper turns
-//! normalised [`NativeEvent::Key`] events into actions), or the GLFW backend's [`NativeEvent::EscapePressed`] produces one [`UiEvent::CloseRequested`] unless one is
+//! A close button press or a rising edge of the `close` action (Escape by default; the loop's `ck-input` mapper turns
+//! normalised [`NativeEvent::Key`] events into actions) produces one [`UiEvent::CloseRequested`] unless one is
 //! already outstanding (later ones are absorbed, and counted in one `debug window:` record per pass). The
 //! UI answers [`Answer::Accept`], [`Answer::Decline`], [`Answer::NotRegistered`] (which means accept) or
 //! [`Answer::Failed`]. Accept closes the window, Decline leaves it open (and the request is no longer

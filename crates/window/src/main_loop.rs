@@ -560,13 +560,9 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
                     input.minimized = true;
                 }
                 NativeEvent::Restored => input.minimized = false,
-                NativeEvent::CloseButton | NativeEvent::EscapePressed => {
+                NativeEvent::CloseButton => {
                     if *close == CloseEvent::Idle {
-                        *close = CloseEvent::ToPost(if event == NativeEvent::CloseButton {
-                            CloseSource::Button
-                        } else {
-                            CloseSource::Key
-                        });
+                        *close = CloseEvent::ToPost(CloseSource::Button);
                     } else {
                         absorbed += 1;
                     }
@@ -606,9 +602,8 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
             }
         }
         self.refresh_updates(pass);
-        // The close action (design §10.1): a rising edge requests the close with source `key`, exactly as Escape did
-        // - one outstanding at a time, later presses absorbed and counted below. Escape from the GLFW backend
-        // (`EscapePressed`) took its own path above.
+        // The close action (design §10.1): a rising edge requests the close with source `key` - one outstanding at a
+        // time, later presses absorbed and counted below.
         let presses = usize::try_from(self.input.mapper.take_close_presses()).unwrap_or(usize::MAX);
         if presses > 0 {
             if pass.close == CloseEvent::Idle {

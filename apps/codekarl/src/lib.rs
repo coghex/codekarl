@@ -1074,7 +1074,7 @@ mod tests {
     }
 
     #[test]
-    fn glfw_vulkan_custom_close_is_refused_through_execute_before_the_window_plan() {
+    fn glfw_vulkan_accepts_custom_close_but_still_refuses_frame_before_the_window_plan() {
         use std::sync::atomic::AtomicBool;
 
         let directory = testing::Dir::new();
@@ -1090,6 +1090,7 @@ mod tests {
             backend: None,
         };
         let planned = Cell::new(false);
+        let saw_custom = Cell::new(false);
         let status = execute_with(
             &options,
             Shared {
@@ -1097,18 +1098,53 @@ mod tests {
                 notifier: Notifier::new(),
             },
             &[mode::Backend::GlfwVulkan],
-            |_| {
+            |setup| {
                 planned.set(true);
-                unreachable!("configuration refusal happens before composing a window")
+                saw_custom.set(
+                    setup.env.settings.bindings()
+                        == &config::load_text_for_test("[input.bindings]\nclose = [\"KeyQ\"]\n")
+                            .bindings,
+                );
+                Plan {
+                    extension: setup.extension,
+                    run: Some(Box::new(|_| ck_runtime::RunEnd::Finished)),
+                }
+            },
+        );
+        assert_eq!(status.code, 0);
+        assert!(
+            planned.get() && saw_custom.get(),
+            "the custom binding reaches the glfw-vulkan window plan"
+        );
+
+        let frame_path = directory.0.join("frame.toml");
+        std::fs::write(
+            &frame_path,
+            "[window]\nbackend = \"glfw-vulkan\"\n[frame]\n",
+        )
+        .expect("write frame config");
+        let frame_options = RunOptions {
+            config: Some(frame_path),
+            headless: false,
+            backend: None,
+        };
+        let planned_frame = Cell::new(false);
+        let status = execute_with(
+            &frame_options,
+            Shared {
+                quit: Arc::new(AtomicBool::new(false)),
+                notifier: Notifier::new(),
+            },
+            &[mode::Backend::GlfwVulkan],
+            |_| {
+                planned_frame.set(true);
+                unreachable!("frame refusal happens before composing a window")
             },
         );
         assert_eq!(status.code, 1);
-        assert!(
-            !planned.get(),
-            "the custom close never reaches the window plan"
-        );
+        assert!(!planned_frame.get(), "frame remains unsupported");
 
-        // Negative control: an old configuration has no explicit binding and keeps the legacy Escape mapping.
+        // An old configuration without explicit bindings keeps the default close binding.
         let old_path = directory.0.join("legacy.toml");
         std::fs::write(&old_path, "[window]\nbackend = \"glfw-vulkan\"\n")
             .expect("write legacy config");
