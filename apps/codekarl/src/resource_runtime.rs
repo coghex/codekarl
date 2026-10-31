@@ -204,7 +204,8 @@ pub(crate) fn final_record(
 }
 
 /// [`final_record`] for a `glfw-vulkan` run: the common part is the same text; the `gpu:` part is the Vulkan presenter's
-/// figures and omits the Metal-only ones (bindless slots, instance buffer, checker staging and instances), never as 0.
+/// figures, `bindless_slots=N` among them (the tables the presenter actually allocated; 0 when the logged fallback drew through
+/// per-revision sets), and omits the Metal-only ones (instance buffer, checker staging and instances), never as 0.
 pub(crate) fn final_record_vulkan(
     stats: &ck_resources::ServiceStats,
     gpu: Option<&crate::windowed::VulkanFigures>,
@@ -215,9 +216,10 @@ pub(crate) fn final_record_vulkan(
         || "no presenter".to_owned(),
         |gpu| {
             format!(
-                "textures created {}, frames {}, upload texture peak {} B, upload staging peak {} B, checker texture {} B",
+                "textures created {}, frames {}, bindless_slots={}, upload texture peak {} B, upload staging peak {} B, checker texture {} B",
                 gpu.textures_created,
                 gpu.frames,
+                gpu.bindless_slots,
                 gpu.texture_bytes_peak,
                 gpu.staging_bytes_peak,
                 gpu.checker_bytes
@@ -684,6 +686,7 @@ mod tests {
             staging_bytes_peak: 32,
             checker_bytes: 16384,
             frames: 9,
+            bindless_slots: 17,
         };
         let metal = crate::windowed::GpuFigures {
             textures_created: 3,
@@ -704,18 +707,14 @@ mod tests {
         for needle in [
             "textures created 3",
             "frames 9",
+            "bindless_slots=17",
             "upload texture peak 64 B",
             "upload staging peak 32 B",
             "checker texture 16384 B",
         ] {
             assert!(vulkan_gpu.contains(needle), "{needle}: {vulkan_gpu}");
         }
-        for omitted in [
-            "bindless",
-            "checker staging",
-            "instance buffer",
-            "checker instances",
-        ] {
+        for omitted in ["checker staging", "instance buffer", "checker instances"] {
             assert!(
                 !vulkan_gpu.contains(omitted),
                 "{omitted} is Metal-only: {vulkan_gpu}"

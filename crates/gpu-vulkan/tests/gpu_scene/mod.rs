@@ -12,18 +12,45 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ck_gpu_vulkan::{
-    CheckerProgress, DestinationRect, HeldCompat, InstanceRole, LedgerCleanup, LedgerEvent,
-    LedgerLimits, PixelSource, TextureLedger, TextureLimits, TextureTestHooks, TextureWakes,
-    VulkanFilter, VulkanFrame, VulkanInstance, VulkanSceneSource, checker_pixels, readback_scene,
-    readback_scene_with_held,
+    BindingChoice, BindlessLimits, CheckerProgress, DestinationRect, HeldCompat, InstanceRole,
+    LedgerCleanup, LedgerEvent, LedgerLimits, PixelSource, TextureLedger, TextureLimits,
+    TextureTestHooks, TextureWakes, VulkanFilter, VulkanFrame, VulkanInstance, VulkanSceneSource,
+    checker_pixels, readback_scene, readback_scene_with_held,
 };
 
 use super::gpu_textures::{Bytes, Kit, PATIENCE, pattern};
 
 const PICK: Duration = Duration::from_millis(1);
 
+/// How a case's ledger binds its textures. The cases that read pixels run in both, against the same reference: "the same scene
+/// draws identical pixels" in the per-revision sets (CK-156/157) and through the bindless table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    PerRevision,
+    Bindless,
+    /// The gate decides for this slot count (a case that expects the fallback, or a small table).
+    Auto(u32),
+}
+
+pub(crate) const MODES: [Mode; 2] = [Mode::PerRevision, Mode::Bindless];
+
+/// The tables' size in the bindless mode: the final stage's, which the device gate accepts here.
+pub(crate) const SLOTS: u32 = 131_072;
+
+impl Mode {
+    fn choice(self) -> BindingChoice {
+        match self {
+            Self::PerRevision => BindingChoice::PerRevision,
+            Self::Bindless => BindingChoice::Auto(BindlessLimits {
+                texture_slots: SLOTS,
+            }),
+            Self::Auto(texture_slots) => BindingChoice::Auto(BindlessLimits { texture_slots }),
+        }
+    }
+}
+
 /// The scene a case draws: its instances in painter order.
-struct Quads(Vec<VulkanInstance<u32>>);
+pub(crate) struct Quads(pub(crate) Vec<VulkanInstance<u32>>);
 
 impl VulkanSceneSource<u32> for Quads {
     fn place(&self, _width: u32, _height: u32, out: &mut dyn FnMut(VulkanInstance<u32>)) {
@@ -44,21 +71,21 @@ impl PixelSource for CheckerBytes {
 
 /// One shown image, as the reference needs it.
 #[derive(Clone)]
-struct Shown {
-    width: u32,
-    height: u32,
-    pixels: Arc<Bytes>,
+pub(crate) struct Shown {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pixels: Arc<Bytes>,
 }
 
 /// A kit, a ledger with its checker resident, and the pixels of everything shown.
-struct Rig {
-    kit: Kit,
-    ledger: Option<TextureLedger<u32>>,
-    shown: HashMap<u32, Shown>,
-    max_quads: usize,
+pub(crate) struct Rig {
+    pub(crate) kit: Kit,
+    pub(crate) ledger: Option<TextureLedger<u32>>,
+    pub(crate) shown: HashMap<u32, Shown>,
+    pub(crate) max_quads: usize,
 }
 
-fn instance(key: u32, destination: [i32; 4], source: [f32; 4]) -> VulkanInstance<u32> {
+pub(crate) fn instance(key: u32, destination: [i32; 4], source: [f32; 4]) -> VulkanInstance<u32> {
     VulkanInstance {
         key,
         destination: DestinationRect {
@@ -72,11 +99,12 @@ fn instance(key: u32, destination: [i32; 4], source: [f32; 4]) -> VulkanInstance
     }
 }
 
-const WHOLE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+pub(crate) const WHOLE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 impl Rig {
-    fn new(max_textures: usize, extras: usize, max_quads: usize) -> Self {
+    pub(crate) fn new(mode: Mode, max_textures: usize, extras: usize, max_quads: usize) -> Self {
         Self::with_limits(
+            mode,
             max_textures,
             max_quads,
             TextureLimits::default(),
@@ -87,13 +115,15 @@ impl Rig {
         )
     }
 
-    fn with_limits(
+    pub(crate) fn with_limits(
+        mode: Mode,
         max_textures: usize,
         max_quads: usize,
         texture: TextureLimits,
         ledger_limits: LedgerLimits,
     ) -> Self {
         Self::with_hooks(
+            mode,
             max_textures,
             max_quads,
             texture,
@@ -102,23 +132,54 @@ impl Rig {
         )
     }
 
-    fn with_hooks(
+    pub(crate) fn with_hooks(
+        mode: Mode,
         max_textures: usize,
         max_quads: usize,
         texture: TextureLimits,
         ledger_limits: LedgerLimits,
         hooks: TextureTestHooks,
     ) -> Self {
-        let kit = Kit::new(false);
-        let ledger = TextureLedger::<u32>::start_with_test_hooks(
+        Self::with_kit(
+            Kit::new(false),
+            mode,
+            max_textures,
+            max_quads,
+            texture,
+            ledger_limits,
+            hooks,
+        )
+    }
+
+    /// A rig on `kit` (a case that holds frames makes it with the host-event feature).
+    pub(crate) fn with_kit(
+        kit: Kit,
+        mode: Mode,
+        max_textures: usize,
+        max_quads: usize,
+        texture: TextureLimits,
+        ledger_limits: LedgerLimits,
+        hooks: TextureTestHooks,
+    ) -> Self {
+        let ledger = TextureLedger::<u32>::start_with_binding(
             kit.context.clone(),
             texture,
             ledger_limits,
             max_textures,
+            mode.choice(),
             TextureWakes::default(),
             hooks,
         )
         .expect("the ledger starts");
+        match mode {
+            Mode::Bindless => assert_eq!(
+                ledger.bindless_slots(),
+                SLOTS,
+                "{mode:?}: this device passes the gate at {SLOTS}"
+            ),
+            Mode::PerRevision => assert_eq!(ledger.bindless_slots(), 0, "{mode:?}"),
+            Mode::Auto(_) => {}
+        }
         ledger
             .start_checker(64, 64, Arc::new(CheckerBytes(checker_pixels())))
             .expect("the checker is offered");
@@ -132,12 +193,12 @@ impl Rig {
         rig
     }
 
-    fn ledger(&self) -> &TextureLedger<u32> {
+    pub(crate) fn ledger(&self) -> &TextureLedger<u32> {
         self.ledger.as_ref().expect("the ledger exists")
     }
 
     /// Pumps until `done` is satisfied, failing after [`PATIENCE`].
-    fn pump_until(
+    pub(crate) fn pump_until(
         &mut self,
         mut done: impl FnMut(&TextureLedger<u32>, &[LedgerEvent<u32>]) -> bool,
     ) -> Vec<LedgerEvent<u32>> {
@@ -160,7 +221,14 @@ impl Rig {
     }
 
     /// Offers `pixels` as revision `revision` of `key`, pumps until it is prepared and commits it. Not adopted.
-    fn prepare(&mut self, key: u32, revision: u64, width: u32, height: u32, pixels: &Arc<Bytes>) {
+    pub(crate) fn prepare(
+        &mut self,
+        key: u32,
+        revision: u64,
+        width: u32,
+        height: u32,
+        pixels: &Arc<Bytes>,
+    ) {
         self.ledger()
             .offer(
                 key,
@@ -179,7 +247,7 @@ impl Rig {
     }
 
     /// Adopts everything committed, at one boundary per call of the limit.
-    fn adopt_all(&self) {
+    pub(crate) fn adopt_all(&self) {
         let mut adopted = Vec::new();
         loop {
             let before = adopted.len();
@@ -191,7 +259,7 @@ impl Rig {
     }
 
     /// Shows `pixels` as the first revision of `key`.
-    fn show(&mut self, key: u32, width: u32, height: u32, pixels: Arc<Bytes>) {
+    pub(crate) fn show(&mut self, key: u32, width: u32, height: u32, pixels: Arc<Bytes>) {
         self.prepare(key, 1, width, height, &pixels);
         self.adopt_all();
         self.shown.insert(
@@ -205,7 +273,7 @@ impl Rig {
     }
 
     /// Draws `instances` off screen and returns the pixels with the counters.
-    fn draw(
+    pub(crate) fn draw(
         &mut self,
         size: (u32, u32),
         clear: [f32; 3],
@@ -227,7 +295,7 @@ impl Rig {
     }
 
     /// Draws `frame` with the compatibility image `held` (the ledger's current hold), or reports why it was not drawn.
-    fn try_draw(
+    pub(crate) fn try_draw(
         &mut self,
         size: (u32, u32),
         frame: &VulkanFrame<u32>,
@@ -246,7 +314,7 @@ impl Rig {
         )
     }
 
-    fn finish(mut self) {
+    pub(crate) fn finish(mut self) {
         let ledger = self.ledger.take().expect("the ledger exists");
         assert_eq!(
             ledger.shutdown(Instant::now() + PATIENCE),
@@ -324,7 +392,7 @@ fn sample(image: &Shown, u: f32, v: f32, filter: VulkanFilter) -> [f32; 4] {
     clippy::cast_possible_wrap,
     reason = "pixel coordinates in these cases are small"
 )]
-fn reference(
+pub(crate) fn reference(
     size: (u32, u32),
     clear: [f32; 3],
     filter: VulkanFilter,
@@ -365,7 +433,7 @@ fn reference(
 }
 
 /// The checker as the reference needs it.
-fn checker_image() -> Shown {
+pub(crate) fn checker_image() -> Shown {
     Shown {
         width: 64,
         height: 64,
@@ -374,7 +442,7 @@ fn checker_image() -> Shown {
 }
 
 /// How many pixels differ by more than `tolerance` in any channel.
-fn differing(a: &[u8], b: &[u8], tolerance: u8) -> usize {
+pub(crate) fn differing(a: &[u8], b: &[u8], tolerance: u8) -> usize {
     assert_eq!(a.len(), b.len());
     a.chunks_exact(4)
         .zip(b.chunks_exact(4))
@@ -435,7 +503,13 @@ fn runs(list: &[VulkanInstance<u32>]) -> u64 {
 /// for an implementation that sorts.
 #[test]
 fn sixty_four_quads_over_sixteen_textures_read_back_exactly_in_painter_order() {
-    let mut rig = Rig::new(32, 8, 128);
+    for mode in MODES {
+        sixty_four_quads_over_sixteen_textures_read_back_exactly_in_painter_order_in(mode);
+    }
+}
+
+fn sixty_four_quads_over_sixteen_textures_read_back_exactly_in_painter_order_in(mode: Mode) {
+    let mut rig = Rig::new(mode, 32, 8, 128);
     for key in 0..16_u32 {
         rig.show(
             key,
@@ -500,7 +574,13 @@ fn sixty_four_quads_over_sixteen_textures_read_back_exactly_in_painter_order() {
 /// reference, which differs from the linear one by far more than the tolerance.
 #[test]
 fn a_linear_frame_switches_back_to_linear_after_the_checker_batch() {
-    let mut rig = Rig::new(8, 2, 16);
+    for mode in MODES {
+        a_linear_frame_switches_back_to_linear_after_the_checker_batch_in(mode);
+    }
+}
+
+fn a_linear_frame_switches_back_to_linear_after_the_checker_batch_in(mode: Mode) {
+    let mut rig = Rig::new(mode, 8, 2, 16);
     rig.show(1, 8, 8, pattern(8, 8, 40));
     // B: four distinct opaque texels.
     let b = Arc::new(Bytes(vec![
@@ -558,7 +638,7 @@ fn a_linear_frame_switches_back_to_linear_after_the_checker_batch() {
 }
 
 /// The identity an image encodes: its key in the three colour bytes, opaque.
-fn identity_image(key: u32) -> Arc<Bytes> {
+pub(crate) fn identity_image(key: u32) -> Arc<Bytes> {
     let [r, g, b, _] = key.to_le_bytes();
     let mut bytes = Vec::with_capacity(32 * 32 * 4);
     for _ in 0..32 * 32 {
@@ -567,7 +647,7 @@ fn identity_image(key: u32) -> Arc<Bytes> {
     Arc::new(Bytes(bytes))
 }
 
-fn decode(pixel: &[u8]) -> u32 {
+pub(crate) fn decode(pixel: &[u8]) -> u32 {
     u32::from_le_bytes([pixel[0], pixel[1], pixel[2], 0])
 }
 
@@ -579,13 +659,20 @@ fn decode(pixel: &[u8]) -> u32 {
 /// Negative control: a quad whose set was written for another revision decodes that revision's identity, so comparing
 /// against the expected one fails.
 #[test]
+fn the_baseline_of_32768_textures_decodes_every_identity() {
+    for mode in MODES {
+        the_baseline_of_32768_textures_decodes_every_identity_in(mode);
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "upload, adopt, build, draw, decode and the control read best as one baseline"
 )]
-fn the_baseline_of_32768_textures_decodes_every_identity() {
+fn the_baseline_of_32768_textures_decodes_every_identity_in(mode: Mode) {
     const TEXTURES: u32 = 32_768;
     let mut rig = Rig::with_limits(
+        mode,
         TEXTURES as usize,
         65_536,
         TextureLimits {
@@ -707,7 +794,13 @@ fn the_baseline_of_32768_textures_decodes_every_identity() {
 /// not an unchanged picture.
 #[test]
 fn movement_re_uploads_nothing_and_a_reload_shows_only_after_adoption() {
-    let mut rig = Rig::new(16, 4, 64);
+    for mode in MODES {
+        movement_re_uploads_nothing_and_a_reload_shows_only_after_adoption_in(mode);
+    }
+}
+
+fn movement_re_uploads_nothing_and_a_reload_shows_only_after_adoption_in(mode: Mode) {
+    let mut rig = Rig::new(mode, 16, 4, 64);
     let red = Arc::new(Bytes([255, 0, 0, 255].repeat(16)));
     let green = Arc::new(Bytes([0, 255, 0, 255].repeat(16)));
     rig.show(1, 4, 4, Arc::clone(&red));
@@ -866,14 +959,14 @@ fn a_failing_checker_upload_is_reported_and_the_end_is_proven() {
     kit.finish();
 }
 
-fn compat_instance(key: u32, destination: [i32; 4]) -> VulkanInstance<u32> {
+pub(crate) fn compat_instance(key: u32, destination: [i32; 4]) -> VulkanInstance<u32> {
     VulkanInstance {
         role: InstanceRole::Compat,
         ..instance(key, destination, WHOLE)
     }
 }
 
-fn compat_frame(key: u32, instances: Vec<VulkanInstance<u32>>) -> VulkanFrame<u32> {
+pub(crate) fn compat_frame(key: u32, instances: Vec<VulkanInstance<u32>>) -> VulkanFrame<u32> {
     VulkanFrame::new(
         1,
         VulkanFilter::Nearest,
@@ -897,7 +990,17 @@ fn pixel_at(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {
 /// with nothing shown still draws the checker where the compatibility key may not.
 #[test]
 fn the_compatibility_quad_is_drawn_with_its_image_or_the_held_one_and_never_the_checker() {
-    let mut rig = Rig::new(8, 2, 16);
+    for mode in MODES {
+        the_compatibility_quad_is_drawn_with_its_image_or_the_held_one_and_never_the_checker_in(
+            mode,
+        );
+    }
+}
+
+fn the_compatibility_quad_is_drawn_with_its_image_or_the_held_one_and_never_the_checker_in(
+    mode: Mode,
+) {
+    let mut rig = Rig::new(mode, 8, 2, 16);
     let green = Arc::new(Bytes([0, 255, 0, 255].repeat(16)));
     let red = Arc::new(Bytes([255, 0, 0, 255].repeat(16)));
     rig.show(1, 4, 4, red);
@@ -991,7 +1094,13 @@ fn the_compatibility_quad_is_drawn_with_its_image_or_the_held_one_and_never_the_
 /// returns a wrong set.
 #[test]
 fn a_held_revision_lookup_follows_the_current_hold_and_never_returns_a_wrong_set() {
-    let mut rig = Rig::new(8, 4, 16);
+    for mode in MODES {
+        a_held_revision_lookup_follows_the_current_hold_and_never_returns_a_wrong_set_in(mode);
+    }
+}
+
+fn a_held_revision_lookup_follows_the_current_hold_and_never_returns_a_wrong_set_in(mode: Mode) {
+    let mut rig = Rig::new(mode, 8, 4, 16);
     rig.show(5, 4, 4, Arc::new(Bytes([0, 255, 0, 255].repeat(16))));
     rig.ledger().hold_compat(5, 1).expect("held");
     // A second revision of the same key is adopted: revision 1 is retired and stays alive by the hold.
@@ -1002,7 +1111,7 @@ fn a_held_revision_lookup_follows_the_current_hold_and_never_returns_a_wrong_set
     let first = ticket
         .resolve_revision(5, 1)
         .expect("the held revision resolves although it was superseded");
-    let first_set = first.descriptor_set();
+    let first_binding = (first.slot(), first.descriptor_set());
     assert!(
         ticket.resolve_revision(5, 2).is_none(),
         "only the exact held revision resolves"
@@ -1018,9 +1127,9 @@ fn a_held_revision_lookup_follows_the_current_hold_and_never_returns_a_wrong_set
         .resolve_revision(5, 2)
         .expect("the new hold resolves");
     assert_ne!(
-        second.descriptor_set(),
-        first_set,
-        "and it is revision 2's own set, not revision 1's"
+        (second.slot(), second.descriptor_set()),
+        first_binding,
+        "and it is revision 2's own slot or set, not revision 1's"
     );
     ledger.release_compat_hold();
     assert!(
@@ -1042,6 +1151,7 @@ fn a_compatibility_upload_failure_is_reported_before_the_ordinary_one_and_only_f
         // The second image-memory allocation fails (the checker's block is the first): an image of 1100 x 1100 has an allocation
         // of its own (it is over the dedicated-allocation threshold).
         let mut rig = Rig::with_hooks(
+            Mode::PerRevision,
             8,
             16,
             TextureLimits::default(),

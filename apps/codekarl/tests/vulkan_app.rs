@@ -68,6 +68,9 @@ mod common;
 
 use common::{BINARY, Scratch};
 
+/// The output rule for validation messages, shared with the library's tests over the fake stack.
+mod validation_rule;
+
 #[expect(
     dead_code,
     reason = "this file reads its worker's output as one text; the raw split capture is the windowed test's"
@@ -542,13 +545,12 @@ fn signal(worker: &Worker, signal: i32) {
     assert_eq!(sent, 0, "kill failed");
 }
 
-/// A validation-layer message anywhere in the output fails the case.
+/// A validation message anywhere in the output fails the case, unless it is the one tolerated record: marked by the in-process scope
+/// that decided it, and naming the tolerated VUID (see [`validation_rule`]). The rule never compares counts.
 fn assert_no_validation(seen: &Seen) {
-    assert!(
-        !seen.stdout.contains("Validation") && !seen.stdout.contains("VUID"),
-        "a validation message:\n{}",
-        seen.stdout
-    );
+    if let Err(message) = validation_rule::check(&seen.stdout) {
+        panic!("{message}\nfull output:\n{}", seen.stdout);
+    }
 }
 
 /// Waits for the worker to end and reads everything it wrote; a deadline, a failed poll, kill or reap and a read error fail
@@ -854,6 +856,10 @@ fn demo_config(fixture: &Fixture) -> PathBuf {
 /// and the run ends `Closed` with exit 0, a proven presenter end, the first-frame record and a complete final resource
 /// record with nothing live, retiring or referenced. Negative control: without the go file, the run keeps its window until
 /// the case's own SIGTERM (exit 143), so the close comes from the marked key, not the typist.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the run, its notice, its final record and the negative control read best as one case"
+)]
 fn the_demo_scene_runs_unchanged_on_glfw_vulkan_and_closes_by_a_marked_escape() {
     let fixture = Fixture::new();
     let config = demo_config(&fixture);
@@ -927,6 +933,27 @@ fn the_demo_scene_runs_unchanged_on_glfw_vulkan_and_closes_by_a_marked_escape() 
     assert!(!seen.stdout.contains("incomplete"), "{}", seen.stdout);
     let record = final_record(&seen.stdout);
     assert_reconciled(&record);
+    // The binding notice, once, through the table at the demo's default 131,072 slots (the support query's answer is the
+    // device's: the text says which), and the final record counts the same tables.
+    assert_eq!(
+        count(
+            &seen.stdout,
+            "render: bindless table of 131072 slots (vkGetDescriptorSetLayoutSupport: "
+        ),
+        1,
+        "{}",
+        seen.stdout
+    );
+    assert_eq!(
+        number_after(&record, "bindless_slots="),
+        131_072,
+        "{record}"
+    );
+    assert!(
+        !seen.stdout.contains("bindless unavailable"),
+        "this device passes the gate:\n{}",
+        seen.stdout
+    );
 
     // The negative control.
     let fixture = Fixture::new();
@@ -1111,11 +1138,13 @@ fn lifecycle_config() -> String {
 /// Runs a lifecycle `script` on a real window and returns what the run wrote. The run must end `Closed`, exit 0, with both
 /// shutdowns after the close and no error or incomplete record.
 fn lifecycle(script: &str) -> Seen {
+    lifecycle_in(&lifecycle_config(), script)
+}
+
+/// [`lifecycle`] over this configuration text.
+fn lifecycle_in(configuration: &str, script: &str) -> Seen {
     let fixture = Fixture::new();
-    let config = fixture.windowed(
-        &lifecycle_config(),
-        &format!("{LIFECYCLE_HELPERS}\n{script}"),
-    );
+    let config = fixture.windowed(configuration, &format!("{LIFECYCLE_HELPERS}\n{script}"));
     let seen = run_windowed(&fixture, &config, &[]);
     assert_eq!(seen.code, Some(0), "{}", seen.stdout);
     assert_in_order(
@@ -1184,9 +1213,9 @@ fn assert_reconciled(record: &str) {
         "{record}"
     );
     assert!(record.ends_with("complete"), "{record}");
-    // The Vulkan record writes its own figures and none of the Metal-only ones.
+    // The Vulkan record writes its own figures (`bindless_slots=N` among them) and none of the Metal-only ones.
     assert!(
-        !record.contains("bindless") && !record.contains("instance buffer"),
+        record.contains("bindless_slots=") && !record.contains("instance buffer"),
         "{record}"
     );
 }
@@ -1254,6 +1283,48 @@ fn moving_a_quad_for_many_updates_uploads_nothing_but_a_reload_does() {
     let record = final_record(&reloaded.stdout);
     assert_eq!(created(&record), 2 + 1, "{record}");
     assert_reconciled(&record);
+}
+
+/// The setting reaches the presenter (CK-128, now on `glfw-vulkan`): a fixture with `max_textures = 8`, `max_extra_revisions = 8`
+/// and `bindless_texture_slots = 17` (the rule's exact minimum) ends with `bindless_slots=17` in the final record, the observed
+/// capacity of the tables the presenter allocated, and the notice says so once; the default configuration shows 131072 (the
+/// negative control: a hard-coded count would show the same number twice).
+fn the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record() {
+    let small = format!(
+        "{}\n[resources]\nmax_textures = 8\nmax_extra_revisions = 8\n",
+        lifecycle_config().replace("[render]\n", "[render]\nbindless_texture_slots = 17\n")
+    );
+    let seen = lifecycle_in(&small, MOVEMENT);
+    let record = final_record(&seen.stdout);
+    assert_eq!(number_after(&record, "bindless_slots="), 17, "{record}");
+    assert_eq!(
+        created(&record),
+        2,
+        "the loaded texture and the checker: {record}"
+    );
+    assert_eq!(
+        count(
+            &seen.stdout,
+            "render: bindless table of 17 slots (vkGetDescriptorSetLayoutSupport: "
+        ),
+        1,
+        "{}",
+        seen.stdout
+    );
+    assert_reconciled(&record);
+    let default = lifecycle(MOVEMENT);
+    let record = final_record(&default.stdout);
+    assert_eq!(
+        number_after(&record, "bindless_slots="),
+        131_072,
+        "{record}"
+    );
+}
+
+/// The output rule over supplied outputs (the same function every case's output goes through): the one genuinely tolerated
+/// record passes, and every substitute fails, whatever the counts.
+fn the_validation_output_rule_accepts_only_a_marked_record_naming_the_tolerated_vuid() {
+    validation_rule::supplied_outputs_behave();
 }
 
 fn destroying_the_quad_and_releasing_the_texture_retires_it_before_the_run_ends() {
@@ -1478,6 +1549,8 @@ fn cases() -> Vec<(&'static str, fn())> {
         case!(a_missing_file_stays_a_failed_checker_quad_and_the_run_ends_normally),
         case!(moving_a_quad_for_many_updates_uploads_nothing_but_a_reload_does),
         case!(destroying_the_quad_and_releasing_the_texture_retires_it_before_the_run_ends),
+        case!(the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record),
+        case!(the_validation_output_rule_accepts_only_a_marked_record_naming_the_tolerated_vuid),
         case!(a_minimised_window_is_restored_and_the_next_update_closes_the_run),
         case!(sigterm_while_the_window_is_minimised_exits_143_with_a_proven_presenter_end),
     ]

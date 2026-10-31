@@ -94,6 +94,39 @@ pub(crate) struct Refused<I> {
     pub(crate) cause: String,
 }
 
+/// How the presenter binds its textures, told once as plain values: the device gate refused and the scene is drawn through
+/// per-revision descriptor sets (`text` is the gate's diagnostic), or the bindless table is in use (`text` says its size and the
+/// support query's answer).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BindingNote {
+    /// The logged per-revision fallback (the owner's choice for a device that fails the gate).
+    pub(crate) fallback: bool,
+    /// The text.
+    pub(crate) text: String,
+}
+
+/// One message of the Vulkan validation log, as plain values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ValidationEntry {
+    /// `[severity kinds] VUID: message`.
+    pub(crate) text: String,
+    /// The one message the log tolerates (the bindless table layout's, after the support query said no), decided when it was
+    /// recorded.
+    pub(crate) tolerated: bool,
+    /// The loader's own notice, made while the instance was created, that the environment adds the validation layer: not a
+    /// validation message (decided when it was recorded).
+    pub(crate) loader_notice: bool,
+}
+
+/// What a drain of the validation log gave: the entries (each delivered once) and how many were dropped beyond the log's bound.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ValidationDrain {
+    /// The entries, oldest first.
+    pub(crate) entries: Vec<ValidationEntry>,
+    /// The entries dropped beyond the log's bound since the last drain.
+    pub(crate) dropped: u64,
+}
+
 /// What the run's resource path needs of the quad side and of the presenter's start, as plain values (no `ck-gpu-vulkan`
 /// type): the service, the relay its wakes go through, and the limits parsed from `[resources]` and `[render]`.
 #[derive(Clone)]
@@ -113,6 +146,8 @@ pub(crate) struct Resources {
     pub(crate) config: ResourceConfig,
     /// `[render] max_quads`.
     pub(crate) max_quads: usize,
+    /// `[render] bindless_texture_slots`.
+    pub(crate) bindless_texture_slots: u32,
 }
 
 /// The quad side of a run: everything of the backend except the presenter (the real one is `ck-render-2d`'s
@@ -155,6 +190,8 @@ pub(crate) trait Running {
     fn drawn_generation(&self) -> Option<u64>;
     /// The format notice, once: the name of the surface format the quad is not drawn on.
     fn take_notice(&mut self) -> Option<String>;
+    /// The binding notice, once: the bindless table or the logged fallback.
+    fn take_binding_notice(&mut self) -> Option<BindingNote>;
     /// The wake the relay is connected to, so the service's uploads and retirements reach the render thread.
     fn texture_wake(&self) -> Arc<dyn Fn() + Send + Sync>;
     /// The presenter's last numbers, copied before its handle is released (`None`: it has none to give).
@@ -181,6 +218,9 @@ pub(crate) trait Stack {
     type Driver;
     /// The quad side of a run.
     type Side: QuadSide<Slot = Self::Slot, Driver = Self::Driver>;
+    /// The handle on the instance's validation log. The run keeps it **apart from the instance**, so the messages the
+    /// instance's destruction emits, and those of a failed or partial setup, are still read after the instance is consumed.
+    type Log;
 
     /// Loads the Vulkan loader, by an explicit absolute path.
     fn load_loader(&self) -> Result<Self::Loader, String>;
@@ -192,6 +232,12 @@ pub(crate) trait Stack {
         loader: &Self::Loader,
         handles: &Self::Handles,
     ) -> Result<Self::Instance, String>;
+    /// The log of an instance whose creation just failed (it returned no instance, so no handle): every entry, once.
+    fn take_creation_log(&self) -> ValidationDrain;
+    /// The handle on the validation log of `instance`, taken as soon as the instance exists.
+    fn validation_log(&self, instance: &Self::Instance) -> Self::Log;
+    /// Moves the log's entries out (each is delivered once) with the count dropped beyond its bound.
+    fn drain_validation(&self, log: &Self::Log) -> ValidationDrain;
     /// Creates the surface on the main thread.
     fn create_surface(
         &self,
@@ -226,6 +272,16 @@ pub(crate) trait Stack {
     ) -> Result<(), Refused<Self::Instance>>;
 }
 
+/// The words that mark a tolerated validation record: the application's output check accepts a validation line only when it
+/// carries this marker and names the tolerated VUID, so provenance comes from the in-process scope that decided it, never from a
+/// count. `MoltenVK` #2573: its `vkGetDescriptorSetLayoutSupport` answers no for any layout of 1,024 or more descriptors.
+pub(crate) const TOLERATED_MARKER: &str =
+    "vulkan validation (tolerated: MoltenVK #2573, bindless table layout)";
+
+/// The words that mark the loader's own notice that the environment adds the validation layer: information the loader gives the
+/// debug messenger at `WARNING` severity while the instance is created, not a validation message.
+pub(crate) const LOADER_NOTICE_MARKER: &str = "vulkan loader notice (not a validation message)";
+
 /// What the run owns besides the GLFW backend (which the backend wrapper holds).
 struct State<S: Stack> {
     /// The run's own clone of the loader: released last.
@@ -234,6 +290,10 @@ struct State<S: Stack> {
     surface: Option<S::Surface>,
     /// The presenter's handle: released first at the teardown.
     presenter: Option<S::Started>,
+    /// The instance's validation log, kept apart from the instance (see [`Stack::Log`]).
+    log: Option<S::Log>,
+    /// Validation records drained from the log and not written yet (a refused record waits for the next call; none is lost).
+    pending_validation: VecDeque<(Level, String)>,
     /// The presenter reported a proven end.
     proven: bool,
     /// The relay was disconnected (it is, once, on whichever end path the run takes first).
@@ -273,6 +333,8 @@ impl<S: Stack> Run<S> {
                 instance: None,
                 surface: None,
                 presenter: None,
+                log: None,
+                pending_validation: VecDeque::new(),
                 proven: false,
                 disconnected: false,
                 retained: None,
@@ -297,6 +359,82 @@ impl<S: Stack> Run<S> {
         }
     }
 
+    /// Drains the instance's validation log and writes what it gave as records in category `render`: the one tolerated message
+    /// as an `info` record carrying its marker, every other message as a `warn` record, a dropped count as one `warn` record.
+    /// Called on the main thread at every pass, and **once more after every destruction and cleanup call** (the regular end, an
+    /// instance destroyed before the loop begins, a failed or partial setup's cleanup), because the log outlives the instance:
+    /// a message the destruction emits is read here. A refused record waits for the next call; with `closing` (an end path) the
+    /// batch gets one bounded wait instead ([`drain_validation_by`](Self::drain_validation_by)), so none is lost to the end. Every
+    /// closing drain has an absolute budget: `poll_end`'s own (the presenter's end), or, on the loop's teardown and window
+    /// creation, which have no caller budget, one control-path deadline per step shared by that step's drains. This form is the
+    /// non-closing pass, which never waits.
+    fn drain_validation(&self) {
+        self.drain_validation_by(false, None);
+    }
+
+    /// [`drain_validation`](Self::drain_validation) whose closing wait is also capped by the caller's own absolute budget `by`
+    /// (`poll_end`'s): what the drain waits comes out of the caller's budget, never on top of it.
+    fn drain_validation_by(&self, closing: bool, by: Option<Instant>) {
+        let drained = {
+            let state = self.state.borrow();
+            state
+                .log
+                .as_ref()
+                .map(|log| self.stack.drain_validation(log))
+        };
+        self.write_validation(drained.unwrap_or_default(), closing, by);
+    }
+
+    /// Turns `drained` (and what earlier calls left pending) into records and writes them: see [`drain_validation`](Self::drain_validation).
+    fn write_validation(&self, drained: ValidationDrain, closing: bool, by: Option<Instant>) {
+        let mut state = self.state.borrow_mut();
+        for entry in drained.entries {
+            state.pending_validation.push_back(if entry.loader_notice {
+                (
+                    Level::Info,
+                    format!("{LOADER_NOTICE_MARKER}: {}", entry.text),
+                )
+            } else if entry.tolerated {
+                (Level::Info, format!("{TOLERATED_MARKER}: {}", entry.text))
+            } else {
+                (Level::Warn, format!("vulkan validation: {}", entry.text))
+            });
+        }
+        if drained.dropped != 0 {
+            state.pending_validation.push_back((
+                Level::Warn,
+                format!(
+                    "vulkan validation: {} further messages were dropped beyond the log's bound",
+                    drained.dropped
+                ),
+            ));
+        }
+        if closing {
+            // One absolute deadline for the whole batch (not one wait per record): a stalled logger costs this call at most
+            // `lifecycle::batch_deadline`. The first record not admitted in time ends the waiting; the rest are offered once
+            // without waiting, so the logger counts every one it dropped.
+            let deadline = by.map_or_else(crate::lifecycle::batch_deadline, |by| {
+                crate::lifecycle::batch_deadline().min(by)
+            });
+            let mut waiting = true;
+            while let Some((level, text)) = state.pending_validation.pop_front() {
+                if waiting && Instant::now() < deadline {
+                    waiting = ck_log::log_within!(level, deadline, "render", "{text}")
+                        != Admission::Dropped;
+                } else {
+                    let _ = ck_log::try_log!(level, "render", "{text}");
+                }
+            }
+        } else {
+            while let Some((level, text)) = state.pending_validation.front() {
+                if ck_log::try_log!(*level, "render", "{text}") == Admission::Dropped {
+                    break;
+                }
+                state.pending_validation.pop_front();
+            }
+        }
+    }
+
     /// Why the owners were retained, if they were.
     fn retained(&self) -> Option<String> {
         self.state.borrow().retained.clone()
@@ -304,14 +442,18 @@ impl<S: Stack> Run<S> {
 
     /// Forgets every owner this path holds, the GLFW backend (if given) and the refusal's instance (if
     /// given) included, and records the cause. Nothing is dropped: no `Drop` runs for them, and no unwind can
-    /// release them. A second retention adds its cause.
+    /// release them. A second retention adds its cause. `by` is the caller's absolute budget when it has one (the end of a
+    /// presenter): the closing drain here comes out of it, as the drain before it did, and is not a fresh wait on top.
     fn retain(
         &self,
         glfw: Option<S::Glfw>,
         instance: Option<S::Instance>,
         surface: Option<S::Surface>,
         cause: String,
+        by: Option<Instant>,
     ) {
+        // What the log holds so far is written before the owners are given up.
+        self.drain_validation_by(true, by);
         let mut state = self.state.borrow_mut();
         state.retained = Some(match state.retained.take() {
             Some(first) => format!("{first}; {cause}"),
@@ -364,8 +506,10 @@ impl<S: Stack> VulkanBackend<S> {
         instance: Option<S::Instance>,
         surface: Option<S::Surface>,
         cause: String,
+        by: Option<Instant>,
     ) {
-        self.run.retain(self.glfw.take(), instance, surface, cause);
+        self.run
+            .retain(self.glfw.take(), instance, surface, cause, by);
     }
 }
 
@@ -387,11 +531,18 @@ impl<S: Stack> Backend for VulkanBackend<S> {
         let instance = match instance {
             Ok(instance) => instance,
             Err(error) => {
-                // Partial setup: the window is destroyed (the loop's `terminate` follows).
+                // Partial setup: the window is destroyed (the loop's `terminate` follows). What the failed creation's log
+                // recorded is written, entry by entry.
                 glfw.destroy_window();
+                let drained = self.run.stack.take_creation_log();
+                // No caller budget (window creation): the control-path deadline, one batch, nothing else drains after it.
+                self.run.write_validation(drained, true, None);
                 return Err(format!("cannot create the Vulkan instance: {error}"));
             }
         };
+        // The log is kept apart from the instance from the moment the instance exists, so no later end can lose its messages.
+        let log = self.run.stack.validation_log(&instance);
+        self.run.state.borrow_mut().log = Some(log);
         match self.run.stack.create_surface(&created.handles, &instance) {
             Ok(surface) => {
                 let mut state = self.run.state.borrow_mut();
@@ -401,7 +552,13 @@ impl<S: Stack> Backend for VulkanBackend<S> {
             }
             Err(error) => {
                 // Partial setup: the instance (no surface, no presenter), then the window, in this order.
-                match self.run.stack.destroy(instance, None, Ended::NoPresenter) {
+                let destroyed = self.run.stack.destroy(instance, None, Ended::NoPresenter);
+                // No caller budget here (the loop's window creation): one control-path deadline for this step, shared by the
+                // drain after the destruction and, on a refusal, by the retention's.
+                let by = crate::lifecycle::batch_deadline();
+                // After the destruction: what it emitted is in the log, which outlives the instance.
+                self.run.drain_validation_by(true, Some(by));
+                match destroyed {
                     Ok(()) => {
                         if let Some(glfw) = self.glfw.as_mut() {
                             glfw.destroy_window();
@@ -413,7 +570,7 @@ impl<S: Stack> Backend for VulkanBackend<S> {
                             "the partial setup could not be destroyed: {}",
                             refused.cause
                         );
-                        self.retain(Some(refused.instance), None, cause);
+                        self.retain(Some(refused.instance), None, cause, Some(by));
                         Err(format!("cannot create the surface: {error}"))
                     }
                 }
@@ -471,19 +628,25 @@ impl<S: Stack> Backend for VulkanBackend<S> {
                 instance,
                 surface,
                 "the presenter's end was not proven".to_owned(),
+                Some(crate::lifecycle::batch_deadline()),
             );
             std::mem::forget(presenter);
             return;
         }
         // The presenter's handle is released first (its loader clone with it).
         drop(presenter);
+        // No caller budget here (the loop's teardown): one control-path deadline for this whole step, shared by every drain in it.
+        let by = crate::lifecycle::batch_deadline();
         let Some(instance) = instance else {
+            self.run.drain_validation_by(true, Some(by));
             if let Some(glfw) = self.glfw.as_mut() {
                 glfw.destroy_window();
             }
             return;
         };
-        match self.run.stack.destroy(instance, surface, ended) {
+        let destroyed = self.run.stack.destroy(instance, surface, ended);
+        self.run.drain_validation_by(true, Some(by));
+        match destroyed {
             Ok(()) => {
                 if let Some(glfw) = self.glfw.as_mut() {
                     glfw.destroy_window();
@@ -505,7 +668,7 @@ impl<S: Stack> Backend for VulkanBackend<S> {
                         "kept"
                     }
                 );
-                self.retain(Some(refused.instance), surface, cause);
+                self.retain(Some(refused.instance), surface, cause, Some(by));
             }
         }
     }
@@ -547,6 +710,11 @@ impl NativeWake for NoWake {
 /// drained and the presenter's handle is released (or retained, on an unproven end), so a notice recorded after
 /// the last ordinary call is not lost; any time spent logging comes out of `poll_end`'s own budget.
 ///
+/// **The binding notice** is logged the same way, once: `warn render: bindless unavailable (<diagnostic>); drawing through
+/// per-revision descriptor sets` when the device gate refused, else `info render: bindless table of N slots
+/// (vkGetDescriptorSetLayoutSupport: ...)`. **The validation log** is drained at every call and after every destruction (see
+/// [`Run::drain_validation`]).
+///
 /// **The first-frame record.** When the loop first takes `FirstFrameQueued`, and the presenter has a drawn
 /// generation, one `debug render: first frame drawn, generation N` record is logged, the same as the native
 /// path's. It is the latest generation drawn, not a history, and claims nothing about the screen.
@@ -559,6 +727,8 @@ pub(crate) struct VulkanAdapter<S: Stack> {
     ended: Option<CleanupResult>,
     /// The format notice taken from the presenter and not logged yet.
     notice: Option<String>,
+    /// The binding notice taken from the presenter and not logged yet.
+    binding: Option<BindingNote>,
     /// The first frame was reported and its record has not been written yet.
     first_frame_pending: bool,
     /// The presenter's drawn generation as of the end (its handle is gone after that).
@@ -574,6 +744,7 @@ impl<S: Stack> VulkanAdapter<S> {
             queued: VecDeque::new(),
             ended: None,
             notice: None,
+            binding: None,
             first_frame_pending: false,
             drawn_at_end: None,
         }
@@ -581,7 +752,7 @@ impl<S: Stack> VulkanAdapter<S> {
 
     /// The presenter ended `Proven` (or was never started): releases its handle, then destroys the surface
     /// and the instance through the helper. A refusal retains everything and says why.
-    fn destroy_after_the_presenter(&mut self) -> CleanupResult {
+    fn destroy_after_the_presenter(&mut self, by: Instant) -> CleanupResult {
         let (presenter, instance, surface) = {
             let mut state = self.run.state.borrow_mut();
             state.proven = true;
@@ -602,9 +773,13 @@ impl<S: Stack> VulkanAdapter<S> {
             self.run.disconnect_relay();
         }
         let Some(instance) = instance else {
+            self.run.drain_validation_by(true, Some(by));
             return CleanupResult::Proven;
         };
-        match self.run.stack.destroy(instance, surface, ended) {
+        let destroyed = self.run.stack.destroy(instance, surface, ended);
+        // After the destruction and before anything else: its messages are in the log, which outlives the instance.
+        self.run.drain_validation_by(true, Some(by));
+        match destroyed {
             Ok(()) => CleanupResult::Proven,
             Err(refused) => {
                 // The surface is kept unless the refusal says it is already gone: never destroyed twice.
@@ -622,8 +797,13 @@ impl<S: Stack> VulkanAdapter<S> {
                         "kept"
                     }
                 );
-                self.run
-                    .retain(None, Some(refused.instance), surface, cause.clone());
+                self.run.retain(
+                    None,
+                    Some(refused.instance),
+                    surface,
+                    cause.clone(),
+                    Some(by),
+                );
                 CleanupResult::Unproven { reason: cause }
             }
         }
@@ -668,21 +848,46 @@ impl<S: Stack> VulkanAdapter<S> {
     /// the run is over, and the logger has counted the drop. A [`Gpu2d`] method's own deadline is therefore never
     /// spent on the logger.
     fn announce(&mut self, closing: bool) -> bool {
+        // The validation log first: what the layer said since the last call (records that were refused wait here).
+        // (With `try_log`, even on an end path: the destruction's own drain, after it, is the one that waits.)
+        self.run.drain_validation();
+        let mut tried = false;
         if self.notice.is_none() {
             self.notice = self.with(Running::take_notice).flatten();
         }
-        let Some(format) = &self.notice else {
-            return false;
-        };
-        let admission = ck_log::try_log!(
-            Level::Warn,
-            "render",
-            "textured quad skipped: the glfw-vulkan surface format is {format}, not UNORM"
-        );
-        if admission != Admission::Dropped || closing {
-            self.notice = None;
+        if let Some(format) = &self.notice {
+            tried = true;
+            let admission = ck_log::try_log!(
+                Level::Warn,
+                "render",
+                "textured quad skipped: the glfw-vulkan surface format is {format}, not UNORM"
+            );
+            if admission != Admission::Dropped || closing {
+                self.notice = None;
+            }
         }
-        true
+        if self.binding.is_none() {
+            self.binding = self.with(Running::take_binding_notice).flatten();
+        }
+        if let Some(note) = &self.binding {
+            tried = true;
+            // One record per run: a `warn` for the logged fallback (the gate refused the device; the text names every failed row),
+            // an `info` for the bindless table (its size and the support query's answer).
+            let admission = if note.fallback {
+                ck_log::try_log!(
+                    Level::Warn,
+                    "render",
+                    "bindless unavailable ({}); drawing through per-revision descriptor sets",
+                    note.text
+                )
+            } else {
+                ck_log::try_log!(Level::Info, "render", "{}", note.text)
+            };
+            if admission != Admission::Dropped || closing {
+                self.binding = None;
+            }
+        }
+        tried
     }
 
     /// The first-frame record, once the first frame was reported and the presenter has a drawn generation.
@@ -783,6 +988,8 @@ impl<S: Stack> Gpu2d for VulkanAdapter<S> {
             return Some(done.clone());
         }
         let started = Instant::now();
+        // The caller's absolute budget: the validation drains below come out of it too.
+        let by = started + within;
         // A notice still pending costs a moment: that moment comes out of the caller's budget.
         let within = if self.announce(true) {
             within.saturating_sub(started.elapsed())
@@ -808,10 +1015,12 @@ impl<S: Stack> Gpu2d for VulkanAdapter<S> {
             self.queued.push_back(report);
         }
         let result = match observed {
-            CleanupResult::Proven => self.destroy_after_the_presenter(),
+            CleanupResult::Proven => self.destroy_after_the_presenter(by),
             unproven @ CleanupResult::Unproven { .. } => {
                 // The handle stays (the loop retains everything); the relay goes first, so a late service wake reaches nobody.
                 self.run.disconnect_relay();
+                // Nothing is destroyed, so no destruction drain follows: what the log holds is written now.
+                self.run.drain_validation_by(true, Some(by));
                 unproven
             }
         };
@@ -840,6 +1049,7 @@ pub(crate) fn run_closure_with<S: Stack + 'static>(
             relay: env.wake_relay.clone(),
             config: env.resource_config,
             max_quads: env.max_quads,
+            bindless_texture_slots: env.bindless_texture_slots,
         };
         // The one wake of the run: the notifier's. The presenter's reports and the quad side's refusal both call
         // it (the run builds the side with the same one), so a sleeping loop is woken by either.
@@ -880,7 +1090,7 @@ pub(crate) fn run_closure_with<S: Stack + 'static>(
 pub(crate) fn run_closure(env: RunEnv) -> RunClosure {
     run_closure_with(
         env,
-        real::Real,
+        real::Real::default(),
         &crate::lifecycle::RESOURCES,
         windowed::DRAIN,
     )

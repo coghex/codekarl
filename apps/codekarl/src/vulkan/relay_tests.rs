@@ -26,6 +26,7 @@ fn count(log: &[String], event: &str) -> usize {
 /// The figures a scripted presenter reports.
 fn figures() -> VulkanFigures {
     VulkanFigures {
+        bindless_slots: 0,
         textures_created: 3,
         texture_bytes_peak: 64,
         staging_bytes_peak: 32,

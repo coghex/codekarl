@@ -12,25 +12,33 @@
 //! refuses while anything still holds the instance.
 
 use std::ffi::c_void;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use ck_gpu_vulkan::vk::Handle as _;
 use ck_gpu_vulkan::{
-    CleanupResult as GpuCleanup, Instance, LedgerLimits, Loader, PresenterReport as GpuReport,
-    SceneLimits, TextureLimits, VulkanContext, VulkanFrameSlot, VulkanPresenter, create_instance,
-    destroy_surface_and_instance, load_loader, vk,
+    BindlessLimits, CleanupResult as GpuCleanup, Instance, LedgerLimits, Loader,
+    PresenterReport as GpuReport, SceneLimits, TextureLimits, ValidationLogHandle, VulkanContext,
+    VulkanFrameSlot, VulkanPresenter, create_instance_draining, destroy_surface_and_instance,
+    load_loader, vk,
 };
 use ck_render_2d::{QuadSink, VulkanResidentDriver, VulkanResourceLimits, VulkanSinkSide};
 use ck_resources::TextureKey;
 use ck_window::{CleanupResult, PixelSize, PresenterReport};
 use ck_window_glfw::{GlfwBackend, GlfwHandles, VulkanLoaderForGlfw};
 
-use super::{Ended, QuadSide, Refused, Resources, Running, Stack};
+use super::{
+    BindingNote, Ended, QuadSide, Refused, Resources, Running, Stack, ValidationDrain,
+    ValidationEntry,
+};
 use crate::windowed::VulkanFigures;
 
-/// The real stack.
-pub(super) struct Real;
+/// The real stack. It keeps the log of a failed instance creation (which returns no instance, hence no handle) until the run
+/// takes it.
+#[derive(Default)]
+pub(super) struct Real {
+    creation_log: Mutex<ValidationDrain>,
+}
 
 impl Stack for Real {
     type Handles = GlfwHandles;
@@ -42,6 +50,7 @@ impl Stack for Real {
     type Slot = Arc<VulkanFrameSlot<TextureKey>>;
     type Driver = VulkanResidentDriver;
     type Side = VulkanSinkSide;
+    type Log = ValidationLogHandle;
 
     fn load_loader(&self) -> Result<Loader, String> {
         // By explicit absolute path (`$VULKAN_SDK/lib`, `/usr/local/lib`, `/opt/homebrew/lib`, then the
@@ -71,8 +80,57 @@ impl Stack for Real {
     }
 
     fn create_instance(&self, loader: &Loader, handles: &GlfwHandles) -> Result<Instance, String> {
-        create_instance(loader, handles.required_instance_extensions())
-            .map_err(|error| error.to_string())
+        create_instance_draining(loader, handles.required_instance_extensions()).map_err(
+            |failure| {
+                // The messages a failed or partial creation recorded are kept, every one, for the run to write.
+                *self
+                    .creation_log
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = ValidationDrain {
+                    entries: failure
+                        .log
+                        .entries
+                        .into_iter()
+                        .map(|entry| ValidationEntry {
+                            text: entry.text,
+                            tolerated: entry.tolerated,
+                            loader_notice: entry.loader_notice,
+                        })
+                        .collect(),
+                    dropped: failure.log.dropped,
+                };
+                failure.error.to_string()
+            },
+        )
+    }
+
+    fn take_creation_log(&self) -> ValidationDrain {
+        std::mem::take(
+            &mut *self
+                .creation_log
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
+
+    fn validation_log(&self, instance: &Instance) -> ValidationLogHandle {
+        instance.validation_log()
+    }
+
+    fn drain_validation(&self, log: &ValidationLogHandle) -> ValidationDrain {
+        let drained = log.drain();
+        ValidationDrain {
+            entries: drained
+                .entries
+                .into_iter()
+                .map(|entry| ValidationEntry {
+                    text: entry.text,
+                    tolerated: entry.tolerated,
+                    loader_notice: entry.loader_notice,
+                })
+                .collect(),
+            dropped: drained.dropped,
+        }
     }
 
     fn create_surface(
@@ -146,6 +204,9 @@ impl Stack for Real {
                     max_adoptions_per_frame: config.max_adoptions_per_frame,
                 },
                 max_textures,
+                BindlessLimits {
+                    texture_slots: resources.bindless_texture_slots,
+                },
                 SceneLimits {
                     max_quads: resources.max_quads,
                     binding_geometry_bytes: config.binding_geometry_bytes,
@@ -261,6 +322,13 @@ impl Running for Started {
             .map(|notice| format!("{:?}", notice.format))
     }
 
+    fn take_binding_notice(&mut self) -> Option<BindingNote> {
+        self.0.take_binding_notice().map(|notice| BindingNote {
+            fallback: notice.fallback,
+            text: notice.text,
+        })
+    }
+
     fn texture_wake(&self) -> Arc<dyn Fn() + Send + Sync> {
         self.0.texture_wake()
     }
@@ -273,6 +341,7 @@ impl Running for Started {
             staging_bytes_peak: stats.staging_bytes_peak,
             checker_bytes: stats.checker_bytes,
             frames: stats.frames,
+            bindless_slots: stats.bindless_slots,
         })
     }
 }

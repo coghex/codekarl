@@ -10,8 +10,10 @@ use ash::vk;
 
 use crate::context::VulkanContext;
 use crate::frame::VulkanFrameSlot;
+use crate::gate::BindlessLimits;
 use crate::hooks::{POLL, TestHooks};
 use crate::render::{render_main, scene_main, texture_marker};
+use crate::revisions::BindingNotice;
 use crate::revisions::LedgerLimits;
 use crate::scene::{SceneLimits, SceneSetup, TextureDriver};
 use crate::shared::{
@@ -148,6 +150,7 @@ impl VulkanPresenter {
         texture_limits: TextureLimits,
         ledger_limits: LedgerLimits,
         max_textures: usize,
+        bindless: BindlessLimits,
         limits: SceneLimits,
         driver: D,
     ) -> Result<Self, Error>
@@ -160,6 +163,7 @@ impl VulkanPresenter {
             texture_limits,
             ledger_limits,
             max_textures,
+            bindless,
             limits,
             driver,
             frames,
@@ -222,6 +226,7 @@ impl VulkanPresenter {
             drawn_generation: AtomicU64::new(0),
             drawn_any: AtomicBool::new(false),
             notice: Mutex::new(None),
+            binding_notice: Mutex::new(None),
             scene_stats: Mutex::new(SceneStats::default()),
         });
         // A published frame wants a frame, and only the render thread is woken. The wake holds the presenter's state
@@ -317,6 +322,7 @@ impl VulkanPresenter {
             drawn_generation: AtomicU64::new(0),
             drawn_any: AtomicBool::new(false),
             notice: Mutex::new(None),
+            binding_notice: Mutex::new(None),
             scene_stats: Mutex::new(SceneStats::default()),
         });
         if let Some(quads) = &hooks.quad_slot {
@@ -407,6 +413,15 @@ impl VulkanPresenter {
     #[must_use]
     pub fn take_quad_notice(&self) -> Option<QuadSkipped> {
         lock(&self.shared.notice).take()
+    }
+
+    /// The scene's binding notice, if the render thread recorded one and it was not taken yet: at most once per run, and never
+    /// a report. It says how the textures are bound: through the bindless tables (with the support query's answer), or, when
+    /// the device gate refused (the text names every failed row), through per-revision descriptor sets (the owner's logged
+    /// fallback). The render thread calls the presenter's `wake` after recording it.
+    #[must_use]
+    pub fn take_binding_notice(&self) -> Option<BindingNotice> {
+        lock(&self.shared.binding_notice).take()
     }
 
     /// The generation of the scene the last frame queued for presentation drew, with or without a quad; `None`

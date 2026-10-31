@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::revisions::BindingNotice;
 use crate::slot::QuadSkipped;
 use crate::unwind;
 
@@ -75,6 +76,8 @@ pub(crate) struct Shared {
     pub(crate) drawn_any: AtomicBool,
     /// The format notice, until the main thread takes it.
     pub(crate) notice: Mutex<Option<QuadSkipped>>,
+    /// The scene's binding notice (the bindless table or the logged fallback), until the main thread takes it.
+    pub(crate) binding_notice: Mutex<Option<BindingNotice>>,
     /// The scene presenter's lean counters (written by the render thread; read by `VulkanPresenter::scene_stats`).
     pub(crate) scene_stats: Mutex<SceneStats>,
 }
@@ -105,6 +108,9 @@ pub struct SceneStats {
     pub checker_resident: bool,
     /// The bytes the driver allocated for the checker: the presenter's baseline, charged once.
     pub checker_bytes: u64,
+    /// The sampled-image slots of each bindless table version actually allocated; 0 when the scene is drawn through
+    /// per-revision sets (the gate refused the device, or the baseline was forced).
+    pub bindless_slots: u32,
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -164,6 +170,7 @@ mod tests {
             drawn_generation: AtomicU64::new(0),
             drawn_any: AtomicBool::new(false),
             notice: Mutex::new(None),
+            binding_notice: Mutex::new(None),
             scene_stats: Mutex::new(crate::shared::SceneStats::default()),
         }
     }

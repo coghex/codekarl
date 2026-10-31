@@ -20,6 +20,7 @@ use ash::vk;
 use ash::{ext, khr};
 
 use crate::error::vk_error;
+use crate::gate::{self, BindlessCaps, BindlessReport};
 use crate::gpu::{self, Selection};
 use crate::instance::InstanceInner;
 use crate::loader::Loader;
@@ -67,6 +68,8 @@ pub struct VulkanContext {
     device: ash::Device,
     memory: vk::PhysicalDeviceMemoryProperties,
     limits: DeviceLimits,
+    /// What the device reported for the bindless gate, read once at creation (the features it lists are the ones enabled).
+    bindless: BindlessCaps,
     queue: Mutex<Option<vk::Queue>>,
     allocations: Mutex<Allocations>,
 }
@@ -152,6 +155,7 @@ impl VulkanContext {
         check_format(vulkan, selection.physical, &name)?;
         let limits = check_limits(&properties.limits, &name)?;
         let events = events_feature(vulkan, &selection, features, &name)?;
+        let bindless = BindlessCaps::query(vulkan, selection.physical, &properties)?;
 
         let priorities = [1.0_f32];
         let queue_info = [vk::DeviceQueueCreateInfo::default()
@@ -164,12 +168,30 @@ impl VulkanContext {
         if selection.portability_subset {
             names.push(khr::portability_subset::NAME.as_ptr());
         }
+        // The bindless tables' features (design §13.3) can only be enabled here. Each is enabled when the device reports it
+        // and nothing else changes; the gate decides at the start of a scene whether the device suffices. The instance
+        // requests Vulkan 1.1, so the descriptor-indexing path is the extension (core in 1.2).
+        if bindless.extension {
+            names.push(ext::descriptor_indexing::NAME.as_ptr());
+        }
+        let core_features = vk::PhysicalDeviceFeatures::default()
+            .shader_sampled_image_array_dynamic_indexing(bindless.dynamic_indexing);
+        let mut indexing = vk::PhysicalDeviceDescriptorIndexingFeatures::default()
+            .runtime_descriptor_array(bindless.runtime_descriptor_array)
+            .shader_sampled_image_array_non_uniform_indexing(bindless.non_uniform_indexing)
+            .descriptor_binding_sampled_image_update_after_bind(
+                bindless.sampled_image_update_after_bind,
+            );
         let mut maintenance = vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default()
             .swapchain_maintenance1(true);
         let mut subset = vk::PhysicalDevicePortabilitySubsetFeaturesKHR::default().events(true);
         let mut info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_info)
-            .enabled_extension_names(&names);
+            .enabled_extension_names(&names)
+            .enabled_features(&core_features);
+        if bindless.extension {
+            info = info.push_next(&mut indexing);
+        }
         if surface.is_some() {
             info = info.push_next(&mut maintenance);
         }
@@ -194,6 +216,7 @@ impl VulkanContext {
             device,
             memory,
             limits,
+            bindless,
             queue: Mutex::new(Some(queue)),
             allocations: Mutex::new(Allocations {
                 in_use: 0,
@@ -253,6 +276,46 @@ impl VulkanContext {
     pub fn lower_allocation_limit(&self, limit: u32) {
         let mut allocations = lock(&self.allocations);
         allocations.limit = allocations.limit.min(limit);
+    }
+
+    /// What the device reported for the bindless gate when the context was made (the features listed are the ones enabled).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn bindless_caps(&self) -> &BindlessCaps {
+        &self.bindless
+    }
+
+    /// Runs the bindless gate for `slots` native slots: the report, `vkGetDescriptorSetLayoutSupport`'s answer for the exact
+    /// table layout (asked only when the extension and the features are enabled) and the one-line refusal listing every
+    /// failed row, if any. Nothing is created.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn bindless_report(&self, slots: u32) -> BindlessReport {
+        gate::run(&self.device, &self.bindless, slots)
+    }
+
+    /// Marks the table layout's `vkCreateDescriptorSetLayout` call on this thread (see `instance.rs`'s `TOLERATED_VUID`).
+    pub(crate) fn layout_scope(&self, answered_no: bool) -> crate::instance::LayoutScope {
+        self.instance.log.layout_scope(answered_no)
+    }
+
+    /// Creates and destroys the bindless table layout for `slots` exactly as the ledger creates it, after asking the support
+    /// query: for the tests, which read the validation log afterwards. Returns the support query's answer, or `None` when
+    /// it could not be asked (the extension or a feature is missing, and then nothing is created).
+    ///
+    /// # Errors
+    ///
+    /// The Vulkan error of the creation.
+    #[doc(hidden)]
+    pub fn create_table_layout_for_tests(&self, slots: u32) -> Result<Option<bool>, Error> {
+        let report = self.bindless_report(slots);
+        let Some(answer) = report.layout_supported else {
+            return Ok(None);
+        };
+        let layout = gate::create_table_layout(self, slots, Some(answer))?;
+        // SAFETY: the layout was just created on this device and nothing uses it.
+        unsafe { self.device.destroy_descriptor_set_layout(layout, None) };
+        Ok(Some(answer))
     }
 
     /// The device selection this context was made with, for a presenter that draws on it.

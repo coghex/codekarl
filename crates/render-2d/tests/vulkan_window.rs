@@ -39,10 +39,11 @@ use std::time::{Duration, Instant};
 
 use ck_gpu_vulkan::vk::Handle as _;
 use ck_gpu_vulkan::{
-    CleanupResult as GpuCleanup, FrameCapture, FrameCaptures, Instance, InstanceOptions,
-    LedgerLimits, Loader, PresenterReport as GpuReport, SceneLimits, SceneSetup, SceneStats,
-    StallGate, TestHooks, TextureLimits, TextureTestHooks, ValidationLogHandle, VulkanContext,
-    VulkanPresenter, create_instance_with, destroy_surface_and_instance, load_loader, vk,
+    BindlessLimits, CleanupResult as GpuCleanup, FrameCapture, FrameCaptures, Instance,
+    InstanceOptions, LedgerLimits, Loader, PresenterReport as GpuReport, SceneLimits, SceneSetup,
+    SceneStats, StallGate, TestHooks, TextureLimits, TextureTestHooks, ValidationLogHandle,
+    VulkanContext, VulkanPresenter, create_instance_with, destroy_surface_and_instance,
+    load_loader, vk,
 };
 use ck_render_2d::{
     Filter, Gpu2d, LegacyLane, Phase, QuadKey, QuadSink, Renderer, SceneBridge, SceneWriter,
@@ -544,6 +545,9 @@ impl Gpu2d for VulkanTestBackend {
             TextureLimits::default(),
             LedgerLimits::default(),
             1024,
+            BindlessLimits {
+                texture_slots: 131_072,
+            },
             SceneLimits {
                 max_quads: 1024,
                 binding_geometry_bytes: 16 * 1024 * 1024,

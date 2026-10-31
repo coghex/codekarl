@@ -1,12 +1,12 @@
 //! Building a scene frame's instances and batches (milestone 5.5, issue 2a; design §8.1, §13.1).
 //!
 //! Everything here is plain data and plain Rust, so it is tested without a device: [`build_scene`] asks a
-//! [`VulkanSceneSource`] for its quads in painter order, validates each, resolves its key to the revision's descriptor set
-//! through a caller-supplied function (the frame ticket in production), writes one [`InstanceRecord`] per drawn quad and
-//! groups **adjacent** instances with the same set into one [`Batch`]. Nothing is sorted by texture (a textured alpha
-//! scene cannot generally be sorted by texture), and the cost is one validation, one map lookup and one 32-byte write
-//! per quad: O(drawn quads), with no scan of the loaded textures. A set belongs to one revision, so equal sets are equal
-//! revisions.
+//! [`VulkanSceneSource`] for its quads in painter order, validates each, resolves its key to the revision's [`Binding`] (its
+//! descriptor set, or its native slot in the bindless tables) through a caller-supplied function (the frame ticket in
+//! production), writes one [`InstanceRecord`] per drawn quad and groups **adjacent** instances with the same binding into one
+//! [`Batch`]. Nothing is sorted by texture (a textured alpha scene cannot generally be sorted by texture), and the cost is one
+//! validation, one map lookup and one 32-byte write per quad: O(drawn quads), with no scan of the loaded textures. A binding
+//! belongs to one revision while the frame lives, so equal bindings are equal revisions.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
@@ -42,11 +42,20 @@ impl InstanceRecord {
     }
 }
 
-/// One instanced draw: the instances `first..first + count` of the buffer, all with `set` (the revision's descriptor set,
-/// set 1 of the pipeline layout). A null `set` is the checker, whose draw is also the one that samples nearest.
+/// What a draw binds for its texture: the checker, a revision's own descriptor set (the per-revision mode, set 1 of the
+/// pipeline layout), or a native slot of the bindless table (pushed as a constant; slot 0 is the checker's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Binding {
+    Checker,
+    Set(vk::DescriptorSet),
+    Slot(u32),
+}
+
+/// One instanced draw: the instances `first..first + count` of the buffer, all with the same binding. Equal bindings are equal
+/// revisions while the frame lives. The checker's draw is also the one that samples nearest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Batch {
-    pub(crate) set: vk::DescriptorSet,
+    pub(crate) binding: Binding,
     pub(crate) first: u32,
     pub(crate) count: u32,
 }
@@ -54,7 +63,7 @@ pub(crate) struct Batch {
 impl Batch {
     /// Whether this batch draws the checker.
     pub(crate) fn is_checker(&self) -> bool {
-        self.set == vk::DescriptorSet::null()
+        self.binding == Binding::Checker
     }
 }
 
@@ -81,10 +90,10 @@ pub struct FrameCounters {
 /// that can resolve textures through the frame's ticket.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum CompatDecision {
-    /// Draw it with this set, at this rectangle and source: the current image, or the held one with the rectangle it was
+    /// Draw it with this binding, at this rectangle and source: the current image, or the held one with the rectangle it was
     /// drawn at.
     Draw {
-        set: vk::DescriptorSet,
+        binding: Binding,
         destination: DestinationRect,
         source: [f32; 4],
     },
@@ -114,18 +123,27 @@ pub(crate) struct Built {
     pub(crate) gated: bool,
 }
 
-/// The instances and batches a frame build writes: one slot per drawn instance, runs of adjacent equal sets sharing a batch.
+/// The instances and batches a frame build writes: one slot per drawn instance, runs of adjacent equal bindings sharing a batch.
 struct Output<'a> {
     write: &'a mut dyn FnMut(usize, InstanceRecord),
     batches: &'a mut Vec<Batch>,
     capacity: usize,
+    /// The slots of the bindless table (0: the per-revision mode, which has no slots to bound).
+    slots: u32,
     written: usize,
     counters: FrameCounters,
 }
 
 impl Output<'_> {
-    /// Stores one drawn instance (the caller checked the capacity).
-    fn push(&mut self, set: vk::DescriptorSet, visible: [f32; 4], destination: DestinationRect) {
+    /// Stores one drawn instance (the caller checked the capacity). A slot outside the table (never produced by the ledger)
+    /// is skipped and counted, never written: an out-of-range index does not reach the GPU.
+    fn push(&mut self, binding: Binding, visible: [f32; 4], destination: DestinationRect) {
+        if let Binding::Slot(slot) = binding
+            && slot >= self.slots
+        {
+            self.counters.skipped += 1;
+            return;
+        }
         (self.write)(
             self.written,
             InstanceRecord {
@@ -140,9 +158,9 @@ impl Output<'_> {
         );
         let index = u32::try_from(self.written).unwrap_or(u32::MAX);
         match self.batches.last_mut() {
-            Some(last) if last.set == set => last.count += 1,
+            Some(last) if last.binding == binding => last.count += 1,
             _ => self.batches.push(Batch {
-                set,
+                binding,
                 first: index,
                 count: 1,
             }),
@@ -155,7 +173,7 @@ impl Output<'_> {
     fn compat(&mut self, decision: CompatDecision) -> bool {
         match decision {
             CompatDecision::Draw {
-                set,
+                binding,
                 destination,
                 source,
             } => {
@@ -164,7 +182,7 @@ impl Output<'_> {
                 } else {
                     self.counters.resolved += 1;
                     self.counters.pinned += 1;
-                    self.push(set, source, destination);
+                    self.push(binding, source, destination);
                 }
                 false
             }
@@ -175,7 +193,8 @@ impl Output<'_> {
 }
 
 /// Builds one frame: `write(slot, record)` stores each drawn instance (slots `0..capacity`), `batches` receives the draws,
-/// and the counters are returned. `resolve` maps a key to its revision's descriptor set, or `None` for the checker;
+/// and the counters are returned. `resolve` maps a key to its revision's binding, or `None` for the checker; `slots` is the
+/// bindless table's size (0 in the per-revision mode);
 /// `resolved` is the per-frame cache (cleared here, its allocation reused). The compatibility quad is never drawn with the
 /// checker: `compat` decides what it is drawn with. It is asked for the compatibility instance (emitted first, below every
 /// scene quad), and once with `None` when the frame has a compatibility entry (`compat_expected`) that placed to nothing,
@@ -188,11 +207,12 @@ pub(crate) fn build_scene<K: Copy + Eq + Hash, S: BuildHasher>(
     source: &dyn VulkanSceneSource<K>,
     size: (u32, u32),
     capacity: usize,
+    slots: u32,
     write: &mut dyn FnMut(usize, InstanceRecord),
-    resolve: &mut dyn FnMut(K) -> Option<vk::DescriptorSet>,
+    resolve: &mut dyn FnMut(K) -> Option<Binding>,
     compat_expected: bool,
     compat: &mut dyn FnMut(Option<&VulkanInstance<K>>) -> CompatDecision,
-    resolved: &mut HashMap<K, Option<vk::DescriptorSet>, S>,
+    resolved: &mut HashMap<K, Option<Binding>, S>,
     batches: &mut Vec<Batch>,
 ) -> Built {
     resolved.clear();
@@ -201,6 +221,7 @@ pub(crate) fn build_scene<K: Copy + Eq + Hash, S: BuildHasher>(
         write,
         batches,
         capacity,
+        slots,
         written: 0,
         counters: FrameCounters::default(),
     };
@@ -229,17 +250,17 @@ pub(crate) fn build_scene<K: Copy + Eq + Hash, S: BuildHasher>(
             output.counters.dropped += 1;
             return;
         }
-        let set = *resolved.entry(instance.key).or_insert_with(|| {
+        let binding = *resolved.entry(instance.key).or_insert_with(|| {
             let found = resolve(instance.key);
             output.counters.pinned += u64::from(found.is_some());
             found
         });
-        if let Some(set) = set {
+        if let Some(binding) = binding {
             output.counters.resolved += 1;
-            output.push(set, instance.source, instance.destination);
+            output.push(binding, instance.source, instance.destination);
         } else {
             output.counters.checker += 1;
-            output.push(vk::DescriptorSet::null(), WHOLE, instance.destination);
+            output.push(Binding::Checker, WHOLE, instance.destination);
         }
     });
     if first && compat_expected && !gated {
@@ -289,9 +310,9 @@ mod tests {
         values.map(f32::to_bits)
     }
 
-    fn handle(texture: usize) -> vk::DescriptorSet {
+    fn handle(texture: usize) -> Binding {
         use ash::vk::Handle as _;
-        vk::DescriptorSet::from_raw(texture as u64)
+        Binding::Set(vk::DescriptorSet::from_raw(texture as u64))
     }
 
     struct Run {
@@ -311,6 +332,7 @@ mod tests {
             &Fixed(instances),
             (100, 100),
             capacity,
+            0,
             &mut |index, record| written.push((index, record)),
             &mut |key| {
                 resolutions.push(key);
@@ -336,7 +358,11 @@ mod tests {
 
     fn batch(texture: usize, first: u32, count: u32) -> Batch {
         Batch {
-            set: handle(texture),
+            binding: if texture == 0 {
+                Binding::Checker
+            } else {
+                handle(texture)
+            },
             first,
             count,
         }
@@ -405,7 +431,7 @@ mod tests {
     #[test]
     fn an_unresolved_key_draws_the_checker_over_its_whole_destination() {
         let got = run(vec![instance(7, 0), instance(7, 4), instance(1, 8)], 16);
-        assert_eq!(got.batches[0].set, vk::DescriptorSet::null());
+        assert_eq!(got.batches[0].binding, Binding::Checker);
         assert_eq!((got.batches[0].first, got.batches[0].count), (0, 2));
         assert_eq!(
             bits(got.written[0].1.source),
@@ -483,6 +509,7 @@ mod tests {
             &Fixed(instances),
             (100, 100),
             16,
+            0,
             &mut |index, record| written.push((index, record)),
             &mut |key| {
                 resolutions.push(key);
@@ -519,7 +546,7 @@ mod tests {
     fn drawn_held(_: Option<&VulkanInstance<u32>>) -> CompatDecision {
         // The held image is another texture, drawn at its own rectangle and source, not the instance's.
         CompatDecision::Draw {
-            set: handle(0x30),
+            binding: handle(0x30),
             destination: DestinationRect {
                 left: 50,
                 top: 51,
@@ -630,6 +657,50 @@ mod tests {
         // A frame that expects no compatibility entry never asks.
         let none = run_compat(vec![instance(1, 4)], false, |_| CompatDecision::Gate);
         assert!(none.asked.is_empty() && !none.built.gated);
+    }
+
+    /// The bindless table has `slots` entries: a slot beyond it (never produced by the ledger) is skipped and counted, never written
+    /// or batched, so an out-of-range index does not reach the GPU. Adjacent equal slots share a batch, as equal sets do.
+    #[test]
+    fn a_slot_outside_the_table_is_skipped_counted_and_never_emitted() {
+        let mut written = Vec::new();
+        let mut batches = Vec::new();
+        let mut resolved = HashMap::new();
+        let built = build_scene(
+            &Fixed(vec![
+                instance(1, 0),
+                instance(1, 4),
+                instance(2, 8),
+                instance(3, 12),
+                instance(1, 16),
+            ]),
+            (100, 100),
+            16,
+            8,
+            &mut |index, record| written.push((index, record)),
+            &mut |key| match key {
+                1 => Some(Binding::Slot(7)),
+                2 => Some(Binding::Slot(8)),
+                _ => Some(Binding::Slot(u32::MAX)),
+            },
+            false,
+            &mut |_| CompatDecision::Gate,
+            &mut resolved,
+            &mut batches,
+        );
+        // Slot 7 is the last entry of a table of 8; slots 8 and beyond are outside it.
+        assert_eq!(built.counters.skipped, 2);
+        assert_eq!(built.counters.instances, 3);
+        assert_eq!(written.len(), 3, "nothing outside the table is written");
+        assert_eq!(
+            batches,
+            vec![Batch {
+                binding: Binding::Slot(7),
+                first: 0,
+                count: 3
+            }],
+            "a skipped instance takes no slot of the instance buffer and does not break adjacency"
+        );
     }
 
     #[test]

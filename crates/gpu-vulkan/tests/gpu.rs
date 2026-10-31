@@ -27,6 +27,7 @@ mod supervisor;
 
 use supervisor::Supervised;
 
+mod gpu_bindless;
 mod gpu_quad;
 mod gpu_scene;
 mod gpu_textures;

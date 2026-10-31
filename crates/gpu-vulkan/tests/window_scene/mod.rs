@@ -10,11 +10,11 @@
 use std::collections::VecDeque;
 
 use ck_gpu_vulkan::{
-    Boundary, BuildRecord, DestinationRect, InstanceRole, LedgerEvent, LedgerLimits, PassOutcome,
-    Pause, PixelSource, QuadSkipped, SceneLimits, SceneSetup, SceneStats, StallGate, TestFeatures,
-    TextureDriver, TextureLedger, TextureLimits, TextureTestHooks, TicketEnding, VulkanContext,
-    VulkanFilter, VulkanFrame, VulkanFrameSlot, VulkanInstance, VulkanSceneSource, WaitKind,
-    WaitObserver,
+    BindlessLimits, Boundary, BuildRecord, DestinationRect, InstanceRole, LedgerEvent,
+    LedgerLimits, PassOutcome, Pause, PixelSource, QuadSkipped, SceneLimits, SceneSetup,
+    SceneStats, StallGate, TestFeatures, TextureDriver, TextureLedger, TextureLimits,
+    TextureTestHooks, TicketEnding, VulkanContext, VulkanFilter, VulkanFrame, VulkanFrameSlot,
+    VulkanInstance, VulkanSceneSource, WaitKind, WaitObserver,
 };
 
 use super::{
@@ -212,6 +212,9 @@ impl Harness {
             TextureLimits::default(),
             LedgerLimits::default(),
             64,
+            BindlessLimits {
+                texture_slots: 131_072,
+            },
             limits,
             Driver(Arc::clone(&self.driver)),
             Arc::clone(&self.frames),
