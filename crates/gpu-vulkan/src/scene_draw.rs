@@ -19,14 +19,16 @@ use std::sync::Arc;
 
 use ash::vk;
 
-use crate::batch::{Batch, INSTANCE_STRIDE};
+use crate::batch::{Batch, Binding, INSTANCE_STRIDE};
 use crate::context::VulkanContext;
-use crate::descriptors::DRAWABLE_PUSH_BYTES;
+use crate::descriptors::{DRAWABLE_PUSH_BYTES, SLOT_PUSH_OFFSET};
 use crate::quad::VulkanFilter;
 use crate::{Error, error::vk_error};
 
 const VERTEX_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/scene.vert.spv"));
 const FRAGMENT_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/scene.frag.spv"));
+const BINDLESS_FRAGMENT_SPIRV: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/scene_bindless.frag.spv"));
 
 fn module(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, Error> {
     // A SPIR-V binary is a sequence of little-endian words; the bytes `include_bytes` gives are not aligned for `u32`.
@@ -51,9 +53,15 @@ impl ScenePipeline {
         device: &ash::Device,
         render_pass: vk::RenderPass,
         layout: vk::PipelineLayout,
+        bindless: bool,
     ) -> Result<Self, Error> {
         let vertex = module(device, VERTEX_SPIRV)?;
-        let fragment = match module(device, FRAGMENT_SPIRV) {
+        let fragment_code = if bindless {
+            BINDLESS_FRAGMENT_SPIRV
+        } else {
+            FRAGMENT_SPIRV
+        };
+        let fragment = match module(device, fragment_code) {
             Ok(fragment) => fragment,
             Err(error) => {
                 // SAFETY: the module was just created and nothing uses it.
@@ -312,8 +320,10 @@ pub(crate) struct SceneDraw<'a> {
     pub(crate) layout: vk::PipelineLayout,
     pub(crate) instances: vk::Buffer,
     pub(crate) batches: &'a [Batch],
-    /// The checker's permanent set (set 1).
+    /// The checker's permanent set (set 1 of the per-revision mode).
     pub(crate) checker: vk::DescriptorSet,
+    /// The table version's set this frame's ticket pinned (set 1 of the bindless mode, bound once per frame); null otherwise.
+    pub(crate) table: vk::DescriptorSet,
     /// The sampler sets: nearest, then linear (set 0).
     pub(crate) samplers: [vk::DescriptorSet; 2],
     /// The frame's filter, for every batch but the checker's.
@@ -344,6 +354,50 @@ pub(crate) fn sampler_plan(batches: &[Batch], filter: VulkanFilter) -> Vec<(usiz
             (effective, rebind)
         })
         .collect()
+}
+
+/// Binds what one batch samples: its slot as the fragment push constant (the bindless mode; the table is bound once per
+/// frame), or its revision's set (set 1) or the checker's.
+fn bind_texture(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    draw: &SceneDraw<'_>,
+    binding: Binding,
+    bindless: bool,
+) {
+    if bindless {
+        let slot = match binding {
+            Binding::Slot(slot) => slot,
+            Binding::Checker | Binding::Set(_) => 0,
+        };
+        // SAFETY: the layout's fragment push constant range covers these four bytes.
+        unsafe {
+            device.cmd_push_constants(
+                cmd,
+                draw.layout,
+                vk::ShaderStageFlags::FRAGMENT,
+                SLOT_PUSH_OFFSET,
+                &slot.to_ne_bytes(),
+            );
+        }
+    } else {
+        let set = match binding {
+            Binding::Set(set) => set,
+            Binding::Checker | Binding::Slot(_) => draw.checker,
+        };
+        // SAFETY: the set is a written set of the layout's second set layout, kept alive by the frame's ticket (a
+        // revision's) or permanent (the checker's).
+        unsafe {
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                draw.layout,
+                1,
+                &[set],
+                &[],
+            );
+        }
+    }
 }
 
 /// Records the draws inside a begun render pass the pipeline is compatible with: the dynamic viewport and scissor over
@@ -378,6 +432,7 @@ pub(crate) fn record_scene(
             height: target.1,
         },
     };
+    let bindless = draw.table != vk::DescriptorSet::null();
     let mut constants = [0_u8; DRAWABLE_PUSH_BYTES as usize];
     constants[..4].copy_from_slice(&width.to_ne_bytes());
     constants[4..].copy_from_slice(&height.to_ne_bytes());
@@ -401,6 +456,20 @@ pub(crate) fn record_scene(
             &constants,
         );
     }
+    if bindless {
+        // SAFETY: the table version's set is written whole (every entry names an image view) and the ticket's pin keeps it
+        // unwritten until the frame's proof; it is the layout's second set layout.
+        unsafe {
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                draw.layout,
+                1,
+                &[draw.table],
+                &[],
+            );
+        }
+    }
     for (batch, (sampler, rebind)) in draw
         .batches
         .iter()
@@ -419,23 +488,7 @@ pub(crate) fn record_scene(
                 );
             }
         }
-        let set = if batch.is_checker() {
-            draw.checker
-        } else {
-            batch.set
-        };
-        // SAFETY: the set is a written set of the layout's second set layout, kept alive by the frame's ticket (a
-        // revision's) or permanent (the checker's).
-        unsafe {
-            device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                draw.layout,
-                1,
-                &[set],
-                &[],
-            );
-        }
+        bind_texture(device, cmd, draw, batch.binding, bindless);
         // SAFETY: the pipeline, the vertex buffer, the push constants and both sets are bound.
         unsafe { device.cmd_draw(cmd, 6, batch.count, 0, batch.first) };
     }
@@ -446,12 +499,16 @@ mod tests {
     use ash::vk;
 
     use super::{VulkanFilter, sampler_plan};
-    use crate::batch::Batch;
+    use crate::batch::{Batch, Binding};
 
     fn batch(set: u64, first: u32) -> Batch {
         use ash::vk::Handle as _;
         Batch {
-            set: vk::DescriptorSet::from_raw(set),
+            binding: if set == 0 {
+                Binding::Checker
+            } else {
+                Binding::Set(vk::DescriptorSet::from_raw(set))
+            },
             first,
             count: 1,
         }

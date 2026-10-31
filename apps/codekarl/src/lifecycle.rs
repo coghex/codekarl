@@ -92,6 +92,12 @@ pub(crate) fn control_deadline(shutdown: Option<Instant>) -> Instant {
     shutdown.map_or(own, |shutdown| shutdown.min(own))
 }
 
+/// The absolute deadline of one batch of control-path records: the earlier of now plus [`LOG_WAIT`] and the shutdown deadline.
+/// A caller that writes several records takes it **once**, so the whole batch is bounded, not each record.
+pub(crate) fn batch_deadline() -> Instant {
+    control_deadline(SHUTDOWN_DEADLINE.get().copied())
+}
+
 /// Emits one record from the main thread through `log_within`. A record that is not admitted in time is
 /// dropped and counted by the logger, which makes the final flush incomplete (status 3): it is not
 /// reported here.

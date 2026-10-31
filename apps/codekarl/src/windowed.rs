@@ -103,6 +103,9 @@ pub(crate) struct VulkanFigures {
     pub(crate) checker_bytes: u64,
     /// Frames queued for presentation.
     pub(crate) frames: u64,
+    /// The sampled-image slots of each bindless table version the presenter allocated; 0 when the scene is drawn through
+    /// per-revision sets (the device gate refused, the logged fallback).
+    pub(crate) bindless_slots: u32,
 }
 
 impl RunNotes {
@@ -147,14 +150,8 @@ pub(crate) struct RunEnv {
     pub(crate) resource_config: crate::config::ResourceConfig,
     /// `[render] max_quads`: the instance buffer's room on a windowed backend.
     pub(crate) max_quads: usize,
-    /// `[render] bindless_texture_slots`: the entry count of the native backend's bindless tables.
-    #[cfg_attr(
-        not(all(feature = "metal", target_os = "macos")),
-        expect(
-            dead_code,
-            reason = "only the native Metal backend allocates the bindless tables"
-        )
-    )]
+    /// `[render] bindless_texture_slots`: the entry count of each bindless table (the native Metal backend's, and each of the
+    /// two versions on `glfw-vulkan`).
     pub(crate) bindless_texture_slots: u32,
 }
 

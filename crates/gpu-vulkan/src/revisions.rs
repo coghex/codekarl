@@ -23,8 +23,19 @@
 //! - **Release** needs no pin, the upload proven, and every submitted ticket that resolved the revision proven
 //!   by its recorded proof (discarded tickets unpin at once). Then the view and the image are destroyed, the range
 //!   returns to the pool and the set to the free list. Nothing waits for the device or the queue to go idle.
-//! - **Not here:** the compatibility hold (CK-118/119, with the legacy lane in M5.5-2) and bindless tables
-//!   (M5.5-5).
+//! - **The bindless mode** (milestone 5.5, issue 5; design §13.1, §13.3). When the device passes the gate
+//!   ([`crate::gate`]) the ledger binds textures through two versions of one table of sampled images instead of per-revision
+//!   sets; any other start is the per-revision mode above, with one notice naming what failed (the owner's logged fallback).
+//!   The pure book (`bindless.rs`) holds the rules; this file does the writes.
+//!   - **Slots.** A revision whose upload is proven takes a native slot (0 is the checker's), its view becomes the slot's wanted
+//!     entry in both versions, and only then is `Prepared` emitted. A version is written only while no ticket pins it:
+//!     `begin_frame` pins the current version, a submitted ticket keeps the pin to its recorded proof, a discarded one unpins at
+//!     once. Only `pump` writes descriptors, at most 4,096 entries per version per pass.
+//!   - **Publication.** `adopt` publishes a committed revision only when its slot is applied in the version the next frame
+//!     binds; at a boundary with a pinned current version, the other becomes current (epoch + 1) when it is bindable and leads.
+//!   - **Retirement.** A revision that stops being shown (and is not held) has its slot set back to the checker in both versions;
+//!     it is released, and its slot freed, only when neither version names its view and nothing pins it. No wait for the device.
+//! - **Not here:** the compatibility lane's legacy quad (M5.5-2).
 
 use std::cell::{Cell, RefCell};
 use std::collections::{VecDeque, hash_map::Entry};
@@ -37,9 +48,12 @@ use std::time::{Duration, Instant};
 use ash::vk;
 
 use crate::Error;
+use crate::batch::Binding;
+use crate::bindless::{CHECKER, TableBook, WRITES_PER_PASS};
 use crate::context::{RenderQueue, VulkanContext};
-use crate::descriptors::Descriptors;
+use crate::descriptors::{DescriptorMode, Descriptors};
 use crate::error::vk_error;
+use crate::gate::BindlessLimits;
 use crate::hash::{FrameMap, FrameSet};
 use crate::proofs::FenceProofs;
 use crate::quad::PixelSource;
@@ -216,6 +230,38 @@ pub enum CheckerProgress {
     Failed(String),
 }
 
+/// How a ledger binds its textures (milestone 5.5, issue 5).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingChoice {
+    /// The gate decides: the bindless tables when the device passes it, else the per-revision sets with one notice naming what
+    /// failed (the owner's logged fallback). The only choice a production path makes.
+    Auto(BindlessLimits),
+    /// The per-revision sets of CK-156/157, without a gate: the baseline a measurement compares against, and the tests of that
+    /// path. Nothing in the application or the configuration selects it.
+    PerRevision,
+}
+
+/// What a ledger tells the application once about how it binds (the presenter passes it through `take_binding_notice`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingNotice {
+    /// The gate refused and the ledger draws through per-revision sets; `text` is the gate's diagnostic, verbatim.
+    pub fallback: bool,
+    /// The diagnostic (fallback), or `bindless table of N slots (vkGetDescriptorSetLayoutSupport: ...)`.
+    pub text: String,
+}
+
+/// The support query's answer as the notice words it.
+fn support_words(answer: Option<bool>) -> &'static str {
+    match answer {
+        Some(true) => "supported",
+        Some(false) => {
+            "not supported although every update-after-bind limit passes; MoltenVK #2573, proceeding"
+        }
+        None => "not asked",
+    }
+}
+
 /// The checker's state in the ledger.
 enum CheckerSlot<K> {
     None,
@@ -245,7 +291,20 @@ struct Revision<K> {
     pins: usize,
     release_queued: bool,
     set: Option<vk::DescriptorSet>,
+    /// The native slot in the bindless tables (the bindless mode), from the upload's proof until the release.
+    slot: Option<u32>,
     texture: Option<PreparedTexture<RevisionKey<K>>>,
+}
+
+impl<K> Revision<K> {
+    /// What a frame binds for this revision: its native slot (the bindless mode) or its own set.
+    fn binding(&self) -> Option<Binding> {
+        match (self.slot, self.set) {
+            (Some(slot), _) => Some(Binding::Slot(slot)),
+            (None, Some(set)) => Some(Binding::Set(set)),
+            (None, None) => None,
+        }
+    }
 }
 
 struct KeyRevisions<K> {
@@ -260,6 +319,8 @@ struct PendingTicket<K> {
     pins: Vec<RevisionId<K>>,
     slot: usize,
     submission: u64,
+    /// The table version the frame bound (the bindless mode); unpinned with the proof.
+    version: Option<usize>,
 }
 
 /// A ticket that ended without an explicit outcome, or whose submit may have reached the GPU: its pins are
@@ -305,6 +366,20 @@ struct LedgerState<K> {
     adopted_total: u64,
     first_adopted_ns: u64,
     last_adopted_ns: u64,
+    /// The bindless tables' book (the bindless mode only).
+    tables: Option<Tables<K>>,
+}
+
+/// The bindless mode's state beside the descriptor objects: the pure book, the revisions that wait for both versions to name
+/// the checker before they are released, and scratch vectors that keep their capacity.
+struct Tables<K> {
+    book: TableBook,
+    /// Retired revisions by slot, popped from the release queue because a version still names their view; each goes back on
+    /// the queue when a pass makes its slot clear in both versions.
+    awaiting: FrameMap<u32, RevisionId<K>>,
+    /// The next pass's writes (slot, value) and their views, sorted by slot.
+    writes: Vec<(u32, u64)>,
+    entries: Vec<(u32, vk::ImageView)>,
 }
 
 impl<K> LedgerState<K> {
@@ -337,6 +412,7 @@ impl<K> LedgerState<K> {
             adopted_total: 0,
             first_adopted_ns: 0,
             last_adopted_ns: 0,
+            tables: None,
         }
     }
 }
@@ -352,6 +428,10 @@ pub struct TextureLedger<K: Copy + Eq + Hash + Send + 'static> {
     descriptors: RefCell<Option<Descriptors>>,
     limits: LedgerLimits,
     wakes: TextureWakes,
+    /// The sampled-image slots of the tables actually allocated; 0 in the per-revision mode.
+    bindless_slots: u32,
+    /// The once-per-run binding notice, until it is taken.
+    binding_notice: RefCell<Option<BindingNotice>>,
     id: u64,
     released: Cell<bool>,
     _not_sync: PhantomData<Cell<()>>,
@@ -362,9 +442,10 @@ pub struct TextureLedger<K: Copy + Eq + Hash + Send + 'static> {
     reason = "all operation errors are described by the public LedgerError or Error type"
 )]
 impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
-    /// Starts the upload worker and creates the owner-thread revision ledger: the set layouts, the two pools
-    /// (`ordinary_sets = max_textures + max_extra_revisions + 1` revision sets, and the two sampler sets,
-    /// written), and the pool of two frame fences.
+    /// Starts the upload worker and creates the owner-thread revision ledger **in the per-revision mode** (CK-156/157): the
+    /// set layouts, the two pools (`ordinary_sets = max_textures + max_extra_revisions + 1` revision sets, and the two sampler
+    /// sets, written), and the pool of two frame fences. The bindless mode is entered through
+    /// [`start_with_binding`](Self::start_with_binding).
     pub fn start(
         context: Arc<VulkanContext>,
         texture_limits: TextureLimits,
@@ -377,12 +458,13 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
             texture_limits,
             limits,
             max_textures,
+            BindingChoice::PerRevision,
             wakes,
             TestHooks::default(),
         )
     }
 
-    /// Test-only fault boundary for the store's hooks.
+    /// Test-only fault boundary for the store's hooks (the per-revision mode, like [`start`](Self::start)).
     #[doc(hidden)]
     pub fn start_with_test_hooks(
         context: Arc<VulkanContext>,
@@ -392,7 +474,44 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
         wakes: TextureWakes,
         hooks: TestHooks,
     ) -> Result<Self, Error> {
-        Self::start_inner(context, texture_limits, limits, max_textures, wakes, hooks)
+        Self::start_inner(
+            context,
+            texture_limits,
+            limits,
+            max_textures,
+            BindingChoice::PerRevision,
+            wakes,
+            hooks,
+        )
+    }
+
+    /// Starts the ledger with `binding` and the store's hooks. With [`BindingChoice::Auto`] the slot count is checked against
+    /// the logical capacity (`texture_slots >= max_textures + max_extra_revisions + 1`, without overflow), then the device gate
+    /// decides before any table, pool or layout exists: a passing device gets the bindless tables, any other starts in the
+    /// per-revision mode with one notice ([`take_binding_notice`](Self::take_binding_notice)).
+    ///
+    /// # Errors
+    ///
+    /// The refused capacity, or what failed creating the descriptor objects, the fences or the store.
+    #[doc(hidden)]
+    pub fn start_with_binding(
+        context: Arc<VulkanContext>,
+        texture_limits: TextureLimits,
+        limits: LedgerLimits,
+        max_textures: usize,
+        binding: BindingChoice,
+        wakes: TextureWakes,
+        hooks: TestHooks,
+    ) -> Result<Self, Error> {
+        Self::start_inner(
+            context,
+            texture_limits,
+            limits,
+            max_textures,
+            binding,
+            wakes,
+            hooks,
+        )
     }
 
     fn start_inner(
@@ -400,6 +519,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
         texture_limits: TextureLimits,
         limits: LedgerLimits,
         max_textures: usize,
+        binding: BindingChoice,
         wakes: TextureWakes,
         hooks: TestHooks,
     ) -> Result<Self, Error> {
@@ -416,7 +536,42 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
                     limits.max_extra_revisions
                 ))
             })?;
-        let mut descriptors = Descriptors::create(&context, ordinary_sets)?;
+        let (mode, notice) = match binding {
+            BindingChoice::PerRevision => (DescriptorMode::PerRevision { ordinary_sets }, None),
+            BindingChoice::Auto(bindless) => {
+                let bindless = bindless.validate(max_textures, limits.max_extra_revisions)?;
+                // The gate runs before anything exists. Its refusal is the owner's logged fallback, not a failure.
+                let report = context.bindless_report(bindless.texture_slots);
+                match report.refusal {
+                    Some(diagnostic) => (
+                        DescriptorMode::PerRevision { ordinary_sets },
+                        Some(BindingNotice {
+                            fallback: true,
+                            text: diagnostic,
+                        }),
+                    ),
+                    None => (
+                        DescriptorMode::Bindless {
+                            slots: bindless.texture_slots,
+                            support: report.layout_supported,
+                        },
+                        Some(BindingNotice {
+                            fallback: false,
+                            text: format!(
+                                "bindless table of {} slots (vkGetDescriptorSetLayoutSupport: {})",
+                                bindless.texture_slots,
+                                support_words(report.layout_supported)
+                            ),
+                        }),
+                    ),
+                }
+            }
+        };
+        let bindless_slots = match mode {
+            DescriptorMode::Bindless { slots, .. } => slots,
+            DescriptorMode::PerRevision { .. } => 0,
+        };
+        let mut descriptors = Descriptors::create(&context, mode)?;
         let fences = match create_fences(&context) {
             Ok(fences) => fences,
             Err(error) => {
@@ -440,18 +595,43 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
                 return Err(error);
             }
         };
+        let mut state = LedgerState::empty(FenceProofs::new(&fences));
+        if bindless_slots != 0 {
+            state.tables = Some(Tables {
+                book: TableBook::new(bindless_slots),
+                awaiting: FrameMap::default(),
+                writes: Vec::new(),
+                entries: Vec::new(),
+            });
+        }
         Ok(Self {
             context,
             port,
             owner: RefCell::new(Some(owner)),
-            state: RefCell::new(LedgerState::empty(FenceProofs::new(&fences))),
+            state: RefCell::new(state),
             descriptors: RefCell::new(Some(descriptors)),
             limits,
             wakes,
+            bindless_slots,
+            binding_notice: RefCell::new(notice),
             id: NEXT_LEDGER_ID.fetch_add(1, Ordering::Relaxed),
             released: Cell::new(false),
             _not_sync: PhantomData,
         })
+    }
+
+    /// The sampled-image slots of the tables this ledger allocated; 0 in the per-revision mode.
+    #[must_use]
+    pub fn bindless_slots(&self) -> u32 {
+        self.bindless_slots
+    }
+
+    /// The ledger's once-per-run binding notice, taken: a fallback (the gate refused; the diagnostic names every failed row) or
+    /// the bindless table with the support query's answer. `None` after the first take, and always `None` in the per-revision
+    /// mode entered by choice.
+    #[must_use]
+    pub fn take_binding_notice(&self) -> Option<BindingNotice> {
+        self.binding_notice.borrow_mut().take()
     }
 
     /// The pipeline layout (set 0 a sampler, set 1 a sampled image, both for the fragment stage) every frame
@@ -502,25 +682,51 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
     ///
     /// # Errors
     ///
-    /// [`LedgerError::UnknownRevision`] if the revision is not live or has no texture.
+    /// [`LedgerError::UnknownRevision`] if the revision is not live or has no texture; in the bindless mode also when its table
+    /// entry is not its own view applied in the current version (a Prepared revision not yet published, or a sanitised one).
     pub fn hold_compat(&self, key: K, revision: u64) -> Result<(), LedgerError> {
         let mut state = self.state.borrow_mut();
         let id = RevisionId { key, revision };
         if state.compat_hold == Some(id) {
             return Ok(());
         }
-        {
+        // The bindless mode: a hold names an image the table the next frame binds already shows. The slot's wanted entry must
+        // still be this revision's own view (a sanitised slot, or one that was never published, is refused) and that view must be
+        // applied in the current version, the one a Building ticket pinned (it cannot change while a ticket is Building). So
+        // `resolve_revision` can never answer with a slot whose entry in the pinned version is the checker or another image.
+        if let Some(tables) = state.tables.as_ref() {
+            let shown = state
+                .keys
+                .get(&key)
+                .and_then(|entry| entry.revisions.get(&revision))
+                .and_then(|item| Some((item.slot?, item.texture.as_ref()?.view())))
+                .is_some_and(|(slot, view)| {
+                    tables.book.wanted(slot) == vk::Handle::as_raw(view)
+                        && tables.book.applied(tables.book.current(), slot)
+                });
+            if !shown {
+                return Err(LedgerError::UnknownRevision);
+            }
+        }
+        let slot = {
             let item = state
                 .keys
                 .get_mut(&key)
                 .and_then(|entry| entry.revisions.get_mut(&revision))
-                .filter(|item| item.texture.is_some() && item.set.is_some())
+                .filter(|item| {
+                    item.texture.is_some() && (item.set.is_some() || item.slot.is_some())
+                })
                 .ok_or(LedgerError::UnknownRevision)?;
             item.pins += 1;
-        }
+            item.slot
+        };
         state.live_pins += 1;
+        if let (Some(slot), Some(tables)) = (slot, state.tables.as_mut()) {
+            // The held revision's entry stays in both versions for as long as the hold lasts.
+            tables.book.set_needed(slot, true);
+        }
         if let Some(previous) = state.compat_hold.replace(id) {
-            release_pins(&mut state, vec![previous]);
+            drop_hold(&mut state, previous);
         }
         Ok(())
     }
@@ -531,7 +737,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
     pub fn release_compat_hold(&self) {
         let mut state = self.state.borrow_mut();
         if let Some(previous) = state.compat_hold.take() {
-            release_pins(&mut state, vec![previous]);
+            drop_hold(&mut state, previous);
         }
     }
 
@@ -717,6 +923,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
                 pins: 0,
                 release_queued: false,
                 set: None,
+                slot: None,
                 texture: None,
             },
         );
@@ -776,6 +983,13 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
             state
                 .committed
                 .retain(|id| id.key != key || id.revision != old_revision);
+            sanitise(
+                &mut state,
+                RevisionId {
+                    key,
+                    revision: old_revision,
+                },
+            );
         }
         state.committed.push_back(RevisionId { key, revision });
         Ok(())
@@ -808,6 +1022,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
         if let Some(id) = id {
             state.release_candidates.push_back(id);
         }
+        sanitise(&mut state, RevisionId { key, revision });
         Ok(())
     }
 
@@ -817,6 +1032,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
     /// retirement returns `None`.
     pub fn retire_key(&self, key: K) {
         let mut state = self.state.borrow_mut();
+        let mut retired = Vec::new();
         let (ready, empty) = {
             let Some(entry) = state.keys.get_mut(&key) else {
                 state.events.push_back(LedgerEvent::KeyRetired { key });
@@ -828,6 +1044,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
             for revision in entry.revisions.values_mut() {
                 if revision.state != RevisionState::InFlight {
                     revision.state = RevisionState::Retired;
+                    retired.push(revision.id);
                     if revision.pins == 0 && !revision.release_queued {
                         revision.release_queued = true;
                         ready.push(revision.id);
@@ -836,6 +1053,9 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
             }
             (ready, entry.revisions.is_empty())
         };
+        for id in retired {
+            sanitise(&mut state, id);
+        }
         if empty {
             state.keys.remove(&key);
             state.baseline_charges = state.baseline_charges.saturating_sub(1);
@@ -872,10 +1092,21 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
                 match result {
                     Completed::Ready(texture) if texture.tag == RevisionKey::Checker => {
                         // The checker is resident once its permanent set is written (a set of the revision pool the
-                        // pool has one more of than its configured revisions need).
+                        // pool has one more of than its configured revisions need). In the bindless mode it is resident
+                        // once **every entry of both table versions names its view** (design §13.1: initialise both
+                        // tables once to the checker), so no frame can bind a table with an invalid entry; its binding is
+                        // slot 0, and the "set" kept here is null.
                         let made = descriptors.as_mut().map_or_else(
                             || Err("the ledger was released".to_owned()),
-                            |descriptors| descriptors.checker_set(texture.view()),
+                            |descriptors| {
+                                if let Some(tables) = state.tables.as_mut() {
+                                    descriptors.init_tables(texture.view());
+                                    tables.book.mark_ready();
+                                    Ok(vk::DescriptorSet::null())
+                                } else {
+                                    descriptors.checker_set(texture.view())
+                                }
+                            },
                         );
                         match made {
                             Ok(set) => state.checker = CheckerSlot::Resident { texture, set },
@@ -899,28 +1130,53 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
                             displaced.push(texture);
                             continue;
                         }
-                        let acquired = descriptors.as_mut().map_or_else(
-                            || Err("the ledger was released".to_owned()),
-                            Descriptors::acquire,
-                        );
-                        let set = match acquired {
-                            Ok(set) => set,
-                            Err(reason) => {
-                                remove_revision(&mut state, id, &mut displaced, &mut wake_room);
-                                push_upload_failed(&mut state, id, reason);
-                                displaced.push(texture);
-                                continue;
-                            }
-                        };
-                        writes.push((set, texture.view()));
                         let retiring = state.keys.get(&id.key).is_some_and(|entry| entry.retiring);
+                        // A revision of a retiring key is Retired at once and is never shown: it takes neither a set nor a
+                        // slot. Otherwise: the bindless mode gives it a native slot (its view becomes the slot's wanted
+                        // entry, dirty in both versions, and `Prepared` is emitted only then), the per-revision mode a set.
+                        let mut set = None;
+                        let mut slot = None;
+                        if !retiring {
+                            let acquired = if let Some(tables) = state.tables.as_mut() {
+                                tables.book.allocate().map(|slot_id| {
+                                    tables
+                                        .book
+                                        .set_wanted(slot_id, vk::Handle::as_raw(texture.view()));
+                                    (None, Some(slot_id))
+                                })
+                            } else {
+                                descriptors
+                                    .as_mut()
+                                    .map_or_else(
+                                        || Err("the ledger was released".to_owned()),
+                                        Descriptors::acquire,
+                                    )
+                                    .map(|acquired| {
+                                        writes.push((acquired, texture.view()));
+                                        (Some(acquired), None)
+                                    })
+                            };
+                            match acquired {
+                                Ok((acquired_set, acquired_slot)) => {
+                                    set = acquired_set;
+                                    slot = acquired_slot;
+                                }
+                                Err(reason) => {
+                                    remove_revision(&mut state, id, &mut displaced, &mut wake_room);
+                                    push_upload_failed(&mut state, id, reason);
+                                    displaced.push(texture);
+                                    continue;
+                                }
+                            }
+                        }
                         if let Some(item) = state
                             .keys
                             .get_mut(&id.key)
                             .and_then(|e| e.revisions.get_mut(&id.revision))
                         {
                             item.texture = Some(texture);
-                            item.set = Some(set);
+                            item.set = set;
+                            item.slot = slot;
                             item.state = if retiring {
                                 RevisionState::Retired
                             } else {
@@ -961,7 +1217,11 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
             if let Some(descriptors) = descriptors.as_ref() {
                 descriptors.write(&writes);
             }
+            // The pending frame's proof first: it unpins the version it bound, so the pass below can write it.
             reap_pending(&mut state, &self.context);
+            if let Some(descriptors) = descriptors.as_mut() {
+                table_pass(&mut state, descriptors);
+            }
             release_retired(
                 &mut state,
                 &mut displaced,
@@ -969,7 +1229,12 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
                 descriptors.as_mut(),
             );
             out.extend(state.events.drain(..));
-            more = !state.release_candidates.is_empty() || !state.completed_pending.is_empty();
+            more = !state.release_candidates.is_empty()
+                || !state.completed_pending.is_empty()
+                || state
+                    .tables
+                    .as_ref()
+                    .is_some_and(|tables| tables.book.has_runnable());
         }
         drop(descriptors);
         drop(displaced);
@@ -1060,7 +1325,12 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
     /// Whether bounded release work is waiting (a retired revision whose last pin just went).
     #[must_use]
     pub fn has_release_work(&self) -> bool {
-        !self.state.borrow().release_candidates.is_empty()
+        let state = self.state.borrow();
+        !state.release_candidates.is_empty()
+            || state
+                .tables
+                .as_ref()
+                .is_some_and(|tables| tables.book.has_runnable())
     }
 
     /// The state of one revision, or `None` once it is released (tests only).
@@ -1073,6 +1343,63 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
             .get(&key)
             .and_then(|entry| entry.revisions.get(&revision))
             .map(|item| item.state)
+    }
+
+    /// The native slot of one revision in the bindless tables, or `None` (per-revision mode, released, or no slot yet) (tests
+    /// only).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_revision_slot(&self, key: K, revision: u64) -> Option<u32> {
+        self.state
+            .borrow()
+            .keys
+            .get(&key)
+            .and_then(|entry| entry.revisions.get(&revision))
+            .and_then(|item| item.slot)
+    }
+
+    /// What table `version` names at `slot` now: `0` for the checker, else the raw handle of the image view (tests only: the
+    /// book's own record of what was written, not a read of the device).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_table_entry(&self, version: usize, slot: u32) -> Option<u64> {
+        let state = self.state.borrow();
+        let book = &state.tables.as_ref()?.book;
+        (version < 2 && slot < book.slots()).then(|| book.contents(version, slot))
+    }
+
+    /// What `slot` should name from now on: `0` for the checker, else a raw image-view handle (tests only).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_table_wanted(&self, slot: u32) -> Option<u64> {
+        let state = self.state.borrow();
+        let book = &state.tables.as_ref()?.book;
+        (slot < book.slots()).then(|| book.wanted(slot))
+    }
+
+    /// The current table version and its publication epoch (tests only).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_current_table(&self) -> Option<(usize, u64)> {
+        let state = self.state.borrow();
+        let book = &state.tables.as_ref()?.book;
+        Some((book.current(), book.epoch()))
+    }
+
+    /// The tickets pinning table `version` (tests only).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_table_pins(&self, version: usize) -> Option<usize> {
+        let state = self.state.borrow();
+        let book = &state.tables.as_ref()?.book;
+        (version < 2).then(|| book.pins(version))
+    }
+
+    /// The native slots in use, the checker's included (tests only).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_slots_in_use(&self) -> Option<usize> {
+        Some(self.state.borrow().tables.as_ref()?.book.in_use())
     }
 
     /// The revisions the ledger holds in its own maps, released ones excluded (tests only: a read of the live
@@ -1091,6 +1418,10 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
     /// One adoption pass in commit order, up to the supplied and configured caps. While a frame ticket is
     /// Building, committed revisions remain pending and no active mapping changes (CK-150); adoption resumes
     /// after the ticket ends.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one adoption pass: the boundary's version, the applied test, the state changes, the sanitisation and the counters read best together"
+    )]
     pub fn adopt(&self, limit: usize, out: &mut Vec<(K, u64)>) {
         let mut displaced = Vec::new();
         let mut wake_room = false;
@@ -1101,11 +1432,34 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
             let mut adopted = 0;
             let resolution_open = state.building;
             let mut remaining = state.committed.len();
+            // The bindless mode: the boundary chooses the version the next frame binds (a swap only when the current one is
+            // pinned and the other leads and is bindable), and a revision is adopted only when its slot is applied in it.
+            let version = if resolution_open {
+                None
+            } else {
+                state
+                    .tables
+                    .as_mut()
+                    .map(|tables| tables.book.boundary().version)
+            };
+            let mut skipped = Vec::new();
             while !resolution_open && adopted < cap && remaining > 0 {
                 remaining -= 1;
                 let Some(id) = state.committed.pop_front() else {
                     break;
                 };
+                if let (Some(version), Some(tables)) = (version, state.tables.as_ref()) {
+                    let slot = state
+                        .keys
+                        .get(&id.key)
+                        .and_then(|entry| entry.revisions.get(&id.revision))
+                        .and_then(|item| item.slot);
+                    if slot.is_some_and(|slot| !tables.book.applied(version, slot)) {
+                        // Its entry is not in the version the next frame binds yet: it waits, still committed, in order.
+                        skipped.push(id);
+                        continue;
+                    }
+                }
                 let (transfer, released_old) = {
                     let Some(entry) = state.keys.get_mut(&id.key) else {
                         continue;
@@ -1133,22 +1487,34 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
                         }
                     }
                     let mut released_old = None;
+                    let mut retired_old = None;
                     if let Some(old_active) = entry.active.replace(id.revision)
                         && old_active != id.revision
                         && let Some(old) = entry.revisions.get_mut(&old_active)
                     {
                         old.state = RevisionState::Retired;
+                        retired_old = Some(old.id);
                         if old.pins == 0 && !old.release_queued {
                             old.release_queued = true;
                             released_old = Some(old.id);
                         }
                     }
                     entry.baseline = Some(id.revision);
+                    let mut adopted_slot = None;
                     if let Some(next) = entry.revisions.get_mut(&id.revision) {
                         next.state = RevisionState::Active;
+                        adopted_slot = next.slot;
                     }
-                    (charge_delta, released_old)
+                    ((charge_delta, retired_old, adopted_slot), released_old)
                 };
+                let (transfer, retired_old, adopted_slot) = transfer;
+                if let (Some(slot), Some(tables)) = (adopted_slot, state.tables.as_mut()) {
+                    // From now on a frame can resolve this slot: it is in the version the next frame binds.
+                    tables.book.set_needed(slot, true);
+                }
+                if let Some(old) = retired_old {
+                    sanitise(&mut state, old);
+                }
                 if let Some(old) = released_old {
                     state.release_candidates.push_back(old);
                 }
@@ -1160,6 +1526,10 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
                 }
                 out.push((id.key, id.revision));
                 adopted += 1;
+            }
+            // The revisions that waited keep their order, ahead of those not looked at this boundary.
+            for id in skipped.into_iter().rev() {
+                state.committed.push_front(id);
             }
             if adopted != 0 {
                 let now = now_ns();
@@ -1185,6 +1555,17 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
     /// Opens the single building frame ticket and takes its fence: the one whose previous submission's proof is
     /// recorded (reset now, and only now), else the result is busy.
     pub fn begin_frame(&self) -> Result<FrameTicket<'_, K>, LedgerError> {
+        self.begin(None)
+    }
+
+    /// [`begin_frame`](Self::begin_frame) pinning table `version` instead of the current one, so a test can draw through a
+    /// named version exactly as a frame would (tests only).
+    #[doc(hidden)]
+    pub fn test_begin_frame_on(&self, version: usize) -> Result<FrameTicket<'_, K>, LedgerError> {
+        self.begin(Some(version.min(1)))
+    }
+
+    fn begin(&self, on: Option<usize>) -> Result<FrameTicket<'_, K>, LedgerError> {
         let mut state = self.state.borrow_mut();
         state.frames_begun = true;
         if state.ending || state.failure_latched {
@@ -1211,12 +1592,20 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
         state.building = true;
         let spare_resolved = state.spare_resolved.take().unwrap_or_default();
         let spare_pinned = state.spare_pinned.take().unwrap_or_default();
+        // The bindless mode: the ticket pins the table version the frame will bind, the current one, until its proof (or
+        // at once if it never submits). A pinned version is never written (design §13.1).
+        let version = state.tables.as_mut().map(|tables| {
+            let version = on.unwrap_or_else(|| tables.book.current());
+            tables.book.pin(version);
+            version
+        });
         Ok(FrameTicket {
             ledger: self,
             pins: RefCell::new(Vec::new()),
             pinned: RefCell::new(spare_pinned),
             resolved: RefCell::new(spare_resolved),
             slot: taken.slot,
+            version,
             phase: Cell::new(TicketPhase::Building),
         })
     }
@@ -1429,6 +1818,85 @@ fn latch_failure<K>(state: &mut LedgerState<K>, message: String) {
     }
 }
 
+/// Ends the compatibility hold on `previous`: its pin goes, and a revision that is retired and no longer held has its table
+/// entry sanitised.
+fn drop_hold<K: Copy + Eq + Hash>(state: &mut LedgerState<K>, previous: RevisionId<K>) {
+    release_pins(state, vec![previous]);
+    sanitise(state, previous);
+}
+
+/// A revision that stopped being shown (replaced, rejected or its key retired) has its slot's wanted entry set back to the
+/// checker in both versions, unless it is Active or held (the compatibility hold keeps its entry in the tables): the
+/// versions are written when they are writable, a pinned one after its frame's proof. The release waits for both.
+fn sanitise<K: Copy + Eq + Hash>(state: &mut LedgerState<K>, id: RevisionId<K>) {
+    let Some(item) = state
+        .keys
+        .get(&id.key)
+        .and_then(|entry| entry.revisions.get(&id.revision))
+    else {
+        return;
+    };
+    let Some(slot) = item.slot else { return };
+    if item.state != RevisionState::Retired || state.compat_hold == Some(id) {
+        return;
+    }
+    if let Some(tables) = state.tables.as_mut() {
+        tables.book.set_needed(slot, false);
+        tables.book.set_wanted(slot, CHECKER);
+    }
+}
+
+/// One pass over the bindless tables: each writable version takes up to [`WRITES_PER_PASS`] queued entries and the descriptors
+/// are written (runs of consecutive slots in one write each). A version a ticket pins is never written. A retired revision that
+/// waited for its slot to be clear goes back on the release queue once both versions name the checker there. Costs
+/// O(entries applied): the table is never scanned.
+fn table_pass<K: Copy + Eq + Hash>(state: &mut LedgerState<K>, descriptors: &mut Descriptors) {
+    let Some(checker_view) = (match &state.checker {
+        CheckerSlot::Resident { texture, .. } => Some(texture.view()),
+        _ => None,
+    }) else {
+        return;
+    };
+    let LedgerState {
+        tables,
+        release_candidates,
+        ..
+    } = state;
+    let Some(tables) = tables.as_mut() else {
+        return;
+    };
+    for version in 0..2 {
+        tables.writes.clear();
+        tables
+            .book
+            .take_writes(version, WRITES_PER_PASS, &mut tables.writes);
+        if tables.writes.is_empty() {
+            continue;
+        }
+        tables.writes.sort_unstable_by_key(|&(slot, _)| slot);
+        tables.entries.clear();
+        tables
+            .entries
+            .extend(tables.writes.iter().map(|&(slot, value)| {
+                let view = if value == CHECKER {
+                    checker_view
+                } else {
+                    <vk::ImageView as vk::Handle>::from_raw(value)
+                };
+                (slot, view)
+            }));
+        descriptors.write_table(version, &tables.entries);
+        for &(slot, value) in &tables.writes {
+            if value == CHECKER
+                && tables.book.is_clear(slot)
+                && let Some(id) = tables.awaiting.remove(&slot)
+            {
+                release_candidates.push_back(id);
+            }
+        }
+    }
+}
+
 fn remove_revision<K: Copy + Eq + Hash>(
     state: &mut LedgerState<K>,
     id: RevisionId<K>,
@@ -1511,6 +1979,10 @@ fn reap_pending<K: Copy + Eq + Hash>(state: &mut LedgerState<K>, context: &Vulka
     let Some(pending) = state.pending.take() else {
         return;
     };
+    if let (Some(version), Some(tables)) = (pending.version, state.tables.as_mut()) {
+        // The proof is recorded: the frame no longer reads the version it bound.
+        tables.book.unpin(version);
+    }
     let mut released = Vec::new();
     for id in pending.pins {
         if let Some(rev) = state
@@ -1564,6 +2036,19 @@ fn release_retired<K: Copy + Eq + Hash>(
             }
             continue;
         }
+        // The bindless mode: the view is destroyed only when neither table version names it, so both versions applied the
+        // sanitisation. Until then the revision waits (still queued) and a table pass puts it back when its slot is clear.
+        let slot = state
+            .keys
+            .get(&id.key)
+            .and_then(|entry| entry.revisions.get(&id.revision))
+            .and_then(|candidate| candidate.slot);
+        if let (Some(slot), Some(tables)) = (slot, state.tables.as_mut())
+            && !tables.book.is_clear(slot)
+        {
+            tables.awaiting.insert(slot, id);
+            continue;
+        }
         let (extra, baseline_removed, empty, retiring) = {
             let Some(entry) = state.keys.get_mut(&id.key) else {
                 continue;
@@ -1581,6 +2066,11 @@ fn release_retired<K: Copy + Eq + Hash>(
             if let (Some(set), Some(descriptors)) = (removed.set.take(), descriptors.as_deref_mut())
             {
                 descriptors.recycle(set);
+            }
+            if let (Some(slot), Some(tables)) = (removed.slot.take(), state.tables.as_mut()) {
+                // Both versions name the checker there: the slot may be reused, and holds the checker until its new
+                // revision's entry is applied.
+                tables.book.free_slot(slot);
             }
             if entry.active == Some(id.revision) {
                 entry.active = None;
@@ -1660,6 +2150,8 @@ pub struct FrameTicket<'a, K: Copy + Eq + Hash + Send + 'static> {
     resolved: RefCell<FrameMap<K, Option<u64>>>,
     /// The frame fence this ticket took at `begin_frame`.
     slot: usize,
+    /// The table version this ticket pinned (the bindless mode).
+    version: Option<usize>,
     phase: Cell<TicketPhase>,
 }
 
@@ -1696,12 +2188,12 @@ impl<K: Copy + Eq + Hash + Send + 'static> FrameTicket<'_, K> {
             {
                 return None;
             }
-            let set = revision.set?;
+            let binding = revision.binding()?;
             let texture = revision.texture.as_ref()?;
             let found = (
                 texture.image(),
                 texture.view(),
-                set,
+                binding,
                 texture.width,
                 texture.height,
             );
@@ -1715,11 +2207,11 @@ impl<K: Copy + Eq + Hash + Send + 'static> FrameTicket<'_, K> {
         if new_pin {
             state.live_pins += 1;
         }
-        let (image, view, set, width, height) = texture;
+        let (image, view, binding, width, height) = texture;
         Some(FrameTexture {
             image,
             view,
-            set,
+            binding,
             width,
             height,
             revision: revision_id,
@@ -1742,12 +2234,12 @@ impl<K: Copy + Eq + Hash + Send + 'static> FrameTicket<'_, K> {
         }
         let (found, new_pin) = {
             let held = state.keys.get_mut(&key)?.revisions.get_mut(&revision)?;
-            let set = held.set?;
+            let binding = held.binding()?;
             let texture = held.texture.as_ref()?;
             let found = (
                 texture.image(),
                 texture.view(),
-                set,
+                binding,
                 texture.width,
                 texture.height,
             );
@@ -1761,16 +2253,39 @@ impl<K: Copy + Eq + Hash + Send + 'static> FrameTicket<'_, K> {
         if new_pin {
             state.live_pins += 1;
         }
-        let (image, view, set, width, height) = found;
+        let (image, view, binding, width, height) = found;
         Some(FrameTexture {
             image,
             view,
-            set,
+            binding,
             width,
             height,
             revision,
             _ticket: PhantomData,
         })
+    }
+
+    /// The table version this ticket pinned and its set (the bindless mode): the one set 1 every batch of the frame binds.
+    /// `None` in the per-revision mode.
+    pub(crate) fn table(&self) -> Option<vk::DescriptorSet> {
+        let version = self.version?;
+        self.ledger
+            .descriptors
+            .borrow()
+            .as_ref()
+            .map(|descriptors| descriptors.table_sets()[version])
+    }
+
+    /// The table version this ticket pinned (tests only: the held-frame cases name it).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_table_version(&self) -> Option<usize> {
+        self.version
+    }
+
+    /// The slots of the bindless tables the ledger allocated (0: per-revision).
+    pub(crate) fn bindless_slots(&self) -> u32 {
+        self.ledger.bindless_slots
     }
 
     /// Performs the frame's `vkQueueSubmit` through `queue`, with this ticket's fence, waiting on `waits` and
@@ -1836,6 +2351,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> FrameTicket<'_, K> {
             pins,
             slot: self.slot,
             submission: number,
+            version: self.version,
         });
         self.phase.set(TicketPhase::Ended);
         Ok(FrameSubmission(number))
@@ -1863,6 +2379,10 @@ impl<K: Copy + Eq + Hash + Send + 'static> FrameTicket<'_, K> {
         let pins = std::mem::take(&mut *self.pins.borrow_mut());
         let mut state = self.ledger.state.borrow_mut();
         release_pins(&mut state, pins);
+        if let (Some(version), Some(tables)) = (self.version, state.tables.as_mut()) {
+            // Nothing was submitted: the version is writable again at once.
+            tables.book.unpin(version);
+        }
         state.proofs.untake(self.slot);
         state.building = false;
         self.phase.set(TicketPhase::Ended);
@@ -1951,8 +2471,8 @@ fn release_pins<K: Copy + Eq + Hash>(state: &mut LedgerState<K>, pins: Vec<Revis
     state.release_candidates.extend(released);
 }
 
-/// Frame-scoped reference to one exact active revision: the image, its view and the revision's descriptor set,
-/// valid while the ticket pins the revision.
+/// Frame-scoped reference to one exact active revision: the image, its view and what a frame binds for it (the revision's
+/// descriptor set, or its native slot in the bindless tables), valid while the ticket pins the revision.
 ///
 /// A resolved texture cannot outlive its ticket:
 ///
@@ -1966,7 +2486,7 @@ fn release_pins<K: Copy + Eq + Hash>(state: &mut LedgerState<K>, pins: Vec<Revis
 pub struct FrameTexture<'a> {
     image: vk::Image,
     view: vk::ImageView,
-    set: vk::DescriptorSet,
+    binding: Binding,
     width: u32,
     height: u32,
     revision: u64,
@@ -1980,10 +2500,27 @@ impl FrameTexture<'_> {
         self.revision
     }
 
-    /// The revision's descriptor set (set 1 of the ledger's pipeline layout), written before `Prepared`.
+    /// The revision's descriptor set (set 1 of the per-revision ledger's pipeline layout), written before `Prepared`; null in
+    /// the bindless mode, where [`slot`](Self::slot) is the binding.
     #[must_use]
     pub fn descriptor_set(&self) -> vk::DescriptorSet {
-        self.set
+        match self.binding {
+            Binding::Set(set) => set,
+            Binding::Slot(_) | Binding::Checker => vk::DescriptorSet::null(),
+        }
+    }
+
+    /// The revision's native slot in the bindless tables (`None` in the per-revision mode). Slot 0 is the checker's.
+    #[must_use]
+    pub fn slot(&self) -> Option<u32> {
+        match self.binding {
+            Binding::Slot(slot) => Some(slot),
+            Binding::Set(_) | Binding::Checker => None,
+        }
+    }
+
+    pub(crate) fn binding(&self) -> Binding {
+        self.binding
     }
 
     /// The image, in `SHADER_READ_ONLY_OPTIMAL`.
@@ -1992,7 +2529,7 @@ impl FrameTexture<'_> {
         self.image
     }
 
-    /// The image view the set names.
+    /// The image view the binding names.
     #[must_use]
     pub fn view(&self) -> vk::ImageView {
         self.view

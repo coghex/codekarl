@@ -13,15 +13,16 @@ use std::time::Instant;
 use ash::vk;
 
 use crate::Error;
-use crate::batch::{Batch, CompatDecision, FrameCounters, build_scene};
+use crate::batch::{Batch, Binding, CompatDecision, FrameCounters, build_scene};
 use crate::context::{RenderQueue, VulkanContext};
 use crate::frame::{VulkanFrame, VulkanFrameSlot};
+use crate::gate::BindlessLimits;
 use crate::hash::FrameMap;
 use crate::hooks::CompatKind;
 use crate::quad::{PixelSource, VulkanFilter, VulkanQuad};
 use crate::revisions::{
-    CheckerProgress, FrameSubmission, FrameTicket, LedgerError, LedgerEvent, LedgerLimits,
-    LedgerProof, TextureLedger,
+    BindingChoice, BindingNotice, CheckerProgress, FrameSubmission, FrameTicket, LedgerError,
+    LedgerEvent, LedgerLimits, LedgerProof, TextureLedger,
 };
 use crate::scene_draw::InstanceBuffer;
 use crate::slot::SlotWake;
@@ -217,8 +218,10 @@ pub(crate) trait FrameSeam {
     ) -> Option<BuiltFrame>;
     /// The batches the last build produced.
     fn batches(&self) -> &[Batch];
-    /// The checker's permanent set.
+    /// The checker's permanent set (the per-revision mode).
     fn checker_set(&self) -> vk::DescriptorSet;
+    /// The set of the table version this frame's ticket pinned (set 1 of the bindless mode); null in the per-revision mode.
+    fn table(&self) -> vk::DescriptorSet;
     /// Whether the proof of an earlier frame submission (by number) is recorded (the texture ledger's latched record).
     fn proven(&self, number: u64) -> bool;
     /// Submits the frame through the ticket and `queue`: the frame's number.
@@ -236,11 +239,13 @@ pub(crate) trait FrameSeam {
 pub(crate) struct SceneBindings {
     pub(crate) layout: vk::PipelineLayout,
     pub(crate) samplers: [vk::DescriptorSet; 2],
+    /// The textures are bound through the bindless table (one set per frame, the slot pushed per batch).
+    pub(crate) bindless: bool,
 }
 
 /// The per-frame working storage a seam borrows and gives back, so a frame allocates nothing once warm.
 pub(crate) struct Scratch<K> {
-    resolved: FrameMap<K, Option<vk::DescriptorSet>>,
+    resolved: FrameMap<K, Option<Binding>>,
     batches: Vec<Batch>,
 }
 
@@ -282,8 +287,9 @@ pub(crate) fn build_frame<K: Copy + Eq + Hash + Send + 'static>(
         &**source,
         size,
         capacity,
+        ticket.bindless_slots(),
         &mut |slot, record| buffer.write(slot, record),
-        &mut |key| ticket.resolve(key).map(|texture| texture.descriptor_set()),
+        &mut |key| ticket.resolve(key).map(|texture| texture.binding()),
         compat_key.is_some(),
         &mut |instance| {
             let Some(instance) = instance else {
@@ -300,7 +306,7 @@ pub(crate) fn build_frame<K: Copy + Eq + Hash + Send + 'static>(
                 {
                     outcome = CompatOutcome::DrewHeld;
                     return CompatDecision::Draw {
-                        set: texture.descriptor_set(),
+                        binding: texture.binding(),
                         destination: held.destination,
                         source: held.source,
                     };
@@ -315,7 +321,7 @@ pub(crate) fn build_frame<K: Copy + Eq + Hash + Send + 'static>(
                     source: instance.source,
                 });
                 return CompatDecision::Draw {
-                    set: texture.descriptor_set(),
+                    binding: texture.binding(),
                     destination: instance.destination,
                     source: instance.source,
                 };
@@ -325,7 +331,7 @@ pub(crate) fn build_frame<K: Copy + Eq + Hash + Send + 'static>(
             {
                 outcome = CompatOutcome::DrewHeld;
                 return CompatDecision::Draw {
-                    set: texture.descriptor_set(),
+                    binding: texture.binding(),
                     destination: held.destination,
                     source: held.source,
                 };
@@ -383,6 +389,10 @@ pub(crate) trait SceneObject {
     fn gpu_outstanding(&self) -> bool;
     fn frame_proven(&self, number: u64) -> bool;
     fn bindings(&self) -> SceneBindings;
+    /// The ledger's once-per-run binding notice, taken (a fallback or the bindless table's).
+    fn binding_notice(&mut self) -> Option<BindingNotice>;
+    /// The bindless table's slots (0 in the per-revision mode).
+    fn bindless_slots(&self) -> u32;
     /// Runs `run` inside a frame ticket and ends the ticket by its fate: it returns the submission when the frame was
     /// submitted (the submit ended the ticket) and `None` when it was not (the ticket is ended not-submitted). Returns
     /// `false` without running `run` when no ticket could begin.
@@ -408,16 +418,55 @@ impl std::fmt::Debug for SceneSetup {
 }
 
 impl SceneSetup {
-    /// A scene over `context`. `texture_hooks` are the store's fault switches (tests only; `None` in production).
+    /// A scene over `context`. `bindless` is the tables' slot count: the device gate decides at the scene's start whether the
+    /// textures are bound through the bindless tables or, with one notice, through per-revision sets (the owner's logged
+    /// fallback). `texture_hooks` are the store's fault switches (tests only; `None` in production).
     #[expect(
         clippy::too_many_arguments,
-        reason = "the context, the three limits, the driver, the frame slot and the hook set the specification names"
+        reason = "the context, the four limits, the driver, the frame slot and the hook set the specification names"
     )]
     pub fn new<K, D>(
         context: Arc<VulkanContext>,
         texture_limits: TextureLimits,
         ledger_limits: LedgerLimits,
         max_textures: usize,
+        bindless: BindlessLimits,
+        limits: SceneLimits,
+        driver: D,
+        frames: Arc<VulkanFrameSlot<K>>,
+        texture_hooks: Option<TextureTestHooks>,
+    ) -> Self
+    where
+        K: Copy + Eq + Hash + Send + 'static,
+        D: TextureDriver<K> + 'static,
+    {
+        Self::with_binding_choice(
+            context,
+            texture_limits,
+            ledger_limits,
+            max_textures,
+            BindingChoice::Auto(bindless),
+            limits,
+            driver,
+            frames,
+            texture_hooks,
+        )
+    }
+
+    /// [`new`](Self::new) with the binding forced: [`BindingChoice::PerRevision`] is the baseline a measurement compares the
+    /// bindless mode against, and the tests of the per-revision path. No configuration, `start_scene` or production path
+    /// reaches it.
+    #[doc(hidden)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "new's arguments with the binding choice in place of the slot count"
+    )]
+    pub fn with_binding_choice<K, D>(
+        context: Arc<VulkanContext>,
+        texture_limits: TextureLimits,
+        ledger_limits: LedgerLimits,
+        max_textures: usize,
+        binding: BindingChoice,
         limits: SceneLimits,
         driver: D,
         frames: Arc<VulkanFrameSlot<K>>,
@@ -432,6 +481,7 @@ impl SceneSetup {
             texture_limits,
             ledger_limits,
             max_textures,
+            binding,
             limits,
             driver: Mutex::new(Some(driver)),
             frames,
@@ -445,6 +495,7 @@ struct Parts<K, D> {
     texture_limits: TextureLimits,
     ledger_limits: LedgerLimits,
     max_textures: usize,
+    binding: BindingChoice,
     limits: SceneLimits,
     driver: Mutex<Option<D>>,
     frames: Arc<VulkanFrameSlot<K>>,
@@ -471,11 +522,12 @@ where
             .unwrap_or_else(PoisonError::into_inner)
             .take()
             .ok_or_else(|| Error("the scene was already started".to_owned()))?;
-        let ledger = TextureLedger::start_with_test_hooks(
+        let ledger = TextureLedger::start_with_binding(
             Arc::clone(&self.context),
             self.texture_limits,
             self.ledger_limits,
             self.max_textures,
+            self.binding,
             wakes,
             self.texture_hooks.clone().unwrap_or_default(),
         )?;
@@ -577,6 +629,8 @@ struct TicketSeam<'t, 'a, K: Copy + Eq + Hash + Send + 'static> {
     frame: Option<VulkanFrame<K>>,
     scratch: Scratch<K>,
     checker: vk::DescriptorSet,
+    /// The table version's set this ticket pinned (null in the per-revision mode).
+    table: vk::DescriptorSet,
     /// The image the last committed frame drew for the compatibility quad.
     drawn: Option<HeldCompat<K>>,
     /// What this frame did with the compatibility quad.
@@ -610,6 +664,10 @@ impl<K: Copy + Eq + Hash + Send + 'static> FrameSeam for TicketSeam<'_, '_, K> {
 
     fn checker_set(&self) -> vk::DescriptorSet {
         self.checker
+    }
+
+    fn table(&self) -> vk::DescriptorSet {
+        self.table
     }
 
     fn proven(&self, number: u64) -> bool {
@@ -718,7 +776,16 @@ where
         SceneBindings {
             layout: self.ledger.pipeline_layout(),
             samplers: self.ledger.sampler_sets(),
+            bindless: self.ledger.bindless_slots() != 0,
         }
+    }
+
+    fn binding_notice(&mut self) -> Option<BindingNotice> {
+        self.ledger.take_binding_notice()
+    }
+
+    fn bindless_slots(&self) -> u32 {
+        self.ledger.bindless_slots()
     }
 
     fn drive(&mut self, boundary: Boundary) -> PassOutcome {
@@ -777,6 +844,7 @@ where
                 frame: self.current.take(),
                 scratch: self.scratch.take().unwrap_or_default(),
                 checker,
+                table: ticket.table().unwrap_or_else(vk::DescriptorSet::null),
                 drawn: self.drawn,
                 outcome: CompatOutcome::Absent,
             };

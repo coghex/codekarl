@@ -21,7 +21,7 @@ fn rust_files(directory: &Path, found: &mut Vec<PathBuf>) {
 
 /// Test-only names distinctive enough to forbid anywhere in `codekarl`'s sources: the hidden constructors
 /// and hook types, the log handle and the invalid-use helpers.
-const DISTINCTIVE: [&str; 58] = [
+const DISTINCTIVE: [&str; 79] = [
     "start_with_test_hooks",
     "TestHooks",
     "readback_clear_with_test_hooks",
@@ -32,8 +32,6 @@ const DISTINCTIVE: [&str; 58] = [
     "submit_test_warning",
     "leak_a_device_for_tests",
     "retained_readbacks",
-    "validation_log",
-    "ValidationLogHandle",
     "LoaderWatch",
     "LedgerSnapshot",
     "SurfaceExtent",
@@ -80,6 +78,29 @@ const DISTINCTIVE: [&str; 58] = [
     "readback_scene_with_held",
     "HeldCompat",
     "CompatKind",
+    "BindlessCaps",
+    "BindlessDeviceLimits",
+    "BindlessReport",
+    "bindless_caps",
+    "bindless_report",
+    "LayoutScope",
+    "submit_test_message",
+    "bindless_layout_scope",
+    "create_table_layout_for_tests",
+    "BindingChoice",
+    "with_binding_choice",
+    "start_with_binding",
+    "test_revision_slot",
+    "test_table_entry",
+    "test_table_wanted",
+    "test_current_table",
+    "test_table_pins",
+    "test_slots_in_use",
+    "test_table_version",
+    "test_begin_frame_on",
+    "SceneContent",
+    "SceneReadback",
+    "readback_slots",
 ];
 
 /// Test-only names too common to forbid as words (the application has fakes of its own called `Gate`, say):

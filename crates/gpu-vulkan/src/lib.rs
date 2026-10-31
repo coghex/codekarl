@@ -172,6 +172,28 @@
 //! - **The end** is the combined proof of the present ledger, the texture ledger and the store under the one absolute stop
 //!   deadline; a complete proof releases in dependency order and the context last, anything uncertain retains everything.
 //!
+//! # The bindless gate (milestone 5.5, issue 5)
+//!
+//! The final binding stage (design §13.3) samples every loaded texture through one large sampled-image table, which needs
+//! device features that can only be enabled when the device is created. [`VulkanContext::new`] therefore enables
+//! `VK_EXT_descriptor_indexing` when the device advertises it (the instance requests Vulkan 1.1) and each of the four
+//! features the tables use that the device reports, and keeps the report ([`BindlessCaps`]) once. The gate (`gate.rs`) is a
+//! pure function of that report, the slot count ([`BindlessLimits`]) and the answer of `vkGetDescriptorSetLayoutSupport` for
+//! the table's exact layout: it judges queried features and limits, never a driver name, and refuses with one bounded line
+//! listing every failed row with the requested and the available value.
+//!
+//! # The bindless stage (milestone 5.5, issue 5)
+//!
+//! [`SceneSetup::new`] takes the tables' slot count ([`BindlessLimits`]). At the scene's start the gate decides: a device that
+//! passes gets **two versions of one 131,072-entry (or configured) sampled-image table** (update-after-bind layout and pool,
+//! allocated once, never freed or grown) and a separate sampler binding; any other device draws through the per-revision sets of
+//! the ordinary stage with one logged notice ([`VulkanPresenter::take_binding_notice`]). The ledger gives each shown revision a
+//! native slot, writes only a version no ticket pins (never on the upload worker, never after a wait for the device), publishes
+//! a revision at a boundary once its slot is applied in the version the next frame binds, sets a retired revision's slot back to
+//! the checker in **both** versions before it releases the image, and reuses a slot only after that. A frame binds its pinned
+//! version once and pushes the batch's slot as a fragment constant (`shaders/scene_bindless.frag`); the batches are CK-157's.
+//! The support query `vkGetDescriptorSetLayoutSupport` is logged and does not gate (see `gate.rs`).
+//!
 //! # What `MoltenVK` does (observed on this Mac, macOS 26.7, SDK loader 1.3.296)
 //!
 //! A surface accepts **one swap chain at a time**: creating a second one that does not name the first as
@@ -200,12 +222,14 @@
 //! the loader clone for the rest of the process; [`readback_clear_with_test_hooks`] injects those cases.
 
 mod batch;
+mod bindless;
 mod capture;
 mod context;
 mod descriptors;
 mod draw;
 mod error;
 mod frame;
+mod gate;
 mod gpu;
 mod gpu_quad;
 mod hash;
@@ -236,14 +260,15 @@ pub use capture::{FrameCapture, FrameCaptures};
 pub use context::{RenderQueue, TestFeatures, VulkanContext};
 pub use error::Error;
 pub use frame::{InstanceRole, VulkanFrame, VulkanFrameSlot, VulkanInstance, VulkanSceneSource};
+pub use gate::{BindlessCaps, BindlessDeviceLimits, BindlessLimits, BindlessReport};
 pub use hooks::{
     BuildRecord, CompatKind, Event, Gate, Observer, Pause, PipelineFault, QuadAllocation,
     QuadFaults, QuadStats, SceneHooks, SurfaceExtent, TestHooks, WaitKind, WaitObserver,
 };
 pub use instance::{
-    DestroyRefused, Instance, InstanceOptions, InstanceTestHooks, ValidationLogHandle,
-    create_instance, create_instance_with, create_instance_with_test_hooks,
-    destroy_surface_and_instance,
+    DestroyRefused, Instance, InstanceFailure, InstanceOptions, InstanceTestHooks, LayoutScope,
+    LogDrain, LogEntry, ValidationLogHandle, create_instance, create_instance_draining,
+    create_instance_with, create_instance_with_test_hooks, destroy_surface_and_instance,
 };
 pub use ledger::LedgerSnapshot;
 pub use loader::{
@@ -256,10 +281,14 @@ pub use quad::{
 };
 pub use readback::{ReadbackHooks, readback_clear, readback_clear_with_test_hooks};
 pub use readback_quad::{MAX_TARGET_SIDE, readback_quad, readback_quad_with_test_hooks};
-pub use readback_scene::{readback_scene, readback_scene_with_held};
+pub use readback_scene::{
+    PROBE_CELL, SceneContent, SceneReadback, readback_scene, readback_scene_with_held,
+    readback_slots,
+};
 pub use revisions::{
-    CheckerProgress, FrameSubmission, FrameTexture, FrameTicket, LedgerCleanup, LedgerError,
-    LedgerEvent, LedgerLimits, LedgerProof, OfferRefusal, RevisionState, TextureLedger,
+    BindingChoice, BindingNotice, CheckerProgress, FrameSubmission, FrameTexture, FrameTicket,
+    LedgerCleanup, LedgerError, LedgerEvent, LedgerLimits, LedgerProof, OfferRefusal,
+    RevisionState, TextureLedger,
 };
 pub use scene::{
     Boundary, CHECKER_CELL, CHECKER_SIDE, HeldCompat, PassOutcome, SceneLimits, SceneSetup,

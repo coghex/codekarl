@@ -248,7 +248,7 @@ fn run(
             }
         };
     let mark = texture_marker(shared);
-    let scene = match setup.0.start(wakes_of(&mark), hooks.scene.tickets.clone()) {
+    let mut scene = match setup.0.start(wakes_of(&mark), hooks.scene.tickets.clone()) {
         Ok(scene) => scene,
         Err(error) => {
             super::fail_setup(shared, observer.as_deref(), error.to_string());
@@ -260,6 +260,12 @@ fn run(
         }
     };
     let bindings = scene.bindings();
+    // How the textures are bound, once, to the main thread (the bindless table, or the logged fallback), and a wake as after
+    // a report.
+    if let Some(notice) = scene.binding_notice() {
+        *lock(&shared.binding_notice) = Some(notice);
+        shared.wake();
+    }
     let mut core = Core {
         shared,
         hooks,
@@ -307,7 +313,12 @@ fn start_pipelines(core: &mut Core<'_>) {
     if core.quad_supported
         && let Some(render_pass) = core.gpu.render_pass
     {
-        match ScenePipeline::create(&core.gpu.device, render_pass, core.bindings.layout) {
+        match ScenePipeline::create(
+            &core.gpu.device,
+            render_pass,
+            core.bindings.layout,
+            core.bindings.bindless,
+        ) {
             Ok(pipeline) => core.pipeline = Some(pipeline),
             Err(error) => core.fail(error.to_string()),
         }
@@ -791,6 +802,7 @@ impl Core<'_> {
                     instances: self.buffer.handle(),
                     batches: seam.batches(),
                     checker: seam.checker_set(),
+                    table: seam.table(),
                     samplers: self.bindings.samplers,
                     filter: built.filter,
                 }),
@@ -1089,6 +1101,7 @@ impl SceneRun<'_> {
             staging_bytes_peak: counts.staging_bytes_peak,
             checker_resident: checker.0,
             checker_bytes: checker.1,
+            bindless_slots: self.scene.bindless_slots(),
         };
     }
 

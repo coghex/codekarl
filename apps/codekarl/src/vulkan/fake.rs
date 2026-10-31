@@ -11,7 +11,10 @@ use std::time::{Duration, Instant};
 use ck_render_2d::{QuadSink, Snapshot};
 use ck_window::{CleanupResult, Notifier, PixelSize, Presenter, PresenterReport, WindowDesc};
 
-use super::{Ended, QuadSide, Refused, Resources, Running, Stack};
+use super::{
+    BindingNote, Ended, QuadSide, Refused, Resources, Running, Stack, ValidationDrain,
+    ValidationEntry,
+};
 use crate::fakes::{BackendScript, FakeBackend, FakePresenter, PresenterScript, Recorder};
 use crate::windowed::VulkanFigures;
 
@@ -34,6 +37,7 @@ pub(super) fn new_run(
         relay,
         config: crate::config::ResourceConfig::default(),
         max_quads: 1024,
+        bindless_texture_slots: 131_072,
     };
     super::Run::new(
         stack,
@@ -87,6 +91,46 @@ pub(super) struct Script {
     pub(super) figures: Option<VulkanFigures>,
     /// A wake regression (see [`WakeCase`]).
     pub(super) wake_case: Option<WakeCase>,
+    /// How the presenter says it binds its textures (the binding notice), told once.
+    pub(super) binding: Option<BindingNote>,
+    /// Validation messages the log holds as soon as the instance exists: `(text, tolerated)`.
+    pub(super) validation_now: Vec<(String, bool)>,
+    /// Entries the log reports as dropped beyond its bound as soon as the instance exists.
+    pub(super) validation_dropped: u64,
+    /// Messages the instance's destruction appends to the log **after** the instance is consumed.
+    pub(super) validation_on_destroy: Vec<(String, bool)>,
+    /// Messages that arrive in the log after **every** drain, as a callback running late would add them: `(text, tolerated)`.
+    pub(super) validation_late: Vec<(String, bool)>,
+    /// Messages a creation that fails (`instance_error`) leaves in its log, which has no handle: `(text, tolerated)`.
+    pub(super) validation_on_failed_creation: Vec<(String, bool)>,
+}
+
+/// The fake validation log: the entries and the dropped count, moved out by a drain.
+#[derive(Default)]
+pub(super) struct FakeValidation {
+    state: Mutex<(Vec<ValidationEntry>, u64)>,
+}
+
+impl FakeValidation {
+    fn push(&self, text: &str, tolerated: bool) {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
+            .push(ValidationEntry {
+                text: text.to_owned(),
+                tolerated,
+                loader_notice: text.contains("Loader Message: env var"),
+            });
+    }
+
+    fn drain(&self) -> ValidationDrain {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        ValidationDrain {
+            entries: std::mem::take(&mut state.0),
+            dropped: std::mem::take(&mut state.1),
+        }
+    }
 }
 
 /// The ordered log of everything the fake stack did.
@@ -279,6 +323,7 @@ pub(super) struct FakeStarted {
     drawn: Option<u64>,
     notice: Option<String>,
     notice_at_end: Option<String>,
+    binding: Option<BindingNote>,
     /// Reports raised from another thread (the wake regression), served before the presenter's.
     extra: Arc<Mutex<VecDeque<PresenterReport>>>,
     /// The wake the relay is to be connected to.
@@ -323,6 +368,13 @@ impl Running for FakeStarted {
         }
         notice
     }
+    fn take_binding_notice(&mut self) -> Option<BindingNote> {
+        let note = self.binding.take();
+        if note.is_some() {
+            (self.log)("binding notice taken");
+        }
+        note
+    }
     fn texture_wake(&self) -> Arc<dyn Fn() + Send + Sync> {
         Arc::clone(&self.texture_wake)
     }
@@ -364,6 +416,8 @@ pub(super) struct FakeStack {
     pub(super) relay: Arc<RelayLog>,
     /// The texture wake the last started presenter handed out (the one the relay must be connected to).
     pub(super) texture_wake: Arc<dyn Fn() + Send + Sync>,
+    /// The fake validation log of the instance.
+    pub(super) validation: Arc<FakeValidation>,
 }
 
 impl FakeStack {
@@ -376,6 +430,7 @@ impl FakeStack {
             refuser: Arc::new(Mutex::new(None)),
             relay: Arc::new(RelayLog::default()),
             texture_wake: Arc::new(|| {}),
+            validation: Arc::new(FakeValidation::default()),
         }
     }
 }
@@ -390,6 +445,7 @@ impl Stack for FakeStack {
     type Slot = Arc<FakeSlot>;
     type Driver = FakeDriver;
     type Side = FakeSide;
+    type Log = Arc<FakeValidation>;
 
     fn load_loader(&self) -> Result<FakeLoader, String> {
         (self.log)("load loader");
@@ -420,10 +476,39 @@ impl Stack for FakeStack {
 
     fn create_instance(&self, _loader: &FakeLoader, (): &()) -> Result<FakeInstance, String> {
         (self.log)("create instance");
-        match &self.script.instance_error {
-            Some(error) => Err(error.clone()),
-            None => Ok(FakeInstance(Arc::clone(&self.log))),
+        if let Some(error) = &self.script.instance_error {
+            for (text, tolerated) in &self.script.validation_on_failed_creation {
+                self.validation.push(text, *tolerated);
+            }
+            return Err(error.clone());
         }
+        for (text, tolerated) in &self.script.validation_now {
+            self.validation.push(text, *tolerated);
+        }
+        self.validation
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .1 = self.script.validation_dropped;
+        Ok(FakeInstance(Arc::clone(&self.log)))
+    }
+
+    fn take_creation_log(&self) -> ValidationDrain {
+        (self.log)("creation log taken");
+        self.validation.drain()
+    }
+
+    fn validation_log(&self, _instance: &FakeInstance) -> Arc<FakeValidation> {
+        Arc::clone(&self.validation)
+    }
+
+    fn drain_validation(&self, log: &Arc<FakeValidation>) -> ValidationDrain {
+        (self.log)("validation drain");
+        let drained = log.drain();
+        for (text, tolerated) in &self.script.validation_late {
+            log.push(text, *tolerated);
+        }
+        drained
     }
 
     fn create_surface(&self, (): &(), _instance: &FakeInstance) -> Result<u64, String> {
@@ -525,6 +610,7 @@ impl Stack for FakeStack {
             drawn: self.script.drawn_generation,
             notice: self.script.notice.clone(),
             notice_at_end: self.script.notice_at_end.clone(),
+            binding: self.script.binding.clone(),
             extra,
             texture_wake: Arc::clone(&self.texture_wake),
             figures: self.script.figures,
@@ -562,6 +648,10 @@ impl Stack for FakeStack {
         }
         (self.log)("instance destroyed");
         drop(instance);
+        // The destruction's own messages arrive after the instance is consumed, into the log that outlives it.
+        for (text, tolerated) in &self.script.validation_on_destroy {
+            self.validation.push(text, *tolerated);
+        }
         Ok(())
     }
 }
