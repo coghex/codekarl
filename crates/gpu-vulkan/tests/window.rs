@@ -190,7 +190,10 @@ impl Rig {
         let instance = create_instance_with(
             &loader,
             handles.required_instance_extensions(),
-            InstanceOptions { validation: true },
+            InstanceOptions {
+                validation: true,
+                ..InstanceOptions::default()
+            },
         )
         .expect("a validated instance");
         let raw = usize::try_from(instance.raw_handle()).expect("a pointer-sized handle");

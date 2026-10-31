@@ -28,6 +28,7 @@ mod supervisor;
 use supervisor::Supervised;
 
 mod gpu_quad;
+mod gpu_textures;
 
 /// A panic payload whose `Drop` panics (and counts itself): the caught payload's disposal must survive it.
 struct Bomb(&'static AtomicUsize);
@@ -56,7 +57,20 @@ const INJECT_VARIABLE: &str = "CK_VULKAN_TEST_INJECT_VALIDATION";
 
 /// A validated instance with **no** window extensions: headless use, as the readback has.
 fn validated(loader: &Loader) -> Instance {
-    let instance = create_instance_with(loader, &[], InstanceOptions { validation: true }).expect(
+    validated_with(loader, false)
+}
+
+/// [`validated`], with synchronization validation too when `synchronization` is set.
+fn validated_with(loader: &Loader, synchronization: bool) -> Instance {
+    let instance = create_instance_with(
+        loader,
+        &[],
+        InstanceOptions {
+            validation: true,
+            synchronization,
+        },
+    )
+    .expect(
         "a validated headless instance (the loader, the layer and the extensions are installed)",
     );
     if env::var(INJECT_VARIABLE).as_deref() == Ok("1") {
@@ -178,8 +192,15 @@ fn a_headless_instance_needs_no_extension_from_the_caller() {
 #[test]
 fn validation_messages_are_recorded() {
     let loader = load_loader().expect("the Vulkan loader loads");
-    let instance = create_instance_with(&loader, &[], InstanceOptions { validation: true })
-        .expect("a validated instance");
+    let instance = create_instance_with(
+        &loader,
+        &[],
+        InstanceOptions {
+            validation: true,
+            ..InstanceOptions::default()
+        },
+    )
+    .expect("a validated instance");
     assert!(instance.validation_messages().is_empty());
     assert!(instance.submit_test_warning("a test warning"));
     let messages = instance.validation_messages();
@@ -215,7 +236,10 @@ fn child_a_creation_time_diagnostic() {
     let instance = create_instance_with_test_hooks(
         &loader,
         &[],
-        InstanceOptions { validation: true },
+        InstanceOptions {
+            validation: true,
+            ..InstanceOptions::default()
+        },
         InstanceTestHooks {
             omit_dependencies: true,
         },
@@ -249,8 +273,15 @@ fn a_destruction_time_diagnostic_is_recorded() {
 #[ignore = "run by a_destruction_time_diagnostic_is_recorded"]
 fn child_a_destruction_time_diagnostic() {
     let loader = load_loader().expect("the Vulkan loader loads");
-    let instance = create_instance_with(&loader, &[], InstanceOptions { validation: true })
-        .expect("a validated instance");
+    let instance = create_instance_with(
+        &loader,
+        &[],
+        InstanceOptions {
+            validation: true,
+            ..InstanceOptions::default()
+        },
+    )
+    .expect("a validated instance");
     let log = instance.validation_log();
     assert_log_clean(&log);
     assert!(instance.leak_a_device_for_tests());
