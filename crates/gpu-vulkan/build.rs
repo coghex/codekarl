@@ -29,7 +29,7 @@ const GLSLC_DIRECTORIES: [&str; 2] = ["/usr/local/bin", "/opt/homebrew/bin"];
 const GLSLC_INSTALL: &str = "run tools/bootstrap (it installs Homebrew's `shaderc`), or install the LunarG Vulkan SDK \
                              for macOS and set VULKAN_SDK";
 /// The shaders, by file name in `shaders/`; each compiles to `<name>.spv` in `OUT_DIR`.
-const SHADERS: [&str; 2] = ["quad.vert", "quad.frag"];
+const SHADERS: [&str; 4] = ["quad.vert", "quad.frag", "scene.vert", "scene.frag"];
 
 /// The filter's source, in `ck-window-glfw`'s tests.
 const TESTING_SOURCE: &str = "../window-glfw/tests/native/testing.m";

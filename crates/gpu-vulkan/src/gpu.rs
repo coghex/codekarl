@@ -200,6 +200,9 @@ pub(crate) struct Gpu {
     pub(crate) capture_usage: bool,
     /// The buffer a drawn frame is copied into, for the test.
     pub(crate) capture: Option<Capture>,
+    /// The device is this thread's own (`start`, `start_2d`): [`Gpu::destroy_all`] destroys it. A scene presenter draws
+    /// on its context's device, which the context destroys when its last `Arc` goes, after a proven end.
+    owns_device: bool,
 }
 
 /// A Vulkan error from one of the wrappers, with the call that failed.
@@ -281,7 +284,49 @@ impl Gpu {
             offered_formats: Vec::new(),
             capture_usage: false,
             capture: None,
+            owns_device: true,
         })
+    }
+
+    /// The thread's objects on the device of `context`, which was made for this surface (M5.5-1). The device, the
+    /// instance and the loader belong to the context: this holds clones of them (in `ManuallyDrop`, like the thread's
+    /// other holders) and [`Gpu::destroy_all`] does not destroy the device. Every queue operation goes through the
+    /// `RenderQueue`, so the `queue` handle here is null and never used.
+    pub(crate) fn on_context(
+        context: &crate::context::VulkanContext,
+        surface: vk::SurfaceKHR,
+        observer: Option<Arc<Observer>>,
+    ) -> Self {
+        let (inner, loader) = context.holders();
+        let device = context.device().clone();
+        let swapchain = khr::swapchain::Device::new(&inner.instance, &device);
+        let maintenance = ext::swapchain_maintenance1::Device::new(&inner.instance, &device);
+        Self {
+            inner: ManuallyDrop::new(inner),
+            loader: ManuallyDrop::new(loader),
+            surface,
+            selection: context.selection(),
+            device,
+            swapchain,
+            maintenance,
+            queue: vk::Queue::null(),
+            pool: None,
+            cmd: None,
+            render_pass: None,
+            format: vk::SurfaceFormatKHR::default(),
+            semaphores: Vec::new(),
+            fences: Vec::new(),
+            current: None,
+            retired: None,
+            observer,
+            extent_override: None,
+            quad: QuadObjects::default(),
+            memory: context.memory_properties(),
+            offered_formats: Vec::new(),
+            capture_usage: false,
+            capture: None,
+            owns_device: false,
+        }
     }
 
     /// The command pool and its one command buffer.
@@ -695,6 +740,99 @@ impl Gpu {
         unsafe { self.device.end_command_buffer(cmd) }.map_err(|code| ("vkEndCommandBuffer", code))
     }
 
+    /// Records a scene frame into the command buffer: the optional held-frame wait, the clear, and the batches `draw`
+    /// names (none: the clear alone). The drawing is [`record_scene`](crate::scene_draw::record_scene)'s, the same as the
+    /// off-screen readback records.
+    pub(crate) fn record_scene_frame(
+        &self,
+        chain: &Chain,
+        index: u32,
+        rgb: [f32; 3],
+        quad: Option<(QuadParams, bool)>,
+        draw: Option<&crate::scene_draw::SceneDraw<'_>>,
+        hold: Option<vk::Event>,
+    ) -> Result<(), Failure> {
+        let (Some(cmd), Some(render_pass)) = (self.cmd, self.render_pass) else {
+            return Err((
+                "vkBeginCommandBuffer",
+                vk::Result::ERROR_INITIALIZATION_FAILED,
+            ));
+        };
+        let Some(framebuffer) = chain.framebuffers.get(index as usize).copied() else {
+            return Err(("vkCmdBeginRenderPass", vk::Result::ERROR_OUT_OF_DATE_KHR));
+        };
+        // SAFETY: the command buffer is not in use: the previous frame's proof is recorded (the thread checks it before
+        // it builds a frame).
+        unsafe {
+            self.device
+                .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
+        }
+        .map_err(|code| ("vkResetCommandBuffer", code))?;
+        let begin = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        // SAFETY: the command buffer is in the initial state after the reset.
+        unsafe { self.device.begin_command_buffer(cmd, &begin) }
+            .map_err(|code| ("vkBeginCommandBuffer", code))?;
+        if let Some(event) = hold {
+            // SAFETY: the command buffer is recording outside a render pass; the event belongs to this device.
+            unsafe {
+                self.device.cmd_wait_events(
+                    cmd,
+                    &[event],
+                    vk::PipelineStageFlags::HOST,
+                    vk::PipelineStageFlags::VERTEX_SHADER
+                        | vk::PipelineStageFlags::FRAGMENT_SHADER
+                        | vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    &[],
+                    &[],
+                    &[],
+                );
+            }
+        }
+        if let Some((_, true)) = quad {
+            self.record_quad_upload(cmd);
+        }
+        let clear = [vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [rgb[0], rgb[1], rgb[2], 1.0],
+            },
+        }];
+        let pass_info = vk::RenderPassBeginInfo::default()
+            .render_pass(render_pass)
+            .framebuffer(framebuffer)
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D::default(),
+                extent: chain.extent,
+            })
+            .clear_values(&clear);
+        // SAFETY: the command buffer is recording; the render pass and framebuffer are compatible.
+        unsafe {
+            self.device
+                .cmd_begin_render_pass(cmd, &pass_info, vk::SubpassContents::INLINE);
+        }
+        // The legacy quad first (below every scene quad), by today's path.
+        if let Some((params, _)) = quad {
+            self.record_quad_draw(cmd, &params, (chain.extent.width, chain.extent.height));
+        }
+        if let Some(draw) = draw {
+            crate::scene_draw::record_scene(
+                &self.device,
+                cmd,
+                draw,
+                (chain.extent.width, chain.extent.height),
+            );
+        }
+        // SAFETY: the render pass was begun on this command buffer.
+        unsafe { self.device.cmd_end_render_pass(cmd) };
+        if self.captures(chain.extent)
+            && let Some(image) = chain.images.get(index as usize).copied()
+        {
+            self.record_capture(cmd, image);
+        }
+        // SAFETY: the command buffer is recording.
+        unsafe { self.device.end_command_buffer(cmd) }.map_err(|code| ("vkEndCommandBuffer", code))
+    }
+
     /// Submits the frame's commands: waits on `acquire`, signals `render_finished`, with `fence`.
     pub(crate) fn submit(
         &self,
@@ -754,6 +892,28 @@ impl Gpu {
             .push_next(&mut fence_info);
         // SAFETY: the swap chain, image index, semaphore and fence are in the states the ledger tracks.
         unsafe { self.swapchain.queue_present(self.queue, &info) }
+    }
+
+    /// [`present`](Self::present) through the render queue: the same call, with the queue's exclusive access.
+    pub(crate) fn present_on(
+        &self,
+        queue: &mut crate::context::RenderQueue,
+        chain: &Chain,
+        index: u32,
+        render_finished: vk::Semaphore,
+        present_fence: vk::Fence,
+    ) -> Result<bool, vk::Result> {
+        let waits = [render_finished];
+        let swapchains = [chain.handle];
+        let indices = [index];
+        let fences = [present_fence];
+        let mut fence_info = vk::SwapchainPresentFenceInfoEXT::default().fences(&fences);
+        let info = vk::PresentInfoKHR::default()
+            .wait_semaphores(&waits)
+            .swapchains(&swapchains)
+            .image_indices(&indices)
+            .push_next(&mut fence_info);
+        queue.present(&self.swapchain, &info)
     }
 
     /// `vkReleaseSwapchainImagesEXT` for one acquired image that will not be presented.
@@ -835,9 +995,11 @@ impl Gpu {
             self.destroy_swapchain_only(chain);
         }
         self.note("swap chains");
-        // SAFETY: every object created on the device is destroyed.
-        unsafe { self.device.destroy_device(None) };
-        self.note("device");
+        if self.owns_device {
+            // SAFETY: every object created on the device is destroyed.
+            unsafe { self.device.destroy_device(None) };
+            self.note("device");
+        }
     }
 }
 

@@ -46,6 +46,7 @@ use ck_window_glfw::{GlfwBackend, GlfwHandles, VulkanLoaderForGlfw};
 mod supervisor;
 mod support;
 mod window_quad;
+mod window_scene;
 
 use supervisor::Supervised;
 
@@ -169,6 +170,11 @@ impl Probes {
 
 impl Rig {
     fn open() -> Self {
+        Self::open_with(false)
+    }
+
+    /// [`Rig::open`] with synchronization validation when asked: the scene cases run with it.
+    fn open_with(synchronization: bool) -> Self {
         let loader = load_loader().expect("the Vulkan loader loads by its absolute path");
         // SAFETY: `ck-gpu-vulkan`'s `GetInstanceProcAddr` and `ck-window-glfw`'s have the same C signature
         // (a pointer-sized handle, a C string, a function pointer back).
@@ -192,7 +198,7 @@ impl Rig {
             handles.required_instance_extensions(),
             InstanceOptions {
                 validation: true,
-                ..InstanceOptions::default()
+                synchronization,
             },
         )
         .expect("a validated instance");
@@ -412,6 +418,12 @@ const DESTROY_ORDER: [&str; 6] = [
 /// every present that queued had one; at most one swap chain is retired at a time; the teardown destroys in
 /// design §7 order and only after the last operation was proven.
 fn check_ledger_order(events: &[Event]) {
+    check_ledger_order_with(events, &DESTROY_ORDER);
+}
+
+/// [`check_ledger_order`] against another teardown order (the scene presenter's device belongs to its context, so its
+/// teardown has no `device` class).
+fn check_ledger_order_with(events: &[Event], order: &[&str]) {
     let mut retired: BTreeSet<u64> = BTreeSet::new();
     let mut presents: BTreeMap<u64, usize> = BTreeMap::new();
     let mut signalled: BTreeMap<u64, usize> = BTreeMap::new();
@@ -463,7 +475,7 @@ fn check_ledger_order(events: &[Event]) {
         })
         .filter(|class| *class != "quad objects")
         .collect();
-    assert_eq!(teardown, DESTROY_ORDER, "the teardown order: {events:?}");
+    assert_eq!(teardown, order, "the teardown order: {events:?}");
     let first_destroy = events
         .iter()
         .position(|event| matches!(event, Event::Destroyed(_)))
@@ -2467,6 +2479,8 @@ fn all_cases() -> Vec<(&'static str, Case)> {
         .chain(EXTRA.iter())
         .chain(window_quad::CASES.iter())
         .chain(window_quad::LAST.iter())
+        .chain(window_scene::CASES.iter())
+        .chain(window_scene::compat::CASES.iter())
         .copied()
         .collect()
 }

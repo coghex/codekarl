@@ -365,6 +365,8 @@ pub struct TestHooks {
     pub fail_allocation_at: Option<usize>,
     /// Lowers the context's allocation-count limit when the store starts.
     pub allocation_count_limit: Option<u32>,
+    /// A baseline item (the checker) fails as an item, with a fixed reason, instead of being uploaded.
+    pub fail_baseline: bool,
 }
 
 /// A host-visible buffer that is mapped for the life of its lease.
@@ -404,6 +406,19 @@ struct ItemResult<T> {
     width: u32,
     height: u32,
     outcome: ItemOutcome,
+    /// A baseline item: it holds no slot of the prepared window (see [`UploadPort::offer_baseline`]).
+    baseline: bool,
+}
+
+/// An item waiting for the worker, with whether it is a baseline item.
+struct Queued<T> {
+    item: UploadItem<T>,
+    baseline: bool,
+}
+
+/// The items of `results` that hold a slot of the prepared window.
+fn windowed<T>(results: &[ItemResult<T>]) -> usize {
+    results.iter().filter(|result| !result.baseline).count()
 }
 
 /// A closed batch: its items' outcomes and the lease that holds its recorded commands.
@@ -419,7 +434,7 @@ struct Envelope<T> {
     reason = "independent lifecycle facts are observed together for the end proof"
 )]
 struct State<T> {
-    waiting: VecDeque<UploadItem<T>>,
+    waiting: VecDeque<Queued<T>>,
     closed: Option<Envelope<T>>,
     submitted: Option<Envelope<T>>,
     immediate: VecDeque<Completed<T>>,
@@ -522,7 +537,32 @@ impl<T: Send + 'static> UploadPort<T> {
             return Err(Refused(item));
         }
         state.occupied += 1;
-        state.waiting.push_back(item);
+        state.waiting.push_back(Queued {
+            item,
+            baseline: false,
+        });
+        drop(state);
+        self.shared.changed.notify_all();
+        Ok(())
+    }
+
+    /// Offers a **baseline** item: one the presenter needs resident for its whole life (the checker). It holds no
+    /// slot of the prepared window (it neither needs room nor takes any) and is a logical key of nobody; it is
+    /// prepared and uploaded like any other and comes back through [`TextureOwner::poll`] with its tag. A stopping
+    /// or failed store refuses it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged item when the store is stopping or failed.
+    pub fn offer_baseline(&self, item: UploadItem<T>) -> Result<(), Refused<UploadItem<T>>> {
+        let mut state = lock(&self.shared.state);
+        if state.stopping || state.failed.is_some() {
+            return Err(Refused(item));
+        }
+        state.waiting.push_back(Queued {
+            item,
+            baseline: true,
+        });
         drop(state);
         self.shared.changed.notify_all();
         Ok(())
@@ -955,12 +995,14 @@ fn fail_envelope<T: Copy>(state: &mut State<T>, envelope: Envelope<T>, reason: &
 
 /// Fails every item still waiting.
 fn fail_waiting<T>(state: &mut State<T>, reason: &str) {
-    while let Some(item) = state.waiting.pop_front() {
+    while let Some(queued) = state.waiting.pop_front() {
         state.immediate.push_back(Completed::Failed {
-            tag: item.tag,
+            tag: queued.item.tag,
             reason: reason.to_owned(),
         });
-        state.occupied = state.occupied.saturating_sub(1);
+        if !queued.baseline {
+            state.occupied = state.occupied.saturating_sub(1);
+        }
     }
 }
 
@@ -1406,7 +1448,7 @@ where
     let mut source = DeviceSource::new(Arc::clone(context));
     source.fail_at = shared.hooks.fail_allocation_at;
     loop {
-        let (mut items, index) = {
+        let (mut items, baselines, index) = {
             let mut state = lock(&shared.state);
             while !state.stopping
                 && (state.closed.is_some() || state.waiting.is_empty() || state.free.is_empty())
@@ -1422,23 +1464,29 @@ where
             let Some(first) = state.waiting.pop_front() else {
                 continue;
             };
-            let mut batch = vec![first];
+            let mut baselines = vec![first.baseline];
+            let mut batch = vec![first.item];
             let first_is_oversized =
                 staging_need(batch.iter(), alignment, atom) > limits.max_upload_bytes_per_batch;
             while !first_is_oversized && batch.len() < limits.max_upload_images_per_batch {
                 let Some(next) = state.waiting.front() else {
                     break;
                 };
-                let need = staging_need(batch.iter().chain(std::iter::once(next)), alignment, atom);
+                let need = staging_need(
+                    batch.iter().chain(std::iter::once(&next.item)),
+                    alignment,
+                    atom,
+                );
                 if need > limits.max_upload_bytes_per_batch {
                     break;
                 }
                 if let Some(next) = state.waiting.pop_front() {
-                    batch.push(next);
+                    baselines.push(next.baseline);
+                    batch.push(next.item);
                 }
             }
             let index = state.free.pop().unwrap_or(0);
-            (batch, index)
+            (batch, baselines, index)
         };
 
         if let Some(gate) = &shared.hooks.stall_gate {
@@ -1483,11 +1531,13 @@ where
         let mut valid_index = 0;
         for (position, item) in items.drain(..).enumerate() {
             let (width, height, tag) = (item.width, item.height, item.tag);
+            let baseline = baselines[position];
             let outcome = |outcome| ItemResult {
                 tag,
                 width,
                 height,
                 outcome,
+                baseline,
             };
             if let Some(reason) = &resource_failure {
                 results.push(outcome(ItemOutcome::Failed(reason.clone())));
@@ -1499,6 +1549,12 @@ where
             }
             if let Err(reason) = &valid[position] {
                 results.push(outcome(ItemOutcome::Failed(reason.clone())));
+                continue;
+            }
+            if baseline && shared.hooks.fail_baseline {
+                results.push(outcome(ItemOutcome::Failed(
+                    "injected baseline failure".to_owned(),
+                )));
                 continue;
             }
             let offset = offsets[valid_index];
@@ -1568,7 +1624,7 @@ where
                 Err(reason) => native_failure = Some(reason),
             }
         }
-        let count = results.len();
+        let count = windowed(&results);
         let lease_index = recorded.then_some(index);
         if let Some(reason) = native_failure {
             latch_prepared_failure(shared, results, &reason, index, lease_index);
@@ -1979,7 +2035,7 @@ fn latch_prepared_failure<T>(
 ) where
     T: Copy,
 {
-    let count = items.len();
+    let count = windowed(&items);
     let mut state = lock(&shared.state);
     state.failed.get_or_insert_with(|| reason.to_owned());
     state.stopping = true;

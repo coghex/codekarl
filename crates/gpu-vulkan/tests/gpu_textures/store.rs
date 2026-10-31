@@ -1281,3 +1281,104 @@ fn a_staging_buffer_over_the_count_limit_fails_its_batch_alone() {
     end(owner);
     kit.finish();
 }
+
+/// A baseline item (the presenter's checker) is prepared and uploaded like any image and comes back with its tag, but it
+/// holds no slot of the prepared window: it is accepted when the window is full and gives no room back when it completes.
+///
+/// Negative control: with the window full, an ordinary item is refused, so the baseline's acceptance is the difference.
+#[test]
+fn a_baseline_item_holds_no_slot_of_the_prepared_window() {
+    let mut kit = Kit::new(false);
+    let limits = TextureLimits {
+        max_prepared_images: 2,
+        max_upload_images_per_batch: 1,
+        ..TextureLimits::default()
+    };
+    let (port, mut owner) =
+        TextureStore::start::<u32>(kit.context.clone(), limits, TextureWakes::default())
+            .expect("the store starts");
+    let mut sources = HashMap::new();
+    sources.insert(0, offer(&port, 0, 8, 8));
+    sources.insert(1, offer(&port, 1, 8, 8));
+    assert_eq!(port.room(), 0, "the window is full");
+    let refused = port.offer(UploadItem {
+        tag: 2,
+        width: 8,
+        height: 8,
+        pixels: pattern(8, 8, 2),
+    });
+    assert!(
+        refused.is_err(),
+        "an ordinary item is refused while the window is full"
+    );
+    let baseline = pattern(8, 8, 77);
+    sources.insert(9, baseline.clone());
+    assert!(
+        port.offer_baseline(UploadItem {
+            tag: 9,
+            width: 8,
+            height: 8,
+            pixels: baseline,
+        })
+        .is_ok(),
+        "a baseline item is accepted with the window full"
+    );
+    assert_eq!(port.room(), 0, "and took no room");
+    let done = kit.drive(&mut owner, 3);
+    assert_eq!(check_pixels(&mut kit, done, &sources), 3);
+    assert_eq!(
+        port.room(),
+        2,
+        "two slots came back for the two ordinary items, none for the baseline"
+    );
+    drop(port);
+    end(owner);
+    kit.finish();
+}
+
+/// An injected baseline failure fails that item alone, with its tag and a reason; an ordinary item in the same batch is
+/// uploaded, and the window's room is whole again.
+#[test]
+fn a_failing_baseline_item_fails_alone() {
+    let mut kit = Kit::new(false);
+    let (port, mut owner) = TextureStore::start_with_test_hooks::<u32>(
+        kit.context.clone(),
+        TextureLimits::default(),
+        TextureWakes::default(),
+        TextureTestHooks {
+            fail_baseline: true,
+            ..TextureTestHooks::default()
+        },
+    )
+    .expect("the store starts");
+    let mut sources = HashMap::new();
+    sources.insert(0, offer(&port, 0, 8, 8));
+    assert!(
+        port.offer_baseline(UploadItem {
+            tag: 9,
+            width: 8,
+            height: 8,
+            pixels: pattern(8, 8, 1),
+        })
+        .is_ok()
+    );
+    let done = kit.drive(&mut owner, 2);
+    let mut failed = Vec::new();
+    let mut ready = Vec::new();
+    for completed in done {
+        match completed {
+            Completed::Failed { tag, reason } => failed.push((tag, reason)),
+            Completed::Ready(texture) => ready.push(texture),
+        }
+    }
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].0, 9);
+    assert!(failed[0].1.contains("baseline"), "{}", failed[0].1);
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].tag, 0, "the ordinary item was uploaded");
+    drop(ready);
+    assert_eq!(port.room(), TextureLimits::default().max_prepared_images);
+    drop(port);
+    end(owner);
+    kit.finish();
+}

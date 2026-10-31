@@ -52,6 +52,10 @@ pub(crate) struct Slot {
     /// Counts every redraw trigger (a changed colour or size, a redraw request): a paused swap chain
     /// creation retries at once when this has moved.
     pub(crate) epoch: u64,
+    /// Texture work is pending (scene presenters only): a store wake, `texture_wake()`, or a pass that reported
+    /// runnable work left. Read and cleared under this slot's mutex like `dirty` and `stop`, and every wake sets it
+    /// under the mutex before signalling, so a wake that arrives while the thread decides to wait is never lost.
+    pub(crate) texture_work: bool,
     pub(crate) stop: bool,
     /// The absolute stop deadline, set once, by the first `request_stop`.
     pub(crate) stop_deadline: Option<Instant>,
@@ -71,6 +75,36 @@ pub(crate) struct Shared {
     pub(crate) drawn_any: AtomicBool,
     /// The format notice, until the main thread takes it.
     pub(crate) notice: Mutex<Option<QuadSkipped>>,
+    /// The scene presenter's lean counters (written by the render thread; read by `VulkanPresenter::scene_stats`).
+    pub(crate) scene_stats: Mutex<SceneStats>,
+}
+
+/// What the scene presenter publishes: the figures the shared metrics record reads for both backends, and nothing
+/// more (no per-frame or per-descriptor tallies).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SceneStats {
+    /// Frames queued for presentation.
+    pub frames: u64,
+    /// Images created for uploads (the checker included).
+    pub textures_created: u64,
+    /// Revisions adopted: textures ready to be drawn in a frame.
+    pub textures_ready: u64,
+    /// When the first revision was adopted, in nanoseconds on the process-wide clock of the ledger (0: none yet).
+    pub first_ready_ns: u64,
+    /// When the latest adopting boundary ran, on the same clock (0: none yet).
+    pub last_ready_ns: u64,
+    /// Upload batches submitted.
+    pub upload_batches_submitted: u64,
+    /// Upload batches completed.
+    pub upload_batches_completed: u64,
+    /// The most image memory ever reserved at once.
+    pub texture_bytes_peak: u64,
+    /// The most staging memory ever allocated at once.
+    pub staging_bytes_peak: u64,
+    /// The checker is resident.
+    pub checker_resident: bool,
+    /// The bytes the driver allocated for the checker: the presenter's baseline, charged once.
+    pub checker_bytes: u64,
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -118,6 +152,7 @@ mod tests {
                 size: (1, 1),
                 dirty: false,
                 epoch: 0,
+                texture_work: false,
                 stop: false,
                 stop_deadline: None,
             }),
@@ -129,6 +164,7 @@ mod tests {
             drawn_generation: AtomicU64::new(0),
             drawn_any: AtomicBool::new(false),
             notice: Mutex::new(None),
+            scene_stats: Mutex::new(crate::shared::SceneStats::default()),
         }
     }
 

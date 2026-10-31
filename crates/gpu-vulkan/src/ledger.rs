@@ -68,6 +68,15 @@ pub(crate) enum Proof {
     RenderDrain,
 }
 
+/// A scene frame's submit, whose proof is the texture ledger's latched `frame_proven(number)`, not a fence of this
+/// ledger: the frame's fence stays inside the texture ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Numbered {
+    number: u64,
+    chain: Option<ChainId>,
+    acquire: Raw,
+}
+
 #[derive(Debug)]
 struct Pending {
     fence: Raw,
@@ -158,6 +167,8 @@ pub(crate) struct Ledger {
     /// starts after the last submit's proof), so every number up to it is proven. This is the ledger's own
     /// record: a fence handle is reset and reused after its proof, and says nothing about an earlier submit.
     submits_proven: u64,
+    /// Scene frames submitted and not yet seen proven through the texture ledger, oldest first.
+    numbered: Vec<Numbered>,
 }
 
 impl Ledger {
@@ -176,10 +187,16 @@ impl Ledger {
             lost: false,
             submits_made: 0,
             submits_proven: 0,
+            numbered: Vec::new(),
         }
     }
 
     // ---- the pools ----
+
+    /// Whether [`take_frame`](Self::take_frame) would give a frame: every pool has what a frame takes.
+    pub(crate) fn can_take_frame(&self) -> bool {
+        !self.acquire_free.is_empty() && !self.slot_free.is_empty() && self.fence_free.len() >= 2
+    }
 
     /// Takes an acquire semaphore, a present slot and two fences, or nothing at all.
     pub(crate) fn take_frame(&mut self) -> Option<Frame> {
@@ -239,6 +256,37 @@ impl Ledger {
         });
         // The spare fence is not needed unless a drain follows.
         self.submits_made
+    }
+
+    /// A scene frame was submitted through the texture ledger as submission `number`. The submit fence of `frame` was
+    /// never used (the texture ledger's own fence proves the frame), so it returns to the pool at once; the acquire
+    /// semaphore returns when [`Ledger::reap_numbered`] is told `number` is proven.
+    pub(crate) fn submitted_numbered(&mut self, frame: &Frame, number: u64) {
+        let chain = self.acquired.map(|acquired| acquired.chain);
+        self.fence_free.push(frame.submit_fence);
+        self.numbered.push(Numbered {
+            number,
+            chain,
+            acquire: frame.acquire,
+        });
+    }
+
+    /// Frees what every numbered submit for which `proven` answers true was holding (its acquire semaphore), in order.
+    /// `proven` is the texture ledger's `frame_proven`: the one authoritative record, true for good once seen.
+    /// Returns how many were freed.
+    pub(crate) fn reap_numbered(&mut self, proven: &dyn Fn(u64) -> bool) -> usize {
+        let before = self.numbered.len();
+        let mut kept = Vec::with_capacity(before);
+        for item in std::mem::take(&mut self.numbered) {
+            if proven(item.number) {
+                self.acquire_free.push(item.acquire);
+                self.submits_proven = self.submits_proven.max(item.number);
+            } else {
+                kept.push(item);
+            }
+        }
+        self.numbered = kept;
+        before - self.numbered.len()
     }
 
     /// The number of the last frame submit made (0 before the first).
@@ -362,11 +410,12 @@ impl Ledger {
         self.pending
             .iter()
             .any(|pending| pending.proof == Proof::Submit)
+            || !self.numbered.is_empty()
     }
 
     /// Whether anything is pending a proof (so the thread must keep looking at fences).
     pub(crate) fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
+        !self.pending.is_empty() || !self.numbered.is_empty()
     }
 
     // ---- the swap chains ----
@@ -424,6 +473,10 @@ impl Ledger {
             .iter()
             .any(|pending| pending.chain == Some(chain))
             || self
+                .numbered
+                .iter()
+                .any(|numbered| numbered.chain == Some(chain))
+            || self
                 .acquired
                 .is_some_and(|acquired| acquired.chain == chain)
     }
@@ -459,7 +512,11 @@ impl Ledger {
     /// Whether every operation is proven finished (the teardown may destroy): nothing pending, no image
     /// acquired, no semaphore waiting for a drain, and the device not lost.
     pub(crate) fn proven(&self) -> bool {
-        !self.lost && self.pending.is_empty() && self.acquired.is_none() && self.undrained.is_none()
+        !self.lost
+            && self.pending.is_empty()
+            && self.numbered.is_empty()
+            && self.acquired.is_none()
+            && self.undrained.is_none()
     }
 
     /// What is outstanding, in words (an `Unproven` reason).
@@ -475,7 +532,7 @@ impl Ledger {
         };
         format!(
             "{} submit fence(s), {} present fence(s) and {} drain(s) outstanding{}",
-            count(Proof::Submit),
+            count(Proof::Submit) + self.numbered.len(),
             count(Proof::Present),
             count(Proof::AcquireDrain) + count(Proof::RenderDrain),
             if self.acquired.is_some() {
@@ -497,7 +554,7 @@ impl Ledger {
                 .count()
         };
         LedgerSnapshot {
-            pending_submits: count(Proof::Submit),
+            pending_submits: count(Proof::Submit) + self.numbered.len(),
             pending_presents: count(Proof::Present),
             pending_drains: count(Proof::AcquireDrain) + count(Proof::RenderDrain),
             free_acquire: self.acquire_free.len(),
@@ -533,6 +590,131 @@ mod tests {
                 .collect(),
             (300..310).collect(),
         )
+    }
+
+    /// A scene frame submitted as number `number`: the acquire is taken, the image acquired, the submit numbered.
+    fn numbered_frame(ledger: &mut Ledger, chain: ChainId, number: u64) -> Frame {
+        let frame = ledger.take_frame().expect("the pools have room");
+        ledger.acquired(0, chain);
+        ledger.submitted_numbered(&frame, number);
+        frame
+    }
+
+    #[test]
+    fn a_numbered_submit_returns_its_fence_at_once_and_its_acquire_semaphore_when_its_number_is_proven()
+     {
+        let mut ledger = ledger();
+        let chain = created(&mut ledger);
+        let before = ledger.snapshot();
+        let frame = numbered_frame(&mut ledger, chain, 1);
+        let during = ledger.snapshot();
+        assert_eq!(
+            during.free_fences,
+            before.free_fences - 1,
+            "the spare fence is out, the submit fence came back at once"
+        );
+        assert_eq!(during.free_acquire, before.free_acquire - 1);
+        assert_eq!(
+            during.pending_submits, 1,
+            "a numbered submit is a pending submit"
+        );
+        assert!(ledger.submit_in_flight() && ledger.has_pending() && !ledger.proven());
+        assert_eq!(
+            ledger.reap_numbered(&|_| false),
+            0,
+            "not proven: nothing is freed"
+        );
+        assert_eq!(ledger.snapshot().free_acquire, before.free_acquire - 1);
+        assert_eq!(ledger.reap_numbered(&|number| number == 1), 1);
+        assert_eq!(ledger.snapshot().free_acquire, before.free_acquire);
+        assert!(!ledger.submit_in_flight());
+        assert_eq!(ledger.proven_through(), 1);
+        // The present half of the frame is the ledger's own, unchanged.
+        ledger.presented(&frame, PresentCall::Success);
+        assert!(ledger.fence_signalled(frame.slot.fence).is_some());
+        assert!(ledger.proven());
+    }
+
+    #[test]
+    fn a_retired_swap_chain_is_not_destroyable_while_a_numbered_submit_on_it_is_unproven() {
+        let mut ledger = ledger();
+        let chain = created(&mut ledger);
+        let frame = numbered_frame(&mut ledger, chain, 1);
+        ledger.presented(&frame, PresentCall::Success);
+        ledger.fence_signalled(frame.slot.fence);
+        ledger
+            .retire_current()
+            .expect("a rebuild retires the current chain");
+        assert_eq!(
+            ledger.retired_destroyable(),
+            None,
+            "the frame's commands may still use the swap chain's framebuffers"
+        );
+        ledger.reap_numbered(&|number| number == 1);
+        assert_eq!(ledger.retired_destroyable(), Some(chain));
+    }
+
+    /// The texture ledger's record is latched: a number stays proven after its fence is reset and used for a later
+    /// frame. The present ledger asks the record, so it reaps in any order and any number of looks later.
+    #[test]
+    fn a_proof_that_stays_true_reaps_a_frame_after_its_fence_was_reused() {
+        let mut ledger = ledger();
+        let chain = created(&mut ledger);
+        let first = numbered_frame(&mut ledger, chain, 1);
+        ledger.presented(&first, PresentCall::Success);
+        // The record says 1 is proven now, but the present ledger does not look until frame 3 is submitted.
+        let second = numbered_frame(&mut ledger, chain, 3);
+        ledger.presented(&second, PresentCall::Success);
+        let latched = |number: u64| number <= 1;
+        assert_eq!(
+            ledger.reap_numbered(&latched),
+            1,
+            "frame 1 is returned, 3 is not"
+        );
+        assert!(ledger.submit_in_flight(), "frame 3 is still unproven");
+        assert_eq!(ledger.reap_numbered(&|number| number <= 3), 1);
+        assert!(!ledger.submit_in_flight());
+    }
+
+    /// Negative control: reading the fence's *current* status after the fence was reset and reused for frame n + 2
+    /// reports frame n unproven for good, so its acquire semaphore never returns and its slot stays stuck.
+    #[test]
+    fn negative_control_the_current_fence_status_after_reuse_never_proves_the_old_frame() {
+        // The model: one fence object, signalled by frame 1, reset for frame 3, which has not signalled.
+        struct Fence {
+            signalled: bool,
+            last_submission: u64,
+        }
+        let mut fence = Fence {
+            signalled: false,
+            last_submission: 1,
+        };
+        fence.signalled = true; // frame 1 finished
+        fence.signalled = false; // reset for frame 3
+        fence.last_submission = 3;
+        let by_current_status = |_number: u64| fence.signalled;
+        let by_latched_record = |number: u64| number <= 1;
+        let mut stuck = ledger();
+        let chain = created(&mut stuck);
+        numbered_frame(&mut stuck, chain, 1);
+        assert_eq!(
+            stuck.reap_numbered(&by_current_status),
+            0,
+            "the mutant never proves frame 1"
+        );
+        assert!(
+            stuck.submit_in_flight(),
+            "and its acquire semaphore is stuck"
+        );
+        assert_eq!(fence.last_submission, 3);
+        let mut whole = ledger();
+        let chain = created(&mut whole);
+        numbered_frame(&mut whole, chain, 1);
+        assert_eq!(
+            whole.reap_numbered(&by_latched_record),
+            1,
+            "the latched record proves it"
+        );
     }
 
     /// One whole frame up to and including its present, returning the frame.
@@ -914,5 +1096,219 @@ mod tests {
         );
         ledger.fence_signalled(frame.submit_fence);
         assert!(ledger.submit_proven(1));
+    }
+
+    /// Test 7, signal between observations, with both ledgers real (the texture ledger, a real device and real fences) and
+    /// the present ledger around them: frame 1 is held by a `VkEvent` and the present ledger finds it unproven; the event is
+    /// set; the texture ledger's pump latches frame 1, and a later `begin_frame` takes frame 1's fence, resets it and
+    /// submits frame 3 on it (held by a second event) **before** the present ledger looks again; then the present ledger
+    /// sees `frame_proven(1)` true, returns frame 1's acquire semaphore (and frame 2's) and `frame_proven(3)` stays false
+    /// until its own signal.
+    ///
+    /// Negative control: the fence frame 1 used now belongs to frame 3 and is unsignalled, so a present ledger that read the
+    /// fence's *current* status would still find frame 1 unproven (`negative_control_the_current_fence_status_after_reuse_never_proves_the_old_frame`
+    /// models it; here the real state shows the premise: frame 3 is unproven while frame 1 is proven).
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "one real sequence of two ledgers, a device, two events and their cleanup, read best together"
+    )]
+    fn a_proof_latched_before_the_fence_was_reused_returns_the_old_frames_semaphore() {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        use crate::revisions::{LedgerLimits, TextureLedger};
+        use crate::textures::{TestHooks, TextureLimits, TextureWakes};
+        use crate::{
+            InstanceOptions, TestFeatures, VulkanContext, create_instance_with, load_loader,
+        };
+        use ash::vk;
+
+        let loader = load_loader().expect("the Vulkan loader loads");
+        let instance = create_instance_with(
+            &loader,
+            &[],
+            InstanceOptions {
+                validation: true,
+                synchronization: true,
+            },
+        )
+        .expect("a validated instance");
+        let log = instance.validation_log();
+        let context = VulkanContext::new_for_tests(&instance, None, TestFeatures { events: true })
+            .expect("a context with host events");
+        let mut queue = context.take_queue().expect("the queue");
+        let texture_ledger = TextureLedger::<u32>::start_with_test_hooks(
+            Arc::clone(&context),
+            TextureLimits::default(),
+            LedgerLimits::default(),
+            4,
+            TextureWakes::default(),
+            TestHooks::default(),
+        )
+        .expect("the texture ledger starts");
+        let device = context.device();
+        // SAFETY: the case's own objects on its own device, destroyed at the end of the case.
+        let (pool, event_one, event_three) = unsafe {
+            (
+                device
+                    .create_command_pool(
+                        &vk::CommandPoolCreateInfo::default().queue_family_index(context.family()),
+                        None,
+                    )
+                    .expect("pool"),
+                device
+                    .create_event(&vk::EventCreateInfo::default(), None)
+                    .expect("event"),
+                device
+                    .create_event(&vk::EventCreateInfo::default(), None)
+                    .expect("event"),
+            )
+        };
+        // A command buffer that waits on `event` (when given): the frame is held until the host sets it.
+        let record = |event: Option<vk::Event>| {
+            // SAFETY: the pool is live; the buffer is recorded once and submitted once.
+            unsafe {
+                let cmd = device
+                    .allocate_command_buffers(
+                        &vk::CommandBufferAllocateInfo::default()
+                            .command_pool(pool)
+                            .command_buffer_count(1),
+                    )
+                    .expect("cmd")[0];
+                device
+                    .begin_command_buffer(
+                        cmd,
+                        &vk::CommandBufferBeginInfo::default()
+                            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                    )
+                    .expect("begin");
+                if let Some(event) = event {
+                    device.cmd_wait_events(
+                        cmd,
+                        &[event],
+                        vk::PipelineStageFlags::HOST,
+                        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                        &[],
+                        &[],
+                        &[],
+                    );
+                }
+                device.end_command_buffer(cmd).expect("end");
+                cmd
+            }
+        };
+        let proven = |number: u64| texture_ledger.frame_proven_number(number);
+        let mut present = ledger();
+        let chain = created(&mut present);
+        let whole = present.snapshot();
+        // Submits one frame through the texture ledger and numbers it in the present ledger.
+        let submit = |present: &mut Ledger,
+                      queue: &mut crate::RenderQueue,
+                      hold: Option<vk::Event>|
+         -> (Frame, u64) {
+            let frame = present.take_frame().expect("the pools have room");
+            present.acquired(0, chain);
+            let ticket = texture_ledger.begin_frame().expect("a ticket");
+            let number = ticket
+                .submit(queue, record(hold), &[], &[])
+                .expect("the frame is submitted")
+                .number();
+            present.submitted_numbered(&frame, number);
+            (frame, number)
+        };
+        let pump_until = |queue: &mut crate::RenderQueue, number: u64| {
+            let mut events = Vec::new();
+            let started = Instant::now();
+            while !texture_ledger.frame_proven_number(number) {
+                texture_ledger.pump(queue, &mut events);
+                assert!(
+                    started.elapsed() < Duration::from_secs(30),
+                    "frame {number} never proven"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+
+        // Frame 1, held. The present ledger looks: not proven.
+        let (first, one) = submit(&mut present, &mut queue, Some(event_one));
+        assert_eq!(present.reap_numbered(&proven), 0, "frame 1 is unproven");
+        let mut events = Vec::new();
+        texture_ledger.pump(&mut queue, &mut events);
+        assert_eq!(
+            present.reap_numbered(&proven),
+            0,
+            "still unproven after a pump"
+        );
+        // The signal. The texture ledger reaps and latches frame 1 -- the present ledger does not look.
+        // SAFETY: the event belongs to this device.
+        unsafe { device.set_event(event_one) }.expect("set");
+        pump_until(&mut queue, one);
+        // Frame 2 on the other fence, proven; frame 3 on frame 1's fence, which `begin_frame` resets: held again.
+        let (second, two) = submit(&mut present, &mut queue, None);
+        pump_until(&mut queue, two);
+        let (third, three) = submit(&mut present, &mut queue, Some(event_three));
+        assert_eq!((one, two, three), (1, 2, 3));
+        assert!(
+            !texture_ledger.frame_proven_number(three),
+            "frame 3 is on frame 1's reused fence and is not proven"
+        );
+        // Now the present ledger looks: it finds frame 1 (and 2) proven although the fence of frame 1 is frame 3's.
+        assert_eq!(
+            present.reap_numbered(&proven),
+            2,
+            "frames 1 and 2 are returned"
+        );
+        assert!(proven(one) && proven(two) && !proven(three));
+        let mid = present.snapshot();
+        assert_eq!(
+            mid.free_acquire,
+            whole.free_acquire - 1,
+            "only frame 3's acquire semaphore is still out"
+        );
+        assert_eq!(present.proven_through(), 2);
+        // Their present halves return the slots.
+        for frame in [&first, &second] {
+            present.presented(frame, PresentCall::Success);
+            assert!(present.fence_signalled(frame.slot.fence).is_some());
+        }
+        // Frame 3's own signal.
+        // SAFETY: the event belongs to this device.
+        unsafe { device.set_event(event_three) }.expect("set");
+        pump_until(&mut queue, three);
+        assert_eq!(present.reap_numbered(&proven), 1);
+        present.presented(&third, PresentCall::Success);
+        assert!(present.fence_signalled(third.slot.fence).is_some());
+        let end = present.snapshot();
+        assert_eq!(
+            (end.free_acquire, end.free_slots, end.free_fences),
+            (whole.free_acquire, whole.free_slots, whole.free_fences),
+            "every semaphore, slot and fence is back"
+        );
+        assert!(present.proven());
+        assert_eq!(
+            texture_ledger.shutdown(Instant::now() + Duration::from_secs(30)),
+            crate::LedgerCleanup::Proven
+        );
+        // SAFETY: every frame that used them is proven finished.
+        unsafe {
+            device.destroy_event(event_one, None);
+            device.destroy_event(event_three, None);
+            device.destroy_command_pool(pool, None);
+        }
+        drop(texture_ledger);
+        drop(queue);
+        assert_eq!(Arc::strong_count(&context), 1);
+        drop(context);
+        assert_eq!(
+            log.messages(),
+            Vec::<String>::new(),
+            "validation said nothing"
+        );
+        // SAFETY: there is no surface (null) and no presenter used the instance.
+        unsafe { crate::destroy_surface_and_instance(instance, vk::SurfaceKHR::null(), None) }
+            .expect("the instance is destroyed");
+        drop(loader);
     }
 }

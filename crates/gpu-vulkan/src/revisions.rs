@@ -45,7 +45,7 @@ use crate::proofs::FenceProofs;
 use crate::quad::PixelSource;
 use crate::textures::{
     Completed, PreparedTexture, Proof, Refused, TestHooks, TextureLimits, TextureOwner,
-    TextureStore, TextureWakes, UploadItem, UploadPort,
+    TextureStats, TextureStore, TextureWakes, UploadItem, UploadPort,
 };
 
 const RELEASES_PER_CALL: usize = 256;
@@ -156,6 +156,16 @@ pub enum LedgerEvent<K> {
         /// Why.
         reason: String,
     },
+    /// The upload of the key marked by [`TextureLedger::set_compat_key`] failed. It accompanies the ordinary
+    /// [`UploadFailed`](Self::UploadFailed) of the same failure, emitted first: two observations of one failure, so
+    /// neither consumer can take the other's. A failure of a key that is no longer marked produces only the ordinary
+    /// event.
+    CompatUploadFailed {
+        /// The key.
+        key: K,
+        /// Why.
+        reason: String,
+    },
     /// A store failure was latched; emitted at most once.
     GpuFailure {
         /// What failed.
@@ -187,8 +197,45 @@ struct RevisionId<K> {
     revision: u64,
 }
 
+/// What an upload of this ledger's store is for: a revision of a logical key, or the presenter's checker (a baseline
+/// item, which is no key's and holds no ledger charge).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct RevisionKey<K>(RevisionId<K>);
+enum RevisionKey<K> {
+    Revision(RevisionId<K>),
+    Checker,
+}
+
+/// How far the checker's upload is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckerProgress {
+    /// No checker was asked for, or its completion has not arrived.
+    Pending,
+    /// Resident, with its permanent descriptor set.
+    Resident,
+    /// Its upload failed.
+    Failed(String),
+}
+
+/// The checker's state in the ledger.
+enum CheckerSlot<K> {
+    None,
+    Pending,
+    Resident {
+        texture: PreparedTexture<RevisionKey<K>>,
+        set: vk::DescriptorSet,
+    },
+    Failed(String),
+}
+
+/// The moment of this process's first look at the clock, so adoption times are small, comparable numbers.
+fn now_ns() -> u64 {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let epoch = *EPOCH.get_or_init(Instant::now);
+    // At least 1: zero means "none yet" to the callers, and the first look can be within the clock's resolution of the epoch.
+    u64::try_from(epoch.elapsed().as_nanos())
+        .unwrap_or(u64::MAX - 1)
+        .saturating_add(1)
+}
 
 struct Revision<K> {
     id: RevisionId<K>,
@@ -248,6 +295,50 @@ struct LedgerState<K> {
     frames_begun: bool,
     spare_resolved: Option<FrameMap<K, Option<u64>>>,
     spare_pinned: Option<FrameSet<RevisionId<K>>>,
+    checker: CheckerSlot<K>,
+    /// The one key whose upload failure is also the presenter's (the current frame's compatibility key).
+    compat_key: Option<K>,
+    /// The one revision held for the presenter as the last compatibility image it drew: a pin that outlives the key's
+    /// retirement and newer adoptions.
+    compat_hold: Option<RevisionId<K>>,
+    /// Revisions adopted over the ledger's life, and when the first and the latest boundary that adopted any ran.
+    adopted_total: u64,
+    first_adopted_ns: u64,
+    last_adopted_ns: u64,
+}
+
+impl<K> LedgerState<K> {
+    fn empty(proofs: FenceProofs<vk::Fence>) -> Self {
+        Self {
+            keys: FrameMap::default(),
+            completed_pending: VecDeque::new(),
+            committed: VecDeque::new(),
+            release_candidates: VecDeque::new(),
+            events: VecDeque::new(),
+            sequence: 0,
+            extra_charges: 0,
+            baseline_charges: 0,
+            live_pins: 0,
+            building: false,
+            pending: None,
+            uncertain: Vec::new(),
+            proofs,
+            failure_latched: false,
+            failure_event_emitted: false,
+            ending: false,
+            spare_limit: 0,
+            spare_limit_set: false,
+            frames_begun: false,
+            spare_resolved: None,
+            spare_pinned: None,
+            checker: CheckerSlot::None,
+            compat_key: None,
+            compat_hold: None,
+            adopted_total: 0,
+            first_adopted_ns: 0,
+            last_adopted_ns: 0,
+        }
+    }
 }
 
 /// The unique render-owner ledger for an upload store and its native revisions.
@@ -353,29 +444,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
             context,
             port,
             owner: RefCell::new(Some(owner)),
-            state: RefCell::new(LedgerState {
-                keys: FrameMap::default(),
-                completed_pending: VecDeque::new(),
-                committed: VecDeque::new(),
-                release_candidates: VecDeque::new(),
-                events: VecDeque::new(),
-                sequence: 0,
-                extra_charges: 0,
-                baseline_charges: 0,
-                live_pins: 0,
-                building: false,
-                pending: None,
-                uncertain: Vec::new(),
-                proofs: FenceProofs::new(&fences),
-                failure_latched: false,
-                failure_event_emitted: false,
-                ending: false,
-                spare_limit: 0,
-                spare_limit_set: false,
-                frames_begun: false,
-                spare_resolved: None,
-                spare_pinned: None,
-            }),
+            state: RefCell::new(LedgerState::empty(FenceProofs::new(&fences))),
             descriptors: RefCell::new(Some(descriptors)),
             limits,
             wakes,
@@ -402,6 +471,154 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
             .borrow()
             .as_ref()
             .map_or([vk::DescriptorSet::null(); 2], Descriptors::sampler_sets)
+    }
+
+    /// Marks `key` as the current frame's compatibility key (one slot: a later call replaces it, `None` clears it), so a
+    /// failed upload of it is also reported as [`LedgerEvent::CompatUploadFailed`] by the next [`pump`](Self::pump). This
+    /// affects failure reporting only; it does not change active mappings.
+    pub fn set_compat_key(&self, key: Option<K>) {
+        self.state.borrow_mut().compat_key = key;
+    }
+
+    /// Whether `key` has something a frame could draw or will draw at its next boundary: a committed revision waiting for
+    /// adoption, or an active one. The gate's readiness predicate: a persistent fact, not an edge, so it cannot be lost.
+    #[must_use]
+    pub fn has_committed_or_active(&self, key: K) -> bool {
+        let state = self.state.borrow();
+        state.committed.iter().any(|id| id.key == key)
+            || state
+                .keys
+                .get(&key)
+                .is_some_and(|entry| entry.active.is_some())
+    }
+
+    /// Holds one revision of `key` for the presenter: the last compatibility image it drew. The hold is a pin: the
+    /// revision stays alive and resolvable through [`FrameTicket::resolve_revision`] after the key retired or newer
+    /// revisions were adopted, and the key's [`LedgerEvent::KeyRetired`] waits for it. Holding a different revision
+    /// releases the previous hold (one slot), so at most one old revision is held; holding the held one again changes
+    /// nothing. A building ticket's held-revision lookup is checked against the current hold on every call, not cached
+    /// (**CK-150's rule**): replacing or releasing the hold can make a repeated lookup return `None`, and it can never
+    /// return a wrong set, because the lookup requires the exact currently held key and revision.
+    ///
+    /// # Errors
+    ///
+    /// [`LedgerError::UnknownRevision`] if the revision is not live or has no texture.
+    pub fn hold_compat(&self, key: K, revision: u64) -> Result<(), LedgerError> {
+        let mut state = self.state.borrow_mut();
+        let id = RevisionId { key, revision };
+        if state.compat_hold == Some(id) {
+            return Ok(());
+        }
+        {
+            let item = state
+                .keys
+                .get_mut(&key)
+                .and_then(|entry| entry.revisions.get_mut(&revision))
+                .filter(|item| item.texture.is_some() && item.set.is_some())
+                .ok_or(LedgerError::UnknownRevision)?;
+            item.pins += 1;
+        }
+        state.live_pins += 1;
+        if let Some(previous) = state.compat_hold.replace(id) {
+            release_pins(&mut state, vec![previous]);
+        }
+        Ok(())
+    }
+
+    /// Releases the compatibility hold, if any (the frame drawn has no compatibility quad), immediately, including while a
+    /// ticket is building. A revision that was only kept alive by the hold is then released by the ordinary bounded release
+    /// work, and a repeated held-revision lookup on an open ticket returns `None`.
+    pub fn release_compat_hold(&self) {
+        let mut state = self.state.borrow_mut();
+        if let Some(previous) = state.compat_hold.take() {
+            release_pins(&mut state, vec![previous]);
+        }
+    }
+
+    /// The revision held now, if any.
+    #[must_use]
+    pub fn compat_hold(&self) -> Option<(K, u64)> {
+        self.state
+            .borrow()
+            .compat_hold
+            .map(|id| (id.key, id.revision))
+    }
+
+    /// Starts the checker's upload: a baseline item of the store (no logical key, no ledger charge and no slot of the
+    /// prepared window), uploaded like any image and resident, with its own permanent descriptor set, once a `pump` has
+    /// seen it complete. It is never retired before the end. Asking again is refused.
+    pub fn start_checker(
+        &self,
+        width: u32,
+        height: u32,
+        pixels: Arc<dyn PixelSource>,
+    ) -> Result<(), Error> {
+        let mut state = self.state.borrow_mut();
+        if !matches!(state.checker, CheckerSlot::None) {
+            return Err(Error("the checker was already started".to_owned()));
+        }
+        let item = UploadItem {
+            tag: RevisionKey::Checker,
+            width,
+            height,
+            pixels,
+        };
+        if self.port.offer_baseline(item).is_err() {
+            state.checker = CheckerSlot::Failed("the upload store refused the checker".to_owned());
+            return Err(Error("the upload store refused the checker".to_owned()));
+        }
+        state.checker = CheckerSlot::Pending;
+        Ok(())
+    }
+
+    /// How far the checker's upload is (one non-blocking look at what the last `pump` found).
+    #[must_use]
+    pub fn checker_progress(&self) -> CheckerProgress {
+        match &self.state.borrow().checker {
+            CheckerSlot::None | CheckerSlot::Pending => CheckerProgress::Pending,
+            CheckerSlot::Resident { .. } => CheckerProgress::Resident,
+            CheckerSlot::Failed(reason) => CheckerProgress::Failed(reason.clone()),
+        }
+    }
+
+    /// The checker's permanent descriptor set (set 1), once it is resident.
+    #[must_use]
+    pub fn checker_set(&self) -> Option<vk::DescriptorSet> {
+        match &self.state.borrow().checker {
+            CheckerSlot::Resident { set, .. } => Some(*set),
+            _ => None,
+        }
+    }
+
+    /// The bytes the driver asked for the checker's image (the presenter's baseline); zero until it is resident.
+    #[must_use]
+    pub fn checker_bytes(&self) -> u64 {
+        match &self.state.borrow().checker {
+            CheckerSlot::Resident { texture, .. } => texture.allocated_size,
+            _ => 0,
+        }
+    }
+
+    /// The store's cumulative figures (constant work).
+    #[must_use]
+    pub fn upload_stats(&self) -> TextureStats {
+        self.owner
+            .borrow()
+            .as_ref()
+            .map(TextureOwner::stats)
+            .unwrap_or_default()
+    }
+
+    /// The revisions adopted over the ledger's life and the times (nanoseconds since this process first looked at the
+    /// clock) of the first and the latest boundary that adopted any: a light read, for the presenter's stats.
+    #[must_use]
+    pub fn adoption_counts(&self) -> (u64, u64, u64) {
+        let state = self.state.borrow();
+        (
+            state.adopted_total,
+            state.first_adopted_ns,
+            state.last_adopted_ns,
+        )
     }
 
     /// Number of upload slots currently available.
@@ -455,7 +672,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
         let sequence = state.sequence;
         let id = RevisionId { key, revision };
         let item = UploadItem {
-            tag: RevisionKey(id),
+            tag: RevisionKey::Revision(id),
             width,
             height,
             pixels,
@@ -631,6 +848,10 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
     /// completed, reads the pending frame's fence and records its proof, releases what is released, and emits
     /// the queued events. It never waits. Returns whether this pass left runnable work, so a caller that sleeps
     /// on wakes pumps again instead.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one owner pass: submit, poll, write sets, reap the frame proof, release and emit read best together"
+    )]
     pub fn pump(&self, queue: &mut RenderQueue, out: &mut Vec<LedgerEvent<K>>) -> bool {
         let mut completed = Vec::new();
         let mut store_failure = None;
@@ -649,8 +870,27 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
             state.completed_pending.extend(completed);
             while let Some(result) = state.completed_pending.pop_front() {
                 match result {
+                    Completed::Ready(texture) if texture.tag == RevisionKey::Checker => {
+                        // The checker is resident once its permanent set is written (a set of the revision pool the
+                        // pool has one more of than its configured revisions need).
+                        let made = descriptors.as_mut().map_or_else(
+                            || Err("the ledger was released".to_owned()),
+                            |descriptors| descriptors.checker_set(texture.view()),
+                        );
+                        match made {
+                            Ok(set) => state.checker = CheckerSlot::Resident { texture, set },
+                            Err(reason) => {
+                                state.checker = CheckerSlot::Failed(format!(
+                                    "the checker's descriptor set could not be made: {reason}"
+                                ));
+                                displaced.push(texture);
+                            }
+                        }
+                    }
                     Completed::Ready(texture) => {
-                        let RevisionKey(id) = texture.tag;
+                        let RevisionKey::Revision(id) = texture.tag else {
+                            continue;
+                        };
                         if !state
                             .keys
                             .get(&id.key)
@@ -698,7 +938,15 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
                         }
                     }
                     Completed::Failed {
-                        tag: RevisionKey(id),
+                        tag: RevisionKey::Checker,
+                        reason,
+                    } => {
+                        state.checker = CheckerSlot::Failed(format!(
+                            "the checker texture upload failed: {reason}"
+                        ));
+                    }
+                    Completed::Failed {
+                        tag: RevisionKey::Revision(id),
                         reason,
                     } => {
                         remove_revision(&mut state, id, &mut displaced, &mut wake_room);
@@ -801,6 +1049,12 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
     #[must_use]
     pub fn has_committed(&self) -> bool {
         !self.state.borrow().committed.is_empty()
+    }
+
+    /// Whether a submitted frame's proof has not been recorded yet (a render loop bounds its idle wait on it).
+    #[must_use]
+    pub fn frame_pending(&self) -> bool {
+        self.state.borrow().pending.is_some()
     }
 
     /// Whether bounded release work is waiting (a retired revision whose last pin just went).
@@ -907,6 +1161,14 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
                 out.push((id.key, id.revision));
                 adopted += 1;
             }
+            if adopted != 0 {
+                let now = now_ns();
+                state.adopted_total = state.adopted_total.saturating_add(adopted as u64);
+                if state.first_adopted_ns == 0 {
+                    state.first_adopted_ns = now;
+                }
+                state.last_adopted_ns = now;
+            }
             release_retired(
                 &mut state,
                 &mut displaced,
@@ -964,7 +1226,12 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
     /// by an earlier signal. This is the whole caller contract for frame completion, teardown included.
     #[must_use]
     pub fn frame_proven(&self, submission: FrameSubmission) -> bool {
-        self.state.borrow().proofs.is_proven(submission.0)
+        self.frame_proven_number(submission.0)
+    }
+
+    /// [`frame_proven`](Self::frame_proven) for a submission number kept as a plain number.
+    pub(crate) fn frame_proven_number(&self, number: u64) -> bool {
+        self.state.borrow().proofs.is_proven(number)
     }
 
     /// Sets how many entries a ticket's map may have held for the ledger to keep it (empty, with its capacity)
@@ -1066,6 +1333,12 @@ impl<K: Copy + Eq + Hash + Send + 'static> TextureLedger<K> {
             }
             state.completed_pending.clear();
             state.committed.clear();
+            state.compat_hold = None;
+            if let CheckerSlot::Resident { texture, .. } =
+                std::mem::replace(&mut state.checker, CheckerSlot::None)
+            {
+                displaced.push(texture);
+            }
             state.pending.take();
             state.baseline_charges = 0;
             state.extra_charges = 0;
@@ -1117,29 +1390,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> Drop for TextureLedger<K> {
         // An unproven end keeps the whole graph and the context, the crate's existing pattern.
         let state = std::mem::replace(
             self.state.get_mut(),
-            LedgerState {
-                keys: FrameMap::default(),
-                completed_pending: VecDeque::new(),
-                committed: VecDeque::new(),
-                release_candidates: VecDeque::new(),
-                events: VecDeque::new(),
-                sequence: 0,
-                extra_charges: 0,
-                baseline_charges: 0,
-                live_pins: 0,
-                building: false,
-                pending: None,
-                uncertain: Vec::new(),
-                proofs: FenceProofs::new(&[]),
-                failure_latched: false,
-                failure_event_emitted: false,
-                ending: false,
-                spare_limit: 0,
-                spare_limit_set: false,
-                frames_begun: false,
-                spare_resolved: None,
-                spare_pinned: None,
-            },
+            LedgerState::empty(FenceProofs::new(&[])),
         );
         std::mem::forget(state);
         if let Some(owner) = self.owner.get_mut().take() {
@@ -1476,6 +1727,52 @@ impl<K: Copy + Eq + Hash + Send + 'static> FrameTicket<'_, K> {
         })
     }
 
+    /// Resolves one exact **currently held** revision (see [`TextureLedger::hold_compat`]) whatever its state: it may be
+    /// retired or superseded, but the hold keeps it alive. Pins it for this ticket like [`resolve`](Self::resolve). Each
+    /// call checks the current hold rather than caching it: replacing or releasing the hold during a building ticket makes
+    /// a repeated lookup return `None` (CK-150).
+    pub fn resolve_revision(&self, key: K, revision: u64) -> Option<FrameTexture<'_>> {
+        if self.phase.get() != TicketPhase::Building {
+            return None;
+        }
+        let id = RevisionId { key, revision };
+        let mut state = self.ledger.state.borrow_mut();
+        if state.compat_hold != Some(id) {
+            return None;
+        }
+        let (found, new_pin) = {
+            let held = state.keys.get_mut(&key)?.revisions.get_mut(&revision)?;
+            let set = held.set?;
+            let texture = held.texture.as_ref()?;
+            let found = (
+                texture.image(),
+                texture.view(),
+                set,
+                texture.width,
+                texture.height,
+            );
+            let new_pin = self.pinned.borrow_mut().insert(id);
+            if new_pin {
+                held.pins += 1;
+                self.pins.borrow_mut().push(id);
+            }
+            (found, new_pin)
+        };
+        if new_pin {
+            state.live_pins += 1;
+        }
+        let (image, view, set, width, height) = found;
+        Some(FrameTexture {
+            image,
+            view,
+            set,
+            width,
+            height,
+            revision,
+            _ticket: PhantomData,
+        })
+    }
+
     /// Performs the frame's `vkQueueSubmit` through `queue`, with this ticket's fence, waiting on `waits` and
     /// signalling `signals`, and returns the submission's number. **The fence is never visible to the caller.**
     ///
@@ -1619,6 +1916,12 @@ fn push_upload_failed<K: Copy + Eq + Hash>(
     id: RevisionId<K>,
     reason: String,
 ) {
+    if state.compat_key == Some(id.key) {
+        state.events.push_back(LedgerEvent::CompatUploadFailed {
+            key: id.key,
+            reason: reason.clone(),
+        });
+    }
     state.events.push_back(LedgerEvent::UploadFailed {
         key: id.key,
         revision: id.revision,
@@ -1710,6 +2013,14 @@ impl FrameTexture<'_> {
 
 #[cfg(test)]
 mod tests {
+    /// Zero means "no adoption yet" to the stats' readers, so a time is never zero, whatever the clock's resolution.
+    #[test]
+    fn an_adoption_time_is_never_zero() {
+        for _ in 0..1000 {
+            assert_ne!(super::now_ns(), 0);
+        }
+    }
+
     use super::{FrameSubmission, LedgerLimits, TextureLedger};
 
     /// The ledger moves to the render thread; it is never shared.
