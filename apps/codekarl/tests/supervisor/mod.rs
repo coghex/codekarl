@@ -270,7 +270,7 @@ type Buffers = (Arc<Mutex<Vec<u8>>>, Arc<Mutex<Vec<u8>>>);
 /// A process under supervision, with every reader it owns. The two graces are public to the tests, which
 /// shorten them.
 pub(crate) struct Supervised<P: Process = Child> {
-    process: Option<P>,
+    pub(crate) process: Option<P>,
     readers: Vec<Reader>,
     text: Arc<Mutex<String>>,
     /// The raw buffers, when the streams are read apart ([`Supervised::spawn_split`]).

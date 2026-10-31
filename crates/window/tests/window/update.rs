@@ -538,6 +538,73 @@ fn focus_minimize_and_zero_size_pause_updates_and_clear_held_input() {
     );
 }
 
+#[cfg(feature = "test-support")]
+#[test]
+fn opted_in_test_worker_keeps_updates_after_focus_loss_and_input_still_resets() {
+    owned(
+        module_path!(),
+        "opted_in_test_worker_keeps_updates_after_focus_loss_and_input_still_resets",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let _unfocused = ck_window::test_support::allow_updates_while_unfocused();
+            let clock = FakeClock::new();
+            let mut rig = Rig::new();
+            configure_updates(&mut rig, &clock, 60, Duration::from_millis(100));
+            rig.backend.script.push_back(vec![
+                NativeEvent::Key {
+                    key: ck_window::Key::ArrowLeft,
+                    down: true,
+                    repeat: false,
+                },
+                NativeEvent::FocusLost,
+            ]);
+            lock(&rig.ui.update_answers).push_back(Answer::Returned);
+            let ui = Arc::clone(&rig.ui);
+            let quit = Arc::clone(&rig.quit);
+            let notifier = Arc::clone(&rig.notifier);
+            rig.backend.hook = Some(Box::new(move |_| {
+                if extract_updates(&ui.posted()).len() == 1 {
+                    quit.store(true, Ordering::SeqCst);
+                    notifier.wake();
+                }
+            }));
+
+            let ran = rig.run_collect_with_clock(&clock);
+            let updates = extract_updates(&ran.posts);
+            assert_eq!(updates.len(), 1);
+            assert!(updates[0].input.reset, "FocusLost still resets held input");
+            assert!(updates[0].input.actions.iter().all(|action| !action.held));
+            assert_eq!(ran.end, LoopEnd::Quit);
+
+            let mut minimized = Rig::new();
+            let minimized_clock = FakeClock::new();
+            configure_updates(
+                &mut minimized,
+                &minimized_clock,
+                60,
+                Duration::from_millis(100),
+            );
+            minimized
+                .backend
+                .script
+                .push_back(vec![NativeEvent::Minimized]);
+            let quit = Arc::clone(&minimized.quit);
+            let notifier = Arc::clone(&minimized.notifier);
+            minimized.backend.hook = Some(Box::new(move |call| {
+                if call.wait == Wait::UntilEvent {
+                    quit.store(true, Ordering::SeqCst);
+                    notifier.wake();
+                }
+            }));
+            let minimized_run = minimized.run_collect_with_clock(&minimized_clock);
+            assert!(extract_updates(&minimized_run.posts).is_empty());
+            assert!(minimized_run.waits.contains(&Wait::UntilEvent));
+            assert_eq!(minimized_run.end, LoopEnd::Quit);
+        },
+    );
+}
+
 #[test]
 fn full_update_post_keeps_input_edges_until_the_successful_snapshot_is_acknowledged() {
     owned(
