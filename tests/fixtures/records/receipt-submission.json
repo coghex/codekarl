@@ -1,0 +1,37 @@
+{
+  "base_examined": "/hub/.pipeline/accepted-v2.json",
+  "id": "049254d7de1a5f0587a1",
+  "incremental_over": null,
+  "issues": [
+    {
+      "id": "CK-23",
+      "revision": "r2",
+      "spec_sha256": "1baecb6cd3be6a8e39ab01c216518c00f16bb7e04dc6a11849c7666945555dc9"
+    }
+  ],
+  "kind": "submission",
+  "recorded": 1792149393040189000,
+  "report_sha256": "9ee4cabef1f366f2fbf3a80762e191cc96c78c3c279384661888b5289393ab27",
+  "reviewer": {
+    "class": "A",
+    "client": "codex",
+    "effort": "high",
+    "evidence": {
+      "offset": 50215130,
+      "path": "/home/user/.codex/sessions/2026/10/14/rollout-2026-10-14T10-12-23-01a13b66-9dbd-7292-b258-1ed2dd024e63.jsonl",
+      "sha256": "2b8939abe4ee76ec5a7773620341db5634f91eeecc624aec11fc1e1756acf85b"
+    },
+    "family": "codex",
+    "identity": "ck-reviewer-1",
+    "model": "gpt-6.1-sol",
+    "role": "reviewer",
+    "session": "01a13b66-9dbd-7292-b258-1ed2dd024e63"
+  },
+  "schema": "ck-review/1",
+  "subject": {
+    "fingerprint_sha256": "d4414b8c78748485543b6ce2d5c53ef22ba3f363d14d445be0ff13fe01ca8e27",
+    "manifest_sha256": "98692321505a3c5c5fca17916ff59a45ec382e33ae33458d5ccbacd63116e4db",
+    "submission": "1792148935114787000"
+  },
+  "verdict": "changes-requested"
+}

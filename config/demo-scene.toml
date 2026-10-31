@@ -1,0 +1,42 @@
+# Milestone 5 live-scene demonstration. Build and run it with
+#
+#   tools/ck cargo run --features metal -- --config config/demo-scene.toml
+#
+# The window opens at once. Twelve tiles appear two at a time as magenta checkers and turn into their images a moment
+# later; one tile names a file that does not exist, so one magenta checker stays for the whole run. The arrow keys and WASD
+# move the gem, R reloads every texture, Escape closes the window. The ui script is scripts/ui/demo_scene.lua; the
+# bindings below are the defaults, written out so they can be edited. Headless (--headless) it validates and ignores the
+# window and scene calls, runs `startup()` and ends by itself.
+
+[log]
+level = "info"
+timestamps = true
+colour = "auto"
+
+[window]
+backend = "native-metal"
+
+# Nearest sampling keeps the pixel art crisp. `assets` is relative to this file's directory: the textures the script loads
+# (assets/demo-quad.png and assets/demo-scene/*.png) are looked for there.
+[render]
+filter = "nearest"
+assets = "../assets"
+
+# The input bindings (design section 7.1): an action name is held while one of its keys is.
+[input.bindings]
+move_left = ["KeyA", "ArrowLeft"]
+move_right = ["KeyD", "ArrowRight"]
+move_up = ["KeyW", "ArrowUp"]
+move_down = ["KeyS", "ArrowDown"]
+close = ["Escape"]
+reload_texture = ["KeyR"]
+
+# The updates the script's frame callback receives, per second.
+[frame]
+updates_per_second = 60
+
+[lua.ui]
+entry = "../scripts/ui/demo_scene.lua"
+
+[lua.gameplay]
+entry = "../scripts/gameplay/main.lua"

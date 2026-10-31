@@ -1,0 +1,51 @@
+[package]
+name = "ck-render-2d"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[features]
+default = []
+# The Metal backend (`MetalBackend`): macOS only, and it needs the full Xcode toolchain. Without it the crate has
+# no GPU dependency.
+metal = ["dep:ck-gpu-metal", "dep:ck-window-cocoa"]
+# The Vulkan sink side (`VulkanSinkSide`): the scene conversion and the once-only refusal over `ck-gpu-vulkan`'s plain
+# types. It holds no Vulkan object, makes no Vulkan call and does not depend on a window crate.
+vulkan = ["dep:ck-gpu-vulkan"]
+
+[dependencies]
+ck-gpu-metal = { path = "../gpu-metal", optional = true }
+ck-gpu-vulkan = { path = "../gpu-vulkan", optional = true }
+ck-log = { path = "../log" }
+ck-resources = { path = "../resources" }
+ck-window = { path = "../window" }
+ck-window-cocoa = { path = "../window-cocoa", optional = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# `test-support` gives the unit tests `Image::from_parts` and `Image::observed`. It is off by default and only this
+# dev-dependency enables it, so it is absent from ordinary builds of the application and of the libraries that select
+# neither the feature nor a dev target. It is compiled, by design, in validation that asks for it: workspace
+# `--all-features` runs and builds of dev targets (tests, examples), where Cargo may unify it into other members
+# selected in the same build. That is test coverage, not production.
+ck-resources = { path = "../resources", features = ["test-support"] }
+
+# A real Metal window driven through `ck_window::run`: AppKit needs the process's main thread, so the executable is
+# a supervisor and a worker (`harness = false`).
+[[test]]
+name = "metal_window"
+path = "tests/metal_window.rs"
+harness = false
+required-features = ["metal"]
+
+# The milestone 5 scale acceptance (CK-130): optional, owner-scheduled, a supervisor and one worker per phase (`harness = false`). It
+# runs its phases only when `CK_SCALE_RUN=1` is set; otherwise it reports that it did not run and passes.
+[[test]]
+name = "scale"
+path = "tests/scale.rs"
+harness = false
+required-features = ["metal"]

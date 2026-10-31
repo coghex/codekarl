@@ -1,0 +1,130 @@
+{
+  "fingerprint": {
+    "files": {
+      ".gitignore": {
+        "executable": false,
+        "sha256": "d96871d6ba277833883cf8f257308c849049fe3577641ea50ed7d58c94a8e172"
+      },
+      ".ignore": {
+        "executable": false,
+        "sha256": "7fb4285b88f3e7c917b47d6d3db6b326e652c28fb934a66831bc8e5a3a0c3406"
+      },
+      ".vscode/settings.json": {
+        "executable": false,
+        "sha256": "a2e5e8d0d383192cabdfb68c075ace01975b24e52ca84ddda9feb5f5b41378aa"
+      },
+      "AGENTS.md": {
+        "executable": false,
+        "sha256": "225ca1b21b1a2024f4ca505fe126d1bc1823a2ac835b82f1bc65c56852b998c6"
+      },
+      "Cargo.lock": {
+        "executable": false,
+        "sha256": "26bc1a14975814761bb2867d5799a268ff39f96a8f4b3179be9f7677648f3883"
+      },
+      "Cargo.toml": {
+        "executable": false,
+        "sha256": "6b4f7763fcab70616af982897750dcdb31b191bd1338d50b18db193928bd8763"
+      },
+      "README.md": {
+        "executable": false,
+        "sha256": "a56b762be50ba5fbc8345c8d600727317e23effc4829f994f7ebad1660920caa"
+      },
+      "apps/codekarl/Cargo.toml": {
+        "executable": false,
+        "sha256": "5315a09b67ec72dd22a52e5304086349d4787a3f00d6884447621f6fe0a82e68"
+      },
+      "apps/codekarl/src/main.rs": {
+        "executable": false,
+        "sha256": "5824090bc599b67bbc89a8eed21e98794327eff8cd288135ea667ed9edea2702"
+      },
+      "crates/gpu-metal/Cargo.toml": {
+        "executable": false,
+        "sha256": "4b408caccb44ee73d22f94fd4fce07755a30da5614ed167485c980ad9872f967"
+      },
+      "crates/gpu-metal/build.rs": {
+        "executable": false,
+        "sha256": "dec2073f1db55718d50b61a4533e5f730c1706249ac70aed88b152618aaa9787"
+      },
+      "crates/gpu-metal/native/bridge.h": {
+        "executable": false,
+        "sha256": "9fc3881afbc2673b9bdf9f87bc642c4765c92402d6cc6a5d348e9a4635f311d2"
+      },
+      "crates/gpu-metal/native/bridge.m": {
+        "executable": false,
+        "sha256": "17f0e1386a6ccb97984eb645f274636721b31d10da01c7c301bfe976532446bb"
+      },
+      "crates/gpu-metal/shaders/probe.metal": {
+        "executable": false,
+        "sha256": "dece1307e2468dc25e1f2585b0d10ed7252bb3b77d1590dca085d5eeb72195d6"
+      },
+      "crates/gpu-metal/src/lib.rs": {
+        "executable": false,
+        "sha256": "fb4e9cda623ba1c8c2b63deb6d905b507af136268c129ce3b6fb78b9fb6dfefd"
+      },
+      "docs/tooling.md": {
+        "executable": false,
+        "sha256": "2697ae911b6a127d659069e6df73ce7b341c0d613133a36a81cce04c2fdc6bb2"
+      },
+      "pijul.toml": {
+        "executable": false,
+        "sha256": "17979b6cdd9d0fe5b90cc42503b37ae2c0f28009e8c621656bfd4070555c2114"
+      },
+      "pyproject.toml": {
+        "executable": false,
+        "sha256": "e442c299797f79dcf900a8501f0fe4312788f2f79e1cadd7072405ea402a5ee6"
+      },
+      "rust-toolchain.toml": {
+        "executable": false,
+        "sha256": "b52d692a421904738c7456fbc1f62d5821ebac0ec2917464c4eaad35f0fe29c0"
+      },
+      "specs/bootstrap.json": {
+        "executable": false,
+        "sha256": "af2a62c494b26ecbfc8d82c50ec50b7e67fc134468e516cc9706c33d244d5049"
+      },
+      "tests/test_pipeline.py": {
+        "executable": false,
+        "sha256": "5eaf58108c08fc2d2946a7d8317a1b9e5efdbd53c9014597066cfd9d055c20f7"
+      },
+      "tools/bootstrap": {
+        "executable": true,
+        "sha256": "46ea94dd5ec27212e13b31e5aa03215466d289554851550bcea7f6c3f0b3a7c0"
+      },
+      "tools/check.py": {
+        "executable": true,
+        "sha256": "99f15fd857dc7181e890b9013fbdf64198fa0d47d1d5bc178b78cf130516e5e6"
+      },
+      "tools/ck": {
+        "executable": true,
+        "sha256": "fda9d9d695f397397f047acb23c4a7151dee4c1700cf3cb42705c5507b30aa8e"
+      },
+      "tools/environment.py": {
+        "executable": false,
+        "sha256": "147bca9f375f6b8e269ebf37215e1080a8eb6cc74e8e038846e098ee6f400c91"
+      },
+      "tools/pipeline.py": {
+        "executable": false,
+        "sha256": "cb2bfb91e094b6cd51458127939304d4c87c5cee6de5773a9341d900d28b943e"
+      },
+      "tools/probes.py": {
+        "executable": false,
+        "sha256": "c9ac49056a5a3ba01f0e205cfb5d063ba7baecad88fa955bacb5685e20491098"
+      },
+      "tools/requirements.txt": {
+        "executable": false,
+        "sha256": "c955aee88119f08548d0b6606f8d28c96de1883ea79210116b4dde92f54fc51a"
+      }
+    },
+    "hashes": [
+      "HVLUQAU5ADMTKFDH7PWSYTUWG2KVV4DQXN2FKTHVAZIZJX6XDW3AC",
+      "JEZ7INQNB3SB5FK222NSUN4BOECXPUL5UDKZZEZS42QHZPY5CBQQC",
+      "M3DA52JJRJFRES5NCS5P3Z45BLGIGC3PBTFQO7XCFZ52Q5DNRJ4QC",
+      "PXUAMYV4KE74KDGH6JYQO7XMLZN4ZCCKOZK3FEKJRN2EU73KTRUQC"
+    ]
+  },
+  "hashes": [
+    "HVLUQAU5ADMTKFDH7PWSYTUWG2KVV4DQXN2FKTHVAZIZJX6XDW3AC"
+  ],
+  "id": "1791990866788535000-e24b5b96",
+  "repo": "/hub/.pipeline/submissions/1791990866788535000-e24b5b96",
+  "spec": "A failing initial validation leaves no accepted pointer and preserves the source repository; covered by BatchSpecification."
+}

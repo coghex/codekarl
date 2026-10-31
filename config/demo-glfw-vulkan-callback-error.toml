@@ -1,0 +1,17 @@
+# Demonstration configuration: `codekarl --config config/demo-glfw-vulkan-callback-error.toml` (build with `--features vulkan`).
+# It reuses the shipped gameplay script; the ui script is scripts/ui/demo_callback_error.lua (its callback raises:
+# the traceback is logged, the window closes and the run exits 1).
+
+[log]
+level = "info"
+timestamps = true
+colour = "auto"
+
+[window]
+backend = "glfw-vulkan"
+
+[lua.ui]
+entry = "../scripts/ui/demo_callback_error.lua"
+
+[lua.gameplay]
+entry = "../scripts/gameplay/main.lua"

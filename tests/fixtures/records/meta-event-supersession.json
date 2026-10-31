@@ -1,0 +1,17 @@
+{
+  "authors": [
+    {
+      "client": "copilot",
+      "families": [
+        "claude"
+      ],
+      "family": "claude",
+      "identity": "copilot:17fe2e3d-c82a-4733-bf82-c15c667af4da",
+      "role": "worker",
+      "session": "17fe2e3d-c82a-4733-bf82-c15c667af4da"
+    }
+  ],
+  "by": "1792033208928860000",
+  "kind": "supersession",
+  "submission": "1792032386569236000"
+}

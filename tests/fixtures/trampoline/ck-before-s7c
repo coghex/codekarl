@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Checkpoint-pinned trampoline for project state commands."""
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+def stream_digest(path):
+    """sha256 of the file's bytes in 1 MiB chunks (the same digest as hashing read_bytes)."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def file_map(repo):
+    result = {}
+    for name in subprocess.check_output(["pijul", "list"], cwd=repo, text=True).splitlines():
+        path = repo / name
+        if path.is_symlink():
+            raise RuntimeError(f"Symlinks are not supported in accepted source yet: {name}")
+        if not path.is_dir():
+            result[name] = {
+                "sha256": stream_digest(path),
+                "executable": bool(path.stat().st_mode & 0o111),
+            }
+    return result
+
+
+def pointer(hub):
+    directory = hub / ".pipeline"
+    v2, legacy = directory / "accepted-v2.json", directory / "accepted.json"
+    path = v2 if v2.exists() else legacy
+    value = json.loads(path.read_bytes())
+    if value.get("schema") == "bootstrap-hold":
+        raise RuntimeError(
+            f"bootstrap {value.get('bootstrap')} in progress; state commands are paused"
+        )
+    if value.get("schema") == "tombstone":
+        raise RuntimeError("activation incomplete; rerun the bootstrap publish recovery (§11.7)")
+    return value
+
+
+def verify(hub, state):
+    repo = Path(state["repo"])
+    status = json.loads(
+        subprocess.check_output(["pijul", "status", "--output-format", "json"], cwd=repo, text=True)
+    )
+    if status.get("changes") or status.get("untracked"):
+        raise RuntimeError(f"Accepted checkpoint has pending changes: {repo}")
+    hashes = subprocess.check_output(
+        ["pijul", "log", "--hash-only"], cwd=repo, text=True
+    ).splitlines()
+    actual = {"hashes": sorted(hashes), "files": file_map(repo)}
+    if actual != state["fingerprint"]:
+        raise RuntimeError("Accepted checkpoint fingerprint mismatch")
+    return repo
+
+
+def main():
+    root = Path(__file__).resolve().parent.parent
+    marker = root / ".ck-hub"
+    hub = Path(marker.read_text().strip()).resolve() if marker.exists() else root
+    args = sys.argv[1:]
+    command = args[0] if args else ""
+    env = os.environ.copy()
+    env["CK_HUB"] = str(hub)
+    env["PIJUL_CONFIG_DIR"] = str(hub / ".tools/pijul-config")
+    env["PATH"] = os.pathsep.join(
+        [
+            "/opt/homebrew/opt/rustup/bin",
+            str(Path.home() / ".local/bin"),
+            env.get("PATH", "/usr/bin:/bin"),
+        ]
+    )
+    env.setdefault("DEVELOPER_DIR", "/Applications/Xcode.app/Contents/Developer")
+    if command in {"check", "cargo", "pijul"}:
+        if (
+            command == "pijul"
+            and len(args) > 1
+            and args[1] == "record"
+            and (hub / ".pipeline/accepted-v2.json").exists()
+        ):
+            raise RuntimeError("pijul record is disabled after activation; use ck record")
+        executable = (
+            [sys.executable, str(root / "tools/check.py"), *args[1:]]
+            if command == "check"
+            else [command, *args[1:]]
+        )
+        key = hub / ".tools/signing/ed25519"
+        with tempfile.TemporaryDirectory(prefix="ck-agent-") as directory:
+            output = subprocess.check_output(
+                ["ssh-agent", "-s", "-a", str(Path(directory) / "s")], text=True
+            )
+            for name in ("SSH_AUTH_SOCK", "SSH_AGENT_PID"):
+                env[name] = output.split(name + "=", 1)[1].split(";", 1)[0]
+            subprocess.run(["ssh-add", str(key)], env=env, check=True, capture_output=True)
+            env["CK_SIGNING_ACTIVE"] = str(hub)
+            try:
+                result = subprocess.run(executable, check=False, cwd=root, env=env)
+            finally:
+                subprocess.run(["ssh-agent", "-k"], env=env, capture_output=True, check=False)
+        raise SystemExit(result.returncode)
+    os.environ.update(env)
+    state = pointer(hub)
+    checkpoint = verify(hub, state)
+    launcher = r"""import os, sys
+from pathlib import Path
+tools, root, *args = sys.argv[1:]
+root = Path(root)
+sys.argv = ["ck", *args]
+sys.path.insert(0, tools)
+import environment, pipeline
+for module in (environment, pipeline):
+    if not os.path.realpath(module.__file__).startswith(os.path.realpath(tools) + os.sep):
+        raise RuntimeError("controller origin check failed")
+hub = environment.configure(root)
+try:
+    with environment.signing(hub):
+        if (hub / ".pipeline/accepted-v2.json").exists():
+            from gate import cli
+            if not os.path.realpath(cli.__file__).startswith(os.path.realpath(tools) + os.sep):
+                raise RuntimeError("controller origin check failed")
+            cli.main(root, hub)
+        else:
+            pipeline.main(root, hub)
+except (RuntimeError, KeyboardInterrupt) as error:
+    print(f"ck: {error or 'interrupted; accepted checkpoint unchanged unless published'}", file=sys.stderr)
+    sys.exit(1)
+"""
+    os.execv(
+        sys.executable,
+        [sys.executable, "-B", "-c", launcher, str(checkpoint / "tools"), str(root), *args],
+    )
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+        print(f"ck: {error}", file=sys.stderr)
+        sys.exit(1)

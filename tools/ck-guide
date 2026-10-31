@@ -1,0 +1,3 @@
+#!/usr/bin/env python3
+# Codekarl guide helper entry point: all of the code is tools/guide/ck_guide.py, which mypy checks.
+__import__("runpy").run_path(__import__("os").path.realpath(__file__ + "/../guide/ck_guide.py"), run_name="__main__")  # fmt: skip

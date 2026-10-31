@@ -1,0 +1,33 @@
+[package]
+name = "ck-gpu-metal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+links = "ck_metal"
+
+[features]
+# Test-only (CK-148): deliberate defects of the ledger's ticket-map reuse, so the textures probe can show that its checks fail without the
+# guarantees they prove. Off by default and enabled only by the dev-dependency on this crate below, the way `ck-resources` keeps
+# `test-support` for its tests; a normal build has no way to switch a defect on.
+spare-faults = []
+
+[dev-dependencies]
+ck-gpu-metal = { path = ".", features = ["spare-faults"] }
+ck-window = { path = "../window" }
+ck-window-cocoa = { path = "../window-cocoa" }
+
+[[test]]
+name = "presenter"
+harness = false  # a supervisor and a worker from one executable; AppKit and Metal need the process's main thread
+
+[[test]]
+name = "gpu_probe"
+harness = false  # a supervisor and a worker from one executable; results in plain `cargo test` output
+
+[[test]]
+name = "textures"
+harness = false  # a supervisor and a worker from this executable; off-screen Metal validation only
+
+[lints]
+workspace = true

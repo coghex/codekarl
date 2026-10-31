@@ -1,0 +1,36 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# The extensionless entry points are linted by a bare `ruff check` (and `ruff format --check`).
+extend-include = ["tools/ck", "tools/ck-chat", "tools/ck-guide"]
+# Historical clones, installed packages and build output are never linted: .pipeline holds checkpoints
+# and clones, .tools the installed toolchain, target the build. Relative to the project root, so a
+# worker copy living under a hub's .pipeline/workers/ is still linted (a leading "/" would be an
+# absolute filesystem path and match nothing).
+extend-exclude = ["./.pipeline", "./.tools", "./target"]
+
+[tool.ruff.lint]
+# The blanket S group stays off (subprocess orchestration is the project's purpose); PLW1510 stays on,
+# so code that inspects a return code says check=False explicitly.
+select = [
+    "E4", "E7", "E9", "F", "I",
+    "W", "B", "UP", "SIM", "RUF", "PTH", "PL", "C4", "PIE", "RET", "PGH", "ANN",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# byte-pinned pre-gate controller; test_gate asserts its SHA-256 (only the new groups are off here)
+"tests/fixtures/legacy/**" = ["W", "B", "UP", "SIM", "RUF", "PTH", "PL", "C4", "PIE", "RET", "PGH", "ANN"]
+
+[tool.mypy]
+python_version = "3.11"  # keeps the 3.11 floor the doctor enforces
+strict = true
+# stubs/ declares the part of the shared chat skill (chatlib, identities, ...) that Codekarl's chat code
+# imports at run time from the installed skill; they are checked against, never installed or run
+mypy_path = "tools:stubs"
+# The extensionless entry point tools/ck is listed and checked as a script. mypy cannot take two
+# extensionless files together (both would be the module `__main__`), so tools/ck-chat is a short shim
+# and its code, tools/chat/ck_chat.py, is checked as a module.
+files = ["tools", "tests", "tools/ck"]
+# byte-pinned pre-gate controller; test_gate asserts its SHA-256
+exclude = ["tests/fixtures/legacy/"]
+cache_dir = "target/mypy-cache"  # inside target/, which is ignored and outside every fingerprint

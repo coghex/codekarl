@@ -1,0 +1,21 @@
+{
+  "at": 1792034041674038000,
+  "authors": [
+    {
+      "client": "copilot",
+      "families": [
+        "claude"
+      ],
+      "family": "claude",
+      "identity": "copilot:383752b5-300f-4a94-b6e7-f2fce6c58ca7",
+      "role": "manager",
+      "session": "383752b5-300f-4a94-b6e7-f2fce6c58ca7"
+    }
+  ],
+  "fields": {
+    "reason": "1792033208928860000",
+    "state": "closed"
+  },
+  "id": "CK-1",
+  "kind": "close"
+}

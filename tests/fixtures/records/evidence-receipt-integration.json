@@ -1,0 +1,29 @@
+{
+  "kind": "integration",
+  "recorded": "2026-10-14T21:17:54Z",
+  "report": {
+    "path": "integration-review-1.md",
+    "sha256": "0fdb26ab9323162538e88c3c6bee985019c61dbbba2978952144a96b647b2ffc"
+  },
+  "reviewer": {
+    "class": "A",
+    "client": "copilot",
+    "effort": "high",
+    "family": "claude",
+    "identity": "ck-copilot-reviewer",
+    "model": "claude-opus-5.5",
+    "role": "reviewer",
+    "session": "9bcdbe98-41c4-4fdf-9a6f-5eb4cc70a523"
+  },
+  "schema": "ck-bootstrap-review/1",
+  "subject": {
+    "bootstrap": "1792012417088242000",
+    "candidate_fingerprint_sha256": "5b89704ba9fcd08e9efabf21f98f69c2e70305b29d19800c5075fbadde93111d",
+    "ci_receipt_sha256": "c7e431fdd2a2a49c0bb3bcc565e96648c8c60a03710916479953dd303c85d683",
+    "membership_manifest_sha256": [
+      "f35e23818e0eb399cbf8b377d56ce853e6e8ca7d215b7eedab7cd12bd7f1b033"
+    ],
+    "validated_sha256": "7388f3186faf841d7c87d3d3cd7876ea6d3d7188b86beae8e6fe649479041b76"
+  },
+  "verdict": "approved"
+}

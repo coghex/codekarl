@@ -1,0 +1,31 @@
+[package]
+name = "ck-resources"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Test-only constructors and a drop observer for `Image` (`Image::from_parts`, `Image::observed`), for the unit tests of
+# the crates built on it. Off by default: it is not in `default`, no `[features]` entry of any member forwards to it and
+# no `[dependencies]` table enables it; only `ck-render-2d`'s `[dev-dependencies]` ask for it. So it is absent from
+# ordinary builds of the application and of the libraries that select neither the feature nor a dev target (the
+# production selections are checked with `cargo tree`). It **is** compiled, by design, in validation that asks for it:
+# workspace `--all-features` runs (the floor's `cargo doc` and Clippy, `resources.core`) and builds of dev targets
+# (tests, examples) whose dev-dependencies request it, where Cargo may unify it into other members selected in the
+# same build. That is test coverage, not production.
+test-support = []
+
+[dependencies]
+png = { version = "0.18", default-features = false }
+
+[lints]
+workspace = true
+
+# The allocation envelope is measured with a counting global allocator over the whole process, so the binary has
+# no test harness (no other thread allocates while a decode is measured).
+[[test]]
+name = "allocation"
+path = "tests/allocation.rs"
+harness = false

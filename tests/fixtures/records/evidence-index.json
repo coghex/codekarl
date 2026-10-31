@@ -1,0 +1,27 @@
+{
+  "authors": {
+    "path": "authors.json",
+    "sha256": "c1075b32b2e6ff8896988f26b94bd1e2206b237dab7043a9cda9150a4fa91a77"
+  },
+  "bootstrap": "1792012417088242000",
+  "receipts": [
+    {
+      "path": "spec-review-4.receipt.json",
+      "sha256": "e0601eb1811b872f2812fc00f564badd55686641df676275222d7b03f529c0cc"
+    },
+    {
+      "path": "submission-review-4.receipt.json",
+      "sha256": "a3eb5e9e4db2a3595b4574692b942c0c3cf48d33f86cbd41806a9d638ab274b9"
+    },
+    {
+      "path": "integration-review-1.receipt.json",
+      "sha256": "6a56816ae07b0910737c8f67ca41129daf53b5a30e163b584d1e12f86ea03b3a"
+    }
+  ],
+  "schema": "ck-bootstrap-evidence/1",
+  "spec": {
+    "path": "spec.md",
+    "sha256": "76cbf92c34dae1153b4b4c2042c1c4e638a5661115a3e5473d0beef67aa367b1"
+  },
+  "validated_sha256": "7388f3186faf841d7c87d3d3cd7876ea6d3d7188b86beae8e6fe649479041b76"
+}

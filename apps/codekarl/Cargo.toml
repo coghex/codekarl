@@ -1,0 +1,53 @@
+[package]
+name = "codekarl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+metal = ["dep:ck-gpu-metal", "dep:ck-window-cocoa", "ck-render-2d/metal"]
+# GLFW and Vulkan (`glfw-vulkan`). Independent of `metal`: both may be on.
+vulkan = ["dep:ck-gpu-vulkan", "dep:ck-window-glfw", "ck-render-2d/vulkan"]
+
+[dependencies]
+ck-gpu-metal = { path = "../../crates/gpu-metal", optional = true }
+ck-gpu-vulkan = { path = "../../crates/gpu-vulkan", optional = true }
+ck-log = { path = "../../crates/log" }
+ck-lua = { path = "../../crates/lua" }
+ck-render-2d = { path = "../../crates/render-2d" }
+ck-resources = { path = "../../crates/resources" }
+ck-window = { path = "../../crates/window" }
+ck-window-cocoa = { path = "../../crates/window-cocoa", optional = true }
+ck-window-glfw = { path = "../../crates/window-glfw", optional = true }
+ck-runtime = { path = "../../crates/runtime" }
+libc = "0.2.189"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
+
+[[test]]
+name = "cli_spec"
+harness = false  # per-case results and skips appear in plain `cargo test` output
+
+# The windowed cases run the program in process behind a test-only keyboard filter: AppKit needs the process's main
+# thread, so the executable is a supervisor and a worker (`harness = false`), like `ck-render-2d`'s `metal_window`.
+[[test]]
+name = "windowed"
+harness = false
+required-features = ["metal"]
+
+# The milestone 5 all-quads-moving Lua profile (CK-130): the same shape, owner-scheduled and measured, not gated. It runs only when
+# `CK_SCALE_RUN=1` is set; otherwise it reports that it did not run and passes.
+[[test]]
+name = "scale_lua"
+harness = false
+required-features = ["metal"]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# `test-support` gives the headless driver's cases the resource service's `JobGate`; only [dev-dependencies] may enable it.
+ck-resources = { path = "../../crates/resources", features = ["test-support"] }
+serde_json = "1.0.154"

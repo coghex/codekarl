@@ -1,0 +1,4 @@
+{
+  "at": 1792032948879894000,
+  "reason": "Combined CI failed test_gate_criteria c32-c35 from a mock leak in the pre-existing threaded test_c05 (nondeterministic, ~20%); split pass not relied on. Superseding fix follows."
+}

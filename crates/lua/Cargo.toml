@@ -1,0 +1,14 @@
+[package]
+name = "ck-lua"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ck-log = { path = "../log" }
+# Lua 5.4 built from the bundled source, and not `send`: a Lua state cannot leave its thread.
+mlua = { version = "=0.12.2", features = ["lua54", "vendored"] }
+
+[lints]
+workspace = true

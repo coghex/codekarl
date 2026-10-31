@@ -1,0 +1,107 @@
+{
+  "_about": "Sanitized copies of the shapes in the live chat inbox (CK-29): every free-text field and identifier is synthetic; the key sets, value types and nulls are the real ones.",
+  "entries": {
+    "bound-agent-session": {
+      "at": "2026-10-14T16:41:24.086Z",
+      "msgid": "m-session",
+      "channel": "#codekarl",
+      "from": "ck-guide",
+      "nick": "ck-guide",
+      "verified": true,
+      "text": "[status] sanitized sample text",
+      "role": "guide",
+      "project": "codekarl",
+      "session_id": "SESSION-1",
+      "surface_id": "SURFACE-1"
+    },
+    "bound-agent-no-session": {
+      "at": "2026-10-14T17:12:45.576Z",
+      "msgid": "m-surface",
+      "channel": "#codekarl",
+      "from": "ck-reviewer-1",
+      "nick": "ck-reviewer-1",
+      "verified": true,
+      "text": "[status] sanitized sample text",
+      "role": "reviewer",
+      "project": "codekarl",
+      "surface_id": "SURFACE-2"
+    },
+    "bound-agent-reply": {
+      "at": "2026-10-15T19:12:23.599Z",
+      "msgid": "m-reply",
+      "channel": "#codekarl",
+      "from": "ck-manager",
+      "nick": "ck-manager",
+      "verified": true,
+      "text": "[done] sanitized sample text",
+      "role": "manager",
+      "project": "codekarl",
+      "session_id": "SESSION-3",
+      "surface_id": "SURFACE-3",
+      "reply_to": "m-session"
+    },
+    "owner-without-project": {
+      "at": "2026-10-15T19:20:38.662Z",
+      "msgid": "m-owner",
+      "channel": "#codekarl",
+      "from": "vince",
+      "nick": "vince",
+      "verified": true,
+      "text": "[status] sanitized sample text",
+      "role": "owner",
+      "project": null
+    },
+    "unbound-account": {
+      "at": "2026-10-15T19:23:35.068Z",
+      "msgid": "m-account",
+      "channel": "#codekarl",
+      "from": "coghex",
+      "nick": "coghex",
+      "verified": true,
+      "text": "sanitized sample text"
+    },
+    "service-reply": {
+      "at": "2026-10-15T19:35:59.889Z",
+      "msgid": "m-service",
+      "channel": "#codekarl",
+      "from": "chatbridge",
+      "nick": "chatbridge",
+      "verified": true,
+      "text": "[status] chatbridge: sanitized sample text",
+      "reply_to": "m-session"
+    }
+  },
+  "routings": {
+    "current": {
+      "role": "guide",
+      "recipients": [],
+      "reason": "",
+      "owner_direct": false,
+      "actionable": false,
+      "interrupt": false,
+      "notify_owner": false
+    },
+    "before-interrupts": {
+      "role": "untrusted",
+      "recipients": [],
+      "reason": "Sender has no active Codekarl role",
+      "owner_direct": false,
+      "actionable": false
+    }
+  },
+  "settings": {
+    "channel": "#codekarl",
+    "prefix": "#ck-",
+    "manager": "ck-manager",
+    "path": "/hub",
+    "routing": "codekarl-v1",
+    "owners": [
+      "vince",
+      "coghex"
+    ],
+    "assistants": [
+      "laz"
+    ],
+    "delivery_enabled": true
+  }
+}

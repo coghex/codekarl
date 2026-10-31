@@ -1,0 +1,15 @@
+{
+  "brand": "codex",
+  "channel": "#codekarl",
+  "created_at": "2026-10-14T16:39:46.606782+00:00",
+  "last_seen": "2026-10-16T18:56:14.376145+00:00",
+  "lifecycle": "idle",
+  "name": "ck-guide",
+  "pid": 37040,
+  "pid_start": "Thu Oct 15 17:51:09 2026",
+  "project": "codekarl",
+  "request": "ck-workflow-ready",
+  "role": "guide",
+  "session_id": "01a14231-0177-7971-ad73-d1adef88d27e",
+  "status": "active"
+}

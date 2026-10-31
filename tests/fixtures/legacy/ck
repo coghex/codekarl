@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""Small, on-demand entry point. Run from a project working copy."""
+
+import sys
+from pathlib import Path
+
+from environment import configure, signing
+from pipeline import main
+
+root = Path(__file__).resolve().parent.parent
+hub = configure(root)
+try:
+    with signing(hub):
+        main(root, hub)
+except (RuntimeError, KeyboardInterrupt) as error:
+    print(
+        f"ck: {error or 'interrupted; accepted checkpoint unchanged unless published'}",
+        file=sys.stderr,
+    )
+    sys.exit(1)

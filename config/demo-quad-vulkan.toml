@@ -1,0 +1,24 @@
+# Demonstration configuration: `codekarl --config config/demo-quad-vulkan.toml` (build with `--features vulkan`).
+# The same demonstration as `demo-quad.toml`, on the `glfw-vulkan` backend: the ui script places a small
+# pixel-art image in the window with `render.quad`, drawn through the Vulkan presenter. It reuses the shipped
+# gameplay script; the ui script is scripts/ui/demo_quad.lua.
+
+[log]
+level = "info"
+timestamps = true
+colour = "auto"
+
+[window]
+backend = "glfw-vulkan"
+
+# Sampling is nearest, so the pixel art stays crisp when it is scaled up. `assets` is relative to this file's
+# directory: PNG files that `render.quad` may open are looked for there.
+[render]
+filter = "nearest"
+assets = "../assets"
+
+[lua.ui]
+entry = "../scripts/ui/demo_quad.lua"
+
+[lua.gameplay]
+entry = "../scripts/gameplay/main.lua"

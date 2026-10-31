@@ -1,0 +1,5 @@
+# One macOS deployment target for the whole build (native code, shaders and the Rust link): the
+# current Mac only (owner decision, CK-22). `force` wins over an exported MACOSX_DEPLOYMENT_TARGET.
+# Line tables survive the metallib link only from 14.0 on; 26.0 is the Metal toolchain's own default.
+[env]
+MACOSX_DEPLOYMENT_TARGET = { value = "26.0", force = true }

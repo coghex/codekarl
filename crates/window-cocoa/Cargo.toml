@@ -1,0 +1,19 @@
+[package]
+name = "ck-window-cocoa"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+links = "ck_window_cocoa"
+
+[dependencies]
+ck-input = { path = "../input" }
+ck-window = { path = "../window" }
+ck-log = { path = "../log" }
+
+[[test]]
+name = "window_cocoa"
+harness = false  # a supervisor and a worker from one executable; AppKit needs the process's main thread
+
+[lints]
+workspace = true

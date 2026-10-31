@@ -1,0 +1,25 @@
+{
+  "authors": [
+    {
+      "client": "copilot",
+      "families": [
+        "claude"
+      ],
+      "family": "claude",
+      "identity": "copilot:17fe2e3d-c82a-4733-bf82-c15c667af4da",
+      "role": "worker",
+      "session": "17fe2e3d-c82a-4733-bf82-c15c667af4da"
+    }
+  ],
+  "base_pointer_sha256": "72dade49f3f5487c3c2e73bfb5b9d10366b20fa9a93faa716e9af79a388b7b85",
+  "candidate": "/hub/.pipeline/checkpoints/1792032622368542000-combined",
+  "candidate_fingerprint_sha256": "fed7624e0175b7e3294d5352b88bccb7bc7c001a79bacab1b71b3beb16e626c6",
+  "ci_receipt": "/hub/.pipeline/ci/1792032622368542000.json",
+  "ci_receipt_sha256": "9fd2d9cd7a4baae80fed65563aee7f3a473e7dbc2066b1693915415681b6768f",
+  "members": [
+    "1792032386569236000"
+  ],
+  "membership_manifest_sha256": [
+    "10a9df2a8437ecd69821a101fae38f410fa02619ef755a24f5f8b21e651d7c1c"
+  ]
+}

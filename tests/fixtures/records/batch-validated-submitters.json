@@ -1,0 +1,41 @@
+{
+  "authors": [
+    {
+      "client": "claude",
+      "families": [
+        "claude"
+      ],
+      "family": "claude",
+      "hashes": [
+        "N2UFALVCYIHQJA3JAIV6AU3HUBN2XFAP3Y2OS7OZYB3SKPA62ZEAC",
+        "Z7UB2HF67Z5GROVB2KYK2RC2ERACZKKE73BK7QO7RBJ2YWNBCLMQC"
+      ],
+      "identity": "ck-worker-2",
+      "role": "worker",
+      "session": "4864d6a5-60e5-48e4-a687-81cec632faba"
+    }
+  ],
+  "base_pointer_sha256": "75c00cb1f764769e0d33bb53696d38350701bc20b8c29723c76adc4217be40bf",
+  "candidate": "/hub/.pipeline/checkpoints/1792116357358030000-combined",
+  "candidate_fingerprint_sha256": "16f68eb33d493281698d2c820873f7dd30c6bea6e4783b71b1916dbc48c7b7f7",
+  "ci_receipt": "/hub/.pipeline/ci/1792116357358030000.json",
+  "ci_receipt_sha256": "6b72515002e3da3c6b5bacb83a054aa96118dac980dc3e0cc9c36177a1172ebc",
+  "members": [
+    "1792115841130127000"
+  ],
+  "membership_manifest_sha256": [
+    "a4b0378d031ec5d34c7959bdae6fa432d923209787d2a80b18e281c3aa521a33"
+  ],
+  "submitters": [
+    {
+      "client": "claude",
+      "families": [
+        "claude"
+      ],
+      "family": "claude",
+      "identity": "ck-worker-2",
+      "role": "worker",
+      "session": "4864d6a5-60e5-48e4-a687-81cec632faba"
+    }
+  ]
+}

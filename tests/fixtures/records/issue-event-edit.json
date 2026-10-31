@@ -1,0 +1,22 @@
+{
+  "at": 1792108242641969000,
+  "authors": [
+    {
+      "client": "claude",
+      "families": [
+        "claude"
+      ],
+      "family": "claude",
+      "identity": "ck-manager",
+      "role": "manager",
+      "session": "7f7b4a5c-120f-4c40-bb7c-64efb53f8f78"
+    }
+  ],
+  "fields": {
+    "depends": [
+      "CK-5"
+    ]
+  },
+  "id": "CK-10",
+  "kind": "edit"
+}

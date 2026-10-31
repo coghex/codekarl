@@ -1,0 +1,627 @@
+{
+  "fingerprint": {
+    "files": {
+      ".gitignore": {
+        "executable": false,
+        "sha256": "d96871d6ba277833883cf8f257308c849049fe3577641ea50ed7d58c94a8e172"
+      },
+      ".ignore": {
+        "executable": false,
+        "sha256": "7fb4285b88f3e7c917b47d6d3db6b326e652c28fb934a66831bc8e5a3a0c3406"
+      },
+      ".vscode/settings.json": {
+        "executable": false,
+        "sha256": "30405acf288a0d18d011818b6fa944f4c2637a16200af6b961cd3296862702f4"
+      },
+      "AGENTS.md": {
+        "executable": false,
+        "sha256": "836ce8422507c361e7434555546dcb0224fa70d306cfe9d0be90e7affdb8e45b"
+      },
+      "CLAUDE.md": {
+        "executable": false,
+        "sha256": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49"
+      },
+      "Cargo.lock": {
+        "executable": false,
+        "sha256": "ab7b680d5f27c3baad70ed6228e75779fca67a262e3488108bd5d223d156ef93"
+      },
+      "Cargo.toml": {
+        "executable": false,
+        "sha256": "ad9eb1ac649e70e0ffa00ba6f84932609af3232f87c6981481c1ffaf3d04cde2"
+      },
+      "README.md": {
+        "executable": false,
+        "sha256": "67fb5dafffcef50e8d45cd5619b240741dc15b9ffe1b21564388ea11c4dd0916"
+      },
+      "apps/codekarl/Cargo.toml": {
+        "executable": false,
+        "sha256": "a1e107a4e01d42957a0f82404cdd37af9b43985ec6eb903a66a0fc0cd352744b"
+      },
+      "apps/codekarl/src/main.rs": {
+        "executable": false,
+        "sha256": "35010420894eef4fb469bdea10a75e2b5c270b13be2ae19e9a5791051003adef"
+      },
+      "apps/codekarl/tests/cli_spec.rs": {
+        "executable": false,
+        "sha256": "cfc169fd9fb4fd2df833af3b1e96714ebcd94266be30ef1bd517540ed0089112"
+      },
+      "apps/codekarl/tests/cli_spec/support.rs": {
+        "executable": false,
+        "sha256": "851a5dcd00cbda20c1c59ae87c26926de441959b9342aedc2176be7e03f22e98"
+      },
+      "apps/codekarl/tests/cli_spec_unit.rs": {
+        "executable": false,
+        "sha256": "66d9fed44dffec8744f0fd840a59d3fa9e483f139307513a955c87a5004c3c43"
+      },
+      "clippy.toml": {
+        "executable": false,
+        "sha256": "0a4dc6f99dec9d560a051e96b453faf8a727fa8f33f0f79169fd66388423cbf6"
+      },
+      "crates/gpu-metal/Cargo.toml": {
+        "executable": false,
+        "sha256": "aec32d49fb3d8a8817fc29e5ba03b3c772838ba657ae543bc6f755373d66979f"
+      },
+      "crates/gpu-metal/build.rs": {
+        "executable": false,
+        "sha256": "6e4ea3c2aceda92ce956560b0adfbd34b29fea127136496884e71e9f258f7412"
+      },
+      "crates/gpu-metal/native/bridge.h": {
+        "executable": false,
+        "sha256": "9fc3881afbc2673b9bdf9f87bc642c4765c92402d6cc6a5d348e9a4635f311d2"
+      },
+      "crates/gpu-metal/native/bridge.m": {
+        "executable": false,
+        "sha256": "17f0e1386a6ccb97984eb645f274636721b31d10da01c7c301bfe976532446bb"
+      },
+      "crates/gpu-metal/shaders/probe.metal": {
+        "executable": false,
+        "sha256": "dece1307e2468dc25e1f2585b0d10ed7252bb3b77d1590dca085d5eeb72195d6"
+      },
+      "crates/gpu-metal/src/lib.rs": {
+        "executable": false,
+        "sha256": "cd03a545a4482918f01a222b4eaca6b49695d43f29362db2b49d1377fb02a61b"
+      },
+      "crates/gpu-metal/tests/gpu_probe.rs": {
+        "executable": false,
+        "sha256": "d623f3196133cce82e6b85cafaec90db433e9dfe73ce7337952d9df9860083f4"
+      },
+      "docs/agent-workflow.md": {
+        "executable": false,
+        "sha256": "10d6b8f1baad9b3f56df1ead7641bc6235fcd448c095e4cfab9cd5ad31c98127"
+      },
+      "docs/chat-identity-incident.md": {
+        "executable": false,
+        "sha256": "d4888ac4b17e33631885a7a170eb168c714b095527ed066fca0898d5f09e8f26"
+      },
+      "docs/chat-workflow.md": {
+        "executable": false,
+        "sha256": "abc115a00c9fcb4527c551b78ba9f1636f0206ffb5f76a6af5aa445d348837cb"
+      },
+      "docs/live-pilot-findings.md": {
+        "executable": false,
+        "sha256": "91407faf8544acc7986750cdbc57a1b80f5666328cadc4b2ba9d3e4695f1fb76"
+      },
+      "docs/review-gate-plan.md": {
+        "executable": false,
+        "sha256": "401f24ff70805f01194af509901c1c7bdd3c5d328168e15c29e674f49981762a"
+      },
+      "docs/reviews/agent-workflow-bootstrap.md": {
+        "executable": false,
+        "sha256": "0688c4b2c15800314bbc43f5cb24f82b089485c3296fdbee071beff3c0994d6e"
+      },
+      "docs/reviews/agent-workflow-rereview.md": {
+        "executable": false,
+        "sha256": "85cd739462970fe801878c2172c217e5853f9806d51f611a1be9ee435bac8ba8"
+      },
+      "docs/reviews/chat-identity-first-review.md": {
+        "executable": false,
+        "sha256": "faed70d4854333ef6b2258ec586fe1c11408ab7b7c2f53bf252789bc26300973"
+      },
+      "docs/reviews/chat-identity-rereview.md": {
+        "executable": false,
+        "sha256": "1b8e7eb0635a9d1376685b22a5699ee72734a5e369a37e880d8ab5bb8a71b20e"
+      },
+      "docs/setup-hardening-plan.md": {
+        "executable": false,
+        "sha256": "1156f6280f7830984286e090957f965392539cf592b889ba7e1a0d9b479557d3"
+      },
+      "docs/tooling.md": {
+        "executable": false,
+        "sha256": "c4aa34c9a0eebb71d102f1b084f8d2e78476078f065a454ad75317d9dfcb4e63"
+      },
+      "pijul.toml": {
+        "executable": false,
+        "sha256": "17979b6cdd9d0fe5b90cc42503b37ae2c0f28009e8c621656bfd4070555c2114"
+      },
+      "pyproject.toml": {
+        "executable": false,
+        "sha256": "a740ce7c4b58cc5f7bedfb41379f50f9a23536ccb37f98b1fc1d630506b67cd9"
+      },
+      "rust-toolchain.toml": {
+        "executable": false,
+        "sha256": "b52d692a421904738c7456fbc1f62d5821ebac0ec2917464c4eaad35f0fe29c0"
+      },
+      "skills/AGENT-POLICY.md": {
+        "executable": false,
+        "sha256": "a6b5f2f26a6b62d6e8ffc1886793aa9d31aa115049d4966fd3270eb906249d60"
+      },
+      "skills/ck-chat/SKILL.md": {
+        "executable": false,
+        "sha256": "ab353d453547f98409f234298ee1d6bbf1f18db2d5604dc362f5264b00b4b27d"
+      },
+      "skills/ck-manage/SKILL.md": {
+        "executable": false,
+        "sha256": "9a3e47dbeea78b07c8b68f6af5a54e49eb82e89560a545c49fd7a0c20bc967a0"
+      },
+      "skills/ck-manager/SKILL.md": {
+        "executable": false,
+        "sha256": "f9bb4d8a90de0e65c577080446779c3749f870a0003b87d103047809a8104127"
+      },
+      "skills/ck-review/SKILL.md": {
+        "executable": false,
+        "sha256": "eca046199e2aa66eee0d00d743aa66d630510779b3dbf5c63d7f8205d4d5a7d3"
+      },
+      "skills/ck-work/SKILL.md": {
+        "executable": false,
+        "sha256": "4a2a3b6a39a110a7bbed34208670a9de6d93049d26950e52ccf4b35a30d49efc"
+      },
+      "specs/bootstrap.json": {
+        "executable": false,
+        "sha256": "ca8692bd2a7cdde92887aa62cab74e2bc1ff35a4c999e1f6d10080d13d5e15da"
+      },
+      "tests/chatfix.py": {
+        "executable": false,
+        "sha256": "8497a32dae76a4df061f66390cd2e12c3c0281f72efe2f77432d8da1a5fd0343"
+      },
+      "tests/fixtures/bootstrap/spec.md": {
+        "executable": false,
+        "sha256": "7c525d8b03a6a5f1c67bf6b27aa98f8be5a05e1a714ad0ce7244d2f2edd1220e"
+      },
+      "tests/fixtures/legacy/ck": {
+        "executable": true,
+        "sha256": "fda9d9d695f397397f047acb23c4a7151dee4c1700cf3cb42705c5507b30aa8e"
+      },
+      "tests/fixtures/legacy/environment.py": {
+        "executable": false,
+        "sha256": "726392067af8b76d1157aa264b2e747c25b26047fe4c10c155b9dd318ebcb0d1"
+      },
+      "tests/fixtures/legacy/pipeline.py": {
+        "executable": false,
+        "sha256": "edef207eafc29da04a17d0ece73ddc68819fc4b414b3872dd5eaadd2e39f076a"
+      },
+      "tests/fixtures/sessions/claude-no-effort.jsonl": {
+        "executable": false,
+        "sha256": "5ff99ee49ba82dff25986b23fe6cf05a5988fb27385cae708fd77c7e29526bc4"
+      },
+      "tests/fixtures/sessions/codex.jsonl": {
+        "executable": false,
+        "sha256": "e9db49137098c342577be4aa6da2293a755fe73fe1bcd6acc8e81aab641196d6"
+      },
+      "tests/fixtures/sessions/copilot-fallback.jsonl": {
+        "executable": false,
+        "sha256": "78cf2477f80c2afed653931372f789f30e4280f1d3ea3689ba5bb88b0a69d90f"
+      },
+      "tests/fixtures/sessions/copilot.jsonl": {
+        "executable": false,
+        "sha256": "70205b428f39f5202164cb0d05a4612093881f7311b5129635257c2530ab944a"
+      },
+      "tests/procfix.py": {
+        "executable": false,
+        "sha256": "cce851eb85e7e808f25d2875f212c226927552d3d834da8200c01baeaa6a2fb6"
+      },
+      "tests/sessionfix.py": {
+        "executable": false,
+        "sha256": "761facf0ab6d7293bc1c85bcbbaa6a44eea7e48472f81a0ce5ce572aa21090d4"
+      },
+      "tests/test_batch.py": {
+        "executable": false,
+        "sha256": "15139dc04f56d91c447eb7c4c91941d21166bb51447c887a796ee4061e3acc1e"
+      },
+      "tests/test_bootstrap.py": {
+        "executable": false,
+        "sha256": "c2d2955a5f45c10a0df061bda81b145fdc95004b21583e3c324752fd8a456b88"
+      },
+      "tests/test_chat.py": {
+        "executable": false,
+        "sha256": "e35e911d56aed1494549b27fe5308bb64b87c53898080f2052d22e650afb73fb"
+      },
+      "tests/test_chat_ci.py": {
+        "executable": false,
+        "sha256": "11e2f160565a7b7c4fc2307ae113ca7892bec81322c5f461ab9d5b3fce428c42"
+      },
+      "tests/test_check.py": {
+        "executable": false,
+        "sha256": "08eb01f2981e07fab6c6710087afb4ff0db730de2e9cc6b8278ada65f030ea0e"
+      },
+      "tests/test_check_tools.py": {
+        "executable": false,
+        "sha256": "28bb978a492f8c52f4cd3a69f01f2f918d60ab7b855a185a14657ae39002e76c"
+      },
+      "tests/test_gate.py": {
+        "executable": false,
+        "sha256": "7de3af1c010bf01c773604fd9e73c3a2a1542bc5c73edf9c9550bd2f2e5060ae"
+      },
+      "tests/test_gate_criteria.py": {
+        "executable": false,
+        "sha256": "726edd7be0f52cad53c23c35d72740bd283e6d135ea70384ca139fca9f6db295"
+      },
+      "tests/test_gc.py": {
+        "executable": false,
+        "sha256": "9f1b8c0e61496f093d1cb143c0aaed28765e5c57d7117601ff8b877669187faf"
+      },
+      "tests/test_hashing.py": {
+        "executable": false,
+        "sha256": "1ed403ede956992c0883314647bffcb7a3d8308a21a90566327eb59a1760d9ae"
+      },
+      "tests/test_lease.py": {
+        "executable": false,
+        "sha256": "3668293c63db8a40bcb41625eafbfda28ff82bfb1aef335d715666a6a221ec30"
+      },
+      "tests/test_lint_policy.py": {
+        "executable": false,
+        "sha256": "9037d532ef3fc16db3da898e1fb53e779483be45a175d5bc40a501fa0b120967"
+      },
+      "tests/test_lock_holders.py": {
+        "executable": false,
+        "sha256": "0cb3a964ee348ec0dddf031a71e14cfbe895cbc967d11befb2d0730b042cd7fb"
+      },
+      "tests/test_owner_signoff.py": {
+        "executable": false,
+        "sha256": "d009bc333dc14b8e798cc7692dae8027a42cfc5a7e892e20177d3c7404dded18"
+      },
+      "tests/test_pipeline.py": {
+        "executable": false,
+        "sha256": "3a371fa80854be1bd49beafc6a2cf94ea5fee1002da1d72c5fc18f5c2f1a9c0c"
+      },
+      "tests/test_procscan.py": {
+        "executable": false,
+        "sha256": "57a1435b776615ac3c4c112e5e29008ed84f676584cc6637b03fe5b459742f0e"
+      },
+      "tests/test_repo_docs_isolation.py": {
+        "executable": false,
+        "sha256": "168432f3212e090f23ec91c46cc4cc69a21ca05de6cedb03b2433f921c282fb9"
+      },
+      "tests/test_rust_lints.py": {
+        "executable": false,
+        "sha256": "b89ccee880169f99ca420af8d4f0ce6bbc1e24aca111a9ba0b500176f6577b73"
+      },
+      "tools/bootstrap": {
+        "executable": true,
+        "sha256": "46ea94dd5ec27212e13b31e5aa03215466d289554851550bcea7f6c3f0b3a7c0"
+      },
+      "tools/chat/adapter.py": {
+        "executable": false,
+        "sha256": "51f6af43ef298a16ee6ee9344732a2ee1af2c1b720f548e13dce01ee7f0b70bc"
+      },
+      "tools/chat/codekarl_chat.py": {
+        "executable": false,
+        "sha256": "b5b20d1d935e57a716139faeaca97f63372c60ed83af2a88b88b4723cc83c88a"
+      },
+      "tools/chat/identity_conflicts.py": {
+        "executable": false,
+        "sha256": "ad0041b00016033c29e55a65676cfdc262cc64c6b80085bc940230099b1c651c"
+      },
+      "tools/chat/inputs.py": {
+        "executable": false,
+        "sha256": "335bd6382ec1744cf16daf4fae915c10d4d6f6e667c9afc91bb6bc791501aad3"
+      },
+      "tools/chat/install.py": {
+        "executable": false,
+        "sha256": "f8b8080dceaecfe5a41b7ada5561370c1c086238a2baf86369966012ed4397f1"
+      },
+      "tools/chat/test_identity_conflict.py": {
+        "executable": false,
+        "sha256": "6f19986ec3873af1379fd3e63091f0aa7853ff967b243c90e6f8ccdd5bd82f25"
+      },
+      "tools/chat/test_integration.py": {
+        "executable": false,
+        "sha256": "3b454156692150c39b6a24863ae87192efd5fc0a8e49cdb44c878bb9ca619562"
+      },
+      "tools/check.py": {
+        "executable": true,
+        "sha256": "7267aca8fc89c37b52a74d567824f228fb71aa1a59befd5681805f7c7b272c06"
+      },
+      "tools/ck": {
+        "executable": true,
+        "sha256": "46f859baaf0861d5d760d288373133475dd959b68b620e71c837018a46c97e63"
+      },
+      "tools/ck-chat": {
+        "executable": true,
+        "sha256": "9a0f622e95eba7e8b83b4b4c1f0e75375272bc6c54ff75f0d65d51b1cbc52ee6"
+      },
+      "tools/environment.py": {
+        "executable": false,
+        "sha256": "c54d325b5b9e449c5c39f6c0f9176ec8d146ea04f8e0b6a79d2cd8e50310903e"
+      },
+      "tools/gate/__init__.py": {
+        "executable": false,
+        "sha256": "5deddc60b94d8a88aad5de5e87522e3082fc58859c9f3bec10d73e82a3c17dc3"
+      },
+      "tools/gate/batch.py": {
+        "executable": false,
+        "sha256": "37585dd4ae1c305e153524d7e17348f7834eab20f5aedc066031ad36b16a4c5f"
+      },
+      "tools/gate/bootstrap.py": {
+        "executable": false,
+        "sha256": "d7d58db2c6c72059761004ca55baccfdc924f418560cf3778ef68506ac4076f2"
+      },
+      "tools/gate/bootstrap_core.py": {
+        "executable": false,
+        "sha256": "ad266285f3df71c7024e816d51b0385ec4cc2dc9f0fa5a17fab70dea06d668b1"
+      },
+      "tools/gate/classes.py": {
+        "executable": false,
+        "sha256": "6c04f45f0245855d9e2f936b7fa7caf20a59d3b3f1017cbe85bca5cf7981d841"
+      },
+      "tools/gate/cli.py": {
+        "executable": false,
+        "sha256": "be5b107c11b809502ff092f78bfd40f8ac49118dc273c8f340d39c4c104dac64"
+      },
+      "tools/gate/docsqueue.py": {
+        "executable": false,
+        "sha256": "0b509c39e84784c157612cd3cc80d6c918646f91a627779c70f156cbb4c3d66f"
+      },
+      "tools/gate/gc.py": {
+        "executable": false,
+        "sha256": "c05c0893ad048e0505f55da153ef14dac9cbc849b9e41195c2b13bb561048708"
+      },
+      "tools/gate/lease.py": {
+        "executable": false,
+        "sha256": "d0a39645aee0042f1e454a9b85dc19c0aeb472fa8b1bc18b6ca289027034d394"
+      },
+      "tools/gate/locks.py": {
+        "executable": false,
+        "sha256": "5fa160ed1a5936ff2cd062f3cb601f7414d2e8f69aae102e724fd3d55e089833"
+      },
+      "tools/gate/meta.py": {
+        "executable": false,
+        "sha256": "c2a0f2a184c45ad3015f1b0bd92ef799553ede1cc1dc6617e068111b5e696e63"
+      },
+      "tools/gate/owned.py": {
+        "executable": false,
+        "sha256": "4896820a40cc594d7a19558eecaa8f8155057833c81f31530a520940c0a86410"
+      },
+      "tools/gate/pointer.py": {
+        "executable": false,
+        "sha256": "4b35b8842687d3d2c42ef78e0b87a9a7fcf3351839ed56026ac435a84775b03b"
+      },
+      "tools/gate/procscan.py": {
+        "executable": false,
+        "sha256": "1bf5415f1ae2c8bbfd81dce5ca7bd7a578dc3da913dc2c201c1a99b5a07fdee6"
+      },
+      "tools/gate/provenance.py": {
+        "executable": false,
+        "sha256": "dd9e3f17e71f8e7183617cb2e00b01eda4b1e41ae435a7c77e47f2f00d4a6a55"
+      },
+      "tools/gate/reviews.py": {
+        "executable": false,
+        "sha256": "333a48a21216c2719d11fde896de522edbcfd1dff82bbf18fcf9f2d3cc1cf952"
+      },
+      "tools/gate/sessions.py": {
+        "executable": false,
+        "sha256": "9fa65c0ca46d7ed7f5e4ba493bb3fe68b8c62204f4da85c4388b96dcec69faef"
+      },
+      "tools/pipeline.py": {
+        "executable": false,
+        "sha256": "2a2470fef9dacff2a901b3a032e25f99facea149d4148fe2f77b31e32769aef3"
+      },
+      "tools/requirements.txt": {
+        "executable": false,
+        "sha256": "226ee842b2f07370268d6f0bdee8329f049e6f5f83a63c7d0a3a7dd3e6f17a4e"
+      }
+    },
+    "hashes": [
+      "25T2UBMTBDDU7GTSUXHZ5TXHMQKWWATKUDMWYXYE53ODJIYD5OQQC",
+      "2OLENCJ2YYOWCJXKKMSFCSDKCL3V5CEQCJTCWMCRCJHLHJJ7OAVAC",
+      "2WF33GF4P4BYVDN4W2XVNIROEQ6MO22OC4PBTYG4LVOZK2C2JIHAC",
+      "36K5GGN33J7CEDTLVP5C4QX67HZMXZK4ZCAZCYEQFGVDIW54WFKQC",
+      "3DH2KEWQRT3WHAXL7CML2RC23VIBCJAYG3A52PQU7UZLWOI5SF5QC",
+      "3MLE2KNB3C4KUYKXZDAULP7IWMIODAJYOYQQRNXQAEGNQTRMINRQC",
+      "3WGR3UZD52D5PWSU5PNXQU2S34H4SA2I7WZUWQBO5YO4TF4B7WTQC",
+      "4DFXHMLJREPMEBM65VYVJ6DU2RQYS5U2JFZDJZYH2DWGDKOKS3WAC",
+      "4FZVHMLGWUDWYIUEN2OCYSHFU2ENUYBMYXRZPIN7L7DLD3NBMHKAC",
+      "4J2ZLGLPX43QVFD6F3INWODFBJHTR3PQH57REZ6HRCBXG7JQB3BAC",
+      "4JPVKWDSYL2RDVEYPDX2AFO57NV324H73POYBEVMYTJJVNGMFD5AC",
+      "4LWCUBPMXOETJ5PS7IMTNHXAR62JPWVAHJB35DR7MZZGRPQC5MGAC",
+      "55UNZ6FP7XQA777Z5USBLWRJYO6TBM2OZ3Q3QMMGFQCYM5MH66MQC",
+      "5CVR6I2A5EQP72XDSCKOGOR6XYGJ35GJ4RGNJWFLITUJPTGJV62QC",
+      "5FAZ3N7A6QFMA3EUC46JD3KKRCDJMXJMNWKGK73C557E3MXSFENQC",
+      "5GS47K6622CS3JDPSHD4W7AMON6XLVYVCEAYAUMTFOZSJ5LSGJBAC",
+      "5VN26JUEAYDGOA75SGM7BNQBVBZARJVUV5Q7ACXTUQVQVC2W7OLQC",
+      "5WIKMQGJH3ADVLFQLJDWT5Z5YNYPI6C7TF5W3RN76KHDX7UPR36QC",
+      "62GJXO7TOKTPTP7YGNJVZC2ISLSZR4Z4A6NJ2J5LEGN2KJEEZEBQC",
+      "65FWZ6XW2DRHLSV6G6TPBJSZ5IX2AHUD744W5KB2TVIISBP53UUAC",
+      "66HHTE3X5SANGUGTG7GRRVU5L4HRRQIM56H4NTF3KJTDTXJK5XRQC",
+      "6BWSSJMFAZ7RZVEAC74ZEVM65H7VLUTD2PSQ5LL7FLEMYRREMPBAC",
+      "6FT3AAINWDRKEP5DKFGFBZJMSYKOUJ4UMYTBTOWFL4BJ4H5BDHQQC",
+      "6H63HMV5WEFL3HKSUVYSEVP7IRKSLPVYHQFUCQHNBVUEQPO7PKPAC",
+      "6SUKRD2RIVIX2UF5XX5ABQZWDBIEW4E3PMIL3R4M7UVJQ5DJGERAC",
+      "6U7QOKN66GTLWSUMLXN6VNSWCPUCYALVRMEW5XDHKUT3S6QZDZJAC",
+      "6WOCDIVP2OFDKMERD6ZEMEPEIU6QKPU5U457OPIQBWGU3FGILZPAC",
+      "72VLDND2PCGTPMVA2AYSBHLOKTGBTMIMMGUAUXJUWOL52IPEJFQAC",
+      "74PHHRWDVBEYZ5L65I2FUKHXJBR25X4C3YCBMLTRRIIZ2IWY5LVQC",
+      "765HIXW7ORW37AXO3TS3KUC3V6L3MGP27S7UYUC2SWI7VPJ2A6FQC",
+      "7BP2YMX4Q3LKTC5DRY7I57HV6SMUBY7LFWH5ZLBNFDCUDWDWJGCQC",
+      "7EDJHUALUHO75VJM53EYUFR3EIUEQXWLEVTLSPBQ46VL736UHEDQC",
+      "7MQKNJHM24VTVGI3JW3UGE4DSAMZJCXEVJX4NUELZF3NZ7Z5WSSQC",
+      "A7MWZ65CWROFYAWWDUVLYMAQDVP5SQZXZFZDHBXOU5ZCDQRDEETAC",
+      "AHZWMNGHGWC3EPFF5EJ2FUVJFGDLIVFBY3E2IOQNZTJFQBQH4GYAC",
+      "AL4AT6BJARXKXDXSHTMBIMSCVSW2YNQ62YHZX275BZFYFJ77VVVAC",
+      "AL53DXAXLYGYIZKNNOY2W7CWDWUX3S7D45DWATZ2M2EEIU46VHRQC",
+      "AMEVLEC36ZNTPJN6YAMLIB2RM5KXJ2G6DFCX65ZFKYB7L6QMXL4AC",
+      "ASDWCI3V6PEY3JDLVVJWEZZS6FLGXP5LUN5XPWCKMH72QMIGOOGQC",
+      "BO7HX35OEFCPW325GQDSNNT5PXFE5Q33XEH7GYFDEFGU2MQVHUTQC",
+      "BOOHPTKRU3BKVL2XHJ4SRDUZQVGXJOWXSOPVXDYV5BOT5VALVCJQC",
+      "BVYCRKVM54RV7UKWUZQRL2KHR47GIOKELZJY7T3HHAYH4FJ3MCNQC",
+      "CAGV7D76ODVM7AAH7457C3PTX2G2CXDZMEVSLTIYRDO3SRXZHY6AC",
+      "CLZD25MDSP3GOHWX263FHYN2GUM6DXNZJEJ5XJKZC2YDAXAEARVQC",
+      "COYASKBFMZ3VXX7SMBBH3KAPUCGWAOZTEV7PLHSZWQZRSIROS7KAC",
+      "CRPC24FDBNRMCPO47ZJLZYYBOLZSEM27VSG4UDCK7GNAGEDAP3LAC",
+      "D4MLTZ7SNVRRK6LVPYPYPLSTSEK6DB7UF6TIX4EQIQSIUHOGS5DQC",
+      "DE2G7EQIGVPZ5Y43JC2PLOLNRNZXC3Y3I64DEX4VIAUTHXZKWKGQC",
+      "DI67TC6USU5FEXJRXPOJZIEG7SYCNFWAXHRBYY53HWE45YVTAUHQC",
+      "DI7IN647MOTS26XQ3TD7YDR3TFKFPB7AA2TMQJ5JVGY7YJNGSXXAC",
+      "DII7HAWZT7ZXOM67NZY7EFVURBEVVKLSBXEJEP3BXT4L2ESWK2VAC",
+      "DLVGHPHYWFZOPYCYSELH532Y6EK7AM3FWUTNF757J5ROQ2BR4QTQC",
+      "DMGA6CEQLEW5WJTOBLK4C6QD33UAFL47FJKMYFT5L64MMWJPC47QC",
+      "DOAAUNNHWWETGBEICH5E5YH2JZCXWGTMBDGUG2KTJMRFTZ7HWCLAC",
+      "EBJ6DQYU3AIISXZSIVVM2BNR6QFBIG7SBBFBGBHHVAZQG65OBRDQC",
+      "EDPFM5J7X32M6F3XCILF2NHAYTNTUUSTAOSNITT6XZDMXYFBKUWQC",
+      "ENCDZGFZ5YFCB74A7U5VTUSKTDXSSN4G7T4WW3PQYAWLP3X6E3YAC",
+      "EZOTA3TC7VUQZUPHY7S3PEUU345YNEWAMSFQ32XV5QUW3HRBHE7QC",
+      "FA4D354FZDKHZJWNMJ7PQ7FKXP7JPBJMDJFNHGKC4OSN6HO5UQEQC",
+      "FB4EEGVEC4NCY2RJL32Q6P6CWJQIKKAKLQRU2UYBLER44Z6H7O6AC",
+      "FFDKNEEWSVJCUTMLSF37Q4O6T6DU7GLH6JW73D45UKE6PU42JTOAC",
+      "FSXMW53YY3L35CU4V6O7DL7QQLX2UKR4ZJ6ZALGIQWS4NRJYYY7AC",
+      "G6JTA6YYSEZYIU3DYIYGFVHYN7LSRZBZLSTWCKGXI2Y7NR7UJVAAC",
+      "GHZXLTEXC73RMY3TIZMIEXREQYZAPV3ZGBCKNLLDDIFB3YL656SQC",
+      "GTE35Q5PABSLTASVBBIKVQ7Y7NARAYWR2QNSLX7JBLYBLZ42GEXQC",
+      "GXAZBI7MCNLMXYPOAOXNYQV7GGRH47DQZHKW2VABSKMHPRXDTUZAC",
+      "H57472Q5C7NYRACNAJTJBPP7WN7LB7XTLF4VRQUYGDNZPOXPUV7QC",
+      "H7J7PP2YFEMNOXR4MH3UFXMLPDIJK32FL47AN3CZ23EK6LCGBCGAC",
+      "HFWRR5XN3X5SXFKP4EEPYJK4F3H4NJRJNY5VJEEX5HOVALQHMU2QC",
+      "HGTWLBVTCPTHGRQ5RQD3A6G5ZDLR6GEJKDPRVIXGT4Q3IJBLTEJQC",
+      "HJ53X3T6X7PJ3OSMM2KN6ZWUW56Q5JB6AA4DBMJG4WCSGIS73AAQC",
+      "HVLUQAU5ADMTKFDH7PWSYTUWG2KVV4DQXN2FKTHVAZIZJX6XDW3AC",
+      "HY4IGZB5DPP3PXQ3VYZQNPE67UGAPODC7JUJCNXJDQ3PVPFVYWBAC",
+      "I7NNGSK2EXVA6SFQ26JHJSDO6JR2KTSOJ6BH3IGHZSLWQBQOEA7QC",
+      "IFXTNRBIX4K4X6SWZWUZMPZXH3ZFKT4NBVZO6OPPHMLUW7R6OTXQC",
+      "IIR5UWG7B6PMFD3IF2NQKP75CBQPBTJEWKCK3NIH5CHH4ER2DCMAC",
+      "IQZ3K6ZLNEEIZ22ECA26NTHBGJGCCCKX5R7CEO25FVXQCPXMDCMAC",
+      "ITRTZPSY3MN272YNN4KZEAH2FGPNE3ODJVQDI4H47DP2RI3ADYMAC",
+      "JEZ7INQNB3SB5FK222NSUN4BOECXPUL5UDKZZEZS42QHZPY5CBQQC",
+      "JR237IECJ6VGUI7TPXRMJ23IFJLVI6MJORUPBNTR4VNHK6C3AQWQC",
+      "JRP4VGMVX4PLQK2EXQPY5KCBBBSVJN73QLECVI5JZOLBISMC2OKAC",
+      "K42QWPZ2QR5YOSGTHMQ6SYXHV7WZYS2IFJKZ3QBPJRSS7R5Q5ZDQC",
+      "K7AWOLO26EI3BQ65V2HPWWGN52N7DJYP2QYWWYYP5MYLCFS6WILQC",
+      "K7SU26CIHSTMWZSLZUUEPZJXJDBYJDW2XZPDISOZFLRK6MJIKGJQC",
+      "KFJ6BWT7VJVAGGZ5DTGMZMVXO4Q6WRCHOZIZ5GHMZ2ITAMCMURWQC",
+      "KGY3TWU2Y53WYTHYSHLT6U6JFVOHZNP5X7EAHQIDV5XRGHOLVV5AC",
+      "KPNW2NS33CFGXXEX3RBGGTFZLOLYEL2S3C5VGWCYUIZZTSPRVMPAC",
+      "KUZOBK52QKFLOO3LPNLPXJ2PD5VR4O6TAFIIHITXRPSOPUS5DBOQC",
+      "KZFW75SW4FMQX3BTU366KLEBMBOB6FSJXUMSDIHXZAX5RM7TYFEAC",
+      "L3EQCTQNG5US5LEMY5LYROFGSIIVWIJKPYHS5N6G73J67LBTMW6QC",
+      "LFBJ2UTAJK6LZO7O7XEDLS3EODRPFL6CIEYYOIBNMEEYES6FGYNAC",
+      "LFSZEXCOVPTPALRCLCCNPB5XTPK7MYHR23ZTOOSLKOPETWCN7HIQC",
+      "LFWIP5ETGWASENUOWY74BL2BB3Q64TDVSKRQGDJBDKUEJ64EZLYQC",
+      "LIKZVN4NXIBPK27NBKYEH7GI23MB5AKLN7FSTLSOVCXGSX5EGSTAC",
+      "LJZIHSBFJZ3DDMQQSZLOKTYJF27RF4BMQ5JKXKQ7TVJYOI7YTRTAC",
+      "LVV3WDWAAKLR3O3KSTGGHD2TKQS3XIIHAVMXGRTHZDE6IFZAIM7AC",
+      "LZVIYNPMHX4SXPKPPWJLDYC3EPOBDYAVIBIG3X3ZYZ3PNFT75TIQC",
+      "M3DA52JJRJFRES5NCS5P3Z45BLGIGC3PBTFQO7XCFZ52Q5DNRJ4QC",
+      "MNR35IQKUFSCFWRD43FOT736ZG62KXEE43WE2Q4B26POSUSRJ7AQC",
+      "MT6JS4HXPEB5XHJPALRW4C7H36MHCHLR7IZFFGADPNZXQEG3LDBQC",
+      "MWMD5GD3PHOR6SLQH3TUGHXYWJVDWT4NKRAOA7WOYHUKPQJJM2EAC",
+      "N22RF7OHG3LEIJRSOEDF3YRILPIBVK6EFHX2DRKFVKVALL3WOVHAC",
+      "N2UFALVCYIHQJA3JAIV6AU3HUBN2XFAP3Y2OS7OZYB3SKPA62ZEAC",
+      "NRZWLDLVC4ZZUW6NUNGTOGDBFWSNFCET7OL3MJEGUE6RDOZLT5JQC",
+      "NS6P6MNVBE5X7SKYEBIOAHQA25O3ZH5IPHUJAOZ56255O7LTFG5AC",
+      "O3MR2V27HA3IPHABUG2ESGC4OJLUGXK75MQ3NXYAPJHNKK4MF3KAC",
+      "O7RUNVGD6V3WBW4L6CBCC7X4L32UP2N5XAYCNL7EJUG5PEJ5FIOAC",
+      "OCM22RNMLDNYPV7H3URVYK6EILGHXC7EKA7CJSKMFZVWYWMZDSBAC",
+      "OTREBX25ZLYBH53PRVUVVINIFFKNW7FY4YLBE3YE5KOVVQY5RFJAC",
+      "PQZAVZQISAYCWFL3GYF4PVBJZQPS7FJ3FJ6ZMNLL4JJKHM7ZRSNAC",
+      "PWCAJ3B2JUSJZJ2ZTKYDTZZH2JO4SBZCWTSXY3Y7BALFBKUMYE6QC",
+      "PXUAMYV4KE74KDGH6JYQO7XMLZN4ZCCKOZK3FEKJRN2EU73KTRUQC",
+      "Q5O2KIGG2WQD75YQ7IMPXUTTKNPQWXDJCCT4OEDP6HCWOLLNNR5AC",
+      "QCCMYTHIP2T6AN44XVK3MCOEID2JFOXKFGDVICN4CGAPD7F242NAC",
+      "QMCFYYGHBMQQCWURTTFSYQVYFBOWTKHHU3AQ6I6JICJNUNXN43IAC",
+      "QTV5VFHRTC7NV7ZOYQHYZE6MC3FXYFW4NSILVFE5NWZ2PDZ5IO3QC",
+      "R7EUZQOZXMDOHSF2HW74KA6HLJ6CTCMV56DBFS3RMY5NSQTTHPUAC",
+      "RBUMFVJWAG2HFX6AX2A76CAHC4RJ5IG3HYID2CEZYVPISJRS44MAC",
+      "RMAV5MVGMBKHKQ4PSQG4LMCDJKRFBNBG2RLWWMZVYGKXRUIRYSXQC",
+      "RWKEXAY65FEIZPZEHQUM5ZJRNMJZ446NXSAO4ZOVLDMCO3T65IYAC",
+      "RZTQHGFZ67JGMSQGXRLWN76D6HNOVRE2UODWNKRCA5WJ3F4Q2W2AC",
+      "TBCW2HHAU2KCUJBLJSYGINEIVUKUC4ABMZMSZ6NPNUAQS336ABDQC",
+      "TCCXENTWCWJ5RTBASTZUO7QLNBA5U4BZBCFYMAUZZYZT5LJKEFQAC",
+      "TDRCPXI43NQFOLPTITS3DXYMFPWFUFUF3YG3A4ZQKTVMS2HWPEEQC",
+      "TETERZCZIVMX342LRLNE3VDO7IG6A43QBYNPRLFQP7ZL6TKGUMXQC",
+      "THD7CQIJHJRDRRT2BMMMSS6GG67ZXZSE4ZGUOMXYA5FHRMASJGCQC",
+      "TK673V6PHBYP26DWHVD6XW4EM6KRSPG74JDPWQYJNJ3CMRRLDB6AC",
+      "TXIT7GVABKAPPVCZF4HCM2H3CY4AIJBZRPQGCJVDEK367ZMGDA7QC",
+      "TZBUOZJBOIFG6KJFVURWS5RFIFU2L3ZXFB47YAPOOXROHGZEHM2AC",
+      "U3BVVQ6G2OV4A5KQ7DFNSAAV6BPFXZHDZBYDC6X53E47OH24AGZAC",
+      "UDTP6LVFW2KKKX4ZAQZSQSQRSJK2C2AWLSAU3GHERXX54IYUSJPAC",
+      "UDVW35OYH5GE4R4LJW4WGLBTVZWMBAJERAONURZID2PPQUCZ26CAC",
+      "UQ4GIRGUMJCGV6JJ6FPAQHD3R7E2NRIUUMRL5HN6RJ5SM45VMKMAC",
+      "URBM555AHLBPSUNCQXWH5RCJPN7PATQA2S3GMWP3GG7QANJUVCCAC",
+      "V4QMOHOPOAPO4OM72LPDVMXYEJEFOUH2WQAAPWA6RCS3ATQVPCVAC",
+      "V5WLR5TWDT24TUT6V3ZNBBTCBDWV77D7K66SUE227Y76AJTOJYIAC",
+      "VG7UMIE6I5QSEGXTCT5DO5XPOHTVAJ3PX3C47UPXIMUZ4B6ZTIGAC",
+      "VQ5FESYK7S6AQLC4W3MZCUWPHDZNTQ4NANW7JF3NSMYN3JF54PIQC",
+      "VS4TDACSFDZCYVWL4FZP645W4KPSLFOJJJDGOPTKX6ZTECZO6C3QC",
+      "VTUDVQVU3HRENP3ZJ2BFV7GYT3S2JMXDCXPYTQCNBCBCAKP4KV4AC",
+      "VWGNOYE5XG3MPFCIQVEYUNB4LO6CMMWECZRLGZ4KLFDJVVSXGB3AC",
+      "W77QOS4BCI7X2SLE7AUHXMHN4TTA33WPMQF6J4O2VILMPQL4ICXAC",
+      "WETPPAOSXA5P4GWFANC37P5LAUNFGLS6R6O4XYCHKXUBS3XCIOEAC",
+      "WGP4RAW2F4J3PG6CK5KAK3XTNOEJY5WAO2MOU7RA7QCUFHCGLAGQC",
+      "WWIFCAHZOCPZ3IJMS442ERJFIXG3MR3ROM246EEJN3YKPQQS6UTAC",
+      "WWXOPPFWNJISULS5KY3F2MKHTOSBLTDRSDM7CM6MBZ6VLG7ZCAYQC",
+      "XG5GYXSLNQWUJLGDNENP7QKGF6T6DXGPQPR2KCSHNRWD6NFPDU3AC",
+      "XLGSEJB4WOGKRIJKXNHVABWDHIG4UW6QE2CR3TM35USPN55CIQBQC",
+      "XLHJFWTMOCCTCD6Q3ILDSP66F66F4FH67DW6CX52PLO5FFJRVJFAC",
+      "XSDRIKWA7SH7LNLSQBNGNWJP7QJJJRSMCAN5LYHYFTN5XIB6S7WQC",
+      "YHPZXWURPLNSYZ7J6DHBTB3DRJ6OTI5WO4IUUBR7GGTVN5M7ZP7AC",
+      "YMESEUTFHQEFHGPET4DTR25IRHDIVBFGTLTXLCLEAJWJCXBOGZ5AC",
+      "Z2ORXPIWSOMSNGH4SNCQFXQDCEZ62OYMJIO3BRZ43QZYMIBZWELQC",
+      "Z6I4A26CVXK26IQY7DCRMDKOYLKWYLX4TQKG37VPD3NZHW2HD7EAC",
+      "Z7UB2HF67Z5GROVB2KYK2RC2ERACZKKE73BK7QO7RBJ2YWNBCLMQC",
+      "ZJHZBQQX6UPAGM2SUV2E56A6P436KO6IZJRAI46GAPFTILCDWDVQC",
+      "ZKGHUTWU4VS3RTYEXXDZTM7SFOENHMYVCQWII52R5R3CIS6JWHMAC",
+      "ZMRD6NTQHTDPOE4SYV2LPXDL7WAWCJONKQTQMWQVICUT3QHGOYQAC",
+      "ZOUWPMYP6E3UNV7223NP3WJYWXWFWWSTSXYD2NOBPNF4KLIBCUMAC",
+      "ZQHY7YRHIGLQ266AINAWNSD37BZUUZ5A6MPAYJRXZYBKCPPMNIVAC",
+      "ZYK6B5ZZEWPIZ3R5PEFTS5JU52S2GYYNE5G2ZQOC3NWVJUXISSOAC"
+    ]
+  },
+  "integration": {
+    "batch": "1792174305241582000",
+    "receipts": [
+      "3da2d16f3b9fc3785d43"
+    ]
+  },
+  "previous": "/hub/.pipeline/docs/receipts/D1792174714513084000.json",
+  "receipt": "/hub/.pipeline/docs/receipts/D1792174808316764000.json",
+  "repo": "/hub/.pipeline/checkpoints/docs-D1792174808316764000",
+  "schema": 2,
+  "submissions": [
+    "1791990866788535000-e24b5b96",
+    "1791990866937085000-f9e8a26f",
+    "1791990994081581000-70e25002",
+    "1791995908970340000-cf06e0e4",
+    "1791997256798611000-01db6481",
+    "1791997773834930000-3cf0d8fe",
+    "1791998764113053000-9e90f31d",
+    "1791999056969754000-87526df1",
+    "1792012152768312000-52be4dd8",
+    "1792033208928860000",
+    "1792036526376252000",
+    "1792090900847282000",
+    "1792097229476638000",
+    "1792112420595716000",
+    "1792112716225818000",
+    "1792113813847702000",
+    "1792114719342642000",
+    "1792115841130127000",
+    "1792116557723521000",
+    "1792117758439601000",
+    "1792118126317068000",
+    "1792119361506373000",
+    "1792120533169165000",
+    "1792122128329812000",
+    "1792123474222915000",
+    "1792124798872048000",
+    "1792126124224442000",
+    "1792133880627503000",
+    "1792140436579656000",
+    "1792143050249649000",
+    "1792144523173435000",
+    "1792161960020581000",
+    "1792163698240600000",
+    "1792164990587352000",
+    "1792168854369761000",
+    "1792171288758560000",
+    "1792172886277530000",
+    "1792174130567425000"
+  ]
+}

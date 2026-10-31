@@ -1,0 +1,27 @@
+# The shipped configuration: `codekarl --config config/codekarl.toml`.
+#
+# Without --config, codekarl runs the built-in defaults and no Lua VM. Script paths are relative to
+# the directory of this file.
+
+[log]
+level = "info"        # error | warn | info | debug | trace
+timestamps = true
+colour = "auto"       # auto | always | never
+
+# Owner deadlines in seconds (greater than 0 and at most 60); these are the defaults.
+[runtime]
+start_timeout = 5
+stop_timeout = 5
+cleanup_timeout = 1
+
+# The window backend. With it `codekarl --config config/codekarl.toml` opens the demo window (build with
+# `--features metal`); without it, or with --headless, the run is headless and `window.open` is ignored.
+[window]
+backend = "native-metal"  # native-metal (macOS, Metal, `--features metal`) | glfw-vulkan (GLFW and Vulkan, `--features vulkan`)
+
+# One table per Lua VM. They start in name order and stop in reverse.
+[lua.ui]
+entry = "../scripts/ui/main.lua"
+
+[lua.gameplay]
+entry = "../scripts/gameplay/main.lua"

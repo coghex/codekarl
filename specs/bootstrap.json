@@ -1,0 +1,30 @@
+{
+  "cases": [
+    {"args": ["--version"], "code": 0, "stdout": "codekarl 0.1.0\n", "stderr": ""},
+    {"args": ["--help"], "code": 0, "stdout": "Usage: codekarl [--config PATH] [--headless | --backend NAME] | --help | --version | --metal-smoke\n", "stderr": ""},
+    {"args": ["--unknown"], "code": 1, "stdout": "codekarl: unknown arguments; use --help\n", "stderr": ""},
+    {"args": ["--help", "extra"], "code": 1, "stdout": "codekarl: unknown arguments; use --help\n", "stderr": ""},
+    {"args": ["--config"], "code": 1, "stdout": "codekarl: --config needs a path; use --help\n", "stderr": ""},
+    {"args": ["--config", "a", "--config", "b"], "code": 1, "stdout": "codekarl: --config given more than once; use --help\n", "stderr": ""},
+    {"args": ["--config", "/nonexistent/codekarl-spec/missing.toml"], "code": 1, "stdout": "ERROR config: cannot read /nonexistent/codekarl-spec/missing.toml: No such file or directory (os error 2)\n", "stderr": ""},
+    {"args": ["--config", "x", "--version"], "code": 1, "stdout": "codekarl: unknown arguments; use --help\n", "stderr": ""},
+    {"args": ["--config", "--help"], "code": 1, "stdout": "codekarl: unknown arguments; use --help\n", "stderr": ""},
+    {"args": ["--config", "--version"], "code": 1, "stdout": "codekarl: unknown arguments; use --help\n", "stderr": ""},
+    {"args": ["--config", "--metal-smoke"], "code": 1, "stdout": "codekarl: unknown arguments; use --help\n", "stderr": ""},
+    {"args": ["--config", "--headless"], "code": 1, "stdout": "codekarl: unknown arguments; use --help\n", "stderr": ""},
+    {"args": ["--config", "--backend"], "code": 1, "stdout": "codekarl: unknown arguments; use --help\n", "stderr": ""},
+    {"args": ["--headless", "--help"], "code": 1, "stdout": "codekarl: unknown arguments; use --help\n", "stderr": ""},
+    {"args": ["--help", "--headless"], "code": 1, "stdout": "codekarl: unknown arguments; use --help\n", "stderr": ""},
+    {"args": ["--headless", "extra"], "code": 1, "stdout": "codekarl: unknown arguments; use --help\n", "stderr": ""},
+    {"args": ["--headless", "--headless"], "code": 1, "stdout": "codekarl: --headless given more than once; use --help\n", "stderr": ""},
+    {"args": ["--config", "a", "--backend", "glfw-vulkan", "--backend", "native-metal"], "code": 1, "stdout": "codekarl: --backend given more than once; use --help\n", "stderr": ""},
+    {"args": ["--config", "a", "--headless", "--backend", "native-metal"], "code": 1, "stdout": "codekarl: --headless and --backend cannot be combined; use --help\n", "stderr": ""},
+    {"args": ["--backend", "native-metal", "--config", "a", "--headless"], "code": 1, "stdout": "codekarl: --headless and --backend cannot be combined; use --help\n", "stderr": ""},
+    {"args": ["--backend", "native-metal"], "code": 1, "stdout": "codekarl: --backend needs --config with a [window] backend; use --help\n", "stderr": ""},
+    {"args": ["--backend", "glfw-vulkan", "--headless"], "code": 1, "stdout": "codekarl: --headless and --backend cannot be combined; use --help\n", "stderr": ""},
+    {"args": ["--config", "a", "--backend"], "code": 1, "stdout": "codekarl: --backend needs a backend name (native-metal or glfw-vulkan); use --help\n", "stderr": ""},
+    {"args": ["--backend", "--config", "a"], "code": 1, "stdout": "codekarl: --backend needs a backend name (native-metal or glfw-vulkan); use --help\n", "stderr": ""},
+    {"args": ["--config", "a", "--backend", "metal"], "code": 1, "stdout": "codekarl: unknown backend metal: expected native-metal or glfw-vulkan; use --help\n", "stderr": ""},
+    {"args": ["--metal-smoke"], "code": 0, "stdout": "Metal smoke passed: 64 GPU results verified\n", "stderr": "", "requires": ["metal"]}
+  ]
+}

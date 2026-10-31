@@ -1,0 +1,3 @@
+#!/usr/bin/env python3
+# Codekarl chat entry point: all of the code is tools/chat/ck_chat.py, which mypy checks.
+__import__("runpy").run_path(__import__("os").path.realpath(__file__ + "/../chat/ck_chat.py"), run_name="__main__")  # fmt: skip

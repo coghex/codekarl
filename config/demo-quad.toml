@@ -1,0 +1,23 @@
+# Demonstration configuration: `codekarl --config config/demo-quad.toml` (build with `--features metal`).
+# The ui script places a small pixel-art image in the window with `render.quad`. It reuses the shipped gameplay
+# script; the ui script is scripts/ui/demo_quad.lua.
+
+[log]
+level = "info"
+timestamps = true
+colour = "auto"
+
+[window]
+backend = "native-metal"
+
+# Sampling is nearest, so the pixel art stays crisp when it is scaled up. `assets` is relative to this file's
+# directory: PNG files that `render.quad` may open are looked for there.
+[render]
+filter = "nearest"
+assets = "../assets"
+
+[lua.ui]
+entry = "../scripts/ui/demo_quad.lua"
+
+[lua.gameplay]
+entry = "../scripts/gameplay/main.lua"

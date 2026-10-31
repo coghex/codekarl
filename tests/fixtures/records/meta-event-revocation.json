@@ -1,0 +1,15 @@
+{
+  "actor": {
+    "class": "A",
+    "client": "codex",
+    "effort": "high",
+    "family": "codex",
+    "identity": "ck-reviewer-1",
+    "model": "gpt-6.1-sol",
+    "role": "reviewer",
+    "session": "01a13b66-9dbd-7292-b258-1ed2dd024e63"
+  },
+  "kind": "revocation",
+  "reason": "CK-17 report transcribed its subject digest incorrectly; replacing the report and receipt with the exact canonical digest. No design or verdict change.",
+  "review": "9ce4b53b100219c97fd9"
+}

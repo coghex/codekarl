@@ -1,0 +1,14 @@
+{
+  "receipts": [
+    "46b70db4d2316d9fc174"
+  ],
+  "subject": {
+    "batch": "1792033565464600000",
+    "candidate_fingerprint_sha256": "ccf22fbd73cc230bfdf3b67d0f49232bdf53aadb2b0be70df3c269aee0229964",
+    "ci_receipt_sha256": "399d1f65615c307d79528ef6dd6dfed0f8f89ea28a1d7d9f9f906cd7f141e946",
+    "membership_manifest_sha256": [
+      "52d43d0fcd0760597ce222d9c9bb664a86e22c78d655471dc9b6225616c8c02c"
+    ],
+    "validated_sha256": "78206b435be0d9d2bfdd35cad1a193ba569f35dfd70c294e3a8f6bb6594bd956"
+  }
+}

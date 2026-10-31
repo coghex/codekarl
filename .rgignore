@@ -1,0 +1,5 @@
+# Hidden from agents' search, kept for history and the guide tool. Not .ignore: Pijul reads .ignore,
+# and `pijul add --recursive` would stop tracking new files here.
+/docs/archive/
+/docs/guide/*
+!/docs/guide/CURSOR.md

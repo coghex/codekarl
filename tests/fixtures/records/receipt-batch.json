@@ -1,0 +1,35 @@
+{
+  "base_examined": "/hub/.pipeline/accepted-v2.json",
+  "id": "0c77c91f621934cc8c90",
+  "incremental_over": null,
+  "issues": [],
+  "kind": "batch",
+  "recorded": 1792124030125660000,
+  "report_sha256": "ba414b654d7337ed0bbe99363ed49ff10ae621c975638cd0e6700531f2d2964c",
+  "reviewer": {
+    "class": "A",
+    "client": "codex",
+    "effort": "high",
+    "evidence": {
+      "offset": 34181158,
+      "path": "/home/user/.codex/sessions/2026/10/14/rollout-2026-10-14T10-12-23-01a13b66-9dbd-7292-b258-1ed2dd024e63.jsonl",
+      "sha256": "f2feb1ef97e8a9188c45352aea01375925855208c1413ba7dec38c6e3f919785"
+    },
+    "family": "codex",
+    "identity": "ck-reviewer-1",
+    "model": "gpt-6.1-sol",
+    "role": "reviewer",
+    "session": "01a13b66-9dbd-7292-b258-1ed2dd024e63"
+  },
+  "schema": "ck-review/1",
+  "subject": {
+    "batch": "1792123806339165000",
+    "candidate_fingerprint_sha256": "7fd2412d8ebe66633c834b451618772f4ea108bb861e71c523647c0fa26f339c",
+    "ci_receipt_sha256": "b4f6b00655752f651394c52ab16d9c1ac0932c3fddc4407f19ecc67171b1e9c8",
+    "membership_manifest_sha256": [
+      "f7740c7c2c444179948becc823f5b6861049d7e4660b47ee5ce0ea9f22057bdc"
+    ],
+    "validated_sha256": "9b94cb2ed4df97db56c140541cc1af9fda59c77d29b18edbabc0525dfe0c4310"
+  },
+  "verdict": "approved"
+}

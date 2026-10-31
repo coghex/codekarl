@@ -1,0 +1,21 @@
+{
+  "fingerprint": {
+    "files": {},
+    "hashes": []
+  },
+  "previous": "/hub/.pipeline/checkpoints/1792004065057148000-4b36667e.json",
+  "receipt": "/hub/.pipeline/checkpoints/1792004416603094000-55db2e79.json",
+  "repo": "/hub/.pipeline/UPGRADE-REQUIRED-see-docs-review-gate-plan",
+  "schema": "tombstone",
+  "submissions": [
+    "1791990866788535000-e24b5b96",
+    "1791990866937085000-f9e8a26f",
+    "1791990994081581000-70e25002",
+    "1791995908970340000-cf06e0e4",
+    "1791997256798611000-01db6481",
+    "1791997773834930000-3cf0d8fe",
+    "1791998764113053000-9e90f31d",
+    "1791999056969754000-87526df1"
+  ],
+  "upgrade": "accepted-v2.json"
+}

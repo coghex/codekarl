@@ -1,0 +1,41 @@
+# Model classes: the single source of which model and effort each class means.
+# Skills and prompts name a class ("Class A"), never a model. Resolve with
+# `modelclass` (see `modelclass --help`). Edit this file to re-point a class;
+# nothing else needs to change.
+#
+# A class either defines a model and effort per brand, or routes to another
+# class with `route`. Brands: claude, codex.
+
+schema_version = 1
+
+[classes.S]
+description = "Top tier: the hardest judgment calls"
+claude = { model = "claude-opus-5-5", effort = "high" }
+codex = { model = "gpt-6-astra", effort = "high" }
+
+[classes.A]
+description = "Frontier workhorse: most tasks"
+claude = { model = "claude-opus-5-5", effort = "high" }
+codex = { model = "gpt-6.1-sol", effort = "high" }
+
+[classes.B]
+description = "Cheap: narrow, well-specified, mechanical tasks"
+claude = { model = "claude-sonnet-5-5", effort = "high" }
+codex = { model = "gpt-6-luna", effort = "high" }
+
+# Kanban's roster roles, by class. `modelclass sync-kanban` writes
+# ~/.config/kanban/models.toml from this table (kanban reads only that file).
+# `effort` overrides the class's effort for that role.
+[kanban.roles]
+solve = { class = "B" }
+pr_revise = { class = "B" }
+pr_review = { class = "S", effort = "xhigh" }
+issue_review = { class = "S", effort = "xhigh" }
+issue_gate = { class = "S", effort = "xhigh" }
+issue_revise = { class = "S" }
+drain_rereview = { class = "S", effort = "medium" }
+
+# Alternate CLI spellings of the same models; never a class substitution.
+[clients.copilot.model_aliases]
+"claude-opus-5-5" = "claude-opus-5.5"
+"claude-sonnet-5-5" = "claude-sonnet-5.5"

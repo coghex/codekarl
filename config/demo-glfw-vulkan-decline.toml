@@ -1,0 +1,17 @@
+# Demonstration configuration: `codekarl --config config/demo-glfw-vulkan-decline.toml` (build with `--features vulkan`).
+# It reuses the shipped gameplay script; the ui script is scripts/ui/demo_decline.lua (the first close request is
+# declined, the next accepted).
+
+[log]
+level = "info"
+timestamps = true
+colour = "auto"
+
+[window]
+backend = "glfw-vulkan"
+
+[lua.ui]
+entry = "../scripts/ui/demo_decline.lua"
+
+[lua.gameplay]
+entry = "../scripts/gameplay/main.lua"

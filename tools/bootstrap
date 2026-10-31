@@ -1,0 +1,26 @@
+#!/bin/sh
+# Explicitly invoked dependency setup. Installs only missing project tools.
+set -eu
+cd "$(dirname "$0")/.."
+export PATH="/opt/homebrew/opt/rustup/bin:$HOME/.local/bin:$PATH"
+if ! command -v rustup >/dev/null; then
+    brew install rustup
+fi
+rustup toolchain install 1.91.1 --profile default --component rust-analyzer
+if ! brew list --versions glfw >/dev/null 2>&1; then
+    brew install glfw
+fi
+# glslc compiles the Vulkan quad shaders (crates/gpu-vulkan/build.rs): it is looked for by explicit path, in the
+# directories below (the same as the build script's and the doctor's), and installed only when none has it.
+if [ ! -x "${VULKAN_SDK:-/nonexistent}/bin/glslc" ] && [ ! -x /usr/local/bin/glslc ] && [ ! -x /opt/homebrew/bin/glslc ]; then
+    brew install shaderc
+fi
+if ! brew list --versions ripgrep >/dev/null 2>&1; then
+    brew install ripgrep
+fi
+if ! command -v pijul >/dev/null || [ "$(pijul --version)" != 'pijul 1.0.0-beta.24' ]; then
+    cargo +1.91.1 install pijul --version 1.0.0-beta.24 --locked --root "$HOME/.local" --jobs 2
+fi
+python3 -m venv .tools/python
+.tools/python/bin/python -m pip install --requirement tools/requirements.txt
+tools/ck doctor

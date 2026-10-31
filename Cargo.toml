@@ -1,0 +1,33 @@
+[workspace]
+members = ["apps/codekarl", "crates/gpu-metal", "crates/gpu-vulkan", "crates/input", "crates/log", "crates/lua", "crates/render-2d", "crates/resources", "crates/runtime", "crates/window", "crates/window-cocoa", "crates/window-glfw"]
+default-members = ["apps/codekarl"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+publish = false
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+linker_messages = "deny"
+missing_docs = "deny"
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+
+[workspace.lints.clippy]
+# The pedantic group sits at a lower priority, so the individual rules below always win.
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+unwrap_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
+
+# For Instruments: optimized like release, with line tables (and so shader sources) kept.
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"

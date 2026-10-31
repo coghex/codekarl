@@ -1,0 +1,5 @@
+{"type":"session.start","data":{"selectedModel":"claude-opus-5.5","reasoningEffort":"high"}}
+{"type":"model.turn_started","data":{"model":"gpt-4o-mini"}}
+{"type":"assistant.message","data":{"model":"claude-opus-5.5"}}
+{"type":"session.model_change","data":{"newModel":"gpt-6-luna"}}
+{"type":"tool.execution_start","data":{"model":"gpt-6-luna"}}

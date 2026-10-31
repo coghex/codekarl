@@ -1,0 +1,15 @@
+{
+  "rust-analyzer.server.path": "/opt/homebrew/opt/rustup/bin/rust-analyzer",
+  "rust-analyzer.server.extraEnv": {
+    "CARGO": "/opt/homebrew/opt/rustup/bin/cargo",
+    "RUSTC": "/opt/homebrew/opt/rustup/bin/rustc",
+    "PATH": "/opt/homebrew/opt/rustup/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  },
+  "rust-analyzer.cargo.features": "all",
+  "rust-analyzer.cargo.extraEnv": {
+    "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer"
+  },
+  "rust-analyzer.cargo.targetDir": true,
+  "rust-analyzer.check.command": "clippy",
+  "editor.formatOnSave": true
+}

@@ -1,0 +1,25 @@
+{
+  "at": 1792032245370522000,
+  "authors": [
+    {
+      "client": "copilot",
+      "families": [
+        "claude"
+      ],
+      "family": "claude",
+      "identity": "copilot:383752b5-300f-4a94-b6e7-f2fce6c58ca7",
+      "role": "manager",
+      "session": "383752b5-300f-4a94-b6e7-f2fce6c58ca7"
+    }
+  ],
+  "fields": {
+    "depends": [],
+    "priority": "P1",
+    "state": "open",
+    "title": "Copilot session provenance in the Codekarl gate",
+    "type": "bug"
+  },
+  "id": "CK-1",
+  "kind": "created",
+  "spec_sha256": "48f787897913a7c569d40c16b15952de3ad21c3a59753dca41188f0f2e48c3b1"
+}

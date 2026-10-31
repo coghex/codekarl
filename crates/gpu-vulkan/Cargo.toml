@@ -1,0 +1,22 @@
+[package]
+name = "ck-gpu-vulkan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ash = { version = "0.38", default-features = false, features = ["loaded", "debug", "std"] }
+
+# The library has no normal dependency on any window crate (design §3): the surface arrives as a raw
+# handle. The windowed tests create their GLFW windows through these two, in the test binary only.
+[dev-dependencies]
+ck-window = { path = "../window" }
+ck-window-glfw = { path = "../window-glfw" }
+
+[[test]]
+name = "window"
+harness = false  # a supervisor and a worker from one executable; GLFW's Cocoa window needs the process's main thread
+
+[lints]
+workspace = true

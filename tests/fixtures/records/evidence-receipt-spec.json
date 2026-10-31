@@ -1,0 +1,24 @@
+{
+  "kind": "spec",
+  "recorded": "2026-10-14T19:03:32.910968Z",
+  "report": {
+    "path": "spec-review-4.md",
+    "sha256": "bb4ad642b1b04f3ba9fdbf190d3bede6508463796d7944dc6a85a2d1fd6f3995"
+  },
+  "reviewer": {
+    "class": "A",
+    "client": "codex",
+    "effort": "high",
+    "family": "codex",
+    "identity": "ck-reviewer-1",
+    "model": "gpt-6.1-sol",
+    "role": "reviewer",
+    "session": "01a13b66-9dbd-7292-b258-1ed2dd024e63"
+  },
+  "schema": "ck-bootstrap-review/1",
+  "subject": {
+    "path": "docs/review-gate-plan.md",
+    "sha256": "76cbf92c34dae1153b4b4c2042c1c4e638a5661115a3e5473d0beef67aa367b1"
+  },
+  "verdict": "approved"
+}
