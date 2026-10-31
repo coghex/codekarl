@@ -630,6 +630,7 @@ impl WaitPause {
 #[derive(Debug)]
 pub struct Observer {
     raw: NonNull<c_void>,
+    first_frame_hook_report: AtomicI32,
 }
 
 // SAFETY: the native observer's counters are atomics and its weak reference is read atomically; nothing
@@ -656,7 +657,29 @@ impl Observer {
         let raw = unsafe { ck_pr_observer_new() };
         Self {
             raw: NonNull::new(raw).expect("the native observer"),
+            first_frame_hook_report: AtomicI32::new(0),
         }
+    }
+
+    /// Whether `FirstFrameQueued` was already in the report queue when the first frames test hook advanced.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn first_frame_hook_report_visible(&self) -> Option<bool> {
+        match self.first_frame_hook_report.load(Ordering::SeqCst) {
+            1 => Some(false),
+            2 => Some(true),
+            _ => None,
+        }
+    }
+
+    fn record_first_frame_hook_report_visibility(&self, visible: bool) {
+        let observed = if visible { 2 } else { 1 };
+        let _ = self.first_frame_hook_report.compare_exchange(
+            0,
+            observed,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
     }
 
     fn get(&self, counter: i32) -> i64 {
@@ -2827,8 +2850,20 @@ impl Loop<'_> {
                 .store(generation, Ordering::Release);
             self.shared.drawn_any.store(true, Ordering::Release);
         }
+        if !self.first_reported {
+            self.first_reported = true;
+            self.shared.report(PresenterReport::FirstFrameQueued);
+        }
         if let Some(frames) = &self.hooks.frames {
-            frames.fetch_add(1, Ordering::SeqCst);
+            if let Some(observer) = &self.hooks.observer {
+                let reports = lock(&self.shared.reports);
+                frames.fetch_add(1, Ordering::SeqCst);
+                observer.record_first_frame_hook_report_visibility(
+                    reports.contains(&PresenterReport::FirstFrameQueued),
+                );
+            } else {
+                frames.fetch_add(1, Ordering::SeqCst);
+            }
         }
         if let (Some(log), Some(rgb)) = (&self.hooks.clear_log, self.last_clear) {
             lock(log).push(rgb);
@@ -2836,10 +2871,6 @@ impl Loop<'_> {
         if let (Some(log), Some(generation)) = (&self.hooks.generation_log, self.pending_generation)
         {
             lock(log).push(generation);
-        }
-        if !self.first_reported {
-            self.first_reported = true;
-            self.shared.report(PresenterReport::FirstFrameQueued);
         }
         if self
             .hooks

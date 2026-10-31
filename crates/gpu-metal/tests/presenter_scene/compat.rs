@@ -225,6 +225,11 @@ pub(crate) fn scene_compat_gate_holds_the_first_frame_until_the_image_resolves()
     commit(&scene, &presenter, 1);
     until(&mut rig, "the first frame", || scene.probes.frames() >= 1);
     assert_eq!(
+        scene.probes.observer.first_frame_hook_report_visible(),
+        Some(true),
+        "FirstFrameQueued is visible when the first drawn-frame hook advances"
+    );
+    assert_eq!(
         presenter.take_report(),
         Some(PresenterReport::FirstFrameQueued)
     );
