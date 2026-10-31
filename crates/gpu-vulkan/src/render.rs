@@ -40,6 +40,9 @@ const BACKOFF_MAX: Duration = Duration::from_secs(1);
 const POOL_FENCES: usize = 6;
 
 mod quad;
+mod scene;
+
+pub(crate) use scene::{scene_main, texture_marker};
 
 /// A failure that ends the drawing: reported once as `Failed`.
 struct Fatal(String);

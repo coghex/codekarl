@@ -148,6 +148,30 @@
 //! `textures`, `revisions`, `memory`, `proofs` and `descriptors` carries the contract, which is the Metal
 //! crate's (CK-112/113/148/150/154) wherever those say nothing different.
 //!
+//! # The scene presenter (milestone 5.5, issue 2a)
+//!
+//! [`VulkanPresenter::start_scene`] draws an ordinary instanced, batched scene on a shared [`VulkanContext`] made for the
+//! surface: a [`VulkanFrameSlot`] of [`VulkanFrame`]s (a latest-value slot, like the quad's), a [`TextureDriver`] run on the
+//! render thread's passes, and the texture ledger's frame tickets. `start` and `start_2d` keep their own device.
+//!
+//! - **Drawing.** Instances are written in painter order into one host-visible buffer (32 bytes each, charged to
+//!   `SceneLimits::binding_geometry_bytes` and counted against `maxMemoryAllocationCount`); adjacent equal revisions
+//!   share one instanced draw (`firstInstance` selects the batch, core Vulkan on a direct draw). A quad is six vertices of
+//!   a triangle list, not a strip: `MoltenVK` warns that Metal cannot disable primitive restart for a strip. The effective
+//!   sampler of a batch is the nearest set for the checker and the frame's filter otherwise; set 0 is rebound whenever it
+//!   changes, set 1 is the batch's revision. The checker (64 x 64, 8-pixel magenta/black cells) is a baseline item of the
+//!   store with its own permanent set, and no frame is attempted before it is resident.
+//! - **Frame proofs.** A frame is submitted by `FrameTicket::submit` through the context's [`RenderQueue`]; the present
+//!   ledger records that number and asks `TextureLedger::frame_proven(number)` wherever it asked a submit fence. The
+//!   instance buffer is written only when the previous submission is proven (one frame in flight).
+//! - **The idle rule.** There is no completion callback, so the render thread polls. Runnable work is never delayed (a
+//!   capped pass, a closed upload envelope, a completion observed, a frame that is wanted with every gate open). A want
+//!   that fails a gate (the checker, the drawable size, present capacity, the previous submission) is parked until a fact it
+//!   depends on changes. Only with nothing runnable does the thread wait: until the earlier of a pending swap-chain creation
+//!   retry (`creation_retry_at`) and 1 ms while GPU work is outstanding, and without a bound when neither exists.
+//! - **The end** is the combined proof of the present ledger, the texture ledger and the store under the one absolute stop
+//!   deadline; a complete proof releases in dependency order and the context last, anything uncertain retains everything.
+//!
 //! # What `MoltenVK` does (observed on this Mac, macOS 26.7, SDK loader 1.3.296)
 //!
 //! A surface accepts **one swap chain at a time**: creating a second one that does not name the first as
@@ -175,11 +199,13 @@
 //! submit) it returns an error naming that and **keeps** its device, its objects, the instance reference and
 //! the loader clone for the rest of the process; [`readback_clear_with_test_hooks`] injects those cases.
 
+mod batch;
 mod capture;
 mod context;
 mod descriptors;
 mod draw;
 mod error;
+mod frame;
 mod gpu;
 mod gpu_quad;
 mod hash;
@@ -193,21 +219,26 @@ mod proofs;
 mod quad;
 mod readback;
 mod readback_quad;
+mod readback_scene;
 mod render;
 mod residency;
 mod revisions;
+mod scene;
+mod scene_draw;
 mod shared;
 mod slot;
 mod textures;
 mod unwind;
 
 pub use ash::vk;
+pub use batch::FrameCounters;
 pub use capture::{FrameCapture, FrameCaptures};
 pub use context::{RenderQueue, TestFeatures, VulkanContext};
 pub use error::Error;
+pub use frame::{InstanceRole, VulkanFrame, VulkanFrameSlot, VulkanInstance, VulkanSceneSource};
 pub use hooks::{
-    Event, Gate, Observer, Pause, PipelineFault, QuadAllocation, QuadFaults, QuadStats,
-    SurfaceExtent, TestHooks,
+    BuildRecord, CompatKind, Event, Gate, Observer, Pause, PipelineFault, QuadAllocation,
+    QuadFaults, QuadStats, SceneHooks, SurfaceExtent, TestHooks, WaitKind, WaitObserver,
 };
 pub use instance::{
     DestroyRefused, Instance, InstanceOptions, InstanceTestHooks, ValidationLogHandle,
@@ -225,11 +256,16 @@ pub use quad::{
 };
 pub use readback::{ReadbackHooks, readback_clear, readback_clear_with_test_hooks};
 pub use readback_quad::{MAX_TARGET_SIDE, readback_quad, readback_quad_with_test_hooks};
+pub use readback_scene::{readback_scene, readback_scene_with_held};
 pub use revisions::{
-    FrameSubmission, FrameTexture, FrameTicket, LedgerCleanup, LedgerError, LedgerEvent,
-    LedgerLimits, LedgerProof, OfferRefusal, RevisionState, TextureLedger,
+    CheckerProgress, FrameSubmission, FrameTexture, FrameTicket, LedgerCleanup, LedgerError,
+    LedgerEvent, LedgerLimits, LedgerProof, OfferRefusal, RevisionState, TextureLedger,
 };
-pub use shared::{CleanupResult, PresenterReport};
+pub use scene::{
+    Boundary, CHECKER_CELL, CHECKER_SIDE, HeldCompat, PassOutcome, SceneLimits, SceneSetup,
+    TextureDriver, TicketEnding, checker_pixels,
+};
+pub use shared::{CleanupResult, PresenterReport, SceneStats};
 pub use slot::{QuadSkipped, VulkanQuadSlot};
 pub use textures::{
     Completed, PreparedTexture, Proof, Refused, StallGate, StoreCleanup,

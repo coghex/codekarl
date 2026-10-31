@@ -57,9 +57,13 @@ struct Allocations {
 /// The shared logical device. See the module documentation.
 pub struct VulkanContext {
     // Held so the instance and the loader outlive the device; dropped in this order after `Drop` destroys it.
-    _instance: Arc<InstanceInner>,
-    _loader: Loader,
+    instance: Arc<InstanceInner>,
+    loader: Loader,
     family: u32,
+    physical: vk::PhysicalDevice,
+    portability_subset: bool,
+    /// Whether the device was created with the presenter's extensions (a surface was given).
+    presents: bool,
     device: ash::Device,
     memory: vk::PhysicalDeviceMemoryProperties,
     limits: DeviceLimits,
@@ -181,9 +185,12 @@ impl VulkanContext {
         let memory = unsafe { vulkan.get_physical_device_memory_properties(selection.physical) };
         let allocation_limit = properties.limits.max_memory_allocation_count;
         Ok(Arc::new(Self {
-            _loader: instance.loader().clone(),
-            _instance: inner,
+            loader: instance.loader().clone(),
+            instance: inner,
             family: selection.family,
+            physical: selection.physical,
+            portability_subset: selection.portability_subset,
+            presents: surface.is_some(),
             device,
             memory,
             limits,
@@ -246,6 +253,25 @@ impl VulkanContext {
     pub fn lower_allocation_limit(&self, limit: u32) {
         let mut allocations = lock(&self.allocations);
         allocations.limit = allocations.limit.min(limit);
+    }
+
+    /// The device selection this context was made with, for a presenter that draws on it.
+    pub(crate) fn selection(&self) -> Selection {
+        Selection {
+            physical: self.physical,
+            family: self.family,
+            portability_subset: self.portability_subset,
+        }
+    }
+
+    /// Whether the context was made with a surface (so it has the presenter's device extensions).
+    pub(crate) fn presents(&self) -> bool {
+        self.presents
+    }
+
+    /// The instance and the loader the context keeps alive, for a presenter that holds its own references.
+    pub(crate) fn holders(&self) -> (Arc<InstanceInner>, Loader) {
+        (Arc::clone(&self.instance), self.loader.clone())
     }
 
     pub(crate) fn limits(&self) -> &DeviceLimits {
@@ -375,6 +401,18 @@ impl RenderQueue {
     ) -> Result<(), vk::Result> {
         let buffers = [buffer];
         self.submit(&vk::SubmitInfo::default().command_buffers(&buffers), fence)
+    }
+
+    /// `vkQueuePresentKHR` through `swapchain` (the device's extension table). The queue is exclusive here, like a
+    /// submit's: every present of the scene presenter goes through this method.
+    pub(crate) fn present(
+        &mut self,
+        swapchain: &khr::swapchain::Device,
+        info: &vk::PresentInfoKHR<'_>,
+    ) -> Result<bool, vk::Result> {
+        // SAFETY: `&mut self` is exclusive access to the queue; the swap chain, the image index, the semaphore and the
+        // fence in `info` are in the states the present ledger tracks.
+        unsafe { swapchain.queue_present(self.queue, info) }
     }
 
     /// `vkQueueSubmit` of one batch with `fence`.

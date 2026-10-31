@@ -8,10 +8,17 @@ use std::time::{Duration, Instant};
 
 use ash::vk;
 
+use crate::context::VulkanContext;
+use crate::frame::VulkanFrameSlot;
 use crate::hooks::{POLL, TestHooks};
-use crate::render::render_main;
-use crate::shared::{CleanupResult, PresenterReport, STOP_BUDGET, Shared, Slot, Wake, lock};
+use crate::render::{render_main, scene_main, texture_marker};
+use crate::revisions::LedgerLimits;
+use crate::scene::{SceneLimits, SceneSetup, TextureDriver};
+use crate::shared::{
+    CleanupResult, PresenterReport, STOP_BUDGET, SceneStats, Shared, Slot, Wake, lock,
+};
 use crate::slot::{QuadSkipped, VulkanQuadSlot};
+use crate::textures::TextureLimits;
 use crate::unwind;
 use crate::{Error, Instance, Loader};
 
@@ -106,6 +113,166 @@ impl VulkanPresenter {
         unsafe { Self::start_with_test_hooks(instance, surface, pixel_size, clear, wake, hooks) }
     }
 
+    /// The scene presenter: draws an ordinary instanced, batched scene through the revision ledger (milestone 5.5, issue 2a)
+    /// on the shared `context`, which must have been created for `surface` (M5.5-1). The render thread takes the context's
+    /// `RenderQueue`, and every submit and present goes through it. The swap chain, render pass, pools and present ledger
+    /// are created on the context's device, with the rules of the crate documentation unchanged. `start` and `start_2d`
+    /// keep their own device and their behaviour.
+    ///
+    /// The thread starts the texture store and ledger on the context with `texture_limits`, `ledger_limits` and
+    /// `max_textures`, uploads the checker, allocates the instance buffer for `limits.max_quads` (refusing one that does
+    /// not fit `limits.binding_geometry_bytes` as a `Failed` report naming both numbers), and runs `driver` on its own
+    /// thread's passes. The renderer publishes frames to `frames`; a published frame wants a frame. The legacy quad of a
+    /// frame is the compatibility lane's (a later part) and is not drawn by this entry yet.
+    ///
+    /// # Errors
+    ///
+    /// `Err` means no thread was spawned and no GPU object was made by this call.
+    ///
+    /// # Safety
+    ///
+    /// The same contract as [`start`](Self::start): `surface` must be a `VkSurfaceKHR` created on the context's instance for
+    /// a window that stays alive at least until the presenter's end is proven, nothing else may use the surface meanwhile,
+    /// and the context must have been created for this surface.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "start_2d's arguments plus the context, the limits and the driver the specification names"
+    )]
+    pub unsafe fn start_scene<K, D>(
+        surface: vk::SurfaceKHR,
+        pixel_size: (u32, u32),
+        clear: [f32; 3],
+        wake: Wake,
+        frames: Arc<VulkanFrameSlot<K>>,
+        context: Arc<VulkanContext>,
+        texture_limits: TextureLimits,
+        ledger_limits: LedgerLimits,
+        max_textures: usize,
+        limits: SceneLimits,
+        driver: D,
+    ) -> Result<Self, Error>
+    where
+        K: Copy + Eq + std::hash::Hash + Send + 'static,
+        D: TextureDriver<K> + 'static,
+    {
+        let setup = SceneSetup::new(
+            context,
+            texture_limits,
+            ledger_limits,
+            max_textures,
+            limits,
+            driver,
+            frames,
+            None,
+        );
+        // SAFETY: the contract is this function's own.
+        unsafe {
+            Self::start_scene_with_test_hooks(
+                surface,
+                pixel_size,
+                clear,
+                wake,
+                &setup,
+                TestHooks::default(),
+            )
+        }
+    }
+
+    /// [`start_scene`](Self::start_scene) with faults injected by the tests. Not part of the interface.
+    ///
+    /// # Errors
+    ///
+    /// As [`start_scene`](Self::start_scene), and a forced `fail_start`.
+    ///
+    /// # Safety
+    ///
+    /// The same contract as [`start_scene`](Self::start_scene). `doc(hidden)` does not make the surface safe.
+    #[doc(hidden)]
+    pub unsafe fn start_scene_with_test_hooks(
+        surface: vk::SurfaceKHR,
+        pixel_size: (u32, u32),
+        clear: [f32; 3],
+        wake: Wake,
+        setup: &SceneSetup,
+        hooks: TestHooks,
+    ) -> Result<Self, Error> {
+        if hooks.fail_start {
+            return Err(Error(
+                "a forced failure before the thread was spawned".to_owned(),
+            ));
+        }
+        if surface == vk::SurfaceKHR::null() {
+            return Err(Error("the surface is null".to_owned()));
+        }
+        let shared = Arc::new(Shared {
+            slot: Mutex::new(Slot {
+                clear,
+                size: pixel_size,
+                dirty: true,
+                epoch: 0,
+                texture_work: false,
+                stop: false,
+                stop_deadline: None,
+            }),
+            signal: Condvar::new(),
+            reports: Mutex::new(VecDeque::new()),
+            result: Mutex::new(None),
+            wake,
+            stop_budget: hooks.stop_budget.unwrap_or(STOP_BUDGET),
+            drawn_generation: AtomicU64::new(0),
+            drawn_any: AtomicBool::new(false),
+            notice: Mutex::new(None),
+            scene_stats: Mutex::new(SceneStats::default()),
+        });
+        // A published frame wants a frame, and only the render thread is woken. The wake holds the presenter's state
+        // weakly. A frame published before this point is read by the first frame, which the slot's initial `dirty`
+        // guarantees.
+        let weak = Arc::downgrade(&shared);
+        setup.0.register_wake(Arc::new(move || {
+            if let Some(shared) = weak.upgrade() {
+                let mut slot = lock(&shared.slot);
+                slot.dirty = true;
+                slot.epoch += 1;
+                drop(slot);
+                shared.signal.notify_all();
+            }
+        }));
+        let loader = setup.0.context().holders().1;
+        let thread_shared = Arc::clone(&shared);
+        let thread_setup = setup.clone();
+        let spawned = thread::Builder::new()
+            .name("ck-vulkan-render".to_owned())
+            .spawn(move || scene_main(&thread_shared, thread_setup, surface, hooks));
+        match spawned {
+            Ok(thread) => Ok(Self {
+                shared,
+                thread: Some(thread),
+                ended: None,
+                _loader: loader,
+            }),
+            Err(error) => {
+                setup.0.clear_wake();
+                Err(Error(format!(
+                    "the render thread could not be spawned: {error}"
+                )))
+            }
+        }
+    }
+
+    /// A handle that marks "texture work pending" and wakes the render thread, for the driver's owner to give its own
+    /// producers (the resource service's upload and retirement wakes). It never blocks and holds the presenter weakly: it
+    /// does nothing after the presenter ended.
+    #[must_use]
+    pub fn texture_wake(&self) -> Wake {
+        texture_marker(&self.shared)
+    }
+
+    /// The scene presenter's counters (a copy; a presenter started without a scene reports zeros).
+    #[must_use]
+    pub fn scene_stats(&self) -> SceneStats {
+        *lock(&self.shared.scene_stats)
+    }
+
     /// [`start`](Self::start) with faults injected by the tests. Not part of the interface.
     ///
     /// # Errors
@@ -138,6 +305,7 @@ impl VulkanPresenter {
                 size: pixel_size,
                 dirty: true,
                 epoch: 0,
+                texture_work: false,
                 stop: false,
                 stop_deadline: None,
             }),
@@ -149,6 +317,7 @@ impl VulkanPresenter {
             drawn_generation: AtomicU64::new(0),
             drawn_any: AtomicBool::new(false),
             notice: Mutex::new(None),
+            scene_stats: Mutex::new(SceneStats::default()),
         });
         if let Some(quads) = &hooks.quad_slot {
             // A change in the slot wants a frame, and only the render thread is woken. The wake holds the

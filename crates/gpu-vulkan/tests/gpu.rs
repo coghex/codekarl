@@ -28,6 +28,7 @@ mod supervisor;
 use supervisor::Supervised;
 
 mod gpu_quad;
+mod gpu_scene;
 mod gpu_textures;
 
 /// A panic payload whose `Drop` panics (and counts itself): the caught payload's disposal must survive it.

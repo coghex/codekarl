@@ -21,6 +21,9 @@ use crate::Error;
 use crate::context::VulkanContext;
 use crate::error::vk_error;
 
+/// The push constants of the ordinary stage's pipeline layout: the drawable's width and height as `f32`.
+pub(crate) const DRAWABLE_PUSH_BYTES: u32 = 8;
+
 /// The books of a pool that allocates up to a cap and recycles: pure, so its rules are tested without a device.
 #[derive(Debug)]
 pub(crate) struct SetBook<S: Copy> {
@@ -147,7 +150,14 @@ impl Descriptors {
         self.sampler_layout = layout(vk::DescriptorType::SAMPLER)?;
         self.image_layout = layout(vk::DescriptorType::SAMPLED_IMAGE)?;
         let layouts = [self.sampler_layout, self.image_layout];
-        let info = vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts);
+        // The ordinary stage's vertex shader takes the drawable size (two floats) as a push constant.
+        let ranges = [vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size(DRAWABLE_PUSH_BYTES)];
+        let info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(&layouts)
+            .push_constant_ranges(&ranges);
         // SAFETY: the device is live and the layouts exist.
         self.pipeline_layout = unsafe { device.create_pipeline_layout(&info, None) }
             .map_err(|code| vk_error("vkCreatePipelineLayout", code))?;
@@ -182,7 +192,15 @@ impl Descriptors {
             })
         };
         self.sampler_pool = pool(2, vk::DescriptorType::SAMPLER)?;
-        self.image_pool = pool(sets, vk::DescriptorType::SAMPLED_IMAGE)?;
+        // One set more than the ordinary revisions can ever need: the checker's permanent one.
+        self.image_pool = pool(
+            sets.checked_add(1).ok_or_else(|| {
+                Error(format!(
+                    "{ordinary_sets} descriptor sets and the checker's do not fit a pool"
+                ))
+            })?,
+            vk::DescriptorType::SAMPLED_IMAGE,
+        )?;
         let both = [self.sampler_layout; 2];
         let allocate = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(self.sampler_pool)
@@ -273,6 +291,20 @@ impl Descriptors {
         // SAFETY: the sets belong to this pool, the views exist, and (the caller's contract) no command buffer
         // that binds these sets is recorded or pending.
         unsafe { self.context.device().update_descriptor_sets(&updates, &[]) };
+    }
+
+    /// The checker's permanent set: the pool's one set beyond the ordinary revisions', written to name `view`. It is
+    /// never recycled.
+    pub(crate) fn checker_set(&mut self, view: vk::ImageView) -> Result<vk::DescriptorSet, String> {
+        let layouts = [self.image_layout];
+        let info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(self.image_pool)
+            .set_layouts(&layouts);
+        // SAFETY: the pool has room for this one more set (its `maxSets` is the ordinary count plus one).
+        let set = unsafe { self.context.device().allocate_descriptor_sets(&info) }
+            .map_err(|code| format!("vkAllocateDescriptorSets failed: {code:?}"))?[0];
+        self.write(&[(set, view)]);
+        Ok(set)
     }
 
     /// A released revision's set returns to the free list.

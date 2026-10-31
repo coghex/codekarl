@@ -282,6 +282,112 @@ pub struct QuadStats {
     pub allocations: Vec<QuadAllocation>,
 }
 
+/// What bounds a wait of the scene presenter's render thread.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitKind {
+    /// No deadline: nothing is outstanding and no swap-chain creation retry is pending.
+    Unbounded,
+    /// The 1 ms look at GPU work that is outstanding (an upload batch, a submitted frame, release work).
+    GpuPoll,
+    /// The pending swap-chain creation retry, `creation_retry_at`, is the earliest deadline.
+    RetryDeadline,
+}
+
+/// Records each wait the scene presenter's render thread enters and each frame attempt it makes. Test evidence, not
+/// an engine counter.
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct WaitObserver {
+    entries: Mutex<Vec<(WaitKind, std::time::Instant)>>,
+    attempts: AtomicU64,
+}
+
+impl WaitObserver {
+    /// A new observer.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn entered(&self, kind: WaitKind) {
+        lock(&self.entries).push((kind, std::time::Instant::now()));
+    }
+
+    pub(crate) fn attempted(&self) {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Every wait entered so far, in order.
+    #[must_use]
+    pub fn entries(&self) -> Vec<WaitKind> {
+        lock(&self.entries).iter().map(|(kind, _)| *kind).collect()
+    }
+
+    /// When each wait was entered, in the same order as [`entries`](Self::entries).
+    #[must_use]
+    pub fn times(&self) -> Vec<std::time::Instant> {
+        lock(&self.entries).iter().map(|(_, time)| *time).collect()
+    }
+
+    /// How many waits were entered.
+    #[must_use]
+    pub fn waits(&self) -> usize {
+        lock(&self.entries).len()
+    }
+
+    /// How many frame steps the thread attempted.
+    #[must_use]
+    pub fn attempts(&self) -> u64 {
+        self.attempts.load(Ordering::SeqCst)
+    }
+}
+
+/// What a frame did with the compatibility quad.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompatKind {
+    /// No compatibility instance was drawn (none placed, or none in the frame).
+    Absent,
+    /// The current image resolved and was drawn.
+    Drew,
+    /// The current image did not resolve; the held one was drawn in its place.
+    DrewHeld,
+    /// Neither resolved: the frame is held back (the initial gate).
+    Gated,
+}
+
+/// What one frame build did, for the tests that read the instance buffer's write rule.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildRecord {
+    /// What the build counted.
+    pub counters: crate::FrameCounters,
+    /// `frame_proven(previous submission)` read at the moment of the first instance write (true when there was no
+    /// previous submission).
+    pub previous_proven: bool,
+    /// What the frame did with the compatibility quad.
+    pub compat: CompatKind,
+}
+
+/// The scene presenter's test hooks: the specification's wait-entry observer, a pause between the idle recheck and the
+/// wait, a held frame, and the records the cases read. Nothing here changes what the presenter does.
+#[doc(hidden)]
+#[derive(Debug, Clone, Default)]
+pub struct SceneHooks {
+    /// Records each wait entry and each frame attempt.
+    pub waits: Option<Arc<WaitObserver>>,
+    /// The thread waits here, while the pause is held, after the last recheck under the slot lock and before it waits.
+    pub pause_before_wait: Option<Arc<Pause>>,
+    /// How each frame's ticket ended.
+    pub tickets: Option<Arc<Mutex<Vec<crate::scene::TicketEnding>>>>,
+    /// What each frame build counted.
+    pub builds: Option<Arc<Mutex<Vec<BuildRecord>>>>,
+    /// Every scene frame's commands wait on this event first (a host-set `VkEvent`), so the frame is held until a test
+    /// sets it: M5.5-1's pattern for a frame the GPU has not finished.
+    pub frame_event: Option<vk::Event>,
+}
+
 /// A record of what the presenter did, shared with the test.
 #[doc(hidden)]
 #[derive(Debug, Default)]
@@ -481,6 +587,8 @@ pub struct TestHooks {
     /// Acquire, record (upload included) and then give the image back unused, for this many frames that have a
     /// quad to draw: the abandon comes after the recording and before the submit.
     pub abandon_after_record: u32,
+    /// The scene presenter's hooks.
+    pub scene: SceneHooks,
 }
 
 impl TestHooks {
