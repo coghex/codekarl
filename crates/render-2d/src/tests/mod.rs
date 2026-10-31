@@ -23,4 +23,6 @@ mod support;
 #[cfg(feature = "vulkan")]
 mod vulkan_refusal;
 #[cfg(feature = "vulkan")]
+mod vulkan_scene;
+#[cfg(feature = "vulkan")]
 mod vulkan_sink;

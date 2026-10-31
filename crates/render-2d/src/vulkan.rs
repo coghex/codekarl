@@ -27,10 +27,15 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use ck_gpu_vulkan::{
-    DestinationRect, PixelSource, SourceRect, VulkanFilter, VulkanQuad, VulkanQuadSlot, VulkanScene,
+    DestinationRect, PixelSource, SourceRect, VulkanFilter, VulkanFrame, VulkanFrameSlot,
+    VulkanQuad, VulkanQuadSlot, VulkanScene,
 };
+use ck_resources::{ResourceService, TextureKey};
 use ck_window::PresenterReport;
 
+use crate::resident::WakeRelay;
+use crate::vulkan_resident::VulkanResidentDriver;
+use crate::vulkan_scene::VulkanSceneFrame;
 use crate::{Filter, Image, QuadSink, Snapshot};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -169,6 +174,11 @@ fn convert(snapshot: &Snapshot, reuse: Option<Arc<ImagePixels>>) -> Result<Conve
     ))
 }
 
+#[cfg(test)]
+pub(crate) const fn real_converter() -> Converter {
+    convert
+}
+
 /// What the sink remembers between snapshots: **weak** references to the image it last wrapped and to that wrapper.
 /// It holds nothing strongly, so it adds nothing to the residency bound; the GPU slot's current scene holds the wrapper
 /// while that scene is current, so the wrapper upgrades exactly when the same image is still published, and the same
@@ -289,8 +299,122 @@ pub struct VulkanSinkSide {
     wake: Arc<dyn Fn() + Send + Sync>,
     slot: Option<Arc<VulkanQuadSlot>>,
     made: Option<Weak<VulkanSink>>,
+    frames: Option<Arc<VulkanFrameSlot<TextureKey>>>,
+    made_scene: Option<Weak<VulkanSceneSink>>,
     refusals: Arc<Refusals>,
     converter: Converter,
+    resources: Option<VulkanResources>,
+}
+
+struct VulkanResources {
+    service: ResourceService,
+    relay: WakeRelay,
+    max_adoptions_per_frame: usize,
+}
+
+/// The resource-service limit needed by the Vulkan resident adapter.
+#[derive(Debug, Clone, Copy)]
+pub struct VulkanResourceLimits {
+    /// Maximum committed revisions adopted at one frame boundary.
+    pub max_adoptions_per_frame: usize,
+}
+
+/// A resource-aware sink over the scene frame slot. It retains its last snapshot and returns the previous one so a
+/// replaced scene is never freed while the bridge's lock is held.
+pub(crate) struct VulkanSceneSink {
+    slot: Arc<VulkanFrameSlot<TextureKey>>,
+    refusals: Arc<Refusals>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    conversion: Mutex<Conversion>,
+    last: Mutex<Option<Snapshot>>,
+    #[cfg(test)]
+    placements: Option<Arc<std::sync::atomic::AtomicUsize>>,
+}
+
+impl std::fmt::Debug for VulkanSceneSink {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("VulkanSceneSink")
+    }
+}
+
+impl VulkanSceneSink {
+    pub(crate) fn over(
+        slot: Arc<VulkanFrameSlot<TextureKey>>,
+        refusals: Arc<Refusals>,
+        wake: Arc<dyn Fn() + Send + Sync>,
+        converter: Converter,
+        #[cfg(test)] placements: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            slot,
+            refusals,
+            wake,
+            conversion: Mutex::new(Conversion {
+                cache: None,
+                converter,
+            }),
+            last: Mutex::new(None),
+            #[cfg(test)]
+            placements,
+        })
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "the test-only placement counter is read from the sink"
+        )
+    )]
+    pub(crate) fn frame_for(
+        &self,
+        snapshot: &Snapshot,
+        scene: &VulkanScene,
+    ) -> VulkanFrame<TextureKey> {
+        let source = snapshot.scene.as_ref().map(|frame| {
+            #[cfg(test)]
+            if let Some(placements) = &self.placements {
+                return Arc::new(VulkanSceneFrame::counting(
+                    Arc::clone(frame),
+                    snapshot.metrics,
+                    Arc::clone(placements),
+                )) as Arc<dyn ck_gpu_vulkan::VulkanSceneSource<TextureKey>>;
+            }
+            Arc::new(VulkanSceneFrame::new(Arc::clone(frame), snapshot.metrics))
+                as Arc<dyn ck_gpu_vulkan::VulkanSceneSource<TextureKey>>
+        });
+        VulkanFrame::new(
+            scene.generation(),
+            vulkan_filter(snapshot.filter),
+            scene.quad().cloned(),
+            source,
+        )
+        .with_compat_key(
+            snapshot
+                .scene
+                .as_ref()
+                .and_then(|frame| frame.compat())
+                .map(|quad| quad.texture.key()),
+        )
+    }
+}
+
+impl QuadSink for VulkanSceneSink {
+    fn publish(&self, snapshot: Snapshot) -> Option<Snapshot> {
+        let step = lock(&self.conversion).next(&snapshot);
+        let refused = step.refusal.is_some();
+        if let Some(message) = step.refusal {
+            self.refusals.record(message);
+        }
+        let frame = self.frame_for(&snapshot, &step.scene);
+        drop(step.scene);
+        self.slot.publish(frame);
+        let previous = lock(&self.last).replace(snapshot);
+        if refused {
+            (self.wake)();
+        }
+        previous
+    }
 }
 
 impl std::fmt::Debug for VulkanSinkSide {
@@ -314,13 +438,61 @@ impl VulkanSinkSide {
             wake,
             slot: None,
             made: None,
+            frames: None,
+            made_scene: None,
             refusals: Arc::new(Refusals::default()),
             converter,
+            resources: None,
         }
     }
 
-    /// A new `VulkanQuadSlot` and the sink over it; the sink replaces any earlier one as "the one this side made".
+    /// Creates the resource-aware Vulkan side. `relay` must be the same relay whose `wake()` was installed as the
+    /// service's uploads and retirements wakes; it is held and connected only when the caller has started the presenter.
+    /// The caller starts the presenter with [`accept_frames`](Self::accept_frames) and [`resident_driver`](Self::resident_driver),
+    /// then connects its texture wake and disconnects on every presenter end path. Dropping this side disconnects as a
+    /// safety net.
+    #[must_use]
+    pub fn with_resources(
+        wake: Arc<dyn Fn() + Send + Sync>,
+        service: ResourceService,
+        relay: WakeRelay,
+        limits: VulkanResourceLimits,
+    ) -> Self {
+        Self {
+            wake,
+            slot: None,
+            made: None,
+            frames: None,
+            made_scene: None,
+            refusals: Arc::new(Refusals::default()),
+            converter: convert,
+            resources: Some(VulkanResources {
+                service,
+                relay,
+                max_adoptions_per_frame: limits.max_adoptions_per_frame,
+            }),
+        }
+    }
+
+    /// A new legacy `VulkanQuadSlot` and sink, or (for a resource-aware side) a scene frame slot and sink. It replaces any
+    /// earlier sink as "the one this side made".
     pub fn new_sink(&mut self) -> Arc<dyn QuadSink> {
+        if self.resources.is_some() {
+            let slot = VulkanFrameSlot::new();
+            let sink = VulkanSceneSink::over(
+                Arc::clone(&slot),
+                Arc::clone(&self.refusals),
+                Arc::clone(&self.wake),
+                self.converter,
+                #[cfg(test)]
+                None,
+            );
+            self.slot = None;
+            self.made = None;
+            self.frames = Some(slot);
+            self.made_scene = Some(Arc::downgrade(&sink));
+            return sink;
+        }
         let slot = VulkanQuadSlot::new();
         let sink = Arc::new(VulkanSink {
             slot: Arc::clone(&slot),
@@ -333,6 +505,8 @@ impl VulkanSinkSide {
         });
         self.slot = Some(slot);
         self.made = Some(Arc::downgrade(&sink));
+        self.frames = None;
+        self.made_scene = None;
         sink
     }
 
@@ -351,6 +525,73 @@ impl VulkanSinkSide {
             .ok_or_else(|| "the backend was started without a sink".to_owned())
     }
 
+    /// The scene slot behind the resource-aware sink this side made.
+    ///
+    /// # Errors
+    ///
+    /// Returns a reason if the side is legacy-only, the sink is foreign, or no scene sink was made.
+    pub fn accept_frames(
+        &self,
+        sink: &Arc<dyn QuadSink>,
+    ) -> Result<Arc<VulkanFrameSlot<TextureKey>>, String> {
+        let made = self
+            .made_scene
+            .as_ref()
+            .is_some_and(|made| std::ptr::addr_eq(made.as_ptr(), Arc::as_ptr(sink)));
+        if !made {
+            return Err(
+                "the sink is not the resource-aware scene sink this backend made".to_owned(),
+            );
+        }
+        self.frames
+            .clone()
+            .ok_or_else(|| "the backend was started without a scene sink".to_owned())
+    }
+
+    /// Makes the resident driver over this side's resource service.
+    ///
+    /// # Errors
+    ///
+    /// Returns a reason when this is a legacy-only side.
+    pub fn resident_driver(&self) -> Result<VulkanResidentDriver, String> {
+        let resources = self
+            .resources
+            .as_ref()
+            .ok_or_else(|| "the backend has no resource service".to_owned())?;
+        Ok(VulkanResidentDriver::new(
+            resources.service.clone(),
+            resources.max_adoptions_per_frame,
+        ))
+    }
+
+    /// Connects the caller-owned service wake relay to the presenter's texture wake after presenter startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns a reason when this is a legacy-only side.
+    pub fn connect(&self, texture_wake: Arc<dyn Fn() + Send + Sync>) -> Result<(), String> {
+        let resources = self
+            .resources
+            .as_ref()
+            .ok_or_else(|| "the backend has no resource service".to_owned())?;
+        resources.relay.connect(texture_wake);
+        Ok(())
+    }
+
+    /// Disconnects the caller-owned service wake relay. Repeated calls are harmless.
+    ///
+    /// # Errors
+    ///
+    /// Returns a reason when this is a legacy-only side.
+    pub fn disconnect(&self) -> Result<(), String> {
+        let resources = self
+            .resources
+            .as_ref()
+            .ok_or_else(|| "the backend has no resource service".to_owned())?;
+        resources.relay.disconnect();
+        Ok(())
+    }
+
     /// Whether `sink` is the one [`new_sink`](Self::new_sink) made.
     pub(crate) fn made(&self, sink: &Arc<dyn QuadSink>) -> bool {
         self.made
@@ -365,5 +606,13 @@ impl VulkanSinkSide {
         self.refusals
             .take()
             .map(|message| PresenterReport::Failed { message })
+    }
+}
+
+impl Drop for VulkanSinkSide {
+    fn drop(&mut self) {
+        if let Some(resources) = &self.resources {
+            resources.relay.disconnect();
+        }
     }
 }

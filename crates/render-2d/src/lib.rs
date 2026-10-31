@@ -8,7 +8,8 @@
 //!   application's accepted adapter);
 //! - `MetalBackend` (feature `metal`, macOS) is the full backend over `ck-gpu-metal`;
 //! - `VulkanSinkSide` (feature `vulkan`) is everything of a backend over `ck-gpu-vulkan` except the presenter: the
-//!   scene conversion and the once-only refusal (the application owns the presenter).
+//!   legacy sink or resource-aware scene conversion, resident driver, caller-owned wake relay and once-only refusal (the
+//!   application owns the presenter).
 //!
 //! - [`Image`]: premultiplied RGBA8, made only by decoding a PNG under the budgets of [`budget`]. Re-exported from
 //!   `ck-resources`, which holds the decoder.
@@ -41,6 +42,10 @@ mod resident;
 mod scene;
 #[cfg(feature = "vulkan")]
 mod vulkan;
+#[cfg(feature = "vulkan")]
+mod vulkan_resident;
+#[cfg(feature = "vulkan")]
+mod vulkan_scene;
 
 pub use bridge::{
     AttachRefused, Phase, QuadSink, SceneBridge, SceneWriter, WriteCounts, WriterTaken,
@@ -70,7 +75,11 @@ pub use resident::{
 };
 pub use scene::{FrameQuad, PlacedFrameQuad, QuadKey, SceneFrame, SceneLimits, SceneLimitsError};
 #[cfg(feature = "vulkan")]
+pub use vulkan::VulkanResourceLimits;
+#[cfg(feature = "vulkan")]
 pub use vulkan::VulkanSinkSide;
+#[cfg(feature = "vulkan")]
+pub use vulkan_resident::VulkanResidentDriver;
 
 #[cfg(test)]
 mod tests;
