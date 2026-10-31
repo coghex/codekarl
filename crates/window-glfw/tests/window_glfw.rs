@@ -20,7 +20,7 @@
 
 use std::collections::BTreeMap;
 use std::env;
-use std::ffi::{CString, c_void};
+use std::ffi::{CString, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
@@ -31,6 +31,22 @@ use std::time::{Duration, Instant};
 
 use ck_window::{Backend, NativeEvent, NativeWake, Notifier, PixelSize, Wait, WindowDesc};
 use ck_window_glfw::{GlfwBackend, GlfwHandles, PumpReport};
+
+unsafe extern "C" {
+    fn glfwCreateWindow(
+        width: i32,
+        height: i32,
+        title: *const c_char,
+        monitor: *mut c_void,
+        share: *mut c_void,
+    ) -> *mut c_void;
+    fn glfwDestroyWindow(window: *mut c_void);
+    fn glfwIconifyWindow(window: *mut c_void);
+    fn glfwRestoreWindow(window: *mut c_void);
+    fn glfwFocusWindow(window: *mut c_void);
+    fn glfwPollEvents();
+    fn glfwWaitEvents();
+}
 
 #[path = "../../../apps/codekarl/tests/supervisor/mod.rs"]
 #[expect(
@@ -119,6 +135,9 @@ impl Rig {
             rig.pump(Wait::Poll);
             thread::sleep(Duration::from_millis(5));
         }
+        // GLFW may report the activation caused by opening this window on the next pump.
+        // Keep that setup event out of each case's own assertions.
+        let _ = rig.pump_for(Duration::from_millis(100));
         rig
     }
 
@@ -178,7 +197,12 @@ impl Drop for Rig {
 /// A report that handed over no close request and no size. A window refresh (needs-display) may come at
 /// any time, from the window system alone, so the cases never count on its absence.
 fn quiet(report: &PumpReport) -> bool {
-    report.close.is_none() && report.pixel_size.is_none() && report.absorbed_close_presses == 0
+    report.input.is_empty()
+        && report.close.is_none()
+        && report.pixel_size.is_none()
+        && !report.minimized
+        && !report.restored
+        && report.absorbed_close_presses == 0
 }
 
 /// Whether `returns` empty returns of the blocking pump within `elapsed` is a busy loop. System events end a
@@ -310,6 +334,20 @@ fn marked_escape_tap() {
     marked_escape_up();
 }
 
+fn marked_key_tap(key_code: u16, characters: &str) {
+    assert!(support::post_key(key_code, 0, false, characters, true));
+    assert!(support::post_keyboard_event(1, key_code, 0, true));
+}
+
+fn key_events(report: &PumpReport) -> Vec<NativeEvent> {
+    report
+        .input
+        .iter()
+        .filter(|event| matches!(event, NativeEvent::Key { .. } | NativeEvent::KeyResync(_)))
+        .copied()
+        .collect()
+}
+
 // ---------------------------------------------------------------------------------------------
 // The cases
 // ---------------------------------------------------------------------------------------------
@@ -435,14 +473,32 @@ fn close_button() {
     }
 }
 
-/// 5. Escape (press only): one request with the key source; the window is alive.
+/// 5. Escape is recorded as a normal key; the default close binding is applied by the loop.
 fn escape() {
     let mut rig = Rig::open();
     marked_escape_tap();
     let report = rig
-        .pump_until(|report| report.close.is_some())
-        .expect("a close request");
-    assert_eq!(report.close, Some(NativeEvent::EscapePressed));
+        .pump_until(|report| !report.input.is_empty())
+        .expect("an Escape transition");
+    assert_eq!(
+        key_events(&report),
+        [
+            NativeEvent::Key {
+                key: ck_input::Key::Escape,
+                down: true,
+                repeat: false
+            },
+            NativeEvent::Key {
+                key: ck_input::Key::Escape,
+                down: false,
+                repeat: false
+            },
+        ]
+    );
+    assert_eq!(
+        report.close, None,
+        "the backend does not hardcode Escape as close"
+    );
     assert!(
         !support::should_close(rig.window()),
         "Escape never sets the flag"
@@ -453,61 +509,71 @@ fn escape() {
     assert!(Rig::close_requests(&rig.pump_for(Duration::from_millis(150))).is_empty());
 }
 
-/// 6. Repeats and further presses while a request waits coalesce into one request and a count.
+/// 6. Key transitions are preserved; duplicate state changes are dropped and held repeats are marked.
 fn presses_coalesce() {
     let mut rig = Rig::open();
-    // Three taps (press, release) are three presses; the first asks, the other two are absorbed.
+    // Three taps (press, release) remain three ordered key pairs.
     for _ in 0..3 {
         marked_escape_tap();
     }
     let report = rig
-        .pump_until(|report| report.close.is_some())
-        .expect("a close request");
-    assert_eq!(report.close, Some(NativeEvent::EscapePressed));
-    assert_eq!(report.absorbed_close_presses, 2);
-    // A held key: the first key-down presses, the others repeat. Repeats while a request waits record
-    // nothing; a repeat after the request was handed over asks again.
-    for _ in 0..4 {
-        assert!(support::post_key(support::ESCAPE, 0, false, "\u{1b}", true));
-    }
+        .pump_until(|report| !report.input.is_empty())
+        .expect("the Escape taps are recorded");
+    assert_eq!(key_events(&report).len(), 6);
+    assert!(key_events(&report).iter().all(|event| matches!(
+        event,
+        NativeEvent::Key {
+            key: ck_input::Key::Escape,
+            ..
+        }
+    )));
+    // The first key-down presses; an explicit repeat below verifies GLFW's repeat flag.
+    assert!(support::post_key(support::ESCAPE, 0, false, "\u{1b}", true));
     let held = rig
-        .pump_until(|report| report.close.is_some())
-        .expect("a close request");
+        .pump_until(|report| !report.input.is_empty())
+        .expect("the held Escape is recorded");
     assert_eq!(
-        (held.close, held.absorbed_close_presses),
-        (Some(NativeEvent::EscapePressed), 0)
+        key_events(&held).len(),
+        1,
+        "the initial key-down is delivered once"
     );
     assert!(support::post_key(support::ESCAPE, 0, true, "\u{1b}", true));
-    let again = rig
-        .pump_until(|report| report.close.is_some())
-        .expect("a repeat asks again once the first request was handed over");
-    assert_eq!(again.close, Some(NativeEvent::EscapePressed));
+    let repeated = rig
+        .pump_until(|report| !report.input.is_empty())
+        .expect("a repeat is recorded while held");
+    assert_eq!(
+        key_events(&repeated),
+        [NativeEvent::Key {
+            key: ck_input::Key::Escape,
+            down: true,
+            repeat: true
+        }]
+    );
     marked_escape_up();
     rig.pump_for(Duration::from_millis(100));
-    // The button and Escape together: the first source in arrival order.
+    // The button and Escape are independent: each retains its own event shape.
     support::perform_close();
     marked_escape_tap();
-    let both = rig
-        .pump_until(|report| report.close.is_some())
-        .expect("a close request");
+    let both = rig.pump(Wait::Poll);
     assert_eq!(both.close, Some(NativeEvent::CloseButton));
-    assert_eq!(both.absorbed_close_presses, 1);
+    assert_eq!(key_events(&both).len(), 2);
 }
 
-/// 7. The pump drains every native event in one call but hands over at most one of each.
+/// 7. The pump drains every native event in one call and hands over every recorded key transition.
 fn the_pump_drains_everything_and_hands_over_one() {
     let mut rig = Rig::open();
     for _ in 0..100 {
         marked_escape_tap();
     }
     let first = rig.pump(Wait::Poll);
-    assert_eq!(first.close, Some(NativeEvent::EscapePressed));
     assert_eq!(
-        first.absorbed_close_presses, 99,
-        "all of them were drained in one call"
+        key_events(&first).len(),
+        200,
+        "all transitions drain in one call"
     );
+    assert_eq!(first.close, None);
     assert!(quiet(&rig.pump(Wait::Poll)), "nothing is left");
-    // Through the `Backend` interface: at most one of each kind per pump.
+    // Through the `Backend` interface: the GLFW drain preserves every transition even with cap = 1.
     for _ in 0..10 {
         marked_escape_tap();
     }
@@ -515,10 +581,289 @@ fn the_pump_drains_everything_and_hands_over_one() {
     rig.backend
         .pump(&mut |event| handed.push(event), Wait::Poll, 1);
     assert_eq!(
-        handed,
-        [NativeEvent::EscapePressed],
-        "the cap bounds the hand-over, not the draining"
+        handed
+            .into_iter()
+            .filter(|event| matches!(event, NativeEvent::Key { .. } | NativeEvent::KeyResync(_)))
+            .collect::<Vec<_>>(),
+        (0..10)
+            .flat_map(|_| [
+                NativeEvent::Key {
+                    key: ck_input::Key::Escape,
+                    down: true,
+                    repeat: false
+                },
+                NativeEvent::Key {
+                    key: ck_input::Key::Escape,
+                    down: false,
+                    repeat: false
+                },
+            ])
+            .collect::<Vec<_>>(),
+        "the cap bounds neither callback recording nor the GLFW drain"
     );
+}
+
+/// 7a. Representative keys from each mapping family arrive normalized, and unknown keys are dropped.
+fn normalized_keys() {
+    let mut rig = Rig::open();
+    let cases = [
+        (0, "a", ck_input::Key::KeyA),     // letter
+        (18, "1", ck_input::Key::Digit1),  // digit
+        (122, "", ck_input::Key::F1),      // function
+        (126, "", ck_input::Key::ArrowUp), // arrow
+        (49, " ", ck_input::Key::Space),   // control/punctuation
+        (115, "", ck_input::Key::Home),    // navigation
+        (27, "-", ck_input::Key::Minus),   // punctuation
+    ];
+    for (code, text, key) in cases {
+        marked_key_tap(code, text);
+        let report = rig
+            .pump_until(|report| {
+                report.input.iter().any(|event| {
+                    matches!(event,
+                NativeEvent::Key { key: actual, .. } if *actual == key)
+                })
+            })
+            .unwrap_or_else(|| panic!("GLFW did not report {key:?}"));
+        let events = key_events(&report);
+        assert_eq!(
+            events,
+            [
+                NativeEvent::Key {
+                    key,
+                    down: true,
+                    repeat: false
+                },
+                NativeEvent::Key {
+                    key,
+                    down: false,
+                    repeat: false
+                },
+            ],
+            "mapping for {key:?}"
+        );
+    }
+    // Carbon keycode 0xFFFF has no GLFW key mapping. Follow it with a known key so an empty report
+    // cannot make this check pass without dispatching either event.
+    assert!(support::post_key(u16::MAX, 0, false, "", true));
+    marked_key_tap(0, "a");
+    let report = rig
+        .pump_until(|report| !key_events(report).is_empty())
+        .expect("the known key after the unmapped key is delivered");
+    assert!(
+        key_events(&report).iter().all(|event| matches!(
+            event,
+            NativeEvent::Key {
+                key: ck_input::Key::KeyA,
+                ..
+            }
+        )),
+        "unknown token is dropped and only the known key arrives: {report:?}"
+    );
+    assert_eq!(
+        key_events(&report),
+        [
+            NativeEvent::Key {
+                key: ck_input::Key::KeyA,
+                down: true,
+                repeat: false
+            },
+            NativeEvent::Key {
+                key: ck_input::Key::KeyA,
+                down: false,
+                repeat: false
+            },
+        ]
+    );
+}
+
+/// 7b. Modifier callbacks preserve left/right identity and held-state order for every modifier family.
+fn modifier_sides_and_order() {
+    let mut rig = Rig::open();
+    let cases = [
+        (
+            56,
+            60,
+            1 << 17,
+            ck_input::Key::ShiftLeft,
+            ck_input::Key::ShiftRight,
+        ),
+        (
+            59,
+            62,
+            1 << 18,
+            ck_input::Key::ControlLeft,
+            ck_input::Key::ControlRight,
+        ),
+        (
+            58,
+            61,
+            1 << 19,
+            ck_input::Key::AltLeft,
+            ck_input::Key::AltRight,
+        ),
+        (
+            55,
+            54,
+            1 << 20,
+            ck_input::Key::MetaLeft,
+            ck_input::Key::MetaRight,
+        ),
+    ];
+    for (left_code, right_code, flag, left, right) in cases {
+        for right_first in [false, true] {
+            let (first_code, first_key, second_code, second_key) = if right_first {
+                (right_code, right, left_code, left)
+            } else {
+                (left_code, left, right_code, right)
+            };
+            assert!(support::post_keyboard_event(2, first_code, flag, true));
+            assert!(support::post_keyboard_event(2, second_code, flag, true));
+            assert!(support::post_keyboard_event(2, first_code, flag, true));
+            assert!(support::post_keyboard_event(2, second_code, 0, true));
+            let report = rig
+                .pump_until(|report| report.input.len() >= 4)
+                .expect("modifier side transitions");
+            assert_eq!(
+                key_events(&report),
+                [
+                    NativeEvent::Key {
+                        key: first_key,
+                        down: true,
+                        repeat: false
+                    },
+                    NativeEvent::Key {
+                        key: second_key,
+                        down: true,
+                        repeat: false
+                    },
+                    NativeEvent::Key {
+                        key: first_key,
+                        down: false,
+                        repeat: false
+                    },
+                    NativeEvent::Key {
+                        key: second_key,
+                        down: false,
+                        repeat: false
+                    },
+                ],
+                "modifier order {first_key:?}, {second_key:?}"
+            );
+        }
+    }
+}
+
+/// 7c. Focus and iconify callbacks report the latest native state.
+fn focus_and_minimize() {
+    let mut rig = Rig::open();
+    let window = rig.window();
+    let title = CString::new("glfw focus-stealing test window").expect("static title has no NUL");
+    // SAFETY: GLFW is initialized on its required main thread; the second window is a test-only
+    // focus target and has no Rust backend handle or shared context.
+    let other = unsafe {
+        glfwCreateWindow(
+            200,
+            150,
+            title.as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert!(
+        !other.is_null(),
+        "a second GLFW window is created as a focus target"
+    );
+    let lost = rig
+        .pump_until(|report| report.input.contains(&NativeEvent::FocusLost))
+        .expect("creating a focused second GLFW window reports focus loss");
+    assert!(lost.input.contains(&NativeEvent::FocusLost));
+    // SAFETY: the live Rig owns this GLFW window and the test runs on its main thread.
+    unsafe { glfwFocusWindow(window) };
+    let gained = rig
+        .pump_until(|report| report.input.contains(&NativeEvent::FocusGained))
+        .expect("showing and focusing reports focus gain");
+    assert!(gained.input.contains(&NativeEvent::FocusGained));
+    // SAFETY: `other` is the live test window created above and GLFW is still initialized.
+    unsafe { glfwDestroyWindow(other) };
+
+    // SAFETY: the live Rig owns this GLFW window and the test runs on its main thread.
+    unsafe { glfwIconifyWindow(window) };
+    let minimized = rig
+        .pump_until(|report| report.minimized)
+        .expect("iconify callback reports minimized");
+    assert!(minimized.minimized && !minimized.restored);
+    // SAFETY: the live Rig owns this GLFW window and the test runs on its main thread.
+    unsafe { glfwRestoreWindow(window) };
+    let restored = rig
+        .pump_until(|report| report.restored)
+        .expect("restore callback reports restored");
+    assert!(restored.restored && !restored.minimized);
+}
+
+/// 7d. One absolute deadline bounds repeated real waits and the two spec-required negative controls.
+fn deadline_wait_is_bounded() {
+    let mut rig = Rig::open();
+    rig.pump_for(Duration::from_millis(400));
+    let started = Instant::now();
+    let deadline = started + Duration::from_millis(300);
+    let mut returns = 0;
+    while Instant::now() < deadline {
+        rig.backend.pump_until(&mut |_| {}, deadline, 16);
+        returns += 1;
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        !too_many_returns(returns, elapsed),
+        "busy polling: {returns} returns in {elapsed:?}"
+    );
+    assert!(
+        elapsed <= Duration::from_millis(500),
+        "deadline + 200 ms bound: {elapsed:?}"
+    );
+    eprintln!("deadline witness: {returns} returns in {elapsed:?}; limit 500 ms");
+
+    // Negative control 1: a polling implementation returns at CPU speed and violates the existing bound.
+    let started = Instant::now();
+    let mut polls = 0;
+    while started.elapsed() < Duration::from_millis(300) {
+        // SAFETY: GLFW is initialized by the live Rig, on its required main thread.
+        unsafe { glfwPollEvents() };
+        polls += 1;
+    }
+    assert!(
+        too_many_returns(polls, started.elapsed()),
+        "PollEvents control unexpectedly met the bound: {polls}"
+    );
+    eprintln!(
+        "negative control glfwPollEvents: {polls} returns in {:?}; correctly exceeds bound",
+        started.elapsed()
+    );
+
+    // Negative control 2: the unbounded wait cannot honor the absolute deadline. A later GLFW wake releases
+    // it only after the deadline plus the allowed slack.
+    if env::var(TYPING_VARIABLE).as_deref() != Ok("1") {
+        let waker: Arc<dyn NativeWake> = rig.backend.wake_target();
+        let helper = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(600));
+            waker.wake();
+        });
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(300);
+        while Instant::now() < deadline {
+            // SAFETY: GLFW is initialized by the live Rig, on its required main thread.
+            unsafe { glfwWaitEvents() };
+        }
+        let elapsed = started.elapsed();
+        helper.join().expect("negative control event posted");
+        assert!(
+            elapsed > Duration::from_millis(500),
+            "WaitEvents control unexpectedly met deadline: {elapsed:?}"
+        );
+        eprintln!(
+            "negative control glfwWaitEvents: returned after {elapsed:?}, past deadline + 200 ms"
+        );
+    }
 }
 
 /// 8. Both waits, with pending state and wake races.
@@ -598,13 +943,62 @@ fn wait_modes() {
     let report = loop {
         assert!(Instant::now() < give_up, "the Escape never arrived");
         let report = rig.pump(Wait::UntilEvent);
-        if report.close.is_some() {
+        if !report.input.is_empty() {
             break report;
         }
     };
     helper.join().expect("the poster ended");
-    assert_eq!(report.close, Some(NativeEvent::EscapePressed));
+    assert_eq!(
+        report.input[0],
+        NativeEvent::Key {
+            key: ck_input::Key::Escape,
+            down: true,
+            repeat: false
+        }
+    );
     assert!(started.elapsed() >= Duration::from_millis(150));
+}
+
+/// 8a. A wake posted before `pump_until` is sticky and ends the far-deadline wait immediately.
+fn pump_until_honors_a_preposted_wake() {
+    let mut rig = Rig::open();
+    let target = rig.backend.wake_target();
+    target.wake();
+    let mut events = Vec::new();
+    let started = Instant::now();
+    rig.backend.pump_until(
+        &mut |event| events.push(event),
+        started + Duration::from_secs(5),
+        16,
+    );
+    assert!(
+        events.is_empty(),
+        "a wake alone has no native event: {events:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(1000),
+        "the preposted wake ends pump_until well before its deadline: {:?}",
+        started.elapsed()
+    );
+}
+
+/// 8b. A callback's already-recorded state makes `pump_until` drain without waiting for the wake.
+fn pump_until_hands_over_previously_recorded_state() {
+    let mut rig = Rig::open();
+    support::perform_close();
+    let mut events = Vec::new();
+    let started = Instant::now();
+    rig.backend.pump_until(
+        &mut |event| events.push(event),
+        started + Duration::from_secs(5),
+        16,
+    );
+    assert_eq!(events, [NativeEvent::CloseButton]);
+    assert!(
+        started.elapsed() < Duration::from_millis(1000),
+        "pending state ends pump_until well before its deadline: {:?}",
+        started.elapsed()
+    );
 }
 
 /// 9. Wakes through the notifier: counted while armed, none after disarm; a retained target after
@@ -773,15 +1167,26 @@ fn typing_is_dropped() {
         "the owner's typing asked for nothing: {seen:?}"
     );
     assert!(
+        seen.iter().all(|report| key_events(report).is_empty()),
+        "the owner's typing delivered no Key or KeyResync: {seen:?}"
+    );
+    assert!(
         support::info().filtered_keys >= before + 10,
         "the filter dropped the unmarked events"
     );
     // The tests' own events still get through.
     marked_escape_tap();
     let report = rig
-        .pump_until(|report| report.close.is_some())
+        .pump_until(|report| !report.input.is_empty())
         .expect("the marked Escape is delivered");
-    assert_eq!(report.close, Some(NativeEvent::EscapePressed));
+    assert_eq!(
+        report.input[0],
+        NativeEvent::Key {
+            key: ck_input::Key::Escape,
+            down: true,
+            repeat: false
+        }
+    );
 }
 
 /// 15. Given no loader, GLFW searches by the loader's leaf name, and a failure is reported by name: found
@@ -960,7 +1365,16 @@ fn the_window_becomes_active_by_itself() {
     let give_up = Instant::now() + BOUND;
     loop {
         let report = backend.pump_with_report(Wait::Poll, 16);
-        if report.close == Some(NativeEvent::EscapePressed) {
+        if report.input.iter().any(|event| {
+            matches!(
+                event,
+                NativeEvent::Key {
+                    key: ck_input::Key::Escape,
+                    down: true,
+                    ..
+                }
+            )
+        }) {
             break;
         }
         assert!(Instant::now() < give_up, "the Escape never arrived");
@@ -1068,7 +1482,7 @@ fn wait_survives_a_system_event() {
 
 type Case = fn();
 
-const CASES: [(&str, Case); 21] = [
+const CASES: [(&str, Case); 27] = [
     ("create_and_destroy", create_and_destroy),
     ("off_the_main_thread", off_the_main_thread),
     (
@@ -1082,7 +1496,19 @@ const CASES: [(&str, Case); 21] = [
         "the_pump_drains_everything_and_hands_over_one",
         the_pump_drains_everything_and_hands_over_one,
     ),
+    ("normalized_keys", normalized_keys),
+    ("modifier_sides_and_order", modifier_sides_and_order),
+    ("focus_and_minimize", focus_and_minimize),
+    ("deadline_wait_is_bounded", deadline_wait_is_bounded),
     ("wait_modes", wait_modes),
+    (
+        "pump_until_honors_a_preposted_wake",
+        pump_until_honors_a_preposted_wake,
+    ),
+    (
+        "pump_until_hands_over_previously_recorded_state",
+        pump_until_hands_over_previously_recorded_state,
+    ),
     ("wake_lifetime", wake_lifetime),
     ("pixel_size_and_scale", pixel_size_and_scale),
     ("no_menu_bar_and_cmd_q", no_menu_bar_and_cmd_q),

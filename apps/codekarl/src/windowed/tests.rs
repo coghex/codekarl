@@ -766,7 +766,18 @@ fn extra_close_requests_from_a_typing_owner_are_declined_and_change_nothing() {
             backend.on_pump = Some(Box::new(move |pass| {
                 let mut queue = queue.lock().unwrap_or_else(PoisonError::into_inner);
                 match pass {
-                    2 | 80 => queue.push_back(NativeEvent::EscapePressed),
+                    2 | 80 => queue.extend([
+                        NativeEvent::Key {
+                            key: ck_window::Key::Escape,
+                            down: true,
+                            repeat: false,
+                        },
+                        NativeEvent::Key {
+                            key: ck_window::Key::Escape,
+                            down: false,
+                            repeat: false,
+                        },
+                    ]),
                     // A burst: only one request is ever outstanding, the rest are absorbed.
                     40 => queue.extend([NativeEvent::CloseButton; 3]),
                     _ => {}

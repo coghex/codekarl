@@ -186,26 +186,6 @@ fn a_custom_close_binding_replaces_escape_on_the_native_path() {
 }
 
 #[test]
-fn escape_from_the_glfw_path_still_requests_a_close_whatever_the_bindings() {
-    owned(
-        module_path!(),
-        "escape_from_the_glfw_path_still_requests_a_close_whatever_the_bindings",
-        DEADLINE,
-        || {
-            let _scenario = scenario();
-            let (posts, end) = run(
-                vec![vec![NativeEvent::EscapePressed]],
-                &[Answer::Accept],
-                |rig| {
-                    with(rig, bindings(&[("close", &["KeyQ"])]));
-                },
-            );
-            assert_eq!((posts, end), (vec![press()], LoopEnd::Closed));
-        },
-    );
-}
-
-#[test]
 fn focus_loss_releases_every_held_key_so_the_next_press_is_a_new_one() {
     owned(
         module_path!(),

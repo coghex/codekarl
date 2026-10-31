@@ -13,7 +13,7 @@ use ck_window::{Backend, CreatedWindow, NativeEvent, NativeWake, PixelSize, Wait
 use crate::activation;
 use crate::ffi::{self, GlfwWindow};
 use crate::loader::{Glfw, Installed, VulkanLoaderForGlfw};
-use crate::pending::{CloseSource, Pending, effective_wait, events};
+use crate::pending::{Pending, effective_wait, key_from_glfw, timeout_seconds};
 use crate::wake::GlfwWake;
 
 /// How long a record may wait for the logger: the main thread never waits on it longer.
@@ -135,7 +135,7 @@ unsafe fn pending_of<'a>(window: *mut GlfwWindow) -> Option<&'a Pending> {
 extern "C" fn on_close(window: *mut GlfwWindow) {
     // SAFETY: called by GLFW on the main thread for a window of a live backend (see `pending_of`).
     if let Some(pending) = unsafe { pending_of(window) } {
-        pending.record_close(CloseSource::Button);
+        pending.record_close();
     }
 }
 
@@ -146,16 +146,35 @@ extern "C" fn on_key(
     action: c_int,
     _mods: c_int,
 ) {
-    if key != ffi::KEY_ESCAPE {
+    let Some(key) = key_from_glfw(key) else {
         return;
-    }
+    };
     // SAFETY: called by GLFW on the main thread for a window of a live backend (see `pending_of`).
     if let Some(pending) = unsafe { pending_of(window) } {
-        // A press asks. A repeat of a held key asks again only when no request is waiting; a release
-        // and anything while a request waits record nothing.
-        if action == ffi::PRESS || (action == ffi::REPEAT && !pending.close_pending()) {
-            pending.record_close(CloseSource::Key);
+        match action {
+            ffi::PRESS => pending.record_key(key, true, false),
+            ffi::RELEASE => pending.record_key(key, false, false),
+            ffi::REPEAT => pending.record_key(key, true, true),
+            _ => {}
         }
+    }
+}
+
+extern "C" fn on_focus(window: *mut GlfwWindow, focused: c_int) {
+    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `pending_of`).
+    if let Some(pending) = unsafe { pending_of(window) } {
+        if focused == ffi::TRUE {
+            pending.record_focus_gained();
+        } else {
+            pending.record_focus_lost();
+        }
+    }
+}
+
+extern "C" fn on_iconify(window: *mut GlfwWindow, iconified: c_int) {
+    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `pending_of`).
+    if let Some(pending) = unsafe { pending_of(window) } {
+        pending.record_minimized(iconified == ffi::TRUE);
     }
 }
 
@@ -183,16 +202,22 @@ extern "C" fn on_refresh(window: *mut GlfwWindow) {
     }
 }
 
-/// What one [`pump`](Backend::pump) handed over: at most one close request (the first source in arrival
-/// order), one pixel-size change (the latest) and one needs-display, with the count behind the close.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// What one [`pump`](Backend::pump) handed over: ordered key/focus events, the latest iconify state,
+/// at most one close request and the latest size/redraw state.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PumpReport {
-    /// The close request, if any: [`NativeEvent::CloseButton`] or [`NativeEvent::EscapePressed`].
+    /// Normalised key and focus events, in their recorded order.
+    pub input: Vec<NativeEvent>,
+    /// The close request, if any: [`NativeEvent::CloseButton`].
     pub close: Option<NativeEvent>,
     /// The latest pixel size, when it changed. A zero size (a minimised window) is reported as such.
     pub pixel_size: Option<PixelSize>,
     /// Whether the window needs to be drawn again.
     pub needs_display: bool,
+    /// Whether the window was minimised during this pump.
+    pub minimized: bool,
+    /// Whether the window was restored during this pump.
+    pub restored: bool,
     /// Further close-type presses absorbed behind the first (saturating).
     pub absorbed_close_presses: u32,
 }
@@ -408,6 +433,10 @@ impl GlfwBackend {
             // SAFETY: as above; a wake from any thread ends the wait.
             Wait::UntilEvent => unsafe { ffi::glfwWaitEvents() },
         }
+        self.report_after_dispatch()
+    }
+
+    fn report_after_dispatch(&mut self) -> PumpReport {
         // GLFW has returned: outside every callback, so GLFW may be called again.
         if let Some(window) = self.window {
             // SAFETY: the window is live (destroyed only by `destroy_window`), on the main thread.
@@ -424,13 +453,13 @@ impl GlfwBackend {
                 .map(|(width, height)| PixelSize { width, height }),
         };
         note_absorbed(taken.absorbed);
-        let handed = events(taken.close, size, taken.display);
         PumpReport {
-            close: handed.iter().copied().find(|event| {
-                matches!(event, NativeEvent::CloseButton | NativeEvent::EscapePressed)
-            }),
+            input: taken.input,
+            close: taken.close.map(|_| NativeEvent::CloseButton),
             pixel_size: size,
             needs_display: taken.display,
+            minimized: taken.minimized == Some(true),
+            restored: taken.minimized == Some(false),
             absorbed_close_presses: taken.absorbed,
         }
     }
@@ -564,6 +593,10 @@ impl Backend for GlfwBackend {
         unsafe { ffi::glfwSetWindowContentScaleCallback(window.as_ptr(), Some(on_scale)) };
         // SAFETY: as above; the refresh callback only records.
         unsafe { ffi::glfwSetWindowRefreshCallback(window.as_ptr(), Some(on_refresh)) };
+        // SAFETY: as above; the focus callback only records.
+        unsafe { ffi::glfwSetWindowFocusCallback(window.as_ptr(), Some(on_focus)) };
+        // SAFETY: as above; the iconify callback only records.
+        unsafe { ffi::glfwSetWindowIconifyCallback(window.as_ptr(), Some(on_iconify)) };
         let pixel_size = framebuffer_size(window);
         self.window = Some(window);
         // A request the system may decline: not waited for, retried or failed on.
@@ -588,7 +621,56 @@ impl Backend for GlfwBackend {
 
     fn pump(&mut self, events: &mut dyn FnMut(NativeEvent), wait: Wait, cap: usize) {
         let report = self.pump_with_report(wait, cap);
+        for event in report.input {
+            events(event);
+        }
+        if report.minimized {
+            events(NativeEvent::Minimized);
+        }
+        if report.restored {
+            events(NativeEvent::Restored);
+        }
         // At most one close, one size and one needs-display, in that order; callbacks only recorded.
+        if let Some(close) = report.close {
+            events(close);
+        }
+        if let Some(PixelSize { width, height }) = report.pixel_size {
+            events(NativeEvent::PixelSizeChanged { width, height });
+        }
+        if report.needs_display {
+            events(NativeEvent::NeedsDisplay);
+        }
+    }
+
+    fn supports_deadline(&self) -> bool {
+        true
+    }
+
+    fn pump_until(&mut self, events: &mut dyn FnMut(NativeEvent), deadline: Instant, _cap: usize) {
+        if !self.initialised {
+            return;
+        }
+        let wait = effective_wait(Wait::UntilEvent, self.pending.is_pending());
+        match (wait, timeout_seconds(deadline, Instant::now())) {
+            (Wait::Poll, _) | (_, None) => {
+                // SAFETY: GLFW is initialised and this runs on the main thread (the backend is not Send).
+                unsafe { ffi::glfwPollEvents() };
+            }
+            (Wait::UntilEvent, Some(timeout)) => {
+                // SAFETY: GLFW is initialised and this runs on the main thread; timeout is finite and positive.
+                unsafe { ffi::glfwWaitEventsTimeout(timeout) };
+            }
+        }
+        let report = self.report_after_dispatch();
+        for event in report.input {
+            events(event);
+        }
+        if report.minimized {
+            events(NativeEvent::Minimized);
+        }
+        if report.restored {
+            events(NativeEvent::Restored);
+        }
         if let Some(close) = report.close {
             events(close);
         }

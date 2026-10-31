@@ -55,19 +55,14 @@ pub(crate) enum Mode {
     Windowed(Backend),
 }
 
-/// Refuses explicit milestone-5 tables that the compatibility backend does not implement yet.
+/// Refuses explicit frame settings that the compatibility backend does not implement yet.
 pub(crate) fn validate_settings(
     mode: Mode,
-    input_bindings_present: bool,
+    _input_bindings_present: bool,
     frame_present: bool,
 ) -> Result<(), String> {
     if mode != Mode::Windowed(Backend::GlfwVulkan) {
         return Ok(());
-    }
-    if input_bindings_present {
-        return Err(
-            "[input.bindings] is not supported by glfw-vulkan until milestone 5.5".to_owned(),
-        );
     }
     if frame_present {
         return Err("[frame] is not supported by glfw-vulkan until milestone 5.5".to_owned());
@@ -215,10 +210,10 @@ mod tests {
     }
 
     #[test]
-    fn glfw_vulkan_refuses_explicit_bindings_and_frame_but_other_modes_accept_them() {
+    fn glfw_vulkan_accepts_explicit_bindings_but_still_refuses_frame() {
         assert_eq!(
             validate_settings(Mode::Windowed(Backend::GlfwVulkan), true, false),
-            Err("[input.bindings] is not supported by glfw-vulkan until milestone 5.5".to_owned())
+            Ok(())
         );
         assert_eq!(
             validate_settings(Mode::Windowed(Backend::GlfwVulkan), false, true),
