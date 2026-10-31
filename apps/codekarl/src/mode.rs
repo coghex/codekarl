@@ -55,21 +55,6 @@ pub(crate) enum Mode {
     Windowed(Backend),
 }
 
-/// Refuses explicit frame settings that the compatibility backend does not implement yet.
-pub(crate) fn validate_settings(
-    mode: Mode,
-    _input_bindings_present: bool,
-    frame_present: bool,
-) -> Result<(), String> {
-    if mode != Mode::Windowed(Backend::GlfwVulkan) {
-        return Ok(());
-    }
-    if frame_present {
-        return Err("[frame] is not supported by glfw-vulkan until milestone 5.5".to_owned());
-    }
-    Ok(())
-}
-
 impl fmt::Display for Mode {
     /// The text of the `window: <mode>` record: `none (headless)` or the backend name.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -206,27 +191,6 @@ mod tests {
         assert_eq!(
             select(false, Some(Backend::NativeMetal), None, BOTH),
             Err("--backend given but the configuration has no [window] backend".to_owned())
-        );
-    }
-
-    #[test]
-    fn glfw_vulkan_accepts_explicit_bindings_but_still_refuses_frame() {
-        assert_eq!(
-            validate_settings(Mode::Windowed(Backend::GlfwVulkan), true, false),
-            Ok(())
-        );
-        assert_eq!(
-            validate_settings(Mode::Windowed(Backend::GlfwVulkan), false, true),
-            Err("[frame] is not supported by glfw-vulkan until milestone 5.5".to_owned())
-        );
-        assert_eq!(
-            validate_settings(Mode::Windowed(Backend::GlfwVulkan), false, false),
-            Ok(())
-        );
-        assert_eq!(validate_settings(Mode::Headless, true, true), Ok(()));
-        assert_eq!(
-            validate_settings(Mode::Windowed(Backend::NativeMetal), true, true),
-            Ok(())
         );
     }
 }

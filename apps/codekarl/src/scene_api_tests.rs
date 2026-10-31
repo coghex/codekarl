@@ -80,8 +80,11 @@ enum Kind {
     Native,
     /// A headless service and no update source.
     Headless,
-    /// No service (`glfw-vulkan`).
+    /// A backend-mode service and the update control, composed for `glfw-vulkan` (the same as `Native` here: the extensions
+    /// do not differ between the two windowed backends).
     Glfw,
+    /// No service, as a test builds a run without one.
+    NoService,
 }
 
 type Records = Arc<Mutex<Vec<(ck_log::Level, &'static str, String)>>>;
@@ -118,14 +121,14 @@ impl Rig {
         fs::write(dir.0.join("b.png"), png(4, 4, &[100; 4 * 4 * 4])).expect("an image");
         let root = dir.0.clone();
         let service = match kind {
-            Kind::Glfw => None,
-            Kind::Native | Kind::Headless => Some(
+            Kind::NoService => None,
+            Kind::Native | Kind::Glfw | Kind::Headless => Some(
                 ResourceService::with_assets(
                     limits,
-                    if kind == Kind::Native {
-                        Mode::Backend
-                    } else {
+                    if kind == Kind::Headless {
                         Mode::Headless
+                    } else {
+                        Mode::Backend
                     },
                     wakes(),
                     Some(Assets::new(root.clone())),
@@ -176,9 +179,8 @@ impl Rig {
             .expect("valid pacing")
             .control();
         let frame = frame_api::extension(match kind {
-            Kind::Native => FrameBackend::Control(control.clone()),
-            Kind::Headless => FrameBackend::Headless,
-            Kind::Glfw => FrameBackend::Unavailable,
+            Kind::Native | Kind::Glfw => FrameBackend::Control(control.clone()),
+            Kind::Headless | Kind::NoService => FrameBackend::Headless,
         });
         let window = window_api::extension(Requests::new().writer(Notifier::new()), headless);
         Self {
@@ -697,79 +699,62 @@ fn frame_on_update_registers_frame_update_and_drives_the_control_after_the_regis
 // glfw-vulkan
 // ---------------------------------------------------------------------------------------------
 
-/// Every new call validates its cheap arguments and then raises the stated message; `render.quad` keeps working; the
-/// update control stays off with its epoch unchanged and no `frame_update` is registered. Negative control: the same
-/// argument errors come first (a bad argument is the ordinary error, not the backend message).
+/// On `glfw-vulkan` the calls that were refused until milestone 5.5 work over its backend-mode service: `texture.load` and
+/// `status`, `render.create_quad`, `set_position` and `destroy_quad`, and `frame.on_update(fn)` turns the update control on
+/// while `frame.on_update(nil)` turns it off again. Negative control: the same calls on a run **without** a service say so
+/// (the argument errors come first), so the working calls are the service's doing, not the extensions' leniency.
 #[test]
-fn on_glfw_vulkan_every_new_call_says_it_is_not_available_after_validating_its_arguments() {
+fn on_glfw_vulkan_the_new_calls_work_over_the_backend_service_and_frame_drives_the_control() {
     let rig = Rig::new(Kind::Glfw);
-    let token = "ck1:tex:0000000000000001:00000001:0000000000000001";
-    let quad = "ck1:quad:0000000000000001:00000001:0000000000000001";
-    for (call, name) in [
-        ("texture.load('a.png')", "texture.load"),
-        (&format!("texture.reload('{token}')"), "texture.reload"),
-        (&format!("texture.release('{token}')"), "texture.release"),
-        (&format!("texture.status('{token}')"), "texture.status"),
-        (
-            &format!("render.create_quad{{texture='{token}', width=4, height=4}}"),
-            "render.create_quad",
-        ),
-        (
-            &format!("render.set_position('{quad}', 1, 2)"),
-            "render.set_position",
-        ),
-        (
-            &format!("render.set_rect('{quad}', 1, 2, 3, 4)"),
-            "render.set_rect",
-        ),
-        (
-            &format!("render.destroy_quad('{quad}')"),
-            "render.destroy_quad",
-        ),
-        ("frame.on_update(function() end)", "frame.on_update"),
-        ("frame.on_update(nil)", "frame.on_update"),
-    ] {
-        assert_eq!(
-            rig.error(call),
-            format!("{name} is not available on the glfw-vulkan backend until milestone 5.5"),
-            "{call}"
-        );
-    }
-    // A bad argument is the ordinary error, before the backend message.
+    assert!(!enabled(&rig.control));
+    let image = rig.token("return texture.load('a.png')");
+    let quad = rig.token(&format!(
+        "return render.create_quad{{texture='{image}', width=8, height=4}}"
+    ));
+    assert_eq!(rig.error(&format!("texture.status('{image}')")), "ok");
+    assert_eq!(
+        rig.error(&format!("render.set_position('{quad}', 1, 2)")),
+        "ok"
+    );
+    assert_eq!(rig.error(&format!("render.destroy_quad('{quad}')")), "ok");
+    assert_eq!(rig.error(&format!("texture.release('{image}')")), "ok");
+    let before = epoch(&rig.control);
+    let (owner, _dir) = rig.vm("frame.on_update(function() end)\nfunction startup() end\n");
+    assert!(
+        enabled(&rig.control),
+        "frame.on_update(fn) turned the control on"
+    );
+    assert_eq!(epoch(&rig.control), before + 1);
+    drop(owner);
+    let (_owner, _dir) =
+        rig.vm("frame.on_update(function() end)\nframe.on_update(nil)\nfunction startup() end\n");
+    assert!(!enabled(&rig.control), "frame.on_update(nil) turned it off");
+    // A bad argument is the ordinary error, as everywhere.
     for (call, name) in [
         ("texture.load(5)", "texture.load"),
-        ("texture.reload('nonsense')", "texture.reload"),
         ("render.create_quad(5)", "render.create_quad"),
-        (
-            "render.set_position('nonsense', 1, 2)",
-            "render.set_position",
-        ),
-        ("render.destroy_quad(5)", "render.destroy_quad"),
         ("frame.on_update(3)", "frame.on_update"),
     ] {
         let error = rig.error(call);
-        assert!(
-            error.contains(name) && !error.contains("not available"),
-            "{call}: {error}"
+        assert!(error.contains(name), "{call}: {error}");
+    }
+    assert_eq!(rig.error("render.quad{image='a.png'}"), "ok");
+    assert_eq!(rig.error("render.clear_quad()"), "ok");
+    // The control: a run without a service says so after validating the arguments.
+    let none = Rig::new(Kind::NoService);
+    for (call, name) in [
+        ("texture.load('a.png')", "texture.load"),
+        (
+            "render.create_quad{texture='ck1:tex:0000000000000001:00000001:0000000000000001', width=4, height=4}",
+            "render.create_quad",
+        ),
+    ] {
+        assert_eq!(
+            none.error(call),
+            format!("{name}: this run has no resource service"),
+            "{call}"
         );
     }
-    assert!(
-        !enabled(&rig.control) && epoch(&rig.control) == 0,
-        "the control never moved"
-    );
-    let (mut owner, _dir) =
-        rig.vm("pcall(frame.on_update, function() end)\nfunction startup() end\n");
-    assert!(matches!(
-        call(&mut owner, "frame_update"),
-        CallOutcome::NotRegistered
-    ));
-    let _ = owner.stop(Duration::from_secs(5));
-    assert_eq!(
-        rig.error("render.quad{image='a.png'}"),
-        "ok",
-        "the legacy call works as before"
-    );
-    assert_eq!(rig.error("render.clear_quad()"), "ok");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1127,18 +1112,18 @@ fn cheap_value_errors() -> Vec<(String, &'static str, &'static str)> {
     ]
 }
 
-/// The cheap value checks (the name rules and the byte cap, the numbers of a rectangle) come before the backend's refusal
-/// and before the end's: on `glfw-vulkan`, after the run's end and natively the same error, never "not available" or
-/// `Ended`; a call with good values still gets the backend or end refusal (the control).
+/// The cheap value checks (the name rules and the byte cap, the numbers of a rectangle) come before the no-service refusal
+/// and before the end's: in a run without a service, after the run's end and in a live one the same error, never "no
+/// resource service" or `Ended`; a call with good values still gets the refusal (the control).
 #[test]
 fn cheap_value_errors_come_before_the_backend_and_the_end_refusal() {
-    let glfw = Rig::new(Kind::Glfw);
+    let glfw = Rig::new(Kind::NoService);
     let ended = Rig::new(Kind::Native);
     ended.service().close();
     let native = Rig::new(Kind::Native);
     for (call, prefix, needle) in cheap_value_errors() {
         for (label, rig) in [
-            ("glfw-vulkan", &glfw),
+            ("no service", &glfw),
             ("ended", &ended),
             ("native", &native),
         ] {
@@ -1146,7 +1131,7 @@ fn cheap_value_errors_come_before_the_backend_and_the_end_refusal() {
             assert!(error.starts_with(prefix), "{label}: {call}: {error}");
             assert!(error.contains(needle), "{label}: {call}: {error}");
             assert!(
-                !error.contains("not available") && !error.contains("has ended"),
+                !error.contains("no resource service") && !error.contains("has ended"),
                 "{label}: {call}: {error}"
             );
         }
@@ -1154,13 +1139,13 @@ fn cheap_value_errors_come_before_the_backend_and_the_end_refusal() {
     // The control: good values get the refusal of the backend or of the end.
     assert!(
         glfw.error("texture.load('a.png')")
-            .contains("not available on the glfw-vulkan backend")
+            .contains("this run has no resource service")
     );
     assert!(
         glfw.error(&format!(
             "render.create_quad{{texture='{TEXTURE_TOKEN}', width=4, height=4}}"
         ))
-        .contains("not available on the glfw-vulkan backend")
+        .contains("this run has no resource service")
     );
     assert!(
         ended

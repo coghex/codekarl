@@ -13,17 +13,19 @@ use crate::mode;
 use crate::render_api::RenderEnd;
 use crate::windowed::RunNotes;
 
-/// Builds the per-mode resource service. The relay already exists before this function is called.
+/// Builds the per-mode resource service: a headless run's, or a windowed run's backend service (both backends). The relay
+/// already exists before this function is called.
 pub(crate) fn compose(
     config: ResourceConfig,
     mode: mode::Mode,
     relay: &ck_render_2d::WakeRelay,
     assets: Option<std::path::PathBuf>,
-) -> Result<Option<ResourceService>, ck_resources::ServiceError> {
+) -> Result<ResourceService, ck_resources::ServiceError> {
     let service_mode = match mode {
-        mode::Mode::Windowed(mode::Backend::GlfwVulkan) => return Ok(None),
         mode::Mode::Headless => ck_resources::Mode::Headless,
-        mode::Mode::Windowed(mode::Backend::NativeMetal) => ck_resources::Mode::Backend,
+        mode::Mode::Windowed(mode::Backend::NativeMetal | mode::Backend::GlfwVulkan) => {
+            ck_resources::Mode::Backend
+        }
     };
     let wakes = ck_resources::ServiceWakes {
         jobs: None,
@@ -31,7 +33,7 @@ pub(crate) fn compose(
         retirements: Some(relay.wake()),
     };
     let assets = assets.map(ck_resources::Assets::new);
-    ResourceService::with_assets(config.service, service_mode, wakes, assets).map(Some)
+    ResourceService::with_assets(config.service, service_mode, wakes, assets)
 }
 
 /// Owns the loader pool and finishes the resource ledger after every VM owner has stopped.
@@ -121,13 +123,14 @@ impl RuntimeService {
         #[cfg(test)]
         self.record_order("final_record");
         let stats = self.resources.stats();
-        let gpu = *self.notes.gpu.borrow();
-        let record = final_record(
-            &stats,
-            gpu.as_ref(),
-            self.notes.resources_incomplete.get(),
-            unfinished,
-        );
+        let incomplete = self.notes.resources_incomplete.get();
+        let vulkan = *self.notes.vulkan_gpu.borrow();
+        let record = if vulkan.is_some() {
+            final_record_vulkan(&stats, vulkan.as_ref(), incomplete, unfinished)
+        } else {
+            let gpu = *self.notes.gpu.borrow();
+            final_record(&stats, gpu.as_ref(), incomplete, unfinished)
+        };
         crate::lifecycle::emit(ck_log::Level::Debug, "resources", format_args!("{record}"));
     }
 
@@ -180,7 +183,6 @@ pub(crate) fn final_record(
     incomplete: bool,
     unfinished: &[String],
 ) -> String {
-    let refused = stats.jobs.refusals + stats.cpu_pixels.refusals + stats.metadata.refusals;
     let gpu_text = gpu.map_or_else(
         || "no presenter".to_owned(),
         |gpu| {
@@ -198,6 +200,41 @@ pub(crate) fn final_record(
             )
         },
     );
+    record_with(stats, &gpu_text, incomplete, unfinished)
+}
+
+/// [`final_record`] for a `glfw-vulkan` run: the common part is the same text; the `gpu:` part is the Vulkan presenter's
+/// figures and omits the Metal-only ones (bindless slots, instance buffer, checker staging and instances), never as 0.
+pub(crate) fn final_record_vulkan(
+    stats: &ck_resources::ServiceStats,
+    gpu: Option<&crate::windowed::VulkanFigures>,
+    incomplete: bool,
+    unfinished: &[String],
+) -> String {
+    let gpu_text = gpu.map_or_else(
+        || "no presenter".to_owned(),
+        |gpu| {
+            format!(
+                "textures created {}, frames {}, upload texture peak {} B, upload staging peak {} B, checker texture {} B",
+                gpu.textures_created,
+                gpu.frames,
+                gpu.texture_bytes_peak,
+                gpu.staging_bytes_peak,
+                gpu.checker_bytes
+            )
+        },
+    );
+    record_with(stats, &gpu_text, incomplete, unfinished)
+}
+
+/// The record's text around a `gpu:` part.
+fn record_with(
+    stats: &ck_resources::ServiceStats,
+    gpu_text: &str,
+    incomplete: bool,
+    unfinished: &[String],
+) -> String {
+    let refused = stats.jobs.refusals + stats.cpu_pixels.refusals + stats.metadata.refusals;
     format!(
         "final resources: {} live, {} retiring, {} referenced at finish_teardown, cpu pixel bytes peak {}, refused admissions {}; gpu: {}; {}",
         stats.registry.live,
@@ -290,23 +327,18 @@ mod tests {
     }
 
     #[test]
-    fn composition_uses_headless_and_backend_resource_modes_and_skips_glfw_vulkan() {
+    fn composition_uses_the_headless_mode_and_the_backend_mode_for_both_windowed_backends() {
         let relay = ck_render_2d::WakeRelay::default();
         let config = ResourceConfig::default();
-        let headless = compose(config, Mode::Headless, &relay, None)
-            .expect("headless service")
-            .expect("headless composes resources");
+        let headless = compose(config, Mode::Headless, &relay, None).expect("headless service");
         assert_eq!(headless.mode(), ck_resources::Mode::Headless);
         assert_eq!(headless.limits(), config.service);
-        let native = compose(config, Mode::Windowed(Backend::NativeMetal), &relay, None)
-            .expect("native service")
-            .expect("native composes resources");
-        assert_eq!(native.mode(), ck_resources::Mode::Backend);
-        assert!(
-            compose(config, Mode::Windowed(Backend::GlfwVulkan), &relay, None,)
-                .expect("legacy mode has no resource service")
-                .is_none()
-        );
+        for backend in [Backend::NativeMetal, Backend::GlfwVulkan] {
+            let windowed =
+                compose(config, Mode::Windowed(backend), &relay, None).expect("windowed service");
+            assert_eq!(windowed.mode(), ck_resources::Mode::Backend, "{backend:?}");
+            assert_eq!(windowed.limits(), config.service, "{backend:?}");
+        }
     }
 
     #[test]
@@ -324,8 +356,7 @@ mod tests {
             &relay,
             Some(assets.0.clone()),
         )
-        .expect("native service")
-        .expect("native resources enabled");
+        .expect("native service");
         let key = service.load("checker.png").expect("admit checker");
         let job = service.take_job().expect("checker load job");
         service.complete(job.run());
@@ -363,8 +394,7 @@ mod tests {
             &ck_render_2d::WakeRelay::default(),
             Some(assets.0.clone()),
         )
-        .expect("compose headless resources")
-        .expect("headless resources are enabled");
+        .expect("compose headless resources");
         let key = service.load("loaded.png").expect("admit configured asset");
         let job = service.take_job().expect("take asset load");
         service.complete(job.run());
@@ -390,8 +420,7 @@ mod tests {
             &ck_render_2d::WakeRelay::default(),
             Some(assets.0.clone()),
         )
-        .expect("compose headless resources")
-        .expect("headless resources are enabled");
+        .expect("compose headless resources");
         let key = service.load("late.png").expect("admit asset");
         let job = service.take_job().expect("take loader job");
         service.close();
@@ -631,6 +660,76 @@ mod tests {
         ] {
             assert!(with_gpu.contains(needle), "{needle}: {with_gpu}");
         }
+    }
+
+    /// The Vulkan presenter's record writes its own figures and omits the Metal-only ones (never as 0); the part before `gpu:` is
+    /// byte-identical to the Metal record's for equal service stats. Negative control: the Metal record does carry the omitted
+    /// figures, so the omission is the Vulkan record's.
+    #[test]
+    fn the_vulkan_final_record_writes_its_figures_omits_the_metal_only_ones_and_shares_the_common_part()
+     {
+        let service = ResourceService::with_assets(
+            ResourceLimits::DEFAULT,
+            ck_resources::Mode::Backend,
+            ck_resources::ServiceWakes::default(),
+            None,
+        )
+        .expect("a service");
+        service.close();
+        let _ = service.finish_teardown();
+        let stats = service.stats();
+        let vulkan = crate::windowed::VulkanFigures {
+            textures_created: 3,
+            texture_bytes_peak: 64,
+            staging_bytes_peak: 32,
+            checker_bytes: 16384,
+            frames: 9,
+        };
+        let metal = crate::windowed::GpuFigures {
+            textures_created: 3,
+            bindless_slots: 17,
+            upload_texture_bytes_peak: 64,
+            upload_staging_bytes_peak: 32,
+            checker_texture_bytes: 16384,
+            checker_staging_bytes: 13,
+            instance_buffer_bytes: 17,
+            checker_instances_peak: 3,
+            frames: 9,
+        };
+        let on_vulkan = final_record_vulkan(&stats, Some(&vulkan), false, &[]);
+        let on_metal = final_record(&stats, Some(&metal), false, &[]);
+        let (vulkan_common, vulkan_gpu) = on_vulkan.split_once("; gpu: ").expect("a gpu part");
+        let (metal_common, metal_gpu) = on_metal.split_once("; gpu: ").expect("a gpu part");
+        assert_eq!(vulkan_common, metal_common, "the common part is identical");
+        for needle in [
+            "textures created 3",
+            "frames 9",
+            "upload texture peak 64 B",
+            "upload staging peak 32 B",
+            "checker texture 16384 B",
+        ] {
+            assert!(vulkan_gpu.contains(needle), "{needle}: {vulkan_gpu}");
+        }
+        for omitted in [
+            "bindless",
+            "checker staging",
+            "instance buffer",
+            "checker instances",
+        ] {
+            assert!(
+                !vulkan_gpu.contains(omitted),
+                "{omitted} is Metal-only: {vulkan_gpu}"
+            );
+            assert!(
+                metal_gpu.contains(omitted),
+                "control, {omitted}: {metal_gpu}"
+            );
+        }
+        assert!(vulkan_gpu.ends_with("complete"), "{vulkan_gpu}");
+        assert!(
+            final_record_vulkan(&stats, None, false, &[]).contains("gpu: no presenter"),
+            "a run with no presenter says so"
+        );
     }
 
     #[test]

@@ -176,8 +176,6 @@ fn backend_overrides_the_configuration_and_the_overriding_backend_is_the_one_che
         assert_eq!(result.code, Some(0), "{result:?}");
         let mut wanted = headless_records(&format!("loaded {}", path.display()));
         wanted[3] = "runtime: window: glfw-vulkan".to_owned();
-        wanted.remove(6); // The compatibility backend composes no resource service.
-        wanted.remove(4);
         assert_eq!(messages(&result.stdout), wanted, "{}", result.stdout);
     } else {
         // Without the `vulkan` feature (the default-feature build): the availability error, exit 1.

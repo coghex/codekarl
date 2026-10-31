@@ -11,8 +11,37 @@ use std::time::{Duration, Instant};
 use ck_render_2d::{QuadSink, Snapshot};
 use ck_window::{CleanupResult, Notifier, PixelSize, Presenter, PresenterReport, WindowDesc};
 
-use super::{Ended, QuadSide, Refused, Running, Stack};
+use super::{Ended, QuadSide, Refused, Resources, Running, Stack};
 use crate::fakes::{BackendScript, FakeBackend, FakePresenter, PresenterScript, Recorder};
+use crate::windowed::VulkanFigures;
+
+/// A run over `stack` with the run's resources a fake needs: a backend-mode service no test uses, a relay of its own and the
+/// default limits. `wake` is the one the side is built with.
+pub(super) fn new_run(
+    stack: FakeStack,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) -> std::rc::Rc<super::Run<FakeStack>> {
+    let relay = ck_render_2d::WakeRelay::default();
+    let service = ck_resources::ResourceService::with_assets(
+        ck_resources::ResourceLimits::DEFAULT,
+        ck_resources::Mode::Backend,
+        ck_resources::ServiceWakes::default(),
+        None,
+    )
+    .expect("a service");
+    let resources = Resources {
+        service,
+        relay,
+        config: crate::config::ResourceConfig::default(),
+        max_quads: 1024,
+    };
+    super::Run::new(
+        stack,
+        wake,
+        resources,
+        std::rc::Rc::new(crate::windowed::RunNotes::default()),
+    )
+}
 
 /// How a wake regression is driven: the presenter's report, or the quad side's refusal, is raised from another
 /// thread while the loop sleeps, and only the wake the adapter was given can wake the loop.
@@ -46,6 +75,16 @@ pub(super) struct Script {
     pub(super) notice_at_end: Option<String>,
     /// The fake side refuses every quad it is given.
     pub(super) refuse_quads: bool,
+    /// The fake side's `accept_frames` fails with this reason (nothing is started).
+    pub(super) accept_error: Option<String>,
+    /// The fake side's `resident_driver` fails with this reason (nothing is started).
+    pub(super) driver_error: Option<String>,
+    /// The fake side's `connect` returns this error (the call is still recorded).
+    pub(super) connect_error: Option<String>,
+    /// The fake side's `disconnect` returns this error (the call is still recorded).
+    pub(super) disconnect_error: Option<String>,
+    /// The presenter's last numbers, as `gpu_figures` returns them (`None`: it has none).
+    pub(super) figures: Option<VulkanFigures>,
     /// A wake regression (see [`WakeCase`]).
     pub(super) wake_case: Option<WakeCase>,
 }
@@ -79,6 +118,16 @@ pub(super) type Scene = (u64, bool, Option<([i32; 4], [f32; 4], String)>);
 #[derive(Default)]
 pub(super) struct FakeSlot {
     pub(super) scenes: Mutex<Vec<Scene>>,
+}
+
+/// The fake driver the side hands out (it stands for the resident driver over the run's service).
+pub(super) struct FakeDriver;
+
+/// What the fake side's relay saw: the wakes connected, in order, and the disconnects.
+#[derive(Default)]
+pub(super) struct RelayLog {
+    pub(super) connected: Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>,
+    pub(super) disconnects: AtomicU64,
 }
 
 /// The once-only refusal latch of the fake side, as the real one is: the first reason, reported once.
@@ -158,10 +207,14 @@ pub(super) struct FakeSide {
     refuser: Refuser,
     refuse_quads: bool,
     made: Option<Weak<FakeSink>>,
+    script: Script,
+    log: Log,
+    relay: Arc<RelayLog>,
 }
 
 impl QuadSide for FakeSide {
     type Slot = Arc<FakeSlot>;
+    type Driver = FakeDriver;
 
     fn new_sink(&mut self) -> Arc<dyn QuadSink> {
         let sink = Arc::new(FakeSink {
@@ -173,7 +226,10 @@ impl QuadSide for FakeSide {
         sink
     }
 
-    fn accept(&self, sink: &Arc<dyn QuadSink>) -> Result<Arc<FakeSlot>, String> {
+    fn accept_frames(&self, sink: &Arc<dyn QuadSink>) -> Result<Arc<FakeSlot>, String> {
+        if let Some(error) = &self.script.accept_error {
+            return Err(error.clone());
+        }
         let made = self
             .made
             .as_ref()
@@ -183,6 +239,29 @@ impl QuadSide for FakeSide {
         } else {
             Err("the sink is not the one this backend made".to_owned())
         }
+    }
+
+    fn resident_driver(&self) -> Result<FakeDriver, String> {
+        match &self.script.driver_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(FakeDriver),
+        }
+    }
+
+    fn connect(&self, texture_wake: Arc<dyn Fn() + Send + Sync>) -> Result<(), String> {
+        (self.log)("relay connect");
+        self.relay
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(texture_wake);
+        self.script.connect_error.clone().map_or(Ok(()), Err)
+    }
+
+    fn disconnect(&self) -> Result<(), String> {
+        (self.log)("relay disconnect");
+        self.relay.disconnects.fetch_add(1, Ordering::SeqCst);
+        self.script.disconnect_error.clone().map_or(Ok(()), Err)
     }
 
     fn take_report(&self) -> Option<PresenterReport> {
@@ -202,6 +281,9 @@ pub(super) struct FakeStarted {
     notice_at_end: Option<String>,
     /// Reports raised from another thread (the wake regression), served before the presenter's.
     extra: Arc<Mutex<VecDeque<PresenterReport>>>,
+    /// The wake the relay is to be connected to.
+    texture_wake: Arc<dyn Fn() + Send + Sync>,
+    figures: Option<VulkanFigures>,
 }
 
 impl Running for FakeStarted {
@@ -241,6 +323,12 @@ impl Running for FakeStarted {
         }
         notice
     }
+    fn texture_wake(&self) -> Arc<dyn Fn() + Send + Sync> {
+        Arc::clone(&self.texture_wake)
+    }
+    fn figures(&self) -> Option<VulkanFigures> {
+        self.figures
+    }
 }
 
 /// Microseconds since the first wake regression raised something, read once by the child that measures how long
@@ -272,6 +360,10 @@ pub(super) struct FakeStack {
     pub(super) slot: Arc<FakeSlot>,
     /// The refuser of the side `quad_side` built, for the wake regression's thread.
     refuser: Arc<Mutex<Option<Refuser>>>,
+    /// What the side's relay saw.
+    pub(super) relay: Arc<RelayLog>,
+    /// The texture wake the last started presenter handed out (the one the relay must be connected to).
+    pub(super) texture_wake: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl FakeStack {
@@ -282,6 +374,8 @@ impl FakeStack {
             notifier,
             slot: Arc::new(FakeSlot::default()),
             refuser: Arc::new(Mutex::new(None)),
+            relay: Arc::new(RelayLog::default()),
+            texture_wake: Arc::new(|| {}),
         }
     }
 }
@@ -294,6 +388,7 @@ impl Stack for FakeStack {
     type Surface = u64;
     type Started = FakeStarted;
     type Slot = Arc<FakeSlot>;
+    type Driver = FakeDriver;
     type Side = FakeSide;
 
     fn load_loader(&self) -> Result<FakeLoader, String> {
@@ -339,7 +434,7 @@ impl Stack for FakeStack {
         }
     }
 
-    fn quad_side(&self, wake: Arc<dyn Fn() + Send + Sync>) -> FakeSide {
+    fn quad_side(&self, wake: Arc<dyn Fn() + Send + Sync>, _resources: &Resources) -> FakeSide {
         let refuser = Refuser {
             latch: Arc::new(Latch::default()),
             wake,
@@ -350,6 +445,9 @@ impl Stack for FakeStack {
             refuser,
             refuse_quads: self.script.refuse_quads,
             made: None,
+            script: self.script.clone(),
+            log: Arc::clone(&self.log),
+            relay: Arc::clone(&self.relay),
         }
     }
 
@@ -361,6 +459,8 @@ impl Stack for FakeStack {
         clear: [f32; 3],
         wake: Arc<dyn Fn() + Send + Sync>,
         slot: Arc<FakeSlot>,
+        _driver: FakeDriver,
+        _resources: &Resources,
     ) -> Result<FakeStarted, String> {
         // Only the slot behind the sink the side made reaches the presenter.
         assert!(
@@ -426,6 +526,8 @@ impl Stack for FakeStack {
             notice: self.script.notice.clone(),
             notice_at_end: self.script.notice_at_end.clone(),
             extra,
+            texture_wake: Arc::clone(&self.texture_wake),
+            figures: self.script.figures,
         })
     }
 

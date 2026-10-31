@@ -9,9 +9,9 @@
 //!   run's one [`SceneWriter`]. Every error is an ordinary Lua error naming the file and the reason, and **a
 //!   failed call changes nothing**: the image is opened and the quad built and checked before the writer is
 //!   touched;
-//! - `render.clear_quad()` clears the quad. On the **upgraded** backend (the flag the composition sets; false until
-//!   milestone 5-8c) both legacy calls go through [`LegacyLane`], with its errors prefixed `render.quad:`; on headless runs
-//!   and `glfw-vulkan` they keep exactly the path above;
+//! - `render.clear_quad()` clears the quad. On the **upgraded** backend (the flag the composition sets: both windowed
+//!   backends) both legacy calls go through [`LegacyLane`], with its errors prefixed `render.quad:`; on headless runs they keep
+//!   exactly the path above;
 //! - the scene API of the design (§8.2): `render.create_quad{texture=, x=, y=, width=, height=}` → a quad token,
 //!   `render.set_position(quad, x, y)`, `render.set_rect(quad, x, y, width, height)` and `render.destroy_quad(quad)`. Each
 //!   validates every argument before it changes anything, and reports a refusal as an ordinary Lua error starting with the
@@ -31,8 +31,8 @@
 //! first; a close that lands just after it is caught by the writer's slot at the latest (the next call, or `end`, reports
 //! `Ended`). Only the legacy calls keep M4's semantics after the end: discarded and counted.
 //!
-//! **`glfw-vulkan`** has no resource service: each new call validates its arguments and then raises "`<function>` is not
-//! available on the glfw-vulkan backend until milestone 5.5" (nothing is silently drawn as one of several quads).
+//! **A run without a resource service** (only a test builds one; every real run has a service) raises "`<function>`: this run
+//! has no resource service" from each new call, after the same argument validation.
 //!
 //! **Headless runs** get the same extension: every call is validated exactly as in a windowed run and the result is
 //! applied to the editable scene, whose publications the bridge stores and nothing draws. The first accepted scene call
@@ -49,7 +49,7 @@ use ck_lua::{Completion, ConfigValue, Extension, HostFunction};
 use ck_render_2d::{Assets, LegacyError, LegacyLane, Quad, QuadKey, SceneWriter, validate_rect};
 use ck_resources::{AdmitError, ResourceService, TextureKey};
 
-use crate::texture_api::unavailable;
+use crate::texture_api::no_service;
 use crate::window_api::{HeadlessNotes, number};
 
 /// What the host functions share.
@@ -60,7 +60,7 @@ struct Shared {
     writer: Mutex<Option<SceneWriter>>,
     /// The headless notes (a headless run).
     headless: Option<Arc<HeadlessNotes>>,
-    /// The run's resource service; `None` on `glfw-vulkan`, where the new calls are not available.
+    /// The run's resource service; `None` only in a test that builds the extension without one.
     service: Option<ResourceService>,
     /// The legacy lane over the service and the assets root; `None` without a service.
     lane: Option<LegacyLane>,
@@ -157,11 +157,11 @@ impl Shared {
         }
     }
 
-    /// The service of a new scene call, after its arguments were checked: `glfw-vulkan` has none, and after the run's end the
-    /// service is closed. Nothing is retained or edited on either refusal.
+    /// The service of a new scene call, after its arguments were checked: a test's run may have none, and after the run's end
+    /// the service is closed. Nothing is retained or edited on either refusal.
     fn scene_service(&self, function: &str) -> Result<&ResourceService, String> {
         let Some(service) = &self.service else {
-            return Err(unavailable(function));
+            return Err(no_service(function));
         };
         if service.is_closed() {
             return Err(format!("{function}: {}", AdmitError::Ended));
@@ -228,7 +228,7 @@ impl Shared {
         height: Option<f64>,
     ) -> Result<Vec<ConfigValue>, String> {
         let Some(lane) = &self.lane else {
-            return Err("render.quad: there is no resource service on this backend".into());
+            return Err("render.quad: there is no resource service in this run".into());
         };
         let ended = match self.writer().as_ref() {
             Some(writer) => writer.is_ended(),
@@ -399,7 +399,7 @@ fn legacy_message(error: &LegacyError, name: &str) -> String {
 
 /// The `render` extension. `assets` is the configured assets directory (`None` without a configuration
 /// file), `writer` the run's scene writer and `headless` the notes of a headless run. It has no resource
-/// service: the new scene calls are not available (as on `glfw-vulkan`) and the legacy calls keep their old path.
+/// service: the new scene calls say so and the legacy calls keep their old path.
 #[cfg(test)]
 pub(crate) fn extension(
     assets: Option<PathBuf>,
@@ -473,8 +473,8 @@ impl RenderEnd {
     }
 }
 
-/// The extension and its end. `service` is the run's resource service (`None` on `glfw-vulkan`); `upgraded` says the
-/// legacy calls go through the lane (the composition passes `false` until milestone 5-8c makes native-metal upgraded).
+/// The extension and its end. `service` is the run's resource service; `upgraded` says the
+/// legacy calls go through the lane (the composition passes `true` for both windowed backends).
 pub(crate) fn extension_with_end(
     assets: Option<PathBuf>,
     writer: SceneWriter,

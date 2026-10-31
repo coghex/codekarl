@@ -15,7 +15,7 @@ use ck_window::{Backend, CleanupResult, Presenter, PresenterReport};
 use super::fake::{FakeStack, Scene, Script};
 use super::logging::{hold_sink_and_fill_the_queue, scenario};
 use super::tests::{at, desc, events, parts, run_over, start_on};
-use super::{Run, VulkanAdapter, VulkanBackend};
+use super::{VulkanAdapter, VulkanBackend};
 use crate::fakes::{End, PresenterScript};
 use crate::lifecycle::ResourceLatch;
 use crate::testing::{Extras, Harness, WINDOW};
@@ -44,9 +44,9 @@ fn run_script(script: Script, body: &str) -> Outcome {
     let (log, recorded) = super::tests::vector_log();
     let stack = FakeStack::new(script, log, Arc::clone(&harness.notifier));
     let slot = Arc::clone(&stack.slot);
-    let run = Run::new(stack);
     let notifier = Arc::clone(&harness.notifier);
     let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || notifier.wake());
+    let run = super::fake::new_run(stack, Arc::clone(&wake));
     let presenter = Renderer::new(
         VulkanAdapter::new(Rc::clone(&run), wake),
         Arc::clone(&harness.bridge),

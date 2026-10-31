@@ -1,10 +1,15 @@
 //! The real stack of the `glfw-vulkan` path: `ck-window-glfw`'s window and `ck-gpu-vulkan`'s loader,
-//! instance, surface and presenter (builds with the `vulkan` feature).
+//! instance, surface, device context and scene presenter (builds with the `vulkan` feature).
 //!
 //! **The five `unsafe` operations of the Vulkan integration**, each in exactly one place below with its
 //! `SAFETY` comment against its contract: the `vkGetInstanceProcAddr` pointer conversion and
-//! `VulkanLoaderForGlfw::new` ([`Real::glfw`]), `GlfwHandles::create_surface` ([`Real::create_surface`]), `VulkanPresenter::start_2d` ([`Real::start`]) and
+//! `VulkanLoaderForGlfw::new` ([`Real::glfw`]), `GlfwHandles::create_surface` ([`Real::create_surface`]), `VulkanPresenter::start_scene` ([`Real::start`]) and
 //! `destroy_surface_and_instance` ([`Real::destroy`]). A source check in this module's tests counts them.
+//!
+//! **The device context** is made in [`Real::start`], on the main thread, after the window and the surface exist
+//! (`VulkanContext::new(&instance, Some(surface))`): the device must present to the window's surface, so unlike the Metal
+//! path it cannot be made before any window. It moves into `start_scene`; no clone of it is kept, because the destroy helper
+//! refuses while anything still holds the instance.
 
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -12,14 +17,17 @@ use std::time::Duration;
 
 use ck_gpu_vulkan::vk::Handle as _;
 use ck_gpu_vulkan::{
-    CleanupResult as GpuCleanup, Instance, Loader, PresenterReport as GpuReport, VulkanPresenter,
-    VulkanQuadSlot, create_instance, destroy_surface_and_instance, load_loader, vk,
+    CleanupResult as GpuCleanup, Instance, LedgerLimits, Loader, PresenterReport as GpuReport,
+    SceneLimits, TextureLimits, VulkanContext, VulkanFrameSlot, VulkanPresenter, create_instance,
+    destroy_surface_and_instance, load_loader, vk,
 };
-use ck_render_2d::{QuadSink, VulkanSinkSide};
+use ck_render_2d::{QuadSink, VulkanResidentDriver, VulkanResourceLimits, VulkanSinkSide};
+use ck_resources::TextureKey;
 use ck_window::{CleanupResult, PixelSize, PresenterReport};
 use ck_window_glfw::{GlfwBackend, GlfwHandles, VulkanLoaderForGlfw};
 
-use super::{Ended, QuadSide, Refused, Running, Stack};
+use super::{Ended, QuadSide, Refused, Resources, Running, Stack};
+use crate::windowed::VulkanFigures;
 
 /// The real stack.
 pub(super) struct Real;
@@ -31,7 +39,8 @@ impl Stack for Real {
     type Instance = Instance;
     type Surface = vk::SurfaceKHR;
     type Started = Started;
-    type Slot = Arc<VulkanQuadSlot>;
+    type Slot = Arc<VulkanFrameSlot<TextureKey>>;
+    type Driver = VulkanResidentDriver;
     type Side = VulkanSinkSide;
 
     fn load_loader(&self) -> Result<Loader, String> {
@@ -81,8 +90,20 @@ impl Stack for Real {
         Ok(vk::SurfaceKHR::from_raw(surface))
     }
 
-    fn quad_side(&self, wake: Arc<dyn Fn() + Send + Sync>) -> VulkanSinkSide {
-        VulkanSinkSide::new(wake)
+    fn quad_side(
+        &self,
+        wake: Arc<dyn Fn() + Send + Sync>,
+        resources: &Resources,
+    ) -> VulkanSinkSide {
+        // Only the adoption cap is the side's; the store, ledger and scene limits are `start`'s.
+        VulkanSinkSide::with_resources(
+            wake,
+            resources.service.clone(),
+            resources.relay.clone(),
+            VulkanResourceLimits {
+                max_adoptions_per_frame: resources.config.max_adoptions_per_frame,
+            },
+        )
     }
 
     fn start(
@@ -92,20 +113,44 @@ impl Stack for Real {
         size: PixelSize,
         clear: [f32; 3],
         wake: Arc<dyn Fn() + Send + Sync>,
-        slot: Arc<VulkanQuadSlot>,
+        slot: Arc<VulkanFrameSlot<TextureKey>>,
+        driver: VulkanResidentDriver,
+        resources: &Resources,
     ) -> Result<Started, String> {
-        // SAFETY: `surface` was created on `instance` for the window `ck_window::run` holds, which outlives
-        // the presenter's proven end (the loop destroys the window only after a `Proven` end, and never
-        // otherwise); nothing else uses the surface meanwhile, and the surface and the instance are
-        // destroyed only after that end (`Real::destroy`), in that order. `slot` holds no Vulkan object.
+        // The device context, made for this surface: its failure is a presenter start failure like any other.
+        let context =
+            VulkanContext::new(instance, Some(surface)).map_err(|error| error.to_string())?;
+        let config = &resources.config;
+        let max_textures = usize::try_from(config.service.max_textures)
+            .map_err(|_| "[resources] max_textures does not fit a pointer".to_owned())?;
+        // SAFETY: `surface` was made on `instance` for the window `ck_window::run` holds until the presenter's proven end;
+        // `context` was made for it just above and moves into the presenter (no clone kept); nothing else uses the surface
+        // meanwhile, and `Real::destroy` destroys it and the instance only after that end.
         let presenter = unsafe {
-            VulkanPresenter::start_2d(
-                instance,
+            VulkanPresenter::start_scene(
                 surface,
                 (size.width, size.height),
                 clear,
                 wake,
                 slot,
+                context,
+                TextureLimits {
+                    max_prepared_images: config.max_prepared_images,
+                    max_upload_images_per_batch: config.max_upload_images_per_batch,
+                    max_upload_bytes_per_batch: config.max_upload_bytes_per_batch,
+                    staging_bytes: config.staging_bytes,
+                    texture_bytes: config.texture_bytes,
+                },
+                LedgerLimits {
+                    max_extra_revisions: config.max_extra_revisions,
+                    max_adoptions_per_frame: config.max_adoptions_per_frame,
+                },
+                max_textures,
+                SceneLimits {
+                    max_quads: resources.max_quads,
+                    binding_geometry_bytes: config.binding_geometry_bytes,
+                },
+                driver,
             )
         }
         .map_err(|error| error.to_string())?;
@@ -141,14 +186,30 @@ impl Stack for Real {
 }
 
 impl QuadSide for VulkanSinkSide {
-    type Slot = Arc<VulkanQuadSlot>;
+    type Slot = Arc<VulkanFrameSlot<TextureKey>>;
+    type Driver = VulkanResidentDriver;
 
     fn new_sink(&mut self) -> Arc<dyn QuadSink> {
         VulkanSinkSide::new_sink(self)
     }
 
-    fn accept(&self, sink: &Arc<dyn QuadSink>) -> Result<Arc<VulkanQuadSlot>, String> {
-        VulkanSinkSide::accept(self, sink)
+    fn accept_frames(
+        &self,
+        sink: &Arc<dyn QuadSink>,
+    ) -> Result<Arc<VulkanFrameSlot<TextureKey>>, String> {
+        VulkanSinkSide::accept_frames(self, sink)
+    }
+
+    fn resident_driver(&self) -> Result<VulkanResidentDriver, String> {
+        VulkanSinkSide::resident_driver(self)
+    }
+
+    fn connect(&self, texture_wake: Arc<dyn Fn() + Send + Sync>) -> Result<(), String> {
+        VulkanSinkSide::connect(self, texture_wake)
+    }
+
+    fn disconnect(&self) -> Result<(), String> {
+        VulkanSinkSide::disconnect(self)
     }
 
     fn take_report(&self) -> Option<PresenterReport> {
@@ -198,5 +259,20 @@ impl Running for Started {
         self.0
             .take_quad_notice()
             .map(|notice| format!("{:?}", notice.format))
+    }
+
+    fn texture_wake(&self) -> Arc<dyn Fn() + Send + Sync> {
+        self.0.texture_wake()
+    }
+
+    fn figures(&self) -> Option<VulkanFigures> {
+        let stats = self.0.scene_stats();
+        Some(VulkanFigures {
+            textures_created: stats.textures_created,
+            texture_bytes_peak: stats.texture_bytes_peak,
+            staging_bytes_peak: stats.staging_bytes_peak,
+            checker_bytes: stats.checker_bytes,
+            frames: stats.frames,
+        })
     }
 }

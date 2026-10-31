@@ -1293,6 +1293,7 @@ class AnalyzerEnvironment(unittest.TestCase):
                     "vulkan.isolation",
                     "vulkan.gpu",
                     "vulkan.window",
+                    "render2d.vulkan-window",
                     "vulkan.app",
                 },
                 level,

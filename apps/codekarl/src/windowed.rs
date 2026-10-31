@@ -62,6 +62,8 @@ pub(crate) struct RunNotes {
     /// The presenter's last numbers, copied here when its end was observed and before its backend was destroyed (the
     /// final resource record reads them after the resource service reconciles). `None` when no presenter ran.
     pub(crate) gpu: RefCell<Option<GpuFigures>>,
+    /// The same for a `glfw-vulkan` run (the Vulkan presenter's figures; `gpu` stays empty there).
+    pub(crate) vulkan_gpu: RefCell<Option<VulkanFigures>>,
 }
 
 /// The GPU-side numbers of the final resource record: plain values copied from the presenter's last snapshot.
@@ -84,6 +86,22 @@ pub(crate) struct GpuFigures {
     /// The most checker instances any one committed frame drew.
     pub(crate) checker_instances_peak: u64,
     /// Frames committed.
+    pub(crate) frames: u64,
+}
+
+/// The Vulkan presenter's numbers for the same record: the figures it reports, and none of the Metal-only ones above (the
+/// record omits those rather than writing 0). The native path's [`GpuFigures`] is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VulkanFigures {
+    /// Images the presenter created for uploads over the run (the checker included).
+    pub(crate) textures_created: u64,
+    /// The most image memory ever reserved at once.
+    pub(crate) texture_bytes_peak: u64,
+    /// The most staging memory ever allocated at once.
+    pub(crate) staging_bytes_peak: u64,
+    /// The bytes the driver allocated for the checker.
+    pub(crate) checker_bytes: u64,
+    /// Frames queued for presentation.
     pub(crate) frames: u64,
 }
 
@@ -121,38 +139,13 @@ pub(crate) struct RunEnv {
     pub(crate) notes: Rc<RunNotes>,
     /// The run's scene bridge: the renderer of the backend the run chose attaches to it.
     pub(crate) bridge: Arc<ck_render_2d::SceneBridge>,
-    /// Late-bound presenter wake used by resource uploads and retirements (the native backend connects it).
-    #[cfg_attr(
-        not(all(feature = "metal", target_os = "macos")),
-        expect(dead_code, reason = "only the native Metal backend connects the relay")
-    )]
+    /// Late-bound presenter wake used by resource uploads and retirements (a windowed backend connects it).
     pub(crate) wake_relay: ck_render_2d::WakeRelay,
-    /// The per-run resource service, absent for the legacy Vulkan compatibility mode.
-    #[cfg_attr(
-        not(all(feature = "metal", target_os = "macos")),
-        expect(
-            dead_code,
-            reason = "only the native Metal backend draws the service's textures"
-        )
-    )]
+    /// The per-run resource service (absent only in a test that runs without one).
     pub(crate) resources: Option<ck_resources::ResourceService>,
-    /// Parsed service and backend caps, carried to the native backend.
-    #[cfg_attr(
-        not(all(feature = "metal", target_os = "macos")),
-        expect(
-            dead_code,
-            reason = "only the native Metal backend consumes the backend limits"
-        )
-    )]
+    /// Parsed service and backend caps, carried to the windowed backend.
     pub(crate) resource_config: crate::config::ResourceConfig,
-    /// `[render] max_quads`: the instance buffer's room on the native backend.
-    #[cfg_attr(
-        not(all(feature = "metal", target_os = "macos")),
-        expect(
-            dead_code,
-            reason = "only the native Metal backend sizes its instance buffer"
-        )
-    )]
+    /// `[render] max_quads`: the instance buffer's room on a windowed backend.
     pub(crate) max_quads: usize,
     /// `[render] bindless_texture_slots`: the entry count of the native backend's bindless tables.
     #[cfg_attr(
@@ -410,9 +403,9 @@ where
 }
 
 /// The end of a windowed run that failed before any window or native object existed (the Metal device context could not be
-/// made): the request slot is ended and the bridge detached, as the loop's own ends do, and the run fails with `message`.
-/// No window was opened, so the UI is never told `Opened`; its `shutdown()` and the normal teardown still run.
-#[cfg(all(feature = "metal", target_os = "macos"))]
+/// made, or a run had no resource service): the request slot is ended and the bridge detached, as the loop's own ends do,
+/// and the run fails with `message`. No window was opened, so the UI is never told `Opened`; its `shutdown()` and the
+/// normal teardown still run.
 pub(crate) fn fail_before_window(env: &RunEnv, message: String) -> RunEnd {
     env.reader.end();
     env.bridge.detach();

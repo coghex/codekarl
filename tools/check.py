@@ -1043,10 +1043,16 @@ NATIVE_WINDOW_PATHS = (
 # CK-99: the quad demonstration, and the application's manifest, which carries the `vulkan` feature's wiring
 # (`ck-render-2d/vulkan` among it): a change to it alone selects this group. It still selects neither
 # `metal.gpu` nor `native.window`, which claim other paths.
+# CK-159: the application's windowed Vulkan tests run in process behind the test-only keyboard filter, so the build script and the
+# native test support are theirs too (they stay in `NATIVE_APP_FILES` as well: the native windowed tests use them, so a change
+# to them also selects the native window groups). The common demonstration they run on `glfw-vulkan` (its configuration, scripts
+# and assets) is read too but selects nothing here: the demonstration's files never open a window by themselves.
 VULKAN_APP_FILES = (
     "apps/codekarl/Cargo.toml",
+    "apps/codekarl/build.rs",
     "apps/codekarl/src/vulkan.rs",
     "apps/codekarl/src/vulkan/",
+    "apps/codekarl/tests/native/",
     "apps/codekarl/tests/vulkan_app.rs",
     "config/demo-glfw-vulkan.toml",
     "config/demo-glfw-vulkan-decline.toml",
@@ -1481,14 +1487,37 @@ STEPS = [
     # the desktop's focus, so they are their own group, selected only by this path's own files. The native
     # reverse-override case (`--backend native-metal` over a `glfw-vulkan` configuration) opens the native
     # backend and lives in `windowed.rs`, so `native.window` runs it and this group never does.
+    # CK-159 (M5.5-4, part A): the resource path on a real Vulkan window, `ck-render-2d`'s counterpart of its Metal window test
+    # (CK-117): a supervisor and a worker over `ck-window-glfw`'s window with the surface's own pixels captured. It opens
+    # windows, so it needs the window slot. `render2d.core`'s commands do not run this target.
+    Step(
+        "render2d.vulkan-window",
+        FAST,
+        lambda: [cargo_test(["-p", "ck-render-2d", "--test", "vulkan_window"])],
+        analyze=True,
+        needs="window",
+        description="`ck-render-2d`'s Vulkan window test: the real resource path (service, resident driver, ledger, scene "
+        "presenter) on a GLFW window under validation, with the surface's pixels captured, and the keyboard filter's isolation "
+        "(real windows, which take the desktop's focus).",
+        paths=(
+            "crates/render-2d/tests/vulkan_window.rs",
+            "crates/render-2d/src/vulkan.rs",
+            "crates/render-2d/src/vulkan_resident.rs",
+            "crates/render-2d/src/vulkan_scene.rs",
+            "crates/render-2d/build.rs",
+            SUPERVISOR_DIR,
+            *GLFW_TEST_SUPPORT,
+        ),
+    ),
     Step(
         "vulkan.app",
         FAST,
         lambda: [cargo_test(["-p", "codekarl", "--test", "vulkan_app"])],
         analyze=True,
         needs="window",
-        description="The application's glfw-vulkan path with a real GLFW window and Vulkan under validation: "
-        "close, signal, the backend override and the shipped demonstration configurations.",
+        description="The application's glfw-vulkan path with a real GLFW window and Vulkan under validation, run in "
+        "process behind the keyboard filter: close, signal, the backend override, the shipped demonstration "
+        "configurations, the common demonstration, the texture lifecycle and the minimised window.",
         paths=VULKAN_APP_FILES,
     ),
     *(unittest_step(group, modules) for group, modules in UNITTEST_GROUPS),

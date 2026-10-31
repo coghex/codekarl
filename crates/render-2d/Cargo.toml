@@ -33,6 +33,9 @@ workspace = true
 # `--all-features` runs and builds of dev targets (tests, examples), where Cargo may unify it into other members
 # selected in the same build. That is test coverage, not production.
 ck-resources = { path = "../resources", features = ["test-support"] }
+# The Vulkan window test (`tests/vulkan_window.rs`) opens a real GLFW window, as `ck-gpu-vulkan`'s window test does. A
+# dev-dependency only: the library has no window dependency for Vulkan.
+ck-window-glfw = { path = "../window-glfw" }
 
 # A real Metal window driven through `ck_window::run`: AppKit needs the process's main thread, so the executable is
 # a supervisor and a worker (`harness = false`).
@@ -49,3 +52,11 @@ name = "scale"
 path = "tests/scale.rs"
 harness = false
 required-features = ["metal"]
+
+# A real Vulkan window driven through `ck_window::run` (CK-159, part A; CK-117's counterpart): GLFW's Cocoa window needs the process's
+# main thread, so the executable is a supervisor and a worker (`harness = false`).
+[[test]]
+name = "vulkan_window"
+path = "tests/vulkan_window.rs"
+harness = false
+required-features = ["vulkan"]

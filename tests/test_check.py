@@ -62,6 +62,7 @@ RUST_STEPS = (
     "vulkan.isolation",
     "vulkan.gpu",
     "vulkan.window",
+    "render2d.vulkan-window",
     "vulkan.app",
 )
 FULL_SPEC_STEPS = {
@@ -81,6 +82,7 @@ ANALYZER_STEPS = {
     "input.core",
     "vulkan.isolation",
     "render2d.core",
+    "render2d.vulkan-window",
     "resources.core",
     "glfw.core",
     "glfw.window",
@@ -569,8 +571,10 @@ class Levels(CheckFixture):
             by_name["vulkan.app"].paths,
             (
                 "apps/codekarl/Cargo.toml",  # CK-99: carries the `vulkan` feature's wiring
+                "apps/codekarl/build.rs",  # CK-159: compiles the keyboard filter the tests run behind
                 "apps/codekarl/src/vulkan.rs",
                 "apps/codekarl/src/vulkan/",
+                "apps/codekarl/tests/native/",  # CK-159: its native source
                 "apps/codekarl/tests/vulkan_app.rs",
                 "config/demo-glfw-vulkan.toml",
                 "config/demo-glfw-vulkan-decline.toml",

@@ -281,8 +281,8 @@ pub(crate) fn uptime_clock() -> UptimeNs {
 }
 
 /// The `diagnostics` extension. `hub` is `Some` in a native-metal run (the mark opens the window); `None` is a headless run, where the
-/// function exists and does nothing (there is nothing to measure), and `available` false is `glfw-vulkan`, where it raises like the
-/// other calls that backend does not have yet.
+/// function exists and does nothing (there is nothing to measure), and `available` false is `glfw-vulkan`, where it raises: that
+/// backend's measurement window is milestone 5.5-6's.
 pub(crate) fn extension(hub: Option<Arc<MetricsHub>>, available: bool) -> Extension {
     let function: ck_lua::HostFunction = Arc::new(move |arguments| {
         if !available {
