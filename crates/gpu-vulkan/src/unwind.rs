@@ -36,6 +36,14 @@ pub(crate) fn dispose(payload: Payload) {
     }
 }
 
+/// Joins a thread that has finished, and disposes of the payload of the panic that ended it, if one did.
+/// The thread's panic is the thread's own: it never becomes the joiner's.
+pub(crate) fn join(handle: std::thread::JoinHandle<()>) {
+    if let Err(payload) = handle.join() {
+        dispose(payload);
+    }
+}
+
 /// A forced panic for the test hooks: with the payload `with` raises if one is chosen, else with `text`.
 pub(crate) fn forced_panic(with: Option<fn() -> !>, text: &'static str) -> ! {
     match with {

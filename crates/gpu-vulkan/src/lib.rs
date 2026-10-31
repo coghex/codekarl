@@ -136,6 +136,18 @@
 //!   destination with optimal tiling. A quad that fails them is a `Failed` report, as is a texture or staging
 //!   allocation that fails (naming its size) and a pipeline that cannot be created.
 //!
+//! # The texture store and the revision ledger (milestone 5.5, issue 1)
+//!
+//! Off screen, with no window: [`VulkanContext`] (the shared logical device, `Send + Sync`, which hands out the one
+//! [`RenderQueue`] once, so every `vkQueueSubmit` goes through `&mut RenderQueue`), [`TextureStore`] (a worker
+//! that records upload batches into one of two leases and never submits; the owner submits and polls fences) and
+//! [`TextureLedger`] (revisions, boundary adoption, frame tickets, one descriptor set per revision recycled only
+//! on release, and frame completion as a recorded [`FrameSubmission`] number). Image memory is pooled in 64 MiB
+//! blocks under a hard `texture_bytes` ceiling and the device's `maxMemoryAllocationCount`; the end is proven
+//! (`prove`, then `release`) and never waits for the device or the queue to go idle. The module documentation of
+//! `textures`, `revisions`, `memory`, `proofs` and `descriptors` carries the contract, which is the Metal
+//! crate's (CK-112/113/148/150/154) wherever those say nothing different.
+//!
 //! # What `MoltenVK` does (observed on this Mac, macOS 26.7, SDK loader 1.3.296)
 //!
 //! A surface accepts **one swap chain at a time**: creating a second one that does not name the first as
@@ -164,26 +176,34 @@
 //! the loader clone for the rest of the process; [`readback_clear_with_test_hooks`] injects those cases.
 
 mod capture;
+mod context;
+mod descriptors;
 mod draw;
 mod error;
 mod gpu;
 mod gpu_quad;
+mod hash;
 mod hooks;
 mod instance;
 mod ledger;
 mod loader;
+mod memory;
 mod presenter;
+mod proofs;
 mod quad;
 mod readback;
 mod readback_quad;
 mod render;
 mod residency;
+mod revisions;
 mod shared;
 mod slot;
+mod textures;
 mod unwind;
 
 pub use ash::vk;
 pub use capture::{FrameCapture, FrameCaptures};
+pub use context::{RenderQueue, TestFeatures, VulkanContext};
 pub use error::Error;
 pub use hooks::{
     Event, Gate, Observer, Pause, PipelineFault, QuadAllocation, QuadFaults, QuadStats,
@@ -205,5 +225,14 @@ pub use quad::{
 };
 pub use readback::{ReadbackHooks, readback_clear, readback_clear_with_test_hooks};
 pub use readback_quad::{MAX_TARGET_SIDE, readback_quad, readback_quad_with_test_hooks};
+pub use revisions::{
+    FrameSubmission, FrameTexture, FrameTicket, LedgerCleanup, LedgerError, LedgerEvent,
+    LedgerLimits, LedgerProof, OfferRefusal, RevisionState, TextureLedger,
+};
 pub use shared::{CleanupResult, PresenterReport};
 pub use slot::{QuadSkipped, VulkanQuadSlot};
+pub use textures::{
+    Completed, PreparedTexture, Proof, Refused, StallGate, StoreCleanup,
+    TestHooks as TextureTestHooks, TextureLimits, TextureOwner, TextureStats, TextureStore,
+    TextureWakes, UploadItem, UploadPort, readback_image,
+};

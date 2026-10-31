@@ -21,7 +21,7 @@ fn rust_files(directory: &Path, found: &mut Vec<PathBuf>) {
 
 /// Test-only names distinctive enough to forbid anywhere in `codekarl`'s sources: the hidden constructors
 /// and hook types, the log handle and the invalid-use helpers.
-const DISTINCTIVE: [&str; 30] = [
+const DISTINCTIVE: [&str; 47] = [
     "start_with_test_hooks",
     "TestHooks",
     "readback_clear_with_test_hooks",
@@ -52,6 +52,23 @@ const DISTINCTIVE: [&str; 30] = [
     "FrameCaptures",
     "capture_frames",
     "PipelineFault",
+    "new_for_tests",
+    "TestFeatures",
+    "lower_allocation_limit",
+    "inject_submit_error",
+    "submit_commands",
+    "StallGate",
+    "envelope_ready_unsubmitted",
+    "test_wait_submitted",
+    "lease_objects",
+    "submitted_command_buffer",
+    "held_images",
+    "allocation_count",
+    "readback_image",
+    "test_submit_upload",
+    "test_wait_upload",
+    "test_revision_state",
+    "test_live_revisions",
 ];
 
 /// Test-only names too common to forbid as words (the application has fakes of its own called `Gate`, say):
@@ -60,7 +77,7 @@ const GENERIC: [&str; 4] = ["Observer", "Gate", "Pause", "Event"];
 
 /// The names the library marks `#[doc(hidden)]` that are in neither list above, each with why: a method
 /// of a forbidden type, or a name too common to forbid as a word.
-const ALLOWED_HIDDEN: [(&str, &str); 7] = [
+const ALLOWED_HIDDEN: [(&str, &str); 11] = [
     (
         "watch",
         "a method of Loader, returning the forbidden LoaderWatch",
@@ -71,6 +88,22 @@ const ALLOWED_HIDDEN: [(&str, &str); 7] = [
     ("hold", "a method of the forbidden Pause"),
     ("release", "a method of the forbidden Pause"),
     ("reached", "a method of the forbidden Pause"),
+    (
+        "readback",
+        "a method of PreparedTexture, which only the texture store's tests reach",
+    ),
+    (
+        "device",
+        "a method of VulkanContext for the tests' own commands, a common word",
+    ),
+    (
+        "family",
+        "a method of VulkanContext for the tests' own commands, a common word",
+    ),
+    (
+        "memory_properties",
+        "a method of VulkanContext for the tests' own buffers, a common word",
+    ),
 ];
 
 /// The names of the items after each `#[doc(hidden)]` in the library: `pub fn`, `struct`, `enum` or `type`.

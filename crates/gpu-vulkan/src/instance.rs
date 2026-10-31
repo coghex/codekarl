@@ -113,6 +113,10 @@ pub struct InstanceOptions {
     /// Enable `VK_LAYER_KHRONOS_validation` and a debug messenger that records every warning and error
     /// (the tests; an error when the layer or `VK_EXT_debug_utils` is missing).
     pub validation: bool,
+    /// Also turn on synchronization validation (`VK_EXT_validation_features`, from the validation layer), which
+    /// reports missing barriers and hazards between commands. Instance creation fails when it is unavailable,
+    /// and when `validation` is off.
+    pub synchronization: bool,
 }
 
 /// A Vulkan instance, created and destroyed on the main thread. Not `Clone`: it is destroyed once, by
@@ -328,6 +332,9 @@ pub fn create_instance_with_test_hooks(
     // never for an instance that is kept.
     let log_pointer = options.validation.then(|| Arc::into_raw(Arc::clone(&log)));
     let mut create_messenger = log_pointer.map(messenger_info);
+    let enabled_features = [vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION];
+    let mut validation_features =
+        vk::ValidationFeaturesEXT::default().enabled_validation_features(&enabled_features);
     let mut info = vk::InstanceCreateInfo::default()
         .application_info(&application)
         .enabled_extension_names(&name_pointers)
@@ -338,6 +345,9 @@ pub fn create_instance_with_test_hooks(
     if let Some(messenger) = create_messenger.as_mut() {
         // Reports what happens during `vkCreateInstance` and `vkDestroyInstance`.
         info = info.push_next(messenger);
+    }
+    if options.synchronization {
+        info = info.push_next(&mut validation_features);
     }
     // SAFETY: `info` and everything it points to (names, layers, application, the messenger info) live until
     // the call returns; the callback's user data outlives the instance.
@@ -488,6 +498,32 @@ fn plan_instance(
         }
         layers.push(VALIDATION_LAYER);
         wanted.push(debug_utils);
+        if options.synchronization {
+            // The layer itself offers `VK_EXT_validation_features`.
+            // SAFETY: the entry is live and the call takes no pointer from us.
+            let offered =
+                unsafe { entry.enumerate_instance_extension_properties(Some(VALIDATION_LAYER)) }
+                    .map_err(|code| {
+                        vk_error("vkEnumerateInstanceExtensionProperties(layer)", code)
+                    })?;
+            let features = vk::EXT_VALIDATION_FEATURES_NAME;
+            if !offered.iter().any(|property| {
+                property
+                    .extension_name_as_c_str()
+                    .is_ok_and(|name| name == features)
+            }) {
+                return Err(Error(format!(
+                    "the Vulkan extension {} (synchronization validation) is not offered by {}",
+                    features.to_string_lossy(),
+                    VALIDATION_LAYER.to_string_lossy()
+                )));
+            }
+            wanted.push(features.to_string_lossy().into_owned());
+        }
+    } else if options.synchronization {
+        return Err(Error(
+            "synchronization validation needs validation to be on".to_owned(),
+        ));
     }
     wanted.sort();
     wanted.dedup();
