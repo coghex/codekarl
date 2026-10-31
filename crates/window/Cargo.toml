@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# Exposes process-local controls used only by application integration-test workers.
+test-support = []
+
 [dependencies]
 ck-input = { path = "../input" }
 ck-log = { path = "../log" }

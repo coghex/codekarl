@@ -600,6 +600,13 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
                 self.backend
                     .pump(&mut record, wait, self.settings.native_events());
             }
+            #[cfg(feature = "test-support")]
+            if crate::test_support::take_queued_focus_lost() {
+                // Apply the test event after this pass's native events so an initial FocusGained cannot
+                // overwrite the deterministic loss before the scheduler evaluates eligibility.
+                record(NativeEvent::FocusLost);
+                println!("test-support: synthetic FocusLost consumed by the shared window loop");
+            }
         }
         self.refresh_updates(pass);
         // The close action (design §10.1): a rising edge requests the close with source `key` - one outstanding at a
@@ -683,9 +690,12 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
             metrics.boundary(self.clock.now());
         }
         let (enabled, epoch) = scheduler.control.state();
+        let focused = self.input.focused;
+        #[cfg(feature = "test-support")]
+        let focused = focused || crate::test_support::updates_may_run_unfocused();
         let eligible = enabled
             && pass.opened == OpenedEvent::Posted
-            && self.input.focused
+            && focused
             && !self.input.minimized
             && self.input.pixel_size.width != 0
             && self.input.pixel_size.height != 0;

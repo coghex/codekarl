@@ -92,6 +92,10 @@ mod notifier;
 mod requests;
 mod settings;
 
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod test_support;
+
 // The input types the window core's API is made of (`NativeEvent::Key`, `LoopSettings::with_bindings`, and the
 // snapshot an `UpdateEvent` carries), so a caller needs no dependency of its own on `ck-input`.
 pub use backend::{Backend, CreatedWindow, NativeEvent, PixelSize, Wait};

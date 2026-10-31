@@ -48,7 +48,7 @@ use std::{
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::{Command, ExitCode},
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -64,6 +64,8 @@ use common::{BINARY, Scratch};
 #[path = "supervisor/mod.rs"]
 mod supervisor;
 use supervisor::{Seen, Split, Supervised};
+#[path = "supervisor/signal.rs"]
+mod signal;
 
 /// The longest a window child may run.
 const DEADLINE: Duration = Duration::from_secs(60);
@@ -73,6 +75,9 @@ const PROMPT: Duration = Duration::from_secs(10);
 /// The worker's own flag: the first argument of a worker, followed by the mode, the report file and then the
 /// application's arguments.
 const WORKER_FLAG: &str = "--ck-windowed-test-worker";
+/// Internal worker argument, consumed here rather than passed to the application.
+const ALLOW_UNFOCUSED_UPDATES_FLAG: &str = "--ck-windowed-test-allow-unfocused-updates";
+const QUEUE_FOCUS_LOST_FOR_CK163_FLAG: &str = "--ck-windowed-test-queue-focus-lost-for-ck163";
 
 unsafe extern "C" {
     fn ck_app_t_install_input_filter();
@@ -135,6 +140,8 @@ impl Mode {
 
 /// The mode the supervisor is running its cases in.
 static MODE: AtomicU8 = AtomicU8::new(0);
+static ALLOW_UNFOCUSED_UPDATES: AtomicBool = AtomicBool::new(false);
+static QUEUE_FOCUS_LOST_FOR_CK163: AtomicBool = AtomicBool::new(false);
 
 fn mode() -> Mode {
     Mode::from_code(MODE.load(Ordering::SeqCst))
@@ -271,7 +278,26 @@ fn worker(arguments: Vec<OsString>) -> ExitCode {
         // Step 4: created after step 1, so it inherits the block, like the typist's helper.
         spawn_reporter(report);
     }
-    codekarl::main_entry(arguments.collect())
+    let mut application_arguments = arguments.collect::<Vec<_>>();
+    let mut allow_unfocused_updates = false;
+    let mut queue_focus_lost_for_ck163 = false;
+    while let Some(argument) = application_arguments.first() {
+        if argument == OsStr::new(ALLOW_UNFOCUSED_UPDATES_FLAG) {
+            allow_unfocused_updates = true;
+            application_arguments.remove(0);
+        } else if argument == OsStr::new(QUEUE_FOCUS_LOST_FOR_CK163_FLAG) {
+            queue_focus_lost_for_ck163 = true;
+            application_arguments.remove(0);
+        } else {
+            break;
+        }
+    }
+    let _unfocused_updates =
+        allow_unfocused_updates.then(ck_window::test_support::allow_updates_while_unfocused);
+    if queue_focus_lost_for_ck163 {
+        ck_window::test_support::queue_focus_lost_on_next_pump();
+    }
+    codekarl::main_entry(application_arguments)
 }
 
 /// Lua helpers for the fixture scripts: `touch(path)` leaves a marker file, `wait_for(path)` polls for one
@@ -385,11 +411,14 @@ fn start(args: &[&OsStr]) -> Worker {
     let report = scratch.0.join("report");
     let exe = env::current_exe().expect("this executable's path");
     let mut command = Command::new(exe);
-    command
-        .arg(WORKER_FLAG)
-        .arg(mode().word())
-        .arg(&report)
-        .args(args);
+    command.arg(WORKER_FLAG).arg(mode().word()).arg(&report);
+    if ALLOW_UNFOCUSED_UPDATES.load(Ordering::SeqCst) {
+        command.arg(ALLOW_UNFOCUSED_UPDATES_FLAG);
+    }
+    if QUEUE_FOCUS_LOST_FOR_CK163.load(Ordering::SeqCst) {
+        command.arg(QUEUE_FOCUS_LOST_FOR_CK163_FLAG);
+    }
+    command.args(args);
     let live = Supervised::spawn(command, DEADLINE).unwrap_or_else(|error| panic!("{error}"));
     Worker {
         live,
@@ -423,10 +452,18 @@ fn wait_for_drops(worker: &Worker) {
 }
 
 /// Sends `signal` to the worker.
-fn signal(worker: &Worker, signal: i32) {
-    // SAFETY: `kill` sends a signal to the child process this test spawned and still holds.
-    let sent = unsafe { libc::kill(i32::try_from(worker.live.id()).expect("a pid"), signal) };
-    assert_eq!(sent, 0, "kill failed");
+fn signal(worker: &mut Worker, kind: i32) {
+    let pid = worker.live.id();
+    let pid = signal::live_pid(worker.live.process.as_mut(), pid)
+        .unwrap_or_else(|error| panic!("{error}"));
+    // SAFETY: the shared guard confirmed a positive pid for this supervisor's live direct child.
+    let sent = unsafe { libc::kill(pid.get(), kind) };
+    assert_eq!(sent, 0, "kill of the live child failed");
+}
+
+fn signal_target_refuses_zero_pid_or_unowned_child() {
+    assert!(signal::target(0).is_err());
+    assert!(signal::live_pid(None, 1).is_err());
 }
 
 /// Waits for the worker to end and reads everything it wrote; a deadline, a failed poll, kill or reap and a read
@@ -610,7 +647,7 @@ fn sigterm_after_window_opened_shuts_down_cleanly_and_exits_143() {
     let mut live = start(&[OsStr::new("--config"), config.as_os_str()]);
     wait_for(&mut live, "window: window opened", Duration::from_secs(30));
     wait_for_drops(&live);
-    signal(&live, libc::SIGTERM);
+    signal(&mut live, libc::SIGTERM);
     let seen = finish(live);
     assert_eq!(seen.code, Some(143), "{}", seen.stdout);
     assert_in_order(
@@ -1000,10 +1037,10 @@ fn two_sigterms_end_the_worker_at_once_with_3() {
         Duration::from_secs(30),
     );
     wait_for_drops(&worker);
-    signal(&worker, libc::SIGTERM);
+    signal(&mut worker, libc::SIGTERM);
     wait_for(&mut worker, "received SIGTERM, quitting", PROMPT);
     wait_for(&mut worker, "ui shutdown waiting", PROMPT);
-    signal(&worker, libc::SIGTERM);
+    signal(&mut worker, libc::SIGTERM);
     let seen = finish(worker);
     assert_eq!(seen.code, Some(3), "{}", seen.stdout);
 }
@@ -1043,7 +1080,7 @@ fn helper_threads_run_with_sigint_and_sigterm_blocked() {
             "the typist's helper: {report:?}"
         );
     }
-    signal(&worker, libc::SIGTERM);
+    signal(&mut worker, libc::SIGTERM);
     let seen = finish(worker);
     assert_eq!(seen.code, Some(143), "{}", seen.stdout);
     assert_in_order(
@@ -1129,7 +1166,7 @@ fn control_without_the_filter() -> Result<String, String> {
     let reached = worker
         .live
         .wait_for("declined close request from key", Duration::from_secs(30));
-    signal(&worker, libc::SIGTERM);
+    signal(&mut worker, libc::SIGTERM);
     let seen = worker.live.finish()?;
     reached.map_err(|error| format!("control 1: typing did not reach the application: {error}"))?;
     Ok(format!(
@@ -1165,7 +1202,7 @@ fn control_block_after_the_typist() -> Result<String, String> {
             }
             thread::sleep(Duration::from_millis(10));
         };
-        signal(&worker, libc::SIGTERM);
+        signal(&mut worker, libc::SIGTERM);
         let seen = worker.live.finish()?;
         lines.push(format!(
             "control 2 ({}): typist helper mask {} (7 = reported, SIGINT and SIGTERM blocked), reporter thread mask {}, exit {:?}",
@@ -1546,6 +1583,48 @@ fn destroying_the_quad_and_releasing_the_texture_retires_it_before_the_run_ends(
     assert_reconciled(&record);
 }
 
+fn update_driven_worker_continues_after_synthetic_focus_loss() {
+    let seen = lifecycle(MOVEMENT);
+    assert!(
+        seen.stdout
+            .contains("test-support: synthetic FocusLost consumed by the shared window loop"),
+        "{}",
+        seen.stdout
+    );
+    assert!(
+        seen.stdout.contains("runtime: shutdown complete"),
+        "{}",
+        seen.stdout
+    );
+}
+
+fn synthetic_focus_loss_without_worker_opt_in_keeps_the_pause() {
+    let fixture = Fixture::new();
+    let config = fixture.windowed(
+        &lifecycle_config(),
+        &format!("{LIFECYCLE_HELPERS}\n{MOVEMENT}"),
+    );
+    let args = [OsStr::new("--config"), config.as_os_str()];
+    let mut worker = start(&args);
+    wait_for(
+        &mut worker,
+        "test-support: synthetic FocusLost consumed by the shared window loop",
+        Duration::from_secs(10),
+    );
+    // With the opt-in, MOVEMENT closes in under 3 seconds on this host; this longer observation
+    // makes an accidental opt-in or a resumed update observable in this negative control.
+    // On the expected timeout, wait_for kills and reaps its child as part of the failed wait.
+    let result = worker
+        .live
+        .wait_for("runtime: shutdown complete", Duration::from_secs(4));
+    assert!(
+        result
+            .as_ref()
+            .is_err_and(|error| { error.contains("no \"runtime: shutdown complete\" in time") }),
+        "without the update opt-in, injected FocusLost must retain the normal update pause: {result:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Frame timing on a real window (milestone 5, issue 10b-1): the one `metrics` record
 // ---------------------------------------------------------------------------------------------
@@ -1740,6 +1819,9 @@ fn cases() -> Vec<(&'static str, fn())> {
         case!(a_missing_file_stays_a_failed_checker_quad_and_the_run_ends_normally),
         case!(moving_a_quad_for_many_updates_uploads_nothing_but_a_reload_does),
         case!(destroying_the_quad_and_releasing_the_texture_retires_it_before_the_run_ends),
+        case!(update_driven_worker_continues_after_synthetic_focus_loss),
+        case!(synthetic_focus_loss_without_worker_opt_in_keeps_the_pause),
+        case!(signal_target_refuses_zero_pid_or_unowned_child),
         case!(the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record),
         case!(a_marked_run_writes_one_metrics_record_with_the_window_beside_the_totals),
         case!(a_run_without_a_mark_reports_the_totals_only),
@@ -1754,8 +1836,34 @@ fn cases() -> Vec<(&'static str, fn())> {
 
 /// Runs one case, catching its panic; returns whether it passed.
 fn run_case(name: &str, case: fn()) -> bool {
+    // Only application workers whose Lua fixtures use frame.on_update opt in. In particular, the minimise / restore and
+    // other focus-specific cases below retain the production focus gate.
+    ALLOW_UNFOCUSED_UPDATES.store(
+        matches!(
+            name,
+            "pending_textures_become_ready_and_the_run_reconciles_to_zero"
+                | "a_missing_file_stays_a_failed_checker_quad_and_the_run_ends_normally"
+                | "moving_a_quad_for_many_updates_uploads_nothing_but_a_reload_does"
+                | "destroying_the_quad_and_releasing_the_texture_retires_it_before_the_run_ends"
+                | "update_driven_worker_continues_after_synthetic_focus_loss"
+                | "the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record"
+                | "a_marked_run_writes_one_metrics_record_with_the_window_beside_the_totals"
+                | "a_run_without_a_mark_reports_the_totals_only"
+        ),
+        Ordering::SeqCst,
+    );
+    QUEUE_FOCUS_LOST_FOR_CK163.store(
+        matches!(
+            name,
+            "update_driven_worker_continues_after_synthetic_focus_loss"
+                | "synthetic_focus_loss_without_worker_opt_in_keeps_the_pause"
+        ),
+        Ordering::SeqCst,
+    );
     let started = Instant::now();
     let passed = panic::catch_unwind(AssertUnwindSafe(case)).is_ok();
+    ALLOW_UNFOCUSED_UPDATES.store(false, Ordering::SeqCst);
+    QUEUE_FOCUS_LOST_FOR_CK163.store(false, Ordering::SeqCst);
     println!(
         "test {name} [{}] ... {} ({:.1}s)",
         mode().word(),
