@@ -13,8 +13,9 @@ accepted ([docs/render-design.md](docs/render-design.md)): the `ui` VM places a 
 path, and the two backends are interchangeable to the rest of the project. Milestone 5 is accepted too
 ([docs/scene-design.md](docs/scene-design.md)): on the native Metal path the `ui` VM loads textures in the background through
 reusable handles, places and moves many quads, reads configurable key bindings every update, and draws tens of thousands of quads
-and distinct textures through a bindless texture table. Milestone 5.5 brings the same to GLFW and Vulkan; its issues are not filed
-yet.
+and distinct textures through a bindless texture table. Milestone 5.5 brings the same to GLFW and Vulkan: its first four stages
+are accepted, so the live scene, its key bindings and the update pacing now run on `glfw-vulkan` through ordinary per-texture
+bindings; the bindless stage and the Vulkan scale measurement are still to come.
 
 ## Run it
 
@@ -28,6 +29,7 @@ tools/ck cargo run --features vulkan -- --config config/demo-glfw-vulkan.toml  #
 tools/ck cargo run --features metal -- --config config/demo-quad.toml  # the textured-quad demo (Metal)
 tools/ck cargo run --features vulkan -- --config config/demo-quad-vulkan.toml  # the textured-quad demo (Vulkan)
 tools/ck cargo run --features metal -- --config config/demo-scene.toml  # the live-scene demo: loading tiles, a gem to move
+tools/ck cargo run --features vulkan -- --config config/demo-scene.toml --backend glfw-vulkan  # the same demo on GLFW and Vulkan
 tools/ck cargo run --features metal -- --metal-smoke
 tools/ck check --changed # the groups your change affects (and why); the usual check
 tools/ck check --quick   # fmt, Ruff, ShellCheck: while editing
@@ -164,7 +166,7 @@ pixel-art placeholder with transparent areas, scaled up with nearest sampling. `
 
 ### The live scene (milestone 5)
 
-On `native-metal` the `ui` VM also gets `texture` and `frame` tables and handle-based quads:
+On `native-metal` and `glfw-vulkan` the `ui` VM also gets `texture` and `frame` tables and handle-based quads:
 
 - `texture.load("name.png")` returns a texture handle at once; the file is read, decoded and uploaded in the background. Until
   its pixels arrive, and for good if it cannot load, its quads show a magenta checkerboard. `texture.status(t)` reports its state
@@ -183,16 +185,18 @@ On `native-metal` the `ui` VM also gets `texture` and `frame` tables and handle-
   `texture.status(t)`. The keys and defaults are in
   [docs/scene-design.md](docs/scene-design.md) §7.1.
 - **Headless** runs validate and ignore the window and scene calls; a texture can reach `cpu_ready` there, never `ready`.
-- **`glfw-vulkan`** refuses these calls with "… is not available on the glfw-vulkan backend until milestone 5.5"; milestone 4's
-  quad still works there.
+- **`glfw-vulkan`** runs all of this too (milestone 5.5), with the same script and settings. Until its bindless stage lands it
+  draws with ordinary per-texture bindings, and `bindless_texture_slots` has no effect there. `diagnostics.metrics_mark` is still
+  Metal-only.
 
 `config/demo-scene.toml` runs `scripts/ui/demo_scene.lua`. Twelve tiles load two per update, each a checkerboard until its image
 arrives; one names a missing file, so its checkerboard stays. The arrow keys or WASD move the gem, R reloads every texture, and
-Escape closes the window.
+Escape closes the window. It looks and behaves the same on `native-metal` and on `glfw-vulkan`.
 
-Measured on this Mac (Apple M3 Max, release build) with 65,536 quads using 32,768 distinct textures in one bindless draw:
-8.25 ms of CPU time per frame at the 95th percentile, just over the 8 ms target and accepted by the owner, and 0.6 ms of GPU
-time. With textures constantly reloaded and recreated it is 7.35 ms, and loading runs at about 7,700 textures a second.
+Measured on `native-metal` on this Mac (Apple M3 Max, release build) with 65,536 quads using 32,768 distinct textures in one
+bindless draw: 8.25 ms of CPU time per frame at the 95th percentile, just over the 8 ms target and accepted by the owner, and
+0.6 ms of GPU time. With textures constantly reloaded and recreated it is 7.35 ms, and loading runs at about 7,700 textures a
+second.
 Counter-level profiling is done with external tools (Instruments, the Metal debugger), not engine counters.
 
 `tools/ck` supplies the project tool environment. It selects Xcode using
