@@ -2,6 +2,10 @@
 #
 #   tools/ck cargo run --features metal -- --config config/demo-scene.toml
 #
+# and on GLFW and Vulkan with
+#
+#   tools/ck cargo run --features vulkan -- --config config/demo-scene.toml --backend glfw-vulkan
+#
 # The window opens at once. Twelve tiles appear two at a time as magenta checkers and turn into their images a moment
 # later; one tile names a file that does not exist, so one magenta checker stays for the whole run. The arrow keys and WASD
 # move the gem, R reloads every texture, Escape closes the window. The ui script is scripts/ui/demo_scene.lua; the

@@ -15,9 +15,8 @@
 //! wanted is a wrong-kind error, and a token of another run's registry is foreign. Tokens are process-local, not saved data.
 //!
 //! **Every call validates its cheap arguments first** (the argument shape and the token's syntax) and only then looks at the
-//! service: on `glfw-vulkan` (no service) it raises "`<function>` is not available on the glfw-vulkan backend until milestone
-//! 5.5", and after the run's end (the service was closed) it raises the service's `Ended` error without touching a file, a
-//! worker or the registry. A close that lands just after the check is the service's to refuse: `load` and `reload` return
+//! service: after the run's end (the service was closed) it raises the service's `Ended` error without touching a file, a
+//! worker or the registry (a test's run without a service raises [`no_service`]). A close that lands just after the check is the service's to refuse: `load` and `reload` return
 //! `Ended` from inside, and `release` and `status` then see an ended registry (stale) at worst. The next call reports
 //! `Ended`.
 
@@ -29,9 +28,15 @@ use ck_resources::{
     AdmitError, Assets, MAX_PATH_BYTES, ResourceService, StatusState, TextureKey, TextureStatus,
 };
 
-/// The message of a new call on the `glfw-vulkan` backend (design §8.4).
+/// The message of a call on the `glfw-vulkan` backend that is not available there yet (design §8.4): the one left is
+/// `diagnostics.metrics_mark`, whose Vulkan measurement window is milestone 5.5-6's.
 pub(crate) fn unavailable(function: &str) -> String {
     format!("{function} is not available on the glfw-vulkan backend until milestone 5.5")
+}
+
+/// The message of a call of a run that has no resource service (only a test builds one).
+pub(crate) fn no_service(function: &str) -> String {
+    format!("{function}: this run has no resource service")
 }
 
 /// A host function of this module: a method of [`Shared`].
@@ -39,7 +44,7 @@ type HostCall = fn(&Shared, &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, 
 
 /// What the four host functions share.
 struct Shared {
-    /// The run's resource service; `None` on `glfw-vulkan`.
+    /// The run's resource service; `None` only in a test that builds the extension without one.
     service: Option<ResourceService>,
     /// What the run's measurement window learns of a `texture.load` (nothing else depends on it).
     on_load: Option<LoadNotes>,
@@ -85,7 +90,7 @@ impl Shared {
     /// The service of a call, or the refusal of this backend or of a run that ended. Called after the argument checks.
     fn service(&self, function: &str) -> Result<&ResourceService, String> {
         let Some(service) = &self.service else {
-            return Err(unavailable(function));
+            return Err(no_service(function));
         };
         if service.is_closed() {
             return Err(ended(function));
@@ -211,8 +216,8 @@ fn status_table(status: &TextureStatus) -> Result<ConfigValue, String> {
     Ok(ConfigValue::Table(table))
 }
 
-/// The `texture` extension. `service` is the run's resource service (`None` on `glfw-vulkan`, where every call validates
-/// its arguments and then says it is not available).
+/// The `texture` extension. `service` is the run's resource service (`None` only in a test, where every call validates its
+/// arguments and then says the run has no service).
 #[cfg(test)]
 pub(crate) fn extension(service: Option<ResourceService>) -> Extension {
     extension_noting(service, None)

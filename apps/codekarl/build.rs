@@ -1,9 +1,10 @@
 //! Build script for `codekarl`. The program (the library and the binary) is pure Rust; this script exists for one
-//! thing: the test-only keyboard filter and typist that the windowed tests (`tests/windowed.rs`) install before
-//! their first window, so the owner's typing (Escape included) never reaches a test window. It is compiled, with
-//! the one macOS deployment target and optionally the Clang static analyzer (as `ck-render-2d`'s and
-//! `ck-gpu-metal`'s scripts do), into an archive that only the integration tests link (`rustc-link-arg-tests`):
-//! the library and the binary carry none of it. Without the `metal` feature, or off macOS, the script does nothing.
+//! thing: the test-only keyboard filter, typist and window helpers that the windowed tests (`tests/windowed.rs` for
+//! `native-metal`, `tests/vulkan_app.rs` for `glfw-vulkan`) install before their first window, so the owner's typing
+//! (Escape included) never reaches a test window. It is compiled, with the one macOS deployment target and optionally
+//! the Clang static analyzer (as `ck-render-2d`'s and `ck-gpu-metal`'s scripts do), into an archive that only the
+//! integration tests link (`rustc-link-arg-tests`): the library and the binary carry none of it. Without the `metal`
+//! and `vulkan` features, or off macOS, the script does nothing.
 use std::{
     env,
     ffi::{OsStr, OsString},
@@ -158,7 +159,8 @@ fn build_archive(
 
 fn main() {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
-        || env::var_os("CARGO_FEATURE_METAL").is_none()
+        || (env::var_os("CARGO_FEATURE_METAL").is_none()
+            && env::var_os("CARGO_FEATURE_VULKAN").is_none())
     {
         return;
     }

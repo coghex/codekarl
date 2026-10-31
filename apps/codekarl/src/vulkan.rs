@@ -10,9 +10,12 @@
 //! tests (the tests of this file's `tests` module run the very same code with them).
 //!
 //! **The quad.** [`VulkanAdapter`] is the [`Gpu2d`] backend itself (milestone 4.5): the stack provides a
-//! [`QuadSide`] for the run (the real one is `ck-render-2d`'s `VulkanSinkSide`, the fake one records every scene
-//! it is given), `new_sink` gets the sink from it, `start` accepts only that sink and hands the matching slot to
-//! [`Stack::start`], and `take_report` returns the side's refusal before anything the presenter has. The seam
+//! [`QuadSide`] for the run (the real one is `ck-render-2d`'s resource-aware `VulkanSinkSide::with_resources`, the fake one
+//! records every scene it is given), `new_sink` gets the sink from it, `start` accepts only that sink and takes the
+//! matching frame slot and the side's resident driver (both **before** anything starts: a failure of either is a start
+//! failure) and hands them to [`Stack::start`], then connects the relay to the started presenter's texture wake, once;
+//! the relay is disconnected on every end path (once for the run); and `take_report` returns the side's refusal before
+//! anything the presenter has. The seam
 //! names no `ck-gpu-vulkan` type (the generic code builds and is tested without the `vulkan` feature): the slot
 //! is the stack's own associated type, and [`Running`] carries the drawn generation and the format notice as
 //! plain values. The adapter's presenter wake and the side's refusal wake are both built from the run's one
@@ -47,15 +50,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ck_log::{Admission, Level};
-use ck_render_2d::{Gpu2d, QuadSink, Renderer};
+use ck_render_2d::{Gpu2d, QuadSink, Renderer, WakeRelay};
+use ck_resources::ResourceService;
 use ck_runtime::{RunContext, RunEnd};
 use ck_window::{
     Backend, CleanupResult, CreatedWindow, NativeEvent, NativeWake, PixelSize, PresenterReport,
     Wait, WindowDesc,
 };
 
+use crate::config::ResourceConfig;
 use crate::lifecycle::ResourceLatch;
-use crate::windowed::{self, RunClosure, RunEnv};
+use crate::windowed::{self, RunClosure, RunEnv, RunNotes, VulkanFigures};
 
 #[cfg(test)]
 mod fake;
@@ -65,6 +70,8 @@ mod logging;
 mod quad_tests;
 #[cfg(feature = "vulkan")]
 mod real;
+#[cfg(test)]
+mod relay_tests;
 #[cfg(test)]
 mod tests;
 
@@ -87,15 +94,44 @@ pub(crate) struct Refused<I> {
     pub(crate) cause: String,
 }
 
+/// What the run's resource path needs of the quad side and of the presenter's start, as plain values (no `ck-gpu-vulkan`
+/// type): the service, the relay its wakes go through, and the limits parsed from `[resources]` and `[render]`.
+#[derive(Clone)]
+#[cfg_attr(
+    not(feature = "vulkan"),
+    expect(
+        dead_code,
+        reason = "only the real stack reads the run's resources; the fakes ignore them"
+    )
+)]
+pub(crate) struct Resources {
+    /// The run's resource service.
+    pub(crate) service: ResourceService,
+    /// The late-bound relay the service's upload and retirement wakes go through.
+    pub(crate) relay: WakeRelay,
+    /// The parsed `[resources]` limits.
+    pub(crate) config: ResourceConfig,
+    /// `[render] max_quads`.
+    pub(crate) max_quads: usize,
+}
+
 /// The quad side of a run: everything of the backend except the presenter (the real one is `ck-render-2d`'s
-/// `VulkanSinkSide`). It holds no presenter, no handle and no GPU object.
+/// `VulkanSinkSide::with_resources`). It holds no presenter, no handle and no GPU object.
 pub(crate) trait QuadSide {
-    /// What `Stack::start` takes of the sink this side made: the slot the presenter's render thread reads.
+    /// What `Stack::start` takes of the sink this side made: the frame slot the presenter's render thread reads.
     type Slot;
-    /// A new sink (and slot); it replaces any earlier one as "the one this side made".
+    /// What `Stack::start` takes of the side's resource service: the driver the render thread's ledger works through.
+    type Driver;
+    /// A new resource-aware sink (and frame slot); it replaces any earlier one as "the one this side made".
     fn new_sink(&mut self) -> Arc<dyn QuadSink>;
-    /// The slot behind `sink`, if it is the one `new_sink` made; an error otherwise.
-    fn accept(&self, sink: &Arc<dyn QuadSink>) -> Result<Self::Slot, String>;
+    /// The frame slot behind `sink`, if it is the one `new_sink` made; an error otherwise.
+    fn accept_frames(&self, sink: &Arc<dyn QuadSink>) -> Result<Self::Slot, String>;
+    /// The driver over the side's resource service; an error only for a side that has none.
+    fn resident_driver(&self) -> Result<Self::Driver, String>;
+    /// Connects the relay to the started presenter's texture wake. An error only for a side with no service.
+    fn connect(&self, texture_wake: Arc<dyn Fn() + Send + Sync>) -> Result<(), String>;
+    /// Disconnects the relay; harmless when repeated. An error only for a side with no service.
+    fn disconnect(&self) -> Result<(), String>;
     /// The recorded refusal, once, as a `Failed` report.
     fn take_report(&self) -> Option<PresenterReport>;
 }
@@ -119,6 +155,10 @@ pub(crate) trait Running {
     fn drawn_generation(&self) -> Option<u64>;
     /// The format notice, once: the name of the surface format the quad is not drawn on.
     fn take_notice(&mut self) -> Option<String>;
+    /// The wake the relay is connected to, so the service's uploads and retirements reach the render thread.
+    fn texture_wake(&self) -> Arc<dyn Fn() + Send + Sync>;
+    /// The presenter's last numbers, copied before its handle is released (`None`: it has none to give).
+    fn figures(&self) -> Option<VulkanFigures>;
 }
 
 /// Everything this path needs from the accepted crates, behind one seam: the real stack, or a fake.
@@ -137,8 +177,10 @@ pub(crate) trait Stack {
     type Started: Running;
     /// What the presenter takes of the quad side's sink.
     type Slot;
+    /// What the presenter takes of the quad side's resource service.
+    type Driver;
     /// The quad side of a run.
-    type Side: QuadSide<Slot = Self::Slot>;
+    type Side: QuadSide<Slot = Self::Slot, Driver = Self::Driver>;
 
     /// Loads the Vulkan loader, by an explicit absolute path.
     fn load_loader(&self) -> Result<Self::Loader, String>;
@@ -156,9 +198,14 @@ pub(crate) trait Stack {
         handles: &Self::Handles,
         instance: &Self::Instance,
     ) -> Result<Self::Surface, String>;
-    /// The quad side of a run, given the loop's wake (the notifier's), which a refusal calls.
-    fn quad_side(&self, wake: Arc<dyn Fn() + Send + Sync>) -> Self::Side;
-    /// Starts the presenter on the surface, with the slot of the sink the quad side made.
+    /// The quad side of a run, given the loop's wake (the notifier's), which a refusal calls, and the run's resources.
+    fn quad_side(&self, wake: Arc<dyn Fn() + Send + Sync>, resources: &Resources) -> Self::Side;
+    /// Starts the presenter on the surface, with the slot of the sink the quad side made, the side's driver and the run's
+    /// resources (their limits). The presenter's device context is made here, after the surface exists.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the surface's start arguments plus the side's slot and driver and the run's resources"
+    )]
     fn start(
         &self,
         instance: &Self::Instance,
@@ -167,6 +214,8 @@ pub(crate) trait Stack {
         clear: [f32; 3],
         wake: Arc<dyn Fn() + Send + Sync>,
         slot: Self::Slot,
+        driver: Self::Driver,
+        resources: &Resources,
     ) -> Result<Self::Started, String>;
     /// Destroys the surface (when given) and then the instance, only after the presenter's proven end.
     fn destroy(
@@ -187,6 +236,8 @@ struct State<S: Stack> {
     presenter: Option<S::Started>,
     /// The presenter reported a proven end.
     proven: bool,
+    /// The relay was disconnected (it is, once, on whichever end path the run takes first).
+    disconnected: bool,
     /// Why the owners were retained (see the module documentation), if they were.
     retained: Option<String>,
 }
@@ -194,22 +245,56 @@ struct State<S: Stack> {
 /// The run's shared state and the stack it is built from.
 struct Run<S: Stack> {
     stack: S,
+    /// The quad side: the sink, its slot, the driver, the relay and the recorded refusal. It is the run's, not the adapter's,
+    /// because the end paths that retain the owners (the backend's) disconnect the relay too.
+    side: RefCell<S::Side>,
+    /// The run's resources: what the presenter's start reads the limits from.
+    resources: Resources,
+    /// Where the presenter's last numbers go when its end is observed.
+    notes: Rc<RunNotes>,
     state: RefCell<State<S>>,
 }
 
 impl<S: Stack> Run<S> {
-    fn new(stack: S) -> Rc<Self> {
+    fn new(
+        stack: S,
+        wake: Arc<dyn Fn() + Send + Sync>,
+        resources: Resources,
+        notes: Rc<RunNotes>,
+    ) -> Rc<Self> {
+        let side = RefCell::new(stack.quad_side(wake, &resources));
         Rc::new(Self {
             stack,
+            side,
+            resources,
+            notes,
             state: RefCell::new(State {
                 loader: None,
                 instance: None,
                 surface: None,
                 presenter: None,
                 proven: false,
+                disconnected: false,
                 retained: None,
             }),
         })
+    }
+
+    /// Disconnects the relay, once for the run: the first end path to get here does it, a later one finds it done. An `Err`
+    /// (a side with no service, which this path's side never is: it is a broken invariant) is logged once at `error` level as
+    /// `render: <reason>` through the control path (bounded, and an error record has the logger's reserve), and the end path
+    /// carries on.
+    fn disconnect_relay(&self) {
+        {
+            let mut state = self.state.borrow_mut();
+            if state.disconnected {
+                return;
+            }
+            state.disconnected = true;
+        }
+        if let Err(reason) = self.side.borrow().disconnect() {
+            crate::lifecycle::emit(Level::Error, "render", format_args!("{reason}"));
+        }
     }
 
     /// Why the owners were retained, if they were.
@@ -349,6 +434,18 @@ impl<S: Stack> Backend for VulkanBackend<S> {
         }
     }
 
+    /// GLFW waits until a deadline (CK-155's `pump_until`), which the loop's paced update source needs: this wrapper says so
+    /// and forwards, or a run with a `[frame]` update source would reach the trait's default and stop.
+    fn supports_deadline(&self) -> bool {
+        self.glfw.as_ref().is_some_and(Backend::supports_deadline)
+    }
+
+    fn pump_until(&mut self, events: &mut dyn FnMut(NativeEvent), deadline: Instant, cap: usize) {
+        if let Some(glfw) = self.glfw.as_mut() {
+            glfw.pump_until(events, deadline, cap);
+        }
+    }
+
     fn destroy_window(&mut self) {
         let (instance, surface, ended, presenter) = {
             let mut state = self.run.state.borrow_mut();
@@ -369,6 +466,7 @@ impl<S: Stack> Backend for VulkanBackend<S> {
         if presenter.is_some() && ended != Ended::Proven {
             // A started presenter whose end was not proven: nothing is destroyed (not reached through the
             // loop, which only tears down after a proven end).
+            self.run.disconnect_relay();
             self.retain(
                 instance,
                 surface,
@@ -455,8 +553,6 @@ impl NativeWake for NoWake {
 pub(crate) struct VulkanAdapter<S: Stack> {
     run: Rc<Run<S>>,
     wake: Arc<dyn Fn() + Send + Sync>,
-    /// The quad side: the sink, its slot and the recorded refusal.
-    side: S::Side,
     /// The reports taken when the end was observed, not yet handed to the loop.
     queued: VecDeque<PresenterReport>,
     /// The final result of [`Gpu2d::poll_end`], once observed.
@@ -470,13 +566,11 @@ pub(crate) struct VulkanAdapter<S: Stack> {
 }
 
 impl<S: Stack> VulkanAdapter<S> {
-    /// An adapter whose presenter and quad side both call `wake` (the notifier's, built once per run).
+    /// An adapter whose presenter calls `wake` (the notifier's, built once per run; the run's quad side was built with the same).
     fn new(run: Rc<Run<S>>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
-        let side = run.stack.quad_side(Arc::clone(&wake));
         Self {
             run,
             wake,
-            side,
             queued: VecDeque::new(),
             ended: None,
             notice: None,
@@ -503,6 +597,10 @@ impl<S: Stack> VulkanAdapter<S> {
             Ended::NoPresenter
         };
         drop(presenter);
+        if ended == Ended::Proven {
+            // After the presenter's handle is released and before the surface and the instance are destroyed.
+            self.run.disconnect_relay();
+        }
         let Some(instance) = instance else {
             return CleanupResult::Proven;
         };
@@ -529,6 +627,33 @@ impl<S: Stack> VulkanAdapter<S> {
                 CleanupResult::Unproven { reason: cause }
             }
         }
+    }
+
+    /// Takes the side's slot and driver, then has the stack start the presenter on the instance and the surface.
+    fn start_presenter(
+        &self,
+        sink: &Arc<dyn QuadSink>,
+        desc: &WindowDesc,
+        pixel_size: PixelSize,
+    ) -> Result<S::Started, String> {
+        let (slot, driver) = {
+            let side = self.run.side.borrow();
+            (side.accept_frames(sink)?, side.resident_driver()?)
+        };
+        let state = self.run.state.borrow();
+        let (Some(instance), Some(surface)) = (state.instance.as_ref(), state.surface) else {
+            return Err("the instance and the surface do not exist".to_owned());
+        };
+        self.run.stack.start(
+            instance,
+            surface,
+            pixel_size,
+            desc.clear,
+            Arc::clone(&self.wake),
+            slot,
+            driver,
+            &self.run.resources,
+        )
     }
 
     fn with<T>(&self, call: impl FnOnce(&mut S::Started) -> T) -> Option<T> {
@@ -585,7 +710,7 @@ impl<S: Stack> Gpu2d for VulkanAdapter<S> {
 
     fn new_sink(&mut self) -> Arc<dyn QuadSink> {
         self.announce(false);
-        self.side.new_sink()
+        self.run.side.borrow_mut().new_sink()
     }
 
     fn start(
@@ -596,21 +721,23 @@ impl<S: Stack> Gpu2d for VulkanAdapter<S> {
         sink: Arc<dyn QuadSink>,
     ) -> Result<(), String> {
         self.announce(false);
-        // Only the sink this side made: any other is refused before anything starts.
-        let slot = self.side.accept(&sink)?;
-        let mut state = self.run.state.borrow_mut();
-        let (Some(instance), Some(surface)) = (state.instance.as_ref(), state.surface) else {
-            return Err("the instance and the surface do not exist".to_owned());
+        // Nothing starts before the side has given both its slot and its driver: only the sink this side made is accepted, and
+        // a side with no service has no driver. Any failure here, or in the start, is a start failure with the relay
+        // disconnected (nothing was connected) before the error returns.
+        let started = self.start_presenter(&sink, desc, pixel_size);
+        let started = match started {
+            Ok(started) => started,
+            Err(error) => {
+                self.run.disconnect_relay();
+                return Err(error);
+            }
         };
-        let started = self.run.stack.start(
-            instance,
-            surface,
-            pixel_size,
-            desc.clear,
-            Arc::clone(&self.wake),
-            slot,
-        )?;
-        state.presenter = Some(started);
+        let texture_wake = started.texture_wake();
+        self.run.state.borrow_mut().presenter = Some(started);
+        // After a successful start, once: the service's uploads and retirements now reach the presenter's render thread.
+        if let Err(reason) = self.run.side.borrow().connect(texture_wake) {
+            crate::lifecycle::emit(Level::Error, "render", format_args!("{reason}"));
+        }
         Ok(())
     }
 
@@ -632,7 +759,7 @@ impl<S: Stack> Gpu2d for VulkanAdapter<S> {
     fn take_report(&mut self) -> Option<PresenterReport> {
         self.announce(false);
         // The side's refusal comes first, once, before anything the presenter has.
-        if let Some(report) = self.side.take_report() {
+        if let Some(report) = self.run.side.borrow().take_report() {
             return Some(report);
         }
         let report = match self.queued.pop_front() {
@@ -668,8 +795,12 @@ impl<S: Stack> Gpu2d for VulkanAdapter<S> {
             None => CleanupResult::Proven,
         };
         // The end was observed, so what the thread recorded is final. The notice first (a notice recorded
-        // after the last ordinary call is not lost to the handle's removal), then the reports, then the handle.
+        // after the last ordinary call is not lost to the handle's removal), then the presenter's last numbers for the
+        // final resource record (copied while the handle is alive, as `native.rs` does), then the reports, then the handle.
         self.announce(true);
+        if let Some(figures) = self.with(|presenter| presenter.figures()).flatten() {
+            *self.run.notes.vulkan_gpu.borrow_mut() = Some(figures);
+        }
         self.drawn_at_end = self
             .with(|presenter| presenter.drawn_generation())
             .flatten();
@@ -678,7 +809,11 @@ impl<S: Stack> Gpu2d for VulkanAdapter<S> {
         }
         let result = match observed {
             CleanupResult::Proven => self.destroy_after_the_presenter(),
-            unproven @ CleanupResult::Unproven { .. } => unproven,
+            unproven @ CleanupResult::Unproven { .. } => {
+                // The handle stays (the loop retains everything); the relay goes first, so a late service wake reaches nobody.
+                self.run.disconnect_relay();
+                unproven
+            }
         };
         self.ended = Some(result.clone());
         Some(result)
@@ -693,11 +828,24 @@ pub(crate) fn run_closure_with<S: Stack + 'static>(
     drain: Duration,
 ) -> RunClosure {
     Box::new(move |_: &RunContext| -> RunEnd {
-        let run = Run::new(stack);
+        let Some(service) = env.resources.clone() else {
+            return windowed::fail_before_window(
+                &env,
+                "cannot start the presenter: the glfw-vulkan path has no resource service"
+                    .to_owned(),
+            );
+        };
+        let resources = Resources {
+            service,
+            relay: env.wake_relay.clone(),
+            config: env.resource_config,
+            max_quads: env.max_quads,
+        };
         // The one wake of the run: the notifier's. The presenter's reports and the quad side's refusal both call
-        // it (the adapter builds the side with the same one), so a sleeping loop is woken by either.
+        // it (the run builds the side with the same one), so a sleeping loop is woken by either.
         let notifier = Arc::clone(&env.notifier);
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || notifier.wake());
+        let run = Run::new(stack, Arc::clone(&wake), resources, Rc::clone(&env.notes));
         let adapter = VulkanAdapter::new(Rc::clone(&run), wake);
         let presenter = Renderer::new(adapter, Arc::clone(&env.bridge));
         let opener = Rc::clone(&run);

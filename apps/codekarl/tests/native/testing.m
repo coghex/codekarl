@@ -5,9 +5,9 @@
 #include <pthread.h>
 #include <unistd.h>
 
-/* Test support for the application's windowed tests (tests/windowed.rs), built into an archive that only the
- * package's integration tests link (build.rs). None of it is part of the library or the binary. Main thread unless
- * it says otherwise. */
+/* Test support for the application's windowed tests (tests/windowed.rs and tests/vulkan_app.rs), built into an archive
+ * that only the package's integration tests link (build.rs). None of it is part of the library or the binary. Main
+ * thread unless it says otherwise. */
 
 /* The mark the tests' own synthetic keyboard events carry in kCGEventSourceUserData (real input carries 0), as in
  * ck-window-cocoa's test support. */
@@ -127,5 +127,89 @@ void ck_app_t_start_typist(void) {
                 usleep(5000);
             }
         });
+    });
+}
+
+/* ---- The window helpers of tests/vulkan_app.rs (the GLFW window of a glfw-vulkan run) ----------------------------- */
+
+/* Runs `work` on the main queue and returns its result; callable from any thread. The caller waits at most one
+ * second: a main queue that does not run the block gives CK_APP_T_TIMEOUT instead of a hang or a late answer. */
+#define CK_APP_T_TIMEOUT (-3)
+#define CK_APP_T_NO_WINDOW (-1)
+#define CK_APP_T_SEVERAL_WINDOWS (-2)
+
+static int32_t ck_app_on_main(int32_t (^work)(void)) {
+    if ([NSThread isMainThread]) {
+        return work();
+    }
+    __block int32_t result = CK_APP_T_TIMEOUT;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        result = work();
+        dispatch_semaphore_signal(done);
+    });
+    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC)) != 0) {
+        return CK_APP_T_TIMEOUT;
+    }
+    return result;
+}
+
+/* The process's one GLFW window, or nil with *error set to CK_APP_T_NO_WINDOW (none) or CK_APP_T_SEVERAL_WINDOWS
+ * (more than one): a helper never guesses between windows. Main queue only. */
+static NSWindow *ck_app_the_window(int32_t *error) {
+    Class glfw = NSClassFromString(@"GLFWWindow");
+    NSWindow *found = nil;
+    for (NSWindow *window in [NSApp windows]) {
+        if (glfw != Nil && [window isKindOfClass:glfw]) {
+            if (found != nil) {
+                *error = CK_APP_T_SEVERAL_WINDOWS;
+                return nil;
+            }
+            found = window;
+        }
+    }
+    if (found == nil) {
+        *error = CK_APP_T_NO_WINDOW;
+    }
+    return found;
+}
+
+/* Asks the one GLFW window to miniaturize. Returns 1 once asked, or a negative error. The request is not an
+ * acknowledgement: the test reads the window's state (ck_app_t_window_state) until it says so. */
+int32_t ck_app_t_miniaturize(void) {
+    return ck_app_on_main(^int32_t {
+        int32_t error = 0;
+        NSWindow *window = ck_app_the_window(&error);
+        if (window == nil) {
+            return error;
+        }
+        [window miniaturize:nil];
+        return 1;
+    });
+}
+
+/* Asks the one GLFW window to deminiaturize. Returns 1 once asked, or a negative error. */
+int32_t ck_app_t_deminiaturize(void) {
+    return ck_app_on_main(^int32_t {
+        int32_t error = 0;
+        NSWindow *window = ck_app_the_window(&error);
+        if (window == nil) {
+            return error;
+        }
+        [window deminiaturize:nil];
+        return 1;
+    });
+}
+
+/* The one GLFW window's actual state, read on the main queue: bit 0 is isMiniaturized, bit 1 is isVisible. A
+ * negative value is an error (none, several windows, or a main queue that did not run the read in time). */
+int32_t ck_app_t_window_state(void) {
+    return ck_app_on_main(^int32_t {
+        int32_t error = 0;
+        NSWindow *window = ck_app_the_window(&error);
+        if (window == nil) {
+            return error;
+        }
+        return (window.isMiniaturized ? 1 : 0) | (window.isVisible ? 2 : 0);
     });
 }

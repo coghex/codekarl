@@ -99,6 +99,7 @@ dependencies = [
  "ck-resources",
  "ck-window",
  "ck-window-cocoa",
+ "ck-window-glfw",
 ]
 
 [[package]]

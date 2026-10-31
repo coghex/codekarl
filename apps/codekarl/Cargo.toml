@@ -37,6 +37,13 @@ name = "windowed"
 harness = false
 required-features = ["metal"]
 
+# The `glfw-vulkan` application on a real window, in process behind the same test-only keyboard filter (CK-159): a supervisor and
+# a worker like `windowed`, because GLFW needs the process's main thread on macOS too.
+[[test]]
+name = "vulkan_app"
+harness = false
+required-features = ["vulkan"]
+
 # The milestone 5 all-quads-moving Lua profile (CK-130): the same shape, owner-scheduled and measured, not gated. It runs only when
 # `CK_SCALE_RUN=1` is set; otherwise it reports that it did not run and passes.
 [[test]]

@@ -81,7 +81,10 @@ fn error_of<T>(result: Result<T, String>) -> String {
 pub(super) fn run_over(script: Script) -> (Rc<Run<FakeStack>>, Arc<Mutex<Vec<String>>>) {
     let (log, events) = vector_log();
     (
-        Run::new(FakeStack::new(script, log, Notifier::new())),
+        fake::new_run(
+            FakeStack::new(script, log, Notifier::new()),
+            Arc::new(|| {}),
+        ),
         events,
     )
 }
@@ -308,6 +311,12 @@ fn a_refused_partial_setup_retains_everything_and_releases_nothing() {
 }
 
 /// A started run up to a presenter whose end is `refuse`d by the helper afterwards.
+pub(super) fn refused_teardown_for(
+    surface_destroyed: bool,
+) -> (Rc<Run<FakeStack>>, Arc<Mutex<Vec<String>>>) {
+    refused_teardown(surface_destroyed)
+}
+
 fn refused_teardown(surface_destroyed: bool) -> (Rc<Run<FakeStack>>, Arc<Mutex<Vec<String>>>) {
     let (run, log) = run_over(Script {
         refuse: Some(surface_destroyed),
@@ -1117,11 +1126,11 @@ fn unsafe_words(text: &str) -> usize {
 
 /// The accepted `unsafe` of `codekarl`, per source (its `src` and `tests`, paths below the crate) and in
 /// words: the native path's presenter start, the signal wrappers and their tests, the logger's immediate
-/// exit, the boundary tests' liveness probe, the stderr redirection, the real-window test's `kill` and the
+/// exit, the boundary tests' liveness probe, the stderr redirection, the real-window tests' `kill` and filter FFI and the
 /// test support's `fcntl` calls. The Vulkan integration's five are in `src/vulkan/real.rs`. A source that
 /// is not here has none; a new `unsafe` anywhere (this crate's `lib.rs` included) changes a count and
 /// fails [`every_unsafe_of_codekarl_is_the_accepted_baseline_plus_the_five_of_the_vulkan_integration`].
-const BASELINE: [(&str, usize); 9] = [
+const BASELINE: [(&str, usize); 10] = [
     ("src/native.rs", 1),
     ("src/signals.rs", 16),
     ("src/lifecycle.rs", 1),
@@ -1131,6 +1140,9 @@ const BASELINE: [(&str, usize); 9] = [
     // The real-window test's `kill`, and the worker's (CK-131): the filter and typist FFI, the signal mask
     // (`pthread_sigmask` and its set operations) and the mask probe, each with a SAFETY comment.
     ("tests/windowed.rs", 14),
+    // CK-159: the `glfw-vulkan` worker's, the same operations as the windowed worker's plus the window helpers (miniaturize,
+    // deminiaturize, state read, the marked key) and its driver's SIGTERM, each with a SAFETY comment.
+    ("tests/vulkan_app.rs", 14),
     // CK-132: set_cloexec's F_GETFD and F_SETFD, each with a SAFETY comment.
     ("tests/common/mod.rs", 4),
     // CK-130: the scale worker's filter FFI (`ck_app_t_install_input_filter`, `ck_app_t_dropped_keys`) and

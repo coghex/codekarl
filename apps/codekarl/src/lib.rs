@@ -20,8 +20,9 @@
 //! **Rendering** (see `render_api`): the `ui` VM also has a `render` API (`render.quad`,
 //! `render.clear_quad`) that decodes a PNG from the configured assets directory and writes the run's one scene
 //! bridge; `native-metal` draws it through `ck-render-2d`'s Metal backend, and `glfw-vulkan` through its own
-//! `Gpu2d` backend over `ck-render-2d`'s Vulkan sink side and the Vulkan presenter (milestone 4.5), so
-//! the two are interchangeable to the rest of the program. Only `native` and `vulkan` name a GPU crate.
+//! `Gpu2d` backend over `ck-render-2d`'s resource-aware Vulkan sink side and the Vulkan scene presenter (milestones 4.5
+//! and 5.5), so the two are interchangeable to the rest of the program: both give the `ui` VM the `texture` and `frame` APIs
+//! and the scene calls over a resource service. Only `native` and `vulkan` name a GPU crate.
 //!
 //! **Signals** (see `signals`): the runtime command blocks SIGINT and SIGTERM before any other thread
 //! exists and waits for them on one thread. The first asks for a quit (the runtime's quit flag) and is
@@ -256,12 +257,6 @@ fn execute_with(
             return FAILED;
         }
     };
-    if let Err(message) =
-        mode::validate_settings(mode, config.input_bindings_present, config.frame_present)
-    {
-        emit(Level::Error, "config", format_args!("{message}"));
-        return FAILED;
-    }
     let settings = config.log.settings(
         io::stdout().is_terminal(),
         std::env::var_os("NO_COLOR").as_deref(),
@@ -294,12 +289,10 @@ struct Wiring {
     render_end: render_api::RenderEnd,
 }
 
-/// The window loop's settings: the defaults and the configuration's `[input.bindings]` (the native-metal loop's
-/// mapper uses them; the `glfw-vulkan` loop keeps its hardcoded Escape until milestone 5.5, and refusing a custom
-/// close binding there is milestone 5-8's). A **native-metal** run also gets the configured `[frame]` pacing as its
-/// update source, created **off**: no update is posted and no timed wake happens until the control is turned on (the
-/// Lua `frame.on_update` of milestone 5-8 does). The `glfw-vulkan` loop never configures an update source, and a
-/// headless run has no window loop.
+/// The window loop's settings: the defaults and the configuration's `[input.bindings]` (both backends' loops map keys
+/// through them). A windowed run, **native-metal** or **`glfw-vulkan`**, also gets the configured `[frame]` pacing as
+/// its update source, created **off**: no update is posted and no timed wake happens until the control is turned on
+/// (the Lua `frame.on_update` does). A headless run has no window loop.
 #[cfg(test)]
 fn loop_settings(config: &config::Config, mode: mode::Mode) -> ck_window::LoopSettings {
     loop_settings_measured(config, mode, None)
@@ -313,12 +306,13 @@ fn loop_settings_measured(
 ) -> ck_window::LoopSettings {
     let settings = ck_window::LoopSettings::default().with_bindings(config.bindings.clone());
     match mode {
-        mode::Mode::Windowed(mode::Backend::NativeMetal) => {
+        mode::Mode::Windowed(_) => {
             config
                 .frame
                 .update_settings()
                 .map_or(settings.clone(), |updates| {
-                    // The loop's measurement windows count the updates it delivers and the opportunities it coalesces.
+                    // The loop's measurement windows count the updates it delivers and the opportunities it coalesces
+                    // (only a native-metal run has a measurement hub).
                     let updates = match metrics {
                         Some(hub) => updates.with_metrics(hub.loop_metrics().clone()),
                         None => updates,
@@ -326,7 +320,7 @@ fn loop_settings_measured(
                     settings.with_updates(updates)
                 })
         }
-        mode::Mode::Windowed(mode::Backend::GlfwVulkan) | mode::Mode::Headless => settings,
+        mode::Mode::Headless => settings,
     }
 }
 
@@ -345,7 +339,7 @@ fn compose_resources(
     config: &config::Config,
     mode: mode::Mode,
     relay: &ck_render_2d::WakeRelay,
-) -> Result<Option<ck_resources::ResourceService>, Status> {
+) -> Result<ck_resources::ResourceService, Status> {
     resource_runtime::compose(config.resources, mode, relay, config.render.assets.clone()).map_err(
         |error| {
             emit(
@@ -398,10 +392,10 @@ fn scene_extensions(
     window_loop_settings: &ck_window::LoopSettings,
     metrics: Option<Arc<metrics::MetricsHub>>,
 ) -> (Vec<ck_lua::Extension>, render_api::RenderEnd) {
-    // The legacy `render.quad` goes through the compatibility lane only on an upgraded backend: native-metal is one
-    // (`native.rs` draws on `MetalBackend::with_resources`, so CK-119's gate applies); headless and `glfw-vulkan` keep
-    // M4's path.
-    let upgraded = matches!(mode, mode::Mode::Windowed(mode::Backend::NativeMetal));
+    // The legacy `render.quad` goes through the compatibility lane only on an upgraded backend: both windowed backends are
+    // (`native.rs` draws on `MetalBackend::with_resources` and `vulkan.rs` on `VulkanSinkSide::with_resources`, so CK-119's
+    // gate applies); headless keeps M4's path.
+    let upgraded = matches!(mode, mode::Mode::Windowed(_));
     let (render, render_end) = render_api::extension_with_end(
         config.render.assets.clone(),
         writer,
@@ -414,12 +408,11 @@ fn scene_extensions(
         metrics.as_ref().map(metrics::MetricsHub::load_notes),
     );
     let frame = frame_api::extension(match mode {
-        mode::Mode::Windowed(mode::Backend::NativeMetal) => window_loop_settings
+        mode::Mode::Windowed(_) => window_loop_settings
             .updates()
             .map_or(frame_api::FrameBackend::Headless, |updates| {
                 frame_api::FrameBackend::Control(updates.control())
             }),
-        mode::Mode::Windowed(mode::Backend::GlfwVulkan) => frame_api::FrameBackend::Unavailable,
         mode::Mode::Headless => frame_api::FrameBackend::Headless,
     });
     // `diagnostics.metrics_mark`: the mark in a native-metal run, accepted and ignored in a headless one, raised on `glfw-vulkan`.
@@ -486,8 +479,9 @@ fn supervise_with_owner_factory(
         .take_writer()
         .expect("a new bridge hands out its one writer");
     let wake_relay = ck_render_2d::WakeRelay::default();
+    // Every run has a resource service now; the downstream seams keep an `Option` for the tests that run without one.
     let resource_service = match compose_resources(config, mode, &wake_relay) {
-        Ok(service) => service,
+        Ok(service) => Some(service),
         Err(status) => return status,
     };
     let metrics = measurement_hub(config, mode);
@@ -731,6 +725,10 @@ mod tests {
         mode::Mode::Windowed(mode::Backend::NativeMetal)
     }
 
+    fn vulkan() -> mode::Mode {
+        mode::Mode::Windowed(mode::Backend::GlfwVulkan)
+    }
+
     struct CompletedOwner;
 
     impl Owner for CompletedOwner {
@@ -895,82 +893,95 @@ mod tests {
         )
     }
 
-    /// native-metal: the UI VM has `texture`, the scene API and `frame`; its startup's scene is published by the completion
-    /// hook the composition gave it; `frame.on_update` turned the loop's own update control on. Negative control: a
-    /// composition without the hook publishes nothing (`published` stays 0), and one that did not wire the control leaves it off.
+    /// A windowed run, on either backend: the UI VM has `texture`, the scene API and `frame`; its startup's scene is published by
+    /// the completion hook the composition gave it; `frame.on_update(fn)` turned the loop's own update control on and
+    /// `frame.on_update(nil)` turned it off again. Negative control: a composition without the hook publishes nothing
+    /// (`published` stays 0), and one that did not wire the control leaves it off.
     #[test]
-    fn the_native_composition_gives_the_ui_vm_the_texture_scene_and_frame_apis_and_the_publishing_hook()
+    fn a_windowed_composition_gives_the_ui_vm_the_texture_scene_and_frame_apis_and_the_publishing_hook()
      {
-        let status = composed_run(
-            native(),
-            "local image = texture.load('a.png')\n\
-             local quad\n\
-             function startup() quad = render.create_quad{texture = image, width = 8, height = 4} end\n\
-             frame.on_update(function() end)\n\
-             function shutdown() local ok, err = pcall(render.destroy_quad, quad)\n\
-               assert(not ok and tostring(err):find('the resource service has ended', 1, true), tostring(err))\n\
-             end\n",
-            |bridge, control| {
-                assert_eq!(
-                    bridge.counts().published,
-                    1,
-                    "the completion hook published startup's quad"
-                );
-                let control = control.expect("the native loop has an update source");
-                assert!(
-                    format!("{control:?}").contains("enabled: true"),
-                    "frame.on_update turned the loop's control on: {control:?}"
-                );
-            },
-        );
-        assert_eq!(status.code, 0, "{status:?}");
-    }
-
-    /// The native composition is **upgraded** (milestone 5-8c): the legacy `render.quad` goes through the compatibility lane,
-    /// so it is a scene publication (a compat entry, with CK-119's gate on the backend). Negative control: on `glfw-vulkan`
-    /// (and headless) the same call keeps M4's path and publishes nothing to the scene.
-    #[test]
-    fn the_native_composition_sends_the_legacy_render_quad_through_the_compatibility_lane() {
-        let script = "render.quad{image = 'a.png', width = 8, height = 4}\n";
-        let status = composed_run(native(), script, |bridge, _| {
-            assert_eq!(
-                bridge.counts().published,
-                1,
-                "the lane's compat quad was published as a scene frame"
+        for mode in [native(), vulkan()] {
+            let status = composed_run(
+                mode,
+                "local image = texture.load('a.png')\n\
+                 local quad\n\
+                 function startup() quad = render.create_quad{texture = image, width = 8, height = 4} end\n\
+                 frame.on_update(function() end)\n\
+                 function shutdown() local ok, err = pcall(render.destroy_quad, quad)\n\
+                   assert(not ok and tostring(err):find('the resource service has ended', 1, true), tostring(err))\n\
+                 end\n",
+                |bridge, control| {
+                    assert_eq!(
+                        bridge.counts().published,
+                        1,
+                        "the completion hook published startup's quad"
+                    );
+                    let control = control.expect("a windowed loop has an update source");
+                    assert!(
+                        format!("{control:?}").contains("enabled: true"),
+                        "frame.on_update turned the loop's control on: {control:?}"
+                    );
+                },
             );
-        });
-        assert_eq!(status.code, 0, "{status:?}");
-        for mode in [
-            mode::Mode::Windowed(mode::Backend::GlfwVulkan),
-            mode::Mode::Headless,
-        ] {
-            let status = composed_run(mode, script, |bridge, _| {
-                assert_eq!(bridge.counts().published, 0, "M4's path publishes no scene");
-            });
+            assert_eq!(status.code, 0, "{mode:?}: {status:?}");
+            let status = composed_run(
+                mode,
+                "frame.on_update(function() end)\nframe.on_update(nil)\n",
+                |_, control| {
+                    let control = control.expect("a windowed loop has an update source");
+                    assert!(
+                        format!("{control:?}").contains("enabled: false"),
+                        "frame.on_update(nil) turned the control off: {control:?}"
+                    );
+                },
+            );
             assert_eq!(status.code, 0, "{mode:?}: {status:?}");
         }
     }
 
-    /// `glfw-vulkan`: the new calls say they are not available (caught by the script), there is no update source and
-    /// nothing was published; `render.quad` is the old path.
+    /// Both windowed compositions are **upgraded**: the legacy `render.quad` goes through the compatibility lane, so it is a
+    /// scene publication (a compat entry, with CK-119's gate on the backend). Negative control: a headless run keeps M4's path
+    /// and publishes nothing to the scene.
     #[test]
-    fn the_glfw_vulkan_composition_refuses_the_new_calls_with_the_stated_message() {
-        let status = composed_run(
-            mode::Mode::Windowed(mode::Backend::GlfwVulkan),
-            "local ok, err = pcall(texture.load, 'a.png')\n\
-             assert(not ok and tostring(err):find('texture.load is not available on the glfw-vulkan backend until milestone 5.5', 1, true), tostring(err))\n\
-             ok, err = pcall(frame.on_update, function() end)\n\
-             assert(not ok and tostring(err):find('frame.on_update is not available on the glfw-vulkan backend until milestone 5.5', 1, true), tostring(err))\n\
-             render.quad{image = 'a.png'}\n",
-            |bridge, control| {
-                assert!(control.is_none(), "no update source on glfw-vulkan");
+    fn the_windowed_compositions_send_the_legacy_render_quad_through_the_compatibility_lane() {
+        let script = "render.quad{image = 'a.png', width = 8, height = 4}\n";
+        for mode in [native(), vulkan()] {
+            let status = composed_run(mode, script, |bridge, _| {
                 assert_eq!(
                     bridge.counts().published,
-                    0,
-                    "the legacy quad is not a scene publication"
+                    1,
+                    "the lane's compat quad was published as a scene frame"
+                );
+            });
+            assert_eq!(status.code, 0, "{mode:?}: {status:?}");
+        }
+        let status = composed_run(mode::Mode::Headless, script, |bridge, _| {
+            assert_eq!(bridge.counts().published, 0, "M4's path publishes no scene");
+        });
+        assert_eq!(status.code, 0, "{status:?}");
+    }
+
+    /// `glfw-vulkan`: the refusal set is exact. `diagnostics.metrics_mark` still raises its named error (the Vulkan measurement
+    /// window is milestone 5.5-6's), while the calls that were refused until milestone 5.5 work; native-metal's mark is accepted.
+    #[test]
+    fn the_glfw_vulkan_composition_refuses_only_the_metrics_mark() {
+        let status = composed_run(
+            vulkan(),
+            "local ok, err = pcall(diagnostics.metrics_mark)\n\
+             assert(not ok and tostring(err):find('diagnostics.metrics_mark is not available on the glfw-vulkan backend until milestone 5.5', 1, true), tostring(err))\n\
+             local image = texture.load('a.png')\n\
+             assert(type(image) == 'string')\n\
+             frame.on_update(function() end)\n",
+            |_, control| {
+                let control = control.expect("glfw-vulkan has an update source");
+                assert!(
+                    format!("{control:?}").contains("enabled: true"),
+                    "{control:?}"
                 );
             },
         );
+        assert_eq!(status.code, 0, "{status:?}");
+        let status = composed_run(native(), "diagnostics.metrics_mark()\n", |_, _| {});
         assert_eq!(status.code, 0, "{status:?}");
     }
 
@@ -996,17 +1007,26 @@ mod tests {
     }
 
     #[test]
-    fn the_glfw_vulkan_loop_and_a_headless_run_have_no_update_source() {
-        let configured = config::load_text_for_test("[frame]\nupdates_per_second = 144\n");
-        for mode in [
-            mode::Mode::Windowed(mode::Backend::GlfwVulkan),
-            mode::Mode::Headless,
-        ] {
-            assert!(
-                loop_settings(&configured, mode).updates().is_none(),
-                "{mode:?} configures no update source"
-            );
-        }
+    fn the_glfw_vulkan_loop_carries_the_frame_values_with_the_update_source_off_and_a_headless_run_has_none()
+     {
+        let configured = config::load_text_for_test(
+            "[frame]\nupdates_per_second = 144\nmax_delta_seconds = 0.05\n",
+        );
+        let settings = loop_settings(&configured, vulkan());
+        let updates = settings.updates().expect("an update source");
+        assert_eq!(updates.updates_per_second(), 144);
+        assert_eq!(updates.max_delta(), Duration::from_millis(50));
+        assert!(
+            format!("{:?}", updates.control()).contains("enabled: false"),
+            "the control starts off: {:?}",
+            updates.control()
+        );
+        assert!(
+            loop_settings(&configured, mode::Mode::Headless)
+                .updates()
+                .is_none(),
+            "a headless run configures no update source"
+        );
     }
 
     #[test]
@@ -1074,7 +1094,11 @@ mod tests {
     }
 
     #[test]
-    fn glfw_vulkan_accepts_custom_close_but_still_refuses_frame_before_the_window_plan() {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "three configurations, each run to the window plan, read best together"
+    )]
+    fn glfw_vulkan_accepts_custom_close_and_frame_and_reaches_the_window_plan() {
         use std::sync::atomic::AtomicBool;
 
         let directory = testing::Dir::new();
@@ -1120,7 +1144,7 @@ mod tests {
         let frame_path = directory.0.join("frame.toml");
         std::fs::write(
             &frame_path,
-            "[window]\nbackend = \"glfw-vulkan\"\n[frame]\n",
+            "[window]\nbackend = \"glfw-vulkan\"\n[frame]\nupdates_per_second = 90\n",
         )
         .expect("write frame config");
         let frame_options = RunOptions {
@@ -1128,7 +1152,7 @@ mod tests {
             headless: false,
             backend: None,
         };
-        let planned_frame = Cell::new(false);
+        let planned_frame = Cell::new(0);
         let status = execute_with(
             &frame_options,
             Shared {
@@ -1136,13 +1160,26 @@ mod tests {
                 notifier: Notifier::new(),
             },
             &[mode::Backend::GlfwVulkan],
-            |_| {
-                planned_frame.set(true);
-                unreachable!("frame refusal happens before composing a window")
+            |setup| {
+                planned_frame.set(
+                    setup
+                        .env
+                        .settings
+                        .updates()
+                        .map_or(0, ck_window::UpdateSettings::updates_per_second),
+                );
+                Plan {
+                    extension: setup.extension,
+                    run: Some(Box::new(|_| ck_runtime::RunEnd::Finished)),
+                }
             },
         );
-        assert_eq!(status.code, 1);
-        assert!(!planned_frame.get(), "frame remains unsupported");
+        assert_eq!(status.code, 0, "[frame] is accepted on glfw-vulkan");
+        assert_eq!(
+            planned_frame.get(),
+            90,
+            "the configured pacing reaches the window plan as the update source"
+        );
 
         // An old configuration without explicit bindings keeps the default close binding.
         let old_path = directory.0.join("legacy.toml");

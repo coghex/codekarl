@@ -33,12 +33,11 @@
 //! The built-in defaults equal an empty file, which runs no VMs and no window. Every table and key is
 //! optional (a `lua.<name>` table needs its `entry`), and an unknown key at any level is an error, not
 //! ignored. `[input]` has one sub-table, `bindings`; what an entry may say is `ck-input`'s grammar, and its refusal
-//! fails the load with its message naming the action and the entry. The `glfw-vulkan` loop does not use the bindings
-//! (its hardcoded Escape stays until milestone 5.5; refusing a custom close binding there is milestone 5-8's).
+//! fails the load with its message naming the action and the entry. Both backends' loops use the bindings.
 //! `[frame]` has two keys, each optional with its default; a value outside its range fails the load naming the key, the
-//! value and the range. The native-metal loop paces its `frame_update` callback by them (and posts nothing until a script
-//! registers one); the `glfw-vulkan` loop never configures an update source. Whether a configured backend can be opened is not checked here: only a windowed run checks it
-//! (see [`crate::mode`]).
+//! value and the range. Both backends' loops pace the `frame_update` callback by them (and post nothing until a script
+//! registers one). Whether a configured backend can be opened is not checked here:
+//! only a windowed run checks it (see [`crate::mode`]).
 //! The whole file, not only the `lua` tables, is also copied to every VM as its `config`.
 
 use std::collections::BTreeMap;
@@ -1048,10 +1047,6 @@ pub(crate) struct Config {
     pub(crate) vms: Vec<VmConfig>,
     /// The `[window]` table's backend, if the file names one: none means a headless run.
     pub(crate) window_backend: Option<Backend>,
-    /// Whether the file explicitly supplied `[input.bindings]` (distinct from built-in defaults).
-    pub(crate) input_bindings_present: bool,
-    /// Whether the file explicitly supplied `[frame]`, including an empty table.
-    pub(crate) frame_present: bool,
     /// Resource-service and backend limits, with defaults filled in.
     pub(crate) resources: ResourceConfig,
     /// The `[render]` table, with its defaults.
@@ -1073,8 +1068,6 @@ impl Default for Config {
             deadlines: OwnerDeadlines::default(),
             vms: Vec::new(),
             window_backend: None,
-            input_bindings_present: false,
-            frame_present: false,
             resources: ResourceConfig::default(),
             render: RenderConfig::default(),
             frame: FrameConfig::default(),
@@ -1135,11 +1128,6 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
     let whole = text
         .parse::<toml::Table>()
         .map_err(|error| describe(path, text, &error))?;
-    let input_bindings_present = whole
-        .get("input")
-        .and_then(toml::Value::as_table)
-        .is_some_and(|input| input.contains_key("bindings"));
-    let frame_present = whole.contains_key("frame");
     let base = path.parent().unwrap_or_else(|| Path::new(""));
     // The entries go to `ck-input`, whose refusal fails the load with its message naming the action and the entry.
     let bindings = match file.input.0.bindings {
@@ -1177,8 +1165,6 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         deadlines: file.runtime.into(),
         vms,
         window_backend: file.window.0.backend.map(|name| name.0),
-        input_bindings_present,
-        frame_present,
         resources,
         render: RenderConfig {
             filter: file
@@ -1481,16 +1467,6 @@ mod tests {
             bytes.contains("max_upload_bytes_per_batch") && bytes.contains("staging_bytes/2"),
             "{bytes}"
         );
-    }
-
-    #[test]
-    fn glfw_vulkan_table_presence_is_distinguished_from_default_values() {
-        let defaults = parse_config("").expect("defaults");
-        assert!(!defaults.input_bindings_present && !defaults.frame_present);
-        let empty_bindings = parse_config("[input.bindings]\n").expect("empty binding table");
-        assert!(empty_bindings.input_bindings_present);
-        let empty_frame = parse_config("[frame]\n").expect("empty frame table");
-        assert!(empty_frame.frame_present);
     }
 
     #[test]

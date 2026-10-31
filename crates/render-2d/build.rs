@@ -4,7 +4,12 @@
 //! one macOS deployment target and optionally the Clang static analyzer (as `ck-window-cocoa`'s and
 //! `ck-gpu-metal`'s scripts do), into an archive that only the integration tests link (`rustc-link-arg-tests`):
 //! the library, and everything that depends on it, carries none of it. Without the `metal` feature, or off
-//! macOS, the script does nothing.
+//! macOS, the Metal branch does nothing.
+//!
+//! **The `vulkan` branch (CK-159).** The Vulkan window test (`tests/vulkan_window.rs`) uses `ck-window-glfw`'s test-only
+//! filter and typist instead: with the `vulkan` feature on macOS the script compiles that crate's `tests/native/testing.m` **by
+//! path** (this crate does not change `ck-window-glfw`) into a second archive, linked only into the integration tests, exactly
+//! as `ck-gpu-vulkan`'s script does. The Metal branch is unchanged.
 use std::{
     env,
     ffi::{OsStr, OsString},
@@ -158,11 +163,82 @@ fn build_archive(
 }
 
 fn main() {
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
-        || env::var_os("CARGO_FEATURE_METAL").is_none()
-    {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
+    if env::var_os("CARGO_FEATURE_METAL").is_some() {
+        metal_testing();
+    }
+    if env::var_os("CARGO_FEATURE_VULKAN").is_some() {
+        vulkan_testing();
+    }
+}
+
+/// The compile flags both branches share: the SDK, the architecture, the deployment target, ARC, language level and warnings.
+fn common_flags(target: &str) -> (OsString, &'static str) {
+    let architecture = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("aarch64") => "arm64",
+        Ok("x86_64") => "x86_64",
+        _ => panic!("unsupported macOS architecture"),
+    };
+    (
+        OsString::from(format!("-mmacosx-version-min={target}")),
+        architecture,
+    )
+}
+
+/// The `vulkan` branch: `ck-window-glfw`'s test-only keyboard filter, compiled by path into its own archive.
+fn vulkan_testing() {
+    const SOURCE: &str = "../window-glfw/tests/native/testing.m";
+    println!("cargo::rerun-if-changed={SOURCE}");
+    println!("cargo::rerun-if-changed=../window-glfw/tests/native/testing.h");
+    println!("cargo::rerun-if-changed=build.rs");
+    for key in [
+        "DEVELOPER_DIR",
+        "SDKROOT",
+        "MACOSX_DEPLOYMENT_TARGET",
+        "CK_NATIVE_ANALYZE",
+    ] {
+        println!("cargo::rerun-if-env-changed={key}");
+    }
+    let target = deployment_target();
+    let (version_min, architecture) = common_flags(&target);
+    // A directory of its own: this object is also called `testing.o`, like the Metal branch's.
+    let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")).join("glfw");
+    std::fs::create_dir_all(&out).expect("the output directory");
+    let common: Vec<&OsStr> = vec![
+        "--sdk".as_ref(),
+        "macosx".as_ref(),
+        "clang".as_ref(),
+        "-arch".as_ref(),
+        architecture.as_ref(),
+        version_min.as_ref(),
+        "-fobjc-arc".as_ref(),
+        "-std=c11".as_ref(),
+        "-Wall".as_ref(),
+        "-Wextra".as_ref(),
+        "-Werror".as_ref(),
+    ];
+    let archive = build_archive(
+        &[SOURCE],
+        "libck_render_2d_glfw_testing.a",
+        &out,
+        &common,
+        analyzer_requested(),
+    );
+    println!("cargo::rustc-link-arg-tests={}", archive.display());
+    for framework in ["AppKit", "CoreGraphics"] {
+        println!("cargo::rustc-link-arg-tests=-framework");
+        println!("cargo::rustc-link-arg-tests={framework}");
+    }
+    println!(
+        "cargo::rustc-env=CK_RENDER_2D_GLFW_TESTING_ARCHIVE={}",
+        archive.display()
+    );
+}
+
+/// The `metal` branch: this crate's own keyboard filter for the Metal window test.
+fn metal_testing() {
     println!("cargo::rerun-if-changed=tests/native/testing.m");
     for key in [
         "DEVELOPER_DIR",

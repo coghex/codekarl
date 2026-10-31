@@ -177,6 +177,7 @@ def unit_need(unit: Unit) -> str:
         ("ck-window-glfw", "window_glfw"),
         ("ck-render-2d", "metal_window"),
         ("ck-render-2d", "scale"),
+        ("ck-render-2d", "vulkan_window"),  # CK-159: the resource path on a real GLFW window
     }
     if package == "ck-window-cocoa" or (package, name) in windowed:
         return "window"
@@ -309,6 +310,7 @@ class Ownership(unittest.TestCase):
                 "metal.scale",
                 "glfw.window",
                 "vulkan.window",
+                "render2d.vulkan-window",
                 "vulkan.app",
             },
         )
@@ -407,6 +409,8 @@ class Catalog(unittest.TestCase):
             "crates/gpu-metal/",
             *check.NATIVE_APP_FILES,  # CK-131: the windowed tests, their build script and native source
             *check.RENDER2D_WINDOW_FILES,  # CK-92: the Metal backend and its real-window test
+            "crates/render-2d/src/vulkan",  # CK-159: the Vulkan sink side, which its real-window test drives
+            "crates/render-2d/tests/vulkan_window.rs",
             "apps/codekarl/tests/supervisor/",  # CK-84: compiled into the GLFW and Vulkan test targets
             "apps/codekarl/src/vulkan",  # CK-80: vulkan.rs and vulkan/ (the path's own files)
             "apps/codekarl/tests/vulkan_app.rs",
@@ -1333,8 +1337,13 @@ class ApplicationLibrary(unittest.TestCase):
         ):
             chosen = self.selected(path)
             self.assertIn("native.window", chosen, path)
-            for other in ("glfw.window", "vulkan.window", "vulkan.gpu", "vulkan.app"):
+            for other in ("glfw.window", "vulkan.window", "vulkan.gpu"):
                 self.assertNotIn(other, chosen, f"{path}: {other}")
+        # CK-159: the build script and the native support are also the `glfw-vulkan` tests' (they run behind the same filter),
+        # so they select `vulkan.app` as well; the native tests alone do not.
+        self.assertNotIn("vulkan.app", self.selected("apps/codekarl/tests/windowed.rs"))
+        for path in ("apps/codekarl/build.rs", "apps/codekarl/tests/native/testing.m"):
+            self.assertIn("vulkan.app", self.selected(path), path)
 
     def test_02_the_libraries_unit_tests_and_doctests_and_the_thin_binary_belong_to_rust_app(
         self,
@@ -1599,6 +1608,35 @@ class VulkanAppGroups(unittest.TestCase):
             ):
                 self.assertNotIn(other, chosen, f"{path}: {other}")
 
+    def test_01b_the_build_script_and_the_native_support_select_the_vulkan_app_group_and_the_native_window_groups(
+        self,
+    ) -> None:
+        """CK-159: the Vulkan application's tests run in process behind the keyboard filter that `build.rs` compiles from
+        `tests/native/`, so those paths are theirs; they stay the native windowed tests' too (`NATIVE_APP_FILES`), so a
+        change to them selects the five shared native window groups as well, and never the GPU groups."""
+        for path in ("apps/codekarl/build.rs", "apps/codekarl/tests/native/testing.m"):
+            chosen = self.selected(path)
+            self.assertIn("vulkan.app", chosen, path)
+            self.assertIn("doctor.graphics", chosen, path)
+            for group in (
+                "native.window",
+                "metal.window-core",
+                "metal.window-scene",
+                "metal.window-compat",
+                "metal.window-instanced",
+            ):
+                self.assertIn(group, chosen, f"{path}: {group}")
+            for other in ("metal.gpu", "glfw.window", "vulkan.window", "vulkan.gpu"):
+                self.assertNotIn(other, chosen, f"{path}: {other}")
+
+    def test_01c_the_vulkan_app_target_is_a_supervisor_and_worker_executable_that_needs_the_vulkan_feature(
+        self,
+    ) -> None:
+        manifest = (REPO / "apps/codekarl/Cargo.toml").read_text()
+        target = manifest[manifest.index('name = "vulkan_app"') :]
+        self.assertIn("harness = false", target.split("[", 1)[0])
+        self.assertIn('required-features = ["vulkan"]', target.split("[[", 1)[0])
+
     def test_02_the_group_is_selected_only_by_the_paths_own_files(self) -> None:
         for path in (
             "apps/codekarl/src/main.rs",
@@ -1705,6 +1743,10 @@ APP_SOURCES = ("apps/codekarl/src/", "apps/codekarl/tests/")
 SUPERVISOR = "apps/codekarl/tests/supervisor/mod.rs"
 TOOLCHAIN_FILES = ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml")
 OWNER_RULE = "the owner's rule: no change to the shared configuration or scripts selects a native window group"
+DEMO_RULE = (
+    "the demonstration's files never open a window by themselves (CK-93, CK-126): `rust.app` runs the script headless "
+    "and every full run covers it on the glfw-vulkan window"
+)
 FIXTURE_COPY = (
     "a fixture copy of the file: its content is not asserted, only that a toolchain file exists"
 )
@@ -1779,6 +1821,18 @@ GUARDS: tuple[Guard, ...] = (
         after="CK-83",
     ),
     Guard("crates/gpu-vulkan/tests/window.rs", "vulkan.window", (SUPERVISOR,)),
+    # CK-159: `ck-render-2d`'s Vulkan window test compiles `ck-window-glfw`'s native filter (its build script) and includes the
+    # info binding and the shared supervisor by path.
+    Guard(
+        "crates/render-2d/build.rs",
+        "render2d.vulkan-window",
+        ("crates/window-glfw/tests/native/testing.m", "crates/window-glfw/tests/native/testing.h"),
+    ),
+    Guard(
+        "crates/render-2d/tests/vulkan_window.rs",
+        "render2d.vulkan-window",
+        (SUPERVISOR, "crates/window-glfw/tests/support/"),
+    ),
     Guard("crates/gpu-vulkan/tests/gpu.rs", "vulkan.gpu", (SUPERVISOR,)),
     Guard("crates/window-glfw/tests/window_glfw.rs", "glfw.window", (SUPERVISOR,)),
     # The application's tests and the shipped configuration, scripts and CLI spec.
@@ -1793,6 +1847,10 @@ GUARDS: tuple[Guard, ...] = (
             "config/demo-glfw-vulkan-decline.toml",
             "config/demo-glfw-vulkan-callback-error.toml",
             "config/demo-quad-vulkan.toml",
+            # CK-159: the common demonstration it runs on `glfw-vulkan`, unchanged.
+            "config/demo-scene.toml",
+            "scripts/ui/demo_scene.lua",
+            "scripts/gameplay/main.lua",
             "assets/",
         ),
         unselected=(
@@ -1801,6 +1859,9 @@ GUARDS: tuple[Guard, ...] = (
                 "the demonstration's image: the owner's own replaces it as a file change, which must not open a "
                 "window by itself; `rust.app` decodes the shipped image headless",
             ),
+            ("config/demo-scene.toml", DEMO_RULE),
+            ("scripts/ui/demo_scene.lua", DEMO_RULE),
+            ("scripts/gameplay/main.lua", DEMO_RULE),
         ),
     ),
     Guard(
