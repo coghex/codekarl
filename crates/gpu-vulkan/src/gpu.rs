@@ -10,7 +10,7 @@ use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
 use ash::vk;
-use ash::{ext, khr};
+use ash::{ext, google, khr};
 
 use crate::capture::Capture;
 use crate::draw::QuadParams;
@@ -203,6 +203,18 @@ pub(crate) struct Gpu {
     /// The device is this thread's own (`start`, `start_2d`): [`Gpu::destroy_all`] destroys it. A scene presenter draws
     /// on its context's device, which the context destroys when its last `Arc` goes, after a proven end.
     owns_device: bool,
+    /// The scene presenter's two timestamp queries for each of two frames (nothing is created without valid timestamp bits).
+    timestamps: Option<vk::QueryPool>,
+    /// `VK_GOOGLE_display_timing`'s device functions, when the context enabled it.
+    pub(crate) display: Option<google::display_timing::Device>,
+}
+
+/// What a scene frame's commands record besides the drawing: a test's host-event hold, and the first of the frame's two timestamp
+/// queries (none: the device has no valid timestamp bits).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FrameExtras {
+    pub(crate) hold: Option<vk::Event>,
+    pub(crate) stamps: Option<u32>,
 }
 
 /// A Vulkan error from one of the wrappers, with the call that failed.
@@ -285,6 +297,8 @@ impl Gpu {
             capture_usage: false,
             capture: None,
             owns_device: true,
+            timestamps: None,
+            display: None,
         })
     }
 
@@ -301,6 +315,8 @@ impl Gpu {
         let device = context.device().clone();
         let swapchain = khr::swapchain::Device::new(&inner.instance, &device);
         let maintenance = ext::swapchain_maintenance1::Device::new(&inner.instance, &device);
+        let inner_instance = inner.instance.clone();
+        let device_for_display = device.clone();
         Self {
             inner: ManuallyDrop::new(inner),
             loader: ManuallyDrop::new(loader),
@@ -326,6 +342,11 @@ impl Gpu {
             capture_usage: false,
             capture: None,
             owns_device: false,
+            timestamps: None,
+            display: context
+                .timing_caps()
+                .display_timing
+                .then(|| google::display_timing::Device::new(&inner_instance, &device_for_display)),
         }
     }
 
@@ -750,8 +771,9 @@ impl Gpu {
         rgb: [f32; 3],
         quad: Option<(QuadParams, bool)>,
         draw: Option<&crate::scene_draw::SceneDraw<'_>>,
-        hold: Option<vk::Event>,
+        extras: FrameExtras,
     ) -> Result<(), Failure> {
+        let FrameExtras { hold, stamps } = extras;
         let (Some(cmd), Some(render_pass)) = (self.cmd, self.render_pass) else {
             return Err((
                 "vkBeginCommandBuffer",
@@ -773,6 +795,22 @@ impl Gpu {
         // SAFETY: the command buffer is in the initial state after the reset.
         unsafe { self.device.begin_command_buffer(cmd, &begin) }
             .map_err(|code| ("vkBeginCommandBuffer", code))?;
+        // The frame's two timestamps (when the device has valid bits): reset, then the start at the top of the pipe.
+        let stamped = self.timestamps.zip(stamps);
+        if let Some((pool, first)) = stamped {
+            // SAFETY: the command buffer is recording outside a render pass; the two queries are not in use: the previous
+            // frame's proof is recorded and its results were read before this frame was built.
+            unsafe { self.device.cmd_reset_query_pool(cmd, pool, first, 2) };
+            // SAFETY: as above; the queries were just reset.
+            unsafe {
+                self.device.cmd_write_timestamp(
+                    cmd,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    pool,
+                    first,
+                );
+            }
+        }
         if let Some(event) = hold {
             // SAFETY: the command buffer is recording outside a render pass; the event belongs to this device.
             unsafe {
@@ -829,8 +867,86 @@ impl Gpu {
         {
             self.record_capture(cmd, image);
         }
+        if let Some((pool, first)) = stamped {
+            // SAFETY: the command buffer is recording outside a render pass; the query was reset above.
+            unsafe {
+                self.device.cmd_write_timestamp(
+                    cmd,
+                    vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                    pool,
+                    first + 1,
+                );
+            }
+        }
         // SAFETY: the command buffer is recording.
         unsafe { self.device.end_command_buffer(cmd) }.map_err(|code| ("vkEndCommandBuffer", code))
+    }
+
+    /// Creates the timestamp query pool (two queries for each of two frames) when the queue family has valid timestamp bits.
+    pub(crate) fn create_timestamps(&mut self, valid_bits: u32) -> Result<(), Failure> {
+        if valid_bits == 0 || self.timestamps.is_some() {
+            return Ok(());
+        }
+        let info = vk::QueryPoolCreateInfo::default()
+            .query_type(vk::QueryType::TIMESTAMP)
+            .query_count(4);
+        // SAFETY: the device is live and `info` is valid for the call.
+        let pool = unsafe { self.device.create_query_pool(&info, None) }
+            .map_err(|code| ("vkCreateQueryPool", code))?;
+        self.timestamps = Some(pool);
+        Ok(())
+    }
+
+    /// Whether frames record timestamps.
+    pub(crate) fn has_timestamps(&self) -> bool {
+        self.timestamps.is_some()
+    }
+
+    /// The two timestamps of the frame whose queries start at `first`, 64-bit and without waiting: `None` while they are not
+    /// available (the caller reads them only after the frame's recorded proof).
+    pub(crate) fn timestamp_results(&self, first: u32) -> Option<[u64; 2]> {
+        let pool = self.timestamps?;
+        let mut data = [0_u64; 2];
+        // SAFETY: the pool belongs to this device, the two queries were written by a submitted frame, and `data` holds two
+        // 64-bit results.
+        let result = unsafe {
+            self.device.get_query_pool_results(
+                pool,
+                first,
+                &mut data,
+                vk::QueryResultFlags::TYPE_64,
+            )
+        };
+        result.ok().map(|()| data)
+    }
+
+    /// One bounded batch of `vkGetPastPresentationTimingGOOGLE` into `out`: how many records it wrote, and whether more remain
+    /// (`VK_INCOMPLETE`). Never waits.
+    pub(crate) fn past_presentation_timings(
+        &self,
+        chain: &Chain,
+        out: &mut [vk::PastPresentationTimingGOOGLE],
+    ) -> Result<(usize, bool), vk::Result> {
+        let Some(display) = &self.display else {
+            return Ok((0, false));
+        };
+        let mut count = u32::try_from(out.len()).unwrap_or(u32::MAX);
+        // SAFETY: the device and the swap chain are live, `out` holds `count` records, and the extension's functions were loaded
+        // only when it was enabled.
+        let result = unsafe {
+            (display.fp().get_past_presentation_timing_google)(
+                display.device(),
+                chain.handle,
+                std::ptr::addr_of_mut!(count),
+                out.as_mut_ptr(),
+            )
+        };
+        let written = usize::try_from(count).unwrap_or(0).min(out.len());
+        match result {
+            vk::Result::SUCCESS => Ok((written, false)),
+            vk::Result::INCOMPLETE => Ok((written, true)),
+            other => Err(other),
+        }
     }
 
     /// Submits the frame's commands: waits on `acquire`, signals `render_finished`, with `fence`.
@@ -902,17 +1018,26 @@ impl Gpu {
         index: u32,
         render_finished: vk::Semaphore,
         present_fence: vk::Fence,
+        present_id: Option<u32>,
     ) -> Result<bool, vk::Result> {
         let waits = [render_finished];
         let swapchains = [chain.handle];
         let indices = [index];
         let fences = [present_fence];
         let mut fence_info = vk::SwapchainPresentFenceInfoEXT::default().fences(&fences);
-        let info = vk::PresentInfoKHR::default()
+        // The frame's number as the presentation timing feedback's `presentID`, when the extension is enabled.
+        let times = [vk::PresentTimeGOOGLE::default()
+            .present_id(present_id.unwrap_or(0))
+            .desired_present_time(0)];
+        let mut times_info = vk::PresentTimesInfoGOOGLE::default().times(&times);
+        let mut info = vk::PresentInfoKHR::default()
             .wait_semaphores(&waits)
             .swapchains(&swapchains)
             .image_indices(&indices)
             .push_next(&mut fence_info);
+        if present_id.is_some() && self.display.is_some() {
+            info = info.push_next(&mut times_info);
+        }
         queue.present(&self.swapchain, &info)
     }
 
@@ -960,6 +1085,10 @@ impl Gpu {
             // SAFETY: proven unused; destroying the pool frees its command buffer.
             unsafe { self.device.destroy_command_pool(pool, None) };
             self.cmd = None;
+        }
+        if let Some(pool) = self.timestamps.take() {
+            // SAFETY: proven unused: every frame that wrote it is proven.
+            unsafe { self.device.destroy_query_pool(pool, None) };
         }
         self.note("command buffers and pool");
         for fence in std::mem::take(&mut self.fences) {

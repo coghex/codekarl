@@ -13,12 +13,13 @@ use std::time::Instant;
 use ash::vk;
 
 use crate::Error;
-use crate::batch::{Batch, Binding, CompatDecision, FrameCounters, build_scene};
+use crate::batch::{Batch, Binding, CompatDecision, FrameCounters, InstanceLayout, build_scene};
 use crate::context::{RenderQueue, VulkanContext};
 use crate::frame::{VulkanFrame, VulkanFrameSlot};
 use crate::gate::BindlessLimits;
 use crate::hash::FrameMap;
 use crate::hooks::CompatKind;
+use crate::metrics::MetricsClock;
 use crate::quad::{PixelSource, VulkanFilter, VulkanQuad};
 use crate::revisions::{
     BindingChoice, BindingNotice, CheckerProgress, FrameSubmission, FrameTicket, LedgerError,
@@ -364,6 +365,14 @@ pub(crate) trait SceneStart: Send + Sync {
     ) -> Result<Box<dyn SceneObject>, Error>;
     /// The instance buffer's bounds.
     fn limits(&self) -> SceneLimits;
+    /// How an instance is laid out in the buffer, decided before the buffer is made: the bindless mode's padded 36 bytes when the
+    /// gate will pass, else the per-revision mode's 32. The same pure rows the ledger evaluates at its start, which the presenter
+    /// checks against what the ledger then did.
+    ///
+    /// # Errors
+    ///
+    /// The slot count's refusal (the ledger refuses the same one at its start).
+    fn instance_layout(&self) -> Result<InstanceLayout, Error>;
     /// Registers the presenter's wake on the frame slot; a published frame wants a frame.
     fn register_wake(&self, wake: SlotWake);
     /// Forgets the wake (the presenter ended).
@@ -409,7 +418,10 @@ pub(crate) trait SceneObject {
 /// fault hooks. The render thread starts the store and ledger on the context during setup and uploads the checker.
 #[doc(hidden)]
 #[derive(Clone)]
-pub struct SceneSetup(pub(crate) Arc<dyn SceneStart>);
+pub struct SceneSetup(
+    pub(crate) Arc<dyn SceneStart>,
+    pub(crate) Option<MetricsClock>,
+);
 
 impl std::fmt::Debug for SceneSetup {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -418,6 +430,14 @@ impl std::fmt::Debug for SceneSetup {
 }
 
 impl SceneSetup {
+    /// The clock the presenter takes its frame-timing marks from (nanoseconds, monotonic, never zero): the application's, so one
+    /// measurement window is one interval on one clock for every owner. Without one the presenter uses a clock of its own.
+    #[must_use]
+    pub fn with_clock(mut self, clock: MetricsClock) -> Self {
+        self.1 = Some(clock);
+        self
+    }
+
     /// A scene over `context`. `bindless` is the tables' slot count: the device gate decides at the scene's start whether the
     /// textures are bound through the bindless tables or, with one notice, through per-revision sets (the owner's logged
     /// fallback). `texture_hooks` are the store's fault switches (tests only; `None` in production).
@@ -476,17 +496,20 @@ impl SceneSetup {
         K: Copy + Eq + Hash + Send + 'static,
         D: TextureDriver<K> + 'static,
     {
-        Self(Arc::new(Parts {
-            context,
-            texture_limits,
-            ledger_limits,
-            max_textures,
-            binding,
-            limits,
-            driver: Mutex::new(Some(driver)),
-            frames,
-            texture_hooks,
-        }))
+        Self(
+            Arc::new(Parts {
+                context,
+                texture_limits,
+                ledger_limits,
+                max_textures,
+                binding,
+                limits,
+                driver: Mutex::new(Some(driver)),
+                frames,
+                texture_hooks,
+            }),
+            None,
+        )
     }
 }
 
@@ -560,6 +583,20 @@ where
 
     fn limits(&self) -> SceneLimits {
         self.limits
+    }
+
+    fn instance_layout(&self) -> Result<InstanceLayout, Error> {
+        let BindingChoice::Auto(bindless) = self.binding else {
+            return Ok(InstanceLayout::PER_REVISION);
+        };
+        let bindless =
+            bindless.validate(self.max_textures, self.ledger_limits.max_extra_revisions)?;
+        let caps = self.context.bindless_caps();
+        if !crate::gate::evaluate(caps, bindless.texture_slots).is_empty() {
+            return Ok(InstanceLayout::PER_REVISION);
+        }
+        InstanceLayout::bindless(caps.limits.min_vertex_input_binding_stride_alignment)
+            .ok_or_else(|| Error("the bindless instance stride overflows".to_owned()))
     }
 
     fn register_wake(&self, wake: SlotWake) {
@@ -904,7 +941,6 @@ pub(crate) fn wakes_of(mark: &Arc<dyn Fn() + Send + Sync>) -> TextureWakes {
 #[cfg(test)]
 mod tests {
     use super::{CHECKER_CELL, CHECKER_SIDE, checker_pixels};
-    use crate::batch::{INSTANCE_STRIDE, InstanceRecord};
 
     #[test]
     fn the_checker_is_64_by_64_of_8_pixel_cells_with_a_magenta_top_left() {
@@ -933,20 +969,5 @@ mod tests {
             pixels.chunks_exact(4).all(|pixel| pixel[3] == 255),
             "opaque, so premultiplication changes nothing"
         );
-    }
-
-    #[test]
-    fn an_instance_record_is_32_bytes_destination_then_source() {
-        assert_eq!(INSTANCE_STRIDE, 32);
-        let record = InstanceRecord {
-            destination: [1.0, 2.0, 3.0, 4.0],
-            source: [0.25, 0.5, 0.75, 1.0],
-        };
-        let bytes = record.to_bytes();
-        let floats: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect();
-        assert_eq!(floats, vec![1.0, 2.0, 3.0, 4.0, 0.25, 0.5, 0.75, 1.0]);
     }
 }

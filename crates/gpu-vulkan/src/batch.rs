@@ -5,8 +5,15 @@
 //! descriptor set, or its native slot in the bindless tables) through a caller-supplied function (the frame ticket in
 //! production), writes one [`InstanceRecord`] per drawn quad and groups **adjacent** instances with the same binding into one
 //! [`Batch`]. Nothing is sorted by texture (a textured alpha scene cannot generally be sorted by texture), and the cost is one
-//! validation, one map lookup and one 32-byte write per quad: O(drawn quads), with no scan of the loaded textures. A binding
+//! validation, one map lookup and one record write per quad: O(drawn quads), with no scan of the loaded textures. A binding
 //! belongs to one revision while the frame lives, so equal bindings are equal revisions.
+//!
+//! **The bindless mode draws through the table in one draw** (milestone 5.5, issue 6; design §13.1): the record carries the
+//! instance's native slot, so differing texture identity no longer splits a draw, and a batch starts only where the pipeline, the
+//! blend or the clip changes. In milestone 5.5 every scene instance and the compatibility instance share all three, so a frame is
+//! one batch. **No chunks** (design §11.3: chunks only where "justified by actual buffer/device limits"): core Vulkan sets no limit
+//! on `instanceCount` of a direct draw, the instance buffer holds `max_quads` instances (the bound of a frame) and `max_quads` fits
+//! `u32` (configuration), so no chunking exists. The per-revision mode keeps its 32-byte record and its per-texture batches.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
@@ -16,43 +23,93 @@ use ash::vk;
 use crate::frame::{InstanceRole, VulkanInstance, VulkanSceneSource};
 use crate::quad::DestinationRect;
 
-/// The bytes of one instance in the instance buffer: the stride the vertex input reads.
-pub(crate) const INSTANCE_STRIDE: usize = size_of::<InstanceRecord>();
+/// The data of a per-revision instance: the destination and the visible source, 32 bytes.
+pub(crate) const REVISION_RECORD_BYTES: usize = 32;
+/// The data of a bindless instance: the same plus the native slot (`u32`, vertex attribute 2), 36 bytes.
+pub(crate) const BINDLESS_RECORD_BYTES: usize = 36;
+
+/// `data` rounded up, with checked arithmetic, to a multiple of `alignment` (0 and 1 impose none): the stride of a vertex binding
+/// on a device that reports `minVertexInputBindingStrideAlignment` (the portability subset's).
+pub(crate) fn padded_stride(data: usize, alignment: u32) -> Option<usize> {
+    let alignment = usize::try_from(alignment.max(1)).ok()?;
+    data.checked_add(alignment - 1)
+        .map(|sum| sum / alignment * alignment)
+}
+
+/// How an instance is laid out in the instance buffer: the bytes of data and the stride between instances (the data, padded).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InstanceLayout {
+    /// Bytes of data in a record: 32, or 36 with the slot.
+    pub(crate) data: usize,
+    /// Bytes between two records: what the vertex binding, the buffer size and every write use. At least `data`.
+    pub(crate) stride: usize,
+}
+
+impl InstanceLayout {
+    /// The per-revision mode's: CK-157's 32-byte record, unchanged.
+    pub(crate) const PER_REVISION: Self = Self {
+        data: REVISION_RECORD_BYTES,
+        stride: REVISION_RECORD_BYTES,
+    };
+
+    /// The bindless mode's on a device whose queried stride alignment is `alignment` (1 where there is none), or `None` when the
+    /// padded stride does not fit.
+    pub(crate) fn bindless(alignment: u32) -> Option<Self> {
+        Some(Self {
+            data: BINDLESS_RECORD_BYTES,
+            stride: padded_stride(BINDLESS_RECORD_BYTES, alignment)?,
+        })
+    }
+
+    /// Whether a record carries the slot.
+    pub(crate) fn has_slot(self) -> bool {
+        self.data == BINDLESS_RECORD_BYTES
+    }
+}
 
 /// One instance as the instance-rate vertex input reads it: the destination rectangle in drawable pixels and the
-/// visible part of the texture as fractions of it, each `[left, top, right, bottom]`. 32 bytes.
-#[repr(C)]
+/// visible part of the texture as fractions of it, each `[left, top, right, bottom]`, and the native slot the bindless mode's
+/// fragment stage samples (not written by the per-revision mode).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct InstanceRecord {
     pub(crate) destination: [f32; 4],
     pub(crate) source: [f32; 4],
+    pub(crate) slot: u32,
 }
 
 impl InstanceRecord {
-    /// The record's 32 bytes in the order the vertex input reads them (native endianness).
-    pub(crate) fn to_bytes(self) -> [u8; INSTANCE_STRIDE] {
-        let mut bytes = [0_u8; INSTANCE_STRIDE];
-        for (chunk, value) in bytes
+    /// Writes the record into `out` (exactly one stride): the data in the order the vertex input reads it (native endianness), then
+    /// zero in every padding byte.
+    pub(crate) fn write_to(self, layout: InstanceLayout, out: &mut [u8]) {
+        debug_assert_eq!(out.len(), layout.stride);
+        out.fill(0);
+        for (chunk, value) in out[..REVISION_RECORD_BYTES]
             .chunks_exact_mut(4)
             .zip(self.destination.iter().chain(self.source.iter()))
         {
             chunk.copy_from_slice(&value.to_ne_bytes());
         }
-        bytes
+        if layout.has_slot() {
+            out[REVISION_RECORD_BYTES..BINDLESS_RECORD_BYTES]
+                .copy_from_slice(&self.slot.to_ne_bytes());
+        }
     }
 }
 
-/// What a draw binds for its texture: the checker, a revision's own descriptor set (the per-revision mode, set 1 of the
-/// pipeline layout), or a native slot of the bindless table (pushed as a constant; slot 0 is the checker's).
+/// What an instance samples: the checker, a revision's own descriptor set (the per-revision mode, set 1 of the pipeline layout),
+/// or a native slot of the bindless table (slot 0 is the checker's; the slot is in the instance's record). A bindless batch's
+/// binding is [`Binding::Table`]: every instance of the draw names its own slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Binding {
     Checker,
     Set(vk::DescriptorSet),
     Slot(u32),
+    /// A bindless batch: the table version bound once, each instance carrying its slot.
+    Table,
 }
 
 /// One instanced draw: the instances `first..first + count` of the buffer, all with the same binding. Equal bindings are equal
-/// revisions while the frame lives. The checker's draw is also the one that samples nearest.
+/// revisions while the frame lives. In the per-revision mode the checker's draw is the one that samples nearest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Batch {
     pub(crate) binding: Binding,
@@ -82,7 +139,7 @@ pub struct FrameCounters {
     pub skipped: u64,
     /// Instances beyond `max_quads`, which are not drawn.
     pub dropped: u64,
-    /// Distinct revisions this frame pinned.
+    /// Distinct revisions this frame pinned: always 0 in the bindless mode, whose frame pins its table version alone.
     pub pinned: u64,
 }
 
@@ -138,15 +195,26 @@ impl Output<'_> {
     /// Stores one drawn instance (the caller checked the capacity). A slot outside the table (never produced by the ledger)
     /// is skipped and counted, never written: an out-of-range index does not reach the GPU.
     fn push(&mut self, binding: Binding, visible: [f32; 4], destination: DestinationRect) {
-        if let Binding::Slot(slot) = binding
-            && slot >= self.slots
-        {
-            self.counters.skipped += 1;
-            return;
-        }
+        let slot = match binding {
+            Binding::Slot(slot) => {
+                if slot >= self.slots {
+                    self.counters.skipped += 1;
+                    return;
+                }
+                slot
+            }
+            Binding::Checker | Binding::Set(_) | Binding::Table => 0,
+        };
+        // The bindless mode splits nowhere: pipeline, blend and clip are the frame's for every instance (milestone 5.5).
+        let binding = if self.slots == 0 {
+            binding
+        } else {
+            Binding::Table
+        };
         (self.write)(
             self.written,
             InstanceRecord {
+                slot,
                 destination: [
                     pixel(destination.left),
                     pixel(destination.top),
@@ -181,7 +249,7 @@ impl Output<'_> {
                     self.counters.dropped += 1;
                 } else {
                     self.counters.resolved += 1;
-                    self.counters.pinned += 1;
+                    self.counters.pinned += u64::from(self.slots == 0);
                     self.push(binding, source, destination);
                 }
                 false
@@ -250,9 +318,11 @@ pub(crate) fn build_scene<K: Copy + Eq + Hash, S: BuildHasher>(
             output.counters.dropped += 1;
             return;
         }
+        let bindless = output.slots != 0;
         let binding = *resolved.entry(instance.key).or_insert_with(|| {
             let found = resolve(instance.key);
-            output.counters.pinned += u64::from(found.is_some());
+            // The bindless frame pins its table version alone, not each revision.
+            output.counters.pinned += u64::from(found.is_some() && !bindless);
             found
         });
         if let Some(binding) = binding {
@@ -695,12 +765,94 @@ mod tests {
         assert_eq!(
             batches,
             vec![Batch {
-                binding: Binding::Slot(7),
+                binding: Binding::Table,
                 first: 0,
                 count: 3
             }],
             "a skipped instance takes no slot of the instance buffer and does not break adjacency"
         );
+    }
+
+    /// The bindless mode draws a scene whose textures alternate in **one** batch, each instance carrying its own slot, and pins no
+    /// revision (the frame's table version is its pin). The per-revision mode batches by run of equal textures (the test above).
+    /// Negative control: splitting on slot again gives 1,000 batches.
+    #[test]
+    fn alternating_slots_are_one_batch_and_each_instance_names_its_slot() {
+        let mut written = Vec::new();
+        let mut batches = Vec::new();
+        let mut resolved = HashMap::new();
+        let instances: Vec<_> = (0..1000_u32)
+            .map(|i| instance(1 + i % 3, i32::try_from(i).expect("small")))
+            .collect();
+        let built = build_scene(
+            &Fixed(instances),
+            (2000, 100),
+            4096,
+            64,
+            &mut |index, record| written.push((index, record)),
+            &mut |key| Some(Binding::Slot(10 + key)),
+            false,
+            &mut |_| CompatDecision::Gate,
+            &mut resolved,
+            &mut batches,
+        );
+        assert_eq!(
+            batches,
+            vec![Batch {
+                binding: Binding::Table,
+                first: 0,
+                count: 1000
+            }]
+        );
+        assert_eq!(
+            (built.counters.batches, built.counters.instances),
+            (1, 1000)
+        );
+        assert_eq!(
+            built.counters.pinned, 0,
+            "the epoch pin alone: no revision is pinned"
+        );
+        assert_eq!(built.counters.resolved, 1000);
+        let slots: Vec<u32> = written.iter().map(|(_, record)| record.slot).collect();
+        let expected: Vec<u32> = (0..1000_u32).map(|i| 11 + i % 3).collect();
+        assert_eq!(slots, expected, "painter order, one slot per instance");
+    }
+
+    /// The checker is slot 0 inside the same draw, and the compatibility instance joins it.
+    #[test]
+    fn the_checker_and_the_compat_image_share_the_bindless_draw() {
+        let mut written = Vec::new();
+        let mut batches = Vec::new();
+        let mut resolved = HashMap::new();
+        let built = build_scene(
+            &Fixed(vec![instance(1, 0), instance(7, 4), instance(1, 8)]),
+            (100, 100),
+            16,
+            64,
+            &mut |index, record| written.push((index, record)),
+            &mut |key| (key == 1).then_some(Binding::Slot(5)),
+            true,
+            &mut |_| CompatDecision::Draw {
+                binding: Binding::Slot(9),
+                destination: DestinationRect {
+                    left: 50,
+                    top: 51,
+                    right: 60,
+                    bottom: 61,
+                },
+                source: [0.0, 0.0, 1.0, 1.0],
+            },
+            &mut resolved,
+            &mut batches,
+        );
+        let slots: Vec<u32> = written.iter().map(|(_, record)| record.slot).collect();
+        assert_eq!(
+            slots,
+            [9, 5, 0, 5],
+            "compat first, then the scene; the checker is slot 0"
+        );
+        assert_eq!(batches.len(), 1, "{batches:?}");
+        assert_eq!((built.counters.checker, built.counters.pinned), (1, 0));
     }
 
     #[test]
@@ -711,9 +863,45 @@ mod tests {
     }
 
     #[test]
-    fn the_record_is_the_stride_the_shader_reads() {
-        assert_eq!(INSTANCE_STRIDE, 32);
+    fn the_records_are_the_layouts_the_shaders_read() {
+        assert_eq!(InstanceLayout::PER_REVISION.stride, 32);
         assert_eq!(align_of::<InstanceRecord>(), 4);
-        assert_eq!(std::mem::offset_of!(InstanceRecord, source), 16);
+        // 36 bytes of data; the stride is padded to the queried alignment, and the padding is zero.
+        for (alignment, stride) in [(0, 36), (1, 36), (4, 36), (8, 40), (16, 48), (64, 64)] {
+            let layout = InstanceLayout::bindless(alignment).expect("fits");
+            assert_eq!(
+                (layout.data, layout.stride),
+                (36, stride),
+                "alignment {alignment}"
+            );
+            let mut bytes = vec![0xAA_u8; layout.stride];
+            InstanceRecord {
+                destination: [1.0, 2.0, 3.0, 4.0],
+                source: [0.25, 0.5, 0.75, 1.0],
+                slot: 0xDEAD_BEEF,
+            }
+            .write_to(layout, &mut bytes);
+            assert_eq!(
+                bytes[32..36],
+                0xDEAD_BEEF_u32.to_ne_bytes(),
+                "the slot follows the source"
+            );
+            assert!(
+                bytes[36..].iter().all(|byte| *byte == 0),
+                "padding is zero (alignment {alignment})"
+            );
+            assert_eq!(bytes[..4], 1.0_f32.to_ne_bytes());
+            assert_eq!(bytes[28..32], 1.0_f32.to_ne_bytes());
+        }
+        // The per-revision record has no slot: its 32 bytes are CK-157's.
+        let mut bytes = [0xAA_u8; 32];
+        InstanceRecord {
+            destination: [1.0, 2.0, 3.0, 4.0],
+            source: [0.25, 0.5, 0.75, 1.0],
+            slot: 9,
+        }
+        .write_to(InstanceLayout::PER_REVISION, &mut bytes);
+        assert_eq!(bytes[16..20], 0.25_f32.to_ne_bytes());
+        assert_eq!(padded_stride(usize::MAX, 8), None, "checked arithmetic");
     }
 }

@@ -88,9 +88,15 @@ impl Kit {
         let loader = load_loader().expect("the Vulkan loader loads");
         let instance = validated_with(&loader, true);
         let log = instance.validation_log();
-        let context =
-            VulkanContext::new_for_tests(&instance, None, ck_gpu_vulkan::TestFeatures { events })
-                .expect("a device context (events requested only when the case needs them)");
+        let context = VulkanContext::new_for_tests(
+            &instance,
+            None,
+            ck_gpu_vulkan::TestFeatures {
+                events,
+                ..ck_gpu_vulkan::TestFeatures::default()
+            },
+        )
+        .expect("a device context (events requested only when the case needs them)");
         let queue = context.take_queue().expect("the queue is handed out once");
         Self {
             loader,

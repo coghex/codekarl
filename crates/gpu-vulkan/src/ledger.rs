@@ -1136,8 +1136,15 @@ mod tests {
         )
         .expect("a validated instance");
         let log = instance.validation_log();
-        let context = VulkanContext::new_for_tests(&instance, None, TestFeatures { events: true })
-            .expect("a context with host events");
+        let context = VulkanContext::new_for_tests(
+            &instance,
+            None,
+            TestFeatures {
+                events: true,
+                ..TestFeatures::default()
+            },
+        )
+        .expect("a context with host events");
         let mut queue = context.take_queue().expect("the queue");
         let texture_ledger = TextureLedger::<u32>::start_with_test_hooks(
             Arc::clone(&context),

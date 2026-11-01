@@ -12,6 +12,7 @@ use crate::context::VulkanContext;
 use crate::frame::VulkanFrameSlot;
 use crate::gate::BindlessLimits;
 use crate::hooks::{POLL, TestHooks};
+use crate::metrics::{MetricsClock, MetricsShared};
 use crate::render::{render_main, scene_main, texture_marker};
 use crate::revisions::BindingNotice;
 use crate::revisions::LedgerLimits;
@@ -31,7 +32,7 @@ use crate::{Error, Instance, Loader};
 /// The handle holds its own clone of the [`Loader`] (and so does the render thread), so the library stays
 /// loaded for as long as either can call it.
 pub struct VulkanPresenter {
-    shared: Arc<Shared>,
+    pub(crate) shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
     ended: Option<CleanupResult>,
     _loader: Loader,
@@ -124,7 +125,9 @@ impl VulkanPresenter {
     /// The thread starts the texture store and ledger on the context with `texture_limits`, `ledger_limits` and
     /// `max_textures`, uploads the checker, allocates the instance buffer for `limits.max_quads` (refusing one that does
     /// not fit `limits.binding_geometry_bytes` as a `Failed` report naming both numbers), and runs `driver` on its own
-    /// thread's passes. The renderer publishes frames to `frames`; a published frame wants a frame. The legacy quad of a
+    /// thread's passes. The renderer publishes frames to `frames`; a published frame wants a frame. `clock` is the caller's
+    /// clock for frame timing (nanoseconds, monotonic, never zero; the application's, so one measurement window is one interval on one
+    /// clock for every owner), or `None` for the presenter's own. The legacy quad of a
     /// frame is the compatibility lane's (a later part) and is not drawn by this entry yet.
     ///
     /// # Errors
@@ -153,12 +156,13 @@ impl VulkanPresenter {
         bindless: BindlessLimits,
         limits: SceneLimits,
         driver: D,
+        clock: Option<MetricsClock>,
     ) -> Result<Self, Error>
     where
         K: Copy + Eq + std::hash::Hash + Send + 'static,
         D: TextureDriver<K> + 'static,
     {
-        let setup = SceneSetup::new(
+        let mut setup = SceneSetup::new(
             context,
             texture_limits,
             ledger_limits,
@@ -169,6 +173,9 @@ impl VulkanPresenter {
             frames,
             None,
         );
+        if let Some(clock) = clock {
+            setup = setup.with_clock(clock);
+        }
         // SAFETY: the contract is this function's own.
         unsafe {
             Self::start_scene_with_test_hooks(
@@ -228,6 +235,7 @@ impl VulkanPresenter {
             notice: Mutex::new(None),
             binding_notice: Mutex::new(None),
             scene_stats: Mutex::new(SceneStats::default()),
+            metrics: MetricsShared::new(setup.1.clone()),
         });
         // A published frame wants a frame, and only the render thread is woken. The wake holds the presenter's state
         // weakly. A frame published before this point is read by the first frame, which the slot's initial `dirty`
@@ -324,6 +332,7 @@ impl VulkanPresenter {
             notice: Mutex::new(None),
             binding_notice: Mutex::new(None),
             scene_stats: Mutex::new(SceneStats::default()),
+            metrics: MetricsShared::new(None),
         });
         if let Some(quads) = &hooks.quad_slot {
             // A change in the slot wants a frame, and only the render thread is woken. The wake holds the

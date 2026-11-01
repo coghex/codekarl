@@ -60,12 +60,16 @@ use ck_window::{
 
 use crate::config::ResourceConfig;
 use crate::lifecycle::ResourceLatch;
+use crate::metrics::{MetricsHub, SUMMARY_WAIT};
+use crate::metrics_record::{PresenterFigures, vulkan_summary};
 use crate::windowed::{self, RunClosure, RunEnv, RunNotes, VulkanFigures};
 
 #[cfg(test)]
 mod fake;
 #[cfg(test)]
 mod logging;
+#[cfg(test)]
+mod metrics_tests;
 #[cfg(test)]
 mod quad_tests;
 #[cfg(feature = "vulkan")]
@@ -148,6 +152,11 @@ pub(crate) struct Resources {
     pub(crate) max_quads: usize,
     /// `[render] bindless_texture_slots`.
     pub(crate) bindless_texture_slots: u32,
+    /// The run's measurement window (`diagnostics.metrics_mark`): the one `metrics` record is written from it.
+    pub(crate) metrics: Option<Arc<MetricsHub>>,
+    /// The clock the presenter takes its frame-timing marks from: the hub's, so the window is one interval on one clock for every
+    /// owner (none: the presenter's own).
+    pub(crate) clock: Option<Arc<dyn Fn() -> u64 + Send + Sync>>,
 }
 
 /// The quad side of a run: everything of the backend except the presenter (the real one is `ck-render-2d`'s
@@ -170,6 +179,9 @@ pub(crate) trait QuadSide {
     /// The recorded refusal, once, as a `Failed` report.
     fn take_report(&self) -> Option<PresenterReport>;
 }
+
+/// The function that sets a measurement window's end `(id, end)` on a presenter (refused with the text of why).
+pub(crate) type MetricsEndSetter<'a> = dyn FnMut(u32, u64) -> Result<(), String> + 'a;
 
 /// The presenter handle the stack started: `ck_window::Presenter` without its `start`, plus what only a quad
 /// drawing presenter has, as plain values.
@@ -196,6 +208,12 @@ pub(crate) trait Running {
     fn texture_wake(&self) -> Arc<dyn Fn() + Send + Sync>;
     /// The presenter's last numbers, copied before its handle is released (`None`: it has none to give).
     fn figures(&self) -> Option<VulkanFigures>;
+    /// Hands the run's marked window to the presenter.
+    fn request_metrics(&mut self, window: ck_window::MetricsWindow) -> Result<(), String>;
+    /// Runs `set` with a function that sets the window's end under the presenter's admission lock (held for the call).
+    fn with_metrics_end(&mut self, set: &mut dyn FnMut(&mut MetricsEndSetter<'_>));
+    /// The presenter's figures for the end-of-run record: the whole run's, and window `window`'s (waiting at most `within` for it).
+    fn record_figures(&mut self, window: Option<u32>, within: Duration) -> PresenterFigures;
 }
 
 /// Everything this path needs from the accepted crates, behind one seam: the real stack, or a fake.
@@ -733,6 +751,8 @@ pub(crate) struct VulkanAdapter<S: Stack> {
     first_frame_pending: bool,
     /// The presenter's drawn generation as of the end (its handle is gone after that).
     drawn_at_end: Option<u64>,
+    /// The `metrics` record was written.
+    reported: bool,
 }
 
 impl<S: Stack> VulkanAdapter<S> {
@@ -747,7 +767,58 @@ impl<S: Stack> VulkanAdapter<S> {
             binding: None,
             first_frame_pending: false,
             drawn_at_end: None,
+            reported: false,
         }
+    }
+
+    /// Hands the marked window to the presenter, once it is started: this thread owns the presenter, so the UI VM's mark only files
+    /// the window in the hub and this runs at the next pass.
+    fn forward_metrics(&mut self) {
+        let Some(hub) = self.run.resources.metrics.clone() else {
+            return;
+        };
+        let Some(window) = hub.take_forward() else {
+            return;
+        };
+        match self.with(|presenter| presenter.request_metrics(window)) {
+            None => hub.unforwarded(),
+            Some(Ok(())) => {}
+            Some(Err(error)) => hub.presenter_refused(error),
+        }
+    }
+
+    /// The run's one `metrics` record, written when the presenter's end is observed and its handle is still alive. Its two reads (the
+    /// presenter's window, the loop's window) wait at most [`SUMMARY_WAIT`] each **and never past `by`**, the caller's absolute
+    /// deadline: what `poll_end` does after its own `within` is capped by what remains of it, and with nothing left the reads do not
+    /// wait.
+    fn write_metrics_record(&mut self, by: Instant) {
+        let Some(hub) = self.run.resources.metrics.clone() else {
+            return;
+        };
+        self.reported = true;
+        let report = hub.report();
+        let window = report.window.map(|window| window.id);
+        let wait = || {
+            by.saturating_duration_since(Instant::now())
+                .min(SUMMARY_WAIT)
+        };
+        let within = wait();
+        let Some(presenter) = self.with(|presenter| presenter.record_figures(window, within))
+        else {
+            return;
+        };
+        let loop_window = report
+            .window
+            .filter(|_| report.loop_attached)
+            .and_then(|window| hub.loop_metrics().read(window.id, wait()));
+        let text = vulkan_summary(
+            presenter,
+            self.run.resources.service.stats().loaders,
+            hub.loop_metrics().totals(),
+            report,
+            loop_window,
+        );
+        crate::lifecycle::emit(Level::Debug, "metrics", format_args!("{text}"));
     }
 
     /// The presenter ended `Proven` (or was never started): releases its handle, then destroys the surface
@@ -963,6 +1034,7 @@ impl<S: Stack> Gpu2d for VulkanAdapter<S> {
 
     fn take_report(&mut self) -> Option<PresenterReport> {
         self.announce(false);
+        self.forward_metrics();
         // The side's refusal comes first, once, before anything the presenter has.
         if let Some(report) = self.run.side.borrow().take_report() {
             return Some(report);
@@ -980,6 +1052,19 @@ impl<S: Stack> Gpu2d for VulkanAdapter<S> {
 
     fn request_stop(&mut self) {
         self.announce(true);
+        // The window loop has begun its teardown: this is the run's one end timestamp for the measured window, sent to both owners
+        // (a window marked and not yet handed over goes first, so the presenter holds it when the end arrives).
+        if let Some(hub) = self.run.resources.metrics.clone() {
+            self.forward_metrics();
+            // Only a run that marked a window has an end to set (and the presenter's lock to take for it).
+            if hub.report().window.is_some() {
+                self.with(|presenter| {
+                    presenter.with_metrics_end(&mut |set| {
+                        hub.finish(set);
+                    });
+                });
+            }
+        }
         self.with(Running::request_stop);
     }
 
@@ -1005,6 +1090,9 @@ impl<S: Stack> Gpu2d for VulkanAdapter<S> {
         // after the last ordinary call is not lost to the handle's removal), then the presenter's last numbers for the
         // final resource record (copied while the handle is alive, as `native.rs` does), then the reports, then the handle.
         self.announce(true);
+        if !self.reported {
+            self.write_metrics_record(by);
+        }
         if let Some(figures) = self.with(|presenter| presenter.figures()).flatten() {
             *self.run.notes.vulkan_gpu.borrow_mut() = Some(figures);
         }
@@ -1050,6 +1138,8 @@ pub(crate) fn run_closure_with<S: Stack + 'static>(
             config: env.resource_config,
             max_quads: env.max_quads,
             bindless_texture_slots: env.bindless_texture_slots,
+            clock: env.metrics.as_ref().map(|hub| hub.clock()),
+            metrics: env.metrics.clone(),
         };
         // The one wake of the run: the notifier's. The presenter's reports and the quad side's refusal both call
         // it (the run builds the side with the same one), so a sleeping loop is woken by either.

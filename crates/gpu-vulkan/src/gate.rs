@@ -19,7 +19,10 @@
 //!   The validation layer then reports `VUID-vkCreateDescriptorSetLayout-support-09582` for the creation, which the validation
 //!   log tolerates narrowly (`instance.rs`): [`create_table_layout`] marks that one call.
 //! - **The final stage is judged once.** The rows cover the next stage's needs too (its two sampler bindings and its
-//!   non-uniform index), so a device is never accepted here and refused one stage later.
+//!   non-uniform index), so a device is never accepted here and refused one stage later. The last row is the instance stride
+//!   (milestone 5.5, issue 6): the bindless record's 36 bytes, padded to the portability subset's queried
+//!   `minVertexInputBindingStrideAlignment`, must fit `maxVertexInputBindingStride` (at least 2,048 on every device, so the row is
+//!   unreachable in practice, but it is judged here and the owner's logged fallback applies if it ever fails).
 
 use std::ffi::CStr;
 
@@ -73,7 +76,7 @@ impl BindlessLimits {
     }
 }
 
-/// The device limits the gate reads (the descriptor-indexing properties and three core limits), as `u32` like Vulkan.
+/// The device limits the gate reads (the descriptor-indexing properties, the core limits and the stride alignment), as `u32` like Vulkan.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BindlessDeviceLimits {
@@ -95,6 +98,11 @@ pub struct BindlessDeviceLimits {
     pub max_update_after_bind_descriptors_in_all_pools: u32,
     /// `maxBoundDescriptorSets`.
     pub max_bound_descriptor_sets: u32,
+    /// `maxVertexInputBindingStride`.
+    pub max_vertex_input_binding_stride: u32,
+    /// The portability subset's `minVertexInputBindingStrideAlignment`; 1 on a device without the subset (core Vulkan imposes no
+    /// stride alignment). 0 is read as 1.
+    pub min_vertex_input_binding_stride_alignment: u32,
 }
 
 /// What the device reported for the gate, read once when the context was made. The four features are what was reported and
@@ -164,6 +172,9 @@ impl BindlessCaps {
             properties.limits.max_per_stage_descriptor_samplers;
         caps.limits.max_descriptor_set_samplers = properties.limits.max_descriptor_set_samplers;
         caps.limits.max_bound_descriptor_sets = properties.limits.max_bound_descriptor_sets;
+        caps.limits.max_vertex_input_binding_stride =
+            properties.limits.max_vertex_input_binding_stride;
+        caps.limits.min_vertex_input_binding_stride_alignment = 1;
 
         let mut indexing = vk::PhysicalDeviceDescriptorIndexingFeatures::default();
         let mut features = vk::PhysicalDeviceFeatures2::default();
@@ -187,9 +198,14 @@ impl BindlessCaps {
 
         let mut indexing_properties = vk::PhysicalDeviceDescriptorIndexingProperties::default();
         let mut driver = vk::PhysicalDeviceDriverProperties::default();
+        let mut subset = vk::PhysicalDevicePortabilitySubsetPropertiesKHR::default();
+        let portability_subset = advertised(khr::portability_subset::NAME);
         let mut query = vk::PhysicalDeviceProperties2::default();
         if extension {
             query = query.push_next(&mut indexing_properties);
+        }
+        if portability_subset {
+            query = query.push_next(&mut subset);
         }
         if driver_properties {
             query = query.push_next(&mut driver);
@@ -211,6 +227,10 @@ impl BindlessCaps {
                 indexing_properties.max_per_stage_update_after_bind_resources;
             limits.max_update_after_bind_descriptors_in_all_pools =
                 indexing_properties.max_update_after_bind_descriptors_in_all_pools;
+        }
+        if portability_subset {
+            caps.limits.min_vertex_input_binding_stride_alignment =
+                subset.min_vertex_input_binding_stride_alignment.max(1);
         }
         if driver_properties {
             let name = driver
@@ -236,7 +256,7 @@ struct Row {
 }
 
 /// The limit rows for `slots` (N), in the order the diagnostic lists them. `N + 2` and `2 * N` are checked.
-fn rows(limits: &BindlessDeviceLimits, slots: u32) -> [Row; 9] {
+fn rows(limits: &BindlessDeviceLimits, slots: u32) -> [Row; 10] {
     let row = |name, available, needed| Row {
         name,
         available,
@@ -287,6 +307,14 @@ fn rows(limits: &BindlessDeviceLimits, slots: u32) -> [Row; 9] {
             "maxBoundDescriptorSets",
             limits.max_bound_descriptor_sets,
             Some(2),
+        ),
+        row(
+            "maxVertexInputBindingStride",
+            limits.max_vertex_input_binding_stride,
+            crate::batch::InstanceLayout::bindless(
+                limits.min_vertex_input_binding_stride_alignment,
+            )
+            .and_then(|layout| u32::try_from(layout.stride).ok()),
         ),
     ]
 }
@@ -472,6 +500,8 @@ mod tests {
                 max_per_stage_update_after_bind_resources: 1_000_000,
                 max_update_after_bind_descriptors_in_all_pools: 1 << 30,
                 max_bound_descriptor_sets: 8,
+                max_vertex_input_binding_stride: 2048,
+                min_vertex_input_binding_stride_alignment: 1,
             },
         }
     }
@@ -530,14 +560,15 @@ mod tests {
             5 => &mut limits.max_descriptor_set_samplers,
             6 => &mut limits.max_per_stage_update_after_bind_resources,
             7 => &mut limits.max_update_after_bind_descriptors_in_all_pools,
-            _ => &mut limits.max_bound_descriptor_sets,
+            8 => &mut limits.max_bound_descriptor_sets,
+            _ => &mut limits.max_vertex_input_binding_stride,
         }
     }
 
     #[test]
     fn each_limit_one_below_its_requirement_is_refused_with_both_numbers() {
         let names: Vec<&str> = rows(&good().limits, N).iter().map(|row| row.name).collect();
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 10);
         for (index, name) in names.iter().enumerate() {
             let mut caps = good();
             let needed = rows(&caps.limits, N)[index].needed.expect("fits");
@@ -555,6 +586,30 @@ mod tests {
                 format!("{name} {} < {needed} requested", needed - 1)
             );
         }
+    }
+
+    /// The stride row judges the record padded to the portability subset's alignment: 36 bytes (an alignment of 1, this Mac's), 40
+    /// (8), 48 (16). A device whose `maxVertexInputBindingStride` is below the padded stride falls back, naming the row.
+    #[test]
+    fn the_stride_row_judges_the_padded_record() {
+        let at = |alignment, max| {
+            let mut caps = good();
+            caps.limits.min_vertex_input_binding_stride_alignment = alignment;
+            caps.limits.max_vertex_input_binding_stride = max;
+            evaluate(&caps, N)
+        };
+        assert!(
+            at(1, 36).is_empty() && at(0, 36).is_empty(),
+            "no alignment: 36"
+        );
+        assert!(at(8, 40).is_empty());
+        assert_eq!(at(8, 39), ["maxVertexInputBindingStride 39 < 40 requested"]);
+        assert!(at(16, 48).is_empty());
+        assert_eq!(
+            at(16, 47),
+            ["maxVertexInputBindingStride 47 < 48 requested"]
+        );
+        assert!(at(4, 36).is_empty(), "36 is already a multiple of 4");
     }
 
     #[test]
@@ -623,8 +678,8 @@ mod tests {
         };
         caps.limits.max_bound_descriptor_sets = 1;
         let failed = evaluate(&caps, N);
-        // Four features and nine rows fail.
-        assert_eq!(failed.len(), 4 + 9, "{failed:?}");
+        // Four features and ten rows fail.
+        assert_eq!(failed.len(), 4 + 10, "{failed:?}");
         let text = diagnostic(&caps, &failed);
         for name in ["maxBoundDescriptorSets", "runtimeDescriptorArray"] {
             assert!(text.contains(name), "{name} in {text}");

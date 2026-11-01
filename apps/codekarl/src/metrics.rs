@@ -108,6 +108,11 @@ impl MetricsHub {
         (self.clock)()
     }
 
+    /// The clock itself, to give the presenter (so the window is one interval on one clock for every owner).
+    pub(crate) fn clock(&self) -> UptimeNs {
+        Arc::clone(&self.clock)
+    }
+
     /// `diagnostics.metrics_mark()`: the first call starts the window and never waits.
     pub(crate) fn mark(&self) -> Marked {
         let now = self.now();
@@ -136,13 +141,6 @@ impl MetricsHub {
 
     /// The window to hand to the presenter, once: the loop's thread asks at each pass, and gives it back with
     /// [`unforwarded`](Self::unforwarded) when the presenter is not started yet.
-    #[cfg_attr(
-        all(not(test), not(all(feature = "metal", target_os = "macos"))),
-        expect(
-            dead_code,
-            reason = "only the native Metal run, and the tests, use this"
-        )
-    )]
     pub(crate) fn take_forward(&self) -> Option<MetricsWindow> {
         let mut state = self.lock();
         if state.forward {
@@ -154,22 +152,11 @@ impl MetricsHub {
     }
 
     /// The presenter refused the window or its end (the text names why); the summary says so.
-    #[cfg_attr(
-        not(all(feature = "metal", target_os = "macos")),
-        expect(dead_code, reason = "only the native Metal run reports a refusal")
-    )]
     pub(crate) fn presenter_refused(&self, why: String) {
         self.lock().presenter_refused = Some(why);
     }
 
     /// The presenter was not ready: the window stays to be forwarded.
-    #[cfg_attr(
-        all(not(test), not(all(feature = "metal", target_os = "macos"))),
-        expect(
-            dead_code,
-            reason = "only the native Metal run, and the tests, use this"
-        )
-    )]
     pub(crate) fn unforwarded(&self) {
         self.lock().forward = true;
     }
@@ -178,13 +165,6 @@ impl MetricsHub {
     /// presenter's. The timestamp is read **while both owners' admission locks are held** (the presenter's, by the caller, whose
     /// `render_end` sets its end; the loop's, here), so neither owner admitted a sample at or after it and both then cover exactly
     /// `[start, end)`. Returns the window with that end. Once: a later call returns `None`. `None` too when no window was marked.
-    #[cfg_attr(
-        all(not(test), not(all(feature = "metal", target_os = "macos"))),
-        expect(
-            dead_code,
-            reason = "only the native Metal run, and the tests, use this"
-        )
-    )]
     pub(crate) fn finish(
         &self,
         render_end: &mut dyn FnMut(u32, u64) -> Result<(), String>,
@@ -218,13 +198,6 @@ impl MetricsHub {
     }
 
     /// What the summary needs of the hub.
-    #[cfg_attr(
-        all(not(test), not(all(feature = "metal", target_os = "macos"))),
-        expect(
-            dead_code,
-            reason = "only the native Metal run, and the tests, use this"
-        )
-    )]
     pub(crate) fn report(&self) -> HubReport {
         let state = self.lock();
         HubReport {
@@ -259,10 +232,6 @@ pub(crate) struct HubReport {
 }
 
 /// How long the summary waits for the owners to consume work still in flight at the run's end.
-#[cfg_attr(
-    not(all(feature = "metal", target_os = "macos")),
-    expect(dead_code, reason = "only the native Metal run waits for the owners")
-)]
 pub(crate) const SUMMARY_WAIT: Duration = Duration::from_millis(200);
 
 /// The clock the run's measurement windows use: `CLOCK_UPTIME_RAW` nanoseconds, the Metal presenter's clock, so a window defined here
@@ -280,14 +249,10 @@ pub(crate) fn uptime_clock() -> UptimeNs {
     Arc::new(move || u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX))
 }
 
-/// The `diagnostics` extension. `hub` is `Some` in a native-metal run (the mark opens the window); `None` is a headless run, where the
-/// function exists and does nothing (there is nothing to measure), and `available` false is `glfw-vulkan`, where it raises: that
-/// backend's measurement window is milestone 5.5-6's.
-pub(crate) fn extension(hub: Option<Arc<MetricsHub>>, available: bool) -> Extension {
+/// The `diagnostics` extension. `hub` is `Some` in a windowed run (native-metal or `glfw-vulkan`: the mark opens the window); `None` is
+/// a headless run, where the function exists and does nothing (there is nothing to measure).
+pub(crate) fn extension(hub: Option<Arc<MetricsHub>>) -> Extension {
     let function: ck_lua::HostFunction = Arc::new(move |arguments| {
-        if !available {
-            return Err(crate::texture_api::unavailable("diagnostics.metrics_mark"));
-        }
         if !arguments.is_empty() {
             return Err("diagnostics.metrics_mark takes no arguments".to_owned());
         }
@@ -439,7 +404,7 @@ mod tests {
         let began = Instant::now();
         now.store(20_000_000_000, Ordering::SeqCst);
         run_script(
-            extension(Some(Arc::clone(&hub)), true),
+            extension(Some(Arc::clone(&hub))),
             "diagnostics.metrics_mark()\ndiagnostics.metrics_mark()\n\
              local ok, err = pcall(diagnostics.metrics_mark, 1)\n\
              if ok then error('arguments were accepted') end\n\
@@ -468,18 +433,12 @@ mod tests {
     #[test]
     fn a_script_that_never_marks_leaves_no_window() {
         let (hub, _) = hub(true);
-        run_script(extension(Some(Arc::clone(&hub)), true), "local x = 1\n");
+        run_script(extension(Some(Arc::clone(&hub))), "local x = 1\n");
         assert_eq!(hub.report().window, None);
     }
 
     #[test]
-    fn a_headless_run_accepts_the_call_and_does_nothing_and_glfw_raises() {
-        run_script(extension(None, true), "diagnostics.metrics_mark()\n");
-        run_script(
-            extension(None, false),
-            "local ok, err = pcall(diagnostics.metrics_mark)\n\
-             if ok then error('available') end\n\
-             if not string.find(tostring(err), 'diagnostics.metrics_mark is not available on the glfw-vulkan backend', 1, true) then error(tostring(err)) end\n",
-        );
+    fn a_headless_run_accepts_the_call_and_does_nothing() {
+        run_script(extension(None), "diagnostics.metrics_mark()\n");
     }
 }

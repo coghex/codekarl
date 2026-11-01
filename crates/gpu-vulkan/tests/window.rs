@@ -2344,7 +2344,35 @@ fn handle_drop_never_blocks() {
 
 type Case = fn();
 
-const CASES: [(&str, Case); 33] = [
+const CASES: [(&str, Case); 40] = [
+    (
+        "a_window_admits_frames_by_their_own_handoff_mark",
+        window_scene::metrics::a_window_admits_frames_by_their_own_handoff_mark,
+    ),
+    (
+        "a_window_adopted_after_its_start_is_marked_late",
+        window_scene::metrics::a_window_adopted_after_its_start_is_marked_late,
+    ),
+    (
+        "a_real_frame_gives_a_gpu_sample_after_its_proof",
+        window_scene::metrics::a_real_frame_gives_a_gpu_sample_after_its_proof,
+    ),
+    (
+        "with_timestamps_forced_off_gpu_time_is_unavailable_never_zero",
+        window_scene::metrics::with_timestamps_forced_off_gpu_time_is_unavailable_never_zero,
+    ),
+    (
+        "display_timing_gives_intervals_between_consecutive_presents",
+        window_scene::metrics::display_timing_gives_intervals_between_consecutive_presents,
+    ),
+    (
+        "with_display_timing_off_presentation_is_unavailable_and_nothing_is_pending",
+        window_scene::metrics::with_display_timing_off_presentation_is_unavailable_and_nothing_is_pending,
+    ),
+    (
+        "a_gpu_result_after_the_end_is_admitted_and_the_read_waits_for_it",
+        window_scene::metrics::a_gpu_result_after_the_end_is_admitted_and_the_read_waits_for_it,
+    ),
     ("first_frame_and_wake", first_frame_and_wake),
     ("redraw_on_demand", redraw_on_demand),
     ("present_lifetime", present_lifetime),

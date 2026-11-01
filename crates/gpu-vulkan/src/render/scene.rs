@@ -28,8 +28,9 @@ use super::{
     ACQUIRE_TIMEOUT_NS, BACKOFF_MAX, BACKOFF_START, CaptureWait, Fatal, Outcome, POOL_FENCES, Prep,
     Prepared, Residency, VulkanScene, failure,
 };
+use crate::Error;
 use crate::context::{RenderQueue, VulkanContext};
-use crate::gpu::Gpu;
+use crate::gpu::{FrameExtras, Gpu};
 use crate::gpu_quad::format_supported;
 use crate::hooks::{BuildRecord, Event, Observer, TestHooks, WaitKind};
 use crate::ledger::{Frame, Ledger, PresentCall, PresentSlot, Presented, Proof};
@@ -41,6 +42,7 @@ use crate::scene_draw::{InstanceBuffer, SceneDraw, ScenePipeline};
 use crate::shared::{CleanupResult, PresenterReport, SceneStats, Shared, lock};
 use crate::slot::QuadSkipped;
 use crate::unwind;
+use timing::{HandedOff, PRESENTATION_POLL_MS, Timing};
 
 /// The longest the thread waits while GPU work is outstanding: the 1 ms look at fences and completions.
 const GPU_POLL: Duration = Duration::from_millis(1);
@@ -70,7 +72,10 @@ pub(crate) fn scene_main(
             }
         }
     };
-    // The presenter is over: the frame slot stops waking it (a publish from now on only stores the value).
+    // The presenter is over: no frame will be presented or resolved again, so what never resolved expires now, final.
+    shared.metrics.recorder().stop();
+    shared.metrics.changed.notify_all();
+    // The frame slot stops waking it (a publish from now on only stores the value).
     setup.0.clear_wake();
     if matches!(result, CleanupResult::Proven) {
         drop(ManuallyDrop::into_inner(setup));
@@ -80,6 +85,7 @@ pub(crate) fn scene_main(
 }
 
 mod quad;
+mod timing;
 
 /// What a frame step did.
 enum Step {
@@ -131,18 +137,32 @@ pub(crate) struct IdleFacts {
     pub(crate) gpu_outstanding: bool,
     /// A swap-chain creation retry is pending: the moment it is due.
     pub(crate) retry_at: Option<Instant>,
+    /// A present's timing feedback is pending: the thread polls for it at least every 50 ms.
+    pub(crate) presentation_pending: bool,
 }
 
 /// The idle wait's deadline and what bounds it: the earliest of the pending creation retry and `now` + 1 ms (only while
 /// GPU work is outstanding); `None` when neither exists, which is a wait without a bound.
 pub(crate) fn idle_deadline(now: Instant, facts: IdleFacts) -> Option<(Instant, WaitKind)> {
     let poll = facts.gpu_outstanding.then(|| now + GPU_POLL);
-    match (facts.retry_at, poll) {
-        (Some(retry), Some(poll)) if retry <= poll => Some((retry, WaitKind::RetryDeadline)),
-        (Some(_) | None, Some(poll)) => Some((poll, WaitKind::GpuPoll)),
-        (Some(retry), None) => Some((retry, WaitKind::RetryDeadline)),
-        (None, None) => None,
+    let feedback = facts
+        .presentation_pending
+        .then(|| now + Duration::from_millis(PRESENTATION_POLL_MS));
+    // The earliest of the three; on a tie the retry, then the GPU poll, then the feedback poll.
+    let mut best: Option<(Instant, WaitKind)> = None;
+    for candidate in [
+        facts.retry_at.map(|at| (at, WaitKind::RetryDeadline)),
+        poll.map(|at| (at, WaitKind::GpuPoll)),
+        feedback.map(|at| (at, WaitKind::PresentationPoll)),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if best.is_none_or(|(at, _)| candidate.0 < at) {
+            best = Some(candidate);
+        }
     }
+    best
 }
 
 /// Where the frame being built stands with its boundary pass.
@@ -192,6 +212,8 @@ struct Core<'a> {
     /// The generation of the frame being drawn.
     frame_generation: Option<u64>,
     checker_resident: bool,
+    /// The frame timing: the marks, the GPU timestamps and the presentation feedback (milestone 5.5, issue 6, part B).
+    timing: Timing,
 }
 
 struct SceneRun<'a> {
@@ -237,16 +259,15 @@ fn run(
         }
     };
     let limits = setup.0.limits();
-    let buffer =
-        match InstanceBuffer::create(&context, limits.max_quads, limits.binding_geometry_bytes) {
-            Ok(buffer) => buffer,
-            Err(error) => {
-                super::fail_setup(shared, observer.as_deref(), error.to_string());
-                gpu.destroy_all();
-                gpu.release_holders();
-                return Outcome::Proven;
-            }
-        };
+    let (buffer, timing) = match start_objects(shared, setup, &mut gpu, &context, limits) {
+        Ok(made) => made,
+        Err(message) => {
+            super::fail_setup(shared, observer.as_deref(), message);
+            gpu.destroy_all();
+            gpu.release_holders();
+            return Outcome::Proven;
+        }
+    };
     let mark = texture_marker(shared);
     let mut scene = match setup.0.start(wakes_of(&mark), hooks.scene.tickets.clone()) {
         Ok(scene) => scene,
@@ -294,6 +315,7 @@ fn run(
         previous: None,
         frame_generation: None,
         checker_resident: false,
+        timing,
     };
     start_pipelines(&mut core);
     let mut run = SceneRun {
@@ -306,10 +328,66 @@ fn run(
     run.teardown()
 }
 
+/// The instance buffer and the frame timing, made before the scene starts.
+fn start_objects(
+    shared: &Shared,
+    setup: &SceneSetup,
+    gpu: &mut Gpu,
+    context: &Arc<VulkanContext>,
+    limits: SceneLimits,
+) -> Result<(InstanceBuffer, Timing), String> {
+    let timing = timing_state(shared, gpu, context)?;
+    let buffer = instance_buffer(setup, context, limits).map_err(|error| error.to_string())?;
+    Ok((buffer, timing))
+}
+
+/// The frame timing for the run: the timestamp queries (when the queue family has valid bits) and the sources the reading will say
+/// are unavailable, fixed for the run.
+fn timing_state(shared: &Shared, gpu: &mut Gpu, context: &VulkanContext) -> Result<Timing, String> {
+    let caps = context.timing_caps();
+    gpu.create_timestamps(caps.timestamp_valid_bits)
+        .map_err(|(call, code)| format!("{call} failed: {code:?}"))?;
+    let timing = Timing::new(
+        caps.timestamp_valid_bits,
+        caps.timestamp_period,
+        caps.display_timing,
+    );
+    let mut recorder = shared.metrics.recorder();
+    recorder.gpu_unavailable = timing.gpu_unavailable();
+    recorder.presentation_unavailable = timing.presentation_unavailable();
+    drop(recorder);
+    Ok(timing)
+}
+
+/// The instance buffer for the scene's bounds. Its layout depends on the binding mode the ledger will choose (the bindless record
+/// carries the slot, padded to the queried stride alignment), decided by the same pure rows before the buffer is made;
+/// `start_pipelines` checks it against what the ledger then did.
+fn instance_buffer(
+    setup: &SceneSetup,
+    context: &Arc<VulkanContext>,
+    limits: SceneLimits,
+) -> Result<InstanceBuffer, Error> {
+    let layout = setup.0.instance_layout()?;
+    InstanceBuffer::create(
+        context,
+        layout,
+        limits.max_quads,
+        limits.binding_geometry_bytes,
+    )
+}
+
 /// Creates the pipelines: the scene's, and the legacy quad's. They exist only on a swap chain whose format the textured
 /// drawing is exact on; anywhere else scene content is skipped with the once-per-run notice and clearing continues.
 fn start_pipelines(core: &mut Core<'_>) {
     core.quad_supported = format_supported(core.gpu.format.format);
+    if core.bindings.bindless != core.buffer.layout.has_slot() {
+        // The layout was decided before the ledger chose its mode; the two use the same rows, so this is a programming error.
+        core.fail(
+            "the instance layout does not match the texture binding mode the ledger chose"
+                .to_owned(),
+        );
+        return;
+    }
     if core.quad_supported
         && let Some(render_pass) = core.gpu.render_pass
     {
@@ -318,6 +396,7 @@ fn start_pipelines(core: &mut Core<'_>) {
             render_pass,
             core.bindings.layout,
             core.bindings.bindless,
+            core.buffer.layout,
         ) {
             Ok(pipeline) => core.pipeline = Some(pipeline),
             Err(error) => core.fail(error.to_string()),
@@ -380,6 +459,23 @@ impl Core<'_> {
         if let Some(observer) = &self.observer {
             observer.push(event);
         }
+    }
+
+    /// The frame step ended: its marks, counts and presentation record go to the recorder, or, when it handed nothing off, it is
+    /// counted skipped. The progress fence is released.
+    fn finish_step(&mut self) {
+        let handed = self.timing.handed_off.take();
+        let marks = self.timing.marks;
+        let mut recorder = self.shared.metrics.recorder();
+        match handed {
+            Some(frame) => {
+                recorder.drawn(&marks, frame.present_id, &frame.counters, frame.table_binds);
+            }
+            None => recorder.not_drawn(marks.t0),
+        }
+        recorder.end_step();
+        drop(recorder);
+        self.shared.metrics.changed.notify_all();
     }
 
     fn publish(&self) {
@@ -499,6 +595,12 @@ impl Core<'_> {
                             .map_err(|code| failure(("vkResetFences", code)))?;
                         if let Some((proof, chain)) = self.ledger.fence_signalled(raw) {
                             freed = true;
+                            if proof == Proof::Present
+                                && let Some(id) = self.timing.presentation_of(raw)
+                            {
+                                let now = self.shared.metrics.now();
+                                self.shared.metrics.recorder().fence_seen(id, now);
+                            }
                             self.log(Event::FenceSignalled {
                                 proof: match proof {
                                     Proof::Submit => "submit",
@@ -520,6 +622,13 @@ impl Core<'_> {
                 }
             }
         }
+        // The GPU time of a proven frame, and whatever feedback the presentation engine has for the presents.
+        self.timing
+            .poll_gpu(&self.gpu, &self.shared.metrics, |number| {
+                scene.frame_proven(number)
+            });
+        self.timing
+            .poll_presentation(&self.gpu, &self.shared.metrics);
         // The frame submits are proven by the texture ledger's latched record, never by a fence of this ledger: a fence
         // handle is reset and reused by a later frame, the record is not.
         for _ in 0..self
@@ -701,6 +810,7 @@ impl Core<'_> {
             return (Ok(Step::Wait), None);
         };
         // ---- acquire ----
+        self.timing.marks.t2 = self.shared.metrics.now();
         let injected = TestHooks::next(&mut self.hooks.acquire);
         let acquired = match injected {
             Some(code) if code != vk::Result::SUBOPTIMAL_KHR => Err(code),
@@ -718,6 +828,7 @@ impl Core<'_> {
                     .map(|(index, suboptimal)| (index, suboptimal || injected.is_some()))
             }
         };
+        self.timing.marks.t3 = self.shared.metrics.now();
         let index = match acquired {
             Ok((index, suboptimal)) => {
                 self.ledger.acquired(index, chain_id);
@@ -760,6 +871,11 @@ impl Core<'_> {
         if !previous_proven {
             return (self.abandon(&frame, index).map(|()| Step::Wait), None);
         }
+        // The previous frame is proven: its GPU time is read now, before this frame reuses the queries.
+        self.timing
+            .poll_gpu(&self.gpu, &self.shared.metrics, |number| {
+                seam.proven(number)
+            });
         let supported = self.pipeline.is_some();
         let built = if supported {
             seam.build(
@@ -780,6 +896,9 @@ impl Core<'_> {
                 compat: built.compat,
             });
         }
+        if let Some(built) = &built {
+            self.timing.built = Some((built.counters, self.bindings.bindless));
+        }
         if built.as_ref().is_some_and(|built| built.gated) {
             // Held back by the initial gate: nothing is drawn, the ticket ends not submitted and the image goes back. The
             // want stays (the step waits); the gate parks it until the compatibility key has something to draw.
@@ -794,6 +913,8 @@ impl Core<'_> {
             return (self.abandon(&frame, index).and(Err(fatal)), None);
         }
         // ---- record ----
+        self.timing.marks.t4 = self.shared.metrics.now();
+        let stamps = self.timing.next_queries(self.gpu.has_timestamps());
         let recorded = {
             let draw = match (&built, &self.pipeline) {
                 (Some(built), Some(pipeline)) => Some(SceneDraw {
@@ -815,7 +936,10 @@ impl Core<'_> {
                     rgb,
                     prepared.draw.map(|draw| (draw.params, draw.upload)),
                     draw.as_ref(),
-                    self.hooks.scene.frame_event,
+                    FrameExtras {
+                        hold: self.hooks.scene.frame_event,
+                        stamps,
+                    },
                 ),
                 None => Err((
                     "vkBeginCommandBuffer",
@@ -860,6 +984,7 @@ impl Core<'_> {
             }
         };
         self.ledger.submitted_numbered(&frame, submission.number());
+        self.timing.submitted(submission.number(), stamps);
         self.previous = Some(submission.number());
         self.quad_submitted(submission.number(), prepared);
         self.log(Event::Submit);
@@ -927,10 +1052,13 @@ impl Core<'_> {
         let semaphore = vk::Semaphore::from_raw(frame.slot.semaphore);
         let fence = vk::Fence::from_raw(frame.slot.fence);
         let chain_id = self.gpu.current.as_ref().map_or(0, |chain| chain.id);
+        // The presentation feedback is keyed by the present's number (when presentation timing is on).
+        let present_id = self.timing.present_id(frame.slot.fence);
         let real = |core: &mut Self| match core.gpu.current.as_ref() {
-            Some(chain) => core
-                .gpu
-                .present_on(&mut core.queue, chain, index, semaphore, fence),
+            Some(chain) => {
+                core.gpu
+                    .present_on(&mut core.queue, chain, index, semaphore, fence, present_id)
+            }
             None => Err(vk::Result::ERROR_SURFACE_LOST_KHR),
         };
         let result: Result<bool, vk::Result> = match (injected, self.gpu.current.is_some()) {
@@ -953,6 +1081,8 @@ impl Core<'_> {
             (Some(code), true) => Err(code),
             (None, true) => real(self),
         };
+        // The hand-off mark: the present call has returned.
+        let handed_at = self.shared.metrics.now();
         let (call, code) = match result {
             Ok(false) => (PresentCall::Success, vk::Result::SUCCESS),
             Ok(true) => (PresentCall::Suboptimal, vk::Result::SUBOPTIMAL_KHR),
@@ -990,6 +1120,7 @@ impl Core<'_> {
                     ));
                 }
                 if matches!(call, PresentCall::Success | PresentCall::Suboptimal) {
+                    self.hand_off(handed_at, present_id);
                     self.drawn(rgb);
                 }
                 if rebuild && call == PresentCall::OutOfDate {
@@ -1020,6 +1151,20 @@ impl Core<'_> {
                 }
                 Err(Fatal(format!("the present failed: {code:?}")))
             }
+        }
+    }
+
+    /// The frame was handed to the presentation engine at `handed_at`: its counts and present number go to the step's record.
+    fn hand_off(&mut self, handed_at: u64, present_id: Option<u32>) {
+        if let Some((counters, bindless)) = self.timing.built.take() {
+            self.timing.handed(
+                handed_at,
+                HandedOff {
+                    counters,
+                    table_binds: u64::from(bindless && counters.instances != 0),
+                    present_id,
+                },
+            );
         }
     }
 
@@ -1152,6 +1297,13 @@ impl SceneRun<'_> {
             if lock(&self.core.shared.slot).stop {
                 return None;
             }
+            // A requested measurement window is adopted at this boundary.
+            let metrics = &self.core.shared.metrics;
+            if metrics.check.swap(false, Ordering::AcqRel) {
+                let now = metrics.now();
+                metrics.recorder().windows.boundary(now);
+                metrics.changed.notify_all();
+            }
             let mut runnable = false;
             if let Err(Fatal(message)) = self.core.service_fences(&*self.scene) {
                 self.core.fail(message);
@@ -1234,10 +1386,15 @@ impl SceneRun<'_> {
         let gates = self.core.gates(&*self.scene, slot.size, slot.epoch);
         if frame_runnable(slot.dirty, self.core.failed, gates)
             || (slot.texture_work && !self.core.failed)
+            || self.core.shared.metrics.check.load(Ordering::Acquire)
         {
             return true;
         }
         let facts = IdleFacts {
+            presentation_pending: self
+                .core
+                .timing
+                .presentation_pending(&self.core.shared.metrics),
             gpu_outstanding: self.core.gpu_outstanding(&*self.scene),
             retry_at: (slot.dirty && !self.core.failed)
                 .then_some(self.core.creation_retry_at)
@@ -1280,17 +1437,25 @@ impl SceneRun<'_> {
             if let Some(waits) = &self.core.hooks.scene.waits {
                 waits.attempted();
             }
+            // The step's first mark: the latest frame is taken. The progress fence holds the windows open until it is recorded.
+            let t0 = self.core.shared.metrics.now();
+            self.core.timing.begin(t0);
+            self.core.shared.metrics.recorder().begin_step(t0);
             // The frame boundary: the pass immediately before the frame is built, where the driver adopts. A step that is
             // attempted again keeps its boundary: texture work that woke the thread meanwhile gets an ordinary pass first.
             if self.boundary == FrameBoundary::Due {
                 self.texture_pass(Boundary::Frame);
                 self.boundary = FrameBoundary::Passed;
             }
+            self.core.timing.marks.t1 = self.core.shared.metrics.now();
             if self.core.failed {
                 // A failure the pass found: nothing more is drawn.
+                self.core.finish_step();
                 continue;
             }
-            match self.core.step(&mut *self.scene, rgb, size) {
+            let outcome = self.core.step(&mut *self.scene, rgb, size);
+            self.core.finish_step();
+            match outcome {
                 Ok(Step::Drawn { again }) => {
                     self.boundary = FrameBoundary::Due;
                     if again {
@@ -1467,7 +1632,8 @@ mod tests {
                 now,
                 IdleFacts {
                     gpu_outstanding: false,
-                    retry_at: None
+                    retry_at: None,
+                    presentation_pending: false
                 }
             ),
             None
@@ -1482,7 +1648,8 @@ mod tests {
                 now,
                 IdleFacts {
                     gpu_outstanding: true,
-                    retry_at: None
+                    retry_at: None,
+                    presentation_pending: false
                 }
             ),
             Some((now + Duration::from_millis(1), WaitKind::GpuPoll))
@@ -1499,7 +1666,8 @@ mod tests {
                 now,
                 IdleFacts {
                     gpu_outstanding: false,
-                    retry_at: Some(late)
+                    retry_at: Some(late),
+                    presentation_pending: false,
                 }
             ),
             Some((late, WaitKind::RetryDeadline)),
@@ -1510,7 +1678,8 @@ mod tests {
                 now,
                 IdleFacts {
                     gpu_outstanding: true,
-                    retry_at: Some(soon)
+                    retry_at: Some(soon),
+                    presentation_pending: false,
                 }
             ),
             Some((soon, WaitKind::RetryDeadline))
@@ -1520,7 +1689,8 @@ mod tests {
                 now,
                 IdleFacts {
                     gpu_outstanding: true,
-                    retry_at: Some(late)
+                    retry_at: Some(late),
+                    presentation_pending: false,
                 }
             ),
             Some((now + Duration::from_millis(1), WaitKind::GpuPoll))
@@ -1536,6 +1706,7 @@ mod tests {
             IdleFacts {
                 gpu_outstanding: false,
                 retry_at: Some(due),
+                presentation_pending: false,
             },
         )
         .expect("a deadline");
@@ -1556,6 +1727,7 @@ mod tests {
         let facts = IdleFacts {
             gpu_outstanding: false,
             retry_at: Some(now + Duration::from_millis(50)),
+            presentation_pending: false,
         };
         assert_eq!(
             without_retry(now, facts),
@@ -1577,6 +1749,7 @@ mod tests {
         let facts = IdleFacts {
             gpu_outstanding: false,
             retry_at: None,
+            presentation_pending: false,
         };
         assert_eq!(idle_deadline(Instant::now(), facts), None);
     }

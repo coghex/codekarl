@@ -538,16 +538,23 @@ fn sixty_four_quads_over_sixteen_textures_read_back_exactly_in_painter_order_in(
     assert_eq!(counters.instances, 64);
     assert_eq!(counters.skipped, 0);
     assert_eq!(counters.checker, 0);
-    assert_eq!(
-        counters.batches,
-        runs(&instances),
-        "one draw per adjacent run, nothing sorted by texture"
-    );
-    assert!(
-        counters.batches > 16 && counters.batches < 64,
-        "the list has adjacent repeats and non-adjacent ones: {} batches",
-        counters.batches
-    );
+    if mode == Mode::Bindless {
+        assert_eq!(
+            counters.batches, 1,
+            "the table draws the whole frame in one draw, each instance naming its slot"
+        );
+    } else {
+        assert_eq!(
+            counters.batches,
+            runs(&instances),
+            "one draw per adjacent run, nothing sorted by texture"
+        );
+        assert!(
+            counters.batches > 16 && counters.batches < 64,
+            "the list has adjacent repeats and non-adjacent ones: {} batches",
+            counters.batches
+        );
+    }
     // The negative control: sorting by texture (stable) changes the picture where quads overlap.
     let mut sorted = instances.clone();
     sorted.sort_by_key(|instance| instance.key);
@@ -595,8 +602,9 @@ fn a_linear_frame_switches_back_to_linear_after_the_checker_batch_in(mode: Mode)
     ];
     let (pixels, counters) = rig.draw((160, 64), [0.0; 3], VulkanFilter::Linear, instances.clone());
     assert_eq!(
-        counters.batches, 3,
-        "A, the checker and B are three batches"
+        counters.batches,
+        if mode == Mode::Bindless { 1 } else { 3 },
+        "A, the checker and B are three batches per revision and one draw through the table"
     );
     assert_eq!(counters.checker, 1);
     let checker = checker_image();
@@ -651,47 +659,16 @@ pub(crate) fn decode(pixel: &[u8]) -> u32 {
     u32::from_le_bytes([pixel[0], pixel[1], pixel[2], 0])
 }
 
-/// Test 2: the 32,768 baseline at 1920 x 1080: 32,768 distinct 32 x 32 images, each encoding its identity, drawn as
-/// 65,536 quads (every image twice, the repeats far apart so none is adjacent) with the ordinary-set bound at
-/// `max_textures` 32,768 + `max_extra_revisions` 1,024 + 1. Every quad decodes its own identity, with no checker and no
-/// skipped instance. The times are reported, not gated.
-///
-/// Negative control: a quad whose set was written for another revision decodes that revision's identity, so comparing
-/// against the expected one fails.
-#[test]
-fn the_baseline_of_32768_textures_decodes_every_identity() {
-    for mode in MODES {
-        the_baseline_of_32768_textures_decodes_every_identity_in(mode);
-    }
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "upload, adopt, build, draw, decode and the control read best as one baseline"
-)]
-fn the_baseline_of_32768_textures_decodes_every_identity_in(mode: Mode) {
-    const TEXTURES: u32 = 32_768;
-    let mut rig = Rig::with_limits(
-        mode,
-        TEXTURES as usize,
-        65_536,
-        TextureLimits {
-            max_prepared_images: 1_024,
-            max_upload_images_per_batch: 512,
-            ..TextureLimits::default()
-        },
-        LedgerLimits {
-            max_extra_revisions: 1_024,
-            max_adoptions_per_frame: 1_024,
-        },
-    );
+/// Uploads `textures` identity images (key `k` encodes `k`, 32 x 32), commits and adopts them, offering as the window has room;
+/// returns how long it took.
+pub(crate) fn upload_identities(rig: &mut Rig, textures: u32) -> Duration {
     let started = Instant::now();
     let mut next = 0_u32;
     let mut committed = 0_u32;
     let mut prepared: Vec<u32> = Vec::new();
-    while committed < TEXTURES {
+    while committed < textures {
         // Offer as much as the window has room for.
-        while next < TEXTURES && rig.ledger().room() > 0 {
+        while next < textures && rig.ledger().room() > 0 {
             rig.ledger()
                 .offer(
                     next,
@@ -725,7 +702,40 @@ fn the_baseline_of_32768_textures_decodes_every_identity_in(mode: Mode) {
         std::thread::sleep(Duration::from_micros(100));
     }
     rig.adopt_all();
-    let uploaded = started.elapsed();
+    started.elapsed()
+}
+
+/// Test 2: the 32,768 baseline at 1920 x 1080: 32,768 distinct 32 x 32 images, each encoding its identity, drawn as
+/// 65,536 quads (every image twice, the repeats far apart so none is adjacent) with the ordinary-set bound at
+/// `max_textures` 32,768 + `max_extra_revisions` 1,024 + 1. Every quad decodes its own identity, with no checker and no
+/// skipped instance. The times are reported, not gated.
+///
+/// Negative control: a quad whose set was written for another revision decodes that revision's identity, so comparing
+/// against the expected one fails.
+#[test]
+fn the_baseline_of_32768_textures_decodes_every_identity() {
+    for mode in MODES {
+        the_baseline_of_32768_textures_decodes_every_identity_in(mode);
+    }
+}
+
+fn the_baseline_of_32768_textures_decodes_every_identity_in(mode: Mode) {
+    const TEXTURES: u32 = 32_768;
+    let mut rig = Rig::with_limits(
+        mode,
+        TEXTURES as usize,
+        65_536,
+        TextureLimits {
+            max_prepared_images: 1_024,
+            max_upload_images_per_batch: 512,
+            ..TextureLimits::default()
+        },
+        LedgerLimits {
+            max_extra_revisions: 1_024,
+            max_adoptions_per_frame: 1_024,
+        },
+    );
+    let uploaded = upload_identities(&mut rig, TEXTURES);
     // 65,536 quads of 7 x 4 pixels in a 274-column grid.
     let mut instances = Vec::with_capacity(65_536);
     for index in 0..65_536_u32 {
@@ -766,8 +776,9 @@ fn the_baseline_of_32768_textures_decodes_every_identity_in(mode: Mode) {
     assert_eq!(counters.checker, 0, "no quad drew the checker");
     assert_eq!(counters.resolved, 65_536);
     assert_eq!(
-        counters.batches, 65_536,
-        "no repeat is adjacent, so every instance is its own run"
+        counters.batches,
+        if mode == Mode::Bindless { 1 } else { 65_536 },
+        "no repeat is adjacent, so every instance is its own run per revision; the table draws them in one"
     );
     for (index, quad) in instances.iter().enumerate() {
         let (x, y) = (
@@ -784,6 +795,128 @@ fn the_baseline_of_32768_textures_decodes_every_identity_in(mode: Mode) {
     let wrong = decode(&pixels[((2 * 1920) + 3) * 4..][..4]);
     assert_ne!(wrong, 1, "quad 0 does not decode quad 1's identity");
     rig.finish();
+}
+
+/// Indexed instancing (milestone 5.5, issue 6): 10,000 instances over 5,000 distinct textures (every texture twice, the repeats
+/// far apart, so no two neighbours share one), in a 100 x 100 grid of 8 x 4 pixel cells. Through the table the frame is **one**
+/// draw; the per-revision mode draws the same scene with one batch per run of equal textures (here 10,000). Every cell decodes its
+/// own identity in both, and the two frames are **identical pixels**.
+///
+/// Negative control (recorded mutation): a batch that splits on the slot again gives 10,000 draws through the table.
+#[test]
+fn ten_thousand_instances_over_five_thousand_textures_are_one_draw_through_the_table() {
+    const TEXTURES: u32 = 5_000;
+    const INSTANCES: u32 = 10_000;
+    let instances: Vec<_> = (0..INSTANCES)
+        .map(|index| {
+            let (column, row) = (
+                i32::try_from(index % 100).expect("small"),
+                i32::try_from(index / 100).expect("small"),
+            );
+            instance(
+                index % TEXTURES,
+                [column * 8, row * 4, column * 8 + 8, row * 4 + 4],
+                WHOLE,
+            )
+        })
+        .collect();
+    let mut frames = Vec::new();
+    for mode in MODES {
+        let mut rig = Rig::with_limits(
+            mode,
+            TEXTURES as usize,
+            INSTANCES as usize,
+            TextureLimits {
+                max_prepared_images: 1_024,
+                max_upload_images_per_batch: 512,
+                ..TextureLimits::default()
+            },
+            LedgerLimits {
+                max_extra_revisions: 64,
+                max_adoptions_per_frame: 1_024,
+            },
+        );
+        upload_identities(&mut rig, TEXTURES);
+        let (pixels, counters) = rig.draw(
+            (800, 400),
+            [0.0; 3],
+            VulkanFilter::Nearest,
+            instances.clone(),
+        );
+        assert_eq!(counters.instances, u64::from(INSTANCES), "{mode:?}");
+        assert_eq!((counters.checker, counters.skipped), (0, 0), "{mode:?}");
+        assert_eq!(
+            counters.batches,
+            if mode == Mode::Bindless {
+                1
+            } else {
+                u64::from(INSTANCES)
+            },
+            "{mode:?}: one draw through the table, one batch per run of equal textures per revision"
+        );
+        for (index, quad) in instances.iter().enumerate() {
+            let (x, y) = (
+                usize::try_from(quad.destination.left + 3).expect("inside"),
+                usize::try_from(quad.destination.top + 2).expect("inside"),
+            );
+            assert_eq!(
+                decode(&pixels[(y * 800 + x) * 4..][..4]),
+                quad.key,
+                "{mode:?}: instance {index} decodes the identity of its own texture"
+            );
+        }
+        frames.push(pixels);
+        rig.finish();
+    }
+    assert!(
+        frames[0] == frames[1],
+        "the per-revision frame and the table's frame are identical pixels ({} differ)",
+        frames[0]
+            .iter()
+            .zip(&frames[1])
+            .filter(|(a, b)| a != b)
+            .count()
+    );
+}
+
+/// The non-uniform index (milestone 5.5, issue 6): in one draw **adjacent fragments of different instances sample different
+/// slots**. 128 instances one pixel wide, side by side, over 64 distinct textures in a shuffled order (no two neighbours share
+/// one), each cell must decode its own identity. This is the case the `nonuniformEXT` qualifier exists for: the index varies
+/// between the invocations of one quad (the 2 x 2 helper groups straddle two instances). The case runs under validation, which
+/// must report nothing beyond the one tolerated message.
+#[test]
+fn adjacent_one_pixel_instances_sample_their_own_slots_in_one_draw() {
+    for mode in MODES {
+        let mut rig = Rig::new(mode, 64, 8, 256);
+        for key in 0..64_u32 {
+            rig.show(key, 32, 32, identity_image(key));
+        }
+        let keys: Vec<u32> = (0..128_u32).map(|index| index * 37 % 64).collect();
+        let instances: Vec<_> = keys
+            .iter()
+            .enumerate()
+            .map(|(index, &key)| {
+                let left = i32::try_from(index).expect("small");
+                instance(key, [left, 0, left + 1, 4], WHOLE)
+            })
+            .collect();
+        let (pixels, counters) = rig.draw((128, 4), [0.0; 3], VulkanFilter::Nearest, instances);
+        assert_eq!(
+            counters.batches,
+            if mode == Mode::Bindless { 1 } else { 128 },
+            "{mode:?}"
+        );
+        for (index, &key) in keys.iter().enumerate() {
+            for row in 0..4_usize {
+                assert_eq!(
+                    decode(&pixels[(row * 128 + index) * 4..][..4]),
+                    key,
+                    "{mode:?}: column {index}, row {row}"
+                );
+            }
+        }
+        rig.finish();
+    }
 }
 
 /// Test 3: stable identity and no movement re-upload. Moving every quad between frames changes the pixels but not the

@@ -238,6 +238,8 @@ mod instance;
 mod ledger;
 mod loader;
 mod memory;
+mod metrics;
+mod metrics_api;
 mod presenter;
 mod proofs;
 mod quad;
@@ -257,7 +259,7 @@ mod unwind;
 pub use ash::vk;
 pub use batch::FrameCounters;
 pub use capture::{FrameCapture, FrameCaptures};
-pub use context::{RenderQueue, TestFeatures, VulkanContext};
+pub use context::{RenderQueue, TestFeatures, TimingCaps, VulkanContext};
 pub use error::Error;
 pub use frame::{InstanceRole, VulkanFrame, VulkanFrameSlot, VulkanInstance, VulkanSceneSource};
 pub use gate::{BindlessCaps, BindlessDeviceLimits, BindlessLimits, BindlessReport};
@@ -274,6 +276,11 @@ pub use ledger::LedgerSnapshot;
 pub use loader::{
     GetInstanceProcAddr, Loader, LoaderWatch, load_loader, load_loader_from, search_directories,
 };
+pub use metrics::{
+    BUCKETS, EndError, FrameIntervals, FrameMarks, FrameStats, Histogram, MetricsClock,
+    MetricsWindow, Percentile, RANGE_END_NS, RequestError, Tracked, Windows, gpu_ns,
+};
+pub use metrics_api::{MetricsEndGuard, MetricsReading};
 pub use presenter::VulkanPresenter;
 pub use quad::{
     DestinationRect, MAX_IMAGE_BYTES, MAX_IMAGE_SIDE, PixelSource, SourceRect, VulkanFilter,

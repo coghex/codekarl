@@ -288,3 +288,147 @@ fn the_joint_end_admits_nothing_at_or_after_its_timestamp_on_either_owner_while_
         );
     }
 }
+
+/// The three copies of the window book agree (milestone 5.5, issue 6, part B): `ck-window`'s, the Metal presenter's and the Vulkan
+/// presenter's keep the same rules, and the same samples, windows, late adoptions and ends give the same readings in all three.
+/// (The Vulkan copy is a deliberate copy, named in CK-162's follow-up; this test is what keeps the three from drifting apart.)
+#[cfg(feature = "vulkan")]
+mod three_way {
+    use ck_render_2d::vulkan_timing::{MetricsWindow as VulkanWindow, Windows as VulkanWindows};
+    use ck_render_2d::{MetricsWindow as MetalWindow, Windows as MetalWindows};
+    use ck_window::{MetricsWindow as LoopWindow, Windows as LoopWindows};
+
+    /// One operation on a book.
+    #[derive(Debug, Clone, Copy)]
+    enum Op {
+        Request {
+            id: u32,
+            start: u64,
+            end: Option<u64>,
+        },
+        Boundary {
+            now: u64,
+        },
+        Admit {
+            ns: u64,
+        },
+        End {
+            id: u32,
+            end: u64,
+        },
+    }
+
+    /// What one book answers to an operation, and its kept windows afterwards, in plain values.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct State {
+        answer: String,
+        windows: Vec<[String; 2]>,
+    }
+
+    macro_rules! drive {
+        ($books:expr, $window:ident, $op:expr) => {{
+            let books = $books;
+            let answer = match $op {
+                Op::Request { id, start, end } => format!(
+                    "{:?}",
+                    books.request($window { id, start, end })
+                ),
+                Op::Boundary { now } => {
+                    books.boundary(now);
+                    String::new()
+                }
+                Op::Admit { ns } => {
+                    let admitted = books.admit(ns).map(|tracked| {
+                        tracked.stats += 1;
+                        tracked.window.id
+                    });
+                    format!("{admitted:?}")
+                }
+                Op::End { id, end } => format!("{:?}", books.end(id, end)),
+            };
+            let windows = (1..=4_u32)
+                .filter_map(|id| books.get(id).map(|tracked| (id, tracked)))
+                .map(|(id, tracked)| {
+                    [
+                        format!("{id}"),
+                        format!(
+                            "{:?} adopted={:?} late={} outside={} dropped_late={} last={} overrun={} stats={}",
+                            (tracked.window.start, tracked.window.end),
+                            tracked.adopted_at,
+                            tracked.late_adopted,
+                            tracked.outside,
+                            tracked.dropped_late,
+                            tracked.last_admitted_ns,
+                            tracked.end_overrun,
+                            tracked.stats
+                        ),
+                    ]
+                })
+                .collect();
+            State { answer, windows }
+        }};
+    }
+
+    /// A deterministic mix of windows, adoptions, samples (inside, on the edges, outside) and ends.
+    fn script(seed: u64) -> Vec<Op> {
+        let mut state = seed;
+        let mut next = move |bound: u64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) % bound
+        };
+        let mut ops = Vec::new();
+        let mut id = 0_u32;
+        let mut clock = 1_000_u64;
+        for _ in 0..400 {
+            clock += next(40);
+            match next(10) {
+                0 => {
+                    id = id % 4 + 1;
+                    let start = clock + next(300);
+                    let end = (next(2) == 0).then(|| start + 1 + next(500));
+                    ops.push(Op::Request { id, start, end });
+                }
+                1 => ops.push(Op::Boundary { now: clock }),
+                2 => ops.push(Op::End {
+                    id: u32::try_from(next(5)).unwrap_or(0),
+                    end: clock + next(400),
+                }),
+                _ => {
+                    // Samples cluster on the edges of whatever windows exist: the half-open rule is what they test.
+                    let edge = match next(4) {
+                        0 => clock,
+                        1 => clock.saturating_sub(1),
+                        2 => clock + 1,
+                        _ => clock + next(600),
+                    };
+                    ops.push(Op::Admit { ns: edge });
+                }
+            }
+        }
+        ops
+    }
+
+    #[test]
+    fn the_same_operations_give_the_same_readings_in_all_three_books() {
+        for seed in 1..=25 {
+            let mut looped = LoopWindows::<u64>::new();
+            let mut metal = MetalWindows::<u64>::new();
+            let mut vulkan = VulkanWindows::<u64>::new();
+            for (index, op) in script(seed).into_iter().enumerate() {
+                let a = drive!(&mut looped, LoopWindow, op);
+                let b = drive!(&mut metal, MetalWindow, op);
+                let c = drive!(&mut vulkan, VulkanWindow, op);
+                assert_eq!(
+                    a, b,
+                    "seed {seed}, operation {index} ({op:?}): ck-window against Metal"
+                );
+                assert_eq!(
+                    b, c,
+                    "seed {seed}, operation {index} ({op:?}): Metal against Vulkan"
+                );
+            }
+        }
+    }
+}

@@ -3,7 +3,9 @@
 //!
 //! - **Layouts.** Set 0 has one `SAMPLER` binding and set 1 one `SAMPLED_IMAGE` binding, both for the fragment
 //!   stage; the pipeline layout names the two. Core Vulkan 1.0: no extension and no feature bit.
-//! - **Sampler sets.** Two sets, nearest and linear, written once at start. A filter change rewrites nothing.
+//! - **Sampler sets.** Two sets, nearest and linear, written once at start. A filter change rewrites nothing. In the bindless
+//!   mode (milestone 5.5, issue 6) set 0 has **two** `SAMPLER` bindings, the checker's nearest sampler (binding 0) and the frame's
+//!   filter (binding 1), and the two sets are a nearest frame and a linear frame, each bound once per frame: one draw cannot rebind.
 //! - **Revision sets.** Each revision owns one set-1 set naming its image view in `SHADER_READ_ONLY_OPTIMAL`.
 //!   The pool has a fixed size and **no free flag**: sets are allocated lazily up to the cap, never freed one by
 //!   one, and recycled through a free list, so there is no fragmentation and no reliance on free-path
@@ -15,7 +17,7 @@
 //! - **The bindless mode** (milestone 5.5, issue 5) replaces the revision sets with the table: set 1 is one
 //!   `SAMPLED_IMAGE` binding of N descriptors (update-after-bind, see [`crate::gate::with_table_layout`]), and a pool
 //!   with the update-after-bind flag holds exactly the two versions' sets, allocated at start, never freed or grown. The
-//!   pipeline layout gains a fragment push constant for the slot. The sets are valid only after
+//!   pipeline layout has no fragment push constant: each instance carries its slot. The sets are valid only after
 //!   [`Descriptors::init_tables`] wrote every entry; nothing binds them before. Only the render thread writes them, and
 //!   the book (`bindless.rs`) says when.
 
@@ -29,10 +31,6 @@ use crate::error::vk_error;
 
 /// The push constants of the ordinary stage's pipeline layout: the drawable's width and height as `f32`.
 pub(crate) const DRAWABLE_PUSH_BYTES: u32 = 8;
-/// The bindless stage's fragment push constant: the batch's slot as a `u32`, after the drawable's size.
-pub(crate) const SLOT_PUSH_OFFSET: u32 = DRAWABLE_PUSH_BYTES;
-/// The bytes of the slot push constant.
-pub(crate) const SLOT_PUSH_BYTES: u32 = 4;
 
 /// How a ledger binds its textures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,43 +186,43 @@ impl Descriptors {
                 "{ordinary_sets} descriptor sets do not fit a descriptor pool"
             ))
         })?;
-        let layout = |descriptor_type| {
-            let binding = [vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(descriptor_type)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+        let layout = |descriptor_type, bindings: u32| {
+            let binding: Vec<vk::DescriptorSetLayoutBinding<'_>> = (0..bindings)
+                .map(|index| {
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(index)
+                        .descriptor_type(descriptor_type)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+                })
+                .collect();
             let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&binding);
-            // SAFETY: the device is live and `info` (with its binding) is valid for the call.
+            // SAFETY: the device is live and `info` (with its bindings) is valid for the call.
             unsafe { device.create_descriptor_set_layout(&info, None) }
                 .map_err(|code| vk_error("vkCreateDescriptorSetLayout", code))
         };
-        self.sampler_layout = layout(vk::DescriptorType::SAMPLER)?;
+        // The bindless mode's set 0 holds both samplers (the checker's nearest and the frame's filter): one draw cannot rebind.
+        let samplers_per_set = match mode {
+            DescriptorMode::PerRevision { .. } => 1,
+            DescriptorMode::Bindless { .. } => 2,
+        };
+        self.sampler_layout = layout(vk::DescriptorType::SAMPLER, samplers_per_set)?;
         self.image_layout = match mode {
-            DescriptorMode::PerRevision { .. } => layout(vk::DescriptorType::SAMPLED_IMAGE)?,
+            DescriptorMode::PerRevision { .. } => layout(vk::DescriptorType::SAMPLED_IMAGE, 1)?,
             DescriptorMode::Bindless { slots, support } => {
                 crate::gate::create_table_layout(&self.context, slots, support)?
             }
         };
         let layouts = [self.sampler_layout, self.image_layout];
-        // The ordinary stage's vertex shader takes the drawable size (two floats) as a push constant; the bindless
-        // stage's fragment shader also takes the batch's slot.
-        let vertex_range = vk::PushConstantRange::default()
+        // The vertex shader takes the drawable size (two floats) as a push constant, in both modes: the bindless mode's slot is
+        // in the instance record.
+        let ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX)
             .offset(0)
-            .size(DRAWABLE_PUSH_BYTES);
-        let slot_range = vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-            .offset(SLOT_PUSH_OFFSET)
-            .size(SLOT_PUSH_BYTES);
-        let both_ranges = [vertex_range, slot_range];
-        let ranges = match mode {
-            DescriptorMode::PerRevision { .. } => &both_ranges[..1],
-            DescriptorMode::Bindless { .. } => &both_ranges[..],
-        };
+            .size(DRAWABLE_PUSH_BYTES)];
         let info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(&layouts)
-            .push_constant_ranges(ranges);
+            .push_constant_ranges(&ranges);
         // SAFETY: the device is live and the layouts exist.
         self.pipeline_layout = unsafe { device.create_pipeline_layout(&info, None) }
             .map_err(|code| vk_error("vkCreatePipelineLayout", code))?;
@@ -258,7 +256,21 @@ impl Descriptors {
                 ))
             })
         };
-        self.sampler_pool = pool(2, vk::DescriptorType::SAMPLER)?;
+        self.sampler_pool = {
+            // Two sets, with one sampler each, or two (the bindless mode's set 0).
+            let sizes = [vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::SAMPLER)
+                .descriptor_count(2 * samplers_per_set)];
+            let info = vk::DescriptorPoolCreateInfo::default()
+                .max_sets(2)
+                .pool_sizes(&sizes);
+            // SAFETY: the device is live and `info` (with its sizes) is valid for the call. No free flag.
+            unsafe { device.create_descriptor_pool(&info, None) }.map_err(|code| {
+                Error(format!(
+                    "the descriptor pool for 2 sampler sets was refused: {code:?}"
+                ))
+            })?
+        };
         match mode {
             DescriptorMode::PerRevision { .. } => {
                 // One set more than the ordinary revisions can ever need: the checker's permanent one.
@@ -285,13 +297,28 @@ impl Descriptors {
             vk::DescriptorImageInfo::default().sampler(self.samplers[0]),
             vk::DescriptorImageInfo::default().sampler(self.samplers[1]),
         ];
-        let writes = [0, 1].map(|index| {
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.sampler_sets[index])
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::SAMPLER)
-                .image_info(std::slice::from_ref(&infos[index]))
-        });
+        // Per-revision: set `i` holds sampler `i` at binding 0. Bindless: set `i` holds the checker's nearest sampler at
+        // binding 0 and sampler `i` (the frame's filter) at binding 1.
+        let mut writes = Vec::with_capacity(3);
+        for index in 0..2 {
+            let checker_binding = (samplers_per_set == 2).then_some(0);
+            if let Some(binding) = checker_binding {
+                writes.push(
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.sampler_sets[index])
+                        .dst_binding(binding)
+                        .descriptor_type(vk::DescriptorType::SAMPLER)
+                        .image_info(std::slice::from_ref(&infos[0])),
+                );
+            }
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.sampler_sets[index])
+                    .dst_binding(samplers_per_set - 1)
+                    .descriptor_type(vk::DescriptorType::SAMPLER)
+                    .image_info(std::slice::from_ref(&infos[index])),
+            );
+        }
         // SAFETY: the sets are unused and the samplers exist; the writes are valid for the call.
         unsafe { device.update_descriptor_sets(&writes, &[]) };
         Ok(())
