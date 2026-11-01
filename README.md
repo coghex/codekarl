@@ -13,9 +13,9 @@ accepted ([docs/render-design.md](docs/render-design.md)): the `ui` VM places a 
 path, and the two backends are interchangeable to the rest of the project. Milestone 5 is accepted too
 ([docs/scene-design.md](docs/scene-design.md)): on the native Metal path the `ui` VM loads textures in the background through
 reusable handles, places and moves many quads, reads configurable key bindings every update, and draws tens of thousands of quads
-and distinct textures through a bindless texture table. Milestone 5.5 brings the same to GLFW and Vulkan: its first four stages
-are accepted, so the live scene, its key bindings and the update pacing now run on `glfw-vulkan` through ordinary per-texture
-bindings; the bindless stage and the Vulkan scale measurement are still to come.
+and distinct textures through a bindless texture table. Milestone 5.5 is accepted too: the live scene, its key bindings, the
+update pacing and the bindless texture table run on `glfw-vulkan` as well, and the same scale was measured there
+([docs/evidence/m55-scale-2026-11-01.md](docs/evidence/m55-scale-2026-11-01.md)).
 
 ## Run it
 
@@ -185,9 +185,9 @@ On `native-metal` and `glfw-vulkan` the `ui` VM also gets `texture` and `frame` 
   `texture.status(t)`. The keys and defaults are in
   [docs/scene-design.md](docs/scene-design.md) §7.1.
 - **Headless** runs validate and ignore the window and scene calls; a texture can reach `cpu_ready` there, never `ready`.
-- **`glfw-vulkan`** runs all of this too (milestone 5.5), with the same script and settings. Until its bindless stage lands it
-  draws with ordinary per-texture bindings, and `bindless_texture_slots` has no effect there. `diagnostics.metrics_mark` is still
-  Metal-only.
+- **`glfw-vulkan`** runs all of this too (milestone 5.5), with the same script and settings, including the bindless table
+  (`bindless_texture_slots`) and `diagnostics.metrics_mark`. A device without the descriptor-indexing support the table needs
+  draws with ordinary per-texture bindings instead, and the log says so once.
 
 `config/demo-scene.toml` runs `scripts/ui/demo_scene.lua`. Twelve tiles load two per update, each a checkerboard until its image
 arrives; one names a missing file, so its checkerboard stays. The arrow keys or WASD move the gem, R reloads every texture, and
@@ -197,6 +197,9 @@ Measured on `native-metal` on this Mac (Apple M3 Max, release build) with 65,536
 bindless draw: 8.25 ms of CPU time per frame at the 95th percentile, just over the 8 ms target and accepted by the owner, and
 0.6 ms of GPU time. With textures constantly reloaded and recreated it is 7.35 ms, and loading runs at about 7,700 textures a
 second.
+On `glfw-vulkan` (MoltenVK on the same Mac) the same scene draws correctly with 15 ms of CPU time per frame at the 95th
+percentile, but takes about 155 ms of GPU time per frame, about 250 times Metal's, so it runs at about 6 frames a second; a 248-image scene matches Metal. The cause is
+being investigated (CK-168), including whether it is specific to MoltenVK or would also affect Linux.
 Counter-level profiling is done with external tools (Instruments, the Metal debugger), not engine counters.
 
 `tools/ck` supplies the project tool environment. It selects Xcode using
