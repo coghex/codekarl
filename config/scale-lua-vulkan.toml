@@ -1,0 +1,29 @@
+# The milestone 5.5 scale run's all-quads-moving profile on Vulkan (CK-162, part C; CK-130's M-lua), run in process by
+# apps/codekarl/tests/vulkan_scale_lua.rs.
+# The harness fills in the two run-specific absolute paths (the placeholders below) and writes the result to a temporary file, so the
+# fixtures are always a fresh temporary directory: `@FIXTURES@` is that directory and `@ROOT@` this repository's root. `glfw-vulkan` (MoltenVK), the
+# default input bindings (nothing unbound), nearest sampling, a 60 Hz update source, and the `metrics` record shown at `debug`.
+
+[log]
+timestamps = false
+colour = "never"
+
+[log.categories]
+metrics = "debug"
+resources = "debug"
+
+[window]
+backend = "glfw-vulkan"
+
+[render]
+filter = "nearest"
+assets = "@FIXTURES@"
+
+[frame]
+updates_per_second = 60
+
+[lua.ui]
+entry = "@ROOT@/scripts/scale/lua_moving.lua"
+
+[lua.gameplay]
+entry = "@ROOT@/scripts/gameplay/main.lua"

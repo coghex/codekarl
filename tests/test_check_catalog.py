@@ -53,6 +53,12 @@ ALL_FEATURES, DEFAULT_FEATURES = "all-features", "default"
 # variants, so its units are compared with the full run's by target.
 RELEASE_METAL = "release-metal"
 SCALE_TARGETS = {("ck-render-2d", "test", "scale"), ("codekarl", "test", "scale_lua")}
+# CK-162: the same on Vulkan: release with `--features vulkan` (optional group `vulkan.scale`), never `--all-features`.
+RELEASE_VULKAN = "release-vulkan"
+VULKAN_SCALE_TARGETS = {
+    ("ck-render-2d", "test", "vulkan_scale"),
+    ("codekarl", "test", "vulkan_scale_lua"),
+}
 
 
 def workspace_targets() -> dict[str, list[tuple[str, str, bool]]]:
@@ -124,9 +130,9 @@ def parse_cargo_test(
             position += 1
         elif word in ("--lib", "--doc"):
             explicit.append((word[2:], ""))
-        elif word == "--features":  # CK-130: only the scale acceptance's recipe build, in release
-            assert words[position] == "metal" and "--release" in words, command
-            variant = RELEASE_METAL
+        elif word == "--features":  # CK-130, CK-162: only the scale recipe builds, in release
+            assert words[position] in ("metal", "vulkan") and "--release" in words, command
+            variant = RELEASE_METAL if words[position] == "metal" else RELEASE_VULKAN
             position += 1
         elif word not in ("--locked", "--release"):  # CK-130: the scale acceptance runs in release
             raise AssertionError(f"unrecognised cargo test argument {word!r} in {command}")
@@ -177,6 +183,10 @@ def unit_need(unit: Unit) -> str:
         ("ck-window-glfw", "window_glfw"),
         ("ck-render-2d", "metal_window"),
         ("ck-render-2d", "scale"),
+        (
+            "ck-render-2d",
+            "vulkan_scale",
+        ),  # CK-162: the same recipe on a real GLFW window (optional group `vulkan.scale`)
         ("ck-render-2d", "vulkan_window"),  # CK-159: the resource path on a real GLFW window
     }
     if package == "ck-window-cocoa" or (package, name) in windowed:
@@ -185,8 +195,8 @@ def unit_need(unit: Unit) -> str:
         return "window" if name == "window" else "gpu"
     if package == "ck-gpu-metal":
         return "window" if (name == "presenter" and case != "gpu") else "gpu"
-    if package == "codekarl" and variant in (ALL_FEATURES, RELEASE_METAL):
-        if name in ("windowed", "vulkan_app", "scale_lua"):
+    if package == "codekarl" and variant in (ALL_FEATURES, RELEASE_METAL, RELEASE_VULKAN):
+        if name in ("windowed", "vulkan_app", "scale_lua", "vulkan_scale_lua"):
             return "window"
         if name == "cli_spec" and case == "gpu":
             return "gpu"
@@ -267,8 +277,16 @@ class Ownership(unittest.TestCase):
         scale_build = {unit for unit in owners if unit[3] == RELEASE_METAL}
         self.assertEqual({unit[:3] for unit in scale_build}, SCALE_TARGETS)
         self.assertEqual({owners[unit][0] for unit in scale_build}, {"metal.scale"})
-        stood_for = {unit for unit in full if unit[:3] in SCALE_TARGETS and unit[3] == ALL_FEATURES}
-        self.assertEqual({unit[:3] for unit in stood_for}, SCALE_TARGETS)
+        # CK-162: and `vulkan.scale` runs its two as the Vulkan recipe builds them (release, `--features vulkan`), by target the same way.
+        vulkan_scale_build = {unit for unit in owners if unit[3] == RELEASE_VULKAN}
+        self.assertEqual({unit[:3] for unit in vulkan_scale_build}, VULKAN_SCALE_TARGETS)
+        self.assertEqual({owners[unit][0] for unit in vulkan_scale_build}, {"vulkan.scale"})
+        scale_build |= vulkan_scale_build
+        every_scale_target = SCALE_TARGETS | VULKAN_SCALE_TARGETS
+        stood_for = {
+            unit for unit in full if unit[:3] in every_scale_target and unit[3] == ALL_FEATURES
+        }
+        self.assertEqual({unit[:3] for unit in stood_for}, every_scale_target)
         self.assertEqual(
             sorted(full - owners.keys() - stood_for),
             [],
@@ -308,6 +326,7 @@ class Ownership(unittest.TestCase):
                 "metal.window-compat",
                 "metal.window-instanced",
                 "metal.scale",
+                "vulkan.scale",
                 "glfw.window",
                 "vulkan.window",
                 "render2d.vulkan-window",
@@ -1243,7 +1262,10 @@ class OptionalScaleGroup(unittest.TestCase):
 
     def test_03_no_other_group_sets_the_run_variable(self) -> None:
         for other in check.STEPS:
-            if other.name != self.NAME:
+            if other.name not in (
+                self.NAME,
+                "vulkan.scale",
+            ):  # CK-162: the Vulkan scale group sets it too
                 self.assertNotIn("CK_SCALE_RUN", dict(other.env), other.name)
 
     def test_04_a_plan_never_selects_it_unless_it_is_named(self) -> None:
@@ -1279,6 +1301,139 @@ class OptionalScaleGroup(unittest.TestCase):
             ["cargo", "test", "-p", "ck-render-2d", "--test", "scale_pure", *flags],
             by_name["render2d.core"].commands(),
         )
+
+
+class OptionalVulkanScaleGroup(unittest.TestCase):
+    """CK-162: the milestone 5.5 scale run on Vulkan is an optional group too, with the same rules: window-needing, in no level, its two
+    harnesses told to run (`CK_SCALE_RUN=1`), in release with `--features vulkan` (never `--all-features`), and never selected by a file
+    change. Its paths are exactly its two targets, its own directory, the three shared platform-free modules, its configuration and the
+    script directory."""
+
+    NAME = "vulkan.scale"
+    HARNESS_FILES = (
+        "crates/render-2d/tests/vulkan_scale.rs",
+        "crates/render-2d/tests/vulkan_scale/rig.rs",
+        "crates/render-2d/tests/vulkan_scale/evidence.rs",
+        "crates/render-2d/tests/scale/fixtures.rs",
+        "crates/render-2d/tests/scale/layout.rs",
+        "crates/render-2d/tests/scale/json.rs",
+        "apps/codekarl/tests/vulkan_scale_lua.rs",
+        "config/scale-lua-vulkan.toml",
+        "scripts/scale/lua_moving.lua",
+    )
+
+    def step(self) -> check.Step:
+        return {step.name: step for step in check.STEPS}[self.NAME]
+
+    def test_01_the_group_is_optional_window_needing_and_in_no_level(self) -> None:
+        step = self.step()
+        self.assertEqual((step.category, step.needs, step.levels), ("optional", "window", ()))
+        for level in ("quick", "fast", "full"):
+            self.assertNotIn(self.NAME, check.select(level), level)
+        self.assertIn(self.NAME, check.select("planned", [step]))
+
+    def test_02_it_runs_the_two_harnesses_in_release_with_the_vulkan_feature_told_to_run(
+        self,
+    ) -> None:
+        step = self.step()
+        self.assertEqual(dict(step.env), {"CK_SCALE_RUN": "1"})
+        flags = ["--locked", "--features", "vulkan"]
+        self.assertEqual(check.VULKAN_SCALE_CARGO_FLAGS, flags)
+        self.assertEqual(
+            step.commands(),
+            [
+                [
+                    "cargo",
+                    "test",
+                    "--release",
+                    "-p",
+                    "ck-render-2d",
+                    "--test",
+                    "vulkan_scale",
+                    *flags,
+                ],
+                [
+                    "cargo",
+                    "test",
+                    "--release",
+                    "-p",
+                    "codekarl",
+                    "--test",
+                    "vulkan_scale_lua",
+                    *flags,
+                ],
+            ],
+        )
+        # Metal's group is unchanged by it.
+        self.assertEqual(check.SCALE_CARGO_FLAGS, ["--locked", "--features", "metal"])
+
+    def test_02b_it_never_builds_all_features(self) -> None:
+        for command in self.step().commands():
+            self.assertNotIn("--all-features", command)
+            self.assertIn("--release", command)
+            self.assertIn("--locked", command)
+            self.assertEqual(command.count("--features"), 1)
+            self.assertEqual(command[command.index("--features") + 1], "vulkan")
+
+    def test_03_its_paths_are_exactly_the_two_targets_its_directory_the_three_shared_modules_and_its_inputs(
+        self,
+    ) -> None:
+        self.assertEqual(
+            sorted(self.step().paths),
+            sorted(
+                (
+                    "crates/render-2d/tests/vulkan_scale.rs",
+                    "crates/render-2d/tests/vulkan_scale/",
+                    "crates/render-2d/tests/scale/fixtures.rs",
+                    "crates/render-2d/tests/scale/layout.rs",
+                    "crates/render-2d/tests/scale/json.rs",
+                    "apps/codekarl/tests/vulkan_scale_lua.rs",
+                    "config/scale-lua-vulkan.toml",
+                    "scripts/scale/",
+                )
+            ),
+        )
+        # Not the Metal directory and not its evidence module, which imports the Metal timing types.
+        self.assertNotIn("crates/render-2d/tests/scale/", self.step().paths)
+        self.assertNotIn("crates/render-2d/tests/scale/evidence.rs", self.step().paths)
+
+    def test_04_a_plan_never_selects_it_unless_it_is_named(self) -> None:
+        for path in self.HARNESS_FILES:
+            chosen = {c.step.name for c in check.plan(check.STEPS, [path]).choices if c.selected}
+            self.assertNotIn(self.NAME, chosen, path)
+            named = check.plan(check.STEPS, [path], requested=[self.NAME])
+            self.assertIn(self.NAME, {c.step.name for c in named.choices if c.selected}, path)
+        by_name = {
+            c.step.name: c
+            for c in check.plan(check.STEPS, ["config/scale-lua-vulkan.toml"]).choices
+        }
+        self.assertEqual(by_name[self.NAME].why, "optional: runs only when requested by name")
+
+    def test_05_the_harness_files_select_no_window_or_gpu_group(self) -> None:
+        needs = {step.name: step.needs for step in check.STEPS}
+        for path in self.HARNESS_FILES:
+            chosen = {c.step.name for c in check.plan(check.STEPS, [path]).choices if c.selected}
+            self.assertEqual({name for name in chosen if needs[name] != "plain"}, set(), path)
+        # The renderer's pure group judges the harness's sources (they are compiled by its clippy and build checks).
+        for path in (
+            "crates/render-2d/tests/vulkan_scale.rs",
+            "crates/render-2d/tests/vulkan_scale/rig.rs",
+        ):
+            chosen = {c.step.name for c in check.plan(check.STEPS, [path]).choices if c.selected}
+            self.assertIn("render2d.core", chosen, path)
+
+    def test_06_every_harness_file_is_claimed_by_a_group(self) -> None:
+        for path in self.HARNESS_FILES:
+            self.assertTrue(check.is_claimed(check.STEPS, path), path)
+
+    def test_07_the_metal_group_does_not_run_the_vulkan_targets_and_the_reverse(self) -> None:
+        metal = {step.name: step for step in check.STEPS}["metal.scale"]
+        for command in metal.commands():
+            self.assertNotIn("vulkan_scale", " ".join(command))
+            self.assertNotIn("vulkan", command)
+        for command in self.step().commands():
+            self.assertNotIn("metal", command)
+            self.assertNotIn("scale", command)
 
 
 class ResourcesGroup(unittest.TestCase):
@@ -1910,6 +2065,44 @@ GUARDS: tuple[Guard, ...] = (
                 "assets/",
                 "the demonstration's image: the owner's own replaces it as a file change, which must not open a "
                 "window by itself; `rust.app` decodes the shipped image headless",
+            ),
+        ),
+    ),
+    # CK-162: the Vulkan Lua profile reads the same two shared modules; its group `vulkan.scale` is optional and never selected by a file change.
+    Guard(
+        "apps/codekarl/tests/vulkan_scale_lua.rs",
+        "vulkan.scale",
+        (
+            "crates/render-2d/tests/scale/fixtures.rs",
+            "crates/render-2d/tests/scale/layout.rs",
+            ACTIVATION_WATCH,
+        ),
+        unselected=(
+            (
+                "crates/render-2d/tests/scale/fixtures.rs",
+                "the Vulkan scale group is optional and owner-scheduled: no file change selects it, and the pure tests "
+                "in `render2d.core` judge the fixtures",
+            ),
+            (
+                "crates/render-2d/tests/scale/layout.rs",
+                "the Vulkan scale group is optional and owner-scheduled: no file change selects it, and the pure tests "
+                "in `render2d.core` judge the layout",
+            ),
+            (
+                ACTIVATION_WATCH,
+                "vulkan.scale is optional and only runs when the owner schedules it",
+            ),
+        ),
+    ),
+    # CK-162: the Vulkan scale harness's workers install the activation watch (CK-164) like the Metal harness's.
+    Guard(
+        "crates/render-2d/tests/vulkan_scale.rs",
+        "vulkan.scale",
+        (ACTIVATION_WATCH,),
+        unselected=(
+            (
+                ACTIVATION_WATCH,
+                "vulkan.scale is optional and only runs when the owner schedules it",
             ),
         ),
     ),

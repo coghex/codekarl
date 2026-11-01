@@ -272,6 +272,8 @@ struct Run<'a> {
 struct CaptureWait {
     /// The generation of the scene the frame drew.
     generation: Option<u64>,
+    /// The number of the frame's submission.
+    submission: u64,
 }
 
 /// What a frame draws of the quad.

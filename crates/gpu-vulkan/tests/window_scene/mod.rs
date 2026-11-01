@@ -10,11 +10,11 @@
 use std::collections::VecDeque;
 
 use ck_gpu_vulkan::{
-    BindlessLimits, Boundary, BuildRecord, DestinationRect, InstanceRole, LedgerEvent,
+    BindlessLimits, Boundary, BuildRecord, DestinationRect, DrawnRecord, InstanceRole, LedgerEvent,
     LedgerLimits, MetricsClock, PassOutcome, Pause, PixelSource, QuadSkipped, SceneLimits,
     SceneSetup, SceneStats, StallGate, TestFeatures, TextureDriver, TextureLedger, TextureLimits,
     TextureTestHooks, TicketEnding, VulkanContext, VulkanFilter, VulkanFrame, VulkanFrameSlot,
-    VulkanInstance, VulkanSceneSource, WaitKind, WaitObserver,
+    VulkanInstance, VulkanSceneSource, WaitKind, WaitObserver, ledger_clock_ns,
 };
 
 use super::{
@@ -153,6 +153,7 @@ struct Harness {
     frames: Arc<VulkanFrameSlot<u32>>,
     waits: Arc<WaitObserver>,
     builds: Arc<Mutex<Vec<BuildRecord>>>,
+    drawn: Arc<Mutex<Vec<DrawnRecord>>>,
     tickets: Arc<Mutex<Vec<TicketEnding>>>,
     driver: Arc<Mutex<DriverState>>,
     generation: u64,
@@ -191,6 +192,7 @@ impl Harness {
             frames: VulkanFrameSlot::new(),
             waits,
             builds: Arc::new(Mutex::new(Vec::new())),
+            drawn: Arc::new(Mutex::new(Vec::new())),
             tickets: Arc::new(Mutex::new(Vec::new())),
             driver,
             generation: 0,
@@ -224,6 +226,7 @@ impl Harness {
         let mut hooks = self.probes.hooks();
         hooks.scene.waits = Some(Arc::clone(&self.waits));
         hooks.scene.builds = Some(Arc::clone(&self.builds));
+        hooks.scene.drawn = Some(Arc::clone(&self.drawn));
         hooks.scene.tickets = Some(Arc::clone(&self.tickets));
         edit(&mut hooks);
         let setup = SceneSetup::new(
@@ -286,6 +289,11 @@ impl Harness {
 
     fn builds(&self) -> Vec<BuildRecord> {
         self.builds.lock().expect("the builds").clone()
+    }
+
+    /// The frames the presenter queued for presentation, in order.
+    fn drawn(&self) -> Vec<DrawnRecord> {
+        self.drawn.lock().expect("the drawn frames").clone()
     }
 
     fn state<T>(&self, read: impl FnOnce(&DriverState) -> T) -> T {
@@ -423,6 +431,70 @@ fn the_first_frame_shows_the_checker_for_a_pending_key() {
     harness.finish(&mut presenter);
 }
 
+/// A drawn record is a frame the presenter queued: its ordinal is the presenter's frame count when it was counted, its generation
+/// is the scene the frame drew, and its counters are what that frame's build counted. Frames are numbered 1, 2, ... with no gap,
+/// whatever builds were made.
+///
+/// Negative control: `the_gate_holds_the_first_frame_until_the_compat_image_resolves` shows a build that is recorded and not
+/// drawn leaves no drawn record.
+fn a_drawn_record_is_the_committed_frame_with_its_generation_and_counts() {
+    let mut harness = Harness::new();
+    harness.publish(vec![quad(1, 10, 10, 100)]);
+    let first = harness.generation;
+    let captures: ck_gpu_vulkan::FrameCaptures = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&captures);
+    let mut presenter =
+        harness.start_with(Harness::limits(), None, harness.rig.pixel, move |hooks| {
+            hooks.capture_frames = Some(sink);
+        });
+    harness.wait_stats(&presenter, "the first frame", |stats| stats.frames >= 1);
+    harness.publish(vec![quad(1, 10, 10, 100), quad(2, 40, 40, 100)]);
+    let second = harness.generation;
+    harness.wait_for("a frame of the second generation", |harness| {
+        harness
+            .drawn()
+            .iter()
+            .any(|record| record.generation == Some(second))
+    });
+    let drawn = harness.drawn();
+    // A capture names the submission of the frame it shows: each one is a queued frame's, of the same generation, and the
+    // captures run in submission order.
+    let shown = captures.lock().expect("the captures").clone();
+    assert!(!shown.is_empty(), "frames were captured");
+    for capture in &shown {
+        if let Some(record) = drawn
+            .iter()
+            .find(|record| record.submission == capture.submission)
+        {
+            assert_eq!(record.generation, capture.generation, "{record:?}");
+        }
+    }
+    assert!(
+        shown
+            .windows(2)
+            .all(|pair| pair[0].submission < pair[1].submission),
+        "the captures run in submission order"
+    );
+    assert!(
+        drawn.iter().all(|record| record.submission != 0),
+        "every drawn frame names its submission: {drawn:?}"
+    );
+    for (index, record) in drawn.iter().enumerate() {
+        assert_eq!(record.ordinal, index as u64 + 1, "no gap: {drawn:?}");
+    }
+    assert_eq!(drawn[0].generation, Some(first), "{drawn:?}");
+    assert_eq!(drawn[0].counters.instances, 1, "{drawn:?}");
+    let last = drawn.last().expect("a drawn frame");
+    assert_eq!(last.generation, Some(second));
+    assert_eq!(last.counters.instances, 2, "{drawn:?}");
+    let stats = presenter.scene_stats();
+    assert!(
+        stats.frames >= last.ordinal,
+        "the presenter's count includes the record: {stats:?} {last:?}"
+    );
+    harness.finish(&mut presenter);
+}
+
 /// With the checker's upload held (the store's gate), no frame is committed and none is attempted; releasing the gate
 /// alone makes the first frame run, showing the checker.
 ///
@@ -530,6 +602,8 @@ fn an_adopted_revision_appears_without_a_publication() {
     let mut presenter = harness.start();
     harness.wait_stats(&presenter, "the first frame", |stats| stats.frames >= 1);
     let generation = harness.generation;
+    // The ledger's clock is readable from outside: the adoption's stamp lies between two reads of it.
+    let before = ledger_clock_ns();
     harness.offer(1, 4, [255, 0, 0, 255]);
     (presenter.texture_wake())();
     harness.rig.wait("a frame that resolves the key", || {
@@ -547,6 +621,13 @@ fn an_adopted_revision_appears_without_a_publication() {
         stats.textures_ready >= 1 && stats.first_ready_ns != 0,
         "{stats:?}"
     );
+    let after = ledger_clock_ns();
+    assert!(
+        (before..=after).contains(&stats.first_ready_ns),
+        "the adoption stamp {} is on the ledger clock between {before} and {after}",
+        stats.first_ready_ns
+    );
+    assert!((before..=after).contains(&stats.last_ready_ns), "{stats:?}");
     harness.finish(&mut presenter);
 }
 
@@ -1230,7 +1311,11 @@ fn a_held_frame_past_the_deadline_is_unproven_and_retains_everything() {
 }
 
 /// The cases this module adds to the window worker.
-pub(super) const CASES: [(&str, Case); 21] = [
+pub(super) const CASES: [(&str, Case); 22] = [
+    (
+        "a_drawn_record_is_the_committed_frame_with_its_generation_and_counts",
+        a_drawn_record_is_the_committed_frame_with_its_generation_and_counts,
+    ),
     (
         "the_first_frame_shows_the_checker_for_a_pending_key",
         the_first_frame_shows_the_checker_for_a_pending_key,

@@ -61,3 +61,12 @@ name = "vulkan_window"
 path = "tests/vulkan_window.rs"
 harness = false
 required-features = ["vulkan"]
+
+# The milestone 5.5 scale run on Vulkan (CK-162, part C): measured and not gated, optional and owner-scheduled like `scale`; a supervisor
+# and one worker per phase (`harness = false`). It runs its phases only when `CK_SCALE_RUN=1` is set; otherwise it reports that it did not
+# run and passes.
+[[test]]
+name = "vulkan_scale"
+path = "tests/vulkan_scale.rs"
+harness = false
+required-features = ["vulkan"]

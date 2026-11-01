@@ -16,6 +16,9 @@ use crate::readback::allocate;
 pub struct FrameCapture {
     /// The generation of the scene the frame drew (`None` without a slot).
     pub generation: Option<u64>,
+    /// The number of the frame's submission: the one a [`DrawnRecord`](crate::DrawnRecord) of the same frame carries, so a test can
+    /// tell which queued frame these pixels are.
+    pub submission: u64,
     /// The frame's size in pixels.
     pub size: (u32, u32),
     /// The swap chain's format; the bytes are that format's pixels (four or eight bytes each), rows top first.

@@ -119,6 +119,20 @@ void ck_glfw_test_post_mouse_moved(int64_t window_number) {
     }
 }
 
+/* Schedules only the native restore operation on the main queue. GLFW's blocking wait services this queue; this helper
+ * posts no NSEvent and calls no GLFW function, so the restore wake itself must end the wait. Main thread only. */
+int32_t ck_glfw_test_schedule_restore(uint32_t delay_milliseconds) {
+    NSWindow *window = ck_window();
+    if (window == nil) {
+        return 0;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay_milliseconds * NSEC_PER_MSEC),
+                   dispatch_get_main_queue(), ^{
+        [window deminiaturize:nil];
+    });
+    return 1;
+}
+
 void ck_glfw_test_perform_close(void) {
     @autoreleasepool {
         [ck_window() performClose:nil];

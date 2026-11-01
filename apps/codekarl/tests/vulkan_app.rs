@@ -114,7 +114,6 @@ unsafe extern "C" {
     fn ck_app_t_miniaturize() -> i32;
     fn ck_app_t_deminiaturize() -> i32;
     fn ck_app_t_window_state() -> i32;
-    fn ck_app_t_wake_pump() -> i32;
 }
 
 /// What a worker runs with.
@@ -322,11 +321,6 @@ fn drive_minimise(dir: &Path, restore: bool, typing: bool) -> Result<(), String>
         wait_for_state(dir, "restored (not miniaturized, visible)", |state| {
             state & 1 == 0 && state & 2 == 2
         })?;
-        // SAFETY: GLFW permits posting an empty event from any thread while initialized; the test-only helper
-        // wakes its event pump only after the native window is visibly restored.
-        if unsafe { ck_app_t_wake_pump() } != 1 {
-            return Err("the restored-window test wake failed".to_owned());
-        }
         mark(dir, "restored")?;
     }
     Ok(())

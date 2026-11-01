@@ -6,6 +6,7 @@
 //! application's window list, so the library exports no handle, hook or control for it.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::time::Duration;
 
 use ck_window_glfw::{GetInstanceProcAddr, VulkanLoaderForGlfw};
 
@@ -16,6 +17,7 @@ unsafe extern "C" {
     fn ck_glfw_test_perform_close();
     fn ck_glfw_test_window_number() -> i64;
     fn ck_glfw_test_post_mouse_moved(window_number: i64);
+    fn ck_glfw_test_schedule_restore(delay_milliseconds: u32) -> i32;
     fn ck_glfw_test_post_key(
         key_code: u16,
         modifier_flags: u64,
@@ -182,6 +184,15 @@ pub(crate) fn window_number() -> i64 {
 pub(crate) fn post_mouse_moved(window_number: i64) {
     // SAFETY: `NSApp postEvent:` is documented as callable from any thread.
     unsafe { ck_glfw_test_post_mouse_moved(window_number) };
+}
+
+/// Schedules a native deminiaturize on the main queue. The block posts no event and calls no GLFW function.
+pub(crate) fn schedule_restore(delay: Duration) -> bool {
+    let Ok(delay) = u32::try_from(delay.as_millis()) else {
+        return false;
+    };
+    // SAFETY: called on the process main thread with a live test window; the native block only restores it.
+    unsafe { ck_glfw_test_schedule_restore(delay) == 1 }
 }
 
 /// Adds a marker line to the trace. Any thread.
