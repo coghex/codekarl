@@ -30,8 +30,9 @@ use crate::quad::{
     DestinationRect, MetalFilter, MetalQuad, MetalQuadSlot, MetalScene, PixelSource,
 };
 use crate::scene::{
-    Baseline, Boundary, BuildRequest, CHECKER_SIDE, CheckerProgress, FrameGate, FrameSeam, Scene,
-    SceneLimits, SceneSetup, TextureDriver, TicketEnding, checker_pixels, wakes_of,
+    Baseline, Boundary, BuildRequest, CHECKER_SIDE, CheckerProgress, CompatStats, FrameGate,
+    FrameSeam, Scene, SceneLimits, SceneSetup, TextureDriver, TicketEnding, checker_pixels,
+    wakes_of,
 };
 use crate::textures::{MetalContext, TextureLimits};
 use crate::{Error, message, unwind};
@@ -1106,7 +1107,7 @@ pub struct TestHooks {
     /// a render thread descheduled right after the submission, so that `t5` is late and the drawable can already be shown.
     pub hold_after_commit: Option<Arc<AtomicI32>>,
     /// The thread waits (at most 30 s) between recording a frame step and moving its ready results into the windows while this
-    /// reads non-zero.
+    /// reads non-zero; it stores `-1` on entry so the test can synchronize on the held seam, and the test stores zero to release it.
     pub hold_before_drain: Option<Arc<AtomicI32>>,
 }
 
@@ -2023,6 +2024,14 @@ fn publish_upload_counters(shared: &Shared, scene: &dyn Scene) {
     stats.upload_staging_bytes_peak = uploads.staging_bytes_peak;
 }
 
+fn publish_compat_stats(stats: &mut SceneStats, counters: CompatStats) {
+    stats.gate_holds = counters.gate_holds;
+    stats.gate_longest_hold_micros = counters.gate_longest_hold_micros;
+    stats.held_compat_frames = counters.held_frames;
+    stats.held_compat_revision = counters.held_revision;
+    stats.compat_upload_failures = counters.upload_failures;
+}
+
 /// A setup that failed after the store started (r3, F1): the presenter has reported `Failed`; it asks the store to
 /// stop and proves the store and ledger against a deadline formed now (now plus the stop budget). Only with a
 /// complete proof does it release everything and end `Proven`; otherwise it retains the whole graph (the store, the
@@ -2411,6 +2420,13 @@ impl Loop<'_> {
                 .as_ref()
                 .filter(|_| code == FRAME_DRAWN)
             {
+                // Tests can wait for this acknowledgement before inspecting the published frame snapshot. The same nonzero
+                // value continues to hold the thread until the test stores zero; a concurrent release cannot be overwritten.
+                let requested = hold.load(Ordering::SeqCst);
+                if requested != 0 {
+                    let _ =
+                        hold.compare_exchange(requested, -1, Ordering::SeqCst, Ordering::SeqCst);
+                }
                 let limit = Instant::now() + Duration::from_secs(30);
                 while hold.load(Ordering::SeqCst) != 0 && Instant::now() < limit {
                     thread::sleep(Duration::from_millis(1));
@@ -2446,7 +2462,11 @@ impl Loop<'_> {
                     thread::sleep(POLL);
                 }
             }
-            self.publish_compat();
+            // A committed frame publishes its compatibility counters with the frame stats, before `drawn` exposes the frame to
+            // its hook. Other outcomes can still change these counters without committing a frame.
+            if code != FRAME_DRAWN {
+                self.publish_compat();
+            }
             // A frame can free what it held (the compatibility hold moved on or was cleared): the release work it queued
             // is run by an ordinary pass now, not at some unrelated wake.
             if !self.failed
@@ -2468,11 +2488,7 @@ impl Loop<'_> {
         };
         let counters = scene.compat_stats();
         let mut stats = lock(&self.shared.scene_stats);
-        stats.gate_holds = counters.gate_holds;
-        stats.gate_longest_hold_micros = counters.gate_longest_hold_micros;
-        stats.held_compat_frames = counters.held_frames;
-        stats.held_compat_revision = counters.held_revision;
-        stats.compat_upload_failures = counters.upload_failures;
+        publish_compat_stats(&mut stats, counters);
     }
 
     /// The legacy quad of a frame as the native step takes it, and the quad whose image must be uploaded because it is not
@@ -2655,6 +2671,11 @@ impl Loop<'_> {
         if !busy && built.is_none() {
             return;
         }
+        let compat = if drawn {
+            self.scene.as_ref().map(|scene| scene.compat_stats())
+        } else {
+            None
+        };
         let mut stats = lock(&self.shared.scene_stats);
         stats.buffer_busy += u64::from(busy);
         if let Some(counters) = built {
@@ -2663,6 +2684,9 @@ impl Loop<'_> {
                 stats.frames += 1;
                 stats.last = counters;
                 stats.peak = stats.peak.max(counters);
+                if let Some(compat) = compat {
+                    publish_compat_stats(&mut stats, compat);
+                }
             }
         }
     }

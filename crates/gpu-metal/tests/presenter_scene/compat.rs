@@ -193,14 +193,19 @@ fn failures(reports: &[PresenterReport]) -> usize {
 
 /// A compatibility quad set before the window opens, its image pending: no frame is committed (the committed-frame counter
 /// stays 0), no checker is ever drawn for it, the render thread and the main thread keep running, and the first committed
-/// frame shows its image. Negative control: without the gate the first frame shows the checker (magenta) for it.
+/// frame shows its image. While held after recording but before drain, one stats snapshot already includes the completed gate hold
+/// with that frame. Negative control: without the gate the first frame shows the checker (magenta) for it.
 pub(crate) fn scene_compat_gate_holds_the_first_frame_until_the_image_resolves() {
     let mut rig = Rig::open();
     let scene = Scene::new();
+    let before_drain = Arc::new(AtomicI32::new(1));
     scene.driver().defer_commit.push(1);
     offer(&scene, 1, RED);
     publish(&scene, 7, Some((1, rect(0, 0, 32, 32))), Vec::new());
-    let mut presenter = scene.start(&rig, limits(), None, capturing);
+    let mut presenter = scene.start(&rig, limits(), None, |hooks| {
+        hooks.capture_frames = true;
+        hooks.hold_before_drain = Some(Arc::clone(&before_drain));
+    });
     until(&mut rig, "the first attempt to be held", || {
         presenter.stats().gate_holds >= 1
     });
@@ -223,17 +228,28 @@ pub(crate) fn scene_compat_gate_holds_the_first_frame_until_the_image_resolves()
     assert!(presenter.stats().gate_holds >= 1);
     // The commit alone lets the frame through.
     commit(&scene, &presenter, 1);
-    until(&mut rig, "the first frame", || scene.probes.frames() >= 1);
+    until(&mut rig, "the committed frame held before drain", || {
+        before_drain.load(Ordering::SeqCst) == -1
+    });
+    assert_eq!(
+        scene.probes.observer.first_frame_hook_report_visible(),
+        None,
+        "the hold is before the drawn-frame hook"
+    );
+    let stats = presenter.stats();
+    before_drain.store(0, Ordering::SeqCst);
+    until(&mut rig, "the drawn-frame hook", || {
+        scene.probes.observer.first_frame_hook_report_visible() == Some(true)
+    });
     assert_eq!(
         scene.probes.observer.first_frame_hook_report_visible(),
         Some(true),
-        "FirstFrameQueued is visible when the first drawn-frame hook advances"
+        "FirstFrameQueued is visible when the first drawn-frame hook advances after the held stats snapshot"
     );
     assert_eq!(
         presenter.take_report(),
         Some(PresenterReport::FirstFrameQueued)
     );
-    let stats = presenter.stats();
     assert_eq!(
         (
             stats.last.instances,
@@ -243,7 +259,14 @@ pub(crate) fn scene_compat_gate_holds_the_first_frame_until_the_image_resolves()
         (1, 1, 0),
         "the compatibility quad was drawn with its image, never the checker"
     );
-    assert!(stats.gate_longest_hold_micros > 0, "{stats:?}");
+    assert_eq!(
+        stats.frames, 1,
+        "the held snapshot includes the committed frame: {stats:?}"
+    );
+    assert!(
+        stats.gate_longest_hold_micros > 0,
+        "the same held snapshot includes the frame's compatibility hold: {stats:?}"
+    );
     assert_eq!(presenter.drawn_generation(), Some(7));
     let frame = next_capture(&mut rig, &scene, 0);
     assert_eq!(px(&frame, 16, 16), RED);
