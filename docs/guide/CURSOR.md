@@ -1,31 +1,27 @@
 # Guide cursor
 
-Resume after: `D1793395010793840000` · patch `WDDF2IC4X7EY76L4C3DK33PDBKDF3FODEWKE5NI4D6ZYINZBBOPQC` · pointer `48824a3c8902d50982806e99d52b53e7de366408858ed58912701fa1a4cb0123` · [20261030t215205z-48824a3c](20261030t215205z-48824a3c.md) · 2026-10-30T22:36:53Z
+Resume after: `D1793539232205556000` · patch `R24GKJ32L53MKJGDWZZLXTUVAZDXLEZAXCFEU3WRQ2JGNPKECAWQC` · pointer `4873df4d981159b1b38d929b190e3cf49416879a2a4d0a93a2cc404e977cc06d` · [20261101t132214z-4873df4d](20261101t132214z-4873df4d.md) · 2026-11-01T13:39:01Z
 Covered beyond the boundary: none
 
 ## Next
 
-Review the 5 publication(s) after the boundary.
+Process the open findings below, then continue from the boundary.
 
 ## Open findings
 
-- none
+- 20261101t132214z-4873df4d/GUIDE-1 — Wait for the Vulkan first-frame report before asserting it — unprocessed
 
 ## Pending handoff
 
-- publication D1793397115015224000 is after the boundary
-- publication D1793398057643160000 is after the boundary
-- publication 1793401749214216000 is after the boundary
-- publication 1793404039834073000 is after the boundary
-- publication D1793405387094421000 is after the boundary
+- none
 
 ## Alignment
 
 | Principle | Reading | Since | Note |
 |---|---|---|---|
-| vision.defer-engine-systems | aligned | 20261030t215205z-48824a3c | Owner-discussed M5 scope is implemented. Game-design heading documents remain pinned but not exercised; no ECS/map/game backlog or Vulkan M5.5 requirement inferred. |
-| vision.early-lua | aligned | 20261030t215205z-48824a3c | Texture/frame APIs, incremental demo, UI completion publication and native/headless integration follow the owner-approved early Lua direction. |
+| vision.defer-engine-systems | aligned | 20261101t132214z-4873df4d | Owner-discussed M5/M5.5 work follows the scene contract. No ECS/map/game mechanics or Linux qualification inferred; stale Open engineering text is superseded only by explicit later owner-directed milestones. |
+| vision.early-lua | aligned | 20261101t132214z-4873df4d | The same resource/scene/frame script now composes on glfw-vulkan; updates and metrics remain separate from GPU ownership. |
 | vision.logging | aligned | 20261030t192312z-8f447d70 | CK-104 retains the writer-thread failure boundary and bounded exit. No new logging architecture assessed. |
-| vision.responsiveness | aligned | 20261030t215205z-48824a3c | Bounded/coalesced work and measured frame-build improvements support the goal. GUIDE-1 can block a direct store client during stop; local repair warranted. Owner accepted static CPU p95 8.25ms miss and waived extra counters; neither is reclassified as a pass. |
-| vision.runtime-first | aligned | 20261030t215205z-48824a3c | Explicit lifecycle and proof-before-release remain aligned. GUIDE-1 is a local after-unlock callback contract defect; CK-150 separately covers ticket/table coherence. |
-| vision.small-libraries | aligned | 20261030t215205z-48824a3c | CPU resources, scenes and adapters retain their boundaries. GUIDE-1 needs a local reusable-store API repair; no package redesign or architectural drift established. |
+| vision.responsiveness | drifting | 20261101t132214z-4873df4d | New scale evidence: bindless Vulkan/MoltenVK GPU p95 157.5ms versus Metal 0.625ms, approximately 6 fps at scale. Owner authorized investigation CK-168; acceptance is correctness-only and does not resolve this goal. No duplicate finding. |
+| vision.runtime-first | aligned | 20261101t132214z-4873df4d | Proof-before-release and explicit lifecycle remain intact across Vulkan composition; prior M5 repairs are present. GUIDE-1 concerns reliable evidence of the first-frame event, not a changed lifecycle design. |
+| vision.small-libraries | aligned | 20261101t132214z-4873df4d | CPU resources and resident policy remain shared; native Vulkan owners stay in gpu-vulkan. CK-162 explicitly accepts temporary metrics/phase duplication and names later consolidation. |
