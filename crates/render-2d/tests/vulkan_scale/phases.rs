@@ -13,6 +13,7 @@ use ck_render_2d::QuadKey;
 use ck_render_2d::vulkan_timing::{MetricsReading, MetricsWindow};
 use ck_resources::{AdmitError, CpuPixels, ResourceService, StatusState, TextureKey};
 
+use crate::diagnostic::Cell;
 use crate::evidence::{self, SAMPLE_NS, WARM_UP_NS};
 use crate::json::J;
 use crate::layout;
@@ -394,6 +395,196 @@ fn build_full_scene(
         );
     }
     Ok(quads)
+}
+
+/// Builds a CK-168 scene using a uniform texture-index mapping and CK-130's fixed geometry.
+fn build_diagnostic_scene(
+    scene: &mut Scene,
+    keys: &[TextureKey],
+    cell: Cell,
+    units: Units,
+) -> Result<Vec<QuadKey>, String> {
+    let mut quads = Vec::with_capacity(cell.quads as usize);
+    for index in 0..cell.quads {
+        let placed = crate::diagnostic::placement(index, cell.sampled_textures)
+            .ok_or_else(|| format!("diagnostic quad {index} has no valid texture mapping"))?;
+        let reference = scene
+            .service
+            .retain(keys[placed.texture as usize])
+            .map_err(|error| format!("diagnostic quad {index}: {error:?}"))?;
+        quads.push(
+            scene
+                .writer
+                .create_quad(
+                    reference,
+                    units.point(placed.x),
+                    units.point(placed.y),
+                    units.point(placed.width),
+                    units.point(placed.height),
+                )
+                .map_err(|error| format!("diagnostic quad {index}: {error:?}"))?,
+        );
+    }
+    Ok(quads)
+}
+
+/// One CK-168 matrix cell: all textures become ready before the uniform sample mapping is drawn and measured.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one diagnostic cell is a single ordered load, draw, measure and evidence protocol"
+)]
+pub(crate) fn diagnostic_scene(scene: &mut Scene, cell: Cell) -> Result<J, String> {
+    let (_, scale) = check_drawable(scene)?;
+    let units = Units(scale);
+    let mut foreground = Foreground::new(scene, units)?;
+    let loaded = load_all(
+        scene,
+        &set_a(cell.live_textures),
+        PER_UPDATE,
+        &mut foreground,
+        true,
+    )?;
+    foreground.remove(scene);
+    let quads = build_diagnostic_scene(scene, &loaded.keys, cell, units)?;
+    let _ = scene.writer.publish();
+    wait_drawn(scene, u64::from(cell.quads), Duration::from_secs(60))?;
+    let first = crate::diagnostic::placement(0, cell.sampled_textures)
+        .ok_or("diagnostic mapping for the first quad was invalid")?;
+    let republish = Republish {
+        key: quads[0],
+        at: (units.point(first.x), units.point(first.y)),
+    };
+    let measured = measure(scene, 1, |scene, _| republish.tick(scene))?;
+    let stats = scene.stats().ok_or("no presenter stats")?;
+    let notice = scene.binding_notice();
+    let expected_slots = if cell.ordinary {
+        0
+    } else {
+        cell.bindless_slots
+    };
+    let mut reasons = Vec::new();
+    if loaded.keys.len() != cell.live_textures as usize {
+        reasons.push(format!(
+            "loaded {} textures, expected {}",
+            loaded.keys.len(),
+            cell.live_textures
+        ));
+    }
+    if stats.last.instances != u64::from(cell.quads)
+        || stats.last.resolved != u64::from(cell.quads)
+        || stats.last.checker != 0
+    {
+        reasons.push(format!(
+            "last frame has {} instances, {} resolved and {} checker; expected {} resolved with none checker",
+            stats.last.instances, stats.last.resolved, stats.last.checker, cell.quads
+        ));
+    }
+    if stats.bindless_slots != expected_slots {
+        reasons.push(format!(
+            "presenter has {} bindless slots, expected {expected_slots}",
+            stats.bindless_slots
+        ));
+    }
+    if !cell.ordinary && !matches!(notice.as_ref(), Some(notice) if !notice.fallback) {
+        reasons.push("bindless mode did not report a non-fallback binding notice".to_owned());
+    }
+    if !cell.ordinary && stats.last.batches != 1 {
+        reasons.push(format!(
+            "bindless frame has {} batches, expected one",
+            stats.last.batches
+        ));
+    }
+    let passed = reasons.is_empty();
+    let max_textures = u64::try_from(cell.max_textures)
+        .map_err(|error| format!("max_textures does not fit the evidence integer: {error}"))?;
+    let mut record = J::o([
+        ("phase", J::s("diagnostic")),
+        ("cell", J::s(cell.name)),
+        (
+            "configuration",
+            J::o([
+                ("live_textures", J::U(u64::from(cell.live_textures))),
+                ("sampled_textures", J::U(u64::from(cell.sampled_textures))),
+                ("quads", J::U(u64::from(cell.quads))),
+                (
+                    "mode",
+                    J::s(if cell.ordinary {
+                        "per-revision"
+                    } else {
+                        "bindless"
+                    }),
+                ),
+                ("bindless_slots", J::U(u64::from(cell.bindless_slots))),
+                ("max_textures", J::U(max_textures)),
+                ("max_extra_revisions", J::U(1_024)),
+                (
+                    "checker",
+                    J::o([
+                        ("resident", J::Bool(stats.checker_resident)),
+                        ("bytes", J::U(stats.checker_bytes)),
+                    ]),
+                ),
+                (
+                    "foreground",
+                    J::o([
+                        ("textures", J::U(FOREGROUND_TEXTURES)),
+                        ("removed_before_measurement", J::Bool(true)),
+                    ]),
+                ),
+            ]),
+        ),
+        (
+            "mode",
+            J::o([
+                ("bindless", J::Bool(!cell.ordinary)),
+                ("bindless_slots", J::U(u64::from(stats.bindless_slots))),
+                (
+                    "binding_notice",
+                    notice.as_ref().map_or(J::Null, |notice| {
+                        J::o([
+                            ("fallback", J::Bool(notice.fallback)),
+                            ("text", J::s(notice.text.clone())),
+                        ])
+                    }),
+                ),
+                ("draw_calls_last_frame", J::U(stats.last.batches)),
+                ("instances_last_frame", J::U(stats.last.instances)),
+                ("checker_last_frame", J::U(stats.last.checker)),
+            ]),
+        ),
+        ("load", load_record(&loaded, "CK-168 set A")),
+        ("window", measured_record(&measured)),
+        (
+            "reference",
+            measured
+                .reading
+                .as_ref()
+                .map_or(J::Null, evidence::reference_reading),
+        ),
+        (
+            "correctness",
+            J::o([
+                ("passed", J::Bool(passed)),
+                ("reasons", J::A(reasons.into_iter().map(J::s).collect())),
+                (
+                    "distinct_sampled_textures",
+                    J::U(u64::from(cell.sampled_textures)),
+                ),
+                ("checker", J::U(stats.last.checker)),
+            ]),
+        ),
+        ("memory", memory(scene)),
+    ]);
+    record.push("gated", J::Bool(true));
+    record.push("passed", J::Bool(passed));
+    for quad in quads {
+        let _ = scene.writer.destroy_quad(quad);
+    }
+    let _ = scene.writer.publish();
+    for key in &loaded.keys {
+        let _ = scene.service.release(*key);
+    }
+    Ok(record)
 }
 
 /// Waits until the newest frame the presenter has **queued for presentation** (its own record of a committed frame, never a build that

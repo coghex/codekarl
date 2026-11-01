@@ -25,6 +25,8 @@
 mod activation_watch;
 #[path = "vulkan_scale/checks.rs"]
 mod checks;
+#[path = "vulkan_scale/diagnostic.rs"]
+mod diagnostic;
 #[path = "vulkan_scale/evidence.rs"]
 mod evidence;
 #[path = "scale/fixtures.rs"]
@@ -88,7 +90,7 @@ struct Job {
     gated: bool,
 }
 
-const JOBS: [Job; 10] = [
+const JOBS: [Job; 11] = [
     Job {
         name: "selftest",
         worker: "selftest",
@@ -149,6 +151,12 @@ const JOBS: [Job; 10] = [
         worker: "caps-min",
         validation: true,
         gated: false,
+    },
+    Job {
+        name: "diagnostic",
+        worker: "diagnostic",
+        validation: false,
+        gated: true,
     },
 ];
 
@@ -240,6 +248,12 @@ fn worker_main(worker: &str) -> ExitCode {
             config.assets = Some(fixtures.root().to_path_buf());
             rig::run_phase(config, move |scene| phases::static_scene(scene, label))
         }
+        "diagnostic" => {
+            let Some(cell) = diagnostic_cell() else {
+                return ExitCode::FAILURE;
+            };
+            diagnostic_phase(&fixtures, cell)
+        }
         "churn" => {
             fixtures.write_set_a(layout::SET_A);
             let mut config = recipe_config("Codekarl scale churn", false, false);
@@ -299,6 +313,32 @@ fn worker_main(worker: &str) -> ExitCode {
     };
     activation_watch::assert_clean();
     rig::finish(&result, &ended)
+}
+
+fn diagnostic_cell() -> Option<diagnostic::Cell> {
+    let Ok(name) = env::var("CK_SCALE_DIAGNOSTIC_CELL") else {
+        eprintln!("vulkan_scale: CK_SCALE_DIAGNOSTIC_CELL is required");
+        return None;
+    };
+    let cell = diagnostic::parse(&name);
+    if cell.is_none() {
+        eprintln!("vulkan_scale: unknown CK-168 diagnostic cell {name:?}");
+    }
+    cell
+}
+
+fn diagnostic_phase(
+    fixtures: &fixtures::Fixtures,
+    cell: diagnostic::Cell,
+) -> (Result<J, String>, rig::Ended) {
+    fixtures.write_set_a(cell.live_textures);
+    let mut config = recipe_config("CK-168 Vulkan diagnostic", cell.ordinary, false);
+    config.max_textures = cell.max_textures;
+    config.bindless_slots = cell.bindless_slots;
+    config.max_quads = 65_536;
+    config.ledger.max_extra_revisions = 1_024;
+    config.assets = Some(fixtures.root().to_path_buf());
+    rig::run_phase(config, move |scene| phases::diagnostic_scene(scene, cell))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -600,10 +640,7 @@ fn supervisor() -> ExitCode {
         .map(|list| list.split(',').map(str::to_owned).collect());
     let mut outcomes = Vec::new();
     for job in &JOBS {
-        if only
-            .as_ref()
-            .is_some_and(|only| !only.iter().any(|name| name == job.name))
-        {
+        if !selected_job(job, only.as_deref()) {
             continue;
         }
         println!(
@@ -682,4 +719,11 @@ fn supervisor() -> ExitCode {
         println!("test result: FAILED. 0 passed; 1 failed");
         ExitCode::FAILURE
     }
+}
+
+fn selected_job(job: &Job, only: Option<&[String]>) -> bool {
+    if job.name == "diagnostic" && only.is_none() {
+        return false;
+    }
+    only.is_none_or(|only| only.iter().any(|name| name == job.name))
 }
