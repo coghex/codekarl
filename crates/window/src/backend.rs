@@ -78,7 +78,9 @@ pub trait Backend {
     /// The native handles of a created window, for the presenter.
     type Handles;
 
-    /// Creates the fixed-size, non-resizable window.
+    /// Creates the fixed-size, non-resizable window. Production backends may request application or key-window
+    /// activation as part of the normal open path; test workers can suppress those requests through
+    /// `ck-window`'s test-support-only activation switch.
     ///
     /// # Errors
     ///

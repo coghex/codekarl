@@ -12,7 +12,6 @@ pub(crate) use info_abi::{
 };
 
 unsafe extern "C" {
-    fn ck_glfw_test_activate();
     fn ck_glfw_test_install_input_filter();
     fn ck_glfw_test_start_typist();
 }
@@ -29,12 +28,6 @@ pub(crate) fn info() -> Info {
     Info {
         visible: raw.visible != 0,
     }
-}
-
-/// Activates the application and makes the window key. Main thread.
-pub(crate) fn activate() {
-    // SAFETY: a plain AppKit call on the main thread.
-    unsafe { ck_glfw_test_activate() };
 }
 
 /// Installs the filter that drops every unmarked keyboard event. Main thread, before the first window.

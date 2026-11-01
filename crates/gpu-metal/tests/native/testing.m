@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <time.h>
 #include <unistd.h>
+#include "../../../window-cocoa/tests/native/activation_watch.inc"
 
 /* Test support for the presenter's window tests, built into an archive that only the test executable
  * links. None of it is part of the library. Main thread unless it says otherwise. */

@@ -212,7 +212,7 @@ def presenter_modules() -> set[str]:
             continue
         found.add(relative)
         for target in path_pattern.findall(source.read_text()):
-            pending.append(source.parent / target)
+            pending.append((source.parent / target).resolve())
     return found
 
 
@@ -1006,7 +1006,6 @@ class MetalWindowFiles(unittest.TestCase):
     def test_02_shared_gpu_and_offscreen_files_do_not_select_the_window_group(self) -> None:
         for path in (
             "crates/gpu-metal/src/lib.rs",
-            "crates/gpu-metal/build.rs",
             "crates/gpu-metal/Cargo.toml",
             "crates/gpu-metal/native/bridge.h",
             "crates/gpu-metal/native/bridge.m",
@@ -1021,6 +1020,18 @@ class MetalWindowFiles(unittest.TestCase):
             chosen = self.selected(path)
             self.assertIn("metal.gpu", chosen, path)
             self.assertNotIn("native.window", chosen, path)
+
+    def test_02a_the_presenter_build_script_is_a_window_input(self) -> None:
+        chosen = self.selected("crates/gpu-metal/build.rs")
+        self.assertIn("metal.gpu", chosen)
+        for group in (
+            "native.window",
+            "metal.window-core",
+            "metal.window-scene",
+            "metal.window-compat",
+            "metal.window-instanced",
+        ):
+            self.assertIn(group, chosen)
 
     def test_03_the_window_groups_keep_the_presenter_window_cases_and_only_those(self) -> None:
         """CK-142: `native.window` no longer runs the presenter; each `metal.window-*` group runs exactly its own set."""
@@ -1406,6 +1417,7 @@ class Render2dVulkanSink(unittest.TestCase):
                 "crates/render-2d/tests/metal_window.rs",
                 "crates/render-2d/build.rs",
                 "crates/render-2d/tests/native/testing.m",
+                "crates/window/tests/support/activation_watch.rs",
             ),
         )
         for path in check.RENDER2D_WINDOW_FILES:
@@ -1741,6 +1753,7 @@ class Guard:
 
 APP_SOURCES = ("apps/codekarl/src/", "apps/codekarl/tests/")
 SUPERVISOR = "apps/codekarl/tests/supervisor/mod.rs"
+ACTIVATION_WATCH = "crates/window/tests/support/activation_watch.rs"
 TOOLCHAIN_FILES = ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml")
 OWNER_RULE = "the owner's rule: no change to the shared configuration or scripts selects a native window group"
 DEMO_RULE = (
@@ -1820,7 +1833,23 @@ GUARDS: tuple[Guard, ...] = (
         ),
         after="CK-83",
     ),
-    Guard("crates/gpu-vulkan/tests/window.rs", "vulkan.window", (SUPERVISOR,)),
+    Guard("crates/gpu-vulkan/tests/window.rs", "vulkan.window", (SUPERVISOR, ACTIVATION_WATCH)),
+    Guard(
+        "crates/gpu-metal/build.rs",
+        "metal.window-core",
+        ("crates/window-cocoa/tests/native/activation_watch.inc",),
+    ),
+    Guard("crates/gpu-metal/tests/presenter.rs", "metal.window-core", (ACTIVATION_WATCH,)),
+    Guard("crates/render-2d/tests/metal_window.rs", "native.window", (ACTIVATION_WATCH,)),
+    Guard(
+        "crates/render-2d/tests/scale.rs",
+        "metal.scale",
+        (ACTIVATION_WATCH,),
+        unselected=(
+            (ACTIVATION_WATCH, "metal.scale is optional and only runs when the owner schedules it"),
+        ),
+    ),
+    Guard("crates/window-cocoa/tests/window_cocoa.rs", "native.window", (ACTIVATION_WATCH,)),
     # CK-159: `ck-render-2d`'s Vulkan window test compiles `ck-window-glfw`'s native filter (its build script) and includes the
     # info binding and the shared supervisor by path.
     Guard(
@@ -1831,10 +1860,15 @@ GUARDS: tuple[Guard, ...] = (
     Guard(
         "crates/render-2d/tests/vulkan_window.rs",
         "render2d.vulkan-window",
-        (SUPERVISOR, "crates/window-glfw/tests/support/"),
+        (SUPERVISOR, "crates/window-glfw/tests/support/", ACTIVATION_WATCH),
+    ),
+    Guard(
+        "crates/window-glfw/build.rs",
+        "glfw.window",
+        ("crates/window-cocoa/tests/native/activation_watch.inc",),
     ),
     Guard("crates/gpu-vulkan/tests/gpu.rs", "vulkan.gpu", (SUPERVISOR,)),
-    Guard("crates/window-glfw/tests/window_glfw.rs", "glfw.window", (SUPERVISOR,)),
+    Guard("crates/window-glfw/tests/window_glfw.rs", "glfw.window", (SUPERVISOR, ACTIVATION_WATCH)),
     # The application's tests and the shipped configuration, scripts and CLI spec.
     # CK-99: the Vulkan real-window case also draws the demonstration's image, and the headless case runs the quad
     # demonstration. Replacing the image is a file change that must not open a window by itself (`rust.app`
@@ -1849,6 +1883,7 @@ GUARDS: tuple[Guard, ...] = (
             "config/demo-quad-vulkan.toml",
             # CK-159: the common demonstration it runs on `glfw-vulkan`, unchanged.
             "config/demo-scene.toml",
+            ACTIVATION_WATCH,
             "scripts/ui/demo_scene.lua",
             "scripts/gameplay/main.lua",
             "assets/",
@@ -1867,7 +1902,7 @@ GUARDS: tuple[Guard, ...] = (
     Guard(
         "apps/codekarl/tests/windowed.rs",
         "native.window",
-        ("config/codekarl.toml", "scripts/ui/main.lua", "assets/"),
+        ("config/codekarl.toml", "scripts/ui/main.lua", "assets/", ACTIVATION_WATCH),
         unselected=(
             ("config/codekarl.toml", OWNER_RULE),
             ("scripts/ui/main.lua", OWNER_RULE),
@@ -1886,6 +1921,7 @@ GUARDS: tuple[Guard, ...] = (
         (
             "crates/render-2d/tests/scale/fixtures.rs",
             "crates/render-2d/tests/scale/layout.rs",
+            ACTIVATION_WATCH,
         ),
         unselected=(
             (
@@ -1898,6 +1934,7 @@ GUARDS: tuple[Guard, ...] = (
                 "the scale group is optional and owner-scheduled: no file change selects it, and the pure tests "
                 "in `render2d.core` judge the layout",
             ),
+            (ACTIVATION_WATCH, "metal.scale is optional and only runs when the owner schedules it"),
         ),
     ),
     Guard(

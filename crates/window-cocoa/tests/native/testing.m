@@ -7,6 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "testing.h"
+#include "activation_watch.inc"
 
 /* The subtype of the identifiable events the tests post, and the mark their synthetic keyboard events
  * carry in kCGEventSourceUserData (real input carries 0). */
@@ -39,6 +40,7 @@ static BOOL ck_is_wake_event(NSEvent *event) {
  * ------------------------------------------------------------------------------------------- */
 
 static CKWinState *ck_state(void);
+static NSWindow *ck_window(void);
 
 @interface CKTestApplication : NSApplication
 @end
@@ -590,14 +592,16 @@ int32_t ck_win_test_key_table(uint32_t position, uint16_t *key_code, uint8_t *ke
 void ck_win_test_resign_key(void) {
     @autoreleasepool {
         [[NSNotificationCenter defaultCenter] postNotificationName:NSWindowDidResignKeyNotification
-                                                            object:ck_window()];
+                                                            object:ck_window()
+                                                          userInfo:@{CK_SYNTHETIC_FOCUS_NOTIFICATION: @YES}];
     }
 }
 
 void ck_win_test_become_key(void) {
     @autoreleasepool {
         [[NSNotificationCenter defaultCenter] postNotificationName:NSWindowDidBecomeKeyNotification
-                                                            object:ck_window()];
+                                                            object:ck_window()
+                                                          userInfo:@{CK_SYNTHETIC_FOCUS_NOTIFICATION: @YES}];
     }
 }
 

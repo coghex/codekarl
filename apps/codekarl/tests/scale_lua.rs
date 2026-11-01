@@ -28,6 +28,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+#[path = "../../../crates/window/tests/support/activation_watch.rs"]
+mod activation_watch;
 
 #[expect(
     dead_code,
@@ -82,10 +84,16 @@ fn block_signals() {
 
 /// The worker: the application plus the keyboard filter.
 fn worker(arguments: Vec<std::ffi::OsString>) -> ExitCode {
+    ck_window::test_support::open_windows_without_activation();
     block_signals();
     // SAFETY: main thread; installs one local event monitor, once, before the first window.
     unsafe { ck_app_t_install_input_filter() };
+    activation_watch::install(false);
+    eprintln!("scale-lua worker: activation watch installed");
+    let _unfocused_updates = ck_window::test_support::allow_updates_while_unfocused();
     let code = codekarl::main_entry(arguments);
+    activation_watch::assert_clean();
+    eprintln!("scale-lua worker: activation watch clean");
     // SAFETY: reads an atomic counter.
     eprintln!("scale-lua worker: the filter dropped {} keys", unsafe {
         ck_app_t_dropped_keys()
@@ -243,6 +251,14 @@ fn supervisor() -> ExitCode {
     for (name, stream) in [("stdout", &stdout), ("stderr", &stderr)] {
         if let Err(error) = stream {
             problems.push(format!("{name}: {error}"));
+        }
+    }
+    for marker in [
+        "scale-lua worker: activation watch installed",
+        "scale-lua worker: activation watch clean",
+    ] {
+        if !stderr_text.contains(marker) {
+            problems.push(format!("worker did not report {marker:?}"));
         }
     }
     let records: Vec<&str> = stdout_text

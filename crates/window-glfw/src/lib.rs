@@ -31,7 +31,9 @@
 //! policy: no Dock icon, not in Cmd-Tab, and it cannot become the active application, so its window is drawn
 //! but stays behind the terminal and never receives key events. The backend therefore sets the regular
 //! policy itself after `glfwInit` (leaving it when it is already regular) and, when the window is created,
-//! asks for the application to be activated and the window to be key and in front. Those two `AppKit` calls
+//! normally asks for the application to be activated and the window to be key and in front. Test workers
+//! that enable `ck-window`'s test-support feature can suppress the focus hints and activation request before
+//! creating a backend; normal builds cannot set that process-local switch. Those two `AppKit` calls
 //! are a small Objective-C source in `native/`, built into the library by `build.rs` (its own archive,
 //! separate from the test support's); an activation request may be declined by the system and is not waited
 //! for.
@@ -73,8 +75,7 @@
 //!
 //! # Tests while the owner types
 //!
-//! The tests open real windows that may take focus while the owner types, Escape included, and give the
-//! same result however much is typed. **None of the test support is part of this library**: it lives in
+//! Window tests do not take focus, except for explicitly named focus cases. **None of the test support is part of this library**: it lives in
 //! `tests/` and its native part is built into a separate archive that only the test executable links; a
 //! test checks the library's rlib for its symbols.
 

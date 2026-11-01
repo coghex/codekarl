@@ -1,4 +1,8 @@
 //! The backend: `ck-window`'s [`Backend`] on `AppKit`.
+//!
+//! Production window creation requests application and key-window activation. Test workers that enable
+//! `ck-window`'s test-support feature can disable those requests before creating a backend; that exception
+//! is process-local and unavailable in normal builds.
 
 use std::ffi::{CStr, c_char, c_void};
 use std::marker::PhantomData;
@@ -238,6 +242,7 @@ impl Backend for CocoaBackend {
                 desc.title.len(),
                 desc.width,
                 desc.height,
+                i32::from(ck_window::window_activation_allowed()),
                 &raw mut layer,
                 &raw mut pixel_width,
                 &raw mut pixel_height,

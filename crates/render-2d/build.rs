@@ -191,6 +191,7 @@ fn common_flags(target: &str) -> (OsString, &'static str) {
 fn vulkan_testing() {
     const SOURCE: &str = "../window-glfw/tests/native/testing.m";
     println!("cargo::rerun-if-changed={SOURCE}");
+    println!("cargo::rerun-if-changed=../window-cocoa/tests/native/activation_watch.inc");
     println!("cargo::rerun-if-changed=../window-glfw/tests/native/testing.h");
     println!("cargo::rerun-if-changed=build.rs");
     for key in [
@@ -240,6 +241,7 @@ fn vulkan_testing() {
 /// The `metal` branch: this crate's own keyboard filter for the Metal window test.
 fn metal_testing() {
     println!("cargo::rerun-if-changed=tests/native/testing.m");
+    println!("cargo::rerun-if-changed=../window-cocoa/tests/native/activation_watch.inc");
     for key in [
         "DEVELOPER_DIR",
         "SDKROOT",

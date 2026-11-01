@@ -167,6 +167,7 @@ fn main() {
         "native/window.m",
         "tests/native/testing.h",
         "tests/native/testing.m",
+        "tests/native/activation_watch.inc",
     ] {
         println!("cargo::rerun-if-changed={input}");
     }

@@ -4,6 +4,11 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <unistd.h>
+#define CK_APP_T_TIMEOUT (-3)
+#define CK_APP_T_NO_WINDOW (-1)
+#define CK_APP_T_SEVERAL_WINDOWS (-2)
+extern void glfwPostEmptyEvent(void);
+#include "../../../../crates/window-cocoa/tests/native/activation_watch.inc"
 
 /* Test support for the application's windowed tests (tests/windowed.rs and tests/vulkan_app.rs), built into an archive
  * that only the package's integration tests link (build.rs). None of it is part of the library or the binary. Main
@@ -15,6 +20,7 @@
 
 static id ck_app_input_filter = nil;
 static _Atomic uint64_t ck_app_dropped;
+static NSWindow *ck_app_the_window(int32_t *error);
 
 /* The test-only input filter: a local event monitor, which AppKit runs inside -[NSApplication sendEvent:] before
  * the event reaches a window, its key equivalents, a responder or text dispatch. It drops every keyboard event
@@ -32,6 +38,12 @@ void ck_app_t_install_input_filter(void) {
             CGEventRef raw = event.CGEvent;
             if (raw != NULL &&
                 CGEventGetIntegerValueField(raw, kCGEventSourceUserData) == CK_TEST_INPUT_MARK) {
+                int32_t error = CK_APP_T_NO_WINDOW;
+                NSWindow *window = ck_app_the_window(&error);
+                if (window != nil && !window.keyWindow) {
+                    [window sendEvent:event];
+                    return nil;
+                }
                 return event;
             }
             atomic_fetch_add(&ck_app_dropped, 1);
@@ -134,10 +146,6 @@ void ck_app_t_start_typist(void) {
 
 /* Runs `work` on the main queue and returns its result; callable from any thread. The caller waits at most one
  * second: a main queue that does not run the block gives CK_APP_T_TIMEOUT instead of a hang or a late answer. */
-#define CK_APP_T_TIMEOUT (-3)
-#define CK_APP_T_NO_WINDOW (-1)
-#define CK_APP_T_SEVERAL_WINDOWS (-2)
-
 static int32_t ck_app_on_main(int32_t (^work)(void)) {
     if ([NSThread isMainThread]) {
         return work();
@@ -199,6 +207,12 @@ int32_t ck_app_t_deminiaturize(void) {
         [window deminiaturize:nil];
         return 1;
     });
+}
+
+/* Wakes the GLFW event pump after the driver has observed the native window restored. */
+int32_t ck_app_t_wake_pump(void) {
+    glfwPostEmptyEvent();
+    return 1;
 }
 
 /* The one GLFW window's actual state, read on the main queue: bit 0 is isMiniaturized, bit 1 is isVisible. A

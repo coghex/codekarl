@@ -532,7 +532,16 @@ class Levels(CheckFixture):
             (by_name["glfw.window"].needs, by_name["glfw.core"].needs), ("window", "plain")
         )
         self.assertEqual(
-            by_name["glfw.window"].paths, ("crates/window-glfw/", "apps/codekarl/tests/supervisor/")
+            by_name["glfw.window"].paths,
+            (
+                "crates/window-glfw/",
+                "apps/codekarl/tests/supervisor/",
+                "crates/window-glfw/tests/native/",
+                "crates/window-glfw/tests/support/",
+                "crates/window-cocoa/tests/native/activation_watch.inc",
+                "crates/window/tests/support/activation_watch.rs",
+                "crates/window-glfw/build.rs",
+            ),
         )
         # CK-79: the Vulkan presenter's two groups, each selected only by the crate's own paths.
         self.assertEqual(
@@ -573,6 +582,9 @@ class Levels(CheckFixture):
                 "apps/codekarl/tests/supervisor/",
                 "crates/window-glfw/tests/native/",
                 "crates/window-glfw/tests/support/",
+                "crates/window-cocoa/tests/native/activation_watch.inc",
+                "crates/window/tests/support/activation_watch.rs",
+                "crates/window-glfw/build.rs",
             ),
         )
         # CK-80: the application's glfw-vulkan path, a window group selected only by its own files.
@@ -590,6 +602,8 @@ class Levels(CheckFixture):
                 "apps/codekarl/src/vulkan/",
                 "apps/codekarl/tests/native/",  # CK-159: its native source
                 "apps/codekarl/tests/vulkan_app.rs",
+                "crates/window-cocoa/tests/native/activation_watch.inc",
+                "crates/window/tests/support/activation_watch.rs",
                 "config/demo-glfw-vulkan.toml",
                 "config/demo-glfw-vulkan-decline.toml",
                 "config/demo-glfw-vulkan-callback-error.toml",

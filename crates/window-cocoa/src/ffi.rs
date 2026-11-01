@@ -79,6 +79,7 @@ unsafe extern "C" {
         title_length: usize,
         width: u32,
         height: u32,
+        activate: i32,
         layer: *mut *mut c_void,
         pixel_width: *mut u32,
         pixel_height: *mut u32,

@@ -58,6 +58,8 @@ use ck_window::{
     RequestWriter, Requests, UiAnswer, UiEvent, UiLink, WindowDesc, run,
 };
 use ck_window_glfw::{GlfwBackend, GlfwHandles, VulkanLoaderForGlfw};
+#[path = "../../window/tests/support/activation_watch.rs"]
+mod activation_watch;
 
 #[path = "../../../apps/codekarl/tests/supervisor/mod.rs"]
 #[expect(
@@ -86,7 +88,6 @@ const DEADLINE: Duration = Duration::from_secs(60);
 const SCENARIOS: [&str; 4] = ["lifecycle", "movement-reupload", "legacy", "early-close"];
 
 unsafe extern "C" {
-    fn ck_glfw_test_activate();
     fn ck_glfw_test_install_input_filter();
     fn ck_glfw_test_start_typist();
 }
@@ -1158,9 +1159,6 @@ impl UiLink for Script {
         match event {
             UiEvent::Opened => {
                 self.opened = true;
-                // SAFETY: a plain AppKit call on the main thread (the loop's thread, which calls this); it makes the window key so
-                // that the typist's events reach the application, where the filter drops them.
-                unsafe { ck_glfw_test_activate() };
             }
             UiEvent::CloseRequested { .. } => {
                 CLOSE_REQUESTS.fetch_add(1, Ordering::SeqCst);
@@ -1193,6 +1191,8 @@ fn worker(name: &str) -> ExitCode {
         eprintln!("unknown worker scenario {name:?}");
         return ExitCode::FAILURE;
     };
+    ck_window::test_support::open_windows_without_activation();
+    activation_watch::install(false);
     watchdog();
     let notifier = Notifier::new();
     let requests = Requests::new();
@@ -1419,6 +1419,7 @@ fn worker(name: &str) -> ExitCode {
         problems.push("the typist's keys were never dropped".to_owned());
     }
     if problems.is_empty() {
+        activation_watch::assert_clean();
         println!("worker: {name} ended {end:?}");
         ExitCode::SUCCESS
     } else {

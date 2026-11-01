@@ -17,6 +17,8 @@
 //! once with validation on), `heterogeneous` (H) and `caps` (K1 to K3; K0 is a preflight). The application's Lua profile (M-lua) is
 //! `apps/codekarl/tests/scale_lua.rs`.
 
+#[path = "../../window/tests/support/activation_watch.rs"]
+mod activation_watch;
 #[path = "scale/evidence.rs"]
 mod evidence;
 #[path = "scale/fixtures.rs"]
@@ -277,6 +279,7 @@ fn worker_main(worker: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    activation_watch::assert_clean();
     rig::finish(&result, &ended)
 }
 

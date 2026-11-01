@@ -556,6 +556,14 @@ impl Backend for GlfwBackend {
         unsafe { ffi::glfwWindowHint(ffi::CLIENT_API, ffi::NO_API) };
         // SAFETY: as above: ... and a fixed-size window.
         unsafe { ffi::glfwWindowHint(ffi::RESIZABLE, ffi::FALSE) };
+        let activation_allowed = ck_window::window_activation_allowed();
+        if !activation_allowed {
+            // SAFETY: GLFW hints are set on the main thread before creation. These keep the
+            // test-only non-focus window from requesting focus when it is shown.
+            unsafe { ffi::glfwWindowHint(ffi::FOCUSED, ffi::FALSE) };
+            // SAFETY: as above; suppress focus-on-show as well as initial focus.
+            unsafe { ffi::glfwWindowHint(ffi::FOCUS_ON_SHOW, ffi::FALSE) };
+        }
         // SAFETY: the title is NUL-terminated and valid for the call; no monitor and no shared window.
         let created = unsafe {
             ffi::glfwCreateWindow(
@@ -600,7 +608,7 @@ impl Backend for GlfwBackend {
         let pixel_size = framebuffer_size(window);
         self.window = Some(window);
         // A request the system may decline: not waited for, retried or failed on.
-        if let Err(reason) = activation::request_activation(window) {
+        if activation_allowed && let Err(reason) = activation::request_activation(window) {
             let at = Instant::now() + LOG_WAIT;
             let _ = ck_log::log_within!(
                 Level::Warn,

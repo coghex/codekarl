@@ -196,6 +196,7 @@ fn main() {
         "native/activation.m",
         "tests/native/testing.h",
         "tests/native/testing.m",
+        "../window-cocoa/tests/native/activation_watch.inc",
     ] {
         println!("cargo::rerun-if-changed={input}");
     }

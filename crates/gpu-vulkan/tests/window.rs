@@ -37,6 +37,8 @@ use ck_gpu_vulkan::{
 };
 use ck_window::{Backend, Wait, WindowDesc};
 use ck_window_glfw::{GlfwBackend, GlfwHandles, VulkanLoaderForGlfw};
+#[path = "../../window/tests/support/activation_watch.rs"]
+mod activation_watch;
 
 #[path = "../../../apps/codekarl/tests/supervisor/mod.rs"]
 #[expect(
@@ -191,7 +193,6 @@ impl Rig {
         let created = backend
             .create_window(&desc())
             .expect("the window is created");
-        support::activate();
         let handles = created.handles;
         let instance = create_instance_with(
             &loader,
@@ -2524,13 +2525,18 @@ fn worker(name: &str) -> ExitCode {
         eprintln!("worker: no case called {name}");
         return ExitCode::from(1);
     };
+    ck_window::test_support::open_windows_without_activation();
+    activation_watch::install(false);
     // The filter is in before the first window and stays for the whole life of the worker.
     support::install_input_filter();
     if env::var(TYPING_VARIABLE).as_deref() == Ok("1") {
         support::start_typist();
     }
     match catch_unwind(AssertUnwindSafe(case)) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            activation_watch::assert_clean();
+            ExitCode::SUCCESS
+        }
         Err(payload) => {
             let text = payload
                 .downcast_ref::<String>()

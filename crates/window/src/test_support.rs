@@ -11,6 +11,19 @@ use std::{
 
 static ALLOW_UNFOCUSED_UPDATES: AtomicBool = AtomicBool::new(false);
 static QUEUED_FOCUS_LOST: AtomicBool = AtomicBool::new(false);
+static WINDOWS_WITHOUT_ACTIVATION: AtomicBool = AtomicBool::new(false);
+
+/// Prevent new test-worker windows from requesting application or key-window activation.
+///
+/// This process-local switch is one-way and idempotent. Set it before creating a backend. It is
+/// available only to test-support builds; ordinary application builds retain the production path.
+pub fn open_windows_without_activation() {
+    WINDOWS_WITHOUT_ACTIVATION.store(true, Ordering::Release);
+}
+
+pub(crate) fn windows_without_activation() -> bool {
+    WINDOWS_WITHOUT_ACTIVATION.load(Ordering::Acquire)
+}
 
 /// Temporarily let update scheduling continue while the window is unfocused.
 ///
@@ -59,7 +72,10 @@ impl Drop for AllowUnfocusedUpdates {
 
 #[cfg(test)]
 mod tests {
-    use super::{allow_updates_while_unfocused, updates_may_run_unfocused};
+    use super::{
+        allow_updates_while_unfocused, open_windows_without_activation, updates_may_run_unfocused,
+        windows_without_activation,
+    };
 
     #[test]
     fn unfocused_update_override_is_scoped_to_its_guard() {
@@ -69,5 +85,15 @@ mod tests {
             assert!(updates_may_run_unfocused());
         }
         assert!(!updates_may_run_unfocused());
+    }
+
+    #[test]
+    fn window_activation_switch_is_one_way_and_idempotent() {
+        assert!(crate::window_activation_allowed());
+        open_windows_without_activation();
+        assert!(!crate::window_activation_allowed());
+        open_windows_without_activation();
+        assert!(!crate::window_activation_allowed());
+        assert!(windows_without_activation());
     }
 }

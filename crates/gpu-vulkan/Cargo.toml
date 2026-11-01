@@ -11,7 +11,7 @@ ash = { version = "0.38", default-features = false, features = ["loaded", "debug
 # The library has no normal dependency on any window crate (design §3): the surface arrives as a raw
 # handle. The windowed tests create their GLFW windows through these two, in the test binary only.
 [dev-dependencies]
-ck-window = { path = "../window" }
+ck-window = { path = "../window", features = ["test-support"] }
 ck-window-glfw = { path = "../window-glfw" }
 
 [[test]]
