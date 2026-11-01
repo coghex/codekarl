@@ -6,6 +6,8 @@
     reason = "the layout module is shared with the harness, which uses what these tests do not"
 )]
 
+#[path = "vulkan_scale/diagnostic.rs"]
+mod diagnostic;
 #[path = "scale/layout.rs"]
 mod layout;
 // The gate's arithmetic reads the presenter's own types, which exist with the Metal feature on macOS (the group's
@@ -23,6 +25,86 @@ use layout::{
     VIEWS, code_bits, decode_bits, identity_pixels, identity_png, png_of, scene_quad, set_b_bytes,
     set_b_count, set_b_side, view_quad,
 };
+
+/// CK-168's fixed matrix uses only the reviewed A-D cells; C's 65,536-quad bindless cell is A's shared cell.
+#[test]
+fn ck168_matrix_cells_match_the_spec() {
+    let cells: Vec<_> = diagnostic::cells().collect();
+    assert_eq!(cells.len(), 13, "C's 65,536-quad case shares A");
+    for count in [1, 256, 4_096, 32_768] {
+        for mode in ["bindless", "per-revision"] {
+            let cell = diagnostic::parse(&format!("a-{mode}-{count}")).expect("listed A cell");
+            assert_eq!(cell.live_textures, count);
+            assert_eq!(cell.sampled_textures, count);
+            assert_eq!(cell.quads, 65_536);
+            assert_eq!(cell.ordinary, mode == "per-revision");
+            assert_eq!(cell.bindless_slots, 131_072);
+        }
+    }
+    for (name, sampled) in [("b-bindless-1", 1), ("b-bindless-256", 256)] {
+        let cell = diagnostic::parse(name).expect("listed B cell");
+        assert_eq!(
+            (cell.live_textures, cell.sampled_textures, cell.quads),
+            (32_768, sampled, 65_536)
+        );
+        assert!(!cell.ordinary);
+    }
+    let c = diagnostic::parse("c-bindless-32768").expect("listed C cell");
+    let shared = diagnostic::parse("a-bindless-32768").expect("A's shared C cell");
+    assert_eq!(
+        (c.live_textures, c.sampled_textures, c.quads),
+        (32_768, 32_768, 32_768)
+    );
+    assert_eq!(shared.quads, 65_536);
+    assert_eq!(c.bindless_slots, shared.bindless_slots);
+    for (name, slots) in [("d-bindless-33794", 33_794), ("d-bindless-131072", 131_072)] {
+        let cell = diagnostic::parse(name).expect("listed D cell");
+        assert_eq!(
+            (cell.live_textures, cell.sampled_textures, cell.quads),
+            (32_768, 32_768, 65_536)
+        );
+        assert_eq!(cell.bindless_slots, slots);
+        assert_eq!(cell.max_textures, 32_769);
+    }
+    assert_eq!(
+        diagnostic::parse("d-bindless-33794").unwrap().max_textures,
+        diagnostic::parse("d-bindless-131072").unwrap().max_textures
+    );
+    assert!(diagnostic::parse("a-bindless-64").is_none());
+}
+
+/// The CK-168 texture mapping uses every sample uniformly and keeps CK-130's positions intact.
+#[test]
+fn ck168_texture_mapping_is_uniform_and_preserves_geometry() {
+    for (quads, sampled) in [
+        (65_536, 1),
+        (65_536, 256),
+        (65_536, 4_096),
+        (65_536, 32_768),
+        (32_768, 32_768),
+    ] {
+        let mut counts = vec![0_u32; sampled as usize];
+        for index in 0..quads {
+            let placed = diagnostic::placement(index, sampled).expect("valid diagnostic mapping");
+            counts[placed.texture as usize] += 1;
+        }
+        assert!(
+            counts.iter().all(|count| *count == quads / sampled),
+            "{sampled} textures were not sampled evenly by {quads} quads"
+        );
+    }
+    let base = scene_quad(32_769, true);
+    let changed = diagnostic::placement(32_769, 32_768).expect("second-pass mapping");
+    assert_eq!(base.texture, 0, "CK-130's i&!1 mapping is uneven");
+    assert_eq!(changed.texture, 1);
+    assert_eq!(
+        (base.x, base.y, base.width, base.height),
+        (changed.x, changed.y, changed.width, changed.height)
+    );
+    assert!(diagnostic::placement(65_536, 32_768).is_none());
+    assert!(diagnostic::placement(0, 0).is_none());
+    assert!(diagnostic::placement(0, 32_769).is_none());
+}
 
 /// Every one of the 65,536 quads lies inside the 1920 x 1080 drawable, and every pass-1 quad overlaps a pass-0 quad
 /// (r2, F1: the offset turns inward at the last column and row).
