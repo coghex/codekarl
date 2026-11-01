@@ -58,8 +58,9 @@ by an actor who can edit the gate or its state directory.
 ## Check levels and timeouts
 
 The checks are a catalog of groups in `tools/check.py` (CK-77, modelled on the owner's moskophoros validation). Each group has an id, a
-category (`floor`, `affected`, `optional`), its exact commands and the paths that affect it, and a class: plain, GPU, or taking the
-desktop's focus (it opens real windows). A group's class covers every command it starts, nested checks included.
+category (`floor`, `affected`, `optional`), its exact commands and the paths that affect it, and a class: plain, GPU, or opening real
+windows. Window tests ignore keyboard and mouse input by default; `glfw.window-focus` is the explicitly owner-scheduled focus group.
+A group's class covers every command it starts, nested checks included.
 
 - **`ck check --changed`** (the planned check, used while working and before recording): compares the copy with the accepted base and
   runs the floor groups plus every affected group a changed path matches, printing every group as run or skip with the reason. An
