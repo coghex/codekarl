@@ -82,6 +82,8 @@ int64_t ck_glfw_test_window_number(void);
  * ordered or activated under the pointer: a system event that ends a blocking wait with nothing for the
  * backend to hand over. Any thread. */
 void ck_glfw_test_post_mouse_moved(int64_t window_number);
+/* Schedules only -[NSWindow deminiaturize:] on the main queue after the delay; posts no event and calls no GLFW API. */
+int32_t ck_glfw_test_schedule_restore(uint32_t delay_milliseconds);
 
 /* A trace of what the application receives, for diagnosing a wait that ended early: every event AppKit
  * dispatches to the application (type and subtype) and every notification posted on the default center, each

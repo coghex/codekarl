@@ -61,6 +61,11 @@ fn the_gate_holds_the_first_frame_until_the_compat_image_resolves() {
         "a held want is not attempted again"
     );
     assert_eq!(presenter.scene_stats().frames, 0, "nothing was drawn");
+    assert!(
+        harness.drawn().is_empty(),
+        "the held build is a build and not a drawn frame: {:?}",
+        harness.drawn()
+    );
     harness.offer(5, 4, [0, 255, 0, 255]);
     (presenter.texture_wake())();
     harness.wait_stats(&presenter, "the frame once the image is there", |stats| {
@@ -70,6 +75,15 @@ fn the_gate_holds_the_first_frame_until_the_compat_image_resolves() {
         harness.compat_kinds(),
         vec![CompatKind::Gated, CompatKind::Drew],
         "held once, then drawn with the compatibility image"
+    );
+    let drawn = harness.drawn();
+    assert_eq!(drawn.len(), 1, "two builds, one drawn frame: {drawn:?}");
+    assert_eq!(drawn[0].ordinal, 1);
+    assert_eq!(drawn[0].generation, Some(harness.generation));
+    assert_eq!(
+        drawn[0].counters,
+        harness.builds()[1].counters,
+        "the drawn frame carries the counters of the build that was drawn, not the held one's"
     );
     harness.finish(&mut presenter);
 }

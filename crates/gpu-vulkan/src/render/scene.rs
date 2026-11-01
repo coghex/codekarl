@@ -32,7 +32,7 @@ use crate::Error;
 use crate::context::{RenderQueue, VulkanContext};
 use crate::gpu::{FrameExtras, Gpu};
 use crate::gpu_quad::format_supported;
-use crate::hooks::{BuildRecord, Event, Observer, TestHooks, WaitKind};
+use crate::hooks::{BuildRecord, DrawnRecord, Event, Observer, TestHooks, WaitKind};
 use crate::ledger::{Frame, Ledger, PresentCall, PresentSlot, Presented, Proof};
 use crate::revisions::{CheckerProgress, LedgerError};
 use crate::scene::{
@@ -1120,8 +1120,9 @@ impl Core<'_> {
                     ));
                 }
                 if matches!(call, PresentCall::Success | PresentCall::Suboptimal) {
+                    let counters = self.counters_for_drawn();
                     self.hand_off(handed_at, present_id);
-                    self.drawn(rgb);
+                    self.drawn(rgb, counters);
                 }
                 if rebuild && call == PresentCall::OutOfDate {
                     self.rebuild_wanted = true;
@@ -1154,6 +1155,17 @@ impl Core<'_> {
         }
     }
 
+    /// What the frame about to be queued counted, read only for a test that asked for the drawn records: with `hooks.scene.drawn` unset
+    /// this is one `is_some` test.
+    fn counters_for_drawn(&self) -> Option<crate::FrameCounters> {
+        self.hooks
+            .scene
+            .drawn
+            .is_some()
+            .then(|| self.timing.built.map(|(counters, _)| counters))
+            .flatten()
+    }
+
     /// The frame was handed to the presentation engine at `handed_at`: its counts and present number go to the step's record.
     fn hand_off(&mut self, handed_at: u64, present_id: Option<u32>) {
         if let Some((counters, bindless)) = self.timing.built.take() {
@@ -1168,10 +1180,25 @@ impl Core<'_> {
         }
     }
 
-    /// A frame was queued for presentation.
-    fn drawn(&mut self, rgb: [f32; 3]) {
+    /// A frame was queued for presentation; `counters` is what its build counted, read only when `hooks.scene.drawn` is set.
+    fn drawn(&mut self, rgb: [f32; 3], counters: Option<crate::FrameCounters>) {
         self.presented += 1;
-        lock(&self.shared.scene_stats).frames += 1;
+        // The one lock the frame count always took; the ordinal is read inside it.
+        let ordinal = {
+            let mut stats = lock(&self.shared.scene_stats);
+            stats.frames += 1;
+            stats.frames
+        };
+        // Only a test sets `drawn`: in production it is `None`, and neither this lock nor the push nor any allocation happens.
+        if let Some(drawn) = &self.hooks.scene.drawn {
+            lock(drawn).push(DrawnRecord {
+                ordinal,
+                generation: self.frame_generation,
+                // The frame being presented is the last one submitted.
+                submission: self.previous.unwrap_or(0),
+                counters: counters.unwrap_or_default(),
+            });
+        }
         if let Some(generation) = self.frame_generation {
             // Value first, flag second: a reader that sees the flag sees a generation.
             self.shared

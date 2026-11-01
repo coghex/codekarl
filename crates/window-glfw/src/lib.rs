@@ -45,14 +45,15 @@
 //! (Rust names it `main`). The one thing that crosses threads is the wake target
 //! [`wake_target`](ck_window::Backend::wake_target).
 //!
-//! # Events: callbacks only record
+//! # Events: callbacks record; restore wakes
 //!
 //! GLFW delivers events by callback from inside `glfwPollEvents` / `glfwWaitEvents`, and those drain every
 //! pending native event in one call (design §4.2): the accepted [`Backend`](ck_window::Backend) contract
-//! permits that, and nothing here claims to bound it. Every callback only **records** into a fixed-size
-//! [`Pending`](crate) state in constant work and never calls GLFW: the close callback, the key callback
-//! (Escape, action press; a repeat only while no request is pending), the framebuffer-size, content-scale
-//! and refresh callbacks. After GLFW returns, the pump (on the main thread, outside every callback) does
+//! permits that, and nothing here claims to bound it. Callbacks record into a fixed-size [`Pending`](crate)
+//! state in constant work. The restore callback also posts the existing thread-safe sticky wake so a loop
+//! asleep in GLFW's wait re-evaluates its minimise gate; it makes no other GLFW call. The other callbacks
+//! only record: close, key (Escape, action press; a repeat only while no request is pending),
+//! framebuffer-size, content-scale, refresh, and focus. After GLFW returns, the pump (on the main thread, outside every callback) does
 //! the work the records need: it resets the close flag (`glfwSetWindowShouldClose(false)`, which GLFW
 //! permits after its close callback), queries the framebuffer size when the scale changed, and hands over
 //! **at most one close, one pixel size and one needs-display**, the first close source and the latest of

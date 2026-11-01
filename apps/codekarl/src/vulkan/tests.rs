@@ -1130,7 +1130,7 @@ fn unsafe_words(text: &str) -> usize {
 /// test support's `fcntl` calls. The Vulkan integration's five are in `src/vulkan/real.rs`. A source that
 /// is not here has none; a new `unsafe` anywhere (this crate's `lib.rs` included) changes a count and
 /// fails [`every_unsafe_of_codekarl_is_the_accepted_baseline_plus_the_five_of_the_vulkan_integration`].
-const BASELINE: [(&str, usize); 10] = [
+const BASELINE: [(&str, usize); 11] = [
     ("src/native.rs", 1),
     ("src/signals.rs", 16),
     ("src/lifecycle.rs", 1),
@@ -1142,13 +1142,16 @@ const BASELINE: [(&str, usize); 10] = [
     ("tests/windowed.rs", 14),
     // CK-159: the `glfw-vulkan` worker's, the same operations as the windowed worker's plus the window helpers (miniaturize,
     // deminiaturize, state read, the marked key) and its driver's SIGTERM, each with a SAFETY comment. CK-164 adds the
-    // test-only GLFW pump wake after the driver observes the native window restored, with a SAFETY comment.
-    ("tests/vulkan_app.rs", 15),
+    // test-only GLFW pump wake after the driver observes the native window restored, with a SAFETY comment; CK-165 removes it.
+    ("tests/vulkan_app.rs", 14),
     // CK-132: set_cloexec's F_GETFD and F_SETFD, each with a SAFETY comment.
     ("tests/common/mod.rs", 4),
     // CK-130: the scale worker's filter FFI (`ck_app_t_install_input_filter`, `ck_app_t_dropped_keys`) and
     // signal mask, the same operations as the windowed worker's, each with a SAFETY comment.
     ("tests/scale_lua.rs", 7),
+    // CK-162 part C: the Vulkan scale worker's, the same seven as `scale_lua`'s (the filter FFI extern block, the filter
+    // install, the dropped-key read and the signal mask), each call with a SAFETY comment.
+    ("tests/vulkan_scale_lua.rs", 7),
 ];
 
 #[test]

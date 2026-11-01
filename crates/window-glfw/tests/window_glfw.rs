@@ -24,13 +24,17 @@ use std::ffi::{CString, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use ck_window::{Backend, NativeEvent, NativeWake, Notifier, PixelSize, Wait, WindowDesc};
 use ck_window_glfw::{GlfwBackend, GlfwHandles, PumpReport};
+
+type IconifyCallback = extern "C" fn(window: *mut c_void, iconified: i32);
+static ORIGINAL_ICONIFY_CALLBACK: OnceLock<IconifyCallback> = OnceLock::new();
+static RESTORE_CALLBACK_ACK: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "C" {
     fn glfwCreateWindow(
@@ -46,6 +50,19 @@ unsafe extern "C" {
     fn glfwFocusWindow(window: *mut c_void);
     fn glfwPollEvents();
     fn glfwWaitEvents();
+    fn glfwSetWindowIconifyCallback(
+        window: *mut c_void,
+        callback: Option<IconifyCallback>,
+    ) -> Option<IconifyCallback>;
+}
+
+extern "C" fn acknowledge_restore_callback(window: *mut c_void, iconified: i32) {
+    if let Some(original) = ORIGINAL_ICONIFY_CALLBACK.get() {
+        original(window, iconified);
+    }
+    if iconified == 0 {
+        RESTORE_CALLBACK_ACK.store(true, Ordering::SeqCst);
+    }
 }
 
 #[path = "../../window/tests/support/activation_watch.rs"]
@@ -67,6 +84,8 @@ const TYPING_VARIABLE: &str = "CK_GLFW_TEST_TYPING";
 const DEADLINE: Duration = Duration::from_secs(30);
 /// The longest any wait for something that must happen.
 const BOUND: Duration = Duration::from_secs(10);
+/// CK-165's restore must end the backend wait inside this bound, well before its far deadline.
+const RESTORE_WAKE_BOUND: Duration = Duration::from_secs(1);
 /// The window every case opens: 400 by 300 points.
 const WIDTH: u32 = 400;
 const HEIGHT: u32 = 300;
@@ -804,6 +823,84 @@ fn focus_and_minimize() {
     assert!(restored.restored && !restored.minimized);
 }
 
+/// 7d. A native restore wakes `Backend::pump_until` without a test-posted event or another GLFW call.
+fn restore_wakes_the_backend_blocking_wait() {
+    let mut rig = Rig::open();
+    let window = rig.window();
+    let focus_before = support::info().focus;
+    assert!(
+        !focus_before.key,
+        "the test window is not key before restore"
+    );
+
+    // Consume the minimization completely so the backend wait starts with no pending state or queued wake.
+    // SAFETY: `window` belongs to the live rig and this case runs on GLFW's main thread.
+    unsafe { glfwIconifyWindow(window) };
+    let minimized = rig
+        .pump_until(|report| report.minimized)
+        .expect("the minimization callback is consumed before the blocking wait");
+    assert!(minimized.minimized && !minimized.restored);
+    assert!(
+        quiet(&rig.pump(Wait::Poll)),
+        "no minimized state remains pending"
+    );
+
+    RESTORE_CALLBACK_ACK.store(false, Ordering::SeqCst);
+    // SAFETY: `window` is live, and the iconify callback is installed on GLFW's main thread.
+    let original =
+        unsafe { glfwSetWindowIconifyCallback(window, Some(acknowledge_restore_callback)) }
+            .expect("the backend's iconify callback is installed");
+    ORIGINAL_ICONIFY_CALLBACK
+        .set(original)
+        .unwrap_or_else(|_| panic!("the restore observer is installed once per worker process"));
+
+    // The scheduled main-queue block only calls NSWindow deminiaturize:. It does not post an event or call GLFW.
+    let started = Instant::now();
+    assert!(support::schedule_restore(Duration::from_millis(250)));
+    let deadline = started + BOUND;
+    let mut events = Vec::new();
+    while Instant::now() < deadline && !events.contains(&NativeEvent::Restored) {
+        rig.backend
+            .pump_until(&mut |event| events.push(event), deadline, 16);
+    }
+    let elapsed = started.elapsed();
+    let callback_acknowledged = RESTORE_CALLBACK_ACK.load(Ordering::SeqCst);
+    println!(
+        "restore wait observation: callback_acknowledged={callback_acknowledged}, elapsed={elapsed:?}, events={events:?}"
+    );
+    assert!(
+        events.contains(&NativeEvent::Restored),
+        "the backend's own blocking wait hands over Restored before its far deadline; elapsed={elapsed:?}, events={events:?}"
+    );
+    assert!(
+        callback_acknowledged,
+        "the GLFW iconify callback itself acknowledged the restore"
+    );
+
+    let expect_no_wake = env::var_os("CK_GLFW_EXPECT_NO_RESTORE_WAKE").is_some();
+    if expect_no_wake {
+        assert!(
+            elapsed >= RESTORE_WAKE_BOUND,
+            "without the callback wake the acknowledged restore must not end the blocking wait within its observation bound: {elapsed:?}"
+        );
+    } else {
+        assert!(
+            elapsed < RESTORE_WAKE_BOUND,
+            "the restore callback's wake ends the backend wait within the observation bound: {elapsed:?}"
+        );
+    }
+
+    let focus_after = support::info().focus;
+    assert_eq!(
+        focus_after.key, focus_before.key,
+        "restore does not make the window key"
+    );
+    assert_eq!(
+        focus_after.active, focus_before.active,
+        "restore does not activate the application"
+    );
+}
+
 /// 7d. One absolute deadline bounds repeated real waits and the two spec-required negative controls.
 fn deadline_wait_is_bounded() {
     let mut rig = Rig::open();
@@ -1485,7 +1582,7 @@ fn wait_survives_a_system_event() {
 
 type Case = fn();
 
-const CASES: [(&str, Case); 27] = [
+const CASES: [(&str, Case); 28] = [
     ("create_and_destroy", create_and_destroy),
     ("off_the_main_thread", off_the_main_thread),
     (
@@ -1502,6 +1599,10 @@ const CASES: [(&str, Case); 27] = [
     ("normalized_keys", normalized_keys),
     ("modifier_sides_and_order", modifier_sides_and_order),
     ("focus_and_minimize", focus_and_minimize),
+    (
+        "restore_wakes_the_backend_blocking_wait",
+        restore_wakes_the_backend_blocking_wait,
+    ),
     ("deadline_wait_is_bounded", deadline_wait_is_bounded),
     ("wait_modes", wait_modes),
     (

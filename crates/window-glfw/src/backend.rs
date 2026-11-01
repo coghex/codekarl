@@ -117,25 +117,32 @@ fn on_main_thread() -> Result<(), String> {
     }
 }
 
-/// The pending state behind a window's user pointer, for a callback.
+/// The callback state behind a window's user pointer.
+#[derive(Debug)]
+struct CallbackState {
+    pending: Pending,
+    wake: Arc<GlfwWake>,
+}
+
+/// Gets the callback state behind a live window's user pointer.
 ///
 /// # Safety
 ///
 /// `window` is the window of a live [`GlfwBackend`] and the call is made by GLFW, on the main thread,
 /// from inside one of the backend's own `glfwPollEvents` / `glfwWaitEvents` / window calls.
-unsafe fn pending_of<'a>(window: *mut GlfwWindow) -> Option<&'a Pending> {
-    // SAFETY: by the contract above, the user pointer is the address of the backend's boxed `Pending`,
-    // which outlives the window (the backend clears the pointer and destroys the window before it drops
-    // the box) and is only ever used from the main thread.
+unsafe fn callback_state_of<'a>(window: *mut GlfwWindow) -> Option<&'a CallbackState> {
+    // SAFETY: by the contract above, the user pointer is the address of the backend's boxed callback
+    // state, which outlives the window (the backend clears the pointer and destroys the window before it
+    // drops the box) and is only ever used from the main thread.
     let pointer = unsafe { ffi::glfwGetWindowUserPointer(window) };
     // SAFETY: as above; a null pointer (no state attached) gives `None`.
-    unsafe { pointer.cast::<Pending>().as_ref() }
+    unsafe { pointer.cast::<CallbackState>().as_ref() }
 }
 
 extern "C" fn on_close(window: *mut GlfwWindow) {
-    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `pending_of`).
-    if let Some(pending) = unsafe { pending_of(window) } {
-        pending.record_close();
+    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `callback_state_of`).
+    if let Some(state) = unsafe { callback_state_of(window) } {
+        state.pending.record_close();
     }
 }
 
@@ -149,39 +156,44 @@ extern "C" fn on_key(
     let Some(key) = key_from_glfw(key) else {
         return;
     };
-    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `pending_of`).
-    if let Some(pending) = unsafe { pending_of(window) } {
+    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `callback_state_of`).
+    if let Some(state) = unsafe { callback_state_of(window) } {
         match action {
-            ffi::PRESS => pending.record_key(key, true, false),
-            ffi::RELEASE => pending.record_key(key, false, false),
-            ffi::REPEAT => pending.record_key(key, true, true),
+            ffi::PRESS => state.pending.record_key(key, true, false),
+            ffi::RELEASE => state.pending.record_key(key, false, false),
+            ffi::REPEAT => state.pending.record_key(key, true, true),
             _ => {}
         }
     }
 }
 
 extern "C" fn on_focus(window: *mut GlfwWindow, focused: c_int) {
-    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `pending_of`).
-    if let Some(pending) = unsafe { pending_of(window) } {
+    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `callback_state_of`).
+    if let Some(state) = unsafe { callback_state_of(window) } {
         if focused == ffi::TRUE {
-            pending.record_focus_gained();
+            state.pending.record_focus_gained();
         } else {
-            pending.record_focus_lost();
+            state.pending.record_focus_lost();
         }
     }
 }
 
 extern "C" fn on_iconify(window: *mut GlfwWindow, iconified: c_int) {
-    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `pending_of`).
-    if let Some(pending) = unsafe { pending_of(window) } {
-        pending.record_minimized(iconified == ffi::TRUE);
+    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `callback_state_of`).
+    if let Some(state) = unsafe { callback_state_of(window) } {
+        state.pending.record_minimized(iconified == ffi::TRUE);
+        if iconified == ffi::FALSE {
+            // A restore can arrive while the application is asleep in GLFW's event wait. The wake is
+            // sticky, so the loop re-evaluates its minimise gate after this callback returns.
+            state.wake.wake();
+        }
     }
 }
 
 extern "C" fn on_size(window: *mut GlfwWindow, width: c_int, height: c_int) {
-    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `pending_of`).
-    if let Some(pending) = unsafe { pending_of(window) } {
-        pending.record_size(
+    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `callback_state_of`).
+    if let Some(state) = unsafe { callback_state_of(window) } {
+        state.pending.record_size(
             u32::try_from(width).unwrap_or(0),
             u32::try_from(height).unwrap_or(0),
         );
@@ -189,16 +201,16 @@ extern "C" fn on_size(window: *mut GlfwWindow, width: c_int, height: c_int) {
 }
 
 extern "C" fn on_scale(window: *mut GlfwWindow, _x: f32, _y: f32) {
-    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `pending_of`).
-    if let Some(pending) = unsafe { pending_of(window) } {
-        pending.record_scale_changed();
+    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `callback_state_of`).
+    if let Some(state) = unsafe { callback_state_of(window) } {
+        state.pending.record_scale_changed();
     }
 }
 
 extern "C" fn on_refresh(window: *mut GlfwWindow) {
-    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `pending_of`).
-    if let Some(pending) = unsafe { pending_of(window) } {
-        pending.record_display();
+    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `callback_state_of`).
+    if let Some(state) = unsafe { callback_state_of(window) } {
+        state.pending.record_display();
     }
 }
 
@@ -305,8 +317,8 @@ fn abandon(installed: Installed<Glfw>) {
 /// [`wake_target`](Backend::wake_target) returns.
 #[derive(Debug)]
 pub struct GlfwBackend {
-    /// What the callbacks record into; its address is the window's user pointer.
-    pending: Box<Pending>,
+    /// The callbacks' recorded state and the wake they may post; its address is the window's user pointer.
+    callback: Box<CallbackState>,
     window: Option<NonNull<GlfwWindow>>,
     wake: Arc<GlfwWake>,
     initialised: bool,
@@ -380,8 +392,12 @@ impl GlfwBackend {
         }
         let wake = Arc::new(GlfwWake::default());
         wake.set_live(true);
+        let callback = Box::new(CallbackState {
+            pending: Pending::default(),
+            wake: Arc::clone(&wake),
+        });
         Ok(Self {
-            pending: Box::new(Pending::default()),
+            callback,
             window: None,
             wake,
             initialised: true,
@@ -426,7 +442,7 @@ impl GlfwBackend {
             return PumpReport::default();
         }
         // A blocking pump never blocks with state already waiting.
-        let wait = effective_wait(wait, self.pending.is_pending());
+        let wait = effective_wait(wait, self.callback.pending.is_pending());
         match wait {
             // SAFETY: GLFW is initialised and this runs on the main thread (the backend is not Send).
             Wait::Poll => unsafe { ffi::glfwPollEvents() },
@@ -445,7 +461,7 @@ impl GlfwBackend {
                 unsafe { ffi::glfwSetWindowShouldClose(window.as_ptr(), ffi::FALSE) };
             }
         }
-        let taken = self.pending.take();
+        let taken = self.callback.pending.take();
         let size = match (taken.query_size, self.window) {
             (true, Some(window)) => Some(framebuffer_size(window)),
             _ => taken
@@ -584,10 +600,11 @@ impl Backend for GlfwBackend {
                 return Err(message);
             }
         };
-        self.pending.take();
-        let state: *const Pending = std::ptr::from_ref(&*self.pending);
-        // SAFETY: the window is live and this is the main thread. The user pointer is the boxed state,
-        // which outlives the window; the callbacks only record into it and call no GLFW function.
+        self.callback.pending.take();
+        let state: *const CallbackState = std::ptr::from_ref(&*self.callback);
+        // SAFETY: the window is live and this is the main thread. The user pointer is the boxed callback
+        // state, which outlives the window; callbacks record state and the restore callback may post its
+        // thread-safe sticky wake.
         unsafe {
             ffi::glfwSetWindowUserPointer(window.as_ptr(), state.cast_mut().cast::<c_void>());
         };
@@ -603,7 +620,7 @@ impl Backend for GlfwBackend {
         unsafe { ffi::glfwSetWindowRefreshCallback(window.as_ptr(), Some(on_refresh)) };
         // SAFETY: as above; the focus callback only records.
         unsafe { ffi::glfwSetWindowFocusCallback(window.as_ptr(), Some(on_focus)) };
-        // SAFETY: as above; the iconify callback only records.
+        // SAFETY: as above; the iconify callback records the state and posts the sticky restore wake.
         unsafe { ffi::glfwSetWindowIconifyCallback(window.as_ptr(), Some(on_iconify)) };
         let pixel_size = framebuffer_size(window);
         self.window = Some(window);
@@ -658,7 +675,7 @@ impl Backend for GlfwBackend {
         if !self.initialised {
             return;
         }
-        let wait = effective_wait(Wait::UntilEvent, self.pending.is_pending());
+        let wait = effective_wait(Wait::UntilEvent, self.callback.pending.is_pending());
         match (wait, timeout_seconds(deadline, Instant::now())) {
             (Wait::Poll, _) | (_, None) => {
                 // SAFETY: GLFW is initialised and this runs on the main thread (the backend is not Send).
@@ -697,7 +714,7 @@ impl Backend for GlfwBackend {
             unsafe { ffi::glfwSetWindowUserPointer(window.as_ptr(), std::ptr::null_mut()) };
             // SAFETY: as above; the window is destroyed once and not used again.
             unsafe { ffi::glfwDestroyWindow(window.as_ptr()) };
-            self.pending.take();
+            self.callback.pending.take();
         }
     }
 

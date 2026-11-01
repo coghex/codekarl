@@ -51,6 +51,13 @@ name = "scale_lua"
 harness = false
 required-features = ["metal"]
 
+# The milestone 5.5 all-quads-moving Lua profile on Vulkan (CK-162, part C): the same, over `glfw-vulkan`; optional and owner-scheduled
+# (`CK_SCALE_RUN=1`), measured and not gated.
+[[test]]
+name = "vulkan_scale_lua"
+harness = false
+required-features = ["vulkan"]
+
 [lints]
 workspace = true
 

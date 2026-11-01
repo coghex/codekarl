@@ -150,20 +150,27 @@ impl Run<'_> {
         {
             self.capture_waiting = Some(CaptureWait {
                 generation: prepared.generation,
+                submission: number,
             });
         }
     }
 
     /// Hands a test the pixels of the frame whose submit was just proven.
     pub(super) fn collect_capture(&mut self) {
-        let (Some(CaptureWait { generation }), Some(sink)) =
-            (self.capture_waiting.take(), &self.hooks.capture_frames)
+        let (
+            Some(CaptureWait {
+                generation,
+                submission,
+            }),
+            Some(sink),
+        ) = (self.capture_waiting.take(), &self.hooks.capture_frames)
         else {
             return;
         };
         if let Some((bytes, size)) = self.gpu.read_capture() {
             lock(sink).push(FrameCapture {
                 generation,
+                submission,
                 size,
                 format: self.gpu.format.format,
                 bytes,

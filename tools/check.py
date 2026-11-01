@@ -741,11 +741,13 @@ CARGO_FLAGS = ["--all-features", "--locked"]
 # The scale acceptance builds as its recipe fixes it: release with the Metal feature, locked. It does not take
 # `CARGO_FLAGS`, whose `--all-features` also compiles in the test-only seams and is not the measured build.
 SCALE_CARGO_FLAGS = ["--locked", "--features", "metal"]
+# CK-162: the same recipe on Vulkan builds in release with the Vulkan feature, locked, and never with `--all-features`.
+VULKAN_SCALE_CARGO_FLAGS = ["--locked", "--features", "vulkan"]
 
 
-def scale_test(package: str, target: str) -> list[str]:
-    """The scale harness `target` of `package` in release, as the recipe builds it."""
-    return ["cargo", "test", "--release", "-p", package, "--test", target, *SCALE_CARGO_FLAGS]
+def scale_test(package: str, target: str, flags: Sequence[str] = SCALE_CARGO_FLAGS) -> list[str]:
+    """The scale harness `target` of `package` in release, as the recipe builds it (`flags`: Metal's by default)."""
+    return ["cargo", "test", "--release", "-p", package, "--test", target, *flags]
 
 
 def cargo_test(selection: Sequence[str], after: Sequence[str] = ()) -> list[str]:
@@ -1387,6 +1389,35 @@ STEPS = [
             "crates/render-2d/tests/scale/",
             "apps/codekarl/tests/scale_lua.rs",
             "config/scale-lua.toml",
+            "scripts/scale/",
+        ),
+    ),
+    # CK-162: the milestone 5.5 scale run on Vulkan (`glfw-vulkan` on MoltenVK), an OPTIONAL group like `metal.scale`: it opens a 1920 x 1080
+    # window and holds the GPU for minutes, so it runs only when named (`--group vulkan.scale`), only when the owner has scheduled it, and never
+    # in a batch or at any level. Its two harnesses run in release with `--features vulkan` (never `--all-features`). Timings are measured and
+    # reported, never gated; only correctness passes or fails. The three platform-free modules of the Metal harness (the fixtures, the layout
+    # and the JSON writer) are read by both, so a change to one of them names this group too (it is still never selected by a file change).
+    Step(
+        "vulkan.scale",
+        (),
+        lambda: [
+            scale_test("ck-render-2d", "vulkan_scale", VULKAN_SCALE_CARGO_FLAGS),
+            scale_test("codekarl", "vulkan_scale_lua", VULKAN_SCALE_CARGO_FLAGS),
+        ],
+        env=(("CK_SCALE_RUN", "1"),),
+        needs="window",
+        category="optional",
+        description="The milestone 5.5 scale run on Vulkan, owner-scheduled and never run by a batch: the frozen recipe "
+        "(32,768 loaded textures, 65,536 quads, 1920 x 1080 at 60 Hz) in `ck-render-2d`'s Vulkan harness, and the "
+        "all-quads-moving Lua profile through the application. Timings are measured and reported, never gated.",
+        paths=(
+            "crates/render-2d/tests/vulkan_scale.rs",
+            "crates/render-2d/tests/vulkan_scale/",
+            "crates/render-2d/tests/scale/fixtures.rs",
+            "crates/render-2d/tests/scale/layout.rs",
+            "crates/render-2d/tests/scale/json.rs",
+            "apps/codekarl/tests/vulkan_scale_lua.rs",
+            "config/scale-lua-vulkan.toml",
             "scripts/scale/",
         ),
     ),

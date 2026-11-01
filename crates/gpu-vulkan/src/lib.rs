@@ -264,8 +264,9 @@ pub use error::Error;
 pub use frame::{InstanceRole, VulkanFrame, VulkanFrameSlot, VulkanInstance, VulkanSceneSource};
 pub use gate::{BindlessCaps, BindlessDeviceLimits, BindlessLimits, BindlessReport};
 pub use hooks::{
-    BuildRecord, CompatKind, Event, Gate, Observer, Pause, PipelineFault, QuadAllocation,
-    QuadFaults, QuadStats, SceneHooks, SurfaceExtent, TestHooks, WaitKind, WaitObserver,
+    BuildRecord, CompatKind, DrawnRecord, Event, Gate, Observer, Pause, PipelineFault,
+    QuadAllocation, QuadFaults, QuadStats, SceneHooks, SurfaceExtent, TestHooks, WaitKind,
+    WaitObserver,
 };
 pub use instance::{
     DestroyRefused, Instance, InstanceFailure, InstanceOptions, InstanceTestHooks, LayoutScope,
@@ -295,7 +296,7 @@ pub use readback_scene::{
 pub use revisions::{
     BindingChoice, BindingNotice, CheckerProgress, FrameSubmission, FrameTexture, FrameTicket,
     LedgerCleanup, LedgerError, LedgerEvent, LedgerLimits, LedgerProof, OfferRefusal,
-    RevisionState, TextureLedger,
+    RevisionState, TextureLedger, ledger_clock_ns,
 };
 pub use scene::{
     Boundary, CHECKER_CELL, CHECKER_SIDE, HeldCompat, PassOutcome, SceneLimits, SceneSetup,

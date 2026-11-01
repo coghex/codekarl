@@ -273,6 +273,14 @@ enum CheckerSlot<K> {
     Failed(String),
 }
 
+/// The ledger's own clock, for a test that places its marks on the ledger's timestamps (a load's first request against its adoptions):
+/// the same clock as every `*_ns` the ledger reports, read now.
+#[doc(hidden)]
+#[must_use]
+pub fn ledger_clock_ns() -> u64 {
+    now_ns()
+}
+
 /// The moment of this process's first look at the clock, so adoption times are small, comparable numbers.
 fn now_ns() -> u64 {
     static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -2577,6 +2585,32 @@ mod tests {
     fn an_adoption_time_is_never_zero() {
         for _ in 0..1000 {
             assert_ne!(super::now_ns(), 0);
+        }
+    }
+
+    /// The test accessor reads the ledger's own clock: never zero, never going back, and the same clock as the ledger's stamps (a
+    /// read of the accessor is not behind a read of the ledger's own function made before it, which a clock with an epoch of its own
+    /// would be).
+    #[test]
+    fn the_ledger_clock_accessor_is_the_ledgers_clock() {
+        // The ledger's own function first, then work, then its own function again, and only then the accessor: the accessor cannot
+        // read earlier than the second read of the ledger's clock if it is that clock.
+        assert_ne!(super::now_ns(), 0);
+        for _ in 0..1000 {
+            assert_ne!(super::now_ns(), 0);
+        }
+        let own = super::now_ns();
+        let accessor = super::ledger_clock_ns();
+        assert_ne!(accessor, 0);
+        assert!(
+            accessor >= own,
+            "the accessor read {accessor} after the ledger's clock read {own}"
+        );
+        let mut previous = accessor;
+        for _ in 0..1000 {
+            let now = super::ledger_clock_ns();
+            assert!(now >= previous, "{now} before {previous}");
+            previous = now;
         }
     }
 

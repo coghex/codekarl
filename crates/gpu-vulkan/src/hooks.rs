@@ -372,6 +372,23 @@ pub struct BuildRecord {
     pub compat: CompatKind,
 }
 
+/// One frame the scene presenter queued for presentation (a commit), for the tests that need the counts of a frame that was
+/// actually drawn: a build that was abandoned or held back by the gate leaves no record here, which a [`BuildRecord`] cannot say.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrawnRecord {
+    /// The frame's place among the frames this presenter queued: 1 for the first, and the value of the presenter's frame count
+    /// once this frame was counted.
+    pub ordinal: u64,
+    /// The generation of the scene the frame drew (`None` without a slot).
+    pub generation: Option<u64>,
+    /// The number of the frame's submission (0 when none is known): a [`FrameCapture`](crate::FrameCapture) of the same frame
+    /// carries the same number.
+    pub submission: u64,
+    /// What the frame's build counted (all zero when no pipeline built it).
+    pub counters: crate::FrameCounters,
+}
+
 /// The scene presenter's test hooks: the specification's wait-entry observer, a pause between the idle recheck and the
 /// wait, a held frame, and the records the cases read. Nothing here changes what the presenter does.
 #[doc(hidden)]
@@ -385,6 +402,8 @@ pub struct SceneHooks {
     pub tickets: Option<Arc<Mutex<Vec<crate::scene::TicketEnding>>>>,
     /// What each frame build counted.
     pub builds: Option<Arc<Mutex<Vec<BuildRecord>>>>,
+    /// Each frame that was queued for presentation: its ordinal, the scene generation it drew and what its build counted.
+    pub drawn: Option<Arc<Mutex<Vec<DrawnRecord>>>>,
     /// Every scene frame's commands wait on this event first (a host-set `VkEvent`), so the frame is held until a test
     /// sets it: M5.5-1's pattern for a frame the GPU has not finished.
     pub frame_event: Option<vk::Event>,
