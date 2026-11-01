@@ -14,8 +14,8 @@ use ck_gpu_metal::{
 };
 
 use super::{
-    BINDLESS_DEFAULT, CleanupResult, Duration, PresenterReport, Rig, Scene, TestHooks, end, limits,
-    limits_adopting, lock, reports_until, until,
+    BINDLESS_DEFAULT, CleanupResult, Duration, PresenterReport, Rig, Scene, TestHooks,
+    await_presented, end, limits, limits_adopting, lock, reports_until, until,
 };
 
 const WHOLE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
@@ -271,6 +271,7 @@ pub(crate) fn scene_compat_gate_holds_the_first_frame_until_the_image_resolves()
     let frame = next_capture(&mut rig, &scene, 0);
     assert_eq!(px(&frame, 16, 16), RED);
     assert_ne!(px(&frame, 16, 16), MAGENTA);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -341,6 +342,7 @@ pub(crate) fn scene_compat_blocked_state_waits_and_is_not_busy() {
     });
     let frame = next_capture(&mut rig, &scene, 0);
     assert_eq!(px(&frame, 16, 16), RED);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 
     // A frame that clears the compatibility quad unblocks it; so does one that replaces it with a resolved image.
@@ -371,6 +373,7 @@ pub(crate) fn scene_compat_blocked_state_waits_and_is_not_busy() {
         } else {
             assert_eq!(px(&frame, 16, 16), CLEAR, "no compatibility quad any more");
         }
+        await_presented(&mut rig, &scene.probes.observer);
         assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     }
 }
@@ -425,6 +428,7 @@ pub(crate) fn scene_compat_a_publication_before_the_wait_is_not_lost() {
         } else {
             assert_eq!(px(&frame, 16, 16), CLEAR);
         }
+        await_presented(&mut rig, &scene.probes.observer);
         assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     }
 }
@@ -489,6 +493,7 @@ pub(crate) fn scene_compat_committed_behind_older_commits_is_adopted_in_bounded_
         settled,
         "the thread idles"
     );
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 
     // Genuinely pending: the others commit, the gating image does not.
@@ -529,6 +534,7 @@ pub(crate) fn scene_compat_committed_behind_older_commits_is_adopted_in_bounded_
         "behind the idle handshake the counters stop"
     );
     assert_eq!(scene.probes.frames(), 0);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -563,6 +569,7 @@ pub(crate) fn scene_compat_never_gates_new_asynchronous_resources() {
         .expect("a captured frame");
     assert_eq!(px(&frame, 4, 4), CLEAR);
     assert_eq!(presenter.stats().gate_holds, 0);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -688,6 +695,7 @@ pub(crate) fn scene_compat_keeps_the_old_image_while_a_replacement_is_pending() 
     until(&mut rig, "the old key's retirement", || {
         scene.driver().retired.contains(&1)
     });
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -763,6 +771,7 @@ pub(crate) fn scene_compat_never_goes_back_to_an_older_image() {
         scene.driver().retired.contains(&1)
     });
     assert_ne!(presenter.stats().held_compat_revision, 0);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -795,6 +804,7 @@ pub(crate) fn scene_compat_clear_releases_the_hold() {
     until(&mut rig, "the old key's retirement", || {
         scene.driver().retired.contains(&1)
     });
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -871,6 +881,7 @@ pub(crate) fn scene_compat_clipped_replacement_keeps_the_hold() {
         "the resolved clipped quad draws nothing"
     );
     assert_eq!(presenter.stats().held_compat_revision, 0);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -918,6 +929,7 @@ pub(crate) fn scene_compat_upload_failure_is_one_failed_and_never_a_hang() {
         );
     }
     assert_eq!(presenter.stats().compat_upload_failures, 1);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 
     // A frame quad's failure does not touch the gate: no Failed, and the compatibility image still gets through.
@@ -963,6 +975,7 @@ pub(crate) fn scene_compat_upload_failure_is_one_failed_and_never_a_hang() {
         "the failed frame quad is the checker"
     );
     assert_eq!(presenter.stats().compat_upload_failures, 0);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -1049,6 +1062,7 @@ pub(crate) fn scene_compat_failure_is_classified_before_any_frame_was_built() {
                 .any(|(key, ..)| *key == 1),
             "the driver still sees the ordinary failure"
         );
+        await_presented(&mut rig, &scene.probes.observer);
         assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     }
     // Cleared, or replaced, before the late failure: no Failed; the status error remains.
@@ -1097,6 +1111,7 @@ pub(crate) fn scene_compat_failure_is_classified_before_any_frame_was_built() {
             "replaced {replaced}: a key no longer marked is only an ordinary UploadFailed: {reports:?}"
         );
         assert_eq!(presenter.stats().compat_upload_failures, 0);
+        await_presented(&mut rig, &scene.probes.observer);
         assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     }
 }

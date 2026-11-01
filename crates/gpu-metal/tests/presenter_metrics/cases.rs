@@ -15,8 +15,8 @@ use ck_gpu_metal::{
 };
 
 use super::{
-    BOUND, CleanupResult, Duration, MetalPresenter, Probes, Rig, TestHooks, ck_t_rig_ever_occluded,
-    ck_t_rig_occlusion_state, ck_t_watch_rig_occlusion, end,
+    BOUND, CleanupResult, Duration, MetalPresenter, Probes, Rig, TestHooks, await_presented,
+    ck_t_rig_ever_occluded, ck_t_rig_occlusion_state, ck_t_watch_rig_occlusion, end,
 };
 
 #[path = "settle.rs"]
@@ -110,7 +110,11 @@ fn occlusion_now() -> i64 {
 /// reading kept for the window after the end, which is final and exact; the flag says so, and the presenter is then already ended
 /// (use [`stop_settled`]). The poll's reading is never used as that reading, because it cannot show the owner's own progress
 /// (`accounted_through`). A window never seen occluded keeps the full assertion and fails at the bound.
-fn settle(rig: &mut Rig, presenter: &mut MetalPresenter) -> (MetricsReading, bool) {
+fn settle(
+    rig: &mut Rig,
+    presenter: &mut MetalPresenter,
+    probes: &Probes,
+) -> (MetricsReading, bool) {
     let mut reading = None;
     let mut outcome = None;
     let settled = rig.pump_until(BOUND, || {
@@ -141,6 +145,9 @@ fn settle(rig: &mut Rig, presenter: &mut MetalPresenter) -> (MetricsReading, boo
         ever_occluded()
     );
     if outcome == Some(true) {
+        // The case ends the presenter itself here: let the native presented handlers arrive first (an occluded window still answers
+        // them, with a zero presentation time), so that this stop, like every other `Proven` stop, does not race one (CK-173).
+        await_presented(rig, &probes.observer);
         assert_eq!(end(rig, presenter), CleanupResult::Proven);
         let ended = presenter.read_metrics(1, Duration::ZERO).expect("kept");
         assert!(
@@ -194,18 +201,25 @@ fn finish(
         .end_metrics(1, ended)
         .expect("the end is accepted once");
     draw(rig, presenter, probes, 1);
-    let (reading, occluded) = settle(rig, presenter);
+    let (reading, occluded) = settle(rig, presenter, probes);
     (ended, reading, occluded)
 }
 
-fn stop(rig: &mut Rig, mut presenter: MetalPresenter) {
+fn stop(rig: &mut Rig, mut presenter: MetalPresenter, probes: &Probes) {
+    await_presented(rig, &probes.observer);
     assert_eq!(end(rig, &mut presenter), CleanupResult::Proven);
 }
 
 /// [`stop`] for a case whose reading came from [`settle`] or [`finish`]: when that ended the presenter already (the occluded outcome),
 /// there is nothing more to end.
-fn stop_settled(rig: &mut Rig, mut presenter: MetalPresenter, ended_already: bool) {
+fn stop_settled(
+    rig: &mut Rig,
+    mut presenter: MetalPresenter,
+    ended_already: bool,
+    probes: &Probes,
+) {
     if !ended_already {
+        await_presented(rig, &probes.observer);
         assert_eq!(end(rig, &mut presenter), CleanupResult::Proven);
     }
 }
@@ -305,7 +319,7 @@ pub(super) fn metrics_marks_are_ordered_and_the_window_holds_exactly_its_frames(
     assert_eq!(reading.timing_lost, 0);
     // The whole run holds at least the window's frames.
     assert!(presenter.metrics_totals().frames >= stats.frames);
-    stop_settled(&mut rig, presenter, occluded);
+    stop_settled(&mut rig, presenter, occluded, &probes);
 }
 
 /// Frames that committed nothing are counted and never sampled (the whole run's totals, which the first, start-up steps belong to).
@@ -330,7 +344,7 @@ pub(super) fn metrics_skipped_frames_are_counted_and_not_sampled() {
     );
     assert_eq!(totals.acquire.count(), totals.frames);
     assert_eq!(totals.invalid_marks, 0);
-    stop(&mut rig, presenter);
+    stop(&mut rig, presenter, &probes);
 }
 
 /// A blocked `nextDrawable` adds to the acquire interval only: within one frame, the total plus the acquisition is the whole frame, and
@@ -386,7 +400,7 @@ pub(super) fn metrics_a_blocked_acquisition_adds_to_acquire_only() {
         inside(&marks_of(&marks), &window, ended).len() as u64,
         stats.frames
     );
-    stop_settled(&mut rig, presenter, occluded);
+    stop_settled(&mut rig, presenter, occluded, &probes);
 }
 
 /// The timestamp rules: an inverted GPU pair is invalid and not sampled; a drawable that was never shown is not presented and makes
@@ -461,7 +475,7 @@ pub(super) fn metrics_gpu_and_presentation_follow_their_rules() {
     );
     assert_eq!(stats.presentation_interval.max_ns(), Some(2 * STEP));
     assert_eq!(reading.outstanding, 0);
-    stop_settled(&mut rig, presenter, occluded);
+    stop_settled(&mut rig, presenter, occluded, &probes);
 }
 
 /// An adoption delayed past `start` is late-adopted, and nothing is adopted while it is held.
@@ -493,7 +507,7 @@ pub(super) fn metrics_an_adoption_delayed_past_start_is_late_adopted() {
         reading.window.late_adopted,
         "the window is flagged, not silently short"
     );
-    stop(&mut rig, presenter);
+    stop(&mut rig, presenter, &probes);
 }
 
 /// A frame committed before the end whose GPU time and presentation arrive after the end is admitted to its window, and `read_metrics`
@@ -541,7 +555,7 @@ fn results_after_the_end(never_poll: bool) {
     watch_occlusion();
     presenter.set_clear([0.6, 0.1, 0.1]);
     presenter.request_redraw();
-    let (reading, occluded) = settle(&mut rig, &mut presenter);
+    let (reading, occluded) = settle(&mut rig, &mut presenter, &probes);
     let mine = inside(&marks_of(&marks), &window, ended);
     let stats = &reading.window.stats;
     assert_eq!(stats.frames, mine.len() as u64);
@@ -553,7 +567,7 @@ fn results_after_the_end(never_poll: bool) {
     );
     assert_eq!(stats.presented + stats.not_presented, 1);
     assert_eq!(reading.outstanding, 0);
-    stop_settled(&mut rig, presenter, occluded);
+    stop_settled(&mut rig, presenter, occluded, &probes);
 }
 
 /// The results of the last frames arrive through the teardown: stopping right after the last frame, the presenter's proof waits for
@@ -625,7 +639,7 @@ pub(super) fn metrics_a_committed_frame_not_yet_registered_keeps_the_window_open
     watch_occlusion();
     presenter.set_clear([0.1, 0.6, 0.1]);
     presenter.request_redraw();
-    let (reading, occluded) = settle(&mut rig, &mut presenter);
+    let (reading, occluded) = settle(&mut rig, &mut presenter, &probes);
     assert_eq!(
         reading.window.stats.frames, 3,
         "the held frame was committed before the end"
@@ -635,7 +649,7 @@ pub(super) fn metrics_a_committed_frame_not_yet_registered_keeps_the_window_open
         reading.window.stats.frames
     );
     assert_eq!(reading.outstanding, 0);
-    stop_settled(&mut rig, presenter, occluded);
+    stop_settled(&mut rig, presenter, occluded, &probes);
 }
 
 /// A window is not final while work committed **before** it still has its presentation to come (CK-129 review 2, F1). Three drawables
@@ -727,7 +741,7 @@ pub(super) fn metrics_a_window_waits_for_the_presentations_of_work_committed_bef
     );
     assert_eq!((stats.frames, stats.presented), (0, 0));
     assert!(!reading.evidence_lost);
-    stop(&mut rig, presenter);
+    stop(&mut rig, presenter, &probes);
 }
 
 /// A render thread descheduled right after a submission reads its commit mark late, after the window's end, while the drawable is
@@ -873,7 +887,7 @@ pub(super) fn metrics_a_late_commit_stamp_does_not_hide_a_presentation_inside_th
         stats.excluded_intervals, crossing,
         "and every one that crosses its start or end"
     );
-    stop(&mut rig, presenter);
+    stop(&mut rig, presenter, &probes);
 }
 
 /// The step is not over until the results of the frame it recorded are in the windows (CK-129 review 3): held between the recording
@@ -906,13 +920,13 @@ pub(super) fn metrics_a_recorded_frame_keeps_the_window_open_until_its_results_a
     watch_occlusion();
     presenter.set_clear([0.9, 0.6, 0.2]);
     presenter.request_redraw();
-    let (reading, occluded) = settle(&mut rig, &mut presenter);
+    let (reading, occluded) = settle(&mut rig, &mut presenter, &probes);
     assert_eq!(reading.outstanding, 0);
     assert_eq!(
         reading.window.stats.frames,
         inside(&marks_of(&marks), &window, ended).len() as u64
     );
-    stop_settled(&mut rig, presenter, occluded);
+    stop_settled(&mut rig, presenter, occluded, &probes);
 }
 
 /// The control for the closing rule (CK-129 review 4): a closing drawable that is never shown (a real `presentedTime` of zero, as
@@ -967,7 +981,9 @@ pub(super) fn metrics_a_zero_closing_presentation_leaves_the_reading_not_final()
         !open.complete,
         "a zero closing presentation closes nothing: {open:?}"
     );
-    // The presenter ending resolves it: nothing will be shown again.
+    // The presenter ending resolves it: nothing will be shown again. The stop is not the subject of the zero-presentation check above,
+    // so the native presented handlers (which the synthetic zero replaces only in the timing) arrive before it (CK-173).
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     let ended_reading = presenter.read_metrics(1, Duration::ZERO).expect("kept");
     assert!(

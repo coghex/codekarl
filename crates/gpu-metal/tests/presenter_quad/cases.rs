@@ -445,6 +445,7 @@ pub(crate) fn quad_publish_while_stalled() {
         Some(105),
         "the latest of ten publishes"
     );
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -487,6 +488,7 @@ pub(crate) fn quad_replacement_bound() {
         0,
         "each retired texture's token had arrived"
     );
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     assert_eq!(observer.quad_textures_alive(), 0);
 }
@@ -544,6 +546,7 @@ pub(crate) fn quad_retired_texture_waits_for_its_token() {
     assert_eq!(observer.quad_textures_created(), 3);
     assert_eq!(observer.quad_textures_max(), 2, "never more than two");
     assert_eq!(observer.quad_released_early(), 0);
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     assert_eq!(observer.quad_textures_alive(), 0);
     assert_eq!(
@@ -578,6 +581,7 @@ pub(crate) fn quad_position_and_filter_do_not_upload() {
     assert_eq!(observer.quad_textures_created(), 1, "one image, one upload");
     assert_eq!(observer.quad_retired(), 0);
     assert_eq!(observer.quad_draws(), 4);
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -623,6 +627,7 @@ pub(crate) fn quad_same_source_new_layout_uploads_again() {
     assert_eq!(observer.quad_textures_created(), 3);
     assert_eq!(observer.quad_last_texture_size(), (2, 2));
     assert_eq!(observer.quad_textures_max(), 2);
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     assert_eq!(observer.quad_textures_alive(), 0);
 }
@@ -670,6 +675,7 @@ pub(crate) fn quad_admission_is_one_decision() {
             observer.quad_textures_max()
         );
         assert_eq!(observer.quad_released_early(), 0, "pausing {pausing}");
+        await_presented(&mut rig, &probes.observer);
         assert_eq!(
             end(&mut rig, &mut presenter),
             CleanupResult::Proven,
@@ -718,6 +724,7 @@ pub(crate) fn quad_source_is_not_held_after_upload() {
         dropped.load(Ordering::SeqCst),
         "the render thread held a reference after its upload"
     );
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -778,6 +785,7 @@ pub(crate) fn quad_removal() {
         2,
         "the removed image is uploaded again"
     );
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -987,6 +995,8 @@ pub(crate) fn quad_failures() {
             PresenterReport::FirstFrameQueued => panic!("{name}: a first frame was queued"),
         }
         assert_eq!(probes.frames(), 0, "{name}: nothing was drawn");
+        // No commit is not no drawable: the encode failures abandon a drawable that was acquired (and has its handler) first.
+        await_presented(&mut rig, &probes.observer);
         assert_eq!(
             end(&mut rig, &mut presenter),
             CleanupResult::Proven,
