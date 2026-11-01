@@ -17,6 +17,8 @@ pub(crate) const TRUE: c_int = 1;
 /// `GLFW_FOCUSED` and `GLFW_FOCUS_ON_SHOW` from GLFW 3.4's `glfw3.h`.
 pub(crate) const FOCUSED: c_int = 0x0002_0001;
 pub(crate) const FOCUS_ON_SHOW: c_int = 0x0002_000c;
+/// `GLFW_MOUSE_PASSTHROUGH` from GLFW 3.4.
+pub(crate) const MOUSE_PASSTHROUGH: c_int = 0x0002_000d;
 /// `GLFW_CLIENT_API` and `GLFW_NO_API`: the window is for Vulkan, so GLFW creates no OpenGL context.
 pub(crate) const CLIENT_API: c_int = 0x0002_2001;
 pub(crate) const NO_API: c_int = 0;

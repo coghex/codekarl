@@ -224,6 +224,139 @@ void ck_win_test_info(CKWinTestInfo *out) {
     }
 }
 
+int32_t ck_win_test_mouse_ignored(void) {
+    @autoreleasepool {
+        return ck_window().ignoresMouseEvents ? 1 : 0;
+    }
+}
+
+/* Paired hit tests use a known test-owned window beneath P, never the owner's window layout. */
+int32_t ck_win_test_mouse_passthrough_probe(void) {
+    @autoreleasepool {
+        NSWindow *window = ck_window();
+        if (window == nil || !window.ignoresMouseEvents) return 3;
+        NSWindowCollectionBehavior old_behavior = window.collectionBehavior;
+        NSWindow *under = [[NSWindow alloc] initWithContentRect:window.frame
+                                                      styleMask:NSWindowStyleMaskBorderless
+                                                        backing:NSBackingStoreBuffered
+                                                          defer:NO
+                                                         screen:window.screen];
+        if (under == nil) return 3;
+        NSRect frame = window.frame;
+        CGFloat title_height = frame.size.height - NSHeight([window contentRectForFrameRect:frame]);
+        const CGFloat inset = 12.0;
+        NSPoint points[] = {
+            NSMakePoint(NSMidX(frame), NSMidY(frame)),
+            NSMakePoint(NSMidX(frame), NSMaxY(frame) - title_height / 2.0),
+            NSMakePoint(NSMinX(frame) + inset, NSMinY(frame) + inset),
+            NSMakePoint(NSMaxX(frame) - inset, NSMinY(frame) + inset),
+            NSMakePoint(NSMidX(frame), NSMaxY(frame) - title_height - inset),
+        };
+        int32_t result = 0;
+        NSInteger controls[sizeof(points) / sizeof(points[0])];
+        int control_pids[sizeof(points) / sizeof(points[0])];
+        NSInteger through[sizeof(points) / sizeof(points[0])];
+        int through_pids[sizeof(points) / sizeof(points[0])];
+        NSUInteger control_hits = 0;
+        char control_summary[512] = {0};
+        size_t control_summary_len = 0;
+        char through_summary[512] = {0};
+        size_t through_summary_len = 0;
+        @try {
+            under.releasedWhenClosed = NO;
+            under.ignoresMouseEvents = YES;
+            under.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                      NSWindowCollectionBehaviorFullScreenAuxiliary;
+            window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                        NSWindowCollectionBehaviorFullScreenAuxiliary;
+            under.level = NSScreenSaverWindowLevel;
+            window.level = NSScreenSaverWindowLevel + 1;
+            [under orderFrontRegardless];
+            [window orderWindow:NSWindowAbove relativeTo:under.windowNumber];
+            /* Observe the backend's untouched pass-through setting before changing P for its control. */
+            for (NSUInteger i = 0; i < sizeof(points) / sizeof(points[0]); i++) {
+                NSInteger hit = -1;
+                @try {
+                    under.ignoresMouseEvents = NO;
+                    hit = [NSWindow windowNumberAtPoint:points[i] belowWindowWithWindowNumber:0];
+                } @finally {
+                    under.ignoresMouseEvents = YES;
+                }
+                through[i] = hit;
+                through_pids[i] = (int)ck_aw_window_owner_pid(hit);
+                int written = snprintf(through_summary + through_summary_len,
+                                       sizeof(through_summary) - through_summary_len,
+                                       "%s%lu:%ld:%d", i == 0 ? "" : ",", (unsigned long)i,
+                                       (long)hit, through_pids[i]);
+                if (written > 0 && (size_t)written < sizeof(through_summary) - through_summary_len) {
+                    through_summary_len += (size_t)written;
+                }
+            }
+
+            /* A separate control identifies which through observations correspond to the probe. */
+            for (NSUInteger i = 0; i < sizeof(points) / sizeof(points[0]); i++) {
+                NSInteger hit = -1;
+                BOOL original_ignores_mouse_events = window.ignoresMouseEvents;
+                @try {
+                    window.ignoresMouseEvents = NO;
+                    hit = [NSWindow windowNumberAtPoint:points[i] belowWindowWithWindowNumber:0];
+                } @finally {
+                    window.ignoresMouseEvents = original_ignores_mouse_events;
+                }
+                controls[i] = hit;
+                control_pids[i] = (int)ck_aw_window_owner_pid(hit);
+                if (hit == window.windowNumber) control_hits++;
+                int written = snprintf(control_summary + control_summary_len,
+                                       sizeof(control_summary) - control_summary_len,
+                                       "%s%lu:%ld:%d", i == 0 ? "" : ",", (unsigned long)i,
+                                       (long)hit, control_pids[i]);
+                if (written > 0 && (size_t)written < sizeof(control_summary) - control_summary_len) {
+                    control_summary_len += (size_t)written;
+                }
+            }
+
+            BOOL probe_active = window.isOnActiveSpace;
+            BOOL under_active = under.isOnActiveSpace;
+            if (!probe_active || !under_active || control_hits == 0) {
+                const char *reason = (!probe_active || !under_active) ? "isOnActiveSpace" : "controlNoHit";
+                fprintf(stderr,
+                        "ck-probe-not-run: reason=%s probe=%ld probe_pid=%d probe_active=%d under=%ld under_pid=%d under_active=%d through=%s controls=%s\n",
+                        reason, (long)window.windowNumber, (int)getpid(), probe_active ? 1 : 0,
+                        (long)under.windowNumber, (int)ck_aw_window_owner_pid(under.windowNumber),
+                        under_active ? 1 : 0, through_summary, control_summary);
+                result = 4;
+            } else {
+                for (NSUInteger i = 0; i < sizeof(points) / sizeof(points[0]); i++) {
+                    if (controls[i] != window.windowNumber) continue;
+                    if (through[i] != under.windowNumber) {
+                        fprintf(stderr,
+                                "mouse pass-through point=%lu through expected=%ld expected_pid=%d found=%ld owner_pid=%d\n",
+                                (unsigned long)i, (long)under.windowNumber,
+                                (int)ck_aw_window_owner_pid(under.windowNumber), (long)through[i],
+                                through_pids[i]);
+                        result = 1;
+                        break;
+                    }
+                }
+                if (result == 0 && control_hits != sizeof(points) / sizeof(points[0])) {
+                    fprintf(stderr,
+                            "mouse pass-through partial control: probe=%ld probe_pid=%d through=%s controls=%s\n",
+                            (long)window.windowNumber, (int)getpid(), through_summary, control_summary);
+                    result = 2;
+                }
+            }
+        } @finally {
+            under.ignoresMouseEvents = YES;
+            window.ignoresMouseEvents = YES;
+            window.level = NSNormalWindowLevel;
+            window.collectionBehavior = old_behavior;
+            [under orderOut:nil];
+            [under close];
+        }
+        return result;
+    }
+}
+
 void ck_win_test_counters(CKWinTestCounters *out) {
     out->markers_dispatched = atomic_load(&ck_markers);
     out->wake_events_dispatched = atomic_load(&ck_wake_dispatched);

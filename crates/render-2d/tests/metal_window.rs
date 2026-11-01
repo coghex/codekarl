@@ -59,6 +59,7 @@ use ck_window_cocoa::{CocoaBackend, CocoaHandles};
 mod activation_watch;
 
 const WORKER_VARIABLE: &str = "CK_RENDER2D_METAL_WINDOW_WORKER";
+const FORWARDING_FIXTURE: &str = "external_forwarding_fixture";
 /// `1` makes a worker run with the owner typing without stopping.
 const TYPING_VARIABLE: &str = "CK_RENDER2D_METAL_WINDOW_TYPING";
 /// The longest the worker may run.
@@ -134,6 +135,20 @@ fn main() -> ExitCode {
         // The supervisor's own fixtures: no window, no GPU.
         Ok("probe-clean") => {
             eprintln!("a clean worker");
+            ExitCode::SUCCESS
+        }
+        Ok(FORWARDING_FIXTURE) => {
+            println!(
+                "{}",
+                activation_watch::format_external_summary(
+                    &std::process::id().to_string(),
+                    1,
+                    0,
+                    0,
+                    0,
+                    0,
+                )
+            );
             ExitCode::SUCCESS
         }
         Ok("probe-invalid-utf8") => {
@@ -266,12 +281,39 @@ fn run_worker(scenario: &str, typing: bool) -> Outcome {
     };
     drop(owned); // killed (if it is still running) and reaped before the pipes are read
     let label = format!("{scenario} ({})", if typing { "typing" } else { "quiet" });
-    judge(
-        &label,
-        status,
-        &joined("stdout", stdout),
-        &joined("stderr", stderr),
-    )
+    let stdout = joined("stdout", stdout);
+    let stderr = joined("stderr", stderr);
+    let mut forwarding_error = None;
+    if let (Ok(stdout), Ok(stderr)) = (&stdout, &stderr) {
+        let captured = format!("{stdout}\n{stderr}");
+        let forwarded = activation_watch::forwarded_external_summaries(
+            "native.window",
+            scenario,
+            if typing { "typing" } else { "quiet" },
+            &captured,
+        );
+        for line in &forwarded {
+            println!("{line}");
+        }
+        if scenario == FORWARDING_FIXTURE {
+            forwarding_error = activation_watch::check_fixture_forwarding(
+                "native.window",
+                scenario,
+                if typing { "typing" } else { "quiet" },
+                &forwarded,
+            )
+            .err();
+        }
+    }
+    let outcome = judge(&label, status, &stdout, &stderr);
+    if let Some(error) = forwarding_error {
+        Outcome {
+            passed: false,
+            report: error,
+        }
+    } else {
+        outcome
+    }
 }
 
 /// A reader that fails after some bytes.
@@ -415,6 +457,13 @@ fn supervisor() -> ExitCode {
         .into_iter()
         .filter_map(Result::err)
         .collect();
+    let forwarding = run_worker(FORWARDING_FIXTURE, false);
+    if !forwarding.passed {
+        failures.push(format!(
+            "a passing fixture's external summary reaches supervisor output: {}",
+            forwarding.report
+        ));
+    }
     if failures.is_empty() {
         let outcomes: Vec<Outcome> = SCENARIOS
             .iter()
@@ -613,6 +662,7 @@ fn start_ticker(notifier: &Arc<Notifier>) -> (Arc<AtomicBool>, thread::JoinHandl
 }
 
 fn worker() -> ExitCode {
+    ck_window::test_support::open_windows_ignoring_mouse();
     ck_window::test_support::open_windows_without_activation();
     activation_watch::install(false);
     watchdog();

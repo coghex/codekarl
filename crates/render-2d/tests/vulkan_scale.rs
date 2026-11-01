@@ -63,6 +63,7 @@ use rig::Config;
 const WORKER_VARIABLE: &str = "CK_SCALE_WORKER";
 const RUN_VARIABLE: &str = "CK_SCALE_RUN";
 const OUT_VARIABLE: &str = "CK_SCALE_OUT";
+const FORWARDING_FIXTURE: &str = "external_forwarding_fixture";
 /// The longest one worker may run.
 const DEADLINE: Duration = Duration::from_secs(900);
 /// What the validation layer prints when something is wrong (the rig also collects its messages from the debug messenger, and any that
@@ -217,7 +218,25 @@ fn caps_config(assets: PathBuf, texture_bytes: u64) -> Config {
     config
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the worker's fixture and phase dispatch are one sequential protocol"
+)]
 fn worker_main(worker: &str) -> ExitCode {
+    if worker == FORWARDING_FIXTURE {
+        println!(
+            "{}",
+            activation_watch::format_external_summary(
+                &std::process::id().to_string(),
+                1,
+                0,
+                0,
+                0,
+                0,
+            )
+        );
+        return ExitCode::SUCCESS;
+    }
     let fixtures = fixtures::Fixtures::create(worker);
     let (result, ended) = match worker {
         "selftest" => {
@@ -433,6 +452,10 @@ fn layer_problem(loaded: Option<bool>, validation: bool) -> Option<String> {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the bounded child capture and validation gates stay together"
+)]
 fn run_job(job: &Job, out: &Path) -> Outcome {
     let exe = env::current_exe().expect("the test binary's path");
     let mut command = job_command(job, &exe);
@@ -461,6 +484,27 @@ fn run_job(job: &Job, out: &Path) -> Outcome {
     let stderr = stderr
         .join()
         .unwrap_or_else(|_| Err("stderr: the reader panicked".to_owned()));
+    let captured = format!(
+        "{}\n{}",
+        stdout.as_deref().unwrap_or(""),
+        stderr.as_deref().unwrap_or("")
+    );
+    let fixture = job.worker == FORWARDING_FIXTURE;
+    let case = if fixture {
+        FORWARDING_FIXTURE
+    } else {
+        job.name
+    };
+    let forwarded =
+        activation_watch::forwarded_external_summaries("vulkan.scale", case, "quiet", &captured);
+    for line in &forwarded {
+        println!("{line}");
+    }
+    let forwarding_error = if fixture {
+        activation_watch::check_fixture_forwarding("vulkan.scale", case, "quiet", &forwarded).err()
+    } else {
+        None
+    };
     let mut problems = Vec::new();
     match status {
         None => problems.push("the worker did not finish by the deadline".to_owned()),
@@ -502,9 +546,13 @@ fn run_job(job: &Job, out: &Path) -> Outcome {
         .as_deref()
         .ok()
         .is_some_and(|text| text.lines().any(|line| line == "SCALE_STATUS passed=true"));
-    if record.is_none() {
+    if !fixture && record.is_none() {
         problems.push("the worker printed no SCALE_RESULT record".to_owned());
     }
+    if let Some(error) = forwarding_error {
+        problems.push(error);
+    }
+    let status_line = fixture || status_line;
     Outcome {
         name: job.name,
         record,
@@ -622,6 +670,10 @@ fn not_run() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the optional scale supervisor runs the forwarding fixture before its phase protocol"
+)]
 fn supervisor() -> ExitCode {
     if !checks_pass() {
         return ExitCode::FAILURE;
@@ -635,6 +687,26 @@ fn supervisor() -> ExitCode {
     let out =
         env::var_os(OUT_VARIABLE).map_or_else(|| default_out(&epoch.to_string()), PathBuf::from);
     fs::create_dir_all(&out).expect("the evidence directory");
+    let forwarding = run_job(
+        &Job {
+            name: "activation-forwarding",
+            worker: FORWARDING_FIXTURE,
+            validation: false,
+            gated: true,
+        },
+        &out,
+    );
+    println!(
+        "test passing scale fixture's external summary reaches supervisor output ... {}",
+        if forwarding.passed { "ok" } else { "FAILED" }
+    );
+    if !forwarding.passed {
+        println!(
+            "scale: activation forwarding fixture: {}",
+            forwarding.problems.join("; ")
+        );
+        return ExitCode::FAILURE;
+    }
     let only: Option<Vec<String>> = env::var("CK_SCALE_ONLY")
         .ok()
         .map(|list| list.split(',').map(str::to_owned).collect());

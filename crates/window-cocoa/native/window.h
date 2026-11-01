@@ -72,7 +72,7 @@ CKWinHandle *ck_win_create(char *error, size_t error_capacity);
  * pointer (valid until ck_win_destroy_window) and the initial pixel size, or 1 and a message with no
  * window left behind. */
 int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_length,
-                         uint32_t width, uint32_t height, int activate, void **layer,
+                         uint32_t width, uint32_t height, int activate, int ignore_mouse, void **layer,
                          uint32_t *pixel_width, uint32_t *pixel_height,
                          char *error, size_t error_capacity);
 

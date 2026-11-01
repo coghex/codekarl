@@ -68,6 +68,8 @@ unsafe extern "C" {
     fn ck_win_test_app_exists() -> i32;
     fn ck_win_test_ns_window_count() -> u64;
     fn ck_win_test_info(out: *mut RawInfo);
+    fn ck_win_test_mouse_ignored() -> i32;
+    fn ck_win_test_mouse_passthrough_probe() -> i32;
     fn ck_win_test_counters(out: *mut RawCounters);
     fn ck_win_test_set_first_responder(to_view: i32);
     fn ck_win_test_perform_close();
@@ -270,6 +272,16 @@ pub(crate) fn info() -> WindowInfo {
             key_equivalents: raw.menu_key_equivalents,
         },
     }
+}
+
+pub(crate) fn mouse_ignored() -> bool {
+    // SAFETY: reads one AppKit property on the main thread.
+    unsafe { ck_win_test_mouse_ignored() != 0 }
+}
+
+pub(crate) fn mouse_passthrough_probe() -> i32 {
+    // SAFETY: paired hit tests run synchronously on the main thread and restore the protected state.
+    unsafe { ck_win_test_mouse_passthrough_probe() }
 }
 
 /// The application's and the window's counters.

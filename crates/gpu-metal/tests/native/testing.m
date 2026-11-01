@@ -241,6 +241,7 @@ int32_t ck_t_open_minimise_decoy(uint64_t *decoy_window_number,
                                                            defer:NO];
         ck_minimise_decoy.releasedWhenClosed = NO;
         ck_minimise_decoy.animationBehavior = NSWindowAnimationBehaviorNone;
+        ck_minimise_decoy.ignoresMouseEvents = YES;
         [ck_minimise_decoy orderFrontRegardless];
         if (decoy_window_number != NULL) {
             *decoy_window_number = (uint64_t)ck_minimise_decoy.windowNumber;

@@ -63,6 +63,8 @@ void ck_win_test_install_application(void);
 int32_t ck_win_test_app_exists(void);
 uint64_t ck_win_test_ns_window_count(void);
 void ck_win_test_info(CKWinTestInfo *out);
+int32_t ck_win_test_mouse_ignored(void);
+int32_t ck_win_test_mouse_passthrough_probe(void);
 void ck_win_test_counters(CKWinTestCounters *out);
 
 /* Makes the content view (to_view != 0) or nothing the first responder. */

@@ -223,4 +223,6 @@ fn main() {
     for framework in ["AppKit", "QuartzCore"] {
         println!("cargo::rustc-link-lib=framework={framework}");
     }
+    println!("cargo::rustc-link-arg-tests=-framework");
+    println!("cargo::rustc-link-arg-tests=CoreGraphics");
 }

@@ -28,6 +28,7 @@ typedef struct {
 } CKGlfwTestInfo;
 
 void ck_glfw_test_info(CKGlfwTestInfo *out);
+int32_t ck_glfw_test_mouse_passthrough_probe(void);
 
 /* The layout CKGlfwTestInfo was compiled with, for every Rust consumer to compare with its own binding
  * before its first ck_glfw_test_info call (a mismatched binding makes that call write outside its

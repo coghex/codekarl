@@ -572,6 +572,11 @@ impl Backend for GlfwBackend {
         unsafe { ffi::glfwWindowHint(ffi::CLIENT_API, ffi::NO_API) };
         // SAFETY: as above: ... and a fixed-size window.
         unsafe { ffi::glfwWindowHint(ffi::RESIZABLE, ffi::FALSE) };
+        if !ck_window::window_mouse_input_allowed() {
+            // SAFETY: this GLFW 3.4+ hint is set on the main thread before creation and remains
+            // active for later windows until defaultWindowHints is called.
+            unsafe { ffi::glfwWindowHint(ffi::MOUSE_PASSTHROUGH, ffi::TRUE) };
+        }
         let activation_allowed = ck_window::window_activation_allowed();
         if !activation_allowed {
             // SAFETY: GLFW hints are set on the main thread before creation. These keep the

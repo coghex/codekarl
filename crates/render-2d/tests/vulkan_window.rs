@@ -80,6 +80,7 @@ mod info_abi;
 use supervisor::Supervised;
 
 const WORKER_FLAG: &str = "--worker";
+const FORWARDING_FIXTURE: &str = "external_forwarding_fixture";
 /// `1` makes a worker run with the owner typing without stopping.
 const TYPING_VARIABLE: &str = "CK_RENDER2D_VULKAN_WINDOW_TYPING";
 /// The longest a worker may run.
@@ -194,6 +195,23 @@ fn run_worker(scenario: &str, typing: bool) -> Result<(), String> {
     }
     let supervised = Supervised::spawn(command, DEADLINE)?;
     let seen = supervised.finish()?;
+    let forwarded = activation_watch::forwarded_external_summaries(
+        "render2d.vulkan-window",
+        scenario,
+        if typing { "typing" } else { "quiet" },
+        &seen.stdout,
+    );
+    for line in &forwarded {
+        println!("{line}");
+    }
+    if scenario == FORWARDING_FIXTURE {
+        activation_watch::check_fixture_forwarding(
+            "render2d.vulkan-window",
+            scenario,
+            if typing { "typing" } else { "quiet" },
+            &forwarded,
+        )?;
+    }
     if seen.code == Some(0) {
         Ok(())
     } else {
@@ -214,7 +232,15 @@ fn supervisor() -> ExitCode {
     if let Err(message) = isolation {
         failures.push(("isolation".to_owned(), message));
     }
-    let mut total = 1;
+    let mut total = 2;
+    let forwarding = run_worker(FORWARDING_FIXTURE, false);
+    println!(
+        "test supervisor: a passing fixture's external summary reaches supervisor output ... {}",
+        if forwarding.is_ok() { "ok" } else { "FAILED" }
+    );
+    if let Err(message) = forwarding {
+        failures.push(("external forwarding".to_owned(), message));
+    }
     for typing in [false, true] {
         for scenario in SCENARIOS {
             total += 1;
@@ -1187,10 +1213,25 @@ impl UiLink for Script {
     reason = "one scenario's setup, run and ordered teardown read best together"
 )]
 fn worker(name: &str) -> ExitCode {
+    if name == FORWARDING_FIXTURE {
+        println!(
+            "{}",
+            activation_watch::format_external_summary(
+                &std::process::id().to_string(),
+                1,
+                0,
+                0,
+                0,
+                0,
+            )
+        );
+        return ExitCode::SUCCESS;
+    }
     let Some(plan) = Plan::of(name) else {
         eprintln!("unknown worker scenario {name:?}");
         return ExitCode::FAILURE;
     };
+    ck_window::test_support::open_windows_ignoring_mouse();
     ck_window::test_support::open_windows_without_activation();
     activation_watch::install(false);
     watchdog();

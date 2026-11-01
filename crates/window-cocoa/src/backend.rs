@@ -243,6 +243,7 @@ impl Backend for CocoaBackend {
                 desc.width,
                 desc.height,
                 i32::from(ck_window::window_activation_allowed()),
+                i32::from(!ck_window::window_mouse_input_allowed()),
                 &raw mut layer,
                 &raw mut pixel_width,
                 &raw mut pixel_height,
