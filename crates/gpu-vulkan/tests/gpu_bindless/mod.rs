@@ -173,6 +173,7 @@ fn the_table_layout_is_created_and_the_one_message_is_tolerated_only_after_a_no(
 /// instance's debug messenger, as the layer's messages do).
 #[test]
 fn the_tolerance_holds_on_a_real_instance_and_nowhere_else() {
+    super::hold_layer_gate();
     let loader = load_loader().expect("the Vulkan loader loads");
     let options = InstanceOptions {
         validation: true,

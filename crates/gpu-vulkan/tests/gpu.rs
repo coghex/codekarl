@@ -4,11 +4,13 @@
 //! case, and any validation message fails it. A missing loader or validation layer fails the test (nothing
 //! is skipped).
 
+use std::cell::RefCell;
 use std::env;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use ck_gpu_vulkan::{
@@ -57,6 +59,38 @@ fn bomb_after_submit() -> ! {
 /// created: every case must then fail.
 const INJECT_VARIABLE: &str = "CK_VULKAN_TEST_INJECT_VALIDATION";
 
+/// Held by the one test thread at a time that has the Khronos validation layer in an instance's chain (CK-166).
+static LAYER_GATE: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    /// The gate, held by this test's thread from its first layer instance until the thread ends.
+    static GATE_HELD: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) };
+}
+
+/// Makes the calling test the only one with the validation layer in use, from now until its thread ends.
+///
+/// The layer (`libVkLayer_khronos_validation` 1.3.296 on the owner's machine) keeps its per-instance and per-device data in one
+/// process-global map, `layer_data_map` (`small_unordered_map<void*, ValidationObject*, 2>`, `layers/vulkan/generated/chassis.cpp:41`),
+/// whose lookup, `GetLayerDataPtr`, takes no lock (the source says "TODO: We probably should lock here"), while `vkCreateInstance`,
+/// `vkCreateDevice` and their destroys insert and erase in it. Every layer call looks up in it, so a test thread that creates or
+/// destroys an instance or a device while another test thread is inside any layer call can read the map mid-update and crash in the
+/// layer. The test binary runs its cases on parallel threads, and all three crash reports (and two in 100 rounds of the unchanged
+/// baseline) show the faulting thread inside the layer while other threads are in `vkCreateInstance`, `CreateDevice` or
+/// `vkDestroyDevice`. Upstream replaced the map's storage with a shared-mutex-guarded one by 1.4.304.0; the layer here is not ours to
+/// change, and the creates and destroys sit inside the production calls the cases make, so the cases that use the layer run one
+/// at a time instead. A case takes it when it asks for validation, and also when it creates an instance with no `validation` option: the
+/// library honours the loader's own `VK_INSTANCE_LAYERS` and `VK_LOADER_LAYERS_ENABLE`, which put the layer in any instance (a run that
+/// sets them on purpose still validates; the variables are not scrubbed). A case that creates no instance (the loader-only ones) and the
+/// child processes the supervisor starts do not take it. Reentrant for the holding thread; a poisoned gate (a case that failed while holding it) is still a gate.
+fn hold_layer_gate() {
+    GATE_HELD.with(|held| {
+        let mut held = held.borrow_mut();
+        if held.is_none() {
+            *held = Some(LAYER_GATE.lock().unwrap_or_else(PoisonError::into_inner));
+        }
+    });
+}
+
 /// A validated instance with **no** window extensions: headless use, as the readback has.
 fn validated(loader: &Loader) -> Instance {
     validated_with(loader, false)
@@ -64,6 +98,7 @@ fn validated(loader: &Loader) -> Instance {
 
 /// [`validated`], with synchronization validation too when `synchronization` is set.
 fn validated_with(loader: &Loader, synchronization: bool) -> Instance {
+    hold_layer_gate();
     let instance = create_instance_with(
         loader,
         &[],
@@ -176,6 +211,9 @@ fn the_instance_enables_what_it_needs_and_names_what_is_missing() {
 /// 14. A headless instance without validation is valid too (an empty extension list).
 #[test]
 fn a_headless_instance_needs_no_extension_from_the_caller() {
+    // No `validation` option, but the loader's own `VK_INSTANCE_LAYERS` / `VK_LOADER_LAYERS_ENABLE` can put the layer in this instance's
+    // chain (the library honours them), so the case takes the gate as the validated ones do.
+    hold_layer_gate();
     let loader = load_loader().expect("the Vulkan loader loads");
     let plain = create_instance(&loader, &[]).expect("an instance with no required extensions");
     assert!(
@@ -193,6 +231,7 @@ fn a_headless_instance_needs_no_extension_from_the_caller() {
 /// in the log (so "no validation messages" means something).
 #[test]
 fn validation_messages_are_recorded() {
+    hold_layer_gate();
     let loader = load_loader().expect("the Vulkan loader loads");
     let instance = create_instance_with(
         &loader,

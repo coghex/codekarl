@@ -56,6 +56,136 @@ unsafe extern "C" {
 const WORKER_FLAG: &str = "--ck-scale-lua-worker";
 const RUN_VARIABLE: &str = "CK_SCALE_RUN";
 const OUT_VARIABLE: &str = "CK_SCALE_OUT";
+/// What the worker says about the activation watch. It prints the first before `codekarl::main_entry` and the second after it, and
+/// `main_entry` redirects the process's standard error onto its standard output (`dup2(1, 2)`, `apps/codekarl/src/lib.rs`), so the second
+/// one reaches the supervisor on the stdout pipe: a marker is looked for on both streams.
+const WORKER_MARKERS: [&str; 2] = [
+    "vulkan-scale-lua worker: activation watch installed",
+    "vulkan-scale-lua worker: activation watch clean",
+];
+
+/// The worker markers that appear on neither stream.
+fn missing_markers(stdout: &str, stderr: &str) -> Vec<&'static str> {
+    WORKER_MARKERS
+        .into_iter()
+        .filter(|marker| !stdout.contains(marker) && !stderr.contains(marker))
+        .collect()
+}
+
+/// The Khronos validation layer's name, as the loader prints it when it inserts the layer into an instance's chain.
+const LAYER_NAME: &str = "VK_LAYER_KHRONOS_validation";
+/// The loader's own layer-selection variables: the worker never inherits them, so an owner's environment cannot put the layer under this
+/// timing run (the application asks for no validation of its own).
+const LAYER_VARIABLES: [&str; 3] = [
+    "VK_INSTANCE_LAYERS",
+    "VK_LOADER_LAYERS_ENABLE",
+    "VK_LOADER_LAYERS_DISABLE",
+];
+
+/// Whether the loader's debug text shows the validation layer inserted into a chain.
+fn layer_in_loader_log(text: &str) -> bool {
+    text.lines()
+        .any(|line| line.contains(LAYER_NAME) && line.to_lowercase().contains("insert"))
+}
+
+/// Whether the loader's debug text is there at all (it says which layers it looks for and inserts; without it "no insertion" proves nothing).
+fn loader_log_present(text: &str) -> bool {
+    text.lines()
+        .any(|line| line.trim_start().contains("LAYER:"))
+}
+
+/// What is wrong with the layer's state in this timing run, from the loader's own log on both streams (`main_entry` moves standard error
+/// onto standard output): the layer must not be inserted, and the log must be there to say so.
+fn layer_problem(stdout: &str, stderr: &str) -> Option<String> {
+    let both = format!("{stdout}\n{stderr}");
+    if layer_in_loader_log(&both) {
+        return Some(format!(
+            "{LAYER_NAME} was loaded in this timing run (the loader's own log says so)"
+        ));
+    }
+    if !loader_log_present(&both) {
+        return Some(
+            "the loader's log (VK_LOADER_DEBUG=layer) was not produced, so the layer being off is not shown"
+                .to_owned(),
+        );
+    }
+    None
+}
+
+/// How many marker cases and layer cases `checks` makes, and so how many checks.
+const MARKER_CASES: usize = 6;
+const LAYER_CASES: usize = 4;
+const CHECK_COUNT: usize = MARKER_CASES + LAYER_CASES;
+
+/// The device-free checks of the supervisor's own reading, run on every invocation (the "not run" one included): the failures, each named.
+fn checks() -> Vec<String> {
+    let [installed, clean] = WORKER_MARKERS;
+    let both = format!("{installed}\n{clean}\n");
+    // (what, stdout, stderr, the markers that must be reported missing)
+    let cases: [(&str, &str, &str, Vec<&str>); MARKER_CASES] = [
+        (
+            "the real run: installed on stderr before main_entry, clean on stdout after its redirect",
+            clean,
+            installed,
+            Vec::new(),
+        ),
+        ("both on stderr (no redirect)", "", &both, Vec::new()),
+        ("both on stdout", &both, "", Vec::new()),
+        (
+            "the clean marker on neither stream (control: the old stderr-only reading fails the real run, this one fails this)",
+            "",
+            installed,
+            vec![clean],
+        ),
+        (
+            "the installed marker on neither stream",
+            clean,
+            "",
+            vec![installed],
+        ),
+        ("no marker at all", "", "", vec![installed, clean]),
+    ];
+    let mut failures: Vec<String> = cases
+        .into_iter()
+        .filter_map(|(what, stdout, stderr, missing)| {
+            let got = missing_markers(stdout, stderr);
+            (got != missing)
+                .then(|| format!("{what}: reported missing {got:?}, expected {missing:?}"))
+        })
+        .collect();
+    let inserted = format!(
+        "INFO | LAYER:  Insert instance layer \"{LAYER_NAME}\" (libVkLayer_khronos_validation.dylib)\n"
+    );
+    let manifest = format!(
+        "INFO | LAYER:  Found manifest file, layer \"{LAYER_NAME}\" in /usr/local/share/vulkan/explicit_layer.d\n"
+    );
+    let searching = "LAYER:             Searching for implicit layer manifest files\n";
+    let layer_cases: [(&str, bool); LAYER_CASES] = [
+        (
+            "an insertion of the layer on stdout (after the redirect) is a problem",
+            layer_problem(&inserted, "").is_some_and(|problem| problem.contains("was loaded")),
+        ),
+        (
+            "an insertion of the layer on stderr is a problem",
+            layer_problem("", &inserted).is_some_and(|problem| problem.contains("was loaded")),
+        ),
+        (
+            "a manifest line naming the layer, with the loader log present and no insertion, is no problem",
+            layer_problem(&manifest, searching).is_none(),
+        ),
+        (
+            "no loader log at all is a problem (the layer being off is not shown)",
+            layer_problem("", "").is_some_and(|problem| problem.contains("was not produced")),
+        ),
+    ];
+    for (what, holds) in layer_cases {
+        if !holds {
+            failures.push(what.to_owned());
+        }
+    }
+    failures
+}
+
 /// The longest the worker may run: loading, the 5 s settle, the 30 s sample and the teardown, with room.
 const DEADLINE: Duration = Duration::from_secs(600);
 
@@ -162,6 +292,18 @@ fn escape(text: &str) -> String {
     reason = "the supervisor is one sequential protocol: fixtures, worker, record"
 )]
 fn supervisor() -> ExitCode {
+    let failures = checks();
+    println!(
+        "vulkan_scale_lua: {CHECK_COUNT} device-free checks, {} failed",
+        failures.len()
+    );
+    if !failures.is_empty() {
+        for failure in &failures {
+            println!("vulkan_scale_lua: {failure}");
+        }
+        println!("test vulkan_scale_lua ... FAILED");
+        return ExitCode::FAILURE;
+    }
     if env::var(RUN_VARIABLE).as_deref() != Ok("1") {
         println!(
             "test vulkan_scale_lua ... ok (not run: the scale run is owner-scheduled; `{RUN_VARIABLE}=1` runs it, `./tools/ck check --group vulkan.scale` does)"
@@ -193,12 +335,17 @@ fn supervisor() -> ExitCode {
 
     let exe = env::current_exe().expect("this executable's path");
     let mut command = Command::new(exe);
+    // A timing run: no layer from the owner's environment, and no implicit layer an installation might add.
+    for variable in LAYER_VARIABLES {
+        command.env_remove(variable);
+    }
+    command.env("VK_LOADER_LAYERS_DISABLE", "~implicit~");
     command
         .arg(WORKER_FLAG)
         .arg("--config")
         .arg(&config)
-        .env_remove("VK_INSTANCE_LAYERS")
-        .env_remove("VK_LOADER_LAYERS_ENABLE")
+        // The loader reports the layers it inserts: the check reads what was actually loaded, not what was asked for.
+        .env("VK_LOADER_DEBUG", "layer")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -257,14 +404,13 @@ fn supervisor() -> ExitCode {
             problems.push(format!("{name}: {error}"));
         }
     }
-    for marker in [
-        "vulkan-scale-lua worker: activation watch installed",
-        "vulkan-scale-lua worker: activation watch clean",
-    ] {
-        if !stderr_text.contains(marker) {
-            problems.push(format!("worker did not report {marker:?}"));
-        }
+    for marker in missing_markers(&stdout_text, &stderr_text) {
+        problems.push(format!("worker did not report {marker:?}"));
     }
+    if let Some(problem) = layer_problem(&stdout_text, &stderr_text) {
+        problems.push(problem);
+    }
+    let layer_loaded = layer_in_loader_log(&format!("{stdout_text}\n{stderr_text}"));
     let records: Vec<&str> = stdout_text
         .lines()
         .filter(|line| line.contains("metrics: "))
@@ -308,7 +454,7 @@ fn supervisor() -> ExitCode {
     let option =
         |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |value| value.to_string());
     let report = format!(
-        "{{\"phase\":\"m-lua\",\"gated\":false,\"passed\":{passed},\"seconds\":{seconds:.1},\"window_duration_us\":{},\"window_frames\":{},\"window_cpu_samples\":{},\"window_gpu_samples\":{},\"window_presentation_intervals\":{},\"gpu_unavailable\":{gpu_unavailable},\"presentation_unavailable\":{presentation_unavailable},\"loop_window_updates_delivered\":{},\"loop_window_missed\":{},\"final_readings\":{complete_readings},\"problems\":[{}],\"script\":[{}],\"metrics_record\":{}}}",
+        "{{\"phase\":\"m-lua\",\"gated\":false,\"passed\":{passed},\"seconds\":{seconds:.1},\"window_duration_us\":{},\"window_frames\":{},\"window_cpu_samples\":{},\"window_gpu_samples\":{},\"window_presentation_intervals\":{},\"gpu_unavailable\":{gpu_unavailable},\"presentation_unavailable\":{presentation_unavailable},\"loop_window_updates_delivered\":{},\"loop_window_missed\":{},\"validation_layer_loaded_per_loader_log\":{layer_loaded},\"final_readings\":{complete_readings},\"problems\":[{}],\"script\":[{}],\"metrics_record\":{}}}",
         option(duration_us),
         option(window_frames),
         option(cpu_samples),

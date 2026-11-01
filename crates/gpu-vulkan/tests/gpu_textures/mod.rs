@@ -158,6 +158,9 @@ impl Kit {
 fn synchronization_validation_is_on_and_reports_a_hazard() {
     use ck_gpu_vulkan::{InstanceOptions, create_instance_with, vk};
 
+    // The creation below is refused before an instance exists, but the loader's layer variables can put the layer in any instance
+    // this case makes, so it holds the gate from its start (the gate is reentrant).
+    super::hold_layer_gate();
     let loader = load_loader().expect("the Vulkan loader loads");
     let refused = create_instance_with(
         &loader,
