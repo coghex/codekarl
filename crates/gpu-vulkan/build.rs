@@ -29,11 +29,12 @@ const GLSLC_DIRECTORIES: [&str; 2] = ["/usr/local/bin", "/opt/homebrew/bin"];
 const GLSLC_INSTALL: &str = "run tools/bootstrap (it installs Homebrew's `shaderc`), or install the LunarG Vulkan SDK \
                              for macOS and set VULKAN_SDK";
 /// The shaders, by file name in `shaders/`; each compiles to `<name>.spv` in `OUT_DIR`.
-const SHADERS: [&str; 5] = [
+const SHADERS: [&str; 6] = [
     "quad.vert",
     "quad.frag",
     "scene.vert",
     "scene.frag",
+    "scene_bindless.vert",
     "scene_bindless.frag",
 ];
 

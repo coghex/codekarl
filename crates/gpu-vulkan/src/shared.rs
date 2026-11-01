@@ -80,6 +80,8 @@ pub(crate) struct Shared {
     pub(crate) binding_notice: Mutex<Option<BindingNotice>>,
     /// The scene presenter's lean counters (written by the render thread; read by `VulkanPresenter::scene_stats`).
     pub(crate) scene_stats: Mutex<SceneStats>,
+    /// The frame-timing windows and totals (milestone 5.5, issue 6, part B).
+    pub(crate) metrics: crate::metrics::MetricsShared,
 }
 
 /// What the scene presenter publishes: the figures the shared metrics record reads for both backends, and nothing
@@ -172,6 +174,7 @@ mod tests {
             notice: Mutex::new(None),
             binding_notice: Mutex::new(None),
             scene_stats: Mutex::new(crate::shared::SceneStats::default()),
+            metrics: crate::metrics::MetricsShared::new(None),
         }
     }
 

@@ -1197,10 +1197,26 @@ STEPS = [
     Step(
         "rust.app-default",
         FAST,
-        lambda: [["cargo", "test", "-p", "codekarl", "--locked"]],
+        lambda: [
+            ["cargo", "test", "-p", "codekarl", "--locked"],
+            # CK-162: the application with the `vulkan` feature and no `metal` feature must compile everywhere its
+            # sources are (a Linux-only break shows here, on a Mac, as a build error); every target is compiled, none run.
+            [
+                "cargo",
+                "check",
+                "-p",
+                "codekarl",
+                "--no-default-features",
+                "--features",
+                "vulkan",
+                "--all-targets",
+                "--locked",
+            ],
+        ],
         env_remove=("CK_REQUIRE_FULL_SPEC",),
         description="The codekarl application's tests without its `metal` feature (the Metal CLI case is "
-        "shown skipped); its real-window test target is empty without the feature.",
+        "shown skipped); its real-window test target is empty without the feature; and a build of every "
+        "target with the `vulkan` feature alone (CK-162).",
         paths=(
             "apps/codekarl/",
             "config/",

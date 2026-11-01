@@ -28,9 +28,10 @@ use ck_window::{CleanupResult, PixelSize, PresenterReport};
 use ck_window_glfw::{GlfwBackend, GlfwHandles, VulkanLoaderForGlfw};
 
 use super::{
-    BindingNote, Ended, QuadSide, Refused, Resources, Running, Stack, ValidationDrain,
-    ValidationEntry,
+    BindingNote, Ended, MetricsEndSetter, QuadSide, Refused, Resources, Running, Stack,
+    ValidationDrain, ValidationEntry,
 };
+use crate::metrics_record::PresenterFigures;
 use crate::windowed::VulkanFigures;
 
 /// The real stack. It keeps the log of a failed instance creation (which returns no instance, hence no handle) until the run
@@ -212,6 +213,7 @@ impl Stack for Real {
                     binding_geometry_bytes: config.binding_geometry_bytes,
                 },
                 driver,
+                resources.clock.clone(),
             )
         }
         .map_err(|error| error.to_string())?;
@@ -331,6 +333,34 @@ impl Running for Started {
 
     fn texture_wake(&self) -> Arc<dyn Fn() + Send + Sync> {
         self.0.texture_wake()
+    }
+
+    fn request_metrics(&mut self, window: ck_window::MetricsWindow) -> Result<(), String> {
+        self.0
+            .request_metrics(ck_gpu_vulkan::MetricsWindow {
+                id: window.id,
+                start: window.start,
+                end: window.end,
+            })
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    fn with_metrics_end(&mut self, set: &mut dyn FnMut(&mut MetricsEndSetter<'_>)) {
+        // The presenter's admission lock is held for the call: the end timestamp `set` reads is the instant before which everything
+        // the presenter admitted lies.
+        let mut guard = self.0.lock_metrics_end();
+        set(&mut |id, end| guard.end(id, end).map_err(|error| format!("{error:?}")));
+    }
+
+    fn record_figures(&mut self, window: Option<u32>, within: Duration) -> PresenterFigures {
+        let reading = window.and_then(|id| self.0.read_metrics(id, within));
+        let unavailable = self.0.metrics_unavailable();
+        crate::metrics_record::vulkan_views::presenter(
+            &self.0.metrics_totals(),
+            &self.0.scene_stats(),
+            reading.as_ref(),
+            unavailable,
+        )
     }
 
     fn figures(&self) -> Option<VulkanFigures> {

@@ -17,7 +17,7 @@ use std::ffi::{CStr, c_char};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ash::vk;
-use ash::{ext, khr};
+use ash::{ext, google, khr};
 
 use crate::error::vk_error;
 use crate::gate::{self, BindlessCaps, BindlessReport};
@@ -26,6 +26,37 @@ use crate::instance::InstanceInner;
 use crate::loader::Loader;
 use crate::memory::SourceError;
 use crate::{Error, Instance};
+
+/// The timing capabilities of the device: the queue family's timestamp bits, the period, and whether `VK_GOOGLE_display_timing` is
+/// advertised (and so enabled, on a context made with a surface).
+fn timing_caps(
+    vulkan: &ash::Instance,
+    selection: &Selection,
+    timestamp_period: f32,
+    presents: bool,
+    features: TestFeatures,
+) -> Result<TimingCaps, Error> {
+    // SAFETY: `selection.physical` came from this instance.
+    let families =
+        unsafe { vulkan.get_physical_device_queue_family_properties(selection.physical) };
+    let bits = usize::try_from(selection.family)
+        .ok()
+        .and_then(|index| families.get(index))
+        .map_or(0, |family| family.timestamp_valid_bits);
+    // SAFETY: `selection.physical` came from this instance.
+    let extensions = unsafe { vulkan.enumerate_device_extension_properties(selection.physical) }
+        .map_err(|code| vk_error("vkEnumerateDeviceExtensionProperties", code))?;
+    let advertised = extensions.iter().any(|property| {
+        property
+            .extension_name_as_c_str()
+            .is_ok_and(|name| name == google::display_timing::NAME)
+    });
+    Ok(TimingCaps {
+        timestamp_valid_bits: if features.without_timestamps { 0 } else { bits },
+        timestamp_period,
+        display_timing: presents && advertised && !features.without_display_timing,
+    })
+}
 
 /// The only image format the store creates.
 pub(crate) const FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
@@ -39,6 +70,24 @@ const PRESENTER_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, ext::swapchain_m
 pub struct TestFeatures {
     /// Enable the host-event feature of the portability subset (`events`), which a held frame needs.
     pub events: bool,
+    /// Do not enable `VK_GOOGLE_display_timing` even where it is advertised: the reviewed capability override of the presentation
+    /// cases (the reading then says presentation is unavailable and nothing is pending).
+    pub without_display_timing: bool,
+    /// Report the queue family as having no valid timestamp bits even where it has: the reviewed capability override of the GPU
+    /// cases (the reading then says GPU time is unavailable and holds no zero sample).
+    pub without_timestamps: bool,
+}
+
+/// What the device offers for frame timing (milestone 5.5, issue 6, part B), read once when the context was made.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimingCaps {
+    /// The queue family's `timestampValidBits` (0: no timestamps, 36 or 64 on common devices).
+    pub timestamp_valid_bits: u32,
+    /// The device's `timestampPeriod`, nanoseconds per tick.
+    pub timestamp_period: f32,
+    /// `VK_GOOGLE_display_timing` was advertised and enabled (it needs a surface; it is never required).
+    pub display_timing: bool,
 }
 
 /// The device limits the texture path reads once.
@@ -70,6 +119,8 @@ pub struct VulkanContext {
     limits: DeviceLimits,
     /// What the device reported for the bindless gate, read once at creation (the features it lists are the ones enabled).
     bindless: BindlessCaps,
+    /// What the device offers for frame timing, read once at creation.
+    timing: TimingCaps,
     queue: Mutex<Option<vk::Queue>>,
     allocations: Mutex<Allocations>,
 }
@@ -156,6 +207,13 @@ impl VulkanContext {
         let limits = check_limits(&properties.limits, &name)?;
         let events = events_feature(vulkan, &selection, features, &name)?;
         let bindless = BindlessCaps::query(vulkan, selection.physical, &properties)?;
+        let timing = timing_caps(
+            vulkan,
+            &selection,
+            properties.limits.timestamp_period,
+            surface.is_some(),
+            features,
+        )?;
 
         let priorities = [1.0_f32];
         let queue_info = [vk::DeviceQueueCreateInfo::default()
@@ -167,6 +225,11 @@ impl VulkanContext {
         }
         if selection.portability_subset {
             names.push(khr::portability_subset::NAME.as_ptr());
+        }
+        // Presentation timing is optional and never required: enabled when advertised, and its absence only makes the intervals
+        // unavailable.
+        if timing.display_timing {
+            names.push(google::display_timing::NAME.as_ptr());
         }
         // The bindless tables' features (design §13.3) can only be enabled here. Each is enabled when the device reports it
         // and nothing else changes; the gate decides at the start of a scene whether the device suffices. The instance
@@ -217,6 +280,7 @@ impl VulkanContext {
             memory,
             limits,
             bindless,
+            timing,
             queue: Mutex::new(Some(queue)),
             allocations: Mutex::new(Allocations {
                 in_use: 0,
@@ -276,6 +340,13 @@ impl VulkanContext {
     pub fn lower_allocation_limit(&self, limit: u32) {
         let mut allocations = lock(&self.allocations);
         allocations.limit = allocations.limit.min(limit);
+    }
+
+    /// What the device offers for frame timing: timestamps and presentation timing.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn timing_caps(&self) -> TimingCaps {
+        self.timing
     }
 
     /// What the device reported for the bindless gate when the context was made (the features listed are the ones enabled).

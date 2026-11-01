@@ -2160,6 +2160,29 @@ pub struct FrameTicket<'a, K: Copy + Eq + Hash + Send + 'static> {
     reason = "transition failures are named by LedgerError"
 )]
 impl<K: Copy + Eq + Hash + Send + 'static> FrameTicket<'_, K> {
+    /// Pins `id` for this ticket, once, unless the ticket is a bindless one: **the epoch pin alone** (milestone 5.5, issue 6; design
+    /// §11.1 and §13.1). A bindless frame pins its table version, not each revision, and that is enough by this proof:
+    /// - the frame samples a revision only through a slot of the version it pinned;
+    /// - that version names the revision's view, and the ledger releases a revision only after **neither** version names it;
+    /// - a pinned version is never written (the writability rule), so its entry cannot be sanitised while the frame lives;
+    /// - so every image the frame can sample keeps its view, its memory and `SHADER_READ_ONLY_OPTIMAL` until the frame's recorded
+    ///   proof, or until its ticket is discarded.
+    ///
+    /// The ticket still caches its resolved mapping (CK-150), which can name a Retired revision only while the pinned version
+    /// still names it. This removes O(distinct textures) pin traffic per frame. The per-revision mode pins each revision, as
+    /// before. The compatibility hold is a pin of its own (`hold_compat`) and is unchanged. Returns whether a pin was taken.
+    fn pin(&self, id: RevisionId<K>, pins: &mut usize) -> bool {
+        if self.version.is_some() {
+            return false;
+        }
+        let new_pin = self.pinned.borrow_mut().insert(id);
+        if new_pin {
+            *pins += 1;
+            self.pins.borrow_mut().push(id);
+        }
+        new_pin
+    }
+
     /// Resolves the exact active revision, pinning it at most once per key. The first successful lookup is
     /// cached for this ticket: an explicit later [`TextureLedger::retire_key`] does not change a cached answer,
     /// and repeated calls may still resolve that pinned Retired revision until the ticket ends. A first lookup
@@ -2197,11 +2220,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> FrameTicket<'_, K> {
                 texture.width,
                 texture.height,
             );
-            let new_pin = self.pinned.borrow_mut().insert(id);
-            if new_pin {
-                revision.pins += 1;
-                self.pins.borrow_mut().push(id);
-            }
+            let new_pin = self.pin(id, &mut revision.pins);
             (found, new_pin)
         };
         if new_pin {
@@ -2243,11 +2262,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> FrameTicket<'_, K> {
                 texture.width,
                 texture.height,
             );
-            let new_pin = self.pinned.borrow_mut().insert(id);
-            if new_pin {
-                held.pins += 1;
-                self.pins.borrow_mut().push(id);
-            }
+            let new_pin = self.pin(id, &mut held.pins);
             (found, new_pin)
         };
         if new_pin {
@@ -2281,6 +2296,13 @@ impl<K: Copy + Eq + Hash + Send + 'static> FrameTicket<'_, K> {
     #[must_use]
     pub fn test_table_version(&self) -> Option<usize> {
         self.version
+    }
+
+    /// The revisions this ticket pinned (tests only): none in the bindless mode, whose frame pins its table version alone.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_revision_pins(&self) -> usize {
+        self.pins.borrow().len()
     }
 
     /// The slots of the bindless tables the ledger allocated (0: per-revision).
@@ -2506,7 +2528,7 @@ impl FrameTexture<'_> {
     pub fn descriptor_set(&self) -> vk::DescriptorSet {
         match self.binding {
             Binding::Set(set) => set,
-            Binding::Slot(_) | Binding::Checker => vk::DescriptorSet::null(),
+            Binding::Slot(_) | Binding::Checker | Binding::Table => vk::DescriptorSet::null(),
         }
     }
 
@@ -2515,7 +2537,7 @@ impl FrameTexture<'_> {
     pub fn slot(&self) -> Option<u32> {
         match self.binding {
             Binding::Slot(slot) => Some(slot),
-            Binding::Set(_) | Binding::Checker => None,
+            Binding::Set(_) | Binding::Checker | Binding::Table => None,
         }
     }
 

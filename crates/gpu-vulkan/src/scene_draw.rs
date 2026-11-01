@@ -2,31 +2,37 @@
 //! (milestone 5.5, issue 2a). The swap-chain frames of the presenter and the off-screen readback record through the
 //! same functions, so what a test reads back is what the window draws.
 //!
-//! - **The pipeline** has one instance-rate vertex binding (a 32-byte [`InstanceRecord`]: destination and source) and
-//!   draws six vertices of a triangle list (two triangles) per instance: a strip would be four, but `MoltenVK` warns that
-//!   Metal cannot disable primitive restart for one, and the log must stay empty. `firstInstance` selects a batch's first instance, which core
-//!   Vulkan allows on direct draws. The pipeline layout is the texture ledger's (set 0 a sampler, set 1 a revision's
-//!   image) with the drawable size as a push constant. Blending is the legacy quad's: premultiplied, no conversion.
-//! - **The instance buffer** is one host-visible buffer for `max_quads` instances, allocated through the context (so
+//! - **The pipeline** has one instance-rate vertex binding (an [`InstanceRecord`]: destination and source, and in the bindless mode
+//!   the native slot, padded to the stride the [`InstanceLayout`] names) and draws six vertices of a triangle list (two
+//!   triangles) per instance: a strip would be four, but `MoltenVK` warns that Metal cannot disable primitive restart for one, and
+//!   the log must stay empty. `firstInstance` selects a batch's first instance, which core Vulkan allows on direct draws. The
+//!   pipeline layout is the texture ledger's (set 0 samplers, set 1 a revision's image or the table) with the drawable size as a
+//!   push constant. Blending is the legacy quad's: premultiplied, no conversion.
+//! - **The instance buffer** is one host-visible buffer for `max_quads` instances of one stride, allocated through the context (so
 //!   it counts against `maxMemoryAllocationCount`) and charged to `binding_geometry_bytes` at its queried allocation
 //!   size. One buffer is enough because at most one frame is in flight: the presenter checks that the previous
 //!   submission is proven before it writes.
-//! - **Samplers.** A batch's effective sampler is the nearest set for the checker and the frame filter's set
+//! - **Samplers, per-revision mode.** A batch's effective sampler is the nearest set for the checker and the frame filter's set
 //!   otherwise. Set 0 is bound before the first batch and **rebound whenever the effective sampler differs from the
 //!   previous batch's**, in both directions. Rebinding writes no descriptor.
+//! - **Samplers, bindless mode (one draw).** Set 0 has two `SAMPLER` bindings, the checker's nearest sampler and the frame's filter,
+//!   in two prebuilt sets (a nearest frame and a linear frame) that are bound once per frame by the frame's filter; the fragment
+//!   stage picks the checker's sampler for slot 0. Nothing rebinds inside the frame, so a frame is one `vkCmdDraw`.
 
 use std::sync::Arc;
 
 use ash::vk;
 
-use crate::batch::{Batch, Binding, INSTANCE_STRIDE};
+use crate::batch::{Batch, Binding, InstanceLayout, InstanceRecord};
 use crate::context::VulkanContext;
-use crate::descriptors::{DRAWABLE_PUSH_BYTES, SLOT_PUSH_OFFSET};
+use crate::descriptors::DRAWABLE_PUSH_BYTES;
 use crate::quad::VulkanFilter;
 use crate::{Error, error::vk_error};
 
 const VERTEX_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/scene.vert.spv"));
 const FRAGMENT_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/scene.frag.spv"));
+const BINDLESS_VERTEX_SPIRV: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/scene_bindless.vert.spv"));
 const BINDLESS_FRAGMENT_SPIRV: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/scene_bindless.frag.spv"));
 
@@ -42,6 +48,44 @@ fn module(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, Error>
         .map_err(|code| vk_error("vkCreateShaderModule", code))
 }
 
+/// The vertex input's binding and attributes for `instance`'s layout, and how many attributes the record has: the destination
+/// and the source, and in the bindless record the native slot (`R32_UINT`, location 2, after the 32 bytes of the others).
+fn vertex_input_arrays(
+    instance: InstanceLayout,
+) -> Result<
+    (
+        [vk::VertexInputBindingDescription; 1],
+        [vk::VertexInputAttributeDescription; 3],
+        usize,
+    ),
+    Error,
+> {
+    let stride = u32::try_from(instance.stride)
+        .map_err(|_| Error("the instance stride does not fit a vertex binding".to_owned()))?;
+    let bindings = [vk::VertexInputBindingDescription::default()
+        .binding(0)
+        .stride(stride)
+        .input_rate(vk::VertexInputRate::INSTANCE)];
+    let attribute = |location, format, offset| {
+        vk::VertexInputAttributeDescription::default()
+            .location(location)
+            .binding(0)
+            .format(format)
+            .offset(offset)
+    };
+    let attributes = [
+        attribute(0, vk::Format::R32G32B32A32_SFLOAT, 0),
+        attribute(1, vk::Format::R32G32B32A32_SFLOAT, 16),
+        attribute(2, vk::Format::R32_UINT, 32),
+    ];
+    // The slot is an attribute of the bindless record only: the per-revision record is CK-157's 32 bytes.
+    Ok((
+        bindings,
+        attributes,
+        if instance.has_slot() { 3 } else { 2 },
+    ))
+}
+
 /// The instanced scene pipeline, made against one render pass and the ledger's pipeline layout.
 pub(crate) struct ScenePipeline {
     pipeline: vk::Pipeline,
@@ -54,8 +98,16 @@ impl ScenePipeline {
         render_pass: vk::RenderPass,
         layout: vk::PipelineLayout,
         bindless: bool,
+        instance: InstanceLayout,
     ) -> Result<Self, Error> {
-        let vertex = module(device, VERTEX_SPIRV)?;
+        let vertex = module(
+            device,
+            if bindless {
+                BINDLESS_VERTEX_SPIRV
+            } else {
+                VERTEX_SPIRV
+            },
+        )?;
         let fragment_code = if bindless {
             BINDLESS_FRAGMENT_SPIRV
         } else {
@@ -80,25 +132,10 @@ impl ScenePipeline {
                 .module(fragment)
                 .name(entry),
         ];
-        let bindings = [vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(u32::try_from(INSTANCE_STRIDE).unwrap_or(32))
-            .input_rate(vk::VertexInputRate::INSTANCE)];
-        let attributes = [
-            vk::VertexInputAttributeDescription::default()
-                .location(0)
-                .binding(0)
-                .format(vk::Format::R32G32B32A32_SFLOAT)
-                .offset(0),
-            vk::VertexInputAttributeDescription::default()
-                .location(1)
-                .binding(0)
-                .format(vk::Format::R32G32B32A32_SFLOAT)
-                .offset(16),
-        ];
+        let (bindings, attributes, used) = vertex_input_arrays(instance)?;
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_binding_descriptions(&bindings)
-            .vertex_attribute_descriptions(&attributes);
+            .vertex_attribute_descriptions(&attributes[..used]);
         let assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
         let viewport = vk::PipelineViewportStateCreateInfo::default()
@@ -165,6 +202,8 @@ pub(crate) struct InstanceBuffer {
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
     ptr: *mut u8,
+    /// How each instance is laid out: the stride the pipeline's binding, the buffer's size and every write use.
+    pub(crate) layout: InstanceLayout,
     /// Instances it holds.
     pub(crate) capacity: usize,
     /// The bytes the driver allocated: what is charged to `binding_geometry_bytes`.
@@ -177,15 +216,16 @@ pub(crate) struct InstanceBuffer {
 unsafe impl Send for InstanceBuffer {}
 
 impl InstanceBuffer {
-    /// Creates the buffer for `capacity` instances. The bytes are checked arithmetic; a buffer whose queried
-    /// allocation does not fit `budget` is refused, naming both numbers, **before** the memory is allocated.
+    /// Creates the buffer for `capacity` instances of `layout`. The bytes (`capacity` times the stride) are checked arithmetic; a
+    /// buffer whose queried allocation does not fit `budget` is refused, naming both numbers, **before** the memory is allocated.
     pub(crate) fn create(
         context: &Arc<VulkanContext>,
+        layout: InstanceLayout,
         capacity: usize,
         budget: u64,
     ) -> Result<Self, Error> {
         let bytes = capacity
-            .checked_mul(INSTANCE_STRIDE)
+            .checked_mul(layout.stride)
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(|| Error("the instance buffer's byte count overflows".to_owned()))?;
         let device = context.device();
@@ -250,6 +290,7 @@ impl InstanceBuffer {
             buffer,
             memory,
             ptr,
+            layout,
             capacity,
             allocated: requirements.size,
             coherent: context.is_coherent(memory_type),
@@ -262,16 +303,17 @@ impl InstanceBuffer {
     }
 
     /// Writes instance `slot`. The caller guarantees the GPU is not reading the buffer.
-    pub(crate) fn write(&self, slot: usize, record: crate::batch::InstanceRecord) {
+    pub(crate) fn write(&self, slot: usize, record: InstanceRecord) {
         if slot >= self.capacity {
             return;
         }
-        let bytes = record.to_bytes();
+        let stride = self.layout.stride;
         // SAFETY: `slot` is below the capacity the allocation was made for, so the offset stays inside it.
-        let target = unsafe { self.ptr.add(slot * INSTANCE_STRIDE) };
-        // SAFETY: the whole record lies inside the mapped allocation (`slot < capacity`), the source is a local array,
-        // and the range is written by this thread only while the GPU does not read the buffer.
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), target, INSTANCE_STRIDE) };
+        let target = unsafe { self.ptr.add(slot * stride) };
+        // SAFETY: the whole stride lies inside the mapped allocation (`slot < capacity`), nothing else aliases it, and the range
+        // is written by this thread only while the GPU does not read the buffer.
+        let bytes = unsafe { std::slice::from_raw_parts_mut(target, stride) };
+        record.write_to(self.layout, bytes);
     }
 
     /// Makes the first `count` instances visible to the device when the memory is not host-coherent.
@@ -284,7 +326,7 @@ impl InstanceBuffer {
             return Ok(());
         }
         let atom = self.context.limits().non_coherent_atom_size;
-        let bytes = u64::try_from(count.saturating_mul(INSTANCE_STRIDE)).unwrap_or(u64::MAX);
+        let bytes = u64::try_from(count.saturating_mul(self.layout.stride)).unwrap_or(u64::MAX);
         let size = crate::memory::align_up(bytes, atom)
             .unwrap_or(vk::WHOLE_SIZE)
             .min(self.allocated);
@@ -356,53 +398,37 @@ pub(crate) fn sampler_plan(batches: &[Batch], filter: VulkanFilter) -> Vec<(usiz
         .collect()
 }
 
-/// Binds what one batch samples: its slot as the fragment push constant (the bindless mode; the table is bound once per
-/// frame), or its revision's set (set 1) or the checker's.
+/// Binds what one per-revision batch samples: its revision's set (set 1) or the checker's.
 fn bind_texture(
     device: &ash::Device,
     cmd: vk::CommandBuffer,
     draw: &SceneDraw<'_>,
     binding: Binding,
-    bindless: bool,
 ) {
-    if bindless {
-        let slot = match binding {
-            Binding::Slot(slot) => slot,
-            Binding::Checker | Binding::Set(_) => 0,
-        };
-        // SAFETY: the layout's fragment push constant range covers these four bytes.
-        unsafe {
-            device.cmd_push_constants(
-                cmd,
-                draw.layout,
-                vk::ShaderStageFlags::FRAGMENT,
-                SLOT_PUSH_OFFSET,
-                &slot.to_ne_bytes(),
-            );
-        }
-    } else {
-        let set = match binding {
-            Binding::Set(set) => set,
-            Binding::Checker | Binding::Slot(_) => draw.checker,
-        };
-        // SAFETY: the set is a written set of the layout's second set layout, kept alive by the frame's ticket (a
-        // revision's) or permanent (the checker's).
-        unsafe {
-            device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                draw.layout,
-                1,
-                &[set],
-                &[],
-            );
-        }
+    let set = match binding {
+        Binding::Set(set) => set,
+        Binding::Checker | Binding::Slot(_) | Binding::Table => draw.checker,
+    };
+    // SAFETY: the set is a written set of the layout's second set layout, kept alive by the frame's ticket (a
+    // revision's) or permanent (the checker's).
+    unsafe {
+        device.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            draw.layout,
+            1,
+            &[set],
+            &[],
+        );
     }
 }
 
 /// Records the draws inside a begun render pass the pipeline is compatible with: the dynamic viewport and scissor over
-/// the target, the pipeline, the instance buffer, the drawable size, and for each batch the sampler (set 0, rebound
-/// when it changes), the batch's set (set 1) and one instanced draw.
+/// the target, the pipeline, the instance buffer, the drawable size, and then
+/// - in the bindless mode the frame's sampler set (set 0) and the table version's set (set 1), **each bound once**, and one instanced
+///   draw for each batch (one in milestone 5.5);
+/// - in the per-revision mode, for each batch the sampler (set 0, rebound when it changes), the batch's set (set 1) and one
+///   instanced draw.
 pub(crate) fn record_scene(
     device: &ash::Device,
     cmd: vk::CommandBuffer,
@@ -457,6 +483,18 @@ pub(crate) fn record_scene(
         );
     }
     if bindless {
+        // SAFETY: the sampler sets were written at the ledger's start and are never written again; each holds the checker's
+        // nearest sampler and the frame filter's.
+        unsafe {
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                draw.layout,
+                0,
+                &[draw.samplers[sampler_index(draw.filter)]],
+                &[],
+            );
+        }
         // SAFETY: the table version's set is written whole (every entry names an image view) and the ticket's pin keeps it
         // unwritten until the frame's proof; it is the layout's second set layout.
         unsafe {
@@ -469,6 +507,12 @@ pub(crate) fn record_scene(
                 &[],
             );
         }
+        for batch in draw.batches {
+            // SAFETY: the pipeline, the vertex buffer, the push constant and both sets are bound; every instance of the batch
+            // names a slot below the table's size (the build skipped any other).
+            unsafe { device.cmd_draw(cmd, 6, batch.count, 0, batch.first) };
+        }
+        return;
     }
     for (batch, (sampler, rebind)) in draw
         .batches
@@ -488,7 +532,7 @@ pub(crate) fn record_scene(
                 );
             }
         }
-        bind_texture(device, cmd, draw, batch.binding, bindless);
+        bind_texture(device, cmd, draw, batch.binding);
         // SAFETY: the pipeline, the vertex buffer, the push constants and both sets are bound.
         unsafe { device.cmd_draw(cmd, 6, batch.count, 0, batch.first) };
     }

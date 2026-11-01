@@ -374,6 +374,194 @@ fn a_held_frame_keeps_its_version_unwritten_until_its_proof() {
     rig.finish();
 }
 
+/// The epoch pin alone (milestone 5.5, issue 6; design §11.1): a bindless frame pins its table version, **not** each revision it
+/// draws. The frame is held with the host event. Every texture it draws is then reloaded and retired. None of the replaced revisions
+/// is released before the frame's proof (the version it pinned still names every one of them, and a pinned version is not written),
+/// the held frame shows the old textures, and the frame holds no per-revision pin. After the proof every old revision is released.
+///
+/// Negative control (recorded mutation): `begin_frame` that does not pin the version lets the next passes write it, so the old
+/// revisions' entries are sanitised and the old revisions released while the held frame can still sample them.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the held frame, the replacement of every texture and the release after the proof read best in order"
+)]
+fn a_held_frame_pins_its_table_version_alone_and_keeps_every_replaced_texture() {
+    const KEYS: u32 = 4;
+    let kit = Kit::new(true);
+    let mut rig = Rig::with_kit(
+        kit,
+        Mode::Bindless,
+        8,
+        16,
+        TextureLimits::default(),
+        LedgerLimits {
+            max_extra_revisions: 8,
+            ..LedgerLimits::default()
+        },
+        TextureTestHooks::default(),
+    );
+    let seed =
+        |key: u32, generation: u32| u8::try_from(key * 20 + generation * 70).expect("a byte");
+    for key in 1..=KEYS {
+        rig.show(key, 16, 16, pattern(16, 16, seed(key, 0)));
+    }
+    let context = Arc::clone(&rig.kit.context);
+    let ledger = rig.ledger.as_ref().expect("the ledger exists");
+    let queue = &mut rig.kit.queue;
+    let (a, _) = ledger.test_current_table().expect("tables");
+    let b = a ^ 1;
+    let old_slots: Vec<u32> = (1..=KEYS)
+        .map(|key| ledger.test_revision_slot(key, 1).expect("a slot"))
+        .collect();
+    let old_views: Vec<u64> = old_slots
+        .iter()
+        .map(|&slot| ledger.test_table_entry(a, slot).expect("an entry"))
+        .collect();
+
+    // The frame draws all four textures in a 2 x 2 grid and is recorded behind the host event.
+    let device = context.device();
+    // SAFETY: the case's own event on its own device, destroyed at the end of the case.
+    let event = unsafe { device.create_event(&vk::EventCreateInfo::default(), None) }
+        .expect("the events feature is enabled");
+    let list: Vec<_> = (1..=KEYS)
+        .map(|key| {
+            let (column, row) = (
+                i32::try_from((key - 1) % 2).expect("small"),
+                i32::try_from((key - 1) / 2).expect("small"),
+            );
+            instance(
+                key,
+                [column * 64, row * 64, column * 64 + 64, row * 64 + 64],
+                WHOLE,
+            )
+        })
+        .collect();
+    let frame = VulkanFrame::new(
+        1,
+        VulkanFilter::Nearest,
+        None,
+        Some(Arc::new(Quads(list.clone()))),
+    );
+    let mut f1 = SceneReadback::prepare(
+        &context,
+        ledger,
+        (128, 128),
+        [0.0; 3],
+        &SceneContent::Frame {
+            frame: &frame,
+            held: None,
+        },
+        16,
+        Some(event),
+    )
+    .expect("F1 is prepared");
+    let ticket = f1.ticket().expect("F1 is Building or recorded");
+    assert_eq!(
+        ticket.test_table_version(),
+        Some(a),
+        "F1 binds the current version"
+    );
+    assert_eq!(
+        ticket.test_revision_pins(),
+        0,
+        "the bindless frame holds no per-revision pin: its version is its pin"
+    );
+    assert_eq!(ledger.test_table_pins(a), Some(1));
+
+    // Every texture it drew is reloaded and committed (written to B only: A is pinned), then F1 is submitted, held.
+    let news: Vec<_> = (1..=KEYS)
+        .map(|key| pattern(16, 16, seed(key, 1)))
+        .collect();
+    for key in 1..=KEYS {
+        offer_and_prepare(ledger, queue, key, 2, &news[(key - 1) as usize]);
+        ledger.commit(key, 2).expect("commit");
+    }
+    for key in 1..=KEYS {
+        let new_slot = ledger.test_revision_slot(key, 2).expect("a slot");
+        let new_view = ledger.test_table_wanted(new_slot).expect("wanted");
+        pump_until(ledger, queue, |ledger, _| {
+            ledger.test_table_entry(b, new_slot) == Some(new_view)
+        });
+    }
+    f1.submit(queue).expect("F1 is submitted");
+    let mut adopted = Vec::new();
+    ledger.adopt(256, &mut adopted);
+    assert_eq!(
+        adopted.len(),
+        KEYS as usize,
+        "every replacement is adopted: {adopted:?}"
+    );
+    for key in 1..=KEYS {
+        assert_eq!(
+            ledger.test_revision_state(key, 1),
+            Some(RevisionState::Retired),
+            "key {key}: the old revision is retired"
+        );
+    }
+
+    // Passes run while F1 is held: B sanitises the old slots, A (pinned) does not, and no old revision is released.
+    pump_until(ledger, queue, |ledger, _| {
+        old_slots
+            .iter()
+            .all(|&slot| ledger.test_table_entry(b, slot) == Some(0))
+    });
+    for _ in 0..30 {
+        ledger.pump(queue, &mut Vec::new());
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    for key in 1..=KEYS {
+        let slot = old_slots[(key - 1) as usize];
+        assert_eq!(
+            ledger.test_table_entry(a, slot),
+            Some(old_views[(key - 1) as usize]),
+            "key {key}: the pinned version still names the old view"
+        );
+        assert_eq!(
+            ledger.test_revision_state(key, 1),
+            Some(RevisionState::Retired),
+            "key {key}: the old revision is not released while the held frame can sample it"
+        );
+    }
+    assert!(!f1.is_proven(ledger));
+
+    // The hold ends: F1 shows the OLD textures; only after its proof are the old revisions released.
+    // SAFETY: the event belongs to this device.
+    unsafe { device.set_event(event) }.expect("set the event");
+    let (held_pixels, _) = f1.finish(queue, ledger).expect("F1 finishes");
+    let mut shown = std::collections::HashMap::new();
+    for key in 1..=KEYS {
+        shown.insert(
+            key,
+            Shown {
+                width: 16,
+                height: 16,
+                pixels: pattern(16, 16, seed(key, 0)),
+            },
+        );
+    }
+    let expected_old = reference(
+        (128, 128),
+        [0.0; 3],
+        VulkanFilter::Nearest,
+        &shown,
+        &checker_image(),
+        &list,
+    );
+    assert_eq!(
+        differing(&held_pixels, &expected_old, 1),
+        0,
+        "F1 shows the old textures"
+    );
+    pump_until(ledger, queue, |ledger, _| {
+        (1..=KEYS).all(|key| ledger.test_revision_state(key, 1).is_none())
+    });
+    // SAFETY: the event's frame is proven finished.
+    unsafe { device.destroy_event(event, None) };
+    drop(context);
+    rig.finish();
+}
+
 /// The compatibility hold names only an image the table the next frame binds already shows (review of part B): a revision that
 /// is Prepared but not yet applied in the current version, or whose slot was already sanitised, is refused; a legitimate hold
 /// during a Building ticket resolves the held image in the version that ticket pinned.

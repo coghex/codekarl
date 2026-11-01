@@ -1353,6 +1353,171 @@ fn the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record
     );
 }
 
+// ---------------------------------------------------------------------------------------------
+// Frame timing on a real window (milestone 5.5, issue 6, part B): `diagnostics.metrics_mark` and the one `metrics` record
+// ---------------------------------------------------------------------------------------------
+
+/// A moving quad, as `MOVEMENT`, whose script marks the measured window once its texture is ready (twice: the second call changes
+/// nothing) and closes after many more updates.
+const MARKED: &str = r"
+local token, quad
+local x, ready, marked = 20, false, false
+function startup()
+  token = texture.load('demo-quad.png')
+  quad = render.create_quad{texture = token, x = x, y = 20, width = 64, height = 64}
+  frame.on_update(function(f)
+    x = 20 + (updates % 200)
+    render.set_position(quad, x, 20)
+    if not ready and texture.status(token).state == 'ready' then
+      ready = true
+      log.info('ready: gem')
+    end
+    if ready and not marked then
+      marked = true
+      diagnostics.metrics_mark()
+      diagnostics.metrics_mark()
+      log.info('marked')
+    end
+    close_when(marked and updates > 300)
+  end)
+  window.open{title = 'marked', width = 400, height = 160, clear = {0.1, 0.2, 0.3}}
+end
+";
+
+/// The configuration of the lifecycle scripts with the `metrics` record shown.
+fn metrics_config() -> String {
+    format!("{}metrics = \"debug\"\n", lifecycle_config())
+}
+
+/// The run's one `metrics` record, asserting there is exactly one record in the category (nothing is written per frame) and that it
+/// comes while the run is up, before the shutdown completes.
+fn metrics_record(text: &str) -> String {
+    assert_eq!(
+        count(text, "metrics: "),
+        1,
+        "exactly one record in the category:\n{text}"
+    );
+    assert_in_order(
+        text,
+        &[
+            "runtime: window: glfw-vulkan",
+            "metrics: run: frames=",
+            "runtime: shutdown complete",
+        ],
+    );
+    text.lines()
+        .find(|line| line.contains("metrics: "))
+        .expect("the metrics record")
+        .to_owned()
+}
+
+/// The number after `key` at or after `from` in `record`.
+fn number_in(record: &str, from: &str, key: &str) -> u64 {
+    let at = record
+        .find(from)
+        .unwrap_or_else(|| panic!("{from:?} not in {record}"));
+    number_after(&record[at..], key)
+}
+
+/// A marked `glfw-vulkan` run writes exactly one record: the measured window beside the whole-run totals, both owners' readings of the
+/// same window final, the second mark counted, and the sources the device does not offer said (never a zero in their place).
+fn a_marked_run_writes_one_metrics_record_with_the_window_beside_the_totals() {
+    let seen = lifecycle_in(&metrics_config(), MARKED);
+    assert_no_validation(&seen);
+    let record = metrics_record(&seen.stdout);
+    for field in [
+        "run: frames=",
+        " skipped=",
+        " invalid_marks=",
+        " invalid_gpu=",
+        " presented=",
+        " not_presented=",
+        " presentation_expired=",
+        " outstanding=",
+        " draw_calls_max=",
+        " instances_max=",
+        "cpu_total[n=",
+        "build[n=",
+        "encode[n=",
+        "ledger[n=",
+        "acquire[n=",
+        "gpu[n=",
+        "presentation_interval[n=",
+        "run updates delivered=",
+        "timing_lost=",
+        "uploads: files_decoded=",
+        " textures_created(native)=",
+        " textures_ready=",
+        "; window id=1 start=",
+        " end=",
+        " duration=",
+        " marks_after_the_first=1",
+        "; presenter window adopted=",
+        " late_adopted=false end_overrun=false",
+        "; window: frames=",
+        "; loop window adopted=",
+        " window updates delivered=",
+    ] {
+        assert!(record.contains(field), "{field:?} missing from {record}");
+    }
+    assert_eq!(number_after(&record, "files_decoded="), 1, "{record}");
+    assert_eq!(number_after(&record, "textures_ready="), 1, "{record}");
+    let frames = number_after(&record, "run: frames=");
+    let window_frames = number_in(&record, "; window: frames=", "frames=");
+    assert!(
+        frames > 0 && window_frames > 0 && window_frames <= frames,
+        "{record}"
+    );
+    assert_eq!(
+        number_in(&record, "; window: frames=", "cpu_total[n="),
+        window_frames,
+        "one CPU total per frame in the window: {record}"
+    );
+    assert_eq!(
+        number_in(&record, "; window: frames=", "draw_calls_max="),
+        1,
+        "one draw per frame through the table: {record}"
+    );
+    assert!(
+        number_in(&record, "; window id=1", "duration=") > 0,
+        "{record}"
+    );
+    assert!(
+        number_in(&record, "; loop window", "window updates delivered=") > 0,
+        "{record}"
+    );
+    assert_eq!(
+        record.matches("complete=true").count(),
+        2,
+        "both owners' readings are final: {record}"
+    );
+    // A source the device does not offer is said, with its reason; where it is offered there is no note.
+    for (note, reason) in [
+        ("gpu: unavailable", "timestampValidBits 0"),
+        (
+            "presentation: unavailable",
+            "VK_GOOGLE_display_timing not advertised",
+        ),
+    ] {
+        if record.contains(note) {
+            assert!(record.contains(reason), "{record}");
+        }
+    }
+}
+
+/// A run that never marks reports the whole-run totals only.
+fn a_run_without_a_mark_reports_the_totals_only() {
+    let seen = lifecycle_in(&metrics_config(), MOVEMENT);
+    assert_no_validation(&seen);
+    let record = metrics_record(&seen.stdout);
+    assert!(
+        record.contains("window: none (no metrics_mark)"),
+        "{record}"
+    );
+    assert!(!record.contains("presenter window"), "{record}");
+    assert!(number_after(&record, "run: frames=") > 0, "{record}");
+}
+
 /// The output rule over supplied outputs (the same function every case's output goes through): the one genuinely tolerated
 /// record passes, and every substitute fails, whatever the counts.
 fn the_validation_output_rule_accepts_only_a_marked_record_naming_the_tolerated_vuid() {
@@ -1626,6 +1791,8 @@ fn cases() -> Vec<(&'static str, fn())> {
         case!(update_driven_worker_continues_after_synthetic_focus_loss),
         case!(synthetic_focus_loss_without_worker_opt_in_keeps_the_pause),
         case!(the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record),
+        case!(a_marked_run_writes_one_metrics_record_with_the_window_beside_the_totals),
+        case!(a_run_without_a_mark_reports_the_totals_only),
         case!(the_validation_output_rule_accepts_only_a_marked_record_naming_the_tolerated_vuid),
         case!(a_minimised_window_is_restored_and_the_next_update_closes_the_run),
         case!(sigterm_while_the_window_is_minimised_exits_143_with_a_proven_presenter_end),
@@ -1646,6 +1813,8 @@ fn run_case(name: &str, case: fn()) -> bool {
                 | "update_driven_worker_continues_after_synthetic_focus_loss"
                 | "the_demo_scene_runs_unchanged_on_glfw_vulkan_and_closes_by_a_marked_escape"
                 | "the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record"
+                | "a_marked_run_writes_one_metrics_record_with_the_window_beside_the_totals"
+                | "a_run_without_a_mark_reports_the_totals_only"
         ),
         Ordering::SeqCst,
     );

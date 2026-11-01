@@ -424,7 +424,21 @@ class Levels(CheckFixture):
         # CK-44: the application is also tested without its `metal` feature.
         self.assertEqual(
             by_name["rust.app-default"].commands(),
-            [["cargo", "test", "-p", "codekarl", "--locked"]],
+            [
+                ["cargo", "test", "-p", "codekarl", "--locked"],
+                # CK-162: the `vulkan` feature alone compiles (every target, none run).
+                [
+                    "cargo",
+                    "check",
+                    "-p",
+                    "codekarl",
+                    "--no-default-features",
+                    "--features",
+                    "vulkan",
+                    "--all-targets",
+                    "--locked",
+                ],
+            ],
         )
         self.assertEqual(by_name["rust.app-default"].levels, ("fast", "full"))
         self.assertFalse(by_name["rust.app-default"].full_spec)

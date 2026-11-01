@@ -61,6 +61,16 @@ pub use metal::timing::{
     EndError, FrameIntervals, FrameStats, Histogram, MetricsEndGuard, MetricsReading,
     MetricsWindow, Percentile, RequestError, SceneStats, Tracked, Windows, now_ns,
 };
+/// The Vulkan presenter's frame-timing types (milestone 5.5, issue 6, part B), under a Vulkan path so that an `--all-features` build
+/// has no name clash with the Metal re-exports above: the application reads them through the backend and never names the GPU crate
+/// (`tests/source_guard.rs`).
+#[cfg(feature = "vulkan")]
+pub mod vulkan_timing {
+    pub use ck_gpu_vulkan::{
+        EndError, FrameIntervals, FrameStats, Histogram, MetricsClock, MetricsEndGuard,
+        MetricsReading, MetricsWindow, Percentile, RequestError, SceneStats, Tracked, Windows,
+    };
+}
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal::{BackendTestHooks, MetalBackend, ResourceBackendLimits, sink_over_slot};
 #[cfg(all(feature = "metal", target_os = "macos"))]

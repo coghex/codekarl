@@ -12,10 +12,11 @@ use ck_render_2d::{QuadSink, Snapshot};
 use ck_window::{CleanupResult, Notifier, PixelSize, Presenter, PresenterReport, WindowDesc};
 
 use super::{
-    BindingNote, Ended, QuadSide, Refused, Resources, Running, Stack, ValidationDrain,
-    ValidationEntry,
+    BindingNote, Ended, MetricsEndSetter, QuadSide, Refused, Resources, Running, Stack,
+    ValidationDrain, ValidationEntry,
 };
 use crate::fakes::{BackendScript, FakeBackend, FakePresenter, PresenterScript, Recorder};
+use crate::metrics_record::PresenterFigures;
 use crate::windowed::VulkanFigures;
 
 /// A run over `stack` with the run's resources a fake needs: a backend-mode service no test uses, a relay of its own and the
@@ -23,6 +24,15 @@ use crate::windowed::VulkanFigures;
 pub(super) fn new_run(
     stack: FakeStack,
     wake: Arc<dyn Fn() + Send + Sync>,
+) -> std::rc::Rc<super::Run<FakeStack>> {
+    new_run_with(stack, wake, None)
+}
+
+/// [`new_run`] with the run's measurement window (`diagnostics.metrics_mark`), as a windowed run has it.
+pub(super) fn new_run_with(
+    stack: FakeStack,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    metrics: Option<Arc<crate::metrics::MetricsHub>>,
 ) -> std::rc::Rc<super::Run<FakeStack>> {
     let relay = ck_render_2d::WakeRelay::default();
     let service = ck_resources::ResourceService::with_assets(
@@ -38,6 +48,8 @@ pub(super) fn new_run(
         config: crate::config::ResourceConfig::default(),
         max_quads: 1024,
         bindless_texture_slots: 131_072,
+        clock: metrics.as_ref().map(|hub| hub.clock()),
+        metrics,
     };
     super::Run::new(
         stack,
@@ -89,6 +101,10 @@ pub(super) struct Script {
     pub(super) disconnect_error: Option<String>,
     /// The presenter's last numbers, as `gpu_figures` returns them (`None`: it has none).
     pub(super) figures: Option<VulkanFigures>,
+    /// The presenter's figures for the end-of-run `metrics` record.
+    pub(super) record: PresenterFigures,
+    /// The presenter refuses the measured window with this text.
+    pub(super) metrics_refusal: Option<String>,
     /// A wake regression (see [`WakeCase`]).
     pub(super) wake_case: Option<WakeCase>,
     /// How the presenter says it binds its textures (the binding notice), told once.
@@ -329,6 +345,10 @@ pub(super) struct FakeStarted {
     /// The wake the relay is to be connected to.
     texture_wake: Arc<dyn Fn() + Send + Sync>,
     figures: Option<VulkanFigures>,
+    /// The presenter's figures for the end-of-run record.
+    record: PresenterFigures,
+    /// The presenter refuses the measured window with this text.
+    metrics_refusal: Option<String>,
 }
 
 impl Running for FakeStarted {
@@ -380,6 +400,32 @@ impl Running for FakeStarted {
     }
     fn figures(&self) -> Option<VulkanFigures> {
         self.figures
+    }
+    fn request_metrics(&mut self, window: ck_window::MetricsWindow) -> Result<(), String> {
+        (self.log)(&format!(
+            "metrics window requested id={} start={}",
+            window.id, window.start
+        ));
+        match &self.metrics_refusal {
+            Some(refusal) => Err(refusal.clone()),
+            None => Ok(()),
+        }
+    }
+    fn with_metrics_end(&mut self, set: &mut dyn FnMut(&mut MetricsEndSetter<'_>)) {
+        (self.log)("metrics end locked");
+        let log = Arc::clone(&self.log);
+        set(&mut |id, end| {
+            log(&format!("metrics end id={id} end={end}"));
+            Ok(())
+        });
+        (self.log)("metrics end unlocked");
+    }
+    fn record_figures(&mut self, window: Option<u32>, within: Duration) -> PresenterFigures {
+        (self.log)(&format!(
+            "metrics figures window={window:?} within_ms={}",
+            within.as_millis()
+        ));
+        self.record.clone()
     }
 }
 
@@ -614,6 +660,8 @@ impl Stack for FakeStack {
             extra,
             texture_wake: Arc::clone(&self.texture_wake),
             figures: self.script.figures,
+            record: self.script.record.clone(),
+            metrics_refusal: self.script.metrics_refusal.clone(),
         })
     }
 

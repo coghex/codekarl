@@ -292,6 +292,8 @@ pub enum WaitKind {
     GpuPoll,
     /// The pending swap-chain creation retry, `creation_retry_at`, is the earliest deadline.
     RetryDeadline,
+    /// The 50 ms look at presentation timing feedback that is still pending.
+    PresentationPoll,
 }
 
 /// Records each wait the scene presenter's render thread enters and each frame attempt it makes. Test evidence, not

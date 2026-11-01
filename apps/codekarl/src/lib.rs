@@ -73,7 +73,14 @@ mod fakes;
 mod frame_api;
 mod lifecycle;
 mod metrics;
-#[cfg(all(feature = "metal", target_os = "macos"))]
+#[cfg_attr(
+    all(
+        not(test),
+        not(all(feature = "metal", target_os = "macos")),
+        not(feature = "vulkan")
+    ),
+    expect(dead_code, reason = "only the windowed runs, and the tests, use this")
+)]
 mod metrics_record;
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 mod metrics_windows_tests;
@@ -324,10 +331,10 @@ fn loop_settings_measured(
     }
 }
 
-/// The run's measurement window (`diagnostics.metrics_mark`): it exists in a native-metal run, the only one with a presenter to
-/// measure, and the loop counts updates when the run has an update source.
+/// The run's measurement window (`diagnostics.metrics_mark`): it exists in a windowed run (native-metal or `glfw-vulkan`, each with a
+/// presenter to measure), and the loop counts updates when the run has an update source.
 fn measurement_hub(config: &config::Config, mode: mode::Mode) -> Option<Arc<metrics::MetricsHub>> {
-    matches!(mode, mode::Mode::Windowed(mode::Backend::NativeMetal)).then(|| {
+    matches!(mode, mode::Mode::Windowed(_)).then(|| {
         Arc::new(metrics::MetricsHub::new(
             metrics::uptime_clock(),
             config.frame.update_settings().is_ok(),
@@ -415,11 +422,8 @@ fn scene_extensions(
             }),
         mode::Mode::Headless => frame_api::FrameBackend::Headless,
     });
-    // `diagnostics.metrics_mark`: the mark in a native-metal run, accepted and ignored in a headless one, raised on `glfw-vulkan`.
-    let diagnostics = metrics::extension(
-        metrics,
-        !matches!(mode, mode::Mode::Windowed(mode::Backend::GlfwVulkan)),
-    );
+    // `diagnostics.metrics_mark`: the mark in a windowed run (either backend), accepted and ignored in a headless one.
+    let diagnostics = metrics::extension(metrics);
     (vec![render, texture, frame, diagnostics], render_end)
 }
 
@@ -961,14 +965,14 @@ mod tests {
         assert_eq!(status.code, 0, "{status:?}");
     }
 
-    /// `glfw-vulkan`: the refusal set is exact. `diagnostics.metrics_mark` still raises its named error (the Vulkan measurement
-    /// window is milestone 5.5-6's), while the calls that were refused until milestone 5.5 work; native-metal's mark is accepted.
+    /// `glfw-vulkan` refuses nothing of the scene path, and `diagnostics.metrics_mark` is accepted (milestone 5.5, issue 6): the mark
+    /// opens the run's window as it does on native-metal. A second call changes nothing.
     #[test]
-    fn the_glfw_vulkan_composition_refuses_only_the_metrics_mark() {
+    fn the_glfw_vulkan_composition_accepts_the_metrics_mark() {
         let status = composed_run(
             vulkan(),
-            "local ok, err = pcall(diagnostics.metrics_mark)\n\
-             assert(not ok and tostring(err):find('diagnostics.metrics_mark is not available on the glfw-vulkan backend until milestone 5.5', 1, true), tostring(err))\n\
+            "diagnostics.metrics_mark()\n\
+             diagnostics.metrics_mark()\n\
              local image = texture.load('a.png')\n\
              assert(type(image) == 'string')\n\
              frame.on_update(function() end)\n",

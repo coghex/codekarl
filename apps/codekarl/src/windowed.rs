@@ -133,10 +133,6 @@ pub(crate) struct RunEnv {
     /// The loop's caps and teardown deadlines.
     pub(crate) settings: LoopSettings,
     /// The run's measurement window (`diagnostics.metrics_mark`); `Some` in a native-metal run.
-    #[cfg_attr(
-        not(all(feature = "metal", target_os = "macos")),
-        expect(dead_code, reason = "only the native Metal backend measures")
-    )]
     pub(crate) metrics: Option<Arc<crate::metrics::MetricsHub>>,
     /// What the run tells the executable.
     pub(crate) notes: Rc<RunNotes>,

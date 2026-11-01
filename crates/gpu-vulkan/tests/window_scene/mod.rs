@@ -11,8 +11,8 @@ use std::collections::VecDeque;
 
 use ck_gpu_vulkan::{
     BindlessLimits, Boundary, BuildRecord, DestinationRect, InstanceRole, LedgerEvent,
-    LedgerLimits, PassOutcome, Pause, PixelSource, QuadSkipped, SceneLimits, SceneSetup,
-    SceneStats, StallGate, TestFeatures, TextureDriver, TextureLedger, TextureLimits,
+    LedgerLimits, MetricsClock, PassOutcome, Pause, PixelSource, QuadSkipped, SceneLimits,
+    SceneSetup, SceneStats, StallGate, TestFeatures, TextureDriver, TextureLedger, TextureLimits,
     TextureTestHooks, TicketEnding, VulkanContext, VulkanFilter, VulkanFrame, VulkanFrameSlot,
     VulkanInstance, VulkanSceneSource, WaitKind, WaitObserver,
 };
@@ -24,6 +24,7 @@ use super::{
 };
 
 pub(crate) mod compat;
+pub(crate) mod metrics;
 
 /// The scene a case publishes: its instances in painter order.
 struct Quads(Vec<VulkanInstance<u32>>);
@@ -155,17 +156,29 @@ struct Harness {
     tickets: Arc<Mutex<Vec<TicketEnding>>>,
     driver: Arc<Mutex<DriverState>>,
     generation: u64,
+    /// The clock the presenter takes its frame-timing marks from (nanoseconds since the harness began, plus one).
+    clock: MetricsClock,
 }
 
 impl Harness {
     fn new() -> Self {
+        Self::with_features(TestFeatures {
+            events: true,
+            ..TestFeatures::default()
+        })
+    }
+
+    /// A harness whose context is made with `features` (the capability overrides of the frame-timing cases).
+    fn with_features(features: TestFeatures) -> Self {
         let rig = Rig::open_with(true);
-        let context = VulkanContext::new_for_tests(
-            &rig.instance,
-            Some(rig.surface),
-            TestFeatures { events: true },
-        )
-        .expect("a context made for the surface, with host events");
+        let context = VulkanContext::new_for_tests(&rig.instance, Some(rig.surface), features)
+            .expect("a context made for the surface, with host events");
+        let began = Instant::now();
+        let clock: MetricsClock = Arc::new(move || {
+            u64::try_from(began.elapsed().as_nanos())
+                .unwrap_or(u64::MAX)
+                .saturating_add(1)
+        });
         let waits = Arc::new(WaitObserver::new());
         let driver = Arc::new(Mutex::new(DriverState {
             waits: Some(Arc::clone(&waits)),
@@ -181,7 +194,13 @@ impl Harness {
             tickets: Arc::new(Mutex::new(Vec::new())),
             driver,
             generation: 0,
+            clock,
         }
+    }
+
+    /// The presenter's clock now.
+    fn now(&self) -> u64 {
+        (self.clock)()
     }
 
     fn limits() -> SceneLimits {
@@ -219,7 +238,8 @@ impl Harness {
             Driver(Arc::clone(&self.driver)),
             Arc::clone(&self.frames),
             texture_hooks,
-        );
+        )
+        .with_clock(Arc::clone(&self.clock));
         let wakes = Arc::clone(&self.probes.wakes);
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             wakes.fetch_add(1, Ordering::SeqCst);

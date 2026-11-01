@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use ash::vk;
 
-use crate::batch::{Batch, Binding, FrameCounters, InstanceRecord};
+use crate::batch::{Batch, Binding, FrameCounters, InstanceLayout, InstanceRecord};
 use crate::context::{RenderQueue, VulkanContext};
 use crate::error::vk_error;
 use crate::frame::VulkanFrame;
@@ -305,13 +305,30 @@ impl<'a, K: Copy + Eq + std::hash::Hash + Send + 'static> SceneReadback<'a, K> {
         unsafe { device.bind_buffer_memory(objects.buffer, buffer_memory, 0) }
             .map_err(|code| vk_error("vkBindBufferMemory(readback)", code))?;
         // The pipeline and the instance buffer: the presenter's own.
+        let instance_layout = if ledger.bindless_slots() == 0 {
+            InstanceLayout::PER_REVISION
+        } else {
+            InstanceLayout::bindless(
+                owner
+                    .bindless_caps()
+                    .limits
+                    .min_vertex_input_binding_stride_alignment,
+            )
+            .ok_or_else(|| Error("the bindless instance stride overflows".to_owned()))?
+        };
         objects.pipeline = Some(ScenePipeline::create(
             device,
             objects.render_pass,
             ledger.pipeline_layout(),
             ledger.bindless_slots() != 0,
+            instance_layout,
         )?);
-        objects.instances = Some(InstanceBuffer::create(&owner, max_quads, u64::MAX)?);
+        objects.instances = Some(InstanceBuffer::create(
+            &owner,
+            instance_layout,
+            max_quads,
+            u64::MAX,
+        )?);
         let pool_info = vk::CommandPoolCreateInfo::default().queue_family_index(owner.family());
         // SAFETY: the device is live.
         objects.pool = unsafe { device.create_command_pool(&pool_info, None) }
@@ -388,18 +405,20 @@ impl<'a, K: Copy + Eq + std::hash::Hash + Send + 'static> SceneReadback<'a, K> {
                                 pixel(top + cell_px),
                             ],
                             source: [0.0, 0.0, 1.0, 1.0],
+                            slot,
                         },
                     );
-                    probe_batches.push(Batch {
-                        binding: Binding::Slot(slot),
-                        first: u32::try_from(index).unwrap_or(u32::MAX),
-                        count: 1,
-                    });
                 }
+                // One draw: each instance names its own slot.
+                probe_batches.push(Batch {
+                    binding: Binding::Table,
+                    first: 0,
+                    count: u32::try_from(slots.len()).unwrap_or(u32::MAX),
+                });
                 (
                     FrameCounters {
                         instances: slots.len() as u64,
-                        batches: slots.len() as u64,
+                        batches: 1,
                         ..FrameCounters::default()
                     },
                     VulkanFilter::Nearest,

@@ -21,7 +21,7 @@ fn rust_files(directory: &Path, found: &mut Vec<PathBuf>) {
 
 /// Test-only names distinctive enough to forbid anywhere in `codekarl`'s sources: the hidden constructors
 /// and hook types, the log handle and the invalid-use helpers.
-const DISTINCTIVE: [&str; 79] = [
+const DISTINCTIVE: [&str; 82] = [
     "start_with_test_hooks",
     "TestHooks",
     "readback_clear_with_test_hooks",
@@ -97,6 +97,9 @@ const DISTINCTIVE: [&str; 79] = [
     "test_table_pins",
     "test_slots_in_use",
     "test_table_version",
+    "test_revision_pins",
+    "timing_caps",
+    "TimingCaps",
     "test_begin_frame_on",
     "SceneContent",
     "SceneReadback",

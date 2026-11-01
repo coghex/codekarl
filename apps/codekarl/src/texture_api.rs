@@ -28,12 +28,6 @@ use ck_resources::{
     AdmitError, Assets, MAX_PATH_BYTES, ResourceService, StatusState, TextureKey, TextureStatus,
 };
 
-/// The message of a call on the `glfw-vulkan` backend that is not available there yet (design §8.4): the one left is
-/// `diagnostics.metrics_mark`, whose Vulkan measurement window is milestone 5.5-6's.
-pub(crate) fn unavailable(function: &str) -> String {
-    format!("{function} is not available on the glfw-vulkan backend until milestone 5.5")
-}
-
 /// The message of a call of a run that has no resource service (only a test builds one).
 pub(crate) fn no_service(function: &str) -> String {
     format!("{function}: this run has no resource service")
