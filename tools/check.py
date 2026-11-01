@@ -135,6 +135,7 @@ class State:
         # The analyzer runs once, in the build-script unit shared by doc, test and build; Clippy's
         # own unit must not see the variable, and neither may a value the caller exported.
         env.pop("CK_NATIVE_ANALYZE", None)
+        env.pop("CK_WINDOW_GLFW_FOCUS", None)
         if step is not None and step.analyze:
             env["CK_NATIVE_ANALYZE"] = "1"
         if step is not None:
@@ -1303,7 +1304,7 @@ STEPS = [
         full_spec=True,
         analyze=True,
         needs="window",
-        description="The native tests that open real windows without taking the desktop's focus, except for explicitly named focus cases: the Cocoa "
+        description="The native tests open real windows with keyboard and mouse input ignored, except for explicitly named focus cases: the Cocoa "
         "backend, the application's real-window tests and ck-render-2d's Metal backend on a real "
         "window (the Metal presenter's windowed cases are the `metal.window-*` groups).",
         paths=NATIVE_WINDOW_PATHS,
@@ -1505,8 +1506,17 @@ STEPS = [
         lambda: [cargo_test(["-p", "ck-window-glfw", "--test", "window_glfw"])],
         analyze=True,
         needs="window",
-        description="The GLFW backend's window tests: real windows through GLFW and the Vulkan loader, without taking desktop focus "
-        "except in the explicitly named focus cases.",
+        description="The GLFW backend's window tests: real windows through GLFW and the Vulkan loader with keyboard and mouse input ignored.",
+        paths=("crates/window-glfw/", SUPERVISOR_DIR, *GLFW_TEST_SUPPORT),
+    ),
+    Step(
+        "glfw.window-focus",
+        (),
+        lambda: [cargo_test(["-p", "ck-window-glfw", "--test", "window_glfw"])],
+        env=(("CK_WINDOW_GLFW_FOCUS", "1"),),
+        needs="window",
+        category="optional",
+        description="The GLFW focus cases that take desktop focus; run only when the owner schedules them.",
         paths=("crates/window-glfw/", SUPERVISOR_DIR, *GLFW_TEST_SUPPORT),
     ),
     # CK-79: the Vulkan presenter. Two groups, each selected only by this crate's own paths: the one without

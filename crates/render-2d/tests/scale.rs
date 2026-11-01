@@ -56,6 +56,7 @@ use rig::Config;
 const WORKER_VARIABLE: &str = "CK_SCALE_WORKER";
 const RUN_VARIABLE: &str = "CK_SCALE_RUN";
 const OUT_VARIABLE: &str = "CK_SCALE_OUT";
+const FORWARDING_FIXTURE: &str = "external_forwarding_fixture";
 /// The longest one worker may run.
 const DEADLINE: Duration = Duration::from_secs(900);
 /// What Metal's validation layers print when something is wrong.
@@ -196,6 +197,20 @@ fn caps_config(assets: PathBuf) -> Config {
 }
 
 fn worker_main(worker: &str) -> ExitCode {
+    if worker == FORWARDING_FIXTURE {
+        println!(
+            "{}",
+            activation_watch::format_external_summary(
+                &std::process::id().to_string(),
+                1,
+                0,
+                0,
+                0,
+                0,
+            )
+        );
+        return ExitCode::SUCCESS;
+    }
     let fixtures = fixtures::Fixtures::create(worker);
     let (result, ended) = match worker {
         "selftest" => {
@@ -326,6 +341,10 @@ struct Outcome {
     seconds: f64,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the bounded worker capture and validation gates stay together"
+)]
 fn run_job(job: &Job, out: &Path) -> Outcome {
     let exe = env::current_exe().expect("the test binary's path");
     let mut command = Command::new(exe);
@@ -369,7 +388,29 @@ fn run_job(job: &Job, out: &Path) -> Outcome {
     let stderr = stderr
         .join()
         .unwrap_or_else(|_| Err("stderr: the reader panicked".to_owned()));
+    let captured = format!(
+        "{}\n{}",
+        stdout.as_deref().unwrap_or(""),
+        stderr.as_deref().unwrap_or("")
+    );
+    let fixture = job.worker == FORWARDING_FIXTURE;
+    let case = if fixture {
+        FORWARDING_FIXTURE
+    } else {
+        job.name
+    };
+    let forwarded =
+        activation_watch::forwarded_external_summaries("metal.scale", case, "quiet", &captured);
     let mut problems = Vec::new();
+    for line in &forwarded {
+        println!("{line}");
+    }
+    if fixture
+        && let Err(error) =
+            activation_watch::check_fixture_forwarding("metal.scale", case, "quiet", &forwarded)
+    {
+        problems.push(error);
+    }
     match status {
         None => problems.push("the worker did not finish by the deadline".to_owned()),
         Some(status) if !status.success() => {
@@ -405,15 +446,32 @@ fn run_job(job: &Job, out: &Path) -> Outcome {
         .as_deref()
         .ok()
         .is_some_and(|text| text.lines().any(|line| line == "SCALE_STATUS passed=true"));
-    if record.is_none() {
+    if !fixture && record.is_none() {
         problems.push("the worker printed no SCALE_RESULT record".to_owned());
     }
+    let status_line = fixture || status_line;
     Outcome {
         name: job.name,
         record,
         passed: status_line && problems.is_empty(),
         problems,
         seconds,
+    }
+}
+
+/// Runs one successful no-window worker through the scale supervisor's capture and forwarding path.
+fn run_forwarding_fixture(out: &Path) -> Result<(), String> {
+    let job = Job {
+        name: "activation-forwarding",
+        worker: FORWARDING_FIXTURE,
+        validation: false,
+        gated: true,
+    };
+    let outcome = run_job(&job, out);
+    if outcome.passed {
+        Ok(())
+    } else {
+        Err(outcome.problems.join("; "))
     }
 }
 
@@ -484,6 +542,15 @@ fn supervisor() -> ExitCode {
     let out =
         env::var_os(OUT_VARIABLE).map_or_else(|| default_out(&epoch.to_string()), PathBuf::from);
     fs::create_dir_all(&out).expect("the evidence directory");
+    let forwarding = run_forwarding_fixture(&out);
+    println!(
+        "test passing scale fixture's external summary reaches supervisor output ... {}",
+        if forwarding.is_ok() { "ok" } else { "FAILED" }
+    );
+    if let Err(error) = forwarding {
+        println!("scale: activation forwarding fixture: {error}");
+        return ExitCode::FAILURE;
+    }
     let only: Option<Vec<String>> = env::var("CK_SCALE_ONLY")
         .ok()
         .map(|list| list.split(',').map(str::to_owned).collect());

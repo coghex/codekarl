@@ -80,6 +80,7 @@ use supervisor::Supervised;
 const WORKER_FLAG: &str = "--worker";
 /// `1` makes a worker run with the owner typing without stopping.
 const TYPING_VARIABLE: &str = "CK_GLFW_TEST_TYPING";
+const FOCUS_SELECTOR: &str = "CK_WINDOW_GLFW_FOCUS";
 /// The longest a worker may run.
 const DEADLINE: Duration = Duration::from_secs(30);
 /// The longest any wait for something that must happen.
@@ -90,6 +91,8 @@ const RESTORE_WAKE_BOUND: Duration = Duration::from_secs(1);
 const WIDTH: u32 = 400;
 const HEIGHT: u32 = 300;
 const FOCUS_CASES: [&str; 2] = ["focus_and_minimize", "the_window_becomes_active_by_itself"];
+const EXPECTED_REQUEST_CASE: &str = "production_open_still_asks_for_activation";
+const FORWARDING_FIXTURE: &str = "external_forwarding_fixture";
 
 /// A backend with the Vulkan loader the tests loaded by its absolute path, as the program does.
 fn new_backend() -> GlfwBackend {
@@ -1580,10 +1583,39 @@ fn wait_survives_a_system_event() {
     assert!(too_many_returns(2_000, Duration::from_millis(10)));
 }
 
+/// The real creation path still makes its production activation requests; the test mouse layer is
+/// independent, and the installed expected-request watch suppresses the requests.
+fn production_open_still_asks_for_activation() {
+    let rig = Rig::open();
+    drop(rig);
+}
+
+fn test_windows_let_clicks_through() {
+    let _rig = Rig::open();
+    match support::mouse_passthrough_probe() {
+        0 | 4 => {}
+        1 => panic!(
+            "the probe window did not pass hit-testing through to its test-owned under-window; see native window/PID diagnostic"
+        ),
+        2 => panic!(
+            "the probe was only partially visible at its frame; see native control window/PID diagnostic"
+        ),
+        other => panic!("mouse pass-through probe could not inspect a window: {other}"),
+    }
+}
+
 type Case = fn();
 
-const CASES: [(&str, Case); 28] = [
+const CASES: [(&str, Case); 30] = [
     ("create_and_destroy", create_and_destroy),
+    (
+        EXPECTED_REQUEST_CASE,
+        production_open_still_asks_for_activation,
+    ),
+    (
+        "test_windows_let_clicks_through",
+        test_windows_let_clicks_through,
+    ),
     ("off_the_main_thread", off_the_main_thread),
     (
         "one_backend_at_a_time_and_terminate_refuses_with_a_window",
@@ -1645,6 +1677,20 @@ fn hang() {
 }
 
 fn worker(name: &str) -> ExitCode {
+    if name == FORWARDING_FIXTURE {
+        println!(
+            "{}",
+            activation_watch::format_external_summary(
+                &std::process::id().to_string(),
+                1,
+                0,
+                0,
+                0,
+                0,
+            )
+        );
+        return ExitCode::SUCCESS;
+    }
     let case = CASES
         .iter()
         .find(|(case, _)| *case == name)
@@ -1654,9 +1700,14 @@ fn worker(name: &str) -> ExitCode {
         eprintln!("worker: no case called {name}");
         return ExitCode::from(1);
     };
-    if !FOCUS_CASES.contains(&name) {
-        ck_window::test_support::open_windows_without_activation();
-        activation_watch::install(false);
+    let focus_case = FOCUS_CASES.contains(&name);
+    let expected_request = name == EXPECTED_REQUEST_CASE;
+    ck_window::test_support::open_windows_ignoring_mouse();
+    if !focus_case {
+        if !expected_request {
+            ck_window::test_support::open_windows_without_activation();
+        }
+        activation_watch::install(expected_request);
     }
     // The filter is in before the first window and stays for the whole life of the worker. This
     // policy case specifically verifies the app does not exist before GLFW starts, and posts no keys.
@@ -1666,7 +1717,9 @@ fn worker(name: &str) -> ExitCode {
     }
     match catch_unwind(AssertUnwindSafe(case)) {
         Ok(()) => {
-            if !FOCUS_CASES.contains(&name) {
+            if expected_request {
+                activation_watch::assert_expected_request_suppressed();
+            } else if !focus_case {
                 activation_watch::assert_clean();
             }
             ExitCode::SUCCESS
@@ -1702,6 +1755,23 @@ fn run_case(case: &str, typing: bool, deadline: Duration) -> Result<(), String> 
     }
     let supervised = Supervised::spawn(command, deadline)?;
     let seen = supervised.finish()?;
+    let forwarded = activation_watch::forwarded_external_summaries(
+        "glfw.window",
+        case,
+        if typing { "typing" } else { "quiet" },
+        &seen.stdout,
+    );
+    for line in &forwarded {
+        println!("{line}");
+    }
+    if case == FORWARDING_FIXTURE {
+        activation_watch::check_fixture_forwarding(
+            "glfw.window",
+            case,
+            if typing { "typing" } else { "quiet" },
+            &forwarded,
+        )?;
+    }
     if seen.code == Some(0) {
         Ok(())
     } else {
@@ -1789,9 +1859,39 @@ fn check_test_support_is_not_in_the_library() -> Result<(), String> {
 
 type SupervisorCheck = fn() -> Result<(), String>;
 
+fn selected_cases(focus: Option<&str>) -> Vec<(&'static str, Case)> {
+    let run_focus = focus == Some("1");
+    CASES
+        .iter()
+        .copied()
+        .filter(|(name, _)| FOCUS_CASES.contains(name) == run_focus)
+        .collect()
+}
+
+fn check_case_selection() -> Result<(), String> {
+    let normal = selected_cases(None);
+    let other = selected_cases(Some("true"));
+    let focus = selected_cases(Some("1"));
+    let expected_focus = FOCUS_CASES.to_vec();
+    if focus.iter().map(|(name, _)| *name).collect::<Vec<_>>() != expected_focus {
+        return Err("the exact selector value 1 must select only FOCUS_CASES".to_owned());
+    }
+    if normal.iter().any(|(name, _)| FOCUS_CASES.contains(name))
+        || other.iter().any(|(name, _)| FOCUS_CASES.contains(name))
+        || normal.len() != CASES.len() - FOCUS_CASES.len()
+    {
+        return Err("default and non-1 values must select all and only non-focus cases".to_owned());
+    }
+    Ok(())
+}
+
+fn check_external_summary_reaches_supervisor() -> Result<(), String> {
+    run_case(FORWARDING_FIXTURE, false, DEADLINE)
+}
+
 fn supervisor() -> ExitCode {
     let mut failures = BTreeMap::new();
-    let checks: [(&str, SupervisorCheck); 4] = [
+    let checks: [(&str, SupervisorCheck); 6] = [
         (
             "the layout check rejects mismatched info bindings",
             support::check_the_comparison_rejects_mismatched_bindings,
@@ -1808,6 +1908,14 @@ fn supervisor() -> ExitCode {
             "the test support is not in the library",
             check_test_support_is_not_in_the_library,
         ),
+        (
+            "focus cases are selected only by the exact opt-in",
+            check_case_selection,
+        ),
+        (
+            "a passing fixture's external summary reaches supervisor output",
+            check_external_summary_reaches_supervisor,
+        ),
     ];
     for (name, check) in checks {
         let result = check();
@@ -1819,13 +1927,27 @@ fn supervisor() -> ExitCode {
             failures.insert(name.to_owned(), message);
         }
     }
-    // Every case runs on a quiet keyboard, and again while the owner types without stopping.
+    let focus = env::var(FOCUS_SELECTOR).ok();
+    let selected = selected_cases(focus.as_deref());
+    if focus.as_deref() == Some("1") {
+        println!(
+            "selected owner-scheduled focus cases only: {}",
+            FOCUS_CASES.join(", ")
+        );
+    } else {
+        println!(
+            "focus cases not run: owner-scheduled (glfw.window-focus): {}",
+            FOCUS_CASES.join(", ")
+        );
+        println!("selected non-focus cases: {}", selected.len());
+    }
+    // Every selected case runs on a quiet keyboard, and again while the owner types without stopping.
     for typing in [false, true] {
-        for (name, _) in CASES {
+        for (name, _) in &selected {
             let label = if typing {
                 format!("{name} (owner typing)")
             } else {
-                name.to_owned()
+                (*name).to_owned()
             };
             let started = Instant::now();
             let result = run_case(name, typing, DEADLINE);
@@ -1842,7 +1964,7 @@ fn supervisor() -> ExitCode {
     for (name, message) in &failures {
         println!("---- {name} ----\n{message}");
     }
-    let total = checks.len() + 2 * CASES.len();
+    let total = checks.len() + 2 * selected.len();
     println!(
         "test result: {}. {} passed; {} failed",
         if failures.is_empty() { "ok" } else { "FAILED" },

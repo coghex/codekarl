@@ -266,6 +266,9 @@ class Ownership(unittest.TestCase):
     def test_01_the_groups_run_disjoint_units_that_together_are_exactly_the_full_run(self) -> None:
         owners: dict[Unit, list[str]] = {}
         for step in check.STEPS:
+            # The focus-only group is a named selector for the same target, not a second default-run unit.
+            if step.name == "glfw.window-focus":
+                continue
             for unit in group_units(step, TARGETS):
                 owners.setdefault(unit, []).append(step.name)
         shared = {unit: names for unit, names in owners.items() if len(names) > 1}
@@ -328,6 +331,7 @@ class Ownership(unittest.TestCase):
                 "metal.scale",
                 "vulkan.scale",
                 "glfw.window",
+                "glfw.window-focus",
                 "vulkan.window",
                 "render2d.vulkan-window",
                 "vulkan.app",
@@ -831,6 +835,41 @@ class GlfwGroups(unittest.TestCase):
             assert step.action is not None
             step.action()
         doctor.assert_called_once_with(graphics=False)  # the floor group never needs GLFW
+
+    def test_04_focus_cases_are_an_optional_group_and_inherited_opt_in_is_removed(self) -> None:
+        by_name = {step.name: step for step in check.STEPS}
+        focus = by_name["glfw.window-focus"]
+        self.assertEqual(focus.levels, ())
+        self.assertEqual(focus.category, "optional")
+        self.assertEqual(focus.needs, "window")
+        self.assertEqual(focus.env, (("CK_WINDOW_GLFW_FOCUS", "1"),))
+        plan = check.plan(check.STEPS, ["crates/window-glfw/tests/window_glfw.rs"])
+        choices = {choice.step.name: choice.selected for choice in plan.choices}
+        self.assertTrue(choices["glfw.window"])
+        self.assertFalse(choices["glfw.window-focus"])
+        named = check.plan(check.STEPS, None, ["glfw.window-focus"])
+        self.assertTrue(
+            next(
+                choice for choice in named.choices if choice.step.name == "glfw.window-focus"
+            ).selected
+        )
+
+        for level, batch in (("full", False), ("fast", False), ("planned", False), ("full", True)):
+            state = check.State(REPO, REPO, level, batch=batch, target=REPO / "target")
+            with mock.patch.dict(os.environ, {"CK_WINDOW_GLFW_FOCUS": "1"}):
+                self.assertNotIn(
+                    "CK_WINDOW_GLFW_FOCUS",
+                    state.environment(by_name["glfw.window"]),
+                    (level, batch),
+                )
+                self.assertEqual(state.environment(focus).get("CK_WINDOW_GLFW_FOCUS"), "1")
+
+        target_groups = []
+        for step in check.STEPS:
+            units = group_units(step, TARGETS)
+            if any(unit[0] == "ck-window-glfw" and unit[2] == "window_glfw" for unit in units):
+                target_groups.append(step.name)
+        self.assertEqual(set(target_groups), {"glfw.window", "glfw.window-focus"})
 
 
 class InputGroup(unittest.TestCase):
@@ -2453,6 +2492,8 @@ class GuardInventory(unittest.TestCase):
             )
         owners: dict[Unit, list[str]] = {}
         for step in check.STEPS:
+            if step.name == "glfw.window-focus":
+                continue
             for unit in group_units(step, TARGETS):
                 owners.setdefault(unit, []).append(step.name)
         self.assertEqual({unit: names for unit, names in owners.items() if len(names) > 1}, {})

@@ -89,6 +89,7 @@ const DEADLINE: Duration = Duration::from_secs(60);
 /// The worker's own flag: the first argument of a worker, followed by the mode, the report file and then the
 /// application's arguments.
 const WORKER_FLAG: &str = "--ck-vulkan-test-worker";
+const EXTERNAL_FORWARDING_FIXTURE_FLAG: &str = "--ck-activation-forwarding-fixture";
 /// Internal worker argument, consumed here rather than passed to the application.
 const ALLOW_UNFOCUSED_UPDATES_FLAG: &str = "--ck-vulkan-test-allow-unfocused-updates";
 const QUEUE_FOCUS_LOST_FOR_CK163_FLAG: &str = "--ck-vulkan-test-queue-focus-lost-for-ck163";
@@ -365,6 +366,7 @@ fn worker(arguments: Vec<OsString>) -> ExitCode {
         eprintln!("unknown worker mode {}", mode.display());
         return ExitCode::FAILURE;
     };
+    ck_window::test_support::open_windows_ignoring_mouse();
     ck_window::test_support::open_windows_without_activation();
     // Step 1, before anything that can create a thread.
     block_signals();
@@ -372,7 +374,8 @@ fn worker(arguments: Vec<OsString>) -> ExitCode {
     // SAFETY: main thread; installs one local event monitor, once, before the first window.
     unsafe { ck_app_t_install_input_filter() };
     let report = PathBuf::from(report);
-    activation_watch::install_report(&report.with_extension("activation"), false);
+    let activation_report = report.with_extension("activation");
+    activation_watch::install_report(&activation_report, false);
     if mode.typing() {
         // Step 3.
         // SAFETY: main thread, after the filter; starts one thread that only posts events.
@@ -394,6 +397,17 @@ fn worker(arguments: Vec<OsString>) -> ExitCode {
         } else {
             break;
         }
+    }
+    if application_arguments
+        .first()
+        .is_some_and(|argument| argument == OsStr::new(EXTERNAL_FORWARDING_FIXTURE_FLAG))
+    {
+        let lines = format!(
+            "installed=1\npid={}\noutcome=becameActive\nend_active=0 end_key=0 end_frontmost=1\n",
+            std::process::id()
+        );
+        fs::write(&activation_report, lines).expect("write the synthetic activation report");
+        return ExitCode::SUCCESS;
     }
     let _unfocused_updates =
         allow_unfocused_updates.then(ck_window::test_support::allow_updates_while_unfocused);
@@ -643,7 +657,12 @@ fn finish_allowing_keys(worker: Worker) -> Seen {
             .unwrap_or_else(|| "no driver stage recorded".to_owned());
         panic!("{error}; window driver last stage: {stage}");
     });
-    activation_watch::assert_report(&activation);
+    activation_watch::assert_report(
+        &activation,
+        "vulkan.app",
+        thread::current().name().unwrap_or("vulkan-app-worker"),
+        mode().word(),
+    );
     assert_no_validation(&seen);
     if let Some(failed) = driver_failed {
         assert!(
@@ -654,6 +673,17 @@ fn finish_allowing_keys(worker: Worker) -> Seen {
         );
     }
     seen
+}
+
+/// Runs a successful no-window child whose report classifies as external, exercising this target's real report path.
+fn external_forwarding_fixture() -> Result<(), String> {
+    let args = [OsStr::new(EXTERNAL_FORWARDING_FIXTURE_FLAG)];
+    let seen = finish_allowing_keys(start(&args));
+    if seen.code == Some(0) {
+        Ok(())
+    } else {
+        Err(format!("fixture exited {:?}: {}", seen.code, seen.stdout))
+    }
 }
 
 /// Runs the application on `config` (and `extra` arguments) to its end.
@@ -1609,7 +1639,12 @@ fn synthetic_focus_loss_without_worker_opt_in_keeps_the_pause() {
             .is_err_and(|error| { error.contains("no \"runtime: shutdown complete\" in time") }),
         "without the update opt-in, injected FocusLost must retain the normal update pause: {result:?}"
     );
-    activation_watch::assert_report(&worker.report.with_extension("activation"));
+    activation_watch::assert_report(
+        &worker.report.with_extension("activation"),
+        "vulkan.app",
+        thread::current().name().unwrap_or("vulkan-app-worker"),
+        mode().word(),
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1888,6 +1923,14 @@ fn supervisor(arguments: &[String]) -> ExitCode {
         })
         .collect();
     let mut failures = Vec::new();
+    let forwarding = external_forwarding_fixture();
+    println!(
+        "test passing report fixture's external summary reaches supervisor output ... {}",
+        if forwarding.is_ok() { "ok" } else { "FAILED" }
+    );
+    if let Err(error) = forwarding {
+        failures.push(format!("external forwarding fixture: {error}"));
+    }
     if let Err(error) = input_filter_isolation() {
         println!("test input_filter_isolation ... FAILED\n{error}");
         failures.push("input_filter_isolation".to_owned());

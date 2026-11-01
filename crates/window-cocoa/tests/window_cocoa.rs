@@ -981,17 +981,39 @@ fn production_open_still_asks_for_activation() {
         .create_window(&desc(200, 120))
         .expect("the production open path creates its window");
     assert!(support::info().has_window, "the opened window exists");
+    assert!(
+        !support::mouse_ignored(),
+        "the production default accepts mouse input"
+    );
     backend.destroy_window();
     backend.terminate();
 }
 
+fn test_windows_let_clicks_through() {
+    let _fixture = Fixture::open(260, 180);
+    match support::mouse_passthrough_probe() {
+        0 | 4 => {}
+        1 => panic!(
+            "the probe window did not pass hit-testing through to its test-owned under-window; see native window/PID diagnostic"
+        ),
+        2 => panic!(
+            "the probe was only partially visible at its frame; see native control window/PID diagnostic"
+        ),
+        other => panic!("mouse pass-through probe could not inspect a window: {other}"),
+    }
+}
+
 type Case = fn();
 
-const CASES: [(&str, Case); 39] = [
+const CASES: [(&str, Case); 40] = [
     ("create_and_destroy", create_and_destroy),
     (
         "production_open_still_asks_for_activation",
         production_open_still_asks_for_activation,
+    ),
+    (
+        "test_windows_let_clicks_through",
+        test_windows_let_clicks_through,
     ),
     ("off_the_main_thread", off_the_main_thread),
     ("close_button", close_button),
@@ -1105,6 +1127,7 @@ const CASES: [(&str, Case); 39] = [
 ];
 
 const EXPECTED_REQUEST_CASE: &str = "production_open_still_asks_for_activation";
+const FORWARDING_FIXTURE: &str = "external_forwarding_fixture";
 
 /// Cases only the supervisor's fixtures start.
 const FIXTURE_CASES: [(&str, Case); 2] = [("checker_control", checker_control), ("hang", hang)];
@@ -1113,6 +1136,20 @@ fn worker(name: &str) -> ExitCode {
     if !checker_loaded() {
         eprintln!("worker: libMainThreadChecker.dylib is not loaded; the checker must be inserted");
         return ExitCode::from(2);
+    }
+    if name == FORWARDING_FIXTURE {
+        println!(
+            "{}",
+            activation_watch::format_external_summary(
+                &std::process::id().to_string(),
+                1,
+                0,
+                0,
+                0,
+                0,
+            )
+        );
+        return ExitCode::SUCCESS;
     }
     let Some((_, case)) = CASES
         .iter()
@@ -1128,6 +1165,7 @@ fn worker(name: &str) -> ExitCode {
     );
     let expected_request = name == EXPECTED_REQUEST_CASE;
     if !expected_request {
+        ck_window::test_support::open_windows_ignoring_mouse();
         ck_window::test_support::open_windows_without_activation();
     }
     activation_watch::install(expected_request);
@@ -1686,7 +1724,28 @@ fn run_case(name: &str, typing: bool) -> Result<(), String> {
         crash_on_report: true,
         typing,
     };
-    judge(name, &supervise(name, run, &Tools::system())?)
+    let outcome = supervise(name, run, &Tools::system())?;
+    if let Outcome::Exited { stdout, stderr, .. } = &outcome {
+        let captured = format!("{stdout}\n{stderr}");
+        let forwarded = activation_watch::forwarded_external_summaries(
+            "native.window",
+            name,
+            if typing { "typing" } else { "quiet" },
+            &captured,
+        );
+        for line in &forwarded {
+            println!("{line}");
+        }
+        if name == FORWARDING_FIXTURE {
+            activation_watch::check_fixture_forwarding(
+                "native.window",
+                name,
+                if typing { "typing" } else { "quiet" },
+                &forwarded,
+            )?;
+        }
+    }
+    judge(name, &outcome)
 }
 
 // -- The supervisor's own checks ----------------------------------------------------------------
@@ -2288,7 +2347,7 @@ fn supervisor() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let mut failures = BTreeMap::new();
-    let checks: [(&str, SupervisorCheck); 11] = [
+    let checks: [(&str, SupervisorCheck); 12] = [
         (
             "a hung worker is killed and reaped",
             check_a_hung_worker_is_killed,
@@ -2332,6 +2391,10 @@ fn supervisor() -> ExitCode {
         (
             "the test support is not in the library",
             check_test_support_is_not_in_the_library,
+        ),
+        (
+            "a passing fixture's external summary reaches supervisor output",
+            || run_case(FORWARDING_FIXTURE, false),
         ),
     ];
     for (name, check) in checks {

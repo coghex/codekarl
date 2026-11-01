@@ -652,7 +652,7 @@ CKWinHandle *ck_win_create(char *error, size_t capacity) {
 }
 
 int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_length,
-                         uint32_t width, uint32_t height, int activate, void **layer,
+                         uint32_t width, uint32_t height, int activate, int ignore_mouse, void **layer,
                          uint32_t *pixel_width, uint32_t *pixel_height, char *error,
                          size_t capacity) {
     @autoreleasepool {
@@ -688,6 +688,7 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
         /* Without this, the show animation keeps the window alive (and listed in [NSApp windows]) after it
          * is closed and released. */
         window.animationBehavior = NSWindowAnimationBehaviorNone;
+        if (ignore_mouse) window.ignoresMouseEvents = YES;
         window.title = text;
         CKWinView *view = [[CKWinView alloc] initWithFrame:content];
         view.state = state;

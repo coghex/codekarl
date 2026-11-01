@@ -12,6 +12,7 @@ use std::{
 static ALLOW_UNFOCUSED_UPDATES: AtomicBool = AtomicBool::new(false);
 static QUEUED_FOCUS_LOST: AtomicBool = AtomicBool::new(false);
 static WINDOWS_WITHOUT_ACTIVATION: AtomicBool = AtomicBool::new(false);
+static WINDOWS_IGNORING_MOUSE: AtomicBool = AtomicBool::new(false);
 
 /// Prevent new test-worker windows from requesting application or key-window activation.
 ///
@@ -19,6 +20,18 @@ static WINDOWS_WITHOUT_ACTIVATION: AtomicBool = AtomicBool::new(false);
 /// available only to test-support builds; ordinary application builds retain the production path.
 pub fn open_windows_without_activation() {
     WINDOWS_WITHOUT_ACTIVATION.store(true, Ordering::Release);
+}
+
+/// Make new test worker windows transparent to physical mouse hit-testing.
+///
+/// This process-local switch is one-way and idempotent, and is available only to `test-support`
+/// builds. Set it before creating a backend. It does not filter mouse events delivered to the app.
+pub fn open_windows_ignoring_mouse() {
+    WINDOWS_IGNORING_MOUSE.store(true, Ordering::Release);
+}
+
+pub(crate) fn windows_ignoring_mouse() -> bool {
+    WINDOWS_IGNORING_MOUSE.load(Ordering::Acquire)
 }
 
 pub(crate) fn windows_without_activation() -> bool {
@@ -73,7 +86,8 @@ impl Drop for AllowUnfocusedUpdates {
 #[cfg(test)]
 mod tests {
     use super::{
-        allow_updates_while_unfocused, open_windows_without_activation, updates_may_run_unfocused,
+        allow_updates_while_unfocused, open_windows_ignoring_mouse,
+        open_windows_without_activation, updates_may_run_unfocused, windows_ignoring_mouse,
         windows_without_activation,
     };
 
@@ -95,5 +109,15 @@ mod tests {
         open_windows_without_activation();
         assert!(!crate::window_activation_allowed());
         assert!(windows_without_activation());
+    }
+
+    #[test]
+    fn mouse_switch_is_one_way_and_idempotent() {
+        assert!(crate::window_mouse_input_allowed());
+        open_windows_ignoring_mouse();
+        assert!(!crate::window_mouse_input_allowed());
+        open_windows_ignoring_mouse();
+        assert!(!crate::window_mouse_input_allowed());
+        assert!(windows_ignoring_mouse());
     }
 }

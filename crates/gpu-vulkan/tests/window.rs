@@ -53,6 +53,7 @@ mod window_scene;
 use supervisor::Supervised;
 
 const WORKER_FLAG: &str = "--worker";
+const FORWARDING_FIXTURE: &str = "external_forwarding_fixture";
 /// `1` makes a worker run with the owner typing without stopping.
 const TYPING_VARIABLE: &str = "CK_VULKAN_TEST_TYPING";
 /// `1` makes a worker send one warning through its instance's own messenger right after the instance is
@@ -2515,6 +2516,20 @@ fn all_cases() -> Vec<(&'static str, Case)> {
 }
 
 fn worker(name: &str) -> ExitCode {
+    if name == FORWARDING_FIXTURE {
+        println!(
+            "{}",
+            activation_watch::format_external_summary(
+                &std::process::id().to_string(),
+                1,
+                0,
+                0,
+                0,
+                0,
+            )
+        );
+        return ExitCode::SUCCESS;
+    }
     let cases = all_cases();
     let case = cases
         .iter()
@@ -2525,6 +2540,7 @@ fn worker(name: &str) -> ExitCode {
         eprintln!("worker: no case called {name}");
         return ExitCode::from(1);
     };
+    ck_window::test_support::open_windows_ignoring_mouse();
     ck_window::test_support::open_windows_without_activation();
     activation_watch::install(false);
     // The filter is in before the first window and stays for the whole life of the worker.
@@ -2584,6 +2600,23 @@ fn run_case_with(
     }
     let supervised = Supervised::spawn(command, deadline)?;
     let seen = supervised.finish()?;
+    let forwarded = activation_watch::forwarded_external_summaries(
+        "vulkan.window",
+        case,
+        if typing { "typing" } else { "quiet" },
+        &seen.stdout,
+    );
+    for line in &forwarded {
+        println!("{line}");
+    }
+    if case == FORWARDING_FIXTURE {
+        activation_watch::check_fixture_forwarding(
+            "vulkan.window",
+            case,
+            if typing { "typing" } else { "quiet" },
+            &forwarded,
+        )?;
+    }
     if seen.code == Some(0) {
         Ok(())
     } else {
@@ -2652,11 +2685,15 @@ fn check_validation_reaches_every_kind_of_case() -> Result<(), String> {
     Ok(())
 }
 
+fn check_external_summary_reaches_supervisor() -> Result<(), String> {
+    run_case(FORWARDING_FIXTURE, false, DEADLINE)
+}
+
 type SupervisorCheck = fn() -> Result<(), String>;
 
 fn supervisor() -> ExitCode {
     let mut failures = BTreeMap::new();
-    let checks: [(&str, SupervisorCheck); 4] = [
+    let checks: [(&str, SupervisorCheck); 5] = [
         (
             "the layout check rejects mismatched info bindings",
             support::check_the_comparison_rejects_mismatched_bindings,
@@ -2672,6 +2709,10 @@ fn supervisor() -> ExitCode {
         (
             "validation reaches every kind of case",
             check_validation_reaches_every_kind_of_case,
+        ),
+        (
+            "a passing fixture's external summary reaches supervisor output",
+            check_external_summary_reaches_supervisor,
         ),
     ];
     for (name, check) in checks {

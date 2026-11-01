@@ -53,6 +53,7 @@ unsafe extern "C" {
 const WORKER_FLAG: &str = "--ck-scale-lua-worker";
 const RUN_VARIABLE: &str = "CK_SCALE_RUN";
 const OUT_VARIABLE: &str = "CK_SCALE_OUT";
+const FORWARDING_FIXTURE: &str = "external_forwarding_fixture";
 /// The longest the worker may run: loading, the 5 s settle, the 30 s sample and the teardown, with room.
 const DEADLINE: Duration = Duration::from_secs(600);
 
@@ -84,12 +85,27 @@ fn block_signals() {
 
 /// The worker: the application plus the keyboard filter.
 fn worker(arguments: Vec<std::ffi::OsString>) -> ExitCode {
+    ck_window::test_support::open_windows_ignoring_mouse();
     ck_window::test_support::open_windows_without_activation();
     block_signals();
     // SAFETY: main thread; installs one local event monitor, once, before the first window.
     unsafe { ck_app_t_install_input_filter() };
     activation_watch::install(false);
     eprintln!("scale-lua worker: activation watch installed");
+    if arguments.first().and_then(|argument| argument.to_str()) == Some(FORWARDING_FIXTURE) {
+        println!(
+            "{}",
+            activation_watch::format_external_summary(
+                &std::process::id().to_string(),
+                1,
+                0,
+                0,
+                0,
+                0,
+            )
+        );
+        return ExitCode::SUCCESS;
+    }
     let _unfocused_updates = ck_window::test_support::allow_updates_while_unfocused();
     let code = codekarl::main_entry(arguments);
     activation_watch::assert_clean();
@@ -120,6 +136,73 @@ fn read_all(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<Result<S
             .map_err(|error| format!("the read failed after {} bytes: {error}", bytes.len()))?;
         String::from_utf8(bytes).map_err(|error| format!("not valid UTF-8: {error}"))
     })
+}
+
+/// Runs a successful no-window worker through this supervisor's real capture and forwarding path.
+fn run_forwarding_fixture(out: &Path) -> Result<(), String> {
+    let mut command = Command::new(env::current_exe().map_err(|error| error.to_string())?);
+    command
+        .arg(WORKER_FLAG)
+        .arg(FORWARDING_FIXTURE)
+        .env_remove(RUN_VARIABLE)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let started = Instant::now();
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("worker start: {error}"))?;
+    let (stdout, stderr) = (
+        read_all(child.stdout.take().ok_or("stdout was not piped")?),
+        read_all(child.stderr.take().ok_or("stderr was not piped")?),
+    );
+    let mut owned = Owned(Some(child));
+    let status = loop {
+        let child = owned.0.as_mut().ok_or("worker ownership was lost")?;
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("worker wait: {error}"))?
+        {
+            break Some(status);
+        }
+        if started.elapsed() >= DEADLINE {
+            break None;
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    drop(owned);
+    let stdout = stdout
+        .join()
+        .map_err(|_| "stdout reader panicked".to_owned())??;
+    let stderr = stderr
+        .join()
+        .map_err(|_| "stderr reader panicked".to_owned())??;
+    fs::write(out.join("activation-forwarding.stdout.txt"), &stdout)
+        .map_err(|error| format!("write stdout evidence: {error}"))?;
+    fs::write(out.join("activation-forwarding.stderr.txt"), &stderr)
+        .map_err(|error| format!("write stderr evidence: {error}"))?;
+    if !status
+        .as_ref()
+        .is_some_and(std::process::ExitStatus::success)
+    {
+        return Err(format!("fixture worker ended with {status:?}"));
+    }
+    let captured = format!("{stdout}\n{stderr}");
+    let forwarded = activation_watch::forwarded_external_summaries(
+        "metal.scale",
+        FORWARDING_FIXTURE,
+        "quiet",
+        &captured,
+    );
+    for line in &forwarded {
+        println!("{line}");
+    }
+    activation_watch::check_fixture_forwarding(
+        "metal.scale",
+        FORWARDING_FIXTURE,
+        "quiet",
+        &forwarded,
+    )
 }
 
 /// The number after `key` at or after `from` in `text`.
@@ -170,6 +253,25 @@ fn supervisor() -> ExitCode {
         .join("../..")
         .canonicalize()
         .expect("the repository root");
+    let out = env::var_os(OUT_VARIABLE).map_or_else(
+        || {
+            env::var_os("CARGO_TARGET_DIR")
+                .map_or_else(|| manifest.join("../../target"), PathBuf::from)
+                .join("scale-evidence")
+                .join(format!("lua-{}", std::process::id()))
+        },
+        PathBuf::from,
+    );
+    fs::create_dir_all(&out).expect("the evidence directory");
+    let forwarding = run_forwarding_fixture(&out);
+    println!(
+        "test passing scale fixture's external summary reaches supervisor output ... {}",
+        if forwarding.is_ok() { "ok" } else { "FAILED" }
+    );
+    if let Err(error) = forwarding {
+        println!("scale_lua: activation forwarding fixture: {error}");
+        return ExitCode::FAILURE;
+    }
     let fixtures = fixtures::Fixtures::create("lua");
     fixtures.write_set_a(layout::SET_A);
     let template =
@@ -223,22 +325,20 @@ fn supervisor() -> ExitCode {
     let stderr = stderr
         .join()
         .unwrap_or_else(|_| Err("stderr: the reader panicked".to_owned()));
-    let out = env::var_os(OUT_VARIABLE).map_or_else(
-        || {
-            env::var_os("CARGO_TARGET_DIR")
-                .map_or_else(|| manifest.join("../../target"), PathBuf::from)
-                .join("scale-evidence")
-                .join(format!("lua-{}", std::process::id()))
-        },
-        PathBuf::from,
-    );
-    fs::create_dir_all(&out).expect("the evidence directory");
     let (stdout_text, stderr_text) = (
         stdout.clone().unwrap_or_default(),
         stderr.clone().unwrap_or_default(),
     );
     let _ = fs::write(out.join("scale-lua.stdout.txt"), &stdout_text);
     let _ = fs::write(out.join("scale-lua.stderr.txt"), &stderr_text);
+    for line in activation_watch::forwarded_external_summaries(
+        "metal.scale",
+        "m-lua",
+        "quiet",
+        &format!("{stdout_text}\n{stderr_text}"),
+    ) {
+        println!("{line}");
+    }
 
     let mut problems = Vec::new();
     match status {

@@ -73,7 +73,7 @@ affect it. **Floor** groups always run (fmt, ruff, ShellCheck, the doctor, Clipp
 opens a window). **Affected** groups run when a changed path matches their patterns: the Rust tests of
 the backend-neutral crates (`rust.core`) and of the application without a real window (`rust.app`,
 `rust.app-default`), the Metal tests that need the GPU but no window (`metal.gpu`), the native tests
-that open real windows without taking the desktop's focus, except for explicitly named focus cases (`native.window` and the presenter's `metal.window-*` groups), each Python test group and the
+that open real windows with keyboard and mouse input ignored (`native.window`, the presenter's `metal.window-*` groups, `glfw.window`, `vulkan.window`, `render2d.vulkan-window` and `vulkan.app`), except for explicitly named focus cases (`glfw.window-focus`), each Python test group and the
 chat CI. **Optional** groups run only when named. Docs and editor files are claimed by the doctor group.
 
 - `tools/ck check --changed` is the planned check: it compares your copy with the accepted base

@@ -947,6 +947,7 @@ where
     F: FnOnce(&mut Scene) -> Result<J, String> + Send + 'static,
 {
     // The owner is using the machine: no window of this run asks the system to activate the application or make a window key.
+    ck_window::test_support::open_windows_ignoring_mouse();
     ck_window::test_support::open_windows_without_activation();
     crate::activation_watch::install(false);
     watchdog(config.deadline);

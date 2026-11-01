@@ -113,6 +113,22 @@ pub fn window_activation_allowed() -> bool {
     }
 }
 
+/// Whether newly created windows may receive physical mouse input.
+///
+/// Without `test-support`, mouse input is always allowed. The test-only switch is process-local.
+#[doc(hidden)]
+#[must_use]
+pub fn window_mouse_input_allowed() -> bool {
+    #[cfg(feature = "test-support")]
+    {
+        !test_support::windows_ignoring_mouse()
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        true
+    }
+}
+
 // The input types the window core's API is made of (`NativeEvent::Key`, `LoopSettings::with_bindings`, and the
 // snapshot an `UpdateEvent` carries), so a caller needs no dependency of its own on `ck-input`.
 pub use backend::{Backend, CreatedWindow, NativeEvent, PixelSize, Wait};

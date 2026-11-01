@@ -13,6 +13,7 @@ use ck_window_glfw::{GetInstanceProcAddr, VulkanLoaderForGlfw};
 mod info_abi;
 
 unsafe extern "C" {
+    fn ck_glfw_test_mouse_passthrough_probe() -> i32;
     fn ck_glfw_test_activate();
     fn ck_glfw_test_perform_close();
     fn ck_glfw_test_window_number() -> i64;
@@ -48,6 +49,11 @@ unsafe extern "C" {
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     fn dlerror() -> *const c_char;
     fn dlclose(handle: *mut c_void) -> c_int;
+}
+
+pub(crate) fn mouse_passthrough_probe() -> i32 {
+    // SAFETY: paired hit tests run synchronously on the main thread and restore the protected state.
+    unsafe { ck_glfw_test_mouse_passthrough_probe() }
 }
 
 /// The Escape and `q` key codes, and the Command modifier flag.

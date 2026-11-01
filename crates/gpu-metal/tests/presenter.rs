@@ -68,6 +68,7 @@ mod metrics;
 mod scene;
 
 const WORKER_FLAG: &str = "--worker";
+const FORWARDING_FIXTURE_PREFIX: &str = "external_forwarding_fixture_";
 /// `1` makes a worker run with the owner typing without stopping.
 const TYPING_VARIABLE: &str = "CK_METAL_PRESENTER_TYPING";
 /// The longest a worker may run.
@@ -1641,6 +1642,20 @@ fn worker(name: &str) -> ExitCode {
             return ExitCode::from(2);
         }
     }
+    if name.starts_with(FORWARDING_FIXTURE_PREFIX) {
+        println!(
+            "{}",
+            activation_watch::format_external_summary(
+                &std::process::id().to_string(),
+                1,
+                0,
+                0,
+                0,
+                0,
+            )
+        );
+        return ExitCode::SUCCESS;
+    }
     let Some((_, case)) = all_cases()
         .chain(FIXTURE_CASES.iter())
         .find(|(case, _)| *case == name)
@@ -1648,6 +1663,7 @@ fn worker(name: &str) -> ExitCode {
         eprintln!("worker: no case called {name}");
         return ExitCode::from(1);
     };
+    ck_window::test_support::open_windows_ignoring_mouse();
     ck_window::test_support::open_windows_without_activation();
     activation_watch::install(false);
     match catch_unwind(AssertUnwindSafe(case)) {
@@ -2206,12 +2222,54 @@ fn judge(case: &str, outcome: &Outcome) -> Result<(), String> {
 }
 
 fn run_case(name: &str, typing: bool) -> Result<(), String> {
+    run_case_with_target(name, typing, presenter_group_for_case(name))
+}
+
+fn run_case_with_target(name: &str, typing: bool, target: &str) -> Result<(), String> {
     let run = Run {
         deadline: DEADLINE,
         crash_on_report: true,
         typing,
     };
-    judge(name, &supervise(name, run, &Tools::system())?)
+    let outcome = supervise(name, run, &Tools::system())?;
+    if let Outcome::Exited { stdout, stderr, .. } = &outcome {
+        let captured = format!("{stdout}\n{stderr}");
+        let forwarded = activation_watch::forwarded_external_summaries(
+            target,
+            name,
+            if typing { "typing" } else { "quiet" },
+            &captured,
+        );
+        for line in &forwarded {
+            println!("{line}");
+        }
+        if name.starts_with(FORWARDING_FIXTURE_PREFIX) {
+            activation_watch::check_fixture_forwarding(
+                target,
+                name,
+                if typing { "typing" } else { "quiet" },
+                &forwarded,
+            )?;
+        }
+    }
+    judge(name, &outcome)
+}
+
+fn presenter_group_for_case(name: &str) -> &'static str {
+    match name {
+        "external_forwarding_fixture_window_core" => return "metal.window-core",
+        "external_forwarding_fixture_window_scene" => return "metal.window-scene",
+        "external_forwarding_fixture_window_compat" => return "metal.window-compat",
+        "external_forwarding_fixture_window_instanced" => return "metal.window-instanced",
+        _ => {}
+    }
+    match case_set(name) {
+        CaseSet::WindowCore => "metal.window-core",
+        CaseSet::WindowScene => "metal.window-scene",
+        CaseSet::WindowCompat => "metal.window-compat",
+        CaseSet::WindowInstanced => "metal.window-instanced",
+        CaseSet::Gpu => "metal.gpu",
+    }
 }
 
 // -- The supervisor's own checks ----------------------------------------------------------------
@@ -3323,6 +3381,10 @@ static CHECKS: [(&str, &[CaseSet], SupervisorCheck); 14] = [
     ),
 ];
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the supervisor keeps its validations, forwarding fixture and cases in their declared order"
+)]
 fn supervisor(arguments: &[String]) -> ExitCode {
     let sets = match requested_sets(arguments) {
         Ok(sets) => sets,
@@ -3369,6 +3431,41 @@ fn supervisor(arguments: &[String]) -> ExitCode {
             failures.insert((*name).to_owned(), message);
         }
     }
+    let mut forwarding_checks = 0;
+    for (set, fixture, target) in [
+        (
+            CaseSet::WindowCore,
+            "external_forwarding_fixture_window_core",
+            "metal.window-core",
+        ),
+        (
+            CaseSet::WindowScene,
+            "external_forwarding_fixture_window_scene",
+            "metal.window-scene",
+        ),
+        (
+            CaseSet::WindowCompat,
+            "external_forwarding_fixture_window_compat",
+            "metal.window-compat",
+        ),
+        (
+            CaseSet::WindowInstanced,
+            "external_forwarding_fixture_window_instanced",
+            "metal.window-instanced",
+        ),
+    ] {
+        if sets.contains(&set) {
+            forwarding_checks += 1;
+            let result = run_case_with_target(fixture, false, target);
+            println!(
+                "test supervisor: a passing fixture's external summary reaches {target} output ... {}",
+                if result.is_ok() { "ok" } else { "FAILED" }
+            );
+            if let Err(message) = result {
+                failures.insert(format!("external forwarding {target}"), message);
+            }
+        }
+    }
     // Every case runs on a quiet keyboard, and again while the owner types without stopping.
     for typing in [false, true] {
         for (name, _) in &cases {
@@ -3392,7 +3489,7 @@ fn supervisor(arguments: &[String]) -> ExitCode {
     for (name, message) in &failures {
         println!("---- {name} ----\n{message}");
     }
-    let total = checks.len() + 2 * cases.len();
+    let total = checks.len() + forwarding_checks + 2 * cases.len();
     println!(
         "test result: {}. {} passed; {} failed",
         if failures.is_empty() { "ok" } else { "FAILED" },
