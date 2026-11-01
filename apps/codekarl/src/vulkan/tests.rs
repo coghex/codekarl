@@ -1141,8 +1141,9 @@ const BASELINE: [(&str, usize); 10] = [
     // (`pthread_sigmask` and its set operations) and the mask probe, each with a SAFETY comment.
     ("tests/windowed.rs", 14),
     // CK-159: the `glfw-vulkan` worker's, the same operations as the windowed worker's plus the window helpers (miniaturize,
-    // deminiaturize, state read, the marked key) and its driver's SIGTERM, each with a SAFETY comment.
-    ("tests/vulkan_app.rs", 14),
+    // deminiaturize, state read, the marked key) and its driver's SIGTERM, each with a SAFETY comment. CK-164 adds the
+    // test-only GLFW pump wake after the driver observes the native window restored, with a SAFETY comment.
+    ("tests/vulkan_app.rs", 15),
     // CK-132: set_cloexec's F_GETFD and F_SETFD, each with a SAFETY comment.
     ("tests/common/mod.rs", 4),
     // CK-130: the scale worker's filter FFI (`ck_app_t_install_input_filter`, `ck_app_t_dropped_keys`) and

@@ -119,6 +119,7 @@ fn main() {
     compile_shaders(&PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")));
     println!("cargo::rerun-if-changed={TESTING_SOURCE}");
     println!("cargo::rerun-if-changed={TESTING_HEADER}");
+    println!("cargo::rerun-if-changed=../window-cocoa/tests/native/activation_watch.inc");
     println!("cargo::rerun-if-changed=build.rs");
     for key in ["DEVELOPER_DIR", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET"] {
         println!("cargo::rerun-if-env-changed={key}");

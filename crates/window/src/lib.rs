@@ -96,6 +96,23 @@ mod settings;
 #[doc(hidden)]
 pub mod test_support;
 
+/// Whether a newly created window may request application or key-window activation.
+///
+/// This hidden query is used by the native backends. Without the test-support feature, activation is
+/// always allowed; only test workers can disable it through [`test_support::open_windows_without_activation`].
+#[doc(hidden)]
+#[must_use]
+pub fn window_activation_allowed() -> bool {
+    #[cfg(feature = "test-support")]
+    {
+        !test_support::windows_without_activation()
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        true
+    }
+}
+
 // The input types the window core's API is made of (`NativeEvent::Key`, `LoopSettings::with_bindings`, and the
 // snapshot an `UpdateEvent` carries), so a caller needs no dependency of its own on `ck-input`.
 pub use backend::{Backend, CreatedWindow, NativeEvent, PixelSize, Wait};

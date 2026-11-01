@@ -48,6 +48,8 @@ unsafe extern "C" {
     fn glfwWaitEvents();
 }
 
+#[path = "../../window/tests/support/activation_watch.rs"]
+mod activation_watch;
 #[path = "../../../apps/codekarl/tests/supervisor/mod.rs"]
 #[expect(
     dead_code,
@@ -68,6 +70,7 @@ const BOUND: Duration = Duration::from_secs(10);
 /// The window every case opens: 400 by 300 points.
 const WIDTH: u32 = 400;
 const HEIGHT: u32 = 300;
+const FOCUS_CASES: [&str; 2] = ["focus_and_minimize", "the_window_becomes_active_by_itself"];
 
 /// A backend with the Vulkan loader the tests loaded by its absolute path, as the program does.
 fn new_backend() -> GlfwBackend {
@@ -124,7 +127,6 @@ impl Rig {
             handles: Some(created.handles),
             pixel_size: created.pixel_size,
         };
-        support::activate();
         let give_up = Instant::now() + BOUND;
         while !support::info().visible {
             assert!(
@@ -757,6 +759,7 @@ fn modifier_sides_and_order() {
 /// 7c. Focus and iconify callbacks report the latest native state.
 fn focus_and_minimize() {
     let mut rig = Rig::open();
+    support::activate();
     let window = rig.window();
     let title = CString::new("glfw focus-stealing test window").expect("static title has no NUL");
     // SAFETY: GLFW is initialized on its required main thread; the second window is a test-only
@@ -1550,13 +1553,23 @@ fn worker(name: &str) -> ExitCode {
         eprintln!("worker: no case called {name}");
         return ExitCode::from(1);
     };
-    // The filter is in before the first window and stays for the whole life of the worker.
+    if !FOCUS_CASES.contains(&name) {
+        ck_window::test_support::open_windows_without_activation();
+        activation_watch::install(false);
+    }
+    // The filter is in before the first window and stays for the whole life of the worker. This
+    // policy case specifically verifies the app does not exist before GLFW starts, and posts no keys.
     support::install_input_filter();
     if env::var(TYPING_VARIABLE).as_deref() == Ok("1") {
         support::start_typist();
     }
     match catch_unwind(AssertUnwindSafe(case)) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            if !FOCUS_CASES.contains(&name) {
+                activation_watch::assert_clean();
+            }
+            ExitCode::SUCCESS
+        }
         Err(payload) => {
             let text = payload
                 .downcast_ref::<String>()
@@ -1747,6 +1760,14 @@ fn main() -> ExitCode {
     match args.as_slice() {
         [flag, case] if flag == WORKER_FLAG => worker(case),
         // Cargo may pass its own arguments (a filter, `--nocapture`); the cases always all run.
-        _ => supervisor(),
+        _ => {
+            assert!(
+                FOCUS_CASES
+                    .iter()
+                    .all(|name| CASES.iter().any(|(case, _)| case == name)),
+                "every named focus case must exist"
+            );
+            supervisor()
+        }
     }
 }

@@ -2,6 +2,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <unistd.h>
+#include "../../../window-cocoa/tests/native/activation_watch.inc"
 
 /* Test support for ck-render-2d's real-window test (tests/metal_window.rs), built into an archive that only
  * the test executable links (build.rs). None of it is part of the library. Main thread unless it says

@@ -64,6 +64,8 @@ use common::{BINARY, Scratch};
 #[path = "supervisor/mod.rs"]
 mod supervisor;
 use supervisor::{Seen, Split, Supervised};
+#[path = "../../../crates/window/tests/support/activation_watch.rs"]
+mod activation_watch;
 #[path = "supervisor/signal.rs"]
 mod signal;
 
@@ -78,6 +80,8 @@ const WORKER_FLAG: &str = "--ck-windowed-test-worker";
 /// Internal worker argument, consumed here rather than passed to the application.
 const ALLOW_UNFOCUSED_UPDATES_FLAG: &str = "--ck-windowed-test-allow-unfocused-updates";
 const QUEUE_FOCUS_LOST_FOR_CK163_FLAG: &str = "--ck-windowed-test-queue-focus-lost-for-ck163";
+const REAL_FOCUS_GATE_CASES: [&str; 1] =
+    ["synthetic_focus_loss_without_worker_opt_in_keeps_the_pause"];
 
 unsafe extern "C" {
     fn ck_app_t_install_input_filter();
@@ -254,6 +258,7 @@ fn worker(arguments: Vec<OsString>) -> ExitCode {
         eprintln!("unknown worker mode {}", mode.display());
         return ExitCode::FAILURE;
     };
+    ck_window::test_support::open_windows_without_activation();
     let report = PathBuf::from(report);
     if mode == Mode::TypingBlockLate {
         // Control: a helper thread that exists before the block does not inherit it.
@@ -267,6 +272,7 @@ fn worker(arguments: Vec<OsString>) -> ExitCode {
         // SAFETY: main thread; installs one local event monitor, once, before the first window.
         unsafe { ck_app_t_install_input_filter() };
     }
+    activation_watch::install_report(&report.with_extension("activation"), false);
     if mode.typing() {
         // Step 3.
         // SAFETY: main thread, after the filter; starts one thread that only posts events.
@@ -297,7 +303,9 @@ fn worker(arguments: Vec<OsString>) -> ExitCode {
     if queue_focus_lost_for_ck163 {
         ck_window::test_support::queue_focus_lost_on_next_pump();
     }
-    codekarl::main_entry(application_arguments)
+    let result = codekarl::main_entry(application_arguments);
+    activation_watch::assert_clean();
+    result
 }
 
 /// Lua helpers for the fixture scripts: `touch(path)` leaves a marker file, `wait_for(path)` polls for one
@@ -470,10 +478,12 @@ fn signal_target_refuses_zero_pid_or_unowned_child() {
 /// error fail the case. A close request from a key that reached the application fails it too: the filter drops
 /// every unmarked key, so none may.
 fn finish(worker: Worker) -> Seen {
+    let activation = worker.report.with_extension("activation");
     let seen = worker
         .live
         .finish()
         .unwrap_or_else(|error| panic!("{error}"));
+    activation_watch::assert_report(&activation);
     assert!(
         !seen.stdout.contains("declined close request from key"),
         "a key reached the application:\n{}",
@@ -1623,6 +1633,7 @@ fn synthetic_focus_loss_without_worker_opt_in_keeps_the_pause() {
             .is_err_and(|error| { error.contains("no \"runtime: shutdown complete\" in time") }),
         "without the update opt-in, injected FocusLost must retain the normal update pause: {result:?}"
     );
+    activation_watch::assert_report(&worker.report.with_extension("activation"));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1836,22 +1847,13 @@ fn cases() -> Vec<(&'static str, fn())> {
 
 /// Runs one case, catching its panic; returns whether it passed.
 fn run_case(name: &str, case: fn()) -> bool {
-    // Only application workers whose Lua fixtures use frame.on_update opt in. In particular, the minimise / restore and
-    // other focus-specific cases below retain the production focus gate.
-    ALLOW_UNFOCUSED_UPDATES.store(
-        matches!(
-            name,
-            "pending_textures_become_ready_and_the_run_reconciles_to_zero"
-                | "a_missing_file_stays_a_failed_checker_quad_and_the_run_ends_normally"
-                | "moving_a_quad_for_many_updates_uploads_nothing_but_a_reload_does"
-                | "destroying_the_quad_and_releasing_the_texture_retires_it_before_the_run_ends"
-                | "update_driven_worker_continues_after_synthetic_focus_loss"
-                | "the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record"
-                | "a_marked_run_writes_one_metrics_record_with_the_window_beside_the_totals"
-                | "a_run_without_a_mark_reports_the_totals_only"
-        ),
-        Ordering::SeqCst,
+    assert!(
+        REAL_FOCUS_GATE_CASES
+            .iter()
+            .all(|name| cases().iter().any(|(case, _)| *case == *name)),
+        "every named real-focus case must exist"
     );
+    ALLOW_UNFOCUSED_UPDATES.store(!REAL_FOCUS_GATE_CASES.contains(&name), Ordering::SeqCst);
     QUEUE_FOCUS_LOST_FOR_CK163.store(
         matches!(
             name,

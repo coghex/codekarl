@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "testing.h"
+#include "../../../window-cocoa/tests/native/activation_watch.inc"
 
 /* The mark the tests' synthetic keyboard events carry in kCGEventSourceUserData (real input carries 0). */
 #define CK_TEST_INPUT_MARK 0x434B54455354LL
@@ -182,7 +183,6 @@ int32_t ck_glfw_test_post_keyboard_event(int32_t kind, uint16_t key_code, uint64
  * it. It drops every keyboard event (key down, key up, modifier change) that does not carry the tests'
  * mark, so the owner's typing, Escape included, never reaches a test window. */
 static id ck_input_filter = nil;
-
 void ck_glfw_test_install_input_filter(void) {
     @autoreleasepool {
         if (ck_input_filter != nil) {
@@ -194,6 +194,11 @@ void ck_glfw_test_install_input_filter(void) {
             CGEventRef raw = event.CGEvent;
             if (raw != NULL &&
                 CGEventGetIntegerValueField(raw, kCGEventSourceUserData) == CK_TEST_INPUT_MARK) {
+                NSWindow *window = ck_window();
+                if (window != nil && !window.keyWindow) {
+                    [window sendEvent:event];
+                    return nil;
+                }
                 return event;
             }
             atomic_fetch_add(&ck_filtered_keys, 1);

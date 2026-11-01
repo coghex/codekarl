@@ -11,6 +11,9 @@ ck-input = { path = "../input" }
 ck-window = { path = "../window" }
 ck-log = { path = "../log" }
 
+[dev-dependencies]
+ck-window = { path = "../window", features = ["test-support"] }
+
 [[test]]
 name = "window_cocoa"
 harness = false  # a supervisor and a worker from one executable; AppKit needs the process's main thread

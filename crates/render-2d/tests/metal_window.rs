@@ -55,6 +55,8 @@ use ck_window::{
     RequestWriter, Requests, UiAnswer, UiEvent, UiLink, WindowDesc, run,
 };
 use ck_window_cocoa::{CocoaBackend, CocoaHandles};
+#[path = "../../window/tests/support/activation_watch.rs"]
+mod activation_watch;
 
 const WORKER_VARIABLE: &str = "CK_RENDER2D_METAL_WINDOW_WORKER";
 /// `1` makes a worker run with the owner typing without stopping.
@@ -611,6 +613,8 @@ fn start_ticker(notifier: &Arc<Notifier>) -> (Arc<AtomicBool>, thread::JoinHandl
 }
 
 fn worker() -> ExitCode {
+    ck_window::test_support::open_windows_without_activation();
+    activation_watch::install(false);
     watchdog();
     let notifier = Notifier::new();
     let requests = Requests::new();
@@ -685,6 +689,7 @@ fn worker() -> ExitCode {
         .clone();
     let problems = check(&end, &seen, &bridge);
     if problems.is_empty() {
+        activation_watch::assert_clean();
         println!("worker: drawn generations {seen:?}; the loop ended {end:?}");
         ExitCode::SUCCESS
     } else {

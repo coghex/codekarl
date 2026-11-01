@@ -78,6 +78,8 @@ mod validation_rule;
 #[path = "supervisor/mod.rs"]
 mod supervisor;
 use supervisor::{Seen, Supervised};
+#[path = "../../../crates/window/tests/support/activation_watch.rs"]
+mod activation_watch;
 #[path = "supervisor/signal.rs"]
 mod signal;
 
@@ -90,6 +92,8 @@ const WORKER_FLAG: &str = "--ck-vulkan-test-worker";
 /// Internal worker argument, consumed here rather than passed to the application.
 const ALLOW_UNFOCUSED_UPDATES_FLAG: &str = "--ck-vulkan-test-allow-unfocused-updates";
 const QUEUE_FOCUS_LOST_FOR_CK163_FLAG: &str = "--ck-vulkan-test-queue-focus-lost-for-ck163";
+const REAL_FOCUS_GATE_CASES: [&str; 1] =
+    ["synthetic_focus_loss_without_worker_opt_in_keeps_the_pause"];
 
 /// Which window driver a worker runs (`go`, `restore` or `hold`), and the directory it reads its markers from and writes
 /// its own to. Set by the supervisor in the worker's environment.
@@ -110,6 +114,7 @@ unsafe extern "C" {
     fn ck_app_t_miniaturize() -> i32;
     fn ck_app_t_deminiaturize() -> i32;
     fn ck_app_t_window_state() -> i32;
+    fn ck_app_t_wake_pump() -> i32;
 }
 
 /// What a worker runs with.
@@ -230,15 +235,28 @@ fn window_state() -> i32 {
     unsafe { ck_app_t_window_state() }
 }
 
+/// Leave the latest driver transition in its per-run directory so a supervisor timeout can distinguish a
+/// miniaturize call that did not return from a returned request whose window state did not change.
+fn record_driver_stage(dir: &Path, stage: &str) -> Result<(), String> {
+    fs::write(dir.join("driver_stage"), stage)
+        .map_err(|error| format!("cannot record driver stage: {error}"))
+}
+
 /// Waits until the window's state satisfies `reached`, for at most [`STEP`] in all: a reading counts as an acknowledgement only if
 /// it **finished** by the deadline (each read is itself bounded at one second by the helper, which gives an error rather than a
 /// late answer), so a read begun near the deadline cannot acknowledge a state later. The failure names the state last read.
-fn wait_for_state(what: &str, reached: impl Fn(i32) -> bool) -> Result<(), String> {
+fn wait_for_state(dir: &Path, what: &str, reached: impl Fn(i32) -> bool) -> Result<(), String> {
     let give_up = Instant::now() + STEP;
+    let mut last_state = None;
     loop {
         let state = window_state();
+        if last_state != Some(state) {
+            record_driver_stage(dir, &format!("waiting for {what}: state={state}"))?;
+            last_state = Some(state);
+        }
         let in_time = Instant::now() <= give_up;
         if in_time && state >= 0 && reached(state) {
+            record_driver_stage(dir, &format!("reached {what}: state={state}"))?;
             return Ok(());
         }
         if !in_time {
@@ -274,6 +292,7 @@ fn drive_go(dir: &Path) -> Result<(), String> {
 /// it reads not miniaturized and visible, and writes "restored".
 fn drive_minimise(dir: &Path, restore: bool, typing: bool) -> Result<(), String> {
     wait_for_file(&dir.join("min_request"), DEADLINE)?;
+    record_driver_stage(dir, "min_request observed")?;
     if typing {
         let give_up = Instant::now() + Duration::from_secs(30);
         while dropped_keys() == 0 {
@@ -283,22 +302,31 @@ fn drive_minimise(dir: &Path, restore: bool, typing: bool) -> Result<(), String>
             thread::sleep(Duration::from_millis(10));
         }
     }
+    record_driver_stage(dir, "calling miniaturize")?;
     // SAFETY: a request on the main queue to the one GLFW window; the helper takes no pointer.
     let asked = unsafe { ck_app_t_miniaturize() };
+    record_driver_stage(dir, &format!("miniaturize returned {asked}"))?;
     if asked != 1 {
         return Err(format!("the miniaturize request failed ({asked})"));
     }
-    wait_for_state("miniaturized", |state| state & 1 == 1)?;
+    wait_for_state(dir, "miniaturized", |state| state & 1 == 1)?;
     mark(dir, "minimised")?;
     if restore {
+        record_driver_stage(dir, "calling deminiaturize")?;
         // SAFETY: a request on the main queue to the one GLFW window; the helper takes no pointer.
         let asked = unsafe { ck_app_t_deminiaturize() };
+        record_driver_stage(dir, &format!("deminiaturize returned {asked}"))?;
         if asked != 1 {
             return Err(format!("the deminiaturize request failed ({asked})"));
         }
-        wait_for_state("restored (not miniaturized, visible)", |state| {
+        wait_for_state(dir, "restored (not miniaturized, visible)", |state| {
             state & 1 == 0 && state & 2 == 2
         })?;
+        // SAFETY: GLFW permits posting an empty event from any thread while initialized; the test-only helper
+        // wakes its event pump only after the native window is visibly restored.
+        if unsafe { ck_app_t_wake_pump() } != 1 {
+            return Err("the restored-window test wake failed".to_owned());
+        }
         mark(dir, "restored")?;
     }
     Ok(())
@@ -322,8 +350,11 @@ fn spawn_driver(typing: bool) {
         if let Err(reason) = outcome {
             let _ = fs::write(dir.join("driver_failed"), reason);
             let own = std::process::id();
-            // SAFETY: sends SIGTERM to this process, whose signal thread takes it (the worker blocked it on every thread).
-            unsafe { libc::kill(i32::try_from(own).unwrap_or(0), libc::SIGTERM) };
+            let target =
+                signal::target(own).expect("the current process id is a positive signal target");
+            // SAFETY: `signal::target` rejects zero and out-of-range pids; this is this worker process,
+            // whose signal thread takes SIGTERM (the worker blocked it on every thread).
+            unsafe { libc::kill(target.get(), libc::SIGTERM) };
         }
     });
 }
@@ -340,18 +371,21 @@ fn worker(arguments: Vec<OsString>) -> ExitCode {
         eprintln!("unknown worker mode {}", mode.display());
         return ExitCode::FAILURE;
     };
+    ck_window::test_support::open_windows_without_activation();
     // Step 1, before anything that can create a thread.
     block_signals();
     // Step 2, before the application's first event dispatch (inside `main_entry`).
     // SAFETY: main thread; installs one local event monitor, once, before the first window.
     unsafe { ck_app_t_install_input_filter() };
+    let report = PathBuf::from(report);
+    activation_watch::install_report(&report.with_extension("activation"), false);
     if mode.typing() {
         // Step 3.
         // SAFETY: main thread, after the filter; starts one thread that only posts events.
         unsafe { ck_app_t_start_typist() };
     }
     // Step 4: created after step 1, so they inherit the block.
-    spawn_reporter(PathBuf::from(report));
+    spawn_reporter(report);
     spawn_driver(mode.typing());
     let mut application_arguments = arguments.collect::<Vec<_>>();
     let mut allow_unfocused_updates = false;
@@ -372,7 +406,9 @@ fn worker(arguments: Vec<OsString>) -> ExitCode {
     if queue_focus_lost_for_ck163 {
         ck_window::test_support::queue_focus_lost_on_next_pump();
     }
-    codekarl::main_entry(application_arguments)
+    let result = codekarl::main_entry(application_arguments);
+    activation_watch::assert_clean();
+    result
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -601,11 +637,19 @@ fn finish(worker: Worker) -> Seen {
 
 /// [`finish`] for a case whose close is a marked key.
 fn finish_allowing_keys(worker: Worker) -> Seen {
+    let activation = worker.report.with_extension("activation");
     let driver_failed = worker.driver_dir.map(|dir| dir.join("driver_failed"));
-    let seen = worker
-        .live
-        .finish()
-        .unwrap_or_else(|error| panic!("{error}"));
+    let driver_stage = driver_failed
+        .as_ref()
+        .map(|path| path.with_file_name("driver_stage"));
+    let seen = worker.live.finish().unwrap_or_else(|error| {
+        let stage = driver_stage
+            .as_ref()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .unwrap_or_else(|| "no driver stage recorded".to_owned());
+        panic!("{error}; window driver last stage: {stage}");
+    });
+    activation_watch::assert_report(&activation);
     assert_no_validation(&seen);
     if let Some(failed) = driver_failed {
         assert!(
@@ -1353,7 +1397,6 @@ fn the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record
     );
 }
 
-// ---------------------------------------------------------------------------------------------
 // Frame timing on a real window (milestone 5.5, issue 6, part B): `diagnostics.metrics_mark` and the one `metrics` record
 // ---------------------------------------------------------------------------------------------
 
@@ -1572,6 +1615,7 @@ fn synthetic_focus_loss_without_worker_opt_in_keeps_the_pause() {
             .is_err_and(|error| { error.contains("no \"runtime: shutdown complete\" in time") }),
         "without the update opt-in, injected FocusLost must retain the normal update pause: {result:?}"
     );
+    activation_watch::assert_report(&worker.report.with_extension("activation"));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1801,23 +1845,13 @@ fn cases() -> Vec<(&'static str, fn())> {
 
 /// Runs one case, catching its panic; returns whether it passed.
 fn run_case(name: &str, case: fn()) -> bool {
-    // Only application workers whose Lua fixtures use frame.on_update opt in. The minimise / restore cases retain the
-    // production focus gate.
-    ALLOW_UNFOCUSED_UPDATES.store(
-        matches!(
-            name,
-            "pending_textures_become_ready_and_the_run_reconciles_to_zero"
-                | "a_missing_file_stays_a_failed_checker_quad_and_the_run_ends_normally"
-                | "moving_a_quad_for_many_updates_uploads_nothing_but_a_reload_does"
-                | "destroying_the_quad_and_releasing_the_texture_retires_it_before_the_run_ends"
-                | "update_driven_worker_continues_after_synthetic_focus_loss"
-                | "the_demo_scene_runs_unchanged_on_glfw_vulkan_and_closes_by_a_marked_escape"
-                | "the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record"
-                | "a_marked_run_writes_one_metrics_record_with_the_window_beside_the_totals"
-                | "a_run_without_a_mark_reports_the_totals_only"
-        ),
-        Ordering::SeqCst,
+    assert!(
+        REAL_FOCUS_GATE_CASES
+            .iter()
+            .all(|name| cases().iter().any(|(case, _)| *case == *name)),
+        "every named real-focus case must exist"
     );
+    ALLOW_UNFOCUSED_UPDATES.store(!REAL_FOCUS_GATE_CASES.contains(&name), Ordering::SeqCst);
     QUEUE_FOCUS_LOST_FOR_CK163.store(
         matches!(
             name,

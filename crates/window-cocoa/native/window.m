@@ -652,7 +652,7 @@ CKWinHandle *ck_win_create(char *error, size_t capacity) {
 }
 
 int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_length,
-                         uint32_t width, uint32_t height, void **layer,
+                         uint32_t width, uint32_t height, int activate, void **layer,
                          uint32_t *pixel_width, uint32_t *pixel_height, char *error,
                          size_t capacity) {
     @autoreleasepool {
@@ -711,14 +711,18 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
         state.knownHeight = pixels_high;
         [window center];
         [window makeFirstResponder:view];
-        [window makeKeyAndOrderFront:nil];
-        if (@available(macOS 14.0, *)) {
-            [state.application activate];
-        } else {
+        if (activate) {
+            [window makeKeyAndOrderFront:nil];
+            if (@available(macOS 14.0, *)) {
+                [state.application activate];
+            } else {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-            [state.application activateIgnoringOtherApps:YES];
+                [state.application activateIgnoringOtherApps:YES];
 #pragma clang diagnostic pop
+            }
+        } else {
+            [window orderFront:nil];
         }
         *layer = (__bridge void *)view.layer;
         *pixel_width = pixels_wide;

@@ -213,6 +213,7 @@ fn main() {
         "native/textures.h",
         "native/textures.m",
         "tests/native/testing.m",
+        "../window-cocoa/tests/native/activation_watch.inc",
         "tests/native/bindless_probe.m",
         "tests/native/bindless_probe.h",
         "shaders/probe.metal",

@@ -37,6 +37,8 @@ use ck_gpu_metal::{
 };
 use ck_window::{Backend, WindowDesc};
 use ck_window_cocoa::CocoaBackend;
+#[path = "../../window/tests/support/activation_watch.rs"]
+mod activation_watch;
 
 /// The textured quad's cases (CK-91): off-screen readbacks and presenters with a quad slot.
 #[path = "presenter_quad/cases.rs"]
@@ -1614,8 +1616,13 @@ fn worker(name: &str) -> ExitCode {
         eprintln!("worker: no case called {name}");
         return ExitCode::from(1);
     };
+    ck_window::test_support::open_windows_without_activation();
+    activation_watch::install(false);
     match catch_unwind(AssertUnwindSafe(case)) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            activation_watch::assert_clean();
+            ExitCode::SUCCESS
+        }
         Err(payload) => {
             let text = payload
                 .downcast_ref::<String>()
@@ -2888,7 +2895,7 @@ fn check_test_support_is_not_in_the_library() -> Result<(), String> {
 
 /// Which part of this target a run executes. The target mixes two kinds of work that the project's check groups keep apart:
 /// `gpu` needs the GPU and the Metal toolchain but opens **no window** (the off-screen readback and the supervisor's own
-/// machinery); the window cases open real windows and take the desktop's focus, and are split by the module they are listed in
+/// machinery); the window cases open real windows without taking desktop focus, and are split by the module they are listed in
 /// into `window-core` (`presenter.rs` and `presenter_quad/`), `window-scene` (`presenter_scene/cases.rs`), `window-compat`
 /// (`presenter_scene/compat.rs`) and `window-instanced` (`presenter_scene/instanced.rs`), so that no check group nears the batch
 /// timing gate. With no `--set` all five run, as plain `cargo test --test presenter` always has. An unknown, empty, repeated or valueless `--set` is an error

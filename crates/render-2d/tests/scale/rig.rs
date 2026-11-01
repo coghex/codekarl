@@ -512,6 +512,8 @@ pub(crate) fn run_phase<F>(config: Config, phase: F) -> (Result<J, String>, Ende
 where
     F: FnOnce(&mut Scene) -> Result<J, String> + Send + 'static,
 {
+    ck_window::test_support::open_windows_without_activation();
+    crate::activation_watch::install(false);
     watchdog(config.deadline);
     let notifier = Notifier::new();
     let requests = Requests::new();

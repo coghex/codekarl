@@ -111,7 +111,9 @@
 //!
 //! # Tests while the owner types (CK-63 r5)
 //!
-//! The tests open real windows that may take focus while the owner is typing, Escape included, and they
+//! Window tests open real windows without taking focus, except in explicitly named focus cases. Test workers
+//! can suppress production activation requests through `ck-window`'s test-support-only switch; normal builds
+//! have no way to set it. The tests
 //! give the same result however much is typed. **None of the test support is part of this library.** It
 //! lives in `tests/` (`tests/support`, `tests/native`), its native part is built into a separate archive
 //! that only the test executable links (`rustc-link-arg-tests` in `build.rs`), and a test checks the

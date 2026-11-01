@@ -36,6 +36,8 @@ use ck_input::Key;
 use ck_window::{Backend, NativeEvent, NativeWake, Notifier, Wait, WindowDesc};
 use ck_window_cocoa::CocoaBackend;
 
+#[path = "../../window/tests/support/activation_watch.rs"]
+mod activation_watch;
 mod support;
 use support::Pumped;
 
@@ -971,10 +973,26 @@ fn hang() {
     }
 }
 
+/// The production open path still requests activation, but the test-only watch suppresses those calls.
+fn production_open_still_asks_for_activation() {
+    support::install_application();
+    let mut backend = CocoaBackend::new().expect("the backend starts");
+    backend
+        .create_window(&desc(200, 120))
+        .expect("the production open path creates its window");
+    assert!(support::info().has_window, "the opened window exists");
+    backend.destroy_window();
+    backend.terminate();
+}
+
 type Case = fn();
 
-const CASES: [(&str, Case); 38] = [
+const CASES: [(&str, Case); 39] = [
     ("create_and_destroy", create_and_destroy),
+    (
+        "production_open_still_asks_for_activation",
+        production_open_still_asks_for_activation,
+    ),
     ("off_the_main_thread", off_the_main_thread),
     ("close_button", close_button),
     ("escape_through_dispatch", escape_through_dispatch),
@@ -1086,6 +1104,8 @@ const CASES: [(&str, Case); 38] = [
     ),
 ];
 
+const EXPECTED_REQUEST_CASE: &str = "production_open_still_asks_for_activation";
+
 /// Cases only the supervisor's fixtures start.
 const FIXTURE_CASES: [(&str, Case); 2] = [("checker_control", checker_control), ("hang", hang)];
 
@@ -1102,8 +1122,27 @@ fn worker(name: &str) -> ExitCode {
         eprintln!("worker: no case called {name}");
         return ExitCode::from(1);
     };
+    assert!(
+        CASES.iter().any(|(case, _)| *case == EXPECTED_REQUEST_CASE),
+        "the expected-request control must name a case in CASES"
+    );
+    let expected_request = name == EXPECTED_REQUEST_CASE;
+    if !expected_request {
+        ck_window::test_support::open_windows_without_activation();
+    }
+    activation_watch::install(expected_request);
+    if name != "off_the_main_thread" {
+        support::install_application();
+    }
     match catch_unwind(AssertUnwindSafe(case)) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            if expected_request {
+                activation_watch::assert_expected_request_suppressed();
+            } else {
+                activation_watch::assert_clean();
+            }
+            ExitCode::SUCCESS
+        }
         Err(payload) => {
             let text = payload
                 .downcast_ref::<String>()

@@ -14,7 +14,7 @@ spare-faults = []
 
 [dev-dependencies]
 ck-gpu-metal = { path = ".", features = ["spare-faults"] }
-ck-window = { path = "../window" }
+ck-window = { path = "../window", features = ["test-support"] }
 ck-window-cocoa = { path = "../window-cocoa" }
 
 [[test]]

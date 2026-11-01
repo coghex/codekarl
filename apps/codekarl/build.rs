@@ -165,6 +165,7 @@ fn main() {
         return;
     }
     println!("cargo::rerun-if-changed=tests/native/testing.m");
+    println!("cargo::rerun-if-changed=../../crates/window-cocoa/tests/native/activation_watch.inc");
     for key in [
         "DEVELOPER_DIR",
         "SDKROOT",

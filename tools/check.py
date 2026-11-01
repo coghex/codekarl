@@ -734,7 +734,7 @@ NEEDS = (
     "plain",
     "gpu",
     "window",
-)  # a group's commands need nothing special, the GPU, or take focus
+)  # a group's commands need nothing special, the GPU, or a real window
 CARGO_FLAGS = ["--all-features", "--locked"]
 
 
@@ -978,6 +978,7 @@ NATIVE_APP_FILES = (
     "apps/codekarl/tests/windowed.rs",
     "apps/codekarl/build.rs",
     "apps/codekarl/tests/native/",
+    "crates/window/tests/support/activation_watch.rs",
 )
 # CK-92: the files of `ck-render-2d` that only the real-window group exercises: its Metal backend and the test
 # that drives it on a real window. The rest of the crate selects `render2d.core`, never a window group.
@@ -987,6 +988,7 @@ RENDER2D_WINDOW_FILES = (
     # The test-only keyboard filter that test installs, and the script that builds it.
     "crates/render-2d/build.rs",
     "crates/render-2d/tests/native/testing.m",
+    "crates/window/tests/support/activation_watch.rs",
 )
 # CK-111: classify every current Metal crate file by whether editing it changes code the windowed presenter
 # cases execute. The presenter/quad implementation, quad shader, presenter native pair, unwind cleanup
@@ -996,9 +998,10 @@ RENDER2D_WINDOW_FILES = (
 # target/features. Those three are excluded because compile/link/export/flag failures are exercised by
 # `metal.gpu`, including the offscreen presenter's GPU set. A shared-flag change with only an on-screen effect
 # must be reported to ck-manager before checks run. The bridge header/implementation, probe shader, GPU probe,
-# shader debug and hook isolation tests are probe/offscreen inputs. Future offscreen texture modules/native
-# sources/tests are also excluded and must remain GPU-only; add future window-only files to this list. The
-# batch still runs the complete window group once.
+# shader debug and hook isolation tests are probe/offscreen inputs. `build.rs` is a window input because it
+# compiles the presenter's native test support, which includes the shared activation watch. Future offscreen
+# texture modules/native sources/tests remain GPU-only; add future window-only files to this list. The batch
+# still runs the complete window group once.
 METAL_WINDOW_FILES = (
     # The presenter implementation and the quad slot drawn by its real-window frames.
     "crates/gpu-metal/src/presenter.rs",
@@ -1018,6 +1021,9 @@ METAL_WINDOW_FILES = (
     "crates/gpu-metal/tests/presenter_metrics/",
     # Test-only keyboard support installed by the windowed cases.
     "crates/gpu-metal/tests/native/",
+    "crates/gpu-metal/build.rs",
+    "crates/window-cocoa/tests/native/activation_watch.inc",
+    "crates/window/tests/support/activation_watch.rs",
 )
 # CK-144: these presenter modules contain only off-screen `readback*` cases, so `metal.gpu` covers them without
 # opening a window. Move a module directory to `METAL_WINDOW_FILES` if it gains a window case.
@@ -1033,6 +1039,8 @@ METAL_PRESENTER_GPU_ONLY = (
 # watchdog, half the single-submission gate's limit, like the `unittest-*` groups); they are regrouped when one nears it.
 NATIVE_WINDOW_PATHS = (
     "crates/window-cocoa/",
+    "crates/window-cocoa/tests/native/activation_watch.inc",
+    "crates/window/tests/support/activation_watch.rs",
     *METAL_WINDOW_FILES,
     *NATIVE_APP_FILES,
     *RENDER2D_WINDOW_FILES,
@@ -1054,6 +1062,8 @@ VULKAN_APP_FILES = (
     "apps/codekarl/src/vulkan/",
     "apps/codekarl/tests/native/",
     "apps/codekarl/tests/vulkan_app.rs",
+    "crates/window-cocoa/tests/native/activation_watch.inc",
+    "crates/window/tests/support/activation_watch.rs",
     "config/demo-glfw-vulkan.toml",
     "config/demo-glfw-vulkan-decline.toml",
     "config/demo-glfw-vulkan-callback-error.toml",
@@ -1066,7 +1076,13 @@ VULKAN_APP_FILES = (
 # selected by these (never `metal.gpu` or `native.window`).
 APP_SOURCE_DIRS = ("apps/codekarl/src/", "apps/codekarl/tests/")
 SUPERVISOR_DIR = "apps/codekarl/tests/supervisor/"
-GLFW_TEST_SUPPORT = ("crates/window-glfw/tests/native/", "crates/window-glfw/tests/support/")
+GLFW_TEST_SUPPORT = (
+    "crates/window-glfw/tests/native/",
+    "crates/window-glfw/tests/support/",
+    "crates/window-cocoa/tests/native/activation_watch.inc",
+    "crates/window/tests/support/activation_watch.rs",
+    "crates/window-glfw/build.rs",
+)
 STEPS = [
     Step(
         "fmt",
@@ -1268,6 +1284,8 @@ STEPS = [
         "(the hook isolation is `metal.isolation`).",
         paths=(
             "crates/gpu-metal/",
+            "crates/window-cocoa/tests/native/activation_watch.inc",
+            "crates/window/tests/support/activation_watch.rs",
             "apps/codekarl/src/native.rs",
             "specs/bootstrap.json",
         ),
@@ -1283,7 +1301,7 @@ STEPS = [
         full_spec=True,
         analyze=True,
         needs="window",
-        description="The native tests that open real windows and take the desktop's focus: the Cocoa "
+        description="The native tests that open real windows without taking the desktop's focus, except for explicitly named focus cases: the Cocoa "
         "backend, the application's real-window tests and ck-render-2d's Metal backend on a real "
         "window (the Metal presenter's windowed cases are the `metal.window-*` groups).",
         paths=NATIVE_WINDOW_PATHS,
@@ -1437,7 +1455,7 @@ STEPS = [
             *TOOLCHAIN_PATHS,
         ),
     ),
-    # CK-78: the GLFW window backend. Its window tests take the desktop's focus, so they are their own
+    # CK-78: the GLFW window backend. Its window tests avoid desktop focus except for the explicit focus cases, so they are their own
     # group, selected only by this crate's paths (never by `crates/window/` or another backend's paths).
     Step(
         "glfw.core",
@@ -1456,13 +1474,13 @@ STEPS = [
         lambda: [cargo_test(["-p", "ck-window-glfw", "--test", "window_glfw"])],
         analyze=True,
         needs="window",
-        description="The GLFW backend's window tests: real windows through GLFW and the Vulkan loader, "
-        "which take the desktop's focus.",
-        paths=("crates/window-glfw/", SUPERVISOR_DIR),
+        description="The GLFW backend's window tests: real windows through GLFW and the Vulkan loader, without taking desktop focus "
+        "except in the explicitly named focus cases.",
+        paths=("crates/window-glfw/", SUPERVISOR_DIR, *GLFW_TEST_SUPPORT),
     ),
     # CK-79: the Vulkan presenter. Two groups, each selected only by this crate's own paths: the one without
     # a window needs the GPU (the ledger's logic, the instance, the loader and the off-screen readback); the
-    # one with real GLFW windows takes the desktop's focus. Neither selects `native.window` or `metal.gpu`,
+    # one with real GLFW windows avoids desktop focus except in explicitly named focus cases. Neither selects `native.window` or `metal.gpu`,
     # and `crates/window-glfw/` selects neither of them.
     # CK-84: the Vulkan presenter's static guard, as `metal.isolation` is the Metal one.
     Step(
@@ -1496,11 +1514,11 @@ STEPS = [
         analyze=True,
         needs="window",
         description="The Vulkan presenter's window tests: real GLFW windows, real presents under validation "
-        "and every ledger transition, which take the desktop's focus.",
+        "and every ledger transition, without taking desktop focus.",
         paths=("crates/gpu-vulkan/", SUPERVISOR_DIR, *GLFW_TEST_SUPPORT),
     ),
-    # CK-80: the application's `glfw-vulkan` path end to end. Its binary tests open real GLFW windows and take
-    # the desktop's focus, so they are their own group, selected only by this path's own files. The native
+    # CK-80: the application's `glfw-vulkan` path end to end. Its binary tests open real GLFW windows without
+    # taking desktop focus except in explicitly named focus cases, so they are their own group. The native
     # reverse-override case (`--backend native-metal` over a `glfw-vulkan` configuration) opens the native
     # backend and lives in `windowed.rs`, so `native.window` runs it and this group never does.
     # CK-159 (M5.5-4, part A): the resource path on a real Vulkan window, `ck-render-2d`'s counterpart of its Metal window test
@@ -1514,7 +1532,7 @@ STEPS = [
         needs="window",
         description="`ck-render-2d`'s Vulkan window test: the real resource path (service, resident driver, ledger, scene "
         "presenter) on a GLFW window under validation, with the surface's pixels captured, and the keyboard filter's isolation "
-        "(real windows, which take the desktop's focus).",
+        "(real windows without taking the desktop's focus).",
         paths=(
             "crates/render-2d/tests/vulkan_window.rs",
             "crates/render-2d/src/vulkan.rs",
