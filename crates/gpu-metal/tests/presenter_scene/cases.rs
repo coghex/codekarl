@@ -24,7 +24,7 @@ use ck_gpu_metal::{
 
 use super::{
     BOUND, CleanupResult, Duration, Gate, MetalPresenter, NeverComplete, PresenterReport, Probes,
-    Rig, TestHooks, end, reports_until,
+    Rig, TestHooks, await_presented, end, reports_until,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -519,6 +519,7 @@ fn scene_shares_the_context() {
         "the presenter and the store hold the context"
     );
     assert_eq!(scene.context.native_live_objects().contexts, 2);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     assert_eq!(
         Arc::strong_count(&scene.context),
@@ -1421,6 +1422,7 @@ fn scene_teardown() {
     let scene = Scene::new();
     let mut presenter = scene.start(&rig, limits(), None, |_| {});
     until(&mut rig, "the first frame", || scene.probes.frames() >= 1);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     {
         let state = scene.driver();

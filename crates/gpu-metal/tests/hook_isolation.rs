@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 mod settle;
 use settle::{Facts, Settled, Window, settled};
 
+// When a case that is not about the stop may stop (CK-173), included by path as the window cases include it: a pure rule too.
+#[path = "presenter_metrics/presented.rs"]
+mod presented;
+
 fn rust_files(directory: &Path, found: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(directory).expect("a readable directory") {
         let path = entry.expect("a directory entry").path();
@@ -299,4 +303,49 @@ fn an_occluded_window_excuses_only_the_closing_interval() {
     ] {
         assert_eq!(settled(&owed), Settled::Waiting, "{owed:?}");
     }
+}
+
+#[test]
+fn a_stop_waits_for_every_acquired_drawable_to_be_answered() {
+    use presented::{Counts, Presentation, presentation};
+    // Nothing acquired yet, and every one answered: the case may stop.
+    for (acquired, answered) in [(0, 0), (1, 1), (7, 7)] {
+        assert_eq!(
+            presentation(Counts { acquired, answered }),
+            Presentation::Answered
+        );
+    }
+    // The failing shape: the first drawable acquired, its presented handler not yet run.
+    assert_eq!(
+        presentation(Counts {
+            acquired: 1,
+            answered: 0
+        }),
+        Presentation::Pending(1)
+    );
+    // A later one still pending after earlier answers is counted by what is missing, not by what ran.
+    assert_eq!(
+        presentation(Counts {
+            acquired: 5,
+            answered: 3
+        }),
+        Presentation::Pending(2)
+    );
+}
+
+#[test]
+fn a_presentation_that_never_arrives_is_named_as_the_presentation() {
+    let message = presented::never_answered(
+        presented::Counts {
+            acquired: 1,
+            answered: 0,
+        },
+        std::time::Duration::from_secs(10),
+    );
+    assert!(
+        message.contains("1 of 1 acquired drawable(s)")
+            && message.contains("10s")
+            && message.contains("not a teardown fault"),
+        "{message}"
+    );
 }

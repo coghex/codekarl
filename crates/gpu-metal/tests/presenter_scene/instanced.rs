@@ -15,8 +15,8 @@ use ck_gpu_metal::{
 };
 
 use super::{
-    CleanupResult, Duration, PresenterReport, Probes, Rig, Scene, TestHooks, end, limits,
-    limits_adopting, lock, reports_until, scene_limits, until,
+    CleanupResult, Duration, PresenterReport, Probes, Rig, Scene, TestHooks, await_presented, end,
+    limits, limits_adopting, lock, reports_until, scene_limits, until,
 };
 use std::sync::atomic::Ordering;
 
@@ -190,6 +190,7 @@ pub(crate) fn scene_bindless_checker_residency_lifecycle() {
     let resident = scene.context.native_live_objects();
     assert_eq!(resident.residency_members, baseline.residency_members + 3);
 
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     let ended = scene.context.native_live_objects();
     assert_eq!(ended.residency_members, baseline.residency_members);
@@ -1571,6 +1572,10 @@ pub(crate) fn scene_bindless_slot_count_is_the_configured_one() {
             stats.bindless_table_bytes
         );
         measured.push(stats.bindless_table_bytes);
+        // The checker resident does not mean the first frame is presented: stopping on top of that presentation made this case
+        // end `Unproven` when the display answered late (CK-173).
+        until(&mut rig, "the first frame", || scene.probes.frames() >= 1);
+        await_presented(&mut rig, &scene.probes.observer);
         assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     }
     assert!(measured[1] > measured[0], "{measured:?}");
