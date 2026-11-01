@@ -7,6 +7,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+// When a window's reading may be taken as final and when an occluded window excuses it (CK-171), included by path as the window
+// cases include it: a pure rule, so it is checked here, where no window and no GPU is opened.
+#[path = "presenter_metrics/settle.rs"]
+mod settle;
+use settle::{Facts, Settled, Window, settled};
+
 fn rust_files(directory: &Path, found: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(directory).expect("a readable directory") {
         let path = entry.expect("a directory entry").path();
@@ -246,4 +252,51 @@ fn native_sources_use_no_volatile_access_and_share_no_gate() {
         }
     }
     assert!(checked >= 4, "the scan found the native sources: {checked}");
+}
+
+/// The facts of a reading that is not final, closing interval outstanding, everything else in; each test changes one.
+fn closing_only() -> Facts {
+    Facts {
+        complete: false,
+        closing_pending: true,
+        outstanding: 0,
+        window: Window::SeenOccluded,
+    }
+}
+
+#[test]
+fn a_final_reading_is_final_whatever_the_window_did() {
+    for window in [Window::AlwaysVisible, Window::SeenOccluded] {
+        let facts = Facts {
+            complete: true,
+            closing_pending: false,
+            window,
+            ..closing_only()
+        };
+        assert_eq!(settled(&facts), Settled::Final);
+    }
+}
+
+#[test]
+fn an_occluded_window_excuses_only_the_closing_interval() {
+    assert_eq!(settled(&closing_only()), Settled::Occluded);
+    // A window never seen occluded keeps the full assertion: it waits, and the case fails at its bound.
+    let visible_window = Facts {
+        window: Window::AlwaysVisible,
+        ..closing_only()
+    };
+    assert_eq!(settled(&visible_window), Settled::Waiting);
+    // Anything else still owed is not excused, even for an occluded window.
+    for owed in [
+        Facts {
+            outstanding: 1,
+            ..closing_only()
+        },
+        Facts {
+            closing_pending: false,
+            ..closing_only()
+        },
+    ] {
+        assert_eq!(settled(&owed), Settled::Waiting, "{owed:?}");
+    }
 }

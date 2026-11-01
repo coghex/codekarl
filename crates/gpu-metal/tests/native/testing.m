@@ -373,3 +373,54 @@ void ck_t_violate_main_thread(void) {
         [NSApp.windows.firstObject.contentView setNeedsDisplay:YES];
     }
 }
+
+/* CK-171: whether the rig window has ever been without `NSWindowOcclusionStateVisible` since the watch was installed. The latch is set
+ * by the window's own occlusion notification, delivered on the main thread, and by the state when the watch is installed. */
+static _Atomic int32_t ck_rig_ever_occluded;
+static id ck_occlusion_observer;
+
+static NSWindow *ck_rig_window(void) {
+    for (NSWindow *window in NSApp.windows) {
+        if (ck_rig_layer != nil && window.contentView.layer == ck_rig_layer) {
+            return window;
+        }
+    }
+    return nil;
+}
+
+int32_t ck_t_watch_rig_occlusion(void) {
+    @autoreleasepool {
+        NSWindow *rig = ck_rig_window();
+        if (rig == nil) {
+            return 0;
+        }
+        if (ck_occlusion_observer == nil) {
+            ck_occlusion_observer = [[NSNotificationCenter defaultCenter]
+                addObserverForName:NSWindowDidChangeOcclusionStateNotification
+                            object:rig
+                             queue:nil
+                        usingBlock:^(NSNotification *note) {
+                            NSWindow *window = note.object;
+                            if ((window.occlusionState & NSWindowOcclusionStateVisible) == 0) {
+                                atomic_store(&ck_rig_ever_occluded, 1);
+                            }
+                        }];
+        }
+        if ((rig.occlusionState & NSWindowOcclusionStateVisible) == 0) {
+            atomic_store(&ck_rig_ever_occluded, 1);
+        }
+        return 1;
+    }
+}
+
+int32_t ck_t_rig_ever_occluded(void) {
+    return atomic_load(&ck_rig_ever_occluded);
+}
+
+/* The rig window's `occlusionState` now, or -1 when there is no rig window (for a failure message). */
+int64_t ck_t_rig_occlusion_state(void) {
+    @autoreleasepool {
+        NSWindow *rig = ck_rig_window();
+        return rig == nil ? -1 : (int64_t)rig.occlusionState;
+    }
+}

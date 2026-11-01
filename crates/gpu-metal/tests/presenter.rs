@@ -115,6 +115,9 @@ unsafe extern "C" {
         truncated: i32,
     );
     fn ck_t_violate_main_thread();
+    fn ck_t_watch_rig_occlusion() -> i32;
+    fn ck_t_rig_ever_occluded() -> i32;
+    fn ck_t_rig_occlusion_state() -> i64;
 }
 
 /// Whether `libMainThreadChecker.dylib` is among the images loaded into this process.
