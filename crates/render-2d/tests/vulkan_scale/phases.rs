@@ -83,6 +83,13 @@ impl Units {
 /// The textures the foreground quad adds to the store (one 8 x 8 image).
 const FOREGROUND_TEXTURES: u64 = 1;
 
+/// The images the store has created for uploads once set A is loaded under the foreground quad: set A's, the foreground's and, when it is
+/// resident, the checker (the Vulkan presenter counts the checker in `textures_created`; the Metal presenter's count does not, so the
+/// Metal harness's expectation without it does not hold here).
+pub(crate) fn expected_textures_created(checker_resident: bool) -> u64 {
+    u64::from(layout::SET_A) + FOREGROUND_TEXTURES + u64::from(checker_resident)
+}
+
 /// A small quad that moves along a scripted path (a Lissajous curve), published every tick: it keeps frames flowing while textures
 /// load, so adoption never waits for a quad that does not exist.
 struct Foreground {
@@ -599,13 +606,15 @@ fn capture_of(
     }
 }
 
-/// The latest completed capture as an identified frame: the capture count `n` and the newest frame are taken together (frame `n - 1`,
-/// 0-based, in commit order), so the frame is the one named and not whichever finished later. Returns its index.
+/// The latest completed capture as an identified frame: the newest capture and the committed frame that has its submission number
+/// (the presenter's own record of a queued frame; its ordinal less one is the 0-based place in commit order). A capture whose frame
+/// is not (or no longer) among the recent committed records is not used. Returns that index.
 fn identified_capture(scene: &Scene) -> Option<(u64, std::sync::Arc<FrameCapture>)> {
-    let (captures, newest) = scene.captures();
+    let (_, newest) = scene.captures();
     let frame = newest?;
     readable(&frame).ok()?;
-    Some((captures.checked_sub(1)?, frame))
+    let ordinal = scene.committed_ordinal_of(frame.submission)?;
+    Some((ordinal.checked_sub(1)?, frame))
 }
 
 /// The correctness pass (the validation layer on): all 32,768 textures sampled at the right place through 8 views, the distinct-identity
@@ -687,13 +696,35 @@ pub(crate) fn verify(scene: &mut Scene) -> Result<J, String> {
         Duration::from_secs(60),
     )?;
     let full = scene.stats().ok_or("no presenter stats")?;
-    // The store created set A's 32,768 textures and the foreground's one (the bindless path pins its table, not each revision, so
-    // the frame's `pinned` is 0 here and is only reported).
-    let distinct_ok = full.last.checker == 0
-        && full.last.resolved == u64::from(layout::SCENE_QUADS)
-        && full.last.skipped == 0
-        && full.last.dropped == 0
-        && full.textures_created == u64::from(layout::SET_A) + FOREGROUND_TEXTURES;
+    // The store created set A's 32,768 textures, the foreground's one and the checker (the bindless path pins its table, not each
+    // revision, so the frame's `pinned` is 0 here and is only reported). Each term is recorded, so a failure names the term.
+    let created_expected = expected_textures_created(full.checker_resident);
+    let terms = [
+        ("no_checker_instance", full.last.checker == 0),
+        (
+            "all_resolved",
+            full.last.resolved == u64::from(layout::SCENE_QUADS),
+        ),
+        ("none_skipped", full.last.skipped == 0),
+        ("none_dropped", full.last.dropped == 0),
+        (
+            "textures_created_as_expected",
+            full.textures_created == created_expected,
+        ),
+    ];
+    let distinct_ok = terms.iter().all(|(_, held)| *held);
+    let terms_record = J::o(terms.map(|(name, held)| (name, J::Bool(held))));
+    let last_frame = J::o([
+        ("instances", J::U(full.last.instances)),
+        ("resolved", J::U(full.last.resolved)),
+        ("checker", J::U(full.last.checker)),
+        ("skipped", J::U(full.last.skipped)),
+        ("dropped", J::U(full.last.dropped)),
+        ("draw_calls", J::U(full.last.batches)),
+        ("textures_created", J::U(full.textures_created)),
+        ("textures_created_expected", J::U(created_expected)),
+        ("checker_resident", J::Bool(full.checker_resident)),
+    ]);
     for quad in quads {
         let _ = scene.writer.destroy_quad(quad);
     }
@@ -720,11 +751,13 @@ pub(crate) fn verify(scene: &mut Scene) -> Result<J, String> {
             "full_scene",
             evidence::scene_stats(&full.scene, scene.allocations()),
         ),
+        ("full_scene_last_frame", last_frame),
+        ("distinct_identities_terms", terms_record),
         ("distinct_identities_ok", J::Bool(distinct_ok)),
         (
             "distinct_identities_method",
             J::s(
-                "the full scene's last frame drew 65,536 resolved instances with no checker and no skipped, dropped or slot-skipped instance, the store created exactly 32,768 textures for set A plus the foreground's one, and all 32,768 identity codes decoded in their own cells through the 8 views (a proxy: the presenter exposes no count of the table's non-checker resource IDs)",
+                "the full scene's last frame drew 65,536 resolved instances with no checker and no skipped or dropped instance, the store created exactly 32,768 textures for set A plus the foreground's one and the checker (the Vulkan count includes it), and all 32,768 identity codes decoded in their own cells through the 8 views (a proxy: the presenter exposes no count of the table's non-checker resource IDs)",
             ),
         ),
     ]);
