@@ -14,7 +14,7 @@
 //!
 //! Phases (each a worker): `selftest` (the harness's cadence and window edges), `verify` (8 views decode all 32,768 identities, the
 //! distinct-identity counters), `loads` (L-cold and L-warm), `static-ordinary` (per-revision mode, the baseline) and `static-bindless` (S),
-//! `churn` (C, once for timing, once with validation on), `heterogeneous` (H) and `caps` (K1 to K3; K0 is a preflight). The application's
+//! `churn` (C, once for timing, once with validation on), `heterogeneous` (H) and `caps` (K1 to K3; K0 is a preflight) and `caps-min` (reported, not gated: one 16 MiB request on a fresh presenter at 64 MiB). The application's
 //! Lua profile (M-lua) is `apps/codekarl/tests/vulkan_scale_lua.rs`.
 //!
 //! The recipe's three platform-free modules (`fixtures`, `layout`, `json`) are the Metal harness's, included read-only, so both backends
@@ -88,7 +88,7 @@ struct Job {
     gated: bool,
 }
 
-const JOBS: [Job; 9] = [
+const JOBS: [Job; 10] = [
     Job {
         name: "selftest",
         worker: "selftest",
@@ -143,6 +143,13 @@ const JOBS: [Job; 9] = [
         validation: true,
         gated: true,
     },
+    // Reported, not gated: what one 16 MiB request does on a fresh presenter at CK-130's 64 MiB (the start-up reservation, shown without K1 or K2 history; not a leak disproof).
+    Job {
+        name: "caps-min",
+        worker: "caps-min",
+        validation: true,
+        gated: false,
+    },
 ];
 
 fn main() -> ExitCode {
@@ -187,11 +194,12 @@ fn recipe_config(title: &'static str, ordinary: bool, capture: bool) -> Config {
 }
 
 /// Phase K's limits, all set explicitly: `max_textures` 1,024, `max_extra_revisions` 64, `bindless_texture_slots` 1,089 (1,024 + 64 +
-/// 1), `texture_bytes` 64 MiB.
-fn caps_config(assets: PathBuf) -> Config {
-    // The captured frames let K2 read the pixels of its waiting textures.
+/// 1), and the given `texture_bytes`: [`phases::CAPS_TEXTURE_BYTES`] for K1 to K3 (CK-130's 64 MiB is one block of the Vulkan image pool and
+/// leaves no room for K3's images), [`phases::CAPS_MIN_TEXTURE_BYTES`] for the `caps-min` job.
+fn caps_config(assets: PathBuf, texture_bytes: u64) -> Config {
+    // The captured frames let K2 read the pixels of its textures.
     let mut config = recipe_config("Codekarl scale caps", false, true);
-    config.texture.texture_bytes = 64 * MIB;
+    config.texture.texture_bytes = texture_bytes;
     config.ledger.max_extra_revisions = 64;
     config.bindless_slots = 1_089;
     config.max_textures = 1_024;
@@ -261,7 +269,7 @@ fn worker_main(worker: &str) -> ExitCode {
             };
             let k0_ok = matches!(&k0, J::O(fields) if fields.iter().any(|(name, value)| name == "refused" && *value == J::Bool(true)))
                 && matches!(&k0, J::O(fields) if fields.iter().any(|(name, value)| name == "message" && matches!(value, J::S(text) if text.contains("1088") && text.contains("1024") && text.contains("64"))));
-            let config = caps_config(fixtures.root().to_path_buf());
+            let config = caps_config(fixtures.root().to_path_buf(), phases::CAPS_TEXTURE_BYTES);
             let (result, ended) = rig::run_phase(config, move |scene| {
                 let mut record = phases::caps(scene)?;
                 let passed = record.get("passed") == Some(&J::Bool(true)) && k0_ok;
@@ -275,6 +283,14 @@ fn worker_main(worker: &str) -> ExitCode {
                 Ok(record)
             });
             (result, ended)
+        }
+        "caps-min" => {
+            fixtures.write_set_b();
+            let config = caps_config(
+                fixtures.root().to_path_buf(),
+                phases::CAPS_MIN_TEXTURE_BYTES,
+            );
+            rig::run_phase(config, phases::caps_min)
         }
         other => {
             eprintln!("unknown worker {other:?}");
