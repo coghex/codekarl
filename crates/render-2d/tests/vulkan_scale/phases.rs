@@ -26,8 +26,28 @@ const K2_RELOADS: usize = 65;
 /// frame the (single, sequential) render thread has committed but not yet counted: a frame is taken as committed after a fence only
 /// from this many frames above the count read.
 const FENCE_MARGIN_FRAMES: u64 = 1;
-/// K2 polls the statuses and the latest capture this many times per 60 Hz tick.
+/// K2 polls the statuses and takes the captures made since the last poll this many times per 60 Hz tick.
 const K2_POLLS_PER_TICK: u32 = 4;
+/// The bytes of one block of the Vulkan image pool (`crates/gpu-vulkan/src/memory.rs`, `BLOCK_SIZE`). `texture_bytes` is reserved in whole
+/// blocks (and in dedicated allocations at their queried size), and the checker, uploaded when the presenter starts, holds a range of the
+/// first block for the presenter's whole life, so one block is reserved from the start. Metal counts per image, which is why CK-130's
+/// 64 MiB ceiling does not carry over (CK-162 part C, scale run 2).
+pub(crate) const POOL_BLOCK_BYTES: u64 = 64 * 1024 * 1024;
+/// Phase K's `texture_bytes`: the pool's first block plus room for four of K3's 16 MiB images. A recorded departure from CK-130's 64 MiB,
+/// which is exactly one block and so leaves no room for any K3 image.
+pub(crate) const CAPS_TEXTURE_BYTES: u64 = POOL_BLOCK_BYTES + 4 * K3_IMAGE_BYTES;
+/// What `caps-min` runs with: CK-130's ceiling, one block.
+pub(crate) const CAPS_MIN_TEXTURE_BYTES: u64 = POOL_BLOCK_BYTES;
+/// K3's requests: the eight 2048 x 2048 images of set B.
+pub(crate) const K3_IMAGES: u32 = 8;
+/// One of them in bytes (RGBA8).
+pub(crate) const K3_IMAGE_BYTES: u64 = 2048 * 2048 * 4;
+/// How many decoded K2 frames are kept (their commit ordinals) for the coverage verdict: far more than the seconds K2 lasts at 60 Hz need; past
+/// it the evidence is not retained and K2 fails by saying so.
+const K2_MAX_FRAMES: usize = 4096;
+/// How long a capture may wait for the presenter's record of its committed frame before it is called unidentified (the record is made by
+/// another thread, so it can lag the capture a little).
+const IDENTIFY_BOUND: Duration = Duration::from_secs(2);
 /// How long all of a set may take to become ready.
 const READY_BOUND: Duration = Duration::from_secs(300);
 /// §11.3's reference for the warm load rate: 1,024 loads per second. Not a gate on Vulkan.
@@ -606,15 +626,235 @@ fn capture_of(
     }
 }
 
-/// The latest completed capture as an identified frame: the newest capture and the committed frame that has its submission number
-/// (the presenter's own record of a queued frame; its ordinal less one is the 0-based place in commit order). A capture whose frame
-/// is not (or no longer) among the recent committed records is not used. Returns that index.
-fn identified_capture(scene: &Scene) -> Option<(u64, std::sync::Arc<FrameCapture>)> {
-    let (_, newest) = scene.captures();
-    let frame = newest?;
-    readable(&frame).ok()?;
-    let ordinal = scene.committed_ordinal_of(frame.submission)?;
-    Some((ordinal.checked_sub(1)?, frame))
+/// A captured frame decoded in the K2 cells.
+struct Decoded {
+    /// The 0-based place of the frame in commit order.
+    index: u64,
+    /// Committed after every reload was requested (by index, with the fence margin).
+    after_requests: bool,
+    /// Whether cell `i` shows texture `i`.
+    rights: Vec<bool>,
+}
+
+impl Decoded {
+    fn wrong(&self) -> u64 {
+        self.rights.iter().filter(|right| !**right).count() as u64
+    }
+}
+
+/// What the K2 frames cover, for [`coverage_problem`].
+pub(crate) struct Window<'a> {
+    /// Captures that were gone before they were read (more than the last 8 arrived between two reads).
+    pub(crate) lost: u64,
+    /// Captures that could not be read as a frame.
+    pub(crate) unreadable: u64,
+    /// Captures with no committed record of their frame, after the bound.
+    pub(crate) unidentified: u64,
+    /// The commit ordinals (0-based) of the decoded frames, in the order taken.
+    pub(crate) ordinals: &'a [u64],
+    /// More frames were decoded than are retained.
+    pub(crate) overflowed: bool,
+    /// The commit ordinal of the baseline frame (the last one decoded before the window began).
+    pub(crate) baseline_index: u64,
+    /// The first and last frames the claim needs: the first committed after the requests (with the fence margin) and the end frame.
+    pub(crate) first_required: u64,
+    pub(crate) last_required: u64,
+}
+
+/// Why the decoded frames do not prove the transition, if they do not: the window must be complete (no capture lost, unreadable or
+/// unidentified, the retained frames consecutive in commit order), must begin after the baseline frame (no earlier scene), and must
+/// reach both ends of the interval the claim names.
+pub(crate) fn coverage_problem(window: &Window<'_>) -> Option<String> {
+    if window.overflowed {
+        return Some(format!(
+            "more than {K2_MAX_FRAMES} frames were decoded and the evidence is not retained"
+        ));
+    }
+    if window.lost != 0 {
+        return Some(format!(
+            "{} captures were gone before they were read (more than 8 arrived between two reads)",
+            window.lost
+        ));
+    }
+    if window.unreadable != 0 {
+        return Some(format!("{} captures could not be read", window.unreadable));
+    }
+    if window.unidentified != 0 {
+        return Some(format!(
+            "{} captures had no committed record of their frame",
+            window.unidentified
+        ));
+    }
+    let (Some(&first), Some(&last)) = (window.ordinals.first(), window.ordinals.last()) else {
+        return Some("no frame was decoded".to_owned());
+    };
+    if first <= window.baseline_index {
+        return Some(format!(
+            "the window begins at frame {first}, not after the baseline frame {}: an earlier scene is in it",
+            window.baseline_index
+        ));
+    }
+    for pair in window.ordinals.windows(2) {
+        if pair[1] != pair[0] + 1 {
+            return Some(if pair[1] > pair[0] {
+                format!(
+                    "frames {} to {} have no decoded capture",
+                    pair[0] + 1,
+                    pair[1] - 1
+                )
+            } else {
+                format!("frame {} came after frame {}", pair[1], pair[0])
+            });
+        }
+    }
+    if first > window.first_required {
+        return Some(format!(
+            "the first frame the claim needs, {}, was not decoded: the window begins at {first}",
+            window.first_required
+        ));
+    }
+    if last < window.last_required {
+        return Some(format!(
+            "the last frame the claim needs, {}, was not decoded: the window ends at {last}",
+            window.last_required
+        ));
+    }
+    None
+}
+
+/// K2's verdict: no refusal, no regression, no wrong cell in any decoded frame, every revision shown at the end in a frame decoded
+/// after, and a complete window ([`coverage_problem`]).
+pub(crate) fn k2_verdict(
+    reload_refused: u64,
+    shown_regressed: u64,
+    wrong_cells: u64,
+    end_wrong: u64,
+    all_shown: bool,
+    coverage: Option<&str>,
+) -> bool {
+    reload_refused == 0
+        && shown_regressed == 0
+        && wrong_cells == 0
+        && end_wrong == 0
+        && all_shown
+        && coverage.is_none()
+}
+
+/// K2's frames: every capture from a cursor taken before the reloads is taken once, in order, identified by its submission number and
+/// decoded in all the cells, so that no frame of the transition is looked at only when a poll happens to fall on it. A capture is
+/// consumed only when it has been read as a frame and identified (or the bound for its record has passed, which is a defect counted
+/// and failing K2), and the numbers of the captures that were gone before they were read are counted.
+struct TransitionFrames {
+    /// The first index in commit order that counts as committed after the requests.
+    first_after: u64,
+    /// The sequence number of the next capture to take.
+    next: u64,
+    /// Since when the capture at `next` has had no committed record.
+    pending_since: Option<Instant>,
+    /// The commit ordinals decoded, in order.
+    ordinals: Vec<u64>,
+    overflowed: bool,
+    lost: u64,
+    unreadable: u64,
+    unidentified: u64,
+    decoded: u64,
+    after_requests: u64,
+    /// Cells that did not show their own identity, over every decoded frame.
+    wrong_cells: u64,
+    /// The first decoded frame committed after the requests: its index and wrong cells.
+    first_after_requests: Option<(u64, u64)>,
+}
+
+impl TransitionFrames {
+    /// `cursor` is [`Scene::captures_cursor`], taken after the baseline frame was decoded and before the reloads were requested.
+    fn new(first_after: u64, cursor: u64) -> Self {
+        Self {
+            first_after,
+            next: cursor,
+            pending_since: None,
+            ordinals: Vec::new(),
+            overflowed: false,
+            lost: 0,
+            unreadable: 0,
+            unidentified: 0,
+            decoded: 0,
+            after_requests: 0,
+            wrong_cells: 0,
+            first_after_requests: None,
+        }
+    }
+
+    /// Takes the captures made since the last call, oldest first, and decodes the identified ones in `cells` cells.
+    fn take(&mut self, scene: &Scene, cells: usize) -> Vec<Decoded> {
+        let mut taken = Vec::new();
+        let (lost, kept) = scene.captures_since(self.next);
+        self.lost += lost;
+        self.next += lost;
+        for (number, frame) in kept {
+            if readable(&frame).is_err() {
+                self.unreadable += 1;
+                self.next = number + 1;
+                self.pending_since = None;
+                continue;
+            }
+            let Some(index) = scene
+                .committed_ordinal_of(frame.submission)
+                .and_then(|ordinal| ordinal.checked_sub(1))
+            else {
+                // The record of the committed frame is made by another thread and can lag: wait for it, then call it a defect.
+                let since = *self.pending_since.get_or_insert_with(Instant::now);
+                if since.elapsed() < IDENTIFY_BOUND {
+                    break;
+                }
+                self.unidentified += 1;
+                self.next = number + 1;
+                self.pending_since = None;
+                continue;
+            };
+            self.pending_since = None;
+            self.next = number + 1;
+            let rights: Vec<bool> = (0..cells)
+                .map(|index| {
+                    let cell = k2_cell(index);
+                    decode_cell(&frame, &cell) == Some(cell.texture)
+                })
+                .collect();
+            let decoded = Decoded {
+                index,
+                after_requests: index >= self.first_after,
+                rights,
+            };
+            self.decoded += 1;
+            self.wrong_cells += decoded.wrong();
+            if self.ordinals.len() < K2_MAX_FRAMES {
+                self.ordinals.push(index);
+            } else {
+                self.overflowed = true;
+            }
+            if decoded.after_requests {
+                self.after_requests += 1;
+                if self.first_after_requests.is_none() {
+                    self.first_after_requests = Some((index, decoded.wrong()));
+                }
+            }
+            taken.push(decoded);
+        }
+        taken
+    }
+
+    /// The coverage problem, if any, for the window that ends at `last_required`.
+    fn coverage(&self, baseline_index: u64, last_required: u64) -> Option<String> {
+        coverage_problem(&Window {
+            lost: self.lost,
+            unreadable: self.unreadable,
+            unidentified: self.unidentified,
+            ordinals: &self.ordinals,
+            overflowed: self.overflowed,
+            baseline_index,
+            first_required: self.first_after,
+            last_required,
+        })
+    }
 }
 
 /// The correctness pass (the validation layer on): all 32,768 textures sampled at the right place through 8 views, the distinct-identity
@@ -1223,7 +1463,72 @@ fn wait_retired(scene: &Scene, bound: Duration) -> bool {
     }
 }
 
-/// K1 to K3, with the small limits the worker was started with (`max_textures` 1,024, 64 extra revisions, 1,089 slots, 64 MiB).
+/// What `caps-min` expects of its one request: refused, not ready, by the texture-bytes budget with the pool already at the ceiling
+/// (`limit` of `limit` reserved).
+pub(crate) fn caps_min_verdict(
+    ready: usize,
+    failed: usize,
+    messages: &[String],
+    limit: u64,
+) -> bool {
+    ready == 0
+        && failed == 1
+        && messages.len() == 1
+        && messages[0].contains(TEXTURE_BYTES_REASON)
+        && messages[0].contains(&format!("({limit} of {limit} reserved)"))
+}
+
+/// The start-up reservation (CK-162 part C r4): on a fresh presenter at CK-130's 64 MiB, before anything else was loaded, one 16 MiB image
+/// of set B is requested. If the pool's ceiling is already reached at that point, the reservation that refuses K3 in `caps` is there
+/// without any K1 or K2 history: the presenter's start-up state (the checker's block). That does **not** show that no range was also
+/// left behind in the `caps` process (a checker-only block and a checker-plus-leak block reserve the same total), and nothing here claims it.
+/// **Reported, not gated**: the job states what the one request did.
+pub(crate) fn caps_min(scene: &mut Scene) -> Result<J, String> {
+    check_drawable(scene)?;
+    let mut cadence = Cadence::starting_at(now_ns());
+    let key = scene
+        .service
+        .load(&layout::set_b_name(layout::set_b_count() - 1))
+        .map_err(|error| format!("caps-min: the request was refused at admission: {error:?}"))?;
+    let limit = Instant::now() + Duration::from_secs(60);
+    let (mut ready, mut failed);
+    loop {
+        cadence.tick();
+        (ready, failed) = ready_and_failed(&scene.service, std::slice::from_ref(&key));
+        if ready + failed == 1 || Instant::now() >= limit {
+            break;
+        }
+    }
+    let mut messages = Vec::new();
+    if let Ok(status) = scene.service.status(key)
+        && status.state == StatusState::Failed
+        && let Some(error) = status.error
+    {
+        messages.push(error.message().to_owned());
+    }
+    let _ = scene.service.release(key);
+    let passed = caps_min_verdict(ready, failed, &messages, CAPS_MIN_TEXTURE_BYTES);
+    let mut record = J::o([
+        ("phase", J::s("caps-min")),
+        ("texture_bytes_limit", J::U(CAPS_MIN_TEXTURE_BYTES)),
+        ("requested", J::U(1)),
+        ("ready", J::U(ready as u64)),
+        ("refused", J::U(failed as u64)),
+        ("messages", J::A(messages.into_iter().map(J::S).collect())),
+        (
+            "expectation",
+            J::s(
+                "refused by the texture-bytes budget with the pool at its ceiling (`<limit> of <limit> reserved`) before anything else was loaded",
+            ),
+        ),
+        ("memory", memory(scene)),
+    ]);
+    record.push("passed", J::Bool(passed));
+    Ok(record)
+}
+
+/// K1 to K3, with the small limits the worker was started with (`max_textures` 1,024, 64 extra revisions, 1,089 slots, `texture_bytes`
+/// [`CAPS_TEXTURE_BYTES`]).
 #[expect(
     clippy::too_many_lines,
     reason = "one phase is one sequential protocol whose steps read best in order"
@@ -1280,10 +1585,15 @@ pub(crate) fn caps(scene: &mut Scene) -> Result<J, String> {
         && refused[0].0.starts_with("texture count");
     // K2: 65 reloads of distinct shown textures in one update: the backend holds at most 64 extra revisions; the one with no room waits
     // in the resource service with its shown revision unchanged; all 65 become shown; no refusal and no failure. What this harness can
-    // observe: the 65 textures are drawn in identity cells (cell i shows texture i), every frame is captured, and on every poll the
-    // latest capture is decoded. A texture whose newest requested revision is not yet shown must still show its own identity (the old
-    // image stays up until the new one is admitted: never the checker, never another image), and the number of such waiting
-    // revisions is recorded per tick. The extra-revision count and peak are not exposed by the presenter and so are not claimed.
+    // observe: the 65 textures are drawn in identity cells (cell i shows texture i), every frame is captured, and **every frame
+    // of a complete window is decoded in all 65 cells**: the window runs from a cursor taken after the baseline frame and before the reloads
+    // to the end frame, no capture may be lost, unreadable or unidentified, the commit ordinals must be consecutive and reach both ends of the
+    // interval the claim names, and the first frame committed after the requests is singled out. A
+    // texture whose newest requested revision is not yet shown must still show its own identity (the old image stays up until the new
+    // one is admitted: never the checker, never another image); the claim is "no frame across the transition shows a wrong image". Whether
+    // a waiting texture was seen, and the number of such waiting revisions per tick, are recorded as data: the reloads can all be shown
+    // within one frame of the requests (run 2: 65 shown within 13 frames), so no waiting state need be visible. The extra-revision count
+    // and peak are not exposed by the presenter and so are not claimed.
     let sample: Vec<TextureKey> = keys.iter().take(K2_RELOADS).copied().collect();
     let mut cells = Vec::with_capacity(sample.len());
     for (index, key) in sample.iter().enumerate() {
@@ -1321,6 +1631,13 @@ pub(crate) fn caps(scene: &mut Scene) -> Result<J, String> {
             sample.len()
         ));
     }
+    // The window of the transition begins here: the baseline frame is decoded and the reloads are not yet requested, so a capture from
+    // the cursor on belongs to the cell scene and to this frame or a later one.
+    let baseline_index = drawn
+        .ordinal
+        .checked_sub(1)
+        .ok_or("K2: the baseline frame has no ordinal")?;
+    let cursor = scene.captures_cursor();
     let shown_before: Vec<u64> = sample
         .iter()
         .map(|key| {
@@ -1349,10 +1666,10 @@ pub(crate) fn caps(scene: &mut Scene) -> Result<J, String> {
     let (mut waiting_peak, mut shown_regressed) = (0_usize, 0_u64);
     let (mut ticks_with_waiting, mut waiting_cells_checked, mut waiting_cells_wrong) =
         (0_u64, 0_u64, 0_u64);
-    let mut any_cell_wrong = 0_u64;
     let mut waiting_series: Vec<J> = Vec::new();
-    let (mut polls, mut polls_with_a_capture_after_the_requests) = (0_u64, 0_u64);
+    let mut polls = 0_u64;
     let mut bound_sequences: Vec<J> = Vec::new();
+    let mut frames = TransitionFrames::new(first_index_after_requests, cursor);
     let limit = Instant::now() + READY_BOUND;
     let all_shown = 'poll: loop {
         cadence.tick();
@@ -1360,17 +1677,12 @@ pub(crate) fn caps(scene: &mut Scene) -> Result<J, String> {
         // Several polls between ticks, so that the short wait of the reloaded textures is not missed.
         for _ in 0..K2_POLLS_PER_TICK {
             polls += 1;
-            // The capture is read BEFORE the statuses: a texture still waiting in the status read that follows was waiting
-            // when that frame was committed (a shown revision only advances), and the frame counts only when it was
-            // committed after the reloads were requested (its index in commit order is at least the number of frames
-            // committed then).
-            let capture = identified_capture(scene);
-            let after_requests = capture
-                .as_ref()
-                .is_some_and(|(index, _)| *index >= first_index_after_requests);
-            if after_requests {
-                polls_with_a_capture_after_the_requests += 1;
-            }
+            // Every frame captured since the last poll is decoded, in every cell, whether or not a texture is seen waiting. The
+            // captures are read BEFORE the statuses: a texture still waiting in the status read that follows was waiting when those
+            // frames were committed (a shown revision only advances). The frames that count for a waiting texture are those
+            // committed after the reloads were requested (their index in commit order is at least the number of frames committed then).
+            let fresh = frames.take(scene, sample.len());
+            let after: Vec<&Decoded> = fresh.iter().filter(|frame| frame.after_requests).collect();
             let mut shown_new = 0;
             let mut waiting = 0;
             let mut waiting_checked_here = 0_u64;
@@ -1388,17 +1700,10 @@ pub(crate) fn caps(scene: &mut Scene) -> Result<J, String> {
                     if revision < shown_before[index] {
                         shown_regressed += 1;
                     }
-                }
-                if let Some((_, frame)) = &capture {
-                    let cell = k2_cell(index);
-                    let right = decode_cell(frame, &cell) == Some(cell.texture);
-                    if !right {
-                        any_cell_wrong += 1;
-                    }
-                    if is_waiting && after_requests {
+                    for frame in &after {
                         waiting_cells_checked += 1;
                         waiting_checked_here += 1;
-                        if !right {
+                        if !frame.rights[index] {
                             waiting_cells_wrong += 1;
                         }
                     }
@@ -1409,10 +1714,10 @@ pub(crate) fn caps(scene: &mut Scene) -> Result<J, String> {
             }
             if waiting_checked_here != 0
                 && bound_sequences.len() < 200
-                && let Some((frame_index, _)) = &capture
+                && let Some(frame) = after.last()
             {
                 bound_sequences.push(J::o([
-                    ("frame_index", J::U(*frame_index)),
+                    ("frame_index", J::U(frame.index)),
                     ("waiting_cells_decoded", J::U(waiting_checked_here)),
                 ]));
             }
@@ -1434,7 +1739,8 @@ pub(crate) fn caps(scene: &mut Scene) -> Result<J, String> {
     };
     // Once every revision is shown, a frame committed after that is decoded: the cells still show their identities (the newest
     // revision is the same image). The frames committed when every revision was seen shown are counted, then frames are published
-    // until a capture above that count exists, so the decoded frame cannot be one drawn before the all-shown read.
+    // until a capture above that count exists, so the decoded frame cannot be one drawn before the all-shown read. Every frame captured
+    // on the way is decoded too.
     let frames_at_all_shown = scene
         .stats()
         .ok_or("K2: no presenter stats after every revision was shown, so no frame fence")?
@@ -1443,13 +1749,15 @@ pub(crate) fn caps(scene: &mut Scene) -> Result<J, String> {
         .checked_add(FENCE_MARGIN_FRAMES)
         .ok_or("K2: the frame fence after every revision was shown overflowed")?;
     let end_limit = Instant::now() + Duration::from_secs(60);
-    let (end_frame, end_index) = loop {
+    let (end_index, end_wrong) = loop {
         cadence.tick();
         foreground.tick(scene);
-        if let Some((index, frame)) = identified_capture(scene)
-            && index >= first_index_after_all_shown
+        let fresh = frames.take(scene, sample.len());
+        if let Some(end) = fresh
+            .iter()
+            .find(|frame| frame.index >= first_index_after_all_shown)
         {
-            break (frame, index);
+            break (end.index, end.wrong());
         }
         if Instant::now() >= end_limit {
             return Err(format!(
@@ -1457,17 +1765,13 @@ pub(crate) fn caps(scene: &mut Scene) -> Result<J, String> {
             ));
         }
     };
-    let end_wrong = (0..sample.len())
-        .filter(|index| {
-            let cell = k2_cell(*index);
-            decode_cell(&end_frame, &cell) != Some(cell.texture)
-        })
-        .count() as u64;
     for cell in cells {
         let _ = scene.writer.destroy_quad(cell);
     }
     let _ = scene.writer.publish();
-    let pixel_witness = waiting_cells_checked >= 1;
+    let waiting_cell_seen = waiting_cells_checked >= 1;
+    let any_cell_wrong = frames.wrong_cells;
+    let coverage = frames.coverage(baseline_index, end_index);
     let k2 = J::o([
         ("reloads_requested", J::U(sample.len() as u64)),
         ("reload_refusals", J::U(reload_refused)),
@@ -1485,9 +1789,44 @@ pub(crate) fn caps(scene: &mut Scene) -> Result<J, String> {
             "first_capture_index_counted_after_the_requests",
             J::U(first_index_after_requests),
         ),
+        ("frames_decoded", J::U(frames.decoded)),
         (
-            "polls_with_a_capture_committed_after_the_requests",
-            J::U(polls_with_a_capture_after_the_requests),
+            "frames_decoded_committed_after_the_requests",
+            J::U(frames.after_requests),
+        ),
+        (
+            "capture_coverage",
+            J::o([
+                ("baseline_index", J::U(baseline_index)),
+                ("first_required_index", J::U(first_index_after_requests)),
+                ("last_required_index", J::U(end_index)),
+                (
+                    "first_decoded_index",
+                    frames.ordinals.first().map_or(J::Null, |i| J::U(*i)),
+                ),
+                (
+                    "last_decoded_index",
+                    frames.ordinals.last().map_or(J::Null, |i| J::U(*i)),
+                ),
+                ("frames_retained", J::U(frames.ordinals.len() as u64)),
+                ("captures_lost_before_read", J::U(frames.lost)),
+                ("captures_unreadable", J::U(frames.unreadable)),
+                ("captures_unidentified", J::U(frames.unidentified)),
+                ("overflowed", J::Bool(frames.overflowed)),
+                ("problem", coverage.clone().map_or(J::Null, J::S)),
+            ]),
+        ),
+        (
+            "first_frame_committed_after_the_requests",
+            frames
+                .first_after_requests
+                .map_or(J::Null, |(index, wrong)| {
+                    J::o([
+                        ("frame_index", J::U(index)),
+                        ("cells_decoded", J::U(sample.len() as u64)),
+                        ("cells_wrong", J::U(wrong)),
+                    ])
+                }),
         ),
         (
             "waiting_cell_observations_by_capture",
@@ -1504,34 +1843,37 @@ pub(crate) fn caps(scene: &mut Scene) -> Result<J, String> {
         ("end_capture_frame_index", J::U(end_index)),
         ("waiting_cells_checked", J::U(waiting_cells_checked)),
         ("waiting_cells_wrong", J::U(waiting_cells_wrong)),
-        ("cell_reads_wrong_on_any_poll", J::U(any_cell_wrong)),
+        ("cells_wrong_in_any_decoded_frame", J::U(any_cell_wrong)),
         ("cells_wrong_before", J::U(baseline_wrong as u64)),
         ("cells_wrong_after_all_shown", J::U(end_wrong)),
         (
-            "pixel_witness_observed_a_waiting_cell_in_a_capture_committed_after_the_requests",
-            J::Bool(pixel_witness),
+            "waiting_cell_seen_in_a_frame_committed_after_the_requests",
+            J::Bool(waiting_cell_seen),
         ),
         ("all_shown_at_end", J::Bool(all_shown)),
         ("service", evidence::service_stats(&scene.service.stats())),
     ]);
-    let k2_ok = reload_refused == 0
-        && shown_regressed == 0
-        && waiting_cells_wrong == 0
-        && any_cell_wrong == 0
-        && end_wrong == 0
-        && pixel_witness
-        && all_shown;
+    let k2_ok = k2_verdict(
+        reload_refused,
+        shown_regressed,
+        any_cell_wrong,
+        end_wrong,
+        all_shown,
+        coverage.as_deref(),
+    ) && waiting_cells_wrong == 0;
     foreground.remove(scene);
     for key in &keys {
         let _ = scene.service.release(*key);
     }
     let retired = wait_retired(scene, Duration::from_secs(60));
 
-    // K3: set B's 2048 x 2048 images are loaded until the texture bytes refuse one.
+    // K3: set B's 2048 x 2048 images are loaded until the texture bytes refuse one. The ceiling is the pool's first block (held from the
+    // start by the checker, and by the textures of K1 and K2 while they live) plus four of these images, so some are admitted and the
+    // rest refused whatever K1 and K2 left behind (CK-130 used 64 MiB, which on Vulkan is the first block alone).
     let mut big = Vec::new();
     let mut failed_texts = Vec::new();
     let mut failed_strings: Vec<String> = Vec::new();
-    let first_big = layout::set_b_count() - 8;
+    let first_big = layout::set_b_count() - K3_IMAGES;
     let mut cadence = Cadence::starting_at(now_ns());
     for n in first_big..layout::set_b_count() {
         if let Ok(key) = scene.service.load(&layout::set_b_name(n)) {
@@ -1557,6 +1899,9 @@ pub(crate) fn caps(scene: &mut Scene) -> Result<J, String> {
         }
     }
     let k3 = J::o([
+        ("texture_bytes_limit", J::U(CAPS_TEXTURE_BYTES)),
+        ("pool_block_bytes", J::U(POOL_BLOCK_BYTES)),
+        ("image_bytes", J::U(K3_IMAGE_BYTES)),
         ("requested", J::U(big.len() as u64)),
         ("ready", J::U(ready as u64)),
         ("refused_by_texture_bytes", J::U(failed as u64)),
@@ -1579,7 +1924,7 @@ pub(crate) fn caps(scene: &mut Scene) -> Result<J, String> {
         (
             "k2_note",
             J::s(
-                "NOT PROVEN HERE, waived by the owner (CK-130 review 1, F2, relayed by ck-manager; the part rests on the CK-113/CK-115 component evidence): the backend's extra-revision count and peak, and the reservation that holds a no-room revision, are not exposed by the presenter, so the <= 64 bound and the identification of which revision had no room are not claimed. Observed: no refusal or failure, no regression of a shown revision, every waiting texture still shows its own identity in the captured frames committed after the reloads were requested (each an identified frame, by its index in commit order), the end state in a frame committed after every revision was seen shown, the waiting count per tick, and the service's budget peaks.",
+                "NOT PROVEN HERE, waived by the owner (CK-130 review 1, F2, relayed by ck-manager; the part rests on the CK-113/CK-115 component evidence): the backend's extra-revision count and peak, and the reservation that holds a no-room revision, are not exposed by the presenter, so the <= 64 bound and the identification of which revision had no room are not claimed. Claimed: no refusal or failure, no regression of a shown revision, and no frame across the transition shows a wrong image: the window from a cursor taken after the baseline frame and before the reloads to the end frame is COMPLETE (no capture lost before it was read, none unreadable or without its committed record, the decoded frames consecutive in commit order, beginning after the baseline frame and covering the first frame committed after the requests through the end frame, or K2 fails by naming the gap), and every frame in it is decoded in all 65 cells; and the end state in a frame committed after every revision was seen shown. Reported as data, not claimed: how many cells were seen waiting in frames committed after the requests (it can be none: the reloads can be shown within a frame), the waiting count per tick, and the service's budget peaks.",
             ),
         ),
         ("k3_texture_bytes", k3),

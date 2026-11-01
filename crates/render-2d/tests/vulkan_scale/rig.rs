@@ -242,6 +242,35 @@ impl Captures {
         (found, taken.recent.back().map(|frame| frame.submission))
     }
 
+    /// The sequence number the next capture will have (the first capture ever is 0): a cursor taken now bounds a later [`since`] at
+    /// its lower end, so that earlier captures are not part of it.
+    ///
+    /// [`since`]: Self::since
+    pub(crate) fn cursor(&self) -> u64 {
+        let mut taken = lock(&self.taken);
+        self.take_into(&mut taken);
+        taken.count
+    }
+
+    /// The captures with sequence number `from` or higher that are still kept, oldest first, with their numbers, and **how many of
+    /// those numbers are gone** (the last [`KEPT_CAPTURES`] are kept, so a caller that waits for more than that many captures to arrive
+    /// between calls loses the older ones, and is told how many instead of not noticing). The `n`th kept capture has the number
+    /// `count - kept + n`: the queue is in sequence order and the newest has the highest number.
+    pub(crate) fn since(&self, from: u64) -> (u64, Vec<(u64, Arc<FrameCapture>)>) {
+        let mut taken = lock(&self.taken);
+        self.take_into(&mut taken);
+        let first_kept = taken.count - taken.recent.len() as u64;
+        let lost = first_kept.saturating_sub(from);
+        let frames = taken
+            .recent
+            .iter()
+            .zip(first_kept..)
+            .filter(|(_, number)| *number >= from)
+            .map(|(frame, number)| (number, Arc::clone(frame)))
+            .collect();
+        (lost, frames)
+    }
+
     fn take_into(&self, taken: &mut Taken) {
         let mut fresh = lock(&self.sink);
         taken.count += fresh.len() as u64;
@@ -830,9 +859,14 @@ impl Scene {
         ordinal_of(&lock(&self.drawn), submission)
     }
 
-    /// The captured frames so far: how many, and the newest.
-    pub(crate) fn captures(&self) -> (u64, Option<Arc<FrameCapture>>) {
-        self.captures.poll()
+    /// The cursor to take before an action whose captures are to be read with [`Scene::captures_since`].
+    pub(crate) fn captures_cursor(&self) -> u64 {
+        self.captures.cursor()
+    }
+
+    /// The kept captures from sequence number `from` on, and how many numbers from there are gone.
+    pub(crate) fn captures_since(&self, from: u64) -> (u64, Vec<(u64, Arc<FrameCapture>)>) {
+        self.captures.since(from)
     }
 
     /// The capture of the frame submitted as `submission` (among the recent ones), and the newest submission number captured.

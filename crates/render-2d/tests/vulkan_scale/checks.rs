@@ -10,7 +10,10 @@ use std::collections::VecDeque;
 
 use ck_gpu_vulkan::{DrawnRecord, FrameCapture, FrameCounters, vk};
 
-use super::phases::{expected_textures_created, k3_verdict};
+use super::phases::{
+    CAPS_MIN_TEXTURE_BYTES, CAPS_TEXTURE_BYTES, K3_IMAGE_BYTES, K3_IMAGES, POOL_BLOCK_BYTES,
+    Window, caps_min_verdict, coverage_problem, expected_textures_created, k2_verdict, k3_verdict,
+};
 use super::rig::{Captures, ordinal_of};
 use super::{Job, LAYER_NAME, LAYER_VARIABLES, VALIDATION_VARIABLE, job_command};
 use super::{layer_in_loader_log, layer_problem};
@@ -20,7 +23,7 @@ type Check = fn() -> Result<(), String>;
 /// How many checks there are.
 pub(crate) const COUNT: usize = CHECKS.len();
 
-const CHECKS: [(&str, Check); 10] = [
+const CHECKS: [(&str, Check); 16] = [
     (
         "a timing job's child has no inherited loader layer variable and no implicit layer",
         a_timing_job_child_has_no_inherited_layer,
@@ -60,6 +63,30 @@ const CHECKS: [(&str, Check); 10] = [
     (
         "set A under the foreground is 32,768 + 1 images, plus the checker when it is resident",
         the_created_images_count_the_checker_when_it_is_resident,
+    ),
+    (
+        "captures are read from a cursor on, once each, and earlier scenes are not in them",
+        captures_are_read_from_a_cursor_on_once_each,
+    ),
+    (
+        "more than eight captures between two reads are reported as lost, not forgotten",
+        captures_gone_before_they_are_read_are_counted,
+    ),
+    (
+        "the K2 window must be complete, begin after the baseline and reach both ends",
+        the_k2_window_must_be_complete_and_bound_at_both_ends,
+    ),
+    (
+        "K2 fails on a wrong frame in the window and on a window with a hole",
+        k2_fails_on_a_wrong_frame_or_a_hole,
+    ),
+    (
+        "K3's budget holds the pool's first block and some, not all, of K3's images",
+        the_caps_budget_admits_some_but_not_all_of_k3,
+    ),
+    (
+        "caps-min needs one refusal by the texture-bytes budget with the pool at its ceiling",
+        caps_min_needs_the_refusal_at_the_ceiling,
     ),
 ];
 
@@ -290,6 +317,269 @@ fn a_capture_is_tied_to_its_committed_frame_by_the_submission() -> Result<(), St
     }
     if ordinal_of(&records, 5).is_some() || ordinal_of(&records, 6).is_some() {
         return Err("a submission that was never queued was given an ordinal".to_owned());
+    }
+    Ok(())
+}
+
+fn numbers(captures: &Captures, from: u64) -> (u64, Vec<(u64, u64)>) {
+    let (lost, kept) = captures.since(from);
+    (
+        lost,
+        kept.iter()
+            .map(|(number, frame)| (*number, frame.submission))
+            .collect(),
+    )
+}
+
+fn captures_are_read_from_a_cursor_on_once_each() -> Result<(), String> {
+    let captures = Captures::default();
+    // Scenes before the cursor (the controls: K1's foreground-only frames) are not in what is read from it.
+    push(&captures, &[10, 11, 12, 13, 14]);
+    let cursor = captures.cursor();
+    if cursor != 5 {
+        return Err(format!("the cursor after five captures is {cursor}, not 5"));
+    }
+    if captures.cursor() != 5 || numbers(&captures, cursor) != (0, Vec::new()) {
+        return Err("a cursor with no capture after it read something".to_owned());
+    }
+    push(&captures, &[15, 16, 17]);
+    let (lost, kept) = numbers(&captures, cursor);
+    if lost != 0 || kept != [(5, 15), (6, 16), (7, 17)] {
+        return Err(format!("from the cursor: lost {lost}, {kept:?}"));
+    }
+    // Reading again from the number after the last taken gives nothing, and the earlier ones are not given twice.
+    if numbers(&captures, 8) != (0, Vec::new()) || numbers(&captures, 7).1 != [(7, 17)] {
+        return Err("a capture was given twice or one after the last was invented".to_owned());
+    }
+    // Reading from the start of the run still has the earlier scenes: the cursor is what excludes them.
+    if numbers(&captures, 0).1.len() != 8 {
+        return Err("the eight kept captures were not all there from number 0".to_owned());
+    }
+    Ok(())
+}
+
+fn captures_gone_before_they_are_read_are_counted() -> Result<(), String> {
+    let captures = Captures::default();
+    let cursor = captures.cursor();
+    // Twelve arrive between two reads: the last eight are kept, the first four are gone and said to be.
+    push(&captures, &(100..112).collect::<Vec<_>>());
+    let (lost, kept) = numbers(&captures, cursor);
+    if lost != 4 || kept.len() != 8 || kept[0] != (4, 104) || kept[7] != (11, 111) {
+        return Err(format!("twelve between two reads: lost {lost}, {kept:?}"));
+    }
+    // Having been told, the reader resumes after the gap and is not told again.
+    if numbers(&captures, 12) != (0, Vec::new()) {
+        return Err("a read after the gap was told of a loss".to_owned());
+    }
+    // Exactly eight between two reads loses none.
+    push(&captures, &(200..208).collect::<Vec<_>>());
+    let (lost, kept) = numbers(&captures, 12);
+    if lost != 0 || kept.len() != 8 {
+        return Err(format!(
+            "eight between two reads: lost {lost}, {} kept",
+            kept.len()
+        ));
+    }
+    Ok(())
+}
+
+fn window(ordinals: &[u64]) -> Window<'_> {
+    Window {
+        lost: 0,
+        unreadable: 0,
+        unidentified: 0,
+        ordinals,
+        overflowed: false,
+        baseline_index: 9,
+        first_required: 12,
+        last_required: 15,
+    }
+}
+
+fn the_k2_window_must_be_complete_and_bound_at_both_ends() -> Result<(), String> {
+    // A complete window: from the frame after the baseline, consecutive, covering 12 to 15.
+    let complete = [10, 11, 12, 13, 14, 15, 16];
+    if let Some(problem) = coverage_problem(&window(&complete)) {
+        return Err(format!("a complete window was refused: {problem}"));
+    }
+    let tight = [12, 13, 14, 15];
+    if let Some(problem) = coverage_problem(&window(&tight)) {
+        return Err(format!(
+            "a window of exactly the required frames was refused: {problem}"
+        ));
+    }
+    let late_start = [13, 14, 15];
+    let early_end = [10, 11, 12, 13, 14];
+    let hole_inside = [10, 11, 13, 14, 15];
+    let hole_at_the_required_start = [10, 11, 13, 14, 15, 16];
+    let before_the_baseline = [8, 9, 10, 11, 12, 13, 14, 15];
+    let at_the_baseline = [9, 10, 11, 12, 13, 14, 15];
+    let out_of_order = [10, 11, 13, 12, 14, 15];
+    let repeated = [10, 11, 11, 12, 13, 14, 15];
+    let refused: [(&str, Option<String>); 11] = [
+        (
+            "the first required frame missing",
+            coverage_problem(&window(&late_start)),
+        ),
+        (
+            "the end frame missing",
+            coverage_problem(&window(&early_end)),
+        ),
+        (
+            "a frame missing in the middle",
+            coverage_problem(&window(&hole_inside)),
+        ),
+        (
+            "the first required frame missing inside the window",
+            coverage_problem(&window(&hole_at_the_required_start)),
+        ),
+        (
+            "frames before the baseline",
+            coverage_problem(&window(&before_the_baseline)),
+        ),
+        (
+            "the baseline frame itself",
+            coverage_problem(&window(&at_the_baseline)),
+        ),
+        (
+            "frames out of order",
+            coverage_problem(&window(&out_of_order)),
+        ),
+        ("a frame taken twice", coverage_problem(&window(&repeated))),
+        ("no frame", coverage_problem(&window(&[]))),
+        (
+            "a capture lost",
+            coverage_problem(&Window {
+                lost: 1,
+                ..window(&complete)
+            }),
+        ),
+        (
+            "a capture unreadable",
+            coverage_problem(&Window {
+                unreadable: 1,
+                ..window(&complete)
+            }),
+        ),
+    ];
+    for (what, problem) in refused {
+        if problem.is_none() {
+            return Err(format!("{what} was accepted"));
+        }
+    }
+    if coverage_problem(&Window {
+        unidentified: 1,
+        ..window(&complete)
+    })
+    .is_none()
+    {
+        return Err("a capture with no committed record was accepted".to_owned());
+    }
+    if coverage_problem(&Window {
+        overflowed: true,
+        ..window(&complete)
+    })
+    .is_none()
+    {
+        return Err("a window that could not be retained was accepted".to_owned());
+    }
+    Ok(())
+}
+
+fn k2_fails_on_a_wrong_frame_or_a_hole() -> Result<(), String> {
+    let complete = [10, 11, 12, 13, 14, 15];
+    let none = coverage_problem(&window(&complete));
+    if !k2_verdict(0, 0, 0, 0, true, none.as_deref()) {
+        return Err("a clean transition with a complete window did not pass".to_owned());
+    }
+    let hole = [10, 11, 12, 14, 15];
+    let hole = coverage_problem(&window(&hole));
+    let refused: [(&str, bool); 6] = [
+        (
+            "a wrong cell in a decoded frame",
+            k2_verdict(0, 0, 1, 0, true, none.as_deref()),
+        ),
+        (
+            "a wrong cell in the end frame",
+            k2_verdict(0, 0, 0, 1, true, none.as_deref()),
+        ),
+        (
+            "a refused reload",
+            k2_verdict(1, 0, 0, 0, true, none.as_deref()),
+        ),
+        (
+            "a regressed shown revision",
+            k2_verdict(0, 1, 0, 0, true, none.as_deref()),
+        ),
+        (
+            "revisions not all shown",
+            k2_verdict(0, 0, 0, 0, false, none.as_deref()),
+        ),
+        (
+            "a correct window with a frame missing (a wrong one could be the missing one)",
+            k2_verdict(0, 0, 0, 0, true, hole.as_deref()),
+        ),
+    ];
+    for (what, accepted) in refused {
+        if accepted {
+            return Err(format!("{what} was accepted"));
+        }
+    }
+    Ok(())
+}
+
+fn the_caps_budget_admits_some_but_not_all_of_k3() -> Result<(), String> {
+    let room = CAPS_TEXTURE_BYTES
+        .checked_sub(POOL_BLOCK_BYTES)
+        .ok_or("the budget is below one pool block")?;
+    let admitted = room / K3_IMAGE_BYTES;
+    if admitted < 1 || admitted >= u64::from(K3_IMAGES) {
+        return Err(format!(
+            "{admitted} of {K3_IMAGES} images fit beside the first block, so K3 could not both admit and refuse one"
+        ));
+    }
+    // The minimum run is CK-130's ceiling: the first block and nothing else.
+    if CAPS_MIN_TEXTURE_BYTES != POOL_BLOCK_BYTES {
+        return Err("caps-min is not the one-block ceiling".to_owned());
+    }
+    Ok(())
+}
+
+fn caps_min_needs_the_refusal_at_the_ceiling() -> Result<(), String> {
+    let limit = CAPS_MIN_TEXTURE_BYTES;
+    let at_ceiling = format!(
+        "texture_bytes budget: 16777216 more bytes would pass the limit ({limit} of {limit} reserved)"
+    );
+    let below = format!(
+        "texture_bytes budget: 16777216 more bytes would pass the limit (60 of {limit} reserved)"
+    );
+    let count = "allocation count limit: 4096 of 4096 memory allocations are in use".to_owned();
+    if !caps_min_verdict(0, 1, std::slice::from_ref(&at_ceiling), limit) {
+        return Err("a refusal at the ceiling was not accepted".to_owned());
+    }
+    let refused: [(&str, bool); 5] = [
+        (
+            "an image that became ready",
+            caps_min_verdict(1, 0, &[], limit),
+        ),
+        ("a refusal with no text", caps_min_verdict(0, 1, &[], limit)),
+        (
+            "a refusal with the pool below its ceiling",
+            caps_min_verdict(0, 1, &[below], limit),
+        ),
+        (
+            "an allocation-count refusal",
+            caps_min_verdict(0, 1, &[count], limit),
+        ),
+        (
+            "two refusals for one request",
+            caps_min_verdict(0, 2, &[at_ceiling.clone(), at_ceiling], limit),
+        ),
+    ];
+    for (what, accepted) in refused {
+        if accepted {
+            return Err(format!("{what} was accepted"));
+        }
     }
     Ok(())
 }
