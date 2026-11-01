@@ -6,10 +6,12 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::Path;
 
-use ck_gpu_vulkan::{FrameCapture, vk};
+use std::collections::VecDeque;
 
-use super::phases::k3_verdict;
-use super::rig::Captures;
+use ck_gpu_vulkan::{DrawnRecord, FrameCapture, FrameCounters, vk};
+
+use super::phases::{expected_textures_created, k3_verdict};
+use super::rig::{Captures, ordinal_of};
 use super::{Job, LAYER_NAME, LAYER_VARIABLES, VALIDATION_VARIABLE, job_command};
 use super::{layer_in_loader_log, layer_problem};
 
@@ -18,7 +20,7 @@ type Check = fn() -> Result<(), String>;
 /// How many checks there are.
 pub(crate) const COUNT: usize = CHECKS.len();
 
-const CHECKS: [(&str, Check); 8] = [
+const CHECKS: [(&str, Check); 10] = [
     (
         "a timing job's child has no inherited loader layer variable and no implicit layer",
         a_timing_job_child_has_no_inherited_layer,
@@ -50,6 +52,14 @@ const CHECKS: [(&str, Check); 8] = [
     (
         "the captures keep their order and count",
         the_captures_keep_their_order_and_count,
+    ),
+    (
+        "a capture is tied to its committed frame by the submission, not by its place among the captures",
+        a_capture_is_tied_to_its_committed_frame_by_the_submission,
+    ),
+    (
+        "set A under the foreground is 32,768 + 1 images, plus the checker when it is resident",
+        the_created_images_count_the_checker_when_it_is_resident,
     ),
 ];
 
@@ -250,6 +260,36 @@ fn the_captures_keep_their_order_and_count() -> Result<(), String> {
     let (count, newest) = captures.poll();
     if count != 3 || newest.map(|frame| frame.submission) != Some(3) {
         return Err("three captures, the newest being submission 3, were expected".to_owned());
+    }
+    Ok(())
+}
+
+fn the_created_images_count_the_checker_when_it_is_resident() -> Result<(), String> {
+    // The first real run: 32,770 created = 32,768 + the foreground + the resident checker.
+    if expected_textures_created(true) != 32_770 || expected_textures_created(false) != 32_769 {
+        return Err(format!(
+            "{} with the checker, {} without it",
+            expected_textures_created(true),
+            expected_textures_created(false)
+        ));
+    }
+    Ok(())
+}
+
+fn a_capture_is_tied_to_its_committed_frame_by_the_submission() -> Result<(), String> {
+    let record = |ordinal: u64, submission: u64| DrawnRecord {
+        ordinal,
+        generation: Some(7),
+        submission,
+        counters: FrameCounters::default(),
+    };
+    // Submissions 5 and 6 were submitted but never queued (no record); frames 1 to 3 were queued as submissions 4, 7 and 8.
+    let records: VecDeque<DrawnRecord> = [record(1, 4), record(2, 7), record(3, 8)].into();
+    if ordinal_of(&records, 7) != Some(2) || ordinal_of(&records, 8) != Some(3) {
+        return Err("a queued frame's ordinal was not found by its submission".to_owned());
+    }
+    if ordinal_of(&records, 5).is_some() || ordinal_of(&records, 6).is_some() {
+        return Err("a submission that was never queued was given an ordinal".to_owned());
     }
     Ok(())
 }

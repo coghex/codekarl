@@ -256,6 +256,14 @@ impl Captures {
     }
 }
 
+/// The ordinal of the frame with `submission` among the presenter's queued-frame records, if it is there.
+pub(crate) fn ordinal_of(records: &VecDeque<DrawnRecord>, submission: u64) -> Option<u64> {
+    records
+        .iter()
+        .find(|record| record.submission == submission)
+        .map(|record| record.ordinal)
+}
+
 /// What the loop thread saw, for the scene thread and the final record.
 #[derive(Default)]
 pub(crate) struct Seen {
@@ -815,6 +823,11 @@ impl Scene {
                 submission: record.submission,
             }),
         })
+    }
+
+    /// The ordinal (1 for the first queued frame) of the committed frame that has this submission number, among the recent ones.
+    pub(crate) fn committed_ordinal_of(&self, submission: u64) -> Option<u64> {
+        ordinal_of(&lock(&self.drawn), submission)
     }
 
     /// The captured frames so far: how many, and the newest.
