@@ -40,6 +40,10 @@ use ck_window_cocoa::CocoaBackend;
 #[path = "../../window/tests/support/activation_watch.rs"]
 mod activation_watch;
 
+/// When a case may stop a presenter it is not testing the stop of (CK-173): a pure rule, checked in `hook_isolation.rs` too.
+#[path = "presenter_metrics/presented.rs"]
+mod presented;
+
 /// The textured quad's cases (CK-91): off-screen readbacks and presenters with a quad slot.
 #[path = "presenter_quad/cases.rs"]
 mod quad;
@@ -326,6 +330,27 @@ fn end(rig: &mut Rig, presenter: &mut MetalPresenter) -> CleanupResult {
     result.expect("a result")
 }
 
+/// Lets the pending presentations arrive before a case that is not about the stop stops its presenter (bounded, pumping): the
+/// teardown proves every presented handler against its own deadline, and the display can answer the window's first drawable later
+/// than that when the owner is active (CK-173). A presentation that never arrives fails here, named; the `Proven` assertion that
+/// follows is unchanged. Cases about the teardown with presentations pending (a held or delayed token, a short budget) do not use it.
+fn await_presented(rig: &mut Rig, observer: &Observer) {
+    let mut last = presented::Counts {
+        acquired: 0,
+        answered: 0,
+    };
+    let answered = rig.pump_until(BOUND, || {
+        // Answered first: a drawable acquired in between only makes the look more cautious.
+        let answered = observer.presented_handlers_run();
+        last = presented::Counts {
+            acquired: observer.drawables_acquired(),
+            answered,
+        };
+        presented::presentation(last) == presented::Presentation::Answered
+    });
+    assert!(answered, "{}", presented::never_answered(last, BOUND));
+}
+
 fn near(a: u8, b: u8) -> bool {
     a.abs_diff(b) <= 1
 }
@@ -445,6 +470,7 @@ fn proven_teardown_visible() {
     assert!(rig.pump_until(BOUND, || probes.frames() >= 1));
     presenter.set_clear([0.2, 0.7, 0.3]);
     assert!(rig.pump_until(BOUND, || probes.frames() >= 2));
+    await_presented(&mut rig, &probes.observer);
     let started = Instant::now();
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     assert!(
@@ -501,6 +527,7 @@ fn proven_teardown_abandoned_drawable() {
         rig.pump_until(BOUND, || !probes.observer.abandoned_drawable_alive()),
         "the abandoned drawable can be released by everyone else"
     );
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     let observer = &probes.observer;
     assert_eq!(
@@ -1429,6 +1456,7 @@ fn wake_panic() {
         [PresenterReport::FirstFrameQueued],
         "the report was made"
     );
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     assert_eq!(
         presenter.poll_end(Duration::ZERO),
@@ -1477,6 +1505,7 @@ fn typing_is_dropped() {
     let probes = Probes::new();
     let mut presenter = probes.start_ok(&rig, probes.hooks());
     assert!(rig.pump_until(BOUND, || probes.frames() >= 1));
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 

@@ -12,7 +12,7 @@ use ck_gpu_metal::{
 
 use super::{
     BOUND, CleanupResult, Duration, Gate, Injection, MetalPresenter, NeverComplete,
-    PresenterReport, Probes, Rig, TestHooks, end, readback_clear, reports_until,
+    PresenterReport, Probes, Rig, TestHooks, await_presented, end, readback_clear, reports_until,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -387,6 +387,7 @@ pub(crate) fn quad_in_the_first_frame() {
     assert_eq!(probes.frames(), 1, "it was the first and only frame");
     assert_eq!(probes.observer.quad_draws(), 1);
     assert_eq!(probes.observer.quad_textures_created(), 1);
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -798,6 +799,7 @@ pub(crate) fn quad_teardown() {
     ));
     let mut presenter = probes.start_ok(&rig, hooks_with(&probes, &slot));
     assert!(rig.pump_until(BOUND, || presenter.drawn_generation() == Some(1)));
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     let observer = &probes.observer;
     assert_eq!(observer.quad_textures_alive(), 0);
