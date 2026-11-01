@@ -33,6 +33,7 @@ BRIDGE_DEFECT = "\nint ck_analyzer_probe(void) {\n    int *p = NULL;\n    return
 
 DoctorProcessRow = tuple[int, int, int, str, str, str]
 DOCTOR_POLL = 0.05
+PIDFILE_STARTUP_ALLOWANCE = 10.0
 DOCTOR_PS_MIN_FIELDS = 9
 DOCTOR_SAMPLE_LIMIT = 8
 
@@ -854,7 +855,7 @@ class SessionHarness(unittest.TestCase):
         )
         return pidfile
 
-    def pid_from(self, path: Path, timeout: float = 3) -> int:
+    def pid_from(self, path: Path, timeout: float = PIDFILE_STARTUP_ALLOWANCE) -> int:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
@@ -869,6 +870,19 @@ class SessionHarness(unittest.TestCase):
                     pass
             time.sleep(DOCTOR_POLL)
         raise AssertionError(f"process did not write its PID file: {path}")
+
+    def test_pidfile_wait_fails_within_its_finite_startup_allowance(self) -> None:
+        missing = self.pids / "never-written"
+        with (
+            mock.patch(
+                "time.monotonic",
+                side_effect=(0.0, 0.0, PIDFILE_STARTUP_ALLOWANCE + 0.001),
+            ),
+            mock.patch("time.sleep") as sleep,
+            self.assertRaisesRegex(AssertionError, "process did not write its PID file"),
+        ):
+            self.pid_from(missing)
+        sleep.assert_called_once_with(DOCTOR_POLL)
 
     def wait_for_fixtures(self, *pidfiles: Path) -> Callable[[int], None]:
         """Reach every blocked fixture before a Doctor timeout used by its control starts."""
@@ -1231,7 +1245,7 @@ class SessionHarness(unittest.TestCase):
                     # subprocess.run starts its timeout inside communicate().
                     # Hold that point until the fixture proves that the probe is actually blocked,
                     # so the old timeout control tests cleanup rather than startup scheduling.
-                    self.pid_from(pidfile, timeout=5)
+                    self.pid_from(pidfile, timeout=PIDFILE_STARTUP_ALLOWANCE)
                 except BaseException:
                     if process.poll() is None:
                         with contextlib.suppress(ProcessLookupError):
