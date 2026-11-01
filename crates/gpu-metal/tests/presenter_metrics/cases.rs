@@ -14,7 +14,14 @@ use ck_gpu_metal::{
     now_ns,
 };
 
-use super::{BOUND, CleanupResult, Duration, MetalPresenter, Probes, Rig, TestHooks, end};
+use super::{
+    BOUND, CleanupResult, Duration, MetalPresenter, Probes, Rig, TestHooks, ck_t_rig_ever_occluded,
+    ck_t_rig_occlusion_state, ck_t_watch_rig_occlusion, end,
+};
+
+#[path = "settle.rs"]
+mod settle;
+use settle::{Facts, Settled, Window};
 
 const MS: u64 = 1_000_000;
 
@@ -75,6 +82,76 @@ fn draw(rig: &mut Rig, presenter: &MetalPresenter, probes: &Probes, count: u64) 
     }
 }
 
+/// Installs the watch that latches, for the rest of the worker, whether the rig window is ever seen without the visible bit (CK-171). An
+/// occluded window shows its drawables with a `presentedTime` of zero, which closes nothing, so a reading whose closing drawable was
+/// never shown cannot become final. The latch is set by `NSWindowDidChangeOcclusionStateNotification` (and by the state at the time the
+/// watch is installed), not by polling, so a window covered for any length of time after this call is retained. Idempotent. Main thread.
+fn watch_occlusion() {
+    // SAFETY: main thread (the worker's); registers one block observer on the rig's window, which may be absent.
+    unsafe { ck_t_watch_rig_occlusion() };
+}
+
+fn ever_occluded() -> bool {
+    // SAFETY: reads an atomic flag.
+    unsafe { ck_t_rig_ever_occluded() != 0 }
+}
+
+/// The window's `occlusionState` now, for a failure message (-1: no window).
+fn occlusion_now() -> i64 {
+    // SAFETY: main thread; reads one property of the rig's window, which may be absent.
+    unsafe { ck_t_rig_occlusion_state() }
+}
+
+/// Pumps until the window's reading is final, which is the product's own condition (`read_metrics(..).complete`: past the end, every
+/// step recorded, every pre-end presentation consumed, nothing outstanding, the closing interval known). The one thing it cannot wait
+/// for is the closing interval of an occluded window, whose closing drawable has a `presentedTime` of zero: when the window has ever
+/// been seen occluded and the reading is not final only because that interval is open (`closing_pending`, `outstanding == 0`), the
+/// case **ends the presenter** (`Proven`; the teardown proof accounts for every frame and the end resolves the interval) and takes the
+/// reading kept for the window after the end, which is final and exact; the flag says so, and the presenter is then already ended
+/// (use [`stop_settled`]). The poll's reading is never used as that reading, because it cannot show the owner's own progress
+/// (`accounted_through`). A window never seen occluded keeps the full assertion and fails at the bound.
+fn settle(rig: &mut Rig, presenter: &mut MetalPresenter) -> (MetricsReading, bool) {
+    let mut reading = None;
+    let mut outcome = None;
+    let settled = rig.pump_until(BOUND, || {
+        reading = presenter.read_metrics(1, Duration::ZERO);
+        outcome = reading.as_ref().and_then(|reading| {
+            match settle::settled(&Facts {
+                complete: reading.complete,
+                closing_pending: reading.closing_pending,
+                outstanding: reading.outstanding,
+                window: if ever_occluded() {
+                    Window::SeenOccluded
+                } else {
+                    Window::AlwaysVisible
+                },
+            }) {
+                Settled::Final => Some(false),
+                Settled::Occluded => Some(true),
+                Settled::Waiting => None,
+            }
+        });
+        outcome.is_some()
+    });
+    assert!(
+        settled,
+        "never final: {} | occlusion={} ever_occluded={}",
+        describe(reading.as_ref(), presenter),
+        occlusion_now(),
+        ever_occluded()
+    );
+    if outcome == Some(true) {
+        assert_eq!(end(rig, presenter), CleanupResult::Proven);
+        let ended = presenter.read_metrics(1, Duration::ZERO).expect("kept");
+        assert!(
+            ended.complete && !ended.closing_pending,
+            "the presenter's end resolves the closing interval: {ended:?}"
+        );
+        return (ended, true);
+    }
+    (reading.expect("a reading"), false)
+}
+
 /// The few figures of a reading that say why it is not final.
 fn describe(reading: Option<&MetricsReading>, presenter: &MetalPresenter) -> String {
     let totals = presenter.metrics_totals();
@@ -104,28 +181,33 @@ fn describe(reading: Option<&MetricsReading>, presenter: &MetalPresenter) -> Str
 }
 
 /// Ends window 1 at the clock now, draws one more frame (a drawable shown after the end closes the window's last interval) and pumps
-/// until the presenter's reading is final.
-fn finish(rig: &mut Rig, presenter: &MetalPresenter, probes: &Probes) -> (u64, MetricsReading) {
+/// until the presenter's reading is final, or the window is occluded and the presenter was ended to resolve it (see [`settle`]; the
+/// flag says which).
+fn finish(
+    rig: &mut Rig,
+    presenter: &mut MetalPresenter,
+    probes: &Probes,
+) -> (u64, MetricsReading, bool) {
+    watch_occlusion();
     let ended = now_ns();
     presenter
         .end_metrics(1, ended)
         .expect("the end is accepted once");
     draw(rig, presenter, probes, 1);
-    let mut reading = None;
-    let final_ = rig.pump_until(BOUND, || {
-        reading = presenter.read_metrics(1, Duration::ZERO);
-        reading.as_ref().is_some_and(|reading| reading.complete)
-    });
-    assert!(
-        final_,
-        "never final: {}",
-        describe(reading.as_ref(), presenter)
-    );
-    (ended, reading.expect("a reading"))
+    let (reading, occluded) = settle(rig, presenter);
+    (ended, reading, occluded)
 }
 
 fn stop(rig: &mut Rig, mut presenter: MetalPresenter) {
     assert_eq!(end(rig, &mut presenter), CleanupResult::Proven);
+}
+
+/// [`stop`] for a case whose reading came from [`settle`] or [`finish`]: when that ended the presenter already (the occluded outcome),
+/// there is nothing more to end.
+fn stop_settled(rig: &mut Rig, mut presenter: MetalPresenter, ended_already: bool) {
+    if !ended_already {
+        assert_eq!(end(rig, &mut presenter), CleanupResult::Proven);
+    }
 }
 
 /// The frames whose commit mark lies in `[start, end)`.
@@ -147,7 +229,7 @@ pub(super) fn metrics_marks_are_ordered_and_the_window_holds_exactly_its_frames(
     let mut rig = Rig::open();
     let probes = Probes::new();
     let (hooks, marks) = marks_hooks(&probes);
-    let presenter = probes.start_ok(&rig, hooks);
+    let mut presenter = probes.start_ok(&rig, hooks);
     assert!(rig.pump_until(BOUND, || probes.frames() >= 1));
     let window = open_window(&mut rig, &presenter, 200);
     // A second request while the first window is still open is refused and changes nothing.
@@ -160,7 +242,7 @@ pub(super) fn metrics_marks_are_ordered_and_the_window_holds_exactly_its_frames(
         Err(RequestError::Overlaps)
     );
     draw(&mut rig, &presenter, &probes, 20);
-    let (ended, reading) = finish(&mut rig, &presenter, &probes);
+    let (ended, reading, occluded) = finish(&mut rig, &mut presenter, &probes);
     let marks = marks_of(&marks);
     let mine = inside(&marks, &window, ended);
     assert!(!mine.is_empty());
@@ -208,7 +290,8 @@ pub(super) fn metrics_marks_are_ordered_and_the_window_holds_exactly_its_frames(
         "every drawable is accounted for"
     );
     assert_eq!(reading.outstanding, 0);
-    assert!(reading.complete);
+    // Final: as the poll found it, or (an occluded window's closing interval cannot close) after the presenter's end.
+    assert!(reading.complete && !reading.closing_pending, "{reading:?}");
     assert!(matches!(
         stats.cpu_total.percentile(950),
         Percentile::Value { .. }
@@ -222,7 +305,7 @@ pub(super) fn metrics_marks_are_ordered_and_the_window_holds_exactly_its_frames(
     assert_eq!(reading.timing_lost, 0);
     // The whole run holds at least the window's frames.
     assert!(presenter.metrics_totals().frames >= stats.frames);
-    stop(&mut rig, presenter);
+    stop_settled(&mut rig, presenter, occluded);
 }
 
 /// Frames that committed nothing are counted and never sampled (the whole run's totals, which the first, start-up steps belong to).
@@ -258,7 +341,7 @@ pub(super) fn metrics_a_blocked_acquisition_adds_to_acquire_only() {
     let (mut hooks, marks) = marks_hooks(&probes);
     let hold = Arc::new(AtomicI32::new(0));
     hooks.hold_in_acquire = Some(Arc::clone(&hold));
-    let presenter = probes.start_ok(&rig, hooks);
+    let mut presenter = probes.start_ok(&rig, hooks);
     assert!(rig.pump_until(BOUND, || probes.frames() >= 1));
     let window = open_window(&mut rig, &presenter, 100);
     draw(&mut rig, &presenter, &probes, 3);
@@ -277,7 +360,7 @@ pub(super) fn metrics_a_blocked_acquisition_adds_to_acquire_only() {
     let released = now_ns();
     hold.store(0, Ordering::SeqCst);
     assert!(rig.pump_until(BOUND, || probes.frames() > committed));
-    let (ended, reading) = finish(&mut rig, &presenter, &probes);
+    let (ended, reading, occluded) = finish(&mut rig, &mut presenter, &probes);
     let blocked = marks_of(&marks)[before];
     let intervals = blocked.intervals().expect("valid marks");
     assert!(
@@ -303,7 +386,7 @@ pub(super) fn metrics_a_blocked_acquisition_adds_to_acquire_only() {
         inside(&marks_of(&marks), &window, ended).len() as u64,
         stats.frames
     );
-    stop(&mut rig, presenter);
+    stop_settled(&mut rig, presenter, occluded);
 }
 
 /// The timestamp rules: an inverted GPU pair is invalid and not sampled; a drawable that was never shown is not presented and makes
@@ -348,7 +431,7 @@ pub(super) fn metrics_gpu_and_presentation_follow_their_rules() {
             }
         }
     })));
-    let presenter = probes.start_ok(&rig, hooks);
+    let mut presenter = probes.start_ok(&rig, hooks);
     assert!(rig.pump_until(BOUND, || probes.frames() >= 1));
     let window = MetricsWindow {
         id: 1,
@@ -361,7 +444,7 @@ pub(super) fn metrics_gpu_and_presentation_follow_their_rules() {
     draw(&mut rig, &presenter, &probes, FRAMES);
     // The window must outlast every replaced presentation time.
     assert!(rig.pump_until(BOUND, || now_ns() > base + (FRAMES + 1) * STEP));
-    let (_, reading) = finish(&mut rig, &presenter, &probes);
+    let (_, reading, occluded) = finish(&mut rig, &mut presenter, &probes);
     let stats = &reading.window.stats;
     assert_eq!(stats.frames, FRAMES);
     let unshown = FRAMES / 3;
@@ -378,7 +461,7 @@ pub(super) fn metrics_gpu_and_presentation_follow_their_rules() {
     );
     assert_eq!(stats.presentation_interval.max_ns(), Some(2 * STEP));
     assert_eq!(reading.outstanding, 0);
-    stop(&mut rig, presenter);
+    stop_settled(&mut rig, presenter, occluded);
 }
 
 /// An adoption delayed past `start` is late-adopted, and nothing is adopted while it is held.
@@ -436,7 +519,7 @@ fn results_after_the_end(never_poll: bool) {
     if never_poll {
         hooks.error_poll = super::ErrorPoll::Never;
     }
-    let presenter = probes.start_ok(&rig, hooks);
+    let mut presenter = probes.start_ok(&rig, hooks);
     assert!(rig.pump_until(BOUND, || probes.frames() >= 1));
     // The start-up frame's handlers have all run, so the gate only touches the next frame.
     assert!(rig.pump_until(BOUND, || { probes.observer.completion_handlers_run() >= 1 }));
@@ -455,19 +538,10 @@ fn results_after_the_end(never_poll: bool) {
     assert!(early.outstanding >= 1);
     gate.store(1, Ordering::SeqCst);
     // A frame drawn after the end is shown after it: the drawable that closes the window's last interval.
+    watch_occlusion();
     presenter.set_clear([0.6, 0.1, 0.1]);
     presenter.request_redraw();
-    let mut reading = None;
-    let final_ = rig.pump_until(BOUND, || {
-        reading = presenter.read_metrics(1, Duration::ZERO);
-        reading.as_ref().is_some_and(|reading| reading.complete)
-    });
-    assert!(
-        final_,
-        "never final: {}",
-        describe(reading.as_ref(), &presenter)
-    );
-    let reading = reading.expect("a reading");
+    let (reading, occluded) = settle(&mut rig, &mut presenter);
     let mine = inside(&marks_of(&marks), &window, ended);
     let stats = &reading.window.stats;
     assert_eq!(stats.frames, mine.len() as u64);
@@ -479,7 +553,7 @@ fn results_after_the_end(never_poll: bool) {
     );
     assert_eq!(stats.presented + stats.not_presented, 1);
     assert_eq!(reading.outstanding, 0);
-    stop(&mut rig, presenter);
+    stop_settled(&mut rig, presenter, occluded);
 }
 
 /// The results of the last frames arrive through the teardown: stopping right after the last frame, the presenter's proof waits for
@@ -515,7 +589,7 @@ pub(super) fn metrics_a_committed_frame_not_yet_registered_keeps_the_window_open
     let (mut hooks, marks) = marks_hooks(&probes);
     let pause = Arc::new(AtomicI32::new(0));
     hooks.hold_before_record = Some(Arc::clone(&pause));
-    let presenter = probes.start_ok(&rig, hooks);
+    let mut presenter = probes.start_ok(&rig, hooks);
     assert!(rig.pump_until(BOUND, || probes.frames() >= 1));
     let window = open_window(&mut rig, &presenter, 100);
     draw(&mut rig, &presenter, &probes, 2);
@@ -548,19 +622,10 @@ pub(super) fn metrics_a_committed_frame_not_yet_registered_keeps_the_window_open
     );
     pause.store(0, Ordering::SeqCst);
     // A frame drawn after the end is shown after it: the drawable that closes the window's last interval.
+    watch_occlusion();
     presenter.set_clear([0.1, 0.6, 0.1]);
     presenter.request_redraw();
-    let mut reading = None;
-    let final_ = rig.pump_until(BOUND, || {
-        reading = presenter.read_metrics(1, Duration::ZERO);
-        reading.as_ref().is_some_and(|reading| reading.complete)
-    });
-    assert!(
-        final_,
-        "never final: {}",
-        describe(reading.as_ref(), &presenter)
-    );
-    let reading = reading.expect("a reading");
+    let (reading, occluded) = settle(&mut rig, &mut presenter);
     assert_eq!(
         reading.window.stats.frames, 3,
         "the held frame was committed before the end"
@@ -570,7 +635,7 @@ pub(super) fn metrics_a_committed_frame_not_yet_registered_keeps_the_window_open
         reading.window.stats.frames
     );
     assert_eq!(reading.outstanding, 0);
-    stop(&mut rig, presenter);
+    stop_settled(&mut rig, presenter, occluded);
 }
 
 /// A window is not final while work committed **before** it still has its presentation to come (CK-129 review 2, F1). Three drawables
@@ -819,7 +884,7 @@ pub(super) fn metrics_a_recorded_frame_keeps_the_window_open_until_its_results_a
     let (mut hooks, marks) = marks_hooks(&probes);
     let before_drain = Arc::new(AtomicI32::new(0));
     hooks.hold_before_drain = Some(Arc::clone(&before_drain));
-    let presenter = probes.start_ok(&rig, hooks);
+    let mut presenter = probes.start_ok(&rig, hooks);
     assert!(rig.pump_until(BOUND, || probes.frames() >= 1));
     let window = open_window(&mut rig, &presenter, 100);
     draw(&mut rig, &presenter, &probes, 1);
@@ -838,25 +903,16 @@ pub(super) fn metrics_a_recorded_frame_keeps_the_window_open_until_its_results_a
         "a frame committed before the end is recorded but its results are not in the windows yet: {held:?}"
     );
     before_drain.store(0, Ordering::SeqCst);
-    let mut reading = None;
+    watch_occlusion();
     presenter.set_clear([0.9, 0.6, 0.2]);
     presenter.request_redraw();
-    let final_ = rig.pump_until(BOUND, || {
-        reading = presenter.read_metrics(1, Duration::ZERO);
-        reading.as_ref().is_some_and(|reading| reading.complete)
-    });
-    assert!(
-        final_,
-        "never final: {}",
-        describe(reading.as_ref(), &presenter)
-    );
-    let reading = reading.expect("a reading");
+    let (reading, occluded) = settle(&mut rig, &mut presenter);
     assert_eq!(reading.outstanding, 0);
     assert_eq!(
         reading.window.stats.frames,
         inside(&marks_of(&marks), &window, ended).len() as u64
     );
-    stop(&mut rig, presenter);
+    stop_settled(&mut rig, presenter, occluded);
 }
 
 /// The control for the closing rule (CK-129 review 4): a closing drawable that is never shown (a real `presentedTime` of zero, as
