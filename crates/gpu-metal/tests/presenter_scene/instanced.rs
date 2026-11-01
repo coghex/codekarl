@@ -283,6 +283,7 @@ pub(crate) fn scene_checker_gates_the_first_frame() {
     assert_eq!(px(&frame, 12, 12), MAGENTA);
     assert_eq!(px(&frame, 64 + 4, 4), MAGENTA);
     assert_eq!(px(&frame, 64 + 12, 4), BLACK);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -330,6 +331,7 @@ pub(crate) fn scene_checker_upload_failure() {
         );
         assert_eq!(scene.probes.frames(), 0, "{what}: nothing is drawn");
         assert_eq!(scene.probes.observer.committed(), 0, "{what}");
+        await_presented(&mut rig, &scene.probes.observer);
         assert_eq!(
             end(&mut rig, &mut presenter),
             CleanupResult::Proven,
@@ -439,6 +441,7 @@ pub(crate) fn scene_checker_is_a_baseline_charge() {
         "{stats:?}"
     );
     assert_eq!(stats.binding_geometry_bytes, 128 * 1024 * 1024);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -538,6 +541,7 @@ pub(crate) fn scene_draws_adopted_revisions() {
         ],
         [BLUE, GREEN, WHITE, RED]
     );
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -617,6 +621,7 @@ pub(crate) fn scene_batches_and_pins_once() {
         "live pins: {}",
         scene.driver().max_live_pins
     );
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -684,6 +689,7 @@ pub(crate) fn scene_movement_uploads_nothing() {
         0,
         "and no legacy texture either"
     );
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -752,6 +758,7 @@ pub(crate) fn scene_places_with_its_own_metrics() {
         "the quad reaches the top and the middle"
     );
     assert!(!row(height / 2 + 2), "and stops at half of the drawable");
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -800,6 +807,7 @@ pub(crate) fn scene_instance_buffer_is_written_only_when_free() {
     let after = presenter.stats();
     assert_eq!(after.last.instances, 25);
     assert!(after.instances_written >= written + 25);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -827,6 +835,7 @@ pub(crate) fn scene_budget_and_bounds() {
             "{message}"
         );
         assert_eq!(scene.probes.frames(), 0);
+        await_presented(&mut rig, &scene.probes.observer);
         assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     }
     // Fits as asked for but not once the allocation is measured and aligned (a page is larger than 48000 bytes).
@@ -847,6 +856,7 @@ pub(crate) fn scene_budget_and_bounds() {
             message.contains("measured") && message.contains("48000"),
             "{message}"
         );
+        await_presented(&mut rig, &scene.probes.observer);
         assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     }
     // The bounds: 16 quads of room, 40 valid instances and 3 invalid ones.
@@ -873,6 +883,7 @@ pub(crate) fn scene_budget_and_bounds() {
         );
         assert_eq!(stats.last.dropped, 24, "the rest are counted");
         assert_eq!(stats.last.skipped, 3, "the invalid ones took no slot");
+        await_presented(&mut rig, &scene.probes.observer);
         assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     }
 }
@@ -948,6 +959,7 @@ pub(crate) fn scene_keeps_the_legacy_quad_below() {
     );
     assert_eq!(px(&frame, 12, 4), BLACK);
     assert_eq!(px(&frame, 100, 100), RED, "the legacy quad shows elsewhere");
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -1036,6 +1048,7 @@ pub(crate) fn scene_filter_reaches_the_frame() {
         }
         assert_eq!(px(frame, 16 + 2, 4), MAGENTA);
     }
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -1189,6 +1202,7 @@ pub(crate) fn scene_without_a_scene_updates_the_latest_counters() {
         (again.frames, again.last.instances, again.peak.instances),
         (without.frames + 1, 4, 10)
     );
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -1257,6 +1271,7 @@ pub(crate) fn scene_scale_cost() {
         (unresolved.instances, unresolved.checker, unresolved.pinned),
         (u64::from(quads), u64::from(quads), 0)
     );
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -1340,6 +1355,7 @@ pub(crate) fn scene_bindless_draws_one_run_and_pins_no_revision() {
             ),
         }
     }
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -1493,6 +1509,7 @@ pub(crate) fn scene_bindless_epoch_pin_alone_keeps_replaced_textures_until_the_f
     );
     assert_eq!(px(&next, 4, 4), BLUE);
     assert_eq!(px(&next, 12, 4), WHITE);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -1541,6 +1558,7 @@ pub(crate) fn scene_bindless_gate_refusal_is_one_failed_report_and_no_fallback()
     );
     assert_eq!(scene.probes.frames(), 0, "no fallback drawing");
     assert_eq!(scene.probes.observer.captures(), 0);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 

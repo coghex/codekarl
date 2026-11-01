@@ -395,6 +395,7 @@ fn first_frame() {
         "the wake was called"
     );
     assert_eq!(probes.frames(), 1);
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -441,6 +442,7 @@ fn redraw_on_demand() {
         [PresenterReport::FirstFrameQueued],
         "reported once, however many frames"
     );
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -460,6 +462,7 @@ fn pixel_size() {
     );
     presenter.set_pixel_size(rig.pixels.0, rig.pixels.1);
     assert!(rig.pump_until(BOUND, || probes.observer.last_drawable_size() == first));
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -911,6 +914,7 @@ fn ownership() {
         rig.pump_until(BOUND, || !observer.abandoned_drawable_alive()),
         "no handler block captured the abandoned drawable"
     );
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -955,6 +959,7 @@ fn deterministic_redraw() {
     presenter.set_clear([0.5, 0.5, 0.5]);
     gate.open(1);
     assert!(rig.pump_until(BOUND, || probes.frames() == 3));
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -1004,6 +1009,7 @@ fn frame_failures() {
             "{name}: nothing more is drawn after Failed"
         );
         assert_eq!(probes.observer.drawable_refs(), 0, "{name}");
+        await_presented(&mut rig, &probes.observer);
         let result = end(&mut rig, &mut presenter);
         assert_eq!(
             result,
@@ -1178,6 +1184,7 @@ fn completion_error_never_lost() {
     rest(&presenter, &mut reports);
     assert_eq!(failure_count(&reports), 1, "a: exactly once: {reports:?}");
     assert_eq!(probes.frames(), 1, "a: nothing more is drawn");
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     rest(&presenter, &mut reports);
     assert_eq!(failure_count(&reports), 1, "a: still once: {reports:?}");
@@ -1203,6 +1210,7 @@ fn completion_error_never_lost() {
     rest(&presenter, &mut reports);
     assert_eq!(failure_count(&reports), 1, "b: exactly once: {reports:?}");
     assert_eq!(probes.frames(), 1, "b: the frame step drew nothing");
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     rest(&presenter, &mut reports);
     assert_eq!(failure_count(&reports), 1, "b: still once: {reports:?}");
@@ -1215,6 +1223,7 @@ fn completion_error_never_lost() {
     rig.pump_for(Duration::from_millis(200));
     rest(&presenter, &mut reports);
     assert_eq!(reports, [PresenterReport::FirstFrameQueued], "c");
+    await_presented(&mut rig, &probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     rest(&presenter, &mut reports);
     assert_eq!(

@@ -607,6 +607,7 @@ fn scene_driver_wakes_and_adoption() {
         scene.probes.frames()
     });
     let mut presenter = presenter;
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     assert_eq!(scene.driver().gpu_failures, 0);
 }
@@ -647,6 +648,7 @@ fn scene_wanted_frame_comes_first() {
         0,
         "the boundary pass served the texture work: no ordinary pass followed"
     );
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -696,6 +698,7 @@ fn scene_redraw_for_adoption() {
     stays(&mut rig, "the frames", Duration::from_millis(300), || {
         scene.probes.frames()
     });
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -776,6 +779,7 @@ fn scene_tickets_follow_frames() {
             until(&mut rig, name, || scene.probes.frames() >= 1);
         }
         rig.pump_for(Duration::from_millis(150));
+        await_presented(&mut rig, &scene.probes.observer);
         assert_eq!(
             end(&mut rig, &mut presenter),
             CleanupResult::Proven,
@@ -849,6 +853,7 @@ fn scene_tickets_busy_and_delayed() {
         "the delayed completion and the next frame",
         || scene.probes.frames() >= 2,
     );
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     assert!(
         scene
@@ -901,6 +906,7 @@ fn scene_gpu_failure() {
         1,
         "{reports:?}"
     );
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     let state = scene.driver();
     assert_eq!(state.gpu_failures, 0, "the driver never sees a GpuFailure");
@@ -986,6 +992,7 @@ fn scene_combined_proof() {
     until(&mut rig, "the upload adopted", || {
         scene.driver().adopted.iter().any(|list| !list.is_empty())
     });
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     assert_eq!(
         *lock(&scene.releases),
@@ -1143,6 +1150,7 @@ fn everything_is_released_once_after_both_proofs(rig: &mut Rig) {
         scene.driver().adopted.iter().any(|list| !list.is_empty())
     });
     scene.driver().retire_at_ending = vec![3];
+    await_presented(rig, &scene.probes.observer);
     assert_eq!(end(rig, &mut presenter), CleanupResult::Proven);
     let live = scene.context.native_live_objects();
     assert_eq!(
@@ -1160,6 +1168,8 @@ fn scene_ending_submits_nothing() {
     let scene = Scene::new();
     let mut presenter = scene.start(&rig, limits(), None, |_| {});
     until(&mut rig, "the first frame", || scene.probes.frames() >= 1);
+    // Before the hold is arranged: the stop below is about the held pass, not about a pending presentation (CK-173).
+    await_presented(&mut rig, &scene.probes.observer);
     let hold = Arc::new(Hold::default());
     {
         let mut state = scene.driver();
@@ -1335,6 +1345,7 @@ fn scene_backlog_and_room() {
         scene.passes()
     });
     assert_eq!(scene.probes.frames(), 1, "retirements make no frame wanted");
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 
     // Blocked on room: one prepared slot, its upload held by a late completion.
@@ -1372,6 +1383,7 @@ fn scene_backlog_and_room() {
     until(&mut rig, "all prepared", || {
         scene.driver().prepared.len() >= 3
     });
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -1408,6 +1420,7 @@ fn scene_room_wake() {
         scene.driver().adopted.iter().any(|list| list == &[(1, 3)])
     });
     assert_eq!(scene.driver().prepared.len(), 3);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -1737,6 +1750,7 @@ fn scene_stats_count_uploads_and_creations_cumulatively() {
         "{after:?} then {later:?}"
     );
     assert_eq!(later.1, later.2);
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -1820,6 +1834,7 @@ fn scene_stats_carry_the_upload_stores_byte_peaks() {
         ),
         "high-water marks never decrease: {large:?} then {later:?}"
     );
+    await_presented(&mut rig, &scene.probes.observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
@@ -1852,6 +1867,8 @@ fn scene_stats_hold_the_peaks_charged_in_the_ending_pass() {
         before.upload_texture_bytes_peak >= 8 * 8 * 4,
         "the small image's peak was published: {before:?}"
     );
+    // Before the hold is arranged: the stop below is about the Ending pass, not about a pending presentation (CK-173).
+    await_presented(&mut rig, &scene.probes.observer);
     // The Ending-pass offer is held until the store has closed its envelope for it: the charge is made **inside** the Ending pass
     // (a handshake, not a schedule), before the stop's proof cancels waiting work (`prove` fails every job still waiting, and the
     // worker leaves on `stopping` before taking one).
