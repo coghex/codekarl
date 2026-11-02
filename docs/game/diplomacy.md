@@ -46,6 +46,8 @@ References to EU4 describe the owner's intent, not a claim about EU4's exact rul
       separate.
   - **Firm (owner, 18:12Z). Cores can be shared.** Normandy and France would both see Norman territory as their core. Each location has a
     list of tags that needs to be regularly checked and updated.
+    - **Corrected (owner, 2026-11-02, map design session).** Cores attach to land ownership, not to locations: land is owned cell by
+      cell, and locations have no owner. See [map-design.md](../map-design.md) §5.4.
   - **Firm (owner, 18:12Z). No accepted minorities.** The owner does not want any sense of accepting minorities, which EU4 and EU5 do.
     Whether a minority is accepted is instead based on the cultural opinion of the host nation's culture towards the guest culture (see
     "Cultural and religious relations" under Populations). It should directly affect satisfaction. There is no granting cultures rights,
