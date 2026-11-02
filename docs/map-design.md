@@ -1,9 +1,10 @@
 # Map design: Ireland, the look, the data and the renderer
 
-**Status: owner interview in progress, 2026-11-02; technical design drafted, not yet reviewed.** Written by ck-designer-1 (Class S,
+**Status: owner interview in progress, 2026-11-02; technical design revision 2, after design review 1, awaiting re-review.** Written by ck-designer-1 (Class S,
 `claude-opus-5-5`, high) from the map design session with the owner. The owner's answers are recorded verbatim, with timestamps, in
 `.pipeline/coordination/map-design/session-log.md`. §2–§7 record what the owner has decided. §9 (technical design) and §10 (milestone) are
-designer proposals awaiting the owner's reading and independent design review.
+designer proposals, revised after design review 1 (`.pipeline/coordination/map-design/design-review-ck-reviewer-1.md` with its owner
+addendum, and `design-review-ck-reviewer-2.md`) and the owner's decisions on it; they await re-review.
 
 **Firm** marks owner decisions, with their date. **Proposal** marks designer recommendations. **Open** marks decisions that still need an
 answer. A Firm item that the owner chose by reacting to a mock-up says so. Times are UTC on 2026-11-02 unless stated.
@@ -83,7 +84,13 @@ verdict on the second: "that looks good".
 
 ### 3.5 Pixels on screen
 
-- **Firm.** Each map pixel is 4 screen pixels square: "i think 4 looks the best."
+- **Firm.** Each map pixel is 4 window points square, in logical units that do not depend on the display's scale: "i think 4 looks the
+  best." The owner chose this in mock-up 2, which drew 4 CSS pixels per map pixel. After design review 1 the owner corrected the earlier
+  wording "4 screen pixels": "i shuold never have asked for anything in exact screen pixels, we arent working in exact pixels, that's a
+  mistake or oversight."
+- **Firm (owner, 15:36Z).** The look must stay as in the mock-up: "i want what the mockup looked like, i thought that was perfect, if
+  rounding looks the same or mostly similar then that is fine". §9.3 gives the rounding rule; on the owner's 2× display it is exactly 8
+  drawable pixels per map pixel, as in the mock-up.
 
 ## 4. Zoom
 
@@ -91,9 +98,14 @@ verdict on the second: "that looks good".
   natural, with lots of steps".
 - **Firm.** Each step redraws the world at a finer or coarser resolution from the map data; this is why the map does not use textures: "it
   would look natural to see the pixels kind of change as we zoom in, that's why i didnt want to use textures."
-- **Proposal (as in the mock-ups).** The on-screen pixel size stays fixed; each step changes how much ground a pixel covers, 10 steps per
-  doubling, from 3 km to about 12 m per pixel (76 steps). Coast and terrain edges gain generated detail below the data resolution. This detail
-  is decoration only.
+- **Firm (owner, 15:36Z).** Milestone 6 controls are keyboard only: "controls are keyboard only for now". Mouse drag and wheel are
+  later work.
+- **Firm (owner, 15:36Z).** The target is 60 frames per second while the map is redrawn every frame. If that cannot be met, the design is
+  revisited. (The owner wrote "if we can hit 60 fps ... we will have to redesign things"; the designer reads it as "cannot", to be
+  confirmed.)
+- **Proposal (as in the mock-ups).** The on-screen map-pixel size stays fixed; each step changes how much ground a map pixel covers, 10 steps
+  per doubling. Coast and terrain edges gain generated detail below the data resolution. This detail is decoration only. §9.3 gives the exact
+  step table.
 
 ## 5. Map data
 
@@ -108,8 +120,8 @@ verdict on the second: "that looks good".
   gameplay-critical objects". Every location and every border is authored. Decoration (dithering, coast detail, houses, implied fields)
   may be generated.
 - **Firm.** A map editor comes eventually, not first. Placing locations in a tool is deferred; data is added by hand to begin with.
-- **Firm.** A preview script, outside the game, reads the data files and draws them, so authors can check the data before the engine
-  can show it.
+- **Firm.** A preview tool, outside the game, reads the data files and draws them, so authors can check the data before the engine
+  can show it. The owner left its language to the designer (§9.8).
 - **Open.** The sources for the medieval terrain layer and how guesswork is recorded so later research can correct it. Present-day land cover
   is a poor guide: medieval Ireland had far more forest and bog.
 
@@ -179,6 +191,10 @@ verdict on the second: "that looks good".
 - Detail at close zoom inside large usable areas, which currently reads flat.
 - The full list of terrain types and their colours; whether lakes use the sea colour.
 - How the map shows unmapped land (the vision's fog of war for land without maps).
+- Mouse drag and wheel zoom, after milestone 6.
+- **World scale (from design review 1).** Mercator cells shrink on the ground as latitude rises: a fixed cell at 60°N covers about half the
+  ground of one at Ireland's latitude, and a quarter of one at the equator. Cells are gameplay units, so the world-map design must correct for
+  it, for example by weighting resources by ground area or giving catchment radii in metres. Inside Ireland the variation is about ±5 %.
 - Starting de facto rule data, if any is needed for Ireland.
 
 ## 8. Mock-ups
@@ -200,117 +216,256 @@ saved copy of mock-up 2 are in `.pipeline/coordination/map-design/mockup/`.
 
 Sea `#05080e`, shallow sea `#0b1422`, lakes `#0b1422`, rivers `#3a78c2`.
 
-## 9. Technical design (Proposal, unreviewed)
+## 9. Technical design (Proposal, revision 2)
 
-Everything in this section is a designer proposal unless it repeats a Firm item above. Names are placeholders for the issue specs.
+Everything in this section is a designer proposal unless it repeats a Firm item. Names are placeholders for the issue specs. Revision 2
+answers design review 1: reviewer-2's D1–D3 and reviewer-1's F1–F3 (with its owner addendum), and folds in the owner's decisions on them.
 
-### 9.1 Packages
+**Firm — owner, on design review 1 (relayed by ck-manager):**
 
-- **`ck-map`** (new, `crates/map`), backend-neutral and windowless: reads and validates the data files, holds the cell grids and the run-time
-  ownership state, computes location catchments, and answers queries (the cell at a point, a location's cells, the cells of a county, a
-  selection). It knows nothing about the GPU.
-- **`ck-render-2d`** gains one map pass, designed once and implemented on Metal and Vulkan together, fed from `ck-map`'s grids. Each
-  slice lands on both backends at the same time and is tested on both (Firm, below). Places and buildings are sprites drawn
-  through the existing M5 scene path (bindless textures, ordered quads).
-- **Lua** gets a small surface later: camera, map mode, and highlight sets. The first milestone drives the camera from input bindings.
+> we will need to implement gpu written images first then, that is a hard requirement. we need fast image generation occuring often, if the
+> player is zoomming in and out and moving the window around, we will be generating the image each frame, so it has to be gpu, cpu rendering
+> would be a waste of time.
 
-### 9.2 Data files
+So the production map image is written by the GPU every frame, and the engine support for GPU-written images comes first, on both backends.
+A CPU rasterizer is not an implementation option. The CPU reference in §9.4 exists only for tests and the preview tool.
 
-One directory per map, for example `data/map/`:
+Wording: the map data lives on the GPU as **data grids** (numbers per cell, read exactly), not as pictures. Nothing on the map is a
+pre-drawn picture that gets scaled, which keeps the owner's "that's why i didnt want to use textures" (§4).
+
+### 9.1 Packages and ownership
+
+- **`ck-map`** (new, `crates/map`), backend-neutral and windowless:
+  - reads and validates the map files;
+  - holds the cell grids and packs them for the GPU (§9.5);
+  - owns the coordinate contract (§9.3) and the **reference colour function** (§9.4), a plain Rust implementation used by tests and the
+    preview tool;
+  - computes each frame's river pixels (§9.4.7).
+- **`ck-render-2d`** gains a **map lane** in its scene bridge, beside the scene snapshot. Through it the application publishes two immutable
+  inputs:
+  - the **map input**: the packed grids, the terrain palette and rule table, and a generation number. It is published once per loaded map.
+  - the **camera snapshot**: the step, the top-left world pixel, the view size in map pixels, the visible river pixels, and the metrics
+    generation it was computed for.
+
+  render-2d stays backend-neutral. It computes the enlarged map's destination rectangle with the accepted points-to-pixels rule (§9.3) and
+  hands the GPU owner plain data.
+- **The GPU owners** (`ck-gpu-metal`, `ck-gpu-vulkan`) hold everything native: the grid images, the low-resolution map target, the map
+  pipeline and its encoding. These are the new engine work of §9.2.
+- **The application** (`apps/codekarl`) owns map loading and the one camera (§9.6). No Lua map API is needed in milestone 6.
+
+### 9.2 GPU-written images: the engine work that comes first
+
+This extends the "later mechanism" that scene-design §5 promised and did not build. It is specific to the map. It adds no general
+render-graph and no writable image for Lua.
+
+1. **Grid images.** When a map input arrives, the GPU owner uploads its packed grids as immutable RGBA8 images, sampled only by exact
+   integer reads (`texture.read` in Metal, `texelFetch` in Vulkan): never filtered or scaled. RGBA8 is the only image format both backends
+   already create, so no new format support is needed (§9.5 gives the packing). A new map input replaces the grids. The old grid images are
+   retired under each backend's existing render-owner ledger: a native resource stays owned until every frame that read it has a completion
+   proof, and an unproven completion keeps it.
+2. **The map target.** One RGBA8 image, the size of the camera's view in map pixels, usable as both a colour attachment and a sampled image.
+   It is created at the first frame with a map, and replaced when the view size changes. The old target is retired under the same ledger rule.
+   At any time there is one current target and at most a bounded number of retired ones awaiting proof. The bound is the presenter's
+   frames-in-flight limit; Metal's presenter currently allows one.
+3. **One frame, one submission.** Each frame's existing command buffer gains a pass before the window pass:
+   1. **The map pass** writes the map target from the grid images and the camera snapshot: a full-target triangle for the terrain colour
+      (§9.4), then the river pixels as one-map-pixel instanced quads.
+   2. **The window pass**, as today: the clear, then **the enlarged map** as one nearest-sampled quad, then the legacy quad, then the scene's
+      batches. The UI is drawn last, over the map, at full resolution.
+4. **Ordering.**
+   - **Metal:** the target is a hazard-tracked resource on the presenter's one queue. That orders the map pass's writes before the window
+     pass's reads, and the next frame's writes after this frame's reads.
+   - **Vulkan:** explicit barriers in the same command buffer. One at the start of the map pass orders the previous submission's shader reads
+     before this pass's colour writes. One between the passes orders the colour writes before the shader reads, with the layout change to
+     shader-read-only.
+   - Neither backend waits on the CPU for this ordering.
+5. **Zero size and minimizing.** No map pass is encoded while the drawable has no size, or while the presenter pauses for minimizing or loss
+   of focus (the M5 choice). The current target is kept for the next visible frame, and replaced if the size changed meanwhile.
+6. **Refusals.**
+   - A grid image refused at map load is a named startup error. The application reports it and exits, as it does for configuration errors.
+   - A target refused at resize fails that frame under the presenter's existing per-frame failure rule (reported, and retried on the next
+     frame). It is never drawn with a stale or stretched target.
+7. **Teardown.** The map target, retired targets and grid images join the existing shutdown proof. They are destroyed only after their last
+   readers are proven complete, before the device. An unproven completion keeps them, as it does every other native resource.
+8. **Readback fixtures.** These run off-screen through each backend's production map encoder (Metal's off-screen frame path and Vulkan's
+   readback module already exist for the quad and scene):
+   - the map target, read back, equals the reference colour function (§9.4) byte for byte, for a small asymmetric fixture map at two steps
+     and an odd view size, including a pan away and back;
+   - the enlarged window pass equals the expected enlargement of that target under the fixture's metrics;
+   - one resize case replaces the target and retires the old one only after its proof.
+
+   No scale or performance campaign is part of this slice.
+
+### 9.3 Coordinates and raster contract
+
+One convention, used by the files, the loader, the reference function, the preview tool, both GPU passes, the camera and the river pixels.
+**All map arithmetic is integer.** No step of the colour function uses floating point, so Metal and Vulkan cannot round differently.
+
+- **The world grid.**
+  - Spherical Mercator, as in web maps. Projected x runs east from the antimeridian. Projected y runs south from the top of the projection
+    (about 85.05°N).
+  - A cell is exactly **839 projected metres** square, which is 500 m on the ground at 53.4°N. Cell (i, j) covers projected
+    [839·i, 839·(i+1)) east and [839·j, 839·(j+1)) south.
+  - The whole world is about 47,800 cells wide, so cell indices fit easily in 32 bits.
+  - A latitude/longitude position belongs to the cell its projected point falls in (floor), and the cell's centre is at (i + ½, j + ½).
+- **The crop.** `map.toml` gives the crop's global origin cell (i₀, j₀) and its size in cells. Every image is exactly that size. Image pixel
+  (x, y) is cell (i₀ + x, j₀ + y), so rows run south and columns east. The pilot's exact origin and size are fixed in the data issue; they are
+  global indices, so Ireland's files carry over to the world map. Anything outside the crop is sea.
+- **Fixed point.** Positions inside cells are counted in 1/32768 of a cell. A world-wide coordinate is then below 2³¹, and fits a signed
+  32-bit integer on both GPUs.
+- **Zoom steps.** Step s = 0 … 75. A map pixel at step s is P(s) = round(32768 × 6 × 2^(−s/10)) units.
+  - Step 0 is 6 cells, about 3 km per map pixel. Step 75 is about 0.033 cells, about 17 m at Ireland's latitude.
+  - The table of 76 integers is computed once and frozen in the spec, so no GPU ever evaluates 2^x.
+  - Ten steps per doubling, as in the mock-ups.
+- **World pixels.** At step s, world pixel (I, J) covers fixed-point x in [I·P(s), (I+1)·P(s)), and likewise for y.
+  - Its **sample point** is its centre: X = I·P(s) + ⌊P(s)/2⌋.
+  - The cell under it is (X >> 15, Y >> 15).
+  - Dither, the coast test and river pixels all index world pixels (I, J), so they are pinned to the world at each step.
+- **The camera.**
+  - The camera is the step s and the integer world pixel (I_left, J_top) at the view's top-left. Panning moves it by whole world pixels, so
+    the land never shimmers.
+  - Zooming keeps the world point at the view's centre fixed: the new top-left is computed from the centre's fixed-point position.
+- **View size and screen mapping (logical units, Firm §3.5).**
+  - The view is ⌈window width in points / 4⌉ by ⌈window height in points / 4⌉ map pixels, anchored at the top-left. A partial map pixel at
+    the right or bottom edge is cropped, never stretched.
+  - The enlarged map is drawn as one quad of (view size × 4) points, through render-2d's accepted points-to-pixels rule: each edge lands at
+    the rounded product of its position in points and the axis scale.
+  - On a 2× display every map pixel is exactly 8 drawable pixels, as in the approved mock-up. At a fractional scale, neighbouring map pixels
+    may differ by one drawable pixel.
+  - There is no exact-native-pixel requirement (reviewer-1's addendum withdraws it).
+  - On resize, the view size and the metrics generation are published together in the camera snapshot, so a frame never pairs a view size
+    with metrics it was not computed for.
+
+### 9.4 The colour function (the reference)
+
+The reference is a Rust function in `ck-map`. It takes the map, the step and a world pixel, and returns an RGBA8 colour. The GPU map pass
+must give the same bytes for every pixel; that is what "the same picture on both backends" means. The readback fixtures in §9.2 check it on
+each backend, and so Metal and Vulkan also match each other. The spec writes each rule out exactly. In outline:
+
+1. **Cell lookup:** the cell under the world pixel's sample point (§9.3), after the sub-cell detail of rule 2. Outside the crop is sea.
+2. **Sub-cell detail** (decoration only), used only at steps where P(s) is under one cell. The sample point is moved by a jitter taken from a
+   fixed 32-bit integer hash of the fixed-point position, at two lattice scales tied to the cell. Its amplitude is at most a fixed fraction
+   of a cell. The spec freezes the hash and the integer interpolation. The result is the same at every visit and on every backend.
+3. **Water.** Sea and lake are terrain types. Sea draws the shallow-sea tone where depth is under the shallow threshold and the Bayer value
+   is below 8 × (threshold − depth) / threshold (integer division). Otherwise it draws the sea colour.
+4. **Usable land** draws the terrain's solid colour, and its second tone where Bayer < level × mix / 100. Here level =
+   clamp(16 × (elevation − relief₀) / (relief₁ − relief₀), 0, 16), and mix is the terrain's integer percentage.
+5. **Unusable land** draws the terrain's dark colour, and its dark second tone where Bayer < level / 2.
+6. **Snow caps** apply on mountain terrain where Bayer < clamp(16 × (elevation − cap₀) / (cap₁ − cap₀), 0, 16). Usable cells draw the cap
+   colour; unusable cells draw the light-grey high-ground colour (Firm, §3.1).
+7. **Rivers** are drawn after the terrain, in the river colour (Firm, §3.4). For each river line, the points are projected to fixed point at
+   step s, and each consecutive pair of world pixels is joined by integer Bresenham. Every pixel visited is a river pixel. `ck-map` computes
+   the visible list for each camera snapshot, and the map pass draws each as a quad covering exactly one map pixel. The pixels are therefore
+   identical on both backends, independent of GPU line rules.
+8. **The coast outline:** a land pixel with any of its four neighbours (left, right, up, down, at the same step, by the same lookup) in sea
+   or lake draws its terrain's solid colour (Firm, §3.2). It takes precedence over rules 4–6, and rivers draw over it.
+
+- **Bayer** is the standard 4×4 ordered matrix with values 0–15, indexed by (I mod 4, J mod 4) of the world pixel.
+- Colours are the palette's hex values written unchanged into the UNORM target, with alpha 255.
+- Coarse steps sample the cell under each pixel's centre, as the mock-ups did. A feature smaller than a map pixel can appear and vanish
+  between steps; a majority rule is a possible later refinement.
+
+### 9.5 Files, loading and packing
 
 | File | Holds |
 |---|---|
-| `map.toml` | Projection (spherical Mercator), the crop's bounds, cell size, and the layer file names |
+| `map.toml` | The crop's global origin cell and size, the layer file names. Projection and cell size are fixed by §9.3, and the file states them for checking |
 | `terrain.png` | Terrain type per cell (RGB key; sea and lake are terrain types) |
 | `usable.png` | Usable or not per cell (two keyed colours) |
-| `elevation.png` | 16-bit greyscale: metres above sea, with sea depth below a fixed offset |
-| `rulers.png` | Starting de jure ruler per cell (RGB key; `#000000` is terra nullius) |
-| `counties.png` | County per cell (RGB key). Only the finest level is painted |
-| `terrain.toml` | Terrain types: key colour, palette, relief range, snow-cap heights |
-| `rulers.toml` | Key colour to political entity id (the entities are defined in game data) |
-| `units.toml` | The nesting: each county's province, each province's area, each area's region |
-| `locations.toml` | `[[location]]`: id, name, kind, size level, position (latitude, longitude), optional radius, notable buildings |
-| `rivers.toml` | River lines as latitude/longitude points |
-| `modes.toml` | Map-mode colouring rules and palettes |
+| `elevation.png` | 16-bit greyscale: elevation + 11,000, in metres, so sea depth down to 11 km fits |
+| `terrain.toml` | Terrain types: key colour, palette (solid, second tone, dark, dark second tone; caps and high ground for mountains), relief range, integer mix percentage, cap heights; the shallow-sea threshold |
+| `rivers.toml` | Major rivers as lines of latitude/longitude points |
 
-- Painting only counties keeps the nesting consistent: a province is the union of its counties, so no two layers can disagree. County
-  painting is independent of ruler painting.
-- Positions in text are latitude and longitude, so authors can look places up on any map. The engine projects them.
-- **Validation is strict.** Every pixel must be a colour in its key, every image must have the crop's size, and every location must stand on
-  land. A failure names the file, the pixel or entry, and the problem. This catches the usual image-editor damage: anti-aliased brush edges,
-  colour-profile conversion and lossy formats.
-- **Cell size in projection units.** Mercator stretches with latitude, so a fixed cell is 839 projected metres, which is 500 m on the ground at
-  53.4°N. On the ground a cell is about 523 m at Ireland's south coast and 476 m at its north coast.
+Later milestones add `rulers.png`, `counties.png`, `rulers.toml`, `units.toml`, `locations.toml` and `modes.toml`, as in §5. Milestone 6
+neither needs nor reads them.
 
-### 9.3 Run-time state
+- **Strict validation.** Every pixel must be a colour in its key, every image must be the crop's size, and every river point must lie in the
+  crop. A failure names the file, the pixel or entry, and the problem. This catches anti-aliased brush edges, colour-profile conversion and
+  lossy formats.
+- **A data-preserving PNG path.** `ck-map` decodes the map images itself (the `png` crate is already a dependency), not through the resource
+  service's display decoder, which premultiplies and reduces 16-bit samples to 8. It reads raw sample values and ignores colour-management
+  chunks (`iCCP`, `gAMA`, `sRGB`, `cHRM`), which image editors add.
+- **GPU packing.** Two RGBA8 grids the crop's size, alpha always 255:
+  - grid A: R is the terrain index, G bit 0 is usable;
+  - grid B: R and G are the high and low bytes of the 16-bit elevation.
 
-- Grids for terrain, usable land, elevation and county are read-only after loading.
-- De jure and de facto rulers are grids of ruler ids, starting from `rulers.png` (de facto starts equal to de jure). Changes are recorded per
-  cell and saved as the difference from the start.
-- Catchments are computed at load from the authored locations: each location takes the cells within its radius (from its size level in data,
-  or its own override), and the nearest location wins an overlap, with ties broken by location id. Cells outside every radius have no
-  location. This is derived the same way every time from authored data; it creates no objects.
-- Ireland's crop is about 716 × 912 cells (about 650,000), a few megabytes for all grids together. They are loaded whole: no tiling or streaming before the world
+  Shaders read them exactly. A unorm byte read back as a float and multiplied by 255 rounds to the original integer on both backends.
+- Ireland's crop is about 716 × 912 cells (about 650,000), a few megabytes in all. It is loaded whole, with no tiling or streaming.
+
+### 9.6 The application path
+
+- **Configuration.** A new `[map]` section in the existing configuration file names the map directory. Without it, the application behaves
+  as today.
+- **Loading.** At startup, before the window's first frame, the application loads and validates the map off the frame-critical path. A
+  failure is a startup error that names the file and the problem, and exits as configuration errors do. It never opens a window with half a
   map.
+- **Initial view.** The coarsest step at which the whole crop fits the view, centred.
+- **One camera owner.** A map controller in the application holds the camera.
+  - It reads new map actions from the existing configurable bindings (`[input.bindings]`). There are six actions: pan left, right, up and
+    down, and zoom in and out.
+  - Default keys are the arrow keys and `=` / `-`.
+  - A held pan key moves a configurable number of map pixels per frame. A held zoom key repeats at a configurable rate.
+  - On each change it computes the camera snapshot with that frame's visible river pixels, publishes it through the map lane, and wakes the
+    renderer.
+  - The existing focus, minimize, close and lifecycle behaviour is unchanged.
+- **Keyboard only** (Firm, §4). Mouse input is later work.
 
-### 9.4 Drawing
+### 9.7 Performance
 
-1. **Map image.** Each frame the GPU fills a small image at map-pixel resolution (screen size divided by 4, about 130,000 pixels at 1080p)
-   from the cell grids, which live on the GPU as textures. For each pixel it finds the cell, applies the decoration-only sub-cell detail at
-   close zoom, picks the colour by the map mode's rule (terrain and usable land, elevation dither, snow caps, coast outline, shallow sea; or
-   ruler colour), and writes it.
-2. **Overlays in the same image:** rivers as one-pixel lines; places as markers when zoomed out, and houses plus notable buildings when zoomed
-   in. Houses are generated from the location's id and size, so they are the same every time; notable buildings come from the location's
-   data. A highlight layer marks a set of cells, for the peace screen and for a farm's catchment.
-3. **Enlarge** the image four times, without smoothing, onto the window.
-4. **The UI** is drawn after that, at full resolution, as a separate pass.
+- **Firm (§4).** 60 frames per second while the map is redrawn every frame, on both backends.
+- **Proposal.** The map pass is small: about 120,000 map pixels on the owner's 3456 × 2234 display at 8 drawable pixels each, with a few
+  exact reads per pixel. The evidence records the map pass's GPU time and the frame rate while zooming and panning, on both backends, at
+  the owner's resolution. It also records load-and-validate time for the whole of Ireland, with 1 second as a provisional target.
 
-- Ownership changes upload only the changed part of the ruler texture.
-- The camera moves on the map-pixel grid of the current step, so the land never shimmers while panning.
-- **Firm (owner, 15:15Z).** The work is backend-agnostic and done once: Metal and Vulkan are implemented together and both are tested,
-  never one after the other: "we shouldnt be implementing one and then the other, we are doing all the work at once now." Both must produce
-  the same picture; Vulkan matters for Linux.
+### 9.8 The preview tool
 
-### 9.5 Preview script
+The owner left the language to the designer. **Proposal:** a small Rust command-line tool in the workspace. It reads a map directory,
+validates it with `ck-map`'s loader, and writes PNG images and an HTML page at chosen steps, using the reference colour function. Its pictures
+are therefore exactly the game's, and authors see validation errors before the engine runs. It never opens a window and needs no GPU.
 
-A small Python script outside the game reads the data directory and writes a picture or an HTML page, using the same colour rules. It also
-reports validation errors early, and can suggest starting borders from location positions for authors to paint over.
+### 9.9 Later, not in milestone 6
 
-### 9.6 Not in the first milestone
+- Locations and their sprites. **Proposal:** draw them into the map target in the map pass, so they share its grid (Firm §3.4) and each
+  backend's pass keeps one composition.
+- The political map, ownership state and changes (with partial grid updates), catchments, the highlight layer.
+- Roads, fog of war, de facto display, the peace screen, the editor and location placer, mouse input, Lua control of the map.
+- Streaming and tiles.
 
-Locations and their sprites; the political map and ownership changes; catchments; streaming and tiles; the map editor and location placer;
-roads; fog of war; de facto display; the peace screen; Lua control of the map beyond the camera. §9.2–§9.4 still describe these, so the first
-milestone's data format and pass leave room for them.
+The file format and the map lane leave room for these.
 
-## 10. Milestone proposal (Proposal, unreviewed)
+## 10. Milestone proposal (Proposal, revision 2)
 
-**Firm (owner, 15:15Z).** The first milestone is "Ireland on screen", terrain only: "we dont need locations settled yet, we dont need
-political maps yet, just the terrain is fine for the first milestone." It is one milestone on both backends, not a Metal milestone followed
-by a Vulkan one. Acceptance is the owner's reading of the running map plus windowless tests.
+**Firm (owner, 15:15Z).** The first milestone is "Ireland on screen", terrain only, as one milestone on both backends, and acceptance is the
+owner's reading of the running map plus windowless tests. **Firm (owner, 15:18Z).** Major rivers are included.
 
-**Milestone 6, "Ireland on screen".** Proposed slices, each its own issue, each covering Metal and Vulkan together where it touches the GPU:
+**Milestone 6, "Ireland on screen".** Every slice that touches the GPU lands on Metal and Vulkan together.
 
-1. **Terrain data** for Ireland, authored with the owner: `map.toml`, `terrain.png`, `usable.png`, `elevation.png` (AWS data plus medieval
-   guesswork), `terrain.toml`.
-2. **Preview script** for that data.
-3. **`ck-map` terrain loading**: the projection, the grids, strict validation and queries; windowless tests.
-4. **The map pass on both backends**: terrain colours, usable and unusable land, elevation dither, snow caps, coast outline, sea shallows,
-   zoom steps and panning, 4× enlargement, the UI kept separate.
-5. **Rivers** (Firm, owner, 15:18Z: included). `rivers.toml` and the one-pixel line overlay, on both backends. Only major waterways that
-   are practically useful: "we dont need to add in every single little revine and stream".
+| # | Slice | Depends on | Delivers |
+|---|---|---|---|
+| 1 | **GPU-written map image** (engine) | — | §9.2: the map lane, grid images, the map target's lifecycle, the map pass with a minimal colour rule (terrain index to palette), the enlarged composition under the scene, and readback fixtures on both encoders |
+| 2 | **Coordinates and reference** | — | §9.3 and §9.4 in `ck-map`: the world grid, the crop, the step table, the reference colour function and the river pixel rule, with windowless tests on an asymmetric fixture |
+| 3 | **Map loading** | 2 | §9.5: TOML and PNG reading, strict validation, the 16-bit path, GPU packing |
+| 4 | **Preview tool** | 2, 3 | §9.8 |
+| 5 | **Ireland's terrain data** | 4 | The files of §9.5 for Ireland, authored with the owner. It records sources, licences and required attribution: AWS Terrain Tiles combine several sources that ask for attribution; Natural Earth is public domain. It also records where medieval guesswork departs from the source data |
+| 6 | **Full colour rules on the GPU** | 1, 2, 3 | Rules 1–6 and 8 of §9.4 in both map passes, matching the reference in the readback fixtures |
+| 7 | **Application and camera** | 6 | §9.6 and §9.7: configuration, startup loading, the initial view, keyboard actions, zoom steps and panning, the performance evidence |
+| 8 | **Rivers** | 6, 7 | Rule 7 of §9.4: `rivers.toml`, the per-snapshot river pixels, drawing them in both map passes, a readback fixture |
 
-**Later milestones (sketch):** locations, markers, houses and notable buildings; the political map, ownership state and changes, catchments
-and the highlight layer; then the peace screen's needs, roads and the editor.
-
-Window tests stay inside the owner-input layer.
+**Acceptance.**
+- Both backends open the same authored map of Ireland.
+- Tests drive the camera through injected actions, inside the owner-input layer.
+- Both backends close normally.
+- 60 frames per second is shown while zooming and panning.
+- The owner reads the running map against mock-up 2.
 
 ## 11. Next steps
 
-1. The owner reads §9 and §10 and corrects them.
-2. Independent design review of both brands, as for earlier designs.
-3. ck-manager files the milestone after the owner approves.
+1. Re-review of revision 2 by both reviewers.
+2. The owner approves; ck-manager files milestone 6.
 
 ## Provenance
 
-Drafted 2026-11-02 by ck-designer-1 from the session log, `docs/vision.md`, `docs/game/diplomacy.md`, `docs/scene-design.md` and
-`docs/render-design.md`. No code, issues or builds.
+Drafted 2026-11-02 by ck-designer-1. Revision 2 the same day, after design review 1. Sources: the session log, both design reviews and the
+reviewer-1 owner addendum, `docs/vision.md`, `docs/game/diplomacy.md`, `docs/scene-design.md` and `docs/render-design.md`, and reading of
+`crates/gpu-metal` (the frame encoder and its off-screen path, the ledger), `crates/gpu-vulkan` (the render pass, readback and ledger),
+`crates/render-2d` (the points-to-pixels rule), `crates/input` and `apps/codekarl`. No code, issues, builds or runs.
