@@ -13,7 +13,7 @@ use ck_gpu_vulkan::{
 use super::{
     Arc, AtomicBool, AtomicUsize, BOUND, Case, CleanupResult, Duration, Event, Gate, Mutex,
     Ordering, PresenterReport, Probes, Rig, TestHooks, VulkanPresenter, check_ledger_order, count,
-    reports, vk,
+    reports, support, vk,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -300,6 +300,11 @@ fn quad_published_before_start_is_in_the_first_frame() {
     harness.publish(7, Some(quad(&source, 2, 2, VulkanFilter::Nearest)));
     let mut presenter = harness.start(harness.hooks());
     harness.wait_generation(&presenter, 7);
+    // The generation is published before the report is queued: wait for the report itself.
+    let mut seen = Vec::new();
+    harness
+        .rig
+        .wait_first_frame(&presenter, &mut seen, "the first-frame report", || true);
     let capture = harness.capture_of(7);
     check_the_checker(&capture);
     let first = harness.captures.lock().expect("captures")[0].clone();
@@ -308,8 +313,13 @@ fn quad_published_before_start_is_in_the_first_frame() {
     let created = position(&events, |e| matches!(e, Event::QuadTextureCreated { .. }));
     let submit = position(&events, |e| *e == Event::Submit);
     assert!(created < submit && created.is_some(), "{events:?}");
-    assert_eq!(reports(&presenter), vec![PresenterReport::FirstFrameQueued]);
     finish_proven(harness, &mut presenter);
+    seen.extend(reports(&presenter));
+    assert_eq!(
+        support::exactly_once(&seen),
+        Ok(()),
+        "one first-frame report to the proven end: {seen:?}"
+    );
 }
 
 /// A later scene with no quad: the next queued frame is the clear only, and the generation is that scene's.

@@ -6,6 +6,9 @@
 #[path = "../../../window-glfw/tests/support/info_abi.rs"]
 mod info_abi;
 
+mod first_frame;
+
+pub(crate) use first_frame::{FirstFrame, exactly_once, first_frame};
 pub(crate) use info_abi::{
     check_layout, check_nothing_else_binds_the_native_info,
     check_the_comparison_rejects_mismatched_bindings,

@@ -20,7 +20,7 @@ use ck_gpu_vulkan::{
 use super::{
     Arc, AtomicBool, BOUND, Case, CleanupResult, Duration, Event, Instant, Mutex, Ordering,
     PresenterReport, Probes, Rig, TestHooks, VulkanPresenter, check_ledger_order_with,
-    check_nothing_destroyed, count, failed_messages, reports, vk,
+    check_nothing_destroyed, count, failed_messages, reports, support, vk,
 };
 
 pub(crate) mod compat;
@@ -414,6 +414,11 @@ fn the_first_frame_shows_the_checker_for_a_pending_key() {
     harness.publish(vec![quad(1, 10, 10, 100)]);
     let mut presenter = harness.start();
     harness.wait_stats(&presenter, "the first frame", |stats| stats.frames >= 1);
+    // The frame is counted before its report is queued: wait for the report itself.
+    let mut seen = Vec::new();
+    harness
+        .rig
+        .wait_first_frame(&presenter, &mut seen, "the first-frame report", || true);
     let builds = harness.builds();
     assert_eq!(builds[0].counters.instances, 1);
     assert_eq!(
@@ -427,8 +432,13 @@ fn the_first_frame_shows_the_checker_for_a_pending_key() {
         stats.checker_resident && stats.checker_bytes > 0,
         "{stats:?}"
     );
-    assert_eq!(reports(&presenter), vec![PresenterReport::FirstFrameQueued]);
     harness.finish(&mut presenter);
+    seen.extend(reports(&presenter));
+    assert_eq!(
+        support::exactly_once(&seen),
+        Ok(()),
+        "one first-frame report to the proven end: {seen:?}"
+    );
 }
 
 /// A drawn record is a frame the presenter queued: its ordinal is the presenter's frame count when it was counted, its generation

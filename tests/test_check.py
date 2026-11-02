@@ -1577,6 +1577,22 @@ def process_state(pid: int) -> str:
     ).stdout.strip()
 
 
+def process_group_members(group: int) -> list[tuple[int, str]]:
+    """The independent `ps` view of a process group, including zombies."""
+    output = subprocess.run(
+        ["ps", "-axo", "pid=,pgid=,stat="], check=True, capture_output=True, text=True
+    ).stdout
+    members: list[tuple[int, str]] = []
+    for line in output.splitlines():
+        try:
+            pid, pgid, state = line.split()
+        except ValueError:
+            continue
+        if pgid == str(group):
+            members.append((int(pid), state))
+    return members
+
+
 def slot_free(path: Path) -> bool:
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT)
     try:
@@ -1953,13 +1969,65 @@ def terminate_pids(pids: Sequence[int]) -> None:
 class Watchdog(CheckFixture):
     """S4: every part of each step of a fast or full run is under a watchdog; firing exits 75."""
 
+    def process_group_tracker(self, path: Path) -> str:
+        """Record every step process group in the driver, independently of fixture PID files."""
+        return (
+            "real_popen = check.subprocess.Popen\n"
+            "class TrackedPopen(real_popen):\n"
+            "    def __init__(self, *args, **kwargs):\n"
+            "        super().__init__(*args, **kwargs)\n"
+            "        if kwargs.get('process_group') == 0:\n"
+            f"            with open({str(path)!r}, 'a') as groups:\n"
+            "                groups.write(f'{self.pid}\\n')\n"
+            "                groups.flush()\n"
+            "check.subprocess.Popen = TrackedPopen"
+        )
+
+    def group_ids(self, path: Path) -> list[int]:
+        if not path.exists():
+            return []
+        return [int(field) for field in path.read_text().split()]
+
+    def live_group_members(self, path: Path) -> dict[int, list[int]]:
+        return {
+            group: [pid for pid, state in process_group_members(group) if not state.startswith("Z")]
+            for group in self.group_ids(path)
+        }
+
+    def assert_no_live_group_members(self, path: Path) -> None:
+        survivors = {group: pids for group, pids in self.live_group_members(path).items() if pids}
+        self.assertEqual(survivors, {}, "the watchdog left step process groups running")
+
+    def terminate_groups(self, path: Path) -> None:
+        """Independent bounded cleanup for a negative control or an assertion failure."""
+        groups = self.group_ids(path)
+        for sent in (signal.SIGTERM, signal.SIGKILL):
+            for group in groups:
+                if any(not state.startswith("Z") for _, state in process_group_members(group)):
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(group, sent)
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and any(
+                not state.startswith("Z")
+                for group in groups
+                for _, state in process_group_members(group)
+            ):
+                time.sleep(0.05)
+        survivors = self.live_group_members(path)
+        survivors = {group: pids for group, pids in survivors.items() if pids}
+        if survivors:
+            raise AssertionError(f"fixture process groups survived SIGKILL: {survivors}")
+
     def hanging_step(
         self, name: str, pidfile: Path, levels: Sequence[str] = ("fast", "full")
     ) -> str:
         body = (
-            "import os, subprocess, time\n"
+            "import os, subprocess, tempfile, time\n"
             "child = subprocess.Popen(['sleep', '300'])\n"
-            f"open({str(pidfile)!r}, 'w').write(f'{{os.getpid()}} {{child.pid}}')\n"
+            f"pidfile = {str(pidfile)!r}\n"
+            "with tempfile.NamedTemporaryFile('w', dir=os.path.dirname(pidfile), delete=False) as out:\n"
+            "    out.write(f'{os.getpid()} {child.pid}\\n')\n"
+            "os.replace(out.name, pidfile)\n"
             "time.sleep(300)\n"
         )
         return self.step_source(body, name=name, levels=levels)
@@ -1981,9 +2049,15 @@ class Watchdog(CheckFixture):
                     "[Step('quick-ok', ('fast', 'full'), lambda: [[sys.executable, '-c', 'pass']])]"
                 )
                 hang = self.hanging_step("hang", pidfile)
+                groups = self.base / f"{level}.groups"
+                self.addCleanup(self.terminate_groups, groups)
                 started = time.monotonic()
                 result = self.driver(
-                    fast[:-1] + ", " + hang[1:], level=level, watchdog=1.0, timeout=30
+                    fast[:-1] + ", " + hang[1:],
+                    level=level,
+                    watchdog=1.0,
+                    timeout=30,
+                    prelude=self.process_group_tracker(groups),
                 )
                 elapsed = time.monotonic() - started
                 self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
@@ -1992,25 +2066,50 @@ class Watchdog(CheckFixture):
                 self.assertIn("killed and reaped. Exiting 75", result.stderr)
                 self.assertIn("quick-ok ok, hang TIMEOUT", result.stdout)
                 self.assertIn("check: step quick-ok took", result.stdout)
-                survivors = [
-                    pid for pid in map(int, pidfile.read_text().split()) if process_state(pid)
-                ]
-                self.assertEqual(survivors, [], "the watchdog left step processes running")
+                self.assert_no_live_group_members(groups)
                 if level == "full":  # the build slot is released after the group is reaped
                     self.assertTrue(slot_free(self.copy / "target/ck-full/0.lock"))
 
     def test_08b_a_hung_doctor_tool_is_under_the_watchdog(self) -> None:
-        """The doctor's version checks run inside one step, so a hanging tool is bounded too."""
+        """A finite startup allowance precedes the one-second hung-tool watchdog."""
         pidfile = self.base / "doctor.pids"
         self.fixture_pids(pidfile)
         tools = self.base / "bin"
         tools.mkdir()
         fake = tools / "rustc"
-        fake.write_text(f'#!/bin/bash\nsleep 300 &\necho "$$ $!" > {pidfile}\nwait\n')
+        fake.write_text(
+            f"#!{sys.executable}\n"
+            "import os, signal, subprocess, tempfile\n"
+            "from pathlib import Path\n"
+            "child = subprocess.Popen(['sleep', '300'])\n"
+            f"pidfile = Path({str(pidfile)!r})\n"
+            "with tempfile.NamedTemporaryFile('w', dir=pidfile.parent, delete=False) as out:\n"
+            "    out.write(f'{os.getpid()} {child.pid}\\n')\n"
+            "os.replace(out.name, pidfile)\n"
+            "os.kill(os.getppid(), signal.SIGUSR1)\n"
+            "child.wait()\n"
+        )
         fake.chmod(0o755)
+        groups = self.base / "doctor.groups"
+        self.addCleanup(self.terminate_groups, groups)
+        prelude = (
+            "def arm_hung_tool(signum, frame):\n"
+            "    print('DOCTOR-TOOL-READY', file=sys.stderr, flush=True)\n"
+            "    check.WATCHDOG = 1.0\n"
+            "    signal.setitimer(signal.ITIMER_REAL, 1.0)\n"
+            "signal.signal(signal.SIGUSR1, arm_hung_tool)\n"
+            "check.WATCHDOG = 5.0\n"
+            "real_run = check.run\n"
+            "def run_with_startup_allowance(arguments, *args, **kwargs):\n"
+            "    if str(arguments[0]) == 'rustc':\n"
+            "        check.WATCHDOG = 5.0\n"
+            "        signal.setitimer(signal.ITIMER_REAL, 5.0)\n"
+            "    return real_run(arguments, *args, **kwargs)\n"
+            "check.run = run_with_startup_allowance\n" + self.process_group_tracker(groups)
+        )
         started = time.monotonic()
         result = self.driver(
-            "[Step('doctor', ('fast', 'full'), action=check.doctor)]",
+            "[Step('doctor', ('fast', 'full'), action=lambda: check.doctor(graphics=False))]",
             level="fast",
             watchdog=1.0,
             timeout=30,
@@ -2019,12 +2118,30 @@ class Watchdog(CheckFixture):
                 "PATH": f"{tools}:{os.environ['PATH']}",
                 "CK_HUB": str(self.hub),
             },
+            prelude=prelude,
         )
         self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
         self.assertLess(time.monotonic() - started, 20.0)
         self.assertIn("step doctor exceeded the 1 s watchdog", result.stderr)
-        survivors = [pid for pid in map(int, pidfile.read_text().split()) if process_state(pid)]
-        self.assertEqual(survivors, [], "the hung doctor tool's group was left running")
+        self.assertIn("DOCTOR-TOOL-READY", result.stderr)
+        (tool_pid, child_pid) = wait_for_pids(pidfile, 2, timeout=5.0)
+        self.assertEqual(process_state(tool_pid), "", "the fake rustc survived the watchdog")
+        self.assertEqual(process_state(child_pid), "", "the fake rustc child survived the watchdog")
+        self.assert_no_live_group_members(groups)
+
+    def test_08b2_the_hung_doctor_survivor_proof_rejects_a_missed_kill(self) -> None:
+        """The independent group check fails if a control leaves a hung-tool group alive."""
+        groups = self.base / "survivor-control.groups"
+        process = subprocess.Popen(["sleep", "300"], process_group=0)
+        self.addCleanup(self.terminate_groups, groups)
+        groups.write_text(f"{process.pid}\n")
+        try:
+            with self.assertRaisesRegex(AssertionError, "left step process groups running"):
+                self.assert_no_live_group_members(groups)
+        finally:
+            self.terminate_groups(groups)
+            process.wait(timeout=5)
+        self.assert_no_live_group_members(groups)
 
     def test_08c_an_in_process_action_is_under_the_watchdog_too(self) -> None:
         result = self.driver(
@@ -2040,16 +2157,20 @@ class Watchdog(CheckFixture):
     def test_08d_a_group_that_cannot_be_ended_is_reported_not_claimed_killed(self) -> None:
         pidfile = self.base / "stubborn.pids"
         self.fixture_pids(pidfile)
+        groups = self.base / "stubborn.groups"
+        self.addCleanup(self.terminate_groups, groups)
         result = self.driver(
             self.hanging_step("hang", pidfile),
             level="fast",
             watchdog=1.0,
             timeout=30,
-            prelude="real = check.end_group; check.end_group = lambda process: (real(process), False)[1]",
+            prelude=self.process_group_tracker(groups)
+            + "\nreal = check.end_group; check.end_group = lambda process: (real(process), False)[1]",
         )
         self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
         self.assertIn("could NOT be fully killed or reaped", result.stderr)
         self.assertNotIn("killed and reaped. Exiting", result.stderr)
+        self.assert_no_live_group_members(groups)
 
     def test_08e_a_deadline_during_the_spawn_still_reaps_the_new_child(self) -> None:
         """The alarm lands after the child exists but before run() has recorded it: the expiry is

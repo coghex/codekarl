@@ -8,6 +8,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use ck_gpu_vulkan::PresenterReport;
+
+// The window tests' reading of the first frame's report (CK-169), included by path as `window.rs` includes it: a pure
+// function of supplied reports, so its protocol is checked here, where no window and no GPU is opened.
+#[path = "support/first_frame.rs"]
+mod first_frame;
+use first_frame::{FirstFrame, exactly_once, first_frame as first_frame_state};
+
 fn rust_files(directory: &Path, found: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(directory).expect("a readable directory") {
         let path = entry.expect("a directory entry").path();
@@ -289,5 +297,57 @@ fn no_source_names_a_dynamic_loader_variable_or_the_library_tree_holds_native_co
     assert!(
         !root.join("native").exists(),
         "the library has no native code"
+    );
+}
+
+fn queued() -> PresenterReport {
+    PresenterReport::FirstFrameQueued
+}
+
+fn failed(message: &str) -> PresenterReport {
+    PresenterReport::Failed {
+        message: message.to_owned(),
+    }
+}
+
+/// A frame observed with no report queued yet stays pending, no report never becomes success, and one report later
+/// succeeds.
+#[test]
+fn a_frame_without_its_report_is_pending_and_one_report_succeeds() {
+    let mut seen = Vec::new();
+    assert_eq!(first_frame_state(&seen), FirstFrame::Pending);
+    assert!(exactly_once(&seen).is_err(), "no report is not success");
+    // A poll that drains nothing leaves the history as it was.
+    seen.extend(Vec::<PresenterReport>::new());
+    assert_eq!(first_frame_state(&seen), FirstFrame::Pending);
+    seen.push(queued());
+    assert_eq!(first_frame_state(&seen), FirstFrame::Reported);
+    assert_eq!(exactly_once(&seen), Ok(()));
+}
+
+/// A failure, before or after the report, and a duplicate, across polls or within one, fail.
+#[test]
+fn a_failure_or_a_duplicate_first_frame_report_fails() {
+    for history in [
+        vec![failed("lost")],
+        vec![queued(), failed("late")],
+        vec![failed("early"), queued()],
+        vec![queued(), queued()],
+    ] {
+        assert_ne!(
+            first_frame_state(&history),
+            FirstFrame::Reported,
+            "{history:?}"
+        );
+        assert!(exactly_once(&history).is_err(), "{history:?} must fail");
+    }
+    // A report drained in one poll and a second drained in a later one is a duplicate, not two successes.
+    let mut seen = vec![queued()];
+    seen.extend(vec![queued()]);
+    assert_eq!(first_frame_state(&seen), FirstFrame::Duplicated(2));
+    assert_eq!(
+        first_frame_state(&[failed("a"), failed("b")]),
+        FirstFrame::Failed(vec!["a".to_owned(), "b".to_owned()]),
+        "every failure is kept"
     );
 }
