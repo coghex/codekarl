@@ -14,6 +14,7 @@ completed, dated records. Executable guidance (`AGENTS.md`, `skills/`) is outsid
 | [window-design.md](window-design.md) | **Provisional draft:** milestone 3 windowing (native/Metal and GLFW/Vulkan), separating owner direction, proposals and open decisions |
 | [vision.md](vision.md) | **Provisional:** the game vision as the owner interview proceeds. It separates firm direction, examples and open decisions; it is not design-ready |
 | [game/](game/) | The vision's detailed game design, one document per system (economy, crown/military/church, diplomacy, research, maritime), indexed from vision.md |
+| [map-design.md](map-design.md) | **Provisional:** the map design session (from 2026-11-02): Ireland, the look, the map data and map modes, separating owner decisions, proposals and open questions |
 
 ## Completed records (history, not instructions)
 
