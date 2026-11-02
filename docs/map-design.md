@@ -1,10 +1,13 @@
 # Map design: Ireland, the look, the data and the renderer
 
-**Status: owner interview in progress, 2026-11-02; technical design revision 2, after design review 1, awaiting re-review.** Written by ck-designer-1 (Class S,
+**Status: technical design approved, 2026-11-02 (revision 2: ck-reviewer-2 and ck-reviewer-1 design re-reviews); revision 3 is editorial.** Written by ck-designer-1 (Class S,
 `claude-opus-5-5`, high) from the map design session with the owner. The owner's answers are recorded verbatim, with timestamps, in
 `.pipeline/coordination/map-design/session-log.md`. §2–§7 record what the owner has decided. §9 (technical design) and §10 (milestone) are
 designer proposals, revised after design review 1 (`.pipeline/coordination/map-design/design-review-ck-reviewer-1.md` with its owner
-addendum, and `design-review-ck-reviewer-2.md`) and the owner's decisions on it; they await re-review.
+addendum, and `design-review-ck-reviewer-2.md`) and the owner's decisions on it. Both reviewers approved revision 2
+(`design-review-2-ck-reviewer-2.md`, `design-review-ck-reviewer-1-r2.md`). Revision 3 records two later owner answers as Firm and fixes two
+non-blocking notes; it changes no design. The owner's decision on the milestone: file it and review its specs, without starting
+implementation.
 
 **Firm** marks owner decisions, with their date. **Proposal** marks designer recommendations. **Open** marks decisions that still need an
 answer. A Firm item that the owner chose by reacting to a mock-up says so. Times are UTC on 2026-11-02 unless stated.
@@ -100,9 +103,10 @@ verdict on the second: "that looks good".
   would look natural to see the pixels kind of change as we zoom in, that's why i didnt want to use textures."
 - **Firm (owner, 15:36Z).** Milestone 6 controls are keyboard only: "controls are keyboard only for now". Mouse drag and wheel are
   later work.
-- **Firm (owner, 15:36Z).** The target is 60 frames per second while the map is redrawn every frame. If that cannot be met, the design is
-  revisited. (The owner wrote "if we can hit 60 fps ... we will have to redesign things"; the designer reads it as "cannot", to be
-  confirmed.)
+- **Firm (owner, 15:36Z, confirmed later: "i meant 'cant'").** 60 frames per second is a hard bar: if it cannot be met while the map is
+  being redrawn, the design is revisited.
+- **Firm (owner, relayed by ck-manager after the re-review).** 60 fps applies "While moving": the map is redrawn at 60 fps during panning and
+  zooming, and when the map changes. When nothing moves, it is idle and redraws only on demand.
 - **Proposal (as in the mock-ups).** The on-screen map-pixel size stays fixed; each step changes how much ground a map pixel covers, 10 steps
   per doubling. Coast and terrain edges gain generated detail below the data resolution. This detail is decoration only. §9.3 gives the exact
   step table.
@@ -192,8 +196,8 @@ verdict on the second: "that looks good".
 - The full list of terrain types and their colours; whether lakes use the sea colour.
 - How the map shows unmapped land (the vision's fog of war for land without maps).
 - Mouse drag and wheel zoom, after milestone 6.
-- **World scale (from design review 1).** Mercator cells shrink on the ground as latitude rises: a fixed cell at 60°N covers about half the
-  ground of one at Ireland's latitude, and a quarter of one at the equator. Cells are gameplay units, so the world-map design must correct for
+- **World scale (from design review 1).** Mercator cells shrink on the ground as latitude rises: a fixed cell at 60°N covers about 70 % of the
+  ground of one at Ireland's latitude (ground area goes with cos² of latitude), and a quarter of one at the equator. Cells are gameplay units, so the world-map design must correct for
   it, for example by weighting resources by ground area or giving catchment radii in metres. Inside Ireland the variation is about ±5 %.
 - Starting de facto rule data, if any is needed for Ireland.
 
@@ -240,11 +244,12 @@ pre-drawn picture that gets scaled, which keeps the owner's "that's why i didnt 
   - holds the cell grids and packs them for the GPU (§9.5);
   - owns the coordinate contract (§9.3) and the **reference colour function** (§9.4), a plain Rust implementation used by tests and the
     preview tool;
-  - computes each frame's river pixels (§9.4.7).
+  - computes the river pixels once per zoom step (§9.4.7).
 - **`ck-render-2d`** gains a **map lane** in its scene bridge, beside the scene snapshot. Through it the application publishes two immutable
   inputs:
   - the **map input**: the packed grids, the terrain palette and rule table, and a generation number. It is published once per loaded map.
-  - the **camera snapshot**: the step, the top-left world pixel, the view size in map pixels, the visible river pixels, and the metrics
+  - the **camera snapshot**: the step, the top-left world pixel, the view size in map pixels, the visible river pixels (selected from the
+    step's prepared coverage), and the metrics
     generation it was computed for.
 
   render-2d stays backend-neutral. It computes the enlarged map's destination rectangle with the accepted points-to-pixels rule (§9.3) and
@@ -289,8 +294,9 @@ render-graph and no writable image for Lua.
    readers are proven complete, before the device. An unproven completion keeps them, as it does every other native resource.
 8. **Readback fixtures.** These run off-screen through each backend's production map encoder (Metal's off-screen frame path and Vulkan's
    readback module already exist for the quad and scene):
-   - the map target, read back, equals the reference colour function (§9.4) byte for byte, for a small asymmetric fixture map at two steps
-     and an odd view size, including a pan away and back;
+   - the map target, read back, equals the expected colour function byte for byte, for a small asymmetric fixture map at two steps and an
+     odd view size, including a pan away and back. In slice 1 the expected function is slice 1's own minimal rule (terrain index to
+     palette), because the full reference arrives in slice 2; the comparison with the full reference (§9.4) belongs to slice 6;
    - the enlarged window pass equals the expected enlargement of that target under the fixture's metrics;
    - one resize case replaces the target and retires the old one only after its proof.
 
@@ -354,8 +360,10 @@ each backend, and so Metal and Vulkan also match each other. The spec writes eac
 6. **Snow caps** apply on mountain terrain where Bayer < clamp(16 × (elevation − cap₀) / (cap₁ − cap₀), 0, 16). Usable cells draw the cap
    colour; unusable cells draw the light-grey high-ground colour (Firm, §3.1).
 7. **Rivers** are drawn after the terrain, in the river colour (Firm, §3.4). For each river line, the points are projected to fixed point at
-   step s, and each consecutive pair of world pixels is joined by integer Bresenham. Every pixel visited is a river pixel. `ck-map` computes
-   the visible list for each camera snapshot, and the map pass draws each as a quad covering exactly one map pixel. The pixels are therefore
+   step s, and each consecutive pair of world pixels is joined by integer Bresenham. Every pixel visited is a river pixel. **Firm (owner: "CPU prep
+   is fine").** `ck-map` computes this coverage on the CPU once per zoom step and keeps it until the step or the map changes; each camera
+   snapshot selects the visible pixels from it without re-running the lines on every pan. The GPU draws each, every rendered frame, as a
+   quad covering exactly one map pixel. The pixels are therefore
    identical on both backends, independent of GPU line rules.
 8. **The coast outline:** a land pixel with any of its four neighbours (left, right, up, down, at the same step, by the same lookup) in sea
    or lake draws its terrain's solid colour (Firm, §3.2). It takes precedence over rules 4–6, and rivers draw over it.
@@ -405,14 +413,15 @@ neither needs nor reads them.
     down, and zoom in and out.
   - Default keys are the arrow keys and `=` / `-`.
   - A held pan key moves a configurable number of map pixels per frame. A held zoom key repeats at a configurable rate.
-  - On each change it computes the camera snapshot with that frame's visible river pixels, publishes it through the map lane, and wakes the
-    renderer.
+  - On each change it computes the camera snapshot, with the visible river pixels selected from the step's prepared coverage, publishes it
+    through the map lane, and wakes the renderer. While a key is held it updates every frame; when nothing moves, nothing is published and
+    the renderer stays idle (Firm, §4).
   - The existing focus, minimize, close and lifecycle behaviour is unchanged.
 - **Keyboard only** (Firm, §4). Mouse input is later work.
 
 ### 9.7 Performance
 
-- **Firm (§4).** 60 frames per second while the map is redrawn every frame, on both backends.
+- **Firm (§4).** 60 frames per second while panning, zooming or when the map changes, on both backends; idle, on-demand redraw otherwise.
 - **Proposal.** The map pass is small: about 120,000 map pixels on the owner's 3456 × 2234 display at 8 drawable pixels each, with a few
   exact reads per pixel. The evidence records the map pass's GPU time and the frame rate while zooming and panning, on both backends, at
   the owner's resolution. It also records load-and-validate time for the whole of Ireland, with 1 second as a provisional target.
@@ -442,14 +451,14 @@ owner's reading of the running map plus windowless tests. **Firm (owner, 15:18Z)
 
 | # | Slice | Depends on | Delivers |
 |---|---|---|---|
-| 1 | **GPU-written map image** (engine) | — | §9.2: the map lane, grid images, the map target's lifecycle, the map pass with a minimal colour rule (terrain index to palette), the enlarged composition under the scene, and readback fixtures on both encoders |
+| 1 | **GPU-written map image** (engine) | — | §9.2: the map lane, grid images, the map target's lifecycle, the map pass with a minimal colour rule (terrain index to palette), the enlarged composition under the scene, and readback fixtures on both encoders against that minimal rule. It owns the packed-grid layout of §9.5, which slice 3 produces |
 | 2 | **Coordinates and reference** | — | §9.3 and §9.4 in `ck-map`: the world grid, the crop, the step table, the reference colour function and the river pixel rule, with windowless tests on an asymmetric fixture |
 | 3 | **Map loading** | 2 | §9.5: TOML and PNG reading, strict validation, the 16-bit path, GPU packing |
 | 4 | **Preview tool** | 2, 3 | §9.8 |
 | 5 | **Ireland's terrain data** | 4 | The files of §9.5 for Ireland, authored with the owner. It records sources, licences and required attribution: AWS Terrain Tiles combine several sources that ask for attribution; Natural Earth is public domain. It also records where medieval guesswork departs from the source data |
 | 6 | **Full colour rules on the GPU** | 1, 2, 3 | Rules 1–6 and 8 of §9.4 in both map passes, matching the reference in the readback fixtures |
 | 7 | **Application and camera** | 6 | §9.6 and §9.7: configuration, startup loading, the initial view, keyboard actions, zoom steps and panning, the performance evidence |
-| 8 | **Rivers** | 6, 7 | Rule 7 of §9.4: `rivers.toml`, the per-snapshot river pixels, drawing them in both map passes, a readback fixture |
+| 8 | **Rivers** | 6, 7 | Rule 7 of §9.4: `rivers.toml`, the river pixels prepared per zoom step and selected per snapshot, drawing them in both map passes, a readback fixture |
 
 **Acceptance.**
 - Both backends open the same authored map of Ireland.
@@ -460,12 +469,13 @@ owner's reading of the running map plus windowless tests. **Firm (owner, 15:18Z)
 
 ## 11. Next steps
 
-1. Re-review of revision 2 by both reviewers.
-2. The owner approves; ck-manager files milestone 6.
+1. ck-designer-1 drafts one issue spec per §10 slice; ck-manager files milestone 6 and routes the specs to review.
+2. Implementation does not start until the owner says so: "File only".
 
 ## Provenance
 
-Drafted 2026-11-02 by ck-designer-1. Revision 2 the same day, after design review 1. Sources: the session log, both design reviews and the
+Drafted 2026-11-02 by ck-designer-1. Revision 2 the same day, after design review 1; revision 3 (editorial) after both re-reviews approved
+it. Sources: the session log, both design reviews and the
 reviewer-1 owner addendum, `docs/vision.md`, `docs/game/diplomacy.md`, `docs/scene-design.md` and `docs/render-design.md`, and reading of
 `crates/gpu-metal` (the frame encoder and its off-screen path, the ledger), `crates/gpu-vulkan` (the render pass, readback and ledger),
 `crates/render-2d` (the points-to-pixels rule), `crates/input` and `apps/codekarl`. No code, issues, builds or runs.
