@@ -251,6 +251,29 @@ impl Rig {
         }
     }
 
+    /// Pumps the window's events until the presenter's first-frame report is among `seen` (every report drained, kept
+    /// across polls) and `also` holds, or fails after the bound. A `Failed` or a second report fails at once.
+    fn wait_first_frame(
+        &mut self,
+        presenter: &VulkanPresenter,
+        seen: &mut Vec<PresenterReport>,
+        what: &str,
+        also: impl Fn() -> bool,
+    ) {
+        let give_up = Instant::now() + BOUND;
+        loop {
+            seen.extend(reports(presenter));
+            match support::first_frame(seen) {
+                support::FirstFrame::Reported if also() => return,
+                support::FirstFrame::Reported | support::FirstFrame::Pending => {}
+                other => panic!("while waiting for {what}: {other:?}"),
+            }
+            assert!(Instant::now() < give_up, "timed out waiting for {what}");
+            self.pump();
+            thread::sleep(Duration::from_millis(3));
+        }
+    }
+
     /// [`Rig::wait`] for a condition on the rig itself.
     fn wait_rig(&mut self, what: &str, condition: impl Fn(&Self) -> bool) {
         let give_up = Instant::now() + BOUND;
@@ -533,21 +556,24 @@ fn first_frame_and_wake() {
     let probes = Probes::new();
     let mut presenter = rig.start(&probes, probes.hooks());
     rig.wait("the first frame", || probes.frames() >= 1);
-    let first = reports(&presenter);
-    assert_eq!(
-        first,
-        vec![PresenterReport::FirstFrameQueued],
-        "one first-frame report"
-    );
-    assert!(
-        probes.wakes.load(Ordering::SeqCst) >= 1,
-        "the wake was called"
+    // The frame is counted before its report is queued, and the wake follows the report.
+    let mut seen = Vec::new();
+    rig.wait_first_frame(
+        &presenter,
+        &mut seen,
+        "the first-frame report and the wake",
+        || probes.wakes.load(Ordering::SeqCst) >= 1,
     );
     // More frames never repeat it.
     presenter.set_clear([0.9, 0.2, 0.2]);
     rig.wait("a second frame", || probes.frames() >= 2);
     rig.idle(Duration::from_millis(200));
-    assert_eq!(reports(&presenter), vec![], "no second first-frame report");
+    seen.extend(reports(&presenter));
+    assert_eq!(
+        support::exactly_once(&seen),
+        Ok(()),
+        "one first-frame report: {seen:?}"
+    );
     let events = probes.events();
     let order: Vec<&Event> = events
         .iter()
@@ -575,6 +601,12 @@ fn first_frame_and_wake() {
     );
     let ended = Rig::end(&mut presenter);
     assert_eq!(ended, CleanupResult::Proven);
+    seen.extend(reports(&presenter));
+    assert_eq!(
+        support::exactly_once(&seen),
+        Ok(()),
+        "one first-frame report to the proven end: {seen:?}"
+    );
     check_ledger_order(&probes.events());
     rig.close(&ended);
 }
