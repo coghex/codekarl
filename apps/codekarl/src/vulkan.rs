@@ -252,6 +252,9 @@ pub(crate) trait Stack {
     ) -> Result<Self::Instance, String>;
     /// The log of an instance whose creation just failed (it returned no instance, so no handle): every entry, once.
     fn take_creation_log(&self) -> ValidationDrain;
+    /// The notice to log once when the instance could not ask `MoltenVK` for Metal heaps (`MoltenVK` without
+    /// `VK_EXT_layer_settings`); `None` otherwise, which is every other platform and every `MoltenVK` that took the request.
+    fn heap_notice(&self, instance: &Self::Instance) -> Option<String>;
     /// The handle on the validation log of `instance`, taken as soon as the instance exists.
     fn validation_log(&self, instance: &Self::Instance) -> Self::Log;
     /// Moves the log's entries out (each is delivered once) with the count dropped beyond its bound.
@@ -561,6 +564,15 @@ impl<S: Stack> Backend for VulkanBackend<S> {
         // The log is kept apart from the instance from the moment the instance exists, so no later end can lose its messages.
         let log = self.run.stack.validation_log(&instance);
         self.run.state.borrow_mut().log = Some(log);
+        // The logged fallback (CK-175): once, a `warn`, through the same bounded path as the validation records (so a stalled logger
+        // cannot lose it to the end).
+        if let Some(notice) = self.run.stack.heap_notice(&instance) {
+            self.run
+                .state
+                .borrow_mut()
+                .pending_validation
+                .push_back((Level::Warn, notice));
+        }
         match self.run.stack.create_surface(&created.handles, &instance) {
             Ok(surface) => {
                 let mut state = self.run.state.borrow_mut();

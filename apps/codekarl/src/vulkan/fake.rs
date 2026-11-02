@@ -109,6 +109,8 @@ pub(super) struct Script {
     pub(super) wake_case: Option<WakeCase>,
     /// How the presenter says it binds its textures (the binding notice), told once.
     pub(super) binding: Option<BindingNote>,
+    /// The instance's notice that `MoltenVK` could not be asked for Metal heaps (`Instance::moltenvk_heap_notice`).
+    pub(super) heap_notice: Option<String>,
     /// Validation messages the log holds as soon as the instance exists: `(text, tolerated)`.
     pub(super) validation_now: Vec<(String, bool)>,
     /// Entries the log reports as dropped beyond its bound as soon as the instance exists.
@@ -537,6 +539,10 @@ impl Stack for FakeStack {
             .unwrap_or_else(PoisonError::into_inner)
             .1 = self.script.validation_dropped;
         Ok(FakeInstance(Arc::clone(&self.log)))
+    }
+
+    fn heap_notice(&self, _instance: &FakeInstance) -> Option<String> {
+        self.script.heap_notice.clone()
     }
 
     fn take_creation_log(&self) -> ValidationDrain {

@@ -203,6 +203,18 @@
 //! (hence the once-per-size rule above). The device is a portability one and needs
 //! `VK_KHR_portability_subset` enabled.
 //!
+//! # Metal heaps on `MoltenVK` (CK-175)
+//!
+//! On a macOS build with the portability path (`MoltenVK`; the portability flag alone is not enough, the Linux loader offers it
+//! too) the instance enables `VK_EXT_layer_settings` and sets `MVK_CONFIG_USE_MTLHEAP` to true under the layer name `MoltenVK`
+//! ([`MoltenVkHeap::Requested`]); `MoltenVK` then allocates textures and buffers from Metal heaps, which CK-168 measured at 0.75 ms
+//! against 157.5 ms of GPU time a frame for 32,768 live textures. Nothing is requested elsewhere
+//! ([`MoltenVkHeap::NotMoltenVk`]). The library never sets or changes an environment variable. `MoltenVK` 1.2.11 lets the instance's
+//! layer settings override the environment, so the instance asks only when `MVK_CONFIG_USE_MTLHEAP` is not set in the environment: a
+//! value set there (`0` included) stands ([`MoltenVkHeap::EnvironmentDecides`]). A `MoltenVK` without `VK_EXT_layer_settings` gets
+//! an instance without the request and [`Instance::moltenvk_heap_notice`] carries the notice for the application to log
+//! ([`MoltenVkHeap::Unavailable`]); creation does not fail.
+//!
 //! # Test hooks and the readback
 //!
 //! The hooks ([`TestHooks`], [`Gate`], [`Observer`]) reach the presenter only through the `doc(hidden)`
@@ -270,8 +282,9 @@ pub use hooks::{
 };
 pub use instance::{
     DestroyRefused, Instance, InstanceFailure, InstanceOptions, InstanceTestHooks, LayoutScope,
-    LogDrain, LogEntry, ValidationLogHandle, create_instance, create_instance_draining,
-    create_instance_with, create_instance_with_test_hooks, destroy_surface_and_instance,
+    LogDrain, LogEntry, MoltenVkHeap, ValidationLogHandle, create_instance,
+    create_instance_draining, create_instance_with, create_instance_with_test_hooks,
+    destroy_surface_and_instance,
 };
 pub use ledger::LedgerSnapshot;
 pub use loader::{

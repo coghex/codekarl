@@ -139,8 +139,8 @@ fn a_compat_upload_failure_is_one_failed() {
     harness.wait_for("the first attempt to be held back", |harness| {
         harness.compat_kinds() == vec![CompatKind::Gated]
     });
-    // 1100 x 1100 has an allocation of its own (over the dedicated-allocation threshold): the injected failure is its.
-    harness.offer(5, 1100, [0, 255, 0, 255]);
+    // 3200 x 3200 (over half a block) has an allocation of its own whatever the driver prefers: the injected failure is its.
+    harness.offer(5, 3200, [0, 255, 0, 255]);
     (presenter.texture_wake())();
     let mut seen = Vec::new();
     harness.rig.wait("the failure", || {
