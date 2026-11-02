@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
@@ -29,6 +30,94 @@ def process_start(pid: int) -> str:
     if not value:
         raise RuntimeError(f"Cannot resolve process start time for pid {pid}")
     return value
+
+
+def open_paths() -> dict[int, list[Path]]:
+    """Return every process's cwd and open-file paths, or fail the whole scan closed.
+
+    `lsof -F0pn` separates fields with NUL and terminates each process/file set with a newline.
+    The output also includes `f` descriptor fields even though only `p` and `n` were requested.
+    A nonzero command, warning, malformed record or empty result is not evidence of idleness:
+    callers keep every candidate. The `n` field includes cwd as well as ordinary open descriptors.
+    """
+    try:
+        completed = lease.run(["lsof", "-nP", "-F0pn"], check=False, capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(
+            f"cannot inspect process working directories and open files: {error}"
+        ) from error
+    if completed.returncode != 0 or completed.stderr:
+        stderr = completed.stderr
+        detail = (
+            stderr.strip()
+            if isinstance(stderr, str) and stderr.strip()
+            else f"lsof exited {completed.returncode}"
+        )
+        raise RuntimeError(f"cannot inspect process working directories and open files: {detail}")
+    raw = completed.stdout
+    if not isinstance(raw, str):
+        raise RuntimeError("process path scan returned bytes, not text")
+    return _parse_open_paths(raw)
+
+
+def _parse_open_paths(raw: str) -> dict[int, list[Path]]:
+    """Parse lsof's NUL-delimited fields and newline-terminated sets."""
+    paths_by_pid: dict[int, list[Path]] = {}
+    current: int | None = None
+    if not raw.endswith("\0\n"):
+        raise RuntimeError("process path scan returned an unterminated field set")
+    for token in raw[:-2].split("\0"):
+        # The newline belongs to the separator between lsof sets, not to the field.
+        field = token[1:] if token.startswith("\n") else token
+        if not field:
+            raise RuntimeError("process path scan returned an empty field")
+        if field.startswith("p"):
+            try:
+                current = int(field[1:])
+            except ValueError as error:
+                raise RuntimeError(
+                    f"process path scan returned an invalid pid record: {field!r}"
+                ) from error
+            paths_by_pid.setdefault(current, [])
+        elif field.startswith("f"):
+            # lsof emits descriptor fields (cwd, txt, 0, …) in -F0 output regardless of the
+            # requested fields. They identify the following name but are not paths themselves.
+            if current is None or not field[1:]:
+                raise RuntimeError(f"process path scan returned an unreadable record: {field!r}")
+        elif field.startswith("n") and current is not None:
+            # Some descriptors have an empty name in lsof's real output; they cannot establish
+            # that a process is using a worker path.
+            if field[1:]:
+                paths_by_pid[current].append(Path(field[1:]))
+        else:
+            raise RuntimeError(f"process path scan returned an unreadable record: {field!r}")
+    if not paths_by_pid:
+        raise RuntimeError("process path scan returned no process records")
+    return paths_by_pid
+
+
+def users_of(
+    directory: Path, observed: dict[int, list[Path]] | None = None
+) -> list[tuple[int, Path]]:
+    """Processes whose cwd or an open file resolves inside `directory`.
+
+    Resolve both sides so an alternate spelling or symlink into a worker copy cannot evade the
+    check. Unresolvable absolute names fail closed instead of being treated as unrelated.
+    """
+    root = directory.resolve(strict=True)
+    paths_by_pid = open_paths() if observed is None else observed
+    users: list[tuple[int, Path]] = []
+    for pid, paths in paths_by_pid.items():
+        for path in paths:
+            if not path.is_absolute():
+                continue  # lsof also reports non-path names for some special descriptors
+            try:
+                resolved = path.resolve(strict=False)
+            except OSError as error:
+                raise RuntimeError(f"cannot resolve process {pid} path {path}: {error}") from error
+            if resolved == root or root in resolved.parents:
+                users.append((pid, path))
+    return users
 
 
 STATE_COMMANDS = {"submit", "accept", "docs", "worker", "sync", "status", "retry", "init"}

@@ -24,7 +24,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import pipeline
 import test_batch
-from gate import batch, cli, docsqueue, lease, locks, owned, pointer
+from gate import batch, cli, docsqueue, lease, locks, owned, pointer, procscan
 from gate import gc as collector
 from test_lease import (
     BOUND,
@@ -950,19 +950,103 @@ class Interruption(GcFixture):
 
 
 class Workers(GcFixture):
-    """Worker copies are out of scope for GC: never listed, never touched."""
+    """Only idle worker build outputs are candidates; sources and evidence are protected."""
 
-    def test_01_apply_and_the_dry_run_never_touch_a_worker_copy(self) -> None:
-        worker = self.pipe / "workers/w1"
-        (worker / "target").mkdir(parents=True)
-        (worker / "target/artifact.bin").write_bytes(b"x" * 100)
-        (worker / "notes.txt").write_text("unrecorded work\n")
-        before = snapshot(worker)
-        text = self.dry()
-        self.assertNotIn(str(worker), text)
-        self.assertNotIn("WORKER", text)
-        self.apply()
-        self.assertEqual(snapshot(worker), before)
+    def worker(self, name: str = "w1") -> Path:
+        worker = self.pipe / "workers" / name
+        (worker / "target/debug").mkdir(parents=True)
+        (worker / "target/debug/artifact.bin").write_bytes(b"x" * 100)
+        (worker / "src/main.rs").parent.mkdir(parents=True)
+        (worker / "src/main.rs").write_text("unrecorded source\n")
+        (worker / ".pijul/pristine").mkdir(parents=True)
+        (worker / ".pijul/pristine/db").write_text("worker repository\n")
+        cutoff = time.time() - 7 * 3600
+        for path in (
+            worker,
+            worker / "target",
+            worker / "target/debug",
+            worker / "target/debug/artifact.bin",
+        ):
+            os.utime(path, (cutoff, cutoff))
+        return worker
+
+    def test_01_idle_target_is_collected_but_source_and_pijul_survive(self) -> None:
+        worker = self.worker()
+        before_source = snapshot(worker / "src", worker / ".pijul")
+        with mock.patch.object(procscan, "open_paths", return_value={}):
+            text = self.dry()
+            self.assertTrue(self.line(text, str(worker / "target")).startswith("CANDIDATE"), text)
+            self.apply()
+        self.assertFalse((worker / "target").exists())
+        self.assertEqual(snapshot(worker / "src", worker / ".pijul"), before_source)
+
+    def test_02_recent_output_and_any_process_using_the_copy_are_kept(self) -> None:
+        recent = self.worker("recent")
+        (recent / "target/debug/recent.bin").write_text("recent")
+        busy = self.worker("busy")
+        observed = {22: [busy / "target/debug/artifact.bin"]}
+        with mock.patch.object(procscan, "open_paths", return_value=observed):
+            text = self.dry()
+        self.assertIn("target/ modified within the six-hour idle window", text)
+        self.assertIn("pid 22 has cwd/open file", text)
+        with mock.patch.object(procscan, "open_paths", return_value=observed):
+            self.apply()
+        self.assertTrue((recent / "target").exists())
+        self.assertTrue((busy / "target").exists())
+
+    def test_03_failed_process_scan_keeps_worker_target(self) -> None:
+        worker = self.worker()
+        with mock.patch.object(
+            procscan, "open_paths", side_effect=RuntimeError("lsof denied access")
+        ):
+            text = self.dry()
+            self.assertIn("process scan failed; kept: lsof denied access", text)
+            self.apply()
+        self.assertTrue((worker / "target").exists())
+
+    def test_03a_a_shared_worker_directory_lease_keeps_its_target(self) -> None:
+        worker = self.worker()
+        descriptor = lease.acquire(worker)
+        try:
+            with mock.patch.object(procscan, "open_paths", return_value={}):
+                text = self.dry()
+                row = self.line(text, f"{worker}/target")
+                self.assertTrue(row.startswith("IN-USE"), row)
+                self.assertIn("in use", row)
+                self.apply()
+            self.assertTrue((worker / "target").exists())
+        finally:
+            lease.release(descriptor)
+
+    def test_04_apply_rechecks_process_usage_after_the_plan(self) -> None:
+        worker = self.worker()
+        snapshots = iter(({}, {33: [worker / "src/main.rs"]}))
+        with mock.patch.object(procscan, "open_paths", side_effect=lambda: next(snapshots)):
+            text = self.apply()
+        self.assertIn("kept: pid 33 has cwd/open file", text)
+        self.assertTrue((worker / "target").exists())
+
+    def test_05_automatic_gc_skips_a_duplicate_while_the_first_run_holds_its_lock(self) -> None:
+        maintenance = self.pipe / "maintenance"
+        maintenance.mkdir()
+        with (maintenance / "gc.lock").open("a") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(collector.automatic(self.hub, self.current / "tools"), 0)
+            self.assertEqual(output.getvalue(), "")
+
+    def test_06_automatic_gc_uses_the_fixture_hub_and_keeps_its_log(self) -> None:
+        worker = self.worker()
+        output = io.StringIO()
+        with (
+            mock.patch.object(procscan, "open_paths", return_value={}),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(collector.automatic(self.hub, self.current / "tools"), 0)
+        self.assertFalse((worker / "target").exists())
+        self.assertIn("CANDIDATE", output.getvalue())
+        self.assertIn("moved to trash/", output.getvalue())
 
 
 class EntryPoint(GcFixture):

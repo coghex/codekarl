@@ -1,11 +1,10 @@
 """`ck gc`: a dry run and `--apply` (plan section 10).
 
 GC removes only state whose writers and readers are enrolled in the lease protocol, plus trash:
-superseded lease-capable checkpoints, the build output (`target/`) of such checkpoints, and trash
-left by an interrupted run. The list is closed. Captures, records, pre-protocol checkpoints and
-their build output, the legacy `.pipeline/target` cache, worker copies and everything outside
-`.pipeline/checkpoints` and `.pipeline/trash` are never removed; the dry run reports them with the
-rule that keeps them.
+superseded lease-capable checkpoints, their build output, idle worker-copy build output, and trash
+left by an interrupted run. Captures, records, worker source and evidence, pre-protocol checkpoints
+and their build output, the legacy `.pipeline/target` cache, and everything outside the closed list
+are never removed; the dry run reports them with the rule that keeps them.
 
 Every candidate has two objects: the *lease object* (the checkpoint directory, locked
 `LOCK_EX | LOCK_NB`) and the *deletion object* (the directory renamed into trash while that lock
@@ -22,12 +21,13 @@ import os
 import re
 import shutil
 import stat
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import lease, locks, meta, owned, pointer
+from . import lease, locks, meta, owned, pointer, procscan
 
 NS = 10**9
 WINDOW_NS = 7 * 24 * 3600 * NS  # checkpoints created in the last 7 days are kept (rule 8)
@@ -35,6 +35,8 @@ NEWEST = 3  # and so are the 3 newest of each kind
 TERMINAL = ("published", "failed", "rejected", "cancelled")
 BATCH_KINDS = ("combined", "split")
 SCHEMA = 2
+WORKER_IDLE_NS = 6 * 3600 * NS
+WORKER_NAME = re.compile(r"[a-z0-9_-]+")
 
 # The closed list of checkpoint names GC recognizes; anything else is never touched.
 PATTERNS = (
@@ -130,6 +132,154 @@ def tree_size(path: Path) -> int:
         except OSError:
             continue
     return total
+
+
+def latest_mtime(path: Path) -> int:
+    """Latest lstat mtime in a tree; unlike a size estimate, any unreadable entry fails closed."""
+    latest = path.lstat().st_mtime_ns
+    pending = [path]
+    while pending:
+        current = pending.pop()
+        with os.scandir(current) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                latest = max(latest, info.st_mtime_ns)
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(Path(entry.path))
+    return latest
+
+
+def _worker_targets(hub: Path, plan: Plan, now: int) -> None:  # noqa: PLR0912,PLR0915  # each keep/refusal path records its reason
+    """Add idle worker `target/` directories, keeping every copy on any uncertain scan."""
+    workers = hub / ".pipeline/workers"
+    if not workers.exists() and not workers.is_symlink():
+        return
+    if not _is_real_directory(workers):
+        plan.items.append(
+            Item("worker-target", workers, 0, "refused", "workers/ is not a real directory")
+        )
+        return
+    try:
+        copies = sorted(workers.iterdir())
+    except OSError as error:
+        plan.items.append(
+            Item("worker-target", workers, 0, "refused", f"cannot read workers/: {error.strerror}")
+        )
+        return
+
+    observed: dict[int, list[Path]] | None = None
+    scan_error: str | None = None
+    for copy in copies:
+        if not _is_real_directory(copy):
+            if copy.is_symlink():
+                plan.items.append(
+                    Item("worker-target", copy, 0, "refused", "worker copy is a symlink")
+                )
+            continue
+        if not WORKER_NAME.fullmatch(copy.name):
+            continue
+        target = copy / "target"
+        if not target.exists() and not target.is_symlink():
+            continue
+        if not _is_real_directory(target):
+            plan.items.append(
+                Item(
+                    "worker-target",
+                    target,
+                    0,
+                    "refused",
+                    "target/ is not a real directory",
+                    copy.name,
+                )
+            )
+            continue
+        size = tree_size(target)
+        if observed is None and scan_error is None:
+            try:
+                observed = procscan.open_paths()
+            except (OSError, RuntimeError, ValueError) as error:
+                scan_error = str(error)
+        if scan_error is not None:
+            plan.items.append(
+                Item(
+                    "worker-target",
+                    target,
+                    size,
+                    "in-use",
+                    f"process scan failed; kept: {scan_error}",
+                    copy.name,
+                )
+            )
+            continue
+        assert observed is not None
+        try:
+            users = procscan.users_of(copy, observed)
+        except (OSError, RuntimeError, ValueError) as error:
+            plan.items.append(
+                Item(
+                    "worker-target",
+                    target,
+                    size,
+                    "in-use",
+                    f"process path scan failed; kept: {error}",
+                    copy.name,
+                )
+            )
+            continue
+        if users:
+            pid, path = users[0]
+            plan.items.append(
+                Item(
+                    "worker-target",
+                    target,
+                    size,
+                    "in-use",
+                    f"pid {pid} has cwd/open file {path} inside the copy",
+                    copy.name,
+                )
+            )
+            continue
+        try:
+            modified = latest_mtime(target)
+        except OSError as error:
+            plan.items.append(
+                Item(
+                    "worker-target",
+                    target,
+                    size,
+                    "in-use",
+                    f"cannot read target mtimes; kept: {error}",
+                    copy.name,
+                )
+            )
+            continue
+        if now - modified < WORKER_IDLE_NS:
+            plan.items.append(
+                Item(
+                    "worker-target",
+                    target,
+                    size,
+                    "protected",
+                    "target/ modified within the six-hour idle window",
+                    copy.name,
+                )
+            )
+            continue
+        why = _lease_state(copy, lease.held())
+        if why:
+            plan.items.append(Item("worker-target", target, size, "in-use", why, copy.name))
+            continue
+        plan.items.append(
+            Item(
+                "worker-target",
+                target,
+                size,
+                "candidate",
+                "worker-copy build output, process-free and idle for at least six hours",
+                copy.name,
+                lease_path=copy,
+            )
+        )
 
 
 def _identity(path: Path, *, follow: bool = False) -> tuple[int, int]:
@@ -510,6 +660,7 @@ def build_plan(hub: Path) -> Plan:  # noqa: PLR0912,PLR0915  # one linear pass o
                 lease_path=None,
             )
         )
+    _worker_targets(hub, plan, now)
     return plan
 
 
@@ -555,10 +706,26 @@ def _unsafe(path: Path, hub: Path) -> str | None:
     return None
 
 
-def _precheck(item: Item, hub: Path, trash: Path, current_id: tuple[int, int] | None) -> str | None:
+def _precheck(item: Item, hub: Path, trash: Path, current_id: tuple[int, int] | None) -> str | None:  # noqa: PLR0911  # one explicit refusal per safety condition
     """Why a candidate must not be moved (names, real directories, location, device), or None."""
     checkpoints = hub / ".pipeline/checkpoints"
     lease_path = item.lease_path
+    if item.kind == "worker-target":
+        workers = hub / ".pipeline/workers"
+        if (
+            lease_path is None
+            or lease_path.parent != workers
+            or not WORKER_NAME.fullmatch(lease_path.name)
+            or item.path != lease_path / "target"
+            or not _is_real_directory(workers)
+        ):
+            return "the name does not identify a worker copy's target/"
+        problem = _unsafe(lease_path, hub) or _unsafe(item.path, hub)
+        if problem:
+            return problem
+        if not _same_device(trash, workers):
+            return "trash is on another device, so the rename would not be atomic"
+        return None
     if lease_path is None or lease_path.parent != checkpoints or classify(lease_path.name) is None:
         return "the name does not match a checkpoint pattern"
     problem = _unsafe(lease_path, hub) or (
@@ -575,7 +742,7 @@ def _precheck(item: Item, hub: Path, trash: Path, current_id: tuple[int, int] | 
     return None
 
 
-def _to_trash(item: Item, hub: Path, trash: Path, current_id: tuple[int, int] | None) -> str:  # noqa: PLR0911  # one outcome per refusal, in rule order
+def _to_trash(item: Item, hub: Path, trash: Path, current_id: tuple[int, int] | None) -> str:  # noqa: PLR0911,PLR0912  # one outcome per refusal, in rule order
     """Rename one candidate into trash while holding the exclusive lease; return its outcome."""
     problem = _precheck(item, hub, trash, current_id)
     if problem:
@@ -584,30 +751,54 @@ def _to_trash(item: Item, hub: Path, trash: Path, current_id: tuple[int, int] | 
     if lease_path is None:  # unreachable: _precheck refuses an item without a lease object
         return "refused: the item has no lease object"
     checkpoints = hub / ".pipeline/checkpoints"
+    workers_fd: int | None = None
     try:
-        descriptor = os.open(lease_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        if item.kind == "worker-target":
+            workers_fd = os.open(
+                hub / ".pipeline/workers", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+            descriptor = os.open(
+                lease_path.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=workers_fd,
+            )
+        else:
+            descriptor = os.open(lease_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as error:
+        if workers_fd is not None:
+            os.close(workers_fd)
         return f"refused: cannot open the lease object ({error.strerror})"
     try:
-        named, opened = lease_path.lstat(), os.fstat(descriptor)
+        named = (
+            os.stat(lease_path.name, dir_fd=workers_fd, follow_symlinks=False)
+            if workers_fd is not None
+            else lease_path.lstat()
+        )
+        opened = os.fstat(descriptor)
         if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
             return "refused: the checkpoint was replaced while opening it"
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return "in use"
+        if item.kind == "worker-target":
+            reason = _worker_recheck(item)
+            if reason:
+                return f"kept: {reason}"
         label = "checkpoint" if item.kind == "checkpoint" else "target"
         destination = f"{_now()}-{label}-{lease_path.name}"
         trash_fd = os.open(trash, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        parent_fd = os.open(checkpoints, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            if item.kind == "target":
+            if item.kind in ("target", "worker-target"):
                 lease.rename_exclusive_at(descriptor, "target", trash_fd, destination)
             else:
-                lease.rename_exclusive_at(parent_fd, lease_path.name, trash_fd, destination)
+                parent_fd = os.open(checkpoints, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    lease.rename_exclusive_at(parent_fd, lease_path.name, trash_fd, destination)
+                finally:
+                    os.close(parent_fd)
         finally:
             os.close(trash_fd)
-            os.close(parent_fd)
         return f"moved to trash/{destination}"
     except FileNotFoundError:
         return "gone already"
@@ -615,6 +806,30 @@ def _to_trash(item: Item, hub: Path, trash: Path, current_id: tuple[int, int] | 
         return f"refused: {error.strerror}"
     finally:
         os.close(descriptor)  # closing the descriptor releases the lease
+        if workers_fd is not None:
+            os.close(workers_fd)
+
+
+def _worker_recheck(item: Item) -> str | None:
+    """Recheck worker-copy activity and target age under its exclusive directory lease."""
+    lease_path = item.lease_path
+    if lease_path is None or item.path != lease_path / "target":
+        return "worker target identity changed"
+    try:
+        observed = procscan.open_paths()
+        users = procscan.users_of(lease_path, observed)
+    except (OSError, RuntimeError, ValueError) as error:
+        return f"process path scan failed; kept: {error}"
+    if users:
+        pid, path = users[0]
+        return f"pid {pid} has cwd/open file {path} inside the copy"
+    try:
+        modified = latest_mtime(item.path)
+    except OSError as error:
+        return f"cannot read target mtimes; kept: {error}"
+    if _now() - modified < WORKER_IDLE_NS:
+        return "target/ was modified within the six-hour idle window"
+    return None
 
 
 def delete_trash(trash: Path) -> list[str]:
@@ -659,6 +874,34 @@ def command(hub: Path, *, apply: bool) -> int:
     return _apply(hub, store)
 
 
+def automatic(hub: Path, tools: Path) -> int:
+    """Run best-effort post-publication GC once at a time, logging every outcome in maintenance/."""
+    hub = hub.resolve()
+    maintenance = hub / ".pipeline/maintenance"
+    maintenance.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if maintenance.is_symlink() or not _is_real_directory(maintenance):
+        raise RuntimeError(
+            f"automatic gc refused: maintenance is not a real directory: {maintenance}"
+        )
+    lock_path = maintenance / "gc.lock"
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RuntimeError(f"automatic gc refused: lock is not a regular file: {lock_path}")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 0
+        try:
+            lease.enroll_controller(tools)
+            return command(hub, apply=True)
+        except Exception as error:  # best-effort child: preserve publication, retain diagnostics
+            print(f"automatic gc failed: {type(error).__name__}: {error}", file=sys.stderr)
+            return 1
+    finally:
+        os.close(descriptor)
+
+
 def _dry_run(hub: Path, store: meta.Store) -> int:
     # The locks are taken exactly as for --apply but write no holder metadata, and a missing lock
     # file is a refusal, never a creation.
@@ -691,7 +934,11 @@ def _apply(hub: Path, store: meta.Store) -> int:
         # Trash left by an interrupted run is unreachable by any reader and goes first.
         for line in delete_trash(trash):
             print(line)
-        movable = [item for item in plan.candidates() if item.kind in ("checkpoint", "target")]
+        movable = [
+            item
+            for item in plan.candidates()
+            if item.kind in ("checkpoint", "target", "worker-target")
+        ]
         if movable:
             trash.mkdir(mode=0o700, exist_ok=True)
             if not _is_real_directory(trash):
