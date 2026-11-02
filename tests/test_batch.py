@@ -15,7 +15,7 @@ import time
 import unittest
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import ClassVar
+from typing import IO, ClassVar, cast
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -103,6 +103,15 @@ class BatchGateSpecification(unittest.TestCase):
         self.store = meta.Store(self.hub)
         self.store.ensure()
         self.calls: list[object] = []
+        self.real_gc_start = postpublish._start_gc
+        self.gc_starts: list[tuple[Path, Path]] = []
+        self.gc_start_patch = mock.patch.object(
+            postpublish,
+            "_start_gc",
+            side_effect=lambda hub, tools: self.gc_starts.append((hub, tools)),
+        )
+        self.gc_start_patch.start()
+        self.addCleanup(self.gc_start_patch.stop)
 
     def populate_base(self) -> None:
         """Extra files for the accepted base before it is recorded (a subclass hook)."""
@@ -3046,6 +3055,49 @@ class BatchGateSpecification(unittest.TestCase):
         )
         self.assertIn("hook ran", (self.hub / postpublish.LOG).read_text())
         self.assertEqual(pointer.read_pointer(self.hub)["submissions"], ["hooked"])
+
+    def test_ck176_01_gc_starts_only_after_a_command_advances_the_pointer(self) -> None:
+        self.gc_starts.clear()
+        expected_tools = Path(postpublish.__file__).resolve().parent.parent
+        bid = self.approved("automatic-gc")
+
+        def assert_locks_released(hub: Path, tools: Path) -> None:
+            self.assertEqual((hub, tools), (self.hub, expected_tools))
+            with (
+                locks.ci(hub, blocking=False),
+                locks.state(hub, quiet=True),
+                locks.meta(self.store.repo, quiet=True),
+            ):
+                pass
+
+        with mock.patch.object(
+            postpublish, "_start_gc", side_effect=assert_locks_released
+        ) as started:
+            self.assertEqual(self.ck("batch", "publish", bid), 0)
+        started.assert_called_once_with(self.hub, expected_tools)
+        self.assertEqual(self.gc_starts, [])
+
+    def test_ck176_02_automatic_gc_is_detached_with_a_maintenance_log(self) -> None:
+        tools = Path(postpublish.__file__).resolve().parent.parent
+        log_inodes: list[int] = []
+
+        def verify_log_descriptor(command: list[str], **options: object) -> None:
+            stdout = cast(IO[bytes], options["stdout"])
+            log_inodes.append(os.fstat(stdout.fileno()).st_ino)
+
+        with mock.patch.object(postpublish, "_spawn", side_effect=verify_log_descriptor) as spawn:
+            self.real_gc_start(self.hub, tools)
+        (command,) = spawn.call_args.args
+        options = spawn.call_args.kwargs
+        self.assertIn("gate.gc import automatic", command[3])
+        self.assertEqual(command[-2:], [str(tools), str(self.hub)])
+        self.assertEqual(options["cwd"], self.hub)
+        self.assertEqual(log_inodes, [(self.hub / postpublish.GC_LOG).stat().st_ino])
+        self.assertIs(options["stderr"], subprocess.STDOUT)
+        self.assertTrue(options["close_fds"])
+        self.assertTrue(options["start_new_session"])
+        self.assertNotIn("CK_LEASE_FDS", options["env"])
+        self.assertNotIn("CK_CI_LOCK_FD", options["env"])
 
     def test_ck152_02_a_docs_capture_and_a_docs_flush_each_run_it_once(self) -> None:
         calls = self.install_hook()

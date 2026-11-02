@@ -3,6 +3,8 @@
 import os
 import subprocess
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -10,7 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import procfix
-from gate import procscan
+from gate import lease, procscan
 from gate.records import ProcessRow
 
 HUB = Path("/fixture/hub")
@@ -97,6 +99,78 @@ class ProcessScanSpecification(unittest.TestCase):
     def test_04a_a_marked_test_may_read_the_real_table(self) -> None:
         rows = procfix.REAL_PROCESSES()
         self.assertIn(os.getpid(), {row["pid"] for row in rows})
+
+    def test_05_open_paths_reads_cwd_and_open_file_records(self) -> None:
+        raw = (
+            "p12\0\nfcwd\0n/fixture/worker\0\nf3\0n/fixture/worker/target/a\0"
+            "\np13\0\nf0\0n/dev/null\0\n"
+        )
+        completed = subprocess.CompletedProcess(["lsof"], 0, stdout=raw, stderr="")
+        with mock.patch.object(lease, "run", return_value=completed):
+            self.assertEqual(
+                procscan.open_paths(),
+                {
+                    12: [Path("/fixture/worker"), Path("/fixture/worker/target/a")],
+                    13: [Path("/dev/null")],
+                },
+            )
+
+    @procfix.real_process
+    def test_05a_real_lsof_finds_a_child_running_inside_a_fixture_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / "worker-fixture"
+            copy.mkdir()
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                cwd=copy,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                time.sleep(0.1)
+                users = procscan.users_of(copy)
+                self.assertTrue(
+                    any(pid == child.pid for pid, _path in users),
+                    f"real lsof did not report child {child.pid} in {copy}: {users}",
+                )
+            finally:
+                child.terminate()
+                child.wait(timeout=5)
+
+    def test_06_open_path_scan_fails_closed_on_unreadable_output(self) -> None:
+        for output in ("", "n/orphan\0", "pnot-a-pid\0"):
+            completed = subprocess.CompletedProcess(["lsof"], 0, stdout=output, stderr="")
+            with (
+                mock.patch.object(lease, "run", return_value=completed),
+                self.assertRaises(RuntimeError),
+            ):
+                procscan.open_paths()
+        with (
+            mock.patch.object(
+                lease,
+                "run",
+                side_effect=subprocess.CalledProcessError(1, ["lsof"]),
+            ),
+            self.assertRaisesRegex(RuntimeError, "cannot inspect process"),
+        ):
+            procscan.open_paths()
+        unreadable = subprocess.CompletedProcess(
+            ["lsof"], 0, stdout="p12\0n/fixture\0", stderr="permission denied\n"
+        )
+        with (
+            mock.patch.object(lease, "run", return_value=unreadable),
+            self.assertRaisesRegex(RuntimeError, "permission denied"),
+        ):
+            procscan.open_paths()
+
+    def test_07_users_of_matches_any_process_path_inside_the_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / "worker"
+            (copy / "target").mkdir(parents=True)
+            inside = copy / "target/output"
+            outside = Path(directory) / "elsewhere"
+            self.assertEqual(procscan.users_of(copy, {12: [inside], 13: [outside]}), [(12, inside)])
 
 
 if __name__ == "__main__":

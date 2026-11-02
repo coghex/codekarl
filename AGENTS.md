@@ -145,15 +145,22 @@ comment giving their reason. Comments explain why, not what.
 ## Garbage collection
 
 `tools/ck gc` is a dry run: gc itself deletes and writes nothing. Read its report first.
-On this hub only the manager (or owner) runs `tools/ck gc`, the dry run and `--apply`,
-and runs `--apply` only after a reviewed dry run. Workers and reviewers use it only in
-disposable fixture hubs (a temporary hub in a test), never against this hub. `--apply`
-removes only build output (`target/`) and superseded lease-capable checkpoints outside
-the retention window (7 days plus the 3 newest of each kind), and trash left by an
-interrupted run; it refuses while a recovery condition exists. Captures, records, the
-current checkpoint's source and retained checkpoints are listed as protected, and
-checkpoints from before the lease protocol (with their build output) as report-only;
-none of them is ever removed. Worker copies are neither listed nor collected.
+The manager or owner may run it manually on this hub; workers and reviewers use it only in
+disposable fixture hubs, never against this hub. After a command advances the accepted pointer,
+the controller also starts detached, best-effort `gc --apply` after releasing publication locks.
+It logs the plan and each removal or refusal in `.pipeline/maintenance/gc.log`; this cannot delay
+or fail publication, and overlapping automatic runs are skipped.
+
+`--apply` removes only superseded lease-capable checkpoints outside the retention window (7 days
+plus the 3 newest of each kind), their `target/`, idle worker-copy `target/` directories, and trash
+left by an interrupted run. A worker target is eligible only if every process has no cwd or open
+file anywhere in its copy and no file below `target/` has been modified for at least six hours.
+Collection takes the worker directory's exclusive lease and rechecks both conditions immediately
+before the atomic rename to `.pipeline/trash/`. Build processes must use the shared worker-directory
+lease; an external build that does not participate and starts after the recheck is outside this
+guarantee. Source, `.pijul`, patches, evidence, captures, records, the current checkpoint's source
+and retained checkpoints are never removed. Pre-lease checkpoints and their build output remain
+report-only; gc refuses while a recovery condition exists.
 
 ## Pijul equivalents
 

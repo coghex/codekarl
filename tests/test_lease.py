@@ -498,11 +498,17 @@ OS_SPAWNERS = {
 # CK_LEASE_FDS) to every step; and when `ck doctor` imports it inside a controller, that controller's
 # lease is already held, `check.run` merges every held lease descriptor into each child's `pass_fds`
 # and environment, and the controller's enrollment covers the doctor's processes.
-# The one exception is the owner's post-publish hook (CK-152): it must outlive the command in its own
-# session and is never waited for, which the waiting helper cannot do, and it inherits no descriptors
-# (`close_fds`) and no lease announcement (the environment drops it), so it holds no lease.
+# The exceptions in `postpublish.py` (CK-152/176) are the owner's hook and automatic gc: each must
+# outlive publication in its own session and is never waited for, and each inherits no descriptors
+# (`close_fds`) or lease announcement (the environment drops it). Automatic gc enrolls its own lease.
 ALLOWED_DIRECT_SPAWNS: dict[tuple[str, str], str] = {
-    ("tools/gate/postpublish.py", "subprocess.Popen("): "the detached post-publish hook, no leases",
+    (
+        "tools/gate/postpublish.py",
+        "return subprocess.Popen(",
+    ): (
+        "detached post-publication maintenance; the child drops inherited leases, "
+        "and automatic gc enrolls its own"
+    ),
 }  # (module, line text): reason; every other spawn uses the helper
 
 
@@ -512,12 +518,16 @@ def direct_spawns(source: str, filename: str) -> list[tuple[int, str]]:
     lines = source.splitlines()
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            module, name = node.value.id, node.attr
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+        ):
+            module, name = node.func.value.id, node.func.attr
             if (module == "subprocess" and name in SPAWNERS) or (
                 module == "os" and name in OS_SPAWNERS
             ):
-                found.append((node.lineno, lines[node.lineno - 1].strip()))
+                found.append((node.func.lineno, lines[node.func.lineno - 1].strip()))
         if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
             for alias in node.names:
                 if alias.name in SPAWNERS:
