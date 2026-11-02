@@ -51,7 +51,10 @@
 - **Firm (aspiration).** A long horizon, from an early-medieval start towards the modern era, supported for as long as is feasible.
 - **Open.** The start date. Two options have been raised: the coronation of Charlemagne (*example* date 9 October 768), or a later start around
   the early 1400s, as EU4 does. The owner considers this unimportant for the vision.
-- **Open.** The first playable region. Ireland or Brittany has been suggested, to get the mechanics right before expanding to a global map.
+- **Firm (owner, 2026-11-02). The first region is Ireland,** with its offshore islands; everything outside it is hidden for now. Owner: "the
+  first region is going to be ireland", and later in the map design session: "we have settled on ireland as the pilot nation, since its an
+  island in a relatively normal situation that doesnt have much outside contact but is still large enough to have some politics going on
+  internally." (Brittany had also been suggested.) The aim is unchanged: get the mechanics right before expanding to a global map.
 
 ## Game design (moved to docs/game/)
 
@@ -78,7 +81,7 @@ Answers to ck-guide's two questions of 20:11Z (at 20:15Z) and its two of 20:16Z 
     troop numbers, morale and supplies (ck-guide's 20:16Z preference, adopted); the uncertainty is mainly about where unseen forces are.
 - Character skills and traits are visible (see "Characters").
 - **Open:** exactly which economic information is shown, and how it relates to unmapped land; how units are spotted, from what and at what
-  range; and what is shown for units that have been seen but are no longer visible. Map design itself remains reserved (see "Map").
+  range; and what is shown for units that have been seen but are no longer visible. Map design is in its own session (see "Map").
 
 ## Missions
 
@@ -96,13 +99,19 @@ Answers to ck-guide's two questions of 20:11Z (at 20:15Z) and its two of 20:16Z 
 - **Firm.** The AI has preset preferences for mission choices, so that history tends to follow its course when conditions allow, for example
   England or Germany eventually forming. These are preferences, not unconditional forced outcomes.
 
-## Map (idea recorded; design reserved)
+## Map (design session started 2026-11-02)
 
-- **Firm.** Map design is reserved for a separate, fresh-context discussion with the owner. This page records the idea only.
+- **Firm.** Map design is held in a separate discussion with the owner. It started on 2026-11-02 and is recorded in
+  [map-design.md](map-design.md); this page keeps the idea and the style statement.
+- **Firm (owner, 2026-11-02). The style:** "the style of the map is going to be solid colors overlayed across a dark background, i have a
+  unique vision in my head for how i want it to look." Later in the session: "dark black background like a arcade game, flat colors with
+  two-tone dithering that contrast with that. low color count, minimalist, like a colored version of 'return of the obra dinn'". The
+  detailed look agreed so far is in map-design.md.
 - The idea: live-rendered pixels with sprites on top, and a moddable data format that captures terrain and resources. Zooming in reveals detail
   as new pixels come into place, with landscape cues from procedural dithering, colour and other features. The owner describes this as fast,
   live graphics memory updated as a function of zoom and the map data.
-- **Open (deliberately).** Pixel storage, tiles, algorithms, rendering interfaces, geographic resolution and GPU layout.
+- **Open (deliberately).** Pixel storage, tiles, algorithms, rendering interfaces and GPU layout. Geographic resolution is partly settled:
+  the owner accepted 500 m on 2026-11-02, "as detailed as we can" within computational pragmatism (see map-design.md).
 
 ## Engineering direction
 
