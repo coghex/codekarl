@@ -86,16 +86,27 @@ step's process group and exits 75, which the gate treats as an infrastructure fa
 ## Garbage collection
 
 `ck gc` is a dry run that classifies every checkpoint, build output directory,
-capture and record as a candidate, in use, protected or report-only, and
-removes nothing. `ck gc --apply` recomputes that plan under the state and
-metadata locks, takes each candidate's exclusive checkpoint lease, moves it to
-`.pipeline/trash/` and then deletes it. It removes only build output and
-superseded lease-capable checkpoints outside the retention window, and refuses
-while any recovery condition exists (an unfinished publication, an unreadable
-record), naming the command that resolves it. Captures, records, the current
-checkpoint and pre-lease checkpoints are never removed; worker copies are never
-listed. On this hub only the manager or owner runs it, and `--apply` only after
-a reviewed dry run.
+worker build output, capture and record as a candidate, in use, protected or
+report-only, and removes nothing. `ck gc --apply` recomputes that plan under the
+state and metadata locks, takes each candidate's exclusive lease, moves it to
+`.pipeline/trash/` and then deletes it. It removes superseded lease-capable
+checkpoints outside the retention window, their build output, and worker-copy
+`target/` directories whose copy has no process cwd or open file and whose
+contents have been idle for at least six hours. For worker output it takes the
+exclusive worker-directory lease and rechecks process use and age before rename.
+Builds must hold the shared worker-directory lease; an external unleased build
+that starts after this recheck is outside the guarantee. Captures, records,
+worker source, `.pijul`, patches and evidence are never removed. Pre-lease
+checkpoints remain report-only, and gc refuses while any recovery condition
+exists (an unfinished publication or unreadable record), naming its repair
+command.
+
+After a command advances the accepted pointer, the controller starts detached,
+best-effort `gc --apply` after releasing publication locks. The log at
+`.pipeline/maintenance/gc.log` records the plan, removals and refusals. The
+publication result never waits for or depends on this run; another automatic
+run is skipped while one is in progress. Workers and reviewers may execute GC
+only against disposable fixture hubs, never the shared project hub.
 
 ## Failed batches
 
