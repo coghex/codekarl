@@ -1281,8 +1281,9 @@ fn a_held_revision_lookup_follows_the_current_hold_and_never_returns_a_wrong_set
 fn a_compatibility_upload_failure_is_reported_before_the_ordinary_one_and_only_for_the_marked_key()
 {
     for marked in [true, false] {
-        // The second image-memory allocation fails (the checker's block is the first): an image of 1100 x 1100 has an allocation
-        // of its own (it is over the dedicated-allocation threshold).
+        // The second image-memory allocation fails (the checker's block is the first): an image of 3200 x 3200 (over half a block)
+        // has an allocation of its own whatever the driver prefers (`MoltenVK` stops preferring one for an image of this class once it
+        // allocates from Metal heaps, so the case no longer leans on 1100 x 1100, which only the driver's hint made dedicated).
         let mut rig = Rig::with_hooks(
             Mode::PerRevision,
             8,
@@ -1299,9 +1300,9 @@ fn a_compatibility_upload_failure_is_reported_before_the_ordinary_one_and_only_f
             .offer(
                 5,
                 1,
-                1100,
-                1100,
-                Arc::new(Bytes([1, 2, 3, 255].repeat(1100 * 1100))) as Arc<dyn PixelSource>,
+                3200,
+                3200,
+                Arc::new(Bytes([1, 2, 3, 255].repeat(3200 * 3200))) as Arc<dyn PixelSource>,
             )
             .expect("offered");
         let events = rig.pump_until(|_, events| {

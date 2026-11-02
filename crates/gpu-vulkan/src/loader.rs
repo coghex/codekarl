@@ -19,6 +19,9 @@ use ash::vk;
 
 use crate::Error;
 
+/// Whether this build is for macOS: the one platform where a portability loader is `MoltenVK` (the instance asks it for Metal heaps).
+pub(crate) const MACOS: bool = cfg!(target_os = "macos");
+
 /// The loader's file name on this platform.
 #[cfg(target_os = "macos")]
 const LOADER_FILE: &str = "libvulkan.1.dylib";

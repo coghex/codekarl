@@ -114,6 +114,10 @@ impl Stack for Real {
         )
     }
 
+    fn heap_notice(&self, instance: &Instance) -> Option<String> {
+        instance.moltenvk_heap_notice().map(str::to_owned)
+    }
+
     fn validation_log(&self, instance: &Instance) -> ValidationLogHandle {
         instance.validation_log()
     }

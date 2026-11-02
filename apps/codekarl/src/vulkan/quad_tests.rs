@@ -805,6 +805,49 @@ fn the_loaders_env_layer_notice_is_one_info_record_with_its_own_marker_and_passe
     );
 }
 
+/// CK-175: `MoltenVK` without `VK_EXT_layer_settings` cannot be asked for Metal heaps; the instance says so and the run writes it once, as a
+/// `warn` render record (the logged fallback), however many drains follow. A run whose instance has no notice writes none.
+#[test]
+fn the_heap_notice_of_the_instance_is_written_once_as_a_warn_render_record() {
+    let scenario = scenario();
+    let notice = "MoltenVK does not offer VK_EXT_layer_settings: Metal heaps were not requested (MVK_CONFIG_USE_MTLHEAP)";
+    let mut run = started(Script {
+        heap_notice: Some(notice.to_owned()),
+        ..Script::default()
+    });
+    some_passes(&mut run);
+    some_passes(&mut run);
+    assert_eq!(
+        end_of(&mut run, Duration::from_secs(5)),
+        Some(CleanupResult::Proven)
+    );
+    let records = scenario.records();
+    let written = containing(&records, "MVK_CONFIG_USE_MTLHEAP");
+    assert_eq!(written.len(), 1, "once: {records:?}");
+    assert!(written[0].contains("WARN"), "{}", written[0]);
+    assert!(written[0].contains("render"), "{}", written[0]);
+    assert!(
+        validation_rule::check(&records.join("\n")).is_ok(),
+        "the output rule accepts it"
+    );
+}
+
+#[test]
+fn an_instance_without_a_heap_notice_writes_no_heap_record() {
+    let scenario = scenario();
+    let mut run = started(Script::default());
+    some_passes(&mut run);
+    assert_eq!(
+        end_of(&mut run, Duration::from_secs(5)),
+        Some(CleanupResult::Proven)
+    );
+    let records = scenario.records();
+    assert!(
+        containing(&records, "MVK_CONFIG_USE_MTLHEAP").is_empty(),
+        "{records:?}"
+    );
+}
+
 #[test]
 fn a_message_the_destruction_appends_after_the_instance_is_consumed_is_written_by_the_final_drain()
 {

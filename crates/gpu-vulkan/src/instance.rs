@@ -9,10 +9,85 @@ use ash::vk;
 use ash::{ext, khr};
 
 use crate::error::vk_error;
+use crate::loader::MACOS;
 use crate::{CleanupResult, Error, Loader};
 
 /// The validation layer's name.
 const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
+
+/// The layer name `MoltenVK` reads its `VK_EXT_layer_settings` under.
+const MOLTENVK_LAYER: &CStr = c"MoltenVK";
+/// `MoltenVK`'s setting (and, spelled the same, its environment variable) for allocating textures and buffers from Metal heaps.
+const MOLTENVK_HEAP_SETTING: &CStr = c"MVK_CONFIG_USE_MTLHEAP";
+/// `MoltenVK` 1.2.11 reads the setting from the process environment first and lets the instance's layer settings override it
+/// (`MoltenVK_Configuration_Parameters.md`, "Configuration Parameters"); the instance therefore asks only when the environment says
+/// nothing, so a value the owner set there (`0` included) is the one in force.
+const MOLTENVK_HEAP_ENVIRONMENT: &str = "MVK_CONFIG_USE_MTLHEAP";
+
+/// What the instance did about `MoltenVK`'s Metal heaps (`MVK_CONFIG_USE_MTLHEAP`): with heaps, 32,768 live textures cost the GPU
+/// about 0.75 ms a frame; without, about 157.5 ms (CK-168).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoltenVkHeap {
+    /// Not `MoltenVK` (a non-macOS build, or no portability loader): nothing was requested and nothing changes.
+    NotMoltenVk,
+    /// `MoltenVK`: the instance enabled `VK_EXT_layer_settings` and asked for Metal heaps.
+    Requested,
+    /// `MoltenVK`, and `MVK_CONFIG_USE_MTLHEAP` is set in the process environment: nothing was requested, the environment's value
+    /// stands (the instance never sets or changes an environment variable).
+    EnvironmentDecides,
+    /// `MoltenVK`, but it does not offer `VK_EXT_layer_settings`: nothing was requested; the instance carries the notice
+    /// ([`Instance::moltenvk_heap_notice`]) and was created without it.
+    Unavailable,
+}
+
+impl MoltenVkHeap {
+    /// The one notice that goes with this answer, for the application to log: only [`Unavailable`](Self::Unavailable) has one.
+    #[must_use]
+    pub fn notice(self) -> Option<&'static str> {
+        match self {
+            Self::Unavailable => Some(
+                "MoltenVK does not offer VK_EXT_layer_settings: Metal heaps were not requested (MVK_CONFIG_USE_MTLHEAP); \
+                 a scene with many live textures costs much more GPU time",
+            ),
+            Self::NotMoltenVk | Self::Requested | Self::EnvironmentDecides => None,
+        }
+    }
+}
+
+/// Whether the implementation is `MoltenVK`: a macOS build on the portability path. The portability flag alone is not enough (the
+/// Linux loader offers `VK_KHR_portability_enumeration` too).
+fn is_moltenvk(macos: bool, portability: bool) -> bool {
+    macos && portability
+}
+
+/// The decision, from three facts.
+fn heap_decision(
+    moltenvk: bool,
+    layer_settings_offered: bool,
+    environment_set: bool,
+) -> MoltenVkHeap {
+    if !moltenvk {
+        MoltenVkHeap::NotMoltenVk
+    } else if environment_set {
+        MoltenVkHeap::EnvironmentDecides
+    } else if layer_settings_offered {
+        MoltenVkHeap::Requested
+    } else {
+        MoltenVkHeap::Unavailable
+    }
+}
+
+/// The one boolean setting that asks `MoltenVK` for Metal heaps; `value` is what `p_values` points at.
+fn heap_setting(value: &vk::Bool32) -> vk::LayerSettingEXT<'_> {
+    let mut setting = vk::LayerSettingEXT::default()
+        .layer_name(MOLTENVK_LAYER)
+        .setting_name(MOLTENVK_HEAP_SETTING)
+        .ty(vk::LayerSettingTypeEXT::BOOL32);
+    // One value, not the byte count `values` would set.
+    setting.value_count = 1;
+    setting.p_values = std::ptr::from_ref(value).cast();
+    setting
+}
 
 /// The one validation message the log tolerates: `MoltenVK`'s `vkGetDescriptorSetLayoutSupport` answers no for any layout of
 /// 1,024 (1.2.11) or 1,212 (1.4.2) descriptors or more, whatever its update-after-bind limits say, so creating the bindless
@@ -285,6 +360,7 @@ pub(crate) struct InstanceInner {
     pub(crate) log: Arc<ValidationLog>,
     pub(crate) debug: Option<Debug>,
     pub(crate) portability: bool,
+    pub(crate) heap: MoltenVkHeap,
     pub(crate) extensions: Vec<String>,
     /// Off-screen readbacks whose completion is unproven and which therefore keep this instance for the rest
     /// of the process (each also holds an `Arc` of it).
@@ -343,6 +419,19 @@ impl Instance {
     #[must_use]
     pub fn is_portability(&self) -> bool {
         self.inner.portability
+    }
+
+    /// What the instance did about `MoltenVK`'s Metal heaps: [`MoltenVkHeap::Requested`] on the `MoltenVK` path, [`MoltenVkHeap::NotMoltenVk`]
+    /// everywhere else.
+    #[must_use]
+    pub fn moltenvk_heap(&self) -> MoltenVkHeap {
+        self.inner.heap
+    }
+
+    /// The notice to log when the heap request could not be made (`MoltenVK` without `VK_EXT_layer_settings`); `None` otherwise.
+    #[must_use]
+    pub fn moltenvk_heap_notice(&self) -> Option<&'static str> {
+        self.inner.heap.notice()
     }
 
     /// Every validation warning and error recorded so far (empty unless validation was asked for).
@@ -589,6 +678,12 @@ fn create_inner(
     if plan.portability {
         info = info.flags(vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR);
     }
+    let heap_value: vk::Bool32 = vk::TRUE;
+    let heap_settings = [heap_setting(&heap_value)];
+    let mut layer_settings = vk::LayerSettingsCreateInfoEXT::default().settings(&heap_settings);
+    if plan.heap == MoltenVkHeap::Requested {
+        info = info.push_next(&mut layer_settings);
+    }
     if let Some(messenger) = create_messenger.as_mut() {
         // Reports what happens during `vkCreateInstance` and `vkDestroyInstance`.
         info = info.push_next(messenger);
@@ -638,6 +733,7 @@ fn create_inner(
             log,
             debug,
             portability: plan.portability,
+            heap: plan.heap,
             extensions: plan.extensions,
             retained_readbacks: AtomicUsize::new(0),
         }),
@@ -812,6 +908,7 @@ struct Plan {
     extensions: Vec<String>,
     layers: Vec<&'static CStr>,
     portability: bool,
+    heap: MoltenVkHeap,
     /// The crate's debug messenger is installed: validation was asked for, or the environment enables the layer.
     messenger: bool,
 }
@@ -873,6 +970,15 @@ fn plan_instance(
     if portability {
         wanted.push(portability_name);
     }
+    let layer_settings_name = ext::layer_settings::NAME.to_string_lossy().into_owned();
+    let heap = heap_decision(
+        is_moltenvk(MACOS, portability),
+        have.contains(&layer_settings_name),
+        std::env::var_os(MOLTENVK_HEAP_ENVIRONMENT).is_some(),
+    );
+    if heap == MoltenVkHeap::Requested {
+        wanted.push(layer_settings_name);
+    }
     let mut layers: Vec<&'static CStr> = Vec::new();
     let debug_utils = ext::debug_utils::NAME.to_string_lossy().into_owned();
     let mut messenger = options.validation;
@@ -915,6 +1021,7 @@ fn plan_instance(
         extensions: wanted,
         layers,
         portability,
+        heap,
         messenger,
     })
 }
@@ -1067,11 +1174,72 @@ mod tests {
     use ash::vk;
 
     use super::{
-        LOG_ENTRIES, LayerEnvironment, TOLERATED_VUID, ValidationLog, enable_filter_matches,
-        on_message, validation_active,
+        LOG_ENTRIES, LayerEnvironment, MoltenVkHeap, TOLERATED_VUID, ValidationLog,
+        enable_filter_matches, heap_decision, heap_setting, is_moltenvk, on_message,
+        validation_active,
     };
 
     const LAYER: &str = "VK_LAYER_KHRONOS_validation";
+
+    /// CK-175: the instance asks `MoltenVK` for Metal heaps on a macOS build with the portability path, and only there. The portability
+    /// flag alone is not `MoltenVK`: the Linux loader offers `VK_KHR_portability_enumeration` too.
+    #[test]
+    fn the_heap_is_requested_on_macos_with_portability_and_nowhere_else() {
+        // (macos, portability, layer settings offered, environment set) -> answer
+        for (macos, portability, offered, environment, expected) in [
+            (true, true, true, false, MoltenVkHeap::Requested),
+            // A non-macOS plan with portability present asks for nothing, whatever else is true.
+            (false, true, true, false, MoltenVkHeap::NotMoltenVk),
+            (false, true, false, false, MoltenVkHeap::NotMoltenVk),
+            (false, true, true, true, MoltenVkHeap::NotMoltenVk),
+            // macOS without the portability path is not `MoltenVK` either.
+            (true, false, true, false, MoltenVkHeap::NotMoltenVk),
+            (false, false, true, false, MoltenVkHeap::NotMoltenVk),
+            // `MoltenVK` with the setting already in the environment: the environment stands, nothing is requested.
+            (true, true, true, true, MoltenVkHeap::EnvironmentDecides),
+            (true, true, false, true, MoltenVkHeap::EnvironmentDecides),
+            // `MoltenVK` without `VK_EXT_layer_settings`: nothing is requested, and the notice says so.
+            (true, true, false, false, MoltenVkHeap::Unavailable),
+        ] {
+            assert_eq!(
+                heap_decision(is_moltenvk(macos, portability), offered, environment),
+                expected,
+                "macos {macos}, portability {portability}, offered {offered}, environment {environment}"
+            );
+        }
+    }
+
+    /// The setting the instance chains is `MoltenVK`'s `MVK_CONFIG_USE_MTLHEAP`, one boolean `true`, under the layer name `MoltenVK`.
+    #[test]
+    fn the_heap_setting_is_the_one_boolean_moltenvk_reads() {
+        let value: vk::Bool32 = vk::TRUE;
+        let setting = heap_setting(&value);
+        // SAFETY: the layer name pointer comes from the static C string the setting was built with.
+        let layer = unsafe { setting.layer_name_as_c_str() }.expect("a layer name");
+        // SAFETY: the setting name pointer comes from the static C string the setting was built with.
+        let name = unsafe { setting.setting_name_as_c_str() }.expect("a setting name");
+        assert_eq!(layer, c"MoltenVK");
+        assert_eq!(name, c"MVK_CONFIG_USE_MTLHEAP");
+        assert_eq!(setting.ty, vk::LayerSettingTypeEXT::BOOL32);
+        assert_eq!(setting.value_count, 1);
+        // SAFETY: `p_values` points at `value`, which lives to the end of this test.
+        assert_eq!(unsafe { *setting.p_values.cast::<vk::Bool32>() }, vk::TRUE);
+    }
+
+    /// Only the unavailable answer carries a notice (the application logs it once).
+    #[test]
+    fn only_an_unavailable_heap_request_has_a_notice() {
+        for heap in [
+            MoltenVkHeap::NotMoltenVk,
+            MoltenVkHeap::Requested,
+            MoltenVkHeap::EnvironmentDecides,
+        ] {
+            assert_eq!(heap.notice(), None, "{heap:?}");
+        }
+        let notice = MoltenVkHeap::Unavailable.notice().expect("a notice");
+        assert!(notice.contains("VK_EXT_layer_settings"), "{notice}");
+        assert!(notice.contains("MVK_CONFIG_USE_MTLHEAP"), "{notice}");
+    }
 
     fn layers(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| (*name).to_owned()).collect()
