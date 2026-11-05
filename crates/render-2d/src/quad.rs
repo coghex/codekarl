@@ -24,6 +24,7 @@ use ck_window::{MAX_DIMENSION, PixelSize, WindowDesc};
 
 use crate::Image;
 use crate::filter::Filter;
+use crate::map::MapFrame;
 use crate::scene::{QuadKey, SceneFrame};
 
 /// Edges, in pixels, are clamped to this magnitude before they become `i32`.
@@ -229,7 +230,7 @@ pub fn validate_rect(x: f64, y: f64, width: f64, height: f64) -> Result<(), Quad
 /// Whether `source` is a span a GPU can sample: finite, inside the `width x height` image, and non-empty
 /// *as `f32`* (an extreme scale can make two distinct `f64` edges round to one `f32`, which no backend can
 /// draw). The destination is already known to be non-empty here.
-fn drawable(source: &SourceRect, width: u32, height: u32) -> bool {
+pub(crate) fn drawable(source: &SourceRect, width: u32, height: u32) -> bool {
     let finite = [source.left, source.top, source.right, source.bottom]
         .iter()
         .all(|value| value.is_finite());
@@ -367,4 +368,8 @@ pub struct Snapshot {
     pub scene: Option<Arc<SceneFrame>>,
     /// The metrics in force when this snapshot was made. Frame consumers use these metrics for placement.
     pub metrics: Metrics,
+    /// The map lane: the map input, the camera computed for **these** metrics and where the enlarged map lands, or `None` when
+    /// there is no map input, no camera, or a camera computed for other metrics (the frame is then exactly the frame without a map).
+    /// Backends draw it above the clear and below the legacy quad.
+    pub map: Option<MapFrame>,
 }

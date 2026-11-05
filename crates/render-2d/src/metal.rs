@@ -38,7 +38,8 @@ use std::time::Duration;
 
 use ck_gpu_metal::{
     BindlessLimits, CleanupResult as GpuCleanup, DestinationRect, EndError, FrameStats,
-    LedgerLimits, MetalContext, MetalFilter, MetalFrame, MetalFrameSlot, MetalPresenter, MetalQuad,
+    LedgerLimits, MapRefusalSink as MetalRefusalSink, MetalContext, MetalFilter, MetalFrame,
+    MetalFrameSlot, MetalMap, MetalMapError, MetalMapInput, MetalPresenter, MetalQuad,
     MetalQuadSlot, MetalScene, MetalSceneSource, MetricsEndGuard, MetricsReading, MetricsWindow,
     PixelSource, PresenterReport as GpuReport, RequestError, SceneLimits as GpuSceneLimits,
     SceneSetup, SceneStats, SourceRect, TestHooks as PresenterTestHooks, TextureLimits,
@@ -50,7 +51,7 @@ use ck_window_cocoa::CocoaHandles;
 
 use crate::metal_resident::MetalResidentDriver;
 use crate::metal_scene::SceneFrameSource;
-use crate::{Filter, Gpu2d, Image, QuadSink, Snapshot, WakeRelay};
+use crate::{Filter, Gpu2d, Image, MapRefusals, QuadSink, Snapshot, WakeRelay};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -216,6 +217,61 @@ impl Default for Conversion {
     }
 }
 
+/// The GPU crate's map for a snapshot: `None` when the snapshot carries none or shows none, an error when the GPU crate refuses
+/// what the lane validated.
+pub(crate) fn metal_map(snapshot: &Snapshot) -> Result<Option<MetalMap>, String> {
+    let Some(frame) = &snapshot.map else {
+        return Ok(None);
+    };
+    let Some(placement) = frame.placement else {
+        return Ok(None);
+    };
+    let input = &frame.input;
+    let camera = &frame.camera;
+    let refused = |error: MetalMapError| format!("the map was refused: {error}");
+    let gpu_input = MetalMapInput::new(
+        input.generation(),
+        input.origin(),
+        input.size(),
+        Arc::clone(input.grid_a()),
+        Arc::clone(input.grid_b()),
+        Arc::clone(input.palette()),
+    )
+    .map_err(refused)?;
+    let map = MetalMap::new(
+        Arc::new(gpu_input),
+        camera.top_left(),
+        camera.view(),
+        DestinationRect {
+            left: placement.destination.left,
+            top: placement.destination.top,
+            right: placement.destination.right,
+            bottom: placement.destination.bottom,
+        },
+        SourceRect {
+            left: placement.source.left,
+            top: placement.source.top,
+            right: placement.source.right,
+            bottom: placement.source.bottom,
+        },
+    )
+    .map_err(refused)?;
+    // Where the presenter tells the publisher it refused to make a map image (and that it later could).
+    Ok(Some(map.with_refusals(
+        Arc::clone(&frame.refusals) as Arc<dyn MetalRefusalSink>
+    )))
+}
+
+impl MetalRefusalSink for MapRefusals {
+    fn refused(&self, message: &str) {
+        MapRefusals::refused(self, message);
+    }
+
+    fn cleared(&self) {
+        MapRefusals::cleared(self);
+    }
+}
+
 /// What publishing one snapshot decided.
 pub(crate) struct Step {
     /// The scene for the GPU slot.
@@ -246,6 +302,12 @@ impl Conversion {
                 None,
                 Some(message),
             ),
+        };
+        // The map lane (milestone 6, slice 1): the shared grids and the camera, placed with this snapshot's own metrics, in O(1). A
+        // map the GPU crate refuses leaves the scene without it and is a refusal like a refused quad.
+        let (scene, refusal) = match metal_map(snapshot) {
+            Ok(map) => (scene.with_map(map), refusal),
+            Err(message) => (scene, refusal.or(Some(message))),
         };
         self.cache = match (&snapshot.quad, wrapper) {
             (Some(placed), Some(wrapper)) => {
@@ -376,6 +438,7 @@ impl SceneSink {
                 self.placements.as_ref(),
             ),
         )
+        .with_map(scene.map().cloned())
         // The compatibility quad's key as plain data, in O(1), whether or not it places anything.
         .with_compat_key(
             snapshot

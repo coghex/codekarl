@@ -21,7 +21,12 @@ use crate::draw::{
     QuadParams, QuadPipeline, QuadTexture, Tally, device_checks, record_draw, upload_bytes,
 };
 use crate::error::vk_error;
+use crate::gpu_map::{
+    MapInputObjects, MapObjects, MapRecord, MapTargetObjects, record_map_pass, record_map_quad,
+};
+use crate::hooks::QuadFaults;
 use crate::instance::InstanceInner;
+use crate::map::{MapReadback, VulkanMap};
 use crate::quad::{MAX_IMAGE_BYTES, VulkanQuad};
 use crate::readback::{Failure, Opened, ReadbackHooks, allocate, open_device, release};
 use crate::unwind;
@@ -49,6 +54,11 @@ struct Objects<'a> {
     buffer_memory: Option<vk::DeviceMemory>,
     pipeline: QuadPipeline,
     texture: QuadTexture,
+    /// The map's pipeline, input and target (milestone 6, slice 1): the presenter's own objects, made when the readback has a map.
+    map: MapObjects,
+    /// The host-visible buffer the map target is copied into.
+    map_buffer: Option<vk::Buffer>,
+    map_buffer_memory: Option<vk::DeviceMemory>,
 }
 
 impl Objects<'_> {
@@ -76,6 +86,28 @@ impl Objects<'_> {
             // SAFETY: the buffer bound to it is destroyed.
             unsafe { device.free_memory(memory, None) };
         }
+        if let Some(buffer) = self.map_buffer.take() {
+            // SAFETY: nothing uses the buffer any more.
+            unsafe { device.destroy_buffer(buffer, None) };
+        }
+        if let Some(memory) = self.map_buffer_memory.take() {
+            // SAFETY: the buffer bound to it is destroyed.
+            unsafe { device.free_memory(memory, None) };
+        }
+        let map_pool = self.map.pipeline.pool;
+        for mut input in [self.map.retired_input.take(), self.map.input.take()]
+            .into_iter()
+            .flatten()
+        {
+            input.destroy(device, map_pool);
+        }
+        for mut target in [self.map.retired_target.take(), self.map.target.take()]
+            .into_iter()
+            .flatten()
+        {
+            target.destroy(device, map_pool);
+        }
+        self.map.pipeline.destroy(device);
         let descriptor_pool = self.pipeline.pool;
         self.texture.destroy(device, descriptor_pool);
         self.pipeline.destroy(device);
@@ -100,8 +132,8 @@ impl Objects<'_> {
 
 /// How a readback ended.
 enum Outcome {
-    /// The bytes, with the submit proven finished.
-    Done(Vec<u8>),
+    /// The window's bytes and the map target's (when there was a map), with the submit proven finished.
+    Done(Vec<u8>, Option<Vec<u8>>),
     /// An error with nothing in flight: everything may be destroyed.
     Clean(Error),
     /// An error with the completion unproven: nothing is destroyed on a guess.
@@ -152,6 +184,41 @@ pub fn readback_quad_with_test_hooks(
     quad: Option<&VulkanQuad>,
     hooks: ReadbackHooks,
 ) -> Result<Vec<u8>, Error> {
+    readback_frame(instance, (width, height), clear, (None, quad), hooks).map(|frame| frame.window)
+}
+
+/// Renders a `width` × `height` `B8G8R8A8_UNORM` window off screen **through the presenter's own map pass and composition** (milestone
+/// 6, slice 1): the map target written from `map`'s grids by the map pass, then the window pass — the clear, the enlarged map, `quad`
+/// if any — and returns the window's bytes (BGRA, rows top first) and the map target's (`R8G8B8A8`, rows top first, `view` sized).
+/// `map` `None` is the frame without a map. Ownership and failure rules are [`readback_quad`]'s.
+///
+/// # Errors
+///
+/// As [`readback_quad`], and the device check the map failed (a side over `maxImageDimension2D`, or a missing capability).
+pub fn readback_map(
+    instance: &Instance,
+    width: u32,
+    height: u32,
+    clear: [f32; 3],
+    map: Option<&VulkanMap>,
+    quad: Option<&VulkanQuad>,
+) -> Result<MapReadback, Error> {
+    readback_frame(
+        instance,
+        (width, height),
+        clear,
+        (map, quad),
+        ReadbackHooks::default(),
+    )
+}
+
+fn readback_frame(
+    instance: &Instance,
+    (width, height): (u32, u32),
+    clear: [f32; 3],
+    (map, quad): (Option<&VulkanMap>, Option<&VulkanQuad>),
+    hooks: ReadbackHooks,
+) -> Result<MapReadback, Error> {
     // Before any Vulkan call or large allocation: the target's own bounds (not the quad's source limits).
     let length = output_length(width, height, MAX_TARGET_SIDE, MAX_IMAGE_BYTES)?;
     // The holds sit in `ManuallyDrop`: only an explicit clean or proven exit releases them, never an unwind.
@@ -167,13 +234,14 @@ pub fn readback_quad_with_test_hooks(
         length,
         clear,
         quad,
+        map,
         hooks,
     };
     let (outcome, device) = run(&instance.inner, &job);
     match outcome {
-        Outcome::Done(bytes) => {
+        Outcome::Done(window, target) => {
             release(instance, held, device);
-            Ok(bytes)
+            Ok(MapReadback { window, target })
         }
         Outcome::Clean(error) => {
             release(instance, held, device);
@@ -267,6 +335,8 @@ struct Job<'a> {
     length: usize,
     clear: [f32; 3],
     quad: Option<&'a VulkanQuad>,
+    /// The map frame (milestone 6, slice 1), if any.
+    map: Option<&'a VulkanMap>,
     hooks: ReadbackHooks,
 }
 
@@ -286,6 +356,16 @@ fn run(inner: &InstanceInner, job: &Job<'_>) -> (Outcome, Option<ash::Device>) {
     {
         return (Outcome::Clean(error), Some(opened.device));
     }
+    if let Some(map) = job.map
+        && let Err(error) = crate::gpu_map::device_checks(
+            &inner.instance,
+            opened.physical,
+            map,
+            job.hooks.max_image_dimension,
+        )
+    {
+        return (Outcome::Clean(error), Some(opened.device));
+    }
     let mut objects = Objects {
         device: &opened.device,
         pool: None,
@@ -299,6 +379,9 @@ fn run(inner: &InstanceInner, job: &Job<'_>) -> (Outcome, Option<ash::Device>) {
         buffer_memory: None,
         pipeline: QuadPipeline::default(),
         texture: QuadTexture::default(),
+        map: MapObjects::default(),
+        map_buffer: None,
+        map_buffer_memory: None,
     };
     // An unwind is caught here, at the readback boundary, and becomes an `Error`: after the submit the
     // completion is unproven (the owners are kept), before it nothing is in flight.
@@ -433,7 +516,27 @@ fn read(
     let bytes = unsafe { std::slice::from_raw_parts(mapped.cast::<u8>(), length) }.to_vec();
     // SAFETY: the memory is mapped by this function.
     unsafe { device.unmap_memory(work.buffer_memory) };
-    Outcome::Done(bytes)
+    let target = match (job.map, work.map_buffer) {
+        (Some(map), Some((_, memory))) => {
+            let [view_width, view_height] = map.view();
+            let target_length = (view_width as usize) * (view_height as usize) * 4;
+            // SAFETY: the memory is host visible and coherent; the submit is proven finished.
+            let mapped = match unsafe {
+                device.map_memory(memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())
+            } {
+                Ok(mapped) => mapped,
+                Err(code) => return early(("vkMapMemory", code)),
+            };
+            // SAFETY: the mapping is at least `target_length` bytes, written by the finished copy.
+            let bytes =
+                unsafe { std::slice::from_raw_parts(mapped.cast::<u8>(), target_length) }.to_vec();
+            // SAFETY: the memory is mapped by this function.
+            unsafe { device.unmap_memory(memory) };
+            Some(bytes)
+        }
+        _ => None,
+    };
+    Outcome::Done(bytes, target)
 }
 
 /// The device-level state the readback works with.
@@ -446,6 +549,8 @@ struct Work {
     render_pass: vk::RenderPass,
     framebuffer: vk::Framebuffer,
     target: vk::Image,
+    /// The map target's copy-out buffer, when the frame has a map.
+    map_buffer: Option<(vk::Buffer, vk::DeviceMemory)>,
 }
 
 /// Creates the render pass, the target and its view and framebuffer, the quad's pipeline and texture (when
@@ -475,8 +580,20 @@ fn build(
         objects,
         target_tally,
     )?;
-    if let (Some(quad), Some(bytes)) = (job.quad, upload) {
+    if job.map.is_some() || (job.quad.is_some() && upload.is_some()) {
+        // The quad's pipeline also draws the enlarged map, so a frame with a map has it too.
         objects.pipeline.create(device, render_pass, tally)?;
+    }
+    let map_buffer = match job.map {
+        Some(map) => Some(create_map_objects(
+            device,
+            &memory_properties,
+            objects,
+            map,
+        )?),
+        None => None,
+    };
+    if let (Some(quad), Some(bytes)) = (job.quad, upload) {
         objects.texture.create(
             device,
             &memory_properties,
@@ -534,7 +651,65 @@ fn build(
         render_pass,
         framebuffer,
         target,
+        map_buffer,
     })
+}
+
+/// Creates the presenter's own map objects for `map` — the pipeline, the input and its upload, the target (also a transfer source here) —
+/// and the host-visible buffer its bytes are copied into, recording each in `objects` as it exists.
+fn create_map_objects(
+    device: &ash::Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    objects: &mut Objects<'_>,
+    map: &VulkanMap,
+) -> Result<(vk::Buffer, vk::DeviceMemory), Failure> {
+    let faults = QuadFaults::default();
+    objects.map.pipeline.create(device)?;
+    let mut input = MapInputObjects::default();
+    let created = input.create(
+        device,
+        memory_properties,
+        &objects.map.pipeline,
+        map.input(),
+        faults,
+    );
+    objects.map.input = Some(input);
+    created?;
+    let mut target = MapTargetObjects::default();
+    let created = target.create(
+        device,
+        memory_properties,
+        &objects.map.pipeline,
+        &objects.pipeline,
+        map.view(),
+        (faults, vk::ImageUsageFlags::TRANSFER_SRC),
+    );
+    objects.map.target = Some(target);
+    created?;
+    let [width, height] = map.view();
+    let length = u64::from(width) * u64::from(height) * 4;
+    let buffer_info = vk::BufferCreateInfo::default()
+        .size(length)
+        .usage(vk::BufferUsageFlags::TRANSFER_DST)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+    // SAFETY: the device is live and `buffer_info` is valid for the call.
+    let buffer = unsafe { device.create_buffer(&buffer_info, None) }
+        .map_err(|code| ("vkCreateBuffer", code))?;
+    objects.map_buffer = Some(buffer);
+    // SAFETY: the buffer belongs to the device.
+    let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+    let memory = allocate(
+        device,
+        memory_properties,
+        requirements,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        false,
+    )?;
+    objects.map_buffer_memory = Some(memory);
+    // SAFETY: the memory is fresh and at least the size the buffer requires.
+    unsafe { device.bind_buffer_memory(buffer, memory, 0) }
+        .map_err(|code| ("vkBindBufferMemory", code))?;
+    Ok((buffer, memory))
 }
 
 /// Creates the target image, its memory and view, and the framebuffer over it, recording each in `objects` as it
@@ -680,6 +855,13 @@ fn record(
     if job.quad.is_some() {
         objects.texture.record_upload(device, cmd);
     }
+    let map_record = job.map.map(|map| MapRecord::of(map, true));
+    if let (Some(record), Some(input), Some(target)) =
+        (&map_record, &objects.map.input, &objects.map.target)
+    {
+        // The presenter's own map pass: the upload, the barriers and the pass.
+        record_map_pass(device, cmd, (&objects.map.pipeline, input, target), record);
+    }
     let clear_values = [vk::ClearValue {
         color: vk::ClearColorValue {
             float32: [job.clear[0], job.clear[1], job.clear[2], 1.0],
@@ -695,6 +877,10 @@ fn record(
         .clear_values(&clear_values);
     // SAFETY: the command buffer is recording; the pass and framebuffer are live and compatible.
     unsafe { device.cmd_begin_render_pass(cmd, &pass_info, vk::SubpassContents::INLINE) };
+    if let (Some(record), Some(target)) = (&map_record, &objects.map.target) {
+        // The presenter's own composition: the enlarged map over the clear, below the legacy quad.
+        record_map_quad(device, cmd, &objects.pipeline, target, record, job.target);
+    }
     if let Some(quad) = job.quad {
         record_draw(
             device,
@@ -748,8 +934,92 @@ fn record(
             &[],
         );
     }
+    if let (Some(map), Some(target), Some((buffer, _))) =
+        (job.map, &objects.map.target, work.map_buffer)
+        && let Some(image) = target.image()
+    {
+        copy_map_target(device, cmd, image, buffer, map.view());
+    }
     // SAFETY: the command buffer is recording.
     unsafe { device.end_command_buffer(cmd) }.map_err(|code| ("vkEndCommandBuffer", code))
+}
+
+/// Copies the map target to its host-visible buffer: the map pass left it in `SHADER_READ_ONLY_OPTIMAL`, so a barrier makes it a
+/// transfer source (after the window pass's reads), the copy, and a barrier for the host.
+fn copy_map_target(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    image: vk::Image,
+    buffer: vk::Buffer,
+    [width, height]: [u32; 2],
+) {
+    let to_source = vk::ImageMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+        .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(
+            vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .level_count(1)
+                .layer_count(1),
+        );
+    // SAFETY: the command buffer is recording outside a render pass; the barrier names this device's image.
+    unsafe {
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_source],
+        );
+    }
+    let region = vk::BufferImageCopy::default()
+        .image_subresource(
+            vk::ImageSubresourceLayers::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .layer_count(1),
+        )
+        .image_extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        });
+    // SAFETY: the command buffer is recording; the image is in `TRANSFER_SRC_OPTIMAL`.
+    unsafe {
+        device.cmd_copy_image_to_buffer(
+            cmd,
+            image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            buffer,
+            &[region],
+        );
+    }
+    let to_host = vk::BufferMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .dst_access_mask(vk::AccessFlags::HOST_READ)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .buffer(buffer)
+        .offset(0)
+        .size(vk::WHOLE_SIZE);
+    // SAFETY: the command buffer is recording; the barrier names this device's buffer.
+    unsafe {
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::HOST,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[to_host],
+            &[],
+        );
+    }
 }
 
 #[cfg(test)]

@@ -27,8 +27,9 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use ck_gpu_vulkan::{
-    DestinationRect, PixelSource, SourceRect, VulkanFilter, VulkanFrame, VulkanFrameSlot,
-    VulkanQuad, VulkanQuadSlot, VulkanScene,
+    DestinationRect, MapRefusalSink as VulkanRefusalSink, PixelSource, SourceRect, VulkanFilter,
+    VulkanFrame, VulkanFrameSlot, VulkanMap, VulkanMapError, VulkanMapInput, VulkanQuad,
+    VulkanQuadSlot, VulkanScene,
 };
 use ck_resources::{ResourceService, TextureKey};
 use ck_window::PresenterReport;
@@ -36,7 +37,7 @@ use ck_window::PresenterReport;
 use crate::resident::WakeRelay;
 use crate::vulkan_resident::VulkanResidentDriver;
 use crate::vulkan_scene::VulkanSceneFrame;
-use crate::{Filter, Image, QuadSink, Snapshot};
+use crate::{Filter, Image, MapRefusals, QuadSink, Snapshot};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -233,6 +234,12 @@ impl Conversion {
                 Some(message),
             ),
         };
+        // The map lane (milestone 6, slice 1): the shared grids and the camera, placed with this snapshot's own metrics, in O(1). A
+        // map the GPU crate refuses leaves the scene without it and is a refusal like a refused quad.
+        let (scene, refusal) = match vulkan_map(snapshot) {
+            Ok(map) => (scene.with_map(map), refusal),
+            Err(message) => (scene, refusal.or(Some(message))),
+        };
         self.cache = match (&snapshot.quad, wrapper) {
             (Some(placed), Some(wrapper)) => {
                 Some((Arc::downgrade(&placed.image), Arc::downgrade(&wrapper)))
@@ -254,6 +261,61 @@ pub(crate) struct VulkanSink {
 impl std::fmt::Debug for VulkanSink {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("VulkanSink")
+    }
+}
+
+/// The GPU crate's map for a snapshot: `None` when the snapshot carries none or shows none, an error when the GPU crate refuses what
+/// the lane validated.
+pub(crate) fn vulkan_map(snapshot: &Snapshot) -> Result<Option<VulkanMap>, String> {
+    let Some(frame) = &snapshot.map else {
+        return Ok(None);
+    };
+    let Some(placement) = frame.placement else {
+        return Ok(None);
+    };
+    let input = &frame.input;
+    let camera = &frame.camera;
+    let refused = |error: VulkanMapError| format!("the map was refused: {error}");
+    let gpu_input = VulkanMapInput::new(
+        input.generation(),
+        input.origin(),
+        input.size(),
+        Arc::clone(input.grid_a()),
+        Arc::clone(input.grid_b()),
+        Arc::clone(input.palette()),
+    )
+    .map_err(refused)?;
+    let map = VulkanMap::new(
+        Arc::new(gpu_input),
+        camera.top_left(),
+        camera.view(),
+        DestinationRect {
+            left: placement.destination.left,
+            top: placement.destination.top,
+            right: placement.destination.right,
+            bottom: placement.destination.bottom,
+        },
+        SourceRect {
+            left: placement.source.left,
+            top: placement.source.top,
+            right: placement.source.right,
+            bottom: placement.source.bottom,
+        },
+    )
+    .map_err(refused)?;
+    // Where the presenter tells the publisher it refused to make a map image (and that it later could).
+    Ok(Some(map.with_refusals(
+        Arc::clone(&frame.refusals) as Arc<dyn VulkanRefusalSink>
+    )))
+}
+
+impl VulkanRefusalSink for MapRefusals {
+    fn refused(&self, message: &str) {
+        MapRefusals::refused(self, message);
+    }
+
+    fn cleared(&self) {
+        MapRefusals::cleared(self);
     }
 }
 
@@ -389,6 +451,7 @@ impl VulkanSceneSink {
             scene.quad().cloned(),
             source,
         )
+        .with_map(scene.map().cloned())
         .with_compat_key(
             snapshot
                 .scene

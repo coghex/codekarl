@@ -671,7 +671,7 @@ impl QuadTexture {
     }
 }
 
-fn color_range() -> vk::ImageSubresourceRange {
+pub(crate) fn color_range() -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange::default()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .level_count(1)
@@ -739,9 +739,22 @@ pub(crate) fn record_draw(
     quad: &QuadParams,
     target: (u32, u32),
 ) {
-    let (Some(graphics), Some(layout), Some(set)) =
-        (pipeline.pipeline, pipeline.layout, texture.set)
-    else {
+    if let Some(set) = texture.set {
+        record_draw_with_set(device, cmd, pipeline, set, quad, target);
+    }
+}
+
+/// [`record_draw`] with a descriptor set the caller made (of the pipeline's set layout: one combined image sampler): the enlarged
+/// map is drawn by the quad's own pipeline from the map target.
+pub(crate) fn record_draw_with_set(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    pipeline: &QuadPipeline,
+    set: vk::DescriptorSet,
+    quad: &QuadParams,
+    target: (u32, u32),
+) {
+    let (Some(graphics), Some(layout)) = (pipeline.pipeline, pipeline.layout) else {
         return;
     };
     #[expect(

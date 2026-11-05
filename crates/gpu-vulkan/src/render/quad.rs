@@ -14,7 +14,9 @@ use super::{
 use crate::capture::FrameCapture;
 use crate::draw::QuadPipeline;
 use crate::hooks::Event;
+use crate::map::VulkanMap;
 use crate::quad::VulkanQuad;
+use crate::render::map::{MapContext, MapPrep};
 use crate::residency::Admission;
 use crate::shared::lock;
 use ash::vk;
@@ -79,6 +81,8 @@ impl Run<'_> {
     /// proven, and a staging buffer whose upload submit is proven. Decided from the ledger's record of the proof
     /// (a submit number), never from a fence handle. `stopping` is the stop state the caller read.
     pub(super) fn reap_quad(&mut self, stopping: bool) {
+        // The map's retired objects and staging follow the same rule (milestone 6, slice 1).
+        self.reap_map(stopping);
         if !self.may_dispose(stopping) {
             return;
         }
@@ -107,8 +111,59 @@ impl Run<'_> {
         }
     }
 
-    /// Prepares the quad for a frame that is going to be drawn: the scene's generation, and what to draw.
+    /// Prepares a frame that is going to be drawn: the map's pass (milestone 6, slice 1), then the quad.
     pub(super) fn prepare(&mut self, scene: Option<VulkanScene>) -> Result<Prep, Fatal> {
+        let map = match self.prepare_map(scene.as_ref().and_then(VulkanScene::map))? {
+            MapPrep::Nothing => None,
+            MapPrep::Wait => return Ok(Prep::Wait),
+            MapPrep::Ready(record) => Some(record),
+        };
+        Ok(match self.prepare_quad(scene)? {
+            Prep::Ready(prepared) => Prep::Ready(Prepared { map, ..prepared }),
+            Prep::Wait => Prep::Wait,
+        })
+    }
+
+    /// Prepares the map of a frame that is going to be drawn. A scene without a map, or a surface whose format the quad's pipeline
+    /// is not exact on (the enlarged map is drawn by it: the single notice of that rule is given), has no map pass and keeps the
+    /// resident objects as they are.
+    fn prepare_map(&mut self, map: Option<&VulkanMap>) -> Result<MapPrep, Fatal> {
+        let Some(map) = map else {
+            self.map.not_attempted();
+            return Ok(MapPrep::Nothing);
+        };
+        if !self.quad_supported {
+            self.skip_notice();
+            self.map.not_attempted();
+            return Ok(MapPrep::Nothing);
+        }
+        let (may_dispose, healthy) = (self.may_dispose(false), self.healthy());
+        self.map.prepare(
+            MapContext {
+                gpu: &mut self.gpu,
+                ledger: &mut self.ledger,
+                hooks: &mut self.hooks,
+                observer: self.observer.as_deref(),
+                may_dispose,
+                healthy,
+            },
+            map,
+        )
+    }
+
+    /// Destroys what the ledger's proofs allow and the state permits of the map's objects.
+    fn reap_map(&mut self, stopping: bool) {
+        let may_dispose = self.may_dispose(stopping);
+        self.map.reap(
+            &mut self.gpu,
+            &self.ledger,
+            self.observer.as_deref(),
+            may_dispose,
+        );
+    }
+
+    /// Prepares the quad for a frame that is going to be drawn: the scene's generation, and what to draw.
+    fn prepare_quad(&mut self, scene: Option<VulkanScene>) -> Result<Prep, Fatal> {
         let Some(scene) = scene else {
             return Ok(Prep::Ready(Prepared::default()));
         };
@@ -117,6 +172,7 @@ impl Run<'_> {
             return Ok(Prep::Ready(Prepared {
                 generation,
                 draw: None,
+                map: None,
             }));
         };
         if !self.quad_supported {
@@ -124,6 +180,7 @@ impl Run<'_> {
             return Ok(Prep::Ready(Prepared {
                 generation,
                 draw: None,
+                map: None,
             }));
         }
         if self.residency.resident_is(quad) {
@@ -136,6 +193,8 @@ impl Run<'_> {
     /// The frame was submitted as `number`: only now is the texture's upload done, and the texture in use by a
     /// submitted frame. The frame's scene generation is what a queued present then reports.
     pub(super) fn quad_submitted(&mut self, number: u64, prepared: Prepared) {
+        self.map
+            .submitted(number, &prepared, self.observer.as_deref());
         if let Some(draw) = prepared.draw {
             self.residency.submitted(number, draw.upload);
             if draw.upload
@@ -239,6 +298,7 @@ impl Run<'_> {
                 params,
                 upload: self.residency.upload_pending(),
             }),
+            map: None,
         }))
     }
 
@@ -251,6 +311,7 @@ impl Run<'_> {
             return Ok(Prep::Ready(Prepared {
                 generation,
                 draw: None,
+                map: None,
             }));
         };
         if self.residency.admission() == Admission::Wait {
@@ -296,6 +357,7 @@ impl Run<'_> {
                 params,
                 upload: true,
             }),
+            map: None,
         }))
     }
 

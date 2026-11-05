@@ -243,12 +243,15 @@ mod error;
 mod frame;
 mod gate;
 mod gpu;
+mod gpu_map;
 mod gpu_quad;
 mod hash;
 mod hooks;
 mod instance;
 mod ledger;
 mod loader;
+mod map;
+mod map_residency;
 mod memory;
 mod metrics;
 mod metrics_api;
@@ -276,7 +279,7 @@ pub use error::Error;
 pub use frame::{InstanceRole, VulkanFrame, VulkanFrameSlot, VulkanInstance, VulkanSceneSource};
 pub use gate::{BindlessCaps, BindlessDeviceLimits, BindlessLimits, BindlessReport};
 pub use hooks::{
-    BuildRecord, CompatKind, DrawnRecord, Event, Gate, Observer, Pause, PipelineFault,
+    BuildRecord, CompatKind, DrawnRecord, Event, Gate, MapStats, Observer, Pause, PipelineFault,
     QuadAllocation, QuadFaults, QuadStats, SceneHooks, SurfaceExtent, TestHooks, WaitKind,
     WaitObserver,
 };
@@ -290,6 +293,10 @@ pub use ledger::LedgerSnapshot;
 pub use loader::{
     GetInstanceProcAddr, Loader, LoaderWatch, load_loader, load_loader_from, search_directories,
 };
+pub use map::{
+    MAP_SIDE_MAX, MapReadback, MapRefusalSink, PALETTE_MAX, VulkanMap, VulkanMapError,
+    VulkanMapInput,
+};
 pub use metrics::{
     BUCKETS, EndError, FrameIntervals, FrameMarks, FrameStats, Histogram, MetricsClock,
     MetricsWindow, Percentile, RANGE_END_NS, RequestError, Tracked, Windows, gpu_ns,
@@ -301,7 +308,9 @@ pub use quad::{
     VulkanQuad, VulkanQuadError, VulkanScene,
 };
 pub use readback::{ReadbackHooks, readback_clear, readback_clear_with_test_hooks};
-pub use readback_quad::{MAX_TARGET_SIDE, readback_quad, readback_quad_with_test_hooks};
+pub use readback_quad::{
+    MAX_TARGET_SIDE, readback_map, readback_quad, readback_quad_with_test_hooks,
+};
 pub use readback_scene::{
     PROBE_CELL, SceneContent, SceneReadback, readback_scene, readback_scene_with_held,
     readback_slots,

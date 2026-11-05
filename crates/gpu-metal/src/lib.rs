@@ -205,6 +205,7 @@ mod bindless;
 mod frame;
 mod hash;
 mod ledger;
+mod map;
 mod metrics;
 mod presenter;
 mod quad;
@@ -228,6 +229,10 @@ pub use textures::{
 pub use batch::FrameCounters;
 pub use frame::{
     InstanceRole, MetalFrame, MetalFrameSlot, MetalInstance, MetalSceneSource, SceneStats,
+};
+pub use map::{
+    MAP_SIDE_MAX, MapReadback, MapRefusalSink, MetalMap, MetalMapError, MetalMapInput, PALETTE_MAX,
+    readback_map,
 };
 pub use metrics::{
     BUCKETS, EndError, FrameIntervals, FrameMarks, FrameStats, Histogram, MetricsWindow,

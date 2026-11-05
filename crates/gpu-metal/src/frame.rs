@@ -14,6 +14,7 @@
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::map::MetalMap;
 use crate::quad::{DestinationRect, MetalFilter, MetalQuad, SlotWake};
 
 /// What a quad is for. A scene's own quads are [`Scene`](Self::Scene); the legacy compatibility quad that the renderer's
@@ -85,6 +86,9 @@ pub struct MetalFrame<K> {
     /// that is clipped away and places to nothing still has its role known to the presenter (it classifies an upload failure
     /// of this key whatever was placed).
     compat_key: Option<K>,
+    /// The GPU-written map (milestone 6, slice 1), drawn above the clear and below the legacy quad; `None`: the frame is exactly the
+    /// frame without a map.
+    map: Option<MetalMap>,
 }
 
 impl<K: Clone> Clone for MetalFrame<K> {
@@ -95,6 +99,7 @@ impl<K: Clone> Clone for MetalFrame<K> {
             quad: self.quad.clone(),
             scene: self.scene.clone(),
             compat_key: self.compat_key.clone(),
+            map: self.map.clone(),
         }
     }
 }
@@ -108,6 +113,7 @@ impl<K> fmt::Debug for MetalFrame<K> {
             .field("quad", &self.quad.is_some())
             .field("scene", &self.scene.is_some())
             .field("compat", &self.compat_key.is_some())
+            .field("map", &self.map.is_some())
             .finish()
     }
 }
@@ -128,7 +134,21 @@ impl<K> MetalFrame<K> {
             quad,
             scene,
             compat_key: None,
+            map: None,
         }
+    }
+
+    /// This frame with the GPU-written map (`None`: no map). Built by the renderer's sink in O(1) from the snapshot's shared data.
+    #[must_use]
+    pub fn with_map(mut self, map: Option<MetalMap>) -> Self {
+        self.map = map;
+        self
+    }
+
+    /// The frame's map, if it has one.
+    #[must_use]
+    pub fn map(&self) -> Option<&MetalMap> {
+        self.map.as_ref()
     }
 
     /// This frame with the key of its compatibility quad (`None`: no compatibility quad). Filled by the renderer's sink from

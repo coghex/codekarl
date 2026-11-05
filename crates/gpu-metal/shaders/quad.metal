@@ -112,3 +112,33 @@ fragment float4 ck_quad_bindless_fragment(BindlessVertex in [[stage_in]],
     }
     return image.sample(image_sampler, in.texcoord);
 }
+
+/* The map pass (milestone 6, slice 1): one triangle that covers the whole map target, drawn with this slice's minimal colour rule.
+ * Map pixel (x, y) shows the palette colour of grid A's terrain index at cell (left + x - i0, top + y - j0), one cell per map
+ * pixel, and palette entry 0 outside the crop. Everything is an integer read (`read`, never `sample`): grid A is an RGBA8 image
+ * of the crop's size (R the terrain index), the palette a 256 x 1 RGBA8 image. A unorm byte read as a float and scaled by 255
+ * rounds back to the original integer, so the result is the same on every GPU and on Vulkan. */
+
+struct MapUniforms {
+    int2 origin;   /* the crop's global origin cell (i0, j0) */
+    int2 crop;     /* the crop's size in cells */
+    int2 top_left; /* the camera's top-left world pixel (I_left, J_top) */
+};
+
+vertex float4 ck_map_vertex(uint vertex_id [[vertex_id]]) {
+    /* (-1, -1), (3, -1), (-1, 3): one triangle that covers the clip square. */
+    float2 corner = float2(float((vertex_id << 1u) & 2u), float(vertex_id & 2u));
+    return float4(corner * 2.0 - 1.0, 0.0, 1.0);
+}
+
+fragment float4 ck_map_fragment(float4 position [[position]], constant MapUniforms &uniforms [[buffer(0)]],
+                                texture2d<float, access::read> grid_a [[texture(0)]],
+                                texture2d<float, access::read> palette [[texture(2)]]) {
+    int2 pixel = int2(position.xy);
+    int2 cell = uniforms.top_left + pixel - uniforms.origin;
+    uint index = 0u;
+    if (all(cell >= int2(0)) && all(cell < uniforms.crop)) {
+        index = uint(grid_a.read(uint2(cell)).r * 255.0 + 0.5);
+    }
+    return palette.read(uint2(index, 0u));
+}

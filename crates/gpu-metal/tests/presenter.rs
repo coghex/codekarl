@@ -48,6 +48,11 @@ mod presented;
 #[path = "presenter_quad/cases.rs"]
 mod quad;
 
+/// The GPU-written map image (CK-177, milestone 6 slice 1): `readback_map_*` draw through the presenter's own map pass and
+/// composition off screen; the `map_*` cases watch a presenter's frames on a real layer.
+#[path = "presenter_map/cases.rs"]
+mod map;
+
 /// The instanced scene's off-screen cases (CK-116): `readback_scene_*` draw through the presenter's own encoding.
 #[path = "presenter_instanced/cases.rs"]
 mod instanced;
@@ -1589,7 +1594,7 @@ const FIXTURE_CASES: [(&str, Case); 2] = [("checker_control", checker_control), 
 
 /// Every case with the set it belongs to. A name starting `readback` is `Gpu` (the off-screen readbacks open no window); every
 /// other case's set comes from **the array it is listed in**, not from its name, so a case added to an array joins that array's
-/// set with no other edit: `CASES`, `MORE_CASES`, `quad::CASES`, `quad::MORE` are `WindowCore`; `scene::CASES` and `scene::MORE`
+/// set with no other edit: `CASES`, `MORE_CASES`, `quad::CASES`, `quad::MORE`, `map::CASES`, `map::MORE` are `WindowCore`; `scene::CASES` and `scene::MORE`
 /// are `WindowScene`; `scene::compat::CASES`, `scene::compat::MORE` and `scene::compat::BINDLESS` are `WindowCompat`;
 /// `scene::instanced::CASES`, `scene::instanced::MORE` and `scene::instanced::BINDLESS` are `WindowInstanced`; `instanced::CASES`
 /// holds only readbacks (`Gpu`).
@@ -1599,6 +1604,8 @@ fn tagged_cases() -> impl Iterator<Item = (&'static (&'static str, Case), CaseSe
         .chain(MORE_CASES.iter())
         .chain(quad::CASES.iter())
         .chain(quad::MORE.iter())
+        .chain(map::CASES.iter())
+        .chain(map::MORE.iter())
         .chain(metrics::CASES.iter())
         .chain(metrics::MORE.iter())
         .map(|case| (case, CaseSet::WindowCore));

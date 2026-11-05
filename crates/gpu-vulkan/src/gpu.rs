@@ -192,6 +192,8 @@ pub(crate) struct Gpu {
     /// The quad pipeline and textures (nothing is created unless the presenter has a slot and the format is
     /// supported).
     pub(crate) quad: QuadObjects,
+    /// The map pass's pipeline and images (nothing is created unless a frame carries a map and the format is supported).
+    pub(crate) map: crate::gpu_map::MapObjects,
     /// The device's memory types, for the quad's allocations.
     pub(crate) memory: vk::PhysicalDeviceMemoryProperties,
     /// Every format the surface offered (before a test restricted them), set when the render pass is created.
@@ -215,6 +217,8 @@ pub(crate) struct Gpu {
 pub(crate) struct FrameExtras {
     pub(crate) hold: Option<vk::Event>,
     pub(crate) stamps: Option<u32>,
+    /// The frame's map pass (milestone 6, slice 1), recorded before the window pass.
+    pub(crate) map: Option<crate::gpu_map::MapRecord>,
 }
 
 /// A Vulkan error from one of the wrappers, with the call that failed.
@@ -292,6 +296,7 @@ impl Gpu {
             observer,
             extent_override: None,
             quad: QuadObjects::default(),
+            map: crate::gpu_map::MapObjects::default(),
             memory,
             offered_formats: Vec::new(),
             capture_usage: false,
@@ -337,6 +342,7 @@ impl Gpu {
             observer,
             extent_override: None,
             quad: QuadObjects::default(),
+            map: crate::gpu_map::MapObjects::default(),
             memory: context.memory_properties(),
             offered_formats: Vec::new(),
             capture_usage: false,
@@ -705,6 +711,7 @@ impl Gpu {
         index: u32,
         rgb: [f32; 3],
         quad: Option<(QuadParams, bool)>,
+        map: Option<&crate::gpu_map::MapRecord>,
     ) -> Result<(), Failure> {
         let (Some(cmd), Some(render_pass)) = (self.cmd, self.render_pass) else {
             return Err((
@@ -729,6 +736,10 @@ impl Gpu {
         if let Some((_, true)) = quad {
             self.record_quad_upload(cmd);
         }
+        // The map pass (milestone 6, slice 1), before the window pass: the map target is written here and sampled below.
+        if let Some(map) = map {
+            self.record_map_pass(cmd, map);
+        }
         let clear = [vk::ClearValue {
             color: vk::ClearColorValue {
                 float32: [rgb[0], rgb[1], rgb[2], 1.0],
@@ -747,6 +758,10 @@ impl Gpu {
             self.device
                 .cmd_begin_render_pass(cmd, &pass_info, vk::SubpassContents::INLINE);
         }
+        // The enlarged map over the clear (below the legacy quad).
+        if let Some(map) = map {
+            self.record_map_quad(cmd, map, (chain.extent.width, chain.extent.height));
+        }
         if let Some((params, _)) = quad {
             self.record_quad_draw(cmd, &params, (chain.extent.width, chain.extent.height));
         }
@@ -761,6 +776,10 @@ impl Gpu {
         unsafe { self.device.end_command_buffer(cmd) }.map_err(|code| ("vkEndCommandBuffer", code))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one frame's commands (the wait, the uploads, the map pass, the window pass and its draws, the capture, the timestamps) are recorded in order in one function"
+    )]
     /// Records a scene frame into the command buffer: the optional held-frame wait, the clear, and the batches `draw`
     /// names (none: the clear alone). The drawing is [`record_scene`](crate::scene_draw::record_scene)'s, the same as the
     /// off-screen readback records.
@@ -773,7 +792,8 @@ impl Gpu {
         draw: Option<&crate::scene_draw::SceneDraw<'_>>,
         extras: FrameExtras,
     ) -> Result<(), Failure> {
-        let FrameExtras { hold, stamps } = extras;
+        let FrameExtras { hold, stamps, map } = extras;
+        let map = map.as_ref();
         let (Some(cmd), Some(render_pass)) = (self.cmd, self.render_pass) else {
             return Err((
                 "vkBeginCommandBuffer",
@@ -830,6 +850,10 @@ impl Gpu {
         if let Some((_, true)) = quad {
             self.record_quad_upload(cmd);
         }
+        // The map pass (milestone 6, slice 1), before the window pass: the map target is written here and sampled below.
+        if let Some(map) = map {
+            self.record_map_pass(cmd, map);
+        }
         let clear = [vk::ClearValue {
             color: vk::ClearColorValue {
                 float32: [rgb[0], rgb[1], rgb[2], 1.0],
@@ -847,6 +871,10 @@ impl Gpu {
         unsafe {
             self.device
                 .cmd_begin_render_pass(cmd, &pass_info, vk::SubpassContents::INLINE);
+        }
+        // The enlarged map over the clear (below the legacy quad and every scene quad).
+        if let Some(map) = map {
+            self.record_map_quad(cmd, map, (chain.extent.width, chain.extent.height));
         }
         // The legacy quad first (below every scene quad), by today's path.
         if let Some((params, _)) = quad {
@@ -1103,6 +1131,11 @@ impl Gpu {
         // After everything that used them (the command buffer, the fences), before the render pass the pipeline
         // was made against and the device. Always visited: whatever a partial creation left (a sampler alone
         // included) is destroyed, and the class is noted only when something existed.
+        let map_present = self.map.any();
+        self.destroy_map();
+        if map_present {
+            self.note("map objects");
+        }
         let quad_present = self.quad.any();
         self.destroy_quad();
         if quad_present {

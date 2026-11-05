@@ -16,6 +16,7 @@ use ash::vk::Handle as _;
 
 use crate::draw::{QuadParams, QuadTexture, Tally, device_checks, upload_bytes};
 use crate::gpu::{self, Gpu};
+use crate::gpu_map::MapRecord;
 use crate::gpu_quad::{format_supported, release_staging, release_texture};
 use crate::hooks::{Event, Observer, POLL, TestHooks};
 use crate::instance::InstanceInner;
@@ -39,6 +40,7 @@ const BACKOFF_MAX: Duration = Duration::from_secs(1);
 /// for the drains.
 const POOL_FENCES: usize = 6;
 
+mod map;
 mod quad;
 mod scene;
 
@@ -165,6 +167,7 @@ fn run(
                 last_clear: [0.0; 3],
                 observer,
                 residency: Residency::default(),
+                map: map::MapDriver::default(),
                 quads,
                 quad_supported,
                 notice_given: false,
@@ -256,6 +259,8 @@ struct Run<'a> {
     observer: Option<Arc<Observer>>,
     /// The quad textures' bookkeeping.
     residency: Residency,
+    /// The map's bookkeeping (its input and target, by proof number) and its refusal episode.
+    map: map::MapDriver,
     /// The slot the presenter was started with, if any.
     quads: Option<Arc<VulkanQuadSlot>>,
     /// The surface's format is one textured drawing supports.
@@ -290,6 +295,9 @@ struct Prepared {
     /// The generation of the scene the frame draws (`None` without a slot).
     generation: Option<u64>,
     draw: Option<Draw>,
+    /// The frame's map pass, when the scene carries a map the presenter can draw (the scene thread only; the legacy thread draws
+    /// no map).
+    map: Option<MapRecord>,
 }
 
 enum Prep {
@@ -381,7 +389,8 @@ impl Run<'_> {
             self.last_clear = rgb;
             match self.step(rgb, size) {
                 Ok(Step::Drawn { again }) => {
-                    if again {
+                    // A refused map allocation keeps a redraw wanted: the next normally paced frame asks again.
+                    if again || self.map.retry_wanted() {
                         lock(&self.shared.slot).dirty = true;
                     }
                 }
@@ -686,6 +695,7 @@ impl Run<'_> {
                 index,
                 rgb,
                 prepared.draw.map(|draw| (draw.params, draw.upload)),
+                prepared.map.as_ref(),
             ),
             None => Err((
                 "vkBeginCommandBuffer",

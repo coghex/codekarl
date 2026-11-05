@@ -693,6 +693,15 @@ fn decode_key_image(
             ),
         ));
     }
+    if info.color_type == png::ColorType::Indexed && info.bit_depth != png::BitDepth::Eight {
+        return Err(LoadError::new(
+            filename,
+            format!(
+                "indexed key image is {}-bit; save as 8-bit indexed or RGB/RGBA",
+                bit_depth_bits(info.bit_depth)
+            ),
+        ));
+    }
     if info.bit_depth != png::BitDepth::Eight
         || !matches!(
             info.color_type,
@@ -780,6 +789,16 @@ fn decode_key_image(
         }
     }
     Ok(KeyImage { pixels })
+}
+
+fn bit_depth_bits(depth: png::BitDepth) -> u8 {
+    match depth {
+        png::BitDepth::One => 1,
+        png::BitDepth::Two => 2,
+        png::BitDepth::Four => 4,
+        png::BitDepth::Eight => 8,
+        png::BitDepth::Sixteen => 16,
+    }
 }
 
 fn decode_elevation_image(

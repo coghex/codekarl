@@ -51,6 +51,7 @@ fn finish_upload(service: &ResourceService) -> TextureKey {
 
 fn sample_snapshot(generation: u64, scene: Option<Arc<SceneFrame>>) -> Snapshot {
     Snapshot {
+        map: None,
         generation,
         filter: Filter::Linear,
         requested: false,

@@ -169,6 +169,8 @@ pub(crate) struct FrameRead {
     /// The frame has a compatibility key: the compatibility instance draws the quad through the ledger, so the legacy quad
     /// is not drawn.
     pub(crate) has_compat: bool,
+    /// The GPU-written map (milestone 6, slice 1), shared by the clone.
+    pub(crate) map: Option<crate::map::VulkanMap>,
 }
 
 /// The compatibility image a frame drew, with the rectangle and source it was drawn at. The ledger holds its revision for as
@@ -736,6 +738,7 @@ where
             generation: frame.generation(),
             quad: frame.quad().cloned(),
             has_compat: frame.compat_key().is_some(),
+            map: frame.map().cloned(),
         };
         self.current = Some(frame);
         read

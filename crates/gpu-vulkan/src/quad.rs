@@ -13,6 +13,8 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crate::map::VulkanMap;
+
 /// The largest width or height of a quad's image, in pixels.
 pub const MAX_IMAGE_SIDE: u32 = 8192;
 
@@ -251,13 +253,31 @@ fn to_f32(side: u32) -> f32 {
 pub struct VulkanScene {
     generation: u64,
     quad: Option<VulkanQuad>,
+    map: Option<VulkanMap>,
 }
 
 impl VulkanScene {
     /// A scene of this `generation` showing `quad`, or nothing.
     #[must_use]
     pub fn new(generation: u64, quad: Option<VulkanQuad>) -> Self {
-        Self { generation, quad }
+        Self {
+            generation,
+            quad,
+            map: None,
+        }
+    }
+
+    /// This scene with the GPU-written map (`None`: no map).
+    #[must_use]
+    pub fn with_map(mut self, map: Option<VulkanMap>) -> Self {
+        self.map = map;
+        self
+    }
+
+    /// The map, if the scene shows one.
+    #[must_use]
+    pub fn map(&self) -> Option<&VulkanMap> {
+        self.map.as_ref()
     }
 
     /// The generation of the change that made this scene.
