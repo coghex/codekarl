@@ -816,8 +816,8 @@ def _worker_recheck(item: Item) -> str | None:
     if lease_path is None or item.path != lease_path / "target":
         return "worker target identity changed"
     try:
-        observed = procscan.open_paths()
-        users = procscan.users_of(lease_path, observed)
+        observed, parents = procscan.open_paths_with_parents()
+        users = procscan.users_of(lease_path, observed, ignore_pid=os.getpid(), parents=parents)
     except (OSError, RuntimeError, ValueError) as error:
         return f"process path scan failed; kept: {error}"
     if users:

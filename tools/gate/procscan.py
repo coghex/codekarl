@@ -40,8 +40,19 @@ def open_paths() -> dict[int, list[Path]]:
     A nonzero command, warning, malformed record or empty result is not evidence of idleness:
     callers keep every candidate. The `n` field includes cwd as well as ordinary open descriptors.
     """
+    completed = _lsof("-F0pn")
+    return _parse_open_paths(completed.stdout)
+
+
+def open_paths_with_parents() -> tuple[dict[int, list[Path]], dict[int, int]]:
+    """Return process paths and PPIDs from one fail-closed lsof scan."""
+    completed = _lsof("-F0pnR")
+    return _parse_open_paths_with_parents(completed.stdout)
+
+
+def _lsof(fields: str) -> subprocess.CompletedProcess[str]:
     try:
-        completed = lease.run(["lsof", "-nP", "-F0pn"], check=False, capture_output=True, text=True)
+        completed = lease.run(["lsof", "-nP", fields], check=False, capture_output=True, text=True)
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError(
             f"cannot inspect process working directories and open files: {error}"
@@ -57,7 +68,7 @@ def open_paths() -> dict[int, list[Path]]:
     raw = completed.stdout
     if not isinstance(raw, str):
         raise RuntimeError("process path scan returned bytes, not text")
-    return _parse_open_paths(raw)
+    return completed
 
 
 def _parse_open_paths(raw: str) -> dict[int, list[Path]]:
@@ -96,8 +107,60 @@ def _parse_open_paths(raw: str) -> dict[int, list[Path]]:
     return paths_by_pid
 
 
+def _parse_open_paths_with_parents(  # noqa: PLR0912  # every lsof field needs a fail-closed parse branch
+    raw: str,
+) -> tuple[dict[int, list[Path]], dict[int, int]]:
+    """Parse lsof paths plus each process's parent PID; missing ancestry data fails closed."""
+    paths_by_pid: dict[int, list[Path]] = {}
+    parents: dict[int, int] = {}
+    current: int | None = None
+    if not raw.endswith("\0\n"):
+        raise RuntimeError("process path scan returned an unterminated field set")
+    for token in raw[:-2].split("\0"):
+        field = token[1:] if token.startswith("\n") else token
+        if not field:
+            raise RuntimeError("process path scan returned an empty field")
+        if field.startswith("p"):
+            try:
+                current = int(field[1:])
+            except ValueError as error:
+                raise RuntimeError(
+                    f"process path scan returned an invalid pid record: {field!r}"
+                ) from error
+            if current in paths_by_pid:
+                raise RuntimeError(f"process path scan repeated pid {current}")
+            paths_by_pid[current] = []
+        elif field.startswith("R") and current is not None:
+            if current in parents:
+                raise RuntimeError(f"process path scan repeated parent pid for {current}")
+            try:
+                parents[current] = int(field[1:])
+            except ValueError as error:
+                raise RuntimeError(
+                    f"process path scan returned an invalid parent pid record: {field!r}"
+                ) from error
+        elif field.startswith("f") and current is not None:
+            if not field[1:]:
+                raise RuntimeError(f"process path scan returned an unreadable record: {field!r}")
+        elif field.startswith("n") and current is not None:
+            if field[1:]:
+                paths_by_pid[current].append(Path(field[1:]))
+        else:
+            raise RuntimeError(f"process path scan returned an unreadable record: {field!r}")
+    if not paths_by_pid:
+        raise RuntimeError("process path scan returned no process records")
+    missing = paths_by_pid.keys() - parents.keys()
+    if missing:
+        raise RuntimeError(f"process path scan omitted parent pid for {min(missing)}")
+    return paths_by_pid, parents
+
+
 def users_of(
-    directory: Path, observed: dict[int, list[Path]] | None = None
+    directory: Path,
+    observed: dict[int, list[Path]] | None = None,
+    *,
+    ignore_pid: int | None = None,
+    parents: dict[int, int] | None = None,
 ) -> list[tuple[int, Path]]:
     """Processes whose cwd or an open file resolves inside `directory`.
 
@@ -106,8 +169,21 @@ def users_of(
     """
     root = directory.resolve(strict=True)
     paths_by_pid = open_paths() if observed is None else observed
+    ignored = {ignore_pid} if ignore_pid is not None else set()
+    if ignored:
+        if parents is None:
+            raise RuntimeError("process path scan omitted parent pid records")
+        if ignore_pid not in parents or ignore_pid not in paths_by_pid:
+            raise RuntimeError(f"process path scan omitted collector pid {ignore_pid}")
+        while True:
+            children = {pid for pid, parent in parents.items() if parent in ignored}
+            if children <= ignored:
+                break
+            ignored.update(children)
     users: list[tuple[int, Path]] = []
     for pid, paths in paths_by_pid.items():
+        if pid in ignored:
+            continue
         for path in paths:
             if not path.is_absolute():
                 continue  # lsof also reports non-path names for some special descriptors

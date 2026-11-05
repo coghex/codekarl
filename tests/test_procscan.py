@@ -115,6 +115,15 @@ class ProcessScanSpecification(unittest.TestCase):
                 },
             )
 
+    def test_05b_open_paths_with_parents_reads_ppid_records(self) -> None:
+        raw = "p12\0R10\0\nfcwd\0n/fixture/worker\0\n"
+        completed = subprocess.CompletedProcess(["lsof"], 0, stdout=raw, stderr="")
+        with mock.patch.object(lease, "run", return_value=completed):
+            self.assertEqual(
+                procscan.open_paths_with_parents(),
+                ({12: [Path("/fixture/worker")]}, {12: 10}),
+            )
+
     @procfix.real_process
     def test_05a_real_lsof_finds_a_child_running_inside_a_fixture_copy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -171,6 +180,31 @@ class ProcessScanSpecification(unittest.TestCase):
             inside = copy / "target/output"
             outside = Path(directory) / "elsewhere"
             self.assertEqual(procscan.users_of(copy, {12: [inside], 13: [outside]}), [(12, inside)])
+
+    def test_08_collector_exclusion_is_descendants_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / "worker"
+            (copy / "target").mkdir(parents=True)
+            inside = copy / "target/output"
+            observed = {
+                10: [inside],  # the collector's ancestor must still protect the copy
+                12: [inside],  # the collector itself is ignored
+                13: [inside],  # a child is ignored
+                14: [inside],  # and so is a deeper descendant
+                20: [inside],  # an unrelated process still protects the copy
+            }
+            parents = {10: 1, 12: 10, 13: 12, 14: 13, 20: 1}
+            self.assertEqual(
+                procscan.users_of(copy, observed, ignore_pid=12, parents=parents),
+                [(10, inside), (20, inside)],
+            )
+
+    def test_09_missing_collector_ancestry_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / "worker"
+            copy.mkdir()
+            with self.assertRaisesRegex(RuntimeError, "omitted collector pid"):
+                procscan.users_of(copy, {12: []}, ignore_pid=12, parents={20: 10})
 
 
 if __name__ == "__main__":
