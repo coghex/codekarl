@@ -1290,6 +1290,9 @@ STEPS = [
         "(the hook isolation is `metal.isolation`).",
         paths=(
             "crates/gpu-metal/",
+            # CK-182: the reference colour function and the shared fixture (`ck_map`) the off-screen map readbacks compare the map pass
+            # with: a change to either reruns exactly the groups that run those comparisons.
+            "crates/map/src/",
             "crates/window-cocoa/tests/native/activation_watch.inc",
             "crates/window/tests/support/activation_watch.rs",
             "apps/codekarl/src/native.rs",
@@ -1326,7 +1329,11 @@ STEPS = [
         needs="window",
         description="The Metal presenter's windowed cases of `presenter.rs`, `presenter_quad/` and `presenter_map/` (real windows, "
         "under Metal validation and the Main Thread Checker).",
-        paths=NATIVE_WINDOW_PATHS,
+        paths=(
+            *NATIVE_WINDOW_PATHS,
+            # CK-182: its map cases compare the map pass with `ck_map`'s reference and fixture.
+            "crates/map/src/",
+        ),
     ),
     Step(
         "metal.window-scene",
@@ -1559,7 +1566,7 @@ STEPS = [
         description="The Vulkan presenter's tests that open no window: the ledger's logic, the loader, the "
         "instance, the off-screen readback under validation and the loader's lifetime (the hook isolation "
         "is `vulkan.isolation`).",
-        paths=("crates/gpu-vulkan/", SUPERVISOR_DIR),
+        paths=("crates/gpu-vulkan/", "crates/map/src/", SUPERVISOR_DIR),
     ),
     Step(
         "vulkan.window",
@@ -1569,7 +1576,13 @@ STEPS = [
         needs="window",
         description="The Vulkan presenter's window tests: real GLFW windows, real presents under validation "
         "and every ledger transition, without taking desktop focus.",
-        paths=("crates/gpu-vulkan/", SUPERVISOR_DIR, *GLFW_TEST_SUPPORT),
+        paths=(
+            "crates/gpu-vulkan/",
+            # CK-182: the reference colour function and the shared fixture the map cases compare the map pass with.
+            "crates/map/src/",
+            SUPERVISOR_DIR,
+            *GLFW_TEST_SUPPORT,
+        ),
     ),
     # CK-80: the application's `glfw-vulkan` path end to end. Its binary tests open real GLFW windows without
     # taking desktop focus except in explicitly named focus cases, so they are their own group. The native

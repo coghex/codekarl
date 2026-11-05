@@ -574,12 +574,18 @@ class Levels(CheckFixture):
             (by_name["vulkan.gpu"].needs, by_name["vulkan.window"].needs), ("gpu", "window")
         )
         self.assertEqual(
-            by_name["vulkan.gpu"].paths, ("crates/gpu-vulkan/", "apps/codekarl/tests/supervisor/")
+            by_name["vulkan.gpu"].paths,
+            (
+                "crates/gpu-vulkan/",
+                "crates/map/src/",  # CK-182: the reference and fixture the readbacks compare with
+                "apps/codekarl/tests/supervisor/",
+            ),
         )
         self.assertEqual(
             by_name["vulkan.window"].paths,
             (
                 "crates/gpu-vulkan/",
+                "crates/map/src/",
                 "apps/codekarl/tests/supervisor/",
                 "crates/window-glfw/tests/native/",
                 "crates/window-glfw/tests/support/",

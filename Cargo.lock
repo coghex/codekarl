@@ -60,6 +60,7 @@ name = "ck-gpu-metal"
 version = "0.1.0"
 dependencies = [
  "ck-gpu-metal",
+ "ck-map",
  "ck-window",
  "ck-window-cocoa",
 ]
@@ -69,6 +70,7 @@ name = "ck-gpu-vulkan"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "ck-map",
  "ck-window",
  "ck-window-glfw",
 ]
@@ -93,6 +95,7 @@ dependencies = [
 name = "ck-map"
 version = "0.1.0"
 dependencies = [
+ "ck-map",
  "png",
  "serde",
  "toml",

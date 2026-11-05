@@ -1,42 +1,31 @@
-//! The GPU-written map image (milestone 6, slice 1), off screen: the presenter's own map pass and composition, read back under the
-//! validation layer (with synchronization validation) with no window. A submodule of `gpu.rs`, so the group that runs that target
+//! The GPU-written map image (milestone 6, slices 1 and 6), off screen: the presenter's own map pass and composition, read back under
+//! the validation layer (with synchronization validation) with no window. A submodule of `gpu.rs`, so the group that runs that target
 //! runs these.
 //!
-//! The fixture is a 7 x 5 crop at global origin cell (100, 200) with four terrains laid out irregularly (so a mirrored or transposed
-//! read fails), seen through a 5 x 3 view (an odd size). The expected pixels come from the slice's minimal colour rule written out
-//! here in plain integers: map pixel `(x, y)` shows palette entry `terrain(left + x - i0, top + y - j0)`, entry 0 outside the crop.
-//! Any validation message fails a case, hazards between the map pass and the window pass included.
+//! The fixture is `ck-map`'s slice 6 fixture (`crates/map/tests/fixture/mod.rs`, included below): a 24 x 16 crop that exercises every
+//! rule of `docs/map-design.md` section 9.4 (rules 1 to 6 and 8). Every expected pixel is `ck_map::reference_colour`'s, the reference
+//! the map pass must match byte for byte; slice 1's minimal rule is gone. Any validation message fails a case, hazards between the map
+//! pass and the window pass included.
 //!
 //! The window readback is `B8G8R8A8_UNORM` (a texel `(r, g, b, a)` reads back as `[b, g, r, a]`); the map target is `R8G8B8A8_UNORM`.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use ck_gpu_vulkan::{
     DestinationRect, PixelSource, SourceRect, VulkanFilter, VulkanMap, VulkanMapError,
-    VulkanMapInput, VulkanQuad, load_loader, readback_map, readback_quad,
+    VulkanMapInput, VulkanMapRules, VulkanQuad, VulkanTerrainKind, VulkanTerrainRule, load_loader,
+    readback_map, readback_quad,
 };
+use ck_map::{STEP_SIZE, fixture};
 
 use super::{assert_log_clean, destroy, validated_with};
 
-const ORIGIN: [i32; 2] = [100, 200];
-const CROP: [u32; 2] = [7, 5];
+const ORIGIN: [i32; 2] = fixture::ORIGIN;
+const CROP: [u32; 2] = fixture::SIZE;
 
-/// Grid A's terrain index per cell, rows running south. Irregular on purpose: three or more indices, no symmetry.
-const TERRAIN: [[u8; 7]; 5] = [
-    [1, 1, 2, 3, 1, 2, 2],
-    [3, 1, 1, 2, 2, 3, 1],
-    [2, 3, 1, 1, 1, 2, 3],
-    [1, 2, 2, 3, 2, 1, 1],
-    [3, 3, 1, 2, 1, 1, 2],
-];
-
-/// The palette: entry 0 is what outside the crop shows.
-const PALETTE: [[u8; 4]; 4] = [
-    [10, 20, 30, 255],
-    [200, 50, 50, 255],
-    [50, 200, 50, 255],
-    [50, 50, 200, 255],
-];
+/// The step of the cases that do not choose one: a tenth of a cell per map pixel, so the cases see all three octaves of the sub-cell
+/// detail and about ten map pixels to a cell.
+const STEP: u8 = 60;
 
 struct Bytes(Vec<u8>);
 
@@ -46,27 +35,76 @@ impl PixelSource for Bytes {
     }
 }
 
-fn input_with(generation: u64) -> Arc<VulkanMapInput> {
-    let mut grid_a = Vec::new();
-    let mut grid_b = Vec::new();
-    for (y, row) in TERRAIN.iter().enumerate() {
-        for (x, terrain) in row.iter().enumerate() {
-            // G bit 0 (usable) varies, so a read of the wrong channel fails; grid B holds an elevation nobody reads in this slice.
-            grid_a.extend_from_slice(&[*terrain, u8::from((x + y) % 2 == 0), 0, 255]);
-            grid_b.extend_from_slice(&[0x2A, u8::try_from(x * 16 + y).expect("small"), 0, 255]);
-        }
+fn the_fixture() -> &'static fixture::Fixture {
+    static FIXTURE: OnceLock<fixture::Fixture> = OnceLock::new();
+    FIXTURE.get_or_init(fixture::fixture)
+}
+
+/// The world pixel of the crop's top-left corner at [`STEP`].
+fn corner() -> [i32; 2] {
+    let pixel = fixture::Fixture::crop_top_left(STEP);
+    [pixel.x, pixel.y]
+}
+
+/// The world pixel `(dx, dy)` map pixels from the crop's top-left corner at [`STEP`].
+fn at(dx: i32, dy: i32) -> [i32; 2] {
+    let [x, y] = corner();
+    [x + dx, y + dy]
+}
+
+fn kind_of(kind: fixture::Kind) -> VulkanTerrainKind {
+    match kind {
+        fixture::Kind::Land => VulkanTerrainKind::Land,
+        fixture::Kind::Sea => VulkanTerrainKind::Sea,
+        fixture::Kind::Lake => VulkanTerrainKind::Lake,
+        fixture::Kind::Mountain => VulkanTerrainKind::Mountain,
     }
+}
+
+/// The fixture's rule table as the presenter takes it.
+fn rules_of(fixture: &fixture::Fixture) -> VulkanMapRules {
+    VulkanMapRules {
+        terrains: fixture
+            .terrains
+            .iter()
+            .map(|terrain| VulkanTerrainRule {
+                kind: kind_of(terrain.kind),
+                solid: terrain.style.solid.0,
+                second: terrain.style.second.0,
+                dark: terrain.style.dark.0,
+                dark_second: terrain.style.dark_second.0,
+                cap: terrain.style.cap.0,
+                high_ground: terrain.style.high_ground.0,
+                relief: [terrain.style.relief_low, terrain.style.relief_high],
+                mix_percent: terrain.style.mix_percent,
+                cap_heights: [terrain.style.cap_low, terrain.style.cap_high],
+            })
+            .collect(),
+        sea: fixture.data.sea.0,
+        shallow_sea: fixture.data.shallow_sea.0,
+        lake: fixture.data.lake.0,
+        river: fixture.data.river.0,
+        shallow_threshold: fixture.data.shallow_threshold,
+        steps: STEP_SIZE,
+    }
+}
+
+fn input_of(fixture: &fixture::Fixture, generation: u64) -> Arc<VulkanMapInput> {
     Arc::new(
         VulkanMapInput::new(
             generation,
             ORIGIN,
             CROP,
-            grid_a.into(),
-            grid_b.into(),
-            PALETTE.to_vec().into(),
+            fixture.grid_a.clone().into(),
+            fixture.grid_b.clone().into(),
+            &rules_of(fixture),
         )
         .expect("a valid input"),
     )
+}
+
+fn input_with(generation: u64) -> Arc<VulkanMapInput> {
+    input_of(the_fixture(), generation)
 }
 
 fn rect(left: i32, top: i32, right: i32, bottom: i32) -> DestinationRect {
@@ -102,9 +140,21 @@ fn map_of(
     view: [u32; 2],
     scale: u32,
 ) -> VulkanMap {
+    map_at(input, STEP, top_left, view, scale)
+}
+
+/// [`map_of`] at a chosen zoom step.
+fn map_at(
+    input: &Arc<VulkanMapInput>,
+    step: u8,
+    top_left: [i32; 2],
+    view: [u32; 2],
+    scale: u32,
+) -> VulkanMap {
     let (width, height) = (view[0] * 4 * scale, view[1] * 4 * scale);
     VulkanMap::new(
         Arc::clone(input),
+        step,
         top_left,
         view,
         rect(0, 0, signed(width), signed(height)),
@@ -113,30 +163,9 @@ fn map_of(
     .expect("a valid map")
 }
 
-/// The minimal rule: the RGBA colour of map pixel `(x, y)` of a view at `top_left`.
-fn expected_pixel(top_left: [i32; 2], x: u32, y: u32) -> [u8; 4] {
-    let cell_x = i64::from(top_left[0]) + i64::from(x) - i64::from(ORIGIN[0]);
-    let cell_y = i64::from(top_left[1]) + i64::from(y) - i64::from(ORIGIN[1]);
-    let inside =
-        (0..i64::from(CROP[0])).contains(&cell_x) && (0..i64::from(CROP[1])).contains(&cell_y);
-    if inside {
-        let terrain = TERRAIN[usize::try_from(cell_y).expect("inside")]
-            [usize::try_from(cell_x).expect("inside")];
-        PALETTE[usize::from(terrain)]
-    } else {
-        PALETTE[0]
-    }
-}
-
-/// The map target the rule gives, RGBA8 rows top first.
+/// The map target the reference gives, RGBA8 rows top first.
 fn expected_target(top_left: [i32; 2], view: [u32; 2]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for y in 0..view[1] {
-        for x in 0..view[0] {
-            bytes.extend_from_slice(&expected_pixel(top_left, x, y));
-        }
-    }
-    bytes
+    the_fixture().reference_image(STEP, top_left, view)
 }
 
 /// The pixel at (x, y) of a BGRA8 readback, as RGBA.
@@ -176,48 +205,101 @@ macro_rules! rig {
     }};
 }
 
-/// The map target equals the minimal rule byte for byte: for a camera inside the crop, one overlapping its right and bottom edges
-/// (where the pixels beyond show entry 0), one overlapping its left and top edges, and one wholly outside; and a pan away and back
-/// gives identical bytes.
+/// The map target equals the reference colour function byte for byte on every scenario of the fixture: steps coarser than a cell and
+/// finer (the three octaves of sub-cell detail), views overlapping the crop's edge and lying wholly outside it, odd view sizes, the
+/// coast, the lake, the shelf, the mountains with their caps and high ground. The last scenario is a view again after one far away: a
+/// pan away and back, with identical bytes.
 #[test]
-fn the_map_target_equals_the_minimal_rule_and_a_pan_away_and_back_gives_identical_bytes() {
+fn the_map_target_equals_the_reference_and_a_pan_away_and_back_gives_identical_bytes() {
     let (_loader, instance, log) = rig!();
+    let fixture = the_fixture();
     let input = input_with(1);
-    let view = [5, 3];
-    let inside = [ORIGIN[0] + 1, ORIGIN[1] + 1];
-    let right_bottom = [ORIGIN[0] + 4, ORIGIN[1] + 3];
-    let left_top = [ORIGIN[0] - 2, ORIGIN[1] - 1];
-    let outside = [ORIGIN[0] + 50, ORIGIN[1] - 40];
-    let mut seen: Vec<Vec<u8>> = Vec::new();
-    for top_left in [inside, right_bottom, left_top, outside, inside] {
-        let map = map_of(&input, top_left, view, 1);
-        let drawn =
-            readback_map(&instance, 20, 12, CLEAR, Some(&map), None).expect("the readback works");
+    let mut first_visit: Option<Vec<u8>> = None;
+    for scenario in fixture::Fixture::scenarios() {
+        let map = map_at(&input, scenario.step, scenario.top_left, scenario.view, 1);
+        let drawn = readback_map(
+            &instance,
+            scenario.view[0] * 4,
+            scenario.view[1] * 4,
+            CLEAR,
+            Some(&map),
+            None,
+        )
+        .expect("the readback works");
         let target = drawn.target.expect("a map target");
-        assert_eq!(
-            target,
-            expected_target(top_left, view),
-            "the target at {top_left:?} equals the rule"
+        let expected = fixture.reference_image(scenario.step, scenario.top_left, scenario.view);
+        let wrong = target
+            .chunks_exact(4)
+            .zip(expected.chunks_exact(4))
+            .enumerate()
+            .filter(|(_, (got, want))| got != want)
+            .map(|(index, (got, want))| {
+                (
+                    index % scenario.view[0] as usize,
+                    index / scenario.view[0] as usize,
+                    got,
+                    want,
+                )
+            })
+            .take(5)
+            .collect::<Vec<_>>();
+        assert!(
+            wrong.is_empty(),
+            "{}: the target differs from the reference at (x, y, got, want) {wrong:?}",
+            scenario.name
         );
-        seen.push(target);
+        assert_eq!(target, expected, "{}", scenario.name);
+        if scenario.name.starts_with("half a cell") {
+            first_visit = Some(target);
+        } else if scenario.name.starts_with("back from far away") {
+            assert_eq!(
+                Some(target),
+                first_visit,
+                "away and back gives identical bytes"
+            );
+        }
     }
-    assert_ne!(seen[0], seen[1]);
-    assert_ne!(seen[1], seen[2]);
-    assert_eq!(seen[0], seen[4], "away and back gives identical bytes");
-    let edge = expected_target(right_bottom, view);
-    assert_eq!(
-        &edge[(2 * 5 + 4) * 4..(2 * 5 + 4) * 4 + 4],
-        &PALETTE[0],
-        "(4, 2) is cell (8, 5): outside"
-    );
-    assert_eq!(
-        &edge[0..4],
-        &PALETTE[usize::from(TERRAIN[3][4])],
-        "(0, 0) is cell (4, 3)"
-    );
-    assert!(seen[3].chunks_exact(4).all(|pixel| pixel == PALETTE[0]));
     assert_log_clean(&log);
     assert_eq!(instance.retained_readbacks(), 0);
+    destroy(instance);
+    assert_log_clean(&log);
+}
+
+/// Negative control: with one rule table entry deliberately wrong (pasture's second tone another colour) the readback changes in
+/// exactly the pixels that show that tone, and in no other.
+#[test]
+fn a_wrong_rule_table_entry_changes_exactly_the_pixels_it_colours() {
+    let (_loader, instance, log) = rig!();
+    let fixture = the_fixture();
+    let wrong = fixture.with_other_pasture_second_tone();
+    let input = input_of(&wrong, 1);
+    let second = fixture.terrains[2].style.second.0;
+    let mut changed = 0;
+    for scenario in fixture::Fixture::scenarios() {
+        let map = map_at(&input, scenario.step, scenario.top_left, scenario.view, 1);
+        let drawn = readback_map(
+            &instance,
+            scenario.view[0] * 4,
+            scenario.view[1] * 4,
+            CLEAR,
+            Some(&map),
+            None,
+        )
+        .expect("the readback works");
+        let got = drawn.target.expect("a map target");
+        let want = fixture.reference_image(scenario.step, scenario.top_left, scenario.view);
+        for (index, (got, want)) in got.chunks_exact(4).zip(want.chunks_exact(4)).enumerate() {
+            assert_eq!(
+                got != want,
+                want == second,
+                "{}: pixel {index} (reference {want:?}, drawn {got:?})",
+                scenario.name
+            );
+            changed += usize::from(got != want);
+        }
+    }
+    assert!(changed > 0, "the wrong entry changed something");
+    assert_log_clean(&log);
     destroy(instance);
     assert_log_clean(&log);
 }
@@ -228,7 +310,7 @@ fn views_of_other_shapes_read_the_same_cells() {
     let (_loader, instance, log) = rig!();
     let input = input_with(1);
     for view in [[1, 1], [5, 3], [9, 7], [7, 5], [2, 9]] {
-        let top_left = [ORIGIN[0] - 1, ORIGIN[1] - 1];
+        let top_left = at(-1, -1);
         let map = map_of(&input, top_left, view, 1);
         let drawn = readback_map(&instance, view[0] * 4, view[1] * 4, CLEAR, Some(&map), None)
             .expect("the readback works");
@@ -250,7 +332,7 @@ fn the_enlarged_map_is_the_map_pixel_whose_point_rectangle_holds_each_pixels_cen
     let (_loader, instance, log) = rig!();
     let input = input_with(1);
     let view = [5, 3];
-    let top_left = [ORIGIN[0] + 2, ORIGIN[1] + 1];
+    let top_left = at(2, 1);
     let target = expected_target(top_left, view);
     let map_pixel = |x: u32, y: u32| -> [u8; 4] {
         let offset = usize::try_from((y * view[0] + x) * 4).expect("small");
@@ -280,6 +362,7 @@ fn the_enlarged_map_is_the_map_pixel_whose_point_rectangle_holds_each_pixels_cen
     // A window of 18 x 10 pixels (scale 1) is 4.5 x 2.5 map pixels: the destination is clipped and the source trimmed in proportion.
     let cropped = VulkanMap::new(
         Arc::clone(&input),
+        STEP,
         top_left,
         view,
         rect(0, 0, 18, 10),
@@ -314,7 +397,7 @@ fn the_map_is_below_the_legacy_quad() {
     let (_loader, instance, log) = rig!();
     let input = input_with(1);
     let view = [5, 3];
-    let top_left = ORIGIN;
+    let top_left = corner();
     let map = map_of(&input, top_left, view, 1);
     let picture = Arc::new(Bytes([255, 255, 0, 255].repeat(4)));
     let quad = VulkanQuad::new(
@@ -387,61 +470,129 @@ fn with_no_map_the_frame_is_the_scene_only_result() {
 /// A map the GPU would be handed in a shape it cannot read never reaches it.
 #[test]
 fn the_types_refuse_what_the_gpu_cannot_read() {
-    let grid: Arc<[u8]> = vec![0; 7 * 5 * 4].into();
-    let palette: Arc<[[u8; 4]]> = PALETTE.to_vec().into();
-    let make = |size: [u32; 2], grid_b: &Arc<[u8]>, palette: &Arc<[[u8; 4]]>| {
+    let fixture = the_fixture();
+    let grid: Arc<[u8]> = vec![0; 24 * 16 * 4].into();
+    let rules = rules_of(fixture);
+    let make = |origin: [i32; 2], size: [u32; 2], grid_b: &Arc<[u8]>, rules: &VulkanMapRules| {
         VulkanMapInput::new(
             1,
-            ORIGIN,
+            origin,
             size,
             Arc::clone(&grid),
             Arc::clone(grid_b),
-            Arc::clone(palette),
+            rules,
         )
     };
-    assert!(make(CROP, &grid, &palette).is_ok());
+    assert!(make(ORIGIN, CROP, &grid, &rules).is_ok());
     assert_eq!(
-        make([0, 5], &grid, &palette).expect_err("refused"),
+        make(ORIGIN, [0, 16], &grid, &rules).expect_err("refused"),
         VulkanMapError::Size
     );
     assert_eq!(
-        make([8, 5], &grid, &palette).expect_err("refused"),
+        make(ORIGIN, [25, 16], &grid, &rules).expect_err("refused"),
         VulkanMapError::GridLength {
-            expected: 160,
-            actual: 140
+            expected: 25 * 16 * 4,
+            actual: 24 * 16 * 4
         }
     );
     let short: Arc<[u8]> = vec![0; 8].into();
     assert_eq!(
-        make(CROP, &short, &palette).expect_err("refused"),
+        make(ORIGIN, CROP, &short, &rules).expect_err("refused"),
         VulkanMapError::GridLength {
-            expected: 140,
+            expected: 24 * 16 * 4,
             actual: 8
         }
     );
-    let none: Arc<[[u8; 4]]> = Vec::new().into();
-    assert_eq!(
-        make(CROP, &grid, &none).expect_err("refused"),
-        VulkanMapError::Palette(0)
+    // The crop must lie in the non-negative world and leave room for a map pixel past its far edge.
+    for origin in [[-1, 0], [0, -1], [i32::MAX / 32_768, 0], [0, 65_500]] {
+        assert_eq!(
+            make(origin, CROP, &grid, &rules).expect_err("refused"),
+            VulkanMapError::Crop,
+            "{origin:?}"
+        );
+    }
+    // The rule table must be one the shader can read.
+    let rules_error = |change: &dyn Fn(&mut VulkanMapRules)| {
+        let mut broken = rules.clone();
+        change(&mut broken);
+        match make(ORIGIN, CROP, &grid, &broken).expect_err("refused") {
+            VulkanMapError::Rules(reason) => reason,
+            other => panic!("not a rules error: {other:?}"),
+        }
+    };
+    assert!(rules_error(&|rules| rules.terrains.clear()).contains("0 terrain types"));
+    assert!(
+        rules_error(&|rules| rules.terrains = vec![rules.terrains[0]; 257]).contains("257 terrain")
     );
-    let many: Arc<[[u8; 4]]> = vec![[0; 4]; 257].into();
-    assert_eq!(
-        make(CROP, &grid, &many).expect_err("refused"),
-        VulkanMapError::Palette(257)
-    );
+    assert!(rules_error(&|rules| rules.shallow_threshold = 0).contains("threshold"));
+    assert!(rules_error(&|rules| rules.sea[3] = 254).contains("sea colour"));
+    assert!(rules_error(&|rules| rules.river[3] = 0).contains("river colour"));
+    assert!(rules_error(&|rules| rules.terrains[2].solid[3] = 0).contains("terrain 2"));
+    assert!(rules_error(&|rules| rules.terrains[2].mix_percent = 101).contains("101 percent"));
+    assert!(rules_error(&|rules| rules.terrains[2].relief = [10, 10]).contains("must rise"));
+    assert!(rules_error(&|rules| rules.terrains[2].relief = [-11_001, 5]).contains("out of range"));
+    assert!(rules_error(&|rules| rules.terrains[6].cap_heights = [900, 500]).contains("must rise"));
+    assert!(rules_error(&|rules| rules.terrains[6].cap[3] = 0).contains("terrain 6"));
+    assert!(rules_error(&|rules| rules.steps[5] = 0).contains("step 5"));
+    // Water ignores the fields it does not read: an unusable style on the sea is not a fault.
+    let mut sloppy = rules.clone();
+    sloppy.terrains[0].relief = [9, 1];
+    assert!(make(ORIGIN, CROP, &grid, &sloppy).is_ok());
+}
 
+/// A step, a view, a destination or a source the pass cannot draw never reaches it.
+#[test]
+fn the_camera_types_refuse_what_the_pass_cannot_draw() {
     let input = input_with(1);
-    let map = |view: [u32; 2], destination: DestinationRect, source: SourceRect| {
-        VulkanMap::new(Arc::clone(&input), [0, 0], view, destination, source)
+    let map = |step: u8,
+               top_left: [i32; 2],
+               view: [u32; 2],
+               destination: DestinationRect,
+               source: SourceRect| {
+        VulkanMap::new(
+            Arc::clone(&input),
+            step,
+            top_left,
+            view,
+            destination,
+            source,
+        )
     };
     let whole = source(0.0, 0.0, 5.0, 3.0);
-    assert!(map([5, 3], rect(0, 0, 20, 12), whole).is_ok());
+    assert!(map(STEP, [0, 0], [5, 3], rect(0, 0, 20, 12), whole).is_ok());
     assert_eq!(
-        map([0, 3], rect(0, 0, 20, 12), whole).expect_err("refused"),
+        map(STEP, [0, 0], [0, 3], rect(0, 0, 20, 12), whole).expect_err("refused"),
         VulkanMapError::Size
     );
     assert_eq!(
-        map([5, 3], rect(0, 0, 0, 12), whole).expect_err("refused"),
+        map(76, [0, 0], [5, 3], rect(0, 0, 20, 12), whole).expect_err("refused"),
+        VulkanMapError::Step(76)
+    );
+    // A camera whose sample points would not fit 32 bits is refused; at the coarsest step a pixel is 6 cells.
+    assert_eq!(
+        map(
+            0,
+            [i32::MAX / 100_000, 0],
+            [5, 3],
+            rect(0, 0, 20, 12),
+            whole
+        )
+        .expect_err("refused"),
+        VulkanMapError::Camera
+    );
+    assert_eq!(
+        map(
+            0,
+            [0, i32::MIN / 100_000],
+            [5, 3],
+            rect(0, 0, 20, 12),
+            whole
+        )
+        .expect_err("refused"),
+        VulkanMapError::Camera
+    );
+    assert_eq!(
+        map(STEP, [0, 0], [5, 3], rect(0, 0, 0, 12), whole).expect_err("refused"),
         VulkanMapError::Destination
     );
     for bad in [
@@ -451,7 +602,7 @@ fn the_types_refuse_what_the_gpu_cannot_read() {
         source(0.0, 0.0, f32::NAN, 3.0),
     ] {
         assert_eq!(
-            map([5, 3], rect(0, 0, 20, 12), bad).expect_err("refused"),
+            map(STEP, [0, 0], [5, 3], rect(0, 0, 20, 12), bad).expect_err("refused"),
             VulkanMapError::Source,
             "{bad:?}"
         );

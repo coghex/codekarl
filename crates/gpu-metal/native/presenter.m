@@ -45,7 +45,7 @@ enum {
     CK_OBS_QUEUE_ID = 30,               /* ... and of its command queue (test) */
     CK_OBS_CAPTURES = 31,               /* frames captured off screen whose command buffer completed (test) */
     CK_OBS_MAP_PASSES = 32,             /* command buffers committed with a map pass in them */
-    CK_OBS_MAP_GRIDS_CREATED = 33,      /* map inputs made resident (grid A, grid B and the palette, as one) */
+    CK_OBS_MAP_GRIDS_CREATED = 33,      /* map inputs made resident (grid A, grid B and the rules, as one) */
     CK_OBS_MAP_TARGETS_CREATED = 34,    /* map targets allocated */
     CK_OBS_MAP_TARGETS_ALIVE = 35,      /* map targets a holder of the core still has (the current one and retired ones) */
     CK_OBS_MAP_TARGETS_MAX = 36,        /* the most alive at once */
@@ -178,12 +178,12 @@ static void ck_obs_max(CKPrObserverState *observer, int index, int64_t value) {
 @property(nonatomic, strong) id<MTLTexture> quadTexture;
 @property(nonatomic, strong) id<MTLTexture> retiredTexture;
 @property(nonatomic, strong) CKPrTokenState *retiredToken;
-/* The map (milestone 6, slice 1): the resident input's three images (grid A, grid B, the palette as a 256 x 1 image), the generation
+/* The map (milestones 6, slices 1 and 6): the resident input's three images (grid A, grid B, the rules as one RGBA8 image), the generation
  * they hold, and the map target. A replaced input or target is retired into `retiredMap`, with the token of the last command buffer
  * that used it, and let go of once that token arrived: at most one such holder (the presenter has one frame in flight). */
 @property(nonatomic, strong) id<MTLTexture> mapGridA;
 @property(nonatomic, strong) id<MTLTexture> mapGridB;
-@property(nonatomic, strong) id<MTLTexture> mapPalette;
+@property(nonatomic, strong) id<MTLTexture> mapRules;
 @property(nonatomic) uint64_t mapGeneration;
 @property(nonatomic, strong) id<MTLTexture> mapTarget;
 @property(nonatomic, strong) NSArray<id<MTLTexture>> *retiredMap;
@@ -329,15 +329,18 @@ static void ck_encode_scene(id<MTLRenderCommandEncoder> encoder, CKPrQuadKit *ki
 typedef struct {
     const CKPrMap *map;
     __unsafe_unretained id<MTLTexture> grid_a;
-    __unsafe_unretained id<MTLTexture> palette;
+    __unsafe_unretained id<MTLTexture> grid_b;
+    __unsafe_unretained id<MTLTexture> rules;
     __unsafe_unretained id<MTLTexture> target;
 } CKPrMapDraw;
 
-/* The map pass's uniforms, as the shader reads them (`MapUniforms` in quad.metal): 24 bytes. */
+/* The map pass's uniforms, as the shader reads them (`MapUniforms` in quad.metal): 32 bytes. */
 typedef struct {
     int32_t origin[2];
     int32_t crop[2];
     int32_t top_left[2];
+    int32_t step;
+    int32_t unused;
 } CKPrMapUniforms;
 
 /* The map pass: one full-target triangle into the map target, in its own render pass in the frame's command buffer, before the
@@ -354,11 +357,14 @@ static BOOL ck_encode_map_pass(id<MTLCommandBuffer> command, CKPrQuadKit *kit, c
     }
     CKPrMapUniforms uniforms = {{draw->map->origin[0], draw->map->origin[1]},
                                 {(int32_t)draw->map->crop[0], (int32_t)draw->map->crop[1]},
-                                {draw->map->top_left[0], draw->map->top_left[1]}};
+                                {draw->map->top_left[0], draw->map->top_left[1]},
+                                draw->map->step,
+                                0};
     [encoder setRenderPipelineState:kit.map];
     [encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
     [encoder setFragmentTexture:draw->grid_a atIndex:0];
-    [encoder setFragmentTexture:draw->palette atIndex:2];
+    [encoder setFragmentTexture:draw->grid_b atIndex:1];
+    [encoder setFragmentTexture:draw->rules atIndex:2];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [encoder endEncoding];
     return YES;
@@ -395,7 +401,7 @@ static id<MTLCommandBuffer> ck_encode_frame(id<MTLCommandQueue> queue, id<MTLTex
     /* The map pass, before the window pass: the map target is written here and sampled by the window pass below. */
     BOOL mapping = map_draw != NULL && map_draw->map != NULL && map_draw->map->present != 0;
     if (mapping) {
-        if (kit == nil || kit.map == nil || map_draw->grid_a == nil || map_draw->palette == nil ||
+        if (kit == nil || kit.map == nil || map_draw->grid_a == nil || map_draw->grid_b == nil || map_draw->rules == nil ||
             map_draw->target == nil || !ck_encode_map_pass(command, kit, map_draw, reason)) {
             if (*reason == nil) {
                 *reason = @"the map could not be encoded";
@@ -886,13 +892,12 @@ static id<MTLTexture> ck_make_map_target(id<MTLDevice> device, uint32_t width, u
     return texture;
 }
 
-/* The three images of one map input (grid A, grid B, the palette as a 256 x 1 image, entries past the palette's length zero) for
- * `map`, which carries the grids. NO with a reason. */
+/* The three images of one map input (grid A, grid B, the rules as one RGBA8 image of CK_MAP_RULES_WIDTH x CK_MAP_RULES_HEIGHT
+ * texels) for `map`, which carries the grids and the rules. NO with a reason. */
 static BOOL ck_make_map_inputs(id<MTLDevice> device, const CKPrMap *map, int32_t fail, id<MTLTexture> *grid_a,
-                               id<MTLTexture> *grid_b, id<MTLTexture> *palette, NSString **reason) {
-    if (map->grid_a == NULL || map->grid_b == NULL || map->palette == NULL || map->palette_count == 0 ||
-        map->palette_count > 256) {
-        *reason = @"the map's grids or palette do not fit";
+                               id<MTLTexture> *grid_b, id<MTLTexture> *rules, NSString **reason) {
+    if (map->grid_a == NULL || map->grid_b == NULL || map->rules == NULL) {
+        *reason = @"the map's grids or rules are missing";
         return NO;
     }
     *grid_a = ck_make_map_image(device, map->crop[0], map->crop[1], map->grid_a, fail, @"grid A", reason);
@@ -903,11 +908,8 @@ static BOOL ck_make_map_inputs(id<MTLDevice> device, const CKPrMap *map, int32_t
     if (*grid_b == nil) {
         return NO;
     }
-    uint8_t colours[256 * 4];
-    memset(colours, 0, sizeof colours);
-    memcpy(colours, map->palette, (size_t)map->palette_count * 4);
-    *palette = ck_make_map_image(device, 256, 1, colours, fail, @"palette", reason);
-    return *palette != nil;
+    *rules = ck_make_map_image(device, CK_MAP_RULES_WIDTH, CK_MAP_RULES_HEIGHT, map->rules, fail, @"rules", reason);
+    return *rules != nil;
 }
 
 /* Lets go of the retired map resources once the token of the last command buffer that used them has arrived; never once the
@@ -976,9 +978,9 @@ static int ck_map_admit(CKPrCoreState *core, const CKPrMap *map, const CKPrFault
     }
     id<MTLTexture> grid_a = nil;
     id<MTLTexture> grid_b = nil;
-    id<MTLTexture> palette = nil;
+    id<MTLTexture> rules = nil;
     id<MTLTexture> target = nil;
-    if (new_grids && !ck_make_map_inputs(core.device, map, faults->fail_texture_allocation, &grid_a, &grid_b, &palette, why)) {
+    if (new_grids && !ck_make_map_inputs(core.device, map, faults->fail_texture_allocation, &grid_a, &grid_b, &rules, why)) {
         return 3;
     }
     if (new_target) {
@@ -993,7 +995,7 @@ static int ck_map_admit(CKPrCoreState *core, const CKPrMap *map, const CKPrFault
         if (replaces_grids) {
             [old addObject:core.mapGridA];
             [old addObject:core.mapGridB];
-            [old addObject:core.mapPalette];
+            [old addObject:core.mapRules];
         }
         if (replaces_target) {
             [old addObject:core.mapTarget];
@@ -1007,7 +1009,7 @@ static int ck_map_admit(CKPrCoreState *core, const CKPrMap *map, const CKPrFault
     if (new_grids) {
         core.mapGridA = grid_a;
         core.mapGridB = grid_b;
-        core.mapPalette = palette;
+        core.mapRules = rules;
         core.mapGeneration = map->generation;
         ck_obs_add(observer, CK_OBS_MAP_GRIDS_CREATED, 1);
         ck_obs_add(observer, CK_OBS_MAP_GRIDS_ALIVE, 1);
@@ -1300,7 +1302,8 @@ CKPrFrame ck_pr_frame_quad(CKPrCore *handle, const float rgb[3], uint32_t width,
             }
             CKPrMapDraw map_draw = {.map = mapping ? map : NULL,
                                     .grid_a = core.mapGridA,
-                                    .palette = core.mapPalette,
+                                    .grid_b = core.mapGridB,
+                                    .rules = core.mapRules,
                                     .target = core.mapTarget};
             id<MTLCommandBuffer> command =
                 ck_encode_frame(core.queue, drawable.texture, rgb, faults, core.quadKit, core.quadTexture,
@@ -1502,7 +1505,7 @@ void ck_pr_release_all(CKPrCore *handle) {
         }
         core.mapGridA = nil;
         core.mapGridB = nil;
-        core.mapPalette = nil;
+        core.mapRules = nil;
         core.mapTarget = nil;
         core.retiredMap = nil;
         core.retiredMapToken = nil;
@@ -1822,10 +1825,10 @@ int ck_pr_readback_map(uint32_t width, uint32_t height, const float rgb[3], cons
         }
         id<MTLTexture> grid_a = nil;
         id<MTLTexture> grid_b = nil;
-        id<MTLTexture> palette = nil;
+        id<MTLTexture> rules = nil;
         id<MTLTexture> target = nil;
         if (mapping) {
-            if (!ck_make_map_inputs(device, map, 0, &grid_a, &grid_b, &palette, &reason)) {
+            if (!ck_make_map_inputs(device, map, 0, &grid_a, &grid_b, &rules, &reason)) {
                 ck_message(error, capacity, reason);
                 return 1;
             }
@@ -1835,7 +1838,7 @@ int ck_pr_readback_map(uint32_t width, uint32_t height, const float rgb[3], cons
                 return 1;
             }
         }
-        CKPrMapDraw draw = {.map = mapping ? map : NULL, .grid_a = grid_a, .palette = palette, .target = target};
+        CKPrMapDraw draw = {.map = mapping ? map : NULL, .grid_a = grid_a, .grid_b = grid_b, .rules = rules, .target = target};
         BOOL partial = NO;
         id<MTLCommandBuffer> command =
             ck_encode_frame(queue, window, rgb, NULL, kit, picture, drawing ? quad : NULL, NULL, nil, &draw, nil, NULL,

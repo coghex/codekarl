@@ -78,10 +78,14 @@ typedef struct {
     uint32_t height;
 } CKPrQuad;
 
-/* The map of one frame (milestone 6, slice 1): the GPU-written map image. `present` 0 means no map (the frame is exactly the frame
+/* The size of the rules image: one row per terrain index, then the globals row and the step-table row (see quad.metal). */
+#define CK_MAP_RULES_WIDTH 80u
+#define CK_MAP_RULES_HEIGHT 258u
+
+/* The map of one frame (milestones 6, slices 1 and 6): the GPU-written map image. `present` 0 means no map (the frame is exactly the frame
  * without one); the resident grids and target are then left as they are. The grids are the crop's RGBA8 images (`crop` cells,
- * 4 bytes each) and the palette `palette_count` RGBA8 colours; they are given (`grid_a` not NULL) only when `generation` differs from
- * the resident grids'. The target is `view` map pixels (RGBA8); the enlarged map is drawn as a nearest-sampled quad at `destination`
+ * 4 bytes each) and the rules one RGBA8 image of CK_MAP_RULES_WIDTH x CK_MAP_RULES_HEIGHT texels (the layout is documented in
+ * quad.metal); they are given (`grid_a` not NULL) only when `generation` differs from the resident grids'. `step` is the zoom step. The target is `view` map pixels (RGBA8); the enlarged map is drawn as a nearest-sampled quad at `destination`
  * (whole drawable pixels) from `source` (map pixels), between the clear and the legacy quad. */
 typedef struct {
     int32_t present;
@@ -94,8 +98,8 @@ typedef struct {
     float source[4];        /* left, top, right, bottom, in map pixels */
     const uint8_t *grid_a;  /* crop[0] * crop[1] * 4 bytes, or NULL (the resident grids are this generation's) */
     const uint8_t *grid_b;
-    const uint8_t *palette; /* palette_count * 4 bytes */
-    uint32_t palette_count;
+    const uint8_t *rules;   /* CK_MAP_RULES_WIDTH * CK_MAP_RULES_HEIGHT * 4 bytes */
+    int32_t step;           /* the zoom step, 0 to 75 */
 } CKPrMap;
 
 /* The pixels of a new texture: given only when the quad's image differs from the resident texture's. */

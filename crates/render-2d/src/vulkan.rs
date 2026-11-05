@@ -28,8 +28,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use ck_gpu_vulkan::{
     DestinationRect, MapRefusalSink as VulkanRefusalSink, PixelSource, SourceRect, VulkanFilter,
-    VulkanFrame, VulkanFrameSlot, VulkanMap, VulkanMapError, VulkanMapInput, VulkanQuad,
-    VulkanQuadSlot, VulkanScene,
+    VulkanFrame, VulkanFrameSlot, VulkanMap, VulkanMapError, VulkanMapInput, VulkanMapRules,
+    VulkanQuad, VulkanQuadSlot, VulkanScene, VulkanTerrainKind, VulkanTerrainRule,
 };
 use ck_resources::{ResourceService, TextureKey};
 use ck_window::PresenterReport;
@@ -37,7 +37,7 @@ use ck_window::PresenterReport;
 use crate::resident::WakeRelay;
 use crate::vulkan_resident::VulkanResidentDriver;
 use crate::vulkan_scene::VulkanSceneFrame;
-use crate::{Filter, Image, MapRefusals, QuadSink, Snapshot};
+use crate::{Filter, Image, MapRefusals, MapRules, MapTerrainKind, QuadSink, Snapshot};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -189,6 +189,11 @@ pub(crate) const fn real_converter() -> Converter {
 pub(crate) struct Conversion {
     cache: Option<(Weak<Image>, Weak<ImagePixels>)>,
     converter: Converter,
+    /// The GPU crate's map input for the generation last published, **weakly**: packing the rule table is not O(1), so it is done
+    /// once per generation (a generation is published once, and a newer one replaces it), but this holds nothing alive. The scene in
+    /// the slot (and the presenter's frame) keep the input while the map is shown; when the map is withdrawn or the bridge detaches,
+    /// the last of them lets go and the grids and the packed rules go with it.
+    map_input: Option<Weak<VulkanMapInput>>,
 }
 
 /// What turns a snapshot into a scene: [`convert`], except in the tests that need the GPU crate to refuse a quad.
@@ -199,6 +204,7 @@ impl Default for Conversion {
         Self {
             cache: None,
             converter: convert,
+            map_input: None,
         }
     }
 }
@@ -236,7 +242,7 @@ impl Conversion {
         };
         // The map lane (milestone 6, slice 1): the shared grids and the camera, placed with this snapshot's own metrics, in O(1). A
         // map the GPU crate refuses leaves the scene without it and is a refusal like a refused quad.
-        let (scene, refusal) = match vulkan_map(snapshot) {
+        let (scene, refusal) = match vulkan_map_cached(snapshot, &mut self.map_input) {
             Ok(map) => (scene.with_map(map), refusal),
             Err(message) => (scene, refusal.or(Some(message))),
         };
@@ -266,8 +272,19 @@ impl std::fmt::Debug for VulkanSink {
 
 /// The GPU crate's map for a snapshot: `None` when the snapshot carries none or shows none, an error when the GPU crate refuses what
 /// the lane validated.
+#[cfg(test)]
 pub(crate) fn vulkan_map(snapshot: &Snapshot) -> Result<Option<VulkanMap>, String> {
+    vulkan_map_cached(snapshot, &mut None)
+}
+
+/// [`vulkan_map`], with the GPU crate's input for a generation made once: `cached` refers (weakly) to the one last made, and is
+/// forgotten by a snapshot that shows no map.
+pub(crate) fn vulkan_map_cached(
+    snapshot: &Snapshot,
+    cached: &mut Option<Weak<VulkanMapInput>>,
+) -> Result<Option<VulkanMap>, String> {
     let Some(frame) = &snapshot.map else {
+        *cached = None;
         return Ok(None);
     };
     let Some(placement) = frame.placement else {
@@ -276,17 +293,30 @@ pub(crate) fn vulkan_map(snapshot: &Snapshot) -> Result<Option<VulkanMap>, Strin
     let input = &frame.input;
     let camera = &frame.camera;
     let refused = |error: VulkanMapError| format!("the map was refused: {error}");
-    let gpu_input = VulkanMapInput::new(
-        input.generation(),
-        input.origin(),
-        input.size(),
-        Arc::clone(input.grid_a()),
-        Arc::clone(input.grid_b()),
-        Arc::clone(input.palette()),
-    )
-    .map_err(refused)?;
+    let held = cached
+        .as_ref()
+        .and_then(Weak::upgrade)
+        .filter(|held| held.generation() == input.generation());
+    let gpu_input = if let Some(held) = held {
+        held
+    } else {
+        let made = Arc::new(
+            VulkanMapInput::new(
+                input.generation(),
+                input.origin(),
+                input.size(),
+                Arc::clone(input.grid_a()),
+                Arc::clone(input.grid_b()),
+                &vulkan_rules(input.rules()),
+            )
+            .map_err(refused)?,
+        );
+        *cached = Some(Arc::downgrade(&made));
+        made
+    };
     let map = VulkanMap::new(
-        Arc::new(gpu_input),
+        gpu_input,
+        camera.step(),
         camera.top_left(),
         camera.view(),
         DestinationRect {
@@ -307,6 +337,39 @@ pub(crate) fn vulkan_map(snapshot: &Snapshot) -> Result<Option<VulkanMap>, Strin
     Ok(Some(map.with_refusals(
         Arc::clone(&frame.refusals) as Arc<dyn VulkanRefusalSink>
     )))
+}
+
+/// The rule table as the GPU crate's: the same fields, the kind spelled for the backend.
+fn vulkan_rules(rules: &MapRules) -> VulkanMapRules {
+    VulkanMapRules {
+        terrains: rules
+            .terrains
+            .iter()
+            .map(|rule| VulkanTerrainRule {
+                kind: match rule.kind {
+                    MapTerrainKind::Land => VulkanTerrainKind::Land,
+                    MapTerrainKind::Sea => VulkanTerrainKind::Sea,
+                    MapTerrainKind::Lake => VulkanTerrainKind::Lake,
+                    MapTerrainKind::Mountain => VulkanTerrainKind::Mountain,
+                },
+                solid: rule.solid,
+                second: rule.second,
+                dark: rule.dark,
+                dark_second: rule.dark_second,
+                cap: rule.cap,
+                high_ground: rule.high_ground,
+                relief: rule.relief,
+                mix_percent: rule.mix_percent,
+                cap_heights: rule.cap_heights,
+            })
+            .collect(),
+        sea: rules.sea,
+        shallow_sea: rules.shallow_sea,
+        lake: rules.lake,
+        river: rules.river,
+        shallow_threshold: rules.shallow_threshold,
+        steps: rules.steps,
+    }
 }
 
 impl VulkanRefusalSink for MapRefusals {
@@ -414,6 +477,7 @@ impl VulkanSceneSink {
             conversion: Mutex::new(Conversion {
                 cache: None,
                 converter,
+                map_input: None,
             }),
             last: Mutex::new(None),
             #[cfg(test)]
@@ -564,6 +628,7 @@ impl VulkanSinkSide {
             conversion: Mutex::new(Conversion {
                 cache: None,
                 converter: self.converter,
+                map_input: None,
             }),
         });
         self.slot = Some(slot);

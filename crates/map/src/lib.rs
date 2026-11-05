@@ -7,6 +7,8 @@
 
 use std::collections::BTreeSet;
 
+#[cfg(feature = "test-support")]
+pub mod fixture;
 mod loading;
 
 pub use loading::{

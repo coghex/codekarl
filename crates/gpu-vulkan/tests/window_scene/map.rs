@@ -1,60 +1,90 @@
-//! The scene presenter's GPU-written map image on a real window (milestone 6, slice 1): the first frame with a map, and the
+//! The scene presenter's GPU-written map image on a real window (milestone 6, slices 1 and 6): the first frame with a map, and the
 //! resize and the new input that replace the target and the images, retired and let go of only after the ledger's proof of the last
 //! submit that used them. A submodule of `window_scene`, so its cases run in the same workers (synchronization validation on: a
 //! missing barrier between the map pass and the window pass fails the case).
 //!
 //! No case sleeps to synchronise: the hold is a `VkEvent` the frame waits on, and a wait is on an observable fact (the presenter's
-//! map counters, the ledger's proofs).
+//! map counters, the ledger's proofs). The map is `ck-map`'s slice 6 fixture (`crates/map/tests/fixture/mod.rs`, included below) and
+//! every expected pixel is `ck_map::reference_colour`'s.
 
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ck_gpu_vulkan::{
     DestinationRect, Event, FrameCapture, FrameCaptures, MapRefusalSink, SourceRect, VulkanFilter,
-    VulkanFrame, VulkanMap, VulkanMapInput,
+    VulkanFrame, VulkanMap, VulkanMapInput, VulkanMapRules, VulkanTerrainKind, VulkanTerrainRule,
 };
+use ck_map::{STEP_SIZE, WorldPixel, fixture};
 
 use super::{
     Arc, Case, CleanupResult, Harness, Mutex, Quads, Rig, count, destroy_event, event, set_event,
     vk,
 };
 
-pub(crate) const ORIGIN: [i32; 2] = [100, 200];
-pub(crate) const CROP: [u32; 2] = [7, 5];
+pub(crate) const ORIGIN: [i32; 2] = fixture::ORIGIN;
+pub(crate) const CROP: [u32; 2] = fixture::SIZE;
 
-/// Grid A's terrain index per cell, rows running south. Irregular on purpose: three or more indices, no symmetry.
-const TERRAIN: [[u8; 7]; 5] = [
-    [1, 1, 2, 3, 1, 2, 2],
-    [3, 1, 1, 2, 2, 3, 1],
-    [2, 3, 1, 1, 1, 2, 3],
-    [1, 2, 2, 3, 2, 1, 1],
-    [3, 3, 1, 2, 1, 1, 2],
-];
+/// The step of these cases: a tenth of a cell per map pixel, with all three octaves of the sub-cell detail.
+pub(crate) const STEP: u8 = 60;
 
-/// The palette: entry 0 is what outside the crop shows.
-const PALETTE: [[u8; 4]; 4] = [
-    [10, 20, 30, 255],
-    [200, 50, 50, 255],
-    [50, 200, 50, 255],
-    [50, 50, 200, 255],
-];
+fn the_fixture() -> &'static fixture::Fixture {
+    static FIXTURE: OnceLock<fixture::Fixture> = OnceLock::new();
+    FIXTURE.get_or_init(fixture::fixture)
+}
+
+/// The world pixel of the crop's top-left corner at [`STEP`].
+pub(crate) fn corner() -> [i32; 2] {
+    let pixel = fixture::Fixture::crop_top_left(STEP);
+    [pixel.x, pixel.y]
+}
+
+fn kind_of(kind: fixture::Kind) -> VulkanTerrainKind {
+    match kind {
+        fixture::Kind::Land => VulkanTerrainKind::Land,
+        fixture::Kind::Sea => VulkanTerrainKind::Sea,
+        fixture::Kind::Lake => VulkanTerrainKind::Lake,
+        fixture::Kind::Mountain => VulkanTerrainKind::Mountain,
+    }
+}
+
+/// The fixture's rule table as the presenter takes it.
+fn rules_of(fixture: &fixture::Fixture) -> VulkanMapRules {
+    VulkanMapRules {
+        terrains: fixture
+            .terrains
+            .iter()
+            .map(|terrain| VulkanTerrainRule {
+                kind: kind_of(terrain.kind),
+                solid: terrain.style.solid.0,
+                second: terrain.style.second.0,
+                dark: terrain.style.dark.0,
+                dark_second: terrain.style.dark_second.0,
+                cap: terrain.style.cap.0,
+                high_ground: terrain.style.high_ground.0,
+                relief: [terrain.style.relief_low, terrain.style.relief_high],
+                mix_percent: terrain.style.mix_percent,
+                cap_heights: [terrain.style.cap_low, terrain.style.cap_high],
+            })
+            .collect(),
+        sea: fixture.data.sea.0,
+        shallow_sea: fixture.data.shallow_sea.0,
+        lake: fixture.data.lake.0,
+        river: fixture.data.river.0,
+        shallow_threshold: fixture.data.shallow_threshold,
+        steps: STEP_SIZE,
+    }
+}
 
 pub(crate) fn input_with(generation: u64) -> Arc<VulkanMapInput> {
-    let mut grid_a = Vec::new();
-    let mut grid_b = Vec::new();
-    for (y, row) in TERRAIN.iter().enumerate() {
-        for (x, terrain) in row.iter().enumerate() {
-            grid_a.extend_from_slice(&[*terrain, u8::from((x + y) % 2 == 0), 0, 255]);
-            grid_b.extend_from_slice(&[0x2A, u8::try_from(x * 16 + y).expect("small"), 0, 255]);
-        }
-    }
+    let fixture = the_fixture();
     Arc::new(
         VulkanMapInput::new(
             generation,
             ORIGIN,
             CROP,
-            grid_a.into(),
-            grid_b.into(),
-            PALETTE.to_vec().into(),
+            fixture.grid_a.clone().into(),
+            fixture.grid_b.clone().into(),
+            &rules_of(fixture),
         )
         .expect("a valid input"),
     )
@@ -66,6 +96,7 @@ pub(crate) fn map_of(input: &Arc<VulkanMapInput>, top_left: [i32; 2], view: [u32
     let float = |value: u32| f32::from(u16::try_from(value).expect("small"));
     VulkanMap::new(
         Arc::clone(input),
+        STEP,
         top_left,
         view,
         DestinationRect {
@@ -84,19 +115,15 @@ pub(crate) fn map_of(input: &Arc<VulkanMapInput>, top_left: [i32; 2], view: [u32
     .expect("a valid map")
 }
 
-/// The minimal rule: the RGBA colour of map pixel `(x, y)` of a view at `top_left`.
+/// The reference's RGBA colour of map pixel `(x, y)` of a view at `top_left`, at [`STEP`].
 pub(crate) fn expected_pixel(top_left: [i32; 2], x: u32, y: u32) -> [u8; 4] {
-    let cell_x = i64::from(top_left[0]) + i64::from(x) - i64::from(ORIGIN[0]);
-    let cell_y = i64::from(top_left[1]) + i64::from(y) - i64::from(ORIGIN[1]);
-    let inside =
-        (0..i64::from(CROP[0])).contains(&cell_x) && (0..i64::from(CROP[1])).contains(&cell_y);
-    if inside {
-        let terrain = TERRAIN[usize::try_from(cell_y).expect("inside")]
-            [usize::try_from(cell_x).expect("inside")];
-        PALETTE[usize::from(terrain)]
-    } else {
-        PALETTE[0]
-    }
+    the_fixture().reference(
+        STEP,
+        WorldPixel {
+            x: top_left[0] + i32::try_from(x).expect("small"),
+            y: top_left[1] + i32::try_from(y).expect("small"),
+        },
+    )
 }
 
 pub(crate) fn bgra(capture: &FrameCapture, x: u32, y: u32) -> [u8; 4] {
@@ -127,7 +154,6 @@ fn captured(harness: &mut Harness, captures: &FrameCaptures, generation: u64) ->
 }
 
 impl Harness {
-    /// Publishes a frame (the next generation) that carries `map` and no scene quad.
     /// Publishes a frame with no map (a withdrawn one), and returns its generation.
     fn publish_without_map(&mut self) -> u64 {
         self.generation += 1;
@@ -140,6 +166,7 @@ impl Harness {
         self.generation
     }
 
+    /// Publishes a frame (the next generation) that carries `map` and no scene quad.
     fn publish_map(&mut self, map: VulkanMap) {
         self.generation += 1;
         self.frames.publish(
@@ -160,7 +187,10 @@ fn a_map_in_the_first_frame_is_drawn_enlarged() {
     let mut harness = Harness::new();
     let captures: FrameCaptures = Arc::new(Mutex::new(Vec::new()));
     let input = input_with(1);
-    let top_left = [ORIGIN[0] - 1, ORIGIN[1]];
+    let top_left = {
+        let [x, y] = corner();
+        [x - 1, y]
+    };
     harness.publish_map(map_of(&input, top_left, [5, 3]));
     let generation = harness.generation;
     let sink = Arc::clone(&captures);
@@ -199,7 +229,7 @@ fn a_resize_retires_the_old_target_after_its_proof() {
     let mut harness = Harness::new();
     let held = event(&harness);
     let input = input_with(1);
-    harness.publish_map(map_of(&input, ORIGIN, [5, 3]));
+    harness.publish_map(map_of(&input, corner(), [5, 3]));
     let mut presenter = harness.start_with(Harness::limits(), None, harness.rig.pixel, |hooks| {
         hooks.scene.frame_event = Some(held);
     });
@@ -210,7 +240,7 @@ fn a_resize_retires_the_old_target_after_its_proof() {
     let first = observer.map_stats();
     assert_eq!((first.targets_created, first.retired), (1, 0));
     // The view grows while the first frame is unproven: the step waits, and makes nothing.
-    harness.publish_map(map_of(&input, ORIGIN, [6, 4]));
+    harness.publish_map(map_of(&input, corner(), [6, 4]));
     presenter.request_redraw();
     harness.rig.idle(std::time::Duration::from_millis(150));
     let held_stats = observer.map_stats();
@@ -235,7 +265,7 @@ fn a_resize_retires_the_old_target_after_its_proof() {
     assert_eq!(resized.retired, 1, "the old target was retired");
     assert_eq!(resized.targets_alive, 1, "and destroyed after its proof");
     // A new input (another generation) replaces the images the same way.
-    harness.publish_map(map_of(&input_with(2), ORIGIN, [6, 4]));
+    harness.publish_map(map_of(&input_with(2), corner(), [6, 4]));
     harness.rig.wait("the new input", || {
         let stats = observer.map_stats();
         stats.inputs_created == 2 && stats.retired_released >= 2
@@ -359,7 +389,7 @@ fn a_refused_allocation_is_told_retried_and_cleared() {
     watch_targets(&told, &harness.probes.observer);
     let with_refusals =
         |map: VulkanMap| map.with_refusals(Arc::clone(&told) as Arc<dyn MapRefusalSink>);
-    harness.publish_map(with_refusals(map_of(&input, ORIGIN, [5, 3])));
+    harness.publish_map(with_refusals(map_of(&input, corner(), [5, 3])));
     let generation = harness.generation;
     let sink = Arc::clone(&captures);
     let mut presenter =
@@ -376,7 +406,7 @@ fn a_refused_allocation_is_told_retried_and_cleared() {
     );
     assert_eq!(
         bgra(&frames[1], 2, 2),
-        expected_pixel(ORIGIN, 0, 0),
+        expected_pixel(corner(), 0, 0),
         "the map is drawn by the retry"
     );
     assert_eq!(told.refused.lock().expect("the messages").len(), 1);
@@ -415,7 +445,7 @@ fn a_withdrawn_map_ends_the_retry() {
     let input = input_with(1);
     let with_refusals =
         |map: VulkanMap| map.with_refusals(Arc::clone(&told) as Arc<dyn MapRefusalSink>);
-    harness.publish_map(with_refusals(map_of(&input, ORIGIN, [5, 3])));
+    harness.publish_map(with_refusals(map_of(&input, corner(), [5, 3])));
     let first = harness.generation;
     let sink = Arc::clone(&captures);
     let mut presenter =
@@ -455,7 +485,7 @@ fn a_refused_resize_draws_without_the_map_and_recovers() {
     watch_targets(&told, &harness.probes.observer);
     let with_refusals =
         |map: VulkanMap| map.with_refusals(Arc::clone(&told) as Arc<dyn MapRefusalSink>);
-    harness.publish_map(with_refusals(map_of(&input, ORIGIN, [5, 3])));
+    harness.publish_map(with_refusals(map_of(&input, corner(), [5, 3])));
     let first = harness.generation;
     let sink = Arc::clone(&captures);
     let mut presenter =
@@ -468,13 +498,13 @@ fn a_refused_resize_draws_without_the_map_and_recovers() {
     let shown = captures_of(&mut harness, &captures, first, 1);
     assert_eq!(
         bgra(&shown[0], 2, 2),
-        expected_pixel(ORIGIN, 0, 0),
+        expected_pixel(corner(), 0, 0),
         "the first map"
     );
     let observer = Arc::clone(&harness.probes.observer);
     assert_eq!(observer.map_stats().targets_created, 1);
     // The view grows: the new target is refused.
-    harness.publish_map(with_refusals(map_of(&input, ORIGIN, [6, 4])));
+    harness.publish_map(with_refusals(map_of(&input, corner(), [6, 4])));
     let second = harness.generation;
     let frames = captures_of(&mut harness, &captures, second, 2);
     assert_eq!(
@@ -484,7 +514,7 @@ fn a_refused_resize_draws_without_the_map_and_recovers() {
     );
     assert_eq!(
         bgra(&frames[1], 2, 2),
-        expected_pixel(ORIGIN, 0, 0),
+        expected_pixel(corner(), 0, 0),
         "the retry draws the new map"
     );
     assert_eq!(told.refused.lock().expect("the messages").len(), 1);

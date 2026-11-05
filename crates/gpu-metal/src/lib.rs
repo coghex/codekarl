@@ -231,8 +231,9 @@ pub use frame::{
     InstanceRole, MetalFrame, MetalFrameSlot, MetalInstance, MetalSceneSource, SceneStats,
 };
 pub use map::{
-    MAP_SIDE_MAX, MapReadback, MapRefusalSink, MetalMap, MetalMapError, MetalMapInput, PALETTE_MAX,
-    readback_map,
+    MAP_SIDE_MAX, MapReadback, MapRefusalSink, MetalMap, MetalMapError, MetalMapInput,
+    MetalMapRules, MetalTerrainKind, MetalTerrainRule, RULES_HEIGHT, RULES_WIDTH, STEP_COUNT,
+    TERRAIN_MAX, readback_map,
 };
 pub use metrics::{
     BUCKETS, EndError, FrameIntervals, FrameMarks, FrameStats, Histogram, MetricsWindow,
