@@ -22,7 +22,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pipeline
+import procfix
 import test_batch
 from gate import batch, cli, docsqueue, lease, locks, owned, pointer, procscan
 from gate import gc as collector
@@ -970,10 +972,23 @@ class Workers(GcFixture):
             os.utime(path, (cutoff, cutoff))
         return worker
 
+    def recheck_scan(
+        self, others: dict[int, list[Path]] | None = None
+    ) -> tuple[dict[int, list[Path]], dict[int, int]]:
+        collector_pid = os.getpid()
+        observed = {collector_pid: [], **(others or {})}
+        parents = {collector_pid: 1, **dict.fromkeys(others or {}, 1)}
+        return observed, parents
+
     def test_01_idle_target_is_collected_but_source_and_pijul_survive(self) -> None:
         worker = self.worker()
         before_source = snapshot(worker / "src", worker / ".pijul")
-        with mock.patch.object(procscan, "open_paths", return_value={}):
+        with (
+            mock.patch.object(procscan, "open_paths", return_value={}),
+            mock.patch.object(
+                procscan, "open_paths_with_parents", return_value=self.recheck_scan()
+            ),
+        ):
             text = self.dry()
             self.assertTrue(self.line(text, str(worker / "target")).startswith("CANDIDATE"), text)
             self.apply()
@@ -985,30 +1000,44 @@ class Workers(GcFixture):
         (recent / "target/debug/recent.bin").write_text("recent")
         busy = self.worker("busy")
         observed = {22: [busy / "target/debug/artifact.bin"]}
-        with mock.patch.object(procscan, "open_paths", return_value=observed):
+        recheck = self.recheck_scan({22: observed[22]})
+        with (
+            mock.patch.object(procscan, "open_paths", return_value=observed),
+            mock.patch.object(procscan, "open_paths_with_parents", return_value=recheck),
+        ):
             text = self.dry()
         self.assertIn("target/ modified within the six-hour idle window", text)
         self.assertIn("pid 22 has cwd/open file", text)
-        with mock.patch.object(procscan, "open_paths", return_value=observed):
+        with (
+            mock.patch.object(procscan, "open_paths", return_value=observed),
+            mock.patch.object(procscan, "open_paths_with_parents", return_value=recheck),
+        ):
             self.apply()
         self.assertTrue((recent / "target").exists())
         self.assertTrue((busy / "target").exists())
 
     def test_03_failed_process_scan_keeps_worker_target(self) -> None:
         worker = self.worker()
-        with mock.patch.object(
-            procscan, "open_paths", side_effect=RuntimeError("lsof denied access")
+        with (
+            mock.patch.object(procscan, "open_paths", return_value={}),
+            mock.patch.object(
+                procscan, "open_paths_with_parents", side_effect=RuntimeError("lsof denied access")
+            ),
         ):
-            text = self.dry()
-            self.assertIn("process scan failed; kept: lsof denied access", text)
-            self.apply()
+            text = self.apply()
+            self.assertIn("kept: process path scan failed; kept: lsof denied access", text)
         self.assertTrue((worker / "target").exists())
 
     def test_03a_a_shared_worker_directory_lease_keeps_its_target(self) -> None:
         worker = self.worker()
         descriptor = lease.acquire(worker)
         try:
-            with mock.patch.object(procscan, "open_paths", return_value={}):
+            with (
+                mock.patch.object(procscan, "open_paths", return_value={}),
+                mock.patch.object(
+                    procscan, "open_paths_with_parents", return_value=self.recheck_scan()
+                ),
+            ):
                 text = self.dry()
                 row = self.line(text, f"{worker}/target")
                 self.assertTrue(row.startswith("IN-USE"), row)
@@ -1020,8 +1049,11 @@ class Workers(GcFixture):
 
     def test_04_apply_rechecks_process_usage_after_the_plan(self) -> None:
         worker = self.worker()
-        snapshots = iter(({}, {33: [worker / "src/main.rs"]}))
-        with mock.patch.object(procscan, "open_paths", side_effect=lambda: next(snapshots)):
+        recheck = self.recheck_scan({33: [worker / "src/main.rs"]})
+        with (
+            mock.patch.object(procscan, "open_paths", return_value={}),
+            mock.patch.object(procscan, "open_paths_with_parents", return_value=recheck),
+        ):
             text = self.apply()
         self.assertIn("kept: pid 33 has cwd/open file", text)
         self.assertTrue((worker / "target").exists())
@@ -1041,12 +1073,24 @@ class Workers(GcFixture):
         output = io.StringIO()
         with (
             mock.patch.object(procscan, "open_paths", return_value={}),
+            mock.patch.object(
+                procscan, "open_paths_with_parents", return_value=self.recheck_scan()
+            ),
             contextlib.redirect_stdout(output),
         ):
             self.assertEqual(collector.automatic(self.hub, self.current / "tools"), 0)
         self.assertFalse((worker / "target").exists())
         self.assertIn("CANDIDATE", output.getvalue())
         self.assertIn("moved to trash/", output.getvalue())
+
+    @procfix.real_process
+    def test_07_real_process_scan_collects_an_idle_worker_target(self) -> None:
+        worker = self.worker()
+        before_source = snapshot(worker / "src", worker / ".pijul")
+        text = self.apply()
+        self.assertFalse((worker / "target").exists(), text)
+        self.assertEqual(snapshot(worker / "src", worker / ".pijul"), before_source)
+        self.assertIn("moved to trash/", text)
 
 
 class EntryPoint(GcFixture):
