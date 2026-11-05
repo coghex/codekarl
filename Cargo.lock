@@ -92,6 +92,11 @@ dependencies = [
 [[package]]
 name = "ck-map"
 version = "0.1.0"
+dependencies = [
+ "png",
+ "serde",
+ "toml",
+]
 
 [[package]]
 name = "ck-render-2d"

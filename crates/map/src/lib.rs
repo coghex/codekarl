@@ -7,6 +7,12 @@
 
 use std::collections::BTreeSet;
 
+mod loading;
+
+pub use loading::{
+    LoadError, LoadedMap, LoadedTerrain, MAX_CROP_DIMENSION, PackedGrid, TerrainKind, load_map,
+};
+
 /// Projected metres in one map cell.
 pub const CELL_METRES: f64 = 839.0;
 /// Fixed-point units in one map cell.
@@ -347,7 +353,7 @@ impl MapData {
         }
         for terrain in &self.terrains {
             if terrain.relief_high <= terrain.relief_low
-                || terrain.cap_high <= terrain.cap_low
+                || (terrain.mountain && terrain.cap_high <= terrain.cap_low)
                 || terrain.mix_percent > 100
             {
                 return Err("invalid terrain thresholds");
@@ -475,7 +481,7 @@ pub fn reference_colour(
         Surface::Land { terrain, usable } => {
             let style = *map.terrains.get(usize::from(terrain))?;
             if style.relief_high <= style.relief_low
-                || style.cap_high <= style.cap_low
+                || (style.mountain && style.cap_high <= style.cap_low)
                 || style.mix_percent > 100
             {
                 return None;
@@ -731,3 +737,6 @@ fn bresenham(start: WorldPixel, end: WorldPixel, pixels: &mut BTreeSet<WorldPixe
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod loading_tests;
