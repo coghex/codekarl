@@ -1,0 +1,14 @@
+projection = "spherical_mercator"
+cell_metres = 839.0
+
+[crop]
+origin = [23882, 23882]
+width = 2
+height = 2
+
+[layers]
+terrain = "terrain.png"
+usable = "usable.png"
+elevation = "elevation.png"
+terrain_rules = "terrain.toml"
+rivers = "rivers.toml"
