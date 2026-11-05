@@ -33,7 +33,9 @@ changed code. Unknown, human or mixed-family authorship needs approval from
 both families, each by a reviewer independent of every author.
 
 `ck batch prepare` freezes only eligible submissions, builds their combined
-candidate, and runs the full checks once. Independent groups may be split after
+candidate, and runs the planned checks selected by the union of member changes
+against the frozen base. The selected groups and reasons are bound to the CI
+receipt. Independent groups may be split after
 a failed combined run; each passing subset is a new candidate. The CI lock is
 released while the validated batch waits for integration review. Changed
 membership or code needs fresh CI and integration approval. `ck batch publish`
@@ -66,15 +68,17 @@ A group's class covers every command it starts, nested checks included.
   runs the floor groups plus every affected group a changed path matches, printing every group as run or skip with the reason. An
   unclaimed path or a change set it cannot compute runs every affected group (it fails wide); a new untracked directory counts as touching
   the directory itself. `--group ID` adds a group, `--plan` prints the plan without running it. The window groups of one backend are
-  selected only by that backend's own paths, so work on one backend never opens another's windows. A planned run calls itself
-  `recipe planned` and is never batch evidence.
+  selected only by that backend's own paths, so work on one backend never opens another's windows. A manual planned run calls itself
+  `recipe planned`; batch validation uses the same planned recipe with `--batch`, binds the changed paths and selection to the CI receipt,
+  and verifies them against the validated candidate before publication.
 - **Guards that read other files** (CK-84, from the milestone 3.5 guide): a test or build step that reads files outside its own group's
   paths, such as source scans, `unsafe` and symbol guards, hook-isolation scans, or native test support compiled by another crate, is
   listed in the catalog's guard inventory, and the files it reads select its group. Static guards that need no GPU or window run in their
   own plain groups (`metal.isolation`, `vulkan.isolation`, `unittest-catalog`), so an application edit runs them without opening a Metal
   or native window. A catalog test fails when a guard reads an unregistered input.
 - **`ck check`** (full): every group once, with `CK_REQUIRE_FULL_SPEC=1` for the all-features Rust groups so a skipped or unavailable
-  Metal case fails. **The batch always runs this level**, so everything, Metal and native windows included, runs once per batch.
+  Metal case fails. The manager runs this level once at milestone completion. If no eligible submission remains, keep the existing
+  empty-batch refusal and run `tools/ck check` on a clean accepted copy, retaining the log as milestone evidence.
 - `--quick` runs formatting, Ruff and ShellCheck; `--fast` runs the full level's groups without the build slot and without
   `CK_REQUIRE_FULL_SPEC`.
 
