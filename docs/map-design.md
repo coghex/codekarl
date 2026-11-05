@@ -349,9 +349,11 @@ must give the same bytes for every pixel; that is what "the same picture on both
 each backend, and so Metal and Vulkan also match each other. The spec writes each rule out exactly. In outline:
 
 1. **Cell lookup:** the cell under the world pixel's sample point (§9.3), after the sub-cell detail of rule 2. Outside the crop is sea.
-2. **Sub-cell detail** (decoration only), used only at steps where P(s) is under one cell. The sample point is moved by a jitter taken from a
-   fixed 32-bit integer hash of the fixed-point position, at two lattice scales tied to the cell. Its amplitude is at most a fixed fraction
-   of a cell. The spec freezes the hash and the integer interpolation. The result is the same at every visit and on every backend.
+2. **Sub-cell detail** (decoration only). The sample point is moved by a jitter of integer value noise from a frozen 32-bit hash, in three
+   octaves taken from mock-up 2: lattices of 3, 0.7 and 0.18 cells, half-amplitudes of 0.9, 0.28 and 0.07 cell, starting at steps 14, 34
+   and 53 (below 2.4, 0.6 and 0.16 cells per map pixel, the mock-up's thresholds). Elevation is interpolated between cell centres at the
+   moved point, as in the mock-up. A pixel whose unmoved sample point is outside the crop is sea before any noise is evaluated. CK-178 holds
+   the exact algorithm and test vectors. The result is the same at every visit and on every backend.
 3. **Water.** Sea and lake are terrain types. Sea draws the shallow-sea tone where depth is under the shallow threshold and the Bayer value
    is below 8 × (threshold − depth) / threshold (integer division). Otherwise it draws the sea colour.
 4. **Usable land** draws the terrain's solid colour, and its second tone where Bayer < level × mix / 100. Here level =
@@ -423,8 +425,9 @@ neither needs nor reads them.
 
 - **Firm (§4).** 60 frames per second while panning, zooming or when the map changes, on both backends; idle, on-demand redraw otherwise.
 - **Proposal.** The map pass is small: about 120,000 map pixels on the owner's 3456 × 2234 display at 8 drawable pixels each, with a few
-  exact reads per pixel. The evidence records the map pass's GPU time and the frame rate while zooming and panning, on both backends, at
-  the owner's resolution. It also records load-and-validate time for the whole of Ireland, with 1 second as a provisional target.
+  exact reads per pixel. The evidence shows frames at 60 fps while zooming and panning, on both backends, at the owner's resolution,
+  from the existing per-frame timing and presentation intervals only. There is no map-pass-specific GPU timing: the owner's rule is no
+  engine debug counters. It also records load-and-validate time for the whole of Ireland, with 1 second as a provisional target.
 
 ### 9.8 The preview tool
 
@@ -475,7 +478,7 @@ owner's reading of the running map plus windowless tests. **Firm (owner, 15:18Z)
 ## Provenance
 
 Drafted 2026-11-02 by ck-designer-1. Revision 2 the same day, after design review 1; revision 3 (editorial) after both re-reviews approved
-it. Sources: the session log, both design reviews and the
+it; revision 4 (editorial) aligns §9.4 rule 2 and §9.7 with the reviewed specs CK-178 and CK-183. Sources: the session log, both design reviews and the
 reviewer-1 owner addendum, `docs/vision.md`, `docs/game/diplomacy.md`, `docs/scene-design.md` and `docs/render-design.md`, and reading of
 `crates/gpu-metal` (the frame encoder and its off-screen path, the ledger), `crates/gpu-vulkan` (the render pass, readback and ledger),
 `crates/render-2d` (the points-to-pixels rule), `crates/input` and `apps/codekarl`. No code, issues, builds or runs.
