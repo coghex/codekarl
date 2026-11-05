@@ -26,6 +26,7 @@ pub mod budget;
 mod clear_only;
 mod filter;
 mod legacy;
+pub mod map;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 #[expect(
     unsafe_code,
@@ -54,6 +55,10 @@ pub use ck_resources::{Assets, AssetsError, DecodeError, DecodeLimits, Image, To
 pub use clear_only::ClearOnly;
 pub use filter::{Filter, UnknownFilter};
 pub use legacy::{Admission, LegacyError, LegacyLane};
+pub use map::{
+    MapCamera, MapError, MapFrame, MapInput, MapPlacement, MapPublication, MapRefusals,
+    PALETTE_MAX, place_map,
+};
 /// The presenter's frame-timing types (milestone 5, issue 10b-1), which the application reads through the backend: the application
 /// never names the GPU crate (`tests/source_guard.rs`).
 #[cfg(all(feature = "metal", target_os = "macos"))]

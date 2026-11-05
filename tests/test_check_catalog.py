@@ -937,12 +937,17 @@ class MapGroup(unittest.TestCase):
         self.assertNotIn("metal.gpu", chosen)
         self.assertNotIn("native.window", chosen)
 
-    def test_03_it_owns_only_the_map_library_and_doc_units(self) -> None:
+    def test_03_it_owns_only_the_map_crate_targets_and_doc_unit(self) -> None:
         step = next(step for step in check.STEPS if step.name == "map.core")
         units = group_units(step, TARGETS)
         self.assertEqual(
             {(kind, name) for _, kind, name, _, _ in units},
-            {("lib", "ck_map"), ("doc", "ck_map")},
+            {
+                ("lib", "ck_map"),
+                ("bin", "map-preview"),
+                ("test", "preview"),
+                ("doc", "ck_map"),
+            },
         )
         self.assertEqual({unit[0] for unit in units}, {"ck-map"})
         self.assertEqual({need_of(unit) for unit in units}, {"plain"})
@@ -1189,6 +1194,7 @@ class MetalWindowFiles(unittest.TestCase):
         modules = presenter_modules()
         expected_nested_modules = {
             "crates/gpu-metal/tests/presenter_quad/cases.rs",
+            "crates/gpu-metal/tests/presenter_map/cases.rs",
             "crates/gpu-metal/tests/presenter_instanced/cases.rs",
             "crates/gpu-metal/tests/presenter_bindless/cases.rs",
             "crates/gpu-metal/tests/presenter_scene/cases.rs",

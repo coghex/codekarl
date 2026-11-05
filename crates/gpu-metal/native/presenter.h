@@ -78,6 +78,26 @@ typedef struct {
     uint32_t height;
 } CKPrQuad;
 
+/* The map of one frame (milestone 6, slice 1): the GPU-written map image. `present` 0 means no map (the frame is exactly the frame
+ * without one); the resident grids and target are then left as they are. The grids are the crop's RGBA8 images (`crop` cells,
+ * 4 bytes each) and the palette `palette_count` RGBA8 colours; they are given (`grid_a` not NULL) only when `generation` differs from
+ * the resident grids'. The target is `view` map pixels (RGBA8); the enlarged map is drawn as a nearest-sampled quad at `destination`
+ * (whole drawable pixels) from `source` (map pixels), between the clear and the legacy quad. */
+typedef struct {
+    int32_t present;
+    uint64_t generation;
+    int32_t origin[2];   /* the crop's global origin cell (i0, j0) */
+    uint32_t crop[2];    /* the crop's width and height in cells */
+    int32_t top_left[2]; /* the camera's top-left world pixel */
+    uint32_t view[2];    /* the view in map pixels: the target's size */
+    int32_t destination[4]; /* left, top, right, bottom */
+    float source[4];        /* left, top, right, bottom, in map pixels */
+    const uint8_t *grid_a;  /* crop[0] * crop[1] * 4 bytes, or NULL (the resident grids are this generation's) */
+    const uint8_t *grid_b;
+    const uint8_t *palette; /* palette_count * 4 bytes */
+    uint32_t palette_count;
+} CKPrMap;
+
 /* The pixels of a new texture: given only when the quad's image differs from the resident texture's. */
 typedef struct {
     const uint8_t *pixels;
@@ -88,6 +108,11 @@ typedef struct {
 typedef struct {
     int32_t uploaded; /* a new texture became the resident one */
     int32_t removed;  /* the resident texture was retired and no new one made */
+    int32_t map_grids; /* new map grids became the resident ones (the `generation` of the CKPrMap given) */
+    int32_t map_admitted; /* the map's images were made resident (or already were) this step: an attempt that succeeded */
+    int32_t map_refused;  /* the map's images could not be allocated this step: `map_refusal` says why, and the frame is drawn
+                             without the map (never with a stale target); the next step tries again */
+    char map_refusal[256];
     /* The frame-timing marks (CLOCK_UPTIME_RAW nanoseconds, `clock_gettime_nsec_np`), zero when the step did not reach them:
      * t3 the step calls nextDrawable, t4 nextDrawable returned, t5 the command buffer's commit returned. */
     uint64_t acquire_begin;
@@ -171,8 +196,8 @@ CKPrFrame ck_pr_frame(CKPrCore *core, const float rgb[3], uint32_t width, uint32
  * still waiting for its token, otherwise the step returns CK_PR_FRAME_BUSY. `result` says what happened. */
 CKPrFrame ck_pr_frame_quad(CKPrCore *core, const float rgb[3], uint32_t width, uint32_t height,
                            const CKPrFaults *faults, const CKPrQuad *quad, const CKPrUpload *upload,
-                           const CKPrPacket *packet, const CKPrTicket *ticket, CKPrQuadResult *result,
-                           char *message, size_t capacity);
+                           const CKPrPacket *packet, const CKPrMap *map, const CKPrTicket *ticket,
+                           CKPrQuadResult *result, char *message, size_t capacity);
 
 /* Render thread, setup. Allocates the core's one shared-storage instance buffer of `bytes` bytes (the scene's
  * instances, 48 bytes each) and reports its measured `allocatedSize` in `allocated`. 0 on success. */
@@ -222,6 +247,16 @@ typedef struct {
     uint32_t width;
     uint32_t height;
 } CKPrReadbackImage;
+
+/* The map through the presenter's own pass and composition, off screen: one RGBA8 map target of `map->view` pixels written by the
+ * map pass from `map`'s grids (all given), and the window pass (the clear, the enlarged map, an optional legacy quad `quad` with
+ * pixels `quad_image`) into a `width` x `height` BGRA8 target. Reads both back: `target_pixels` (`map->view[0] * view[1] * 4`
+ * bytes, RGBA8) and `pixels` (`width * height * 4`, BGRA8). A `map` that is not present draws the window pass without a map. 0 on
+ * success. */
+int ck_pr_readback_map(uint32_t width, uint32_t height, const float rgb[3], const uint8_t *library,
+                       size_t library_length, const CKPrMap *map, const CKPrQuad *quad, const uint8_t *quad_image,
+                       size_t quad_image_length, uint8_t *target_pixels, size_t target_length, uint8_t *pixels,
+                       size_t length, char *error, size_t capacity);
 
 /* Renders a clear, an optional legacy quad and a scene (instances already laid out as the instance buffer, 48 bytes each,
  * and its batches) off screen through the presenter's own pipeline, samplers and encoding, and reads the pixels back. A

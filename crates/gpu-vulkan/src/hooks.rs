@@ -409,6 +409,34 @@ pub struct SceneHooks {
     pub frame_event: Option<vk::Event>,
 }
 
+/// What the presenter did with the map (milestone 6, slice 1), read with [`Observer::map_stats`].
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MapStats {
+    /// Submitted frames that carried a map pass.
+    pub passes: u64,
+    /// Map inputs made (grid A, grid B and the palette, counted as one).
+    pub inputs_created: u64,
+    /// Map inputs the render thread still holds: the resident one and a retired one awaiting its proof.
+    pub inputs_alive: u64,
+    /// Map targets made.
+    pub targets_created: u64,
+    /// Map targets the render thread still holds.
+    pub targets_alive: u64,
+    /// The most map targets alive at once.
+    pub targets_max_alive: u64,
+    /// Map objects retired: a replaced input and a replaced target, one count each.
+    pub retired: u64,
+    /// Retired map objects destroyed, after the ledger's proof of the last submit that used them.
+    pub retired_released: u64,
+    /// Frame attempts that waited because a retired holder still waited for its proof.
+    pub admission_waits: u64,
+    /// Inputs whose upload a submitted frame carried.
+    pub uploads: u64,
+    /// The size, in map pixels, of the target made last.
+    pub last_target: (u32, u32),
+}
+
 /// A record of what the presenter did, shared with the test.
 #[doc(hidden)]
 #[derive(Debug, Default)]
@@ -422,6 +450,7 @@ pub struct Observer {
     /// Swap chains created.
     chains_created: AtomicU64,
     quad: Mutex<QuadStats>,
+    map: Mutex<MapStats>,
 }
 
 impl Observer {
@@ -473,6 +502,52 @@ impl Observer {
         let mut stats = lock(&self.quad);
         stats.staging_released += 1;
         stats.staging_alive = stats.staging_alive.saturating_sub(1);
+    }
+
+    /// What the presenter did with the map so far.
+    #[must_use]
+    pub fn map_stats(&self) -> MapStats {
+        *lock(&self.map)
+    }
+
+    pub(crate) fn map_input_began(&self) {
+        let mut stats = lock(&self.map);
+        stats.inputs_created += 1;
+        stats.inputs_alive += 1;
+    }
+
+    pub(crate) fn map_target_began(&self, size: [u32; 2]) {
+        let mut stats = lock(&self.map);
+        stats.targets_created += 1;
+        stats.targets_alive += 1;
+        stats.targets_max_alive = stats.targets_max_alive.max(stats.targets_alive);
+        stats.last_target = (size[0], size[1]);
+    }
+
+    pub(crate) fn map_input_released(&self, retired: bool) {
+        let mut stats = lock(&self.map);
+        stats.inputs_alive = stats.inputs_alive.saturating_sub(1);
+        stats.retired_released += u64::from(retired);
+    }
+
+    pub(crate) fn map_target_released(&self, retired: bool) {
+        let mut stats = lock(&self.map);
+        stats.targets_alive = stats.targets_alive.saturating_sub(1);
+        stats.retired_released += u64::from(retired);
+    }
+
+    pub(crate) fn map_retired(&self) {
+        lock(&self.map).retired += 1;
+    }
+
+    pub(crate) fn map_admission_wait(&self) {
+        lock(&self.map).admission_waits += 1;
+    }
+
+    pub(crate) fn map_submitted(&self, uploaded: bool) {
+        let mut stats = lock(&self.map);
+        stats.passes += 1;
+        stats.uploads += u64::from(uploaded);
     }
 
     pub(crate) fn quad_admission_wait(&self) {
@@ -554,6 +629,12 @@ pub struct TestHooks {
     pub swapchain: Vec<Option<vk::Result>>,
     /// Acquire an image and give it back unused (release it and drain its semaphore) for this many frames.
     pub abandon_frames: u32,
+    /// The next this many attempts to make the map's input or target are refused as if the device were out of memory (each attempt
+    /// that needs a creation uses one).
+    pub map_allocation_failures: u32,
+    /// The first this many attempts that need a creation succeed before `map_allocation_failures` begins to refuse (a refusal of
+    /// a resize, with the old target resident).
+    pub map_allocation_skip: u32,
     /// While this reads true, every fence reads as not signalled (a fence that never proves anything).
     pub fences_never_signal: Option<Arc<AtomicBool>>,
     /// Results for the successive capability queries that decide something in the thread (whether a suboptimal

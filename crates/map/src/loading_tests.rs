@@ -135,6 +135,23 @@ fn indexed_and_rgb_key_layers_are_equivalent_and_rgba_must_be_opaque() {
 }
 
 #[test]
+fn low_bit_indexed_key_image_names_the_conversion() {
+    let fixture = Fixture::copy();
+    write_png(
+        &fixture.0.join("terrain.png"),
+        ColorType::Indexed,
+        BitDepth::Four,
+        &[0, 1],
+        Some(&[0, 0, 255, 0, 255, 255, 0, 255, 0, 255, 0, 255]),
+    );
+    assert_error(
+        &fixture,
+        "terrain.png",
+        "indexed key image is 4-bit; save as 8-bit",
+    );
+}
+
+#[test]
 fn colour_metadata_chunks_do_not_change_stored_samples() {
     let plain = Fixture::copy();
     let expected = load_map(&plain.0).expect("plain fixture loads");

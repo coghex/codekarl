@@ -44,7 +44,19 @@ enum {
     CK_OBS_DEVICE_ID = 29,              /* the identity of the device the core took from the context (test) */
     CK_OBS_QUEUE_ID = 30,               /* ... and of its command queue (test) */
     CK_OBS_CAPTURES = 31,               /* frames captured off screen whose command buffer completed (test) */
-    CK_OBS_COUNT = 32
+    CK_OBS_MAP_PASSES = 32,             /* command buffers committed with a map pass in them */
+    CK_OBS_MAP_GRIDS_CREATED = 33,      /* map inputs made resident (grid A, grid B and the palette, as one) */
+    CK_OBS_MAP_TARGETS_CREATED = 34,    /* map targets allocated */
+    CK_OBS_MAP_TARGETS_ALIVE = 35,      /* map targets a holder of the core still has (the current one and retired ones) */
+    CK_OBS_MAP_TARGETS_MAX = 36,        /* the most alive at once */
+    CK_OBS_MAP_RETIRED = 37,            /* map resources retired (a replaced input, a replaced target: one count each) */
+    CK_OBS_MAP_RETIRED_RELEASED = 38,   /* ... of which let go of, after the token of the last command buffer that used them */
+    CK_OBS_MAP_RELEASED_EARLY = 39,     /* retired resources let go of before that token (the teardown never does) */
+    CK_OBS_MAP_ADMISSION_WAITS = 40,    /* frame steps that waited for retired map resources' token */
+    CK_OBS_MAP_GRIDS_ALIVE = 41,        /* map inputs a holder of the core still has (the current one and a retired one) */
+    CK_OBS_MAP_LAST_WIDTH = 42,         /* the size of the map target made last, in map pixels */
+    CK_OBS_MAP_LAST_HEIGHT = 43,
+    CK_OBS_COUNT = 44
 };
 
 /* The entry points a test may pause in (see ck_pr_set_check_pause). */
@@ -128,6 +140,8 @@ static void ck_obs_max(CKPrObserverState *observer, int index, int64_t value) {
 /* The bindless scene pipeline: the same blending and target; the vertex function passes each instance's slot on, the fragment
  * function selects the image from the frame's table. */
 @property(nonatomic, strong) id<MTLRenderPipelineState> bindless;
+/* The map pass's pipeline (milestone 6, slice 1): the full-target triangle, RGBA8 target, no blending. */
+@property(nonatomic, strong) id<MTLRenderPipelineState> map;
 @property(nonatomic, strong) id<MTLSamplerState> nearest;
 @property(nonatomic, strong) id<MTLSamplerState> linear;
 @end
@@ -164,6 +178,18 @@ static void ck_obs_max(CKPrObserverState *observer, int index, int64_t value) {
 @property(nonatomic, strong) id<MTLTexture> quadTexture;
 @property(nonatomic, strong) id<MTLTexture> retiredTexture;
 @property(nonatomic, strong) CKPrTokenState *retiredToken;
+/* The map (milestone 6, slice 1): the resident input's three images (grid A, grid B, the palette as a 256 x 1 image), the generation
+ * they hold, and the map target. A replaced input or target is retired into `retiredMap`, with the token of the last command buffer
+ * that used it, and let go of once that token arrived: at most one such holder (the presenter has one frame in flight). */
+@property(nonatomic, strong) id<MTLTexture> mapGridA;
+@property(nonatomic, strong) id<MTLTexture> mapGridB;
+@property(nonatomic, strong) id<MTLTexture> mapPalette;
+@property(nonatomic) uint64_t mapGeneration;
+@property(nonatomic, strong) id<MTLTexture> mapTarget;
+@property(nonatomic, strong) NSArray<id<MTLTexture>> *retiredMap;
+@property(nonatomic, strong) CKPrTokenState *retiredMapToken;
+@property(nonatomic) int32_t retiredMapTargets;
+@property(nonatomic) int32_t retiredMapGrids;
 /* A completion error, latched when first seen and not yet handed out; and that one was seen at all. */
 @property(nonatomic, copy) NSString *latchedError;
 @property(nonatomic) BOOL failedSticky;
@@ -298,6 +324,59 @@ static void ck_encode_scene(id<MTLRenderCommandEncoder> encoder, CKPrQuadKit *ki
     }
 }
 
+/* What the encoder needs of the map for one frame: the frame's description and the images it reads and writes (borrowed: the core,
+ * or the off-screen caller, keeps them alive for the call). */
+typedef struct {
+    const CKPrMap *map;
+    __unsafe_unretained id<MTLTexture> grid_a;
+    __unsafe_unretained id<MTLTexture> palette;
+    __unsafe_unretained id<MTLTexture> target;
+} CKPrMapDraw;
+
+/* The map pass's uniforms, as the shader reads them (`MapUniforms` in quad.metal): 24 bytes. */
+typedef struct {
+    int32_t origin[2];
+    int32_t crop[2];
+    int32_t top_left[2];
+} CKPrMapUniforms;
+
+/* The map pass: one full-target triangle into the map target, in its own render pass in the frame's command buffer, before the
+ * window pass. NO with a reason when no encoder could be made. */
+static BOOL ck_encode_map_pass(id<MTLCommandBuffer> command, CKPrQuadKit *kit, const CKPrMapDraw *draw, NSString **reason) {
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = draw->target;
+    pass.colorAttachments[0].loadAction = MTLLoadActionDontCare; /* the triangle writes every pixel */
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> encoder = [command renderCommandEncoderWithDescriptor:pass];
+    if (encoder == nil) {
+        *reason = @"no render command encoder could be created for the map pass";
+        return NO;
+    }
+    CKPrMapUniforms uniforms = {{draw->map->origin[0], draw->map->origin[1]},
+                                {(int32_t)draw->map->crop[0], (int32_t)draw->map->crop[1]},
+                                {draw->map->top_left[0], draw->map->top_left[1]}};
+    [encoder setRenderPipelineState:kit.map];
+    [encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+    [encoder setFragmentTexture:draw->grid_a atIndex:0];
+    [encoder setFragmentTexture:draw->palette atIndex:2];
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [encoder endEncoding];
+    return YES;
+}
+
+/* The enlarged map, drawn into the window pass over the clear: the map target, nearest-sampled, at the frame's destination. */
+static void ck_encode_map_quad(id<MTLRenderCommandEncoder> encoder, CKPrQuadKit *kit, const CKPrMapDraw *draw,
+                               NSUInteger target_width, NSUInteger target_height) {
+    CKPrQuad quad = {.present = 1,
+                     .filter = 0,
+                     .destination = {draw->map->destination[0], draw->map->destination[1], draw->map->destination[2],
+                                     draw->map->destination[3]},
+                     .source = {draw->map->source[0], draw->map->source[1], draw->map->source[2], draw->map->source[3]},
+                     .width = draw->map->view[0],
+                     .height = draw->map->view[1]};
+    ck_encode_quad(encoder, kit, draw->target, &quad, target_width, target_height);
+}
+
 /* The frame, encoded the same way for a drawable and for the off-screen texture: the clear and, if `quad`
  * is present, the quad over it in the same render pass, then the scene's batches over both (painter order: the legacy
  * quad is below). Returns the command buffer, or nil with a reason. */
@@ -305,12 +384,25 @@ static id<MTLCommandBuffer> ck_encode_frame(id<MTLCommandQueue> queue, id<MTLTex
                                             const float rgb[3], const CKPrFaults *faults,
                                             CKPrQuadKit *kit, id<MTLTexture> image, const CKPrQuad *quad,
                                             const CKPrPacket *packet, id<MTLBuffer> instances,
+                                            const CKPrMapDraw *map_draw,
                                             id<MTLTexture> capture, const CKPrTicket *ticket,
                                             CKMcToken **ledger_token, NSString **reason, BOOL *partial) {
     id<MTLCommandBuffer> command = faults != NULL && faults->nil_command_buffer ? nil : [queue commandBuffer];
     if (command == nil) {
         *reason = @"no command buffer could be created";
         return nil;
+    }
+    /* The map pass, before the window pass: the map target is written here and sampled by the window pass below. */
+    BOOL mapping = map_draw != NULL && map_draw->map != NULL && map_draw->map->present != 0;
+    if (mapping) {
+        if (kit == nil || kit.map == nil || map_draw->grid_a == nil || map_draw->palette == nil ||
+            map_draw->target == nil || !ck_encode_map_pass(command, kit, map_draw, reason)) {
+            if (*reason == nil) {
+                *reason = @"the map could not be encoded";
+            }
+            *partial = YES;
+            return nil;
+        }
     }
     MTLRenderPassDescriptor *pass = faults != NULL && faults->nil_render_pass
                                         ? nil
@@ -345,6 +437,9 @@ static id<MTLCommandBuffer> ck_encode_frame(id<MTLCommandQueue> queue, id<MTLTex
         *reason = @"the scene could not be encoded";
         return nil;
     }
+    if (mapping) {
+        ck_encode_map_quad(encoder, kit, map_draw, texture.width, texture.height);
+    }
     if (drawing) {
         ck_encode_quad(encoder, kit, image, quad, texture.width, texture.height);
     }
@@ -363,6 +458,9 @@ static id<MTLCommandBuffer> ck_encode_frame(id<MTLCommandQueue> queue, id<MTLTex
         if (again == nil) {
             *reason = @"no render command encoder could be created for the capture";
             return nil;
+        }
+        if (mapping) {
+            ck_encode_map_quad(again, kit, map_draw, capture.width, capture.height);
         }
         if (drawing) {
             ck_encode_quad(again, kit, image, quad, capture.width, capture.height);
@@ -575,8 +673,10 @@ static CKPrQuadKit *ck_make_quad_kit(id<MTLDevice> device, const uint8_t *librar
     id<MTLFunction> instance_vertex = [library newFunctionWithName:@"ck_quad_instance_vertex"];
     id<MTLFunction> bindless_vertex = [library newFunctionWithName:@"ck_quad_bindless_vertex"];
     id<MTLFunction> bindless_fragment = [library newFunctionWithName:@"ck_quad_bindless_fragment"];
+    id<MTLFunction> map_vertex = [library newFunctionWithName:@"ck_map_vertex"];
+    id<MTLFunction> map_fragment = [library newFunctionWithName:@"ck_map_fragment"];
     if (library == nil || vertex == nil || fragment == nil || instance_vertex == nil || bindless_vertex == nil ||
-        bindless_fragment == nil) {
+        bindless_fragment == nil || map_vertex == nil || map_fragment == nil) {
         *reason = [NSString stringWithFormat:@"the quad shader library could not be loaded: %@",
                                              failure.localizedDescription ?: @"a function is missing"];
         return nil;
@@ -616,10 +716,21 @@ static CKPrQuadKit *ck_make_quad_kit(id<MTLDevice> device, const uint8_t *librar
                                              failure.localizedDescription ?: @"unknown error"];
         return nil;
     }
+    MTLRenderPipelineDescriptor *map_description = [MTLRenderPipelineDescriptor new];
+    map_description.vertexFunction = map_vertex;
+    map_description.fragmentFunction = map_fragment;
+    map_description.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+    id<MTLRenderPipelineState> map = [device newRenderPipelineStateWithDescriptor:map_description error:&failure];
+    if (map == nil) {
+        *reason = [NSString stringWithFormat:@"the map pipeline could not be created: %@",
+                                             failure.localizedDescription ?: @"unknown error"];
+        return nil;
+    }
     CKPrQuadKit *kit = [CKPrQuadKit new];
     kit.pipeline = pipeline;
     kit.instanced = instanced;
     kit.bindless = bindless;
+    kit.map = map;
     for (int linear = 0; linear < 2; linear++) {
         MTLSamplerDescriptor *sampler = [MTLSamplerDescriptor new];
         MTLSamplerMinMagFilter filter = linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
@@ -723,6 +834,200 @@ static BOOL ck_quad_retire(CKPrCoreState *core, int32_t delay_ms) {
     return YES;
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * The map (milestone 6, slice 1)
+ * ------------------------------------------------------------------------------------------- */
+
+/* A shared-storage RGBA8 image of `width` x `height` with `bytes` copied in, read by exact integer reads only. nil with a reason. */
+static id<MTLTexture> ck_make_map_image(id<MTLDevice> device, uint32_t width, uint32_t height, const uint8_t *bytes,
+                                        int32_t fail, NSString *what, NSString **reason) {
+    if (width == 0 || height == 0 || bytes == NULL) {
+        *reason = [NSString stringWithFormat:@"the map's %@ has no pixels", what];
+        return nil;
+    }
+    MTLTextureDescriptor *description =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                           width:width
+                                                          height:height
+                                                       mipmapped:NO];
+    description.usage = MTLTextureUsageShaderRead;
+    description.storageMode = MTLStorageModeShared;
+    id<MTLTexture> texture = fail ? nil : [device newTextureWithDescriptor:description];
+    if (texture == nil) {
+        *reason = [NSString stringWithFormat:@"the map's %@ of %u x %u pixels could not be allocated", what, width, height];
+        return nil;
+    }
+    [texture replaceRegion:MTLRegionMake2D(0, 0, width, height)
+               mipmapLevel:0
+                 withBytes:bytes
+               bytesPerRow:(NSUInteger)width * 4];
+    return texture;
+}
+
+/* The map target: an RGBA8 image of the view's size, written by the map pass and sampled by the window pass. Private storage in
+ * the presenter (hazard-tracked on its queue); shared for the off-screen readback, which reads it back. nil with a reason. */
+static id<MTLTexture> ck_make_map_target(id<MTLDevice> device, uint32_t width, uint32_t height, MTLStorageMode storage,
+                                         int32_t fail, NSString **reason) {
+    if (width == 0 || height == 0) {
+        *reason = @"the map target has no size";
+        return nil;
+    }
+    MTLTextureDescriptor *description =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                           width:width
+                                                          height:height
+                                                       mipmapped:NO];
+    description.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    description.storageMode = storage;
+    id<MTLTexture> texture = fail ? nil : [device newTextureWithDescriptor:description];
+    if (texture == nil) {
+        *reason = [NSString stringWithFormat:@"the map target of %u x %u pixels could not be allocated", width, height];
+    }
+    return texture;
+}
+
+/* The three images of one map input (grid A, grid B, the palette as a 256 x 1 image, entries past the palette's length zero) for
+ * `map`, which carries the grids. NO with a reason. */
+static BOOL ck_make_map_inputs(id<MTLDevice> device, const CKPrMap *map, int32_t fail, id<MTLTexture> *grid_a,
+                               id<MTLTexture> *grid_b, id<MTLTexture> *palette, NSString **reason) {
+    if (map->grid_a == NULL || map->grid_b == NULL || map->palette == NULL || map->palette_count == 0 ||
+        map->palette_count > 256) {
+        *reason = @"the map's grids or palette do not fit";
+        return NO;
+    }
+    *grid_a = ck_make_map_image(device, map->crop[0], map->crop[1], map->grid_a, fail, @"grid A", reason);
+    if (*grid_a == nil) {
+        return NO;
+    }
+    *grid_b = ck_make_map_image(device, map->crop[0], map->crop[1], map->grid_b, fail, @"grid B", reason);
+    if (*grid_b == nil) {
+        return NO;
+    }
+    uint8_t colours[256 * 4];
+    memset(colours, 0, sizeof colours);
+    memcpy(colours, map->palette, (size_t)map->palette_count * 4);
+    *palette = ck_make_map_image(device, 256, 1, colours, fail, @"palette", reason);
+    return *palette != nil;
+}
+
+/* Lets go of the retired map resources once the token of the last command buffer that used them has arrived; never once the
+ * teardown began, and never before the token. */
+static void ck_map_reap(CKPrCoreState *core) {
+    if (core.tearingDown || core.retiredMap == nil) {
+        return;
+    }
+    CKPrTokenState *token = core.retiredMapToken;
+    if (token != nil && !atomic_load(&token->done)) {
+        return;
+    }
+    ck_obs_add(core.observer, CK_OBS_MAP_RETIRED_RELEASED, core.retiredMapTargets + core.retiredMapGrids);
+    ck_obs_add(core.observer, CK_OBS_MAP_TARGETS_ALIVE, -core.retiredMapTargets);
+    ck_obs_add(core.observer, CK_OBS_MAP_GRIDS_ALIVE, -core.retiredMapGrids);
+    core.retiredMap = nil;
+    core.retiredMapToken = nil;
+    core.retiredMapTargets = 0;
+    core.retiredMapGrids = 0;
+}
+
+/* Whether retired map resources still wait for their token (then no further replacement is admitted, and the teardown waits). */
+static BOOL ck_map_retired_waiting(CKPrCoreState *core) {
+    if (core.retiredMap == nil) {
+        return NO;
+    }
+    CKPrTokenState *token = core.retiredMapToken;
+    return token != nil && !atomic_load(&token->done);
+}
+
+/* The token a retirement waits for: that of the last command buffer that used the resources, or (test) a stand-in that arrives
+ * `delay_ms` later, as if a command buffer still used them. */
+static CKPrTokenState *ck_retirement_token(CKPrCoreState *core, int32_t delay_ms) {
+    if (delay_ms <= 0) {
+        return core.bufferToken;
+    }
+    CKPrTokenState *late = [CKPrTokenState new];
+    late.label = @"a retired map resource's stand-in token (test)";
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay_ms * NSEC_PER_MSEC),
+                   dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+                       atomic_store(&late->done, true);
+                   });
+    return late;
+}
+
+/* Before a drawable is acquired, so that no failure leaves one outstanding: makes resident whatever the frame's map needs (a new
+ * input's images, a target of the view's size), retiring what it replaces into the one retired holder. 0 admitted; 1 busy (a
+ * retired holder still waits for its token, and this frame would retire another); 2 failed (`why` set: a map drawn with no grids,
+ * which is the Rust side's mistake); 3 refused (`why` set: an image could not be allocated; the frame goes on without the map and
+ * the next step tries again). Nothing changes on 1, 2 or 3. */
+static int ck_map_admit(CKPrCoreState *core, const CKPrMap *map, const CKPrFaults *faults, int32_t *grids_uploaded,
+                        NSString **why) {
+    CKPrObserverState *observer = core.observer;
+    BOOL new_grids = map->grid_a != NULL;
+    BOOL new_target = core.mapTarget == nil || core.mapTarget.width != map->view[0] ||
+                      core.mapTarget.height != map->view[1];
+    BOOL replaces_grids = new_grids && core.mapGridA != nil;
+    BOOL replaces_target = new_target && core.mapTarget != nil;
+    if (!new_grids && core.mapGridA == nil) {
+        *why = @"a map was drawn with no grids to read";
+        return 2;
+    }
+    if ((replaces_grids || replaces_target) && core.retiredMap != nil) {
+        ck_obs_add(observer, CK_OBS_MAP_ADMISSION_WAITS, 1);
+        return 1;
+    }
+    id<MTLTexture> grid_a = nil;
+    id<MTLTexture> grid_b = nil;
+    id<MTLTexture> palette = nil;
+    id<MTLTexture> target = nil;
+    if (new_grids && !ck_make_map_inputs(core.device, map, faults->fail_texture_allocation, &grid_a, &grid_b, &palette, why)) {
+        return 3;
+    }
+    if (new_target) {
+        target = ck_make_map_target(core.device, map->view[0], map->view[1], MTLStorageModePrivate,
+                                    faults->fail_texture_allocation, why);
+        if (target == nil) {
+            return 3;
+        }
+    }
+    if (replaces_grids || replaces_target) {
+        NSMutableArray<id<MTLTexture>> *old = [NSMutableArray array];
+        if (replaces_grids) {
+            [old addObject:core.mapGridA];
+            [old addObject:core.mapGridB];
+            [old addObject:core.mapPalette];
+        }
+        if (replaces_target) {
+            [old addObject:core.mapTarget];
+        }
+        core.retiredMap = old;
+        core.retiredMapToken = ck_retirement_token(core, faults->retired_token_delay_ms);
+        core.retiredMapGrids = replaces_grids ? 1 : 0;
+        core.retiredMapTargets = replaces_target ? 1 : 0;
+        ck_obs_add(observer, CK_OBS_MAP_RETIRED, core.retiredMapGrids + core.retiredMapTargets);
+    }
+    if (new_grids) {
+        core.mapGridA = grid_a;
+        core.mapGridB = grid_b;
+        core.mapPalette = palette;
+        core.mapGeneration = map->generation;
+        ck_obs_add(observer, CK_OBS_MAP_GRIDS_CREATED, 1);
+        ck_obs_add(observer, CK_OBS_MAP_GRIDS_ALIVE, 1);
+        *grids_uploaded = 1;
+    }
+    if (new_target) {
+        core.mapTarget = target;
+        ck_obs_add(observer, CK_OBS_MAP_TARGETS_CREATED, 1);
+        ck_obs_add(observer, CK_OBS_MAP_TARGETS_ALIVE, 1);
+        ck_obs_max(observer, CK_OBS_MAP_TARGETS_MAX,
+                   observer == nil ? 0 : atomic_load(&observer->counters[CK_OBS_MAP_TARGETS_ALIVE]));
+        if (observer != nil) {
+            atomic_store(&observer->counters[CK_OBS_MAP_LAST_WIDTH], (int64_t)map->view[0]);
+            atomic_store(&observer->counters[CK_OBS_MAP_LAST_HEIGHT], (int64_t)map->view[1]);
+        }
+    }
+    ck_map_reap(core);
+    return 0;
+}
+
 int ck_pr_quad_setup(CKPrCore *handle, const uint8_t *library, size_t length, int32_t fail_pipeline,
                      char *error, size_t capacity) {
     @autoreleasepool {
@@ -806,13 +1111,13 @@ static void ck_set_token(CKPrTokenState *token, CKPrObserverState *observer, int
 
 CKPrFrame ck_pr_frame(CKPrCore *handle, const float rgb[3], uint32_t width, uint32_t height,
                       const CKPrFaults *faults, char *message, size_t capacity) {
-    return ck_pr_frame_quad(handle, rgb, width, height, faults, NULL, NULL, NULL, NULL, NULL, message, capacity);
+    return ck_pr_frame_quad(handle, rgb, width, height, faults, NULL, NULL, NULL, NULL, NULL, NULL, message, capacity);
 }
 
 CKPrFrame ck_pr_frame_quad(CKPrCore *handle, const float rgb[3], uint32_t width, uint32_t height,
                            const CKPrFaults *faults, const CKPrQuad *quad, const CKPrUpload *upload,
-                           const CKPrPacket *packet, const CKPrTicket *ticket, CKPrQuadResult *result,
-                           char *message, size_t capacity) {
+                           const CKPrPacket *packet, const CKPrMap *map, const CKPrTicket *ticket,
+                           CKPrQuadResult *result, char *message, size_t capacity) {
     @autoreleasepool {
         CKPrCoreState *core = (__bridge CKPrCoreState *)handle;
         CKPrObserverState *observer = core.observer;
@@ -821,6 +1126,10 @@ CKPrFrame ck_pr_frame_quad(CKPrCore *handle, const float rgb[3], uint32_t width,
         if (result != NULL) {
             result->uploaded = 0;
             result->removed = 0;
+            result->map_grids = 0;
+            result->map_admitted = 0;
+            result->map_refused = 0;
+            result->map_refusal[0] = 0;
             result->acquire_begin = 0;
             result->acquire_end = 0;
             result->committed = 0;
@@ -829,6 +1138,7 @@ CKPrFrame ck_pr_frame_quad(CKPrCore *handle, const float rgb[3], uint32_t width,
         core.entry = CK_ENTRY_FRAME;
         ck_prune_drawables(core);
         ck_quad_reap(core);
+        ck_map_reap(core);
         if (faults->pause_after_reap_for_token && core.retiredTexture != nil && core.retiredToken != nil) {
             /* Test only: the token arrives between the reap above and the admission below. Bounded at 5 s. */
             for (int waited = 0; waited < 5000 && !atomic_load(&core.retiredToken->done); waited++) {
@@ -896,6 +1206,33 @@ CKPrFrame ck_pr_frame_quad(CKPrCore *handle, const float rgb[3], uint32_t width,
                 return CK_PR_FRAME_FAILED;
             }
         }
+        /* The map: whatever its pass reads and writes is made resident here too, before a drawable is acquired. A frame with no
+         * size encodes no map pass and leaves the resident target for the next visible frame. */
+        BOOL mapping = map != NULL && map->present != 0 && width != 0 && height != 0;
+        if (mapping) {
+            NSString *why = nil;
+            int32_t grids_uploaded = 0;
+            int admitted = ck_map_admit(core, map, faults, &grids_uploaded, &why);
+            if (admitted == 1) {
+                return CK_PR_FRAME_BUSY;
+            }
+            if (admitted == 2) {
+                ck_message(message, capacity, why);
+                return CK_PR_FRAME_FAILED;
+            }
+            if (admitted == 3) {
+                /* Refused: not a failure of the run. The frame is drawn without the map, and the Rust side tells the publisher
+                 * once per episode and asks again next frame. */
+                if (result != NULL) {
+                    result->map_refused = 1;
+                    ck_message(result->map_refusal, sizeof result->map_refusal, why);
+                }
+                mapping = NO;
+            } else if (result != NULL) {
+                result->map_grids = grids_uploaded;
+                result->map_admitted = 1;
+            }
+        }
         if (width != 0 && height != 0) {
             CGSize size = core.layer.drawableSize;
             if ((uint32_t)size.width != width || (uint32_t)size.height != height) {
@@ -961,10 +1298,14 @@ CKPrFrame ck_pr_frame_quad(CKPrCore *handle, const float rgb[3], uint32_t width,
                 capture_description.storageMode = MTLStorageModeShared;
                 capture = [core.device newTextureWithDescriptor:capture_description];
             }
+            CKPrMapDraw map_draw = {.map = mapping ? map : NULL,
+                                    .grid_a = core.mapGridA,
+                                    .palette = core.mapPalette,
+                                    .target = core.mapTarget};
             id<MTLCommandBuffer> command =
                 ck_encode_frame(core.queue, drawable.texture, rgb, faults, core.quadKit, core.quadTexture,
-                                quad, packet, core.instanceBuffer, capture, ticket, &ledgerToken, &reason,
-                                &partial);
+                                quad, packet, core.instanceBuffer, &map_draw, capture, ticket, &ledgerToken,
+                                &reason, &partial);
             if (command == nil) {
                 observer.abandoned = drawable;
                 if (message != NULL && capacity != 0) {
@@ -1042,6 +1383,9 @@ CKPrFrame ck_pr_frame_quad(CKPrCore *handle, const float rgb[3], uint32_t width,
                 if (quad != NULL && quad->present != 0) {
                     ck_obs_add(observer, CK_OBS_QUAD_DRAWS, 1);
                 }
+                if (mapping) {
+                    ck_obs_add(observer, CK_OBS_MAP_PASSES, 1);
+                }
             }
         }
         /* The step is over: the presenter lets go of the drawable (Core Animation and the command buffer
@@ -1075,6 +1419,7 @@ int ck_pr_poll(CKPrCore *handle, char *message, size_t capacity) {
         (void)ck_command_outstanding(core);
         ck_prune_drawables(core);
         ck_quad_reap(core);
+        ck_map_reap(core);
         return ck_take_error(core, message, capacity) ? 1 : 0;
     }
 }
@@ -1085,11 +1430,13 @@ int ck_pr_outstanding(CKPrCore *handle) {
         core.entry = CK_ENTRY_OUTSTANDING;
         ck_prune_drawables(core);
         ck_quad_reap(core);
+        ck_map_reap(core);
         /* The thread sleeps without a timer only when this says 0, so it is decided from one look at the
          * command token (taking its error if it completed), then the latched error, then the drawables. */
         BOOL command = ck_command_outstanding(core);
         BOOL unreported = core.latchedError != nil;
-        return command || unreported || ck_drawables_outstanding(core) != 0 || core.retiredTexture != nil
+        return command || unreported || ck_drawables_outstanding(core) != 0 || core.retiredTexture != nil ||
+                       core.retiredMap != nil
                    ? 1
                    : 0;
     }
@@ -1104,14 +1451,16 @@ int ck_pr_tokens_state(CKPrCore *handle, char *outstanding, size_t capacity) {
         ck_prune_drawables(core); /* the results of the drawables that arrived; the tokens stay for the proof */
         NSUInteger drawables = ck_drawables_outstanding(core);
         BOOL retired = ck_quad_retired_waiting(core);
-        if (drawables == 0 && !command && !retired) {
+        BOOL retired_map = ck_map_retired_waiting(core);
+        if (drawables == 0 && !command && !retired && !retired_map) {
             return 1;
         }
         ck_message(outstanding, capacity,
                    [NSString stringWithFormat:@"%lu drawable presented handler(s) and %@ outstanding%@",
                                               (unsigned long)drawables,
                                               command ? @"1 command buffer completion" : @"no command buffer completion",
-                                              retired ? @", and a retired quad texture waiting for its token" : @""]);
+                                              retired ? @", and a retired quad texture waiting for its token"
+                                                      : (retired_map ? @", and retired map resources waiting for their token" : @"")]);
         return 0;
     }
 }
@@ -1140,6 +1489,23 @@ void ck_pr_release_all(CKPrCore *handle) {
             ck_obs_add(observer, CK_OBS_QUAD_TEXTURES_ALIVE, -textures);
             ck_obs_add(observer, CK_OBS_QUAD_HOLDERS_RELEASED, textures + (core.quadKit != nil ? 3 : 0));
         }
+        if (observer != nil) {
+            /* The map's holders: its images and target. A retired holder whose token has not arrived is let go of early: the
+             * teardown waits for it, so this stays zero. */
+            if (core.retiredMap != nil && core.retiredMapToken != nil && !atomic_load(&core.retiredMapToken->done)) {
+                ck_obs_add(observer, CK_OBS_MAP_RELEASED_EARLY, core.retiredMapGrids + core.retiredMapTargets);
+            }
+            int64_t targets = (core.mapTarget != nil ? 1 : 0) + core.retiredMapTargets;
+            int64_t grids = (core.mapGridA != nil ? 1 : 0) + core.retiredMapGrids;
+            ck_obs_add(observer, CK_OBS_MAP_TARGETS_ALIVE, -targets);
+            ck_obs_add(observer, CK_OBS_MAP_GRIDS_ALIVE, -grids);
+        }
+        core.mapGridA = nil;
+        core.mapGridB = nil;
+        core.mapPalette = nil;
+        core.mapTarget = nil;
+        core.retiredMap = nil;
+        core.retiredMapToken = nil;
         core.quadTexture = nil;
         core.retiredTexture = nil;
         core.retiredToken = nil;
@@ -1180,7 +1546,7 @@ int ck_pr_readback(uint32_t width, uint32_t height, const float rgb[3], uint8_t 
         NSString *reason = nil;
         BOOL partial = NO;
         id<MTLCommandBuffer> command =
-            ck_encode_frame(queue, texture, rgb, NULL, nil, nil, NULL, NULL, nil, nil, NULL, NULL, &reason, &partial);
+            ck_encode_frame(queue, texture, rgb, NULL, nil, nil, NULL, NULL, nil, NULL, nil, NULL, NULL, &reason, &partial);
         if (command == nil) {
             ck_message(error, capacity, reason);
             return 1;
@@ -1243,8 +1609,8 @@ int ck_pr_readback_quad(uint32_t width, uint32_t height, const float rgb[3], con
         }
         BOOL partial = NO;
         id<MTLCommandBuffer> command =
-            ck_encode_frame(queue, target, rgb, NULL, kit, picture, drawing ? quad : NULL, NULL, nil, nil, NULL,
-                            NULL, &reason, &partial);
+            ck_encode_frame(queue, target, rgb, NULL, kit, picture, drawing ? quad : NULL, NULL, nil, NULL, nil,
+                            NULL, NULL, &reason, &partial);
         if (command == nil) {
             ck_message(error, capacity, reason);
             return 1;
@@ -1385,8 +1751,8 @@ int ck_pr_readback_scene(uint32_t width, uint32_t height, const float rgb[3], co
         }
         BOOL partial = NO;
         id<MTLCommandBuffer> command =
-            ck_encode_frame(queue, target, rgb, NULL, kit, picture, drawing ? quad : NULL, &packet, buffer, nil,
-                            NULL, NULL, &reason, &partial);
+            ck_encode_frame(queue, target, rgb, NULL, kit, picture, drawing ? quad : NULL, &packet, buffer, NULL,
+                            nil, NULL, NULL, &reason, &partial);
         free(resolved);
         if (command == nil) {
             free(resident);
@@ -1404,6 +1770,96 @@ int ck_pr_readback_scene(uint32_t width, uint32_t height, const float rgb[3], co
              bytesPerRow:(NSUInteger)width * 4
               fromRegion:MTLRegionMake2D(0, 0, width, height)
              mipmapLevel:0];
+        return 0;
+    }
+}
+
+int ck_pr_readback_map(uint32_t width, uint32_t height, const float rgb[3], const uint8_t *library,
+                       size_t library_length, const CKPrMap *map, const CKPrQuad *quad, const uint8_t *quad_image,
+                       size_t quad_image_length, uint8_t *target_pixels, size_t target_length, uint8_t *pixels,
+                       size_t length, char *error, size_t capacity) {
+    @autoreleasepool {
+        BOOL mapping = map != NULL && map->present != 0;
+        if (width == 0 || height == 0 || length != (size_t)width * height * 4 ||
+            (mapping && (map->view[0] == 0 || map->view[1] == 0 || target_pixels == NULL ||
+                         target_length != (size_t)map->view[0] * map->view[1] * 4))) {
+            ck_message(error, capacity, @"the map readback arguments do not fit");
+            return 1;
+        }
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (device == nil) {
+            ck_message(error, capacity, @"No Metal device is available");
+            return 1;
+        }
+        id<MTLCommandQueue> queue = [device newCommandQueue];
+        MTLTextureDescriptor *description =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                               width:width
+                                                              height:height
+                                                           mipmapped:NO];
+        description.usage = MTLTextureUsageRenderTarget;
+        description.storageMode = MTLStorageModeShared;
+        id<MTLTexture> window = [device newTextureWithDescriptor:description];
+        if (queue == nil || window == nil) {
+            ck_message(error, capacity, @"the off-screen resources could not be created");
+            return 1;
+        }
+        NSString *reason = nil;
+        CKPrQuadKit *kit = ck_make_quad_kit(device, library, library_length, 0, &reason);
+        if (kit == nil) {
+            ck_message(error, capacity, reason);
+            return 1;
+        }
+        id<MTLTexture> picture = nil;
+        BOOL drawing = quad != NULL && quad->present != 0;
+        if (drawing) {
+            CKPrUpload upload = {.pixels = quad_image, .length = quad_image_length};
+            picture = ck_make_quad_texture(device, quad->width, quad->height, &upload, 0, &reason);
+            if (picture == nil) {
+                ck_message(error, capacity, reason);
+                return 1;
+            }
+        }
+        id<MTLTexture> grid_a = nil;
+        id<MTLTexture> grid_b = nil;
+        id<MTLTexture> palette = nil;
+        id<MTLTexture> target = nil;
+        if (mapping) {
+            if (!ck_make_map_inputs(device, map, 0, &grid_a, &grid_b, &palette, &reason)) {
+                ck_message(error, capacity, reason);
+                return 1;
+            }
+            target = ck_make_map_target(device, map->view[0], map->view[1], MTLStorageModeShared, 0, &reason);
+            if (target == nil) {
+                ck_message(error, capacity, reason);
+                return 1;
+            }
+        }
+        CKPrMapDraw draw = {.map = mapping ? map : NULL, .grid_a = grid_a, .palette = palette, .target = target};
+        BOOL partial = NO;
+        id<MTLCommandBuffer> command =
+            ck_encode_frame(queue, window, rgb, NULL, kit, picture, drawing ? quad : NULL, NULL, nil, &draw, nil, NULL,
+                            NULL, &reason, &partial);
+        if (command == nil) {
+            ck_message(error, capacity, reason);
+            return 1;
+        }
+        [command commit];
+        [command waitUntilCompleted];
+        if (command.status != MTLCommandBufferStatusCompleted) {
+            ck_message(error, capacity, command.error.localizedDescription ?: @"the off-screen map frame failed");
+            return 1;
+        }
+        [window getBytes:pixels
+             bytesPerRow:(NSUInteger)width * 4
+              fromRegion:MTLRegionMake2D(0, 0, width, height)
+             mipmapLevel:0];
+        if (mapping) {
+            [target getBytes:target_pixels
+                 bytesPerRow:(NSUInteger)map->view[0] * 4
+                  fromRegion:MTLRegionMake2D(0, 0, map->view[0], map->view[1])
+                 mipmapLevel:0];
+        }
         return 0;
     }
 }

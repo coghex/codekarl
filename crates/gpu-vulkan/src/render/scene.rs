@@ -34,6 +34,7 @@ use crate::gpu::{FrameExtras, Gpu};
 use crate::gpu_quad::format_supported;
 use crate::hooks::{BuildRecord, DrawnRecord, Event, Observer, TestHooks, WaitKind};
 use crate::ledger::{Frame, Ledger, PresentCall, PresentSlot, Presented, Proof};
+use crate::render::map::MapDriver;
 use crate::revisions::{CheckerProgress, LedgerError};
 use crate::scene::{
     Boundary, FrameSeam, SceneBindings, SceneLimits, SceneObject, SceneSetup, wakes_of,
@@ -84,6 +85,7 @@ pub(crate) fn scene_main(
     shared.wake();
 }
 
+mod map;
 mod quad;
 mod timing;
 
@@ -202,6 +204,8 @@ struct Core<'a> {
     observer: Option<Arc<Observer>>,
     /// The legacy quad's bookkeeping (its textures and staging buffers, by proof number).
     residency: Residency,
+    /// The map's bookkeeping (its input and target, by proof number) and its refusal episode.
+    map: MapDriver,
     /// The surface's format is one textured drawing supports.
     quad_supported: bool,
     /// A submitted frame's copy waits for its proof: the generation it drew.
@@ -309,6 +313,7 @@ fn run(
         creation_failed_epoch: 0,
         observer,
         residency: Residency::default(),
+        map: MapDriver::default(),
         quad_supported: false,
         capture_waiting: None,
         notice_given: false,
@@ -746,7 +751,8 @@ impl Core<'_> {
         }
         let read = scene.read_frame();
         // A frame with a compatibility key draws that quad through the ledger; its legacy quad is not drawn.
-        let legacy = VulkanScene::new(read.generation, read.quad.filter(|_| !read.has_compat));
+        let legacy = VulkanScene::new(read.generation, read.quad.filter(|_| !read.has_compat))
+            .with_map(read.map);
         self.retire_for(Some(&legacy));
         if self.needs_rebuild(size) {
             // A surface that is not drawable (a zero extent after the limits) suspends rendering too.
@@ -939,6 +945,7 @@ impl Core<'_> {
                     FrameExtras {
                         hold: self.hooks.scene.frame_event,
                         stamps,
+                        map: prepared.map,
                     },
                 ),
                 None => Err((
@@ -1485,7 +1492,8 @@ impl SceneRun<'_> {
             match outcome {
                 Ok(Step::Drawn { again }) => {
                     self.boundary = FrameBoundary::Due;
-                    if again {
+                    // A refused map allocation keeps a redraw wanted: the next normally paced frame asks again.
+                    if again || self.core.map.retry_wanted() {
                         lock(&self.core.shared.slot).dirty = true;
                     }
                     self.want_frame_for_committed();

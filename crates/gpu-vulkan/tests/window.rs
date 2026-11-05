@@ -498,7 +498,7 @@ fn check_ledger_order_with(events: &[Event], order: &[&str]) {
             Event::Destroyed(class) => Some(*class),
             _ => None,
         })
-        .filter(|class| *class != "quad objects")
+        .filter(|class| !matches!(*class, "quad objects" | "map objects"))
         .collect();
     assert_eq!(teardown, order, "the teardown order: {events:?}");
     let first_destroy = events
@@ -2543,6 +2543,8 @@ fn all_cases() -> Vec<(&'static str, Case)> {
         .chain(window_quad::LAST.iter())
         .chain(window_scene::CASES.iter())
         .chain(window_scene::compat::CASES.iter())
+        .chain(window_scene::map::CASES.iter())
+        .chain(window_quad::map::CASES.iter())
         .copied()
         .collect()
 }

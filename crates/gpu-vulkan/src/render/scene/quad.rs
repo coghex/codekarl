@@ -12,6 +12,7 @@ use crate::capture::FrameCapture;
 use crate::draw::QuadPipeline;
 use crate::hooks::Event;
 use crate::quad::VulkanQuad;
+use crate::render::map::MapPrep;
 use crate::render::{
     CaptureWait, Draw, Fatal, Identity, Owner, Prep, Prepared, QuadParams, QuadTexture,
     ReadbackHooks, Replaced, Retirement, Tally, VulkanScene, device_checks, failure,
@@ -26,13 +27,13 @@ impl Core<'_> {
     /// while the rendering is healthy, so never once a stop was requested, never after a terminal failure (`Failed`
     /// was reported and nothing more is drawn) and never after a device loss. The one decision every opportunistic
     /// disposal makes.
-    fn may_dispose(&self, stopping: bool) -> bool {
+    pub(in crate::render) fn may_dispose(&self, stopping: bool) -> bool {
         !stopping && !self.failed && !self.ledger.is_lost()
     }
 
     /// [`may_dispose`](Self::may_dispose) with the stop state read now, under its own lock, at the moment of the
     /// decision.
-    fn healthy(&self) -> bool {
+    pub(in crate::render) fn healthy(&self) -> bool {
         self.may_dispose(lock(&self.shared.slot).stop)
     }
 
@@ -76,6 +77,8 @@ impl Core<'_> {
     /// proven, and a staging buffer whose upload submit is proven. Decided from the ledger's record of the proof
     /// (a submit number), never from a fence handle. `stopping` is the stop state the caller read.
     pub(in crate::render) fn reap_quad(&mut self, stopping: bool) {
+        // The map's retired objects and staging follow the same rule (milestone 6, slice 1).
+        self.reap_map(stopping);
         if !self.may_dispose(stopping) {
             return;
         }
@@ -104,8 +107,21 @@ impl Core<'_> {
         }
     }
 
-    /// Prepares the quad for a frame that is going to be drawn: the scene's generation, and what to draw.
+    /// Prepares a frame that is going to be drawn: the map's pass (milestone 6, slice 1), then the quad.
     pub(in crate::render) fn prepare(&mut self, scene: Option<VulkanScene>) -> Result<Prep, Fatal> {
+        let map = match self.prepare_map(scene.as_ref().and_then(VulkanScene::map))? {
+            MapPrep::Nothing => None,
+            MapPrep::Wait => return Ok(Prep::Wait),
+            MapPrep::Ready(record) => Some(record),
+        };
+        Ok(match self.prepare_quad(scene)? {
+            Prep::Ready(prepared) => Prep::Ready(Prepared { map, ..prepared }),
+            Prep::Wait => Prep::Wait,
+        })
+    }
+
+    /// Prepares the quad for a frame that is going to be drawn: the scene's generation, and what to draw.
+    fn prepare_quad(&mut self, scene: Option<VulkanScene>) -> Result<Prep, Fatal> {
         let Some(scene) = scene else {
             return Ok(Prep::Ready(Prepared::default()));
         };
@@ -114,6 +130,7 @@ impl Core<'_> {
             return Ok(Prep::Ready(Prepared {
                 generation,
                 draw: None,
+                map: None,
             }));
         };
         if !self.quad_supported {
@@ -121,6 +138,7 @@ impl Core<'_> {
             return Ok(Prep::Ready(Prepared {
                 generation,
                 draw: None,
+                map: None,
             }));
         }
         if self.residency.resident_is(quad) {
@@ -133,6 +151,7 @@ impl Core<'_> {
     /// The frame was submitted as `number`: only now is the texture's upload done, and the texture in use by a
     /// submitted frame. The frame's scene generation is what a queued present then reports.
     pub(in crate::render) fn quad_submitted(&mut self, number: u64, prepared: Prepared) {
+        self.map_submitted(number, &prepared);
         if let Some(draw) = prepared.draw {
             self.residency.submitted(number, draw.upload);
             if draw.upload
@@ -224,6 +243,7 @@ impl Core<'_> {
                 params,
                 upload: self.residency.upload_pending(),
             }),
+            map: None,
         }))
     }
 
@@ -236,6 +256,7 @@ impl Core<'_> {
             return Ok(Prep::Ready(Prepared {
                 generation,
                 draw: None,
+                map: None,
             }));
         };
         if self.residency.admission() == Admission::Wait {
@@ -281,6 +302,7 @@ impl Core<'_> {
                 params,
                 upload: true,
             }),
+            map: None,
         }))
     }
 

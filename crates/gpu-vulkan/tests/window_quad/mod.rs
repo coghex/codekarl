@@ -5,6 +5,8 @@
 //! The surface path's pixels are read through the presenter's frame capture (`TestHooks::capture_frames`): an
 //! off-screen readback alone is not proof of what the swap chain showed.
 
+pub(crate) mod map;
+
 use ck_gpu_vulkan::{
     DestinationRect, FrameCapture, FrameCaptures, PipelineFault, PixelSource, QuadSkipped,
     QuadStats, SourceRect, VulkanFilter, VulkanQuad, VulkanQuadSlot, VulkanScene,
@@ -257,6 +259,8 @@ fn check_quad_teardown_order(events: &[Event]) {
             Event::Destroyed(class) => Some(*class),
             _ => None,
         })
+        // The map's objects (milestone 6, slice 1) are their own class, noted only in a run that drew a map.
+        .filter(|class| *class != "map objects")
         .collect();
     assert_eq!(
         classes,

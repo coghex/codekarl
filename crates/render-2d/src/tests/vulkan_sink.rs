@@ -23,6 +23,7 @@ fn snapshot(
     source: SourceRect,
 ) -> Snapshot {
     Snapshot {
+        map: None,
         generation,
         filter,
         requested: picture.is_some(),

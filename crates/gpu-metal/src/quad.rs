@@ -21,6 +21,8 @@
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::map::MetalMap;
+
 /// The largest width or height of a quad's image, in pixels (a Metal 2D texture limit on the GPUs in use).
 pub const MAX_IMAGE_SIDE: u32 = 16_384;
 
@@ -264,13 +266,31 @@ fn to_f32(side: u32) -> f32 {
 pub struct MetalScene {
     generation: u64,
     quad: Option<MetalQuad>,
+    map: Option<MetalMap>,
 }
 
 impl MetalScene {
     /// A scene of this `generation` showing `quad`, or nothing.
     #[must_use]
     pub fn new(generation: u64, quad: Option<MetalQuad>) -> Self {
-        Self { generation, quad }
+        Self {
+            generation,
+            quad,
+            map: None,
+        }
+    }
+
+    /// This scene with the GPU-written map (`None`: no map).
+    #[must_use]
+    pub fn with_map(mut self, map: Option<MetalMap>) -> Self {
+        self.map = map;
+        self
+    }
+
+    /// The map, if the scene shows one.
+    #[must_use]
+    pub fn map(&self) -> Option<&MetalMap> {
+        self.map.as_ref()
     }
 
     /// The generation of the change that made this scene.

@@ -99,6 +99,7 @@ impl Presenter for Fake {
 
 fn snapshot(generation: u64, with_quad: bool) -> Snapshot {
     Snapshot {
+        map: None,
         generation,
         filter: Filter::Nearest,
         requested: with_quad,

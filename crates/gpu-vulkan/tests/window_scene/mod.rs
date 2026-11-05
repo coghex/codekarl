@@ -24,6 +24,7 @@ use super::{
 };
 
 pub(crate) mod compat;
+pub(crate) mod map;
 pub(crate) mod metrics;
 
 /// The scene a case publishes: its instances in painter order.

@@ -1020,6 +1020,8 @@ METAL_WINDOW_FILES = (
     # The presenter runner and its windowed quad and scene cases.
     "crates/gpu-metal/tests/presenter.rs",
     "crates/gpu-metal/tests/presenter_quad/",
+    # CK-177: the GPU-written map image (off-screen map readbacks and the presenter's map frames on a real layer).
+    "crates/gpu-metal/tests/presenter_map/",
     "crates/gpu-metal/tests/presenter_scene/",
     # CK-129: the frame-timing window cases (real windows: the marks, the measurement windows and their delayed results).
     "crates/gpu-metal/tests/presenter_metrics/",
@@ -1322,7 +1324,7 @@ STEPS = [
         full_spec=True,
         analyze=True,
         needs="window",
-        description="The Metal presenter's windowed cases of `presenter.rs` and `presenter_quad/` (real windows, "
+        description="The Metal presenter's windowed cases of `presenter.rs`, `presenter_quad/` and `presenter_map/` (real windows, "
         "under Metal validation and the Main Thread Checker).",
         paths=NATIVE_WINDOW_PATHS,
     ),
@@ -1438,10 +1440,10 @@ STEPS = [
         "map.core",
         FAST,
         lambda: [
-            cargo_test(["-p", "ck-map", "--lib"]),
+            cargo_test(["-p", "ck-map"]),
             cargo_test(["-p", "ck-map", "--doc"]),
         ],
-        description="The backend-neutral map coordinate, camera, reference-colour and river-coverage contract (no GPU or window).",
+        description="The backend-neutral map coordinate, camera, reference-colour, river-coverage and preview-tool contract (no GPU or window).",
         paths=("crates/map/", *TOOLCHAIN_PATHS),
     ),
     # CK-90: the 2D renderer's core (images, the scene bridge and the `Renderer` over a fake backend). It has no

@@ -8,6 +8,7 @@ mod fake;
 mod idle;
 mod legacy;
 mod logging;
+mod map;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_refusal;
 #[cfg(all(feature = "metal", target_os = "macos"))]

@@ -23,6 +23,7 @@ use crate::batch::{
 use crate::bindless::BindlessLimits;
 use crate::frame::{InstanceRole, MetalFrameSlot, MetalInstance, MetalSceneSource, SceneStats};
 use crate::ledger::LedgerLimits;
+use crate::map::{MetalMap, NativeMap};
 use crate::metrics::{
     EndError, FrameMarks, FrameStats, MetricsWindow, Recorder, RequestError, Tracked, now_ns,
 };
@@ -38,7 +39,7 @@ use crate::textures::{MetalContext, TextureLimits};
 use crate::{Error, message, unwind};
 
 /// The compiled quad shader library (`shaders/quad.metal`), embedded by the build script.
-const QUAD_LIBRARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/quad.metallib"));
+pub(crate) const QUAD_LIBRARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/quad.metallib"));
 
 /// The stop budget: the moment of the first `request_stop` plus this.
 const STOP_BUDGET: Duration = Duration::from_millis(1500);
@@ -160,7 +161,7 @@ struct NativeTicket {
 /// The textured quad of one frame (`CKPrQuad`); `present` 0 means none.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-struct NativeQuad {
+pub(crate) struct NativeQuad {
     present: i32,
     filter: i32,
     destination: [i32; 4],
@@ -201,12 +202,29 @@ struct NativeReadbackImage {
     height: u32,
 }
 
+/// The native message of a refused map allocation (`CKPrQuadResult::map_refusal`).
+#[repr(C)]
+struct RefusalText([u8; 256]);
+
+impl Default for RefusalText {
+    fn default() -> Self {
+        Self([0; 256])
+    }
+}
+
 /// What a frame step did to the quad texture (`CKPrQuadResult`).
 #[repr(C)]
 #[derive(Default)]
 struct NativeQuadResult {
     uploaded: i32,
     removed: i32,
+    /// New map grids became the resident ones.
+    map_grids: i32,
+    /// The map's images were made resident (or already were): an attempt that succeeded.
+    map_admitted: i32,
+    /// The map's images could not be allocated: `map_refusal` says why (a NUL-terminated message).
+    map_refused: i32,
+    map_refusal: RefusalText,
     /// The frame-timing marks the native step took (`CLOCK_UPTIME_RAW` nanoseconds; zero when not reached): `nextDrawable` called
     /// (t3), returned (t4), and the command buffer's `commit` returned (t5).
     acquire_begin: u64,
@@ -230,7 +248,7 @@ struct NativeTiming {
 
 impl NativeQuad {
     /// No quad.
-    const NONE: Self = Self {
+    pub(crate) const NONE: Self = Self {
         present: 0,
         filter: 0,
         destination: [0; 4],
@@ -239,7 +257,7 @@ impl NativeQuad {
         height: 0,
     };
 
-    fn of(quad: &MetalQuad) -> Self {
+    pub(crate) fn of(quad: &MetalQuad) -> Self {
         let destination = quad.destination();
         let source = quad.source();
         Self {
@@ -323,6 +341,7 @@ unsafe extern "C" {
         quad: *const NativeQuad,
         upload: *const NativeUpload,
         packet: *const NativePacket,
+        map: *const NativeMap,
         ticket: *const NativeTicket,
         result: *mut NativeQuadResult,
         message: *mut c_char,
@@ -841,6 +860,72 @@ impl Observer {
         self.get(26)
     }
 
+    /// Command buffers committed with a map pass in them.
+    #[must_use]
+    pub fn map_passes(&self) -> i64 {
+        self.get(32)
+    }
+
+    /// Map inputs made resident (grid A, grid B and the palette, counted as one).
+    #[must_use]
+    pub fn map_grids_created(&self) -> i64 {
+        self.get(33)
+    }
+
+    /// Map targets allocated.
+    #[must_use]
+    pub fn map_targets_created(&self) -> i64 {
+        self.get(34)
+    }
+
+    /// Map targets the core still holds: the current one and a retired one awaiting its proof.
+    #[must_use]
+    pub fn map_targets_alive(&self) -> i64 {
+        self.get(35)
+    }
+
+    /// The most map targets alive at once.
+    #[must_use]
+    pub fn map_targets_max(&self) -> i64 {
+        self.get(36)
+    }
+
+    /// Map resources retired: a replaced input and a replaced target, one count each.
+    #[must_use]
+    pub fn map_retired(&self) -> i64 {
+        self.get(37)
+    }
+
+    /// Retired map resources let go of after the proof of the last command buffer that used them.
+    #[must_use]
+    pub fn map_retired_released(&self) -> i64 {
+        self.get(38)
+    }
+
+    /// Retired map resources let go of **before** that proof: zero, always.
+    #[must_use]
+    pub fn map_released_early(&self) -> i64 {
+        self.get(39)
+    }
+
+    /// Frame steps that waited because retired map resources still waited for their proof.
+    #[must_use]
+    pub fn map_admission_waits(&self) -> i64 {
+        self.get(40)
+    }
+
+    /// Map inputs the core still holds: the current one and a retired one awaiting its proof.
+    #[must_use]
+    pub fn map_grids_alive(&self) -> i64 {
+        self.get(41)
+    }
+
+    /// The size, in map pixels, of the map target made last.
+    #[must_use]
+    pub fn map_last_target_size(&self) -> (i64, i64) {
+        (self.get(42), self.get(43))
+    }
+
     /// Frames captured off screen whose command buffer completed (see [`TestHooks::capture_frames`]).
     #[must_use]
     pub fn captures(&self) -> i64 {
@@ -1055,6 +1140,12 @@ pub struct TestHooks {
     pub fail_pipeline: bool,
     /// For this many frames, the quad texture cannot be allocated.
     pub fail_texture_allocation_frames: u32,
+    /// The next this many attempts to make the map's images or target are refused (counted only in frame steps that need a creation:
+    /// a new input, or a view of another size).
+    pub fail_map_allocations: u32,
+    /// The first this many such attempts succeed before `fail_map_allocations` begins to refuse (a refusal of a resize, with the old
+    /// target resident).
+    pub skip_map_allocations: u32,
     /// For this many frames, the quad cannot be encoded.
     pub fail_quad_encode_frames: u32,
     /// The scene to start (what [`MetalPresenter::start_scene`] passes).
@@ -1739,6 +1830,13 @@ struct Loop<'a> {
     /// together with the layout it was uploaded as (width and height): the same source described with a
     /// different layout is a different texture.
     resident: Option<(Weak<dyn PixelSource>, u32, u32)>,
+    /// The generation of the map input whose images the native core holds (`None`: none yet). A frame whose map has another
+    /// generation hands the grids to the native step, which makes them resident.
+    map_resident: Option<u64>,
+    /// The last attempt to make the map's images was refused (and the publisher told): the first success is told too.
+    map_refusing: bool,
+    /// The size of the map target the native core holds (`None`: none yet).
+    map_target: Option<[u32; 2]>,
     /// The generation to record when the frame in progress is committed.
     pending_generation: Option<u64>,
     /// The texture scene (store, ledger, driver), if the presenter was started with one.
@@ -1900,6 +1998,9 @@ fn run(shared: &Arc<Shared>, core: Core, hooks: TestHooks) -> CleanupResult {
         last_clear: None,
         quads,
         resident: None,
+        map_resident: None,
+        map_refusing: false,
+        map_target: None,
         pending_generation: None,
         checker_resident: scene.is_none(),
         frame_gate,
@@ -2532,6 +2633,8 @@ impl Loop<'_> {
         message_buffer: &mut [u8; 512],
         latest: Option<MetalScene>,
     ) -> i32 {
+        let mut faults = *faults;
+        let faults = &mut faults;
         // `latest` is the frame taken from the scene's slot at the start of the step (the legacy quad is part of it); the scene
         // source and filter stay with the scene for this attempt's build.
         let mut built_at = 0_u64;
@@ -2546,6 +2649,25 @@ impl Loop<'_> {
         });
         let identity =
             upload_from.map(|quad| (Arc::downgrade(quad.pixels()), quad.width(), quad.height()));
+        // The map (milestone 6, slice 1): its description for the native step, with the grids only when their generation is not
+        // the one the core holds. `latest` keeps the grids alive until after the call.
+        let frame_map = latest.as_ref().and_then(MetalScene::map);
+        let map_generation = frame_map.map(MetalMap::generation);
+        let map_refusals = frame_map.and_then(MetalMap::refusals).cloned();
+        // A test's refusals of the map's images count only in a step that needs a creation (a new input, or a view of another size)
+        // **and reaches the allocation** (a busy step does not), so they land on the attempt they name however many other steps run.
+        let needs_creation = frame_map.is_some_and(|map| {
+            self.map_resident != Some(map.generation()) || self.map_target != Some(map.view())
+        });
+        if needs_creation
+            && self.hooks.skip_map_allocations == 0
+            && self.hooks.fail_map_allocations > 0
+        {
+            faults.fail_texture_allocation = 1;
+        }
+        let map_view = frame_map.map(MetalMap::view);
+        let native_map =
+            frame_map.map(|map| NativeMap::of(map, self.map_resident != Some(map.generation())));
         let mut result = NativeQuadResult::default();
         let native_core = self.core.0.as_ptr();
         let instances = self.instances;
@@ -2563,6 +2685,9 @@ impl Loop<'_> {
                     native.as_ref().map_or(std::ptr::null(), std::ptr::from_ref),
                     upload.as_ref().map_or(std::ptr::null(), std::ptr::from_ref),
                     packet,
+                    native_map
+                        .as_ref()
+                        .map_or(std::ptr::null(), std::ptr::from_ref),
                     ticket,
                     &raw mut result,
                     message_buffer.as_mut_ptr().cast::<c_char>(),
@@ -2661,6 +2786,35 @@ impl Loop<'_> {
             self.resident = identity;
         } else if result.removed != 0 {
             self.resident = None;
+        }
+        if result.map_grids != 0 {
+            self.map_resident = map_generation;
+        }
+        // The publisher hears of a refused map once per episode, and of the first success after it (the notice type keeps the
+        // episode); the frame was drawn without the map, and the next frame asks again.
+        if result.map_refused != 0 {
+            // A refused map allocation keeps a redraw wanted: the next normally paced frame (the drawable acquisition paces it, one
+            // attempt per frame) asks again with nothing else changing; the first success ends it.
+            lock(&self.shared.slot).dirty = true;
+        }
+        if let Some(refusals) = &map_refusals {
+            if result.map_refused != 0 {
+                refusals.refused(&text(&result.map_refusal.0));
+                self.map_refusing = true;
+            } else if result.map_admitted != 0 && self.map_refusing {
+                refusals.cleared();
+                self.map_refusing = false;
+            }
+        }
+        if needs_creation {
+            if result.map_admitted != 0 && self.hooks.skip_map_allocations > 0 {
+                self.hooks.skip_map_allocations -= 1;
+            } else if result.map_refused != 0 && self.hooks.fail_map_allocations > 0 {
+                self.hooks.fail_map_allocations -= 1;
+            }
+        }
+        if result.map_admitted != 0 {
+            self.map_target = map_view;
         }
         self.pending_generation = generation;
         code

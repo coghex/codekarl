@@ -836,7 +836,8 @@ where
         // Each newer frame gives the ledger its current compatibility key (one slot), so a failed upload of it is also the
         // presenter's, whatever was placed.
         self.ledger.set_compat_key(frame.compat_key().copied());
-        let scene = MetalScene::new(frame.generation(), frame.quad().cloned());
+        let scene = MetalScene::new(frame.generation(), frame.quad().cloned())
+            .with_map(frame.map().cloned());
         self.current = Some(frame);
         scene
     }

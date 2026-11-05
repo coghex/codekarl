@@ -10,6 +10,13 @@
 //! - [`SceneBridge::set_pixel_size`], a metrics update;
 //! - [`SceneBridge::detach`], which removes the sink and ends the bridge.
 //!
+//! **The map lane** (milestone 6, slice 1) sits beside the scene: [`SceneBridge::publish_map`] stores the loaded map once and
+//! [`SceneBridge::publish_camera`] the view, each under the same lock and published to the sink with the same rules. An input
+//! that is not newer than the stored one, and a camera computed for other metrics than the bridge's
+//! ([`SceneBridge::metrics_generation`]), are refused as stale and change nothing; a detached bridge refuses both. The snapshot
+//! carries a map only while the input, a camera for its own metrics and a placement exist, so with no map input the frame is
+//! exactly the frame without one.
+//!
 //! A change that alters either lane or the metrics increments the generation and, when attached, publishes the
 //! snapshot to the sink **while the lock is held**. Snapshots therefore reach the sink in generation order, and
 //! a publication made with old metrics can never overwrite a newer one.
@@ -40,6 +47,7 @@ use ck_resources::{RegistryId, ResourceState, TextureRef};
 use ck_window::{PixelSize, WindowDesc};
 
 use crate::filter::Filter;
+use crate::map::{MapCamera, MapFrame, MapInput, MapPublication, MapRefusals, place_map};
 use crate::quad::{Metrics, Quad, QuadError, Snapshot};
 use crate::scene::{EditScene, FrameQuad, QuadKey, SceneFrame, SceneLimits, SceneLimitsError};
 
@@ -105,6 +113,12 @@ impl std::error::Error for AttachRefused {}
 struct State {
     scene: Option<Quad>,
     frame: Option<Arc<SceneFrame>>,
+    map: Option<Arc<MapInput>>,
+    camera: Option<Arc<MapCamera>>,
+    /// What the presenter reports of refusing to make a map image (shared with every snapshot's map).
+    map_refusals: Arc<MapRefusals>,
+    /// Counts the metrics the bridge has had (attach and every pixel-size change); a camera is for exactly one of them.
+    metrics_generation: u64,
     metrics: Option<Metrics>,
     filter: Filter,
     generation: u64,
@@ -122,6 +136,8 @@ struct Displaced {
     snapshot: Option<Snapshot>,
     sink: Option<Arc<dyn QuadSink>>,
     frame: Option<Arc<SceneFrame>>,
+    map: Option<Arc<MapInput>>,
+    camera: Option<Arc<MapCamera>>,
 }
 
 impl State {
@@ -133,12 +149,30 @@ impl State {
         };
         let quad = self.scene.as_ref().and_then(|quad| quad.place(metrics));
         sink.publish(Snapshot {
+            map: self.map_frame(metrics),
             generation: self.generation,
             filter: self.filter,
             requested: self.scene.is_some(),
             quad,
             scene: self.frame.as_ref().map(Arc::clone),
             metrics: *metrics,
+        })
+    }
+
+    /// The map lane's contribution to a snapshot made with `metrics`: the input and a camera computed for these very metrics, placed.
+    /// A camera computed for earlier metrics (a resize since) contributes nothing until the matching one is published, so a frame never
+    /// pairs a view size with metrics it was not computed for.
+    fn map_frame(&self, metrics: &Metrics) -> Option<MapFrame> {
+        let input = self.map.as_ref()?;
+        let camera = self.camera.as_ref()?;
+        if camera.metrics_generation() != self.metrics_generation {
+            return None;
+        }
+        Some(MapFrame {
+            input: Arc::clone(input),
+            camera: Arc::clone(camera),
+            placement: place_map(camera.view(), metrics),
+            refusals: Arc::clone(&self.map_refusals),
         })
     }
 }
@@ -198,6 +232,10 @@ impl SceneBridge {
             state: Mutex::new(State {
                 scene: None,
                 frame: None,
+                map: None,
+                camera: None,
+                map_refusals: Arc::new(MapRefusals::default()),
+                metrics_generation: 0,
                 metrics: None,
                 filter,
                 generation: 0,
@@ -270,6 +308,7 @@ impl SceneBridge {
                 return Err(AttachRefused { phase: state.phase });
             }
             state.metrics = Some(Metrics::new(desc, pixels));
+            state.metrics_generation += 1;
             state.sink = Some(sink);
             state.phase = Phase::Attached;
             state.generation += 1;
@@ -290,6 +329,7 @@ impl SceneBridge {
             }
             if let Some(metrics) = &mut state.metrics {
                 metrics.pixels = pixels;
+                state.metrics_generation += 1;
             }
             state.generation += 1;
             displaced.snapshot = state.publish();
@@ -306,8 +346,12 @@ impl SceneBridge {
                 state.generation += 1;
             }
             displaced.frame = state.frame.take();
-            // Replace the consumer's latest snapshot before detaching it, so an idle sink cannot pin the scene frame.
-            if state.phase == Phase::Attached && displaced.frame.is_some() {
+            displaced.map = state.map.take();
+            displaced.camera = state.camera.take();
+            // Replace the consumer's latest snapshot before detaching it, so an idle sink cannot pin the scene frame or the map.
+            if state.phase == Phase::Attached
+                && (displaced.frame.is_some() || displaced.map.is_some())
+            {
                 displaced.snapshot = state.publish();
             }
             state.phase = Phase::Ended;
@@ -315,6 +359,78 @@ impl SceneBridge {
             displaced.sink = state.sink.take();
         }
         drop(displaced);
+    }
+
+    /// How many metrics the bridge has had: it grows by one at [`attach`](Self::attach) and at every
+    /// [`set_pixel_size`](Self::set_pixel_size). A [`MapCamera`] is computed for one of them.
+    #[must_use]
+    pub fn metrics_generation(&self) -> u64 {
+        self.lock().metrics_generation
+    }
+
+    /// A refusal of the presenter to make a map image (the grids or the target), once per episode: `None` when there is none to
+    /// report. It is not a failure of the run: the presenter drew the frame without the map and tries again on its next frame; a
+    /// later success ends the episode and the next refusal is a new message.
+    pub fn take_map_refusal(&self) -> Option<String> {
+        let refusals = Arc::clone(&self.lock().map_refusals);
+        refusals.take()
+    }
+
+    /// Publishes the loaded map (once per loaded map): stored, and sent to the sink when one is attached.
+    ///
+    /// [`MapPublication::Stale`] when `input` is not newer than the stored one (its generation is not larger), and
+    /// [`MapPublication::Detached`] after [`detach`](Self::detach); neither changes anything. Before a sink is attached the input is
+    /// stored and goes out at [`attach`](Self::attach), like a scene write.
+    pub fn publish_map(&self, input: Arc<MapInput>) -> MapPublication {
+        // What the publication displaces, or is itself when refused, is dropped after the lock is released.
+        let mut displaced = Displaced::default();
+        let outcome = {
+            let mut state = self.lock();
+            if state.phase == Phase::Ended {
+                displaced.map = Some(input);
+                MapPublication::Detached
+            } else if state
+                .map
+                .as_ref()
+                .is_some_and(|held| input.generation() <= held.generation())
+            {
+                displaced.map = Some(input);
+                MapPublication::Stale
+            } else {
+                displaced.map = state.map.replace(input);
+                state.generation += 1;
+                displaced.snapshot = state.publish();
+                MapPublication::Published
+            }
+        };
+        drop(displaced);
+        outcome
+    }
+
+    /// Publishes the camera: stored, and sent to the sink when one is attached.
+    ///
+    /// [`MapPublication::Stale`] when the camera was computed for other metrics than the bridge's now
+    /// ([`metrics_generation`](Self::metrics_generation)), and [`MapPublication::Detached`] after [`detach`](Self::detach); neither
+    /// changes anything.
+    pub fn publish_camera(&self, camera: Arc<MapCamera>) -> MapPublication {
+        let mut displaced = Displaced::default();
+        let outcome = {
+            let mut state = self.lock();
+            if state.phase == Phase::Ended {
+                displaced.camera = Some(camera);
+                MapPublication::Detached
+            } else if camera.metrics_generation() != state.metrics_generation {
+                displaced.camera = Some(camera);
+                MapPublication::Stale
+            } else {
+                displaced.camera = state.camera.replace(camera);
+                state.generation += 1;
+                displaced.snapshot = state.publish();
+                MapPublication::Published
+            }
+        };
+        drop(displaced);
+        outcome
     }
 
     /// Where the bridge is.
