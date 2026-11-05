@@ -1,11 +1,11 @@
-//! The Vulkan objects of the map pass and their recording (milestone 6, slice 1). The data is [`map`](crate::map)'s, the bookkeeping of what
+//! The Vulkan objects of the map pass and their recording (milestone 6, slices 1 and 6). The data is [`map`](crate::map)'s, the bookkeeping of what
 //! is resident [`map_residency`](crate::map_residency)'s; this module creates, records and destroys.
 //!
 //! - **[`MapPipeline`]**: the map pass's render pass (one `R8G8B8A8_UNORM` colour attachment, kept in `COLOR_ATTACHMENT_OPTIMAL` by the
 //!   pass; the layouts change by the explicit barriers below), its descriptor set layout (three sampled images: grid A, grid B, the
-//!   palette), a pool, the pipeline layout (a 24-byte push constant for the fragment stage) and the pipeline (the full-target triangle,
+//!   rules), a pool, the pipeline layout (a 32-byte push constant for the fragment stage) and the pipeline (the full-target triangle,
 //!   dynamic viewport and scissor, no blending).
-//! - **[`MapInputObjects`]**: grid A, grid B and the palette (a 256 x 1 image) as `R8G8B8A8_UNORM` optimal-tiling images (`SAMPLED |
+//! - **[`MapInputObjects`]**: grid A, grid B and the rules (an 80 x 258 image) as `R8G8B8A8_UNORM` optimal-tiling images (`SAMPLED |
 //!   TRANSFER_DST`), their memory, views, one descriptor set naming them, and one host-visible staging buffer holding all three. The
 //!   upload is recorded in the frame's command buffer before the map pass and counts as done only once the frame is submitted.
 //! - **[`MapTargetObjects`]**: the map target, an `R8G8B8A8_UNORM` image of the view's size (`COLOR_ATTACHMENT | SAMPLED`), its view and
@@ -28,7 +28,7 @@ use crate::Error;
 use crate::draw::{QuadParams, QuadPipeline, color_range, record_draw_with_set};
 use crate::gpu::{Failure, Gpu};
 use crate::hooks::QuadFaults;
-use crate::map::{MAP_SIDE_MAX, VulkanMap, VulkanMapInput};
+use crate::map::{MAP_SIDE_MAX, RULES_HEIGHT, RULES_WIDTH, VulkanMap, VulkanMapInput};
 use crate::quad::{DestinationRect, SourceRect, VulkanFilter};
 use crate::readback::allocate;
 
@@ -37,10 +37,8 @@ const FRAGMENT_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/map.frag
 
 /// The format of every map image, the target included.
 pub(crate) const MAP_FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
-/// The push constants: `origin`, `crop` and `top_left`, each two `i32`.
-const PUSH_BYTES: u32 = 24;
-/// The palette image's width: one pixel per palette entry.
-const PALETTE_WIDTH: u32 = 256;
+/// The push constants: `origin`, `crop` and `top_left`, each two `i32`, then the zoom step and a zero.
+const PUSH_BYTES: u32 = 32;
 /// The descriptor sets the pool holds: an input and a retired input (three images each), a target and a retired target (the window
 /// pass's combined image sampler each).
 const POOL_SETS: u32 = 4;
@@ -50,8 +48,8 @@ const POOL_SETS: u32 = 4;
 pub(crate) struct MapRecord {
     /// The input's upload is recorded in this frame (it was never submitted).
     pub(crate) upload: bool,
-    /// The push constants: `origin`, `crop` and `top_left`.
-    pub(crate) constants: [i32; 6],
+    /// The push constants: `origin`, `crop` and `top_left`, the zoom step and a zero.
+    pub(crate) constants: [i32; 8],
     /// The view, which is the target's size, in map pixels.
     pub(crate) view: [u32; 2],
     /// Where the enlarged map lands, in drawable pixels.
@@ -76,6 +74,8 @@ impl MapRecord {
                 i32::try_from(crop_height).unwrap_or(i32::MAX),
                 left,
                 top,
+                i32::from(map.step()),
+                0,
             ],
             view: map.view(),
             destination: map.destination(),
@@ -408,9 +408,12 @@ impl MapInputObjects {
     ) -> Result<(), Failure> {
         self.generation = input.generation();
         let [width, height] = input.size();
-        let palette = input.palette_image();
-        let parts: [&[u8]; 3] = [input.grid_a(), input.grid_b(), &palette];
-        self.extents = [(width, height), (width, height), (PALETTE_WIDTH, 1)];
+        let parts: [&[u8]; 3] = [input.grid_a(), input.grid_b(), input.rules_image()];
+        self.extents = [
+            (width, height),
+            (width, height),
+            (RULES_WIDTH, RULES_HEIGHT),
+        ];
         let mut total = 0_u64;
         for (offset, part) in self.offsets.iter_mut().zip(parts) {
             *offset = total;
@@ -891,7 +894,7 @@ pub(crate) fn record_map_pass(
             &[],
         );
     }
-    // SAFETY: the push constant range covers these 24 bytes for the fragment stage.
+    // SAFETY: the push constant range covers these 32 bytes for the fragment stage.
     unsafe {
         device.cmd_push_constants(cmd, layout, vk::ShaderStageFlags::FRAGMENT, 0, &constants);
     }

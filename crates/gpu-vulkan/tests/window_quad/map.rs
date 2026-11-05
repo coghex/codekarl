@@ -6,7 +6,7 @@
 use ck_gpu_vulkan::{MapRefusalSink, VulkanMap, VulkanScene};
 
 use super::{Arc, Case, Harness, Ordering, finish_proven};
-use crate::window_scene::map::{ORIGIN, Told, bgra, expected_pixel, input_with, map_of};
+use crate::window_scene::map::{Told, bgra, corner, expected_pixel, input_with, map_of};
 
 impl Harness {
     /// Publishes a scene (generation `generation`) that carries `map` and no quad.
@@ -20,7 +20,10 @@ impl Harness {
 fn quad_slot_map_in_the_first_frame_is_drawn_enlarged() {
     let mut harness = Harness::new();
     let input = input_with(1);
-    let top_left = [ORIGIN[0] - 1, ORIGIN[1]];
+    let top_left = {
+        let [x, y] = corner();
+        [x - 1, y]
+    };
     harness.publish_map(7, map_of(&input, top_left, [5, 3]));
     let mut presenter = harness.start(harness.hooks());
     harness.wait_generation(&presenter, 7);
@@ -55,7 +58,7 @@ fn quad_slot_a_refusal_is_retried_and_a_resize_retires_the_old_target() {
     let input = input_with(1);
     let with_refusals =
         |map: VulkanMap| map.with_refusals(Arc::clone(&told) as Arc<dyn MapRefusalSink>);
-    harness.publish_map(1, with_refusals(map_of(&input, ORIGIN, [5, 3])));
+    harness.publish_map(1, with_refusals(map_of(&input, corner(), [5, 3])));
     let mut hooks = harness.hooks();
     hooks.map_allocation_failures = 1;
     let mut presenter = harness.start(hooks);
@@ -87,7 +90,7 @@ fn quad_slot_a_refusal_is_retried_and_a_resize_retires_the_old_target() {
     );
     assert_eq!(
         bgra(&frames[1], 2, 2),
-        expected_pixel(ORIGIN, 0, 0),
+        expected_pixel(corner(), 0, 0),
         "the retry draws the map"
     );
     assert_eq!(
@@ -96,7 +99,7 @@ fn quad_slot_a_refusal_is_retried_and_a_resize_retires_the_old_target() {
         "the success is told once"
     );
     // The view grows: a new target, and the old one is retired and destroyed after its proof.
-    harness.publish_map(3, with_refusals(map_of(&input, ORIGIN, [6, 4])));
+    harness.publish_map(3, with_refusals(map_of(&input, corner(), [6, 4])));
     harness.wait_generation(&presenter, 3);
     harness.rig.wait("the old target's release", || {
         let stats = observer.map_stats();

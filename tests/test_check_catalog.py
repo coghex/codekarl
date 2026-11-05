@@ -441,6 +441,9 @@ class Catalog(unittest.TestCase):
             "config/demo-quad-vulkan.toml",  # CK-99: run by the headless case of vulkan_app.rs
             "apps/codekarl/Cargo.toml",  # CK-99: carries the `vulkan` feature's wiring
             "specs/bootstrap.json",
+            # CK-182: the reference colour function and fixture are inputs of the shader-parity cases; they select only the four
+            # groups that run those comparisons (`MapGroup.test_01b`), `metal.window-core` and `vulkan.window` among them.
+            "crates/map/src/",
         )
         for path in paths:
             chosen = check.plan(check.STEPS, [path])
@@ -917,17 +920,33 @@ class MapGroup(unittest.TestCase):
     def selected(self, path: str) -> set[str]:
         return {c.step.name for c in check.plan(check.STEPS, [path]).choices if c.selected}
 
-    def test_01_crate_paths_select_only_map_core_and_lints(self) -> None:
-        for path in ("crates/map/src/lib.rs", "crates/map/Cargo.toml"):
+    PARITY_GROUPS = ("metal.gpu", "metal.window-core", "vulkan.gpu", "vulkan.window")
+
+    def test_01_the_manifest_selects_only_map_core_and_lints(self) -> None:
+        chosen = self.selected("crates/map/Cargo.toml")
+        self.assertTrue({"map.core", "unittest-lints"} <= chosen)
+        for other in (
+            *self.PARITY_GROUPS,
+            "native.window",
+            "glfw.window",
+            "vulkan.app",
+        ):
+            self.assertNotIn(other, chosen, f"crates/map/Cargo.toml: {other}")
+
+    def test_01b_the_reference_selects_exactly_the_groups_that_compare_with_it(self) -> None:
+        """CK-182: the reference in `crates/map/src` is an input of the shader-parity cases (the Metal and Vulkan map readbacks
+        and window cases), so it reruns those groups and no other GPU or window group."""
+        for path in ("crates/map/src/lib.rs", "crates/map/src/fixture.rs"):
             chosen = self.selected(path)
-            self.assertTrue({"map.core", "unittest-lints"} <= chosen, path)
+            self.assertTrue({"map.core", "unittest-lints", *self.PARITY_GROUPS} <= chosen, path)
             for other in (
-                "metal.gpu",
                 "native.window",
+                "metal.window-scene",
+                "metal.window-compat",
+                "metal.window-instanced",
                 "glfw.window",
-                "vulkan.window",
-                "vulkan.gpu",
                 "vulkan.app",
+                "render2d.vulkan-window",
             ):
                 self.assertNotIn(other, chosen, f"{path}: {other}")
 
@@ -946,6 +965,7 @@ class MapGroup(unittest.TestCase):
                 ("lib", "ck_map"),
                 ("bin", "map-preview"),
                 ("test", "preview"),
+                ("test", "rules_fixture"),
                 ("doc", "ck_map"),
             },
         )
@@ -1253,11 +1273,18 @@ class NativeWindowGroupsShareOneSelection(unittest.TestCase):
     def selected(self, path: str) -> set[str]:
         return {c.step.name for c in check.plan(check.STEPS, [path]).choices if c.selected}
 
-    def test_01_the_five_groups_have_identical_paths_equal_to_the_shared_tuple(self) -> None:
+    def test_01_the_five_groups_share_the_tuple_and_only_core_adds_the_reference(self) -> None:
         steps = self.steps()
         self.assertEqual(sorted(steps), sorted(self.GROUPS))
         for name, step in steps.items():
-            self.assertEqual(tuple(step.paths), check.NATIVE_WINDOW_PATHS, name)
+            # CK-182: `metal.window-core` also runs the map cases that compare with `ck-map`'s reference, so its tuple is the shared one
+            # plus the reference's directory (and only that group: the others do not run those comparisons).
+            expected = (
+                (*check.NATIVE_WINDOW_PATHS, "crates/map/src/")
+                if name == "metal.window-core"
+                else check.NATIVE_WINDOW_PATHS
+            )
+            self.assertEqual(tuple(step.paths), expected, name)
         self.assertIn("crates/window-cocoa/", check.NATIVE_WINDOW_PATHS)
 
     def test_02_a_window_path_selects_all_five_and_a_non_window_path_none(self) -> None:

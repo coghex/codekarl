@@ -1,12 +1,12 @@
-//! The map lane (milestone 6, slice 1): the inputs the application publishes beside the scene so that the GPU owners can write the
-//! map image, and where that image lands in the window.
+//! The map lane (milestone 6, slices 1 and 6): the inputs the application publishes beside the scene so that the GPU owners can write
+//! the map image, and where that image lands in the window.
 //!
 //! Two immutable inputs, both plain data (no GPU object, no `ck-map` type):
 //!
-//! - [`MapInput`], published once per loaded map: the crop's global origin cell and size, the two packed grids, a palette of up to 256
-//!   colours and a generation number;
-//! - [`MapCamera`]: the top-left world pixel, the view size in map pixels, the river pixels (empty in this slice) and the metrics
-//!   generation it was computed for.
+//! - [`MapInput`], published once per loaded map: the crop's global origin cell and size, the two packed grids, the rule table
+//!   ([`MapRules`]) and a generation number;
+//! - [`MapCamera`]: the zoom step, the top-left world pixel, the view size in map pixels, the river pixels (empty until slice 8) and the
+//!   metrics generation it was computed for.
 //!
 //! # The packed grids
 //!
@@ -22,11 +22,22 @@
 //! `elevation + 11000` is an unsigned 16-bit value in metres, so a sea depth down to 11 km fits. Slice 3 (the loader) produces this layout
 //! and cites this section; slice 6 reads grid B.
 //!
-//! # The minimal colour rule of slice 1
+//! # The rule table and the colour rules (slice 6)
 //!
-//! Map pixel `(x, y)` of the view shows the palette colour of grid A's terrain index at cell
-//! `(left + x - i0, top + y - j0)`, where `(left, top)` is the camera's top-left world pixel and `(i0, j0)` the crop's origin: one cell
-//! per map pixel. A cell outside the crop shows palette entry 0. The camera's river list is carried and not drawn (slice 8).
+//! [`MapRules`] carries, **for each terrain index** (grid A's red byte): its kind ([`MapTerrainKind`]: land, sea, lake or mountain —
+//! the table's sea, lake and mountain flags), the solid, second, dark and dark-second colours, the relief range and mix percentage, the
+//! cap and high-ground colours and the cap heights. It also carries the sea, shallow-sea, lake and river colours, the shallow-sea
+//! threshold and the 76-entry step table (`ck-map`'s `STEP_SIZE`, which the GPU reads from here and not from a copy of its own).
+//! Elevations are metres, from -11000 to 54535 (so `elevation + 11000` is the 16-bit value of grid B); every colour is opaque.
+//!
+//! Map pixel `(x, y)` of the view at zoom step `s` is world pixel `(I_left + x, J_top + y)`. Its colour is the one `ck-map`'s
+//! reference colour function gives (`docs/map-design.md` section 9.4, rules 1 to 6 and 8, every one in integer arithmetic): the
+//! sample point of the pixel's centre, moved by the frozen sub-cell jitter, the cell and elevation under it, the water, usable and
+//! unusable tones with their Bayer dither, the snow caps and high ground, and the four-neighbour coast outline. A pixel outside the
+//! crop is sea. The camera's river list is carried and not drawn (rule 7 is slice 8's).
+//!
+//! The crop must lie in the non-negative projected world and leave room for a map pixel and the sub-cell detail past its far edge
+//! (`(origin + size) * 32768` at most `i32::MAX - 2^20`), and the camera's sample points must fit 32 bits; both are checked.
 //!
 //! # Where the map image lands
 //!
@@ -45,8 +56,20 @@ use std::sync::Arc;
 
 use crate::quad::{Metrics, PixelRect, SourceRect, drawable, edges, trimmed};
 
-/// The most colours a palette holds.
-pub const PALETTE_MAX: usize = 256;
+/// The most terrain types a rule table holds: grid A's terrain index is a byte.
+pub const TERRAIN_MAX: usize = 256;
+
+/// The number of zoom steps (0 through 75) and so of entries in the step table.
+pub const STEP_COUNT: usize = 76;
+
+/// Fixed-point units in one cell.
+const FIXED_PER_CELL: i64 = 32_768;
+
+/// What the far edge of the crop must leave below `i32::MAX`: room for one map pixel and the sub-cell detail past the edge.
+const CROP_MARGIN: i64 = 1 << 20;
+
+/// The lowest and highest elevation in metres a rule can name (`elevation + 11000` is a 16-bit value).
+const ELEVATION_RANGE: std::ops::RangeInclusive<i32> = -11_000..=54_535;
 
 /// The longest side of a crop or a view: a size every GPU image supports.
 pub const SIDE_MAX: u32 = 16_384;
@@ -86,19 +109,22 @@ pub enum MapError {
         /// What is wrong with it.
         problem: &'static str,
     },
-    /// A palette with no colour or more than [`PALETTE_MAX`].
-    Palette {
-        /// How many colours were given.
-        count: usize,
+    /// A rule table that breaks its layout: the terrain index it concerns (`None` for the table as a whole) and the problem. Colours
+    /// must be opaque (the map target is opaque, and the enlarged map is blended as premultiplied).
+    Rules {
+        /// The terrain index the problem concerns, or `None` for the table as a whole (its length, the water colours, the step table).
+        terrain: Option<usize>,
+        /// What is wrong.
+        problem: &'static str,
     },
-    /// A palette colour whose alpha is not 255: the map target is opaque, and the enlarged map is blended as premultiplied.
-    PaletteAlpha {
-        /// The colour's index in the palette.
-        index: usize,
-        /// Its alpha.
-        alpha: u8,
+    /// A crop outside the usable world: origin not in the non-negative projected world, or no room past the far edge for a map pixel.
+    Crop {
+        /// The crop's global origin cell.
+        origin: [i32; 2],
+        /// Its size in cells.
+        size: [u32; 2],
     },
-    /// A terrain index that the palette does not have.
+    /// A terrain index that the rule table does not have.
     TerrainIndex {
         /// The cell's column within the crop.
         x: u32,
@@ -106,8 +132,13 @@ pub enum MapError {
         y: u32,
         /// The index.
         index: u8,
-        /// The palette's length.
-        palette: usize,
+        /// The rule table's length.
+        terrains: usize,
+    },
+    /// A zoom step past the last one.
+    Step {
+        /// The step.
+        step: u8,
     },
     /// A river pixel outside the view.
     RiverOutsideView {
@@ -152,22 +183,31 @@ impl std::fmt::Display for MapError {
                 y,
                 problem,
             } => write!(formatter, "grid {grid} cell ({x}, {y}): {problem}"),
-            Self::Palette { count } => write!(
+            Self::Rules {
+                terrain: Some(terrain),
+                problem,
+            } => write!(formatter, "the rules of terrain {terrain}: {problem}"),
+            Self::Rules {
+                terrain: None,
+                problem,
+            } => write!(formatter, "the map rules: {problem}"),
+            Self::Crop { origin, size } => write!(
                 formatter,
-                "the palette has {count} colours; it needs from 1 to {PALETTE_MAX}"
-            ),
-            Self::PaletteAlpha { index, alpha } => write!(
-                formatter,
-                "palette colour {index} has alpha {alpha}; every colour must be opaque (255)"
+                "the crop at {origin:?} of {size:?} cells must lie in the non-negative world with room for a map pixel past its far edge"
             ),
             Self::TerrainIndex {
                 x,
                 y,
                 index,
-                palette,
+                terrains,
             } => write!(
                 formatter,
-                "grid A cell ({x}, {y}) has terrain index {index}; the palette has {palette} colours"
+                "grid A cell ({x}, {y}) has terrain index {index}; the rules have {terrains} terrain types"
+            ),
+            Self::Step { step } => write!(
+                formatter,
+                "zoom step {step} is past the last ({})",
+                STEP_COUNT - 1
             ),
             Self::RiverOutsideView { position, x, y } => write!(
                 formatter,
@@ -187,6 +227,138 @@ fn side_ok(side: u32) -> bool {
     (1..=SIDE_MAX).contains(&side)
 }
 
+/// What a terrain index is: ordinary land, the sea, a lake or a mountain (the table's sea, lake and mountain flags).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapTerrainKind {
+    /// Ordinary land: the usable and unusable tones with their dither.
+    Land,
+    /// The sea: the sea colour, or the shallow-sea colour where the depth is under the threshold.
+    Sea,
+    /// A lake: the lake colour.
+    Lake,
+    /// A mountain: land that also shows snow caps (usable) or high ground (unusable) by its elevation.
+    Mountain,
+}
+
+/// One terrain type's rules (`docs/map-design.md` section 9.4). A water kind ignores every field but its kind; ordinary land ignores
+/// the cap and high-ground colours and the cap heights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MapTerrainRule {
+    /// Land, sea, lake or mountain.
+    pub kind: MapTerrainKind,
+    /// The usable land's colour, and the coast outline's.
+    pub solid: [u8; 4],
+    /// The usable land's second tone.
+    pub second: [u8; 4],
+    /// The unusable land's dark colour.
+    pub dark: [u8; 4],
+    /// The unusable land's dark second tone.
+    pub dark_second: [u8; 4],
+    /// A usable mountain's snow cap.
+    pub cap: [u8; 4],
+    /// An unusable mountain's high ground.
+    pub high_ground: [u8; 4],
+    /// The elevations, in metres, between which the relief ramp rises from level 0 to 16 (the low one below the high one).
+    pub relief: [i32; 2],
+    /// How much of the relief level the usable second tone shows, in percent (0 to 100).
+    pub mix_percent: u8,
+    /// The elevations, in metres, between which a mountain's cap ramp rises from level 0 to 16.
+    pub cap_heights: [i32; 2],
+}
+
+/// The rule table a map input carries (see the module documentation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapRules {
+    /// One rule per terrain index, 1 to [`TERRAIN_MAX`].
+    pub terrains: Vec<MapTerrainRule>,
+    /// The sea.
+    pub sea: [u8; 4],
+    /// The shallow sea.
+    pub shallow_sea: [u8; 4],
+    /// The lakes.
+    pub lake: [u8; 4],
+    /// The rivers (carried; drawn from slice 8).
+    pub river: [u8; 4],
+    /// A sea depth, in metres, under which the shallow sea dithers in; at least 1.
+    pub shallow_threshold: u16,
+    /// The map pixel size at each zoom step, in 1/32768 cell (`ck-map`'s frozen `STEP_SIZE`).
+    pub steps: [i32; STEP_COUNT],
+}
+
+impl MapRules {
+    /// The first problem with the table, or `Ok`.
+    fn check(&self) -> Result<(), MapError> {
+        let table = |problem| MapError::Rules {
+            terrain: None,
+            problem,
+        };
+        let terrain = |index, problem| MapError::Rules {
+            terrain: Some(index),
+            problem,
+        };
+        if self.terrains.is_empty() || self.terrains.len() > TERRAIN_MAX {
+            return Err(table("it needs from 1 to 256 terrain types"));
+        }
+        if self.shallow_threshold == 0 {
+            return Err(table("the shallow-sea threshold must be at least 1"));
+        }
+        for (name, colour) in [
+            ("the sea colour is not opaque", self.sea),
+            ("the shallow-sea colour is not opaque", self.shallow_sea),
+            ("the lake colour is not opaque", self.lake),
+            ("the river colour is not opaque", self.river),
+        ] {
+            if colour[3] != 255 {
+                return Err(table(name));
+            }
+        }
+        if self.steps.iter().any(|size| !(1..1 << 24).contains(size)) {
+            return Err(table("a step size must be from 1 to 2^24 - 1"));
+        }
+        for (index, rule) in self.terrains.iter().enumerate() {
+            let land = matches!(rule.kind, MapTerrainKind::Land | MapTerrainKind::Mountain);
+            if !land {
+                continue;
+            }
+            if [rule.solid, rule.second, rule.dark, rule.dark_second]
+                .iter()
+                .any(|colour| colour[3] != 255)
+            {
+                return Err(terrain(index, "a land colour is not opaque"));
+            }
+            if rule.mix_percent > 100 {
+                return Err(terrain(index, "the mix is over 100 percent"));
+            }
+            let ramp_ok = |range: [i32; 2]| {
+                range[0] < range[1]
+                    && ELEVATION_RANGE.contains(&range[0])
+                    && ELEVATION_RANGE.contains(&range[1])
+            };
+            if !ramp_ok(rule.relief) {
+                return Err(terrain(
+                    index,
+                    "the relief range must rise within -11000 to 54535 metres",
+                ));
+            }
+            if rule.kind == MapTerrainKind::Mountain {
+                if rule.cap[3] != 255 || rule.high_ground[3] != 255 {
+                    return Err(terrain(
+                        index,
+                        "the cap or high-ground colour is not opaque",
+                    ));
+                }
+                if !ramp_ok(rule.cap_heights) {
+                    return Err(terrain(
+                        index,
+                        "the cap heights must rise within -11000 to 54535 metres",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A loaded map as the GPU reads it: immutable, published once, replaced as a whole by a newer generation.
 #[derive(Debug)]
 pub struct MapInput {
@@ -195,26 +367,26 @@ pub struct MapInput {
     size: [u32; 2],
     grid_a: Arc<[u8]>,
     grid_b: Arc<[u8]>,
-    palette: Arc<[[u8; 4]]>,
+    rules: Arc<MapRules>,
 }
 
 impl MapInput {
     /// A map input, checked against the layout in the module documentation.
     ///
     /// `origin` is the crop's global origin cell `(i0, j0)`; `size` its width and height in cells; `grid_a` and `grid_b` the packed
-    /// grids; `palette` up to [`PALETTE_MAX`] RGBA8 colours; `generation` the number that orders inputs (a newer input has a larger one).
+    /// grids; `rules` the rule table; `generation` the number that orders inputs (a newer input has a larger one).
     ///
     /// # Errors
     ///
-    /// The first [`MapError`] found: a size, a grid length, a cell that breaks the layout, the palette's length, or a terrain index the
-    /// palette lacks.
+    /// The first [`MapError`] found: a size, a crop outside the usable world, a rule that breaks its layout, a grid length, a cell that
+    /// breaks the layout, or a terrain index the rule table lacks.
     pub fn new(
         generation: u64,
         origin: [i32; 2],
         size: [u32; 2],
         grid_a: Vec<u8>,
         grid_b: Vec<u8>,
-        palette: Vec<[u8; 4]>,
+        rules: MapRules,
     ) -> Result<Self, MapError> {
         let [width, height] = size;
         if !side_ok(width) || !side_ok(height) {
@@ -224,21 +396,15 @@ impl MapInput {
                 height,
             });
         }
-        if palette.is_empty() || palette.len() > PALETTE_MAX {
-            return Err(MapError::Palette {
-                count: palette.len(),
-            });
-        }
-        if let Some((index, colour)) = palette
-            .iter()
-            .enumerate()
-            .find(|(_, colour)| colour[3] != 255)
+        let far = |axis: usize| (i64::from(origin[axis]) + i64::from(size[axis])) * FIXED_PER_CELL;
+        if origin[0] < 0
+            || origin[1] < 0
+            || far(0) > i64::from(i32::MAX) - CROP_MARGIN
+            || far(1) > i64::from(i32::MAX) - CROP_MARGIN
         {
-            return Err(MapError::PaletteAlpha {
-                index,
-                alpha: colour[3],
-            });
+            return Err(MapError::Crop { origin, size });
         }
+        rules.check()?;
         let expected = usize::try_from(u64::from(width) * u64::from(height) * 4).map_err(|_| {
             MapError::Size {
                 what: "crop",
@@ -278,12 +444,12 @@ impl MapInput {
                     problem,
                 });
             }
-            if usize::from(pixel[0]) >= palette.len() {
+            if usize::from(pixel[0]) >= rules.terrains.len() {
                 return Err(MapError::TerrainIndex {
                     x,
                     y,
                     index: pixel[0],
-                    palette: palette.len(),
+                    terrains: rules.terrains.len(),
                 });
             }
         }
@@ -311,7 +477,7 @@ impl MapInput {
             size,
             grid_a: grid_a.into(),
             grid_b: grid_b.into(),
-            palette: palette.into(),
+            rules: Arc::new(rules),
         })
     }
 
@@ -345,16 +511,17 @@ impl MapInput {
         &self.grid_b
     }
 
-    /// The palette, shared.
+    /// The rule table, shared.
     #[must_use]
-    pub fn palette(&self) -> &Arc<[[u8; 4]]> {
-        &self.palette
+    pub fn rules(&self) -> &Arc<MapRules> {
+        &self.rules
     }
 }
 
 /// The camera as the map pass reads it: immutable, one per change of the view.
 #[derive(Debug)]
 pub struct MapCamera {
+    step: u8,
     top_left: [i32; 2],
     view: [u32; 2],
     rivers: Arc<[[u32; 2]]>,
@@ -362,21 +529,27 @@ pub struct MapCamera {
 }
 
 impl MapCamera {
-    /// A camera at world pixel `top_left` showing a `view` of map pixels, computed for the bridge's metrics of
-    /// `metrics_generation` ([`SceneBridge::metrics_generation`](crate::SceneBridge::metrics_generation)).
+    /// A camera at zoom `step` (0 through 75) and world pixel `top_left` showing a `view` of map pixels, computed for the bridge's
+    /// metrics of `metrics_generation` ([`SceneBridge::metrics_generation`](crate::SceneBridge::metrics_generation)).
     ///
-    /// `rivers` are the visible river pixels in view coordinates; the list is empty in slice 1 and bounded by the view's pixel count.
+    /// `rivers` are the visible river pixels in view coordinates; the list is empty until slice 8 and bounded by the view's pixel
+    /// count.
     ///
     /// # Errors
     ///
-    /// [`MapError::Size`] for a view with a zero or too long side, [`MapError::TooManyRivers`], or [`MapError::RiverOutsideView`].
+    /// [`MapError::Step`] for a step past the last, [`MapError::Size`] for a view with a zero or too long side,
+    /// [`MapError::TooManyRivers`], or [`MapError::RiverOutsideView`].
     pub fn new(
+        step: u8,
         top_left: [i32; 2],
         view: [u32; 2],
         rivers: Vec<[u32; 2]>,
         metrics_generation: u64,
     ) -> Result<Self, MapError> {
         let [width, height] = view;
+        if usize::from(step) >= STEP_COUNT {
+            return Err(MapError::Step { step });
+        }
         if !side_ok(width) || !side_ok(height) {
             return Err(MapError::Size {
                 what: "view",
@@ -403,11 +576,18 @@ impl MapCamera {
             });
         }
         Ok(Self {
+            step,
             top_left,
             view,
             rivers: rivers.into(),
             metrics_generation,
         })
+    }
+
+    /// The zoom step `s`, 0 through 75.
+    #[must_use]
+    pub fn step(&self) -> u8 {
+        self.step
     }
 
     /// The top-left world pixel `(I_left, J_top)`.
@@ -422,7 +602,7 @@ impl MapCamera {
         self.view
     }
 
-    /// The visible river pixels in view coordinates (not drawn in slice 1).
+    /// The visible river pixels in view coordinates (not drawn until slice 8).
     #[must_use]
     pub fn rivers(&self) -> &Arc<[[u32; 2]]> {
         &self.rivers

@@ -294,8 +294,9 @@ pub use loader::{
     GetInstanceProcAddr, Loader, LoaderWatch, load_loader, load_loader_from, search_directories,
 };
 pub use map::{
-    MAP_SIDE_MAX, MapReadback, MapRefusalSink, PALETTE_MAX, VulkanMap, VulkanMapError,
-    VulkanMapInput,
+    MAP_SIDE_MAX, MapReadback, MapRefusalSink, RULES_HEIGHT, RULES_WIDTH, STEP_COUNT, TERRAIN_MAX,
+    VulkanMap, VulkanMapError, VulkanMapInput, VulkanMapRules, VulkanTerrainKind,
+    VulkanTerrainRule,
 };
 pub use metrics::{
     BUCKETS, EndError, FrameIntervals, FrameMarks, FrameStats, Histogram, MetricsClock,
