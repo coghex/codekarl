@@ -911,6 +911,45 @@ class InputGroup(unittest.TestCase):
         self.assertEqual(step.category, "affected")
 
 
+class MapGroup(unittest.TestCase):
+    """CK-178: the backend-neutral map contract is an isolated plain Rust group."""
+
+    def selected(self, path: str) -> set[str]:
+        return {c.step.name for c in check.plan(check.STEPS, [path]).choices if c.selected}
+
+    def test_01_crate_paths_select_only_map_core_and_lints(self) -> None:
+        for path in ("crates/map/src/lib.rs", "crates/map/Cargo.toml"):
+            chosen = self.selected(path)
+            self.assertTrue({"map.core", "unittest-lints"} <= chosen, path)
+            for other in (
+                "metal.gpu",
+                "native.window",
+                "glfw.window",
+                "vulkan.window",
+                "vulkan.gpu",
+                "vulkan.app",
+            ):
+                self.assertNotIn(other, chosen, f"{path}: {other}")
+
+    def test_02_workspace_toolchain_changes_select_plain_map_core(self) -> None:
+        chosen = self.selected("Cargo.lock")
+        self.assertIn("map.core", chosen)
+        self.assertNotIn("metal.gpu", chosen)
+        self.assertNotIn("native.window", chosen)
+
+    def test_03_it_owns_only_the_map_library_and_doc_units(self) -> None:
+        step = next(step for step in check.STEPS if step.name == "map.core")
+        units = group_units(step, TARGETS)
+        self.assertEqual(
+            {(kind, name) for _, kind, name, _, _ in units},
+            {("lib", "ck_map"), ("doc", "ck_map")},
+        )
+        self.assertEqual({unit[0] for unit in units}, {"ck-map"})
+        self.assertEqual({need_of(unit) for unit in units}, {"plain"})
+        self.assertEqual(step.needs, "plain")
+        self.assertEqual(step.category, "affected")
+
+
 class WindowBuildsOnInput(unittest.TestCase):
     """CK-121: `ck-window` depends on `ck-input`, so a change to the mapper reruns what builds on the window core."""
 
