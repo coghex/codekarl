@@ -873,6 +873,7 @@ RUST_SOURCE_DIRS = (
     "crates/input/",
     "crates/log/",
     "crates/lua/",
+    "crates/map/",
     "crates/render-2d/",
     "crates/resources/",
     "crates/runtime/",
@@ -1432,6 +1433,16 @@ STEPS = [
         analyze=True,
         description="The portable physical-key names, binding validation and bounded pure action mapper (no native input, GPU or window).",
         paths=("crates/input/", *TOOLCHAIN_PATHS),
+    ),
+    Step(
+        "map.core",
+        FAST,
+        lambda: [
+            cargo_test(["-p", "ck-map", "--lib"]),
+            cargo_test(["-p", "ck-map", "--doc"]),
+        ],
+        description="The backend-neutral map coordinate, camera, reference-colour and river-coverage contract (no GPU or window).",
+        paths=("crates/map/", *TOOLCHAIN_PATHS),
     ),
     # CK-90: the 2D renderer's core (images, the scene bridge and the `Renderer` over a fake backend). It has no
     # GPU feature and opens no window, so every test target of the crate is one plain group, selected by the

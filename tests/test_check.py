@@ -55,6 +55,7 @@ RUST_STEPS = (
     "metal.window-compat",
     "metal.window-instanced",
     "input.core",
+    "map.core",
     "render2d.core",
     "resources.core",
     "glfw.core",

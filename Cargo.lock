@@ -90,6 +90,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ck-map"
+version = "0.1.0"
+
+[[package]]
 name = "ck-render-2d"
 version = "0.1.0"
 dependencies = [

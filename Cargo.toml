@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/codekarl", "crates/gpu-metal", "crates/gpu-vulkan", "crates/input", "crates/log", "crates/lua", "crates/render-2d", "crates/resources", "crates/runtime", "crates/window", "crates/window-cocoa", "crates/window-glfw"]
+members = ["apps/codekarl", "crates/gpu-metal", "crates/gpu-vulkan", "crates/input", "crates/log", "crates/lua", "crates/map", "crates/render-2d", "crates/resources", "crates/runtime", "crates/window", "crates/window-cocoa", "crates/window-glfw"]
 default-members = ["apps/codekarl"]
 resolver = "3"
 
