@@ -69,7 +69,8 @@ Review an immutable submission, not a moving worker directory. A verdict names:
 
 Changed code, scope or specification needs a new review. Base advancement alone
 does not require another review of identical patches; acceptance still checks
-their combined state with full CI. A conflict resolution is new implementation
+their combined state with the planned selection; each milestone is completed
+with one full CI run. A conflict resolution is new implementation
 and needs review. A chat acknowledgement, a worker's done message, or passing CI
 is not review approval. Ordinary documentation uses `ck docs` without review.
 
@@ -81,8 +82,9 @@ Class A/high coverage before its issue is ready. Code authors use `ck record`
 and `ck submit --issue CK-N[,CK-M] --spec TEXT`; raw-recorded changes are
 unknown authorship and require both review families.
 
-`ck batch prepare` freezes only eligible submissions and runs one full combined
-CI pass. It leaves the CI slot free while an independent integration review is
+`ck batch prepare` freezes only eligible submissions and runs the planned check
+selection for their changes against the frozen base, binding that selection to
+the CI receipt. It leaves the CI slot free while an independent integration review is
 pending, unless the batch is a single-submission one (`ck batch status` shows
 `publication_basis: single-submission`): its submission review is then the basis
 and no separate integration review is requested. Rejected members named with `--blame` are blocked; unaffected members

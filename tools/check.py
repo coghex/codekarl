@@ -5,15 +5,15 @@ One ordered catalog of check groups (`STEPS`); each group has an id, a category 
 `optional`), the path patterns that affect it and the exact commands it runs. Each level selects groups
 and runs each selected one once, in order:
 
-- no option: the **full** level, every group. Batch validation runs this and records it; it is the only
-  evidence a batch accepts.
+- no option: the **full** level, every group. Managers use this at milestone completion.
 - `--fast`: every group like full, without the build slot and the full-spec variable; `--quick`: the
   three static floor groups (the record hook).
 - `--changed` and/or `--group ID`: a **planned** level. `--changed` compares the copy with the accepted
   base and selects the floor groups, every affected group a changed path matches and the groups named by
   `--group`; the plan says, for every group, whether it runs and why. An unclaimed changed path or a
-  failure to compute the change set selects every affected group. A planned run names itself `planned`
-  and is never batch evidence. `--plan` prints the plan without running it.
+  failure to compute the change set selects every affected group. `--plan` prints the plan without running it.
+  `--batch` is reserved for the batch manager and requires its inherited CI lock; it lets that manager
+  use the same planned recipe as batch evidence.
 
 Only batch validation holds `ci.lock` (through the inherited `CK_CI_LOCK_FD`); manual runs hold no
 project lock.
@@ -881,23 +881,22 @@ RUST_SOURCE_DIRS = (
     "crates/window-cocoa/",
     "crates/window-glfw/",
 )
-# CK-84: the files the catalog tests read besides the Python ones (see `tests/test_check_catalog.py`, GUARDS):
-# every Rust source, test and build script of the crates (RUST_SOURCE_DIRS, by directory, which is also what
-# the inventory scan reads and where `cargo metadata` derives the test units from), the toolchain files, and
-# the whole GLFW crate (every file there is scanned for dynamic-loader variables).
-CATALOG_PATHS = (*PYTHON_PATHS, *TOOLCHAIN_PATHS, *RUST_SOURCE_DIRS)
+# The catalog tests are part of the check-tool area. Rust edits select their owning crate groups; they do
+# not select this tool test merely because its static inventory reads Rust sources.
+CATALOG_PATHS = PYTHON_PATHS
 UNITTEST_PATHS = {
     "batch": PYTHON_PATHS,
     "catalog": CATALOG_PATHS,
     # `.rgignore` and `.ignore` are read by `test_rgignore` and copied into the real-toolchain workload;
     # `test_rgignore` also runs ripgrep over the real `docs/` tree. Registering it selects the test when a
     # code change is checked; documentation publication stays ungated (the docs lane runs no check).
-    "check": (*PYTHON_PATHS, *TOOLCHAIN_PATHS, ".rgignore", ".ignore", "docs/"),
-    # The Rust sources it scans, by directory: a new crate is unclaimed until a group registers it.
-    "lints": (*RUST_SOURCE_DIRS, "tests/test_rust_lints.py", *TOOLCHAIN_PATHS),
+    "check": (*PYTHON_PATHS, ".rgignore", ".ignore", "docs/"),
+    # This is a Python tooling test. Rust source changes run the unconditional Clippy floor; they do not
+    # select a test group owned by the tools area.
+    "lints": (*PYTHON_PATHS, "clippy.toml", "tests/test_rust_lints.py"),
     # `AnalyzerBuild` builds a copy of the workspace's `ck-gpu-metal` offline with the analyzer on, and edits
     # its real bridge source: the crate's files and the toolchain files it builds with are its inputs.
-    "bootstrap": (*PYTHON_PATHS, "crates/gpu-metal/", *TOOLCHAIN_PATHS),
+    "bootstrap": PYTHON_PATHS,
     "lease": PYTHON_PATHS,
 }
 # The groups the real-toolchain lease test runs (`check.py --group ...`): focus-free, real Cargo work.
@@ -966,8 +965,8 @@ def group_problems(
 # path matches their patterns (or when the plan fails wide); optional groups only when named. A group's
 # `needs` covers every command it starts, nested recipes included. `doc` and `rust.*`/`metal.gpu`/
 # `native.window` and `metal.window-*` set `analyze` (they share the build-script unit); Clippy does not.
-# CK-121: `ck-window` depends on `ck-input` (the loop's key mapper), so the crates that build on the window core
-# are rebuilt and retested when the mapper changes: `crates/input/` is one of them.
+# The plain core group owns these backend-neutral crates. Changes to dependencies do not select dependents;
+# dependency breakage is checked at milestone completion.
 NEUTRAL_CRATES = (
     "crates/input/",
     "crates/log/",
@@ -975,92 +974,27 @@ NEUTRAL_CRATES = (
     "crates/runtime/",
     "crates/window/",
 )
-# CK-131: the application's windowed tests run the program in process behind a test-only keyboard filter, so the
-# script that builds the filter and its native source exist for them, like `ck-render-2d`'s (below).
-NATIVE_APP_FILES = (
-    "apps/codekarl/src/native.rs",
-    "apps/codekarl/tests/windowed.rs",
-    "apps/codekarl/build.rs",
-    "apps/codekarl/tests/native/",
-    "crates/window/tests/support/activation_watch.rs",
-)
-# CK-92: the files of `ck-render-2d` that only the real-window group exercises: its Metal backend and the test
-# that drives it on a real window. The rest of the crate selects `render2d.core`, never a window group.
-RENDER2D_WINDOW_FILES = (
-    "crates/render-2d/src/metal.rs",
-    "crates/render-2d/tests/metal_window.rs",
-    # The test-only keyboard filter that test installs, and the script that builds it.
-    "crates/render-2d/build.rs",
-    "crates/render-2d/tests/native/testing.m",
-    "crates/window/tests/support/activation_watch.rs",
-)
-# CK-111: classify every current Metal crate file by whether editing it changes code the windowed presenter
-# cases execute. The presenter/quad implementation, quad shader, presenter native pair, unwind cleanup
-# helper, presenter runner/cases, and test-only native keyboard support are window inputs. `src/lib.rs`
-# holds the probe, module list, shared re-exports and Error/message parser used by both presenter sets;
-# `build.rs` compiles both production sources with one shared flag vector; `Cargo.toml` defines their shared
-# target/features. Those three are excluded because compile/link/export/flag failures are exercised by
-# `metal.gpu`, including the offscreen presenter's GPU set. A shared-flag change with only an on-screen effect
-# must be reported to ck-manager before checks run. The bridge header/implementation, probe shader, GPU probe,
-# shader debug and hook isolation tests are probe/offscreen inputs. `build.rs` is a window input because it
-# compiles the presenter's native test support, which includes the shared activation watch. Future offscreen
-# texture modules/native sources/tests remain GPU-only; add future window-only files to this list. The batch
-# still runs the complete window group once.
-METAL_WINDOW_FILES = (
-    # The presenter implementation and the quad slot drawn by its real-window frames.
-    "crates/gpu-metal/src/presenter.rs",
-    "crates/gpu-metal/src/quad.rs",
-    # Conservative: the presenter disposes wake and join payloads through this shared helper.
-    "crates/gpu-metal/src/unwind.rs",
-    # The presenter's native drawable and presentation interface and implementation.
-    "crates/gpu-metal/native/presenter.h",
-    "crates/gpu-metal/native/presenter.m",
-    # The shader used by the quad rendered in the windowed presenter cases.
-    "crates/gpu-metal/shaders/quad.metal",
-    # The presenter runner and its windowed quad and scene cases.
-    "crates/gpu-metal/tests/presenter.rs",
-    "crates/gpu-metal/tests/presenter_quad/",
-    # CK-177: the GPU-written map image (off-screen map readbacks and the presenter's map frames on a real layer).
-    "crates/gpu-metal/tests/presenter_map/",
-    "crates/gpu-metal/tests/presenter_scene/",
-    # CK-129: the frame-timing window cases (real windows: the marks, the measurement windows and their delayed results).
-    "crates/gpu-metal/tests/presenter_metrics/",
-    # Test-only keyboard support installed by the windowed cases.
-    "crates/gpu-metal/tests/native/",
-    "crates/gpu-metal/build.rs",
-    "crates/window-cocoa/tests/native/activation_watch.inc",
-    "crates/window/tests/support/activation_watch.rs",
-)
+# Window groups own one crate each. Their test targets may compile support from other crates, but those
+# dependencies never cause the dependent window group to be selected.
+METAL_WINDOW_FILES = ("crates/gpu-metal/",)
 # CK-144: these presenter modules contain only off-screen `readback*` cases, so `metal.gpu` covers them without
 # opening a window. Move a module directory to `METAL_WINDOW_FILES` if it gains a window case.
 METAL_PRESENTER_GPU_ONLY = (
     "crates/gpu-metal/tests/presenter_instanced/",
     "crates/gpu-metal/tests/presenter_bindless/",
 )
-# CK-142: the paths of the native window groups. `native.window` (the Cocoa backend, the application's real-window tests and
-# `ck-render-2d`'s Metal backend) and the presenter's four window-case groups (`metal.window-core`, `-scene`, `-compat`, `-instanced`) take
-# **one shared tuple**: `gpu-metal` depends on `window-cocoa`, and `render-2d` and the application depend on `gpu-metal`, so the
-# window inputs overlap, and a planned check selects all five groups or none, exactly where it selected the one `native.window`
-# before the split. No path gains or loses a window run. Target: every window group under 135 s on a batch run (1/20 of the
-# watchdog, half the single-submission gate's limit, like the `unittest-*` groups); they are regrouped when one nears it.
-NATIVE_WINDOW_PATHS = (
-    "crates/window-cocoa/",
-    "crates/window-cocoa/tests/native/activation_watch.inc",
-    "crates/window/tests/support/activation_watch.rs",
-    *METAL_WINDOW_FILES,
-    *NATIVE_APP_FILES,
-    *RENDER2D_WINDOW_FILES,
+# The application owns its manifests, code, tests and shipped configuration inputs.
+APP_SOURCE_FILES = (
+    "apps/codekarl/Cargo.toml",
+    "apps/codekarl/build.rs",
+    "apps/codekarl/src/native.rs",
+    "apps/codekarl/src/windowed.rs",
 )
-# CK-80: the `glfw-vulkan` path's own files in the application: the generic run closure and its real stack,
-# the binary tests that open real GLFW windows, and the demonstration configurations. Only these select
-# `vulkan.app`; the rest of `apps/codekarl/` selects the application's other groups, never this one.
-# CK-99: the quad demonstration, and the application's manifest, which carries the `vulkan` feature's wiring
-# (`ck-render-2d/vulkan` among it): a change to it alone selects this group. It still selects neither
-# `metal.gpu` nor `native.window`, which claim other paths.
-# CK-159: the application's windowed Vulkan tests run in process behind the test-only keyboard filter, so the build script and the
-# native test support are theirs too (they stay in `NATIVE_APP_FILES` as well: the native windowed tests use them, so a change
-# to them also selects the native window groups). The common demonstration they run on `glfw-vulkan` (its configuration, scripts
-# and assets) is read too but selects nothing here: the demonstration's files never open a window by themselves.
+APP_NATIVE_WINDOW_FILES = (
+    *APP_SOURCE_FILES,
+    "apps/codekarl/tests/windowed.rs",
+    "apps/codekarl/tests/native/",
+)
 VULKAN_APP_FILES = (
     "apps/codekarl/Cargo.toml",
     "apps/codekarl/build.rs",
@@ -1068,26 +1002,12 @@ VULKAN_APP_FILES = (
     "apps/codekarl/src/vulkan/",
     "apps/codekarl/tests/native/",
     "apps/codekarl/tests/vulkan_app.rs",
-    "crates/window-cocoa/tests/native/activation_watch.inc",
-    "crates/window/tests/support/activation_watch.rs",
-    "config/demo-glfw-vulkan.toml",
-    "config/demo-glfw-vulkan-decline.toml",
-    "config/demo-glfw-vulkan-callback-error.toml",
-    "config/demo-quad-vulkan.toml",
 )
-# CK-84: what the static guards and the test targets of other crates read. The hook-isolation guards of the
-# two GPU crates scan the application's Rust sources and tests; the supervisor module of the application's
-# tests is compiled into the GLFW and Vulkan test targets by path; the Vulkan window tests compile and link
-# `ck-window-glfw`'s native test support and include its Rust test support. Only GLFW and Vulkan groups are
-# selected by these (never `metal.gpu` or `native.window`).
-APP_SOURCE_DIRS = ("apps/codekarl/src/", "apps/codekarl/tests/")
-SUPERVISOR_DIR = "apps/codekarl/tests/supervisor/"
-GLFW_TEST_SUPPORT = (
-    "crates/window-glfw/tests/native/",
-    "crates/window-glfw/tests/support/",
-    "crates/window-cocoa/tests/native/activation_watch.inc",
-    "crates/window/tests/support/activation_watch.rs",
-    "crates/window-glfw/build.rs",
+APP_METAL_GPU_FILES = (
+    *APP_SOURCE_FILES,
+    "specs/bootstrap.json",
+    "apps/codekarl/tests/cli_spec.rs",
+    "apps/codekarl/tests/cli_spec/",
 )
 STEPS = [
     Step(
@@ -1118,7 +1038,19 @@ STEPS = [
         description="The toolchain and environment doctor. Claims the documentation, licence and editor files, "
         "which have no test group of their own.",
         category="floor",
-        paths=("docs/", "README.md", "LICENSE", ".gitignore", ".ignore", ".rgignore", ".vscode/"),
+        paths=(
+            "docs/",
+            "README.md",
+            "LICENSE",
+            ".gitignore",
+            ".ignore",
+            ".rgignore",
+            ".vscode/",
+            "Cargo.toml",
+            "Cargo.lock",
+            "rust-toolchain.toml",
+            ".cargo/config.toml",
+        ),
     ),
     Step(
         "doctor.graphics",
@@ -1126,7 +1058,7 @@ STEPS = [
         action=lambda: graphics_doctor(),
         description="GLFW 3.4 or newer 3.x, the Vulkan loader and the Khronos validation layer are installed "
         "(a missing piece fails, naming the install command).",
-        paths=("crates/window-glfw/", "crates/gpu-vulkan/", "tools/bootstrap", *VULKAN_APP_FILES),
+        paths=("tools/bootstrap", "tools/bootstrap/"),
     ),
     Step(
         "clippy",
@@ -1165,7 +1097,7 @@ STEPS = [
         full_spec=True,
         analyze=True,
         description="Every Rust test of the backend-neutral crates (log, lua, runtime, window with its fakes).",
-        paths=(*NEUTRAL_CRATES, *TOOLCHAIN_PATHS),
+        paths=NEUTRAL_CRATES,
     ),
     Step(
         "rust.app",
@@ -1209,8 +1141,6 @@ STEPS = [
             "scripts/",
             "assets/",
             "specs/",
-            *NEUTRAL_CRATES,
-            *TOOLCHAIN_PATHS,
         ),
     ),
     # CK-44: the application without its `metal` feature. The CLI spec runner's normal mode shows the
@@ -1245,8 +1175,6 @@ STEPS = [
             "scripts/",
             "assets/",
             "specs/",
-            *NEUTRAL_CRATES,
-            *TOOLCHAIN_PATHS,
         ),
     ),
     # CK-84: the Metal presenter's static guard. It reads files and opens no window and uses no GPU, so it is
@@ -1259,7 +1187,7 @@ STEPS = [
         analyze=True,
         description="The Metal presenter's hook isolation: nothing in codekarl's sources names the hidden "
         "constructor or the hooks type, and the native sources hold no volatile access (reads files only).",
-        paths=("crates/gpu-metal/", *APP_SOURCE_DIRS),
+        paths=("crates/gpu-metal/",),
     ),
     Step(
         "metal.gpu",
@@ -1280,40 +1208,53 @@ STEPS = [
             ),
             cargo_test(["-p", "ck-gpu-metal", "--doc"]),
             cargo_test(["-p", "ck-gpu-metal", "--test", "presenter"], ["--set", "gpu"]),
-            cargo_test(["-p", "codekarl", "--test", "cli_spec"], ["--set", "gpu"]),
         ],
         full_spec=True,
         analyze=True,
         needs="gpu",
-        description="The Metal tests that need the GPU but open no window: the GPU probe, the readback and "
-        "the presenter supervisor's own checks, the library tests, and the `--metal-smoke` CLI case "
-        "(the hook isolation is `metal.isolation`).",
-        paths=(
-            "crates/gpu-metal/",
-            # CK-182: the reference colour function and the shared fixture (`ck_map`) the off-screen map readbacks compare the map pass
-            # with: a change to either reruns exactly the groups that run those comparisons.
-            "crates/map/src/",
-            "crates/window-cocoa/tests/native/activation_watch.inc",
-            "crates/window/tests/support/activation_watch.rs",
-            "apps/codekarl/src/native.rs",
-            "specs/bootstrap.json",
-        ),
+        description="The ck-gpu-metal tests that need the GPU but open no window: the GPU probe, readback, "
+        "presenter GPU cases and library tests (hook isolation is `metal.isolation`).",
+        paths=("crates/gpu-metal/",),
+    ),
+    Step(
+        "app.metal-gpu",
+        FAST,
+        lambda: [cargo_test(["-p", "codekarl", "--test", "cli_spec"], ["--set", "gpu"])],
+        full_spec=True,
+        analyze=True,
+        needs="gpu",
+        description="The codekarl application's `--metal-smoke` CLI case, using the GPU without opening a window.",
+        paths=APP_METAL_GPU_FILES,
     ),
     Step(
         "native.window",
         FAST,
-        lambda: [
-            cargo_test(["-p", "ck-window-cocoa"]),
-            cargo_test(["-p", "codekarl", "--test", "windowed"]),
-            cargo_test(["-p", "ck-render-2d", "--test", "metal_window"]),
-        ],
+        lambda: [cargo_test(["-p", "ck-window-cocoa"])],
         full_spec=True,
         analyze=True,
         needs="window",
-        description="The native tests open real windows with keyboard and mouse input ignored, except for explicitly named focus cases: the Cocoa "
-        "backend, the application's real-window tests and ck-render-2d's Metal backend on a real "
-        "window (the Metal presenter's windowed cases are the `metal.window-*` groups).",
-        paths=NATIVE_WINDOW_PATHS,
+        description="The Cocoa backend's native window tests.",
+        paths=("crates/window-cocoa/",),
+    ),
+    Step(
+        "app.native-window",
+        FAST,
+        lambda: [cargo_test(["-p", "codekarl", "--test", "windowed"])],
+        full_spec=True,
+        analyze=True,
+        needs="window",
+        description="The codekarl application's native real-window test target.",
+        paths=APP_NATIVE_WINDOW_FILES,
+    ),
+    Step(
+        "render2d.metal-window",
+        FAST,
+        lambda: [cargo_test(["-p", "ck-render-2d", "--test", "metal_window"])],
+        full_spec=True,
+        analyze=True,
+        needs="window",
+        description="ck-render-2d's Metal backend test target on a real window.",
+        paths=("crates/render-2d/",),
     ),
     # CK-142: the Metal presenter's windowed cases, split by the module they are listed in so that no window group nears the
     # batch timing gate (the single `native.window` took 289 s against the 270 s gate). Each runs one of the presenter's window sets
@@ -1329,11 +1270,7 @@ STEPS = [
         needs="window",
         description="The Metal presenter's windowed cases of `presenter.rs`, `presenter_quad/` and `presenter_map/` (real windows, "
         "under Metal validation and the Main Thread Checker).",
-        paths=(
-            *NATIVE_WINDOW_PATHS,
-            # CK-182: its map cases compare the map pass with `ck_map`'s reference and fixture.
-            "crates/map/src/",
-        ),
+        paths=("crates/gpu-metal/",),
     ),
     Step(
         "metal.window-scene",
@@ -1346,7 +1283,7 @@ STEPS = [
         needs="window",
         description="The Metal presenter's windowed scene cases of `presenter_scene/cases.rs` (the "
         "texture driver, tickets, proof and rollback).",
-        paths=NATIVE_WINDOW_PATHS,
+        paths=("crates/gpu-metal/",),
     ),
     # CK-145: `presenter_scene/compat.rs` split out of `metal.window-scene` (128.2 s against the 135 s target) as CK-142 split
     # the presenter's cases: by module, on the same shared path tuple.
@@ -1361,7 +1298,7 @@ STEPS = [
         needs="window",
         description="The Metal presenter's windowed compatibility-quad cases of `presenter_scene/compat.rs` "
         "(the first-frame gate, the held replacement image, and their bindless forms).",
-        paths=NATIVE_WINDOW_PATHS,
+        paths=("crates/gpu-metal/",),
     ),
     Step(
         "metal.window-instanced",
@@ -1376,61 +1313,57 @@ STEPS = [
         needs="window",
         description="The Metal presenter's windowed instanced-scene cases of `presenter_scene/instanced.rs` "
         "(the checker's start-up contract, batching, the instance buffer and the bindless frames).",
-        paths=NATIVE_WINDOW_PATHS,
+        paths=("crates/gpu-metal/",),
     ),
-    # CK-130: the milestone 5 scale acceptance (`docs/scene-design.md` §11.3), an OPTIONAL group: it opens a 1920 x 1080 window and holds the
-    # GPU for minutes on the owner's Mac, so it runs only when named (`--group metal.scale`), only when the owner has scheduled it, and never
-    # in a batch or at any level (`levels` is empty). Its two harnesses run their phases only because the group sets `CK_SCALE_RUN=1`; run
-    # any other way they report that they did not run. They run in release, as the recipe says.
+    # CK-130: each optional scale group owns one crate. Both stay outside every level and run only when named.
     Step(
         "metal.scale",
         (),
-        lambda: [
-            scale_test("ck-render-2d", "scale"),
-            scale_test("codekarl", "scale_lua"),
-        ],
+        lambda: [scale_test("ck-render-2d", "scale")],
         env=(("CK_SCALE_RUN", "1"),),
         needs="window",
         category="optional",
-        description="The milestone 5 scale acceptance, owner-scheduled and never run by a batch: the frozen recipe "
-        "(32,768 loaded textures, 65,536 quads, 1920 x 1080 at 60 Hz, CPU and GPU frame p95 under 8 ms) in "
-        "`ck-render-2d`'s harness, and the all-quads-moving Lua profile through the application (measured, not gated).",
+        description="The ck-render-2d milestone 5 scale harness (owner-scheduled, measured but not gated).",
         paths=(
             "crates/render-2d/tests/scale.rs",
             "crates/render-2d/tests/scale/",
-            "apps/codekarl/tests/scale_lua.rs",
-            "config/scale-lua.toml",
-            "scripts/scale/",
         ),
     ),
-    # CK-162: the milestone 5.5 scale run on Vulkan (`glfw-vulkan` on MoltenVK), an OPTIONAL group like `metal.scale`: it opens a 1920 x 1080
-    # window and holds the GPU for minutes, so it runs only when named (`--group vulkan.scale`), only when the owner has scheduled it, and never
-    # in a batch or at any level. Its two harnesses run in release with `--features vulkan` (never `--all-features`). Timings are measured and
-    # reported, never gated; only correctness passes or fails. The three platform-free modules of the Metal harness (the fixtures, the layout
-    # and the JSON writer) are read by both, so a change to one of them names this group too (it is still never selected by a file change).
     Step(
-        "vulkan.scale",
+        "app.metal-scale",
         (),
-        lambda: [
-            scale_test("ck-render-2d", "vulkan_scale", VULKAN_SCALE_CARGO_FLAGS),
-            scale_test("codekarl", "vulkan_scale_lua", VULKAN_SCALE_CARGO_FLAGS),
-        ],
+        lambda: [scale_test("codekarl", "scale_lua")],
         env=(("CK_SCALE_RUN", "1"),),
         needs="window",
         category="optional",
-        description="The milestone 5.5 scale run on Vulkan, owner-scheduled and never run by a batch: the frozen recipe "
-        "(32,768 loaded textures, 65,536 quads, 1920 x 1080 at 60 Hz) in `ck-render-2d`'s Vulkan harness, and the "
-        "all-quads-moving Lua profile through the application. Timings are measured and reported, never gated.",
+        description="The codekarl application's milestone 5 Lua scale profile (owner-scheduled, measured but not gated).",
+        paths=("apps/codekarl/tests/scale_lua.rs", "config/scale-lua.toml"),
+    ),
+    # CK-162: the milestone 5.5 scale run on Vulkan (`glfw-vulkan` on MoltenVK), an OPTIONAL group like `metal.scale`: it opens a 1920 x 1080
+    # window and holds the GPU for minutes, so it runs only when named (`--group vulkan.scale`), only when the owner has scheduled it, and never
+    # in a batch or at any level. The two crate-owned harnesses are separate groups.
+    Step(
+        "vulkan.scale",
+        (),
+        lambda: [scale_test("ck-render-2d", "vulkan_scale", VULKAN_SCALE_CARGO_FLAGS)],
+        env=(("CK_SCALE_RUN", "1"),),
+        needs="window",
+        category="optional",
+        description="The ck-render-2d milestone 5.5 Vulkan scale harness (owner-scheduled, measured but not gated).",
         paths=(
             "crates/render-2d/tests/vulkan_scale.rs",
             "crates/render-2d/tests/vulkan_scale/",
-            "crates/render-2d/tests/scale/fixtures.rs",
-            "crates/render-2d/tests/scale/layout.rs",
-            "crates/render-2d/tests/scale/json.rs",
-            "apps/codekarl/tests/vulkan_scale_lua.rs",
-            "config/scale-lua-vulkan.toml",
-            "scripts/scale/",
         ),
+    ),
+    Step(
+        "app.vulkan-scale",
+        (),
+        lambda: [scale_test("codekarl", "vulkan_scale_lua", VULKAN_SCALE_CARGO_FLAGS)],
+        env=(("CK_SCALE_RUN", "1"),),
+        needs="window",
+        category="optional",
+        description="The codekarl application's milestone 5.5 Vulkan Lua scale profile (owner-scheduled, measured but not gated).",
+        paths=("apps/codekarl/tests/vulkan_scale_lua.rs", "config/scale-lua-vulkan.toml"),
     ),
     Step(
         "input.core",
@@ -1441,7 +1374,7 @@ STEPS = [
         ],
         analyze=True,
         description="The portable physical-key names, binding validation and bounded pure action mapper (no native input, GPU or window).",
-        paths=("crates/input/", *TOOLCHAIN_PATHS),
+        paths=("crates/input/",),
     ),
     Step(
         "map.core",
@@ -1451,7 +1384,7 @@ STEPS = [
             cargo_test(["-p", "ck-map", "--doc"]),
         ],
         description="The backend-neutral map coordinate, camera, reference-colour, river-coverage and preview-tool contract (no GPU or window).",
-        paths=("crates/map/", *TOOLCHAIN_PATHS),
+        paths=("crates/map/",),
     ),
     # CK-90: the 2D renderer's core (images, the scene bridge and the `Renderer` over a fake backend). It has no
     # GPU feature and opens no window, so every test target of the crate is one plain group, selected by the
@@ -1472,19 +1405,7 @@ STEPS = [
         "backend's sink conversion, the Vulkan sink side's scene conversion and refusal, and the scale "
         "acceptance's pure geometry and fixtures (no GPU work, no window; the Metal window cases are the "
         "`metal.window-*` groups).",
-        paths=(
-            "crates/render-2d/",
-            "crates/resources/",
-            "crates/window/",
-            "crates/input/",
-            "crates/log/",
-            "crates/gpu-metal/",
-            # CK-98: the Vulkan sink converts into the GPU crate's plain types, so a change to that crate reruns
-            # the conversion tests (and, as for the Metal crate above, still never selects a window group).
-            "crates/gpu-vulkan/",
-            "crates/window-cocoa/",
-            *TOOLCHAIN_PATHS,
-        ),
+        paths=("crates/render-2d/",),
     ),
     # CK-105: the resource component (`docs/scene-design.md` §3): PNG decoding under budgets, the assets rule. It is
     # CPU-only with no dependency on a `ck-*` crate, so it is its own plain group, selected by the crate alone (and
@@ -1502,10 +1423,7 @@ STEPS = [
         analyze=True,
         description="Every Rust test of ck-resources: PNG decoding and its budgets, the decoder's allocation "
         "envelope and the assets rule (no GPU, no window).",
-        paths=(
-            "crates/resources/",
-            *TOOLCHAIN_PATHS,
-        ),
+        paths=("crates/resources/",),
     ),
     # CK-78: the GLFW window backend. Its window tests avoid desktop focus except for the explicit focus cases, so they are their own
     # group, selected only by this crate's paths (never by `crates/window/` or another backend's paths).
@@ -1518,7 +1436,7 @@ STEPS = [
         ],
         analyze=True,
         description="The GLFW backend's tests that open no window: the pending-state logic and the docs.",
-        paths=("crates/window-glfw/", "crates/window/", "crates/input/", *TOOLCHAIN_PATHS),
+        paths=("crates/window-glfw/",),
     ),
     Step(
         "glfw.window",
@@ -1527,7 +1445,7 @@ STEPS = [
         analyze=True,
         needs="window",
         description="The GLFW backend's window tests: real windows through GLFW and the Vulkan loader with keyboard and mouse input ignored.",
-        paths=("crates/window-glfw/", SUPERVISOR_DIR, *GLFW_TEST_SUPPORT),
+        paths=("crates/window-glfw/",),
     ),
     Step(
         "glfw.window-focus",
@@ -1537,7 +1455,7 @@ STEPS = [
         needs="window",
         category="optional",
         description="The GLFW focus cases that take desktop focus; run only when the owner schedules them.",
-        paths=("crates/window-glfw/", SUPERVISOR_DIR, *GLFW_TEST_SUPPORT),
+        paths=("crates/window-glfw/",),
     ),
     # CK-79: the Vulkan presenter. Two groups, each selected only by this crate's own paths: the one without
     # a window needs the GPU (the ledger's logic, the instance, the loader and the off-screen readback); the
@@ -1551,7 +1469,7 @@ STEPS = [
         analyze=True,
         description="The Vulkan presenter's hook isolation: no test-only name of the library in codekarl's "
         "sources, the library's dependency boundary and its source rules (reads files only).",
-        paths=("crates/gpu-vulkan/", *APP_SOURCE_DIRS),
+        paths=("crates/gpu-vulkan/",),
     ),
     Step(
         "vulkan.gpu",
@@ -1566,7 +1484,7 @@ STEPS = [
         description="The Vulkan presenter's tests that open no window: the ledger's logic, the loader, the "
         "instance, the off-screen readback under validation and the loader's lifetime (the hook isolation "
         "is `vulkan.isolation`).",
-        paths=("crates/gpu-vulkan/", "crates/map/src/", SUPERVISOR_DIR),
+        paths=("crates/gpu-vulkan/",),
     ),
     Step(
         "vulkan.window",
@@ -1576,13 +1494,7 @@ STEPS = [
         needs="window",
         description="The Vulkan presenter's window tests: real GLFW windows, real presents under validation "
         "and every ledger transition, without taking desktop focus.",
-        paths=(
-            "crates/gpu-vulkan/",
-            # CK-182: the reference colour function and the shared fixture the map cases compare the map pass with.
-            "crates/map/src/",
-            SUPERVISOR_DIR,
-            *GLFW_TEST_SUPPORT,
-        ),
+        paths=("crates/gpu-vulkan/",),
     ),
     # CK-80: the application's `glfw-vulkan` path end to end. Its binary tests open real GLFW windows without
     # taking desktop focus except in explicitly named focus cases, so they are their own group. The native
@@ -1600,15 +1512,7 @@ STEPS = [
         description="`ck-render-2d`'s Vulkan window test: the real resource path (service, resident driver, ledger, scene "
         "presenter) on a GLFW window under validation, with the surface's pixels captured, and the keyboard filter's isolation "
         "(real windows without taking the desktop's focus).",
-        paths=(
-            "crates/render-2d/tests/vulkan_window.rs",
-            "crates/render-2d/src/vulkan.rs",
-            "crates/render-2d/src/vulkan_resident.rs",
-            "crates/render-2d/src/vulkan_scene.rs",
-            "crates/render-2d/build.rs",
-            SUPERVISOR_DIR,
-            *GLFW_TEST_SUPPORT,
-        ),
+        paths=("crates/render-2d/",),
     ),
     Step(
         "vulkan.app",
@@ -1775,6 +1679,18 @@ class Plan:
             for choice in self.choices
         ]
 
+    def evidence(
+        self, changed: Sequence[str] | None, failure: str | None = None
+    ) -> dict[str, object]:
+        return {
+            "changed_paths": None if changed is None else list(changed),
+            "failure": failure,
+            "selection": [
+                {"name": choice.step.name, "selected": choice.selected, "why": choice.why}
+                for choice in self.choices
+            ],
+        }
+
 
 def abbreviate(items: Sequence[str], limit: int) -> str:
     """The first `limit` items, comma-separated, and how many more there were."""
@@ -1911,6 +1827,11 @@ def planned(root: Path, hub: Path, changed: bool, requested: Sequence[str]) -> P
     if paths is not None:
         shown = abbreviate(paths, 10)
         print(f"check: change set: {len(paths)} path(s){': ' + shown if paths else ''}", flush=True)
+    print(
+        "check: plan-data: "
+        + json.dumps(chosen.evidence(paths, failure), sort_keys=True, separators=(",", ":")),
+        flush=True,
+    )
     for line in chosen.lines():
         print(line, flush=True)
     return chosen
@@ -2139,6 +2060,11 @@ def main() -> int:
         help="a planned check: the floor groups and the groups the copy's changes affect",
     )
     parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="internal: planned evidence under the batch manager's CI lock",
+    )
+    parser.add_argument(
         "--group",
         action="append",
         default=[],
@@ -2152,8 +2078,12 @@ def main() -> int:
         parser.error("--changed and --group select a planned check; --quick and --fast do not mix")
     if args.plan and not is_planned:
         parser.error("--plan needs --changed or --group")
-    if is_planned and "CK_CI_LOCK_FD" in os.environ:
-        parser.error("a planned check is never batch evidence; the batch runs the full level")
+    if args.batch and not is_planned:
+        parser.error("--batch requires --changed or --group")
+    if args.batch and "CK_CI_LOCK_FD" not in os.environ:
+        parser.error("--batch requires the batch manager's CI lock")
+    if "CK_CI_LOCK_FD" in os.environ and is_planned and not args.batch:
+        parser.error("a planned check under the CI lock must be started by the batch manager")
     level = "planned" if is_planned else "quick" if args.quick else "fast" if args.fast else "full"
     hub = configure(ROOT)
     signal.signal(signal.SIGTERM, terminate)

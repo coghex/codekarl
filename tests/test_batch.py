@@ -94,6 +94,10 @@ class BatchGateSpecification(unittest.TestCase):
         (self.base / "source.txt").write_text("base\n")
         (self.base / "README.md").write_text("base docs\n")
         self.populate_base()
+        fixture_catalog = self.base / "tools/check.py"
+        if not fixture_catalog.is_file():
+            fixture_catalog.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(Path(__file__).resolve().parents[1] / "tools/check.py", fixture_catalog)
         self.record(self.base, "base")
         legacy = pipeline.Pipeline(self.hub, lambda repo, log: True)
         legacy.initialize(self.base)
@@ -194,6 +198,7 @@ class BatchGateSpecification(unittest.TestCase):
         self,
         name: str,
         *,
+        changed_path: str | None = None,
         authors: Sequence[Author] | None = None,
         raw: bool = False,
         declared: list[Author] | None = None,
@@ -203,6 +208,7 @@ class BatchGateSpecification(unittest.TestCase):
         parent: ManifestV2 | None = None,
         issues: Iterable[IssueRef] = (),
         descriptions: Mapping[int, str] | None = None,
+        contents: Mapping[str, str] | None = None,
     ) -> ManifestV2:
         """A live submission. `authors` record one real patch each (default: one Codex worker);
         `raw` records them without provenance; `declared` overrides the manifest's authors."""
@@ -213,8 +219,16 @@ class BatchGateSpecification(unittest.TestCase):
         pipeline.clone(source, worker, self.hub)
         files = []
         for index, author in enumerate(authors):
-            filename = f"{name}.txt" if index == 0 else f"{name}-{index}.txt"
-            (worker / filename).write_text(f"{name} {index}\n")
+            filename = (
+                changed_path
+                if index == 0 and changed_path is not None
+                else f"{name}.txt"
+                if index == 0
+                else f"{name}-{index}.txt"
+            )
+            changed_file = worker / filename
+            changed_file.parent.mkdir(parents=True, exist_ok=True)
+            changed_file.write_text((contents or {}).get(filename, f"{name} {index}\n"))
             files.append(filename)
             override = (descriptions or {}).get(index)
             self.record_as(
@@ -977,11 +991,180 @@ class BatchGateSpecification(unittest.TestCase):
         assert is_batch_ci_receipt(receipt)
         return receipt
 
+    def write_check_log(self, manager: batch.Manager, candidate: Path, log: Path) -> None:
+        """A successful fixture run with the real candidate-derived check selection in its log."""
+        level = "full" if manager._full else "planned"
+        evidence = manager._expected_selection(candidate, level)
+        rows = evidence["selection"]
+        assert isinstance(rows, list)
+        names = [row["name"] for row in rows if row["selected"] is True]
+        lines = [
+            f"check: recipe {level}; watchdog 2700 s; steps {','.join(names)}",
+        ]
+        if level == "planned":
+            lines.append(
+                "check: plan-data: "
+                + json.dumps(
+                    {
+                        "changed_paths": evidence["changed_paths"],
+                        "failure": evidence["failure"],
+                        "selection": evidence["selection"],
+                    },
+                    separators=(",", ":"),
+                )
+            )
+        lines.extend(f"check: step {name} took 0.1 s" for name in names)
+        lines.append(f"check {level}: {', '.join(f'{name} ok' for name in names)} => PASS")
+        log.write_text("\n".join(lines) + "\n")
+        if "chat-ci" in names:
+            self.chat_inputs(log)
+
+    def fixture_batch(self, submission: str, *, full: bool = False) -> tuple[batch.Manager, str]:
+        holder: dict[str, batch.Manager] = {}
+
+        def validate(candidate: Path, log: Path, _fd: int) -> bool:
+            self.write_check_log(holder["manager"], candidate, log)
+            return True
+
+        manager = batch.Manager(self.hub, validate)
+        # These fixtures write the real recipe protocol and exercise the production verifier,
+        # while the callback stands in for executing the selected commands.
+        manager._custom_validator = False
+        holder["manager"] = manager
+        return manager, manager.prepare(full=full)
+
+    def candidate_catalog_with_group(self, name: str) -> str:
+        source = (Path(__file__).resolve().parents[1] / "tools/check.py").read_text()
+        marker = '\nif __name__ == "__main__":'
+        self.assertIn(marker, source)
+        addition = (
+            f'\nSTEPS.append(Step({name!r}, ("full",), lambda: [], '
+            'description="Fixture-only catalog step.", paths=("tools/check.py",)))\n'
+        )
+        return source.replace(marker, addition + marker, 1)
+
+    def test_ck186_planned_batch_uses_candidate_catalog_and_publishes(self) -> None:
+        catalog = self.candidate_catalog_with_group("demo.core")
+        self.submission(
+            "candidate-catalog-planned",
+            changed_path="tools/check.py",
+            contents={"tools/check.py": catalog},
+        )
+        manager, bid = self.fixture_batch("candidate-catalog-planned")
+        candidate = Path(self.validated(bid)["candidate"])
+        candidate_names = {step.name for step in manager._checker(candidate).STEPS}
+        hub_names = {
+            step.name for step in batch.Manager._checker(Path(__file__).resolve().parents[1]).STEPS
+        }
+        self.assertIn("demo.core", candidate_names)
+        self.assertNotIn("demo.core", hub_names)
+        validation = self.ci_receipt(bid)["validation"]
+        assert validation is not None
+        self.assertIn(
+            "demo.core",
+            {row["name"] for row in validation["selection"] if row["selected"] is True},
+        )
+        self.approve(manager, bid, "candidate-catalog-planned-integration")
+        manager.publish(bid)
+        self.assertIn("candidate-catalog-planned", pointer.read_pointer(self.hub)["submissions"])
+
+    def test_ck186_full_batch_uses_candidate_catalog_and_publishes(self) -> None:
+        catalog = self.candidate_catalog_with_group("demo.full")
+        self.submission(
+            "candidate-catalog-full",
+            changed_path="tools/check.py",
+            contents={"tools/check.py": catalog},
+        )
+        manager, bid = self.fixture_batch("candidate-catalog-full", full=True)
+        candidate = Path(self.validated(bid)["candidate"])
+        candidate_names = {step.name for step in manager._checker(candidate).STEPS}
+        hub_names = {
+            step.name for step in batch.Manager._checker(Path(__file__).resolve().parents[1]).STEPS
+        }
+        self.assertIn("demo.full", candidate_names)
+        self.assertNotIn("demo.full", hub_names)
+        validation = self.ci_receipt(bid)["validation"]
+        assert validation is not None
+        selected = {row["name"] for row in validation["selection"] if row["selected"] is True}
+        self.assertIn("demo.full", selected)
+        self.assertEqual(validation["level"], "full")
+        self.approve(manager, bid, "candidate-catalog-full-integration")
+        manager.publish(bid)
+        self.assertIn("candidate-catalog-full", pointer.read_pointer(self.hub)["submissions"])
+
     def approve(
         self, manager: batch.Manager, bid: str, identifier: str = "rc1-integration"
     ) -> None:
         self.integration_receipt(bid, identifier)
         manager.approve(bid)
+
+    def test_ck186_python_only_batch_binds_its_plan_and_publishes_without_chat_sidecar(
+        self,
+    ) -> None:
+        self.submission("python-only", changed_path="tools/gate/procscan.py")
+        manager, bid = self.fixture_batch("python-only")
+        receipt = self.ci_receipt(bid)
+        validation = receipt["validation"]
+        assert validation is not None
+        selected = {row["name"] for row in validation["selection"] if row["selected"] is True}
+        expected = manager._expected_selection(Path(self.validated(bid)["candidate"]), "planned")
+        self.assertEqual(validation["changed_paths"], ["tools/gate/procscan.py"])
+        self.assertEqual(
+            selected, {row["name"] for row in expected["selection"] if row["selected"]}
+        )
+        self.assertIn("unittest-batch", selected)
+        self.assertNotIn("chat-ci", selected)
+        self.assertNotIn("chat_inputs", receipt)
+        self.approve(manager, bid, "ck186-python-only-integration")
+        manager.publish(bid)
+        self.assertIn("python-only", pointer.read_pointer(self.hub)["submissions"])
+
+    def test_ck186_selected_chat_ci_retains_its_required_sidecar(self) -> None:
+        self.submission("chat-inputs", changed_path="tools/chat/inputs.py")
+        _, bid = self.fixture_batch("chat-inputs")
+        receipt = self.ci_receipt(bid)
+        validation = receipt["validation"]
+        assert validation is not None
+        selected = {row["name"] for row in validation["selection"] if row["selected"] is True}
+        self.assertIn("chat-ci", selected)
+        self.assertIn("chat_inputs", receipt)
+
+    def test_ck186_full_batch_selects_and_publishes_every_standard_group(self) -> None:
+        self.submission("full-batch", changed_path="tools/gate/procscan.py")
+        manager, bid = self.fixture_batch("full-batch", full=True)
+        receipt = self.ci_receipt(bid)
+        validation = receipt["validation"]
+        assert validation is not None
+        self.assertEqual(validation["level"], "full")
+        selected = {row["name"] for row in validation["selection"] if row["selected"] is True}
+        candidate = Path(self.validated(bid)["candidate"])
+        self.assertEqual(
+            selected,
+            {step.name for step in manager._checker(candidate).STEPS if step.levels},
+        )
+        self.assertIn("chat_inputs", receipt)
+        self.approve(manager, bid, "ck186-full-integration")
+        manager.publish(bid)
+        self.assertIn("full-batch", pointer.read_pointer(self.hub)["submissions"])
+
+    def test_ck186_publication_rejects_a_receipt_selection_that_differs_from_its_log(self) -> None:
+        self.submission("tampered-plan", changed_path="tools/gate/procscan.py")
+        manager, bid = self.fixture_batch("tampered-plan")
+        directory = batch.batch_path(self.hub, bid)
+        validated = json.loads((directory / "validated.json").read_bytes())
+        receipt_path = Path(validated["ci_receipt"])
+        receipt = json.loads(receipt_path.read_bytes())
+        validation = receipt["validation"]
+        skipped = next(row for row in validation["selection"] if row["selected"] is False)
+        skipped["selected"] = True
+        pointer.atomic_bytes(receipt_path, pointer.canonical(receipt))
+        validated["ci_receipt_sha256"] = pointer.file_digest(receipt_path)
+        pointer.atomic_bytes(directory / "validated.json", pointer.canonical(validated))
+        typed_validation = self.validated(bid)
+        typed_receipt = load_ci_receipt(receipt, str(receipt_path))
+        candidate = Path(typed_validation["candidate"])
+        with self.assertRaisesRegex(RuntimeError, "selection no longer matches"):
+            manager._verify_validation(typed_validation, typed_receipt, candidate, rederive=True)
 
     def unbind(self, bid: str) -> None:
         """The receipt of a batch prepared by the previously accepted gate: no chat_inputs."""
@@ -2648,19 +2831,19 @@ class BatchGateSpecification(unittest.TestCase):
             (
                 "no-summary",
                 self.timed(summary=False),
-                "does not end with the full run's passing summary",
+                "does not end with the passing summary of the header's steps",
             ),
             (
                 "quick-recipe",
                 self.timed(header="check: recipe quick; watchdog 2700 s; steps fmt"),
-                "not a full run",
+                "not a full or planned run",
             ),
             (
                 # CK-77: a planned check names itself `planned`, whatever groups it ran and however it
                 # ends, and is never batch evidence.
                 "planned-recipe",
                 self.timed(header="check: recipe planned; watchdog 2700 s; steps fmt"),
-                "not a full run",
+                "which the header does not list",
             ),
         ):
             with self.subTest(name):
@@ -2676,15 +2859,15 @@ class BatchGateSpecification(unittest.TestCase):
         cases = {
             "quick-pass-then-full-fail": (
                 [head, *took, "check quick: fmt ok => PASS", "check full: fmt ok, test ok => FAIL"],
-                "does not end with the full run's passing summary",
+                "does not end with the passing summary of the header's steps",
             ),
             "full-pass-then-another-summary": (
                 [head, *took, full, "check quick: fmt ok => FAIL"],
-                "does not end with the full run's passing summary",
+                "does not end with the passing summary of the header's steps",
             ),
             "summary-names-other-steps": (
                 [head, *took, "check full: fmt ok => PASS"],
-                "does not end with the full run's passing summary",
+                "does not end with the passing summary of the header's steps",
             ),
             "duplicate-timing": (
                 [head, took[0], "check: step test took 2000.0 s", took[1], full],
@@ -2712,15 +2895,15 @@ class BatchGateSpecification(unittest.TestCase):
             ),
             "duplicate-step-names": (
                 ["check: recipe full; watchdog 2700 s; steps fmt,fmt", took[0], full],
-                "not a full run of distinct, non-empty steps",
+                "not a full or planned run of distinct, non-empty steps",
             ),
             "empty-step-name": (
                 ["check: recipe full; watchdog 2700 s; steps fmt,,test", *took, full],
-                "not a full run of distinct, non-empty steps",
+                "not a full or planned run of distinct, non-empty steps",
             ),
             "trailing-empty-step-name": (
                 ["check: recipe full; watchdog 2700 s; steps fmt,test,", *took, full],
-                "not a full run of distinct, non-empty steps",
+                "not a full or planned run of distinct, non-empty steps",
             ),
             "infinite-margin": (
                 [
@@ -2757,7 +2940,7 @@ class BatchGateSpecification(unittest.TestCase):
             ),
             "no-steps": (
                 ["check: recipe full; watchdog 2700 s; steps ", full],
-                "not a full run of distinct, non-empty steps",
+                "not a full or planned run of distinct, non-empty steps",
             ),
             "overflowing-timing": (
                 [head, took[0], f"check: step test took {huge}.0 s", full],
@@ -2874,23 +3057,21 @@ class BatchGateSpecification(unittest.TestCase):
         manager, bid = self.single_batch("no-log", silent)
         self.refused_single(manager, bid, "without a bound CI log digest")
 
-    def test_single_13_a_changed_log_or_an_unbound_batch_falls_back_to_the_review(self) -> None:
+    def test_single_13_a_changed_or_unbound_log_is_rejected(self) -> None:
         manager, bid = self.single_batch("changed-log")
         log = Path(self.ci_receipt(bid)["logs"][0])
         log.write_text(log.read_text() + "check: edited later\n")
-        self.refused_single(manager, bid, "changed after prepare")
+        with self.assertRaisesRegex(RuntimeError, "selected check log is missing or changed"):
+            manager.publish(bid)
         self.retire(manager, bid, "changed-log")
         manager, bid = self.single_batch("unbound")
         record = batch.batch_path(self.hub, bid) / "validated.json"
         validated = json.loads(record.read_bytes())
         del validated["ci_log_sha256"]
         pointer.atomic_bytes(record, pointer.canonical(validated))
-        self.refused_single(manager, bid, "without a bound CI log digest")
-        self.integration_receipt(bid, "unbound-integration")  # the integration path still works
-        manager.approve(bid)
-        manager.publish(bid)
-        published = json.loads((batch.batch_path(self.hub, bid) / "published.json").read_bytes())
-        self.assertEqual(published["basis"], "integration-review")
+        with self.assertRaisesRegex(RuntimeError, "Validated evidence does not bind"):
+            manager.publish(bid)
+        self.retire(manager, bid, "unbound")
 
     def test_single_14_the_watchdog_comes_from_the_run_header_not_the_controller(self) -> None:
         manager, bid = self.single_batch("short", self.timed(watchdog=600))  # 96 s x 10 > 600 s

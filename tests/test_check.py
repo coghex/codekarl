@@ -49,7 +49,10 @@ RUST_STEPS = (
     "rust.app-default",
     "metal.isolation",
     "metal.gpu",
+    "app.metal-gpu",
     "native.window",
+    "app.native-window",
+    "render2d.metal-window",
     "metal.window-core",
     "metal.window-scene",
     "metal.window-compat",
@@ -70,7 +73,10 @@ FULL_SPEC_STEPS = {
     "rust.core",
     "rust.app",
     "metal.gpu",
+    "app.metal-gpu",
     "native.window",
+    "app.native-window",
+    "render2d.metal-window",
     "metal.window-core",
     "metal.window-scene",
     "metal.window-compat",
@@ -474,6 +480,11 @@ class Levels(CheckFixture):
                     "--set",
                     "gpu",
                 ],
+            ],
+        )
+        self.assertEqual(
+            by_name["app.metal-gpu"].commands(),
+            [
                 [
                     "cargo",
                     "test",
@@ -485,17 +496,20 @@ class Levels(CheckFixture):
                     "--",
                     "--set",
                     "gpu",
-                ],
+                ]
             ],
         )
         self.assertEqual(
             by_name["native.window"].commands(),
-            [
-                ["cargo", "test", "-p", "ck-window-cocoa", *flags],
-                ["cargo", "test", "-p", "codekarl", "--test", "windowed", *flags],
-                # CK-92: `ck-render-2d`'s Metal backend on a real window.
-                ["cargo", "test", "-p", "ck-render-2d", "--test", "metal_window", *flags],
-            ],
+            [["cargo", "test", "-p", "ck-window-cocoa", *flags]],
+        )
+        self.assertEqual(
+            by_name["app.native-window"].commands(),
+            [["cargo", "test", "-p", "codekarl", "--test", "windowed", *flags]],
+        )
+        self.assertEqual(
+            by_name["render2d.metal-window"].commands(),
+            [["cargo", "test", "-p", "ck-render-2d", "--test", "metal_window", *flags]],
         )
         # CK-142: the presenter's windowed cases, one group per set (the old `--set window` is an error now).
         for name in ("window-core", "window-scene", "window-compat", "window-instanced"):
@@ -534,15 +548,7 @@ class Levels(CheckFixture):
         )
         self.assertEqual(
             by_name["glfw.window"].paths,
-            (
-                "crates/window-glfw/",
-                "apps/codekarl/tests/supervisor/",
-                "crates/window-glfw/tests/native/",
-                "crates/window-glfw/tests/support/",
-                "crates/window-cocoa/tests/native/activation_watch.inc",
-                "crates/window/tests/support/activation_watch.rs",
-                "crates/window-glfw/build.rs",
-            ),
+            ("crates/window-glfw/",),
         )
         # CK-79: the Vulkan presenter's two groups, each selected only by the crate's own paths.
         self.assertEqual(
@@ -575,24 +581,11 @@ class Levels(CheckFixture):
         )
         self.assertEqual(
             by_name["vulkan.gpu"].paths,
-            (
-                "crates/gpu-vulkan/",
-                "crates/map/src/",  # CK-182: the reference and fixture the readbacks compare with
-                "apps/codekarl/tests/supervisor/",
-            ),
+            ("crates/gpu-vulkan/",),
         )
         self.assertEqual(
             by_name["vulkan.window"].paths,
-            (
-                "crates/gpu-vulkan/",
-                "crates/map/src/",
-                "apps/codekarl/tests/supervisor/",
-                "crates/window-glfw/tests/native/",
-                "crates/window-glfw/tests/support/",
-                "crates/window-cocoa/tests/native/activation_watch.inc",
-                "crates/window/tests/support/activation_watch.rs",
-                "crates/window-glfw/build.rs",
-            ),
+            ("crates/gpu-vulkan/",),
         )
         # CK-80: the application's glfw-vulkan path, a window group selected only by its own files.
         self.assertEqual(
@@ -604,17 +597,11 @@ class Levels(CheckFixture):
             by_name["vulkan.app"].paths,
             (
                 "apps/codekarl/Cargo.toml",  # CK-99: carries the `vulkan` feature's wiring
-                "apps/codekarl/build.rs",  # CK-159: compiles the keyboard filter the tests run behind
+                "apps/codekarl/build.rs",
                 "apps/codekarl/src/vulkan.rs",
                 "apps/codekarl/src/vulkan/",
                 "apps/codekarl/tests/native/",  # CK-159: its native source
                 "apps/codekarl/tests/vulkan_app.rs",
-                "crates/window-cocoa/tests/native/activation_watch.inc",
-                "crates/window/tests/support/activation_watch.rs",
-                "config/demo-glfw-vulkan.toml",
-                "config/demo-glfw-vulkan-decline.toml",
-                "config/demo-glfw-vulkan-callback-error.toml",
-                "config/demo-quad-vulkan.toml",  # CK-99
             ),
         )
         self.assertEqual(by_name["doctor.graphics"].category, "affected")
