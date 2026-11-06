@@ -9,7 +9,6 @@
 //! rule of `docs/map-design.md` section 9.4 (rules 1 to 6 and 8). Every expected pixel is `ck_map::reference_colour`'s, the
 //! reference the map pass must match byte for byte; slice 1's minimal rule is gone.
 
-use std::path::Path;
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -364,21 +363,15 @@ pub(crate) fn readback_map_rivers_overlay() {
     }
 }
 
-/// Encode Ireland's real river coverage on two zoom steps through Metal's offscreen map pass. The maps share one input generation,
-/// just as the resident-grid zoom path does, while each step carries its newly selected river vector.
+/// Encode a local river fixture at two zoom steps through Metal's offscreen map pass. Both maps share one input generation, just as
+/// the resident-grid zoom path does, while each step carries its newly selected river vector.
 pub(crate) fn readback_map_ireland_rivers_after_zoom() {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/map/ireland");
-    let loaded = ck_map::load_map(directory).expect("the shipped Ireland map loads");
-    let longest = loaded
-        .rivers
-        .iter()
-        .max_by_key(|line| line.points.len())
-        .expect("Ireland has river lines");
-    let river_center = longest.points[longest.points.len() / 2];
-    let input = ireland_metal_input(&loaded);
+    // Keep this crash regression independent of the shipped map assets: the GPU-metal crate owns
+    // its small input and river line, while the live rule table still supplies the river colour.
+    let (input, crop, river, river_center, river_colour) = metal_zoom_fixture();
     let counts = [
-        readback_ireland_step(&loaded, &input, 56, river_center),
-        readback_ireland_step(&loaded, &input, 55, river_center),
+        readback_zoom_step(&input, &crop, &river, river_colour, 56, river_center),
+        readback_zoom_step(&input, &crop, &river, river_colour, 55, river_center),
     ];
     assert_ne!(
         counts[0], counts[1],
@@ -386,38 +379,75 @@ pub(crate) fn readback_map_ireland_rivers_after_zoom() {
     );
 }
 
-fn ireland_metal_input(loaded: &ck_map::LoadedMap) -> Arc<MetalMapInput> {
-    let crop = loaded.data.crop;
-    Arc::new(
-        MetalMapInput::new(
-            184,
-            [crop.origin.x, crop.origin.y],
-            [crop.width, crop.height],
-            loaded
-                .grid_a
-                .pixels
-                .iter()
-                .flatten()
-                .copied()
-                .collect::<Vec<_>>()
-                .into(),
-            loaded
-                .grid_b
-                .pixels
-                .iter()
-                .flatten()
-                .copied()
-                .collect::<Vec<_>>()
-                .into(),
-            &ireland_rules(loaded),
-        )
-        .expect("Ireland's full grids and rules are valid"),
-    )
+fn metal_zoom_fixture() -> (
+    Arc<MetalMapInput>,
+    ck_map::Crop,
+    RiverLine,
+    ck_map::FixedPoint,
+    [u8; 4],
+) {
+    const ORIGIN: [i32; 2] = [24_100, 14_700];
+    const SIZE: [u32; 2] = [24, 16];
+    const CELLS: usize = SIZE[0] as usize * SIZE[1] as usize;
+    const FIXED_PER_CELL: i32 = 32_768;
+    let river_colour = [0x3a, 0x78, 0xc2, 0xff];
+    let rules = MetalMapRules {
+        terrains: vec![MetalTerrainRule {
+            kind: MetalTerrainKind::Land,
+            solid: [0x30, 0x60, 0x20, 0xff],
+            second: [0x30, 0x60, 0x20, 0xff],
+            dark: [0x10, 0x20, 0x10, 0xff],
+            dark_second: [0x10, 0x20, 0x10, 0xff],
+            cap: [0xff; 4],
+            high_ground: [0xff; 4],
+            relief: [0, 1],
+            mix_percent: 0,
+            cap_heights: [0, 1],
+        }],
+        sea: [0x05, 0x08, 0x0e, 0xff],
+        shallow_sea: [0x0b, 0x14, 0x22, 0xff],
+        lake: [0x0b, 0x14, 0x22, 0xff],
+        river: river_colour,
+        shallow_threshold: 40,
+        steps: STEP_SIZE,
+    };
+    let mut grid_a = Vec::with_capacity(CELLS * 4);
+    let mut grid_b = Vec::with_capacity(CELLS * 4);
+    for _ in 0..CELLS {
+        grid_a.extend_from_slice(&[0, 1, 0, 255]);
+        grid_b.extend_from_slice(&[0x2a, 0xf8, 0, 255]); // 11,000 metres encoded as metres + 11,000.
+    }
+    let input = Arc::new(
+        MetalMapInput::new(184, ORIGIN, SIZE, grid_a.into(), grid_b.into(), &rules)
+            .expect("the local zoom fixture has valid grids and rules"),
+    );
+    let crop = ck_map::Crop {
+        origin: ck_map::Cell {
+            x: ORIGIN[0],
+            y: ORIGIN[1],
+        },
+        width: SIZE[0],
+        height: SIZE[1],
+    };
+    let fixed = |x: i32, y: i32| ck_map::FixedPoint {
+        x: x * FIXED_PER_CELL,
+        y: y * FIXED_PER_CELL,
+    };
+    let river = RiverLine {
+        points: vec![
+            fixed(ORIGIN[0] + 2, ORIGIN[1] + 8),
+            fixed(ORIGIN[0] + 22, ORIGIN[1] + 8),
+        ],
+    };
+    let river_center = fixed(ORIGIN[0] + 12, ORIGIN[1] + 8);
+    (input, crop, river, river_center, river_colour)
 }
 
-fn readback_ireland_step(
-    loaded: &ck_map::LoadedMap,
+fn readback_zoom_step(
     input: &Arc<MetalMapInput>,
+    crop: &ck_map::Crop,
+    river: &RiverLine,
+    river_colour: [u8; 4],
     step: u8,
     river_center: ck_map::FixedPoint,
 ) -> usize {
@@ -426,13 +456,14 @@ fn readback_ireland_step(
         width: view[0],
         height: view[1],
     };
-    let coverage = RiverCoverage::prepare(&loaded.rivers, step).expect("valid zoom step");
+    let coverage =
+        RiverCoverage::prepare(std::slice::from_ref(river), step).expect("valid zoom step");
     assert!(
         !coverage.pixels().is_empty(),
-        "Ireland has river coverage at step {step}"
+        "the local fixture has river coverage at step {step}"
     );
-    let top_left = ck_map::Camera::new(step, river_center, view_size, loaded.data.crop)
-        .expect("camera fits the Ireland crop")
+    let top_left = ck_map::Camera::new(step, river_center, view_size, *crop)
+        .expect("camera fits the local zoom fixture")
         .top_left();
     let rivers = coverage
         .select(top_left, view_size)
@@ -448,7 +479,7 @@ fn readback_ireland_step(
         .collect::<Vec<_>>();
     assert!(
         !rivers.is_empty(),
-        "the zoomed Ireland view includes rivers at step {step}"
+        "the zoomed fixture view includes rivers at step {step}"
     );
     let map = MetalMap::new_with_rivers(
         Arc::clone(input),
@@ -459,95 +490,19 @@ fn readback_ireland_step(
         source(0.0, 0.0, 320.0, 240.0),
         rivers.clone(),
     )
-    .expect("the zoomed Ireland map is valid");
+    .expect("the zoomed fixture map is valid");
     let drawn = readback_map(320, 240, CLEAR, Some(&map), None)
-        .expect("Metal encodes the full Ireland river buffer at this zoom");
+        .expect("Metal encodes the full river buffer at this zoom");
     let target = drawn.target.expect("the map pass writes its target");
     for [x, y] in &rivers {
         let offset = usize::try_from((y * view[0] + x) * 4).expect("view pixel fits");
         assert_eq!(
             &target[offset..offset + 4],
-            &loaded.data.river.0,
+            &river_colour,
             "the new step's river pixel is drawn at ({x}, {y})"
         );
     }
     rivers.len()
-}
-
-fn ireland_rules(loaded: &ck_map::LoadedMap) -> MetalMapRules {
-    let terrains = loaded
-        .terrain_types
-        .iter()
-        .map(|terrain| {
-            let palette = terrain.palette_colour.0;
-            let style = terrain
-                .style_index
-                .map(|index| &loaded.data.terrains[usize::from(index)]);
-            let (
-                solid,
-                second,
-                dark,
-                dark_second,
-                cap,
-                high_ground,
-                relief,
-                mix_percent,
-                cap_heights,
-            ) = style.map_or(
-                (
-                    palette,
-                    palette,
-                    palette,
-                    palette,
-                    palette,
-                    palette,
-                    [0, 1],
-                    0,
-                    [0, 1],
-                ),
-                |style| {
-                    (
-                        style.solid.0,
-                        style.second.0,
-                        style.dark.0,
-                        style.dark_second.0,
-                        style.cap.0,
-                        style.high_ground.0,
-                        [style.relief_low, style.relief_high],
-                        style.mix_percent,
-                        [style.cap_low, style.cap_high],
-                    )
-                },
-            );
-            let kind = match terrain.kind {
-                ck_map::TerrainKind::Land => MetalTerrainKind::Land,
-                ck_map::TerrainKind::Sea => MetalTerrainKind::Sea,
-                ck_map::TerrainKind::Lake => MetalTerrainKind::Lake,
-                ck_map::TerrainKind::Mountain => MetalTerrainKind::Mountain,
-            };
-            MetalTerrainRule {
-                kind,
-                solid,
-                second,
-                dark,
-                dark_second,
-                cap,
-                high_ground,
-                relief,
-                mix_percent,
-                cap_heights,
-            }
-        })
-        .collect();
-    MetalMapRules {
-        terrains,
-        sea: loaded.data.sea.0,
-        shallow_sea: loaded.data.shallow_sea.0,
-        lake: loaded.data.lake.0,
-        river: loaded.data.river.0,
-        shallow_threshold: loaded.data.shallow_threshold,
-        steps: STEP_SIZE,
-    }
 }
 
 /// Negative control: with one rule table entry deliberately wrong (pasture's second tone another colour) the readback changes in
