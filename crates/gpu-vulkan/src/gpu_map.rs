@@ -20,7 +20,9 @@
 //! Every object is created by one function and destroyed by one, each keeping what exists in the struct as it goes, so a failure in
 //! the middle destroys exactly what was made, and a caller that must keep everything (an unproven completion) does not destroy.
 
+use std::cell::RefCell;
 use std::io::Cursor;
+use std::mem::size_of;
 
 use ash::vk;
 
@@ -34,6 +36,8 @@ use crate::readback::allocate;
 
 const VERTEX_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/map.vert.spv"));
 const FRAGMENT_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/map.frag.spv"));
+const RIVER_VERTEX_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/map_river.vert.spv"));
+const RIVER_FRAGMENT_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/map_river.frag.spv"));
 
 /// The format of every map image, the target included.
 pub(crate) const MAP_FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
@@ -44,7 +48,7 @@ const PUSH_BYTES: u32 = 32;
 const POOL_SETS: u32 = 4;
 
 /// What a frame's map pass records. Plain data: it names no object, so it is carried from the frame's preparation to its recording.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MapRecord {
     /// The input's upload is recorded in this frame (it was never submitted).
     pub(crate) upload: bool,
@@ -56,6 +60,8 @@ pub(crate) struct MapRecord {
     pub(crate) destination: DestinationRect,
     /// The part of the target drawn there, in map pixels.
     pub(crate) source: SourceRect,
+    /// View-relative river pixels, retained until the frame's draw data is uploaded.
+    pub(crate) rivers: std::sync::Arc<[[u32; 2]]>,
 }
 
 impl MapRecord {
@@ -80,6 +86,7 @@ impl MapRecord {
             view: map.view(),
             destination: map.destination(),
             source: map.source(),
+            rivers: std::sync::Arc::clone(map.rivers()),
         }
     }
 
@@ -116,6 +123,7 @@ pub(crate) struct MapPipeline {
     pub(crate) pool: Option<vk::DescriptorPool>,
     pub(crate) layout: Option<vk::PipelineLayout>,
     pub(crate) pipeline: Option<vk::Pipeline>,
+    pub(crate) river_pipeline: Option<vk::Pipeline>,
 }
 
 impl MapPipeline {
@@ -126,6 +134,7 @@ impl MapPipeline {
             || self.pool.is_some()
             || self.layout.is_some()
             || self.pipeline.is_some()
+            || self.river_pipeline.is_some()
     }
 
     /// Creates everything, recording each object as it exists.
@@ -186,7 +195,7 @@ impl MapPipeline {
         );
         let layouts = [set_layout];
         let ranges = [vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
             .size(PUSH_BYTES)];
         let layout_info = vk::PipelineLayoutCreateInfo::default()
@@ -196,7 +205,8 @@ impl MapPipeline {
         let layout = unsafe { device.create_pipeline_layout(&layout_info, None) }
             .map_err(|code| ("vkCreatePipelineLayout", code))?;
         self.layout = Some(layout);
-        self.create_pipeline(device, layout)
+        self.create_pipeline(device, layout)?;
+        self.create_river_pipeline(device, layout)
     }
 
     fn create_pipeline(
@@ -274,8 +284,97 @@ impl MapPipeline {
         Ok(())
     }
 
+    fn create_river_pipeline(
+        &mut self,
+        device: &ash::Device,
+        layout: vk::PipelineLayout,
+    ) -> Result<(), Failure> {
+        let Some(pass) = self.pass else {
+            return Err((
+                "vkCreateGraphicsPipelines",
+                vk::Result::ERROR_INITIALIZATION_FAILED,
+            ));
+        };
+        let vertex = module(device, RIVER_VERTEX_SPIRV)?;
+        let fragment = match module(device, RIVER_FRAGMENT_SPIRV) {
+            Ok(fragment) => fragment,
+            Err(failure) => {
+                // SAFETY: the module was just created and nothing uses it.
+                unsafe { device.destroy_shader_module(vertex, None) };
+                return Err(failure);
+            }
+        };
+        let entry = c"main";
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vertex)
+                .name(entry),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(fragment)
+                .name(entry),
+        ];
+        let bindings = [vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(u32::try_from(size_of::<[u32; 2]>()).expect("two u32 values fit"))
+            .input_rate(vk::VertexInputRate::INSTANCE)];
+        let attributes = [vk::VertexInputAttributeDescription::default()
+            .location(0)
+            .binding(0)
+            .format(vk::Format::R32G32_UINT)
+            .offset(0)];
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&bindings)
+            .vertex_attribute_descriptions(&attributes);
+        let assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let raster = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let attachments = [vk::PipelineColorBlendAttachmentState::default()
+            .blend_enable(false)
+            .color_write_mask(vk::ColorComponentFlags::RGBA)];
+        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&attachments);
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&assembly)
+            .viewport_state(&viewport)
+            .rasterization_state(&raster)
+            .multisample_state(&multisample)
+            .color_blend_state(&blend)
+            .dynamic_state(&dynamic)
+            .layout(layout)
+            .render_pass(pass)
+            .subpass(0);
+        // SAFETY: the device is live and `info` and its borrowed arrays are valid for this call.
+        let created =
+            unsafe { device.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None) };
+        // SAFETY: the vertex module was created above and pipeline creation has returned.
+        unsafe { device.destroy_shader_module(vertex, None) };
+        // SAFETY: the fragment module was created above and pipeline creation has returned.
+        unsafe { device.destroy_shader_module(fragment, None) };
+        let pipelines = created.map_err(|(_, code)| ("vkCreateGraphicsPipelines", code))?;
+        self.river_pipeline = pipelines.first().copied();
+        Ok(())
+    }
+
     /// Destroys what exists, in reverse order of creation. Only when nothing submitted uses any of it.
     pub(crate) fn destroy(&mut self, device: &ash::Device) {
+        if let Some(pipeline) = self.river_pipeline.take() {
+            // SAFETY: nothing submitted uses the pipeline.
+            unsafe { device.destroy_pipeline(pipeline, None) };
+        }
         if let Some(pipeline) = self.pipeline.take() {
             // SAFETY: nothing submitted uses the pipeline.
             unsafe { device.destroy_pipeline(pipeline, None) };
@@ -654,8 +753,16 @@ pub(crate) struct MapTargetObjects {
     image: MapImage,
     framebuffer: Option<vk::Framebuffer>,
     set: Option<vk::DescriptorSet>,
+    river_resources: RefCell<RiverResources>,
     /// The target's size in map pixels.
     pub(crate) size: [u32; 2],
+}
+
+#[derive(Default)]
+struct RiverResources {
+    buffer: Option<vk::Buffer>,
+    memory: Option<vk::DeviceMemory>,
+    capacity: u64,
 }
 
 impl MapTargetObjects {
@@ -722,8 +829,97 @@ impl MapTargetObjects {
         Ok(())
     }
 
+    fn upload_rivers(
+        &self,
+        device: &ash::Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        rivers: &[[u32; 2]],
+    ) -> Result<(), Failure> {
+        if rivers.is_empty() {
+            return Ok(());
+        }
+        // This target is updated only by its owning render thread, after the reusable command buffer's previous submission is proven.
+        let mut resources = self.river_resources.borrow_mut();
+        let byte_count = u64::try_from(rivers.len())
+            .ok()
+            .and_then(|count| count.checked_mul(size_of::<[u32; 2]>() as u64))
+            .ok_or(("vkCreateBuffer", vk::Result::ERROR_OUT_OF_HOST_MEMORY))?;
+        if resources.capacity < byte_count {
+            let info = vk::BufferCreateInfo::default()
+                .size(byte_count)
+                .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE);
+            // SAFETY: the device is live and `info` is valid for this call.
+            let buffer = unsafe { device.create_buffer(&info, None) }
+                .map_err(|code| ("vkCreateBuffer", code))?;
+            // SAFETY: the buffer belongs to the device.
+            let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+            let memory = match allocate(
+                device,
+                memory_properties,
+                requirements,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                false,
+            ) {
+                Ok(memory) => memory,
+                Err(failure) => {
+                    // SAFETY: no command references this new buffer.
+                    unsafe { device.destroy_buffer(buffer, None) };
+                    return Err(failure);
+                }
+            };
+            // SAFETY: the fresh memory is large enough for the buffer.
+            if let Err(code) = unsafe { device.bind_buffer_memory(buffer, memory, 0) } {
+                // SAFETY: the new buffer and memory have not been used by a command.
+                unsafe { device.destroy_buffer(buffer, None) };
+                // SAFETY: the fresh memory was not bound after the failed buffer bind.
+                unsafe { device.free_memory(memory, None) };
+                return Err(("vkBindBufferMemory", code));
+            }
+            if let Some(old) = resources.buffer.replace(buffer) {
+                // SAFETY: the prior frame's submission is complete before this reusable command buffer is recorded again.
+                unsafe { device.destroy_buffer(old, None) };
+            }
+            if let Some(old) = resources.memory.replace(memory) {
+                // SAFETY: the buffer bound to this memory was destroyed above after its submission completed.
+                unsafe { device.free_memory(old, None) };
+            }
+            resources.capacity = byte_count;
+        }
+        let memory = resources
+            .memory
+            .ok_or(("vkMapMemory", vk::Result::ERROR_INITIALIZATION_FAILED))?;
+        let copy_len = usize::try_from(byte_count)
+            .map_err(|_| ("vkMapMemory", vk::Result::ERROR_OUT_OF_HOST_MEMORY))?;
+        // SAFETY: the target's host-visible coherent memory is not in GPU use while the command buffer is re-recorded.
+        let mapped =
+            unsafe { device.map_memory(memory, 0, byte_count, vk::MemoryMapFlags::empty()) }
+                .map_err(|code| ("vkMapMemory", code))?;
+        // SAFETY: the mapped range contains byte_count writable bytes and rivers has exactly that many source bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                rivers.as_ptr().cast::<u8>(),
+                mapped.cast::<u8>(),
+                copy_len,
+            );
+        }
+        // SAFETY: `memory` was mapped above and the copy is complete.
+        unsafe { device.unmap_memory(memory) };
+        Ok(())
+    }
+
     /// Destroys what exists. Only when no submitted frame uses any of it.
     pub(crate) fn destroy(&mut self, device: &ash::Device, pool: Option<vk::DescriptorPool>) {
+        let resources = self.river_resources.get_mut();
+        if let Some(buffer) = resources.buffer.take() {
+            // SAFETY: no submitted frame uses the buffer.
+            unsafe { device.destroy_buffer(buffer, None) };
+        }
+        if let Some(memory) = resources.memory.take() {
+            // SAFETY: the buffer bound to it is destroyed.
+            unsafe { device.free_memory(memory, None) };
+        }
+        resources.capacity = 0;
         if let (Some(set), Some(pool)) = (self.set.take(), pool) {
             // SAFETY: no submitted frame uses the set; a failure to free it is not an error (the pool's destruction frees it).
             let _ = unsafe { device.free_descriptor_sets(pool, &[set]) };
@@ -806,23 +1002,43 @@ pub(crate) fn device_checks(
 /// are discarded: the triangle writes every pixel), the pass, and the barrier that orders its colour writes before the window pass's
 /// fragment-shader reads, with the layout change to shader-read-only. The presenter's frames and the off-screen readback record
 /// through this one function.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the map target's ordered barriers, terrain pass and river overlay are one command-buffer transaction"
+)]
 pub(crate) fn record_map_pass(
     device: &ash::Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
     cmd: vk::CommandBuffer,
     objects: (&MapPipeline, &MapInputObjects, &MapTargetObjects),
     record: &MapRecord,
-) {
+) -> Result<(), Failure> {
     let (pipeline, input, target) = objects;
     let (Some(graphics), Some(layout), Some(pass)) =
         (pipeline.pipeline, pipeline.layout, pipeline.pass)
     else {
-        return;
+        return Ok(());
     };
+    target.upload_rivers(device, memory_properties, &record.rivers)?;
     let (Some(image), Some(framebuffer), Some(set)) =
         (target.image(), target.framebuffer, input.set)
     else {
-        return;
+        return Ok(());
     };
+    let river_count = u32::try_from(record.rivers.len())
+        .map_err(|_| ("vkCmdDraw", vk::Result::ERROR_INITIALIZATION_FAILED))?;
+    let view_width = i32::try_from(record.view[0]).map_err(|_| {
+        (
+            "vkCmdPushConstants",
+            vk::Result::ERROR_INITIALIZATION_FAILED,
+        )
+    })?;
+    let view_height = i32::try_from(record.view[1]).map_err(|_| {
+        (
+            "vkCmdPushConstants",
+            vk::Result::ERROR_INITIALIZATION_FAILED,
+        )
+    })?;
     if record.upload {
         input.record_upload(device, cmd);
     }
@@ -894,12 +1110,47 @@ pub(crate) fn record_map_pass(
             &[],
         );
     }
-    // SAFETY: the push constant range covers these 32 bytes for the fragment stage.
+    // SAFETY: the shared pipeline layout declares this 32-byte range for both vertex and fragment stages.
     unsafe {
-        device.cmd_push_constants(cmd, layout, vk::ShaderStageFlags::FRAGMENT, 0, &constants);
+        device.cmd_push_constants(
+            cmd,
+            layout,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            0,
+            &constants,
+        );
     }
     // SAFETY: the pipeline, descriptor set and push constants are bound.
     unsafe { device.cmd_draw(cmd, 3, 1, 0, 0) };
+    if !record.rivers.is_empty() {
+        let river_buffer = target.river_resources.borrow().buffer;
+        let (Some(river_pipeline), Some(river_buffer)) = (pipeline.river_pipeline, river_buffer)
+        else {
+            // SAFETY: the render pass is active on this command buffer.
+            unsafe { device.cmd_end_render_pass(cmd) };
+            return Err(("vkCmdDraw", vk::Result::ERROR_INITIALIZATION_FAILED));
+        };
+        // The camera push constants use their crop slot for the overlay's view dimensions.
+        let mut river_constants = [0_u8; PUSH_BYTES as usize];
+        river_constants[8..12].copy_from_slice(&view_width.to_ne_bytes());
+        river_constants[12..16].copy_from_slice(&view_height.to_ne_bytes());
+        // SAFETY: the pipeline is compatible with this render pass.
+        unsafe { device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, river_pipeline) };
+        // SAFETY: `river_buffer` contains one [u32; 2] per instance.
+        unsafe { device.cmd_bind_vertex_buffers(cmd, 0, &[river_buffer], &[0]) };
+        // SAFETY: the shared pipeline layout declares this 32-byte range for both vertex and fragment stages.
+        unsafe {
+            device.cmd_push_constants(
+                cmd,
+                layout,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                0,
+                &river_constants,
+            );
+        }
+        // SAFETY: the bound instance buffer contains river_count records.
+        unsafe { device.cmd_draw(cmd, 6, river_count, 0, 0) };
+    }
     // SAFETY: the render pass was begun on this command buffer.
     unsafe { device.cmd_end_render_pass(cmd) };
     let to_shader = vk::ImageMemoryBarrier::default()
@@ -923,6 +1174,7 @@ pub(crate) fn record_map_pass(
             &[to_shader],
         );
     }
+    Ok(())
 }
 
 impl Gpu {
@@ -957,15 +1209,21 @@ impl Gpu {
     }
 
     /// Records the map pass into the frame's command buffer (see [`record_map_pass`]).
-    pub(crate) fn record_map_pass(&self, cmd: vk::CommandBuffer, record: &MapRecord) {
+    pub(crate) fn record_map_pass(
+        &self,
+        cmd: vk::CommandBuffer,
+        record: &MapRecord,
+    ) -> Result<(), Failure> {
         if let (Some(input), Some(target)) = (&self.map.input, &self.map.target) {
             record_map_pass(
                 &self.device,
+                &self.memory,
                 cmd,
                 (&self.map.pipeline, input, target),
                 record,
-            );
+            )?;
         }
+        Ok(())
     }
 
     /// Records the enlarged map into the window pass (see [`record_map_quad`]).

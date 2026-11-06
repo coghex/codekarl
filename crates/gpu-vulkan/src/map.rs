@@ -69,6 +69,22 @@ pub enum VulkanMapError {
     Destination,
     /// A source that is not finite, not inside the view, or empty.
     Source,
+    /// A river pixel outside the view.
+    RiverOutsideView {
+        /// The zero-based position in the submitted river list.
+        position: usize,
+        /// The pixel's x coordinate.
+        x: u32,
+        /// The pixel's y coordinate.
+        y: u32,
+    },
+    /// More river pixels than the view has pixels.
+    TooManyRivers {
+        /// The maximum number of pixels in the view.
+        limit: u64,
+        /// The submitted number of pixels.
+        count: usize,
+    },
 }
 
 impl std::fmt::Display for VulkanMapError {
@@ -95,6 +111,12 @@ impl std::fmt::Display for VulkanMapError {
             Self::Destination => formatter.write_str("the map's destination has no area"),
             Self::Source => {
                 formatter.write_str("the map's source is not a non-empty part of the view")
+            }
+            Self::RiverOutsideView { position, x, y } => {
+                write!(formatter, "river pixel {position} ({x}, {y}) is outside the view")
+            }
+            Self::TooManyRivers { limit, count } => {
+                write!(formatter, "{count} river pixels; the view holds at most {limit}")
             }
         }
     }
@@ -395,6 +417,7 @@ pub struct VulkanMap {
     view: [u32; 2],
     destination: DestinationRect,
     source: SourceRect,
+    rivers: Arc<[[u32; 2]]>,
     refusals: Option<Arc<dyn MapRefusalSink>>,
 }
 
@@ -408,6 +431,7 @@ impl std::fmt::Debug for VulkanMap {
             .field("view", &self.view)
             .field("destination", &self.destination)
             .field("source", &self.source)
+            .field("river_pixels", &self.rivers.len())
             .field("refusals", &self.refusals.is_some())
             .finish()
     }
@@ -429,6 +453,25 @@ impl VulkanMap {
         view: [u32; 2],
         destination: DestinationRect,
         source: SourceRect,
+    ) -> Result<Self, VulkanMapError> {
+        Self::new_with_rivers(input, step, top_left, view, destination, source, Vec::new())
+    }
+
+    /// A map frame with visible river pixels in view coordinates. The list is
+    /// validated and retained for the map pass's overlay draw.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VulkanMapError::RiverOutsideView`] for an out-of-view pixel or
+    /// [`VulkanMapError::TooManyRivers`] when the list exceeds the view area.
+    pub fn new_with_rivers(
+        input: Arc<VulkanMapInput>,
+        step: u8,
+        top_left: [i32; 2],
+        view: [u32; 2],
+        destination: DestinationRect,
+        source: SourceRect,
+        rivers: Vec<[u32; 2]>,
     ) -> Result<Self, VulkanMapError> {
         if !side_ok(view[0]) || !side_ok(view[1]) {
             return Err(VulkanMapError::Size);
@@ -469,6 +512,24 @@ impl VulkanMap {
         {
             return Err(VulkanMapError::Source);
         }
+        let limit = u64::from(view[0]) * u64::from(view[1]);
+        if rivers.len() as u64 > limit {
+            return Err(VulkanMapError::TooManyRivers {
+                limit,
+                count: rivers.len(),
+            });
+        }
+        if let Some((position, pixel)) = rivers
+            .iter()
+            .enumerate()
+            .find(|(_, pixel)| pixel[0] >= view[0] || pixel[1] >= view[1])
+        {
+            return Err(VulkanMapError::RiverOutsideView {
+                position,
+                x: pixel[0],
+                y: pixel[1],
+            });
+        }
         Ok(Self {
             input,
             step,
@@ -476,8 +537,15 @@ impl VulkanMap {
             view,
             destination,
             source,
+            rivers: rivers.into(),
             refusals: None,
         })
+    }
+
+    /// River pixels in view coordinates, sorted and deduplicated by `ck-map`.
+    #[must_use]
+    pub fn rivers(&self) -> &Arc<[[u32; 2]]> {
+        &self.rivers
     }
 
     /// This map with the place the presenter tells a refused allocation to.

@@ -450,7 +450,10 @@ fn read(
         Ok(work) => work,
         Err(failure) => return early(failure),
     };
-    if let Err(failure) = record(device, &work, objects, job) {
+    // SAFETY: the opened instance and selected physical device are live.
+    let memory_properties =
+        unsafe { instance.get_physical_device_memory_properties(opened.physical) };
+    if let Err(failure) = record(device, &memory_properties, &work, objects, job) {
         return early(failure);
     }
     let commands = [work.cmd];
@@ -841,8 +844,9 @@ fn create_render_pass(device: &ash::Device) -> Result<vk::RenderPass, Failure> {
 /// to the host-visible buffer and the barrier that makes it visible to the host.
 fn record(
     device: &ash::Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
     work: &Work,
-    objects: &Objects<'_>,
+    objects: &mut Objects<'_>,
     job: &Job<'_>,
 ) -> Result<(), Failure> {
     let cmd = work.cmd;
@@ -857,10 +861,16 @@ fn record(
     }
     let map_record = job.map.map(|map| MapRecord::of(map, true));
     if let (Some(record), Some(input), Some(target)) =
-        (&map_record, &objects.map.input, &objects.map.target)
+        (&map_record, &objects.map.input, &mut objects.map.target)
     {
         // The presenter's own map pass: the upload, the barriers and the pass.
-        record_map_pass(device, cmd, (&objects.map.pipeline, input, target), record);
+        record_map_pass(
+            device,
+            memory_properties,
+            cmd,
+            (&objects.map.pipeline, input, target),
+            record,
+        )?;
     }
     let clear_values = [vk::ClearValue {
         color: vk::ClearColorValue {

@@ -16,7 +16,7 @@ use ck_gpu_vulkan::{
     VulkanMapInput, VulkanMapRules, VulkanQuad, VulkanTerrainKind, VulkanTerrainRule, load_loader,
     readback_map, readback_quad,
 };
-use ck_map::{STEP_SIZE, fixture};
+use ck_map::{FIXED_PER_CELL, PreparedRivers, RiverLine, STEP_SIZE, ViewSize, WorldPixel, fixture};
 
 use super::{assert_log_clean, destroy, validated_with};
 
@@ -168,6 +168,58 @@ fn expected_target(top_left: [i32; 2], view: [u32; 2]) -> Vec<u8> {
     the_fixture().reference_image(STEP, top_left, view)
 }
 
+fn fixture_rivers(step: u8, top_left: [i32; 2], view: [u32; 2]) -> Vec<[u32; 2]> {
+    let point = |x: i32, y: i32| ck_map::FixedPoint {
+        x: i32::try_from((i64::from(ORIGIN[0]) + i64::from(x)) * FIXED_PER_CELL)
+            .expect("fixture x fits"),
+        y: i32::try_from((i64::from(ORIGIN[1]) + i64::from(y)) * FIXED_PER_CELL)
+            .expect("fixture y fits"),
+    };
+    let lines = vec![
+        RiverLine {
+            points: vec![point(-2, 5), point(12, 5)],
+        },
+        RiverLine {
+            points: vec![point(3, 1), point(20, 14)],
+        },
+        RiverLine {
+            points: vec![point(17, 1), point(18, 15)],
+        },
+    ];
+    for (name, line) in ["horizontal", "diagonal", "steep"].into_iter().zip(&lines) {
+        assert!(
+            !PreparedRivers::new(vec![line.clone()])
+                .select_view(
+                    step,
+                    WorldPixel {
+                        x: top_left[0],
+                        y: top_left[1],
+                    },
+                    ViewSize {
+                        width: view[0],
+                        height: view[1],
+                    },
+                )
+                .expect("fixture step has river coverage")
+                .is_empty(),
+            "the {name} fixture river is visible at step {step}"
+        );
+    }
+    PreparedRivers::new(lines)
+        .select_view(
+            step,
+            WorldPixel {
+                x: top_left[0],
+                y: top_left[1],
+            },
+            ViewSize {
+                width: view[0],
+                height: view[1],
+            },
+        )
+        .expect("fixture step has river coverage")
+}
+
 /// The pixel at (x, y) of a BGRA8 readback, as RGBA.
 fn bgra_at(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
     let offset = usize::try_from((y * width + x) * 4).expect("small");
@@ -258,6 +310,65 @@ fn the_map_target_equals_the_reference_and_a_pan_away_and_back_gives_identical_b
                 "away and back gives identical bytes"
             );
         }
+    }
+    assert_log_clean(&log);
+    assert_eq!(instance.retained_readbacks(), 0);
+    destroy(instance);
+    assert_log_clean(&log);
+}
+
+/// Prepared river pixels replace the reference byte-for-byte on two steps; the left view edge cuts a river line.
+#[test]
+fn prepared_rivers_overlay_the_map_reference_at_two_steps() {
+    let (_loader, instance, log) = rig!();
+    let fixture = the_fixture();
+    let input = input_with(1);
+    for (step, offset, view) in [(60, 2, [260, 180]), (36, 1, [52, 37])] {
+        let corner = fixture::Fixture::crop_top_left(step);
+        let top_left = [corner.x - offset, corner.y - offset];
+        let rivers = fixture_rivers(step, top_left, view);
+        assert!(!rivers.is_empty(), "step {step} has visible river pixels");
+        let (mut sea, mut land, mut lake) = (false, false, false);
+        for [x, y] in &rivers {
+            let colour = fixture.reference(
+                step,
+                WorldPixel {
+                    x: top_left[0] + signed(*x),
+                    y: top_left[1] + signed(*y),
+                },
+            );
+            sea |= colour == fixture.data.sea.0 || colour == fixture.data.shallow_sea.0;
+            lake |= colour == fixture.data.lake.0;
+            land |= colour != fixture.data.sea.0
+                && colour != fixture.data.shallow_sea.0
+                && colour != fixture.data.lake.0;
+        }
+        assert!(
+            sea && land && lake,
+            "rivers cross sea/coast/land and lake at step {step}"
+        );
+        assert!(
+            rivers.iter().any(|pixel| pixel[0] == 0),
+            "the view edge cuts a river"
+        );
+        let map = VulkanMap::new_with_rivers(
+            Arc::clone(&input),
+            step,
+            top_left,
+            view,
+            rect(0, 0, signed(view[0] * 4), signed(view[1] * 4)),
+            source(0.0, 0.0, float(view[0]), float(view[1])),
+            rivers.clone(),
+        )
+        .expect("a valid river map");
+        let drawn = readback_map(&instance, view[0] * 4, view[1] * 4, CLEAR, Some(&map), None)
+            .expect("the river readback works");
+        let mut expected = fixture.reference_image(step, top_left, view);
+        for [x, y] in rivers {
+            let offset = usize::try_from((y * view[0] + x) * 4).expect("small fixture");
+            expected[offset..offset + 4].copy_from_slice(&fixture.data.river.0);
+        }
+        assert_eq!(drawn.target.expect("a map target"), expected, "step {step}");
     }
     assert_log_clean(&log);
     assert_eq!(instance.retained_readbacks(), 0);

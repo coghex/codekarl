@@ -192,9 +192,9 @@ impl Run<'_> {
 
     /// The frame was submitted as `number`: only now is the texture's upload done, and the texture in use by a
     /// submitted frame. The frame's scene generation is what a queued present then reports.
-    pub(super) fn quad_submitted(&mut self, number: u64, prepared: Prepared) {
+    pub(super) fn quad_submitted(&mut self, number: u64, prepared: &Prepared) {
         self.map
-            .submitted(number, &prepared, self.observer.as_deref());
+            .submitted(number, prepared, self.observer.as_deref());
         if let Some(draw) = prepared.draw {
             self.residency.submitted(number, draw.upload);
             if draw.upload

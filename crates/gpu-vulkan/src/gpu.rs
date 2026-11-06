@@ -213,7 +213,7 @@ pub(crate) struct Gpu {
 
 /// What a scene frame's commands record besides the drawing: a test's host-event hold, and the first of the frame's two timestamp
 /// queries (none: the device has no valid timestamp bits).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct FrameExtras {
     pub(crate) hold: Option<vk::Event>,
     pub(crate) stamps: Option<u32>,
@@ -738,7 +738,7 @@ impl Gpu {
         }
         // The map pass (milestone 6, slice 1), before the window pass: the map target is written here and sampled below.
         if let Some(map) = map {
-            self.record_map_pass(cmd, map);
+            self.record_map_pass(cmd, map)?;
         }
         let clear = [vk::ClearValue {
             color: vk::ClearColorValue {
@@ -852,7 +852,7 @@ impl Gpu {
         }
         // The map pass (milestone 6, slice 1), before the window pass: the map target is written here and sampled below.
         if let Some(map) = map {
-            self.record_map_pass(cmd, map);
+            self.record_map_pass(cmd, map)?;
         }
         let clear = [vk::ClearValue {
             color: vk::ClearColorValue {

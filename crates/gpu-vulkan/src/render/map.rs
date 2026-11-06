@@ -269,7 +269,7 @@ impl MapDriver {
         prepared: &Prepared,
         observer: Option<&Observer>,
     ) {
-        if let Some(record) = prepared.map {
+        if let Some(record) = &prepared.map {
             self.residency.submitted(number, record.upload);
             if let Some(observer) = observer {
                 observer.map_submitted(record.upload);
