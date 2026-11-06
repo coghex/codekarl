@@ -100,6 +100,8 @@ typedef struct {
     const uint8_t *grid_b;
     const uint8_t *rules;   /* CK_MAP_RULES_WIDTH * CK_MAP_RULES_HEIGHT * 4 bytes */
     int32_t step;           /* the zoom step, 0 to 75 */
+    const uint32_t (*rivers)[2]; /* visible river pixels in view coordinates, or NULL */
+    uint32_t river_count;
 } CKPrMap;
 
 /* The pixels of a new texture: given only when the quad's image differs from the resident texture's. */

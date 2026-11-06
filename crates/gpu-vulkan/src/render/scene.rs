@@ -791,7 +791,7 @@ impl Core<'_> {
         self.hold_acquisition();
         let mut outcome: Option<Result<Step, Fatal>> = None;
         let began = scene.frame_dyn(&mut |seam| {
-            let (result, submission) = self.frame(seam, frame, rgb, prepared, map_frame);
+            let (result, submission) = self.frame(seam, frame, rgb, &prepared, map_frame);
             outcome = Some(result);
             submission
         });
@@ -811,7 +811,7 @@ impl Core<'_> {
         seam: &mut dyn FrameSeam,
         frame: Frame,
         rgb: [f32; 3],
-        prepared: Prepared,
+        prepared: &Prepared,
         map_frame: bool,
     ) -> (Result<Step, Fatal>, Option<crate::FrameSubmission>) {
         let Some(chain_id) = self.gpu.current.as_ref().map(|chain| chain.id) else {
@@ -948,7 +948,7 @@ impl Core<'_> {
                     FrameExtras {
                         hold: self.hooks.scene.frame_event,
                         stamps,
-                        map: prepared.map,
+                        map: prepared.map.clone(),
                     },
                 ),
                 None => Err((

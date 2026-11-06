@@ -142,6 +142,8 @@ static void ck_obs_max(CKPrObserverState *observer, int index, int64_t value) {
 @property(nonatomic, strong) id<MTLRenderPipelineState> bindless;
 /* The map pass's pipeline (milestone 6, slice 1): the full-target triangle, RGBA8 target, no blending. */
 @property(nonatomic, strong) id<MTLRenderPipelineState> map;
+/* The opaque map-pixel overlay drawn after the terrain pass. */
+@property(nonatomic, strong) id<MTLRenderPipelineState> mapRivers;
 @property(nonatomic, strong) id<MTLSamplerState> nearest;
 @property(nonatomic, strong) id<MTLSamplerState> linear;
 @end
@@ -366,6 +368,27 @@ static BOOL ck_encode_map_pass(id<MTLCommandBuffer> command, CKPrQuadKit *kit, c
     [encoder setFragmentTexture:draw->grid_b atIndex:1];
     [encoder setFragmentTexture:draw->rules atIndex:2];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    if (draw->map->river_count != 0) {
+        NSUInteger river_bytes = (NSUInteger)draw->map->river_count * sizeof(uint32_t[2]);
+        id<MTLBuffer> rivers = [command.commandQueue.device newBufferWithBytes:draw->map->rivers
+                                                                        length:river_bytes
+                                                                       options:MTLResourceStorageModeShared];
+        if (rivers == nil) {
+            [encoder endEncoding];
+            *reason = @"the visible river-pixel buffer could not be created";
+            return NO;
+        }
+        float colour[4];
+        for (NSUInteger channel = 0; channel < 4; channel++) {
+            colour[channel] = (float)draw->map->rules[((CK_MAP_RULES_HEIGHT - 2) * CK_MAP_RULES_WIDTH + 3) * 4 + channel] / 255.0f;
+        }
+        const uint32_t view[2] = {draw->map->view[0], draw->map->view[1]};
+        [encoder setRenderPipelineState:kit.mapRivers];
+        [encoder setVertexBytes:view length:sizeof(view) atIndex:0];
+        [encoder setVertexBuffer:rivers offset:0 atIndex:1];
+        [encoder setFragmentBytes:colour length:sizeof(colour) atIndex:0];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:draw->map->river_count];
+    }
     [encoder endEncoding];
     return YES;
 }
@@ -681,8 +704,10 @@ static CKPrQuadKit *ck_make_quad_kit(id<MTLDevice> device, const uint8_t *librar
     id<MTLFunction> bindless_fragment = [library newFunctionWithName:@"ck_quad_bindless_fragment"];
     id<MTLFunction> map_vertex = [library newFunctionWithName:@"ck_map_vertex"];
     id<MTLFunction> map_fragment = [library newFunctionWithName:@"ck_map_fragment"];
+    id<MTLFunction> map_river_vertex = [library newFunctionWithName:@"ck_map_river_vertex"];
+    id<MTLFunction> map_river_fragment = [library newFunctionWithName:@"ck_map_river_fragment"];
     if (library == nil || vertex == nil || fragment == nil || instance_vertex == nil || bindless_vertex == nil ||
-        bindless_fragment == nil || map_vertex == nil || map_fragment == nil) {
+        bindless_fragment == nil || map_vertex == nil || map_fragment == nil || map_river_vertex == nil || map_river_fragment == nil) {
         *reason = [NSString stringWithFormat:@"the quad shader library could not be loaded: %@",
                                              failure.localizedDescription ?: @"a function is missing"];
         return nil;
@@ -732,11 +757,20 @@ static CKPrQuadKit *ck_make_quad_kit(id<MTLDevice> device, const uint8_t *librar
                                              failure.localizedDescription ?: @"unknown error"];
         return nil;
     }
+    map_description.vertexFunction = map_river_vertex;
+    map_description.fragmentFunction = map_river_fragment;
+    id<MTLRenderPipelineState> map_rivers = [device newRenderPipelineStateWithDescriptor:map_description error:&failure];
+    if (map_rivers == nil) {
+        *reason = [NSString stringWithFormat:@"the map-river pipeline could not be created: %@",
+                                             failure.localizedDescription ?: @"unknown error"];
+        return nil;
+    }
     CKPrQuadKit *kit = [CKPrQuadKit new];
     kit.pipeline = pipeline;
     kit.instanced = instanced;
     kit.bindless = bindless;
     kit.map = map;
+    kit.mapRivers = map_rivers;
     for (int linear = 0; linear < 2; linear++) {
         MTLSamplerDescriptor *sampler = [MTLSamplerDescriptor new];
         MTLSamplerMinMagFilter filter = linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;

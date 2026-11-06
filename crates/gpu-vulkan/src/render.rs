@@ -290,7 +290,7 @@ struct Draw {
 }
 
 /// What a step prepared for its frame.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Prepared {
     /// The generation of the scene the frame draws (`None` without a slot).
     generation: Option<u64>,
@@ -632,10 +632,10 @@ impl Run<'_> {
             return Ok(Step::Wait);
         };
         self.hold_acquisition();
-        self.frame(frame, rgb, prepared)
+        self.frame(frame, rgb, &prepared)
     }
 
-    fn frame(&mut self, frame: Frame, rgb: [f32; 3], prepared: Prepared) -> Result<Step, Fatal> {
+    fn frame(&mut self, frame: Frame, rgb: [f32; 3], prepared: &Prepared) -> Result<Step, Fatal> {
         let Some(chain_id) = self.gpu.current.as_ref().map(|chain| chain.id) else {
             self.ledger.return_unused(frame);
             return Ok(Step::Wait);

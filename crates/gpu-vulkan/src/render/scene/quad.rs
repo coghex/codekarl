@@ -150,8 +150,8 @@ impl Core<'_> {
 
     /// The frame was submitted as `number`: only now is the texture's upload done, and the texture in use by a
     /// submitted frame. The frame's scene generation is what a queued present then reports.
-    pub(in crate::render) fn quad_submitted(&mut self, number: u64, prepared: Prepared) {
-        self.map_submitted(number, &prepared);
+    pub(in crate::render) fn quad_submitted(&mut self, number: u64, prepared: &Prepared) {
+        self.map_submitted(number, prepared);
         if let Some(draw) = prepared.draw {
             self.residency.submitted(number, draw.upload);
             if draw.upload

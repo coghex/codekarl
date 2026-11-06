@@ -314,7 +314,7 @@ pub(crate) fn vulkan_map_cached(
         *cached = Some(Arc::downgrade(&made));
         made
     };
-    let map = VulkanMap::new(
+    let map = VulkanMap::new_with_rivers(
         gpu_input,
         camera.step(),
         camera.top_left(),
@@ -331,6 +331,7 @@ pub(crate) fn vulkan_map_cached(
             right: placement.source.right,
             bottom: placement.source.bottom,
         },
+        camera.rivers().as_ref().to_vec(),
     )
     .map_err(refused)?;
     // Where the presenter tells the publisher it refused to make a map image (and that it later could).

@@ -564,3 +564,40 @@ fn river_lines_deduplicate_crossings_and_view_selection_is_bounded() {
     assert!(visible.len() <= 2 * 3);
     assert!(RiverCoverage::prepare(&[], 76).is_none());
 }
+
+#[test]
+fn prepared_rivers_reuse_step_coverage_across_pans_and_rebuild_on_step_change() {
+    let lines = vec![RiverLine {
+        points: vec![fp_pixel(0, 2, 50), fp_pixel(8, 2, 50)],
+    }];
+    let mut prepared = PreparedRivers::new(lines);
+    let first = prepared.coverage(50).expect("coverage at step 50") as *const _;
+    let first_view = prepared
+        .select_view(
+            50,
+            WorldPixel { x: 1, y: 1 },
+            ViewSize {
+                width: 4,
+                height: 3,
+            },
+        )
+        .expect("first view");
+    assert_eq!(first_view, vec![[0, 1], [1, 1], [2, 1], [3, 1]]);
+    let panned_view = prepared
+        .select_view(
+            50,
+            WorldPixel { x: 3, y: 1 },
+            ViewSize {
+                width: 4,
+                height: 3,
+            },
+        )
+        .expect("panned view");
+    assert_eq!(panned_view, vec![[0, 1], [1, 1], [2, 1], [3, 1]]);
+    let reused = prepared.coverage(50).expect("retained coverage") as *const _;
+    assert_eq!(first, reused, "panning must not rasterize the lines again");
+
+    let other_step = prepared.coverage(51).expect("coverage at next step") as *const _;
+    assert_ne!(first, other_step, "each zoom step has its own coverage");
+    assert!(prepared.coverage(76).is_none());
+}

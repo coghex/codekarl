@@ -3,7 +3,10 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use ck_map::{Camera, Crop, FixedPoint, LoadedMap, STEP_SIZE, TerrainKind, ViewSize};
+use ck_map::{
+    Camera, Crop, FixedPoint, LoadedMap, PreparedRivers, STEP_SIZE, TerrainKind, ViewSize,
+    WorldPixel,
+};
 use ck_render_2d::{
     MapCamera, MapInput, MapPublication, MapRules, MapTerrainKind, MapTerrainRule, SceneBridge,
 };
@@ -19,10 +22,31 @@ const ZOOM_OUT: &str = "map_zoom_out";
 
 pub(crate) type SharedController = Arc<Mutex<MapController>>;
 
+pub(crate) trait RiverViewSelector {
+    fn select_view(
+        &mut self,
+        step: u8,
+        top_left: WorldPixel,
+        view: ViewSize,
+    ) -> Option<Vec<[u32; 2]>>;
+}
+
+impl RiverViewSelector for PreparedRivers {
+    fn select_view(
+        &mut self,
+        step: u8,
+        top_left: WorldPixel,
+        view: ViewSize,
+    ) -> Option<Vec<[u32; 2]>> {
+        PreparedRivers::select_view(self, step, top_left, view)
+    }
+}
+
 /// A map, its packed GPU input, and the one camera controlled by the application.
-pub(crate) struct MapController {
+pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     bridge: Arc<SceneBridge>,
     crop: Crop,
+    rivers: R,
     pan_pixels_per_frame: i32,
     zoom_steps_per_second: u32,
     camera: Option<Camera>,
@@ -30,12 +54,30 @@ pub(crate) struct MapController {
     zoom_out_elapsed: Duration,
 }
 
-impl MapController {
+impl MapController<PreparedRivers> {
     pub(crate) fn new(
         loaded: &LoadedMap,
         bridge: Arc<SceneBridge>,
         pan_pixels_per_frame: u32,
         zoom_steps_per_second: u32,
+    ) -> Result<Self, String> {
+        Self::with_rivers(
+            loaded,
+            bridge,
+            pan_pixels_per_frame,
+            zoom_steps_per_second,
+            PreparedRivers::new(loaded.rivers.clone()),
+        )
+    }
+}
+
+impl<R: RiverViewSelector> MapController<R> {
+    fn with_rivers(
+        loaded: &LoadedMap,
+        bridge: Arc<SceneBridge>,
+        pan_pixels_per_frame: u32,
+        zoom_steps_per_second: u32,
+        rivers: R,
     ) -> Result<Self, String> {
         let crop = loaded.data.crop;
         let rules = rules(loaded);
@@ -56,6 +98,7 @@ impl MapController {
         Ok(Self {
             bridge,
             crop,
+            rivers,
             pan_pixels_per_frame: i32::try_from(pan_pixels_per_frame)
                 .map_err(|_| "map pan_pixels_per_frame does not fit i32".to_owned())?,
             zoom_steps_per_second,
@@ -69,15 +112,8 @@ impl MapController {
     pub(crate) fn open(&mut self, desc: &WindowDesc) -> Result<(), String> {
         let view = ViewSize::from_points(desc.width, desc.height);
         let camera = initial_camera(self.crop, view)?;
+        let snapshot = self.snapshot(camera, self.bridge.metrics_generation().saturating_add(1))?;
         self.camera = Some(camera);
-        let snapshot = MapCamera::new(
-            camera.step,
-            [camera.top_left().x, camera.top_left().y],
-            [camera.view.width, camera.view.height],
-            Vec::new(),
-            self.bridge.metrics_generation().saturating_add(1),
-        )
-        .map_err(|error| format!("map camera is invalid: {error}"))?;
         match self.bridge.stage_initial_camera(Arc::new(snapshot)) {
             MapPublication::Published => Ok(()),
             outcome => Err(format!("map lane refused the initial camera: {outcome:?}")),
@@ -154,15 +190,24 @@ impl MapController {
         Ok(false)
     }
 
-    fn publish_for_generation(&self, camera: Camera, generation: u64) -> Result<(), String> {
-        let snapshot = MapCamera::new(
+    fn snapshot(&mut self, camera: Camera, generation: u64) -> Result<MapCamera, String> {
+        let top_left = camera.top_left();
+        let rivers = self
+            .rivers
+            .select_view(camera.step, top_left, camera.view)
+            .ok_or_else(|| format!("map river coverage is invalid for step {}", camera.step))?;
+        MapCamera::new(
             camera.step,
-            [camera.top_left().x, camera.top_left().y],
+            [top_left.x, top_left.y],
             [camera.view.width, camera.view.height],
-            Vec::new(),
+            rivers,
             generation,
         )
-        .map_err(|error| format!("map camera is invalid: {error}"))?;
+        .map_err(|error| format!("map camera is invalid: {error}"))
+    }
+
+    fn publish_for_generation(&mut self, camera: Camera, generation: u64) -> Result<(), String> {
+        let snapshot = self.snapshot(camera, generation)?;
         match self.bridge.publish_camera(Arc::new(snapshot)) {
             MapPublication::Published => Ok(()),
             outcome => Err(format!("map lane refused the camera snapshot: {outcome:?}")),
@@ -314,7 +359,63 @@ fn rules(loaded: &LoadedMap) -> MapRules {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
     use ck_window::{InputSnapshot, PixelSize, WindowMetrics};
+
+    #[derive(Default)]
+    struct CapturingSink(Mutex<Option<ck_render_2d::Snapshot>>);
+
+    impl ck_render_2d::QuadSink for CapturingSink {
+        fn publish(&self, snapshot: ck_render_2d::Snapshot) -> Option<ck_render_2d::Snapshot> {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .replace(snapshot)
+        }
+    }
+
+    impl CapturingSink {
+        fn latest(&self) -> ck_render_2d::Snapshot {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .expect("bridge published a snapshot")
+                .clone()
+        }
+    }
+
+    struct CountingRivers {
+        prepared: PreparedRivers,
+        prepared_steps: HashSet<u8>,
+        preparations: usize,
+    }
+
+    impl CountingRivers {
+        fn new(lines: Vec<ck_map::RiverLine>) -> Self {
+            Self {
+                prepared: PreparedRivers::new(lines),
+                prepared_steps: HashSet::new(),
+                preparations: 0,
+            }
+        }
+    }
+
+    impl RiverViewSelector for CountingRivers {
+        fn select_view(
+            &mut self,
+            step: u8,
+            top_left: WorldPixel,
+            view: ViewSize,
+        ) -> Option<Vec<[u32; 2]>> {
+            if self.prepared_steps.insert(step) {
+                self.preparations += 1;
+            }
+            self.prepared.select_view(step, top_left, view)
+        }
+    }
 
     fn loaded_map() -> LoadedMap {
         let crop = Crop {
@@ -356,6 +457,12 @@ mod tests {
             },
             rivers: Vec::new(),
         }
+    }
+
+    fn loaded_map_with_rivers(rivers: Vec<ck_map::RiverLine>) -> LoadedMap {
+        let mut loaded = loaded_map();
+        loaded.rivers = rivers;
+        loaded
     }
 
     fn controller(pan: u32, zoom: u32) -> MapController {
@@ -405,12 +512,67 @@ mod tests {
         }
     }
 
-    fn at_step(controller: &mut MapController, step: u8) -> Camera {
+    fn at_step<R: RiverViewSelector>(controller: &mut MapController<R>, step: u8) -> Camera {
         let current = controller.camera.expect("opened camera");
         let camera = Camera::new(step, current.center, current.view, controller.crop)
             .expect("fixture camera");
         controller.camera = Some(camera);
         camera
+    }
+
+    fn river_test_controller() -> (
+        MapController<CountingRivers>,
+        Arc<SceneBridge>,
+        Arc<CapturingSink>,
+    ) {
+        let center = FixedPoint {
+            x: i32::try_from(23_883 * ck_map::FIXED_PER_CELL).expect("fixture coordinate fits"),
+            y: i32::try_from(23_883 * ck_map::FIXED_PER_CELL).expect("fixture coordinate fits"),
+        };
+        let loaded = loaded_map_with_rivers(vec![ck_map::RiverLine {
+            points: vec![center],
+        }]);
+        let bridge = SceneBridge::new(ck_render_2d::Filter::Nearest);
+        let mut controller = MapController::with_rivers(
+            &loaded,
+            Arc::clone(&bridge),
+            1,
+            20,
+            CountingRivers::new(loaded.rivers.clone()),
+        )
+        .expect("map lane accepts fixture");
+        let desc = WindowDesc {
+            title: "river controller test".to_owned(),
+            width: 400,
+            height: 320,
+            clear: [0.0; 3],
+        };
+        controller.open(&desc).expect("initial view is valid");
+        let sink = Arc::new(CapturingSink::default());
+        bridge
+            .attach(
+                &desc,
+                PixelSize {
+                    width: 800,
+                    height: 640,
+                },
+                sink.clone(),
+            )
+            .expect("test sink attaches");
+        (controller, bridge, sink)
+    }
+
+    fn expected_center_river(camera: Camera) -> [u32; 2] {
+        let top_left = camera.top_left();
+        let pixel_size = i64::from(STEP_SIZE[usize::from(camera.step)]);
+        let world = WorldPixel {
+            x: i32::try_from((23_883 * ck_map::FIXED_PER_CELL) / pixel_size).expect("world x fits"),
+            y: i32::try_from((23_883 * ck_map::FIXED_PER_CELL) / pixel_size).expect("world y fits"),
+        };
+        [
+            u32::try_from(i64::from(world.x) - i64::from(top_left.x)).expect("river x in view"),
+            u32::try_from(i64::from(world.y) - i64::from(top_left.y)).expect("river y in view"),
+        ]
     }
 
     #[test]
@@ -497,6 +659,60 @@ mod tests {
         assert_eq!(camera.center.x, 23883 * 32_768);
         assert_eq!(camera.center.y, 23883 * 32_768);
         assert_eq!(camera.step, initial_step(controller.crop, camera.view));
+    }
+
+    #[test]
+    fn river_selection_reuses_step_coverage_and_publishes_visible_pixels() {
+        let (mut controller, _bridge, sink) = river_test_controller();
+        assert_eq!(
+            controller.rivers.preparations, 1,
+            "opening prepares its step"
+        );
+
+        let initial = controller.camera().expect("opened camera");
+        let initial_frame = sink.latest();
+        let initial_map = initial_frame.map.expect("map frame is published");
+        assert_eq!(
+            initial_map.camera.rivers().as_ref(),
+            [expected_center_river(initial)],
+            "the camera snapshot carries the expected river pixel in view coordinates"
+        );
+
+        assert!(
+            controller
+                .update(&update(
+                    &[(PAN_RIGHT, true, true)],
+                    Duration::from_millis(16)
+                ))
+                .expect("pan publishes")
+        );
+        assert_eq!(controller.rivers.preparations, 1, "panning reuses coverage");
+
+        at_step(&mut controller, 10);
+        assert!(
+            controller
+                .update(&update(&[(ZOOM_IN, true, true)], Duration::from_millis(16)))
+                .expect("step change publishes")
+        );
+        assert_eq!(
+            controller.rivers.preparations, 2,
+            "the new step prepares once"
+        );
+
+        let second_read = controller.camera().expect("camera remains open");
+        controller
+            .publish_for_generation(second_read, controller.bridge.metrics_generation())
+            .expect("second read at the new step publishes");
+        assert_eq!(
+            controller.rivers.preparations, 2,
+            "a second read at the new step reuses the prepared coverage"
+        );
+        let current = controller.camera().expect("camera remains open");
+        let published = sink.latest().map.expect("map frame is published");
+        assert_eq!(
+            published.camera.rivers().as_ref(),
+            [expected_center_river(current)]
+        );
     }
 
     #[test]

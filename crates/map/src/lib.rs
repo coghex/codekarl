@@ -701,6 +701,58 @@ impl RiverCoverage {
     }
 }
 
+/// Lazily prepared river coverage for one immutable map.
+///
+/// The application owns one cache for the loaded map. A zoom step is rasterized
+/// the first time it is shown and reused for subsequent pans at that step. A new
+/// loaded map gets a new cache, so coverage cannot outlive its source lines.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PreparedRivers {
+    lines: Vec<RiverLine>,
+    steps: Vec<Option<RiverCoverage>>,
+}
+
+impl PreparedRivers {
+    /// Create an empty per-map cache from the map's projected river lines.
+    #[must_use]
+    pub fn new(lines: Vec<RiverLine>) -> Self {
+        Self {
+            lines,
+            steps: vec![None; STEP_SIZE.len()],
+        }
+    }
+
+    /// Return the retained coverage for `step`, preparing it once on first use.
+    ///
+    /// Invalid steps return `None` and do not alter the cache.
+    pub fn coverage(&mut self, step: u8) -> Option<&RiverCoverage> {
+        let slot = self.steps.get_mut(usize::from(step))?;
+        if slot.is_none() {
+            *slot = RiverCoverage::prepare(&self.lines, step);
+        }
+        slot.as_ref()
+    }
+
+    /// Select the visible pixels in view coordinates without rebuilding the
+    /// step's coverage. Output is bounded by the view's area.
+    pub fn select_view(
+        &mut self,
+        step: u8,
+        top_left: WorldPixel,
+        view: ViewSize,
+    ) -> Option<Vec<[u32; 2]>> {
+        let coverage = self.coverage(step)?;
+        let mut selected = Vec::new();
+        for pixel in coverage.select(top_left, view) {
+            selected.push([
+                u32::try_from(i64::from(pixel.x) - i64::from(top_left.x)).ok()?,
+                u32::try_from(i64::from(pixel.y) - i64::from(top_left.y)).ok()?,
+            ]);
+        }
+        Some(selected)
+    }
+}
+
 fn fixed_to_pixel(point: FixedPoint, pixel_size: i64) -> WorldPixel {
     WorldPixel {
         x: clamp_i32(i64::from(point.x).div_euclid(pixel_size)),

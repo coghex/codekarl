@@ -359,3 +359,22 @@ fragment float4 ck_map_fragment(float4 position [[position]], constant MapUnifor
     }
     return colour;
 }
+
+struct MapRiverUniforms {
+    uint2 view;
+};
+
+/* One instanced quad per prepared river pixel. Pixel-edge positions make the overlay exactly one map pixel wide at every zoom. */
+vertex float4 ck_map_river_vertex(uint vertex_id [[vertex_id]], uint instance_id [[instance_id]],
+                                  constant MapRiverUniforms &uniforms [[buffer(0)]],
+                                  device const uint2 *rivers [[buffer(1)]]) {
+    const float2 corners[4] = {float2(0.0, 0.0), float2(0.0, 1.0), float2(1.0, 0.0), float2(1.0, 1.0)};
+    float2 pixel = float2(rivers[instance_id]) + corners[vertex_id];
+    float2 clip = float2(2.0 * pixel.x / float(uniforms.view.x) - 1.0,
+                         1.0 - 2.0 * pixel.y / float(uniforms.view.y));
+    return float4(clip, 0.0, 1.0);
+}
+
+fragment float4 ck_map_river_fragment(constant float4 &colour [[buffer(0)]]) {
+    return colour;
+}

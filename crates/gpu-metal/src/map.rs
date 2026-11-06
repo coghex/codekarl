@@ -67,6 +67,22 @@ pub enum MetalMapError {
     Destination,
     /// A source that is not finite, not inside the view, or empty.
     Source,
+    /// A river pixel outside the view.
+    RiverOutsideView {
+        /// The zero-based position in the submitted river list.
+        position: usize,
+        /// The pixel's x coordinate.
+        x: u32,
+        /// The pixel's y coordinate.
+        y: u32,
+    },
+    /// More river pixels than the view has pixels.
+    TooManyRivers {
+        /// The maximum number of pixels in the view.
+        limit: u64,
+        /// The submitted number of pixels.
+        count: usize,
+    },
 }
 
 impl std::fmt::Display for MetalMapError {
@@ -93,6 +109,12 @@ impl std::fmt::Display for MetalMapError {
             Self::Destination => formatter.write_str("the map's destination has no area"),
             Self::Source => {
                 formatter.write_str("the map's source is not a non-empty part of the view")
+            }
+            Self::RiverOutsideView { position, x, y } => {
+                write!(formatter, "river pixel {position} ({x}, {y}) is outside the view")
+            }
+            Self::TooManyRivers { limit, count } => {
+                write!(formatter, "{count} river pixels; the view holds at most {limit}")
             }
         }
     }
@@ -361,6 +383,7 @@ pub struct MetalMap {
     view: [u32; 2],
     destination: DestinationRect,
     source: SourceRect,
+    rivers: Arc<[[u32; 2]]>,
     refusals: Option<Arc<dyn MapRefusalSink>>,
 }
 
@@ -374,6 +397,7 @@ impl std::fmt::Debug for MetalMap {
             .field("view", &self.view)
             .field("destination", &self.destination)
             .field("source", &self.source)
+            .field("river_pixels", &self.rivers.len())
             .field("refusals", &self.refusals.is_some())
             .finish()
     }
@@ -395,6 +419,25 @@ impl MetalMap {
         view: [u32; 2],
         destination: DestinationRect,
         source: SourceRect,
+    ) -> Result<Self, MetalMapError> {
+        Self::new_with_rivers(input, step, top_left, view, destination, source, Vec::new())
+    }
+
+    /// A map frame with visible river pixels in view coordinates. The list is
+    /// validated and retained for the map pass's overlay draw.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MetalMapError::RiverOutsideView`] for an out-of-view pixel or
+    /// [`MetalMapError::TooManyRivers`] when the list exceeds the view area.
+    pub fn new_with_rivers(
+        input: Arc<MetalMapInput>,
+        step: u8,
+        top_left: [i32; 2],
+        view: [u32; 2],
+        destination: DestinationRect,
+        source: SourceRect,
+        rivers: Vec<[u32; 2]>,
     ) -> Result<Self, MetalMapError> {
         if !side_ok(view[0]) || !side_ok(view[1]) {
             return Err(MetalMapError::Size);
@@ -435,6 +478,24 @@ impl MetalMap {
         {
             return Err(MetalMapError::Source);
         }
+        let limit = u64::from(view[0]) * u64::from(view[1]);
+        if rivers.len() as u64 > limit {
+            return Err(MetalMapError::TooManyRivers {
+                limit,
+                count: rivers.len(),
+            });
+        }
+        if let Some((position, pixel)) = rivers
+            .iter()
+            .enumerate()
+            .find(|(_, pixel)| pixel[0] >= view[0] || pixel[1] >= view[1])
+        {
+            return Err(MetalMapError::RiverOutsideView {
+                position,
+                x: pixel[0],
+                y: pixel[1],
+            });
+        }
         Ok(Self {
             input,
             step,
@@ -442,8 +503,15 @@ impl MetalMap {
             view,
             destination,
             source,
+            rivers: rivers.into(),
             refusals: None,
         })
+    }
+
+    /// River pixels in view coordinates, sorted and deduplicated by `ck-map`.
+    #[must_use]
+    pub fn rivers(&self) -> &Arc<[[u32; 2]]> {
+        &self.rivers
     }
 
     /// This map with the place the presenter tells a refused allocation to.
@@ -487,6 +555,8 @@ pub(crate) struct NativeMap {
     grid_b: *const u8,
     rules: *const u8,
     step: i32,
+    rivers: *const [u32; 2],
+    river_count: u32,
 }
 
 impl NativeMap {
@@ -504,19 +574,17 @@ impl NativeMap {
         grid_b: std::ptr::null(),
         rules: std::ptr::null(),
         step: 0,
+        rivers: std::ptr::null(),
+        river_count: 0,
     };
 
     /// The native description of `map`; `with_grids` also names the input's images' bytes (the first frame of a generation).
     pub(crate) fn of(map: &MetalMap, with_grids: bool) -> Self {
         let input = &map.input;
-        let (grid_a, grid_b, rules) = if with_grids {
-            (
-                input.grid_a.as_ptr(),
-                input.grid_b.as_ptr(),
-                input.rules.as_ptr(),
-            )
+        let (grid_a, grid_b) = if with_grids {
+            (input.grid_a.as_ptr(), input.grid_b.as_ptr())
         } else {
-            (std::ptr::null(), std::ptr::null(), std::ptr::null())
+            (std::ptr::null(), std::ptr::null())
         };
         Self {
             present: 1,
@@ -539,9 +607,108 @@ impl NativeMap {
             ],
             grid_a,
             grid_b,
-            rules,
+            // The rules image is resident with the grids, but the native map pass also reads its river colour on every frame.
+            // Keep this borrowed pointer available after the generation's upload frame as well.
+            rules: input.rules.as_ptr(),
             step: i32::from(map.step),
+            rivers: map.rivers.as_ptr(),
+            river_count: u32::try_from(map.rivers.len()).unwrap_or(u32::MAX),
         }
+    }
+}
+
+#[cfg(test)]
+mod native_map_tests {
+    use super::*;
+
+    fn input() -> Arc<MetalMapInput> {
+        let colour = [20, 40, 60, 255];
+        let rules = MetalMapRules {
+            terrains: vec![MetalTerrainRule {
+                kind: MetalTerrainKind::Land,
+                solid: colour,
+                second: colour,
+                dark: colour,
+                dark_second: colour,
+                cap: colour,
+                high_ground: colour,
+                relief: [0, 1],
+                mix_percent: 0,
+                cap_heights: [0, 1],
+            }],
+            sea: colour,
+            shallow_sea: colour,
+            lake: colour,
+            river: [5, 90, 180, 255],
+            shallow_threshold: 1,
+            steps: ck_map::STEP_SIZE,
+        };
+        Arc::new(
+            MetalMapInput::new(
+                1,
+                [0, 0],
+                [4, 4],
+                vec![0; 4 * 4 * 4].into(),
+                vec![0; 4 * 4 * 4].into(),
+                &rules,
+            )
+            .expect("small map input is valid"),
+        )
+    }
+
+    fn map(input: Arc<MetalMapInput>, step: u8, rivers: Vec<[u32; 2]>) -> MetalMap {
+        MetalMap::new_with_rivers(
+            input,
+            step,
+            [100, 100],
+            [4, 4],
+            DestinationRect {
+                left: 0,
+                top: 0,
+                right: 4,
+                bottom: 4,
+            },
+            SourceRect {
+                left: 0.0,
+                top: 0.0,
+                right: 4.0,
+                bottom: 4.0,
+            },
+            rivers,
+        )
+        .expect("map camera is valid")
+    }
+
+    #[test]
+    fn a_resident_generation_still_supplies_rules_and_new_rivers_after_zoom() {
+        let input = input();
+        let first = map(Arc::clone(&input), 60, vec![[1, 1]]);
+        let first_native = NativeMap::of(&first, true);
+        assert!(!first_native.rules.is_null());
+        assert_eq!(first_native.river_count, 1);
+
+        let zoomed = map(input, 59, vec![[2, 1], [2, 2]]);
+        let zoomed_native = NativeMap::of(&zoomed, false);
+        assert!(
+            zoomed_native.grid_a.is_null(),
+            "resident grids are not uploaded again"
+        );
+        assert!(
+            zoomed_native.grid_b.is_null(),
+            "resident grids are not uploaded again"
+        );
+        assert!(
+            !zoomed_native.rules.is_null(),
+            "the resident rules still supply the river colour"
+        );
+        assert!(
+            !zoomed_native.rivers.is_null(),
+            "the new step has river coverage"
+        );
+        assert_eq!(
+            zoomed_native.river_count, 2,
+            "zoom carries the resized coverage"
+        );
     }
 }
 
