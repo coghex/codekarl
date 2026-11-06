@@ -1,0 +1,92 @@
+# Ireland's terrain types, palette and rules (milestone 6, slice 5). Hand-kept data: the derivation scripts read the keys from here
+# and never write this file. The colours are mock-up 2's (docs/map-design.md section 8); the relief and mix values are its rules.
+#
+# `key` is the colour that stands for the type in terrain.png, so that a hand edit in an image editor is a paint stroke. The keys
+# of the land types are their solid colours; sea and lake have keys of their own. usable.png has two keys, below.
+
+# Under this depth, in metres, the sea dithers towards the shallow-sea tone.
+shallow_threshold = 60
+
+[water]
+sea = "05080e"
+shallow_sea = "0b1422"
+lake = "0b1422"
+river = "3a78c2"
+
+[usable]
+usable = "ffffff"
+unusable = "000000"
+
+[[terrain]]
+name = "sea"
+kind = "sea"
+key = "0a1a33"
+
+[[terrain]]
+name = "lake"
+kind = "lake"
+key = "2f6fb8"
+
+[[terrain]]
+name = "pasture"
+kind = "land"
+key = "a08944"
+solid = "a08944"
+second = "806c35"
+dark = "15110a"
+dark_second = "211a0f"
+relief_low = 20
+relief_high = 260
+mix = 70
+
+[[terrain]]
+name = "forest"
+kind = "land"
+key = "367534"
+solid = "367534"
+second = "285a27"
+dark = "0a120a"
+dark_second = "122012"
+relief_low = 20
+relief_high = 300
+mix = 70
+
+[[terrain]]
+name = "bog"
+kind = "land"
+key = "2c4c2d"
+solid = "2c4c2d"
+second = "203a22"
+dark = "090f0a"
+dark_second = "101a11"
+relief_low = 40
+relief_high = 300
+mix = 50
+
+[[terrain]]
+name = "marsh"
+kind = "land"
+key = "5c3e25"
+solid = "5c3e25"
+second = "462e1b"
+dark = "110b07"
+dark_second = "1c130c"
+relief_low = 0
+relief_high = 40
+mix = 40
+
+[[terrain]]
+name = "mountain"
+kind = "mountain"
+key = "7f8187"
+solid = "7f8187"
+second = "606268"
+dark = "101114"
+dark_second = "1b1c20"
+relief_low = 280
+relief_high = 650
+mix = 80
+cap = "e8e9ed"
+high_ground = "3c3e44"
+cap_low = 560
+cap_high = 900
