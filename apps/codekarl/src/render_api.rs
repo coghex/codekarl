@@ -619,7 +619,8 @@ mod tests {
                 .expect("attached");
             let writer = bridge.take_writer().expect("the one writer");
             let requests = Requests::new();
-            let window = window_api::extension(requests.writer(ck_window::Notifier::new()), None);
+            let window =
+                window_api::extension(requests.writer(ck_window::Notifier::new()), None, None);
             let render = extension(path.map(Path::to_path_buf), writer, None);
             Self {
                 _assets: dir,
@@ -810,6 +811,7 @@ mod tests {
             window_api::extension(
                 requests.writer(ck_window::Notifier::new()),
                 Some(Arc::clone(&notes)),
+                None,
             ),
             extension(Some(path), writer, Some(Arc::clone(&notes))),
         ];
@@ -878,6 +880,7 @@ mod tests {
             window_api::extension(
                 requests.writer(ck_window::Notifier::new()),
                 Some(Arc::clone(&notes)),
+                None,
             ),
             extension(Some(path), writer, Some(notes)),
         ];

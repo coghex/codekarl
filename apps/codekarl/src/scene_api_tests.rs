@@ -178,11 +178,14 @@ impl Rig {
         let control = UpdateSettings::new(60, Duration::from_millis(100))
             .expect("valid pacing")
             .control();
-        let frame = frame_api::extension(match kind {
-            Kind::Native | Kind::Glfw => FrameBackend::Control(control.clone()),
-            Kind::Headless | Kind::NoService => FrameBackend::Headless,
-        });
-        let window = window_api::extension(Requests::new().writer(Notifier::new()), headless);
+        let frame = frame_api::extension(
+            false,
+            match kind {
+                Kind::Native | Kind::Glfw => FrameBackend::Control(control.clone()),
+                Kind::Headless | Kind::NoService => FrameBackend::Headless,
+            },
+        );
+        let window = window_api::extension(Requests::new().writer(Notifier::new()), headless, None);
         Self {
             _dir: dir,
             root,

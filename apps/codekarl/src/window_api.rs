@@ -239,11 +239,15 @@ fn description(arguments: &[Option<ConfigValue>]) -> Result<WindowDesc, String> 
 struct Shared {
     writer: RequestWriter,
     headless: Option<Arc<HeadlessNotes>>,
+    map: Option<crate::map_app::SharedController>,
 }
 
 impl Shared {
     fn open(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
         let desc = description(arguments)?;
+        if let Some(map) = &self.map {
+            crate::map_app::lock(map).open(&desc)?;
+        }
         self.writer.open(desc).map_err(|error| error.to_string())?;
         if let Some(notes) = &self.headless {
             notes.accepted_open();
@@ -276,8 +280,16 @@ impl Shared {
 
 /// The `window` extension over `writer`. `headless` is `Some` in a headless run: the same functions, the
 /// same validation, plus the notes of what was ignored.
-pub(crate) fn extension(writer: RequestWriter, headless: Option<Arc<HeadlessNotes>>) -> Extension {
-    let shared = Shared { writer, headless };
+pub(crate) fn extension(
+    writer: RequestWriter,
+    headless: Option<Arc<HeadlessNotes>>,
+    map: Option<crate::map_app::SharedController>,
+) -> Extension {
+    let shared = Shared {
+        writer,
+        headless,
+        map,
+    };
     let open: HostFunction = {
         let shared = shared.clone();
         Arc::new(move |arguments| shared.open(arguments))
@@ -355,7 +367,7 @@ mod tests {
             });
             let writer = requests.writer(Notifier::new());
             Self {
-                extension: extension(writer, notes.clone()),
+                extension: extension(writer, notes.clone(), None),
                 requests,
                 headless: notes,
                 records,

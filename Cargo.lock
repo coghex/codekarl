@@ -162,6 +162,7 @@ dependencies = [
  "ck-gpu-vulkan",
  "ck-log",
  "ck-lua",
+ "ck-map",
  "ck-render-2d",
  "ck-resources",
  "ck-runtime",

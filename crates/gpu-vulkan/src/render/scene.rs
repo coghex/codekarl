@@ -778,6 +778,8 @@ impl Core<'_> {
             Prep::Ready(prepared) => prepared,
             Prep::Wait => return Ok(Step::Wait),
         };
+        // A map-only frame has no scene build, but it still submits and presents a GPU draw.
+        let map_frame = prepared.map.is_some();
         if self.hooks.capture_frames.is_some()
             && let Some(extent) = self.gpu.current.as_ref().map(|chain| chain.extent)
         {
@@ -789,7 +791,7 @@ impl Core<'_> {
         self.hold_acquisition();
         let mut outcome: Option<Result<Step, Fatal>> = None;
         let began = scene.frame_dyn(&mut |seam| {
-            let (result, submission) = self.frame(seam, frame, rgb, prepared);
+            let (result, submission) = self.frame(seam, frame, rgb, prepared, map_frame);
             outcome = Some(result);
             submission
         });
@@ -810,6 +812,7 @@ impl Core<'_> {
         frame: Frame,
         rgb: [f32; 3],
         prepared: Prepared,
+        map_frame: bool,
     ) -> (Result<Step, Fatal>, Option<crate::FrameSubmission>) {
         let Some(chain_id) = self.gpu.current.as_ref().map(|chain| chain.id) else {
             self.ledger.return_unused(frame);
@@ -996,7 +999,10 @@ impl Core<'_> {
         self.quad_submitted(submission.number(), prepared);
         self.log(Event::Submit);
         // ---- present ----
-        (self.present(&frame, index, rgb), Some(submission))
+        (
+            self.present(&frame, index, rgb, map_frame),
+            Some(submission),
+        )
     }
 
     /// Records the format notice, once per run, and wakes the main loop as after a report.
@@ -1054,7 +1060,13 @@ impl Core<'_> {
         }
     }
 
-    fn present(&mut self, frame: &Frame, index: u32, rgb: [f32; 3]) -> Result<Step, Fatal> {
+    fn present(
+        &mut self,
+        frame: &Frame,
+        index: u32,
+        rgb: [f32; 3],
+        map_frame: bool,
+    ) -> Result<Step, Fatal> {
         let injected = TestHooks::next(&mut self.hooks.present);
         let semaphore = vk::Semaphore::from_raw(frame.slot.semaphore);
         let fence = vk::Fence::from_raw(frame.slot.fence);
@@ -1128,7 +1140,7 @@ impl Core<'_> {
                 }
                 if matches!(call, PresentCall::Success | PresentCall::Suboptimal) {
                     let counters = self.counters_for_drawn();
-                    self.hand_off(handed_at, present_id);
+                    self.hand_off(handed_at, present_id, map_frame);
                     self.drawn(rgb, counters);
                 }
                 if rebuild && call == PresentCall::OutOfDate {
@@ -1174,17 +1186,23 @@ impl Core<'_> {
     }
 
     /// The frame was handed to the presentation engine at `handed_at`: its counts and present number go to the step's record.
-    fn hand_off(&mut self, handed_at: u64, present_id: Option<u32>) {
-        if let Some((counters, bindless)) = self.timing.built.take() {
-            self.timing.handed(
-                handed_at,
-                HandedOff {
-                    counters,
-                    table_binds: u64::from(bindless && counters.instances != 0),
-                    present_id,
-                },
-            );
-        }
+    fn hand_off(&mut self, handed_at: u64, present_id: Option<u32>, map_frame: bool) {
+        let built = self.timing.built.take();
+        let (counters, bindless) = match built {
+            Some(built) => built,
+            // Map passes are GPU draws outside the scene-quads build. Their hand-off still owns
+            // frame timing and presentation feedback, with no scene counters to report.
+            None if map_frame => (crate::FrameCounters::default(), false),
+            None => return,
+        };
+        self.timing.handed(
+            handed_at,
+            HandedOff {
+                counters,
+                table_binds: u64::from(bindless && counters.instances != 0),
+                present_id,
+            },
+        );
     }
 
     /// A frame was queued for presentation; `counters` is what its build counted, read only when `hooks.scene.drawn` is set.

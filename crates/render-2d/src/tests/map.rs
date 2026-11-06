@@ -574,6 +574,35 @@ fn an_input_published_before_the_sink_attaches_goes_out_at_attach_without_a_came
 }
 
 #[test]
+fn a_staged_initial_camera_makes_the_first_attached_map_snapshot_complete() {
+    let bridge = SceneBridge::new(Filter::Nearest);
+    assert_eq!(
+        bridge.publish_map(input(1, 4, 4)),
+        MapPublication::Published
+    );
+    assert_eq!(
+        bridge.stage_initial_camera(camera([2, 2], 1)),
+        MapPublication::Published
+    );
+    let sink = RecordingSink::new();
+    bridge
+        .attach(
+            &desc(100, 60),
+            pixels(100, 60),
+            Arc::clone(&sink) as Arc<dyn QuadSink>,
+        )
+        .expect("attached");
+    let first = sink.last().expect("first publication");
+    let map = first.map.expect("the first frame contains the map camera");
+    assert_eq!(map.camera.step(), 40);
+    assert_eq!(map.input.generation(), 1);
+    assert!(
+        map.placement.is_some(),
+        "the first camera is bound to attach metrics"
+    );
+}
+
+#[test]
 fn a_refusal_is_reported_once_per_episode_and_a_success_ends_the_episode() {
     let (bridge, sink) = attached();
     bridge.publish_map(input(1, 4, 4));

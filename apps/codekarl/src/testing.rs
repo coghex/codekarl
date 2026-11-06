@@ -118,7 +118,8 @@ impl Harness {
         fs::write(&entry, script).expect("a script");
         let notifier = Notifier::new();
         let requests = Requests::new();
-        let mut extension = window_api::extension(requests.writer(Arc::clone(&notifier)), None);
+        let mut extension =
+            window_api::extension(requests.writer(Arc::clone(&notifier)), None, None);
         for (name, function) in extras.functions {
             extension = extension.function(name, function);
         }
@@ -539,6 +540,7 @@ impl HeadlessDriver {
                 quit: Arc::new(AtomicBool::new(false)),
                 notifier: Notifier::new(),
             },
+            None,
             |_| panic!("a headless run has no window plan"),
             move |setup| {
                 let extension = setup.extension.function("probe", probe);

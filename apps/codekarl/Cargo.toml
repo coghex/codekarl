@@ -16,6 +16,7 @@ ck-gpu-metal = { path = "../../crates/gpu-metal", optional = true }
 ck-gpu-vulkan = { path = "../../crates/gpu-vulkan", optional = true }
 ck-log = { path = "../../crates/log" }
 ck-lua = { path = "../../crates/lua" }
+ck-map = { path = "../../crates/map" }
 ck-render-2d = { path = "../../crates/render-2d" }
 ck-resources = { path = "../../crates/resources" }
 ck-window = { path = "../../crates/window" }

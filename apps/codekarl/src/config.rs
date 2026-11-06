@@ -16,6 +16,11 @@
 //!
 //! [window]                # optional; without a `backend` (or without the table) the run is headless
 //! backend = "native-metal"   # native-metal | glfw-vulkan; `--headless` and `--backend` override it
+
+//! [map]                   # optional; adds the map camera and six map input actions
+//! directory = "../maps/fixture"
+//! pan_pixels_per_frame = 4 # 1..=32, default 4
+//! zoom_steps_per_second = 20 # 1..=60, default 20
 //!
 //! [input.bindings]        # optional; action name = the physical-key bindings that hold it (design §7.1)
 //! close = ["Escape"]      # the default; an explicit empty list unbinds an action
@@ -134,11 +139,49 @@ struct File {
     #[serde(default)]
     window: Window,
     #[serde(default)]
+    map: Option<MapTable>,
+    #[serde(default)]
     render: RenderTable,
     #[serde(default)]
     frame: FrameTable,
     #[serde(default)]
     lua: BTreeMap<VmName, Vm>,
+}
+
+/// `[map]`: the map directory and the paced camera control rates.
+#[derive(Debug, Default)]
+struct MapFields {
+    directory: Option<PathBuf>,
+    pan_pixels_per_frame: Option<i64>,
+    zoom_steps_per_second: Option<i64>,
+}
+
+impl<'de> Deserialize<'de> for MapFields {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize, Default)]
+        #[serde(deny_unknown_fields, default)]
+        struct Fields {
+            directory: Option<PathBuf>,
+            pan_pixels_per_frame: Option<i64>,
+            zoom_steps_per_second: Option<i64>,
+        }
+
+        let fields: Fields = table_only(deserializer, "a table for `map`")?;
+        Ok(Self {
+            directory: fields.directory,
+            pan_pixels_per_frame: fields.pan_pixels_per_frame,
+            zoom_steps_per_second: fields.zoom_steps_per_second,
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct MapTable(MapFields);
+
+impl<'de> Deserialize<'de> for MapTable {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        table_only(deserializer, "a table for `map`").map(Self)
+    }
 }
 
 /// Deserializes a `T` from a table (`[name]` or an inline table) and from nothing else. Serde's derived
@@ -1047,6 +1090,8 @@ pub(crate) struct Config {
     pub(crate) vms: Vec<VmConfig>,
     /// The `[window]` table's backend, if the file names one: none means a headless run.
     pub(crate) window_backend: Option<Backend>,
+    /// Optional map input and camera controls. The path is relative to the configuration file.
+    pub(crate) map: Option<MapConfig>,
     /// Resource-service and backend limits, with defaults filled in.
     pub(crate) resources: ResourceConfig,
     /// The `[render]` table, with its defaults.
@@ -1060,6 +1105,14 @@ pub(crate) struct Config {
     pub(crate) whole: ConfigValue,
 }
 
+/// Validated map configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MapConfig {
+    pub(crate) directory: PathBuf,
+    pub(crate) pan_pixels_per_frame: u32,
+    pub(crate) zoom_steps_per_second: u32,
+}
+
 impl Default for Config {
     /// The built-in defaults: the same as an empty file, so no VMs.
     fn default() -> Self {
@@ -1068,6 +1121,7 @@ impl Default for Config {
             deadlines: OwnerDeadlines::default(),
             vms: Vec::new(),
             window_backend: None,
+            map: None,
             resources: ResourceConfig::default(),
             render: RenderConfig::default(),
             frame: FrameConfig::default(),
@@ -1130,10 +1184,27 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         .map_err(|error| describe(path, text, &error))?;
     let base = path.parent().unwrap_or_else(|| Path::new(""));
     // The entries go to `ck-input`, whose refusal fails the load with its message naming the action and the entry.
-    let bindings = match file.input.0.bindings {
-        None => ck_window::LoopSettings::default().bindings().clone(),
-        Some(BindingsTable(entries)) => Bindings::from_entries(entries)
-            .map_err(|error| format!("{}: [input.bindings]: {error}", path.display()))?,
+    let map = parse_map(path, base, file.map)?;
+    let bindings = if map.is_some() {
+        let mut entries = BTreeMap::from([
+            ("map_pan_left".to_owned(), vec!["ArrowLeft".to_owned()]),
+            ("map_pan_right".to_owned(), vec!["ArrowRight".to_owned()]),
+            ("map_pan_up".to_owned(), vec!["ArrowUp".to_owned()]),
+            ("map_pan_down".to_owned(), vec!["ArrowDown".to_owned()]),
+            ("map_zoom_in".to_owned(), vec!["Equal".to_owned()]),
+            ("map_zoom_out".to_owned(), vec!["Minus".to_owned()]),
+        ]);
+        if let Some(BindingsTable(custom)) = file.input.0.bindings {
+            entries.extend(custom);
+        }
+        Bindings::from_entries(entries)
+            .map_err(|error| format!("{}: [input.bindings]: {error}", path.display()))?
+    } else {
+        match file.input.0.bindings {
+            None => ck_window::LoopSettings::default().bindings().clone(),
+            Some(BindingsTable(entries)) => Bindings::from_entries(entries)
+                .map_err(|error| format!("{}: [input.bindings]: {error}", path.display()))?,
+        }
     };
     let resources = ResourceConfig::parse(file.resources.0)
         .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -1165,6 +1236,7 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         deadlines: file.runtime.into(),
         vms,
         window_backend: file.window.0.backend.map(|name| name.0),
+        map,
         resources,
         render: RenderConfig {
             filter: file
@@ -1191,6 +1263,34 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         bindings,
         whole: to_config_value(&toml::Value::Table(whole)),
     })
+}
+
+fn parse_map(path: &Path, base: &Path, map: Option<MapTable>) -> Result<Option<MapConfig>, String> {
+    let Some(MapTable(fields)) = map else {
+        return Ok(None);
+    };
+    let directory = fields
+        .directory
+        .ok_or_else(|| format!("{}: [map]: directory is required", path.display()))?;
+    let pan = fields.pan_pixels_per_frame.unwrap_or(4);
+    if !(1..=32).contains(&pan) {
+        return Err(format!(
+            "{}: [map]: pan_pixels_per_frame={pan} is outside 1..=32",
+            path.display()
+        ));
+    }
+    let zoom = fields.zoom_steps_per_second.unwrap_or(20);
+    if !(1..=60).contains(&zoom) {
+        return Err(format!(
+            "{}: [map]: zoom_steps_per_second={zoom} is outside 1..=60",
+            path.display()
+        ));
+    }
+    Ok(Some(MapConfig {
+        directory: base.join(directory),
+        pan_pixels_per_frame: u32::try_from(pan).expect("validated map pan range fits u32"),
+        zoom_steps_per_second: u32::try_from(zoom).expect("validated map zoom range fits u32"),
+    }))
 }
 
 #[cfg(test)]
@@ -1264,6 +1364,78 @@ mod tests {
             ConfigValue::Integer(4)
         );
         assert_eq!(render["max_quads"], ConfigValue::Integer(99));
+    }
+
+    #[test]
+    fn map_is_opt_in_with_mockup_derived_keyboard_defaults_and_custom_rates() {
+        let without_map = parse_config("").expect("empty configuration");
+        assert!(without_map.map.is_none());
+        assert_eq!(
+            without_map.bindings,
+            ck_window::LoopSettings::default().bindings().clone()
+        );
+
+        let defaults = parse_config("[map]\ndirectory = \"fixture\"\n").expect("map defaults");
+        let map = defaults.map.expect("configured map");
+        assert_eq!(
+            map.directory,
+            Path::new(PATH).parent().unwrap().join("fixture")
+        );
+        assert_eq!(map.pan_pixels_per_frame, 4);
+        assert_eq!(map.zoom_steps_per_second, 20);
+        assert_eq!(
+            defaults.bindings.action("map_pan_left").unwrap().bindings()[0]
+                .key()
+                .name(),
+            "ArrowLeft"
+        );
+        assert_eq!(
+            defaults.bindings.action("map_zoom_in").unwrap().bindings()[0]
+                .key()
+                .name(),
+            "Equal"
+        );
+        assert_eq!(
+            defaults.bindings.action("map_zoom_out").unwrap().bindings()[0]
+                .key()
+                .name(),
+            "Minus"
+        );
+
+        let custom = parse_config(
+            "[map]\ndirectory = \"fixture\"\npan_pixels_per_frame = 9\nzoom_steps_per_second = 31\n\
+             [input.bindings]\nmap_pan_left = [\"KeyA\"]\n",
+        )
+        .expect("custom map controls");
+        let map = custom.map.expect("configured map");
+        assert_eq!(map.pan_pixels_per_frame, 9);
+        assert_eq!(map.zoom_steps_per_second, 31);
+        assert_eq!(
+            custom.bindings.action("map_pan_left").unwrap().bindings()[0]
+                .key()
+                .name(),
+            "KeyA"
+        );
+        assert_eq!(
+            custom.bindings.action("map_pan_right").unwrap().bindings()[0]
+                .key()
+                .name(),
+            "ArrowRight"
+        );
+    }
+
+    #[test]
+    fn map_control_rates_reject_values_outside_their_approved_ranges() {
+        for (key, value, range) in [
+            ("pan_pixels_per_frame", "0", "1..=32"),
+            ("pan_pixels_per_frame", "33", "1..=32"),
+            ("zoom_steps_per_second", "0", "1..=60"),
+            ("zoom_steps_per_second", "61", "1..=60"),
+        ] {
+            let text = format!("[map]\ndirectory = \"fixture\"\n{key} = {value}\n");
+            let error = parse_config(&text).expect_err(&text);
+            assert!(error.contains(key) && error.contains(range), "{error}");
+        }
     }
 
     #[test]
