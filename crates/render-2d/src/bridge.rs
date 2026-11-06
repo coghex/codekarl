@@ -433,6 +433,35 @@ impl SceneBridge {
         outcome
     }
 
+    /// Stages the initial camera before the first presenter attach. The caller computes it from the accepted window description;
+    /// its metrics generation must be the one the first `attach` will create. This lets the first rendered frame contain the complete
+    /// map instead of briefly showing an empty map lane.
+    ///
+    /// Returns [`MapPublication::Stale`] once a presenter has attached, when metrics already exist, or when the camera does not name
+    /// exactly the next metrics generation. A detached bridge returns [`MapPublication::Detached`].
+    pub fn stage_initial_camera(&self, camera: Arc<MapCamera>) -> MapPublication {
+        let mut displaced = Displaced::default();
+        let outcome = {
+            let mut state = self.lock();
+            if state.phase == Phase::Ended {
+                displaced.camera = Some(camera);
+                MapPublication::Detached
+            } else if state.sink.is_some()
+                || state.metrics.is_some()
+                || camera.metrics_generation() != state.metrics_generation.saturating_add(1)
+            {
+                displaced.camera = Some(camera);
+                MapPublication::Stale
+            } else {
+                displaced.camera = state.camera.replace(camera);
+                state.generation = state.generation.saturating_add(1);
+                MapPublication::Published
+            }
+        };
+        drop(displaced);
+        outcome
+    }
+
     /// Where the bridge is.
     #[must_use]
     pub fn phase(&self) -> Phase {

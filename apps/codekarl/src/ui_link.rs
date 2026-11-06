@@ -205,6 +205,7 @@ struct State {
 pub(crate) struct CodekarlUi {
     slot: UiSlot,
     state: Rc<State>,
+    map: Option<crate::map_app::SharedController>,
 }
 
 impl CodekarlUi {
@@ -213,6 +214,15 @@ impl CodekarlUi {
         Self {
             slot,
             state: Rc::new(State::default()),
+            map: None,
+        }
+    }
+
+    pub(crate) fn with_map(slot: UiSlot, map: crate::map_app::SharedController) -> Self {
+        Self {
+            slot,
+            state: Rc::new(State::default()),
+            map: Some(map),
         }
     }
 
@@ -278,7 +288,17 @@ impl UiLink for CodekarlUi {
         let posted = vm.borrow_mut().post(callback, arguments);
         match posted {
             Ok(id) => {
+                let map_result = match (&self.map, &event) {
+                    (Some(map), UiEvent::Update(update)) => {
+                        crate::map_app::lock(map).update(update).map(|_| ())
+                    }
+                    _ => Ok(()),
+                };
                 self.state.pending.borrow_mut().push_back((id, event));
+                if let Err(message) = map_result {
+                    *self.state.failure.borrow_mut() = Some(message);
+                    return Err(PostError::Disconnected);
+                }
                 Ok(())
             }
             Err(VmError::Full { .. }) => Err(PostError::Full),
@@ -298,6 +318,16 @@ impl UiLink for CodekarlUi {
         let (_, event) = pending.remove(position)?;
         drop(pending);
         let answer = answer_of(&event, result.outcome);
+        let answer = if self.map.is_some()
+            && matches!(&event, UiEvent::Update(_))
+            && matches!(answer, Answer::NotRegistered)
+        {
+            // The map controller consumes paced updates even when Lua has no frame_update callback. Returning a successful
+            // synthetic answer keeps the scheduler's registration epoch alive without changing Lua's callback contract.
+            Answer::Returned
+        } else {
+            answer
+        };
         Some(UiAnswer { event, answer })
     }
 

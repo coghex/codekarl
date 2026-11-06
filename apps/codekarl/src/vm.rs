@@ -506,6 +506,7 @@ mod tests {
             extensions: vec![crate::window_api::extension(
                 requests.writer(Notifier::new()),
                 None,
+                None,
             )],
             slot: Rc::clone(&slot),
             wake: Arc::new(move || {

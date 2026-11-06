@@ -179,6 +179,15 @@ impl Harness {
             .with_map(Some(map)),
         );
     }
+
+    /// Publishes a map frame with no separate scene source, as the app does for the map-only path.
+    fn publish_map_only(&mut self, map: VulkanMap) {
+        self.generation += 1;
+        self.frames.publish(
+            VulkanFrame::new(self.generation, VulkanFilter::Nearest, None, None)
+                .with_map(Some(map)),
+        );
+    }
 }
 
 /// The first frame has the map: the presenter makes the input and the target resident, records the map pass, and its window is
@@ -191,7 +200,7 @@ fn a_map_in_the_first_frame_is_drawn_enlarged() {
         let [x, y] = corner();
         [x - 1, y]
     };
-    harness.publish_map(map_of(&input, top_left, [5, 3]));
+    harness.publish_map_only(map_of(&input, top_left, [5, 3]));
     let generation = harness.generation;
     let sink = Arc::clone(&captures);
     let mut presenter =
@@ -199,6 +208,18 @@ fn a_map_in_the_first_frame_is_drawn_enlarged() {
             hooks.capture_frames = Some(sink);
         });
     let frame = captured(&mut harness, &captures, generation);
+    harness.rig.wait("the map frame's metrics hand-off", || {
+        presenter.metrics_totals().frames >= 1
+    });
+    let metrics = presenter.metrics_totals();
+    assert_eq!(
+        metrics.frames, 1,
+        "the map frame is a drawn frame: {metrics:?}"
+    );
+    assert_eq!(
+        metrics.skipped, 0,
+        "the map frame was not skipped: {metrics:?}"
+    );
     for y in 0..12 {
         for x in 0..20 {
             assert_eq!(

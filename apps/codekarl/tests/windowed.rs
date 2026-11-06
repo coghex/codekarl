@@ -81,6 +81,7 @@ const EXTERNAL_FORWARDING_FIXTURE_FLAG: &str = "--ck-activation-forwarding-fixtu
 /// Internal worker argument, consumed here rather than passed to the application.
 const ALLOW_UNFOCUSED_UPDATES_FLAG: &str = "--ck-windowed-test-allow-unfocused-updates";
 const QUEUE_FOCUS_LOST_FOR_CK163_FLAG: &str = "--ck-windowed-test-queue-focus-lost-for-ck163";
+const MAP_INPUT_ENV: &str = "CK_WINDOWED_TEST_MAP_INPUT";
 const REAL_FOCUS_GATE_CASES: [&str; 1] =
     ["synthetic_focus_loss_without_worker_opt_in_keeps_the_pause"];
 
@@ -147,6 +148,7 @@ impl Mode {
 static MODE: AtomicU8 = AtomicU8::new(0);
 static ALLOW_UNFOCUSED_UPDATES: AtomicBool = AtomicBool::new(false);
 static QUEUE_FOCUS_LOST_FOR_CK163: AtomicBool = AtomicBool::new(false);
+static MAP_INPUT_CASE: AtomicBool = AtomicBool::new(false);
 
 fn mode() -> Mode {
     Mode::from_code(MODE.load(Ordering::SeqCst))
@@ -272,6 +274,7 @@ fn worker(arguments: Vec<OsString>) -> ExitCode {
     if mode != Mode::TypingWithoutFilter {
         // Step 2, before the application's first event dispatch (inside `main_entry`).
         // SAFETY: main thread; installs one local event monitor, once, before the first window.
+        // SAFETY: main thread; installs one local event monitor before the first window.
         unsafe { ck_app_t_install_input_filter() };
     }
     let activation_report = report.with_extension("activation");
@@ -369,6 +372,25 @@ impl Fixture {
         self.scratch.0.join(name)
     }
 
+    /// Copies the app's accepted 2 x 2 fixture into this test's scratch directory.
+    fn map_fixture(&self) -> PathBuf {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/map");
+        let destination = self.path("map");
+        fs::create_dir_all(&destination).expect("the fixture map directory");
+        for name in [
+            "map.toml",
+            "terrain.toml",
+            "rivers.toml",
+            "terrain.png",
+            "usable.png",
+            "elevation.png",
+        ] {
+            fs::copy(source.join(name), destination.join(name))
+                .expect("copy the valid map fixture");
+        }
+        destination
+    }
+
     fn has(&self, name: &str) -> bool {
         self.path(name).exists()
     }
@@ -439,6 +461,9 @@ fn start(args: &[&OsStr]) -> Worker {
     }
     if QUEUE_FOCUS_LOST_FOR_CK163.load(Ordering::SeqCst) {
         command.arg(QUEUE_FOCUS_LOST_FOR_CK163_FLAG);
+    }
+    if MAP_INPUT_CASE.load(Ordering::SeqCst) {
+        command.env(MAP_INPUT_ENV, "1");
     }
     command.args(args);
     let live = Supervised::spawn(command, DEADLINE).unwrap_or_else(|error| panic!("{error}"));
@@ -647,6 +672,43 @@ fn the_demo_placeholder_is_drawn_with_the_quads_generation_in_the_first_frame_an
         seen.stdout
     );
     assert!(!seen.stdout.contains("ERROR"), "{}", seen.stdout);
+}
+
+fn a_fixture_map_opens_moves_from_marked_pan_and_zoom_keys_and_closes_normally() {
+    let fixture = Fixture::new();
+    let map = fixture.map_fixture();
+    let config_text = format!(
+        "[window]\nbackend = \"native-metal\"\n\n[map]\ndirectory = '{}'\n\n[frame]\nupdates_per_second = 60\n",
+        map.display()
+    );
+    let body = r"
+function startup()
+  local updates = 0
+  frame.on_update(function()
+    updates = updates + 1
+    if updates >= 30 then window.close() end
+  end)
+  window.on_opened(function() wait_for(HOLD) end)
+  window.open{title = 'map controls', width = 400, height = 240, clear = {0, 0, 0}}
+end
+";
+    let config = fixture.windowed(&config_text, body);
+    let seen = run_windowed(&fixture, &config, &[]);
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+    assert_in_order(
+        &seen.stdout,
+        &[
+            "runtime: window: native-metal",
+            "window: window opened",
+            "window: window closed",
+            "runtime: shutdown complete",
+        ],
+    );
+    assert!(
+        !seen.stdout.contains("ERROR") && !seen.stdout.contains("incomplete"),
+        "{}",
+        seen.stdout
+    );
 }
 
 fn a_window_opened_and_closed_by_the_script_exits_0_and_both_shutdowns_follow_the_close() {
@@ -1134,12 +1196,13 @@ fn helper_threads_run_with_sigint_and_sigterm_blocked() {
 // ---------------------------------------------------------------------------------------------
 
 /// The names the filter exports.
-const FILTER_SYMBOLS: [&str; 5] = [
+const FILTER_SYMBOLS: [&str; 6] = [
     "ck_app_t_install_input_filter",
     "ck_app_t_dropped_keys",
     "ck_app_t_start_typist",
     "ck_app_t_typist_mask",
     "ck_app_t_post_key",
+    "ck_app_t_schedule_map_keys",
 ];
 
 fn contains(haystack: &[u8], needle: &str) -> bool {
@@ -1852,6 +1915,7 @@ fn feature_cases() -> Vec<(&'static str, fn())> {
 /// The cases, in the order they run.
 fn cases() -> Vec<(&'static str, fn())> {
     let mut cases = vec![
+        case!(a_fixture_map_opens_moves_from_marked_pan_and_zoom_keys_and_closes_normally),
         case!(the_demo_placeholder_is_drawn_with_the_quads_generation_in_the_first_frame_and_the_run_closes_cleanly),
         case!(a_window_opened_and_closed_by_the_script_exits_0_and_both_shutdowns_follow_the_close),
         case!(sigterm_after_window_opened_shuts_down_cleanly_and_exits_143),
@@ -1897,10 +1961,15 @@ fn run_case(name: &str, case: fn()) -> bool {
         ),
         Ordering::SeqCst,
     );
+    MAP_INPUT_CASE.store(
+        name == "a_fixture_map_opens_moves_from_marked_pan_and_zoom_keys_and_closes_normally",
+        Ordering::SeqCst,
+    );
     let started = Instant::now();
     let passed = panic::catch_unwind(AssertUnwindSafe(case)).is_ok();
     ALLOW_UNFOCUSED_UPDATES.store(false, Ordering::SeqCst);
     QUEUE_FOCUS_LOST_FOR_CK163.store(false, Ordering::SeqCst);
+    MAP_INPUT_CASE.store(false, Ordering::SeqCst);
     println!(
         "test {name} [{}] ... {} ({:.1}s)",
         mode().word(),

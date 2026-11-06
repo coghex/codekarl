@@ -72,6 +72,7 @@ mod demo_tests;
 mod fakes;
 mod frame_api;
 mod lifecycle;
+mod map_app;
 mod metrics;
 #[cfg_attr(
     all(
@@ -414,14 +415,17 @@ fn scene_extensions(
         service,
         metrics.as_ref().map(metrics::MetricsHub::load_notes),
     );
-    let frame = frame_api::extension(match mode {
-        mode::Mode::Windowed(_) => window_loop_settings
-            .updates()
-            .map_or(frame_api::FrameBackend::Headless, |updates| {
-                frame_api::FrameBackend::Control(updates.control())
-            }),
-        mode::Mode::Headless => frame_api::FrameBackend::Headless,
-    });
+    let frame = frame_api::extension(
+        config.map.is_some(),
+        match mode {
+            mode::Mode::Windowed(_) => window_loop_settings
+                .updates()
+                .map_or(frame_api::FrameBackend::Headless, |updates| {
+                    frame_api::FrameBackend::Control(updates.control())
+                }),
+            mode::Mode::Headless => frame_api::FrameBackend::Headless,
+        },
+    );
     // `diagnostics.metrics_mark`: the mark in a windowed run (either backend), accepted and ignored in a headless one.
     let diagnostics = metrics::extension(metrics);
     (vec![render, texture, frame, diagnostics], render_end)
@@ -435,10 +439,21 @@ fn supervise(
     shared: Shared,
     windowed_plan: impl FnOnce(Setup) -> Plan,
 ) -> Status {
+    let loaded_map = match &config.map {
+        Some(map) => match ck_map::load_map(&map.directory) {
+            Ok(loaded) => Some(loaded),
+            Err(error) => {
+                emit(Level::Error, "config", format_args!("[map] {error}"));
+                return FAILED;
+            }
+        },
+        None => None,
+    };
     supervise_with_owner_factory(
         config,
         mode,
         shared,
+        loaded_map,
         windowed_plan,
         production_headless_plan,
         |wiring, _, _| vm::spawns(&config.vms, &config.whole, Some(wiring)),
@@ -462,6 +477,7 @@ fn supervise_with_owner_factory(
     config: &config::Config,
     mode: mode::Mode,
     shared: Shared,
+    loaded_map: Option<ck_map::LoadedMap>,
     windowed_plan: impl FnOnce(Setup) -> Plan,
     headless_plan: impl FnOnce(Setup) -> Plan,
     owner_factory: impl FnOnce(
@@ -473,12 +489,31 @@ fn supervise_with_owner_factory(
     let requests = Requests::new();
     let headless = matches!(mode, mode::Mode::Headless).then(|| Arc::new(HeadlessNotes::logging()));
     let slot = UiSlot::default();
-    let ui = CodekarlUi::new(Rc::clone(&slot));
     let notes = Rc::new(RunNotes::default());
     // One bridge per run, with the configured filter. Its one writer goes to the `render` extension. The end of
     // the bridge is the application's to declare (below): a late write is discarded and counted in every kind of
     // run, a headless one included, where no renderer ever attaches.
     let bridge = scene_bridge(config);
+    let map_controller = match (loaded_map, &config.map) {
+        (Some(loaded), Some(map)) => match map_app::MapController::new(
+            &loaded,
+            Arc::clone(&bridge),
+            map.pan_pixels_per_frame,
+            map.zoom_steps_per_second,
+        ) {
+            Ok(controller) => Some(map_app::shared(controller)),
+            Err(message) => {
+                emit(Level::Error, "config", format_args!("{message}"));
+                return FAILED;
+            }
+        },
+        (None, _) => None,
+        (Some(_), None) => unreachable!("map loading follows map configuration"),
+    };
+    let ui = map_controller.as_ref().map_or_else(
+        || CodekarlUi::new(Rc::clone(&slot)),
+        |map| CodekarlUi::with_map(Rc::clone(&slot), Arc::clone(map)),
+    );
     let writer = bridge
         .take_writer()
         .expect("a new bridge hands out its one writer");
@@ -505,6 +540,7 @@ fn supervise_with_owner_factory(
         extension: window_api::extension(
             requests.writer(Arc::clone(&shared.notifier)),
             headless.clone(),
+            map_controller.clone(),
         ),
         env: RunEnv {
             ui: ui.clone(),
@@ -733,6 +769,22 @@ mod tests {
         mode::Mode::Windowed(mode::Backend::GlfwVulkan)
     }
 
+    #[test]
+    fn a_bad_configured_map_is_a_startup_error_before_the_window_plan() {
+        let missing = testing::Dir::new().0.join("missing-map");
+        let config = config::load_text_for_test(&format!("[map]\ndirectory = {missing:?}\n"));
+        let status = supervise(
+            &config,
+            mode::Mode::Headless,
+            Shared {
+                quit: Arc::new(AtomicBool::new(false)),
+                notifier: Notifier::new(),
+            },
+            |_| panic!("a failed map load must stop before any window plan"),
+        );
+        assert_eq!(status.code, FAILED.code);
+    }
+
     struct CompletedOwner;
 
     impl Owner for CompletedOwner {
@@ -799,6 +851,7 @@ mod tests {
                 quit: Arc::new(AtomicBool::new(false)),
                 notifier: Notifier::new(),
             },
+            None,
             |setup| {
                 let backend_resources = Arc::clone(&observed_service);
                 Plan {
@@ -877,6 +930,7 @@ mod tests {
                 quit: Arc::new(AtomicBool::new(false)),
                 notifier: Notifier::new(),
             },
+            None,
             |setup| {
                 let bridge = Arc::clone(&setup.env.bridge);
                 let control = setup

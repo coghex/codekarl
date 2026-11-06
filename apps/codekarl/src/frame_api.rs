@@ -27,14 +27,19 @@ pub(crate) enum FrameBackend {
 }
 
 /// The `frame` extension for `backend`.
-pub(crate) fn extension(backend: FrameBackend) -> Extension {
+pub(crate) fn extension(map_enabled: bool, backend: FrameBackend) -> Extension {
     let frame = Extension::new("frame");
     match backend {
-        FrameBackend::Control(control) => frame.callback_observed(
-            "on_update",
-            FRAME_UPDATE,
-            Arc::new(move |registered| control.set(registered)),
-        ),
+        FrameBackend::Control(control) => {
+            if map_enabled {
+                control.set(true);
+            }
+            frame.callback_observed(
+                "on_update",
+                FRAME_UPDATE,
+                Arc::new(move |registered| control.set(registered || map_enabled)),
+            )
+        }
         FrameBackend::Headless => frame.callback("on_update", FRAME_UPDATE),
     }
 }
