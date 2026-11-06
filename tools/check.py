@@ -1384,7 +1384,11 @@ STEPS = [
             cargo_test(["-p", "ck-map", "--doc"]),
         ],
         description="The backend-neutral map coordinate, camera, reference-colour, river-coverage and preview-tool contract (no GPU or window).",
-        paths=("crates/map/",),
+        paths=(
+            "crates/map/",
+            # CK-181: Ireland's shipped map data, which `crates/map/tests/ireland.rs` loads and validates: a data-only change selects it.
+            "assets/map/",
+        ),
     ),
     # CK-90: the 2D renderer's core (images, the scene bridge and the `Renderer` over a fake backend). It has no
     # GPU feature and opens no window, so every test target of the crate is one plain group, selected by the

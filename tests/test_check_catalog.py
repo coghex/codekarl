@@ -956,6 +956,14 @@ class MapGroup(unittest.TestCase):
             ):
                 self.assertNotIn(other, chosen, f"{path}: {other}")
 
+    def test_01c_shipped_map_data_selects_map_core_and_no_gpu_group(self) -> None:
+        """CK-181: `assets/map/` holds the data `crates/map/tests/ireland.rs` validates, so a data-only change selects `map.core`."""
+        for path in ("assets/map/ireland/terrain.png", "assets/map/ireland/rivers.toml"):
+            chosen = self.selected(path)
+            self.assertIn("map.core", chosen, path)
+            for other in (*self.PARITY_GROUPS, "native.window", "glfw.window", "vulkan.app"):
+                self.assertNotIn(other, chosen, f"{path}: {other}")
+
     def test_02_workspace_toolchain_changes_select_plain_map_core(self) -> None:
         chosen = self.selected("Cargo.lock")
         self.assertNotIn("map.core", chosen)
@@ -971,6 +979,7 @@ class MapGroup(unittest.TestCase):
                 ("lib", "ck_map"),
                 ("bin", "map-preview"),
                 ("test", "preview"),
+                ("test", "ireland"),
                 ("test", "rules_fixture"),
                 ("doc", "ck_map"),
             },
@@ -2032,6 +2041,12 @@ GUARDS: tuple[Guard, ...] = (
         "crates/render-2d/src/tests/resources.rs",
         "render2d.core",
         ("crates/resources/tests/fixtures/rgba8.png",),
+    ),
+    # CK-181: the shipped data of Ireland's map, which the `ck-map` validation test loads.
+    Guard(
+        "crates/map/tests/ireland.rs",
+        "map.core",
+        ("assets/map/ireland/",),
     ),
     # Native and Rust test support compiled into another crate's test targets.
     Guard(

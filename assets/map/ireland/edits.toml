@@ -1,0 +1,507 @@
+# CK-181 medieval pass, edits r7, for assets/map/ireland/edits.toml (2026-11-05). Supersedes r1, the WITHDRAWN r2, r3, r4, both r5 files and r6.
+# Author: ck-designer-1, under the owner's delegation of 2026-11-05 and their corrections: "a lot more 'noise' like these bogs were added
+# one at a time randomly, little disconnected bits instead of larger 'islands' of usable resources"; "noise shouldnt be used to place
+# these, we need to expand existing features in an intelligent way". ck-manager ruling (vzs2e27b): the draft's fbm-placed bog and
+# forest are not existing features; clear them; seed bog only from named bogs, the uplands rule and lake edges; forest only from the
+# recorded woods and terrain rules; report any shortfall instead of adding seeds.
+# Basis of every entry: ck-designer-1 judgement, owner-delegated 2026-11-05. NO noise or random term anywhere.
+#
+# Format: ck-worker-2's grow format (weawg53k) plus four additions, all deterministic:
+#   1. where.relative_elevation_max with where.relative_radius: elevation minus the mean elevation within relative_radius cells
+#      (box mean) must be at most this many metres. Basin ground is at or below its local mean.
+#   2. grow.max_distance is the straight-line (Euclidean) distance in cells to the seed cell the growth front came from, so growth makes
+#      rounded spreads following the ground, not squares.
+#   3. tidy = { min_cells, back }: patches of `paint` under min_cells become `back`; patches of `back` under min_cells that are entirely
+#      enclosed by `paint` become `paint`. Use terrain_min_patch if it does exactly this, at these points in the order.
+#   4. The usable keys in [settings].
+# A plain edit (no grow) paints every cell of the region that passes `where`: that is how terrain-rule seeds are laid.
+# The reclamation, Lough Neagh and callows entries are r1's, minus their per-edit usable lines.
+#
+# Owner decisions 2026-11-05 (relayed verbatim by ck-manager, ujpdcqkm): "66 is arbitrary target requirement, we dont need to strictly
+# adhere to it. if there are named bogs/woods then they should be included ... as for the usable land hugging rivers, i think that's
+# fairly realistic, we dont want each area of land to have the same amount of usable land, some areas are naturally more valuable and
+# that is something we want to represent".
+# r6 = r4 plus: the eleven wood edits before all bog edits with slope_min 0.01 (ck-manager ruling i9jc48iu), and the 18 named western
+# blanket-bog sites (western-bog-sites-r1.md) as further seed_points. usable_local_radius is NOT used: usable land follows rivers and
+# good land unevenly, as in r4. The western `share = 0.66` is only an upper cap on growth, not a target; growth there is bounded by the
+# 10 km max_distance from named places.
+# r7 changes from r6 (ck-worker-2's check of the 63 named sites, named-sites-check-r6.md: 14 had no cell of their terrain; the owner:
+# "if there are named bogs/woods then they should be included"):
+#   - grow.seed_radius = 2 with grow.seed_over: the cells within 2 cells (5 x 5) of each seed point whose terrain is in seed_over become
+#     `paint`, whatever `where` says; growth then proceeds from all seeds under `where` as before. Bog: seed_over = pasture, forest, marsh.
+#     Woods: pasture.
+#   - tidy.keep_seed_points = true: tidy never removes a patch that contains, or touches within one cell, a seed point of an edit with
+#     the same paint (a coastal site's 5 x 5 patch can be under min_cells).
+#   - wood-kilultagh has no slope_min (a flat lowland wood).
+#   - Six coordinates moved to the nearest block of ground at or below 200 m with slope at most 0.08 (at least 15 of the 25 cells around
+#     it): Owenduff, the Mullet interior, Montiaghs Moss, Maam valley, Dunlewey, Glenveagh lowlands. Each reason is in its seed-point comment.
+# Prototype (scratch): pasture 41.3, forest 26.7, bog 22.1, marsh 5.4+, mountain 4.4 %; bog 260 patches, median 46; forest 239, median 45;
+# all 63 named sites have their terrain within 3 x 3 cells. Western districts: Erris 55.7, Connemara 60.2, west Donegal 55.1 % bog.
+# r6's prototype, for comparison:
+#   pasture about 41.5, forest 26.8, bog 21.8, marsh 5.5+, mountain 4.4 %. Bog median patch about 46 cells, none under 4.
+#   Every recorded wood has forest. Bog over the original western districts: Erris 49 %, Connemara 58 %, west Donegal 54 %.
+
+[[edit]]
+id = "wexford-north-slob-sea"
+area = "North Slob, Wexford Harbour: lowest ground to sea"
+reason = "embanked and drained in the 1840s-50s; the medieval harbour was tidal flats"
+confidence = "high"
+paint = "sea"
+region = { polygon = [[52.395, -6.44], [52.395, -6.35], [52.355, -6.34], [52.355, -6.44]] }
+where = { terrain = ["pasture", "forest", "bog", "marsh"], elevation_max = 4 }
+depth = 2
+
+[[edit]]
+id = "wexford-north-slob-marsh"
+area = "North Slob, Wexford Harbour: low ground to marsh"
+reason = "embanked and drained in the 1840s-50s; the medieval harbour was tidal flats"
+confidence = "high"
+paint = "marsh"
+region = { polygon = [[52.395, -6.44], [52.395, -6.35], [52.355, -6.34], [52.355, -6.44]] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 10 }
+
+[[edit]]
+id = "wexford-south-slob-sea"
+area = "South Slob, Wexford Harbour: lowest ground to sea"
+reason = "embanked and drained in the 1840s-50s"
+confidence = "high"
+paint = "sea"
+region = { polygon = [[52.34, -6.43], [52.34, -6.37], [52.3, -6.37], [52.3, -6.43]] }
+where = { terrain = ["pasture", "forest", "bog", "marsh"], elevation_max = 3 }
+depth = 2
+
+[[edit]]
+id = "wexford-south-slob-marsh"
+area = "South Slob, Wexford Harbour: low ground to marsh"
+reason = "embanked and drained in the 1840s-50s"
+confidence = "high"
+paint = "marsh"
+region = { polygon = [[52.34, -6.43], [52.34, -6.37], [52.3, -6.37], [52.3, -6.43]] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 8 }
+
+[[edit]]
+id = "north-bull-island"
+area = "North Bull Island, Dublin Bay"
+reason = "formed after the Bull Wall of the 1820s; leave the Clontarf-Dollymount mainland as it is (check on the preview)"
+confidence = "high on the fact; the island's cells need a check"
+paint = "sea"
+region = { box = [53.365, 53.392, -6.155, -6.105] }
+where = { terrain = ["pasture", "forest", "bog", "marsh"], elevation_max = 3 }
+depth = 2
+
+[[edit]]
+id = "dublin-liffey-mouth-sea"
+area = "Dublin, Liffey mouth, North Lotts, East Wall, Ringsend and the port: lowest ground to sea"
+reason = "18th-20th-century quays and reclamation"
+confidence = "high on the fact, low on the cell count"
+paint = "sea"
+region = { polygon = [[53.362, -6.235], [53.362, -6.165], [53.338, -6.165], [53.338, -6.235]] }
+where = { terrain = ["pasture", "forest", "bog", "marsh"], elevation_max = 2 }
+depth = 2
+
+[[edit]]
+id = "dublin-liffey-mouth-marsh"
+area = "Dublin, Liffey mouth, North Lotts, East Wall, Ringsend and the port: low ground to marsh"
+reason = "18th-20th-century quays and reclamation"
+confidence = "high on the fact, low on the cell count"
+paint = "marsh"
+region = { polygon = [[53.362, -6.235], [53.362, -6.165], [53.338, -6.165], [53.338, -6.235]] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 5 }
+
+[[edit]]
+id = "belfast-harbour-sea"
+area = "Belfast Lough head, Queen's Island and the harbour estate: lowest ground to sea"
+reason = "19th-20th-century reclamation of the slob lands"
+confidence = "high"
+paint = "sea"
+region = { box = [54.595, 54.64, -5.935, -5.86] }
+where = { terrain = ["pasture", "forest", "bog", "marsh"], elevation_max = 2 }
+depth = 2
+
+[[edit]]
+id = "belfast-harbour-marsh"
+area = "Belfast Lough head, Queen's Island and the harbour estate: low ground to marsh"
+reason = "19th-20th-century reclamation of the slob lands"
+confidence = "high"
+paint = "marsh"
+region = { box = [54.595, 54.64, -5.935, -5.86] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 5 }
+
+[[edit]]
+id = "cork-marshes-marsh"
+area = "Cork, the Lee's marshes and the Marina/Tivoli slobs: low ground to marsh"
+reason = "Cork stood on marsh islands (Corcach, marsh); the flats were drained and quayed from the 17th century"
+confidence = "medium"
+paint = "marsh"
+region = { polygon = [[51.905, -8.48], [51.905, -8.38], [51.895, -8.38], [51.895, -8.48]] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 12 }
+
+[[edit]]
+id = "lough-foyle-levels-sea"
+area = "Lough Foyle, Myroe and Magilligan levels: lowest ground to sea"
+reason = "19th-century embankment"
+confidence = "medium"
+paint = "sea"
+region = { box = [55.05, 55.17, -7.05, -6.9] }
+where = { terrain = ["pasture", "forest", "bog", "marsh"], elevation_max = 1 }
+depth = 2
+
+[[edit]]
+id = "lough-foyle-levels-marsh"
+area = "Lough Foyle, Myroe and Magilligan levels: low ground to marsh"
+reason = "19th-century embankment"
+confidence = "medium"
+paint = "marsh"
+region = { box = [55.05, 55.17, -7.05, -6.9] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 3 }
+
+[[edit]]
+id = "lough-swilly-inch-levels-sea"
+area = "Lough Swilly, Inch levels and Blanket Nook: lowest ground to sea"
+reason = "1850s embankment"
+confidence = "medium"
+paint = "sea"
+region = { box = [55.03, 55.08, -7.53, -7.45] }
+where = { terrain = ["pasture", "forest", "bog", "marsh"], elevation_max = 1 }
+depth = 2
+
+[[edit]]
+id = "lough-swilly-inch-levels-marsh"
+area = "Lough Swilly, Inch levels and Blanket Nook: low ground to marsh"
+reason = "1850s embankment"
+confidence = "medium"
+paint = "marsh"
+region = { box = [55.03, 55.08, -7.53, -7.45] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 5 }
+
+[[edit]]
+id = "shannon-fergus-slobs-marsh"
+area = "Shannon and Fergus estuary slobs, around Shannon Airport: low ground to marsh"
+reason = "embanked estuary slob; the airport stands on reclaimed land"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.58, 52.75, -9.05, -8.65] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 3 }
+
+[[edit]]
+id = "strangford-north-marsh"
+area = "Strangford Lough, north end (Newtownards marshes): low ground to marsh"
+reason = "19th-century embankment"
+confidence = "low"
+paint = "marsh"
+region = { box = [54.56, 54.6, -5.7, -5.65] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 3 }
+
+[[edit]]
+id = "lough-neagh-higher"
+area = "Lough Neagh's low shores"
+reason = "lowered by drainage schemes in the 1840s-50s and 1940s-50s; surface 9 m in the data, lake to 11 m one cell out"
+confidence = "high on the lowering, low on the extent"
+paint = "lake"
+region = { box = [54.45, 54.75, -6.65, -6.25] }
+where = { terrain = ["pasture", "forest", "bog", "marsh"], elevation_max = 11, near_water_max = 1 }
+usable = "false"
+
+[[edit]]
+id = "lough-neagh-margin"
+area = "Lough Neagh's new shore"
+reason = "the wet margin of the higher lough, to 12 m"
+confidence = "low"
+paint = "marsh"
+region = { box = [54.45, 54.75, -6.65, -6.25] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 12, near_water_max = 1 }
+
+[[edit]]
+id = "shannon-callows"
+area = "Middle Shannon, Athlone to Portumna"
+reason = "the callows flooded each winter before the 19th-century drainage works; a 2 km corridor, floor to 39 m"
+confidence = "medium"
+paint = "marsh"
+region = { polygon = [[53.425, -7.96], [53.38, -7.955], [53.31, -8.055], [53.278, -8.065], [53.22, -8.015], [53.19, -8.005], [53.175, -8.085], [53.13, -8.16], [53.1, -8.22], [53.08, -8.2], [53.11, -8.14], [53.155, -8.075], [53.18, -7.975], [53.22, -7.985], [53.278, -8.035], [53.31, -8.025], [53.38, -7.925], [53.425, -7.93]] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 39 }
+
+[[edit]]
+id = "suck-callows"
+area = "The Suck below Ballinasloe"
+reason = "tributary callows"
+confidence = "low"
+paint = "marsh"
+region = { polygon = [[53.34, -8.25], [53.34, -8.19], [53.26, -8.04], [53.24, -8.08]] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 42 }
+
+[[edit]]
+id = "little-brosna-callows"
+area = "The Little Brosna"
+reason = "tributary callows"
+confidence = "low"
+paint = "marsh"
+region = { polygon = [[53.16, -8.05], [53.15, -7.92], [53.1, -7.9], [53.11, -8.03]] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 42 }
+
+[[edit]]
+id = "upper-erne-shores"
+area = "Upper Lough Erne's shores"
+reason = "flooded margins before the 1880s and 1950s drainage; surface 42 m in the data"
+confidence = "low"
+paint = "marsh"
+region = { box = [54.18, 54.35, -7.62, -7.35] }
+where = { terrain = ["pasture", "forest", "bog"], elevation_max = 45, near_water_max = 2 }
+
+[[edit]]
+id = "clear-draft-bog-forest"
+area = "The whole map"
+reason = "ck-manager ruling 2026-11-05: the draft's bog and forest were placed with fbm noise and are not existing features; cleared so placement starts only from named sites and terrain rules"
+confidence = "n/a (method)"
+paint = "pasture"
+region = { box = [51.25, 55.55, -10.90, -5.30] }
+where = { terrain = ["bog", "forest"] }
+
+[[edit]]
+id = "wood-glenconkeyne-killetra"
+area = "Glenconkeyne and Killetra (south Londonderry)"
+reason = "a large wood in 16th-17th-century accounts and maps; placed before the bogs (ck-manager ruling i9jc48iu) and grown from its centre over drier ground (slope at least 0.01), nearest first, to 60 % of the circle's land below 300 m; centre and size are a judgement"
+confidence = "medium"
+paint = "forest"
+region = { circle = [54.8, -6.72, 15] }
+where = { terrain = ["pasture"], elevation_max = 300, slope_min = 0.01 }
+grow = { from = ["forest"], share = 0.60, order = "near", seed_radius = 2, seed_over = ["pasture"], seed_points = [[54.8, -6.72]] }
+
+[[edit]]
+id = "wood-kilultagh"
+area = "Kilultagh (around Lisburn)"
+reason = "a lowland wood in the flat Lagan valley, so it has no slope_min (with one its centre was excluded and it took 0 cells); a large wood in 16th-17th-century accounts and maps; placed before the bogs (ck-manager ruling i9jc48iu) and grown from its centre over drier ground (slope at least 0.01), nearest first, to 60 % of the circle's land below 300 m; centre and size are a judgement"
+confidence = "medium"
+paint = "forest"
+region = { circle = [54.5, -6.1, 10] }
+where = { terrain = ["pasture"], elevation_max = 300 }
+grow = { from = ["forest"], share = 0.60, order = "near", seed_radius = 2, seed_over = ["pasture"], seed_points = [[54.5, -6.1]] }
+
+[[edit]]
+id = "wood-the-fews"
+area = "The Fews (south Armagh)"
+reason = "a large wood in 16th-17th-century accounts and maps; placed before the bogs (ck-manager ruling i9jc48iu) and grown from its centre over drier ground (slope at least 0.01), nearest first, to 60 % of the circle's land below 300 m; centre and size are a judgement"
+confidence = "medium"
+paint = "forest"
+region = { circle = [54.13, -6.6, 10] }
+where = { terrain = ["pasture"], elevation_max = 300, slope_min = 0.01 }
+grow = { from = ["forest"], share = 0.60, order = "near", seed_radius = 2, seed_over = ["pasture"], seed_points = [[54.13, -6.6]] }
+
+[[edit]]
+id = "wood-shillelagh"
+area = "Shillelagh (south Wicklow)"
+reason = "a large wood in 16th-17th-century accounts and maps; placed before the bogs (ck-manager ruling i9jc48iu) and grown from its centre over drier ground (slope at least 0.01), nearest first, to 60 % of the circle's land below 300 m; centre and size are a judgement"
+confidence = "medium"
+paint = "forest"
+region = { circle = [52.75, -6.53, 10] }
+where = { terrain = ["pasture"], elevation_max = 300, slope_min = 0.01 }
+grow = { from = ["forest"], share = 0.60, order = "near", seed_radius = 2, seed_over = ["pasture"], seed_points = [[52.75, -6.53]] }
+
+[[edit]]
+id = "wood-wicklow-glens"
+area = "The Wicklow glens: Glenmalure, Glendalough, the Vale of Avoca"
+reason = "a large wood in 16th-17th-century accounts and maps; placed before the bogs (ck-manager ruling i9jc48iu) and grown from its centre over drier ground (slope at least 0.01), nearest first, to 60 % of the circle's land below 300 m; centre and size are a judgement"
+confidence = "medium"
+paint = "forest"
+region = { circle = [52.95, -6.3, 12] }
+where = { terrain = ["pasture"], elevation_max = 300, slope_min = 0.01 }
+grow = { from = ["forest"], share = 0.60, order = "near", seed_radius = 2, seed_over = ["pasture"], seed_points = [[52.95, -6.3]] }
+
+[[edit]]
+id = "wood-leix-offaly"
+area = "The Leix and Offaly woods, the Slieve Bloom foothills"
+reason = "a large wood in 16th-17th-century accounts and maps; placed before the bogs (ck-manager ruling i9jc48iu) and grown from its centre over drier ground (slope at least 0.01), nearest first, to 60 % of the circle's land below 300 m; centre and size are a judgement"
+confidence = "medium"
+paint = "forest"
+region = { circle = [53.05, -7.5, 15] }
+where = { terrain = ["pasture"], elevation_max = 300, slope_min = 0.01 }
+grow = { from = ["forest"], share = 0.60, order = "near", seed_radius = 2, seed_over = ["pasture"], seed_points = [[53.05, -7.5]] }
+
+[[edit]]
+id = "wood-aherlow"
+area = "The Glen of Aherlow"
+reason = "a large wood in 16th-17th-century accounts and maps; placed before the bogs (ck-manager ruling i9jc48iu) and grown from its centre over drier ground (slope at least 0.01), nearest first, to 60 % of the circle's land below 300 m; centre and size are a judgement"
+confidence = "medium"
+paint = "forest"
+region = { circle = [52.42, -8.1, 8] }
+where = { terrain = ["pasture"], elevation_max = 300, slope_min = 0.01 }
+grow = { from = ["forest"], share = 0.60, order = "near", seed_radius = 2, seed_over = ["pasture"], seed_points = [[52.42, -8.1]] }
+
+[[edit]]
+id = "wood-killarney"
+area = "The Killarney oakwoods"
+reason = "a large wood in 16th-17th-century accounts and maps; placed before the bogs (ck-manager ruling i9jc48iu) and grown from its centre over drier ground (slope at least 0.01), nearest first, to 60 % of the circle's land below 300 m; centre and size are a judgement"
+confidence = "medium"
+paint = "forest"
+region = { circle = [52.0, -9.52, 10] }
+where = { terrain = ["pasture"], elevation_max = 300, slope_min = 0.01 }
+grow = { from = ["forest"], share = 0.60, order = "near", seed_radius = 2, seed_over = ["pasture"], seed_points = [[52.0, -9.52]] }
+
+[[edit]]
+id = "wood-duhallow"
+area = "Duhallow"
+reason = "a large wood in 16th-17th-century accounts and maps; placed before the bogs (ck-manager ruling i9jc48iu) and grown from its centre over drier ground (slope at least 0.01), nearest first, to 60 % of the circle's land below 300 m; centre and size are a judgement"
+confidence = "medium"
+paint = "forest"
+region = { circle = [52.15, -9.05, 12] }
+where = { terrain = ["pasture"], elevation_max = 300, slope_min = 0.01 }
+grow = { from = ["forest"], share = 0.60, order = "near", seed_radius = 2, seed_over = ["pasture"], seed_points = [[52.15, -9.05]] }
+
+[[edit]]
+id = "wood-slieve-aughty"
+area = "Slieve Aughty"
+reason = "a large wood in 16th-17th-century accounts and maps; placed before the bogs (ck-manager ruling i9jc48iu) and grown from its centre over drier ground (slope at least 0.01), nearest first, to 60 % of the circle's land below 300 m; centre and size are a judgement"
+confidence = "medium"
+paint = "forest"
+region = { circle = [52.98, -8.6, 14] }
+where = { terrain = ["pasture"], elevation_max = 300, slope_min = 0.01 }
+grow = { from = ["forest"], share = 0.60, order = "near", seed_radius = 2, seed_over = ["pasture"], seed_points = [[52.98, -8.6]] }
+
+[[edit]]
+id = "wood-lough-erne"
+area = "The shores of Lough Erne"
+reason = "a large wood in 16th-17th-century accounts and maps; placed before the bogs (ck-manager ruling i9jc48iu) and grown from its centre over drier ground (slope at least 0.01), nearest first, to 60 % of the circle's land below 300 m; centre and size are a judgement"
+confidence = "medium"
+paint = "forest"
+region = { circle = [54.4, -7.7, 15] }
+where = { terrain = ["pasture"], elevation_max = 300, slope_min = 0.01 }
+grow = { from = ["forest"], share = 0.60, order = "near", seed_radius = 2, seed_over = ["pasture"], seed_points = [[54.4, -7.7]] }
+
+[[edit]]
+id = "bog-seed-lake-edges-central"
+area = "Central Plain lake edges"
+reason = "raised bogs began as fen over lake basins; very flat low ground touching a lough seeds bog"
+confidence = "medium"
+paint = "bog"
+region = { polygon = [[53.95, -8.35], [53.85, -7.35], [53.55, -6.95], [53.40, -6.65], [53.15, -6.70], [52.95, -7.05], [52.80, -7.75], [52.95, -8.35], [53.40, -8.65], [53.75, -8.65]] }
+where = { terrain = ["pasture"], elevation_min = 35, elevation_max = 140, slope_max = 0.01, near_water_max = 1 }
+
+[[edit]]
+id = "bog-seed-lake-edges-ulster"
+area = "Ulster lowland lake edges"
+reason = "as bog-seed-lake-edges-central"
+confidence = "medium"
+paint = "bog"
+region = { polygon = [[55.05, -6.85], [55.05, -6.30], [54.40, -6.20], [54.35, -6.90]] }
+where = { terrain = ["pasture"], elevation_min = 15, elevation_max = 120, slope_max = 0.01, near_water_max = 1 }
+
+[[edit]]
+id = "bog-central-plain"
+area = "Central Plain raised bogs: Bog of Allen, Offaly, Westmeath, Longford, south Roscommon, east Galway, north Tipperary"
+reason = "raised bogs filled basins before cutting and reclamation (the Bog of Allen alone about 1,000 km2); grown from named bogs and lake edges into connected basin ground (flat, low, below its local mean), lowest first, to 40 % of the region's land"
+confidence = "high on the region and scale; outlines follow the basins"
+paint = "bog"
+region = { polygon = [[53.95, -8.35], [53.85, -7.35], [53.55, -6.95], [53.40, -6.65], [53.15, -6.70], [52.95, -7.05], [52.80, -7.75], [52.95, -8.35], [53.40, -8.65], [53.75, -8.65]] }
+where = { terrain = ["pasture"], elevation_min = 35, elevation_max = 140, slope_max = 0.02, relative_elevation_max = 0, relative_radius = 10 }
+grow = { from = ["bog"], share = 0.40, order = "wet", seed_radius = 2, seed_over = ["pasture", "forest", "marsh"], seed_points = [[53.29, -6.9], [53.33, -6.84], [53.23, -7.17], [53.34, -7.35], [53.32, -7.62], [53.21, -7.72], [53.28, -7.98], [53.32, -7.95], [53.67, -7.96], [53.62, -7.82], [52.9, -7.34], [53.13, -7.98]] }
+# seed points: Bog of Allen, Allenwood (53.29, -6.9); Timahoe (53.33, -6.84); Clonsast (53.23, -7.17); Raheenmore (53.34, -7.35); Clara (53.32, -7.62); Boora (53.21, -7.72); Blackwater, Shannonbridge (53.28, -7.98); Mongan (53.32, -7.95); Mountdillon, Lanesborough (53.67, -7.96); Corlea (53.62, -7.82); Abbeyleix (52.9, -7.34); All Saints, Birr (53.13, -7.98)
+
+[[edit]]
+id = "bog-ulster-lowlands"
+area = "Ulster lowland raised bogs: the Lough Neagh basin and the Bann valley"
+reason = "cut and reclaimed since the 17th century; grown from named bogs and lake edges into connected basin ground to 25 % of the region's land"
+confidence = "medium"
+paint = "bog"
+region = { polygon = [[55.05, -6.85], [55.05, -6.30], [54.40, -6.20], [54.35, -6.90]] }
+where = { terrain = ["pasture"], elevation_min = 15, elevation_max = 120, slope_max = 0.02, relative_elevation_max = 0, relative_radius = 10 }
+grow = { from = ["bog"], share = 0.25, order = "wet", seed_radius = 2, seed_over = ["pasture", "forest", "marsh"], seed_points = [[54.48, -6.62], [55.03, -6.52], [54.82, -6.66], [54.502, -6.445]] }
+# seed points: Peatlands Park (54.48, -6.62); Garry Bog (55.03, -6.52); Ballynahone (54.82, -6.66); Montiaghs Moss (54.502, -6.445; was inside the raised Lough Neagh; moved 4.2 km onto the shore lowland (low confidence on the exact site))
+
+[[edit]]
+id = "bog-erris"
+area = "Western blanket bog: Erris and north-west Mayo"
+reason = "lowland blanket bog covered most land below 300 m around these districts; grown from named bog places, lowest first, at most 20 cells (10 km) from a seed, not onto the coastal strip; at most two thirds of the region's land (a cap, not a target)"
+confidence = "high on the district; seed places medium"
+paint = "bog"
+region = { polygon = [[54.40, -10.20], [54.40, -8.90], [53.75, -8.90], [53.75, -10.20]] }
+where = { terrain = ["pasture"], elevation_max = 300, slope_max = 0.10, far_from_water_min = 2 }
+grow = { from = ["bog"], share = 0.66, order = "wet", max_distance = 20, seed_radius = 2, seed_over = ["pasture", "forest", "marsh"], seed_points = [[54.25, -9.7], [54.12, -9.55], [54.02, -9.8], [54.036, -9.678], [54.18, -9.78], [54.14, -9.74], [54.3, -9.46], [54.23, -9.57], [54.17, -9.62], [53.97, -10.05], [54.159, -10.055], [53.98, -9.62]] }
+# seed points: Glenamoy (54.25, -9.7); Bellacorick, Oweninny (54.12, -9.55); Ballycroy (54.02, -9.8); Owenduff (54.036, -9.678; was on a mountain at 490 m; moved 2.5 km to the nearest lowland block); Carrowmore Lake (54.18, -9.78); Bangor Erris (54.14, -9.74); Ceide Fields (54.3, -9.46); Bellanaboy (54.23, -9.57); Sheskin and Knockmoyle (54.17, -9.62); Achill Island moorland (53.97, -10.05); the Mullet interior (54.159, -10.055; was 500 m off the coast; moved 1.1 km onto land); Srahmore, Nephin Beg foothills (53.98, -9.62)
+
+[[edit]]
+id = "bog-connemara"
+area = "Western blanket bog: Connemara"
+reason = "lowland blanket bog covered most land below 300 m around these districts; grown from named bog places, lowest first, at most 20 cells (10 km) from a seed, not onto the coastal strip; at most two thirds of the region's land (a cap, not a target)"
+confidence = "high on the district; seed places medium"
+paint = "bog"
+region = { polygon = [[53.70, -10.30], [53.70, -9.05], [53.15, -8.90], [53.15, -10.30]] }
+where = { terrain = ["pasture"], elevation_max = 300, slope_max = 0.10, far_from_water_min = 2 }
+grow = { from = ["bog"], share = 0.66, order = "wet", max_distance = 20, seed_radius = 2, seed_over = ["pasture", "forest", "marsh"], seed_points = [[53.43, -9.85], [53.45, -10.0], [53.46, -9.55], [53.42, -9.38], [53.47, -9.67], [53.32, -9.83], [53.27, -9.55], [53.46, -9.86], [53.32, -9.73], [53.24, -9.68], [53.33, -9.18], [53.43, -10.05], [53.519, -9.58]] }
+# seed points: Roundstone Bog (53.43, -9.85); Derrygimlagh (53.45, -10.0); Maam Cross (53.46, -9.55); Oughterard (53.42, -9.38); Recess (53.47, -9.67); Carna (53.32, -9.83); Cois Fharraige (53.27, -9.55); Ballynahinch (53.46, -9.86); Kilkieran peninsula (53.32, -9.73); Gorumna and Lettermore (53.24, -9.68); Moycullen bogs (53.33, -9.18); Ballyconneely, Clifden hinterland (53.43, -10.05); Maam valley (53.519, -9.58; was on a steep wooded slope at 239 m; moved 1.1 km to the valley floor)
+
+[[edit]]
+id = "bog-west-donegal"
+area = "Western blanket bog: west Donegal"
+reason = "lowland blanket bog covered most land below 300 m around these districts; grown from named bog places, lowest first, at most 20 cells (10 km) from a seed, not onto the coastal strip; at most two thirds of the region's land (a cap, not a target)"
+confidence = "medium"
+paint = "bog"
+region = { polygon = [[55.35, -8.60], [55.35, -7.55], [54.60, -7.70], [54.60, -8.90]] }
+where = { terrain = ["pasture"], elevation_max = 300, slope_max = 0.10, far_from_water_min = 2 }
+grow = { from = ["bog"], share = 0.66, order = "wet", max_distance = 20, seed_radius = 2, seed_over = ["pasture", "forest", "marsh"], seed_points = [[55.028, -8.141], [55.13, -8.25], [54.7, -8.65], [54.87, -8.12], [55.02, -8.27], [54.95, -8.08], [54.95, -8.12], [54.98, -8.38], [54.85, -8.3], [55.067, -7.982], [54.78, -8.35]] }
+# seed points: Dunlewey (55.028, -8.141; was on a mountain at 381 m; moved 2.5 km to the nearest lowland block); Bloody Foreland moorland (55.13, -8.25); Glencolumbkille uplands (54.7, -8.65); Fintown (54.87, -8.12); Crolly (55.02, -8.27); Lough Barra bog (54.95, -8.08); Cloghernagore bog (54.95, -8.12); the Rosses (54.98, -8.38); Gweebarra valley (54.85, -8.3); Glenveagh lowlands (55.067, -7.982; was on a wooded slope at 264 m; moved 2.0 km to the nearest lowland block); Ardara-Glenties moorland (54.78, -8.35)
+
+[[edit]]
+id = "bog-uplands-rule"
+area = "Upland blanket bog island-wide (Wicklow, Slieve Bloom, the Sperrins, the Antrim plateau, Cuilcagh, the Ox Mountains, the Cork-Kerry hills and the others)"
+reason = "blanket bog covered open hill ground and plateaus continuously; every pasture cell from 150 m with slope up to 0.10 is bog (a terrain rule, after the regional growth so it does not seed it)"
+confidence = "high on the direction"
+paint = "bog"
+region = { box = [51.25, 55.55, -10.90, -5.30] }
+where = { terrain = ["pasture"], elevation_min = 150, slope_max = 0.10 }
+
+[[edit]]
+id = "tidy-bog"
+area = "The whole map"
+reason = "no bog patch under 12 cells (3 km2); small pasture holes enclosed by bog become bog"
+confidence = "n/a (method)"
+paint = "bog"
+tidy = { min_cells = 12, back = "pasture", keep_seed_points = true }
+
+[[edit]]
+id = "forest-steep-valley-sides"
+area = "Steep valley sides island-wide"
+reason = "steep ground from 60 to 300 m, away from water, was left wooded when lowland was cleared: every such pasture cell is forest (a terrain rule)"
+confidence = "medium"
+paint = "forest"
+region = { box = [51.25, 55.55, -10.90, -5.30] }
+where = { terrain = ["pasture"], elevation_min = 60, elevation_max = 300, slope_min = 0.06, far_from_water_min = 3 }
+
+[[edit]]
+id = "forest-dry-slopes"
+area = "Forest island-wide, onto drier sloping ground next to existing woods"
+reason = "woodland was far more extensive before the 17th-century clearances than the roughly 12 % quoted for about 1600; grows from existing forest up to 8 cells (4 km) out, steepest and highest first, to 26 % of land; flat, well-drained lowland stays mostly farmland"
+confidence = "medium"
+paint = "forest"
+region = { box = [51.25, 55.55, -10.90, -5.30] }
+where = { terrain = ["pasture"], elevation_min = 20, elevation_max = 300, slope_min = 0.015, far_from_water_min = 2 }
+grow = { from = ["forest"], share = 0.26, order = "dry_slope", max_distance = 8 }
+
+[[edit]]
+id = "tidy-forest"
+area = "The whole map"
+reason = "no forest patch under 10 cells"
+confidence = "n/a (method)"
+paint = "forest"
+tidy = { min_cells = 10, back = "pasture", keep_seed_points = true }
+
+[[edit]]
+id = "tidy-bog-again"
+area = "The whole map"
+reason = "forest placement can cut bog patches; repeat the bog tidy"
+confidence = "n/a (method)"
+paint = "bog"
+tidy = { min_cells = 12, back = "pasture", keep_seed_points = true }
+
+[settings]
+# Usable land, deterministic, no noise, applied once after every edit (per-edit usable lines are gone, except "false" on lakes).
+# For each terrain, the usable cells are the ones that rank best on suitability, at mock-up 2's shares (the owner's "fine for now").
+# Suitability = rank(elevation - mean elevation within usable_relative_radius cells) + rank(slope) + rank(distance to water, capped
+# at usable_water_cap cells), each rank normalised over the map, summed, then box-blurred over usable_smooth cells; lower is better.
+# "Water" includes the rasterised river lines of rivers.toml, so usable land follows the river valleys and lowlands inland, not only
+# the coasts and loughs; relative elevation ranks each valley floor against its own surroundings.
+usable = "suitability"
+usable_shares = { pasture = 0.32, forest = 0.28, bog = 0.20, marsh = 0.15, mountain = 0.08 }
+usable_relative_radius = 15
+usable_water = ["sea", "lake", "rivers"]
+usable_water_cap = 12
+usable_smooth = 4
+usable_min_patch = 20
