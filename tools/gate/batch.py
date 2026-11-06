@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import importlib.util
 import json
 import math
@@ -13,7 +14,7 @@ import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Final, Protocol, TypedDict
+from typing import Final, Protocol, TypedDict, cast
 
 from . import docsqueue, lease, locks, meta, pipeline_api, pointer, reviews
 from .pointer import atomic_bytes, canonical, file_digest
@@ -67,6 +68,7 @@ INTEGRATION: Final = "integration-review"
 _RECIPE = re.compile(r"check: recipe (\w+); watchdog ([0-9]+(?:\.[0-9]+)?) s; steps (\S*)")
 _TOOK = re.compile(r"check: step (\S+) took ([0-9]+(?:\.[0-9]+)?) s")
 _SUMMARY = re.compile(r"check \w+: .* => (?:PASS|FAIL)")
+_PLAN_DATA = "check: plan-data: "
 
 
 def _protocol(text: str) -> tuple[list[re.Match[str]], list[re.Match[str]], list[str]] | str:
@@ -97,6 +99,47 @@ def _protocol(text: str) -> tuple[list[re.Match[str]], list[re.Match[str]], list
 
 Hook = Callable[..., None]  # a test seam: called with the stage name and keyword details
 Validator = Callable[[Path, Path, int], bool]  # (candidate, log, ci lock descriptor) -> passed
+
+
+class CheckStep(Protocol):
+    name: str
+    levels: Sequence[str]
+
+
+class CheckPlan(Protocol):
+    def evidence(
+        self, changed: Sequence[str] | None, failure: str | None = None
+    ) -> dict[str, object]: ...
+
+
+class CheckSelection(TypedDict):
+    name: str
+    selected: bool
+    why: str
+
+
+class CheckValidation(TypedDict):
+    level: str
+    changed_paths: list[str] | None
+    failure: str | None
+    selection: list[CheckSelection]
+
+
+class CheckCatalog(Protocol):
+    STEPS: Sequence[CheckStep]
+    ChangeSetError: type[Exception]
+
+    def select(self, level: str) -> list[str]: ...
+
+    def changed_paths(self, root: Path, hub: Path) -> list[str]: ...
+
+    def plan(
+        self,
+        steps: Sequence[CheckStep],
+        changed: Sequence[str] | None,
+        requested: Sequence[str] = (),
+        failure: str | None = None,
+    ) -> CheckPlan: ...
 
 
 class ChatInputsModule(Protocol):
@@ -226,8 +269,13 @@ def timing_from_log(  # noqa: PLR0911  # one early return per refused condition,
     level, watchdog_text, listed = headers[0]
     watchdog = float(watchdog_text)
     steps = listed.split(",") if listed else []
-    if level != "full" or not steps or "" in steps or len(set(steps)) != len(steps):
-        return f"the CI log's recipe is `{level}` with steps [{listed}], not a full run of distinct, non-empty steps"
+    if (
+        level not in ("full", "planned")
+        or not steps
+        or "" in steps
+        or len(set(steps)) != len(steps)
+    ):
+        return f"the CI log's recipe is `{level}` with steps [{listed}], not a full or planned run of distinct, non-empty steps"
     if not math.isfinite(watchdog) or watchdog <= 0:
         return "the CI log's watchdog is not a finite positive number"
     lines = [(row.group(1), float(row.group(2))) for row in timing_rows]
@@ -244,9 +292,9 @@ def timing_from_log(  # noqa: PLR0911  # one early return per refused condition,
         return f"the CI log has a timing line for step {', '.join(extra)}, which the header does not list"
     if not all(math.isfinite(seconds) and seconds >= 0 for seconds in took.values()):
         return "the CI log has a timing that is not a finite number"
-    expected = f"check full: {', '.join(f'{name} ok' for name in steps)} => PASS"
+    expected = f"check {level}: {', '.join(f'{name} ok' for name in steps)} => PASS"
     if not summaries or summaries[-1] != expected:
-        return "the CI log does not end with the full run's passing summary of the header's steps"
+        return "the CI log does not end with the passing summary of the header's steps"
     slowest = max(steps, key=lambda name: took[name])
     seconds = took[slowest]
     if seconds * WATCHDOG_MARGIN > watchdog:
@@ -308,7 +356,10 @@ class Manager:
         self.validator = validator or self._full_check
         self.store = meta.Store(hub)
         self.hook = hook
+        self._custom_validator = validator is not None
+        self._full = False
         self._accepted_log: Path | None = None
+        self._accepted_validation: dict[str, object] | None = None
         self._last_candidate: Path = hub
 
     def _point(self, name: str, **details: object) -> None:
@@ -326,8 +377,11 @@ class Manager:
         sidecar = self._inputs_sidecar(log)
         sidecar.unlink(missing_ok=True)
         env["CK_CHAT_INPUTS"] = str(sidecar)
+        arguments = [sys.executable, str(candidate / "tools/check.py")]
+        if not self._full:
+            arguments.extend(("--changed", "--batch"))
         result = lease.run(
-            [sys.executable, str(candidate / "tools/check.py")],
+            arguments,
             check=False,
             cwd=candidate,
             env=env,
@@ -450,8 +504,9 @@ class Manager:
                 groups.append([manifest])
         return groups
 
-    def prepare(self, no_split: bool = False) -> str:  # noqa: PLR0915  # linear workflow kept whole so failure ordering stays visible
+    def prepare(self, no_split: bool = False, full: bool = False) -> str:  # noqa: PLR0912, PLR0915  # linear workflow kept whole so failure ordering stays visible
         pipeline = pipeline_api.load()
+        self._full = full
         with locks.ci(self.hub) as ci_fd:
             with locks.state(self.hub), locks.meta(self.store.repo):
                 for old in (self.hub / ".pipeline/batches").glob("*/"):
@@ -540,8 +595,12 @@ class Manager:
             receipts_dir.mkdir(parents=True, exist_ok=True)
             ci_receipt = receipts_dir / f"{bid}.json"
             # Only the accepted candidate's own run is bound; a stale or other group's is ignored.
-            chat_inputs = self._chat_inputs(self._accepted_log) if passing else None
-            unrecorded = bool(passing) and chat_inputs is None
+            selected_names = self._selected_names(self._accepted_validation)
+            needs_chat_inputs = "chat-ci" in selected_names
+            chat_inputs = (
+                self._chat_inputs(self._accepted_log) if passing and needs_chat_inputs else None
+            )
+            unrecorded = bool(passing) and needs_chat_inputs and chat_inputs is None
             receipt: BatchCIReceipt = {
                 "kind": "ci",
                 "passed": bool(passing) and not unrecorded,
@@ -553,6 +612,8 @@ class Manager:
             }
             if chat_inputs is not None:
                 receipt["chat_inputs"] = chat_inputs
+            if passing and self._accepted_validation is not None:
+                receipt["validation"] = self._accepted_validation
             if unrecorded:
                 receipt["reason"] = "chat inputs not recorded"
             _write(ci_receipt, receipt)
@@ -634,6 +695,53 @@ class Manager:
                 "Shared chat inputs changed after batch validation; cancel and prepare again"
             )
 
+    def _verify_validation(  # noqa: PLR0912  # fail-closed validation checks stay in protocol order
+        self,
+        validated: BatchValidated,
+        ci_receipt: CIReceipt,
+        candidate: Path,
+        *,
+        rederive: bool,
+    ) -> dict[str, object]:
+        """Verify the plan, candidate, log and receipt still describe the same successful run."""
+        if not is_batch_ci_receipt(ci_receipt):
+            raise RuntimeError("Batch CI receipt has the wrong shape")
+        evidence = ci_receipt.get("validation")
+        if not isinstance(evidence, dict):
+            raise RuntimeError("Batch CI receipt does not bind a check selection")
+        log = Path(str(evidence.get("log", "")))
+        digest = evidence.get("log_sha256")
+        fixture_validator = evidence.get("fixture_validator") is True
+        if not fixture_validator or isinstance(digest, str):
+            if not log.is_file() or not isinstance(digest, str) or file_digest(log) != digest:
+                raise RuntimeError("The selected check log is missing or changed after prepare")
+            if str(log) not in ci_receipt["logs"]:
+                raise RuntimeError("The selected check log is not listed in the CI receipt")
+            if validated.get("ci_log_sha256") != digest:
+                raise RuntimeError("Validated evidence does not bind the selected check log")
+        pipeline = pipeline_api.load()
+        if ci_receipt["fingerprint"] != pipeline.fingerprint(candidate):
+            raise RuntimeError("The CI receipt fingerprint differs from the validated candidate")
+        if ci_receipt["submissions"] != validated["members"]:
+            raise RuntimeError("The CI receipt members differ from the validated batch")
+        if rederive:
+            level = evidence.get("level")
+            if level not in ("planned", "full"):
+                raise RuntimeError("The CI receipt has an unsupported check level")
+            expected = self._expected_selection(candidate, level)
+            if any(evidence.get(key) != expected.get(key) for key in expected):
+                raise RuntimeError("The check selection no longer matches the validated candidate")
+            if not fixture_validator:
+                current = self._validation_evidence(candidate, log)
+                if current != evidence:
+                    raise RuntimeError(
+                        "The check selection no longer matches the validated candidate"
+                    )
+        selection = evidence.get("selection")
+        if not isinstance(selection, list) or any(not isinstance(row, dict) for row in selection):
+            raise RuntimeError("The CI receipt has malformed selection evidence")
+        return evidence
+
     def _validate_groups(
         self, bid: str, base: Path, eligible: list[ManifestV2], no_split: bool, ci_fd: int
     ) -> tuple[list[ManifestV2], list[ManifestV2], list[str]]:
@@ -646,12 +754,14 @@ class Manager:
         log = self.hub / ".pipeline/checkpoints" / f"{bid}-combined.log"
         logs = [str(log)]
         self._accepted_log = None
+        self._accepted_validation = None
         valid = not conflicts and self.validator(combined, log, ci_fd)
         try:
             pipeline.clean(combined)
         except RuntimeError:
             valid = False
         if valid:
+            self._accepted_validation = self._checked_validation_evidence(combined, log)
             self._last_candidate = combined
             self._accepted_log = log
             return eligible, [], logs
@@ -676,6 +786,7 @@ class Manager:
             except RuntimeError:
                 group_valid = False
             if group_valid:
+                self._accepted_validation = self._checked_validation_evidence(candidate, group_log)
                 accepted_candidate = candidate
                 self._accepted_log = group_log
                 passing.extend(group)
@@ -683,6 +794,133 @@ class Manager:
                 failures.extend(group)
         self._last_candidate = accepted_candidate
         return passing, failures, logs
+
+    def _checked_validation_evidence(self, candidate: Path, log: Path) -> dict[str, object]:
+        """A passing validator without bindable plan evidence is an infrastructure failure."""
+        try:
+            return self._validation_evidence(candidate, log)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise InfrastructureFailure(
+                f"the passing candidate's check plan could not be bound to its log: {error}"
+            ) from error
+
+    @staticmethod
+    def _checker(candidate: Path) -> CheckCatalog:
+        """Load the exact check catalog whose runner validated `candidate`."""
+        path = candidate / "tools/check.py"
+        if not path.is_file():
+            raise RuntimeError(f"the candidate has no check catalog at {path}")
+        digest = hashlib.sha256(
+            str(path.resolve()).encode() + b"\0" + path.read_bytes()
+        ).hexdigest()
+        name = f"_ck_candidate_check_{digest}"
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"cannot load the candidate check catalog from {path}")
+        module = importlib.util.module_from_spec(spec)
+        previous_path = sys.path[:]
+        sys.modules[name] = module
+        sys.path.insert(0, str(path.parent))
+        try:
+            # The validated candidate is often a temporary checkpoint. Importing it
+            # through SourceFileLoader writes tools/__pycache__ into that tree, which
+            # makes the candidate dirty and prevents publication. Compile the exact
+            # candidate bytes directly instead of asking the loader to cache them.
+            exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
+        except BaseException:
+            sys.modules.pop(name, None)
+            raise
+        finally:
+            sys.path[:] = previous_path
+        sys.modules.pop(name, None)
+        return cast(CheckCatalog, module)
+
+    @staticmethod
+    def _selected_names(validation: Mapping[str, object] | None) -> list[str]:
+        """Names selected by checked plan evidence, ignoring malformed additive data safely."""
+        selection = validation.get("selection", []) if validation is not None else []
+        if not isinstance(selection, list):
+            return []
+        return [
+            name
+            for row in selection
+            if isinstance(row, dict)
+            and row.get("selected") is True
+            and isinstance((name := row.get("name")), str)
+        ]
+
+    def _expected_selection(self, candidate: Path, level: str) -> CheckValidation:
+        checker = self._checker(candidate)
+        if level == "full":
+            names = checker.select("full")
+            return {
+                "level": "full",
+                "changed_paths": [],
+                "failure": None,
+                "selection": [
+                    {"name": name, "selected": True, "why": "full level"} for name in names
+                ],
+            }
+        try:
+            changed = checker.changed_paths(candidate, self.hub)
+            failure = None
+        except checker.ChangeSetError as error:
+            changed, failure = None, str(error)
+        planned = checker.plan(checker.STEPS, changed, (), failure)
+        return cast(CheckValidation, {"level": "planned", **planned.evidence(changed, failure)})
+
+    def _validation_evidence(self, candidate: Path, log: Path) -> dict[str, object]:
+        """Extract and independently verify the exact successful candidate's check plan."""
+        if self._custom_validator:
+            # Existing state-machine fixtures inject a validator rather than running check.py. They
+            # still bind the expected candidate selection, while CK-186's protocol fixtures opt
+            # into the production parser below by clearing this test-seam marker. The marker keeps
+            # publish-side tests from treating their intentionally synthetic logs as production
+            # check.py protocol; the command-line Manager never emits it.
+            expected = self._expected_selection(candidate, "full" if self._full else "planned")
+            evidence = {
+                **expected,
+                "fixture_validator": True,
+                "log": str(log),
+            }
+            if log.is_file():
+                evidence["log_sha256"] = file_digest(log)
+            return evidence
+        text = log.read_text(errors="replace")
+        protocol = _protocol(text)
+        if isinstance(protocol, str):
+            raise RuntimeError(f"The candidate check log has no valid recipe: {protocol}")
+        headers, _, _ = protocol
+        if len(headers) != 1:
+            raise RuntimeError("The candidate check log must contain exactly one recipe header")
+        level = headers[0].group(1)
+        if level == "planned":
+            values = [
+                line[len(_PLAN_DATA) :] for line in text.splitlines() if line.startswith(_PLAN_DATA)
+            ]
+            if len(values) != 1:
+                raise RuntimeError(
+                    "The planned candidate log must contain exactly one plan-data record"
+                )
+            try:
+                printed = json.loads(values[0])
+            except json.JSONDecodeError as error:
+                raise RuntimeError("The planned candidate log has malformed plan-data") from error
+            expected = self._expected_selection(candidate, "planned")
+            if printed != {key: expected[key] for key in ("changed_paths", "failure", "selection")}:
+                raise RuntimeError(
+                    "The check runner's plan differs from the frozen candidate paths"
+                )
+            expected = cast(CheckValidation, {"level": "planned", **printed})
+        elif level == "full":
+            expected = self._expected_selection(candidate, "full")
+        else:
+            raise RuntimeError(f"The candidate check used unsupported level {level!r}")
+        listed = headers[0].group(3).split(",")
+        selected = self._selected_names(expected)
+        if listed != selected:
+            raise RuntimeError("The recipe header does not match the bound selection")
+        return {**expected, "log": str(log), "log_sha256": file_digest(log)}
 
     def _single_plan(  # noqa: PLR0911, PLR0912  # one early return per refused condition, in the spec's order
         self,
@@ -1011,6 +1249,14 @@ class Manager:
                 != validated["candidate_fingerprint_sha256"]
             ):
                 raise RuntimeError("Validated candidate fingerprint changed")
+            ci_receipt = read_ci_receipt(Path(validated["ci_receipt"]))
+            if not ci_receipt.get("passed"):
+                raise RuntimeError("Batch CI receipt did not pass")
+            if file_digest(Path(validated["ci_receipt"])) != validated["ci_receipt_sha256"]:
+                raise RuntimeError("Batch CI receipt changed")
+            validation = self._verify_validation(
+                validated, ci_receipt, candidate, rederive=not recovering
+            )
             receipts = reviews.receipt_rows(self.store)
             # The single-submission path replaces the batch-subject review by the sole member's
             # submission review (CK-38). An existing approved.json is honoured on any batch.
@@ -1032,11 +1278,6 @@ class Manager:
                 for item in validated["members"]
             ] != validated["membership_manifest_sha256"]:
                 raise RuntimeError("Batch membership manifest changed")
-            ci_receipt = read_ci_receipt(Path(validated["ci_receipt"]))
-            if not ci_receipt.get("passed"):
-                raise RuntimeError("Batch CI receipt did not pass")
-            if file_digest(Path(validated["ci_receipt"])) != validated["ci_receipt_sha256"]:
-                raise RuntimeError("Batch CI receipt changed")
             if not recovering:
                 current_eligible = {item["id"] for item in self.eligible()}
                 if not set(validated["members"]) <= current_eligible:
@@ -1055,7 +1296,9 @@ class Manager:
             if intent and intent.get("pointer") != raw.decode():
                 raise RuntimeError("Publication intent does not match the validated result")
             if not intent:
-                self._require_bound(ci_receipt)
+                selected = self._selected_names(validation)
+                if "chat-ci" in selected:
+                    self._require_bound(ci_receipt)
                 self._point("before_publish_intent", bid=bid, directory=directory)
                 _write(
                     intent_path,

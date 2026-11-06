@@ -13,6 +13,7 @@ looked at it. Nothing else in this module is typed `Any`, and the standard libra
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, NotRequired, TypedDict, TypeGuard, cast
 
@@ -1155,6 +1156,7 @@ class BatchCIReceipt(TypedDict):
     failed: list[str]
     logs: list[str]
     recorded: int
+    validation: NotRequired[dict[str, Any]]
     chat_inputs: NotRequired[ChatInputs]
     reason: NotRequired[str]
 
@@ -1195,7 +1197,7 @@ def is_bootstrap_ci_receipt(receipt: CIReceipt) -> TypeGuard[BootstrapCIReceipt]
     return "bootstrap" in receipt and "logs" not in receipt
 
 
-def load_ci_receipt(raw: object, where: str) -> CIReceipt:
+def load_ci_receipt(raw: object, where: str) -> CIReceipt:  # noqa: PLR0912, PLR0915  # receipt variants and typed validation fields are checked in order
     obj = as_object(raw, where)
     _boolean(obj, "passed", where)
     _texts(obj, "submissions", where)
@@ -1225,6 +1227,38 @@ def load_ci_receipt(raw: object, where: str) -> CIReceipt:
             load_chat_inputs(obj["chat_inputs"], f"{where}: chat_inputs")
         if "reason" in obj:
             _text(obj, "reason", where)
+        if "validation" in obj:
+            validation = as_object(obj["validation"], f"{where}: validation")
+            level = _text(validation, "level", f"{where}: validation")
+            if level not in ("planned", "full"):
+                raise _missing(where, "validation.level", "must be `planned` or `full`")
+            if validation.get("changed_paths") is not None:
+                _texts(validation, "changed_paths", f"{where}: validation")
+            if "failure" in validation and validation["failure"] is not None:
+                _text(validation, "failure", f"{where}: validation")
+            selections = _objects(validation, "selection", f"{where}: validation")
+            names: set[str] = set()
+            for index, selection in enumerate(selections):
+                location = f"{where}: validation.selection[{index}]"
+                name = _text(selection, "name", location)
+                if name in names:
+                    raise _missing(where, "validation.selection", "must have unique group names")
+                names.add(name)
+                _boolean(selection, "selected", location)
+                _text(selection, "why", location)
+            _text(validation, "log", f"{where}: validation")
+            fixture_validator = validation.get("fixture_validator", False)
+            if not isinstance(fixture_validator, bool):
+                raise _missing(where, "validation.fixture_validator", "must be a boolean")
+            if "log_sha256" in validation:
+                if not re.fullmatch(
+                    r"[0-9a-f]{64}", _text(validation, "log_sha256", f"{where}: validation")
+                ):
+                    raise _missing(
+                        where, "validation.log_sha256", "must be a lowercase SHA-256 digest"
+                    )
+            elif not fixture_validator:
+                raise _missing(where, "validation.log_sha256", "must be a lowercase SHA-256 digest")
         return cast("BatchCIReceipt", obj)
     _text(obj, "repo", where)
     _number(obj, "started", where)

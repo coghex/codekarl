@@ -29,9 +29,9 @@ instead of resetting it.
 
 Implement the assigned behavior and add meaningful real-Pijul specs. Run the planned check,
 `tools/ck check --changed` (add groups with `--group ID`), before recording, and report its plan:
-the selected groups and why, with every unselected group named. The batch runs the full level
-(every group, Metal and native windows included) once, so do not repeat it unless the task asks
-for it. Return unresolved design to Class S. Skills, commands, tests and other executable Markdown are code.
+the selected groups and why, with every unselected group named. Batch validation runs the matching
+planned selection; the manager runs the full level (every group, Metal and native windows included)
+once at milestone completion. Return unresolved design to Class S. Skills, commands, tests and other executable Markdown are code.
 
 Ordinary docs use `tools/ck docs --from COPY -m MESSAGE
 PATHS`. Code uses `tools/ck record -m MESSAGE --issue CK-N PATHS`; raw Pijul

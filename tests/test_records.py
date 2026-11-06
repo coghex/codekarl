@@ -953,6 +953,14 @@ class Audit(LoaderCase):
             "previous_pointer_sha256": SHA,
             "pointer": "{}",
         }
+        batch_ci = real("ci-receipt-batch-chat-inputs")
+        batch_ci["validation"] = {
+            "level": "planned",
+            "changed_paths": [],
+            "selection": [],
+            "log": "/hub/check.log",
+            "log_sha256": SHA,
+        }
         return [
             ("batch frozen", records.load_batch_frozen, real("batch-frozen"), records.BatchFrozen),
             (
@@ -1025,7 +1033,7 @@ class Audit(LoaderCase):
             (
                 "ci receipt (batch)",
                 records.load_ci_receipt,
-                real("ci-receipt-batch-chat-inputs"),
+                batch_ci,
                 records.BatchCIReceipt,
             ),
             (

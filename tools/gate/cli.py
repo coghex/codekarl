@@ -120,6 +120,7 @@ def parser() -> argparse.ArgumentParser:  # noqa: PLR0915  # linear workflow kep
     batch_sub = batch.add_subparsers(dest="action", required=True)
     prepare = batch_sub.add_parser("prepare")
     prepare.add_argument("--no-split", action="store_true")
+    prepare.add_argument("--full", action="store_true", help="run every standard check group")
     for action in ("status", "publish"):
         sub = batch_sub.add_parser(action)
         sub.add_argument("batch")
@@ -232,7 +233,7 @@ def _dispatch(root: Path, hub: Path, argv: list[str] | None = None) -> int:  # n
 
         manager = Manager(hub)
         if args.action == "prepare":
-            print(manager.prepare(args.no_split))
+            print(manager.prepare(args.no_split, args.full))
         elif args.action == "status":
             print(json.dumps(manager.status(args.batch), indent=2))
         elif args.action == "cancel":

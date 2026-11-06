@@ -30,8 +30,9 @@ test (`crates/gpu-metal/tests/gpu_probe.rs`) exercise the built program inside
 `cargo test`. Run `tools/ck check --changed` (the planned check) before you record: it runs the
 floor checks and only the groups your change affects, and prints for every group whether it ran
 and why. Name more with `--group ID`. Never skip a group silently: a planned check lists each
-unselected group and its reason, and the batch always runs every group (Metal and the native
-window tests included) once, as the full level (`tools/ck check`).
+unselected group and its reason. Batch validation runs this same planned selection against the
+frozen candidate and binds its plan to the CI receipt; the manager runs the full level once at
+milestone completion.
 
 Record code with `tools/ck record -m "message" --issue CK-N [paths]`, which adds
 provenance; a raw `pijul record` outside `ck` produces patches of unknown
@@ -72,8 +73,8 @@ The checks are a catalog of groups in `tools/check.py`: each has an id, a catego
 affect it. **Floor** groups always run (fmt, ruff, ShellCheck, the doctor, Clippy, rustdoc, mypy; none
 opens a window). **Affected** groups run when a changed path matches their patterns: the Rust tests of
 the backend-neutral crates (`rust.core`) and of the application without a real window (`rust.app`,
-`rust.app-default`), the Metal tests that need the GPU but no window (`metal.gpu`), the native tests
-that open real windows with keyboard and mouse input ignored (`native.window`, the presenter's `metal.window-*` groups, `glfw.window`, `vulkan.window`, `render2d.vulkan-window` and `vulkan.app`), except for explicitly named focus cases (`glfw.window-focus`), each Python test group and the
+`rust.app-default`), the Metal tests that need the GPU but no window (`metal.gpu`, `app.metal-gpu`), the native tests
+that open real windows with keyboard and mouse input ignored (`native.window` for Cocoa, `app.native-window`, the presenter's `metal.window-*` groups, `glfw.window`, `vulkan.window`, `render2d.vulkan-window` and `vulkan.app`), except for explicitly named focus cases (`glfw.window-focus`), each Python test group and the
 chat CI. **Optional** groups run only when named. Docs and editor files are claimed by the doctor group.
 
 - `tools/ck check --changed` is the planned check: it compares your copy with the accepted base
@@ -84,19 +85,21 @@ chat CI. **Optional** groups run only when named. Docs and editor files are clai
   (it is not walked): it selects the groups with a pattern inside it or a directory pattern containing it,
   and fails wide unless it lies wholly inside one group's directory pattern. `--group ID` adds a group by name (repeatable; alone it plans
   without a change set), and `--plan` prints the plan and runs nothing. A planned run names itself
-  `recipe planned` and builds in its own `target/ck-full/<n>` slot; it is never batch evidence.
+  `recipe planned` and builds in its own `target/ck-full/<n>` slot. The batch manager runs this same
+  planned selection with `--batch` under the CI lock and binds its plan and log to the batch receipt.
 - With no flag the **full** level runs every group once. It sets `CK_REQUIRE_FULL_SPEC=1` for the
   all-features Rust groups, so the Metal case must run (a skip or an unavailable GPU fails), and it
-  builds in its own `target/ck-full/<n>` slot. The batch runs and records this level, so everything,
-  Metal and native windows included, runs once per batch; workers and reviewers need not repeat it,
-  but anyone may.
+  builds in its own `target/ck-full/<n>` slot. At milestone completion, the manager runs this level
+  once on a clean accepted copy and keeps its log. If no submissions are pending, use the existing
+  empty-batch refusal and run this check directly; do not create an empty batch.
 - `--quick` runs fmt, ruff and ShellCheck (the record hook); `--fast` runs the same groups as the full
   level without the build slot and without `CK_REQUIRE_FULL_SPEC`.
 
 A manual run holds no project lock; only batch validation holds `ci.lock`. Exit status: 0 pass, 1
 failure, 2 a refused command line, 75 when a step outlived the 45-minute watchdog (an infrastructure
 failure, not a patch failure). Report the planned check's plan (the selected groups and why) with your
-result; a Metal or window group that the plan did not select is covered by the batch.
+result; a Metal or window group the planned selection skips is not covered by that batch and is
+deferred to the milestone's full-level run. Dependency breakage is found at that milestone run.
 
 ## Checked locally, submitted, accepted
 
