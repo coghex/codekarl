@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use ck_map::{TerrainKind, load_map};
+use ck_map::{ScenarioStart, TerrainKind, load_map, load_scenario};
 
 #[test]
 #[expect(
@@ -69,4 +69,31 @@ fn the_shipped_map_of_ireland_loads_and_validates() {
         }
     }
     assert_eq!(hash, 1_751_616_413_225_014_021);
+}
+
+#[test]
+fn ireland_768_scenario_resolves_its_map_and_loads_all_locations() {
+    let directory =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768");
+    let scenario = load_scenario(&directory).unwrap_or_else(|error| panic!("{error}"));
+
+    assert_eq!(scenario.id, "ireland_768");
+    assert_eq!(
+        scenario.start,
+        ScenarioStart {
+            year: 768,
+            month: 10,
+            day: 9,
+            hour: 0,
+        }
+    );
+    assert_eq!(scenario.locations.len(), 94);
+    assert_eq!(scenario.location_kinds.kinds.len(), 5);
+    for id in ["iniscealtra", "inisfallen"] {
+        assert!(
+            scenario.locations.iter().any(|location| location.id == id),
+            "missing island monastery {id}"
+        );
+    }
+    assert!(!scenario.map.rivers.is_empty());
 }

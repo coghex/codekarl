@@ -1,7 +1,7 @@
 # Ireland's map data: sources, derivation and guesswork
 
 This directory is Ireland and its associated offshore islands in the map format of `ck-map` (`docs/map-design.md` section 9.5), for
-milestone 6, slice 5 (CK-181). **It is a draft toward medieval Ireland, approved by the owner at three preview views on 2026-11-05 (below); no file in it has a hand edit: every committed layer is reproduced byte for byte by the scripts and `edits.toml`.** The elevation, the
+milestone 6, slice 5 (CK-181), updated by CK-194 for the Ireland-768 scenario. **It is a draft toward medieval Ireland, approved by the owner at three preview views on 2026-11-05 (below); no file in it has a hand edit: every committed layer is reproduced byte for byte by the scripts and edits r8 in `edits.toml`.** The elevation, the
 coast and the larger loughs come from real data; which terrain a cell has, which land is usable and the course of most rivers do not (see
 the guesswork log).
 
@@ -10,15 +10,15 @@ the guesswork log).
 | `map.toml` | the crop and the layer names | `derive_elevation.py` |
 | `elevation.png` | 16-bit grey, `elevation + 11000` in metres | `derive_elevation.py` (fully reproducible) |
 | `terrain.toml` | the terrain types, their keys, palette and rules | by hand |
-| `terrain.png` | the terrain type of each cell, as its key colour | `draft_terrain.py`, then `apply_edits.py` (no hand edit) |
-| `usable.png` | usable (`ffffff`) or not (`000000`) | `draft_terrain.py`, then `apply_edits.py` (no hand edit) |
+| `terrain.png` | the terrain type of each cell, as its key colour | `draft_terrain.py`, then `apply_edits.py` (edits r8; no hand edit) |
+| `usable.png` | usable (`ffffff`) or not (`000000`) | `draft_terrain.py`, then `apply_edits.py` (edits r8; no hand edit) |
 | `rivers.toml` | the major rivers, as latitude and longitude points | `derive_rivers.py`, unchanged (no hand edit) |
-| `edits.toml` | the owner-delegated corrections toward medieval Ireland: one entry per change, with its reason (cited by `id` in the guesswork log below) | by hand (ck-designer-1, owner-delegated) |
+| `edits.toml` | the owner-delegated corrections toward medieval Ireland: one entry per change, with its reason (cited by `id` in the guesswork log below) | by hand (ck-designer-1, owner-delegated); r8 adds the two monastery islands at the owner's direction |
 | `apply_edits.py` | applies `edits.toml` over the draft, in order, deterministically | |
 | `edits.applied` | records that the edits were applied to these images (the SHA-256 of `edits.toml`) | `apply_edits.py` |
 | `ireland_grid.py` | the world grid and tile arithmetic the scripts share | |
 
-**The committed `elevation.png`, `terrain.png` and `usable.png` are the first draft plus `edits.toml` (the medieval corrections);
+**The committed `elevation.png`, `terrain.png` and `usable.png` are the first draft plus edits r8 in `edits.toml` (the medieval corrections);
 `rivers.toml` is `derive_rivers.py`'s output unchanged. Hand edits made after them are listed in the guesswork log.** Running `draft_terrain.py` or
 `derive_rivers.py` again reproduces the first draft only and destroys those edits, so both refuse to overwrite their files unless
 `--force` is given; `apply_edits.py` refuses to run twice over the same files (`edits.applied`) unless `--force` is given.
@@ -197,8 +197,9 @@ earlier ones left. The last column is the number of cells the entry changed.
 * **Owner approval of the preview, 2026-11-05 (relayed verbatim by ck-manager, 54fbyx3b), at the three views (whole island step 10,
   Athlone step 40, Clonmacnoise step 60):** "yes i approve these views, they look good, draft 1 is mislabeled on the first view right?
   the one on the right is draft 4 correct? i would honestly accept either of these, but the one on the right looks better from a gameplay
-  perspective". That approval was of draft 4, `edits.toml` r6 (sha256 `239ce3f2...`). The data of this directory is edits r7
-  (sha256 `d4e4bcee...`), which differs from r6 by the named-site rules above. **ck-manager's ruling, 2026-11-05:** "draft 5 needs no
+  perspective". That approval was of draft 4, `edits.toml` r6 (sha256 `239ce3f2...`). The data before CK-194 was edits r7
+  (sha256 `d4e4bcee...`), which differs from r6 by the named-site rules above. Edits r8 (sha256 `9898d782...`) adds only the two
+  one-cell lake-island corrections below. **ck-manager's ruling, 2026-11-05:** "draft 5 needs no
   new owner sign-off. The owner approved draft 4 at the three views and separately required 'if there are named bogs/woods then they
   should be included'; draft 5 is draft 4 plus exactly that (63/63 named sites, Kilultagh 799 cells), visually almost identical at the
   three scales per the designer's check, and the owner asked to get back to work." ck-designer-1's check of draft 5 passed.
@@ -281,3 +282,14 @@ example the Shannon callows near Clonmacnoise; the owner, 2026-11-05: "the river
 defer that work". ck-manager tracks it.
 
 Hand edits made after `edits.toml` go here, one row each (area, change, reason, who). None has been made.
+
+### Edits r8 (CK-194), owner direction 2026-11-06
+
+The owner directed, verbatim, "Make the islands land" (relayed by ck-manager). Edits r8 applies this to the one map cell containing
+each monastery below. It changes only the terrain at those two cells; elevation and rivers are unchanged. The usable ranking is global,
+so its output also changes at another cell; the CK-194 submission lists every changed usable cell and its before/after value.
+
+| Edit | Area | Change | Reason | Confidence | Cells |
+|---|---|---|---|---|---|
+| `island-iniscealtra` | Inis Cealtra (Holy Island), Lough Derg, crop cell (325, 599) | paint pasture | The monastery of 768 is on an island smaller than this map's cell; the derivation made that cell lake. Elevation remains 30 m. | high on site, low on extent | 1 |
+| `island-inisfallen` | Inis Faithlinn (Inisfallen), Lough Leane, crop cell (181, 788) | paint pasture | The monastery of 768 is on an island smaller than this map's cell; the derivation made that cell lake. Elevation remains 22 m. | high on site, low on extent | 1 |
