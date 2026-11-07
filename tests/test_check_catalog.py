@@ -964,6 +964,17 @@ class MapGroup(unittest.TestCase):
             for other in (*self.PARITY_GROUPS, "native.window", "glfw.window", "vulkan.app"):
                 self.assertNotIn(other, chosen, f"{path}: {other}")
 
+    def test_01d_scenario_data_selects_map_core_and_no_gpu_group(self) -> None:
+        """CK-191: scenario TOML is loaded by map.core and does not require a renderer lane."""
+        for path in (
+            "assets/scenarios/ireland-768/scenario.toml",
+            "assets/scenarios/fixture/locations.toml",
+        ):
+            chosen = self.selected(path)
+            self.assertIn("map.core", chosen, path)
+            for other in (*self.PARITY_GROUPS, "native.window", "glfw.window", "vulkan.app"):
+                self.assertNotIn(other, chosen, f"{path}: {other}")
+
     def test_02_workspace_toolchain_changes_select_plain_map_core(self) -> None:
         chosen = self.selected("Cargo.lock")
         self.assertNotIn("map.core", chosen)
