@@ -84,6 +84,8 @@ mod activation_watch;
 mod held_pipe;
 #[path = "supervisor/signal.rs"]
 mod signal;
+#[path = "support/time_bar.rs"]
+mod time_bar_witness;
 #[path = "support/ui_pointer_streams.rs"]
 mod ui_pointer_streams;
 
@@ -102,6 +104,7 @@ const MAP_HOVER_ENV: &str = "CK_VULKAN_TEST_MAP_HOVER";
 const SIM_INPUT_ENV: &str = "CK_VULKAN_TEST_SIM_INPUT";
 const KEY_FILES_ENV: &str = "CK_VULKAN_TEST_KEY_FILES";
 const UI_POINTER_ENV: &str = "CK_VULKAN_TEST_UI_POINTER";
+const TIME_BAR_ENV: &str = "CK_VULKAN_TEST_TIME_BAR";
 const MAP_CAMERA_ENV: &str = "CK_MAP_TEST_CAMERA_OBSERVATION";
 const REAL_FOCUS_GATE_CASES: [&str; 1] =
     ["synthetic_focus_loss_without_worker_opt_in_keeps_the_pause"];
@@ -170,6 +173,7 @@ static QUEUE_FOCUS_LOST_FOR_CK163: AtomicBool = AtomicBool::new(false);
 static MAP_INPUT_CASE: AtomicBool = AtomicBool::new(false);
 static MAP_HOVER_CASE: AtomicBool = AtomicBool::new(false);
 static UI_POINTER_CASE: AtomicBool = AtomicBool::new(false);
+static TIME_BAR_CASE: AtomicBool = AtomicBool::new(false);
 static SIM_INPUT_CASE: AtomicBool = AtomicBool::new(false);
 static KEYS_CASE: AtomicBool = AtomicBool::new(false);
 static HELD_UI_CASE: AtomicBool = AtomicBool::new(false);
@@ -683,6 +687,9 @@ fn start_with(args: &[&OsStr], driver: Option<(&str, &Path)>) -> Worker {
     if UI_POINTER_CASE.load(Ordering::SeqCst) {
         command.env(UI_POINTER_ENV, &scratch.0);
     }
+    if TIME_BAR_CASE.load(Ordering::SeqCst) {
+        command.env(TIME_BAR_ENV, &scratch.0);
+    }
     if SIM_INPUT_CASE.load(Ordering::SeqCst) {
         // The directory the case writes its markers in: the worker's own scratch directory.
         command.env(SIM_INPUT_ENV, &scratch.0);
@@ -694,6 +701,7 @@ fn start_with(args: &[&OsStr], driver: Option<(&str, &Path)>) -> Worker {
     let map_camera_observation = (MAP_INPUT_CASE.load(Ordering::SeqCst)
         || MAP_HOVER_CASE.load(Ordering::SeqCst)
         || UI_POINTER_CASE.load(Ordering::SeqCst)
+        || TIME_BAR_CASE.load(Ordering::SeqCst)
         || SIM_INPUT_CASE.load(Ordering::SeqCst)
         || HELD_UI_CASE.load(Ordering::SeqCst))
     .then(|| report.with_extension("map-camera"));
@@ -1031,6 +1039,52 @@ end
     UI_POINTER_CASE.store(false, Ordering::SeqCst);
     assert_eq!(seen.code, Some(0), "{}", seen.stdout);
     assert_ui_pointer_streams(&seen, "Vulkan");
+}
+
+fn a_fixture_scenario_time_bar_changes_speed_pause_and_captures_a_gap_drag() {
+    let fixture = Fixture::new();
+    let scenario = fixture.scenario_fixture();
+    time_bar_witness::install_fixture_assets(&fixture.path(""), &fixture.path("assets"));
+    let config_text = format!(
+        "[game]\nscenario = '{}'\nsaves = '{}'\n\n[frame]\nupdates_per_second = 60\n",
+        scenario.display(),
+        fixture.path("saves").display()
+    );
+    let config = fixture.windowed(
+        &format!("[window]\nbackend = \"glfw-vulkan\"\n\n{config_text}"),
+        &format!(
+            "{}\nwindow.on_opened(function() wait_for(HOLD) end)\n",
+            time_bar_witness::script()
+        ),
+    );
+    TIME_BAR_CASE.store(true, Ordering::SeqCst);
+    let args: Vec<&OsStr> = vec![OsStr::new("--config"), config.as_os_str()];
+    let mut worker = start(&args);
+    let markers = worker
+        .report
+        .parent()
+        .expect("the worker marker directory")
+        .to_path_buf();
+    wait_for(
+        &mut worker,
+        "window: window opened",
+        Duration::from_secs(30),
+    );
+    wait_for_drops(&worker);
+    fixture.release();
+    let within = Duration::from_secs(30);
+    wait_for(&mut worker, "lua.ui: time-bar speed 1 load", within);
+    fs::write(markers.join("time-bar-go"), "x").expect("release the speed button click");
+    wait_for(&mut worker, "lua.ui: time-bar speed 3 load", within);
+    wait_for(&mut worker, "lua.ui: time-bar speed 3 running", within);
+    wait_for(&mut worker, "lua.ui: time-bar speed 3 player", within);
+    wait_for(&mut worker, "lua.ui: time-bar gap up", within);
+    wait_for(&mut worker, "window: window closed", within);
+    let seen = finish(worker);
+    TIME_BAR_CASE.store(false, Ordering::SeqCst);
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+    time_bar_witness::validate(&seen.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {}", seen.stdout));
 }
 
 fn assert_ui_pointer_streams(seen: &Seen, backend: &str) {
@@ -2657,6 +2711,7 @@ fn cases() -> Vec<(&'static str, fn())> {
     vec![
         case!(a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally),
         case!(a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each),
+        case!(a_fixture_scenario_time_bar_changes_speed_pause_and_captures_a_gap_drag),
         case!(a_held_ui_does_not_stop_the_map_and_gets_every_transition_after_the_release),
         case!(a_worker_that_fails_before_opening_the_pipe_is_released_reaped_and_removed_at_once),
         case!(a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally),
@@ -2712,6 +2767,10 @@ fn run_case(name: &str, case: fn()) -> bool {
         name == "a_ui_hit_captures_a_click_while_an_outside_drag_pans_the_map",
         Ordering::SeqCst,
     );
+    TIME_BAR_CASE.store(
+        name == "a_fixture_scenario_time_bar_changes_speed_pause_and_captures_a_gap_drag",
+        Ordering::SeqCst,
+    );
     SIM_INPUT_CASE.store(name == "a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally", Ordering::SeqCst);
     KEYS_CASE.store(
         name == "a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each",
@@ -2728,6 +2787,7 @@ fn run_case(name: &str, case: fn()) -> bool {
     MAP_INPUT_CASE.store(false, Ordering::SeqCst);
     MAP_HOVER_CASE.store(false, Ordering::SeqCst);
     UI_POINTER_CASE.store(false, Ordering::SeqCst);
+    TIME_BAR_CASE.store(false, Ordering::SeqCst);
     SIM_INPUT_CASE.store(false, Ordering::SeqCst);
     KEYS_CASE.store(false, Ordering::SeqCst);
     HELD_UI_CASE.store(false, Ordering::SeqCst);

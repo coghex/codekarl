@@ -1174,6 +1174,7 @@ mod tests {
                         Arc::clone(&registered),
                         Arc::clone(&hover_registered),
                         Arc::new(|| {}),
+                        crate::game::controls::SimControls::new(std::sync::mpsc::channel().0),
                     ),
                 ],
                 ..Extras::default()
@@ -2426,6 +2427,7 @@ mod tests {
             Arc::clone(&registered),
             Arc::new(AtomicBool::new(false)),
             Arc::new(|| {}),
+            crate::game::controls::SimControls::new(std::sync::mpsc::channel().0),
         ));
         let harness = Harness::new(script, extras);
         let slot = SimSlot::new(Arc::new(|| {}));
@@ -2700,6 +2702,7 @@ mod tests {
                         Arc::clone(&time_registered),
                         Arc::clone(&hover_registered),
                         Arc::new(|| {}),
+                        crate::game::controls::SimControls::new(std::sync::mpsc::channel().0),
                     ),
                 ],
                 after_wake: Some({
@@ -2863,6 +2866,7 @@ mod tests {
                         Arc::clone(&time_registered),
                         Arc::clone(&hover_registered),
                         Arc::new(|| {}),
+                        crate::game::controls::SimControls::new(std::sync::mpsc::channel().0),
                     ),
                 ],
                 ..Extras::default()

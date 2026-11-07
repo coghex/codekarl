@@ -33,15 +33,20 @@ static id ck_app_unmarked_observer = nil;
 static id ck_app_ui_pointer_observer = nil;
 static dispatch_source_t ck_app_ui_pointer_timer = nil;
 static char ck_app_ui_pointer_dir[1024];
+static id ck_app_time_bar_observer = nil;
+static dispatch_source_t ck_app_time_bar_timer = nil;
+static char ck_app_time_bar_dir[1024];
 static _Atomic uint64_t ck_app_dropped;
 static _Atomic uint64_t ck_app_dropped_mouse;
 static NSWindow *ck_app_the_window(int32_t *error);
 static BOOL ck_app_marker(const char *dir, const char *name);
+static void ck_app_tap(uint16_t code, const char *characters);
 void ck_app_t_schedule_map_keys(void);
 void ck_app_t_schedule_sim_keys(void);
 void ck_app_t_schedule_key_files(void);
 void ck_app_t_schedule_map_pointer(void);
 void ck_app_t_schedule_ui_pointer(void);
+void ck_app_t_schedule_time_bar(void);
 void ck_app_t_schedule_map_hover(void);
 
 /* The test-only input filter: a local event monitor, which AppKit runs inside -[NSApplication sendEvent:] before
@@ -95,6 +100,9 @@ void ck_app_t_install_input_filter(void) {
         }
         if (getenv("CK_WINDOWED_TEST_UI_POINTER") != NULL || getenv("CK_VULKAN_TEST_UI_POINTER") != NULL) {
             ck_app_t_schedule_ui_pointer();
+        }
+        if (getenv("CK_WINDOWED_TEST_TIME_BAR") != NULL || getenv("CK_VULKAN_TEST_TIME_BAR") != NULL) {
+            ck_app_t_schedule_time_bar();
         }
         if (getenv("CK_WINDOWED_TEST_MAP_HOVER") != NULL || getenv("CK_VULKAN_TEST_MAP_HOVER") != NULL) {
             ck_app_t_schedule_map_hover();
@@ -309,6 +317,102 @@ static void ck_app_ui_pointer_line(const char *line) {
         fprintf(file, "%s\n", line);
         fclose(file);
     }
+}
+
+static BOOL ck_app_time_bar_marker(const char *name) {
+    char path[1200];
+    snprintf(path, sizeof path, "%s/%s", ck_app_time_bar_dir, name);
+    return access(path, F_OK) == 0;
+}
+
+static void ck_app_time_bar_write_marker(const char *name) {
+    char path[1200];
+    snprintf(path, sizeof path, "%s/%s", ck_app_time_bar_dir, name);
+    FILE *file = fopen(path, "w");
+    if (file != NULL) {
+        fputs("x", file);
+        fclose(file);
+    }
+}
+
+static void ck_app_time_bar_line(const char *line) {
+    ck_app_ui_pointer_line(line);
+}
+
+/* Coordinates supplied by the fixture are UI top-left points; NSEvent locations use the AppKit bottom-left origin. */
+static int32_t ck_app_t_time_bar_click(NSWindow *window, double x, double y) {
+    NSPoint in_view = NSMakePoint(x, window.contentView.bounds.size.height - y);
+    NSPoint in_window = [window.contentView convertPoint:in_view toView:nil];
+    int32_t result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, in_window);
+    if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDown, in_window);
+    if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseUp, in_window);
+    return result;
+}
+
+static int ck_app_t_time_bar_advance(NSWindow *window, int phase) {
+    if (phase == 0 && ck_app_time_bar_marker("time-bar-go")) {
+        int32_t result = ck_app_t_time_bar_click(window, 140.0, 27.0); /* speed 3 */
+        if (result != 1) NSLog(@"test time-bar speed click failed with result %d", result);
+        ck_app_time_bar_line("time-bar-speed3-injected");
+        return 1;
+    } else if (phase == 1 && ck_app_time_bar_marker("time-bar-speed3-applied")) {
+        int32_t result = ck_app_t_time_bar_click(window, 20.0, 20.0); /* pause */
+        if (result != 1) NSLog(@"test time-bar first pause click failed with result %d", result);
+        ck_app_time_bar_line("time-bar-pause1-injected");
+        return 2;
+    } else if (phase == 2 && ck_app_time_bar_marker("time-bar-running")) {
+        int32_t result = ck_app_t_time_bar_click(window, 20.0, 20.0); /* pause again */
+        if (result != 1) NSLog(@"test time-bar second pause click failed with result %d", result);
+        ck_app_time_bar_line("time-bar-pause2-injected");
+        return 3;
+    } else if (phase == 3 && ck_app_time_bar_marker("time-bar-paused-again")) {
+        NSPoint gap_view = NSMakePoint(32.0, window.contentView.bounds.size.height - 20.0);
+        NSPoint end_view = NSMakePoint(80.0, window.contentView.bounds.size.height - 70.0);
+        NSPoint start = [window.contentView convertPoint:gap_view toView:nil];
+        NSPoint end = [window.contentView convertPoint:end_view toView:nil];
+        int32_t result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, start);
+        if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDown, start);
+        if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDragged, end);
+        if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseUp, end);
+        if (result != 1) NSLog(@"test time-bar gap drag failed with result %d", result);
+        ck_app_time_bar_line("time-bar-gap-drag-injected");
+        return 4;
+    } else if (phase == 4 && ck_app_time_bar_marker("time-bar-drag-observed")) {
+        ck_app_time_bar_write_marker("time-bar-done");
+        ck_app_time_bar_line("time-bar-gap-drag-observed");
+        ck_app_tap(0x35, "\e"); /* Escape closes the fixture window through its normal handler. */
+        return 5;
+    }
+    return phase;
+}
+
+/* Drives speed and pause buttons, then drags from a gap in the bar; every next input waits for Lua's observed state. */
+void ck_app_t_schedule_time_bar(void) {
+    const char *dir = getenv("CK_WINDOWED_TEST_TIME_BAR");
+    if (dir == NULL) dir = getenv("CK_VULKAN_TEST_TIME_BAR");
+    if (dir == NULL) return;
+    strncpy(ck_app_time_bar_dir, dir, sizeof ck_app_time_bar_dir - 1);
+    ck_app_time_bar_observer = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSWindowDidUpdateNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *notification) {
+        NSWindow *window = notification.object;
+        if (![window isKindOfClass:NSWindow.class] || !window.isVisible) return;
+        [NSNotificationCenter.defaultCenter removeObserver:ck_app_time_bar_observer];
+        ck_app_time_bar_observer = nil;
+        __block int phase = 0;
+        ck_app_time_bar_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(ck_app_time_bar_timer, DISPATCH_TIME_NOW, 5 * NSEC_PER_MSEC, NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(ck_app_time_bar_timer, ^{
+            phase = ck_app_t_time_bar_advance(window, phase);
+            if (phase == 5) {
+                dispatch_source_cancel(ck_app_time_bar_timer);
+                ck_app_time_bar_timer = nil;
+            }
+        });
+        dispatch_resume(ck_app_time_bar_timer);
+    }];
 }
 
 /* Click the UI region, wait for its observed down/up delivery, then drag outside it across the map. */
