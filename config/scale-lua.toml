@@ -15,6 +15,8 @@ resources = "debug"
 backend = "native-metal"
 
 [render]
+# The run loads 32,768 textures: the large table and the limits it covers are explicit (CK-201: the application default is 4,096 slots).
+bindless_texture_slots = 131072
 filter = "nearest"
 assets = "@FIXTURES@"
 
@@ -26,3 +28,7 @@ entry = "@ROOT@/scripts/scale/lua_moving.lua"
 
 [lua.gameplay]
 entry = "@ROOT@/scripts/gameplay/main.lua"
+
+[resources]
+max_textures = 65536
+max_extra_revisions = 1024
