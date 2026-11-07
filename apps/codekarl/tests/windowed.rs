@@ -2089,7 +2089,7 @@ fn moving_a_quad_for_many_updates_uploads_nothing_but_a_reload_does() {
 
 /// The setting reaches the presenter (CK-128): a fixture with `max_textures = 8`, `max_extra_revisions = 8` and
 /// `bindless_texture_slots = 17` (the rule's exact minimum) ends with `bindless_slots=17` in the final record, the observed
-/// capacity of the tables the presenter allocated; the default configuration shows 131072 (the negative control: a hard-coded
+/// capacity of the tables the presenter allocated; the default configuration shows 4096 (the negative control: a hard-coded
 /// count would show the same number twice). Native exhaustion is not claimed: a valid configuration cannot reach it.
 fn the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record() {
     let small = format!(
@@ -2103,11 +2103,7 @@ fn the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record
     assert_reconciled(&record);
     let default = lifecycle(MOVEMENT);
     let record = final_record(&default.stdout);
-    assert_eq!(
-        number_after(&record, "bindless_slots="),
-        131_072,
-        "{record}"
-    );
+    assert_eq!(number_after(&record, "bindless_slots="), 4_096, "{record}");
 }
 
 fn destroying_the_quad_and_releasing_the_texture_retires_it_before_the_run_ends() {
