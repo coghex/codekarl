@@ -518,6 +518,29 @@ fn crop_is_checked_before_jitter_and_outside_neighbours_are_sea() {
     );
 }
 
+#[test]
+fn prepared_location_overlay_precedes_jitter_crop_rejection_but_not_rivers() {
+    use std::collections::BTreeMap;
+
+    let map = encoded_elevation_map();
+    let moved_outside = WorldPixel { x: 0, y: 2 };
+    let location_colour = Rgba8::opaque(201, 101, 51);
+    let locations = BTreeMap::from([(moved_outside, location_colour)]);
+
+    assert_eq!(
+        reference_colour_with_locations(&map, 34, moved_outside, &BTreeSet::new(), &locations,),
+        Some(location_colour),
+        "a prepared location survives terrain jitter moving its sample outside the crop"
+    );
+
+    let rivers = BTreeSet::from([moved_outside]);
+    assert_eq!(
+        reference_colour_with_locations(&map, 34, moved_outside, &rivers, &locations),
+        Some(map.river),
+        "river colour remains above a prepared location overlay"
+    );
+}
+
 fn fp_pixel(x: i32, y: i32, step: u8) -> FixedPoint {
     let p = STEP_SIZE[usize::from(step)];
     FixedPoint { x: x * p, y: y * p }

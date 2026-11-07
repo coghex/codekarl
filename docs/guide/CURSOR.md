@@ -1,27 +1,31 @@
 # Guide cursor
 
-Resume after: `D1793539232205556000` · patch `R24GKJ32L53MKJGDWZZLXTUVAZDXLEZAXCFEU3WRQ2JGNPKECAWQC` · pointer `4873df4d981159b1b38d929b190e3cf49416879a2a4d0a93a2cc404e977cc06d` · [20261101t132214z-4873df4d](20261101t132214z-4873df4d.md) · 2026-11-01T13:39:01Z
+Resume after: `D1794066013299252000` · patch `SR7QEBJOJY7SJRKUW7EJ5LT3SSX3OF5A3MPXI5SQGFBBN7WCRHCAC` · pointer `064a459b05299902ad0b18b947a11df22aed93356c2d790edb2f4b4b60e8b280` · [20261107t154110z-064a459b](20261107t154110z-064a459b.md) · 2026-11-07T16:00:41Z
 Covered beyond the boundary: none
 
 ## Next
 
-Process the open findings below, then continue from the boundary.
+Review the 1 publication(s) after the boundary.
 
 ## Open findings
 
-- 20261101t132214z-4873df4d/GUIDE-1 — Wait for the Vulkan first-frame report before asserting it — unprocessed
+- none
 
 ## Pending handoff
 
-- none
+- publication D1794067250011122000 is after the boundary
 
 ## Alignment
 
 | Principle | Reading | Since | Note |
 |---|---|---|---|
-| vision.defer-engine-systems | aligned | 20261101t132214z-4873df4d | Owner-discussed M5/M5.5 work follows the scene contract. No ECS/map/game mechanics or Linux qualification inferred; stale Open engineering text is superseded only by explicit later owner-directed milestones. |
-| vision.early-lua | aligned | 20261101t132214z-4873df4d | The same resource/scene/frame script now composes on glfw-vulkan; updates and metrics remain separate from GPU ownership. |
+| vision.defer-engine-systems | aligned | 20261107t154110z-064a459b | M6 map and M7 clock/scenario work follow explicit owner-discussed designs and reviewed effective specs. No economy/combat backlog or multiplayer design inferred. |
+| vision.early-lua | drifting | 20261107t154110z-064a459b | GUIDE-1: ordinary textual load loses its default environment. Gameplay VM integration otherwise follows the accepted M7 scope. |
+| vision.hourly-time | aligned | 20261107t154110z-064a459b | Clock, scheduler and command boundaries implement hourly simulation with coarser cadences and no skipped ticks; controls and save/load are owned separately from rendering. |
+| vision.ireland-first | aligned | 20261107t154110z-064a459b | Shipped terrain and the 94 authored places of Ireland-768 implement the pilot-region slice; uncertainty remains explicit in source notes. |
 | vision.logging | aligned | 20261030t192312z-8f447d70 | CK-104 retains the writer-thread failure boundary and bounded exit. No new logging architecture assessed. |
-| vision.responsiveness | drifting | 20261101t132214z-4873df4d | New scale evidence: bindless Vulkan/MoltenVK GPU p95 157.5ms versus Metal 0.625ms, approximately 6 fps at scale. Owner authorized investigation CK-168; acceptance is correctness-only and does not resolve this goal. No duplicate finding. |
-| vision.runtime-first | aligned | 20261101t132214z-4873df4d | Proof-before-release and explicit lifecycle remain intact across Vulkan composition; prior M5 repairs are present. GUIDE-1 concerns reliable evidence of the first-frame event, not a changed lifecycle design. |
-| vision.small-libraries | aligned | 20261101t132214z-4873df4d | CPU resources and resident policy remain shared; native Vulkan owners stay in gpu-vulkan. CK-162 explicitly accepts temporary metrics/phase duplication and names later consolidation. |
+| vision.modding | drifting | 20261107t154110z-064a459b | GUIDE-1 and GUIDE-3: normal script composition and valid crop-edge scenario previews have contract defects; authored data remains separate from GPU owners. |
+| vision.reproducible-saves | drifting | 20261107t154110z-064a459b | GUIDE-2: unsupported-key error text and metamethod selection remain allocation-order dependent. Save framing, stream isolation and continuation are otherwise aligned at the reviewed boundaries. |
+| vision.responsiveness | aligned | 20261107t154110z-064a459b | Changed from drifting: CK-168 identifies a heap-sensitive MoltenVK penalty, CK-175 adopts the owner-selected mitigation and CK-201 reduces default table cost. This is directional alignment with bounded evidence, not a native-Linux or all-scale performance qualification. GUIDE-4 is an unmeasured, at-most-1-KB-per-frame contract deviation. |
+| vision.runtime-first | aligned | 20261107t154110z-064a459b | Map resources join completion-proof ownership; simulation shutdown and Lua exit preserve the application lifecycle at reviewed boundaries. Source review is not new shutdown execution evidence. |
+| vision.small-libraries | aligned | 20261107t154110z-064a459b | Map and simulation stay windowless/backend-neutral; GPU ownership remains native. GUIDE-4 concerns the palette update cadence inside the Metal owner, not a new dependency boundary. |

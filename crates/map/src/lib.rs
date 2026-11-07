@@ -480,6 +480,9 @@ pub fn reference_colour_with_locations(
     if rivers.contains(&pixel) {
         return Some(map.river);
     }
+    if let Some(&location_colour) = locations.get(&pixel) {
+        return Some(location_colour);
+    }
     let b = u32::from(bayer(pixel));
     let unmoved = sample_point(pixel, step)?;
     if !inside_crop(map.crop, unmoved) {
@@ -533,9 +536,6 @@ pub fn reference_colour_with_locations(
         && let Surface::Land { terrain, .. } = surface
     {
         colour = map.terrains.get(usize::from(terrain))?.solid;
-    }
-    if let Some(&location_colour) = locations.get(&pixel) {
-        return Some(location_colour);
     }
     Some(colour)
 }

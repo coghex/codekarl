@@ -394,6 +394,112 @@ assert(indexed.answer == 42)
 }
 
 #[test]
+fn deterministic_load_without_an_environment_keeps_the_ordinary_globals_and_passes_an_explicit_one_through()
+ {
+    let dir = Dir::new();
+    let entry = dir.script(
+        r"
+answer = 7
+-- No environment: the chunk reads the profile's ordinary globals, library tables included.
+local plain = load('return answer + math.floor(2.5)', '=plain')
+assert(plain and plain() == 9)
+-- The mode argument is still ignored in favour of text only, with or without an environment.
+local mode_ignored = load('return answer', '=mode', 'b')
+assert(mode_ignored and mode_ignored() == 7)
+-- An explicit environment table is the chunk's environment, not the globals.
+local scoped = load('return answer, other', '=scoped', 't', {answer = 1, other = 2})
+local first, second = scoped()
+assert(first == 1 and second == 2)
+-- An explicit nil is passed through: the chunk's _ENV is nil, so reading a global fails and a constant does not.
+local nothing = load('return answer', '=nothing', 't', nil)
+assert(nothing and not pcall(nothing))
+local constant = load('return 5', '=constant', 't', nil)
+assert(constant() == 5)
+-- Binary chunks are still refused, with or without an environment.
+local binary = load('\27Lua', '=bin')
+assert(binary == nil)
+local binary_env = load('\27Lua', '=bin', 't', {})
+assert(binary_env == nil)
+-- A function chunk source works with the default environment as well.
+local pieces = {'return ', 'answer'}
+local index = 0
+local streamed = load(function() index = index + 1 return pieces[index] end, '=streamed')
+assert(streamed and streamed() == 7)
+",
+    );
+    let mut settings = VmSettings::new("deterministic_load_env", entry, empty_config());
+    settings.profile = Profile::Deterministic;
+    let mut owner = VmOwner::spawn(settings).expect("the thread starts");
+    owner
+        .wait_ready(BOUND)
+        .expect("load keeps the default environment when none is given");
+    owner.stop(BOUND).expect("the owner stops");
+}
+
+#[test]
+fn deterministic_pairs_errors_depend_on_the_set_of_keys_and_never_call_a_key_s_tostring() {
+    let dir = Dir::new();
+    let entry = dir.script(
+        r"
+local calls = 0
+local function key(text)
+  return setmetatable({}, {__tostring = function() calls = calls + 1 return text end})
+end
+local function attempt(make)
+  local ok, message = pcall(function() for _ in pairs(make()) do end end)
+  assert(not ok)
+  return message
+end
+-- Several table keys whose __tostring answers differ: the same text every time, and no __tostring ran.
+local expected
+for round = 1, 30 do
+  local message = attempt(function()
+    local t = {}
+    t[key('first ' .. round)] = 1
+    t[key('second ' .. round)] = 2
+    t[key('third ' .. round)] = 3
+    return t
+  end)
+  expected = expected or message
+  assert(message == expected, message)
+end
+assert(expected:find('unsupported table key (table)', 1, true), expected)
+assert(not expected:find('first', 1, true) and not expected:find('second', 1, true))
+assert(calls == 0, calls)
+-- Mixed kinds: the message names a fixed one whatever order they were inserted in (boolean before table).
+local both_ways = {}
+for round = 1, 20 do
+  local forward = attempt(function() local t = {}; t[true] = 1; t[key('k')] = 2; return t end)
+  local backward = attempt(function() local t = {}; t[key('k')] = 2; t[true] = 1; return t end)
+  assert(forward == backward, forward .. ' vs ' .. backward)
+  both_ways[forward] = true
+end
+local count = 0
+for message in pairs(both_ways) do
+  count = count + 1
+  assert(message:find('(boolean)', 1, true), message)
+end
+assert(count == 1 and calls == 0)
+-- A non-integral number outranks the other kinds, and several of them are named by the smallest.
+local fraction = attempt(function() local t = {[2.5] = 1, [1.5] = 2, [math.huge] = 3}; t[key('k')] = 4; return t end)
+assert(fraction:find('1.5', 1, true) and not fraction:find('2.5', 1, true), fraction)
+assert(calls == 0)
+-- Supported keys still iterate: integers before strings, strings by bytes.
+local order = {}
+for k in pairs({[2] = true, [1] = true, b = true, a = true}) do order[#order + 1] = tostring(k) end
+assert(table.concat(order, ',') == '1,2,a,b')
+",
+    );
+    let mut settings = VmSettings::new("deterministic_pairs_errors", entry, empty_config());
+    settings.profile = Profile::Deterministic;
+    let mut owner = VmOwner::spawn(settings).expect("the thread starts");
+    owner
+        .wait_ready(BOUND)
+        .expect("the unsupported-key error does not depend on native order");
+    owner.stop(BOUND).expect("the owner stops");
+}
+
+#[test]
 fn deterministic_collector_runs_after_each_posted_call() {
     use std::sync::{Arc, Condvar, Mutex, PoisonError};
     use std::time::Instant;

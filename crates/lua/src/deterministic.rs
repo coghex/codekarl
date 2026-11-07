@@ -56,6 +56,8 @@ globals.print = function(...)
 end
 
 local key_order = { number = 1, string = 2 }
+-- Which unsupported kind an error names when several are present: a fixed order, never the order the native traversal met them.
+local unsupported_rank = { boolean = 1, table = 2, ['function'] = 3, thread = 4, userdata = 5 }
 globals.pairs = function(value)
   local mt = native.getmetatable(value)
   if mt ~= nil and mt.__pairs ~= nil then
@@ -65,17 +67,31 @@ globals.pairs = function(value)
     error("bad argument #1 to 'pairs' (table expected)", 2)
   end
   local keys = {}
+  local smallest_fraction, worst_kind
   for key in native.next, value do
     local kind = native.type(key)
     if kind == 'number' then
-      local number_kind = math.type(key)
-      if number_kind ~= 'integer' then
-        error('unsupported non-integral numeric key: ' .. stable_tostring(key), 2)
+      if math.type(key) == 'integer' then
+        keys[#keys + 1] = key
+      elseif smallest_fraction == nil or key < smallest_fraction then
+        smallest_fraction = key
       end
-    elseif kind ~= 'string' then
-      error('unsupported table key (' .. kind .. '): ' .. stable_tostring(key), 2)
+    elseif kind == 'string' then
+      keys[#keys + 1] = key
+    else
+      local rank, worst_rank = unsupported_rank[kind] or 9, worst_kind and (unsupported_rank[worst_kind] or 9)
+      if worst_kind == nil or rank < worst_rank or (rank == worst_rank and kind < worst_kind) then
+        worst_kind = kind
+      end
     end
-    keys[#keys + 1] = key
+  end
+  -- The error depends on the set of keys only, and never converts a key to text through its own metamethods: a
+  -- non-integral number is named by the smallest one, any other unsupported key by its kind.
+  if smallest_fraction ~= nil then
+    error('unsupported non-integral numeric key: ' .. native.format('%.14g', smallest_fraction), 2)
+  end
+  if worst_kind ~= nil then
+    error('unsupported table key (' .. worst_kind .. ')', 2)
   end
   native.sort(keys, function(a, b)
     local ta, tb = native.type(a), native.type(b)
@@ -159,8 +175,11 @@ globals.setmetatable = function(value, mt)
   return native_setmetatable(value, mt)
 end
 
-globals.load = function(chunk, name, _mode, env)
-  return native.load(chunk, name, 't', env)
+-- Text only. The environment is passed on only when the caller gave one: Lua tells an omitted fourth argument (the chunk
+-- gets the ordinary global environment) from an explicit nil (the chunk gets a nil `_ENV`), so a fixed fourth parameter
+-- would turn every omission into an explicit nil.
+globals.load = function(chunk, name, _mode, ...)
+  return native.load(chunk, name, 't', ...)
 end
 
 -- `%s` normally calls luaL_tolstring directly and includes an allocation address. Replace only
