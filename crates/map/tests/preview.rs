@@ -38,6 +38,17 @@ impl Drop for TempDir {
     }
 }
 
+struct ScenarioFixture {
+    _directory: TempDir,
+    scenario: PathBuf,
+}
+
+impl ScenarioFixture {
+    fn path(&self) -> &Path {
+        &self.scenario
+    }
+}
+
 fn fixture() -> TempDir {
     let directory = TempDir::new("fixture");
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-data/valid");
@@ -54,9 +65,12 @@ fn fixture() -> TempDir {
     directory
 }
 
-fn scenario_fixture() -> TempDir {
+fn scenario_fixture() -> ScenarioFixture {
     let directory = TempDir::new("scenario");
-    fs::create_dir_all(directory.path().join("map")).expect("create scenario map");
+    let scenario = directory.path().join("scenarios/preview_test");
+    let map = directory.path().join("map/fixture");
+    fs::create_dir_all(&scenario).expect("create scenario directory");
+    fs::create_dir_all(&map).expect("create shared map directory");
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-data/valid");
     for name in [
         "map.toml",
@@ -66,14 +80,16 @@ fn scenario_fixture() -> TempDir {
         "usable.png",
         "elevation.png",
     ] {
-        fs::copy(source.join(name), directory.path().join("map").join(name))
-            .expect("copy map fixture");
+        fs::copy(source.join(name), map.join(name)).expect("copy map fixture");
     }
-    fs::write(directory.path().join("scenario.toml"), "id = \"preview_test\"\nmap = \"map\"\nlocations = \"locations.toml\"\n[start]\nyear = 768\nmonth = 10\nday = 9\nhour = 0\n").expect("write scenario");
-    fs::write(directory.path().join("map/location_kinds.toml"), "[[kind]]\nid = \"town\"\nsizes = [1, 1]\ncatchment_m = [1000]\nglyph = [\".#.\", \"#d#\", \".#.\"]\nlight = \"#d7c89b\"\ndark = \"#66583c\"\n").expect("write kinds");
+    fs::write(scenario.join("scenario.toml"), "id = \"preview_test\"\nmap = \"fixture\"\nlocations = \"locations.toml\"\n[start]\nyear = 768\nmonth = 10\nday = 9\nhour = 0\n").expect("write scenario");
+    fs::write(map.join("location_kinds.toml"), "[[kind]]\nid = \"town\"\nsizes = [1, 1]\ncatchment_m = [1000]\nglyph = [\".#.\", \"#d#\", \".#.\"]\nlight = \"#d7c89b\"\ndark = \"#66583c\"\n").expect("write kinds");
     let (latitude, longitude) = lat_lon_for_cell(23_883, 23_883);
-    fs::write(directory.path().join("locations.toml"), format!("[[location]]\nid = \"test_town\"\nname = \"Test Town\"\nlat = {latitude}\nlon = {longitude}\nkind = \"town\"\nsize = 1\nbuildings = []\nsource = \"fixture\"\nconfidence = \"medium\"\n")).expect("write location");
-    directory
+    fs::write(scenario.join("locations.toml"), format!("[[location]]\nid = \"test_town\"\nname = \"Test Town\"\nlat = {latitude}\nlon = {longitude}\nkind = \"town\"\nsize = 1\nbuildings = []\nsource = \"fixture\"\nconfidence = \"medium\"\n")).expect("write location");
+    ScenarioFixture {
+        _directory: directory,
+        scenario,
+    }
 }
 
 fn lat_lon_for_cell(x: i32, y: i32) -> (f64, f64) {
