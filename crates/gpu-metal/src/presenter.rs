@@ -139,6 +139,7 @@ struct Faults {
     handler_delay_ms: i32,
     completion_delay_ms: i32,
     fail_texture_allocation: i32,
+    fail_overlay_palette_allocation: i32,
     fail_quad_encode: i32,
     retired_token_delay_ms: i32,
     pause_after_reap_for_token: i32,
@@ -289,6 +290,7 @@ impl Faults {
         handler_delay_ms: 0,
         completion_delay_ms: 0,
         fail_texture_allocation: 0,
+        fail_overlay_palette_allocation: 0,
         fail_quad_encode: 0,
         retired_token_delay_ms: 0,
         pause_after_reap_for_token: 0,
@@ -920,6 +922,24 @@ impl Observer {
         self.get(41)
     }
 
+    /// Map-generation overlay palettes uploaded to Metal.
+    #[must_use]
+    pub fn map_palettes_created(&self) -> i64 {
+        self.get(44)
+    }
+
+    /// Resident and retired map-generation palettes still held by the core.
+    #[must_use]
+    pub fn map_palettes_alive(&self) -> i64 {
+        self.get(45)
+    }
+
+    /// Retired map palettes released after their completion proof.
+    #[must_use]
+    pub fn map_palettes_released(&self) -> i64 {
+        self.get(46)
+    }
+
     /// The size, in map pixels, of the map target made last.
     #[must_use]
     pub fn map_last_target_size(&self) -> (i64, i64) {
@@ -1143,6 +1163,8 @@ pub struct TestHooks {
     /// The next this many attempts to make the map's images or target are refused (counted only in frame steps that need a creation:
     /// a new input, or a view of another size).
     pub fail_map_allocations: u32,
+    /// For this many attempts, the newly admitted map generation's overlay palette cannot be allocated.
+    pub fail_map_palette_allocations: u32,
     /// The first this many such attempts succeed before `fail_map_allocations` begins to refuse (a refusal of a resize, with the old
     /// target resident).
     pub skip_map_allocations: u32,
@@ -2665,6 +2687,11 @@ impl Loop<'_> {
         {
             faults.fail_texture_allocation = 1;
         }
+        let inject_palette_failure = frame_map.is_some_and(|map| {
+            self.map_resident != Some(map.generation())
+                && self.hooks.fail_map_palette_allocations > 0
+        });
+        faults.fail_overlay_palette_allocation = i32::from(inject_palette_failure);
         let map_view = frame_map.map(MetalMap::view);
         let native_map =
             frame_map.map(|map| NativeMap::of(map, self.map_resident != Some(map.generation())));
@@ -2812,6 +2839,12 @@ impl Loop<'_> {
             } else if result.map_refused != 0 && self.hooks.fail_map_allocations > 0 {
                 self.hooks.fail_map_allocations -= 1;
             }
+        }
+        if inject_palette_failure
+            && result.map_refused != 0
+            && text(&result.map_refusal.0).contains("overlay-palette")
+        {
+            self.hooks.fail_map_palette_allocations -= 1;
         }
         if result.map_admitted != 0 {
             self.map_target = map_view;

@@ -56,7 +56,10 @@ enum {
     CK_OBS_MAP_GRIDS_ALIVE = 41,        /* map inputs a holder of the core still has (the current one and a retired one) */
     CK_OBS_MAP_LAST_WIDTH = 42,         /* the size of the map target made last, in map pixels */
     CK_OBS_MAP_LAST_HEIGHT = 43,
-    CK_OBS_COUNT = 44
+    CK_OBS_MAP_PALETTES_CREATED = 44,   /* admitted map generations with a non-empty resident overlay palette (test) */
+    CK_OBS_MAP_PALETTES_ALIVE = 45,     /* resident and retired map palettes still held by the core (test) */
+    CK_OBS_MAP_PALETTES_RELEASED = 46,  /* retired map palettes released after their completion proof (test) */
+    CK_OBS_COUNT = 47
 };
 
 /* The entry points a test may pause in (see ck_pr_set_check_pause). */
@@ -187,12 +190,14 @@ static void ck_obs_max(CKPrObserverState *observer, int index, int64_t value) {
 @property(nonatomic, strong) id<MTLTexture> mapGridA;
 @property(nonatomic, strong) id<MTLTexture> mapGridB;
 @property(nonatomic, strong) id<MTLTexture> mapRules;
+@property(nonatomic, strong) id<MTLBuffer> mapPalette;
 @property(nonatomic) uint64_t mapGeneration;
 @property(nonatomic, strong) id<MTLTexture> mapTarget;
-@property(nonatomic, strong) NSArray<id<MTLTexture>> *retiredMap;
+@property(nonatomic, strong) NSArray *retiredMap;
 @property(nonatomic, strong) CKPrTokenState *retiredMapToken;
 @property(nonatomic) int32_t retiredMapTargets;
 @property(nonatomic) int32_t retiredMapGrids;
+@property(nonatomic) int32_t retiredMapPalettes;
 /* A completion error, latched when first seen and not yet handed out; and that one was seen at all. */
 @property(nonatomic, copy) NSString *latchedError;
 @property(nonatomic) BOOL failedSticky;
@@ -334,6 +339,7 @@ typedef struct {
     __unsafe_unretained id<MTLTexture> grid_a;
     __unsafe_unretained id<MTLTexture> grid_b;
     __unsafe_unretained id<MTLTexture> rules;
+    __unsafe_unretained id<MTLBuffer> palette;
     __unsafe_unretained id<MTLTexture> target;
 } CKPrMapDraw;
 
@@ -371,23 +377,19 @@ static BOOL ck_encode_map_pass(id<MTLCommandBuffer> command, CKPrQuadKit *kit, c
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     if (draw->map->location_count != 0) {
         NSUInteger location_bytes = (NSUInteger)draw->map->location_count * sizeof(uint32_t[3]);
-        NSUInteger palette_bytes = (NSUInteger)draw->map->overlay_palette_count * sizeof(uint8_t[4]);
         id<MTLBuffer> locations = [command.commandQueue.device newBufferWithBytes:draw->map->locations
                                                                              length:location_bytes
                                                                             options:MTLResourceStorageModeShared];
-        id<MTLBuffer> palette = [command.commandQueue.device newBufferWithBytes:draw->map->overlay_palette
-                                                                          length:palette_bytes
-                                                                         options:MTLResourceStorageModeShared];
-        if (locations == nil || palette == nil) {
+        if (locations == nil || draw->palette == nil) {
             [encoder endEncoding];
-            *reason = @"the visible location-pixel or overlay-palette buffer could not be created";
+            *reason = @"the visible location-pixel buffer could not be created";
             return NO;
         }
         const uint32_t view[2] = {draw->map->view[0], draw->map->view[1]};
         [encoder setRenderPipelineState:kit.mapLocations];
         [encoder setVertexBytes:view length:sizeof(view) atIndex:0];
         [encoder setVertexBuffer:locations offset:0 atIndex:1];
-        [encoder setFragmentBuffer:palette offset:0 atIndex:0];
+        [encoder setFragmentBuffer:draw->palette offset:0 atIndex:0];
         [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:draw->map->location_count];
     }
     if (draw->map->river_count != 0) {
@@ -991,12 +993,15 @@ static void ck_map_reap(CKPrCoreState *core) {
         return;
     }
     ck_obs_add(core.observer, CK_OBS_MAP_RETIRED_RELEASED, core.retiredMapTargets + core.retiredMapGrids);
+    ck_obs_add(core.observer, CK_OBS_MAP_PALETTES_RELEASED, core.retiredMapPalettes);
     ck_obs_add(core.observer, CK_OBS_MAP_TARGETS_ALIVE, -core.retiredMapTargets);
     ck_obs_add(core.observer, CK_OBS_MAP_GRIDS_ALIVE, -core.retiredMapGrids);
+    ck_obs_add(core.observer, CK_OBS_MAP_PALETTES_ALIVE, -core.retiredMapPalettes);
     core.retiredMap = nil;
     core.retiredMapToken = nil;
     core.retiredMapTargets = 0;
     core.retiredMapGrids = 0;
+    core.retiredMapPalettes = 0;
 }
 
 /* Whether retired map resources still wait for their token (then no further replacement is admitted, and the teardown waits). */
@@ -1047,9 +1052,24 @@ static int ck_map_admit(CKPrCoreState *core, const CKPrMap *map, const CKPrFault
     id<MTLTexture> grid_a = nil;
     id<MTLTexture> grid_b = nil;
     id<MTLTexture> rules = nil;
+    id<MTLBuffer> palette = nil;
     id<MTLTexture> target = nil;
     if (new_grids && !ck_make_map_inputs(core.device, map, faults->fail_texture_allocation, &grid_a, &grid_b, &rules, why)) {
         return 3;
+    }
+    if (new_grids && map->overlay_palette_count != 0) {
+        if (faults->fail_overlay_palette_allocation) {
+            *why = @"the map overlay-palette buffer could not be created";
+            return 3;
+        }
+        NSUInteger palette_bytes = (NSUInteger)map->overlay_palette_count * sizeof(uint8_t[4]);
+        palette = [core.device newBufferWithBytes:map->overlay_palette
+                                            length:palette_bytes
+                                           options:MTLResourceStorageModeShared];
+        if (palette == nil) {
+            *why = @"the map overlay-palette buffer could not be created";
+            return 3;
+        }
     }
     if (new_target) {
         target = ck_make_map_target(core.device, map->view[0], map->view[1], MTLStorageModePrivate,
@@ -1059,11 +1079,14 @@ static int ck_map_admit(CKPrCoreState *core, const CKPrMap *map, const CKPrFault
         }
     }
     if (replaces_grids || replaces_target) {
-        NSMutableArray<id<MTLTexture>> *old = [NSMutableArray array];
+        NSMutableArray *old = [NSMutableArray array];
         if (replaces_grids) {
             [old addObject:core.mapGridA];
             [old addObject:core.mapGridB];
             [old addObject:core.mapRules];
+            if (core.mapPalette != nil) {
+                [old addObject:core.mapPalette];
+            }
         }
         if (replaces_target) {
             [old addObject:core.mapTarget];
@@ -1071,6 +1094,7 @@ static int ck_map_admit(CKPrCoreState *core, const CKPrMap *map, const CKPrFault
         core.retiredMap = old;
         core.retiredMapToken = ck_retirement_token(core, faults->retired_token_delay_ms);
         core.retiredMapGrids = replaces_grids ? 1 : 0;
+        core.retiredMapPalettes = replaces_grids && core.mapPalette != nil ? 1 : 0;
         core.retiredMapTargets = replaces_target ? 1 : 0;
         ck_obs_add(observer, CK_OBS_MAP_RETIRED, core.retiredMapGrids + core.retiredMapTargets);
     }
@@ -1078,9 +1102,14 @@ static int ck_map_admit(CKPrCoreState *core, const CKPrMap *map, const CKPrFault
         core.mapGridA = grid_a;
         core.mapGridB = grid_b;
         core.mapRules = rules;
+        core.mapPalette = palette;
         core.mapGeneration = map->generation;
         ck_obs_add(observer, CK_OBS_MAP_GRIDS_CREATED, 1);
         ck_obs_add(observer, CK_OBS_MAP_GRIDS_ALIVE, 1);
+        if (palette != nil) {
+            ck_obs_add(observer, CK_OBS_MAP_PALETTES_CREATED, 1);
+            ck_obs_add(observer, CK_OBS_MAP_PALETTES_ALIVE, 1);
+        }
         *grids_uploaded = 1;
     }
     if (new_target) {
@@ -1372,6 +1401,7 @@ CKPrFrame ck_pr_frame_quad(CKPrCore *handle, const float rgb[3], uint32_t width,
                                     .grid_a = core.mapGridA,
                                     .grid_b = core.mapGridB,
                                     .rules = core.mapRules,
+                                    .palette = core.mapPalette,
                                     .target = core.mapTarget};
             id<MTLCommandBuffer> command =
                 ck_encode_frame(core.queue, drawable.texture, rgb, faults, core.quadKit, core.quadTexture,
@@ -1568,12 +1598,15 @@ void ck_pr_release_all(CKPrCore *handle) {
             }
             int64_t targets = (core.mapTarget != nil ? 1 : 0) + core.retiredMapTargets;
             int64_t grids = (core.mapGridA != nil ? 1 : 0) + core.retiredMapGrids;
+            int64_t palettes = (core.mapPalette != nil ? 1 : 0) + core.retiredMapPalettes;
             ck_obs_add(observer, CK_OBS_MAP_TARGETS_ALIVE, -targets);
             ck_obs_add(observer, CK_OBS_MAP_GRIDS_ALIVE, -grids);
+            ck_obs_add(observer, CK_OBS_MAP_PALETTES_ALIVE, -palettes);
         }
         core.mapGridA = nil;
         core.mapGridB = nil;
         core.mapRules = nil;
+        core.mapPalette = nil;
         core.mapTarget = nil;
         core.retiredMap = nil;
         core.retiredMapToken = nil;
@@ -1894,11 +1927,22 @@ int ck_pr_readback_map(uint32_t width, uint32_t height, const float rgb[3], cons
         id<MTLTexture> grid_a = nil;
         id<MTLTexture> grid_b = nil;
         id<MTLTexture> rules = nil;
+        id<MTLBuffer> palette = nil;
         id<MTLTexture> target = nil;
         if (mapping) {
             if (!ck_make_map_inputs(device, map, 0, &grid_a, &grid_b, &rules, &reason)) {
                 ck_message(error, capacity, reason);
                 return 1;
+            }
+            if (map->overlay_palette_count != 0) {
+                NSUInteger palette_bytes = (NSUInteger)map->overlay_palette_count * sizeof(uint8_t[4]);
+                palette = [device newBufferWithBytes:map->overlay_palette
+                                               length:palette_bytes
+                                              options:MTLResourceStorageModeShared];
+                if (palette == nil) {
+                    ck_message(error, capacity, @"the map overlay-palette buffer could not be created");
+                    return 1;
+                }
             }
             target = ck_make_map_target(device, map->view[0], map->view[1], MTLStorageModeShared, 0, &reason);
             if (target == nil) {
@@ -1906,7 +1950,12 @@ int ck_pr_readback_map(uint32_t width, uint32_t height, const float rgb[3], cons
                 return 1;
             }
         }
-        CKPrMapDraw draw = {.map = mapping ? map : NULL, .grid_a = grid_a, .grid_b = grid_b, .rules = rules, .target = target};
+        CKPrMapDraw draw = {.map = mapping ? map : NULL,
+                            .grid_a = grid_a,
+                            .grid_b = grid_b,
+                            .rules = rules,
+                            .palette = palette,
+                            .target = target};
         BOOL partial = NO;
         id<MTLCommandBuffer> command =
             ck_encode_frame(queue, window, rgb, NULL, kit, picture, drawing ? quad : NULL, NULL, nil, &draw, nil, NULL,
