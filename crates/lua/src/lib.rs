@@ -230,6 +230,18 @@
 //! ignored): it ends the serving loop like a panic anywhere in it, the owner reports
 //! [`VmError::Panicked`] and ends, and no result is sent for that request.
 //!
+//! # Modules
+//!
+//! [`VmSettings::modules`] chooses how `require` finds modules. [`Modules::Default`] (the default) is Lua's own `require` and
+//! `package.path`. [`Modules::Rooted`] narrows it before any user chunk runs: `package.searchers` is exactly `package.preload` and a
+//! searcher that loads **Lua text** modules from beneath the given directory only, `package.path` and `package.cpath` are `""` and
+//! `package.loadlib` is removed, so no C module can be loaded. A module name must match `[a-z0-9_]+(\.[a-z0-9_]+)*` (anything else,
+//! `..` and `/` included, is refused with an error naming it); the name's dots become `/` and `<root>/<path>.lua`, then
+//! `<root>/<path>/init.lua`, are tried; a candidate is opened only if its canonical path lies under the canonical root (a symbolic link
+//! out of it is refused, naming the module and the path); the file is loaded in text mode (a binary chunk is refused) under the chunk
+//! name `@<path relative to the root>`; and a missing module is Lua's usual `module '<name>' not found` error listing the candidates
+//! relative to the root. The [`Profile::Deterministic`] profile ignores the option and still has no `require` or `package`.
+//!
 //! # Host surface
 //!
 //!
@@ -252,6 +264,7 @@ mod extension;
 mod hooks;
 mod host;
 mod interrupt;
+mod modules;
 mod owner;
 mod runner;
 #[cfg(test)]
@@ -263,4 +276,5 @@ pub use config::ConfigValue;
 pub use error::{VmError, VmState};
 pub use exit::ExitWatch;
 pub use extension::{CallbackObserver, Extension, HostFunction};
+pub use modules::Modules;
 pub use owner::{Profile, VmOwner, VmSettings};

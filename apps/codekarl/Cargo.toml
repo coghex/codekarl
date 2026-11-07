@@ -67,6 +67,8 @@ workspace = true
 [dev-dependencies]
 # `test-support` gives the headless driver's cases the resource service's `JobGate`; only [dev-dependencies] may enable it.
 ck-resources = { path = "../../crates/resources", features = ["test-support"] }
+# The widget library's real two-tick witness feeds the real `Mapper` (`ui_link/widget_witness_tests.rs`).
+ck-input = { path = "../../crates/input" }
 # The real-window integration workers alone opt into the window core's test-only focus control; normal app builds do not.
 ck-window = { path = "../../crates/window", features = ["test-support"] }
 serde_json = "1.0.154"

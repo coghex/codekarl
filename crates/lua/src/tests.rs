@@ -1865,3 +1865,6 @@ fn the_owner_flush_survives_a_script_that_replaces_io() {
 mod calls;
 #[path = "tests_profile.rs"]
 mod profile;
+
+#[path = "tests_modules.rs"]
+mod modules;
