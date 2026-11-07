@@ -9,6 +9,7 @@
 //!
 //! The window readback is `B8G8R8A8_UNORM` (a texel `(r, g, b, a)` reads back as `[b, g, r, a]`); the map target is `R8G8B8A8_UNORM`.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
 
 use ck_gpu_vulkan::{
@@ -16,7 +17,10 @@ use ck_gpu_vulkan::{
     VulkanMapInput, VulkanMapRules, VulkanQuad, VulkanTerrainKind, VulkanTerrainRule, load_loader,
     readback_map, readback_quad,
 };
-use ck_map::{FIXED_PER_CELL, PreparedRivers, RiverLine, STEP_SIZE, ViewSize, WorldPixel, fixture};
+use ck_map::{
+    FIXED_PER_CELL, PreparedLocations, PreparedRivers, RiverLine, STEP_SIZE, ViewSize, WorldPixel,
+    fixture, reference_colour_with_locations,
+};
 
 use super::{assert_log_clean, destroy, validated_with};
 
@@ -84,6 +88,7 @@ fn rules_of(fixture: &fixture::Fixture) -> VulkanMapRules {
         shallow_sea: fixture.data.shallow_sea.0,
         lake: fixture.data.lake.0,
         river: fixture.data.river.0,
+        overlay_palette: Vec::new(),
         shallow_threshold: fixture.data.shallow_threshold,
         steps: STEP_SIZE,
     }
@@ -374,6 +379,280 @@ fn prepared_rivers_overlay_the_map_reference_at_two_steps() {
     assert_eq!(instance.retained_readbacks(), 0);
     destroy(instance);
     assert_log_clean(&log);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the two-step readback, pan control and empty-list control together"
+)]
+fn prepared_locations_overlay_the_map_reference_at_marker_and_house_steps() {
+    let (_loader, instance, log) = rig!();
+    let fixture = the_fixture();
+    let scenario = fixture::location_scenario();
+    let palette = scenario
+        .location_kinds
+        .overlay_palette()
+        .into_iter()
+        .map(|colour| colour.0)
+        .collect::<Vec<_>>();
+    let mut prepared = PreparedLocations::new(
+        scenario.locations.clone(),
+        scenario.location_kinds.clone(),
+        scenario.map.data.crop,
+    );
+    let mut rules = rules_of(fixture);
+    rules.overlay_palette.clone_from(&palette);
+    let input = Arc::new(
+        VulkanMapInput::new(
+            2,
+            ORIGIN,
+            CROP,
+            fixture.grid_a.clone().into(),
+            fixture.grid_b.clone().into(),
+            &rules,
+        )
+        .expect("location palette is carried by the map input"),
+    );
+
+    for (step, offset, view) in [(15, 1, [35, 25]), (46, 2, [99, 67])] {
+        let crop_corner = fixture::Fixture::crop_top_left(step);
+        let top_left = [crop_corner.x - offset, crop_corner.y - offset];
+        let mut rivers = fixture_rivers(step, top_left, view)
+            .into_iter()
+            .filter(|pixel| fixture_pixel_inside_crop(step, top_left, *pixel))
+            .collect::<Vec<_>>();
+        let locations = prepared
+            .select_view(
+                step,
+                WorldPixel {
+                    x: top_left[0],
+                    y: top_left[1],
+                },
+                ViewSize {
+                    width: view[0],
+                    height: view[1],
+                },
+            )
+            .expect("fixture scenario step is supported")
+            .into_iter()
+            .map(|([x, y], index)| [x, y, u32::from(index)])
+            .collect::<Vec<_>>();
+        if step == 46 {
+            let [x, y, _] = locations
+                .iter()
+                .find(|[_, _, index]| (6..9).contains(index))
+                .copied()
+                .expect("fixture scenario has a visible house pixel at step 46");
+            let house = WorldPixel {
+                x: top_left[0] + signed(x),
+                y: top_left[1] + signed(y),
+            };
+            let mut crossing = PreparedRivers::new(vec![
+                fixture::river_through_pixel(house, step)
+                    .expect("fixture house river fits fixed-point coordinates"),
+            ]);
+            rivers.extend(
+                crossing
+                    .select_view(
+                        step,
+                        WorldPixel {
+                            x: top_left[0],
+                            y: top_left[1],
+                        },
+                        ViewSize {
+                            width: view[0],
+                            height: view[1],
+                        },
+                    )
+                    .expect("fixture house river step is supported")
+                    .into_iter()
+                    .filter(|pixel| fixture_pixel_inside_crop(step, top_left, *pixel)),
+            );
+        }
+        rivers.sort_unstable();
+        rivers.dedup();
+        let river_pixels = rivers
+            .iter()
+            .map(|[x, y]| WorldPixel {
+                x: top_left[0] + signed(*x),
+                y: top_left[1] + signed(*y),
+            })
+            .collect::<BTreeSet<_>>();
+        let has_visible_location_colour = locations.iter().any(|[x, y, index]| {
+            !river_pixels.contains(&WorldPixel {
+                x: top_left[0] + signed(*x),
+                y: top_left[1] + signed(*y),
+            }) && *index < u32::try_from(palette.len()).expect("small palette")
+        });
+        let has_visible_palette_range = |range: std::ops::Range<u32>| {
+            locations.iter().any(|[x, y, index]| {
+                range.contains(index)
+                    && !river_pixels.contains(&WorldPixel {
+                        x: top_left[0] + signed(*x),
+                        y: top_left[1] + signed(*y),
+                    })
+            })
+        };
+        let has_river_overlap = |range: std::ops::Range<u32>| {
+            locations.iter().any(|[x, y, index]| {
+                range.contains(index)
+                    && river_pixels.contains(&WorldPixel {
+                        x: top_left[0] + signed(*x),
+                        y: top_left[1] + signed(*y),
+                    })
+            })
+        };
+        assert!(
+            has_visible_location_colour,
+            "prepared marker, house or building pixels remain visible off the river"
+        );
+        if step == 15 {
+            assert!(
+                has_visible_palette_range(0..4),
+                "step 15 has a visible marker pixel"
+            );
+            assert!(
+                has_river_overlap(0..4),
+                "the river crosses a marker at step 15"
+            );
+        } else {
+            assert!(
+                has_visible_palette_range(4..6),
+                "step 46 has a visible building pixel"
+            );
+            assert!(
+                has_visible_palette_range(6..9),
+                "step 46 has a visible house pixel"
+            );
+            assert!(
+                has_river_overlap(6..9),
+                "the river crosses a house at step 46"
+            );
+        }
+        let colour_by_pixel = locations
+            .iter()
+            .map(|[x, y, index]| {
+                (
+                    WorldPixel {
+                        x: top_left[0] + signed(*x),
+                        y: top_left[1] + signed(*y),
+                    },
+                    ck_map::Rgba8(
+                        palette[usize::try_from(*index).expect("literal palette index fits")],
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let expected = (0..view[1])
+            .flat_map(|y| (0..view[0]).map(move |x| (x, y)))
+            .flat_map(|(x, y)| {
+                reference_colour_with_locations(
+                    &fixture.data,
+                    step,
+                    WorldPixel {
+                        x: top_left[0] + signed(x),
+                        y: top_left[1] + signed(y),
+                    },
+                    &river_pixels,
+                    &colour_by_pixel,
+                )
+                .expect("reference colour")
+                .0
+            })
+            .collect::<Vec<_>>();
+        let map = VulkanMap::new_with_overlays(
+            Arc::clone(&input),
+            step,
+            top_left,
+            view,
+            rect(0, 0, signed(view[0] * 4), signed(view[1] * 4)),
+            source(0.0, 0.0, float(view[0]), float(view[1])),
+            rivers.clone(),
+            locations,
+        )
+        .expect("valid overlay map");
+        let drawn = readback_map(&instance, view[0] * 4, view[1] * 4, CLEAR, Some(&map), None)
+            .expect("overlay readback works");
+        let target = drawn.target.expect("map target");
+        assert_eq!(target, expected, "location/rivers reference at step {step}");
+
+        let far = VulkanMap::new_with_rivers(
+            Arc::clone(&input),
+            step,
+            [top_left[0] + 5_000, top_left[1] + 5_000],
+            view,
+            rect(0, 0, signed(view[0] * 4), signed(view[1] * 4)),
+            source(0.0, 0.0, float(view[0]), float(view[1])),
+            Vec::new(),
+        )
+        .expect("far-away pan is a valid camera");
+        let _ = readback_map(&instance, view[0] * 4, view[1] * 4, CLEAR, Some(&far), None)
+            .expect("far-away pan readback works");
+        let back = readback_map(&instance, view[0] * 4, view[1] * 4, CLEAR, Some(&map), None)
+            .expect("return pan readback works");
+        assert_eq!(back.target.expect("returned map target"), target);
+
+        let empty = VulkanMap::new_with_overlays(
+            Arc::clone(&input),
+            step,
+            top_left,
+            view,
+            rect(0, 0, signed(view[0] * 4), signed(view[1] * 4)),
+            source(0.0, 0.0, float(view[0]), float(view[1])),
+            rivers,
+            Vec::new(),
+        )
+        .expect("empty locations accepted");
+        let baseline = readback_map(
+            &instance,
+            view[0] * 4,
+            view[1] * 4,
+            CLEAR,
+            Some(&empty),
+            None,
+        )
+        .expect("empty control readback works");
+        let expected_without_locations = (0..view[1])
+            .flat_map(|y| (0..view[0]).map(move |x| (x, y)))
+            .flat_map(|(x, y)| {
+                reference_colour_with_locations(
+                    &fixture.data,
+                    step,
+                    WorldPixel {
+                        x: top_left[0] + signed(x),
+                        y: top_left[1] + signed(y),
+                    },
+                    &river_pixels,
+                    &BTreeMap::new(),
+                )
+                .expect("reference colour")
+                .0
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            baseline.target.expect("baseline map target"),
+            expected_without_locations,
+            "no locations preserves the existing readback"
+        );
+    }
+    assert_log_clean(&log);
+    assert_eq!(instance.retained_readbacks(), 0);
+    destroy(instance);
+    assert_log_clean(&log);
+}
+
+fn fixture_pixel_inside_crop(step: u8, top_left: [i32; 2], pixel: [u32; 2]) -> bool {
+    let crop = the_fixture().data.crop;
+    let size = i64::from(STEP_SIZE[usize::from(step)]);
+    let centre = |world: i32| i64::from(world) * size + size / 2;
+    let left = i64::from(crop.origin.x) * FIXED_PER_CELL;
+    let top = i64::from(crop.origin.y) * FIXED_PER_CELL;
+    let right = (i64::from(crop.origin.x) + i64::from(crop.width)) * FIXED_PER_CELL;
+    let bottom = (i64::from(crop.origin.y) + i64::from(crop.height)) * FIXED_PER_CELL;
+    let x = centre(top_left[0] + signed(pixel[0]));
+    let y = centre(top_left[1] + signed(pixel[1]));
+    x >= left && x < right && y >= top && y < bottom
 }
 
 /// Negative control: with one rule table entry deliberately wrong (pasture's second tone another colour) the readback changes in

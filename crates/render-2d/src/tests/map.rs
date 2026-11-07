@@ -42,6 +42,7 @@ fn rules(count: usize) -> MapRules {
         shallow_sea: [11, 20, 34, 255],
         lake: [11, 20, 34, 255],
         river: [58, 120, 194, 255],
+        overlay_palette: Vec::new(),
         shallow_threshold: 40,
         steps: std::array::from_fn(|step| 196_608 - 2_000 * i32::try_from(step).unwrap()),
     }
@@ -342,6 +343,53 @@ fn a_camera_is_checked_and_its_rivers_are_bounded_by_the_view() {
             held.metrics_generation()
         ),
         (33, [-7, 9], [3, 2], 4)
+    );
+}
+
+#[test]
+fn location_snapshots_are_bounded_checked_and_use_the_input_palette() {
+    assert!(
+        MapCamera::new_with_locations(46, [10, -4], [3, 2], vec![[0, 0]], vec![[2, 1, 1]], 2, 7,)
+            .is_ok()
+    );
+    assert_eq!(
+        MapCamera::new_with_locations(0, [0, 0], [3, 2], vec![], vec![[0, 0, 0]; 7], 1, 1)
+            .expect_err("too many location pixels refused"),
+        MapError::TooManyLocations { limit: 6, count: 7 }
+    );
+    assert_eq!(
+        MapCamera::new_with_locations(0, [0, 0], [3, 2], vec![], vec![[3, 0, 0]], 1, 1)
+            .expect_err("out of view refused"),
+        MapError::LocationOutsideView {
+            position: 0,
+            x: 3,
+            y: 0
+        }
+    );
+    assert_eq!(
+        MapCamera::new_with_locations(0, [0, 0], [3, 2], vec![], vec![[1, 1, 1]], 1, 1)
+            .expect_err("missing palette index refused"),
+        MapError::LocationPaletteIndex {
+            position: 0,
+            index: 1,
+            colours: 1
+        }
+    );
+
+    let mut map_rules = rules(3);
+    map_rules.overlay_palette = vec![[20, 30, 40, 255], [50, 60, 70, 255]];
+    let map_input = MapInput::new(
+        9,
+        [100, 200],
+        [2, 1],
+        grid(2, 1, [1, 1, 0, 255]),
+        grid(2, 1, [0, 0, 0, 255]),
+        map_rules,
+    )
+    .expect("palette is part of a validated map input");
+    assert_eq!(
+        map_input.rules().overlay_palette,
+        [[20, 30, 40, 255], [50, 60, 70, 255]]
     );
 }
 

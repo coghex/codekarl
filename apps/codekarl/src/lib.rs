@@ -550,9 +550,9 @@ fn supervise_with_owner_factory(
     // the bridge is the application's to declare (below): a late write is discarded and counted in every kind of
     // run, a headless one included, where no renderer ever attaches.
     let bridge = scene_bridge(config);
-    let map_controller = match (loaded_map, &config.map) {
-        (Some(loaded), Some(map)) => match map_app::MapController::new(
-            &loaded,
+    let map_controller = match (&loaded_map, &game, &config.map) {
+        (Some(_), Some(prepared), Some(map)) => match map_app::MapController::from_scenario(
+            &prepared.scenario,
             Arc::clone(&bridge),
             map.pan_pixels_per_frame,
             map.zoom_steps_per_second,
@@ -564,8 +564,21 @@ fn supervise_with_owner_factory(
                 return FAILED;
             }
         },
-        (None, _) => None,
-        (Some(_), None) => unreachable!("map loading follows map configuration"),
+        (Some(loaded), None, Some(map)) => match map_app::MapController::new(
+            loaded,
+            Arc::clone(&bridge),
+            map.pan_pixels_per_frame,
+            map.zoom_steps_per_second,
+            map.scroll_points_per_step,
+        ) {
+            Ok(controller) => Some(map_app::shared(controller)),
+            Err(message) => {
+                emit(Level::Error, "config", format_args!("{message}"));
+                return FAILED;
+            }
+        },
+        (None, _, _) => None,
+        (Some(_), _, None) => unreachable!("map loading follows map configuration"),
     };
     let wake = {
         let notifier = Arc::clone(&shared.notifier);

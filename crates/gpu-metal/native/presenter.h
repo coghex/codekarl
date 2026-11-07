@@ -102,6 +102,10 @@ typedef struct {
     int32_t step;           /* the zoom step, 0 to 75 */
     const uint32_t (*rivers)[2]; /* visible river pixels in view coordinates, or NULL */
     uint32_t river_count;
+    const uint32_t (*locations)[3]; /* view-relative x, y and overlay palette index, or NULL */
+    uint32_t location_count;
+    const uint8_t *overlay_palette; /* overlay_palette_count RGBA8 colours, resident with this map input */
+    uint32_t overlay_palette_count;
 } CKPrMap;
 
 /* The pixels of a new texture: given only when the quad's image differs from the resident texture's. */

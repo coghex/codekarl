@@ -85,6 +85,31 @@ pub enum VulkanMapError {
         /// The submitted number of pixels.
         count: usize,
     },
+    /// A location pixel outside the view.
+    LocationOutsideView {
+        /// Its position in the list.
+        position: usize,
+        /// Its column.
+        x: u32,
+        /// Its row.
+        y: u32,
+    },
+    /// More location pixels than the view can contain.
+    TooManyLocations {
+        /// The view's pixel count.
+        limit: u64,
+        /// The submitted count.
+        count: usize,
+    },
+    /// A location references a missing palette colour.
+    LocationPaletteIndex {
+        /// Its position in the list.
+        position: usize,
+        /// The supplied index.
+        index: u32,
+        /// The number of palette colours.
+        colours: usize,
+    },
 }
 
 impl std::fmt::Display for VulkanMapError {
@@ -118,6 +143,9 @@ impl std::fmt::Display for VulkanMapError {
             Self::TooManyRivers { limit, count } => {
                 write!(formatter, "{count} river pixels; the view holds at most {limit}")
             }
+            Self::LocationOutsideView { position, x, y } => write!(formatter, "location pixel {position} ({x}, {y}) is outside the view"),
+            Self::TooManyLocations { limit, count } => write!(formatter, "{count} location pixels; the view holds at most {limit}"),
+            Self::LocationPaletteIndex { position, index, colours } => write!(formatter, "location pixel {position} uses palette index {index}; the palette has {colours} colours"),
         }
     }
 }
@@ -180,6 +208,8 @@ pub struct VulkanMapRules {
     pub lake: [u8; 4],
     /// The rivers.
     pub river: [u8; 4],
+    /// Opaque RGBA8 colours referenced by indexed location pixels.
+    pub overlay_palette: Vec<[u8; 4]>,
     /// A sea depth, in metres, under which the shallow sea dithers in; at least 1.
     pub shallow_threshold: u16,
     /// The map pixel size at each zoom step, in 1/32768 cell (`ck-map`'s frozen table).
@@ -229,6 +259,12 @@ impl VulkanMapRules {
         }
         if self.shallow_threshold == 0 {
             return Err(rules_error("the shallow-sea threshold must be at least 1"));
+        }
+        if self.overlay_palette.len() > 256 {
+            return Err(rules_error("the overlay palette has more than 256 colours"));
+        }
+        if self.overlay_palette.iter().any(|colour| colour[3] != 255) {
+            return Err(rules_error("an overlay palette colour is not opaque"));
         }
         let mut image = vec![0_u8; (RULES_WIDTH * RULES_HEIGHT * 4) as usize];
         let mut put = |column: usize, row: usize, texel: [u8; 4]| {
@@ -308,6 +344,7 @@ pub struct VulkanMapInput {
     grid_a: Arc<[u8]>,
     grid_b: Arc<[u8]>,
     rules: Arc<[u8]>,
+    overlay_palette: Arc<[u8]>,
     steps: [i32; STEP_COUNT],
 }
 
@@ -339,6 +376,12 @@ impl VulkanMapInput {
             return Err(VulkanMapError::Crop);
         }
         let image = rules.image()?;
+        let overlay_palette = rules
+            .overlay_palette
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
         let expected = usize::try_from(u64::from(size[0]) * u64::from(size[1]) * 4)
             .map_err(|_| VulkanMapError::Size)?;
         for grid in [&grid_a, &grid_b] {
@@ -356,6 +399,7 @@ impl VulkanMapInput {
             grid_a,
             grid_b,
             rules: image.into(),
+            overlay_palette: overlay_palette.into(),
             steps: rules.steps,
         })
     }
@@ -364,6 +408,12 @@ impl VulkanMapInput {
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Packed RGBA8 location palette carried by this map input.
+    #[must_use]
+    pub fn overlay_palette(&self) -> &Arc<[u8]> {
+        &self.overlay_palette
     }
 
     /// The crop's global origin cell.
@@ -418,6 +468,7 @@ pub struct VulkanMap {
     destination: DestinationRect,
     source: SourceRect,
     rivers: Arc<[[u32; 2]]>,
+    locations: Arc<[[u32; 3]]>,
     refusals: Option<Arc<dyn MapRefusalSink>>,
 }
 
@@ -432,6 +483,7 @@ impl std::fmt::Debug for VulkanMap {
             .field("destination", &self.destination)
             .field("source", &self.source)
             .field("river_pixels", &self.rivers.len())
+            .field("location_pixels", &self.locations.len())
             .field("refusals", &self.refusals.is_some())
             .finish()
     }
@@ -472,6 +524,38 @@ impl VulkanMap {
         destination: DestinationRect,
         source: SourceRect,
         rivers: Vec<[u32; 2]>,
+    ) -> Result<Self, VulkanMapError> {
+        Self::new_with_overlays(
+            input,
+            step,
+            top_left,
+            view,
+            destination,
+            source,
+            rivers,
+            Vec::new(),
+        )
+    }
+
+    /// A map frame with river pixels and palette-indexed location pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`VulkanMapError`] when a location is outside the view, the list exceeds the view area,
+    /// or a palette index is unavailable.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "matches the existing map-frame constructor layout"
+    )]
+    pub fn new_with_overlays(
+        input: Arc<VulkanMapInput>,
+        step: u8,
+        top_left: [i32; 2],
+        view: [u32; 2],
+        destination: DestinationRect,
+        source: SourceRect,
+        rivers: Vec<[u32; 2]>,
+        locations: Vec<[u32; 3]>,
     ) -> Result<Self, VulkanMapError> {
         if !side_ok(view[0]) || !side_ok(view[1]) {
             return Err(VulkanMapError::Size);
@@ -530,6 +614,29 @@ impl VulkanMap {
                 y: pixel[1],
             });
         }
+        if locations.len() as u64 > limit {
+            return Err(VulkanMapError::TooManyLocations {
+                limit,
+                count: locations.len(),
+            });
+        }
+        for (position, pixel) in locations.iter().enumerate() {
+            if pixel[0] >= view[0] || pixel[1] >= view[1] {
+                return Err(VulkanMapError::LocationOutsideView {
+                    position,
+                    x: pixel[0],
+                    y: pixel[1],
+                });
+            }
+            let index = usize::try_from(pixel[2]).unwrap_or(usize::MAX);
+            if index >= input.overlay_palette.len() / 4 {
+                return Err(VulkanMapError::LocationPaletteIndex {
+                    position,
+                    index: pixel[2],
+                    colours: input.overlay_palette.len() / 4,
+                });
+            }
+        }
         Ok(Self {
             input,
             step,
@@ -538,6 +645,7 @@ impl VulkanMap {
             destination,
             source,
             rivers: rivers.into(),
+            locations: locations.into(),
             refusals: None,
         })
     }
@@ -546,6 +654,12 @@ impl VulkanMap {
     #[must_use]
     pub fn rivers(&self) -> &Arc<[[u32; 2]]> {
         &self.rivers
+    }
+
+    /// View-relative palette-indexed location pixels.
+    #[must_use]
+    pub fn locations(&self) -> &Arc<[[u32; 3]]> {
+        &self.locations
     }
 
     /// This map with the place the presenter tells a refused allocation to.

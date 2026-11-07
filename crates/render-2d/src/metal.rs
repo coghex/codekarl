@@ -269,7 +269,7 @@ pub(crate) fn metal_map_cached(
         *cached = Some(Arc::downgrade(&made));
         made
     };
-    let map = MetalMap::new_with_rivers(
+    let map = MetalMap::new_with_overlays(
         gpu_input,
         camera.step(),
         camera.top_left(),
@@ -287,6 +287,7 @@ pub(crate) fn metal_map_cached(
             bottom: placement.source.bottom,
         },
         camera.rivers().as_ref().to_vec(),
+        camera.locations().as_ref().to_vec(),
     )
     .map_err(refused)?;
     // Where the presenter tells the publisher it refused to make a map image (and that it later could).
@@ -323,6 +324,7 @@ fn metal_rules(rules: &MapRules) -> MetalMapRules {
         shallow_sea: rules.shallow_sea,
         lake: rules.lake,
         river: rules.river,
+        overlay_palette: rules.overlay_palette.clone(),
         shallow_threshold: rules.shallow_threshold,
         steps: rules.steps,
     }

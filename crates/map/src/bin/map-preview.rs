@@ -1,14 +1,14 @@
 //! Render exact reference-colour previews of authored maps.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use ck_map::{
-    CELL_METRES, FIXED_PER_CELL, FixedPoint, LoadedMap, PreparedMarkers, Rgba8, RiverCoverage,
+    CELL_METRES, FIXED_PER_CELL, FixedPoint, LoadedMap, PreparedLocations, Rgba8, RiverCoverage,
     STEP_SIZE, Scenario, Surface, ViewSize, WorldPixel, load_map, load_scenario, project,
-    reference_colour,
+    reference_colour, reference_colour_with_locations,
 };
 use png::{BitDepth, ColorType};
 
@@ -49,16 +49,23 @@ fn run() -> Result<(), Box<dyn Error>> {
     let plans = make_plans(map, &args.steps, args.view)?;
 
     fs::create_dir_all(&args.output_directory)?;
-    let mut markers = scenario.as_ref().and_then(|scenario| {
-        (!scenario.location_kinds.kinds.is_empty()).then(|| {
-            PreparedMarkers::new(scenario.locations.clone(), scenario.location_kinds.clone())
-        })
+    let mut locations = scenario.as_ref().map(|scenario| {
+        PreparedLocations::new(
+            scenario.locations.clone(),
+            scenario.location_kinds.clone(),
+            scenario.map.data.crop,
+        )
     });
     let mut entries = Vec::with_capacity(plans.len());
     for plan in plans {
         let name = format!("step-{}.png", plan.step);
-        if let (Some(scenario), Some(markers)) = (&scenario, &mut markers) {
-            render_scenario_png(scenario, markers, &args.output_directory.join(&name), &plan)?;
+        if let (Some(scenario), Some(locations)) = (&scenario, &mut locations) {
+            render_scenario_png(
+                scenario,
+                locations,
+                &args.output_directory.join(&name),
+                &plan,
+            )?;
         } else {
             render_png(map, &args.output_directory.join(&name), &plan)?;
         }
@@ -314,28 +321,29 @@ fn render_png(map: &LoadedMap, path: &Path, plan: &RenderPlan) -> Result<(), Box
 
 fn render_scenario_png(
     scenario: &Scenario,
-    markers: &mut PreparedMarkers,
+    locations: &mut PreparedLocations,
     path: &Path,
     plan: &RenderPlan,
 ) -> Result<(), Box<dyn Error>> {
     let pixel_count = usize::try_from(plan.size.width)?
         .checked_mul(usize::try_from(plan.size.height)?)
         .ok_or("image pixel count overflows address space")?;
-    let mut marker_colours = vec![None; pixel_count];
-    for (position, colour) in markers
-        .select_view(plan.step, plan.top_left, plan.size)
-        .ok_or("marker step is outside the supported range")?
-    {
-        let index = usize::try_from(position[1])?
-            .checked_mul(usize::try_from(plan.size.width)?)
-            .and_then(|row| row.checked_add(usize::try_from(position[0]).ok()?))
-            .ok_or("marker pixel index overflows address space")?;
-        marker_colours[index] = Some(colour);
-    }
+    let palette = scenario.location_kinds.overlay_palette();
+    let location_colours = locations
+        .pixels(plan.step)
+        .ok_or("location step is outside the supported range")?
+        .iter()
+        .map(|item| {
+            palette
+                .get(usize::from(item.palette_index))
+                .copied()
+                .map(|colour| (item.pixel, colour))
+                .ok_or("location pixel refers to a missing palette colour")
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
     let rivers = RiverCoverage::prepare(&scenario.map.rivers, plan.step)
         .ok_or("could not prepare river pixels for step")?;
     let river_pixels = rivers.pixels();
-    let no_rivers = BTreeSet::new();
     let mut pixels = Vec::with_capacity(
         pixel_count
             .checked_mul(4)
@@ -343,19 +351,18 @@ fn render_scenario_png(
     );
     for y in 0..plan.size.height {
         for x in 0..plan.size.width {
-            let index =
-                usize::try_from(y)? * usize::try_from(plan.size.width)? + usize::try_from(x)?;
             let world = WorldPixel {
                 x: plan.top_left.x + i32::try_from(x)?,
                 y: plan.top_left.y + i32::try_from(y)?,
             };
-            let base = reference_colour(&scenario.map.data, plan.step, world, &no_rivers)
-                .ok_or("reference colour could not be computed")?;
-            let colour = if river_pixels.contains(&world) {
-                scenario.map.data.river
-            } else {
-                marker_colours[index].unwrap_or(base)
-            };
+            let colour = reference_colour_with_locations(
+                &scenario.map.data,
+                plan.step,
+                world,
+                river_pixels,
+                &location_colours,
+            )
+            .ok_or("reference colour could not be computed")?;
             pixels.extend_from_slice(&colour.0);
         }
     }

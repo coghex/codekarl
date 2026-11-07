@@ -1,10 +1,12 @@
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{
-    BuildingKind, Confidence, Location, LocationKind, LocationKinds, ScenarioStart,
-    compute_catchments, ground_scales, load_scenario, prepare_markers,
+    BuildingKind, Confidence, HouseStyle, Location, LocationKind, LocationKinds, PreparedLocations,
+    ScenarioStart, compute_catchments, ground_scales, load_scenario, prepare_locations,
+    prepare_markers,
 };
 use crate::{Cell, Crop, MapData, Rgba8, STEP_SIZE, Surface, TerrainStyle, WorldPixel};
 
@@ -35,8 +37,41 @@ impl Fixture {
         ] {
             fs::copy(source.join(name), map.join(name)).expect("copy map fixture");
         }
-        fs::write(scenario.join("scenario.toml"), "id = \"test_768\"\nmap = \"fixture\"\nlocations = \"locations.toml\"\n[start]\nyear = 768\nmonth = 10\nday = 9\nhour = 0\n").expect("write scenario");
-        fs::write(map.join("location_kinds.toml"), "[[kind]]\nid = \"town\"\nsizes = [1, 2]\ncatchment_m = [839, 2000]\nglyph = [\".#.\", \"#d#\", \".#.\"]\nlight = \"#d7c89b\"\ndark = \"#66583c\"\n[[building]]\nid = \"church\"\nglyph = [\"#\"]\nlight = \"#ffffff\"\ndark = \"#000000\"\n").expect("write kinds");
+        fs::write(
+            scenario.join("scenario.toml"),
+            "id = \"test_768\"
+map = \"fixture\"
+locations = \"locations.toml\"
+[start]
+year = 768
+month = 10
+day = 9
+hour = 0
+",
+        )
+        .expect("write scenario");
+        fs::write(
+            map.join("location_kinds.toml"),
+            "[[kind]]
+id = \"town\"
+sizes = [1, 2]
+catchment_m = [839, 2000]
+houses = { count = [2, 3], radius_cells_x256 = [256, 512] }
+glyph = [\".#.\", \"#d#\", \".#.\"]
+light = \"#d7c89b\"
+dark = \"#66583c\"
+[[building]]
+id = \"church\"
+glyph = [\"#\"]
+light = \"#ffffff\"
+dark = \"#000000\"
+[house]
+roof = \"#a9563b\"
+light = \"#ece3cb\"
+dark = \"#2a2119\"
+",
+        )
+        .expect("write kinds");
         let land = lat_lon_for_cell(23_882, 23_883);
         let mountain = lat_lon_for_cell(23_883, 23_883);
         fs::write(scenario.join("locations.toml"), format!("[[location]]\nid = \"town_a\"\nname = \"Test Place\"\nlat = {}\nlon = {}\nkind = \"town\"\nsize = 1\nbuildings = [\"church\"]\nsource = \"fixture\"\nconfidence = \"high\"\n\n[[location]]\nid = \"town_b\"\nname = \"Mountain Place\"\nlat = {}\nlon = {}\nkind = \"town\"\nsize = 2\nbuildings = []\nsource = \"fixture\"\nconfidence = \"medium\"\n", land.0, land.1, mountain.0, mountain.1)).expect("write locations");
@@ -551,7 +586,7 @@ fn kind_table_refuses_duplicate_ids_and_all_size_radius_and_glyph_limits() {
         "location_kinds.toml",
         &fixture.map_text("location_kinds.toml").replace(
             "[[building]]",
-            "[[kind]]\nid = \"town\"\nsizes = [1, 1]\ncatchment_m = [839]\nglyph = [\"#\"]\nlight = \"#ffffff\"\ndark = \"#000000\"\n\n[[building]]",
+            "[[kind]]\nid = \"town\"\nsizes = [1, 1]\ncatchment_m = [839]\nhouses = { count = [0], radius_cells_x256 = [0] }\nglyph = [\"#\"]\nlight = \"#ffffff\"\ndark = \"#000000\"\n\n[[building]]",
         ),
     );
     assert!(
@@ -575,6 +610,40 @@ fn kind_table_refuses_duplicate_ids_and_all_size_radius_and_glyph_limits() {
             .to_string()
             .contains("duplicate building id")
     );
+}
+
+#[test]
+fn house_rules_validate_lengths_and_inclusive_limits() {
+    for (old, new, message) in [
+        ("count = [2, 3]", "count = [2]", "houses.count"),
+        ("count = [2, 3]", "count = [-1, 3]", "houses.count[0]"),
+        ("count = [2, 3]", "count = [2, 201]", "houses.count[1]"),
+        (
+            "radius_cells_x256 = [256, 512]",
+            "radius_cells_x256 = [256]",
+            "houses.radius_cells_x256",
+        ),
+        (
+            "radius_cells_x256 = [256, 512]",
+            "radius_cells_x256 = [-1, 512]",
+            "houses.radius_cells_x256[0]",
+        ),
+        (
+            "radius_cells_x256 = [256, 512]",
+            "radius_cells_x256 = [256, 2561]",
+            "houses.radius_cells_x256[1]",
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.write_map(
+            "location_kinds.toml",
+            &fixture.map_text("location_kinds.toml").replace(old, new),
+        );
+        let error = load_scenario(fixture.path())
+            .expect_err("invalid house rule refused")
+            .to_string();
+        assert!(error.contains(message), "{error}");
+    }
 }
 
 #[test]
@@ -668,6 +737,8 @@ fn kind(radius: u32) -> LocationKinds {
             min_size: 1,
             max_size: 1,
             catchment_m: vec![radius],
+            house_count: vec![2],
+            house_radius_cells_x256: vec![256],
             glyph: vec![vec!['#']],
             light: Rgba8::opaque(255, 0, 0),
             dark: Rgba8::opaque(0, 0, 255),
@@ -678,6 +749,7 @@ fn kind(radius: u32) -> LocationKinds {
             light: Rgba8::opaque(255, 255, 255),
             dark: Rgba8::opaque(0, 0, 0),
         }],
+        house: HouseStyle::default(),
     }
 }
 
@@ -795,6 +867,8 @@ fn markers_obey_zoom_center_outline_overlap_and_view_selection() {
                 min_size: 1,
                 max_size: 1,
                 catchment_m: vec![1],
+                house_count: vec![0],
+                house_radius_cells_x256: vec![0],
                 glyph: glyph(&[".#.", "#d#", ".#."]),
                 light: Rgba8::opaque(255, 0, 0),
                 dark: Rgba8::opaque(0, 0, 255),
@@ -804,12 +878,15 @@ fn markers_obey_zoom_center_outline_overlap_and_view_selection() {
                 min_size: 1,
                 max_size: 1,
                 catchment_m: vec![1],
+                house_count: vec![0],
+                house_radius_cells_x256: vec![0],
                 glyph: glyph(&[".#.", "#d#", ".#."]),
                 light: Rgba8::opaque(0, 255, 0),
                 dark: Rgba8::opaque(255, 255, 0),
             },
         ],
         buildings: vec![],
+        house: HouseStyle::default(),
     };
     let place = location("town", Cell { x: 10, y: 10 }, None);
     assert!(prepare_markers(std::slice::from_ref(&place), &kinds, 14).is_empty());
@@ -881,11 +958,14 @@ fn even_sized_marker_places_its_lower_right_cell_on_the_location_pixel() {
             min_size: 1,
             max_size: 1,
             catchment_m: vec![1],
+            house_count: vec![0],
+            house_radius_cells_x256: vec![0],
             glyph: vec![vec!['#', '.'], vec!['.', '#']],
             light: Rgba8::opaque(200, 100, 20),
             dark: Rgba8::opaque(10, 20, 30),
         }],
         buildings: vec![],
+        house: HouseStyle::default(),
     };
     let center = location("town", Cell { x: 10, y: 20 }, None);
     let size = i64::from(STEP_SIZE[15]);
@@ -905,4 +985,368 @@ fn even_sized_marker_places_its_lower_right_cell_on_the_location_pixel() {
             .iter()
             .any(|pixel| pixel.pixel == center_pixel && pixel.colour == kinds.kinds[0].light)
     );
+}
+
+#[test]
+fn location_placement_vectors_and_zoom_thresholds_are_frozen() {
+    let cell = Cell { x: 10, y: 20 };
+    let place = location("town_a", cell, None);
+    let kinds = kind(1);
+    let offsets = [
+        (-13_395, 17_278),
+        (-13_155, 17_329),
+        (-28_615, -12_419),
+        (14_123, 17_126),
+    ];
+    for (index, expected) in offsets.into_iter().enumerate() {
+        assert_eq!(
+            super::accepted_offset(
+                place.id.as_bytes(),
+                u32::try_from(index).unwrap(),
+                32_768,
+                0x484f_5553,
+                0x484f_5554,
+            ),
+            Some(expected),
+            "house {index} frozen fixed-point offset"
+        );
+    }
+    assert_eq!(
+        super::accepted_offset(place.id.as_bytes(), 0, 32_768, 0x424c_4447, 0x424c_4448,),
+        Some((22_452, 13_771)),
+        "building 0 frozen offset"
+    );
+    assert_eq!(
+        offsets.map(|(x, y)| super::location_pixel(cell, x, y, i64::from(STEP_SIZE[46]))),
+        [
+            WorldPixel { x: 40, y: 84 },
+            WorldPixel { x: 40, y: 84 },
+            WorldPixel { x: 38, y: 81 },
+            WorldPixel { x: 44, y: 84 },
+        ],
+        "house anchors are the world pixels containing their fixed-point positions"
+    );
+
+    let mut marker_only = kinds.clone();
+    marker_only.kinds[0].house_count = vec![1];
+    marker_only.kinds[0].house_radius_cells_x256 = vec![0];
+    marker_only.kinds[0].glyph = vec![vec!['#']];
+    marker_only.buildings.clear();
+    let at_14 = prepare_locations(std::slice::from_ref(&place), &marker_only, crop(), 14);
+    let at_15 = prepare_locations(std::slice::from_ref(&place), &marker_only, crop(), 15);
+    let at_45 = prepare_locations(std::slice::from_ref(&place), &marker_only, crop(), 45);
+    assert!(at_14.is_empty());
+    assert_eq!(
+        at_15.len(),
+        5,
+        "the marker and outline first appear at step 15"
+    );
+    assert_eq!(at_45.len(), 5, "houses remain hidden through step 45");
+    assert!(
+        at_45.iter().all(|pixel| pixel.palette_index < 2),
+        "nonzero house counts still produce markers only at step 45"
+    );
+    let at_46 = prepare_locations(std::slice::from_ref(&place), &marker_only, crop(), 46);
+    assert_eq!(
+        at_46.len(),
+        6,
+        "the 2x2 house appears at step 46 below the marker outline"
+    );
+    assert!(
+        at_46.iter().any(|pixel| pixel.palette_index >= 2),
+        "step 46 includes a house pixel"
+    );
+}
+
+#[test]
+fn location_readback_fixture_produces_marker_building_and_house_pixels() {
+    let scenario = crate::fixture::location_scenario();
+    let marker = prepare_locations(
+        &scenario.locations,
+        &scenario.location_kinds,
+        scenario.map.data.crop,
+        15,
+    );
+    assert!(marker.iter().any(|pixel| pixel.palette_index < 4));
+
+    let step46 = prepare_locations(
+        &scenario.locations,
+        &scenario.location_kinds,
+        scenario.map.data.crop,
+        46,
+    );
+    assert!(
+        step46
+            .iter()
+            .any(|pixel| (4..6).contains(&pixel.palette_index)),
+        "the building has prepared pixels: {step46:?}"
+    );
+    assert!(
+        step46
+            .iter()
+            .any(|pixel| (6..9).contains(&pixel.palette_index)),
+        "the fixture has prepared house pixels: {step46:?}"
+    );
+}
+
+#[test]
+fn location_readback_fixture_cpu_reference_crosses_a_prepared_house_pixel() {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let scenario = crate::fixture::location_scenario();
+    let step = 46;
+    let crop_corner = crate::fixture::Fixture::crop_top_left(step);
+    let top_left = WorldPixel {
+        x: crop_corner.x - 2,
+        y: crop_corner.y - 2,
+    };
+    let view = crate::ViewSize {
+        width: 99,
+        height: 67,
+    };
+    let mut prepared = PreparedLocations::new(
+        scenario.locations.clone(),
+        scenario.location_kinds.clone(),
+        scenario.map.data.crop,
+    );
+    let locations = prepared
+        .select_view(step, top_left, view)
+        .expect("fixture scenario step is supported");
+    let world_pixel = |[x, y]: [u32; 2]| WorldPixel {
+        x: top_left.x + i32::try_from(x).expect("fixture x fits"),
+        y: top_left.y + i32::try_from(y).expect("fixture y fits"),
+    };
+    let house = locations
+        .iter()
+        .find(|(_, index)| (6..9).contains(index))
+        .copied()
+        .expect("step 46 has a prepared house pixel");
+    let house_world = world_pixel(house.0);
+    let mut rivers = crate::PreparedRivers::new(vec![
+        crate::fixture::river_through_pixel(house_world, step)
+            .expect("fixture river fits fixed-point coordinates"),
+    ]);
+    let river_pixels = rivers
+        .select_view(step, top_left, view)
+        .expect("fixture scenario step is supported")
+        .into_iter()
+        .map(world_pixel)
+        .collect::<BTreeSet<_>>();
+    assert!(
+        river_pixels.contains(&house_world),
+        "the river crosses a prepared house pixel"
+    );
+
+    let palette = scenario
+        .location_kinds
+        .overlay_palette()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let location_colours = locations
+        .iter()
+        .map(|([x, y], index)| (world_pixel([*x, *y]), palette[usize::from(*index)]))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        crate::reference_colour_with_locations(
+            &scenario.map.data,
+            step,
+            house_world,
+            &river_pixels,
+            &location_colours,
+        ),
+        Some(scenario.map.data.river),
+        "the CPU reference draws the river over the house pixel"
+    );
+    let visible_house = locations
+        .iter()
+        .find(|([x, y], index)| {
+            (6..9).contains(index) && !river_pixels.contains(&world_pixel([*x, *y]))
+        })
+        .unwrap_or_else(|| {
+            panic!("another prepared house pixel remains visible beside the river; locations={locations:?}, rivers={river_pixels:?}")
+        });
+    assert_eq!(
+        crate::reference_colour_with_locations(
+            &scenario.map.data,
+            step,
+            world_pixel(visible_house.0),
+            &river_pixels,
+            &location_colours,
+        ),
+        Some(palette[usize::from(visible_house.1)]),
+        "the CPU reference keeps an uncovered house pixel visible"
+    );
+}
+
+#[test]
+fn prepared_locations_later_overlapping_marker_replaces_the_earlier_location() {
+    let mut kinds = kind(1);
+    kinds.kinds[0].house_count = vec![0];
+    kinds.kinds[0].glyph = vec![vec!['#']];
+    let mut later_kind = kinds.kinds[0].clone();
+    later_kind.id = "later_town".into();
+    later_kind.glyph = vec![vec!['d']];
+    later_kind.light = Rgba8::opaque(0, 255, 0);
+    later_kind.dark = Rgba8::opaque(255, 255, 0);
+    kinds.kinds.push(later_kind);
+
+    let first = location("first", Cell { x: 10, y: 20 }, None);
+    let later = Location {
+        id: "later".into(),
+        kind_index: 1,
+        ..first.clone()
+    };
+    let center = super::location_pixel(first.cell, 0, 0, i64::from(STEP_SIZE[15]));
+    let pixels = prepare_locations(&[first, later], &kinds, crop(), 15);
+    assert_eq!(
+        pixels
+            .iter()
+            .find(|pixel| pixel.pixel == center)
+            .map(|pixel| pixel.palette_index),
+        Some(3),
+        "the later location's marker colour replaces the earlier marker in the same layer"
+    );
+}
+
+#[test]
+fn location_kinds_refuse_an_overlay_palette_over_256_colours() {
+    let fixture = Fixture::new();
+    let mut table = String::new();
+    for index in 0..127 {
+        let id = if index == 0 {
+            "town".to_owned()
+        } else {
+            format!("kind_{index}")
+        };
+        writeln!(
+            table,
+            "[[kind]]\nid = \"{id}\"\nsizes = [1, 1]\ncatchment_m = [839]\nhouses = {{ count = [0], radius_cells_x256 = [0] }}\nglyph = [\"#\"]\nlight = \"#ffffff\"\ndark = \"#000000\"\n"
+        )
+        .expect("write fixture kind");
+    }
+    table.push_str(
+        "[[building]]\nid = \"church\"\nglyph = [\"#\"]\nlight = \"#ffffff\"\ndark = \"#000000\"\n\n[house]\nroof = \"#a9563b\"\nlight = \"#ece3cb\"\ndark = \"#2a2119\"\n",
+    );
+    fixture.write_map("location_kinds.toml", &table);
+
+    let error = load_scenario(fixture.path())
+        .expect_err("259-colour overlay palette is refused")
+        .to_string();
+    assert!(error.contains("overlay_palette"), "{error}");
+    assert!(error.contains("more than 256 colours"), "{error}");
+}
+
+fn crop() -> Crop {
+    Crop {
+        origin: Cell { x: -100, y: -100 },
+        width: 300,
+        height: 300,
+    }
+}
+
+#[test]
+fn locations_apply_house_marker_building_precedence_and_cache_view_selection() {
+    let cell = Cell { x: 10, y: 20 };
+    let mut place = location("town_a", cell, None);
+    place.building_indices = vec![0];
+    let mut kinds = kind(1);
+    kinds.kinds[0].house_count = vec![1];
+    kinds.kinds[0].house_radius_cells_x256 = vec![0];
+    kinds.kinds[0].glyph = vec![vec!['#']];
+    kinds.buildings[0].glyph = vec![vec!['#']];
+    let center = super::location_pixel(cell, 0, 0, i64::from(STEP_SIZE[46]));
+    let pixels = prepare_locations(&[place.clone()], &kinds, crop(), 46);
+    let center_pixel = pixels
+        .iter()
+        .find(|pixel| pixel.pixel == center)
+        .expect("building glyph covers the marker at its anchor");
+    assert_eq!(center_pixel.palette_index, 2, "building is above marker");
+    assert!(
+        pixels.iter().any(|pixel| {
+            pixel.pixel
+                == WorldPixel {
+                    x: center.x + 1,
+                    y: center.y,
+                }
+                && pixel.palette_index == 3
+        }),
+        "the building outline is drawn over the house and marker outlines"
+    );
+    assert!(
+        pixels.iter().any(|pixel| {
+            pixel.pixel
+                == WorldPixel {
+                    x: center.x + 1,
+                    y: center.y + 1,
+                }
+                && pixel.palette_index == 6
+        }),
+        "the diagonal house pixel remains visible outside the marker outline"
+    );
+
+    let mut house_kinds = kind(1);
+    house_kinds.kinds[0].house_count = vec![1];
+    house_kinds.kinds[0].glyph = vec![vec!['#']];
+    let house_only = location("town_a", cell, None);
+    let house_pixels = prepare_locations(&[house_only], &house_kinds, crop(), 46);
+    assert!(
+        house_pixels.iter().any(|pixel| {
+            pixel.pixel == WorldPixel { x: 40, y: 84 } && pixel.palette_index == 4
+        })
+    );
+    assert!(
+        house_pixels.iter().any(|pixel| {
+            pixel.pixel == WorldPixel { x: 40, y: 85 } && pixel.palette_index == 5
+        })
+    );
+
+    let mut cached = PreparedLocations::new(vec![place], kinds, crop());
+    let first_ptr = cached.pixels(46).unwrap().as_ptr();
+    let second_ptr = cached.pixels(46).unwrap().as_ptr();
+    assert_eq!(
+        first_ptr, second_ptr,
+        "a step is rasterized once and cached"
+    );
+    let view = cached
+        .select_view(
+            46,
+            WorldPixel {
+                x: center.x - 1,
+                y: center.y - 1,
+            },
+            crate::ViewSize {
+                width: 3,
+                height: 3,
+            },
+        )
+        .expect("valid step");
+    assert!(view.contains(&([1, 1], 2)));
+    assert!(
+        cached
+            .select_view(76, WorldPixel::default(), crate::ViewSize::default())
+            .is_none()
+    );
+}
+
+#[test]
+fn building_fallback_and_house_skip_have_a_test_only_attempt_seam() {
+    let house = super::accepted_offset_from_attempts(2_304, |_| Some((2_304, 2_304)));
+    assert_eq!(
+        house, None,
+        "all eight out-of-disc house attempts are skipped"
+    );
+
+    let building = super::building_offset_from_attempts(2_304, |attempt| {
+        Some(if attempt == 0 {
+            (-4_026, -4_253)
+        } else {
+            (2_304, 2_304)
+        })
+    });
+    assert_eq!(
+        building,
+        Some((-2_013, -2_126)),
+        "the building uses the first offsets halved toward zero"
+    );
+    assert_eq!(super::building_offset(b"zero-radius", 0, 0), Some((0, 0)));
 }

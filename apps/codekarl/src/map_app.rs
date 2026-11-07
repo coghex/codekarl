@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use ck_map::{
-    Camera, Crop, FixedPoint, LoadedMap, PreparedRivers, STEP_SIZE, TerrainKind, ViewSize,
-    WorldPixel,
+    Camera, Crop, FixedPoint, LoadedMap, LocationKinds, PreparedLocations, PreparedRivers,
+    STEP_SIZE, Scenario, TerrainKind, ViewSize, WorldPixel,
 };
 use ck_render_2d::{
     MapCamera, MapInput, MapPublication, MapRules, MapTerrainKind, MapTerrainRule, SceneBridge,
@@ -21,6 +21,13 @@ const PAN_UP: &str = "map_pan_up";
 const PAN_DOWN: &str = "map_pan_down";
 const ZOOM_IN: &str = "map_zoom_in";
 const ZOOM_OUT: &str = "map_zoom_out";
+
+#[derive(Clone, Copy)]
+struct MapControls {
+    pan_pixels_per_frame: u32,
+    zoom_steps_per_second: u32,
+    scroll_points_per_step: u32,
+}
 
 pub(crate) type SharedController = Arc<Mutex<MapController>>;
 
@@ -49,6 +56,8 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     bridge: Arc<SceneBridge>,
     crop: Crop,
     rivers: R,
+    locations: PreparedLocations,
+    overlay_palette: Vec<ck_map::Rgba8>,
     pan_pixels_per_frame: i32,
     zoom_steps_per_second: u32,
     scroll_points_per_step: u32,
@@ -74,18 +83,44 @@ impl MapController<PreparedRivers> {
         zoom_steps_per_second: u32,
         scroll_points_per_step: u32,
     ) -> Result<Self, String> {
-        Self::with_rivers(
+        Self::with_scenario_parts(
             loaded,
             bridge,
-            pan_pixels_per_frame,
-            zoom_steps_per_second,
-            scroll_points_per_step,
+            MapControls {
+                pan_pixels_per_frame,
+                zoom_steps_per_second,
+                scroll_points_per_step,
+            },
             PreparedRivers::new(loaded.rivers.clone()),
+            Vec::new(),
+            LocationKinds::default(),
+        )
+    }
+
+    pub(crate) fn from_scenario(
+        scenario: &Scenario,
+        bridge: Arc<SceneBridge>,
+        pan_pixels_per_frame: u32,
+        zoom_steps_per_second: u32,
+        scroll_points_per_step: u32,
+    ) -> Result<Self, String> {
+        Self::with_scenario_parts(
+            &scenario.map,
+            bridge,
+            MapControls {
+                pan_pixels_per_frame,
+                zoom_steps_per_second,
+                scroll_points_per_step,
+            },
+            PreparedRivers::new(scenario.map.rivers.clone()),
+            scenario.locations.clone(),
+            scenario.location_kinds.clone(),
         )
     }
 }
 
 impl<R: RiverViewSelector> MapController<R> {
+    #[cfg(test)]
     fn with_rivers(
         loaded: &LoadedMap,
         bridge: Arc<SceneBridge>,
@@ -94,8 +129,32 @@ impl<R: RiverViewSelector> MapController<R> {
         scroll_points_per_step: u32,
         rivers: R,
     ) -> Result<Self, String> {
+        Self::with_scenario_parts(
+            loaded,
+            bridge,
+            MapControls {
+                pan_pixels_per_frame,
+                zoom_steps_per_second,
+                scroll_points_per_step,
+            },
+            rivers,
+            Vec::new(),
+            LocationKinds::default(),
+        )
+    }
+
+    fn with_scenario_parts(
+        loaded: &LoadedMap,
+        bridge: Arc<SceneBridge>,
+        controls: MapControls,
+        rivers: R,
+        locations: Vec<ck_map::Location>,
+        kinds: LocationKinds,
+    ) -> Result<Self, String> {
         let crop = loaded.data.crop;
-        let rules = rules(loaded);
+        let overlay_palette = kinds.overlay_palette();
+        let location_cache = PreparedLocations::new(locations, kinds, crop);
+        let rules = rules(loaded, &overlay_palette);
         let input = MapInput::new(
             MAP_INPUT_GENERATION,
             [crop.origin.x, crop.origin.y],
@@ -114,10 +173,12 @@ impl<R: RiverViewSelector> MapController<R> {
             bridge,
             crop,
             rivers,
-            pan_pixels_per_frame: i32::try_from(pan_pixels_per_frame)
+            locations: location_cache,
+            overlay_palette,
+            pan_pixels_per_frame: i32::try_from(controls.pan_pixels_per_frame)
                 .map_err(|_| "map pan_pixels_per_frame does not fit i32".to_owned())?,
-            zoom_steps_per_second,
-            scroll_points_per_step,
+            zoom_steps_per_second: controls.zoom_steps_per_second,
+            scroll_points_per_step: controls.scroll_points_per_step,
             drag: None,
             scroll_remainder: [0; 2],
             scroll_direction: [0; 2],
@@ -340,11 +401,20 @@ impl<R: RiverViewSelector> MapController<R> {
             .rivers
             .select_view(camera.step, top_left, camera.view)
             .ok_or_else(|| format!("map river coverage is invalid for step {}", camera.step))?;
-        MapCamera::new(
+        let locations = self
+            .locations
+            .select_view(camera.step, top_left, camera.view)
+            .ok_or_else(|| format!("map location pixels are invalid for step {}", camera.step))?
+            .into_iter()
+            .map(|(xy, index)| [xy[0], xy[1], u32::from(index)])
+            .collect();
+        MapCamera::new_with_locations(
             camera.step,
             [top_left.x, top_left.y],
             [camera.view.width, camera.view.height],
             rivers,
+            locations,
+            self.overlay_palette.len(),
             generation,
         )
         .map_err(|error| format!("map camera is invalid: {error}"))
@@ -462,7 +532,7 @@ fn rgba(colour: ck_map::Rgba8) -> [u8; 4] {
     colour.0
 }
 
-fn rules(loaded: &LoadedMap) -> MapRules {
+fn rules(loaded: &LoadedMap, overlay_palette: &[ck_map::Rgba8]) -> MapRules {
     let terrains = loaded
         .terrain_types
         .iter()
@@ -533,6 +603,7 @@ fn rules(loaded: &LoadedMap) -> MapRules {
         shallow_sea: rgba(loaded.data.shallow_sea),
         lake: rgba(loaded.data.lake),
         river: rgba(loaded.data.river),
+        overlay_palette: overlay_palette.iter().map(|colour| rgba(*colour)).collect(),
         shallow_threshold: loaded.data.shallow_threshold,
         steps: STEP_SIZE,
     }

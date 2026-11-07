@@ -70,6 +70,7 @@ fn rules_of(fixture: &fixture::Fixture) -> VulkanMapRules {
         shallow_sea: fixture.data.shallow_sea.0,
         lake: fixture.data.lake.0,
         river: fixture.data.river.0,
+        overlay_palette: Vec::new(),
         shallow_threshold: fixture.data.shallow_threshold,
         steps: STEP_SIZE,
     }
