@@ -6,6 +6,12 @@ use std::path::Path;
 use ck_map::{TerrainKind, load_map};
 
 #[test]
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "independently reproduce the specified f64 cosine scale table for its pinned hash"
+)]
 fn the_shipped_map_of_ireland_loads_and_validates() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/map/ireland");
     let map = load_map(&directory).unwrap_or_else(|error| panic!("{error}"));
@@ -45,4 +51,22 @@ fn the_shipped_map_of_ireland_loads_and_validates() {
         "{land} land cells of {cells}"
     );
     assert!(!map.rivers.is_empty());
+
+    // Independently pin the f64 cosine scale table for Ireland's crop.
+    let crop = map.data.crop;
+    let mut hash = 14_695_981_039_346_656_037_u64;
+    for row in 0..crop.height {
+        let global_y = i64::from(crop.origin.y) + i64::from(row);
+        let y_metres = (global_y as f64 + 0.5) * 839.0;
+        let radius = 6_378_137.0_f64;
+        let half_world = std::f64::consts::PI * radius;
+        let latitude =
+            2.0 * ((half_world - y_metres) / radius).exp().atan() - std::f64::consts::FRAC_PI_2;
+        let scale = (latitude.cos() * 65_536.0).round().clamp(1.0, 65_536.0) as u32;
+        for byte in scale.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(1_099_511_628_211);
+        }
+    }
+    assert_eq!(hash, 1_751_616_413_225_014_021);
 }

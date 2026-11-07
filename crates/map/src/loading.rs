@@ -85,13 +85,13 @@ struct KeyImage {
 }
 
 impl LoadError {
-    fn new(file: &str, detail: impl Display) -> Self {
+    pub(crate) fn new(file: &str, detail: impl Display) -> Self {
         Self {
             message: format!("{file}: {detail}"),
         }
     }
 
-    fn at(file: &str, location: impl Display, detail: impl Display) -> Self {
+    pub(crate) fn at(file: &str, location: impl Display, detail: impl Display) -> Self {
         Self {
             message: format!("{file} {location}: {detail}"),
         }
@@ -316,6 +316,8 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
     data.validate()
         .map_err(|error| LoadError::new("map.toml", error))?;
     let rivers = load_rivers(directory, &map_file.layers.rivers, crop)?;
+    // Validate the optional map-wide marker table whenever a map is loaded.
+    let _location_kinds = crate::scenario::load_location_kinds(directory)?;
     Ok(LoadedMap {
         data,
         terrain_types,

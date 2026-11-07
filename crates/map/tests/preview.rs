@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use ck_map::{RiverCoverage, STEP_SIZE, WorldPixel, load_map, project, reference_colour};
+use ck_map::{
+    PreparedMarkers, RiverCoverage, STEP_SIZE, WorldPixel, load_map, load_scenario, project,
+    reference_colour,
+};
 use png::{BitDepth, ColorType};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -49,6 +52,40 @@ fn fixture() -> TempDir {
         fs::copy(source.join(name), directory.path().join(name)).expect("copy map fixture");
     }
     directory
+}
+
+fn scenario_fixture() -> TempDir {
+    let directory = TempDir::new("scenario");
+    fs::create_dir_all(directory.path().join("map")).expect("create scenario map");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-data/valid");
+    for name in [
+        "map.toml",
+        "terrain.toml",
+        "rivers.toml",
+        "terrain.png",
+        "usable.png",
+        "elevation.png",
+    ] {
+        fs::copy(source.join(name), directory.path().join("map").join(name))
+            .expect("copy map fixture");
+    }
+    fs::write(directory.path().join("scenario.toml"), "id = \"preview_test\"\nmap = \"map\"\nlocations = \"locations.toml\"\n[start]\nyear = 768\nmonth = 10\nday = 9\nhour = 0\n").expect("write scenario");
+    fs::write(directory.path().join("map/location_kinds.toml"), "[[kind]]\nid = \"town\"\nsizes = [1, 1]\ncatchment_m = [1000]\nglyph = [\".#.\", \"#d#\", \".#.\"]\nlight = \"#d7c89b\"\ndark = \"#66583c\"\n").expect("write kinds");
+    let (latitude, longitude) = lat_lon_for_cell(23_883, 23_883);
+    fs::write(directory.path().join("locations.toml"), format!("[[location]]\nid = \"test_town\"\nname = \"Test Town\"\nlat = {latitude}\nlon = {longitude}\nkind = \"town\"\nsize = 1\nbuildings = []\nsource = \"fixture\"\nconfidence = \"medium\"\n")).expect("write location");
+    directory
+}
+
+fn lat_lon_for_cell(x: i32, y: i32) -> (f64, f64) {
+    let radius = 6_378_137.0_f64;
+    let half = std::f64::consts::PI * radius;
+    let x_metres = (f64::from(x) + 0.5) * 839.0;
+    let y_metres = (f64::from(y) + 0.5) * 839.0;
+    (
+        ((2.0 * ((half - y_metres) / radius).exp().atan() - std::f64::consts::FRAC_PI_2)
+            .to_degrees()),
+        ((x_metres - half) / radius).to_degrees(),
+    )
 }
 
 fn run_preview(args: &[&str]) -> Output {
@@ -136,6 +173,61 @@ fn loader_error_is_forwarded_and_no_output_is_written() {
     assert!(!result.status.success());
     assert_eq!(String::from_utf8_lossy(&result.stderr).trim(), expected);
     assert_eq!(fs::read_dir(output.path()).expect("read output").count(), 0);
+}
+
+#[test]
+fn scenario_preview_writes_markers_catchments_and_draws_rivers_last() {
+    let input = scenario_fixture();
+    let output = TempDir::new("scenario-preview");
+    let (latitude, longitude) = lat_lon_for_cell(23_883, 23_883);
+    let result = run_preview(&[
+        output.path().to_str().expect("output path"),
+        "--scenario",
+        input.path().to_str().expect("scenario path"),
+        "--steps",
+        "14,15",
+        "--catchments",
+        "--view",
+        &format!("{latitude},{longitude}"),
+        "16x16",
+    ]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(output.path().join("catchments.png").is_file());
+    let catchments = decode_png(&output.path().join("catchments.png"));
+    assert_eq!((catchments.0, catchments.1), (2, 2));
+
+    let scenario = load_scenario(input.path()).expect("scenario fixture loads");
+    let mut markers =
+        PreparedMarkers::new(scenario.locations.clone(), scenario.location_kinds.clone());
+    assert!(markers.pixels(14).expect("valid step").is_empty());
+    let marker_pixels = markers.pixels(15).expect("valid step").to_vec();
+    let rivers = RiverCoverage::prepare(&scenario.map.rivers, 15).expect("river pixels");
+    let overlap = marker_pixels
+        .iter()
+        .find(|marker| rivers.pixels().contains(&marker.pixel))
+        .expect("fixture marker overlaps the river");
+    let view_center = project(latitude, longitude).expect("projected view centre");
+    let top_left = WorldPixel {
+        x: i32::try_from(i64::from(view_center.x).div_euclid(i64::from(STEP_SIZE[15])) - 8)
+            .expect("view x"),
+        y: i32::try_from(i64::from(view_center.y).div_euclid(i64::from(STEP_SIZE[15])) - 8)
+            .expect("view y"),
+    };
+    let x = u32::try_from(i64::from(overlap.pixel.x) - i64::from(top_left.x))
+        .expect("visible overlap x");
+    let y = u32::try_from(i64::from(overlap.pixel.y) - i64::from(top_left.y))
+        .expect("visible overlap y");
+    let (_, _, bytes) = decode_png(&output.path().join("step-15.png"));
+    let index = (usize::try_from(y).unwrap() * 16 + usize::try_from(x).unwrap()) * 4;
+    assert_eq!(
+        &bytes[index..index + 4],
+        &scenario.map.data.river.0,
+        "river pixels are drawn after marker pixels"
+    );
 }
 
 #[test]

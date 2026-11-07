@@ -10,9 +10,14 @@ use std::collections::BTreeSet;
 #[cfg(feature = "test-support")]
 pub mod fixture;
 mod loading;
+mod scenario;
 
 pub use loading::{
     LoadError, LoadedMap, LoadedTerrain, MAX_CROP_DIMENSION, PackedGrid, TerrainKind, load_map,
+};
+pub use scenario::{
+    BuildingKind, Confidence, Location, LocationKind, LocationKinds, MarkerPixel, PreparedMarkers,
+    Scenario, ScenarioStart, load_scenario,
 };
 
 /// Projected metres in one map cell.

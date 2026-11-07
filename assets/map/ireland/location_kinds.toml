@@ -1,0 +1,55 @@
+[[kind]]
+id = "monastery"
+sizes = [1, 5]
+catchment_m = [800, 1100, 1500, 2000, 2600]
+glyph = ["..#..", ".###.", "##d##", ".###.", "..#.."]
+light = "#d7c89b"
+dark = "#66583c"
+
+[[kind]]
+id = "royal_site"
+sizes = [1, 5]
+catchment_m = [1000, 1500, 2200, 3000, 4000]
+glyph = [".#.", "#d#", ".#."]
+light = "#d6b66d"
+dark = "#665333"
+
+[[kind]]
+id = "ringfort"
+sizes = [1, 5]
+catchment_m = [500, 800, 1200, 1600, 2200]
+glyph = [".###.", "#...#", "#...#", "#...#", ".###."]
+light = "#a3b27a"
+dark = "#4e5b39"
+
+[[kind]]
+id = "crannog"
+sizes = [1, 5]
+catchment_m = [500, 800, 1200, 1600, 2200]
+glyph = ["..#..", ".#d#.", "#...#", ".#.#.", "..#.."]
+light = "#8eaeb0"
+dark = "#415d60"
+
+[[building]]
+id = "church"
+glyph = [".#.", "#d#", ".#."]
+light = "#e5ddc8"
+dark = "#696252"
+
+[[building]]
+id = "round_tower"
+glyph = [".#.", "#d#", ".#."]
+light = "#c8c5b8"
+dark = "#5d5a51"
+
+[[building]]
+id = "high_cross"
+glyph = [".#.", "#d#", ".#."]
+light = "#d4cbb2"
+dark = "#655d4b"
+
+[[building]]
+id = "rath"
+glyph = [".###.", "#...#", "#...#", "#...#", ".###."]
+light = "#a5a77a"
+dark = "#4e5138"

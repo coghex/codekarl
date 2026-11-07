@@ -1389,6 +1389,8 @@ STEPS = [
             "crates/map/",
             # CK-181: Ireland's shipped map data, which `crates/map/tests/ireland.rs` loads and validates: a data-only change selects it.
             "assets/map/",
+            # CK-191: scenario files are loaded and validated by `ck-map`.
+            "assets/scenarios/",
         ),
     ),
     # CK-190: the simulation core (calendar, scheduler, commands and the real-time clock): integer arithmetic, no GPU, window, Lua or
