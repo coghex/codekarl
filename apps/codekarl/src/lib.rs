@@ -124,6 +124,8 @@ mod vm;
     )
 )]
 mod vulkan;
+#[cfg(test)]
+mod widget_tests;
 mod window_api;
 #[cfg_attr(
     all(
@@ -509,22 +511,15 @@ fn supervise(
             None => (None, None),
         },
     };
-    // With a game, the pixel font is read and checked now, so a missing or invalid one stops the run before anything starts.
-    let font = if config.game.is_some() {
-        let assets = config.render.assets.clone().unwrap_or_default();
-        match font::load(&assets) {
-            Ok(font) => Some(Arc::new(font)),
-            Err(message) => {
-                emit(
-                    Level::Error,
-                    "config",
-                    format_args!("[game] font: {message}"),
-                );
-                return FAILED;
-            }
+    // The pixel font is read and checked now, so that an invalid one stops the run before anything starts. With a game it is
+    // required (a missing font is a refusal too). Without one, a `ui` VM with `[render] assets` gets it when
+    // `<assets>/ui/font/font.toml` exists, and no `font` extension when it does not. `game` stays scenario-only.
+    let font = match pixel_font(config) {
+        Ok(font) => font,
+        Err(message) => {
+            emit(Level::Error, "config", format_args!("{message}"));
+            return FAILED;
         }
-    } else {
-        None
     };
     supervise_with_owner_factory(
         config,
@@ -541,12 +536,35 @@ fn supervise(
     )
 }
 
+/// The pixel font a run loads at start-up (see the call): required with a game, optional for a `ui` VM with an assets directory.
+///
+/// # Errors
+/// The message of a refusal: with a game, a missing or invalid font; without one, an invalid font.
+fn pixel_font(config: &config::Config) -> Result<Option<Arc<font::Font>>, String> {
+    if config.game.is_some() {
+        let assets = config.render.assets.clone().unwrap_or_default();
+        return font::load(&assets)
+            .map(|font| Some(Arc::new(font)))
+            .map_err(|message| format!("[game] font: {message}"));
+    }
+    let has_ui = config.vms.iter().any(|vm| vm.name == vm::UI_VM);
+    let Some(assets) = config.render.assets.as_ref().filter(|_| has_ui) else {
+        return Ok(None);
+    };
+    if !assets.join("ui/font/font.toml").is_file() {
+        return Ok(None);
+    }
+    font::load(assets)
+        .map(|font| Some(Arc::new(font)))
+        .map_err(|message| format!("[ui] font: {message}"))
+}
+
 /// What a run loads before it starts: the map, and the game when the configuration has one (its map is the scenario's).
 #[derive(Default)]
 struct Content {
     map: Option<ck_map::LoadedMap>,
     game: Option<game::setup::Prepared>,
-    /// The pixel font of the readout, loaded with a game.
+    /// The pixel font, loaded with a game or when a `ui` VM's assets hold `ui/font/font.toml`.
     font: Option<Arc<font::Font>>,
 }
 
@@ -679,7 +697,8 @@ fn supervise_with_owner_factory(
         metrics.clone(),
         frame_registration,
     );
-    // `game.on_time`, `game.on_hover` and `font.layout`: the UI VM's view of the simulation, map and pixel font, with a game only.
+    // `game.on_time` and `game.on_hover` (the UI VM's view of the simulation and map, with a game only) and `font.layout` (the pixel
+    // font: with a game, or when the assets hold one).
     ui_extensions.extend(game_extension);
     ui_extensions.extend(font.map(font::extension));
     let setup = Setup {
@@ -937,6 +956,107 @@ mod tests {
             |_| panic!("a failed map load must stop before any window plan"),
         );
         assert_eq!(status.code, FAILED.code);
+    }
+
+    /// A configuration with a `ui` VM running `script` (no `[game]`), and assets in `dir`; `font` is the text of
+    /// `ui/font/font.toml`, if the case has one.
+    fn ui_without_game(dir: &testing::Dir, script: &str, font: Option<&str>) -> config::Config {
+        let assets = dir.0.join("assets");
+        std::fs::create_dir_all(assets.join("ui/font")).expect("the assets directory");
+        if let Some(font) = font {
+            std::fs::write(assets.join("ui/font/font.toml"), font).expect("the font file");
+        }
+        let entry = dir.0.join("ui.lua");
+        std::fs::write(&entry, script).expect("the ui script");
+        config::load_text_for_test(&format!(
+            "[lua.ui]\nentry = {entry:?}\n[render]\nassets = {assets:?}\n"
+        ))
+    }
+
+    fn shipped_font() -> String {
+        std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/ui/font/font.toml"),
+        )
+        .expect("the shipped font")
+    }
+
+    fn headless(config: &config::Config) -> Status {
+        supervise(
+            config,
+            &RunOptions {
+                config: None,
+                headless: true,
+                backend: None,
+                load: None,
+                seed: None,
+            },
+            mode::Mode::Headless,
+            Shared {
+                quit: Arc::new(AtomicBool::new(false)),
+                notifier: Notifier::new(),
+            },
+            |_| panic!("a headless run has no window plan"),
+        )
+    }
+
+    #[test]
+    fn a_ui_vm_without_a_game_gets_the_font_when_the_assets_hold_one() {
+        let dir = testing::Dir::new();
+        let config = ui_without_game(
+            &dir,
+            "assert(font ~= nil and font.layout('a').width > 0, 'the font extension')\n\
+             assert(game == nil, 'game stays scenario-only')",
+            Some(&shipped_font()),
+        );
+        assert!(config.game.is_none());
+        assert!(pixel_font(&config).expect("a valid font").is_some());
+        assert_eq!(headless(&config).code, 0);
+    }
+
+    #[test]
+    fn a_ui_vm_without_a_game_and_without_a_font_file_gets_no_font_extension() {
+        let dir = testing::Dir::new();
+        let config = ui_without_game(&dir, "assert(font == nil and game == nil)", None);
+        assert!(
+            pixel_font(&config)
+                .expect("no font is not an error")
+                .is_none()
+        );
+        assert_eq!(headless(&config).code, 0);
+    }
+
+    #[test]
+    fn an_invalid_font_without_a_game_is_a_startup_refusal_before_any_vm_starts() {
+        let dir = testing::Dir::new();
+        let config = ui_without_game(
+            &dir,
+            "error('the ui script must not run')",
+            Some("not a font"),
+        );
+        let message = pixel_font(&config).expect_err("an invalid font");
+        assert!(
+            message.starts_with("[ui] font: ") && message.contains("font.toml"),
+            "{message}"
+        );
+        assert_eq!(headless(&config).code, FAILED.code);
+    }
+
+    #[test]
+    fn a_run_without_a_ui_vm_loads_no_font_and_a_game_still_requires_one() {
+        let dir = testing::Dir::new();
+        let assets = dir.0.join("assets");
+        std::fs::create_dir_all(assets.join("ui/font")).expect("the assets directory");
+        std::fs::write(assets.join("ui/font/font.toml"), "not a font").expect("the font file");
+        let config = config::load_text_for_test(&format!("[render]\nassets = {assets:?}\n"));
+        assert!(pixel_font(&config).expect("no ui VM, no font").is_none());
+        // With a game a missing font is refused (as before).
+        let empty = dir.0.join("empty");
+        std::fs::create_dir_all(&empty).expect("an empty assets directory");
+        let config = config::load_text_for_test(&format!(
+            "[game]\nscenario = \"s\"\n[render]\nassets = {empty:?}\n"
+        ));
+        let message = pixel_font(&config).expect_err("a game needs the font");
+        assert!(message.starts_with("[game] font: "), "{message}");
     }
 
     struct CompletedOwner;

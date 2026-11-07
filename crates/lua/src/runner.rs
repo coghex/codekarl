@@ -16,6 +16,7 @@ use crate::call::{CallId, CallOutcome, CallResult, Completion};
 use crate::config::ConfigValue;
 use crate::extension::{Callbacks, Extension};
 use crate::interrupt::Fatal;
+use crate::modules::{self, Modules};
 use crate::owner::Profile;
 use crate::{convert, host, interrupt, unwind};
 
@@ -83,6 +84,7 @@ pub(crate) struct Job {
     pub(crate) entry: PathBuf,
     pub(crate) config: ConfigValue,
     pub(crate) profile: Profile,
+    pub(crate) modules: Modules,
     pub(crate) extensions: Vec<Extension>,
     pub(crate) on_report: Option<Wake>,
     pub(crate) on_complete: Option<CompleteHook>,
@@ -418,6 +420,10 @@ fn run(job: &Job) -> Result<Option<Report>, Failure> {
         extension
             .install(&state.lua, &job.fatal, &state.callbacks)
             .map_err(|error| Failure::from_lua(&error))?;
+    }
+    // The deterministic profile removes `require` and `package` in its bootstrap, so it ignores the option.
+    if let (Profile::Standard, Modules::Rooted(root)) = (job.profile, &job.modules) {
+        modules::install_rooted(&state.lua, root).map_err(|error| Failure::from_lua(&error))?;
     }
     if job.profile == Profile::Deterministic {
         state.protected = Some(

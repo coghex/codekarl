@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use ck_lua::{
-    ConfigValue, ExitWatch, Extension, HostFunction, Profile, VmError, VmOwner, VmSettings,
+    ConfigValue, ExitWatch, Extension, HostFunction, Modules, Profile, VmError, VmOwner, VmSettings,
 };
 use ck_render_2d::SceneBridge;
 use ck_runtime::{Outcome, Owner, OwnerError, OwnerSpawn, Progress, Report};
@@ -334,6 +334,11 @@ pub(crate) fn spawns(
             let slot = ui.filter(|_| vm.name == UI_VM).map(|wiring| {
                 settings.extensions.clone_from(&wiring.extensions);
                 settings.call_limit = UI_CALL_LIMIT;
+                // `require` in the ui script loads Lua text modules only from beneath the entry script's directory.
+                settings.modules = Modules::Rooted(vm.entry.parent().map_or_else(
+                    || std::path::PathBuf::from("."),
+                    std::path::Path::to_path_buf,
+                ));
                 settings.on_report = Some(Arc::clone(&wiring.wake));
                 settings.on_complete.clone_from(&wiring.on_complete);
                 Rc::clone(&wiring.slot)
@@ -805,6 +810,51 @@ mod tests {
             matches!(report.outcome, Outcome::StartFailed { .. }),
             "{report:?}"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_ui_vm_requires_modules_only_from_beneath_its_entry_directory_and_other_vms_keep_the_default()
+     {
+        use ck_runtime::{RunEnd, Runtime};
+        use ck_window::{Notifier, Requests};
+
+        use crate::ui_link::UiSlot;
+
+        let (dir, vms) = scripts(
+            "local helper = require('helper')\n\
+             assert(helper.name == 'helper' and require('pkg').name == 'pkg')\n\
+             assert(not pcall(require, '../gameplay'), 'a module outside the root is refused')\n\
+             assert(package.cpath == '' and package.loadlib == nil and #package.searchers == 2)",
+            "assert(#package.searchers == 3 and package.cpath ~= '', 'the gameplay VM keeps the default require')",
+        );
+        std::fs::write(dir.join("helper.lua"), "return {name = 'helper'}").expect("a module");
+        std::fs::create_dir_all(dir.join("pkg")).expect("a package directory");
+        std::fs::write(dir.join("pkg/init.lua"), "return {name = 'pkg'}").expect("a package");
+        let requests = Requests::new();
+        let wiring = UiWiring {
+            extensions: vec![crate::window_api::extension(
+                requests.writer(Notifier::new()),
+                None,
+                None,
+            )],
+            slot: UiSlot::default(),
+            wake: Arc::new(|| {}),
+            bridge: SceneBridge::new(ck_render_2d::Filter::Nearest),
+            notes: Rc::new(crate::windowed::RunNotes::default()),
+            on_complete: None,
+            gameplay: None,
+        };
+        let spawned = spawns(
+            &vms,
+            &ConfigValue::Table(std::collections::BTreeMap::new()),
+            Some(&wiring),
+        );
+        let report = Runtime::new(Vec::new())
+            .with_owners(spawned)
+            .with_run(|_| RunEnd::Finished)
+            .run_report();
+        assert_eq!(report.outcome, Outcome::Clean, "{report:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

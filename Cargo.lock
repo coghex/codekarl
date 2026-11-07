@@ -171,6 +171,7 @@ version = "0.1.0"
 dependencies = [
  "ck-gpu-metal",
  "ck-gpu-vulkan",
+ "ck-input",
  "ck-log",
  "ck-lua",
  "ck-map",

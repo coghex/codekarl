@@ -16,6 +16,7 @@ use crate::error::{VmError, VmState};
 use crate::exit::{self, ExitWatch};
 use crate::extension::{self, Extension};
 use crate::interrupt::Fatal;
+use crate::modules::Modules;
 use crate::runner::{self, Command, Failure, Job, Report, Wake};
 use crate::unwind;
 
@@ -31,6 +32,9 @@ pub struct VmSettings {
     pub config: ConfigValue,
     /// The VM's standard-library and reproducibility policy (default [`Profile::Standard`]).
     pub profile: Profile,
+    /// How `require` finds modules (default [`Modules::Default`]). [`Modules::Rooted`] limits it to Lua text modules beneath one
+    /// directory; the [`Profile::Deterministic`] profile ignores it and still has no `require`.
+    pub modules: Modules,
     /// The global tables of host functions and callback setters, installed in this order before the entry
     /// script runs (default empty). Table names are unique across the list, and so are callback names
     /// (a posted call names its callback); function and setter names belong to their own table.
@@ -61,6 +65,7 @@ impl VmSettings {
             entry: entry.into(),
             config,
             profile: Profile::Standard,
+            modules: Modules::Default,
             extensions: Vec::new(),
             call_limit: 0,
             on_report: None,
@@ -87,6 +92,7 @@ impl fmt::Debug for VmSettings {
             .field("entry", &self.entry)
             .field("config", &self.config)
             .field("profile", &self.profile)
+            .field("modules", &self.modules)
             .field("extensions", &self.extensions)
             .field("call_limit", &self.call_limit)
             .field(
@@ -164,6 +170,7 @@ impl VmOwner {
             entry,
             config,
             profile,
+            modules,
             extensions,
             call_limit,
             on_report,
@@ -190,6 +197,7 @@ impl VmOwner {
             entry,
             config,
             profile,
+            modules,
             extensions,
             on_report: wake,
             on_complete,

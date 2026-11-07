@@ -2,90 +2,25 @@
 -- window is open, and logs the source of a close request (Escape or the close button) and accepts it.
 -- Run headless (--headless, or no [window] backend), `window.open` is ignored with one record and the rest
 -- of the script runs unchanged.
+--
+-- The widget library is in `lib/` (`require` loads modules from beneath this script's directory only). The date readout and the
+-- hover tooltip (with `[game] scenario` only: that is when `game` exists) are built from it, and `frame.on_update` keeps their
+-- layout against the window's current size and gives the pointer events to the widgets.
 
--- The pixel font and the date readout (with `[game] scenario` only: that is when `font` and `game` exist). The UI VM has no
--- module loading, so the text helpers are local functions here. A line is a row of glyph quads: `font.layout` says which glyph
--- goes where, and `set` keeps a quad when its glyph and position are unchanged, moves it when only its position changed and
--- replaces it when its glyph changed, so a readout whose digits change touches one quad.
-local FONT_POINTS_PER_PIXEL = (config.ui and config.ui.font_points_per_pixel) or 2
+local ui = require("lib.ui")
+local text = require("lib.text")
+local panel = require("lib.panel")
+local pointer = require("lib.pointer")
+
+local P = ui.P
 local MARGIN = 8 -- points from the window's top and left edges
 
--- Each texture is loaded once, on first use, and kept for the run.
-local textures = {}
-local function texture_token(name)
-  local token = textures[name]
-  if token == nil then
-    token = texture.load(name)
-    textures[name] = token
-  end
-  return token
-end
+-- The window as opened, and then as the last update reported it, in points.
+local OPEN_WIDTH, OPEN_HEIGHT = 800, 600
+local view = {width = OPEN_WIDTH, height = OPEN_HEIGHT}
 
--- An empty line whose top-left corner is the point (x, y).
-local function line(x, y)
-  return {x = x, y = y, glyphs = {}, width = 0, height = 0}
-end
-
-local function place(l, glyph)
-  return l.x + glyph.x * FONT_POINTS_PER_PIXEL
-end
-
-local function create_glyph(l, glyph, height)
-  return render.create_quad{
-    texture = texture_token(glyph.texture),
-    x = place(l, glyph),
-    y = l.y,
-    width = glyph.width * FONT_POINTS_PER_PIXEL,
-    height = height * FONT_POINTS_PER_PIXEL,
-  }
-end
-
--- Lays `text` out and updates the line's quads to match, glyph by glyph in order.
-local function set(l, text)
-  local laid = font.layout(text)
-  local old = l.glyphs
-  local new = {}
-  for index, glyph in ipairs(laid.glyphs) do
-    local kept = old[index]
-    if kept ~= nil and kept.texture == glyph.texture then
-      if kept.x ~= glyph.x then
-        render.set_position(kept.quad, place(l, glyph), l.y)
-      end
-      new[index] = {texture = glyph.texture, x = glyph.x, quad = kept.quad}
-    else
-      if kept ~= nil then
-        render.destroy_quad(kept.quad)
-      end
-      new[index] = {texture = glyph.texture, x = glyph.x, quad = create_glyph(l, glyph, laid.height)}
-    end
-  end
-  for index = #laid.glyphs + 1, #old do
-    render.destroy_quad(old[index].quad)
-  end
-  l.glyphs = new
-  l.width = laid.width
-  l.height = laid.height
-end
-
--- Moves the line's corner to (x, y) and repositions every quad; the same position makes no call.
-local function move(l, x, y)
-  if l.x == x and l.y == y then
-    return
-  end
-  l.x = x
-  l.y = y
-  for _, glyph in ipairs(l.glyphs) do
-    render.set_position(glyph.quad, place(l, glyph), l.y)
-  end
-end
-
-local function destroy(l)
-  for _, glyph in ipairs(l.glyphs) do
-    render.destroy_quad(glyph.quad)
-  end
-  l.glyphs = {}
-  l.width = 0
-end
+-- Relayouts of the anchored elements, run when the window's size changes. Each is registered by the element.
+local relayouts = {}
 
 -- The readout's text for a `game_time` table: `9 Oct 768 · 14:00 · speed 3`, or `... · paused` whatever the reason.
 local MONTHS = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
@@ -95,100 +30,114 @@ local function readout_text(time)
 end
 
 if game ~= nil then
-  local readout = line(MARGIN + FONT_POINTS_PER_PIXEL, MARGIN + FONT_POINTS_PER_PIXEL)
-  local panel = nil
+  -- The readout: a panel one UI pixel larger than the text on each side, anchored to the top-left corner. It is created with the
+  -- first `game_time`, the panel first so that the glyphs are drawn over it.
+  local readout = text.line(0, 0)
+  local readout_panel = nil
+
+  -- Places the panel, the hit region and the text for the readout's current text size.
+  local function fit_readout()
+    local width = (readout.width + 2) * P
+    local height = (readout.height + 2) * P
+    local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
+    readout_panel:set_rect(x, y, width, height)
+    render.set_hit("readout", {{x = readout_panel.x, y = readout_panel.y, width = readout_panel.width, height = readout_panel.height}})
+    text.move(readout, readout_panel.x + P, readout_panel.y + P)
+  end
+
   game.on_time(function(time)
-    local text = readout_text(time)
-    if panel == nil then
-      -- The panel is created first, so that the glyphs are drawn over it.
-      local laid = font.layout(text)
-      panel = render.create_quad{
-        texture = texture_token("ui/font/panel.png"),
-        x = MARGIN,
-        y = MARGIN,
-        width = (laid.width + 2) * FONT_POINTS_PER_PIXEL,
-        height = (laid.height + 2) * FONT_POINTS_PER_PIXEL,
-      }
-      render.set_hit("readout", {{
-        x = MARGIN,
-        y = MARGIN,
-        width = (laid.width + 2) * FONT_POINTS_PER_PIXEL,
-        height = (laid.height + 2) * FONT_POINTS_PER_PIXEL,
-      }})
+    local content = readout_text(time)
+    if readout_panel == nil then
+      local laid = font.layout(content)
+      local width = (laid.width + 2) * P
+      local height = (laid.height + 2) * P
+      local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
+      readout_panel = panel.new{x = x, y = y, width = width, height = height}
+      render.set_hit("readout", {{x = readout_panel.x, y = readout_panel.y, width = readout_panel.width, height = readout_panel.height}})
+      text.move(readout, readout_panel.x + P, readout_panel.y + P)
     end
     local before = readout.width
-    set(readout, text)
+    text.set(readout, content)
     if readout.width ~= before then
-      render.set_rect(panel, MARGIN, MARGIN, (readout.width + 2) * FONT_POINTS_PER_PIXEL, (readout.height + 2) * FONT_POINTS_PER_PIXEL)
-      render.set_hit("readout", {{
-        x = MARGIN,
-        y = MARGIN,
-        width = (readout.width + 2) * FONT_POINTS_PER_PIXEL,
-        height = (readout.height + 2) * FONT_POINTS_PER_PIXEL,
-      }})
+      fit_readout()
     end
   end)
+  relayouts[#relayouts + 1] = function()
+    if readout_panel ~= nil then
+      fit_readout()
+    end
+  end
 
-  local tooltip = line(0, 0)
+  -- The tooltip: a panel and a text line beside the hovered place, on the side that fits the window's current width.
+  local tooltip = text.line(0, 0)
   local tooltip_panel = nil
   local tooltip_id = nil
   local tooltip_visible = false
-  local WINDOW_WIDTH = 800
-  local HIDDEN = -1000000
+  local last_hover = nil
+
+  local function show_tooltip(hover)
+    local text_changed = tooltip_id ~= hover.id
+    local measured = text_changed and font.layout(hover.name) or nil
+    local width = measured and measured.width or tooltip.width
+    local height = measured and measured.height or tooltip.height
+    local panel_width = (width + 2) * P
+    local panel_height = (height + 2) * P
+    local panel_x = hover.right + 4
+    if panel_x + panel_width > view.width and hover.left - 4 - panel_width >= 0 then
+      panel_x = hover.left - 4 - panel_width
+    end
+    local panel_y = hover.y - panel_height / 2
+    if tooltip_panel == nil then
+      tooltip_panel = panel.new{x = panel_x, y = panel_y, width = panel_width, height = panel_height}
+    else
+      tooltip_panel:set_rect(panel_x, panel_y, panel_width, panel_height)
+    end
+    if text_changed then
+      text.set(tooltip, hover.name)
+    end
+    tooltip_id = hover.id
+    text.move(tooltip, tooltip_panel.x + P, tooltip_panel.y + P)
+    tooltip_visible = true
+  end
+
   game.on_hover(function(hover)
+    last_hover = hover
     if hover == nil then
       if tooltip_visible then
-        move(tooltip, HIDDEN, HIDDEN)
+        text.move(tooltip, ui.HIDDEN, ui.HIDDEN)
         if tooltip_panel ~= nil then
-          render.set_rect(tooltip_panel, HIDDEN, HIDDEN,
-            (tooltip.width + 2) * FONT_POINTS_PER_PIXEL,
-            (tooltip.height + 2) * FONT_POINTS_PER_PIXEL)
+          tooltip_panel:set_rect(ui.HIDDEN, ui.HIDDEN, (tooltip.width + 2) * P, (tooltip.height + 2) * P)
         end
         tooltip_visible = false
       end
       return
     end
-
-    local text_changed = tooltip_id ~= hover.id
-    local measured = text_changed and font.layout(hover.name) or nil
-    local padding = FONT_POINTS_PER_PIXEL
-    local width = measured and measured.width or tooltip.width
-    local height = measured and measured.height or tooltip.height
-    local panel_width = (width + 2) * FONT_POINTS_PER_PIXEL
-    local panel_height = (height + 2) * FONT_POINTS_PER_PIXEL
-    local panel_x = hover.right + 4
-    if panel_x + panel_width > WINDOW_WIDTH and hover.left - 4 - panel_width >= 0 then
-      panel_x = hover.left - 4 - panel_width
-    end
-    local panel_y = hover.y - panel_height / 2
-    if tooltip_panel == nil then
-      tooltip_panel = render.create_quad{
-        texture = texture_token("ui/font/panel.png"),
-        x = panel_x,
-        y = panel_y,
-        width = panel_width,
-        height = panel_height,
-      }
-      if text_changed then
-        set(tooltip, hover.name)
-      end
-      tooltip_id = hover.id
-    else
-      if text_changed then
-        set(tooltip, hover.name)
-      end
-      tooltip_id = hover.id
-      render.set_rect(tooltip_panel, panel_x, panel_y, panel_width, panel_height)
-    end
-    move(tooltip, panel_x + padding, panel_y + padding)
-    tooltip_visible = true
+    show_tooltip(hover)
   end)
+  relayouts[#relayouts + 1] = function()
+    if tooltip_visible and last_hover ~= nil then
+      show_tooltip(last_hover)
+    end
+  end
 end
+
+-- Every update gives the pointer to the dispatcher (which makes scene calls only for a change a widget shows) and, when the window's
+-- size changed, relayouts the anchored elements. An update with an unchanged size and nothing for the dispatcher makes no scene call.
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  if update.width ~= view.width or update.height ~= view.height then
+    view.width = update.width
+    view.height = update.height
+    for _, relayout in ipairs(relayouts) do
+      relayout()
+    end
+  end
+end)
 
 print("ui: loaded")
 log.info("loaded")
 
-window.open{title = "Codekarl", width = 800, height = 600, clear = {0.10, 0.25, 0.45}}
+window.open{title = "Codekarl", width = OPEN_WIDTH, height = OPEN_HEIGHT, clear = {0.10, 0.25, 0.45}}
 
 window.on_opened(function()
   log.info("the window is open")

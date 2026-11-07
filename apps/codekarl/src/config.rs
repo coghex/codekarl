@@ -734,12 +734,16 @@ impl FrameConfig {
     }
 }
 
-/// The keys of the `ui` table: the pixel font's scale. The UI VM reads the value from its `config` table; the application only
-/// checks it.
+/// The keys of the `ui` table: the UI scale, in window points per UI pixel (the font's pixel, the borders and the icons). The UI VM
+/// reads the value from its `config` table; the application only checks it.
+///
+/// `font_points_per_pixel` is the key this one replaced (owner Q3): it is accepted only to be refused by name, so any value of it
+/// is read here.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 struct UiFields {
-    font_points_per_pixel: Option<i64>,
+    points_per_pixel: Option<i64>,
+    font_points_per_pixel: Option<toml::Value>,
 }
 
 /// The `ui` table.
@@ -752,8 +756,8 @@ impl<'de> Deserialize<'de> for UiTable {
     }
 }
 
-/// The range of `[ui] font_points_per_pixel`.
-const FONT_SCALE_RANGE: std::ops::RangeInclusive<i64> = 1..=8;
+/// The range of `[ui] points_per_pixel`.
+const UI_SCALE_RANGE: std::ops::RangeInclusive<i64> = 1..=8;
 
 /// A sampling filter named in the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1291,7 +1295,8 @@ pub(crate) fn load_text_for_test(text: &str) -> Config {
     parse(Path::new("/tmp/codekarl-test/config.toml"), text).expect("a valid configuration")
 }
 
-/// The pixel font's two checks: `[ui] font_points_per_pixel` is 1 to 8, and with a game the scene's one sampling filter is
+/// The pixel font's checks: the old `[ui] font_points_per_pixel` key is refused, naming the new one, even beside the new key;
+/// `[ui] points_per_pixel` is 1 to 8; and with a game the scene's one sampling filter is
 /// `nearest` (the glyphs need it, and the scene has no per-quad filter).
 fn check_pixel_font(
     path: &Path,
@@ -1299,11 +1304,17 @@ fn check_pixel_font(
     has_game: bool,
     filter: Option<FilterName>,
 ) -> Result<(), String> {
-    if let Some(scale) = ui.font_points_per_pixel
-        && !FONT_SCALE_RANGE.contains(&scale)
+    if ui.font_points_per_pixel.is_some() {
+        return Err(format!(
+            "{}: [ui]: font_points_per_pixel was renamed: use points_per_pixel",
+            path.display()
+        ));
+    }
+    if let Some(scale) = ui.points_per_pixel
+        && !UI_SCALE_RANGE.contains(&scale)
     {
         return Err(format!(
-            "{}: [ui]: font_points_per_pixel={scale} is outside 1..=8",
+            "{}: [ui]: points_per_pixel={scale} is outside 1..=8",
             path.display()
         ));
     }
@@ -2946,26 +2957,46 @@ mod tests {
     }
 
     #[test]
-    fn ui_font_scale_is_one_to_eight_and_unknown_ui_keys_are_refused() {
+    fn ui_scale_is_one_to_eight_and_unknown_ui_keys_are_refused() {
         for scale in [1, 2, 8] {
-            parse_config(&format!("[ui]\nfont_points_per_pixel = {scale}\n")).unwrap();
+            parse_config(&format!("[ui]\npoints_per_pixel = {scale}\n")).unwrap();
         }
         parse_config("").unwrap();
         parse_config("[ui]\n").unwrap();
         for bad in ["0", "9", "-1", "2.5", "\"2\""] {
             assert!(
-                parse_config(&format!("[ui]\nfont_points_per_pixel = {bad}\n")).is_err(),
+                parse_config(&format!("[ui]\npoints_per_pixel = {bad}\n")).is_err(),
                 "{bad}"
             );
         }
-        let outside = parse_config("[ui]\nfont_points_per_pixel = 9\n").unwrap_err();
+        let outside = parse_config("[ui]\npoints_per_pixel = 9\n").unwrap_err();
         assert!(
             outside.contains("[ui]") && outside.contains("1..=8"),
             "{outside}"
         );
+        let zero = parse_config("[ui]\npoints_per_pixel = 0\n").unwrap_err();
+        assert!(zero.contains("points_per_pixel=0"), "{zero}");
         let unknown = parse_config("[ui]\ncolour = 1\n").unwrap_err();
         assert!(unknown.contains("colour"), "{unknown}");
         assert!(parse_config("ui = 3\n").is_err());
+    }
+
+    #[test]
+    fn the_old_font_scale_key_is_refused_naming_the_new_one_alone_and_beside_it() {
+        let expected = "[ui]: font_points_per_pixel was renamed: use points_per_pixel";
+        for text in [
+            "[ui]\nfont_points_per_pixel = 2\n",
+            "[ui]\nfont_points_per_pixel = 2\npoints_per_pixel = 2\n",
+            "[ui]\npoints_per_pixel = 2\nfont_points_per_pixel = 9\n",
+            "[ui]\nfont_points_per_pixel = \"x\"\n",
+        ] {
+            let refused = parse_config(text).unwrap_err();
+            assert!(refused.ends_with(expected), "{text:?}: {refused}");
+            assert!(
+                refused.starts_with("/tmp/codekarl-test/config.toml: "),
+                "{text:?}: {refused}"
+            );
+        }
     }
 
     #[test]

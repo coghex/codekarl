@@ -102,6 +102,8 @@ pub(crate) struct Extras {
     /// A resource service: the UI VM then also gets the `texture` extension and the new scene calls work, as in a real
     /// run (`None`: as on `glfw-vulkan`).
     pub(crate) service: Option<ck_resources::ResourceService>,
+    /// The directory the UI VM's `require` is rooted at (none: Lua's default `require`).
+    pub(crate) modules: Option<PathBuf>,
 }
 
 /// A test-only extension that registers a `frame_update` callback, as `window.on_close_request` registers
@@ -136,6 +138,9 @@ impl Harness {
         // The completion hook the real UI VM has: the scene is published after startup and after every posted callback.
         settings.on_complete = Some(render_end.completion_hook());
         settings.extensions = vec![extension, render];
+        if let Some(root) = extras.modules {
+            settings.modules = ck_lua::Modules::Rooted(root);
+        }
         if extras.service.is_some() {
             settings
                 .extensions

@@ -1,5 +1,5 @@
-//! The UI script's text helpers and the date readout (`scripts/ui/main.lua`), run for real over the shipped pixel font and a
-//! scene that only records what it is asked to do.
+//! The UI script (`scripts/ui/main.lua`) and its widget library (`scripts/ui/lib/`), run for real over the shipped pixel font and a
+//! scene that only records what it is asked to do: the text helpers, the date readout, the hover tooltip and the idle rule.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -7,11 +7,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use ck_lua::{CallOutcome, ConfigValue, Extension, HostFunction, VmOwner, VmSettings};
+use ck_lua::{CallOutcome, ConfigValue, Extension, HostFunction, Modules, VmOwner, VmSettings};
 use ck_window::{Notifier, Requests};
 
+use crate::frame_api::{self, FrameBackend, FrameRegistration};
 use crate::game::slot::{PauseReason, SimSnapshot};
 use crate::testing::Dir;
+use crate::window_api::FRAME_UPDATE;
 use crate::{font, game_api, window_api};
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -33,14 +35,14 @@ fn field(table: &ConfigValue, name: &str) -> String {
     }
 }
 
-fn push(log: &Log, line: String) {
+pub(crate) fn push(log: &Log, line: String) {
     log.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .push(line);
 }
 
 /// A function that records `<name> <arguments>` and returns nothing.
-fn recording(log: &Log, name: &'static str) -> HostFunction {
+pub(crate) fn recording(log: &Log, name: &'static str) -> HostFunction {
     let log = Arc::clone(log);
     Arc::new(move |arguments| {
         let arguments: Vec<String> = arguments.iter().flatten().map(show).collect();
@@ -50,6 +52,34 @@ fn recording(log: &Log, name: &'static str) -> HostFunction {
                 .trim_end()
                 .to_owned(),
         );
+        Ok(Vec::new())
+    })
+}
+
+/// `render.set_hit`, recorded as `set_hit <key> <x> <y> <width> <height>` per rectangle, or `set_hit <key> nil`.
+fn hit_recording(log: &Log) -> HostFunction {
+    let log = Arc::clone(log);
+    Arc::new(move |arguments| {
+        let Some(Some(ConfigValue::String(key))) = arguments.first() else {
+            return Err("render.set_hit: a key".to_owned());
+        };
+        match arguments.get(1).and_then(Option::as_ref) {
+            Some(ConfigValue::Array(rects)) => {
+                for rect in rects {
+                    push(
+                        &log,
+                        format!(
+                            "set_hit {key} {} {} {} {}",
+                            field(rect, "x"),
+                            field(rect, "y"),
+                            field(rect, "width"),
+                            field(rect, "height")
+                        ),
+                    );
+                }
+            }
+            _ => push(&log, format!("set_hit {key} nil")),
+        }
         Ok(Vec::new())
     })
 }
@@ -92,7 +122,7 @@ fn scene(log: &Log) -> Vec<Extension> {
     vec![
         Extension::new("render")
             .function("create_quad", create)
-            .function("set_hit", recording(log, "set_hit"))
+            .function("set_hit", hit_recording(log))
             .function("set_position", recording(log, "set_position"))
             .function("set_rect", recording(log, "set_rect"))
             .function("destroy_quad", recording(log, "destroy")),
@@ -100,25 +130,36 @@ fn scene(log: &Log) -> Vec<Extension> {
     ]
 }
 
-/// The UI script (`scripts/ui/main.lua`, as shipped) followed by `tail`, running in a VM with the real pixel font and the
-/// `game` extension over a recording scene.
-struct Readout {
+/// The shipped UI scripts' directory: the root of the UI VM's `require`.
+fn ui_scripts() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui")
+}
+
+/// A UI VM over a recording scene with the real pixel font, the `game` and `frame` extensions and `require` rooted at the
+/// shipped `scripts/ui`: the script is the shipped `main.lua` followed by a tail (`new`), or just a script (`script`).
+pub(crate) struct Readout {
     owner: VmOwner,
     log: Log,
     registered: Arc<AtomicBool>,
     hover_registered: Arc<AtomicBool>,
+    frame: FrameRegistration,
+    sequence: u32,
     _dir: Dir,
 }
 
 impl Readout {
-    fn new(tail: &str, scale: Option<i64>) -> Self {
+    /// The UI script (`scripts/ui/main.lua`, as shipped) followed by `tail`.
+    pub(crate) fn new(tail: &str, scale: Option<i64>) -> Self {
+        let shipped =
+            fs::read_to_string(ui_scripts().join("main.lua")).expect("the shipped UI script");
+        Self::script(&format!("{shipped}\n{tail}\n"), scale)
+    }
+
+    /// `script` as the UI script.
+    pub(crate) fn script(script: &str, scale: Option<i64>) -> Self {
         let dir = Dir::new();
-        let shipped = fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua"),
-        )
-        .expect("the shipped UI script");
         let entry = dir.0.join("main.lua");
-        fs::write(&entry, format!("{shipped}\n{tail}\n")).expect("the script");
+        fs::write(&entry, script).expect("the script");
         let log = Log::default();
         let notifier = Notifier::new();
         let requests = Requests::new();
@@ -132,16 +173,23 @@ impl Readout {
             Some(scale) => BTreeMap::from([(
                 "ui".to_owned(),
                 ConfigValue::Table(BTreeMap::from([(
-                    "font_points_per_pixel".to_owned(),
+                    "points_per_pixel".to_owned(),
                     ConfigValue::Integer(scale),
                 )])),
             )]),
             None => BTreeMap::new(),
         });
+        let frame = FrameRegistration::default();
         let mut settings = VmSettings::new("ui", entry, config);
+        settings.modules = Modules::Rooted(ui_scripts());
         settings.extensions = vec![window];
         settings.extensions.extend(scene(&log));
         settings.extensions.push(font::extension(shipped_font));
+        settings.extensions.push(frame_api::extension(
+            false,
+            FrameBackend::Headless,
+            frame.clone(),
+        ));
         settings.extensions.push(game_api::extension(
             Arc::clone(&registered),
             Arc::clone(&hover_registered),
@@ -156,11 +204,18 @@ impl Readout {
             log,
             registered,
             hover_registered,
+            frame,
+            sequence: 0,
             _dir: dir,
         }
     }
 
-    fn entries(&self) -> Vec<String> {
+    /// Whether the script has a `frame_update` callback registered.
+    pub(crate) fn frame_registered(&self) -> bool {
+        self.frame.state().1
+    }
+
+    pub(crate) fn entries(&self) -> Vec<String> {
         self.log
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -168,7 +223,7 @@ impl Readout {
     }
 
     /// The entries after the `n`th `record mark` entry, up to the next one.
-    fn after_mark(&self, n: usize) -> Vec<String> {
+    pub(crate) fn after_mark(&self, n: usize) -> Vec<String> {
         let entries = self.entries();
         let marks: Vec<usize> = entries
             .iter()
@@ -182,7 +237,7 @@ impl Readout {
     }
 
     /// Posts `game_time` with `snapshot` and waits for the call to end.
-    fn deliver(&mut self, snapshot: &SimSnapshot) {
+    pub(crate) fn deliver(&mut self, snapshot: &SimSnapshot) {
         let id = self
             .owner
             .post(game_api::GAME_TIME, vec![game_api::time_table(snapshot)])
@@ -203,7 +258,7 @@ impl Readout {
         }
     }
 
-    fn deliver_hover(&mut self, hover: Option<(&str, &str, i64, i64, i64)>) {
+    pub(crate) fn deliver_hover(&mut self, hover: Option<(&str, &str, i64, i64, i64)>) {
         let arguments = hover.map_or_else(Vec::new, |(id, name, left, right, y)| {
             vec![ConfigValue::Table(BTreeMap::from([
                 ("id".to_owned(), ConfigValue::String(id.to_owned())),
@@ -232,6 +287,46 @@ impl Readout {
             std::thread::yield_now();
         }
     }
+
+    /// Posts a `frame_update` for a window of `width` by `height` points (with `pointer`, if any) and waits for the call to end.
+    pub(crate) fn update(&mut self, width: i64, height: i64, pointer: Option<ConfigValue>) {
+        self.sequence += 1;
+        let mut fields = BTreeMap::from([
+            ("dt".to_owned(), ConfigValue::Float(0.016)),
+            ("elapsed".to_owned(), ConfigValue::Float(0.016)),
+            (
+                "sequence".to_owned(),
+                ConfigValue::Integer(i64::from(self.sequence)),
+            ),
+            ("width".to_owned(), ConfigValue::Integer(width)),
+            ("height".to_owned(), ConfigValue::Integer(height)),
+            ("actions".to_owned(), ConfigValue::Table(BTreeMap::new())),
+            ("transitions".to_owned(), ConfigValue::Array(Vec::new())),
+            ("overflow".to_owned(), ConfigValue::Bool(false)),
+            ("reset".to_owned(), ConfigValue::Bool(false)),
+        ]);
+        if let Some(pointer) = pointer {
+            fields.insert("pointer".to_owned(), pointer);
+        }
+        let id = self
+            .owner
+            .post(FRAME_UPDATE, vec![ConfigValue::Table(fields)])
+            .expect("posted");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(result) = self.owner.take_result() {
+                assert_eq!(result.id, id);
+                assert!(
+                    matches!(result.outcome, CallOutcome::Returned(_)),
+                    "{:?}",
+                    result.outcome
+                );
+                return;
+            }
+            assert!(Instant::now() < deadline, "the callback did not return");
+            std::thread::yield_now();
+        }
+    }
 }
 
 impl Drop for Readout {
@@ -241,7 +336,7 @@ impl Drop for Readout {
     }
 }
 
-fn snapshot(hour: u8, speed: u8, paused: Option<PauseReason>) -> SimSnapshot {
+pub(crate) fn snapshot(hour: u8, speed: u8, paused: Option<PauseReason>) -> SimSnapshot {
     let date = ck_sim::Date {
         year: 768,
         month: 10,
@@ -259,7 +354,7 @@ fn snapshot(hour: u8, speed: u8, paused: Option<PauseReason>) -> SimSnapshot {
 #[test]
 fn setting_the_next_hour_replaces_one_quad_and_moves_none() {
     let readout = Readout::new(
-        "local l = line(10, 20)\nset(l, '14:00')\nwindow.record('mark')\nset(l, '15:00')\nwindow.record('mark')",
+        "local l = text.line(10, 20)\ntext.set(l, '14:00')\nwindow.record('mark')\ntext.set(l, '15:00')\nwindow.record('mark')",
         None,
     );
     // The first set: one quad for each of the five glyphs, at 2 points per font pixel (the colon is narrow, so the zeros come
@@ -300,7 +395,7 @@ fn setting_the_next_hour_replaces_one_quad_and_moves_none() {
 #[test]
 fn a_wider_glyph_moves_the_later_quads_and_replaces_nothing_else() {
     let readout = Readout::new(
-        "local l = line(0, 0)\nset(l, 'iab')\nwindow.record('mark')\nset(l, 'mab')\nwindow.record('mark')",
+        "local l = text.line(0, 0)\ntext.set(l, 'iab')\nwindow.record('mark')\ntext.set(l, 'mab')\nwindow.record('mark')",
         None,
     );
     assert_eq!(
@@ -318,7 +413,7 @@ fn a_wider_glyph_moves_the_later_quads_and_replaces_nothing_else() {
 #[test]
 fn an_unchanged_string_makes_no_scene_call_and_a_shorter_one_destroys_the_tail() {
     let readout = Readout::new(
-        "local l = line(0, 0)\nset(l, 'abc')\nwindow.record('mark')\nset(l, 'abc')\nwindow.record('mark')\nset(l, 'a')\nwindow.record('mark')\nset(l, 'a')\nwindow.record('mark')",
+        "local l = text.line(0, 0)\ntext.set(l, 'abc')\nwindow.record('mark')\ntext.set(l, 'abc')\nwindow.record('mark')\ntext.set(l, 'a')\nwindow.record('mark')\ntext.set(l, 'a')\nwindow.record('mark')",
         None,
     );
     assert!(
@@ -333,12 +428,12 @@ fn an_unchanged_string_makes_no_scene_call_and_a_shorter_one_destroys_the_tail()
 #[test]
 fn move_repositions_every_quad_once_and_the_same_position_makes_no_call() {
     let readout = Readout::new(
-        "local l = line(0, 0)\nset(l, 'ab')\nwindow.record('mark')\nmove(l, 5, 7)\nwindow.record('mark')\nmove(l, 5, 7)\nwindow.record('mark')\ndestroy(l)\nwindow.record('mark')",
+        "local l = text.line(0, 0)\ntext.set(l, 'ab')\nwindow.record('mark')\ntext.move(l, 6, 8)\nwindow.record('mark')\ntext.move(l, 6, 8)\nwindow.record('mark')\ntext.destroy(l)\nwindow.record('mark')",
         None,
     );
     assert_eq!(
         readout.after_mark(1),
-        ["set_position q1 5 7", "set_position q2 17 7"]
+        ["set_position q1 6 8", "set_position q2 18 8"]
     );
     assert!(readout.after_mark(2).is_empty());
     assert_eq!(readout.after_mark(3), ["destroy q1", "destroy q2"]);
@@ -346,7 +441,7 @@ fn move_repositions_every_quad_once_and_the_same_position_makes_no_call() {
 
 #[test]
 fn the_scale_comes_from_the_ui_table_of_the_configuration() {
-    let readout = Readout::new("local l = line(0, 0)\nset(l, 'a')", Some(3));
+    let readout = Readout::new("local l = text.line(0, 0)\ntext.set(l, 'a')", Some(3));
     assert!(
         readout
             .entries()
@@ -458,7 +553,7 @@ fn hover_tooltip_flips_moves_and_hides_while_reusing_its_quads() {
     let first = readout.entries();
     assert!(first[0].starts_with("load ui/font/panel.png"), "{first:?}");
     assert!(
-        first[1].starts_with("create q1 ui/font/panel.png 24 27 "),
+        first[1].starts_with("create q1 ui/font/panel.png 24 28 "),
         "{first:?}"
     );
     assert!(
@@ -476,13 +571,13 @@ fn hover_tooltip_flips_moves_and_hides_while_reusing_its_quads() {
     readout.deliver_hover(Some(("town", "Alpha", 700, 760, 80)));
     let moved = readout.entries()[before_move..].to_vec();
     // Alpha is 28 font pixels wide; the 2-point scale plus 2-pixel panel margin makes a 60-point
-    // panel. At left=700, its flipped x is exactly 700 - 4 - 60 = 636.
+    // panel. At left=700, its flipped x is exactly 700 - 4 - 60 = 636. The panel's y, 80 - 13 = 67, snaps to the 2-point grid: 68.
     assert!(
-        moved.iter().any(|line| line == "set_rect q1 636 67 60 26"),
+        moved.iter().any(|line| line == "set_rect q1 636 68 60 26"),
         "{moved:?}"
     );
     assert!(
-        moved.iter().any(|line| line == "set_position q2 638 69"),
+        moved.iter().any(|line| line == "set_position q2 638 70"),
         "{moved:?}"
     );
     assert_eq!(

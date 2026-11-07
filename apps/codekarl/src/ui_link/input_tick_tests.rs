@@ -39,7 +39,7 @@ fn edge(name: &str, edge: Edge) -> Transition {
     }
 }
 
-fn metrics() -> WindowMetrics {
+pub(super) fn metrics() -> WindowMetrics {
     WindowMetrics {
         points: (400, 320),
         pixels: PixelSize {
@@ -62,7 +62,7 @@ const NAMES: [&str; 8] = [
 ];
 
 /// A snapshot with every action idle, to be edited.
-fn idle() -> InputSnapshot {
+pub(super) fn idle() -> InputSnapshot {
     InputSnapshot {
         sequence: 1,
         actions: NAMES
@@ -99,7 +99,7 @@ fn with(
     input
 }
 
-fn tick(input: InputSnapshot) -> InputTick {
+pub(super) fn tick(input: InputSnapshot) -> InputTick {
     InputTick {
         dt: Duration::from_millis(16),
         metrics: metrics(),
@@ -107,7 +107,7 @@ fn tick(input: InputSnapshot) -> InputTick {
     }
 }
 
-fn update(sequence: u64) -> UiEvent {
+pub(super) fn update(sequence: u64) -> UiEvent {
     UiEvent::Update(UpdateEvent {
         sequence,
         elapsed: Duration::from_millis(16),
@@ -117,7 +117,7 @@ fn update(sequence: u64) -> UiEvent {
 }
 
 /// The next answer, within a bound.
-fn answer(link: &mut CodekarlUi) -> UiAnswer {
+pub(super) fn answer(link: &mut CodekarlUi) -> UiAnswer {
     let give_up = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(answer) = link.take_answer() {
@@ -129,9 +129,9 @@ fn answer(link: &mut CodekarlUi) -> UiAnswer {
 }
 
 /// What a `frame_update` callback was given, in order.
-type Tables = Arc<Mutex<Vec<ConfigValue>>>;
+pub(super) type Tables = Arc<Mutex<Vec<ConfigValue>>>;
 
-fn field<'a>(table: &'a ConfigValue, name: &str) -> &'a ConfigValue {
+pub(super) fn field<'a>(table: &'a ConfigValue, name: &str) -> &'a ConfigValue {
     let ConfigValue::Table(fields) = table else {
         panic!("a table: {table:?}");
     };
@@ -218,7 +218,7 @@ fn held_ui() -> Held {
     }
 }
 
-fn wait_entered(entered: &AtomicBool) {
+pub(super) fn wait_entered(entered: &AtomicBool) {
     let give_up = Instant::now() + Duration::from_secs(10);
     while !entered.load(Ordering::SeqCst) {
         assert!(Instant::now() < give_up, "the callback did not start");
@@ -249,7 +249,7 @@ fn mapped_link(
     (link, map, receiver, pointer)
 }
 
-fn camera_of(map: &crate::map_app::SharedController) -> Option<ck_map::Camera> {
+pub(super) fn camera_of(map: &crate::map_app::SharedController) -> Option<ck_map::Camera> {
     crate::map_app::lock(map).camera()
 }
 
