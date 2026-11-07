@@ -11,7 +11,10 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    Cell, Crop, MapData, Rgba8, STEP_SIZE, Surface, TerrainStyle, WorldPixel, reference_colour,
+    BuildingKind, Cell, Confidence, Crop, FixedPoint, HouseStyle, LoadedMap, LoadedTerrain,
+    Location, LocationKind, LocationKinds, MapData, PackedGrid, Rgba8, RiverLine, STEP_SIZE,
+    Scenario as LoadedScenario, ScenarioStart, Surface, TerrainKind, TerrainStyle, WorldPixel,
+    reference_colour,
 };
 
 /// The crop's global origin cell.
@@ -256,6 +259,168 @@ pub fn fixture() -> Fixture {
         grid_a,
         grid_b,
         terrains,
+    }
+}
+
+/// A small scenario over [`fixture`]'s map for production-path location readbacks.
+///
+/// # Panics
+/// Panics only if the fixture's fixed terrain indices or cell count stop fitting their storage types.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the shared fixture scenario's map, palette and locations together"
+)]
+#[must_use]
+pub fn location_scenario() -> LoadedScenario {
+    let map_fixture = fixture();
+    let crop = map_fixture.data.crop;
+    let loaded_map = LoadedMap {
+        data: map_fixture.data.clone(),
+        terrain_types: map_fixture
+            .terrains
+            .iter()
+            .enumerate()
+            .map(|(index, terrain)| {
+                let (kind, palette_colour, style_index) = match terrain.kind {
+                    Kind::Sea => (TerrainKind::Sea, map_fixture.data.sea, None),
+                    Kind::Lake => (TerrainKind::Lake, map_fixture.data.lake, None),
+                    Kind::Land => (
+                        TerrainKind::Land,
+                        terrain.style.solid,
+                        Some(u16::try_from(index - 2).expect("land style index fits")),
+                    ),
+                    Kind::Mountain => (
+                        TerrainKind::Mountain,
+                        terrain.style.solid,
+                        Some(u16::try_from(index - 2).expect("mountain style index fits")),
+                    ),
+                };
+                LoadedTerrain {
+                    key: [u8::try_from(index).expect("fixture terrain index fits"); 3],
+                    kind,
+                    palette_colour,
+                    style_index,
+                }
+            })
+            .collect(),
+        grid_a: packed_grid(&map_fixture.grid_a, crop.width, crop.height),
+        grid_b: packed_grid(&map_fixture.grid_b, crop.width, crop.height),
+        rivers: Vec::new(),
+    };
+    let kinds = LocationKinds {
+        kinds: vec![
+            LocationKind {
+                id: "town".into(),
+                min_size: 1,
+                max_size: 1,
+                catchment_m: vec![1_000],
+                house_count: vec![1],
+                house_radius_cells_x256: vec![512],
+                glyph: vec![vec!['#']],
+                light: Rgba8::opaque(230, 30, 40),
+                dark: Rgba8::opaque(180, 20, 30),
+            },
+            LocationKind {
+                id: "village".into(),
+                min_size: 1,
+                max_size: 1,
+                catchment_m: vec![500],
+                house_count: vec![0],
+                house_radius_cells_x256: vec![0],
+                glyph: vec![vec!['#']],
+                light: Rgba8::opaque(20, 210, 40),
+                dark: Rgba8::opaque(10, 150, 20),
+            },
+        ],
+        buildings: vec![BuildingKind {
+            id: "church".into(),
+            glyph: vec![vec!['#', 'd', '#']],
+            light: Rgba8::opaque(170, 80, 50),
+            dark: Rgba8::opaque(140, 60, 35),
+        }],
+        house: HouseStyle {
+            roof: Rgba8::opaque(230, 220, 200),
+            light: Rgba8::opaque(230, 220, 200),
+            dark: Rgba8::opaque(40, 30, 20),
+        },
+    };
+    let cell = |x: i32, y: i32| Cell {
+        x: ORIGIN[0] + x,
+        y: ORIGIN[1] + y,
+    };
+    let locations = vec![
+        Location {
+            id: "river-town".into(),
+            name: "River Town".into(),
+            cell: cell(11, 7),
+            kind_index: 0,
+            size: 1,
+            building_indices: Vec::new(),
+            catchment_m: None,
+            source: "fixture".into(),
+            confidence: Confidence::High,
+        },
+        Location {
+            id: "hill-village".into(),
+            name: "Hill Village".into(),
+            cell: cell(8, 10),
+            kind_index: 1,
+            size: 1,
+            building_indices: vec![0],
+            catchment_m: None,
+            source: "fixture".into(),
+            confidence: Confidence::Medium,
+        },
+    ];
+    LoadedScenario {
+        id: "overlay_readback_fixture".into(),
+        start: ScenarioStart {
+            year: 768,
+            month: 10,
+            day: 9,
+            hour: 0,
+        },
+        map: loaded_map,
+        location_kinds: kinds,
+        locations,
+        catchment_owners: vec![
+            None;
+            usize::try_from(crop.width * crop.height)
+                .expect("small fixture crop")
+        ],
+    }
+}
+
+/// A short test river crossing the supplied world pixel at `step`.
+///
+/// The segment spans three pixels on each side so it visibly crosses a marker or house while
+/// remaining local to the fixture. Invalid steps or coordinates that do not fit fixed-point
+/// storage return `None`.
+#[must_use]
+pub fn river_through_pixel(pixel: WorldPixel, step: u8) -> Option<RiverLine> {
+    let pixel_size = i64::from(*STEP_SIZE.get(usize::from(step))?);
+    let fixed = |x: i32, y: i32| {
+        Some(FixedPoint {
+            x: i32::try_from(i64::from(x).checked_mul(pixel_size)?).ok()?,
+            y: i32::try_from(i64::from(y).checked_mul(pixel_size)?).ok()?,
+        })
+    };
+    Some(RiverLine {
+        points: vec![
+            fixed(pixel.x.checked_sub(3)?, pixel.y)?,
+            fixed(pixel.x.checked_add(3)?, pixel.y)?,
+        ],
+    })
+}
+
+fn packed_grid(bytes: &[u8], width: u32, height: u32) -> PackedGrid {
+    PackedGrid {
+        width,
+        height,
+        pixels: bytes
+            .chunks_exact(4)
+            .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
+            .collect(),
     }
 }
 

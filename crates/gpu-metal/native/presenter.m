@@ -144,6 +144,7 @@ static void ck_obs_max(CKPrObserverState *observer, int index, int64_t value) {
 @property(nonatomic, strong) id<MTLRenderPipelineState> map;
 /* The opaque map-pixel overlay drawn after the terrain pass. */
 @property(nonatomic, strong) id<MTLRenderPipelineState> mapRivers;
+@property(nonatomic, strong) id<MTLRenderPipelineState> mapLocations;
 @property(nonatomic, strong) id<MTLSamplerState> nearest;
 @property(nonatomic, strong) id<MTLSamplerState> linear;
 @end
@@ -368,6 +369,27 @@ static BOOL ck_encode_map_pass(id<MTLCommandBuffer> command, CKPrQuadKit *kit, c
     [encoder setFragmentTexture:draw->grid_b atIndex:1];
     [encoder setFragmentTexture:draw->rules atIndex:2];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    if (draw->map->location_count != 0) {
+        NSUInteger location_bytes = (NSUInteger)draw->map->location_count * sizeof(uint32_t[3]);
+        NSUInteger palette_bytes = (NSUInteger)draw->map->overlay_palette_count * sizeof(uint8_t[4]);
+        id<MTLBuffer> locations = [command.commandQueue.device newBufferWithBytes:draw->map->locations
+                                                                             length:location_bytes
+                                                                            options:MTLResourceStorageModeShared];
+        id<MTLBuffer> palette = [command.commandQueue.device newBufferWithBytes:draw->map->overlay_palette
+                                                                          length:palette_bytes
+                                                                         options:MTLResourceStorageModeShared];
+        if (locations == nil || palette == nil) {
+            [encoder endEncoding];
+            *reason = @"the visible location-pixel or overlay-palette buffer could not be created";
+            return NO;
+        }
+        const uint32_t view[2] = {draw->map->view[0], draw->map->view[1]};
+        [encoder setRenderPipelineState:kit.mapLocations];
+        [encoder setVertexBytes:view length:sizeof(view) atIndex:0];
+        [encoder setVertexBuffer:locations offset:0 atIndex:1];
+        [encoder setFragmentBuffer:palette offset:0 atIndex:0];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:draw->map->location_count];
+    }
     if (draw->map->river_count != 0) {
         NSUInteger river_bytes = (NSUInteger)draw->map->river_count * sizeof(uint32_t[2]);
         id<MTLBuffer> rivers = [command.commandQueue.device newBufferWithBytes:draw->map->rivers
@@ -706,8 +728,11 @@ static CKPrQuadKit *ck_make_quad_kit(id<MTLDevice> device, const uint8_t *librar
     id<MTLFunction> map_fragment = [library newFunctionWithName:@"ck_map_fragment"];
     id<MTLFunction> map_river_vertex = [library newFunctionWithName:@"ck_map_river_vertex"];
     id<MTLFunction> map_river_fragment = [library newFunctionWithName:@"ck_map_river_fragment"];
+    id<MTLFunction> map_location_vertex = [library newFunctionWithName:@"ck_map_location_vertex"];
+    id<MTLFunction> map_location_fragment = [library newFunctionWithName:@"ck_map_location_fragment"];
     if (library == nil || vertex == nil || fragment == nil || instance_vertex == nil || bindless_vertex == nil ||
-        bindless_fragment == nil || map_vertex == nil || map_fragment == nil || map_river_vertex == nil || map_river_fragment == nil) {
+        bindless_fragment == nil || map_vertex == nil || map_fragment == nil || map_river_vertex == nil || map_river_fragment == nil ||
+        map_location_vertex == nil || map_location_fragment == nil) {
         *reason = [NSString stringWithFormat:@"the quad shader library could not be loaded: %@",
                                              failure.localizedDescription ?: @"a function is missing"];
         return nil;
@@ -765,12 +790,21 @@ static CKPrQuadKit *ck_make_quad_kit(id<MTLDevice> device, const uint8_t *librar
                                              failure.localizedDescription ?: @"unknown error"];
         return nil;
     }
+    map_description.vertexFunction = map_location_vertex;
+    map_description.fragmentFunction = map_location_fragment;
+    id<MTLRenderPipelineState> map_locations = [device newRenderPipelineStateWithDescriptor:map_description error:&failure];
+    if (map_locations == nil) {
+        *reason = [NSString stringWithFormat:@"the map-location pipeline could not be created: %@",
+                                             failure.localizedDescription ?: @"unknown error"];
+        return nil;
+    }
     CKPrQuadKit *kit = [CKPrQuadKit new];
     kit.pipeline = pipeline;
     kit.instanced = instanced;
     kit.bindless = bindless;
     kit.map = map;
     kit.mapRivers = map_rivers;
+    kit.mapLocations = map_locations;
     for (int linear = 0; linear < 2; linear++) {
         MTLSamplerDescriptor *sampler = [MTLSamplerDescriptor new];
         MTLSamplerMinMagFilter filter = linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;

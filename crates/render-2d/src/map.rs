@@ -156,6 +156,31 @@ pub enum MapError {
         /// How many were given.
         count: usize,
     },
+    /// A location pixel outside the view.
+    LocationOutsideView {
+        /// Its position in the list.
+        position: usize,
+        /// Its column.
+        x: u32,
+        /// Its row.
+        y: u32,
+    },
+    /// More location pixels than the view can contain.
+    TooManyLocations {
+        /// The view's pixel count.
+        limit: u64,
+        /// How many were given.
+        count: usize,
+    },
+    /// A location references a palette entry that does not exist.
+    LocationPaletteIndex {
+        /// Its position in the list.
+        position: usize,
+        /// The palette index supplied.
+        index: u32,
+        /// Number of available colours.
+        colours: usize,
+    },
 }
 
 impl std::fmt::Display for MapError {
@@ -216,6 +241,22 @@ impl std::fmt::Display for MapError {
             Self::TooManyRivers { limit, count } => write!(
                 formatter,
                 "{count} river pixels; the view holds at most {limit}"
+            ),
+            Self::LocationOutsideView { position, x, y } => write!(
+                formatter,
+                "location pixel {position} ({x}, {y}) is outside the view"
+            ),
+            Self::TooManyLocations { limit, count } => write!(
+                formatter,
+                "{count} location pixels; the view holds at most {limit}"
+            ),
+            Self::LocationPaletteIndex {
+                position,
+                index,
+                colours,
+            } => write!(
+                formatter,
+                "location pixel {position} uses palette index {index}; the palette has {colours} colours"
             ),
         }
     }
@@ -279,6 +320,8 @@ pub struct MapRules {
     pub lake: [u8; 4],
     /// The rivers (carried; drawn from slice 8).
     pub river: [u8; 4],
+    /// Opaque RGBA8 colours for the location overlay, indexed by camera pixels.
+    pub overlay_palette: Vec<[u8; 4]>,
     /// A sea depth, in metres, under which the shallow sea dithers in; at least 1.
     pub shallow_threshold: u16,
     /// The map pixel size at each zoom step, in 1/32768 cell (`ck-map`'s frozen `STEP_SIZE`).
@@ -301,6 +344,12 @@ impl MapRules {
         }
         if self.shallow_threshold == 0 {
             return Err(table("the shallow-sea threshold must be at least 1"));
+        }
+        if self.overlay_palette.len() > 256 {
+            return Err(table("the overlay palette has more than 256 colours"));
+        }
+        if self.overlay_palette.iter().any(|colour| colour[3] != 255) {
+            return Err(table("an overlay palette colour is not opaque"));
         }
         for (name, colour) in [
             ("the sea colour is not opaque", self.sea),
@@ -525,6 +574,7 @@ pub struct MapCamera {
     top_left: [i32; 2],
     view: [u32; 2],
     rivers: Arc<[[u32; 2]]>,
+    locations: Arc<[[u32; 3]]>,
     metrics_generation: u64,
 }
 
@@ -544,6 +594,34 @@ impl MapCamera {
         top_left: [i32; 2],
         view: [u32; 2],
         rivers: Vec<[u32; 2]>,
+        metrics_generation: u64,
+    ) -> Result<Self, MapError> {
+        Self::new_with_locations(
+            step,
+            top_left,
+            view,
+            rivers,
+            Vec::new(),
+            0,
+            metrics_generation,
+        )
+    }
+
+    /// Construct a camera with view-relative `[x, y, palette_index]` locations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MapError::Step`] or [`MapError::Size`] for an invalid step/view, the river errors
+    /// documented on [`Self::new`], [`MapError::TooManyLocations`] when the list exceeds the view
+    /// pixel count, [`MapError::LocationOutsideView`] for an out-of-view pixel, or
+    /// [`MapError::LocationPaletteIndex`] for an unavailable palette index.
+    pub fn new_with_locations(
+        step: u8,
+        top_left: [i32; 2],
+        view: [u32; 2],
+        rivers: Vec<[u32; 2]>,
+        locations: Vec<[u32; 3]>,
+        palette_colours: usize,
         metrics_generation: u64,
     ) -> Result<Self, MapError> {
         let [width, height] = view;
@@ -575,11 +653,35 @@ impl MapCamera {
                 y: pixel[1],
             });
         }
+        if locations.len() as u64 > limit {
+            return Err(MapError::TooManyLocations {
+                limit,
+                count: locations.len(),
+            });
+        }
+        for (position, pixel) in locations.iter().enumerate() {
+            if pixel[0] >= width || pixel[1] >= height {
+                return Err(MapError::LocationOutsideView {
+                    position,
+                    x: pixel[0],
+                    y: pixel[1],
+                });
+            }
+            let index = pixel[2];
+            if usize::try_from(index).unwrap_or(usize::MAX) >= palette_colours {
+                return Err(MapError::LocationPaletteIndex {
+                    position,
+                    index,
+                    colours: palette_colours,
+                });
+            }
+        }
         Ok(Self {
             step,
             top_left,
             view,
             rivers: rivers.into(),
+            locations: locations.into(),
             metrics_generation,
         })
     }
@@ -606,6 +708,12 @@ impl MapCamera {
     #[must_use]
     pub fn rivers(&self) -> &Arc<[[u32; 2]]> {
         &self.rivers
+    }
+
+    /// The visible location pixels in view coordinates and their palette indices.
+    #[must_use]
+    pub fn locations(&self) -> &Arc<[[u32; 3]]> {
+        &self.locations
     }
 
     /// The metrics generation this camera was computed for.

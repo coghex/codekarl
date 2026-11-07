@@ -15,13 +15,15 @@ const MAX_CATCHMENT_METRES: i64 = 50_000;
 const METRES_PER_CELL: i128 = 839;
 const SCALE: i128 = 65_536;
 
-/// Validated marker styles shared by every scenario on a map.
+/// Validated location, building and house styles shared by every scenario on a map.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LocationKinds {
     /// Location marker kinds, in source-file order.
     pub kinds: Vec<LocationKind>,
     /// Validated notable-building styles, reserved for later slices.
     pub buildings: Vec<BuildingKind>,
+    /// Shared house colours.
+    pub house: HouseStyle,
 }
 
 /// One location kind's allowed sizes, catchment radii and marker appearance.
@@ -35,12 +37,54 @@ pub struct LocationKind {
     pub max_size: u8,
     /// Default radius for each size, in order from `min_size`.
     pub catchment_m: Vec<u32>,
+    /// Number of decorative houses for each size, from `min_size`.
+    pub house_count: Vec<u16>,
+    /// Maximum house/building radius for each size, in 1/256 cells.
+    pub house_radius_cells_x256: Vec<u16>,
     /// Marker rows from top to bottom.
     pub glyph: Vec<Vec<char>>,
     /// Colour for `#` pixels.
     pub light: Rgba8,
     /// Colour for `d` pixels and outlines.
     pub dark: Rgba8,
+}
+
+/// The shared roof and wall colours of a two-by-two house.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HouseStyle {
+    /// The top row colour.
+    pub roof: Rgba8,
+    /// Lower left pixel colour.
+    pub light: Rgba8,
+    /// Lower right pixel colour.
+    pub dark: Rgba8,
+}
+
+impl Default for HouseStyle {
+    fn default() -> Self {
+        Self {
+            roof: Rgba8::opaque(0xa9, 0x56, 0x3b),
+            light: Rgba8::opaque(0xec, 0xe3, 0xcb),
+            dark: Rgba8::opaque(0x2a, 0x21, 0x19),
+        }
+    }
+}
+
+impl LocationKinds {
+    /// Palette in the specified stable order: kinds, buildings, then house colours.
+    #[must_use]
+    pub fn overlay_palette(&self) -> Vec<Rgba8> {
+        self.kinds
+            .iter()
+            .flat_map(|kind| [kind.light, kind.dark])
+            .chain(
+                self.buildings
+                    .iter()
+                    .flat_map(|building| [building.light, building.dark]),
+            )
+            .chain([self.house.roof, self.house.light, self.house.dark])
+            .collect()
+    }
 }
 
 /// One notable-building glyph and its colours.
@@ -127,6 +171,85 @@ pub struct MarkerPixel {
     pub pixel: WorldPixel,
     /// Marker colour.
     pub colour: Rgba8,
+}
+
+/// One prepared location overlay pixel with an index into the scenario palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocationPixel {
+    /// Global map-pixel position.
+    pub pixel: WorldPixel,
+    /// Palette index for this pixel.
+    pub palette_index: u8,
+}
+
+/// Lazily prepared house, marker and building pixels for each zoom step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedLocations {
+    locations: Vec<Location>,
+    kinds: LocationKinds,
+    crop: Crop,
+    steps: Vec<Option<Vec<LocationPixel>>>,
+}
+
+impl PreparedLocations {
+    /// Build a per-scenario cache; each zoom step is rasterized at most once.
+    #[must_use]
+    pub fn new(locations: Vec<Location>, kinds: LocationKinds, crop: Crop) -> Self {
+        Self {
+            locations,
+            kinds,
+            crop,
+            steps: vec![None; STEP_SIZE.len()],
+        }
+    }
+
+    /// Return prepared global pixels for a step, or `None` for an invalid step.
+    pub fn pixels(&mut self, step: u8) -> Option<&[LocationPixel]> {
+        let slot = self.steps.get_mut(usize::from(step))?;
+        if slot.is_none() {
+            *slot = Some(prepare_locations(
+                &self.locations,
+                &self.kinds,
+                self.crop,
+                step,
+            ));
+        }
+        slot.as_deref()
+    }
+
+    /// Select visible pixels as view-relative coordinates, bounded by the view's area.
+    pub fn select_view(
+        &mut self,
+        step: u8,
+        top_left: WorldPixel,
+        view: ViewSize,
+    ) -> Option<Vec<([u32; 2], u8)>> {
+        let right = i64::from(top_left.x) + i64::from(view.width);
+        let bottom = i64::from(top_left.y) + i64::from(view.height);
+        Some(
+            self.pixels(step)?
+                .iter()
+                .filter_map(|item| {
+                    let x = i64::from(item.pixel.x);
+                    let y = i64::from(item.pixel.y);
+                    if x < i64::from(top_left.x)
+                        || x >= right
+                        || y < i64::from(top_left.y)
+                        || y >= bottom
+                    {
+                        return None;
+                    }
+                    Some((
+                        [
+                            u32::try_from(x - i64::from(top_left.x)).ok()?,
+                            u32::try_from(y - i64::from(top_left.y)).ok()?,
+                        ],
+                        item.palette_index,
+                    ))
+                })
+                .collect(),
+        )
+    }
 }
 
 /// Lazily prepared marker pixels, parallel to the river coverage cache.
@@ -348,12 +471,15 @@ fn validate_location_kinds(file: &LocationKindsFile) -> Result<LocationKinds, Lo
             ));
         }
         let radii = validate_radii(&entry.catchment_m, "location_kinds.toml", &path)?;
+        let houses = validate_house_rules(entry, expected, &path)?;
         let glyph = parse_glyph(&entry.glyph, "location_kinds.toml", &path)?;
         kinds.push(LocationKind {
             id: entry.id.clone(),
             min_size: u8::try_from(min).unwrap_or_default(),
             max_size: u8::try_from(max).unwrap_or_default(),
             catchment_m: radii,
+            house_count: houses.0,
+            house_radius_cells_x256: houses.1,
             glyph,
             light: parse_rgb(&entry.light, "location_kinds.toml", &path, "light")?,
             dark: parse_rgb(&entry.dark, "location_kinds.toml", &path, "dark")?,
@@ -379,7 +505,82 @@ fn validate_location_kinds(file: &LocationKindsFile) -> Result<LocationKinds, Lo
             dark: parse_rgb(&entry.dark, "location_kinds.toml", &path, "dark")?,
         });
     }
-    Ok(LocationKinds { kinds, buildings })
+    let house = HouseStyle {
+        roof: parse_rgb(&file.house.roof, "location_kinds.toml", "house", "roof")?,
+        light: parse_rgb(&file.house.light, "location_kinds.toml", "house", "light")?,
+        dark: parse_rgb(&file.house.dark, "location_kinds.toml", "house", "dark")?,
+    };
+    let palette_len = kinds
+        .len()
+        .saturating_mul(2)
+        .saturating_add(buildings.len().saturating_mul(2))
+        .saturating_add(3);
+    if palette_len > 256 {
+        return Err(LoadError::at(
+            "location_kinds.toml",
+            "overlay_palette",
+            "has more than 256 colours",
+        ));
+    }
+    Ok(LocationKinds {
+        kinds,
+        buildings,
+        house,
+    })
+}
+
+fn validate_house_rules(
+    entry: &LocationKindFile,
+    expected: usize,
+    path: &str,
+) -> Result<(Vec<u16>, Vec<u16>), LoadError> {
+    if entry.houses.count.len() != expected {
+        return Err(LoadError::at(
+            "location_kinds.toml",
+            format!("{path}.houses.count"),
+            format!("must contain exactly {expected} values"),
+        ));
+    }
+    if entry.houses.radius_cells_x256.len() != expected {
+        return Err(LoadError::at(
+            "location_kinds.toml",
+            format!("{path}.houses.radius_cells_x256"),
+            format!("must contain exactly {expected} values"),
+        ));
+    }
+    let count = entry
+        .houses
+        .count
+        .iter()
+        .enumerate()
+        .map(|(i, value)| {
+            if !(0..=200).contains(value) {
+                return Err(LoadError::at(
+                    "location_kinds.toml",
+                    format!("{path}.houses.count[{i}]"),
+                    "must be in 0..=200",
+                ));
+            }
+            Ok(u16::try_from(*value).unwrap_or_default())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let radius = entry
+        .houses
+        .radius_cells_x256
+        .iter()
+        .enumerate()
+        .map(|(i, value)| {
+            if !(0..=2560).contains(value) {
+                return Err(LoadError::at(
+                    "location_kinds.toml",
+                    format!("{path}.houses.radius_cells_x256[{i}]"),
+                    "must be in 0..=2560",
+                ));
+            }
+            Ok(u16::try_from(*value).unwrap_or_default())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((count, radius))
 }
 
 fn validate_radii(values: &[i64], file: &str, entry: &str) -> Result<Vec<u32>, LoadError> {
@@ -784,6 +985,322 @@ fn prepare_markers(locations: &[Location], kinds: &LocationKinds, step: u8) -> V
         .collect()
 }
 
+fn prepare_locations(
+    locations: &[Location],
+    kinds: &LocationKinds,
+    crop: Crop,
+    step: u8,
+) -> Vec<LocationPixel> {
+    if step < 15 || usize::from(step) >= STEP_SIZE.len() {
+        return Vec::new();
+    }
+    let size = i64::from(STEP_SIZE[usize::from(step)]);
+    let mut output = BTreeMap::<WorldPixel, u8>::new();
+    if step >= 46 {
+        output.extend(prepare_house_layer(locations, kinds, size));
+    }
+    output.extend(prepare_marker_layer(locations, kinds, size));
+    if step >= 46 {
+        output.extend(prepare_building_layer(locations, kinds, size));
+    }
+    output.retain(|pixel, _| pixel_inside_crop(*pixel, crop, size));
+    output
+        .into_iter()
+        .map(|(pixel, palette_index)| LocationPixel {
+            pixel,
+            palette_index,
+        })
+        .collect()
+}
+
+fn pixel_inside_crop(pixel: WorldPixel, crop: Crop, step: i64) -> bool {
+    let centre = |coordinate: i32| i64::from(coordinate) * step + step / 2;
+    let (x, y) = (centre(pixel.x), centre(pixel.y));
+    let left = i64::from(crop.origin.x) * crate::FIXED_PER_CELL;
+    let top = i64::from(crop.origin.y) * crate::FIXED_PER_CELL;
+    let right = (i64::from(crop.origin.x) + i64::from(crop.width)) * crate::FIXED_PER_CELL;
+    let bottom = (i64::from(crop.origin.y) + i64::from(crop.height)) * crate::FIXED_PER_CELL;
+    x >= left && x < right && y >= top && y < bottom
+}
+
+fn prepare_house_layer(
+    locations: &[Location],
+    kinds: &LocationKinds,
+    pixel_size: i64,
+) -> BTreeMap<WorldPixel, u8> {
+    let roof = u8::try_from(kinds.kinds.len() * 2 + kinds.buildings.len() * 2).unwrap_or(u8::MAX);
+    let mut layer = BTreeMap::new();
+    for location in locations {
+        let Some(kind) = kinds.kinds.get(location.kind_index) else {
+            continue;
+        };
+        let size_index = usize::from(location.size.saturating_sub(kind.min_size));
+        let (Some(&count), Some(&radius)) = (
+            kind.house_count.get(size_index),
+            kind.house_radius_cells_x256.get(size_index),
+        ) else {
+            continue;
+        };
+        for house_index in 0..u32::from(count) {
+            let Some((ux, uy)) = accepted_offset(
+                location.id.as_bytes(),
+                house_index,
+                i64::from(radius) * 128,
+                0x484f_5553,
+                0x484f_5554,
+            ) else {
+                continue;
+            };
+            let anchor = location_pixel(location.cell, ux, uy, pixel_size);
+            layer.insert(anchor, roof);
+            layer.insert(
+                WorldPixel {
+                    x: anchor.x.saturating_add(1),
+                    y: anchor.y,
+                },
+                roof,
+            );
+            layer.insert(
+                WorldPixel {
+                    x: anchor.x,
+                    y: anchor.y.saturating_add(1),
+                },
+                roof.saturating_add(1),
+            );
+            layer.insert(
+                WorldPixel {
+                    x: anchor.x.saturating_add(1),
+                    y: anchor.y.saturating_add(1),
+                },
+                roof.saturating_add(2),
+            );
+        }
+    }
+    layer
+}
+
+fn prepare_marker_layer(
+    locations: &[Location],
+    kinds: &LocationKinds,
+    pixel_size: i64,
+) -> BTreeMap<WorldPixel, u8> {
+    let mut layer = BTreeMap::new();
+    for location in locations {
+        let Some(kind) = kinds.kinds.get(location.kind_index) else {
+            continue;
+        };
+        let base = u8::try_from(location.kind_index * 2).unwrap_or(u8::MAX);
+        layer.extend(glyph_indices(
+            location.cell,
+            &kind.glyph,
+            base,
+            base.saturating_add(1),
+            pixel_size,
+        ));
+    }
+    layer
+}
+
+fn prepare_building_layer(
+    locations: &[Location],
+    kinds: &LocationKinds,
+    pixel_size: i64,
+) -> BTreeMap<WorldPixel, u8> {
+    let base = u8::try_from(kinds.kinds.len() * 2).unwrap_or(u8::MAX);
+    let mut layer = BTreeMap::new();
+    for location in locations {
+        for (entry_index, &building_index) in location.building_indices.iter().enumerate() {
+            let Some(building) = kinds.buildings.get(building_index) else {
+                continue;
+            };
+            let Ok(entry_index) = u32::try_from(entry_index) else {
+                continue;
+            };
+            let size_index = kinds
+                .kinds
+                .get(location.kind_index)
+                .map(|kind| usize::from(location.size.saturating_sub(kind.min_size)));
+            let radius = size_index
+                .and_then(|index| {
+                    kinds
+                        .kinds
+                        .get(location.kind_index)?
+                        .house_radius_cells_x256
+                        .get(index)
+                        .copied()
+                })
+                .map_or(0, |r| i64::from(r) * 128);
+            let (ux, uy) =
+                building_offset(location.id.as_bytes(), entry_index, radius).unwrap_or((0, 0));
+            let anchor = location_pixel(location.cell, ux, uy, pixel_size);
+            let light = base.saturating_add(u8::try_from(building_index * 2).unwrap_or(u8::MAX));
+            layer.extend(glyph_indices_at(
+                anchor,
+                &building.glyph,
+                light,
+                light.saturating_add(1),
+                pixel_size,
+            ));
+        }
+    }
+    layer
+}
+
+fn fnv1a32(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
+    })
+}
+
+fn corner_hash(identity: u32, index: u32, salt: u32) -> u32 {
+    crate::corner_hash(identity, index, salt)
+}
+
+fn offset(identity: u32, index: u32, radius: i64, salt: u32) -> i64 {
+    let width = u64::try_from(radius.saturating_mul(2).saturating_add(1)).unwrap_or(u64::MAX);
+    i64::from(corner_hash(identity, index, salt)) % i64::try_from(width).unwrap_or(i64::MAX)
+        - radius
+}
+
+fn accepted_offset(
+    id: &[u8],
+    object: u32,
+    radius: i64,
+    salt_x: u32,
+    salt_y: u32,
+) -> Option<(i64, i64)> {
+    if radius == 0 {
+        return Some((0, 0));
+    }
+    let identity = fnv1a32(id);
+    accepted_offset_from_attempts(radius, |attempt| {
+        let index = object.checked_mul(8)?.checked_add(attempt)?;
+        Some((
+            offset(identity, index, radius, salt_x),
+            offset(identity, index, radius, salt_y),
+        ))
+    })
+}
+
+fn accepted_offset_from_attempts(
+    radius: i64,
+    mut attempt_offset: impl FnMut(u32) -> Option<(i64, i64)>,
+) -> Option<(i64, i64)> {
+    debug_assert!(radius > 0);
+    for attempt in 0..8_u32 {
+        let (ux, uy) = attempt_offset(attempt)?;
+        if ux * ux + uy * uy <= radius * radius {
+            return Some((ux, uy));
+        }
+    }
+    None
+}
+
+fn building_offset(id: &[u8], index: u32, radius: i64) -> Option<(i64, i64)> {
+    if radius == 0 {
+        return Some((0, 0));
+    }
+    let identity = fnv1a32(id);
+    building_offset_from_attempts(radius, |attempt| {
+        let object_attempt = index.checked_mul(8)?.checked_add(attempt)?;
+        Some((
+            offset(identity, object_attempt, radius, 0x424c_4447),
+            offset(identity, object_attempt, radius, 0x424c_4448),
+        ))
+    })
+}
+
+fn building_offset_from_attempts(
+    radius: i64,
+    mut attempt_offset: impl FnMut(u32) -> Option<(i64, i64)>,
+) -> Option<(i64, i64)> {
+    debug_assert!(radius > 0);
+    let (first_x, first_y) = attempt_offset(0)?;
+    accepted_offset_from_attempts(radius, attempt_offset).or(Some((first_x / 2, first_y / 2)))
+}
+
+fn location_pixel(cell: Cell, dx: i64, dy: i64, step: i64) -> WorldPixel {
+    WorldPixel {
+        x: clamp_i32(
+            (i64::from(cell.x) * crate::FIXED_PER_CELL + crate::FIXED_PER_CELL / 2 + dx)
+                .div_euclid(step),
+        ),
+        y: clamp_i32(
+            (i64::from(cell.y) * crate::FIXED_PER_CELL + crate::FIXED_PER_CELL / 2 + dy)
+                .div_euclid(step),
+        ),
+    }
+}
+
+fn glyph_indices(
+    cell: Cell,
+    glyph: &[Vec<char>],
+    light: u8,
+    dark: u8,
+    step: i64,
+) -> BTreeMap<WorldPixel, u8> {
+    let anchor = location_pixel(cell, 0, 0, step);
+    glyph_indices_at(anchor, glyph, light, dark, step)
+}
+
+fn glyph_indices_at(
+    anchor: WorldPixel,
+    glyph: &[Vec<char>],
+    light: u8,
+    dark: u8,
+    _step: i64,
+) -> BTreeMap<WorldPixel, u8> {
+    let height = i32::try_from(glyph.len()).unwrap_or_default();
+    let width = i32::try_from(glyph.first().map_or(0, Vec::len)).unwrap_or_default();
+    let left = anchor.x - (width >> 1);
+    let top = anchor.y - (height >> 1);
+    let mut mask = BTreeMap::new();
+    for (row, cells) in glyph.iter().enumerate() {
+        for (column, character) in cells.iter().enumerate() {
+            let pixel = WorldPixel {
+                x: left.saturating_add(i32::try_from(column).unwrap_or_default()),
+                y: top.saturating_add(i32::try_from(row).unwrap_or_default()),
+            };
+            match character {
+                '#' => {
+                    mask.insert(pixel, light);
+                }
+                'd' => {
+                    mask.insert(pixel, dark);
+                }
+                _ => {}
+            }
+        }
+    }
+    let lights: Vec<_> = mask
+        .iter()
+        .filter_map(|(pixel, color)| (*color == light).then_some(*pixel))
+        .collect();
+    for pixel in lights {
+        for neighbor in [
+            WorldPixel {
+                x: pixel.x.saturating_sub(1),
+                y: pixel.y,
+            },
+            WorldPixel {
+                x: pixel.x.saturating_add(1),
+                y: pixel.y,
+            },
+            WorldPixel {
+                x: pixel.x,
+                y: pixel.y.saturating_sub(1),
+            },
+            WorldPixel {
+                x: pixel.x,
+                y: pixel.y.saturating_add(1),
+            },
+        ] {
+            mask.entry(neighbor).or_insert(dark);
+        }
+    }
+    mask
+}
+
 trait GlyphAt {
     fn glyph_pixel_at(&self, pixel: WorldPixel, left: i32, top: i32) -> Option<char>;
 }
@@ -961,6 +1478,7 @@ struct LocationKindsFile {
     kind: Vec<LocationKindFile>,
     #[serde(default)]
     building: Vec<BuildingKindFile>,
+    house: HouseFile,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -968,7 +1486,21 @@ struct LocationKindFile {
     id: String,
     sizes: Vec<i64>,
     catchment_m: Vec<i64>,
+    houses: HousesFile,
     glyph: Vec<String>,
+    light: String,
+    dark: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HousesFile {
+    count: Vec<i64>,
+    radius_cells_x256: Vec<i64>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HouseFile {
+    roof: String,
     light: String,
     dark: String,
 }

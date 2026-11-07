@@ -5,7 +5,7 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(feature = "test-support")]
 pub mod fixture;
@@ -16,8 +16,8 @@ pub use loading::{
     LoadError, LoadedMap, LoadedTerrain, MAX_CROP_DIMENSION, PackedGrid, TerrainKind, load_map,
 };
 pub use scenario::{
-    BuildingKind, Confidence, Location, LocationKind, LocationKinds, MarkerPixel, PreparedMarkers,
-    Scenario, ScenarioStart, load_scenario,
+    BuildingKind, Confidence, HouseStyle, Location, LocationKind, LocationKinds, LocationPixel,
+    MarkerPixel, PreparedLocations, PreparedMarkers, Scenario, ScenarioStart, load_scenario,
 };
 
 /// Projected metres in one map cell.
@@ -458,11 +458,27 @@ pub fn reference_colour(
     pixel: WorldPixel,
     rivers: &BTreeSet<WorldPixel>,
 ) -> Option<Rgba8> {
+    reference_colour_with_locations(map, step, pixel, rivers, &BTreeMap::new())
+}
+
+/// Reference colour with prepared location pixels keyed by global world pixel.
+/// Rivers retain their final-draw precedence over locations and terrain.
+#[must_use]
+pub fn reference_colour_with_locations(
+    map: &MapData,
+    step: u8,
+    pixel: WorldPixel,
+    rivers: &BTreeSet<WorldPixel>,
+    locations: &BTreeMap<WorldPixel, Rgba8>,
+) -> Option<Rgba8> {
     if usize::from(step) >= STEP_SIZE.len() {
         return None;
     }
     if map.shallow_threshold == 0 {
         return None;
+    }
+    if rivers.contains(&pixel) {
+        return Some(map.river);
     }
     let b = u32::from(bayer(pixel));
     let unmoved = sample_point(pixel, step)?;
@@ -518,8 +534,8 @@ pub fn reference_colour(
     {
         colour = map.terrains.get(usize::from(terrain))?.solid;
     }
-    if rivers.contains(&pixel) {
-        colour = map.river;
+    if let Some(&location_colour) = locations.get(&pixel) {
+        return Some(location_colour);
     }
     Some(colour)
 }

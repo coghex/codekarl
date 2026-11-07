@@ -378,3 +378,26 @@ vertex float4 ck_map_river_vertex(uint vertex_id [[vertex_id]], uint instance_id
 fragment float4 ck_map_river_fragment(constant float4 &colour [[buffer(0)]]) {
     return colour;
 }
+
+struct MapLocationVertex {
+    float4 position [[position]];
+    uint palette_index;
+};
+struct MapLocation { uint x; uint y; uint palette_index; };
+
+/* One instanced pixel quad; the location record carries its palette index through to the fragment stage. */
+vertex MapLocationVertex ck_map_location_vertex(uint vertex_id [[vertex_id]], uint instance_id [[instance_id]],
+                                                constant MapRiverUniforms &uniforms [[buffer(0)]],
+                                                device const MapLocation *locations [[buffer(1)]]) {
+    const float2 corners[4] = {float2(0.0, 0.0), float2(0.0, 1.0), float2(1.0, 0.0), float2(1.0, 1.0)};
+    MapLocation location = locations[instance_id];
+    float2 pixel = float2(location.x, location.y) + corners[vertex_id];
+    float2 clip = float2(2.0 * pixel.x / float(uniforms.view.x) - 1.0,
+                         1.0 - 2.0 * pixel.y / float(uniforms.view.y));
+    return {float4(clip, 0.0, 1.0), location.palette_index};
+}
+
+fragment float4 ck_map_location_fragment(MapLocationVertex input [[stage_in]],
+                                         device const uchar4 *palette [[buffer(0)]]) {
+    return float4(palette[input.palette_index]) / 255.0f;
+}

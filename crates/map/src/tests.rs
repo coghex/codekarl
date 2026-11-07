@@ -493,6 +493,12 @@ fn crop_is_checked_before_jitter_and_outside_neighbours_are_sea() {
         reference_colour(&map, 14, outside, &BTreeSet::new()),
         Some(map.sea)
     );
+    let river = BTreeSet::from([outside]);
+    assert_eq!(
+        reference_colour(&map, 14, outside, &river),
+        Some(map.river),
+        "rivers remain the final overlay even beyond the crop"
+    );
     let outside_above = WorldPixel { x: 0, y: -1 };
     assert_eq!(
         reference_colour(&map, 14, outside_above, &BTreeSet::new()),

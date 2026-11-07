@@ -38,6 +38,10 @@ const VERTEX_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/map.vert.s
 const FRAGMENT_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/map.frag.spv"));
 const RIVER_VERTEX_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/map_river.vert.spv"));
 const RIVER_FRAGMENT_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/map_river.frag.spv"));
+const LOCATION_VERTEX_SPIRV: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/map_location.vert.spv"));
+const LOCATION_FRAGMENT_SPIRV: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/map_location.frag.spv"));
 
 /// The format of every map image, the target included.
 pub(crate) const MAP_FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
@@ -62,6 +66,8 @@ pub(crate) struct MapRecord {
     pub(crate) source: SourceRect,
     /// View-relative river pixels, retained until the frame's draw data is uploaded.
     pub(crate) rivers: std::sync::Arc<[[u32; 2]]>,
+    /// View-relative `[x, y, palette_index]` location pixels.
+    pub(crate) locations: std::sync::Arc<[[u32; 3]]>,
 }
 
 impl MapRecord {
@@ -87,6 +93,7 @@ impl MapRecord {
             destination: map.destination(),
             source: map.source(),
             rivers: std::sync::Arc::clone(map.rivers()),
+            locations: std::sync::Arc::clone(map.locations()),
         }
     }
 
@@ -124,6 +131,7 @@ pub(crate) struct MapPipeline {
     pub(crate) layout: Option<vk::PipelineLayout>,
     pub(crate) pipeline: Option<vk::Pipeline>,
     pub(crate) river_pipeline: Option<vk::Pipeline>,
+    pub(crate) location_pipeline: Option<vk::Pipeline>,
 }
 
 impl MapPipeline {
@@ -135,6 +143,7 @@ impl MapPipeline {
             || self.layout.is_some()
             || self.pipeline.is_some()
             || self.river_pipeline.is_some()
+            || self.location_pipeline.is_some()
     }
 
     /// Creates everything, recording each object as it exists.
@@ -162,7 +171,7 @@ impl MapPipeline {
             unsafe { device.create_render_pass(&pass_info, None) }
                 .map_err(|code| ("vkCreateRenderPass", code))?,
         );
-        let bindings: Vec<vk::DescriptorSetLayoutBinding<'_>> = (0..3)
+        let mut bindings: Vec<vk::DescriptorSetLayoutBinding<'_>> = (0..3)
             .map(|binding| {
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(binding)
@@ -171,6 +180,13 @@ impl MapPipeline {
                     .stage_flags(vk::ShaderStageFlags::FRAGMENT)
             })
             .collect();
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        );
         let set_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
         // SAFETY: the device is live and `set_layout_info` (with its bindings) is valid for the call.
         let set_layout = unsafe { device.create_descriptor_set_layout(&set_layout_info, None) }
@@ -182,6 +198,9 @@ impl MapPipeline {
                 .descriptor_count(6),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(2),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(2),
         ];
         let pool_info = vk::DescriptorPoolCreateInfo::default()
@@ -206,7 +225,8 @@ impl MapPipeline {
             .map_err(|code| ("vkCreatePipelineLayout", code))?;
         self.layout = Some(layout);
         self.create_pipeline(device, layout)?;
-        self.create_river_pipeline(device, layout)
+        self.create_river_pipeline(device, layout)?;
+        self.create_location_pipeline(device, layout)
     }
 
     fn create_pipeline(
@@ -369,8 +389,97 @@ impl MapPipeline {
         Ok(())
     }
 
+    fn create_location_pipeline(
+        &mut self,
+        device: &ash::Device,
+        layout: vk::PipelineLayout,
+    ) -> Result<(), Failure> {
+        let Some(pass) = self.pass else {
+            return Err((
+                "vkCreateGraphicsPipelines",
+                vk::Result::ERROR_INITIALIZATION_FAILED,
+            ));
+        };
+        let vertex = module(device, LOCATION_VERTEX_SPIRV)?;
+        let fragment = match module(device, LOCATION_FRAGMENT_SPIRV) {
+            Ok(fragment) => fragment,
+            Err(failure) => {
+                // SAFETY: this shader module was just created and no pipeline references it.
+                unsafe { device.destroy_shader_module(vertex, None) };
+                return Err(failure);
+            }
+        };
+        let entry = c"main";
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vertex)
+                .name(entry),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(fragment)
+                .name(entry),
+        ];
+        let bindings = [vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(u32::try_from(size_of::<[u32; 3]>()).expect("three u32 values fit"))
+            .input_rate(vk::VertexInputRate::INSTANCE)];
+        let attributes = [vk::VertexInputAttributeDescription::default()
+            .location(0)
+            .binding(0)
+            .format(vk::Format::R32G32B32_UINT)
+            .offset(0)];
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&bindings)
+            .vertex_attribute_descriptions(&attributes);
+        let assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let raster = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let attachments = [vk::PipelineColorBlendAttachmentState::default()
+            .blend_enable(false)
+            .color_write_mask(vk::ColorComponentFlags::RGBA)];
+        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&attachments);
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&assembly)
+            .viewport_state(&viewport)
+            .rasterization_state(&raster)
+            .multisample_state(&multisample)
+            .color_blend_state(&blend)
+            .dynamic_state(&dynamic)
+            .layout(layout)
+            .render_pass(pass)
+            .subpass(0);
+        // SAFETY: the graphics pipeline info and all borrowed state live through the call.
+        let created =
+            unsafe { device.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None) };
+        // SAFETY: creation has returned and the shader modules are no longer needed.
+        unsafe { device.destroy_shader_module(vertex, None) };
+        // SAFETY: creation has returned and the shader modules are no longer needed.
+        unsafe { device.destroy_shader_module(fragment, None) };
+        self.location_pipeline =
+            Some(created.map_err(|(_, code)| ("vkCreateGraphicsPipelines", code))?[0]);
+        Ok(())
+    }
+
     /// Destroys what exists, in reverse order of creation. Only when nothing submitted uses any of it.
     pub(crate) fn destroy(&mut self, device: &ash::Device) {
+        if let Some(pipeline) = self.location_pipeline.take() {
+            // SAFETY: no submitted frame uses this pipeline.
+            unsafe { device.destroy_pipeline(pipeline, None) };
+        }
         if let Some(pipeline) = self.river_pipeline.take() {
             // SAFETY: nothing submitted uses the pipeline.
             unsafe { device.destroy_pipeline(pipeline, None) };
@@ -488,6 +597,8 @@ pub(crate) struct MapInputObjects {
     set: Option<vk::DescriptorSet>,
     staging: Option<vk::Buffer>,
     staging_memory: Option<vk::DeviceMemory>,
+    palette_buffer: Option<vk::Buffer>,
+    palette_memory: Option<vk::DeviceMemory>,
     /// The three images' sizes, and the byte offset of each in the staging buffer.
     extents: [(u32, u32); 3],
     offsets: [u64; 3],
@@ -527,8 +638,59 @@ impl MapInputObjects {
                 faults.texture_allocation,
             )?;
         }
+        self.create_palette_buffer(device, memory_properties, input.overlay_palette())?;
         self.allocate_set(device, pipeline)?;
         self.create_staging(device, memory_properties, &parts, total, faults)
+    }
+
+    fn create_palette_buffer(
+        &mut self,
+        device: &ash::Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        palette: &[u8],
+    ) -> Result<(), Failure> {
+        let byte_count = u64::try_from(palette.len().max(4))
+            .map_err(|_| ("vkCreateBuffer", vk::Result::ERROR_OUT_OF_HOST_MEMORY))?;
+        let info = vk::BufferCreateInfo::default()
+            .size(byte_count)
+            .usage(vk::BufferUsageFlags::STORAGE_BUFFER)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        // SAFETY: the device is live and the buffer description is valid.
+        let buffer = unsafe { device.create_buffer(&info, None) }
+            .map_err(|code| ("vkCreateBuffer", code))?;
+        self.palette_buffer = Some(buffer);
+        // SAFETY: `buffer` was created by this device.
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let memory = allocate(
+            device,
+            memory_properties,
+            requirements,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            false,
+        )?;
+        self.palette_memory = Some(memory);
+        // SAFETY: the allocation satisfies the buffer's memory requirements.
+        unsafe { device.bind_buffer_memory(buffer, memory, 0) }
+            .map_err(|code| ("vkBindBufferMemory", code))?;
+        // SAFETY: the buffer memory is host-visible and not currently mapped.
+        let mapped =
+            unsafe { device.map_memory(memory, 0, byte_count, vk::MemoryMapFlags::empty()) }
+                .map_err(|code| ("vkMapMemory", code))?;
+        // SAFETY: the mapped range is byte_count bytes, enough for the palette and zero padding.
+        unsafe {
+            std::ptr::write_bytes(
+                mapped.cast::<u8>(),
+                0,
+                usize::try_from(byte_count).unwrap_or(4),
+            );
+        }
+        // SAFETY: destination is still mapped and the source slice has palette.len() bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(palette.as_ptr(), mapped.cast::<u8>(), palette.len());
+        };
+        // SAFETY: the memory was mapped above and the host write is complete.
+        unsafe { device.unmap_memory(memory) };
+        Ok(())
     }
 
     fn allocate_set(
@@ -570,7 +732,19 @@ impl MapInputObjects {
                     .image_info(info)
             })
             .collect();
+        let palette_info = [vk::DescriptorBufferInfo::default()
+            .buffer(self.palette_buffer.unwrap_or_default())
+            .offset(0)
+            .range(vk::WHOLE_SIZE)];
+        let palette_write = vk::WriteDescriptorSet::default()
+            .dst_set(set)
+            .dst_binding(3)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .buffer_info(&palette_info);
         // SAFETY: the set is fresh (no submitted work uses it) and `writes` names live image views.
+        let mut writes = writes;
+        writes.push(palette_write);
+        // SAFETY: the set is fresh (no submitted work uses it) and `writes` names live resources.
         unsafe { device.update_descriptor_sets(&writes, &[]) };
         Ok(())
     }
@@ -744,6 +918,14 @@ impl MapInputObjects {
         for image in &mut self.images {
             image.destroy(device);
         }
+        if let Some(buffer) = self.palette_buffer.take() {
+            // SAFETY: no command submitted can still reference this input buffer.
+            unsafe { device.destroy_buffer(buffer, None) };
+        }
+        if let Some(memory) = self.palette_memory.take() {
+            // SAFETY: the buffer bound to the allocation was destroyed above.
+            unsafe { device.free_memory(memory, None) };
+        }
     }
 }
 
@@ -754,6 +936,7 @@ pub(crate) struct MapTargetObjects {
     framebuffer: Option<vk::Framebuffer>,
     set: Option<vk::DescriptorSet>,
     river_resources: RefCell<RiverResources>,
+    location_resources: RefCell<RiverResources>,
     /// The target's size in map pixels.
     pub(crate) size: [u32; 2],
 }
@@ -850,9 +1033,11 @@ impl MapTargetObjects {
                 .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
             // SAFETY: the device is live and `info` is valid for this call.
+            // SAFETY: the device is live and the buffer description is valid.
             let buffer = unsafe { device.create_buffer(&info, None) }
                 .map_err(|code| ("vkCreateBuffer", code))?;
             // SAFETY: the buffer belongs to the device.
+            // SAFETY: `buffer` was created by this device.
             let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
             let memory = match allocate(
                 device,
@@ -908,6 +1093,82 @@ impl MapTargetObjects {
         Ok(())
     }
 
+    fn upload_locations(
+        &self,
+        device: &ash::Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        locations: &[[u32; 3]],
+    ) -> Result<(), Failure> {
+        if locations.is_empty() {
+            return Ok(());
+        }
+        let mut resources = self.location_resources.borrow_mut();
+        let byte_count = u64::try_from(locations.len())
+            .ok()
+            .and_then(|count| count.checked_mul(size_of::<[u32; 3]>() as u64))
+            .ok_or(("vkCreateBuffer", vk::Result::ERROR_OUT_OF_HOST_MEMORY))?;
+        if resources.capacity < byte_count {
+            let info = vk::BufferCreateInfo::default()
+                .size(byte_count)
+                .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE);
+            // SAFETY: the device is live and the vertex-buffer description is valid.
+            let buffer = unsafe { device.create_buffer(&info, None) }
+                .map_err(|code| ("vkCreateBuffer", code))?;
+            // SAFETY: `buffer` was created by this device and has not been destroyed.
+            let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+            let memory = match allocate(
+                device,
+                memory_properties,
+                requirements,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                false,
+            ) {
+                Ok(memory) => memory,
+                Err(failure) => {
+                    // SAFETY: no command references this new buffer.
+                    unsafe { device.destroy_buffer(buffer, None) };
+                    return Err(failure);
+                }
+            };
+            // SAFETY: the allocation satisfies the buffer's memory requirements.
+            if let Err(code) = unsafe { device.bind_buffer_memory(buffer, memory, 0) } {
+                // SAFETY: no command references this newly created buffer.
+                unsafe { device.destroy_buffer(buffer, None) };
+                // SAFETY: binding failed, so the allocation is not bound to the buffer.
+                unsafe { device.free_memory(memory, None) };
+                return Err(("vkBindBufferMemory", code));
+            }
+            if let Some(old) = resources.buffer.replace(buffer) {
+                // SAFETY: the previous submission is complete before this target is updated.
+                unsafe { device.destroy_buffer(old, None) };
+            }
+            if let Some(old) = resources.memory.replace(memory) {
+                // SAFETY: the old buffer was destroyed after its last use.
+                unsafe { device.free_memory(old, None) };
+            }
+            resources.capacity = byte_count;
+        }
+        let memory = resources
+            .memory
+            .ok_or(("vkMapMemory", vk::Result::ERROR_INITIALIZATION_FAILED))?;
+        // SAFETY: this coherent host-visible memory is not in use while the command buffer is re-recorded.
+        let mapped =
+            unsafe { device.map_memory(memory, 0, byte_count, vk::MemoryMapFlags::empty()) }
+                .map_err(|code| ("vkMapMemory", code))?;
+        // SAFETY: the mapped region holds byte_count bytes and the source has exactly that many bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                locations.as_ptr().cast::<u8>(),
+                mapped.cast::<u8>(),
+                usize::try_from(byte_count).unwrap_or(0),
+            );
+        };
+        // SAFETY: the mapped copy is complete.
+        unsafe { device.unmap_memory(memory) };
+        Ok(())
+    }
+
     /// Destroys what exists. Only when no submitted frame uses any of it.
     pub(crate) fn destroy(&mut self, device: &ash::Device, pool: Option<vk::DescriptorPool>) {
         let resources = self.river_resources.get_mut();
@@ -920,6 +1181,16 @@ impl MapTargetObjects {
             unsafe { device.free_memory(memory, None) };
         }
         resources.capacity = 0;
+        let locations = self.location_resources.get_mut();
+        if let Some(buffer) = locations.buffer.take() {
+            // SAFETY: no submitted frame uses this buffer.
+            unsafe { device.destroy_buffer(buffer, None) };
+        }
+        if let Some(memory) = locations.memory.take() {
+            // SAFETY: the buffer bound to the allocation was destroyed above.
+            unsafe { device.free_memory(memory, None) };
+        }
+        locations.capacity = 0;
         if let (Some(set), Some(pool)) = (self.set.take(), pool) {
             // SAFETY: no submitted frame uses the set; a failure to free it is not an error (the pool's destruction frees it).
             let _ = unsafe { device.free_descriptor_sets(pool, &[set]) };
@@ -1020,6 +1291,7 @@ pub(crate) fn record_map_pass(
         return Ok(());
     };
     target.upload_rivers(device, memory_properties, &record.rivers)?;
+    target.upload_locations(device, memory_properties, &record.locations)?;
     let (Some(image), Some(framebuffer), Some(set)) =
         (target.image(), target.framebuffer, input.set)
     else {
@@ -1122,6 +1394,39 @@ pub(crate) fn record_map_pass(
     }
     // SAFETY: the pipeline, descriptor set and push constants are bound.
     unsafe { device.cmd_draw(cmd, 3, 1, 0, 0) };
+    if !record.locations.is_empty() {
+        let location_buffer = target.location_resources.borrow().buffer;
+        let (Some(location_pipeline), Some(location_buffer)) =
+            (pipeline.location_pipeline, location_buffer)
+        else {
+            // SAFETY: the map render pass is active for this command buffer.
+            unsafe { device.cmd_end_render_pass(cmd) };
+            return Err(("vkCmdDraw", vk::Result::ERROR_INITIALIZATION_FAILED));
+        };
+        let mut location_constants = [0_u8; PUSH_BYTES as usize];
+        location_constants[8..12].copy_from_slice(&view_width.to_ne_bytes());
+        location_constants[12..16].copy_from_slice(&view_height.to_ne_bytes());
+        // SAFETY: the command buffer is inside the map render pass and the pipeline is compatible.
+        unsafe {
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, location_pipeline);
+        };
+        // SAFETY: the bound instance buffer contains one triple per location.
+        unsafe { device.cmd_bind_vertex_buffers(cmd, 0, &[location_buffer], &[0]) };
+        // SAFETY: the shared pipeline layout declares this 32-byte push-constant range.
+        unsafe {
+            device.cmd_push_constants(
+                cmd,
+                layout,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                0,
+                &location_constants,
+            );
+        }
+        let count = u32::try_from(record.locations.len())
+            .map_err(|_| ("vkCmdDraw", vk::Result::ERROR_INITIALIZATION_FAILED))?;
+        // SAFETY: the bound instance buffer has `count` records and the pass is active.
+        unsafe { device.cmd_draw(cmd, 6, count, 0, 0) };
+    }
     if !record.rivers.is_empty() {
         let river_buffer = target.river_resources.borrow().buffer;
         let (Some(river_pipeline), Some(river_buffer)) = (pipeline.river_pipeline, river_buffer)

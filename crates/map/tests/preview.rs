@@ -1,5 +1,6 @@
 //! End-to-end contract tests for the `map-preview` command.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -7,8 +8,8 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ck_map::{
-    PreparedMarkers, RiverCoverage, STEP_SIZE, WorldPixel, load_map, load_scenario, project,
-    reference_colour,
+    PreparedLocations, PreparedMarkers, RiverCoverage, STEP_SIZE, WorldPixel, load_map,
+    load_scenario, project, reference_colour, reference_colour_with_locations,
 };
 use png::{BitDepth, ColorType};
 
@@ -82,10 +83,59 @@ fn scenario_fixture() -> ScenarioFixture {
     ] {
         fs::copy(source.join(name), map.join(name)).expect("copy map fixture");
     }
-    fs::write(scenario.join("scenario.toml"), "id = \"preview_test\"\nmap = \"fixture\"\nlocations = \"locations.toml\"\n[start]\nyear = 768\nmonth = 10\nday = 9\nhour = 0\n").expect("write scenario");
-    fs::write(map.join("location_kinds.toml"), "[[kind]]\nid = \"town\"\nsizes = [1, 1]\ncatchment_m = [1000]\nglyph = [\".#.\", \"#d#\", \".#.\"]\nlight = \"#d7c89b\"\ndark = \"#66583c\"\n").expect("write kinds");
+    fs::write(
+        scenario.join("scenario.toml"),
+        "id = \"preview_test\"
+map = \"fixture\"
+locations = \"locations.toml\"
+[start]
+year = 768
+month = 10
+day = 9
+hour = 0
+",
+    )
+    .expect("write scenario");
+    fs::write(
+        map.join("location_kinds.toml"),
+        "[[kind]]
+id = \"town\"
+sizes = [1, 1]
+catchment_m = [1000]
+houses = { count = [1], radius_cells_x256 = [0] }
+glyph = [\".#.\", \"#d#\", \".#.\"]
+light = \"#d7c89b\"
+dark = \"#66583c\"
+[[building]]
+id = \"castle\"
+glyph = [\"#\"]
+light = \"#f0c040\"
+dark = \"#302010\"
+[house]
+roof = \"#a9563b\"
+light = \"#ece3cb\"
+dark = \"#2a2119\"
+",
+    )
+    .expect("write kinds");
     let (latitude, longitude) = lat_lon_for_cell(23_883, 23_883);
-    fs::write(scenario.join("locations.toml"), format!("[[location]]\nid = \"test_town\"\nname = \"Test Town\"\nlat = {latitude}\nlon = {longitude}\nkind = \"town\"\nsize = 1\nbuildings = []\nsource = \"fixture\"\nconfidence = \"medium\"\n")).expect("write location");
+    fs::write(
+        scenario.join("locations.toml"),
+        format!(
+            "[[location]]
+id = \"test_town\"
+name = \"Test Town\"
+lat = {latitude}
+lon = {longitude}
+kind = \"town\"
+size = 1
+buildings = [\"castle\"]
+source = \"fixture\"
+confidence = \"medium\"
+"
+        ),
+    )
+    .expect("write location");
     ScenarioFixture {
         _directory: directory,
         scenario,
@@ -201,7 +251,7 @@ fn scenario_preview_writes_markers_catchments_and_draws_rivers_last() {
         "--scenario",
         input.path().to_str().expect("scenario path"),
         "--steps",
-        "14,15",
+        "14,15,46",
         "--catchments",
         "--view",
         &format!("{latitude},{longitude}"),
@@ -243,6 +293,86 @@ fn scenario_preview_writes_markers_catchments_and_draws_rivers_last() {
         &bytes[index..index + 4],
         &scenario.map.data.river.0,
         "river pixels are drawn after marker pixels"
+    );
+
+    for step in [15, 46] {
+        assert_preview_matches_reference(
+            &scenario,
+            step,
+            &output.path().join(format!("step-{step}.png")),
+            top_left_for(latitude, longitude, step, 16, 16),
+            16,
+            16,
+        );
+    }
+}
+
+fn top_left_for(latitude: f64, longitude: f64, step: u8, width: u32, height: u32) -> WorldPixel {
+    let centre = project(latitude, longitude).expect("projected view centre");
+    WorldPixel {
+        x: i32::try_from(
+            i64::from(centre.x).div_euclid(i64::from(STEP_SIZE[usize::from(step)]))
+                - i64::from(width / 2),
+        )
+        .expect("view x"),
+        y: i32::try_from(
+            i64::from(centre.y).div_euclid(i64::from(STEP_SIZE[usize::from(step)]))
+                - i64::from(height / 2),
+        )
+        .expect("view y"),
+    }
+}
+
+fn assert_preview_matches_reference(
+    scenario: &ck_map::Scenario,
+    step: u8,
+    path: &Path,
+    top_left: WorldPixel,
+    width: u32,
+    height: u32,
+) {
+    let mut prepared = PreparedLocations::new(
+        scenario.locations.clone(),
+        scenario.location_kinds.clone(),
+        scenario.map.data.crop,
+    );
+    let palette = scenario.location_kinds.overlay_palette();
+    let colours = prepared
+        .pixels(step)
+        .expect("valid location step")
+        .iter()
+        .map(|location| {
+            let colour = palette
+                .get(usize::from(location.palette_index))
+                .expect("prepared palette index is valid");
+            (location.pixel, *colour)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let rivers = RiverCoverage::prepare(&scenario.map.rivers, step).expect("river pixels");
+    let (_, _, actual) = decode_png(path);
+    let mut expected = Vec::with_capacity(actual.len());
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = WorldPixel {
+                x: top_left.x + i32::try_from(x).expect("view x offset"),
+                y: top_left.y + i32::try_from(y).expect("view y offset"),
+            };
+            expected.extend_from_slice(
+                &reference_colour_with_locations(
+                    &scenario.map.data,
+                    step,
+                    pixel,
+                    rivers.pixels(),
+                    &colours,
+                )
+                .expect("reference colour")
+                .0,
+            );
+        }
+    }
+    assert_eq!(
+        actual, expected,
+        "step {step} preview differs from reference"
     );
 }
 
