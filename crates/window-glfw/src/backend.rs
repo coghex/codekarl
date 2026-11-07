@@ -1,5 +1,6 @@
 //! The backend: `ck-window`'s [`Backend`] on GLFW.
 
+use std::cell::Cell;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
@@ -121,7 +122,54 @@ fn on_main_thread() -> Result<(), String> {
 #[derive(Debug)]
 struct CallbackState {
     pending: Pending,
+    cursor_position: Cell<CursorPositionCache>,
     wake: Arc<GlfwWake>,
+}
+
+/// The last valid cursor callback position for one window. `callback_received` is separate because an invalid
+/// callback still disables the physical-cursor fallback for that window.
+#[derive(Debug, Clone, Copy, Default)]
+struct CursorPositionCache {
+    callback_received: bool,
+    position: Option<ck_input::PointerPosition>,
+}
+
+impl CursorPositionCache {
+    fn record_callback(&mut self, x: f64, y: f64) -> Option<ck_input::PointerPosition> {
+        self.callback_received = true;
+        self.position = pointer_position(x, y);
+        self.position
+    }
+
+    fn position_or(
+        self,
+        physical_cursor: impl FnOnce() -> Option<ck_input::PointerPosition>,
+    ) -> Option<ck_input::PointerPosition> {
+        if self.callback_received {
+            self.position
+        } else {
+            physical_cursor()
+        }
+    }
+}
+
+fn invalidate_cursor_position(cursor: &Cell<CursorPositionCache>) {
+    cursor.set(CursorPositionCache::default());
+}
+
+fn record_focus_change(cursor: &Cell<CursorPositionCache>, pending: &Pending, focused: bool) {
+    if focused {
+        pending.record_focus_gained();
+    } else {
+        invalidate_cursor_position(cursor);
+        pending.record_focus_lost();
+    }
+}
+
+fn record_cursor_enter(cursor: &Cell<CursorPositionCache>, entered: bool) {
+    if !entered {
+        invalidate_cursor_position(cursor);
+    }
 }
 
 /// Gets the callback state behind a live window's user pointer.
@@ -172,14 +220,15 @@ fn pointer_position(x: f64, y: f64) -> Option<ck_input::PointerPosition> {
 }
 
 extern "C" fn on_cursor(window: *mut GlfwWindow, x: f64, y: f64) {
-    let Some(position) = pointer_position(x, y) else {
-        return;
-    };
     // SAFETY: GLFW invokes this callback on the main thread for a live backend window.
     if let Some(state) = unsafe { callback_state_of(window) } {
-        state
-            .pending
-            .record_pointer(ck_input::PointerEvent::Move(position));
+        let mut cursor = state.cursor_position.get();
+        if let Some(position) = cursor.record_callback(x, y) {
+            state
+                .pending
+                .record_pointer(ck_input::PointerEvent::Move(position));
+        }
+        state.cursor_position.set(cursor);
     }
 }
 
@@ -188,22 +237,16 @@ extern "C" fn on_mouse_button(window: *mut GlfwWindow, button: c_int, action: c_
         return;
     }
     // SAFETY: callbacks run on the main thread for a live window.
-    let (Some(state), Some(position)) = (
-        unsafe { callback_state_of(window) },
-        cursor_position(window),
-    ) else {
+    let Some(state) = (unsafe { callback_state_of(window) }) else {
         return;
     };
-    let event = if action == ffi::PRESS {
-        Some(ck_input::PointerEvent::Down(position))
-    } else if action == ffi::RELEASE {
-        Some(ck_input::PointerEvent::Up(position))
-    } else {
-        None
-    };
-    if let Some(event) = event {
-        state.pending.record_pointer(event);
-    }
+    record_mouse_button(
+        &state.cursor_position,
+        &state.pending,
+        button,
+        action,
+        || cursor_position(window),
+    );
 }
 
 fn cursor_position(window: *mut GlfwWindow) -> Option<ck_input::PointerPosition> {
@@ -217,7 +260,47 @@ fn cursor_position(window: *mut GlfwWindow) -> Option<ck_input::PointerPosition>
 }
 
 extern "C" fn on_scroll(window: *mut GlfwWindow, _x: f64, y: f64) {
-    let Some(position) = cursor_position(window) else {
+    // SAFETY: callback runs on the main thread for a live window.
+    if let Some(state) = unsafe { callback_state_of(window) } {
+        record_scroll(&state.cursor_position, &state.pending, y, || {
+            cursor_position(window)
+        });
+    }
+}
+
+fn record_mouse_button(
+    cursor: &Cell<CursorPositionCache>,
+    pending: &Pending,
+    button: c_int,
+    action: c_int,
+    physical_cursor: impl FnOnce() -> Option<ck_input::PointerPosition>,
+) {
+    if button != ffi::MOUSE_BUTTON_LEFT {
+        return;
+    }
+    let Some(event) = (match action {
+        ffi::PRESS => cursor
+            .get()
+            .position_or(physical_cursor)
+            .map(ck_input::PointerEvent::Down),
+        ffi::RELEASE => cursor
+            .get()
+            .position_or(physical_cursor)
+            .map(ck_input::PointerEvent::Up),
+        _ => None,
+    }) else {
+        return;
+    };
+    pending.record_pointer(event);
+}
+
+fn record_scroll(
+    cursor: &Cell<CursorPositionCache>,
+    pending: &Pending,
+    y: f64,
+    physical_cursor: impl FnOnce() -> Option<ck_input::PointerPosition>,
+) {
+    let Some(position) = cursor.get().position_or(physical_cursor) else {
         return;
     };
     if !y.is_finite() {
@@ -231,26 +314,24 @@ extern "C" fn on_scroll(window: *mut GlfwWindow, _x: f64, y: f64) {
         reason = "the rounded scroll amount is clamped to the i32 range"
     )]
     let amount = scaled as i32;
-    // SAFETY: callback runs on the main thread for a live window.
-    if let Some(state) = unsafe { callback_state_of(window) } {
-        state
-            .pending
-            .record_pointer(ck_input::PointerEvent::Scroll {
-                position,
-                amount,
-                unit: ck_input::ScrollUnit::Lines,
-            });
-    }
+    pending.record_pointer(ck_input::PointerEvent::Scroll {
+        position,
+        amount,
+        unit: ck_input::ScrollUnit::Lines,
+    });
 }
 
 extern "C" fn on_focus(window: *mut GlfwWindow, focused: c_int) {
     // SAFETY: called by GLFW on the main thread for a window of a live backend (see `callback_state_of`).
     if let Some(state) = unsafe { callback_state_of(window) } {
-        if focused == ffi::TRUE {
-            state.pending.record_focus_gained();
-        } else {
-            state.pending.record_focus_lost();
-        }
+        record_focus_change(&state.cursor_position, &state.pending, focused == ffi::TRUE);
+    }
+}
+
+extern "C" fn on_cursor_enter(window: *mut GlfwWindow, entered: c_int) {
+    // SAFETY: called by GLFW on the main thread for a window of a live backend (see `callback_state_of`).
+    if let Some(state) = unsafe { callback_state_of(window) } {
+        record_cursor_enter(&state.cursor_position, entered == ffi::TRUE);
     }
 }
 
@@ -470,6 +551,7 @@ impl GlfwBackend {
         wake.set_live(true);
         let callback = Box::new(CallbackState {
             pending: Pending::default(),
+            cursor_position: Cell::new(CursorPositionCache::default()),
             wake: Arc::clone(&wake),
         });
         Ok(Self {
@@ -682,6 +764,7 @@ impl Backend for GlfwBackend {
             }
         };
         self.callback.pending.take();
+        invalidate_cursor_position(&self.callback.cursor_position);
         let state: *const CallbackState = std::ptr::from_ref(&*self.callback);
         // SAFETY: the window is live and this is the main thread. The user pointer is the boxed callback
         // state, which outlives the window; callbacks record state and the restore callback may post its
@@ -693,6 +776,8 @@ impl Backend for GlfwBackend {
         unsafe { ffi::glfwSetKeyCallback(window.as_ptr(), Some(on_key)) };
         // SAFETY: pointer callbacks only append bounded state while GLFW dispatches on the main thread.
         unsafe { ffi::glfwSetCursorPosCallback(window.as_ptr(), Some(on_cursor)) };
+        // SAFETY: as above; cursor entry only invalidates cached pointer state on leave.
+        unsafe { ffi::glfwSetCursorEnterCallback(window.as_ptr(), Some(on_cursor_enter)) };
         // SAFETY: as above; only the left button is recorded.
         unsafe { ffi::glfwSetMouseButtonCallback(window.as_ptr(), Some(on_mouse_button)) };
         // SAFETY: as above; GLFW offsets are retained as fractional lines.
@@ -802,6 +887,7 @@ impl Backend for GlfwBackend {
             // SAFETY: as above; the window is destroyed once and not used again.
             unsafe { ffi::glfwDestroyWindow(window.as_ptr()) };
             self.callback.pending.take();
+            invalidate_cursor_position(&self.callback.cursor_position);
         }
     }
 
@@ -842,9 +928,228 @@ impl Drop for GlfwBackend {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell as TestCell;
     use std::ffi::CString;
+    use std::rc::Rc;
 
     use super::*;
+
+    #[test]
+    fn button_and_scroll_use_the_latest_event_position_across_pump_drains() {
+        let cursor = Cell::new(CursorPositionCache::default());
+        let pending = Pending::default();
+        let physical_reads = Rc::new(TestCell::new(0));
+        let event_position = pointer_position(31.0, 47.0).unwrap();
+        let physical_position = pointer_position(181.0, 217.0).unwrap();
+
+        let mut cache = cursor.get();
+        if let Some(position) = cache.record_callback(31.0, 47.0) {
+            pending.record_pointer(ck_input::PointerEvent::Move(position));
+        }
+        cursor.set(cache);
+        assert_eq!(
+            pending.take().input,
+            [NativeEvent::Pointer(ck_input::PointerEvent::Move(
+                event_position
+            ))]
+        );
+
+        for action in [ffi::PRESS, ffi::RELEASE] {
+            let reads = Rc::clone(&physical_reads);
+            record_mouse_button(
+                &cursor,
+                &pending,
+                ffi::MOUSE_BUTTON_LEFT,
+                action,
+                move || {
+                    reads.set(reads.get() + 1);
+                    Some(physical_position)
+                },
+            );
+        }
+        assert_eq!(
+            pending.take().input,
+            [
+                NativeEvent::Pointer(ck_input::PointerEvent::Down(event_position)),
+                NativeEvent::Pointer(ck_input::PointerEvent::Up(event_position)),
+            ]
+        );
+
+        let reads = Rc::clone(&physical_reads);
+        record_scroll(&cursor, &pending, 1.5, move || {
+            reads.set(reads.get() + 1);
+            Some(physical_position)
+        });
+        assert_eq!(
+            pending.take().input,
+            [NativeEvent::Pointer(ck_input::PointerEvent::Scroll {
+                position: event_position,
+                amount: 384,
+                unit: ck_input::ScrollUnit::Lines,
+            })]
+        );
+        assert_eq!(
+            physical_reads.get(),
+            0,
+            "cached event coordinates win over the distinct physical query"
+        );
+    }
+
+    #[test]
+    fn physical_cursor_fallback_is_used_only_before_the_window_receives_a_cursor_callback() {
+        let cursor = Cell::new(CursorPositionCache::default());
+        let pending = Pending::default();
+        let fallback_position = pointer_position(9.0, 13.0).unwrap();
+        record_mouse_button(
+            &cursor,
+            &pending,
+            ffi::MOUSE_BUTTON_LEFT,
+            ffi::PRESS,
+            || Some(fallback_position),
+        );
+        assert_eq!(
+            pending.take().input,
+            [NativeEvent::Pointer(ck_input::PointerEvent::Down(
+                fallback_position
+            ))]
+        );
+        record_scroll(&cursor, &pending, 2.0, || Some(fallback_position));
+        assert_eq!(
+            pending.take().input,
+            [NativeEvent::Pointer(ck_input::PointerEvent::Scroll {
+                position: fallback_position,
+                amount: 512,
+                unit: ck_input::ScrollUnit::Lines,
+            })]
+        );
+
+        let mut cache = cursor.get();
+        cache.record_callback(31.0, 47.0);
+        cursor.set(cache);
+        record_mouse_button(
+            &cursor,
+            &pending,
+            ffi::MOUSE_BUTTON_LEFT,
+            ffi::RELEASE,
+            || panic!("a callback position must supersede the physical cursor"),
+        );
+        assert_eq!(
+            pending.take().input,
+            [NativeEvent::Pointer(ck_input::PointerEvent::Up(
+                pointer_position(31.0, 47.0).unwrap()
+            ))]
+        );
+    }
+
+    #[test]
+    fn focus_loss_invalidates_cached_position_until_the_next_cursor_callback() {
+        let cursor = Cell::new(CursorPositionCache::default());
+        let pending = Pending::default();
+        let cached_position = pointer_position(31.0, 47.0).unwrap();
+        let fallback_position = pointer_position(9.0, 13.0).unwrap();
+
+        let mut cache = cursor.get();
+        cache.record_callback(31.0, 47.0);
+        cursor.set(cache);
+        record_focus_change(&cursor, &pending, false);
+        // Regaining focus does not make the pre-loss callback position valid again.
+        record_focus_change(&cursor, &pending, true);
+        record_mouse_button(
+            &cursor,
+            &pending,
+            ffi::MOUSE_BUTTON_LEFT,
+            ffi::PRESS,
+            || Some(fallback_position),
+        );
+        assert_eq!(
+            pending.take().input,
+            [
+                NativeEvent::FocusLost,
+                NativeEvent::FocusGained,
+                NativeEvent::Pointer(ck_input::PointerEvent::Down(fallback_position)),
+            ]
+        );
+
+        let mut cache = cursor.get();
+        cache.record_callback(31.0, 47.0);
+        cursor.set(cache);
+        record_mouse_button(
+            &cursor,
+            &pending,
+            ffi::MOUSE_BUTTON_LEFT,
+            ffi::RELEASE,
+            || panic!("the next cursor callback revalidates the cached position"),
+        );
+        assert_eq!(
+            pending.take().input,
+            [NativeEvent::Pointer(ck_input::PointerEvent::Up(
+                cached_position
+            ))]
+        );
+    }
+
+    #[test]
+    fn cursor_leave_invalidates_cached_position_until_the_next_cursor_callback() {
+        let cursor = Cell::new(CursorPositionCache::default());
+        let pending = Pending::default();
+        let cached_position = pointer_position(31.0, 47.0).unwrap();
+        let fallback_position = pointer_position(9.0, 13.0).unwrap();
+
+        let mut cache = cursor.get();
+        cache.record_callback(31.0, 47.0);
+        cursor.set(cache);
+        record_cursor_enter(&cursor, false);
+        // Re-entering without a cursor callback must keep using the physical fallback.
+        record_cursor_enter(&cursor, true);
+        record_scroll(&cursor, &pending, 1.0, || Some(fallback_position));
+        assert_eq!(
+            pending.take().input,
+            [NativeEvent::Pointer(ck_input::PointerEvent::Scroll {
+                position: fallback_position,
+                amount: 256,
+                unit: ck_input::ScrollUnit::Lines,
+            })]
+        );
+
+        let mut cache = cursor.get();
+        cache.record_callback(31.0, 47.0);
+        cursor.set(cache);
+        record_scroll(&cursor, &pending, 1.0, || {
+            panic!("the next cursor callback revalidates the cached position")
+        });
+        assert_eq!(
+            pending.take().input,
+            [NativeEvent::Pointer(ck_input::PointerEvent::Scroll {
+                position: cached_position,
+                amount: 256,
+                unit: ck_input::ScrollUnit::Lines,
+            })]
+        );
+    }
+
+    #[test]
+    fn a_reused_backend_starts_the_next_window_without_a_cached_cursor_callback() {
+        let cursor = Cell::new(CursorPositionCache {
+            callback_received: true,
+            position: pointer_position(31.0, 47.0),
+        });
+        invalidate_cursor_position(&cursor);
+        let pending = Pending::default();
+        let next_window_position = pointer_position(9.0, 13.0).unwrap();
+        record_mouse_button(
+            &cursor,
+            &pending,
+            ffi::MOUSE_BUTTON_LEFT,
+            ffi::PRESS,
+            || Some(next_window_position),
+        );
+        assert_eq!(
+            pending.take().input,
+            [NativeEvent::Pointer(ck_input::PointerEvent::Down(
+                next_window_position
+            ))]
+        );
+    }
 
     #[test]
     fn extension_names_are_deduplicated_keeping_their_first_order() {

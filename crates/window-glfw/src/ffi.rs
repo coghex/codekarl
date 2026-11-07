@@ -127,6 +127,7 @@ pub(crate) type RefreshCallback = extern "C" fn(window: *mut GlfwWindow);
 pub(crate) type FocusCallback = extern "C" fn(window: *mut GlfwWindow, focused: c_int);
 pub(crate) type IconifyCallback = extern "C" fn(window: *mut GlfwWindow, iconified: c_int);
 pub(crate) type CursorPosCallback = extern "C" fn(window: *mut GlfwWindow, x: f64, y: f64);
+pub(crate) type CursorEnterCallback = extern "C" fn(window: *mut GlfwWindow, entered: c_int);
 pub(crate) type MouseButtonCallback =
     extern "C" fn(window: *mut GlfwWindow, button: c_int, action: c_int, mods: c_int);
 pub(crate) type ScrollCallback = extern "C" fn(window: *mut GlfwWindow, x: f64, y: f64);
@@ -188,6 +189,10 @@ unsafe extern "C" {
         window: *mut GlfwWindow,
         callback: Option<CursorPosCallback>,
     ) -> Option<CursorPosCallback>;
+    pub(crate) fn glfwSetCursorEnterCallback(
+        window: *mut GlfwWindow,
+        callback: Option<CursorEnterCallback>,
+    ) -> Option<CursorEnterCallback>;
     pub(crate) fn glfwSetMouseButtonCallback(
         window: *mut GlfwWindow,
         callback: Option<MouseButtonCallback>,

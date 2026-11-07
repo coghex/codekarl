@@ -18,6 +18,9 @@ unsafe extern "C" {
     fn ck_glfw_test_perform_close();
     fn ck_glfw_test_window_number() -> i64;
     fn ck_glfw_test_post_mouse_moved(window_number: i64);
+    fn ck_glfw_test_dispatch_cursor_move(x: f64, y: f64) -> i32;
+    fn ck_glfw_test_dispatch_left_button(down: i32, x: f64, y: f64) -> i32;
+    fn ck_glfw_test_dispatch_scroll(x: f64, y: f64, lines: i32) -> i32;
     fn ck_glfw_test_schedule_restore(delay_milliseconds: u32) -> i32;
     fn ck_glfw_test_post_key(
         key_code: u16,
@@ -190,6 +193,21 @@ pub(crate) fn window_number() -> i64 {
 pub(crate) fn post_mouse_moved(window_number: i64) {
     // SAFETY: `NSApp postEvent:` is documented as callable from any thread.
     unsafe { ck_glfw_test_post_mouse_moved(window_number) };
+}
+
+pub(crate) fn dispatch_cursor_move(x: f64, y: f64) -> bool {
+    // SAFETY: called synchronously on the process main thread for the visible test window.
+    unsafe { ck_glfw_test_dispatch_cursor_move(x, y) == 1 }
+}
+
+pub(crate) fn dispatch_left_button(down: bool, x: f64, y: f64) -> bool {
+    // SAFETY: called synchronously on the process main thread for the visible test window.
+    unsafe { ck_glfw_test_dispatch_left_button(i32::from(down), x, y) == 1 }
+}
+
+pub(crate) fn dispatch_scroll(x: f64, y: f64, lines: i32) -> bool {
+    // SAFETY: called synchronously on the process main thread for the visible test window.
+    unsafe { ck_glfw_test_dispatch_scroll(x, y, lines) == 1 }
 }
 
 /// Schedules a native deminiaturize on the main queue. The block posts no event and calls no GLFW function.

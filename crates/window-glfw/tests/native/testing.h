@@ -83,6 +83,11 @@ int64_t ck_glfw_test_window_number(void);
  * ordered or activated under the pointer: a system event that ends a blocking wait with nothing for the
  * backend to hand over. Any thread. */
 void ck_glfw_test_post_mouse_moved(int64_t window_number);
+/* Calls GLFW's real content-view handlers directly with these test-only coordinates. The move, button and scroll
+ * helpers do not move the physical pointer; `y` is top-left content points. Main thread. */
+int32_t ck_glfw_test_dispatch_cursor_move(double x, double y);
+int32_t ck_glfw_test_dispatch_left_button(int32_t down, double x, double y);
+int32_t ck_glfw_test_dispatch_scroll(double x, double y, int32_t lines);
 /* Schedules only -[NSWindow deminiaturize:] on the main queue after the delay; posts no event and calls no GLFW API. */
 int32_t ck_glfw_test_schedule_restore(uint32_t delay_milliseconds);
 

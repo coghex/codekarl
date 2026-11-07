@@ -50,6 +50,7 @@ unsafe extern "C" {
     fn glfwFocusWindow(window: *mut c_void);
     fn glfwPollEvents();
     fn glfwWaitEvents();
+    fn glfwGetCursorPos(window: *mut c_void, x: *mut f64, y: *mut f64);
     fn glfwSetWindowIconifyCallback(
         window: *mut c_void,
         callback: Option<IconifyCallback>,
@@ -375,6 +376,72 @@ fn marked_escape_tap() {
 fn marked_key_tap(key_code: u16, characters: &str) {
     assert!(support::post_key(key_code, 0, false, characters, true));
     assert!(support::post_keyboard_event(1, key_code, 0, true));
+}
+
+fn pointer_positions(report: &PumpReport) -> Vec<ck_input::PointerEvent> {
+    report
+        .input
+        .iter()
+        .filter_map(|event| match event {
+            NativeEvent::Pointer(pointer) => Some(*pointer),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Button and scroll callbacks follow the last injected cursor event, even after a pump drained it.
+fn button_and_scroll_positions_follow_cursor_events() {
+    let mut rig = Rig::open();
+    let (mut physical_x, mut physical_y) = (0.0, 0.0);
+    // SAFETY: the live test window and output pointers are valid; this only observes the physical cursor.
+    unsafe { glfwGetCursorPos(rig.window(), &raw mut physical_x, &raw mut physical_y) };
+    let event_point = if (physical_x - 31.0).abs() > 1.0 && (physical_y - 47.0).abs() > 1.0 {
+        (31.0, 47.0)
+    } else {
+        (73.0, 91.0)
+    };
+    let expected = ck_input::PointerPosition::from_points(event_point.0, event_point.1)
+        .expect("the chosen test point is finite and in range");
+    let physical = ck_input::PointerPosition::from_points(physical_x, physical_y)
+        .expect("GLFW's physical cursor position is finite and in range");
+    assert_ne!(
+        expected, physical,
+        "the witness must distinguish event and physical positions"
+    );
+
+    assert!(support::dispatch_cursor_move(event_point.0, event_point.1));
+    assert_eq!(
+        pointer_positions(&rig.pump(Wait::Poll)),
+        [ck_input::PointerEvent::Move(expected)]
+    );
+
+    assert!(support::dispatch_left_button(
+        true,
+        event_point.0,
+        event_point.1
+    ));
+    assert!(support::dispatch_left_button(
+        false,
+        event_point.0,
+        event_point.1
+    ));
+    assert_eq!(
+        pointer_positions(&rig.pump(Wait::Poll)),
+        [
+            ck_input::PointerEvent::Down(expected),
+            ck_input::PointerEvent::Up(expected),
+        ]
+    );
+
+    assert!(support::dispatch_scroll(event_point.0, event_point.1, 2));
+    assert_eq!(
+        pointer_positions(&rig.pump(Wait::Poll)),
+        [ck_input::PointerEvent::Scroll {
+            position: expected,
+            amount: 512,
+            unit: ck_input::ScrollUnit::Lines,
+        }]
+    );
 }
 
 fn key_events(report: &PumpReport) -> Vec<NativeEvent> {
@@ -1620,7 +1687,7 @@ fn test_windows_let_clicks_through() {
 
 type Case = fn();
 
-const CASES: [(&str, Case); 30] = [
+const CASES: [(&str, Case); 31] = [
     ("create_and_destroy", create_and_destroy),
     (
         EXPECTED_REQUEST_CASE,
@@ -1681,6 +1748,10 @@ const CASES: [(&str, Case); 30] = [
         the_info_binding_matches_the_native_layout,
     ),
     ("wait_survives_a_system_event", wait_survives_a_system_event),
+    (
+        "button_and_scroll_positions_follow_cursor_events",
+        button_and_scroll_positions_follow_cursor_events,
+    ),
 ];
 
 /// A worker that never ends, for the supervisor's own check.
