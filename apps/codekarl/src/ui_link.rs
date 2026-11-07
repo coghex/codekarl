@@ -23,12 +23,14 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use std::collections::BTreeMap;
 
 use ck_lua::{CallId, CallOutcome, ConfigValue, VmError, VmOwner, VmState};
 use ck_window::{
-    Answer, CloseSource, Edge, InputTick, PostError, UiAnswer, UiEvent, UiLink, UpdateEvent,
+    Answer, CloseSource, Edge, InputTick, PointerEvent, PointerPosition, PostError, ScrollUnit,
+    UiAnswer, UiEvent, UiLink, UpdateEvent,
 };
 
 use crate::frame_api::FrameRegistration;
@@ -76,6 +78,38 @@ fn integer(value: impl TryInto<i64>) -> ConfigValue {
 
 fn boolean(value: bool) -> ConfigValue {
     ConfigValue::Bool(value)
+}
+
+fn pointer_number(value: i32) -> ConfigValue {
+    ConfigValue::Float(f64::from(value) / 256.0)
+}
+
+fn pointer_key(key: Option<&String>) -> ConfigValue {
+    key.map_or(ConfigValue::Bool(false), |key| {
+        ConfigValue::String(key.clone())
+    })
+}
+
+fn pointer_event_table(event: &crate::input_stash::PointerViewEvent) -> ConfigValue {
+    let mut table = BTreeMap::from([
+        (
+            "kind".to_owned(),
+            ConfigValue::String(event.kind.to_owned()),
+        ),
+        ("x".to_owned(), pointer_number(event.position.x)),
+        ("y".to_owned(), pointer_number(event.position.y)),
+        ("key".to_owned(), pointer_key(event.key.as_ref())),
+    ]);
+    if let Some(amount) = event.amount {
+        table.insert(
+            "amount".to_owned(),
+            ConfigValue::Float(f64::from(amount) / 256.0),
+        );
+    }
+    if let Some(unit) = event.unit {
+        table.insert("unit".to_owned(), ConfigValue::String(unit.to_owned()));
+    }
+    ConfigValue::Table(table)
 }
 
 /// The table a `frame_update` callback is given (design §8.2): `dt`, `elapsed` (seconds), `sequence`; the window in
@@ -129,7 +163,7 @@ fn update_table(update: &UpdateEvent, stash: &InputStash) -> Result<ConfigValue,
             ]))
         })
         .collect();
-    Ok(ConfigValue::Table(BTreeMap::from([
+    let mut fields = BTreeMap::from([
         ("dt".to_owned(), ConfigValue::Float(update.dt.as_secs_f64())),
         (
             "elapsed".to_owned(),
@@ -150,7 +184,24 @@ fn update_table(update: &UpdateEvent, stash: &InputStash) -> Result<ConfigValue,
         ("transitions".to_owned(), ConfigValue::Array(transitions)),
         ("overflow".to_owned(), boolean(stash.overflow())),
         ("reset".to_owned(), boolean(stash.reset())),
-    ])))
+    ]);
+    if let Some(pointer) = stash.pointer() {
+        fields.insert(
+            "pointer".to_owned(),
+            ConfigValue::Table(BTreeMap::from([
+                ("x".to_owned(), pointer_number(pointer.position.x)),
+                ("y".to_owned(), pointer_number(pointer.position.y)),
+                ("held".to_owned(), boolean(pointer.held)),
+                ("over".to_owned(), pointer_key(pointer.over.as_ref())),
+                ("overflow".to_owned(), boolean(stash.pointer_overflow())),
+                (
+                    "events".to_owned(),
+                    ConfigValue::Array(stash.pointer_events().map(pointer_event_table).collect()),
+                ),
+            ])),
+        );
+    }
+    Ok(ConfigValue::Table(fields))
 }
 
 /// The name of an event's callback.
@@ -215,6 +266,183 @@ struct State {
     stash: RefCell<InputStash>,
     /// The `frame.on_update` registration generation the previous input tick saw.
     seen_generation: Cell<u64>,
+    /// The owner of the current pointer gesture, independent of what input detail survived overflow.
+    pointer_owner: RefCell<GestureOwner>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum GestureOwner {
+    #[default]
+    Idle,
+    Ui(String),
+    Map,
+    Nobody,
+}
+
+#[derive(Default)]
+struct RoutedPointer {
+    map: Vec<crate::map_app::RoutedMapEvent>,
+    ui: Vec<crate::input_stash::PointerViewEvent>,
+}
+
+fn view_event(
+    kind: &'static str,
+    position: PointerPosition,
+    key: Option<String>,
+) -> crate::input_stash::PointerViewEvent {
+    crate::input_stash::PointerViewEvent {
+        kind,
+        position,
+        key,
+        amount: None,
+        unit: None,
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "gesture ownership and per-event routing form one ordered state transition"
+)]
+fn route_pointer(
+    owner: &mut GestureOwner,
+    input: &ck_window::InputSnapshot,
+    regions: Option<&ck_render_2d::HitRegions>,
+) -> RoutedPointer {
+    use crate::map_app::RoutedMapEvent as MapEvent;
+    let mut routed = RoutedPointer::default();
+    let latest = input.pointer_position.unwrap_or_default();
+    if matches!(owner, GestureOwner::Nobody) && !input.pointer_held {
+        *owner = GestureOwner::Idle;
+    }
+    if input.reset {
+        match owner {
+            GestureOwner::Ui(key) => {
+                routed
+                    .ui
+                    .push(view_event("cancel", latest, Some(key.clone())));
+            }
+            GestureOwner::Map => routed.map.push(MapEvent::EndDrag),
+            GestureOwner::Idle | GestureOwner::Nobody => {}
+        }
+        if !matches!(owner, GestureOwner::Idle) {
+            *owner = GestureOwner::Nobody;
+        }
+    } else if let GestureOwner::Ui(key) = owner
+        && !regions.is_some_and(|regions| regions.contains_key(key))
+    {
+        routed
+            .ui
+            .push(view_event("cancel", latest, Some(key.clone())));
+        *owner = GestureOwner::Nobody;
+    }
+
+    for event in &input.pointer_events {
+        match *event {
+            PointerEvent::Down(position) => {
+                match owner {
+                    GestureOwner::Map => routed.map.push(MapEvent::EndDrag),
+                    GestureOwner::Ui(key) => {
+                        routed
+                            .ui
+                            .push(view_event("cancel", position, Some(key.clone())));
+                    }
+                    GestureOwner::Idle | GestureOwner::Nobody => {}
+                }
+                if let Some(key) = regions.and_then(|regions| regions.key_at(position)) {
+                    let key = key.to_owned();
+                    routed
+                        .ui
+                        .push(view_event("down", position, Some(key.clone())));
+                    *owner = GestureOwner::Ui(key);
+                } else {
+                    routed.map.push(MapEvent::Pointer(*event));
+                    *owner = GestureOwner::Map;
+                }
+            }
+            PointerEvent::Move(position) => match owner {
+                GestureOwner::Ui(key) => {
+                    routed
+                        .ui
+                        .push(view_event("move", position, Some(key.clone())));
+                }
+                GestureOwner::Map => routed.map.push(MapEvent::Pointer(*event)),
+                GestureOwner::Idle => {
+                    let key = regions
+                        .and_then(|regions| regions.key_at(position))
+                        .map(str::to_owned);
+                    routed.ui.push(view_event("move", position, key.clone()));
+                    if key.is_none() {
+                        routed.map.push(MapEvent::Pointer(*event));
+                    }
+                }
+                GestureOwner::Nobody => {}
+            },
+            PointerEvent::Up(position) => {
+                match owner {
+                    GestureOwner::Ui(key) => {
+                        routed
+                            .ui
+                            .push(view_event("up", position, Some(key.clone())));
+                    }
+                    GestureOwner::Map => routed.map.push(MapEvent::Pointer(*event)),
+                    GestureOwner::Idle | GestureOwner::Nobody => {}
+                }
+                if matches!(owner, GestureOwner::Ui(_) | GestureOwner::Map) {
+                    *owner = GestureOwner::Idle;
+                }
+            }
+            PointerEvent::Scroll {
+                position,
+                amount,
+                unit,
+            } => {
+                let key = match owner {
+                    GestureOwner::Ui(key) => Some(key.clone()),
+                    GestureOwner::Idle | GestureOwner::Map | GestureOwner::Nobody => regions
+                        .and_then(|regions| regions.key_at(position))
+                        .map(str::to_owned),
+                };
+                if key.is_some() {
+                    let mut view = view_event("scroll", position, key);
+                    view.amount = Some(amount);
+                    view.unit = Some(match unit {
+                        ScrollUnit::Lines => "lines",
+                        ScrollUnit::Points => "points",
+                    });
+                    routed.ui.push(view);
+                } else if !matches!(owner, GestureOwner::Ui(_)) {
+                    routed.map.push(MapEvent::Pointer(*event));
+                }
+            }
+        }
+    }
+
+    if input.pointer_overflow {
+        match owner {
+            GestureOwner::Ui(key) if input.pointer_held => {
+                if let Some(position) = input.pointer_position {
+                    routed
+                        .ui
+                        .push(view_event("move", position, Some(key.clone())));
+                }
+            }
+            GestureOwner::Ui(key) => {
+                routed
+                    .ui
+                    .push(view_event("cancel", latest, Some(key.clone())));
+                *owner = GestureOwner::Nobody;
+            }
+            GestureOwner::Idle if input.pointer_held => *owner = GestureOwner::Nobody,
+            GestureOwner::Map | GestureOwner::Idle | GestureOwner::Nobody => {}
+        }
+    } else if matches!(owner, GestureOwner::Idle) && input.pointer_held {
+        // A held button without a retained Down has no owner.
+        *owner = GestureOwner::Nobody;
+    }
+    if matches!(owner, GestureOwner::Nobody) && !input.pointer_held {
+        *owner = GestureOwner::Idle;
+    }
+    routed
 }
 
 #[derive(Default)]
@@ -238,6 +466,8 @@ pub(crate) struct CodekarlUi {
     slot: UiSlot,
     state: Rc<State>,
     map: Option<crate::map_app::SharedController>,
+    /// The scene publication source, even when this run has no map controller.
+    scene: Option<Arc<ck_render_2d::SceneBridge>>,
     sim: Option<SimLink>,
     /// Whether the UI VM has a `frame_update` callback, as the setter's observer published it; `None` counts as registered.
     registration: Option<FrameRegistration>,
@@ -247,11 +477,11 @@ pub(crate) struct CodekarlUi {
 #[derive(Clone)]
 pub(crate) struct SimLink {
     pub(crate) controls: crate::game::controls::SimControls,
-    pub(crate) slot: std::sync::Arc<crate::game::slot::SimSlot>,
+    pub(crate) slot: Arc<crate::game::slot::SimSlot>,
     /// Whether the UI VM has registered a `game.on_time` callback.
-    pub(crate) time_registered: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) time_registered: Arc<std::sync::atomic::AtomicBool>,
     /// Whether the UI VM has registered a `game.on_hover` callback.
-    pub(crate) hover_registered: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) hover_registered: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl CodekarlUi {
@@ -261,6 +491,7 @@ impl CodekarlUi {
             slot,
             state: Rc::new(State::default()),
             map: None,
+            scene: None,
             sim: None,
             registration: None,
         }
@@ -271,9 +502,16 @@ impl CodekarlUi {
             slot,
             state: Rc::new(State::default()),
             map: Some(map),
+            scene: None,
             sim: None,
             registration: None,
         }
+    }
+
+    /// Attach the scene publication source used for hit-region routing, including in map-less runs.
+    pub(crate) fn with_scene_bridge(mut self, scene: Arc<ck_render_2d::SceneBridge>) -> Self {
+        self.scene = Some(scene);
+        self
     }
 
     /// This link reading the UI VM's `frame.on_update` registration from `registration`, which the setter's observer writes.
@@ -612,8 +850,56 @@ impl UiLink for CodekarlUi {
     /// One input tick, on the main thread, never waiting: the map controller and the time controls take it, and the UI's share goes
     /// to the stash (trimmed as the `frame.on_update` registration says).
     fn input(&mut self, tick: &InputTick) -> Result<(), String> {
+        let regions = if let Some(scene) = &self.scene {
+            scene.hit_regions()
+        } else {
+            self.map
+                .as_ref()
+                .and_then(|map| crate::map_app::lock(map).hit_regions())
+        };
+        let previous_position = self
+            .state
+            .stash
+            .borrow()
+            .pointer()
+            .map(|pointer| pointer.position);
+        let mut owner = self.state.pointer_owner.borrow_mut();
+        let routed = route_pointer(&mut owner, &tick.input, regions.as_deref());
+        let latest_position = tick.input.pointer_position.or(previous_position);
+        let latest_over = latest_position
+            .and_then(|position| {
+                regions
+                    .as_deref()
+                    .and_then(|regions| regions.key_at(position))
+            })
+            .map(str::to_owned);
+        let map_owns_gesture = matches!(*owner, GestureOwner::Map);
+        let suppress_hover = tick.input.reset
+            || tick.input.pointer_held
+            || matches!(*owner, GestureOwner::Ui(_))
+            || latest_over.is_some();
         if let Some(map) = &self.map {
-            crate::map_app::lock(map).update(tick)?;
+            let mut map_tick = tick.clone();
+            map_tick.input.pointer_events.clear();
+            map_tick.input.pointer_position = map_owns_gesture
+                .then_some(tick.input.pointer_position)
+                .flatten();
+            map_tick.input.pointer_held = map_owns_gesture && tick.input.pointer_held;
+            map_tick.input.pointer_overflow = map_owns_gesture && tick.input.pointer_overflow;
+            let hover_position = if !suppress_hover && !map_owns_gesture {
+                latest_position
+            } else {
+                None
+            };
+            crate::map_app::lock(map).update_routed(
+                &map_tick,
+                &routed.map,
+                hover_position,
+                suppress_hover,
+            )?;
+        }
+        if map_owns_gesture && tick.input.pointer_overflow && !tick.input.pointer_held {
+            *owner = GestureOwner::Idle;
         }
         if let Some(sim) = &self.sim
             && sim.controls.send(&tick.input)
@@ -629,9 +915,27 @@ impl UiLink for CodekarlUi {
         let registered = self.observe_registration(&mut stash);
         if registered {
             stash.absorb(&tick.input);
+            stash.absorb_pointer(
+                latest_position.map(|position| crate::input_stash::PointerView {
+                    position,
+                    held: tick.input.pointer_held,
+                    over: latest_over,
+                }),
+                routed.ui,
+                tick.input.pointer_overflow,
+            );
         } else {
             // No callback: the stash follows only each action's held state, and everything that was an event is dropped.
             stash.follow_held(&tick.input);
+            stash.absorb_pointer(
+                latest_position.map(|position| crate::input_stash::PointerView {
+                    position,
+                    held: tick.input.pointer_held,
+                    over: latest_over,
+                }),
+                [],
+                false,
+            );
         }
         Ok(())
     }
@@ -876,7 +1180,7 @@ mod tests {
         let map = crate::map_app::tests::window_case_hover_controller();
         // The Cocoa helper injects at the fixture marker's center in window coordinates.
         // The window adapter reports top-left coordinates to the map controller.
-        let pointer = ck_window::PointerPosition {
+        let pointer = PointerPosition {
             x: 200 * 256,
             y: 120 * 256,
         };
@@ -920,12 +1224,12 @@ mod tests {
         };
         first_input.pointer_position = Some(pointer);
         first_input.pointer_events = vec![
-            ck_window::PointerEvent::Scroll {
+            PointerEvent::Scroll {
                 position: pointer,
                 amount: 15 * 256,
-                unit: ck_window::ScrollUnit::Points,
+                unit: ScrollUnit::Points,
             },
-            ck_window::PointerEvent::Move(pointer),
+            PointerEvent::Move(pointer),
         ];
         first_input.actions = vec![action("map_pan_left", false, true, true)];
         first_input.transitions = vec![
@@ -1027,7 +1331,7 @@ mod tests {
             width: 800,
             height: 480,
         };
-        leave_input.pointer_position = Some(ck_window::PointerPosition {
+        leave_input.pointer_position = Some(PointerPosition {
             x: 401 * 256,
             y: 12 * 256,
         });
@@ -1147,6 +1451,477 @@ mod tests {
         }
     }
 
+    fn hit_regions(keys: &[(&str, f64, f64, f64, f64)]) -> Arc<ck_render_2d::HitRegions> {
+        let bridge = ck_render_2d::SceneBridge::new(ck_render_2d::Filter::Nearest);
+        let mut writer = bridge.take_writer().expect("writer");
+        for (key, x, y, width, height) in keys {
+            writer
+                .set_hit(
+                    key,
+                    Some(vec![
+                        ck_render_2d::HitRect::from_points(*x, *y, *width, *height)
+                            .expect("valid hit rectangle"),
+                    ]),
+                )
+                .expect("valid hit key");
+        }
+        assert!(writer.publish());
+        bridge.hit_regions().expect("published regions")
+    }
+
+    fn pointer_input(
+        events: Vec<PointerEvent>,
+        position: Option<PointerPosition>,
+        held: bool,
+    ) -> InputSnapshot {
+        let mut input = known_input();
+        input.pointer_events = events;
+        input.pointer_position = position;
+        input.pointer_held = held;
+        input
+    }
+
+    #[test]
+    fn pointer_routing_captures_clicks_and_drags_and_keeps_map_drags_outside() {
+        let regions = hit_regions(&[("panel", 0.0, 0.0, 20.0, 20.0)]);
+        let inside = PointerPosition {
+            x: 5 * 256,
+            y: 5 * 256,
+        };
+        let outside = PointerPosition {
+            x: 40 * 256,
+            y: 40 * 256,
+        };
+        let mut owner = GestureOwner::Idle;
+        let click = route_pointer(
+            &mut owner,
+            &pointer_input(
+                vec![PointerEvent::Down(inside), PointerEvent::Up(inside)],
+                Some(inside),
+                false,
+            ),
+            Some(&regions),
+        );
+        assert!(matches!(click.map.as_slice(), []));
+        assert_eq!(
+            click.ui.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            ["down", "up"]
+        );
+        assert!(
+            click
+                .ui
+                .iter()
+                .all(|event| event.key.as_deref() == Some("panel"))
+        );
+        assert_eq!(owner, GestureOwner::Idle);
+
+        let drag = route_pointer(
+            &mut owner,
+            &pointer_input(vec![PointerEvent::Down(inside)], Some(outside), true),
+            Some(&regions),
+        );
+        assert_eq!(drag.ui[0].kind, "down");
+        let move_out = route_pointer(
+            &mut owner,
+            &pointer_input(
+                vec![PointerEvent::Move(outside), PointerEvent::Up(outside)],
+                Some(outside),
+                false,
+            ),
+            Some(&regions),
+        );
+        assert_eq!(
+            move_out
+                .ui
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            ["move", "up"]
+        );
+        assert!(move_out.map.is_empty());
+
+        let map_drag = route_pointer(
+            &mut owner,
+            &pointer_input(vec![PointerEvent::Down(outside)], Some(outside), true),
+            Some(&regions),
+        );
+        assert!(matches!(
+            map_drag.map.as_slice(),
+            [crate::map_app::RoutedMapEvent::Pointer(PointerEvent::Down(
+                _
+            ))]
+        ));
+        let crossing = route_pointer(
+            &mut owner,
+            &pointer_input(vec![PointerEvent::Move(inside)], Some(inside), true),
+            Some(&regions),
+        );
+        assert!(matches!(
+            crossing.map.as_slice(),
+            [crate::map_app::RoutedMapEvent::Pointer(PointerEvent::Move(
+                _
+            ))]
+        ));
+        assert!(crossing.ui.is_empty());
+    }
+
+    #[test]
+    fn overlap_scroll_cancel_overflow_and_lost_down_follow_the_router_owner() {
+        let regions = hit_regions(&[
+            ("lower", 0.0, 0.0, 30.0, 30.0),
+            ("upper", 5.0, 5.0, 20.0, 20.0),
+        ]);
+        let inside = PointerPosition {
+            x: 10 * 256,
+            y: 10 * 256,
+        };
+        let mut owner = GestureOwner::Idle;
+        let top = route_pointer(
+            &mut owner,
+            &pointer_input(vec![PointerEvent::Down(inside)], Some(inside), true),
+            Some(&regions),
+        );
+        assert_eq!(top.ui[0].key.as_deref(), Some("upper"));
+        let scroll = route_pointer(
+            &mut owner,
+            &pointer_input(
+                vec![PointerEvent::Scroll {
+                    position: inside,
+                    amount: 256,
+                    unit: ScrollUnit::Lines,
+                }],
+                Some(inside),
+                true,
+            ),
+            Some(&regions),
+        );
+        assert_eq!(scroll.ui[0].kind, "scroll");
+        assert_eq!(scroll.ui[0].key.as_deref(), Some("upper"));
+        let overflow = route_pointer(
+            &mut owner,
+            &{
+                let mut input = pointer_input(Vec::new(), Some(inside), true);
+                input.pointer_overflow = true;
+                input
+            },
+            Some(&regions),
+        );
+        assert_eq!(overflow.ui.len(), 1);
+        assert_eq!(overflow.ui[0].kind, "move");
+
+        let removed = hit_regions(&[("lower", 0.0, 0.0, 30.0, 30.0)]);
+        let cancel = route_pointer(
+            &mut owner,
+            &pointer_input(
+                vec![PointerEvent::Move(inside), PointerEvent::Up(inside)],
+                Some(inside),
+                false,
+            ),
+            Some(&removed),
+        );
+        assert_eq!(
+            cancel.ui.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            ["cancel"]
+        );
+        assert!(cancel.map.is_empty());
+        assert_eq!(owner, GestureOwner::Idle, "the up snapshot ends Nobody");
+        let after_cancel = route_pointer(
+            &mut owner,
+            &pointer_input(
+                vec![PointerEvent::Move(inside), PointerEvent::Up(inside)],
+                Some(inside),
+                false,
+            ),
+            Some(&regions),
+        );
+        assert_eq!(
+            after_cancel
+                .ui
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            ["move"]
+        );
+        assert!(after_cancel.map.is_empty());
+        assert_eq!(owner, GestureOwner::Idle);
+        let next_gesture = route_pointer(
+            &mut owner,
+            &pointer_input(vec![PointerEvent::Down(inside)], Some(inside), true),
+            Some(&regions),
+        );
+        assert_eq!(next_gesture.ui[0].kind, "down");
+        assert_eq!(next_gesture.ui[0].key.as_deref(), Some("upper"));
+
+        let mut lost = GestureOwner::Idle;
+        let no_down = route_pointer(
+            &mut lost,
+            &pointer_input(Vec::new(), Some(inside), true),
+            Some(&regions),
+        );
+        assert!(no_down.map.is_empty() && no_down.ui.is_empty());
+        assert_eq!(lost, GestureOwner::Nobody);
+        let lost_move = route_pointer(
+            &mut lost,
+            &pointer_input(vec![PointerEvent::Move(inside)], Some(inside), true),
+            Some(&regions),
+        );
+        assert!(lost_move.map.is_empty() && lost_move.ui.is_empty());
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered sequence covers reset, overflow cancellation, release, and the next routed input"
+    )]
+    fn reset_and_overflow_cancel_captures_but_idle_and_released_nobody_route_again() {
+        use crate::map_app::RoutedMapEvent as MapEvent;
+        let regions = hit_regions(&[("panel", 0.0, 0.0, 20.0, 20.0)]);
+        let inside = PointerPosition {
+            x: 5 * 256,
+            y: 5 * 256,
+        };
+        let outside = PointerPosition {
+            x: 40 * 256,
+            y: 40 * 256,
+        };
+
+        let mut idle_owner = GestureOwner::Idle;
+        let mut reset_idle = pointer_input(Vec::new(), Some(outside), false);
+        reset_idle.reset = true;
+        let reset = route_pointer(&mut idle_owner, &reset_idle, Some(&regions));
+        assert!(reset.ui.is_empty() && reset.map.is_empty());
+        assert_eq!(idle_owner, GestureOwner::Idle);
+        let after_reset_map_scroll = route_pointer(
+            &mut idle_owner,
+            &pointer_input(
+                vec![PointerEvent::Scroll {
+                    position: outside,
+                    amount: 256,
+                    unit: ScrollUnit::Lines,
+                }],
+                Some(outside),
+                false,
+            ),
+            Some(&regions),
+        );
+        assert!(after_reset_map_scroll.ui.is_empty());
+        assert!(matches!(
+            after_reset_map_scroll.map.as_slice(),
+            [MapEvent::Pointer(PointerEvent::Scroll {
+                position,
+                amount: 256,
+                unit: ScrollUnit::Lines,
+            })] if *position == outside
+        ));
+        let after_reset_ui_scroll = route_pointer(
+            &mut idle_owner,
+            &pointer_input(
+                vec![PointerEvent::Scroll {
+                    position: inside,
+                    amount: 256,
+                    unit: ScrollUnit::Lines,
+                }],
+                Some(inside),
+                false,
+            ),
+            Some(&regions),
+        );
+        assert!(after_reset_ui_scroll.map.is_empty());
+        assert_eq!(after_reset_ui_scroll.ui[0].key.as_deref(), Some("panel"));
+
+        let mut ui_owner = GestureOwner::Ui("panel".to_owned());
+        let mut reset_capture = pointer_input(
+            vec![PointerEvent::Move(outside), PointerEvent::Up(outside)],
+            Some(outside),
+            true,
+        );
+        reset_capture.reset = true;
+        let cancelled = route_pointer(&mut ui_owner, &reset_capture, Some(&regions));
+        assert_eq!(
+            cancelled
+                .ui
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            ["cancel"]
+        );
+        assert!(cancelled.map.is_empty());
+        assert_eq!(ui_owner, GestureOwner::Nobody);
+
+        let released = pointer_input(Vec::new(), Some(outside), false);
+        let resumed = route_pointer(&mut ui_owner, &released, Some(&regions));
+        assert!(resumed.ui.is_empty() && resumed.map.is_empty());
+        assert_eq!(ui_owner, GestureOwner::Idle);
+        let resumed_scroll = route_pointer(
+            &mut ui_owner,
+            &pointer_input(
+                vec![PointerEvent::Scroll {
+                    position: outside,
+                    amount: 256,
+                    unit: ScrollUnit::Lines,
+                }],
+                Some(outside),
+                false,
+            ),
+            Some(&regions),
+        );
+        assert_eq!(resumed_scroll.map.len(), 1);
+
+        let mut overflow_owner = GestureOwner::Ui("panel".to_owned());
+        let mut overflow_up = pointer_input(Vec::new(), Some(inside), false);
+        overflow_up.pointer_overflow = true;
+        let overflow_cancel = route_pointer(&mut overflow_owner, &overflow_up, Some(&regions));
+        assert_eq!(
+            overflow_cancel
+                .ui
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            ["cancel"]
+        );
+        assert_eq!(overflow_owner, GestureOwner::Idle);
+    }
+
+    #[test]
+    fn reset_cancels_map_drag_and_scroll_routes_by_position_except_during_ui_capture() {
+        use crate::map_app::RoutedMapEvent as MapEvent;
+        let regions = hit_regions(&[("panel", 0.0, 0.0, 20.0, 20.0)]);
+        let inside = PointerPosition {
+            x: 5 * 256,
+            y: 5 * 256,
+        };
+        let outside = PointerPosition {
+            x: 40 * 256,
+            y: 40 * 256,
+        };
+
+        let mut map_owner = GestureOwner::Map;
+        let mut reset_map = pointer_input(Vec::new(), Some(outside), true);
+        reset_map.reset = true;
+        assert!(matches!(
+            route_pointer(&mut map_owner, &reset_map, Some(&regions))
+                .map
+                .as_slice(),
+            [MapEvent::EndDrag]
+        ));
+        assert_eq!(map_owner, GestureOwner::Nobody);
+
+        let mut idle_owner = GestureOwner::Idle;
+        let scroll_in = route_pointer(
+            &mut idle_owner,
+            &pointer_input(
+                vec![PointerEvent::Scroll {
+                    position: inside,
+                    amount: 256,
+                    unit: ScrollUnit::Lines,
+                }],
+                Some(inside),
+                false,
+            ),
+            Some(&regions),
+        );
+        assert_eq!(scroll_in.ui[0].kind, "scroll");
+        assert_eq!(scroll_in.ui[0].key.as_deref(), Some("panel"));
+
+        let mut map_owner = GestureOwner::Map;
+        let map_scroll_in = route_pointer(
+            &mut map_owner,
+            &pointer_input(
+                vec![PointerEvent::Scroll {
+                    position: inside,
+                    amount: 256,
+                    unit: ScrollUnit::Lines,
+                }],
+                Some(inside),
+                true,
+            ),
+            Some(&regions),
+        );
+        assert_eq!(map_scroll_in.ui[0].key.as_deref(), Some("panel"));
+        assert!(map_scroll_in.map.is_empty());
+        assert_eq!(map_owner, GestureOwner::Map);
+
+        let map_scroll_out = route_pointer(
+            &mut map_owner,
+            &pointer_input(
+                vec![PointerEvent::Scroll {
+                    position: outside,
+                    amount: 256,
+                    unit: ScrollUnit::Lines,
+                }],
+                Some(outside),
+                true,
+            ),
+            Some(&regions),
+        );
+        assert!(matches!(
+            map_scroll_out.map.as_slice(),
+            [MapEvent::Pointer(PointerEvent::Scroll {
+                position,
+                amount: 256,
+                unit: ScrollUnit::Lines
+            })] if *position == outside
+        ));
+
+        let mut ui_owner = GestureOwner::Ui("panel".to_owned());
+        let captured_scroll_out = route_pointer(
+            &mut ui_owner,
+            &pointer_input(
+                vec![PointerEvent::Scroll {
+                    position: outside,
+                    amount: 256,
+                    unit: ScrollUnit::Lines,
+                }],
+                Some(outside),
+                true,
+            ),
+            Some(&regions),
+        );
+        assert_eq!(captured_scroll_out.ui[0].key.as_deref(), Some("panel"));
+        assert!(captured_scroll_out.map.is_empty());
+    }
+
+    #[test]
+    fn a_new_ui_down_ends_a_map_drag_at_its_position_before_overflow_resync() {
+        use crate::map_app::RoutedMapEvent::EndDrag;
+        let regions = hit_regions(&[("panel", 0.0, 0.0, 20.0, 20.0)]);
+        let outside = PointerPosition {
+            x: 40 * 256,
+            y: 40 * 256,
+        };
+        let inside = PointerPosition {
+            x: 5 * 256,
+            y: 5 * 256,
+        };
+        let mut owner = GestureOwner::Map;
+        let mut input = pointer_input(vec![PointerEvent::Down(inside)], Some(inside), true);
+        input.pointer_overflow = true;
+        let routed = route_pointer(&mut owner, &input, Some(&regions));
+        assert!(matches!(routed.map.as_slice(), [EndDrag]));
+        assert_eq!(routed.ui[0].kind, "down");
+        assert_eq!(owner, GestureOwner::Ui("panel".to_owned()));
+
+        let mut map_owner = GestureOwner::Map;
+        let moved = route_pointer(
+            &mut map_owner,
+            &pointer_input(
+                vec![PointerEvent::Down(outside), PointerEvent::Move(inside)],
+                Some(inside),
+                true,
+            ),
+            Some(&regions),
+        );
+        assert!(matches!(
+            moved.map.as_slice(),
+            [
+                EndDrag,
+                crate::map_app::RoutedMapEvent::Pointer(PointerEvent::Down(_)),
+                crate::map_app::RoutedMapEvent::Pointer(PointerEvent::Move(_))
+            ]
+        ));
+        assert!(moved.ui.is_empty());
+    }
+
     /// The stash after one tick of `input`.
     fn stash_of(input: &InputSnapshot) -> InputStash {
         let mut stash = InputStash::default();
@@ -1216,6 +1991,63 @@ mod tests {
             ("overflow".to_owned(), ConfigValue::Bool(true)),
             ("reset".to_owned(), ConfigValue::Bool(false)),
         ]))
+    }
+
+    #[test]
+    fn frame_update_pointer_has_literal_point_units_keys_and_overflow() {
+        let position = PointerPosition { x: 384, y: -128 };
+        let mut stash = InputStash::default();
+        stash.absorb_pointer(
+            Some(crate::input_stash::PointerView {
+                position,
+                held: true,
+                over: Some("readout".to_owned()),
+            }),
+            [
+                crate::input_stash::PointerViewEvent {
+                    kind: "down",
+                    position,
+                    key: Some("readout".to_owned()),
+                    amount: None,
+                    unit: None,
+                },
+                crate::input_stash::PointerViewEvent {
+                    kind: "scroll",
+                    position,
+                    key: Some("readout".to_owned()),
+                    amount: Some(-128),
+                    unit: Some("lines"),
+                },
+            ],
+            true,
+        );
+        let UiEvent::Update(update_event) = update(31) else {
+            unreachable!();
+        };
+        let ConfigValue::Table(fields) = update_table(&update_event, &stash).expect("table") else {
+            panic!("update is a table");
+        };
+        let ConfigValue::Table(pointer) = &fields["pointer"] else {
+            panic!("pointer is present");
+        };
+        assert_eq!(pointer["x"], ConfigValue::Float(1.5));
+        assert_eq!(pointer["y"], ConfigValue::Float(-0.5));
+        assert_eq!(pointer["held"], ConfigValue::Bool(true));
+        assert_eq!(pointer["over"], ConfigValue::String("readout".to_owned()));
+        assert_eq!(pointer["overflow"], ConfigValue::Bool(true));
+        let ConfigValue::Array(events) = &pointer["events"] else {
+            panic!("pointer events are an array");
+        };
+        assert_eq!(events.len(), 2);
+        let ConfigValue::Table(scroll) = &events[1] else {
+            panic!("scroll event is a table");
+        };
+        assert_eq!(scroll["kind"], ConfigValue::String("scroll".to_owned()));
+        assert_eq!(scroll["x"], ConfigValue::Float(1.5));
+        assert_eq!(scroll["y"], ConfigValue::Float(-0.5));
+        assert_eq!(scroll["key"], ConfigValue::String("readout".to_owned()));
+        assert_eq!(scroll["amount"], ConfigValue::Float(-0.5));
+        assert_eq!(scroll["unit"], ConfigValue::String("lines".to_owned()));
     }
 
     #[test]
@@ -1934,7 +2766,7 @@ mod tests {
         }
         let result_baseline = reports.load(Ordering::SeqCst);
 
-        let pointer = ck_window::PointerPosition {
+        let pointer = PointerPosition {
             x: 200 * 256,
             y: 120 * 256,
         };
@@ -1946,12 +2778,12 @@ mod tests {
         };
         tick.input.pointer_position = Some(pointer);
         tick.input.pointer_events = vec![
-            ck_window::PointerEvent::Scroll {
+            PointerEvent::Scroll {
                 position: pointer,
                 amount: 15 * 256,
-                unit: ck_window::ScrollUnit::Points,
+                unit: ScrollUnit::Points,
             },
-            ck_window::PointerEvent::Move(pointer),
+            PointerEvent::Move(pointer),
         ];
         crate::map_app::lock(&map)
             .update(&tick)
@@ -2048,7 +2880,7 @@ mod tests {
         // The first frame is the ready answer at the head of the VM queue. A marker hover is
         // delivered after it, making time the next fair choice when that frame frees one place.
         link.post(update(1)).expect("first frame is posted");
-        let pointer = ck_window::PointerPosition {
+        let pointer = PointerPosition {
             x: 200 * 256,
             y: 120 * 256,
         };
@@ -2059,7 +2891,7 @@ mod tests {
             height: 480,
         };
         marker.input.pointer_position = Some(pointer);
-        marker.input.pointer_events = vec![ck_window::PointerEvent::Move(pointer)];
+        marker.input.pointer_events = vec![PointerEvent::Move(pointer)];
         crate::map_app::lock(&map)
             .update(&marker)
             .expect("the marker hover is produced");
@@ -2079,18 +2911,18 @@ mod tests {
             height: 480,
         };
         for position in [
-            ck_window::PointerPosition {
+            PointerPosition {
                 x: 700 * 256,
                 y: 400 * 256,
             },
             pointer,
-            ck_window::PointerPosition {
+            PointerPosition {
                 x: 700 * 256,
                 y: 400 * 256,
             },
         ] {
             latest.input.pointer_position = Some(position);
-            latest.input.pointer_events = vec![ck_window::PointerEvent::Move(position)];
+            latest.input.pointer_events = vec![PointerEvent::Move(position)];
             crate::map_app::lock(&map)
                 .update(&latest)
                 .expect("the latest hover change is valid");

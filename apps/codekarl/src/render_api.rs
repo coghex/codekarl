@@ -46,7 +46,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ck_lua::{Completion, ConfigValue, Extension, HostFunction};
-use ck_render_2d::{Assets, LegacyError, LegacyLane, Quad, QuadKey, SceneWriter, validate_rect};
+use ck_render_2d::{
+    Assets, HitRect, LegacyError, LegacyLane, Quad, QuadKey, SceneWriter, validate_rect,
+};
 use ck_resources::{AdmitError, ResourceService, TextureKey};
 
 use crate::texture_api::no_service;
@@ -387,6 +389,64 @@ impl Shared {
         self.note_accepted();
         Ok(Vec::new())
     }
+
+    fn set_hit(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
+        const F: &str = "render.set_hit";
+        arity(F, arguments, 2, "(key, rects | nil)")?;
+        let Some(Some(ConfigValue::String(key))) = arguments.first() else {
+            return Err(format!("{F}: `key` must be a string"));
+        };
+        let rects = match arguments.get(1).and_then(Option::as_ref) {
+            None => None,
+            Some(ConfigValue::Array(items)) => {
+                let mut rects = Vec::with_capacity(items.len());
+                for (index, item) in items.iter().enumerate() {
+                    let ConfigValue::Table(table) = item else {
+                        return Err(format!("{F}: rect {} must be a table", index + 1));
+                    };
+                    for field in table.keys() {
+                        if !["x", "y", "width", "height"].contains(&field.as_str()) {
+                            return Err(format!(
+                                "{F}: rect {} has unknown field `{field}`",
+                                index + 1
+                            ));
+                        }
+                    }
+                    let value = |name: &str| -> Result<f64, String> {
+                        table.get(name).and_then(number).ok_or_else(|| {
+                            format!("{F}: rect {} `{name}` must be a number", index + 1)
+                        })
+                    };
+                    let (x, y, width, height) =
+                        (value("x")?, value("y")?, value("width")?, value("height")?);
+                    if width <= 0.0 || height <= 0.0 {
+                        return Err(format!(
+                            "{F}: rect {} width and height must be positive",
+                            index + 1
+                        ));
+                    }
+                    rects.push(
+                        HitRect::from_points(x, y, width, height)
+                            .map_err(|error| format!("{F}: rect {}: {error}", index + 1))?,
+                    );
+                }
+                Some(rects)
+            }
+            Some(_) => return Err(format!("{F}: `rects` must be an array or nil")),
+        };
+        let mut writer = self.writer();
+        let Some(writer) = writer.as_mut() else {
+            return Err(format!("{F}: {}", AdmitError::Ended));
+        };
+        if writer.is_ended() {
+            return Err(format!("{F}: {}", AdmitError::Ended));
+        }
+        writer
+            .set_hit(key, rects)
+            .map_err(|error| format!("{F}: {error}"))?;
+        self.note_accepted();
+        Ok(Vec::new())
+    }
 }
 
 /// The text of a legacy-lane refusal: the old wording with the `render.quad:` prefix.
@@ -538,6 +598,7 @@ fn build(shared: &Arc<Shared>) -> Extension {
         .function("set_position", function(Shared::set_position))
         .function("set_rect", function(Shared::set_rect))
         .function("destroy_quad", function(Shared::destroy_quad))
+        .function("set_hit", function(Shared::set_hit))
 }
 
 #[cfg(test)]
@@ -651,6 +712,83 @@ mod tests {
         fn generation(&self) -> u64 {
             self.seen.last().generation
         }
+    }
+
+    #[test]
+    fn set_hit_validates_atomically_and_publishes_the_ordered_regions() {
+        let bridge = SceneBridge::new(Filter::Nearest);
+        let shared = Shared {
+            assets: None,
+            writer: Mutex::new(Some(bridge.take_writer().expect("writer"))),
+            headless: None,
+            service: None,
+            lane: None,
+            upgraded: false,
+            after_decode: None,
+            lock_threads: Mutex::new(Vec::new()),
+            lane_seam: Mutex::new(None),
+        };
+        let rectangles = Some(ConfigValue::Array(vec![ConfigValue::Table(
+            BTreeMap::from([
+                ("x".to_owned(), ConfigValue::Float(0.001)),
+                ("y".to_owned(), ConfigValue::Float(2.0)),
+                ("width".to_owned(), ConfigValue::Float(10.0)),
+                ("height".to_owned(), ConfigValue::Float(8.0)),
+            ]),
+        )]));
+        shared
+            .set_hit(&[Some(ConfigValue::String("panel".to_owned())), rectangles])
+            .expect("valid hit update");
+        shared.writer().as_mut().unwrap().publish();
+        assert_eq!(
+            bridge
+                .hit_regions()
+                .expect("published regions")
+                .key_at(ck_window::PointerPosition { x: 0, y: 512 }),
+            Some("panel")
+        );
+        let before = bridge.hit_regions().unwrap();
+        for arguments in [
+            vec![Some(ConfigValue::String("Bad".to_owned())), None],
+            vec![
+                Some(ConfigValue::String("panel".to_owned())),
+                Some(ConfigValue::Table(BTreeMap::new())),
+            ],
+            vec![
+                Some(ConfigValue::String("panel".to_owned())),
+                Some(ConfigValue::Array(vec![ConfigValue::Table(
+                    BTreeMap::from([
+                        ("x".to_owned(), ConfigValue::Float(0.0)),
+                        ("y".to_owned(), ConfigValue::Float(0.0)),
+                        ("width".to_owned(), ConfigValue::Float(0.0)),
+                        ("height".to_owned(), ConfigValue::Float(1.0)),
+                    ]),
+                )])),
+            ],
+        ] {
+            assert!(shared.set_hit(&arguments).is_err());
+            assert!(!shared.writer().as_mut().unwrap().publish());
+            assert_eq!(
+                bridge
+                    .hit_regions()
+                    .expect("prior regions remain")
+                    .key_at(ck_window::PointerPosition { x: 0, y: 512 }),
+                Some("panel")
+            );
+        }
+        assert_eq!(before.regions().len(), 1);
+        shared
+            .set_hit(&[Some(ConfigValue::String("panel".to_owned())), None])
+            .expect("nil removes the key");
+        shared.writer().as_mut().unwrap().publish();
+        assert_eq!(
+            bridge
+                .hit_regions()
+                .expect("empty table was published")
+                .regions()
+                .len(),
+            0
+        );
     }
 
     #[test]

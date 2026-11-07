@@ -233,7 +233,7 @@ fn mapped_link(
     CodekarlUi,
     crate::map_app::SharedController,
     mpsc::Receiver<Message>,
-    ck_window::PointerPosition,
+    PointerPosition,
 ) {
     let mut controller = crate::map_app::tests::hover_controller();
     let pointer = crate::map_app::tests::hover_pointer(&mut controller);
@@ -251,6 +251,126 @@ fn mapped_link(
 
 fn camera_of(map: &crate::map_app::SharedController) -> Option<ck_map::Camera> {
     crate::map_app::lock(map).camera()
+}
+
+#[test]
+fn a_published_scene_hit_routes_down_and_up_without_a_map_windowless() {
+    let received: Tables = Arc::default();
+    let record: HostFunction = {
+        let received = Arc::clone(&received);
+        Arc::new(move |arguments| {
+            if let Some(Some(value)) = arguments.first() {
+                received
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(value.clone());
+            }
+            Ok(Vec::new())
+        })
+    };
+    let held = Harness::new(
+        r#"
+render.set_hit("fixture_panel", {{x=0, y=0, width=40, height=40}})
+frame.on_update(function(update) window.record(update.pointer.events) end)
+"#,
+        Extras {
+            functions: vec![("record", record)],
+            extensions: vec![frame_extension()],
+            ..Extras::default()
+        },
+    );
+    let regions = held
+        .bridge
+        .hit_regions()
+        .expect("startup completion published the set_hit region with the scene");
+    let position = PointerPosition {
+        x: 10 * 256,
+        y: 12 * 256,
+    };
+    assert_eq!(regions.key_at(position), Some("fixture_panel"));
+
+    let mut link =
+        CodekarlUi::new(held.ui.slot.clone()).with_scene_bridge(Arc::clone(&held.bridge));
+    let mut input = idle();
+    input.pointer_position = Some(position);
+    input.pointer_events = vec![PointerEvent::Down(position), PointerEvent::Up(position)];
+    link.input(&tick(input))
+        .expect("the pointer tick is consumed");
+    link.post(update(1)).expect("the real UI update is posted");
+    assert_eq!(answer(&mut link).answer, Answer::Returned);
+
+    let received = received.lock().unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(received.len(), 1, "one real UI frame_update callback");
+    let ConfigValue::Array(events) = &received[0] else {
+        panic!("pointer events array: {:?}", received[0]);
+    };
+    let observed: Vec<_> = events
+        .iter()
+        .map(|event| {
+            (
+                match field(event, "kind") {
+                    ConfigValue::String(kind) => kind.as_str(),
+                    other => panic!("event kind string: {other:?}"),
+                },
+                match field(event, "key") {
+                    ConfigValue::String(key) => key.as_str(),
+                    other => panic!("event key string: {other:?}"),
+                },
+            )
+        })
+        .collect();
+    assert_eq!(
+        observed,
+        [("down", "fixture_panel"), ("up", "fixture_panel")]
+    );
+}
+
+#[test]
+fn input_suppresses_map_hover_over_a_published_ui_region_and_restores_it_outside() {
+    let mut probe = crate::map_app::tests::hover_controller();
+    let pointer = crate::map_app::tests::hover_pointer(&mut probe);
+    let left = f64::from(pointer.x) / 256.0;
+    let top = f64::from(pointer.y) / 256.0;
+    let held = Harness::new(
+        &format!(
+            "render.set_hit(\"fixture_panel\", {{{{x={left}, y={top}, width=2, height=2}}}})\n"
+        ),
+        Extras::default(),
+    );
+    let controller = crate::map_app::tests::hover_controller_with_bridge(Arc::clone(&held.bridge));
+    let map = crate::map_app::shared(controller);
+    let mut link = CodekarlUi::with_map(held.ui.slot.clone(), Arc::clone(&map))
+        .with_scene_bridge(Arc::clone(&held.bridge));
+
+    let mut over_region = idle();
+    over_region.pointer_position = Some(pointer);
+    over_region.pointer_events = vec![PointerEvent::Move(pointer)];
+    link.input(&tick(over_region)).expect("UI hover is routed");
+    assert!(
+        crate::map_app::lock(&map).hover().is_none(),
+        "a published UI region suppresses map hover through input()"
+    );
+
+    let mut down = idle();
+    down.pointer_position = Some(pointer);
+    down.pointer_held = true;
+    down.pointer_events = vec![PointerEvent::Down(pointer)];
+    link.input(&tick(down)).expect("UI capture starts");
+    assert!(crate::map_app::lock(&map).hover().is_none());
+
+    let outside = PointerPosition {
+        x: pointer.x + 3 * 256,
+        y: pointer.y,
+    };
+    let mut leave = idle();
+    leave.pointer_position = Some(outside);
+    leave.pointer_events = vec![PointerEvent::Up(outside), PointerEvent::Move(outside)];
+    link.input(&tick(leave))
+        .expect("UI capture ends outside the region");
+    assert!(
+        crate::map_app::lock(&map).hover().is_some(),
+        "map hover resumes after leaving the UI region"
+    );
 }
 
 #[test]
@@ -296,7 +416,7 @@ fn the_map_and_the_time_controls_take_the_input_at_each_tick_while_the_ui_is_hel
     );
 
     // A pointer drag pans.
-    let moved = ck_window::PointerPosition {
+    let moved = PointerPosition {
         x: pointer.x + 40 * 256,
         y: pointer.y,
     };
@@ -318,7 +438,7 @@ fn the_map_and_the_time_controls_take_the_input_at_each_tick_while_the_ui_is_hel
     scroll.pointer_events = vec![PointerEvent::Scroll {
         position: moved,
         amount: -256,
-        unit: ck_window::ScrollUnit::Lines,
+        unit: ScrollUnit::Lines,
     }];
     link.input(&tick(scroll)).expect("a scroll tick");
     let scrolled = camera_of(&map);
@@ -422,6 +542,10 @@ fn three_hundred_transitions_while_held_keep_the_newest_256_and_set_overflow() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the single scenario verifies refused then accepted posts deliver the same tick exactly once"
+)]
 fn a_post_refused_as_full_and_then_accepted_delivers_the_stash_once_and_the_controllers_saw_it_once()
  {
     let gate = Gate::new();
@@ -447,7 +571,7 @@ fn a_post_refused_as_full_and_then_accepted_delivers_the_stash_once_and_the_cont
     };
     let harness = Harness::new(
         &format!(
-            "{WINDOW}\nwindow.on_opened(function() window.hold() end)\nframe.on_update(function(f) window.record(f) end)"
+            "{WINDOW}\nrender.set_hit(\"panel\", {{{{x=0, y=0, width=40, height=40}}}})\nwindow.on_opened(function() window.hold() end)\nframe.on_update(function(f) window.record(f) end)"
         ),
         Extras {
             functions: vec![("hold", hold), ("record", record)],
@@ -456,18 +580,28 @@ fn a_post_refused_as_full_and_then_accepted_delivers_the_stash_once_and_the_cont
         },
     );
     let (sender, receiver) = mpsc::channel();
-    let mut link = harness.ui.clone().with_sim(SimLink {
-        controls: SimControls::new(sender),
-        slot: SimSlot::new(Arc::new(|| {})),
-        time_registered: Arc::new(AtomicBool::new(false)),
-        hover_registered: Arc::new(AtomicBool::new(false)),
-    });
+    let mut link = harness
+        .ui
+        .clone()
+        .with_scene_bridge(Arc::clone(&harness.bridge))
+        .with_sim(SimLink {
+            controls: SimControls::new(sender),
+            slot: SimSlot::new(Arc::new(|| {})),
+            time_registered: Arc::new(AtomicBool::new(false)),
+            hover_registered: Arc::new(AtomicBool::new(false)),
+        });
     // Three calls in flight leave only the place reserved for lifecycle posts: an update is refused.
     for _ in 0..3 {
         link.post(UiEvent::Opened).expect("within the limit");
     }
     let mut input = with(idle(), "time_pause", false, true, false);
     input.transitions = vec![edge("time_pause", Edge::Press)];
+    let pointer = PointerPosition {
+        x: 10 * 256,
+        y: 12 * 256,
+    };
+    input.pointer_position = Some(pointer);
+    input.pointer_events = vec![PointerEvent::Down(pointer), PointerEvent::Up(pointer)];
     link.input(&tick(input)).expect("the tick");
     assert_eq!(link.post(update(1)), Err(PostError::Full));
     assert_eq!(
@@ -491,6 +625,26 @@ fn a_post_refused_as_full_and_then_accepted_delivers_the_stash_once_and_the_cont
         [("time_pause".to_owned(), "press".to_owned())],
         "the stash arrived once, with the accepted post"
     );
+    let ConfigValue::Array(pointer_events) = field(field(&tables[0], "pointer"), "events") else {
+        panic!("pointer events array: {:?}", field(&tables[0], "pointer"));
+    };
+    assert_eq!(
+        pointer_events.len(),
+        2,
+        "the pointer pair is delivered once"
+    );
+    let kinds: Vec<_> = pointer_events
+        .iter()
+        .map(|event| match field(event, "kind") {
+            ConfigValue::String(kind) => kind.as_str(),
+            other => panic!("event kind string: {other:?}"),
+        })
+        .collect();
+    assert_eq!(kinds, ["down", "up"]);
+    assert!(pointer_events.iter().all(|event| matches!(
+        field(event, "key"),
+        ConfigValue::String(key) if key == "panel"
+    )));
     assert_eq!(
         receiver.try_iter().count(),
         0,
@@ -513,13 +667,13 @@ fn with_no_callback_registered_the_map_still_pans_by_keys_and_by_drag() {
     assert_ne!(panned, before, "keys pan without a UI callback");
     let mut drag = idle();
     drag.pointer_held = true;
-    drag.pointer_position = Some(ck_window::PointerPosition {
+    drag.pointer_position = Some(PointerPosition {
         x: pointer.x + 40 * 256,
         y: pointer.y,
     });
     drag.pointer_events = vec![
         PointerEvent::Down(pointer),
-        PointerEvent::Move(ck_window::PointerPosition {
+        PointerEvent::Move(PointerPosition {
             x: pointer.x + 40 * 256,
             y: pointer.y,
         }),

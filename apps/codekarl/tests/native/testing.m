@@ -30,6 +30,9 @@ static id ck_app_key_files_observer = nil;
 static dispatch_source_t ck_app_key_files_timer = nil;
 static id ck_app_map_pointer_observer = nil;
 static id ck_app_unmarked_observer = nil;
+static id ck_app_ui_pointer_observer = nil;
+static dispatch_source_t ck_app_ui_pointer_timer = nil;
+static char ck_app_ui_pointer_dir[1024];
 static _Atomic uint64_t ck_app_dropped;
 static _Atomic uint64_t ck_app_dropped_mouse;
 static NSWindow *ck_app_the_window(int32_t *error);
@@ -38,6 +41,7 @@ void ck_app_t_schedule_map_keys(void);
 void ck_app_t_schedule_sim_keys(void);
 void ck_app_t_schedule_key_files(void);
 void ck_app_t_schedule_map_pointer(void);
+void ck_app_t_schedule_ui_pointer(void);
 void ck_app_t_schedule_map_hover(void);
 
 /* The test-only input filter: a local event monitor, which AppKit runs inside -[NSApplication sendEvent:] before
@@ -88,6 +92,9 @@ void ck_app_t_install_input_filter(void) {
         }];
         if (getenv("CK_WINDOWED_TEST_MAP_INPUT") != NULL || getenv("CK_VULKAN_TEST_MAP_INPUT") != NULL) {
             ck_app_t_schedule_map_pointer();
+        }
+        if (getenv("CK_WINDOWED_TEST_UI_POINTER") != NULL || getenv("CK_VULKAN_TEST_UI_POINTER") != NULL) {
+            ck_app_t_schedule_ui_pointer();
         }
         if (getenv("CK_WINDOWED_TEST_MAP_HOVER") != NULL || getenv("CK_VULKAN_TEST_MAP_HOVER") != NULL) {
             ck_app_t_schedule_map_hover();
@@ -265,6 +272,110 @@ void ck_app_t_schedule_map_pointer(void) {
                 }
             }
         }];
+    }];
+}
+
+static int32_t ck_app_t_send_ui_mouse(NSWindow *window, NSEventType type, NSPoint location) {
+    NSEvent *event = [NSEvent mouseEventWithType:type
+                                         location:location
+                                    modifierFlags:0
+                                        timestamp:NSProcessInfo.processInfo.systemUptime
+                                     windowNumber:window.windowNumber
+                                          context:nil
+                                      eventNumber:CK_TEST_POINTER_EVENT
+                                       clickCount:type == NSEventTypeLeftMouseDown ? 1 : 0
+                                         pressure:type == NSEventTypeLeftMouseUp ? 0.0 : 1.0];
+    if (event == nil || event.windowNumber != window.windowNumber) return -1;
+    @try {
+        switch (type) {
+            case NSEventTypeMouseMoved: [window.contentView mouseMoved:event]; break;
+            case NSEventTypeLeftMouseDown: [window.contentView mouseDown:event]; break;
+            case NSEventTypeLeftMouseDragged: [window.contentView mouseDragged:event]; break;
+            case NSEventTypeLeftMouseUp: [window.contentView mouseUp:event]; break;
+            default: return -2;
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"test UI pointer dispatch raised %@: %@", exception.name, exception.reason);
+        return -3;
+    }
+    return 1;
+}
+
+static void ck_app_ui_pointer_line(const char *line) {
+    const char *path = getenv("CK_MAP_TEST_CAMERA_OBSERVATION");
+    if (path == NULL) return;
+    FILE *file = fopen(path, "a");
+    if (file != NULL) {
+        fprintf(file, "%s\n", line);
+        fclose(file);
+    }
+}
+
+/* Click the UI region, wait for its observed down/up delivery, then drag outside it across the map. */
+void ck_app_t_schedule_ui_pointer(void) {
+    const char *dir = getenv("CK_WINDOWED_TEST_UI_POINTER");
+    if (dir == NULL) dir = getenv("CK_VULKAN_TEST_UI_POINTER");
+    if (dir == NULL) return;
+    strncpy(ck_app_ui_pointer_dir, dir, sizeof ck_app_ui_pointer_dir - 1);
+    ck_app_ui_pointer_observer = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSWindowDidUpdateNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *notification) {
+        NSWindow *window = notification.object;
+        if (![window isKindOfClass:NSWindow.class] || !window.isVisible) return;
+        [NSNotificationCenter.defaultCenter removeObserver:ck_app_ui_pointer_observer];
+        ck_app_ui_pointer_observer = nil;
+        ck_app_ui_pointer_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(ck_app_ui_pointer_timer, DISPATCH_TIME_NOW, 5 * NSEC_PER_MSEC, NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(ck_app_ui_pointer_timer, ^{
+            // Rust writes this command only after it observes the real UI's logged frame_update marker. That callback
+            // cannot run until startup has returned through the completion hook that publishes set_hit.
+            if (!ck_app_marker(ck_app_ui_pointer_dir, "ui-hit-go")) return;
+            dispatch_source_cancel(ck_app_ui_pointer_timer);
+            ck_app_ui_pointer_timer = nil;
+            // The hit rectangle is in top-left UI coordinates, while AppKit event locations use a bottom-left
+            // origin. Convert the intended top-left point into window coordinates before dispatching.
+            NSPoint click_in_view = NSMakePoint(20.0, window.contentView.bounds.size.height - 20.0);
+            NSPoint click_in_window = [window.contentView convertPoint:click_in_view toView:nil];
+            if (getenv("CK_VULKAN_TEST_UI_POINTER") != NULL) {
+                int32_t move_result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, click_in_window);
+                if (move_result != 1) {
+                    NSLog(@"test Vulkan UI cursor move dispatch failed with result %d", move_result);
+                } else {
+                    ck_app_ui_pointer_line("ui-cursor-move-injected");
+                }
+            }
+            ck_app_ui_pointer_line("ui-click-injected");
+            int32_t result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDown, click_in_window);
+            if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseUp, click_in_window);
+            if (result != 1) NSLog(@"test UI click dispatch failed with result %d", result);
+            ck_app_ui_pointer_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+            dispatch_source_set_timer(ck_app_ui_pointer_timer, DISPATCH_TIME_NOW, 5 * NSEC_PER_MSEC, NSEC_PER_MSEC);
+            dispatch_source_set_event_handler(ck_app_ui_pointer_timer, ^{
+            if (!ck_app_marker(ck_app_ui_pointer_dir, "ui-click-received")) return;
+            dispatch_source_cancel(ck_app_ui_pointer_timer);
+            ck_app_ui_pointer_timer = nil;
+            ck_app_ui_pointer_line("ui-click-delivered");
+            const NSPoint drag_start = NSMakePoint(100.0, 80.0);
+            int32_t drag_result = 1;
+            // GLFW assigns a button event the most recent cursor-callback position. Move to the
+            // outside-map drag start first so the gesture begins on the map, not the captured UI.
+            if (getenv("CK_VULKAN_TEST_UI_POINTER") != NULL) {
+                drag_result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, drag_start);
+                if (drag_result == 1) ck_app_ui_pointer_line("ui-drag-cursor-move-injected");
+            }
+            if (drag_result == 1) drag_result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDown, drag_start);
+            if (drag_result == 1) drag_result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDragged, NSMakePoint(132.0, 96.0));
+            if (drag_result == 1) drag_result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseUp, NSMakePoint(132.0, 96.0));
+            if (drag_result != 1) NSLog(@"test map drag dispatch failed with result %d", drag_result);
+            NSString *marker = [[NSString stringWithUTF8String:ck_app_ui_pointer_dir] stringByAppendingPathComponent:@"map-drag-dispatched"];
+            [@"x" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            ck_app_ui_pointer_line("map-drag-dispatched");
+            });
+            dispatch_resume(ck_app_ui_pointer_timer);
+        });
+        dispatch_resume(ck_app_ui_pointer_timer);
     }];
 }
 

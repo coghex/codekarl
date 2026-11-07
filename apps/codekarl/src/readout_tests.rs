@@ -92,6 +92,7 @@ fn scene(log: &Log) -> Vec<Extension> {
     vec![
         Extension::new("render")
             .function("create_quad", create)
+            .function("set_hit", recording(log, "set_hit"))
             .function("set_position", recording(log, "set_position"))
             .function("set_rect", recording(log, "set_rect"))
             .function("destroy_quad", recording(log, "destroy")),
