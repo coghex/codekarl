@@ -87,6 +87,20 @@ fn quit_after_updates(rig: &mut Rig, count: usize) {
     }));
 }
 
+/// The fake clock follows the loop's deadlines, except while an update is outstanding (posted, not yet answered): then it waits for
+/// the test to move it, as the real clock would not run ahead of a test that is holding the UI.
+fn hold_the_clock_while_an_update_is_outstanding(rig: &mut Rig, clock: &FakeClock) {
+    let ui = Arc::clone(&rig.ui);
+    let clock = clock.clone();
+    rig.backend.deadline_hook = Some(Box::new(move |deadline| {
+        let updates = extract_updates(&ui.posted()).len();
+        let answered = ui.answered_updates.load(Ordering::SeqCst);
+        if updates <= answered {
+            clock.set(deadline);
+        }
+    }));
+}
+
 #[test]
 fn update_settings_validate_rate_and_representable_periods() {
     assert_eq!(
@@ -197,8 +211,20 @@ fn active_updates_use_the_deadline_grid_ack_input_and_bound_delta() {
             assert_eq!(sent[0].dt, Duration::ZERO);
             assert_eq!(sent[1].elapsed, Duration::from_nanos(16_666_666));
             assert_eq!(sent[2].elapsed, Duration::from_nanos(16_666_666));
-            assert!(sent[0].input.transitions.len() > sent[1].input.transitions.len());
-            assert!(sent[0].input.actions.iter().any(|action| action.pressed));
+            // The input is the tick's, consumed once: the first tick carries the press, the next ones nothing.
+            assert!(
+                ran.ticks.len() >= 3,
+                "a tick per update: {}",
+                ran.ticks.len()
+            );
+            assert!(ran.ticks[0].input.transitions.len() > ran.ticks[1].input.transitions.len());
+            assert!(
+                ran.ticks[0]
+                    .input
+                    .actions
+                    .iter()
+                    .any(|action| action.pressed)
+            );
             assert!(sent.iter().all(|event| event.metrics.points == (400, 300)));
             assert!(sent.iter().all(|event| event.metrics.pixels
                 == PixelSize {
@@ -244,20 +270,21 @@ fn pointer_events_reach_one_scheduled_update_and_idle_state_does_not_repeat_them
             let updates = extract_updates(&posts);
             assert_eq!(ran.end, LoopEnd::Quit);
             assert_eq!(updates.len(), 2);
+            assert!(ran.ticks.len() >= 2, "{}", ran.ticks.len());
             assert_eq!(
-                updates[0].input.pointer_events,
+                ran.ticks[0].input.pointer_events,
                 [
                     PointerEvent::Down(PointerPosition { x: 256, y: 512 }),
                     PointerEvent::Move(PointerPosition { x: 768, y: 1024 }),
                     PointerEvent::Up(PointerPosition { x: 768, y: 1024 }),
                 ]
             );
-            assert!(updates[1].input.pointer_events.is_empty());
+            assert!(ran.ticks[1].input.pointer_events.is_empty());
             assert_eq!(
-                updates[1].input.pointer_position,
+                ran.ticks[1].input.pointer_position,
                 Some(PointerPosition { x: 768, y: 1024 })
             );
-            assert!(!updates[1].input.pointer_held);
+            assert!(!ran.ticks[1].input.pointer_held);
         },
     );
 }
@@ -278,8 +305,7 @@ fn a_delayed_answer_coalesces_missed_ticks_into_one_update_with_elapsed_delta() 
                 updates_cfg.control().set(true);
                 rig.settings = LoopSettings::default().with_updates(updates_cfg);
                 rig.backend.deadline_supported = true;
-                let time = clock.clone();
-                rig.backend.deadline_hook = Some(Box::new(move |deadline| time.set(deadline)));
+                hold_the_clock_while_an_update_is_outstanding(&mut rig, &clock);
                 lock(&rig.presenter.reports).push_back(PresenterReport::FirstFrameQueued);
                 let ui = Arc::clone(&rig.ui);
                 let quit = Arc::clone(&rig.quit);
@@ -341,8 +367,7 @@ fn a_delayed_answer_counts_the_coalesced_opportunities_and_the_delivered_updates
             updates_cfg.control().set(true);
             rig.settings = LoopSettings::default().with_updates(updates_cfg);
             rig.backend.deadline_supported = true;
-            let time = clock.clone();
-            rig.backend.deadline_hook = Some(Box::new(move |deadline| time.set(deadline)));
+            hold_the_clock_while_an_update_is_outstanding(&mut rig, &clock);
             lock(&rig.presenter.reports).push_back(PresenterReport::FirstFrameQueued);
             let ui = Arc::clone(&rig.ui);
             let quit = Arc::clone(&rig.quit);
@@ -480,24 +505,25 @@ fn equal_held_action_displacement_is_independent_of_the_update_rate() {
                 let updates = usize::try_from(rate).expect("rate fits") + 1;
                 lock(&rig.ui.update_answers).extend(std::iter::repeat_n(Answer::Returned, updates));
                 quit_after_updates(&mut rig, updates);
-                let posts = rig.run_collect_with_clock(&clock).posts;
-                let sent = extract_updates(&posts);
+                let ran = rig.run_collect_with_clock(&clock);
+                let sent = extract_updates(&ran.posts);
                 assert_eq!(sent.len(), updates);
+                // The displacement is integrated over the input ticks (the map's input), at each tick's dt.
                 assert!(
-                    sent[0].input.actions.iter().any(|action| {
+                    ran.ticks[0].input.actions.iter().any(|action| {
                         action.name == "move_left" && action.held && action.pressed
                     })
                 );
-                let position = sent
+                let position = ran
+                    .ticks
                     .iter()
-                    .filter(|update| {
-                        update
-                            .input
+                    .filter(|tick| {
+                        tick.input
                             .actions
                             .iter()
                             .any(|action| action.name == "move_left" && action.held)
                     })
-                    .map(|update| 3.5 * update.dt.as_secs_f64())
+                    .map(|tick| 3.5 * tick.dt.as_secs_f64())
                     .sum::<f64>();
                 displacements.push((rate, position));
             }
@@ -571,11 +597,17 @@ fn focus_minimize_and_zero_size_pause_updates_and_clear_held_input() {
                 assert_eq!(sent.len(), 2, "a paused interval admitted no update");
                 assert_eq!(sent[0].dt, Duration::ZERO);
                 assert_eq!(sent[1].dt, Duration::ZERO, "resume has a fresh time origin");
-                assert!(sent[1].input.reset, "resume reports the input reset");
-                assert!(sent[1].input.transitions.iter().any(|transition| {
+                assert_eq!(ran.ticks.len(), 2, "a paused interval admitted no tick");
+                assert_eq!(
+                    ran.ticks[1].dt,
+                    Duration::ZERO,
+                    "resume has a fresh tick origin"
+                );
+                assert!(ran.ticks[1].input.reset, "resume reports the input reset");
+                assert!(ran.ticks[1].input.transitions.iter().any(|transition| {
                     transition.action == "move_left" && transition.edge == ck_input::Edge::Release
                 }));
-                assert!(sent[1].input.actions.iter().any(|action| {
+                assert!(ran.ticks[1].input.actions.iter().any(|action| {
                     action.name == "move_left" && !action.held && action.released
                 }));
                 assert_eq!(ran.end, LoopEnd::Quit);
@@ -619,8 +651,11 @@ fn opted_in_test_worker_keeps_updates_after_focus_loss_and_input_still_resets() 
             let ran = rig.run_collect_with_clock(&clock);
             let updates = extract_updates(&ran.posts);
             assert_eq!(updates.len(), 1);
-            assert!(updates[0].input.reset, "FocusLost still resets held input");
-            assert!(updates[0].input.actions.iter().all(|action| !action.held));
+            assert!(
+                ran.ticks[0].input.reset,
+                "FocusLost still resets held input"
+            );
+            assert!(ran.ticks[0].input.actions.iter().all(|action| !action.held));
             assert_eq!(ran.end, LoopEnd::Quit);
 
             let mut minimized = Rig::new();
@@ -652,10 +687,10 @@ fn opted_in_test_worker_keeps_updates_after_focus_loss_and_input_still_resets() 
 }
 
 #[test]
-fn full_update_post_keeps_input_edges_until_the_successful_snapshot_is_acknowledged() {
+fn a_full_update_post_neither_repeats_nor_loses_input_edges_which_the_tick_consumed_once() {
     owned(
         module_path!(),
-        "full_update_post_keeps_input_edges_until_the_successful_snapshot_is_acknowledged",
+        "a_full_update_post_neither_repeats_nor_loses_input_edges_which_the_tick_consumed_once",
         DEADLINE,
         || {
             let _scenario = scenario();
@@ -677,19 +712,36 @@ fn full_update_post_keeps_input_edges_until_the_successful_snapshot_is_acknowled
             rig.ui.full_update_posts.store(1, Ordering::SeqCst);
             lock(&rig.ui.update_answers).extend([Answer::Returned, Answer::Returned]);
             quit_after_updates(&mut rig, 2);
-            let posts = rig.run_collect_with_clock(&clock).posts;
-            let sent = extract_updates(&posts);
+            let ran = rig.run_collect_with_clock(&clock);
+            let sent = extract_updates(&ran.posts);
             assert_eq!(sent.len(), 2);
+            // The refused post changes nothing about the input: each edge reaches the link at its own tick, exactly once and in
+            // order, and the retried update carries no input of its own.
+            let edges: Vec<(String, ck_input::Edge)> = ran
+                .ticks
+                .iter()
+                .flat_map(|tick| tick.input.transitions.iter())
+                .map(|transition| (transition.action.clone(), transition.edge))
+                .collect();
+            assert_eq!(
+                edges,
+                [
+                    ("move_left".to_owned(), ck_input::Edge::Press),
+                    ("move_left".to_owned(), ck_input::Edge::Release),
+                ]
+            );
             assert!(
-                sent[0].input.actions.iter().any(|action| {
-                    action.name == "move_left" && action.pressed && action.released
+                ran.ticks[0]
+                    .input
+                    .actions
+                    .iter()
+                    .any(|action| { action.name == "move_left" && action.pressed && action.held })
+            );
+            assert!(
+                ran.ticks[1].input.actions.iter().any(|action| {
+                    action.name == "move_left" && action.released && !action.held
                 })
             );
-            assert_eq!(sent[0].input.transitions.len(), 2);
-            assert!(sent[1].input.transitions.is_empty());
-            assert!(sent[1].input.actions.iter().all(|action| {
-                action.name != "move_left" || (!action.pressed && !action.released)
-            }));
         },
     );
 }
@@ -977,4 +1029,349 @@ fn wait_for_update(ui: &crate::fakes::UiHandle, ordinal: usize) -> UpdateEvent {
         assert!(Instant::now() < deadline, "update {ordinal} was not posted");
         thread::yield_now();
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The input tick (milestone 8, slice 0): its own cursor on the update grid, independent of the UI
+// ---------------------------------------------------------------------------------------------
+
+/// Quits the loop at the first pump that finds `count` input ticks consumed.
+fn quit_after_ticks(rig: &mut Rig, count: usize) {
+    let ui = Arc::clone(&rig.ui);
+    let quit = Arc::clone(&rig.quit);
+    let notifier = Arc::clone(&rig.notifier);
+    rig.backend.hook = Some(Box::new(move |_| {
+        if ui.ticks().len() >= count {
+            quit.store(true, Ordering::SeqCst);
+            notifier.wake();
+        }
+    }));
+}
+
+fn left_press() -> NativeEvent {
+    NativeEvent::Key {
+        key: ck_window::Key::ArrowLeft,
+        down: true,
+        repeat: false,
+    }
+}
+
+#[test]
+fn a_tick_runs_at_each_due_opportunity_while_an_update_is_outstanding_and_a_press_arrives_once() {
+    owned(
+        module_path!(),
+        "a_tick_runs_at_each_due_opportunity_while_an_update_is_outstanding_and_a_press_arrives_once",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let clock = FakeClock::new();
+            let mut rig = Rig::new();
+            configure_updates(&mut rig, &clock, 60, Duration::from_millis(20));
+            rig.backend.script.push_back(vec![left_press()]);
+            // No answer is ever given: the first update stays outstanding for the whole run.
+            quit_after_ticks(&mut rig, 5);
+            let ran = rig.run_collect_with_clock(&clock);
+            assert_eq!(ran.end, LoopEnd::Quit);
+            assert_eq!(
+                extract_updates(&ran.posts).len(),
+                1,
+                "no second update is posted while the first is outstanding"
+            );
+            assert!(ran.ticks.len() >= 5, "{}", ran.ticks.len());
+            assert_eq!(
+                ran.ticks[0].dt,
+                Duration::ZERO,
+                "the first tick after activation"
+            );
+            for tick in &ran.ticks[1..] {
+                assert_eq!(
+                    tick.dt,
+                    Duration::from_nanos(16_666_666),
+                    "one period apart"
+                );
+            }
+            // Exactly once: the press reaches the link at one tick, and is never offered again once it was acknowledged.
+            let presses = ran
+                .ticks
+                .iter()
+                .flat_map(|tick| tick.input.transitions.iter())
+                .filter(|transition| transition.edge == ck_input::Edge::Press)
+                .count();
+            assert_eq!(presses, 1);
+            assert!(ran.ticks[1..].iter().all(|tick| {
+                tick.input.transitions.is_empty()
+                    && tick
+                        .input
+                        .actions
+                        .iter()
+                        .all(|action| !action.pressed && !action.released)
+            }));
+            assert!(
+                ran.ticks[1..].iter().all(|tick| tick
+                    .input
+                    .actions
+                    .iter()
+                    .any(|a| a.name == "move_left" && a.held)),
+                "the key stays held"
+            );
+            // The loop woke for the tick's opportunities, not only for the update's.
+            assert!(ran.deadlines.iter().flatten().count() >= 4);
+        },
+    );
+}
+
+#[test]
+fn opportunities_that_fell_due_together_coalesce_into_one_tick_with_a_capped_dt() {
+    owned(
+        module_path!(),
+        "opportunities_that_fell_due_together_coalesce_into_one_tick_with_a_capped_dt",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let clock = FakeClock::new();
+            let mut rig = Rig::new();
+            configure_updates(&mut rig, &clock, 60, Duration::from_millis(20));
+            lock(&rig.ui.update_answers).extend(std::iter::repeat_n(Answer::Returned, 4));
+            // Five periods (83.3 ms) pass in one step between the first tick and the next pass.
+            let fake_clock = clock.clone();
+            let ui = Arc::clone(&rig.ui);
+            let quit = Arc::clone(&rig.quit);
+            let notifier = Arc::clone(&rig.notifier);
+            rig.backend.hook = Some(Box::new(move |call| {
+                if call.index == 3 {
+                    fake_clock.set(fake_clock.after(Duration::from_millis(84)));
+                }
+                if ui.ticks().len() >= 2 {
+                    quit.store(true, Ordering::SeqCst);
+                    notifier.wake();
+                }
+            }));
+            let ran = rig.run_collect_with_clock(&clock);
+            assert_eq!(ran.end, LoopEnd::Quit);
+            assert_eq!(
+                ran.ticks.len(),
+                2,
+                "five periods, one tick: nothing is replayed"
+            );
+            assert_eq!(
+                ran.ticks[1].dt,
+                Duration::from_millis(20),
+                "capped at [frame] max_delta_seconds"
+            );
+        },
+    );
+}
+
+#[test]
+fn a_busy_pass_with_nothing_due_runs_no_tick() {
+    owned(
+        module_path!(),
+        "a_busy_pass_with_nothing_due_runs_no_tick",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let clock = FakeClock::new();
+            let mut rig = Rig::new();
+            configure_updates(&mut rig, &clock, 60, Duration::from_millis(20));
+            // The clock never moves: many passes run (each pump has an event), and only opportunity zero is ever due.
+            rig.backend.deadline_hook = None;
+            for _ in 0..10 {
+                rig.backend
+                    .script
+                    .push_back(vec![NativeEvent::NeedsDisplay]);
+            }
+            lock(&rig.ui.update_answers).extend(std::iter::repeat_n(Answer::Returned, 4));
+            let pumps = Arc::clone(&rig.backend.pumps);
+            let quit = Arc::clone(&rig.quit);
+            let notifier = Arc::clone(&rig.notifier);
+            rig.backend.hook = Some(Box::new(move |call| {
+                if call.index >= 8 {
+                    quit.store(true, Ordering::SeqCst);
+                    notifier.wake();
+                }
+            }));
+            let ran = rig.run_collect_with_clock(&clock);
+            assert_eq!(ran.end, LoopEnd::Quit);
+            assert!(lock(&pumps).len() >= 8, "the loop kept passing");
+            assert_eq!(ran.ticks.len(), 1, "only the first opportunity fell due");
+        },
+    );
+}
+
+#[test]
+fn no_tick_runs_while_unfocused_minimised_zero_sized_or_the_control_is_off() {
+    owned(
+        module_path!(),
+        "no_tick_runs_while_unfocused_minimised_zero_sized_or_the_control_is_off",
+        DEADLINE,
+        || {
+            for case in 0..4 {
+                let _scenario = scenario();
+                let clock = FakeClock::new();
+                let mut rig = Rig::new();
+                let control = configure_updates(&mut rig, &clock, 60, Duration::from_millis(20));
+                match case {
+                    0 => rig.backend.script.push_back(vec![NativeEvent::FocusLost]),
+                    1 => rig.backend.script.push_back(vec![NativeEvent::Minimized]),
+                    2 => rig
+                        .backend
+                        .script
+                        .push_back(vec![NativeEvent::PixelSizeChanged {
+                            width: 0,
+                            height: 0,
+                        }]),
+                    _ => control.set(false),
+                }
+                let quit = Arc::clone(&rig.quit);
+                let notifier = Arc::clone(&rig.notifier);
+                rig.backend.hook = Some(Box::new(move |call| {
+                    if call.wait == Wait::UntilEvent {
+                        quit.store(true, Ordering::SeqCst);
+                        notifier.wake();
+                    }
+                }));
+                let ran = rig.run_collect_with_clock(&clock);
+                assert_eq!(ran.end, LoopEnd::Quit, "case {case}");
+                assert!(ran.ticks.is_empty(), "case {case}: {}", ran.ticks.len());
+                assert!(extract_updates(&ran.posts).is_empty(), "case {case}");
+            }
+        },
+    );
+}
+
+#[test]
+fn ticks_continue_while_the_link_is_full_after_not_registered_and_with_a_close_outstanding() {
+    owned(
+        module_path!(),
+        "ticks_continue_while_the_link_is_full_after_not_registered_and_with_a_close_outstanding",
+        DEADLINE,
+        || {
+            // A link that refuses every update as full.
+            {
+                let _scenario = scenario();
+                let clock = FakeClock::new();
+                let mut rig = Rig::new();
+                configure_updates(&mut rig, &clock, 60, Duration::from_millis(20));
+                rig.ui.full_update_posts.store(1_000, Ordering::SeqCst);
+                quit_after_ticks(&mut rig, 4);
+                let ran = rig.run_collect_with_clock(&clock);
+                assert_eq!(ran.end, LoopEnd::Quit);
+                assert!(
+                    extract_updates(&ran.posts).is_empty(),
+                    "every post was refused"
+                );
+                assert!(ran.ticks.len() >= 4);
+            }
+            // The epoch is suppressed by a NotRegistered answer: no further update, and the ticks go on, woken by their own deadline.
+            {
+                let _scenario = scenario();
+                let clock = FakeClock::new();
+                let mut rig = Rig::new();
+                configure_updates(&mut rig, &clock, 60, Duration::from_millis(20));
+                lock(&rig.ui.update_answers).push_back(Answer::NotRegistered);
+                quit_after_ticks(&mut rig, 4);
+                let ran = rig.run_collect_with_clock(&clock);
+                assert_eq!(ran.end, LoopEnd::Quit);
+                assert_eq!(
+                    extract_updates(&ran.posts).len(),
+                    1,
+                    "the suppressed epoch posts no more"
+                );
+                assert!(ran.ticks.len() >= 4);
+            }
+            // A close request is outstanding (nobody answers it).
+            {
+                let _scenario = scenario();
+                let clock = FakeClock::new();
+                let mut rig = Rig::new();
+                configure_updates(&mut rig, &clock, 60, Duration::from_millis(20));
+                rig.backend.script.push_back(vec![NativeEvent::CloseButton]);
+                lock(&rig.ui.update_answers).extend(std::iter::repeat_n(Answer::Returned, 8));
+                quit_after_ticks(&mut rig, 4);
+                let ran = rig.run_collect_with_clock(&clock);
+                assert_eq!(ran.end, LoopEnd::Quit);
+                assert_eq!(
+                    ran.posts
+                        .iter()
+                        .filter(|event| matches!(event, UiEvent::CloseRequested { .. }))
+                        .count(),
+                    1
+                );
+                assert!(ran.ticks.len() >= 4);
+            }
+        },
+    );
+}
+
+/// The loop's measurement counts the UI cursor only: with ticks running and the UI refusing every post, `delivered` stays zero and
+/// `missed` counts each UI opportunity that was replaced by the next, as it did before the ticks existed.
+#[test]
+fn ticks_do_not_change_what_the_loop_measures_of_the_ui_updates() {
+    owned(
+        module_path!(),
+        "ticks_do_not_change_what_the_loop_measures_of_the_ui_updates",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let clock = FakeClock::new();
+            let metrics = LoopMetrics::new(Arc::new(|| 1_000_000_000));
+            metrics
+                .request(MetricsWindow {
+                    id: 1,
+                    start: 1_000_000_000,
+                    end: Some(2_000_000_000),
+                })
+                .expect("a first request");
+            let mut rig = Rig::new();
+            let updates_cfg = UpdateSettings::new(60, Duration::from_millis(20))
+                .expect("valid settings")
+                .with_metrics(metrics.clone());
+            updates_cfg.control().set(true);
+            rig.settings = LoopSettings::default().with_updates(updates_cfg);
+            rig.backend.deadline_supported = true;
+            let time = clock.clone();
+            rig.backend.deadline_hook = Some(Box::new(move |deadline| time.set(deadline)));
+            lock(&rig.presenter.reports).push_back(PresenterReport::FirstFrameQueued);
+            rig.ui.full_update_posts.store(1_000, Ordering::SeqCst);
+            quit_after_ticks(&mut rig, 6);
+            let ran = rig.run_collect_with_clock(&clock);
+            assert_eq!(ran.end, LoopEnd::Quit);
+            assert!(ran.ticks.len() >= 6);
+            let window = metrics.snapshot(1).expect("the window is kept").window;
+            assert_eq!(
+                window.stats.delivered, 0,
+                "only accepted posts are deliveries: {window:?}"
+            );
+            // Every opportunity the refusing UI let pass was replaced by the next and counted once, by its own due time: the ticks add
+            // nothing, and they take nothing away (the cursor that consumes them is not the UI cursor).
+            let ticks = u64::try_from(ran.ticks.len()).expect("a small count");
+            assert_eq!(window.stats.missed, ticks, "{window:?}");
+        },
+    );
+}
+
+#[test]
+fn a_failing_input_ends_the_loop_with_its_message_before_any_update_is_posted() {
+    owned(
+        module_path!(),
+        "a_failing_input_ends_the_loop_with_its_message_before_any_update_is_posted",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let clock = FakeClock::new();
+            let mut rig = Rig::new();
+            configure_updates(&mut rig, &clock, 60, Duration::from_millis(20));
+            rig.backend.script.push_back(vec![left_press()]);
+            *lock(&rig.ui.input_failure) = Some("the map update failed".to_owned());
+            let ran = rig.run_collect_with_clock(&clock);
+            assert_eq!(
+                ran.end,
+                LoopEnd::CallbackFailed {
+                    message: "the map update failed".to_owned()
+                }
+            );
+            assert!(ran.ticks.is_empty(), "the failing tick consumed nothing");
+            assert!(extract_updates(&ran.posts).is_empty());
+        },
+    );
 }

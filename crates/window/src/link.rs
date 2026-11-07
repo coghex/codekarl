@@ -48,7 +48,20 @@ pub struct UpdateEvent {
     pub dt: Duration,
     /// Window geometry at posting time.
     pub metrics: WindowMetrics,
-    /// Input snapshot captured at posting time.
+}
+
+/// One input tick: the input state taken on the loop's own schedule, independent of the UI VM (design `ui-design.md` §3.12).
+///
+/// A tick runs when the input cursor of the update grid has a due opportunity, however many fell due since the last one, and
+/// whether or not an update is outstanding, the link refused a post as full, a callback is registered or a close request is
+/// outstanding. The link consumes the snapshot; the loop acknowledges the mapper only after [`UiLink::input`] returned `Ok`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputTick {
+    /// Time since the previous tick, capped by `[frame] max_delta_seconds`; zero for the first tick after activation.
+    pub dt: Duration,
+    /// Window geometry at the tick.
+    pub metrics: WindowMetrics,
+    /// The input snapshot, taken at the tick.
     pub input: ck_input::InputSnapshot,
 }
 
@@ -96,6 +109,19 @@ pub trait UiLink {
     ///
     /// [`PostError::Full`] while the VM cannot take it now, [`PostError::Disconnected`] once it ended.
     fn post(&mut self, event: UiEvent) -> Result<(), PostError>;
+
+    /// Consumes one input tick on the main thread; never waits and never calls the UI VM's Lua.
+    ///
+    /// The default consumes nothing, for links that need no input outside their posted events (tests, headless fakes).
+    ///
+    /// # Errors
+    ///
+    /// The message ends the run as a failed callback does ([`LoopEnd::CallbackFailed`](crate::LoopEnd::CallbackFailed)); the
+    /// mapper is then not acknowledged.
+    fn input(&mut self, tick: &InputTick) -> Result<(), String> {
+        let _ = tick;
+        Ok(())
+    }
 
     /// The next answer, if one has arrived; never waits.
     fn take_answer(&mut self) -> Option<UiAnswer>;

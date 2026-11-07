@@ -7,8 +7,8 @@ use std::{
 
 use ck_lua::HostFunction;
 use ck_window::{
-    ActionSnapshot, Edge, InputSnapshot, PixelSize, PostError, Transition, UiEvent, UiLink,
-    UpdateEvent, WindowMetrics,
+    ActionSnapshot, Edge, InputSnapshot, InputTick, PixelSize, PostError, Transition, UiEvent,
+    UiLink, UpdateEvent, WindowMetrics,
 };
 
 use super::Harness as CoreHarness;
@@ -60,20 +60,32 @@ fn snapshot(transitions: Vec<Transition>, overflow: bool) -> InputSnapshot {
     }
 }
 
-fn update(sequence: u64, input: InputSnapshot) -> UiEvent {
+fn update(sequence: u64) -> UiEvent {
     UiEvent::Update(UpdateEvent {
         sequence,
         elapsed: Duration::from_millis(16),
         dt: Duration::from_millis(16),
-        metrics: WindowMetrics {
-            points: (100, 80),
-            pixels: PixelSize {
-                width: 200,
-                height: 160,
-            },
-        },
-        input,
+        metrics: metrics(),
     })
+}
+
+fn metrics() -> WindowMetrics {
+    WindowMetrics {
+        points: (100, 80),
+        pixels: PixelSize {
+            width: 200,
+            height: 160,
+        },
+    }
+}
+
+/// The input tick that gathered `input`: the time controls act on a press at its tick, not at the UI update.
+fn tick(input: InputSnapshot) -> InputTick {
+    InputTick {
+        dt: Duration::from_millis(16),
+        metrics: metrics(),
+        input,
+    }
 }
 
 /// A UI link with a simulation attached, and the receiving end of its control channel.
@@ -146,7 +158,7 @@ fn two_space_presses_in_one_snapshot_toggle_twice() {
         ],
         false,
     );
-    link.post(update(1, input)).expect("posted");
+    link.input(&tick(input)).expect("the tick");
     let messages = received(&receiver);
     assert_eq!(
         messages,
@@ -170,11 +182,11 @@ fn two_space_presses_in_one_snapshot_toggle_twice() {
 fn a_speed_then_pause_keeps_its_order_across_actions() {
     let harness = Harness::new("", Extras::default());
     let (mut link, receiver) = linked(&harness);
-    link.post(update(
-        1,
-        snapshot(vec![press("time_speed_3"), press("time_pause")], false),
-    ))
-    .expect("posted");
+    link.input(&tick(snapshot(
+        vec![press("time_speed_3"), press("time_pause")],
+        false,
+    )))
+    .expect("the tick");
     assert_eq!(
         received(&receiver),
         [
@@ -196,7 +208,7 @@ fn a_speed_then_pause_keeps_its_order_across_actions() {
 }
 
 #[test]
-fn a_refused_update_acts_on_nothing_and_the_next_accepted_one_acts_on_each_press_once() {
+fn a_press_acts_once_at_its_tick_whatever_happens_to_the_update_that_follows() {
     let gate = Gate::new();
     let hold: HostFunction = {
         let gate = Arc::clone(&gate);
@@ -217,43 +229,40 @@ fn a_refused_update_acts_on_nothing_and_the_next_accepted_one_acts_on_each_press
     for _ in 0..3 {
         link.post(UiEvent::Opened).expect("within the limit");
     }
+    // The presses act at the tick, with the UI full and the update refused (independent of the UI VM).
     let first = snapshot(vec![press("time_speed_4"), press("time_pause")], false);
-    assert_eq!(link.post(update(1, first)), Err(PostError::Full));
-    assert!(
-        received(&receiver).is_empty(),
-        "a refused post acts on nothing"
+    link.input(&tick(first)).expect("the tick");
+    assert_eq!(link.post(update(1)), Err(PostError::Full));
+    assert_eq!(
+        received(&receiver),
+        [
+            Message::Control(Control::Speed(4)),
+            Message::Control(Control::TogglePause),
+        ],
+        "the presses acted at their tick, though the update was refused"
     );
 
-    // The loop acknowledges only an accepted post, so the next snapshot still holds the first two presses and adds a third.
+    // The loop acknowledged the tick, so the next snapshot holds only what is new; the retried post repeats nothing.
     gate.open();
     for _ in 0..3 {
         while link.take_answer().is_none() {
             std::thread::yield_now();
         }
     }
-    let retained = snapshot(
-        vec![
-            press("time_speed_4"),
-            press("time_pause"),
-            press("game_quicksave"),
-        ],
-        false,
-    );
-    link.post(update(2, retained)).expect("accepted");
+    link.input(&tick(snapshot(vec![press("game_quicksave")], false)))
+        .expect("the tick");
+    link.post(update(2)).expect("accepted");
     assert_eq!(
         received(&receiver),
-        [
-            Message::Control(Control::Speed(4)),
-            Message::Control(Control::TogglePause),
-            Message::Control(Control::Quicksave)
-        ]
+        [Message::Control(Control::Quicksave)],
+        "only the new press acted; the accepted post acted on nothing"
     );
-    // After that acknowledgement the transitions are gone, so a later update acts on nothing.
     while link.take_answer().is_none() {
         std::thread::yield_now();
     }
-    link.post(update(3, snapshot(Vec::new(), false)))
-        .expect("accepted");
+    link.input(&tick(snapshot(Vec::new(), false)))
+        .expect("the tick");
+    link.post(update(3)).expect("accepted");
     assert!(received(&receiver).is_empty());
 }
 

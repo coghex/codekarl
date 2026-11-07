@@ -15,8 +15,8 @@ use ck_log::Level;
 
 use crate::backend::{Backend, NativeEvent, PixelSize, Wait};
 use crate::link::{
-    Answer, CleanupResult, CloseSource, PostError, Presenter, PresenterReport, UiAnswer, UiEvent,
-    UiLink, UpdateEvent, WindowMetrics,
+    Answer, CleanupResult, CloseSource, InputTick, PostError, Presenter, PresenterReport, UiAnswer,
+    UiEvent, UiLink, UpdateEvent, WindowMetrics,
 };
 use crate::metrics::LoopMetrics;
 use crate::notifier::Notifier;
@@ -162,7 +162,65 @@ struct OutstandingUpdate {
     epoch: u64,
 }
 
+/// The input tick's cursor on the update grid (origin and `[frame]` period), independent of the UI update cursor: its own next
+/// index and its own last tick. Opportunities that fall due between two ticks coalesce into one tick; nothing is replayed, and no
+/// tick runs between due opportunities.
+struct TickCursor {
+    active: bool,
+    origin: Option<Instant>,
+    next_index: u128,
+    /// An opportunity fell due and the tick has not run.
+    due: bool,
+    last_tick: Option<Instant>,
+}
+
+impl TickCursor {
+    fn new() -> Self {
+        Self {
+            active: false,
+            origin: None,
+            next_index: 0,
+            due: false,
+            last_tick: None,
+        }
+    }
+
+    /// Re-evaluates the cursor at `now`. `eligible` is what an update needs (the control enabled, `opened` posted, focused, not
+    /// minimised, a nonzero size) and nothing else: not an outstanding update, a full link, a suppressed epoch or a close request.
+    fn refresh(&mut self, now: Instant, eligible: bool, period: Duration) {
+        if !eligible {
+            *self = Self::new();
+            return;
+        }
+        if !self.active {
+            // Opportunity zero is the immediate first tick; the next grid point is one complete period later.
+            self.active = true;
+            self.origin = Some(now);
+            self.next_index = 1;
+            self.due = true;
+            self.last_tick = None;
+            return;
+        }
+        let Some(origin) = self.origin else { return };
+        let latest = now.saturating_duration_since(origin).as_nanos() / period.as_nanos().max(1);
+        if latest >= self.next_index {
+            self.due = true;
+            self.next_index = latest.saturating_add(1);
+        }
+    }
+
+    /// The instant of the next opportunity, while the cursor is active.
+    fn deadline(&self, period: Duration) -> Option<Instant> {
+        if !self.active {
+            return None;
+        }
+        self.origin?
+            .checked_add(multiply_duration(period, self.next_index)?)
+    }
+}
+
 struct UpdateScheduler {
+    ticks: TickCursor,
     settings: UpdateSettings,
     control: UpdateControl,
     metrics: Option<LoopMetrics>,
@@ -180,6 +238,7 @@ struct UpdateScheduler {
 impl UpdateScheduler {
     fn new(settings: UpdateSettings) -> Self {
         Self {
+            ticks: TickCursor::new(),
             control: settings.control(),
             metrics: settings.metrics().cloned(),
             settings,
@@ -504,21 +563,6 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         }
     }
 
-    /// A coherent snapshot of the input state, for the UI VM's input delivery (milestone 5-7); it consumes nothing.
-    #[expect(
-        dead_code,
-        reason = "milestone 5-7 reads the snapshot; this issue delivers no input to the UI VM"
-    )]
-    fn input_snapshot(&mut self) -> ck_input::InputSnapshot {
-        self.input.mapper.snapshot()
-    }
-
-    /// Acknowledges the edges up to a snapshot (milestone 5-7).
-    #[expect(dead_code, reason = "milestone 5-7 acknowledges the snapshot it took")]
-    fn acknowledge_input(&mut self, sequence: u128) {
-        self.input.mapper.acknowledge(sequence);
-    }
-
     fn quit_requested(&self) -> bool {
         self.quit.load(Ordering::SeqCst)
     }
@@ -584,20 +628,24 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
                 NativeEvent::NeedsDisplay => *redraw = true,
             };
             if let (Some(scheduler), Wait::UntilEvent) = (&self.updates, wait) {
-                if scheduler.active && scheduler.outstanding.is_none() {
-                    if let Some(deadline) = scheduler.deadline() {
-                        self.backend.pump_until(
-                            &mut record,
-                            deadline,
-                            self.settings.native_events(),
-                        );
-                    } else {
-                        self.backend.pump(
-                            &mut record,
-                            Wait::UntilEvent,
-                            self.settings.native_events(),
-                        );
-                    }
+                // The loop wakes for the earlier of the two cursors' next opportunities: the UI update's (only while it can post)
+                // and the input tick's (whether or not an update is outstanding).
+                let update_deadline = if scheduler.active && scheduler.outstanding.is_none() {
+                    scheduler.deadline()
+                } else {
+                    None
+                };
+                let tick_deadline = scheduler.ticks.deadline(scheduler.settings.period());
+                let deadline = match (update_deadline, tick_deadline) {
+                    (Some(update), Some(tick)) => Some(update.min(tick)),
+                    (update, tick) => update.or(tick),
+                };
+                if let Some(deadline) = deadline {
+                    self.backend
+                        .pump_until(&mut record, deadline, self.settings.native_events());
+                } else if scheduler.active && scheduler.outstanding.is_none() {
+                    self.backend
+                        .pump(&mut record, Wait::UntilEvent, self.settings.native_events());
                 } else {
                     self.backend
                         .pump(&mut record, wait, self.settings.native_events());
@@ -672,6 +720,10 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
             return Some(end);
         }
         self.refresh_updates(pass);
+        // The input tick: independent of the UI VM, so it runs before the update is offered (the update's input is the link's).
+        if let Some(end) = self.input_tick() {
+            return Some(end);
+        }
         let close_blocked = matches!(pass.close, CloseEvent::Blocked(_));
         if !close_blocked && let Some(end) = self.post_update(pass) {
             return Some(end);
@@ -706,6 +758,9 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
             && self.input.pixel_size.width != 0
             && self.input.pixel_size.height != 0;
         let now = self.clock.now();
+        scheduler
+            .ticks
+            .refresh(now, eligible, scheduler.settings.period());
         scheduler.refresh(now, eligible, epoch);
         if let Some(metrics) = &scheduler.metrics {
             // The loop has examined its schedule through `now`: the measurement windows' progress fence.
@@ -722,6 +777,40 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         }
     }
 
+    /// Runs one input tick when the tick cursor has a due opportunity: the mapper's snapshot goes to the link, and the mapper is
+    /// acknowledged only after the link took it. `Some` is the end of the loop (the link's input failed).
+    fn input_tick(&mut self) -> Option<LoopEnd> {
+        let scheduler = self.updates.as_mut()?;
+        if !scheduler.ticks.active || !scheduler.ticks.due {
+            return None;
+        }
+        let now = self.clock.now();
+        let elapsed = scheduler
+            .ticks
+            .last_tick
+            .map_or(Duration::ZERO, |last| now.saturating_duration_since(last));
+        let dt = elapsed.min(scheduler.settings.max_delta());
+        scheduler.ticks.due = false;
+        scheduler.ticks.last_tick = Some(now);
+        let snapshot = self.input.mapper.snapshot();
+        let input_sequence = snapshot.sequence;
+        let tick = InputTick {
+            dt,
+            metrics: WindowMetrics {
+                points: self.points,
+                pixels: self.input.pixel_size,
+            },
+            input: snapshot,
+        };
+        match self.ui.input(&tick) {
+            Ok(()) => {
+                self.input.mapper.acknowledge(input_sequence);
+                None
+            }
+            Err(message) => Some(LoopEnd::CallbackFailed { message }),
+        }
+    }
+
     fn post_update(&mut self, _pass: &mut Pass) -> Option<LoopEnd> {
         let Some(scheduler) = &mut self.updates else {
             return None;
@@ -735,8 +824,6 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
             .map_or(Duration::ZERO, |last| now.saturating_duration_since(last));
         let dt = elapsed.min(scheduler.settings.max_delta());
         let sequence = scheduler.sequence.saturating_add(1);
-        let snapshot = self.input.mapper.snapshot();
-        let input_sequence = snapshot.sequence;
         let event = UiEvent::Update(UpdateEvent {
             sequence,
             elapsed,
@@ -745,14 +832,12 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
                 points: self.points,
                 pixels: self.input.pixel_size,
             },
-            input: snapshot,
         });
         match self.ui.post(event) {
             Ok(()) => {
                 if let Some(metrics) = &scheduler.metrics {
                     metrics.delivered(now);
                 }
-                self.input.mapper.acknowledge(input_sequence);
                 scheduler.sequence = sequence;
                 scheduler.last_post = Some(now);
                 scheduler.pending = None;

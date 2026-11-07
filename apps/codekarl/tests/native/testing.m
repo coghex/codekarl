@@ -413,7 +413,7 @@ void ck_app_t_schedule_sim_keys(void) {
 /* Posts the marked keys the test asks for, one at a time, once AppKit reports a visible window. The environment names a directory;
  * the test writes a file `NNN.key` there for each key it wants pressed, holding `<hexadecimal key code>:<characters>`, and the
  * poll (on the main queue, every 5 ms) taps each such file's key (a key-down and a key-up, marked) in name order, then renames
- * the file to `NNN.key.done`. So the keys are ordered by what the test has seen happen, not by a count or a delay. */
+ * the file to `NNN.key.done`. A file holding `D<hex>:<characters>` presses the key and leaves it down; `U<hex>:` lets it up. So the keys are ordered by what the test has seen happen, not by a count or a delay. */
 void ck_app_t_schedule_key_files(void) {
     const char *dir = getenv("CK_WINDOWED_TEST_KEY_FILES");
     if (dir == NULL) {
@@ -453,8 +453,21 @@ void ck_app_t_schedule_key_files(void) {
                     continue;
                 }
                 unsigned code = 0;
-                if ([[NSScanner scannerWithString:[text substringToIndex:colon.location]] scanHexInt:&code]) {
-                    ck_app_tap((uint16_t)code, [text substringFromIndex:colon.location + 1].UTF8String);
+                /* A leading "D" holds the key down and a leading "U" lets it up (a map pan held while the UI is held); no
+                 * prefix is a tap. */
+                NSString *head = [text substringToIndex:colon.location];
+                int hold = 0;
+                if ([head hasPrefix:@"D"] || [head hasPrefix:@"U"]) {
+                    hold = [head hasPrefix:@"D"] ? 1 : 2;
+                    head = [head substringFromIndex:1];
+                }
+                if ([[NSScanner scannerWithString:head] scanHexInt:&code]) {
+                    const char *characters = [text substringFromIndex:colon.location + 1].UTF8String;
+                    if (hold == 0) {
+                        ck_app_tap((uint16_t)code, characters);
+                    } else {
+                        ck_app_hold((uint16_t)code, characters, hold == 1);
+                    }
                 }
                 [NSFileManager.defaultManager moveItemAtPath:path
                                                       toPath:[path stringByAppendingString:@".done"]

@@ -27,8 +27,12 @@ use std::rc::Rc;
 use std::collections::BTreeMap;
 
 use ck_lua::{CallId, CallOutcome, ConfigValue, VmError, VmOwner, VmState};
-use ck_window::{Answer, CloseSource, Edge, PostError, UiAnswer, UiEvent, UiLink, UpdateEvent};
+use ck_window::{
+    Answer, CloseSource, Edge, InputTick, PostError, UiAnswer, UiEvent, UiLink, UpdateEvent,
+};
 
+use crate::frame_api::FrameRegistration;
+use crate::input_stash::InputStash;
 use crate::vm::UI_CALL_LIMIT;
 use crate::window_api::{CLOSE_REQUEST, FRAME_UPDATE, OPENED};
 
@@ -45,7 +49,10 @@ pub(crate) type UiSlot = Rc<RefCell<Option<UiVm>>>;
 ///
 /// An update whose sequence is not a Lua integer (above `i64::MAX`): the call is not built, so no callback is ever given
 /// an altered identity.
-fn call_of(event: &UiEvent) -> Result<(&'static str, Vec<ConfigValue>), String> {
+fn call_of(
+    event: &UiEvent,
+    stash: &InputStash,
+) -> Result<(&'static str, Vec<ConfigValue>), String> {
     Ok(match event {
         UiEvent::Opened => (OPENED, Vec::new()),
         UiEvent::CloseRequested { source } => (
@@ -58,7 +65,7 @@ fn call_of(event: &UiEvent) -> Result<(&'static str, Vec<ConfigValue>), String> 
                 .to_owned(),
             )],
         ),
-        UiEvent::Update(update) => (FRAME_UPDATE, vec![update_table(update)?]),
+        UiEvent::Update(update) => (FRAME_UPDATE, vec![update_table(update, stash)?]),
     })
 }
 
@@ -74,12 +81,13 @@ fn boolean(value: bool) -> ConfigValue {
 /// The table a `frame_update` callback is given (design §8.2): `dt`, `elapsed` (seconds), `sequence`; the window in
 /// points (`width`, `height`) and in pixels (`pixel_width`, `pixel_height`); `actions`, one entry per action name of
 /// the run's bindings, unbound ones included, each `{held, pressed, released}`; `transitions`, the ordered edges as
-/// `{action = name, kind = "press" | "release"}`; and `overflow`, `reset`. Built from `ConfigValue` only (no `mlua`
-/// type), in O(actions + transitions), both bounded by the input snapshot.
+/// `{action = name, kind = "press" | "release"}`; and `overflow`, `reset`. The input fields come from the stash (what the input
+/// ticks gathered since the last accepted post); the rest from the event. Built from `ConfigValue` only (no `mlua` type), in
+/// O(actions + transitions), both bounded by the stash.
 ///
 /// The sequence is a `u64` and a script's integer an `i64`; a sequence above `i64::MAX` is an error (never saturated or
 /// wrapped), which the link turns into a terminal failure.
-fn update_table(update: &UpdateEvent) -> Result<ConfigValue, String> {
+fn update_table(update: &UpdateEvent, stash: &InputStash) -> Result<ConfigValue, String> {
     let sequence = i64::try_from(update.sequence).map_err(|_| {
         format!(
             "frame_update sequence {} does not fit a Lua integer (at most {})",
@@ -87,13 +95,11 @@ fn update_table(update: &UpdateEvent) -> Result<ConfigValue, String> {
             i64::MAX
         )
     })?;
-    let actions = update
-        .input
-        .actions
-        .iter()
-        .map(|action| {
+    let actions = stash
+        .actions()
+        .map(|(name, action)| {
             (
-                action.name.clone(),
+                name.to_owned(),
                 ConfigValue::Table(BTreeMap::from([
                     ("held".to_owned(), boolean(action.held)),
                     ("pressed".to_owned(), boolean(action.pressed)),
@@ -102,10 +108,8 @@ fn update_table(update: &UpdateEvent) -> Result<ConfigValue, String> {
             )
         })
         .collect();
-    let transitions = update
-        .input
-        .transitions
-        .iter()
+    let transitions = stash
+        .transitions()
         .map(|transition| {
             ConfigValue::Table(BTreeMap::from([
                 (
@@ -144,8 +148,8 @@ fn update_table(update: &UpdateEvent) -> Result<ConfigValue, String> {
         ),
         ("actions".to_owned(), ConfigValue::Table(actions)),
         ("transitions".to_owned(), ConfigValue::Array(transitions)),
-        ("overflow".to_owned(), boolean(update.input.overflow)),
-        ("reset".to_owned(), boolean(update.input.reset)),
+        ("overflow".to_owned(), boolean(stash.overflow())),
+        ("reset".to_owned(), boolean(stash.reset())),
     ])))
 }
 
@@ -207,6 +211,10 @@ struct State {
     failure: RefCell<Option<String>>,
     /// A post reported that the VM ended.
     disconnected: Cell<bool>,
+    /// The input the UI VM has not been given yet; cleared when a post carrying it was accepted.
+    stash: RefCell<InputStash>,
+    /// The `frame.on_update` registration generation the previous input tick saw.
+    seen_generation: Cell<u64>,
 }
 
 #[derive(Default)]
@@ -231,6 +239,8 @@ pub(crate) struct CodekarlUi {
     state: Rc<State>,
     map: Option<crate::map_app::SharedController>,
     sim: Option<SimLink>,
+    /// Whether the UI VM has a `frame_update` callback, as the setter's observer published it; `None` counts as registered.
+    registration: Option<FrameRegistration>,
 }
 
 /// The simulation owner as the UI link sees it: where presses go, and what it published.
@@ -252,6 +262,7 @@ impl CodekarlUi {
             state: Rc::new(State::default()),
             map: None,
             sim: None,
+            registration: None,
         }
     }
 
@@ -261,7 +272,14 @@ impl CodekarlUi {
             state: Rc::new(State::default()),
             map: Some(map),
             sim: None,
+            registration: None,
         }
+    }
+
+    /// This link reading the UI VM's `frame.on_update` registration from `registration`, which the setter's observer writes.
+    pub(crate) fn with_registration(mut self, registration: FrameRegistration) -> Self {
+        self.registration = Some(registration);
+        self
     }
 
     /// This link with the simulation owner attached: it carries the update's time presses to the owner, and ends the run when
@@ -334,6 +352,26 @@ impl CodekarlUi {
             failures.extend(step);
         }
         failures
+    }
+}
+
+impl CodekarlUi {
+    /// Reads the `frame.on_update` registration once and applies a change of it to `stash`: when the generation differs from the one
+    /// last seen, everything that was an event is dropped (each action's latest `held` stays), whether the new state is registered or
+    /// not. Returns whether a callback is registered. Called by every tick and by every update post, so the boundary is the first of
+    /// them that observes the new generation, and an update posted before the next tick (the control epoch restarts the UI cursor
+    /// at once) can never carry what an earlier registration gathered. With no registration attached the callback counts as
+    /// registered, always.
+    fn observe_registration(&self, stash: &mut InputStash) -> bool {
+        let Some(registration) = &self.registration else {
+            return true;
+        };
+        let (generation, registered) = registration.state();
+        if generation != self.state.seen_generation.get() {
+            stash.clear();
+            self.state.seen_generation.set(generation);
+        }
+        registered
     }
 }
 
@@ -483,16 +521,6 @@ impl CodekarlUi {
             let (_, event) = pending.remove(position)?;
             drop(pending);
             let answer = answer_of(&event, result.outcome);
-            let answer = if self.map.is_some()
-                && matches!(&event, UiEvent::Update(_))
-                && matches!(answer, Answer::NotRegistered)
-            {
-                // The map controller consumes paced updates even when Lua has no frame_update callback. Returning a successful
-                // synthetic answer keeps the scheduler's registration epoch alive without changing Lua's callback contract.
-                Answer::Returned
-            } else {
-                answer
-            };
             return Some(Taken::Answer(UiAnswer { event, answer }));
         }
     }
@@ -549,7 +577,10 @@ impl UiLink for CodekarlUi {
         if matches!(event, UiEvent::Update(_)) && self.outstanding() >= UI_CALL_LIMIT - 1 {
             return Err(PostError::Full);
         }
-        let (callback, arguments) = match call_of(&event) {
+        if matches!(event, UiEvent::Update(_)) {
+            self.observe_registration(&mut self.state.stash.borrow_mut());
+        }
+        let (callback, arguments) = match call_of(&event, &self.state.stash.borrow()) {
             Ok(call) => call,
             Err(message) => {
                 // Nothing was posted: the failure is the link's terminal one, as a VM failure is, and the loop
@@ -561,28 +592,12 @@ impl UiLink for CodekarlUi {
         let posted = vm.borrow_mut().post(callback, arguments);
         match posted {
             Ok(id) => {
-                let map_result = match (&self.map, &event) {
-                    (Some(map), UiEvent::Update(update)) => {
-                        crate::map_app::lock(map).update(update).map(|_| ())
-                    }
-                    _ => Ok(()),
-                };
-                // Only after the UI VM accepted the post: a refused update leaves its transitions in the snapshot for the next
-                // accepted one, so a press is acted on exactly once.
-                if let (Some(sim), UiEvent::Update(update)) = (&self.sim, &event)
-                    && sim.controls.send(&update.input)
-                {
-                    crate::lifecycle::emit(
-                        ck_log::Level::Warn,
-                        "sim",
-                        format_args!("{}", crate::game::controls::OVERFLOW_RECORD),
-                    );
+                // Only the VM's acceptance clears the stash: a refused post leaves it for the next one. The map and the time
+                // controls took this input at its tick, so a retried post can never repeat them.
+                if matches!(event, UiEvent::Update(_)) {
+                    self.state.stash.borrow_mut().clear();
                 }
                 self.state.pending.borrow_mut().push_back((id, event));
-                if let Err(message) = map_result {
-                    *self.state.failure.borrow_mut() = Some(message);
-                    return Err(PostError::Disconnected);
-                }
                 Ok(())
             }
             Err(VmError::Full { .. }) => Err(PostError::Full),
@@ -592,6 +607,33 @@ impl UiLink for CodekarlUi {
                 Err(PostError::Disconnected)
             }
         }
+    }
+
+    /// One input tick, on the main thread, never waiting: the map controller and the time controls take it, and the UI's share goes
+    /// to the stash (trimmed as the `frame.on_update` registration says).
+    fn input(&mut self, tick: &InputTick) -> Result<(), String> {
+        if let Some(map) = &self.map {
+            crate::map_app::lock(map).update(tick)?;
+        }
+        if let Some(sim) = &self.sim
+            && sim.controls.send(&tick.input)
+        {
+            crate::lifecycle::emit(
+                ck_log::Level::Warn,
+                "sim",
+                format_args!("{}", crate::game::controls::OVERFLOW_RECORD),
+            );
+        }
+        let mut stash = self.state.stash.borrow_mut();
+        // A registration since the previous look at it (a tick or a post): what was gathered before it is never delivered.
+        let registered = self.observe_registration(&mut stash);
+        if registered {
+            stash.absorb(&tick.input);
+        } else {
+            // No callback: the stash follows only each action's held state, and everything that was an event is dropped.
+            stash.follow_held(&tick.input);
+        }
+        Ok(())
     }
 
     fn take_answer(&mut self) -> Option<UiAnswer> {
@@ -624,6 +666,9 @@ impl UiLink for CodekarlUi {
         matches!(vm.state(), VmState::Ending | VmState::Finished) || vm.is_finished()
     }
 }
+
+#[cfg(test)]
+mod input_tick_tests;
 
 #[cfg(test)]
 mod tests {
@@ -720,10 +765,11 @@ mod tests {
 
     #[test]
     fn every_event_is_a_posted_call_with_its_arguments() {
-        assert_eq!(call_of(&UiEvent::Opened), Ok(("opened", Vec::new())));
+        let none = InputStash::default();
+        assert_eq!(call_of(&UiEvent::Opened, &none), Ok(("opened", Vec::new())));
         for (source, text) in [(CloseSource::Button, "button"), (CloseSource::Key, "key")] {
             assert_eq!(
-                call_of(&UiEvent::CloseRequested { source }),
+                call_of(&UiEvent::CloseRequested { source }, &none),
                 Ok(("close_request", vec![ConfigValue::String(text.to_owned())]))
             );
         }
@@ -863,6 +909,7 @@ mod tests {
             }
         };
         let mut first = update(1);
+        let mut first_input = known_input();
         let UiEvent::Update(first) = &mut first else {
             unreachable!();
         };
@@ -871,8 +918,8 @@ mod tests {
             width: 800,
             height: 480,
         };
-        first.input.pointer_position = Some(pointer);
-        first.input.pointer_events = vec![
+        first_input.pointer_position = Some(pointer);
+        first_input.pointer_events = vec![
             ck_window::PointerEvent::Scroll {
                 position: pointer,
                 amount: 15 * 256,
@@ -880,8 +927,8 @@ mod tests {
             },
             ck_window::PointerEvent::Move(pointer),
         ];
-        first.input.actions = vec![action("map_pan_left", false, true, true)];
-        first.input.transitions = vec![
+        first_input.actions = vec![action("map_pan_left", false, true, true)];
+        first_input.transitions = vec![
             Transition {
                 action: "map_pan_left".to_owned(),
                 edge: Edge::Press,
@@ -891,12 +938,13 @@ mod tests {
                 edge: Edge::Release,
             },
         ];
-        link.post(UiEvent::Update(first.clone()))
+        post_after_tick(&mut link, UiEvent::Update(first.clone()), first_input)
             .expect("first update posted");
 
         // Model more dropped owner input arriving after the pointer move, before the link gets a
         // chance to publish the controller's hover to the UI VM.
         let mut interleaved_keys = update(2);
+        let mut interleaved_keys_input = known_input();
         let UiEvent::Update(interleaved_keys) = &mut interleaved_keys else {
             unreachable!();
         };
@@ -905,9 +953,9 @@ mod tests {
             width: 800,
             height: 480,
         };
-        interleaved_keys.input.pointer_position = Some(pointer);
-        interleaved_keys.input.actions = vec![action("map_zoom_out", false, true, true)];
-        interleaved_keys.input.transitions = vec![
+        interleaved_keys_input.pointer_position = Some(pointer);
+        interleaved_keys_input.actions = vec![action("map_zoom_out", false, true, true)];
+        interleaved_keys_input.transitions = vec![
             Transition {
                 action: "map_zoom_out".to_owned(),
                 edge: Edge::Press,
@@ -917,14 +965,19 @@ mod tests {
                 edge: Edge::Release,
             },
         ];
-        link.post(UiEvent::Update(interleaved_keys.clone()))
-            .expect("interleaved key update posted");
+        post_after_tick(
+            &mut link,
+            UiEvent::Update(interleaved_keys.clone()),
+            interleaved_keys_input,
+        )
+        .expect("interleaved key update posted");
 
         let _ = answer(&mut link);
         wait_for_count(&mut link, 1);
         assert_eq!(seen.lock().unwrap().as_slice(), ["Fixture Town"]);
 
         let mut still = update(3);
+        let mut still_input = known_input();
         let UiEvent::Update(still) = &mut still else {
             unreachable!();
         };
@@ -933,8 +986,8 @@ mod tests {
             width: 800,
             height: 480,
         };
-        still.input.pointer_position = Some(pointer);
-        link.post(UiEvent::Update(still.clone()))
+        still_input.pointer_position = Some(pointer);
+        post_after_tick(&mut link, UiEvent::Update(still.clone()), still_input)
             .expect("still update posted");
         let _ = answer(&mut link);
         for _ in 0..5 {
@@ -944,6 +997,7 @@ mod tests {
         assert_eq!(seen.lock().unwrap().as_slice(), ["Fixture Town"]);
 
         let mut pan = update(4);
+        let mut pan_input = known_input();
         let UiEvent::Update(pan) = &mut pan else {
             unreachable!();
         };
@@ -952,9 +1006,9 @@ mod tests {
             width: 800,
             height: 480,
         };
-        pan.input.actions = vec![action("map_pan_right", true, false, false)];
-        pan.input.pointer_position = Some(pointer);
-        link.post(UiEvent::Update(pan.clone()))
+        pan_input.actions = vec![action("map_pan_right", true, false, false)];
+        pan_input.pointer_position = Some(pointer);
+        post_after_tick(&mut link, UiEvent::Update(pan.clone()), pan_input)
             .expect("pan update posted");
         let _ = answer(&mut link);
         wait_for_count(&mut link, 2);
@@ -964,6 +1018,7 @@ mod tests {
         );
 
         let mut leave = update(5);
+        let mut leave_input = known_input();
         let UiEvent::Update(leave) = &mut leave else {
             unreachable!();
         };
@@ -972,11 +1027,11 @@ mod tests {
             width: 800,
             height: 480,
         };
-        leave.input.pointer_position = Some(ck_window::PointerPosition {
+        leave_input.pointer_position = Some(ck_window::PointerPosition {
             x: 401 * 256,
             y: 12 * 256,
         });
-        link.post(UiEvent::Update(leave.clone()))
+        post_after_tick(&mut link, UiEvent::Update(leave.clone()), leave_input)
             .expect("leave update posted");
         let _ = answer(&mut link);
         wait_for_count(&mut link, 3);
@@ -1030,49 +1085,91 @@ mod tests {
         }
     }
 
-    /// An update with a known snapshot: `move_left` held, `reload_texture` tapped, `move_up` unbound and untouched.
+    /// A paced update event (its input is the stash's, gathered by the ticks before it).
     fn update(sequence: u64) -> UiEvent {
         UiEvent::Update(UpdateEvent {
             sequence,
             elapsed: Duration::from_millis(500),
             dt: Duration::from_millis(250),
-            metrics: WindowMetrics {
-                points: (100, 80),
-                pixels: PixelSize {
-                    width: 200,
-                    height: 160,
-                },
-            },
-            input: InputSnapshot {
-                sequence: 7,
-                actions: vec![
-                    action("move_left", true, true, false),
-                    action("move_up", false, false, false),
-                    action("reload_texture", false, true, true),
-                ],
-                transitions: vec![
-                    Transition {
-                        action: "move_left".to_owned(),
-                        edge: Edge::Press,
-                    },
-                    Transition {
-                        action: "reload_texture".to_owned(),
-                        edge: Edge::Press,
-                    },
-                    Transition {
-                        action: "reload_texture".to_owned(),
-                        edge: Edge::Release,
-                    },
-                ],
-                overflow: true,
-                pointer_events: Vec::new(),
-                pointer_position: None,
-                pointer_held: false,
-                pointer_overflow: false,
-                reset: false,
-                overflow_count: 3,
-            },
+            metrics: known_metrics(),
         })
+    }
+
+    fn known_metrics() -> WindowMetrics {
+        WindowMetrics {
+            points: (100, 80),
+            pixels: PixelSize {
+                width: 200,
+                height: 160,
+            },
+        }
+    }
+
+    /// A known snapshot: `move_left` held, `reload_texture` tapped, `move_up` unbound and untouched.
+    fn known_input() -> InputSnapshot {
+        InputSnapshot {
+            sequence: 7,
+            actions: vec![
+                action("move_left", true, true, false),
+                action("move_up", false, false, false),
+                action("reload_texture", false, true, true),
+            ],
+            transitions: vec![
+                Transition {
+                    action: "move_left".to_owned(),
+                    edge: Edge::Press,
+                },
+                Transition {
+                    action: "reload_texture".to_owned(),
+                    edge: Edge::Press,
+                },
+                Transition {
+                    action: "reload_texture".to_owned(),
+                    edge: Edge::Release,
+                },
+            ],
+            overflow: true,
+            pointer_events: Vec::new(),
+            pointer_position: None,
+            pointer_held: false,
+            pointer_overflow: false,
+            reset: false,
+            overflow_count: 3,
+        }
+    }
+
+    /// The tick that gathered `known_input()`.
+    fn known_tick() -> InputTick {
+        InputTick {
+            dt: Duration::from_millis(250),
+            metrics: known_metrics(),
+            input: known_input(),
+        }
+    }
+
+    /// The stash after one tick of `input`.
+    fn stash_of(input: &InputSnapshot) -> InputStash {
+        let mut stash = InputStash::default();
+        stash.absorb(input);
+        stash
+    }
+
+    /// What the loop does: the input tick of `input` first, then the update that is offered to the UI.
+    fn post_after_tick(
+        link: &mut CodekarlUi,
+        event: UiEvent,
+        input: InputSnapshot,
+    ) -> Result<(), PostError> {
+        let UiEvent::Update(update) = &event else {
+            unreachable!("an update");
+        };
+        link.input(&InputTick {
+            dt: update.dt,
+            metrics: update.metrics,
+            input,
+        })
+        .expect("the tick is consumed");
+        link.post(event)
     }
 
     fn flags(held: bool, pressed: bool, released: bool) -> ConfigValue {
@@ -1126,7 +1223,7 @@ mod tests {
         // Negative control: a wrong name, a missing key, an unbound action left out or a transition's kind swapped
         // changes this exact value.
         assert_eq!(
-            call_of(&update(5)),
+            call_of(&update(5), &stash_of(&known_input())),
             Ok(("frame_update", vec![expected_table(5)]))
         );
         assert_eq!(name_of(&update(5)), FRAME_UPDATE);
@@ -1138,13 +1235,14 @@ mod tests {
         // below fail (a callback would be given i64::MAX for 2^63) or the failure text absent.
         let top = u64::try_from(i64::MAX).expect("positive");
         assert_eq!(
-            call_of(&update(top)),
+            call_of(&update(top), &stash_of(&known_input())),
             Ok(("frame_update", vec![expected_table(i64::MAX)]))
         );
-        let message = call_of(&update(top + 1)).expect_err("2^63 is not a Lua integer");
+        let message = call_of(&update(top + 1), &InputStash::default())
+            .expect_err("2^63 is not a Lua integer");
         assert!(message.contains(&(top + 1).to_string()), "{message}");
         assert!(message.contains("Lua integer"), "{message}");
-        assert!(call_of(&update(u64::MAX)).is_err());
+        assert!(call_of(&update(u64::MAX), &InputStash::default()).is_err());
     }
 
     #[test]
@@ -1181,12 +1279,12 @@ mod tests {
 
     #[test]
     fn an_update_with_no_actions_and_no_transitions_has_empty_collections() {
-        let UiEvent::Update(mut event) = update(1) else {
-            unreachable!("update() is an update");
-        };
-        event.input.actions.clear();
-        event.input.transitions.clear();
-        let (_, arguments) = call_of(&UiEvent::Update(event)).expect("a call");
+        // A stash of an input with no actions and no transitions.
+        let mut input = known_input();
+        input.actions.clear();
+        input.transitions.clear();
+        input.overflow = false;
+        let (_, arguments) = call_of(&update(1), &stash_of(&input)).expect("a call");
         let ConfigValue::Table(table) = &arguments[0] else {
             panic!("a table: {arguments:?}");
         };
@@ -1259,7 +1357,7 @@ mod tests {
             vec![("record", record)],
         );
         let mut link = harness.ui.clone();
-        link.post(update(9)).expect("posted");
+        post_after_tick(&mut link, update(9), known_input()).expect("posted");
         let got = answer(&mut link);
         assert_eq!(got.answer, Answer::Returned);
         assert_eq!(got.event, update(9));
@@ -1840,17 +1938,14 @@ mod tests {
             x: 200 * 256,
             y: 120 * 256,
         };
-        let mut event = update(1);
-        let UiEvent::Update(update) = &mut event else {
-            unreachable!();
-        };
-        update.metrics.points = (400, 240);
-        update.metrics.pixels = PixelSize {
+        let mut tick = known_tick();
+        tick.metrics.points = (400, 240);
+        tick.metrics.pixels = PixelSize {
             width: 800,
             height: 480,
         };
-        update.input.pointer_position = Some(pointer);
-        update.input.pointer_events = vec![
+        tick.input.pointer_position = Some(pointer);
+        tick.input.pointer_events = vec![
             ck_window::PointerEvent::Scroll {
                 position: pointer,
                 amount: 15 * 256,
@@ -1858,11 +1953,8 @@ mod tests {
             },
             ck_window::PointerEvent::Move(pointer),
         ];
-        let UiEvent::Update(controller_update) = &event else {
-            unreachable!();
-        };
         crate::map_app::lock(&map)
-            .update(controller_update)
+            .update(&tick)
             .expect("the direct controller replay succeeds");
         assert_eq!(
             crate::map_app::lock(&map)
@@ -1960,10 +2052,7 @@ mod tests {
             x: 200 * 256,
             y: 120 * 256,
         };
-        let mut marker_event = update(2);
-        let UiEvent::Update(marker) = &mut marker_event else {
-            unreachable!();
-        };
+        let mut marker = known_tick();
         marker.metrics.points = (400, 240);
         marker.metrics.pixels = PixelSize {
             width: 800,
@@ -1972,7 +2061,7 @@ mod tests {
         marker.input.pointer_position = Some(pointer);
         marker.input.pointer_events = vec![ck_window::PointerEvent::Move(pointer)];
         crate::map_app::lock(&map)
-            .update(marker)
+            .update(&marker)
             .expect("the marker hover is produced");
         link.deliver_updates();
         assert_eq!(link.outstanding_names(), ["frame_update", "game_hover"]);
@@ -1983,10 +2072,7 @@ mod tests {
 
         // Keep changing the latest hover while all places are occupied. The already-posted hover
         // remains in flight, so the latest hover cannot be sent until that result is drained.
-        let mut latest = update(4);
-        let UiEvent::Update(latest) = &mut latest else {
-            unreachable!();
-        };
+        let mut latest = known_tick();
         latest.metrics.points = (400, 240);
         latest.metrics.pixels = PixelSize {
             width: 800,
@@ -2006,7 +2092,7 @@ mod tests {
             latest.input.pointer_position = Some(position);
             latest.input.pointer_events = vec![ck_window::PointerEvent::Move(position)];
             crate::map_app::lock(&map)
-                .update(latest)
+                .update(&latest)
                 .expect("the latest hover change is valid");
         }
         assert!(crate::map_app::lock(&map).hover().is_none());

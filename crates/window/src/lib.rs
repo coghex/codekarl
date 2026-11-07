@@ -130,16 +130,16 @@ pub fn window_mouse_input_allowed() -> bool {
 }
 
 // The input types the window core's API is made of (`NativeEvent::Key`, `LoopSettings::with_bindings`, and the
-// snapshot an `UpdateEvent` carries), so a caller needs no dependency of its own on `ck-input`.
+// snapshot an `InputTick` carries), so a caller needs no dependency of its own on `ck-input`.
 pub use backend::{Backend, CreatedWindow, NativeEvent, PixelSize, Wait};
 pub use ck_input::{
     ActionSnapshot, Bindings, BindingsError, Edge, InputSnapshot, Key, KeyStates, PointerEvent,
-    PointerPosition, ScrollUnit, Transition,
+    PointerPosition, ScrollUnit, TRANSITION_CAPACITY, Transition,
 };
 pub use desc::{InvalidColour, MAX_DIMENSION, OpenError, WindowDesc};
 pub use link::{
-    Answer, CleanupResult, CloseSource, PostError, Presenter, PresenterReport, UiAnswer, UiEvent,
-    UiLink, UpdateEvent, WindowMetrics,
+    Answer, CleanupResult, CloseSource, InputTick, PostError, Presenter, PresenterReport, UiAnswer,
+    UiEvent, UiLink, UpdateEvent, WindowMetrics,
 };
 pub use main_loop::{Clock, LoopEnd, run, run_with_clock};
 pub use metrics::{

@@ -391,8 +391,8 @@ impl Drive {
     /// [`post_update`](Self::post_update) with the named actions pressed (and held) in the snapshot, as a bound key would give.
     pub(crate) fn post_update_with(&mut self, pressed: &[&str]) {
         use ck_window::{
-            ActionSnapshot, Answer, InputSnapshot, PixelSize, UiEvent, UiLink, UpdateEvent,
-            WindowMetrics,
+            ActionSnapshot, Answer, InputSnapshot, InputTick, PixelSize, UiEvent, UiLink,
+            UpdateEvent, WindowMetrics,
         };
         self.sequence += 1;
         let step = Duration::from_millis(16);
@@ -407,27 +407,34 @@ impl Drive {
                     height: 1200,
                 },
             },
-            input: InputSnapshot {
-                sequence: u128::from(self.sequence),
-                actions: DEFAULT_ACTIONS
-                    .iter()
-                    .map(|name| ActionSnapshot {
-                        name: (*name).to_owned(),
-                        held: pressed.contains(name),
-                        pressed: pressed.contains(name),
-                        released: false,
-                    })
-                    .collect(),
-                transitions: Vec::new(),
-                overflow: false,
-                reset: false,
-                overflow_count: 0,
-                pointer_events: Vec::new(),
-                pointer_position: None,
-                pointer_held: false,
-                pointer_overflow: false,
-            },
         };
+        // The loop's order: the input tick first (the time controls and the stash take it), then the update.
+        self.ui
+            .input(&InputTick {
+                dt: step,
+                metrics: update.metrics,
+                input: InputSnapshot {
+                    sequence: u128::from(self.sequence),
+                    actions: DEFAULT_ACTIONS
+                        .iter()
+                        .map(|name| ActionSnapshot {
+                            name: (*name).to_owned(),
+                            held: pressed.contains(name),
+                            pressed: pressed.contains(name),
+                            released: false,
+                        })
+                        .collect(),
+                    transitions: Vec::new(),
+                    overflow: false,
+                    reset: false,
+                    overflow_count: 0,
+                    pointer_events: Vec::new(),
+                    pointer_position: None,
+                    pointer_held: false,
+                    pointer_overflow: false,
+                },
+            })
+            .expect("the tick is consumed");
         self.ui
             .post(UiEvent::Update(update))
             .expect("the update is posted");
