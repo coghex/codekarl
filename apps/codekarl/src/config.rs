@@ -804,8 +804,19 @@ pub(crate) struct RenderConfig {
     pub(crate) bindless_texture_slots: u32,
 }
 
-/// The default `bindless_texture_slots` (design §7.1; the table range's default).
-pub(crate) const DEFAULT_BINDLESS_TEXTURE_SLOTS: u32 = 131_072;
+/// The default `[resources] max_textures` of the application: the milestone 7 application uses about a hundred textures (the pixel
+/// font's glyphs, the panel, the checker and the map), so 2,048 is about twenty times what it needs. The resource service's own
+/// default (65,536) is for the scale runs, which set their limits explicitly.
+pub(crate) const DEFAULT_MAX_TEXTURES: u32 = 2_048;
+
+/// The default `[resources] max_extra_revisions` (design §7.1).
+pub(crate) const DEFAULT_MAX_EXTRA_REVISIONS: usize = 1_024;
+
+/// The default `bindless_texture_slots` (design §7.1): it covers `max_textures + max_extra_revisions + 1` (3,073) with room to
+/// spare. The size is a cost, not only a capacity: `MoltenVK` walks the whole table at every scene draw (about 20 ns a slot), so the
+/// former 131,072-slot default cost 2.8 ms of encode a frame on `glfw-vulkan` against 0.28 ms for 4,096 (CK-201). A larger table
+/// is configured with `[render] bindless_texture_slots` and the `[resources]` limits it must cover.
+pub(crate) const DEFAULT_BINDLESS_TEXTURE_SLOTS: u32 = 4_096;
 
 /// The bindless table's slot range (the backend's `BindlessLimits::validate`; this application cannot import it without
 /// depending on the Metal backend crate, so the two are kept aligned by hand and by a test that parses both ends).
@@ -910,13 +921,16 @@ pub(crate) struct ResourceConfig {
 impl Default for ResourceConfig {
     fn default() -> Self {
         Self {
-            service: ResourceLimits::DEFAULT,
+            service: ResourceLimits {
+                max_textures: DEFAULT_MAX_TEXTURES,
+                ..ResourceLimits::DEFAULT
+            },
             max_prepared_images: 256,
             max_upload_images_per_batch: 128,
             max_upload_bytes_per_batch: 16 * 1024 * 1024,
             staging_bytes: 128 * 1024 * 1024,
             texture_bytes: 2 * 1024 * 1024 * 1024,
-            max_extra_revisions: 1024,
+            max_extra_revisions: DEFAULT_MAX_EXTRA_REVISIONS,
             max_adoptions_per_frame: 256,
             binding_geometry_bytes: 128 * 1024 * 1024,
         }
@@ -1506,7 +1520,14 @@ mod tests {
         let config = parse_config("").expect("built-in defaults");
         assert_eq!(config.resources, ResourceConfig::default());
         assert_eq!(config.render.max_quads, 131_072);
-        assert_eq!(config.resources.service, ResourceLimits::DEFAULT);
+        // The application's default texture count is its own (CK-201); every other service limit is the service's default.
+        assert_eq!(
+            config.resources.service,
+            ResourceLimits {
+                max_textures: DEFAULT_MAX_TEXTURES,
+                ..ResourceLimits::DEFAULT
+            }
+        );
         let configured = parse_config(
             "[resources]\nmax_textures=7\nmax_pending_jobs=8\ndecode_workers=2\n\
              cpu_pixel_bytes=67108864\nmetadata_bytes=1048576\nmax_prepared_images=32\n\
@@ -1737,13 +1758,30 @@ mod tests {
 
     #[test]
     fn the_bindless_table_must_cover_the_textures_the_extra_revisions_and_the_checker() {
-        // Default: 131,072 slots against 65,536 + 1,024 + 1.
-        assert_eq!(
-            parse_config("")
-                .expect("defaults")
-                .render
-                .bindless_texture_slots,
-            131_072
+        // Default: 4,096 slots against 2,048 + 1,024 + 1 (CK-201: the table's size is a per-draw cost on MoltenVK).
+        let defaults = parse_config("").expect("defaults");
+        assert_eq!(defaults.render.bindless_texture_slots, 4_096);
+        assert_eq!(defaults.resources.service.max_textures, 2_048);
+        assert_eq!(defaults.resources.max_extra_revisions, 1_024);
+        assert!(
+            u64::from(defaults.render.bindless_texture_slots)
+                > u64::from(defaults.resources.service.max_textures)
+                    + defaults.resources.max_extra_revisions as u64
+        );
+        // A large table still works when it is configured with the limits it covers: the scale runs' values.
+        let scale = "[resources]\nmax_textures=65536\nmax_extra_revisions=1024\n[render]\nbindless_texture_slots=131072\n";
+        let scaled = parse_config(scale).expect("the scale runs' explicit limits");
+        assert_eq!(scaled.render.bindless_texture_slots, 131_072);
+        assert_eq!(scaled.resources.service.max_textures, 65_536);
+        // Asking for more textures than the default table covers is refused with the three numbers, never accepted silently.
+        let over = "[resources]\nmax_textures=4096\n";
+        let error = parse_config(over).expect_err("more textures than the default table covers");
+        assert!(
+            error.contains("bindless_texture_slots=4096")
+                && error.contains("max_textures=4096")
+                && error.contains("max_extra_revisions=1024")
+                && error.contains("5121"),
+            "{error}"
         );
         // One below the rule is refused with the three numbers; exactly the rule is accepted (negative control: a check that
         // forgot the checker's slot would accept 67,560 here).
@@ -1800,10 +1838,11 @@ mod tests {
             .expect_err("the sum overflows u32");
         assert!(error.contains("overflows u32"), "{error}");
         let wrapped = ResourceConfig {
-            max_extra_revisions: usize::try_from(u32::MAX).expect("64-bit") - 65_536,
+            max_extra_revisions: usize::try_from(u32::MAX).expect("64-bit")
+                - usize::try_from(DEFAULT_MAX_TEXTURES).expect("64-bit"),
             ..ResourceConfig::default()
         };
-        // 65,536 + (u32::MAX - 65,536) + 1 wraps to 0 in u32 arithmetic: a wrapping sum would accept any table.
+        // max_textures + (u32::MAX - max_textures) + 1 wraps to 0 in u32 arithmetic: a wrapping sum would accept any table.
         let error =
             bindless_slots(Path::new(PATH), Some(2), &wrapped).expect_err("wrapped to zero");
         assert!(error.contains("overflows u32"), "{error}");
