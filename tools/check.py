@@ -877,6 +877,7 @@ RUST_SOURCE_DIRS = (
     "crates/render-2d/",
     "crates/resources/",
     "crates/runtime/",
+    "crates/sim/",
     "crates/window/",
     "crates/window-cocoa/",
     "crates/window-glfw/",
@@ -1389,6 +1390,19 @@ STEPS = [
             # CK-181: Ireland's shipped map data, which `crates/map/tests/ireland.rs` loads and validates: a data-only change selects it.
             "assets/map/",
         ),
+    ),
+    # CK-190: the simulation core (calendar, scheduler, commands and the real-time clock): integer arithmetic, no GPU, window, Lua or
+    # logging dependency, so it is one plain group selected by its own crate.
+    Step(
+        "sim.core",
+        FAST,
+        lambda: [
+            cargo_test(["-p", "ck-sim"]),
+            cargo_test(["-p", "ck-sim", "--doc"]),
+        ],
+        description="The backend-neutral simulation core: the Julian calendar, the tick scheduler, command timing and the "
+        "real-time clock under a fake time (no GPU or window).",
+        paths=("crates/sim/",),
     ),
     # CK-90: the 2D renderer's core (images, the scene bridge and the `Renderer` over a fake backend). It has no
     # GPU feature and opens no window, so every test target of the crate is one plain group, selected by the
