@@ -23,6 +23,10 @@
 //! zoom_steps_per_second = 20 # 1..=60, default 20
 //! scroll_points_per_step = 24 # 1..=256, default 24
 //!
+//! [game]                  # optional; without it there is no simulation. Adds the time and save input actions
+//! scenario = "../scenarios/ireland-768"   # a scenario directory: its map replaces `[map] directory` (both is an error)
+//! saves = "saves"         # the quicksave directory, default `saves` beside this file
+//!
 //! [input.bindings]        # optional; action name = the physical-key bindings that hold it (design §7.1)
 //! close = ["Escape"]      # the default; an explicit empty list unbinds an action
 //! move_left = ["KeyA", "ArrowLeft"]
@@ -145,6 +149,8 @@ struct File {
     #[serde(default)]
     map: Option<MapTable>,
     #[serde(default)]
+    game: Option<GameTable>,
+    #[serde(default)]
     render: RenderTable,
     #[serde(default)]
     frame: FrameTable,
@@ -188,6 +194,39 @@ struct MapTable(MapFields);
 impl<'de> Deserialize<'de> for MapTable {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         table_only(deserializer, "a table for `map`").map(Self)
+    }
+}
+
+/// `[game]`: the scenario the simulation runs and the quicksave directory.
+#[derive(Debug, Default)]
+struct GameFields {
+    scenario: Option<PathBuf>,
+    saves: Option<PathBuf>,
+}
+
+impl<'de> Deserialize<'de> for GameFields {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize, Default)]
+        #[serde(deny_unknown_fields, default)]
+        struct Fields {
+            scenario: Option<PathBuf>,
+            saves: Option<PathBuf>,
+        }
+
+        let fields: Fields = table_only(deserializer, "a table for `game`")?;
+        Ok(Self {
+            scenario: fields.scenario,
+            saves: fields.saves,
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct GameTable(GameFields);
+
+impl<'de> Deserialize<'de> for GameTable {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        table_only(deserializer, "a table for `game`").map(Self)
     }
 }
 
@@ -1097,8 +1136,11 @@ pub(crate) struct Config {
     pub(crate) vms: Vec<VmConfig>,
     /// The `[window]` table's backend, if the file names one: none means a headless run.
     pub(crate) window_backend: Option<Backend>,
-    /// Optional map input and camera controls. The path is relative to the configuration file.
+    /// Optional map input and camera controls. The path is relative to the configuration file. With `[game] scenario` the
+    /// map is the scenario's, and the directory is the scenario directory.
     pub(crate) map: Option<MapConfig>,
+    /// The `[game]` table: the simulation's scenario and quicksave directory. Without it there is no simulation.
+    pub(crate) game: Option<GameConfig>,
     /// Resource-service and backend limits, with defaults filled in.
     pub(crate) resources: ResourceConfig,
     /// The `[render]` table, with its defaults.
@@ -1121,6 +1163,32 @@ pub(crate) struct MapConfig {
     pub(crate) scroll_points_per_step: u32,
 }
 
+/// Validated `[game]` configuration. Both paths are relative to the configuration file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GameConfig {
+    /// The scenario directory.
+    pub(crate) scenario: PathBuf,
+    /// The quicksave directory.
+    pub(crate) saves: PathBuf,
+}
+
+/// The default quicksave directory, beside the configuration file.
+const DEFAULT_SAVES: &str = "saves";
+
+/// The time and save actions with their default keys, added only when `[game] scenario` is set.
+const GAME_BINDINGS: [(&str, &str); 10] = [
+    ("time_pause", "Space"),
+    ("time_speed_1", "Digit1"),
+    ("time_speed_2", "Digit2"),
+    ("time_speed_3", "Digit3"),
+    ("time_speed_4", "Digit4"),
+    ("time_speed_5", "Digit5"),
+    ("time_faster", "BracketRight"),
+    ("time_slower", "BracketLeft"),
+    ("game_quicksave", "F5"),
+    ("game_quickload", "F9"),
+];
+
 impl Default for Config {
     /// The built-in defaults: the same as an empty file, so no VMs.
     fn default() -> Self {
@@ -1130,6 +1198,7 @@ impl Default for Config {
             vms: Vec::new(),
             window_backend: None,
             map: None,
+            game: None,
             resources: ResourceConfig::default(),
             render: RenderConfig::default(),
             frame: FrameConfig::default(),
@@ -1192,7 +1261,8 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         .map_err(|error| describe(path, text, &error))?;
     let base = path.parent().unwrap_or_else(|| Path::new(""));
     // The entries go to `ck-input`, whose refusal fails the load with its message naming the action and the entry.
-    let map = parse_map(path, base, file.map)?;
+    let game = parse_game(path, base, file.game)?;
+    let map = parse_map(path, base, file.map, game.as_ref())?;
     let bindings = if map.is_some() {
         let mut entries = BTreeMap::from([
             ("map_pan_left".to_owned(), vec!["ArrowLeft".to_owned()]),
@@ -1202,6 +1272,13 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
             ("map_zoom_in".to_owned(), vec!["Equal".to_owned()]),
             ("map_zoom_out".to_owned(), vec!["Minus".to_owned()]),
         ]);
+        if game.is_some() {
+            entries.extend(
+                GAME_BINDINGS
+                    .iter()
+                    .map(|(action, key)| ((*action).to_owned(), vec![(*key).to_owned()])),
+            );
+        }
         if let Some(BindingsTable(custom)) = file.input.0.bindings {
             entries.extend(custom);
         }
@@ -1245,6 +1322,7 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         vms,
         window_backend: file.window.0.backend.map(|name| name.0),
         map,
+        game,
         resources,
         render: RenderConfig {
             filter: file
@@ -1273,13 +1351,51 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
     })
 }
 
-fn parse_map(path: &Path, base: &Path, map: Option<MapTable>) -> Result<Option<MapConfig>, String> {
-    let Some(MapTable(fields)) = map else {
+/// `[game]`: the scenario directory and the quicksave directory, both joined to the configuration file's directory.
+fn parse_game(
+    path: &Path,
+    base: &Path,
+    game: Option<GameTable>,
+) -> Result<Option<GameConfig>, String> {
+    let Some(GameTable(fields)) = game else {
         return Ok(None);
     };
-    let directory = fields
-        .directory
-        .ok_or_else(|| format!("{}: [map]: directory is required", path.display()))?;
+    let scenario = fields
+        .scenario
+        .ok_or_else(|| format!("{}: [game]: scenario is required", path.display()))?;
+    Ok(Some(GameConfig {
+        scenario: base.join(scenario),
+        saves: base.join(fields.saves.unwrap_or_else(|| PathBuf::from(DEFAULT_SAVES))),
+    }))
+}
+
+fn parse_map(
+    path: &Path,
+    base: &Path,
+    map: Option<MapTable>,
+    game: Option<&GameConfig>,
+) -> Result<Option<MapConfig>, String> {
+    // With `[game] scenario` the map is the scenario's. `[map]` may still set the camera rates, but not a second map source.
+    let (fields, directory) = match (map, game) {
+        (None, None) => return Ok(None),
+        (Some(MapTable(fields)), None) => {
+            let directory = fields
+                .directory
+                .clone()
+                .ok_or_else(|| format!("{}: [map]: directory is required", path.display()))?;
+            (fields, base.join(directory))
+        }
+        (map, Some(game)) => {
+            let fields = map.map(|MapTable(fields)| fields).unwrap_or_default();
+            if fields.directory.is_some() {
+                return Err(format!(
+                    "{}: [game] scenario and [map] directory cannot both be set",
+                    path.display()
+                ));
+            }
+            (fields, game.scenario.clone())
+        }
+    };
     let pan = fields.pan_pixels_per_frame.unwrap_or(4);
     if !(1..=32).contains(&pan) {
         return Err(format!(
@@ -1302,7 +1418,7 @@ fn parse_map(path: &Path, base: &Path, map: Option<MapTable>) -> Result<Option<M
         ));
     }
     Ok(Some(MapConfig {
-        directory: base.join(directory),
+        directory,
         pan_pixels_per_frame: u32::try_from(pan).expect("validated map pan range fits u32"),
         zoom_steps_per_second: u32::try_from(zoom).expect("validated map zoom range fits u32"),
         scroll_points_per_step: u32::try_from(scroll)
@@ -2627,5 +2743,117 @@ mod tests {
             panic!("a table");
         };
         assert!(entries.contains_key("render"));
+    }
+
+    #[test]
+    fn game_names_a_scenario_and_defaults_the_saves_directory_beside_the_file() {
+        let config = parse_config("[game]\nscenario = \"scenario\"\n").unwrap();
+        assert_eq!(
+            config.game,
+            Some(GameConfig {
+                scenario: PathBuf::from("/tmp/codekarl-test/scenario"),
+                saves: PathBuf::from("/tmp/codekarl-test/saves"),
+            })
+        );
+        // The scenario is the map source, with the default camera rates.
+        assert_eq!(
+            config.map,
+            Some(MapConfig {
+                directory: PathBuf::from("/tmp/codekarl-test/scenario"),
+                pan_pixels_per_frame: 4,
+                zoom_steps_per_second: 20,
+                scroll_points_per_step: 24,
+            })
+        );
+        let custom =
+            parse_config("[game]\nscenario = \"s\"\nsaves = \"elsewhere/slots\"\n[map]\npan_pixels_per_frame = 7\n")
+                .unwrap();
+        assert_eq!(
+            custom.game.unwrap().saves,
+            PathBuf::from("/tmp/codekarl-test/elsewhere/slots")
+        );
+        assert_eq!(custom.map.unwrap().pan_pixels_per_frame, 7);
+    }
+
+    #[test]
+    fn no_game_table_means_no_simulation() {
+        assert_eq!(parse_config("").unwrap().game, None);
+        assert_eq!(
+            parse_config("[map]\ndirectory = \"m\"\n").unwrap().game,
+            None
+        );
+    }
+
+    #[test]
+    fn game_without_a_scenario_or_with_an_unknown_key_is_refused() {
+        let missing = parse_config("[game]\nsaves = \"s\"\n").unwrap_err();
+        assert!(
+            missing.contains("[game]: scenario is required"),
+            "{missing}"
+        );
+        let empty = parse_config("[game]\n").unwrap_err();
+        assert!(empty.contains("[game]"), "{empty}");
+        let unknown = parse_config("[game]\nscenario = \"s\"\nspeed = 3\n").unwrap_err();
+        assert!(unknown.contains("speed"), "{unknown}");
+        assert!(parse_config("game = 3\n").is_err());
+        assert!(parse_config("[game]\nscenario = 3\n").is_err());
+    }
+
+    #[test]
+    fn a_scenario_and_a_map_directory_cannot_both_be_set() {
+        let error =
+            parse_config("[game]\nscenario = \"s\"\n[map]\ndirectory = \"m\"\n").unwrap_err();
+        assert!(
+            error.contains("[game] scenario and [map] directory cannot both be set"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_time_and_save_actions_have_defaults_only_with_a_scenario() {
+        let actions = [
+            ("time_pause", "Space"),
+            ("time_speed_1", "Digit1"),
+            ("time_speed_2", "Digit2"),
+            ("time_speed_3", "Digit3"),
+            ("time_speed_4", "Digit4"),
+            ("time_speed_5", "Digit5"),
+            ("time_faster", "BracketRight"),
+            ("time_slower", "BracketLeft"),
+            ("game_quicksave", "F5"),
+            ("game_quickload", "F9"),
+        ];
+        for text in ["", "[map]\ndirectory = \"m\"\n"] {
+            let config = parse_config(text).unwrap();
+            for (action, _) in actions {
+                assert!(config.bindings.action(action).is_none(), "{action}");
+            }
+        }
+        let config = parse_config("[game]\nscenario = \"s\"\n").unwrap();
+        for (action, key) in actions {
+            let bindings = config.bindings.action(action).unwrap().bindings();
+            assert_eq!(bindings.len(), 1, "{action}");
+            assert_eq!(bindings[0].key().name(), key, "{action}");
+        }
+        // The map's defaults are still there, and a configured binding replaces a default.
+        assert!(config.bindings.action("map_pan_left").is_some());
+        let rebound = parse_config(
+            "[game]\nscenario = \"s\"\n[input.bindings]\ntime_pause = [\"KeyP\"]\ngame_quickload = []\n",
+        )
+        .unwrap();
+        assert_eq!(
+            rebound.bindings.action("time_pause").unwrap().bindings()[0]
+                .key()
+                .name(),
+            "KeyP"
+        );
+        assert!(
+            rebound
+                .bindings
+                .action("game_quickload")
+                .unwrap()
+                .bindings()
+                .is_empty()
+        );
     }
 }

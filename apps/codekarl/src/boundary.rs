@@ -454,6 +454,8 @@ fn child_main(name: &str, dir: &Path) -> ! {
         config: Some(config),
         headless: case.headless,
         backend: None,
+        load: None,
+        seed: None,
     };
     let shared = Shared {
         quit: Arc::new(AtomicBool::new(false)),

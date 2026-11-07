@@ -1,7 +1,17 @@
 {
   "cases": [
     {"args": ["--version"], "code": 0, "stdout": "codekarl 0.1.0\n", "stderr": ""},
-    {"args": ["--help"], "code": 0, "stdout": "Usage: codekarl [--config PATH] [--headless | --backend NAME] | --help | --version | --metal-smoke\n", "stderr": ""},
+    {"args": ["--help"], "code": 0, "stdout": "Usage: codekarl [--config PATH] [--headless | --backend NAME] [--load PATH | --seed N] | --help | --version | --metal-smoke\n", "stderr": ""},
+    {"args": ["--config", "a", "--load", "s", "--seed", "1"], "code": 1, "stdout": "codekarl: --load and --seed cannot be combined; a save holds its seed; use --help\n", "stderr": ""},
+    {"args": ["--config", "a", "--seed", "1", "--load", "s"], "code": 1, "stdout": "codekarl: --load and --seed cannot be combined; a save holds its seed; use --help\n", "stderr": ""},
+    {"args": ["--load", "s"], "code": 1, "stdout": "codekarl: --load needs --config with a [game] scenario; use --help\n", "stderr": ""},
+    {"args": ["--seed", "1"], "code": 1, "stdout": "codekarl: --seed needs --config with a [game] scenario; use --help\n", "stderr": ""},
+    {"args": ["--config", "a", "--seed", "-1"], "code": 1, "stdout": "codekarl: --seed -1 is not a decimal number from 0 to 18446744073709551615; use --help\n", "stderr": ""},
+    {"args": ["--config", "a", "--seed", "18446744073709551616"], "code": 1, "stdout": "codekarl: --seed 18446744073709551616 is not a decimal number from 0 to 18446744073709551615; use --help\n", "stderr": ""},
+    {"args": ["--config", "a", "--seed"], "code": 1, "stdout": "codekarl: --seed needs a number; use --help\n", "stderr": ""},
+    {"args": ["--config", "a", "--load"], "code": 1, "stdout": "codekarl: --load needs a path; use --help\n", "stderr": ""},
+    {"args": ["--config", "a", "--load", "x", "--load", "y"], "code": 1, "stdout": "codekarl: --load given more than once; use --help\n", "stderr": ""},
+    {"args": ["--config", "a", "--seed", "1", "--seed", "2"], "code": 1, "stdout": "codekarl: --seed given more than once; use --help\n", "stderr": ""},
     {"args": ["--unknown"], "code": 1, "stdout": "codekarl: unknown arguments; use --help\n", "stderr": ""},
     {"args": ["--help", "extra"], "code": 1, "stdout": "codekarl: unknown arguments; use --help\n", "stderr": ""},
     {"args": ["--config"], "code": 1, "stdout": "codekarl: --config needs a path; use --help\n", "stderr": ""},

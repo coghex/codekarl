@@ -206,6 +206,14 @@ pub(crate) struct CodekarlUi {
     slot: UiSlot,
     state: Rc<State>,
     map: Option<crate::map_app::SharedController>,
+    sim: Option<SimLink>,
+}
+
+/// The simulation owner as the UI link sees it: where presses go, and what it published.
+#[derive(Clone)]
+pub(crate) struct SimLink {
+    pub(crate) controls: crate::game::controls::SimControls,
+    pub(crate) slot: std::sync::Arc<crate::game::slot::SimSlot>,
 }
 
 impl CodekarlUi {
@@ -215,6 +223,7 @@ impl CodekarlUi {
             slot,
             state: Rc::new(State::default()),
             map: None,
+            sim: None,
         }
     }
 
@@ -223,7 +232,25 @@ impl CodekarlUi {
             slot,
             state: Rc::new(State::default()),
             map: Some(map),
+            sim: None,
         }
+    }
+
+    /// This link with the simulation owner attached: it carries the update's time presses to the owner, and ends the run when
+    /// the owner records a terminal failure.
+    pub(crate) fn with_sim(mut self, sim: SimLink) -> Self {
+        self.sim = Some(sim);
+        self
+    }
+
+    /// Whether the simulation owner recorded a terminal failure; the message becomes the link's own terminal failure, which
+    /// ends the run through the ordinary UI-failure path.
+    fn simulation_failed(&self) -> bool {
+        let Some(message) = self.sim.as_ref().and_then(|sim| sim.slot.failure()) else {
+            return false;
+        };
+        self.state.failure.borrow_mut().get_or_insert(message);
+        true
     }
 
     /// The handle, if the UI VM was spawned.
@@ -267,6 +294,9 @@ impl CodekarlUi {
 
 impl UiLink for CodekarlUi {
     fn post(&mut self, event: UiEvent) -> Result<(), PostError> {
+        if self.simulation_failed() {
+            return Err(PostError::Disconnected);
+        }
         let Some(vm) = self.vm() else {
             return Err(PostError::Disconnected);
         };
@@ -294,6 +324,17 @@ impl UiLink for CodekarlUi {
                     }
                     _ => Ok(()),
                 };
+                // Only after the UI VM accepted the post: a refused update leaves its transitions in the snapshot for the next
+                // accepted one, so a press is acted on exactly once.
+                if let (Some(sim), UiEvent::Update(update)) = (&self.sim, &event)
+                    && sim.controls.send(&update.input)
+                {
+                    crate::lifecycle::emit(
+                        ck_log::Level::Warn,
+                        "sim",
+                        format_args!("{}", crate::game::controls::OVERFLOW_RECORD),
+                    );
+                }
                 self.state.pending.borrow_mut().push_back((id, event));
                 if let Err(message) = map_result {
                     *self.state.failure.borrow_mut() = Some(message);
@@ -311,6 +352,9 @@ impl UiLink for CodekarlUi {
     }
 
     fn take_answer(&mut self) -> Option<UiAnswer> {
+        if self.simulation_failed() {
+            return None;
+        }
         let vm = self.vm()?;
         let result = vm.borrow_mut().take_result()?;
         let mut pending = self.state.pending.borrow_mut();
@@ -332,7 +376,10 @@ impl UiLink for CodekarlUi {
     }
 
     fn is_disconnected(&self) -> bool {
-        if self.state.failure.borrow().is_some() || self.state.disconnected.get() {
+        if self.simulation_failed()
+            || self.state.failure.borrow().is_some()
+            || self.state.disconnected.get()
+        {
             return true;
         }
         let Some(vm) = self.vm() else {

@@ -19,7 +19,7 @@ pub use calendar::{
 };
 pub use canonical::{Canonical, CanonicalError, Reader, encode_length};
 pub use clock::{Clock, DEFAULT_MAX_TICKS_PER_WAKE, Speed, SpeedError};
-pub use random::{RandomError, Stream, stream_id};
+pub use random::{RandomError, Stream, fnv1a, stream_id};
 pub use save::{Expected, HashKind, Save, SaveError, SaveMeta};
 pub use scheduler::{Cadence, Scheduler, SchedulerError, SystemError, SystemResult, Tick};
 pub use simulation::{CommandRecord, CommandStamp, Issuer, ReplayError, Simulation};

@@ -381,7 +381,7 @@ mod tests {
                 quit: Arc::new(AtomicBool::new(false)),
                 notifier: Notifier::new(),
             },
-            None,
+            crate::Content::default(),
             move |setup: Setup| {
                 let factory = factory
                     .lock()
