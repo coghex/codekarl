@@ -335,6 +335,7 @@ fn a_terminal_simulation_failure_ends_a_windowed_run_failed_and_is_never_reporte
     env.ui = harness.ui.clone().with_sim(SimLink {
         controls: SimControls::new(sender),
         slot: Arc::clone(&slot),
+        time_registered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
     let latch = ResourceLatch::new();
     let outcome = run_hooked_in(
@@ -355,6 +356,61 @@ fn a_terminal_simulation_failure_ends_a_windowed_run_failed_and_is_never_reporte
         Some(PauseReason::Error)
     );
     assert!(owner.wait_finished(Duration::from_secs(10)));
+}
+
+#[test]
+fn the_late_drain_returns_a_failing_game_time_call_and_posts_nothing_new() {
+    use std::sync::atomic::AtomicBool;
+
+    use crate::game::controls::SimControls;
+    use crate::game::slot::{SimSlot, SimSnapshot};
+    use crate::ui_link::SimLink;
+
+    let snapshot = |hour: u8| {
+        let date = ck_sim::Date {
+            year: 768,
+            month: 1,
+            day: 1,
+            hour,
+        };
+        SimSnapshot {
+            tick: ck_sim::GameTime::from_date(date).unwrap(),
+            date,
+            speed: ck_sim::Speed::new(1).unwrap(),
+            paused: None,
+        }
+    };
+    let registered = Arc::new(AtomicBool::new(false));
+    let harness = Harness::new(
+        "game.on_time(function(t) error('drain boom') end)",
+        Extras {
+            extensions: vec![crate::game_api::extension(
+                Arc::clone(&registered),
+                Arc::new(|| {}),
+            )],
+            ..Extras::default()
+        },
+    );
+    let slot = SimSlot::new(Arc::new(|| {}));
+    let (sender, _receiver) = std::sync::mpsc::channel();
+    let mut link = harness.ui.clone().with_sim(SimLink {
+        controls: SimControls::new(sender),
+        slot: Arc::clone(&slot),
+        time_registered: registered,
+    });
+    slot.publish(snapshot(1));
+    let _ = UiLink::take_answer(&mut link);
+    assert_eq!(link.outstanding(), 1, "the delivery was posted");
+    // The loop is over. A newer snapshot exists, but the drain only takes results: the failure comes back once, nothing is posted.
+    slot.publish(snapshot(2));
+    let failures = drain_late(&AtomicBool::new(false), &link, Duration::from_secs(10));
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0].starts_with("ui callback game_time failed: "),
+        "{failures:?}"
+    );
+    assert!(failures[0].contains("drain boom"), "{failures:?}");
+    assert_eq!(link.outstanding(), 0);
 }
 
 #[test]

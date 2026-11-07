@@ -83,6 +83,7 @@ const ALLOW_UNFOCUSED_UPDATES_FLAG: &str = "--ck-windowed-test-allow-unfocused-u
 const QUEUE_FOCUS_LOST_FOR_CK163_FLAG: &str = "--ck-windowed-test-queue-focus-lost-for-ck163";
 const MAP_INPUT_ENV: &str = "CK_WINDOWED_TEST_MAP_INPUT";
 const SIM_INPUT_ENV: &str = "CK_WINDOWED_TEST_SIM_INPUT";
+const KEY_FILES_ENV: &str = "CK_WINDOWED_TEST_KEY_FILES";
 const MAP_CAMERA_ENV: &str = "CK_MAP_TEST_CAMERA_OBSERVATION";
 const REAL_FOCUS_GATE_CASES: [&str; 1] =
     ["synthetic_focus_loss_without_worker_opt_in_keeps_the_pause"];
@@ -152,6 +153,7 @@ static ALLOW_UNFOCUSED_UPDATES: AtomicBool = AtomicBool::new(false);
 static QUEUE_FOCUS_LOST_FOR_CK163: AtomicBool = AtomicBool::new(false);
 static MAP_INPUT_CASE: AtomicBool = AtomicBool::new(false);
 static SIM_INPUT_CASE: AtomicBool = AtomicBool::new(false);
+static KEYS_CASE: AtomicBool = AtomicBool::new(false);
 
 fn mode() -> Mode {
     Mode::from_code(MODE.load(Ordering::SeqCst))
@@ -415,6 +417,18 @@ impl Fixture {
         )
         .expect("the scenario file");
         fs::write(scenario.join("locations.toml"), "").expect("the locations file");
+        // A run with a scenario reads the pixel font from the assets root at start-up.
+        let font = root.join("ui/font");
+        fs::create_dir_all(font.join("glyphs")).expect("the font directory");
+        let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/ui/font");
+        for name in ["font.toml", "panel.png"] {
+            fs::copy(shipped.join(name), font.join(name)).expect("copy the shipped font");
+        }
+        for entry in fs::read_dir(shipped.join("glyphs")).expect("the shipped glyphs") {
+            let entry = entry.expect("a glyph file");
+            fs::copy(entry.path(), font.join("glyphs").join(entry.file_name()))
+                .expect("copy a glyph");
+        }
         scenario
     }
 
@@ -436,10 +450,15 @@ impl Fixture {
             lua_path(&self.path("hold")),
             lua_path(&self.path("ui_shutdown"))
         );
-        let gameplay = format!(
-            "{LUA_HELPERS}\nfunction shutdown()\n  log.info('gameplay shutdown')\n  touch({})\nend\n",
-            lua_path(&self.path("gameplay_shutdown"))
-        );
+        // With a game the gameplay VM runs the deterministic profile, which has no `io`: it cannot leave a marker file.
+        let gameplay = if extra_config.contains("[game]") {
+            "function shutdown()\n  log.info('gameplay shutdown')\nend\n".to_owned()
+        } else {
+            format!(
+                "{LUA_HELPERS}\nfunction shutdown()\n  log.info('gameplay shutdown')\n  touch({})\nend\n",
+                lua_path(&self.path("gameplay_shutdown"))
+            )
+        };
         let ui = self.scratch.file("ui.lua", &ui);
         let gameplay = self.scratch.file("gameplay.lua", &gameplay);
         self.scratch.file(
@@ -496,6 +515,10 @@ fn start(args: &[&OsStr]) -> Worker {
     if SIM_INPUT_CASE.load(Ordering::SeqCst) {
         // The directory the case writes its markers in: the worker's own scratch directory.
         command.env(SIM_INPUT_ENV, &scratch.0);
+    }
+    if KEYS_CASE.load(Ordering::SeqCst) {
+        // The directory the case writes its key files in: the worker's own scratch directory.
+        command.env(KEY_FILES_ENV, &scratch.0);
     }
     let map_camera_observation = (MAP_INPUT_CASE.load(Ordering::SeqCst)
         || SIM_INPUT_CASE.load(Ordering::SeqCst))
@@ -872,6 +895,154 @@ end
         .find(|line| line.contains("metrics: run: frames="))
         .unwrap_or_else(|| panic!("no run timing record:\n{}", seen.stdout));
     println!("native-metal 60 fps record: {timing}");
+    assert!(
+        !seen.stdout.contains("ERROR") && !seen.stdout.contains("incomplete"),
+        "{}",
+        seen.stdout
+    );
+}
+
+/// Writes the next key file (`<order>.key`, `<hex code>:<characters>`) the worker's key poll taps.
+fn press(markers: &Path, order: u32, code: u16, characters: &str) {
+    fs::write(
+        markers.join(format!("{order:03}.key")),
+        format!("{code:x}:{characters}"),
+    )
+    .expect("a key file");
+}
+
+/// The time the UI VM hears of on a real window, with each key posted once the log shows the one before took effect: the first
+/// `game_time` is the start state, Digit3 while paused delivers the new speed with no tick advanced, Space runs and delivers each
+/// hour, Space again pauses, and a quicksave then a quickload at the same hour delivers exactly one more (the reason `load`). The
+/// script logs every `game_time`; once paused or idle nothing more arrives.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the script, the keys in the order the log releases them and the checks read best in one run"
+)]
+fn a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each() {
+    let fixture = Fixture::new();
+    let scenario = fixture.scenario_fixture();
+    let config_text = format!(
+        "[window]\nbackend = \"native-metal\"\n\n[game]\nscenario = '{}'\nsaves = '{}'\n\n[frame]\nupdates_per_second = 60\n",
+        scenario.display(),
+        fixture.path("saves").display()
+    );
+    let body = format!(
+        r"
+local SETTLED = {}
+local function exists(path)
+  local file = io.open(path, 'r')
+  if file then file:close() return true end
+  return false
+end
+function startup()
+  local after = 0
+  frame.on_update(function()
+    if exists(SETTLED) then
+      after = after + 1
+      if after >= 60 then window.close() end
+    end
+  end)
+  local past_three = false
+  game.on_time(function(t)
+    log.info(string.format('time %d %02d speed %d paused %s', t.day, t.hour, t.speed, tostring(t.paused)))
+    -- Latest wins, so a slow pass may skip an hour: the test waits for this, not for one exact hour.
+    if not t.paused and (t.day > 1 or t.hour >= 3) and not past_three then
+      past_three = true
+      log.info('running past hour three')
+    end
+  end)
+  window.on_opened(function() wait_for(HOLD) end)
+  window.open{{title = 'time', width = 400, height = 240, clear = {{0, 0, 0}}}}
+end
+",
+        lua_path(&fixture.path("settled"))
+    );
+    let config = fixture.windowed(&config_text, &body);
+    let mut args: Vec<&OsStr> = vec![OsStr::new("--config"), config.as_os_str()];
+    args.extend(["--seed", "42"].map(OsStr::new));
+    let mut worker = start(&args);
+    let markers = worker
+        .report
+        .parent()
+        .expect("the report's directory")
+        .to_path_buf();
+    wait_for(
+        &mut worker,
+        "window: window opened",
+        Duration::from_secs(30),
+    );
+    wait_for_drops(&worker);
+    fixture.release();
+    let within = Duration::from_secs(60);
+    // The start state, paused with the reason `load`.
+    wait_for(&mut worker, "lua.ui: time 1 00 speed 1 paused load", within);
+    // Digit3 while paused: a new delivery, the same hour.
+    press(&markers, 1, 0x14, "3");
+    wait_for(&mut worker, "lua.ui: time 1 00 speed 3 paused load", within);
+    // Space runs the game. Latest wins, so no particular running hour is waited for: the script says when the game has run past
+    // hour three.
+    press(&markers, 2, 0x31, " ");
+    wait_for(&mut worker, "lua.ui: running past hour three", within);
+    // Space pauses, a quicksave changes nothing displayed, and a quickload at the same hour is one delivery more.
+    press(&markers, 3, 0x31, " ");
+    wait_for(&mut worker, "speed 3 paused player", within);
+    press(&markers, 4, 0x60, "");
+    wait_for(&mut worker, "sim: saved", within);
+    press(&markers, 5, 0x65, "");
+    wait_for(&mut worker, "sim: loaded", within);
+    wait_for(&mut worker, "speed 1 paused load\n", within);
+    fs::write(fixture.path("settled"), "x").expect("the settled marker");
+    let seen = finish(worker);
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+    let times: Vec<&str> = seen
+        .stdout
+        .lines()
+        .filter_map(|line| line.split_once("lua.ui: time ").map(|(_, rest)| rest))
+        .collect();
+    assert!(times.len() >= 5, "{times:?}");
+    assert_eq!(
+        times[..2],
+        ["1 00 speed 1 paused load", "1 00 speed 3 paused load"]
+    );
+    // Latest wins: a slow pass may skip hours, and at speed 3 a game day is one real second, so a delayed pass may even cross
+    // midnight. The running lines are checked to be running at speed 3 and to go forward by the whole date, `day * 24 + hour`.
+    let running = &times[2..times.len() - 2];
+    assert!(!running.is_empty(), "{times:?}");
+    let stamp = |line: &str| -> u32 {
+        let mut fields = line.split(' ');
+        let mut number = || -> u32 { fields.next().expect("a field").parse().expect("a number") };
+        let day = number();
+        let hour = number();
+        day * 24 + hour
+    };
+    let stamps: Vec<u32> = running
+        .iter()
+        .map(|line| {
+            assert!(line.ends_with("speed 3 paused false"), "{line}");
+            stamp(line)
+        })
+        .collect();
+    assert!(
+        stamps.windows(2).all(|pair| pair[0] < pair[1]),
+        "{stamps:?}"
+    );
+    assert!(
+        stamps.last().is_some_and(|last| *last >= 24 + 3),
+        "{stamps:?}"
+    );
+    // Then exactly two deliveries more and no continuous delivery after them: the pause, and the load at the same date and hour
+    // (the save was taken while paused, so no tick lies between them). The pause and the load are bound to the actual paused
+    // timestamp, not to a day or hour fixed in advance.
+    let load = times[times.len() - 1];
+    let paused = times[times.len() - 2];
+    let (date, _) = paused.split_once(" speed ").expect("a speed");
+    assert_eq!(paused, format!("{date} speed 3 paused player"));
+    assert_eq!(load, format!("{date} speed 1 paused load"));
+    assert!(
+        stamps.last().is_some_and(|last| *last <= stamp(paused)),
+        "{stamps:?} then {paused}"
+    );
     assert!(
         !seen.stdout.contains("ERROR") && !seen.stdout.contains("incomplete"),
         "{}",
@@ -1364,7 +1535,7 @@ fn helper_threads_run_with_sigint_and_sigterm_blocked() {
 // ---------------------------------------------------------------------------------------------
 
 /// The names the filter exports.
-const FILTER_SYMBOLS: [&str; 8] = [
+const FILTER_SYMBOLS: [&str; 9] = [
     "ck_app_t_install_input_filter",
     "ck_app_t_dropped_keys",
     "ck_app_t_start_typist",
@@ -1372,6 +1543,7 @@ const FILTER_SYMBOLS: [&str; 8] = [
     "ck_app_t_post_key",
     "ck_app_t_schedule_map_keys",
     "ck_app_t_schedule_sim_keys",
+    "ck_app_t_schedule_key_files",
     "ck_app_t_schedule_map_pointer",
 ];
 
@@ -2086,6 +2258,7 @@ fn feature_cases() -> Vec<(&'static str, fn())> {
 fn cases() -> Vec<(&'static str, fn())> {
     let mut cases = vec![
         case!(a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally),
+        case!(a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each),
         case!(a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally),
         case!(the_demo_placeholder_is_drawn_with_the_quads_generation_in_the_first_frame_and_the_run_closes_cleanly),
         case!(a_window_opened_and_closed_by_the_script_exits_0_and_both_shutdowns_follow_the_close),
@@ -2137,12 +2310,17 @@ fn run_case(name: &str, case: fn()) -> bool {
         Ordering::SeqCst,
     );
     SIM_INPUT_CASE.store(name == "a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally", Ordering::SeqCst);
+    KEYS_CASE.store(
+        name == "a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each",
+        Ordering::SeqCst,
+    );
     let started = Instant::now();
     let passed = panic::catch_unwind(AssertUnwindSafe(case)).is_ok();
     ALLOW_UNFOCUSED_UPDATES.store(false, Ordering::SeqCst);
     QUEUE_FOCUS_LOST_FOR_CK163.store(false, Ordering::SeqCst);
     MAP_INPUT_CASE.store(false, Ordering::SeqCst);
     SIM_INPUT_CASE.store(false, Ordering::SeqCst);
+    KEYS_CASE.store(false, Ordering::SeqCst);
     println!(
         "test {name} [{}] ... {} ({:.1}s)",
         mode().word(),

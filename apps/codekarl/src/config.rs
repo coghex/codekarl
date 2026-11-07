@@ -153,6 +153,8 @@ struct File {
     #[serde(default)]
     render: RenderTable,
     #[serde(default)]
+    ui: UiTable,
+    #[serde(default)]
     frame: FrameTable,
     #[serde(default)]
     lua: BTreeMap<VmName, Vm>,
@@ -732,6 +734,27 @@ impl FrameConfig {
     }
 }
 
+/// The keys of the `ui` table: the pixel font's scale. The UI VM reads the value from its `config` table; the application only
+/// checks it.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct UiFields {
+    font_points_per_pixel: Option<i64>,
+}
+
+/// The `ui` table.
+#[derive(Debug, Default)]
+struct UiTable(UiFields);
+
+impl<'de> Deserialize<'de> for UiTable {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        table_only(deserializer, "a table for `ui`").map(UiTable)
+    }
+}
+
+/// The range of `[ui] font_points_per_pixel`.
+const FONT_SCALE_RANGE: std::ops::RangeInclusive<i64> = 1..=8;
+
 /// A sampling filter named in the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "String")]
@@ -1254,6 +1277,31 @@ pub(crate) fn load_text_for_test(text: &str) -> Config {
     parse(Path::new("/tmp/codekarl-test/config.toml"), text).expect("a valid configuration")
 }
 
+/// The pixel font's two checks: `[ui] font_points_per_pixel` is 1 to 8, and with a game the scene's one sampling filter is
+/// `nearest` (the glyphs need it, and the scene has no per-quad filter).
+fn check_pixel_font(
+    path: &Path,
+    ui: &UiFields,
+    has_game: bool,
+    filter: Option<FilterName>,
+) -> Result<(), String> {
+    if let Some(scale) = ui.font_points_per_pixel
+        && !FONT_SCALE_RANGE.contains(&scale)
+    {
+        return Err(format!(
+            "{}: [ui]: font_points_per_pixel={scale} is outside 1..=8",
+            path.display()
+        ));
+    }
+    if has_game && filter.is_some_and(|name| name.0 == ImageFilter::Linear) {
+        return Err(format!(
+            "{}: [render] filter = \"linear\" cannot be used with [game] scenario: the pixel font needs nearest sampling",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 fn parse(path: &Path, text: &str) -> Result<Config, String> {
     let file = toml::from_str::<File>(text).map_err(|error| describe(path, text, &error))?;
     let whole = text
@@ -1291,6 +1339,7 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
                 .map_err(|error| format!("{}: [input.bindings]: {error}", path.display()))?,
         }
     };
+    check_pixel_font(path, &file.ui.0, game.is_some(), file.render.0.filter)?;
     let resources = ResourceConfig::parse(file.resources.0)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let max_quads = file
@@ -2855,5 +2904,43 @@ mod tests {
                 .bindings()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn ui_font_scale_is_one_to_eight_and_unknown_ui_keys_are_refused() {
+        for scale in [1, 2, 8] {
+            parse_config(&format!("[ui]\nfont_points_per_pixel = {scale}\n")).unwrap();
+        }
+        parse_config("").unwrap();
+        parse_config("[ui]\n").unwrap();
+        for bad in ["0", "9", "-1", "2.5", "\"2\""] {
+            assert!(
+                parse_config(&format!("[ui]\nfont_points_per_pixel = {bad}\n")).is_err(),
+                "{bad}"
+            );
+        }
+        let outside = parse_config("[ui]\nfont_points_per_pixel = 9\n").unwrap_err();
+        assert!(
+            outside.contains("[ui]") && outside.contains("1..=8"),
+            "{outside}"
+        );
+        let unknown = parse_config("[ui]\ncolour = 1\n").unwrap_err();
+        assert!(unknown.contains("colour"), "{unknown}");
+        assert!(parse_config("ui = 3\n").is_err());
+    }
+
+    #[test]
+    fn a_scenario_requires_nearest_sampling_and_names_both_keys_otherwise() {
+        let game = "[game]\nscenario = \"s\"\n";
+        parse_config(game).unwrap();
+        parse_config(&format!("{game}[render]\nfilter = \"nearest\"\n")).unwrap();
+        let refused = parse_config(&format!("{game}[render]\nfilter = \"linear\"\n")).unwrap_err();
+        assert!(
+            refused.contains("[render] filter") && refused.contains("[game] scenario"),
+            "{refused}"
+        );
+        // Without a scenario nothing changes.
+        let linear = parse_config("[render]\nfilter = \"linear\"\n").unwrap();
+        assert_eq!(linear.render.filter, ImageFilter::Linear);
     }
 }

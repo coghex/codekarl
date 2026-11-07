@@ -26,6 +26,8 @@ static id ck_app_input_filter = nil;
 static id ck_app_mouse_filter = nil;
 static id ck_app_map_keys_observer = nil;
 static id ck_app_sim_keys_observer = nil;
+static id ck_app_key_files_observer = nil;
+static dispatch_source_t ck_app_key_files_timer = nil;
 static id ck_app_map_pointer_observer = nil;
 static id ck_app_unmarked_observer = nil;
 static _Atomic uint64_t ck_app_dropped;
@@ -33,6 +35,7 @@ static _Atomic uint64_t ck_app_dropped_mouse;
 static NSWindow *ck_app_the_window(int32_t *error);
 void ck_app_t_schedule_map_keys(void);
 void ck_app_t_schedule_sim_keys(void);
+void ck_app_t_schedule_key_files(void);
 void ck_app_t_schedule_map_pointer(void);
 
 /* The test-only input filter: a local event monitor, which AppKit runs inside -[NSApplication sendEvent:] before
@@ -86,6 +89,9 @@ void ck_app_t_install_input_filter(void) {
         }
         if (getenv("CK_WINDOWED_TEST_SIM_INPUT") != NULL || getenv("CK_VULKAN_TEST_SIM_INPUT") != NULL) {
             ck_app_t_schedule_sim_keys();
+        }
+        if (getenv("CK_WINDOWED_TEST_KEY_FILES") != NULL || getenv("CK_VULKAN_TEST_KEY_FILES") != NULL) {
+            ck_app_t_schedule_key_files();
         }
     }
 }
@@ -336,6 +342,61 @@ void ck_app_t_schedule_sim_keys(void) {
             }
         });
         dispatch_resume(timer);
+    }];
+}
+
+/* Posts the marked keys the test asks for, one at a time, once AppKit reports a visible window. The environment names a directory;
+ * the test writes a file `NNN.key` there for each key it wants pressed, holding `<hexadecimal key code>:<characters>`, and the
+ * poll (on the main queue, every 5 ms) taps each such file's key (a key-down and a key-up, marked) in name order, then renames
+ * the file to `NNN.key.done`. So the keys are ordered by what the test has seen happen, not by a count or a delay. */
+void ck_app_t_schedule_key_files(void) {
+    const char *dir = getenv("CK_WINDOWED_TEST_KEY_FILES");
+    if (dir == NULL) {
+        dir = getenv("CK_VULKAN_TEST_KEY_FILES");
+    }
+    if (dir == NULL) {
+        return;
+    }
+    static char directory[1024];
+    strncpy(directory, dir, sizeof directory - 1);
+    ck_app_key_files_observer = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSWindowDidUpdateNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *notification) {
+        NSWindow *window = notification.object;
+        if (![window isKindOfClass:NSWindow.class] || !window.isVisible) {
+            return;
+        }
+        [NSNotificationCenter.defaultCenter removeObserver:ck_app_key_files_observer];
+        ck_app_key_files_observer = nil;
+        /* Kept in a static: nothing else holds the source, and a released timer never fires. */
+        ck_app_key_files_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(ck_app_key_files_timer, DISPATCH_TIME_NOW, 5 * NSEC_PER_MSEC, NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(ck_app_key_files_timer, ^{
+            NSString *root = [NSString stringWithUTF8String:directory];
+            NSArray<NSString *> *names = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:nil]
+                                          sortedArrayUsingSelector:@selector(compare:)];
+            for (NSString *name in names) {
+                if (![name hasSuffix:@".key"]) {
+                    continue;
+                }
+                NSString *path = [root stringByAppendingPathComponent:name];
+                NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+                NSRange colon = [text rangeOfString:@":"];
+                if (colon.location == NSNotFound) {
+                    continue;
+                }
+                unsigned code = 0;
+                if ([[NSScanner scannerWithString:[text substringToIndex:colon.location]] scanHexInt:&code]) {
+                    ck_app_tap((uint16_t)code, [text substringFromIndex:colon.location + 1].UTF8String);
+                }
+                [NSFileManager.defaultManager moveItemAtPath:path
+                                                      toPath:[path stringByAppendingString:@".done"]
+                                                       error:nil];
+            }
+        });
+        dispatch_resume(ck_app_key_files_timer);
     }];
 }
 

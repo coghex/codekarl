@@ -93,8 +93,7 @@ impl SimSlot {
         (self.wake)();
     }
 
-    /// The latest snapshot, if one was published; the readout of a later slice reads it, and tests read it now.
-    #[cfg(test)]
+    /// The latest snapshot, if one was published.
     pub(crate) fn latest(&self) -> Option<SimSnapshot> {
         self.locked().latest
     }

@@ -193,6 +193,10 @@ fn describe(error: VmError) -> String {
 struct State {
     /// The calls posted and not yet answered, oldest first (results arrive in the order the calls ran).
     pending: RefCell<VecDeque<(CallId, UiEvent)>>,
+    /// The `game_time` calls posted and not yet answered (their results are taken and not given to the window loop).
+    times: RefCell<Vec<CallId>>,
+    /// The snapshot last delivered through `game_time`, to post the next only when something displayed differs.
+    delivered: Cell<Option<crate::game::slot::SimSnapshot>>,
     /// The text of the terminal failure `take_failure` returned, once.
     failure: RefCell<Option<String>>,
     /// A post reported that the VM ended.
@@ -214,6 +218,8 @@ pub(crate) struct CodekarlUi {
 pub(crate) struct SimLink {
     pub(crate) controls: crate::game::controls::SimControls,
     pub(crate) slot: std::sync::Arc<crate::game::slot::SimSlot>,
+    /// Whether the UI VM has registered a `game.on_time` callback.
+    pub(crate) time_registered: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl CodekarlUi {
@@ -265,31 +271,158 @@ impl CodekarlUi {
 
     /// The calls posted and not yet answered.
     pub(crate) fn outstanding(&self) -> usize {
-        self.state.pending.borrow().len()
+        self.state.pending.borrow().len() + self.state.times.borrow().len()
     }
 
     /// The names of the callbacks still running, oldest first.
     pub(crate) fn outstanding_names(&self) -> Vec<&'static str> {
-        self.state
+        let mut names: Vec<&'static str> = self
+            .state
             .pending
             .borrow()
             .iter()
             .map(|(_, event)| name_of(event))
-            .collect()
+            .collect();
+        names.extend(
+            self.state
+                .times
+                .borrow()
+                .iter()
+                .map(|_| crate::game_api::GAME_TIME),
+        );
+        names
     }
 
     /// Takes every result that is already there, never waiting, and returns every failure among them, in
-    /// order (the post-stop fold: any remaining result is taken here).
+    /// order (the post-stop fold: any remaining result is taken here). A failing `game_time` call is one of them.
     pub(crate) fn take_remaining_failures(&self) -> Vec<String> {
         let mut failures = Vec::new();
         let mut link = self.clone();
-        while let Some(answer) = link.take_answer() {
-            if let Answer::Failed { message } = answer.answer {
-                failures.push(message);
-            }
+        // Results only: nothing new is posted after the stop.
+        while let Some(step) = link.take_late() {
+            failures.extend(step);
         }
         failures
     }
+}
+
+impl CodekarlUi {
+    /// Posts the latest simulation snapshot as `game_time`, when a callback is registered, something displayed differs from
+    /// the last snapshot delivered and there is a free call place outside the one reserved for lifecycle posts. Otherwise
+    /// nothing is posted and the next pass tries again; an older snapshot is never posted once a newer one exists.
+    fn deliver_time(&self) {
+        let Some(sim) = &self.sim else {
+            return;
+        };
+        if !sim
+            .time_registered
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            // A callback registered later gets the state at that time.
+            self.state.delivered.set(None);
+            return;
+        }
+        let Some(snapshot) = sim.slot.latest() else {
+            return;
+        };
+        if self
+            .state
+            .delivered
+            .get()
+            .is_some_and(|delivered| !snapshot.differs_from(&delivered))
+        {
+            return;
+        }
+        if self.outstanding() >= UI_CALL_LIMIT - 1 {
+            return;
+        }
+        let Some(vm) = self.vm() else {
+            return;
+        };
+        let posted = vm.borrow_mut().post(
+            crate::game_api::GAME_TIME,
+            vec![crate::game_api::time_table(&snapshot)],
+        );
+        if let Ok(id) = posted {
+            self.state.times.borrow_mut().push(id);
+            self.state.delivered.set(Some(snapshot));
+        }
+    }
+
+    /// The next result that is not a successful `game_time` call (those are taken here and dropped): an answer for the window loop,
+    /// or the failure of a `game_time` call.
+    fn take_next(&mut self) -> Option<Taken> {
+        let vm = self.vm()?;
+        loop {
+            let result = vm.borrow_mut().take_result()?;
+            let timed = {
+                let mut times = self.state.times.borrow_mut();
+                times
+                    .iter()
+                    .position(|id| *id == result.id)
+                    .map(|position| times.remove(position))
+            };
+            if timed.is_some() {
+                if let CallOutcome::Failed { message, traceback } = result.outcome {
+                    return Some(Taken::TimeFailed(format!(
+                        "ui callback {} failed: {message}\n{traceback}",
+                        crate::game_api::GAME_TIME
+                    )));
+                }
+                continue;
+            }
+            let mut pending = self.state.pending.borrow_mut();
+            let position = pending.iter().position(|(id, _)| *id == result.id)?;
+            let (_, event) = pending.remove(position)?;
+            drop(pending);
+            let answer = answer_of(&event, result.outcome);
+            let answer = if self.map.is_some()
+                && matches!(&event, UiEvent::Update(_))
+                && matches!(answer, Answer::NotRegistered)
+            {
+                // The map controller consumes paced updates even when Lua has no frame_update callback. Returning a successful
+                // synthetic answer keeps the scheduler's registration epoch alive without changing Lua's callback contract.
+                Answer::Returned
+            } else {
+                answer
+            };
+            return Some(Taken::Answer(UiAnswer { event, answer }));
+        }
+    }
+
+    /// The next answer for the window loop. A failing `game_time` call is the link's terminal failure here, which ends the run
+    /// through the ordinary UI-failure path.
+    fn next_answer(&mut self) -> Option<UiAnswer> {
+        loop {
+            match self.take_next()? {
+                Taken::Answer(answer) => return Some(answer),
+                Taken::TimeFailed(message) => {
+                    self.state.failure.borrow_mut().get_or_insert(message);
+                }
+            }
+        }
+    }
+
+    /// One step of the late paths (the drain after the loop and the post-stop fold), which never post anything new: `None` when no
+    /// result is left, else `Some` of the failures the step took (none, or the one of an answer or of a `game_time` call).
+    pub(crate) fn take_late(&mut self) -> Option<Vec<String>> {
+        Some(match self.take_next()? {
+            Taken::Answer(UiAnswer {
+                answer: Answer::Failed { message },
+                ..
+            })
+            | Taken::TimeFailed(message) => vec![message],
+            Taken::Answer(_) => Vec::new(),
+        })
+    }
+}
+
+/// What the link took from the VM's results.
+enum Taken {
+    /// An answer to an event of the window loop.
+    Answer(UiAnswer),
+    /// A `game_time` call failed: the message with its traceback.
+    TimeFailed(String),
 }
 
 impl UiLink for CodekarlUi {
@@ -355,24 +488,13 @@ impl UiLink for CodekarlUi {
         if self.simulation_failed() {
             return None;
         }
-        let vm = self.vm()?;
-        let result = vm.borrow_mut().take_result()?;
-        let mut pending = self.state.pending.borrow_mut();
-        let position = pending.iter().position(|(id, _)| *id == result.id)?;
-        let (_, event) = pending.remove(position)?;
-        drop(pending);
-        let answer = answer_of(&event, result.outcome);
-        let answer = if self.map.is_some()
-            && matches!(&event, UiEvent::Update(_))
-            && matches!(answer, Answer::NotRegistered)
-        {
-            // The map controller consumes paced updates even when Lua has no frame_update callback. Returning a successful
-            // synthetic answer keeps the scheduler's registration epoch alive without changing Lua's callback contract.
-            Answer::Returned
-        } else {
-            answer
-        };
-        Some(UiAnswer { event, answer })
+        self.deliver_time();
+        let answer = self.next_answer();
+        if answer.is_none() {
+            // Results drained just now may have freed the call places a waiting snapshot needs, and no other wake may come.
+            self.deliver_time();
+        }
+        answer
     }
 
     fn is_disconnected(&self) -> bool {
@@ -397,7 +519,7 @@ impl UiLink for CodekarlUi {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -1005,5 +1127,319 @@ mod tests {
             link.take_answer().is_none(),
             "a host panic sends no call result"
         );
+    }
+
+    // --- the simulation's time (`game_time`)
+
+    use crate::game::slot::{PauseReason, SimSlot, SimSnapshot};
+    use crate::game_api;
+
+    fn snapshot_at(hour: u8, speed: u8, paused: Option<PauseReason>) -> SimSnapshot {
+        let date = ck_sim::Date {
+            year: 768,
+            month: 10,
+            day: 9,
+            hour,
+        };
+        SimSnapshot {
+            tick: ck_sim::GameTime::from_date(date).expect("a valid date"),
+            date,
+            speed: ck_sim::Speed::new(speed).expect("a speed"),
+            paused,
+        }
+    }
+
+    /// A UI VM running `script` with `game.on_time` and a `window.record` that notes `hour speed paused`, over a link with a
+    /// simulation slot the test publishes to.
+    struct Timed {
+        harness: Harness,
+        link: CodekarlUi,
+        slot: Arc<SimSlot>,
+        seen: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    fn timed(script: &str, extras: Extras) -> Timed {
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let record: HostFunction = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |arguments| {
+                let text: Vec<String> = arguments
+                    .iter()
+                    .flatten()
+                    .map(|value| match value {
+                        ConfigValue::Integer(number) => number.to_string(),
+                        ConfigValue::String(text) => text.clone(),
+                        ConfigValue::Bool(flag) => flag.to_string(),
+                        other => format!("{other:?}"),
+                    })
+                    .collect();
+                seen.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(text.join(" "));
+                Ok(Vec::new())
+            })
+        };
+        let registered = Arc::new(AtomicBool::new(false));
+        let mut extras = extras;
+        extras.functions.push(("record", record));
+        extras.extensions.push(game_api::extension(
+            Arc::clone(&registered),
+            Arc::new(|| {}),
+        ));
+        let harness = Harness::new(script, extras);
+        let slot = SimSlot::new(Arc::new(|| {}));
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let link = harness.ui.clone().with_sim(SimLink {
+            controls: crate::game::controls::SimControls::new(sender),
+            slot: Arc::clone(&slot),
+            time_registered: registered,
+        });
+        Timed {
+            harness,
+            link,
+            slot,
+            seen,
+        }
+    }
+
+    impl Timed {
+        fn seen(&self) -> Vec<String> {
+            self.seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+
+        /// Runs the link's passes until `count` `game_time` calls have run, at most ten seconds.
+        fn pump_until(&mut self, count: usize) {
+            let give_up = Instant::now() + Duration::from_secs(10);
+            while self.seen().len() < count {
+                let _ = self.link.take_answer();
+                assert!(
+                    Instant::now() < give_up,
+                    "{} calls, not {count}",
+                    self.seen().len()
+                );
+                thread::yield_now();
+            }
+            // The last call's result is taken too.
+            while self.link.outstanding() > 0 {
+                let _ = self.link.take_answer();
+                assert!(Instant::now() < give_up, "a call is still outstanding");
+                thread::yield_now();
+            }
+        }
+    }
+
+    const ON_TIME: &str =
+        "game.on_time(function(t) window.record(t.hour, t.speed, tostring(t.paused)) end)";
+
+    #[test]
+    fn a_changed_snapshot_is_delivered_once_and_an_unchanged_one_not_at_all() {
+        let mut timed = timed(ON_TIME, Extras::default());
+        timed
+            .slot
+            .publish(snapshot_at(14, 1, Some(PauseReason::Load)));
+        timed.pump_until(1);
+        assert_eq!(timed.seen(), ["14 1 load"]);
+        // The same displayed state, published again: nothing is posted.
+        timed
+            .slot
+            .publish(snapshot_at(14, 1, Some(PauseReason::Load)));
+        for _ in 0..5 {
+            let _ = timed.link.take_answer();
+        }
+        assert_eq!(timed.link.outstanding(), 0);
+        assert_eq!(timed.seen().len(), 1);
+        // A tick that changes the hour, a speed picked while paused, and a pause for another reason each deliver once.
+        timed
+            .slot
+            .publish(snapshot_at(15, 1, Some(PauseReason::Load)));
+        timed.pump_until(2);
+        timed
+            .slot
+            .publish(snapshot_at(15, 3, Some(PauseReason::Load)));
+        timed.pump_until(3);
+        timed.slot.publish(snapshot_at(15, 3, None));
+        timed.pump_until(4);
+        assert_eq!(
+            timed.seen(),
+            ["14 1 load", "15 1 load", "15 3 load", "15 3 false"]
+        );
+    }
+
+    #[test]
+    fn with_the_call_places_full_the_delivery_is_retried_and_only_the_latest_is_posted() {
+        let gate = Gate::new();
+        let hold: HostFunction = {
+            let gate = Arc::clone(&gate);
+            Arc::new(move |_| {
+                gate.wait();
+                Ok(Vec::new())
+            })
+        };
+        let script = format!("{ON_TIME}\nwindow.on_opened(function() window.hold() end)");
+        let mut timed = timed(
+            &script,
+            Extras {
+                functions: vec![("hold", hold)],
+                ..Extras::default()
+            },
+        );
+        // Three held calls leave the one place reserved for lifecycle posts: nothing may be delivered.
+        for _ in 0..3 {
+            timed.link.post(UiEvent::Opened).expect("within the limit");
+        }
+        timed
+            .slot
+            .publish(snapshot_at(1, 1, Some(PauseReason::Load)));
+        let _ = timed.link.take_answer();
+        timed.slot.publish(snapshot_at(2, 5, None));
+        let _ = timed.link.take_answer();
+        assert!(timed.seen().is_empty());
+        assert_eq!(timed.link.outstanding(), 3);
+        // The places free up: the retry posts the latest snapshot, and the older one is never posted.
+        gate.open();
+        timed.pump_until(1);
+        assert_eq!(timed.seen(), ["2 5 false"]);
+        for _ in 0..5 {
+            let _ = timed.link.take_answer();
+        }
+        assert_eq!(timed.seen().len(), 1);
+    }
+
+    #[test]
+    fn without_a_registered_callback_nothing_is_posted() {
+        let mut timed = timed("", Extras::default());
+        timed.slot.publish(snapshot_at(9, 2, None));
+        for _ in 0..5 {
+            let _ = timed.link.take_answer();
+        }
+        assert_eq!(timed.link.outstanding(), 0);
+        assert!(timed.seen().is_empty());
+    }
+
+    #[test]
+    fn a_failing_game_time_callback_is_the_links_terminal_failure() {
+        let mut timed = timed(
+            "game.on_time(function() error('readout exploded') end)",
+            Extras::default(),
+        );
+        timed.slot.publish(snapshot_at(9, 2, None));
+        let give_up = Instant::now() + Duration::from_secs(10);
+        while !timed.link.is_disconnected() {
+            let _ = timed.link.take_answer();
+            assert!(Instant::now() < give_up, "the failure did not arrive");
+            thread::yield_now();
+        }
+        let failure = timed.link.failure().expect("a failure");
+        assert!(
+            failure.starts_with("ui callback game_time failed: "),
+            "{failure}"
+        );
+        assert!(failure.contains("readout exploded"), "{failure}");
+        drop(timed.harness);
+    }
+
+    #[test]
+    fn delivery_is_re_armed_by_the_pass_that_drains_the_results_which_freed_the_places() {
+        let gate = Gate::new();
+        // Set by the first held call on the owner thread, before it waits at the gate.
+        let entered = Arc::new(AtomicBool::new(false));
+        let hold: HostFunction = {
+            let gate = Arc::clone(&gate);
+            let entered = Arc::clone(&entered);
+            Arc::new(move |_| {
+                entered.store(true, Ordering::SeqCst);
+                gate.wait();
+                Ok(Vec::new())
+            })
+        };
+        let script = "game.on_time(function(t) window.hold() window.record(t.hour) end)";
+        // Each report the VM sends (a call's result) is counted: the completion witness of a call, which `window.record` is not,
+        // since it runs before the callback returns.
+        let reports = Arc::new(AtomicUsize::new(0));
+        let mut timed = timed(
+            script,
+            Extras {
+                functions: vec![("hold", hold)],
+                after_wake: Some({
+                    let reports = Arc::clone(&reports);
+                    Arc::new(move || {
+                        reports.fetch_add(1, Ordering::SeqCst);
+                    })
+                }),
+                ..Extras::default()
+            },
+        );
+        // Three held `game_time` calls fill the places outside the reserved one; the fourth snapshot waits.
+        for hour in 1..=3 {
+            timed.slot.publish(snapshot_at(hour, 1, None));
+            let _ = timed.link.take_answer();
+        }
+        assert_eq!(timed.link.outstanding(), 3);
+        timed.slot.publish(snapshot_at(4, 1, None));
+        let _ = timed.link.take_answer();
+        assert_eq!(timed.link.outstanding(), 3, "no place for the fourth");
+        // The baseline of the report count is read only once the first call is held at the gate. The owner thread sent its
+        // start-up reports and ran their wake hooks before it took that call, and it is blocked in it now, so the count cannot
+        // move until the gate opens: no late start-up wake can be counted as a call's report.
+        let give_up = Instant::now() + Duration::from_secs(10);
+        while !entered.load(Ordering::SeqCst) {
+            assert!(Instant::now() < give_up, "the first call was not held");
+            thread::yield_now();
+        }
+        let before = reports.load(Ordering::SeqCst);
+        // The calls finish (the test waits for their reports without touching the link), and then ONE pass is all there is: it
+        // drains the three results, and that pass alone must post the waiting snapshot.
+        gate.open();
+        let give_up = Instant::now() + Duration::from_secs(10);
+        while reports.load(Ordering::SeqCst) < before + 3 {
+            assert!(Instant::now() < give_up, "the calls did not finish");
+            thread::yield_now();
+        }
+        assert_eq!(timed.seen(), ["1", "2", "3"]);
+        assert!(timed.link.take_answer().is_none());
+        assert_eq!(
+            timed.link.outstanding(),
+            1,
+            "the waiting snapshot was posted by the draining pass"
+        );
+        timed.pump_until(4);
+        assert_eq!(timed.seen(), ["1", "2", "3", "4"]);
+    }
+
+    #[test]
+    fn a_game_time_failure_met_after_the_loop_is_returned_by_the_late_paths_and_nothing_new_is_posted()
+     {
+        let mut timed = timed(
+            "game.on_time(function(t) window.record(t.hour) error('late boom') end)",
+            Extras::default(),
+        );
+        timed.slot.publish(snapshot_at(1, 1, None));
+        let _ = timed.link.take_answer();
+        let give_up = Instant::now() + Duration::from_secs(10);
+        while timed.seen().is_empty() {
+            assert!(Instant::now() < give_up, "the call did not run");
+            thread::yield_now();
+        }
+        // The loop is over: a newer snapshot is not posted by the late paths, and the failure is returned once.
+        timed.slot.publish(snapshot_at(2, 1, None));
+        // The call's result may still be on its way: the fold is repeated until it has it.
+        let mut failures = Vec::new();
+        while failures.is_empty() {
+            failures = timed.link.take_remaining_failures();
+            assert!(Instant::now() < give_up, "the failure did not arrive");
+            thread::yield_now();
+        }
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].starts_with("ui callback game_time failed: "),
+            "{failures:?}"
+        );
+        assert!(failures[0].contains("late boom"), "{failures:?}");
+        assert_eq!(timed.link.outstanding(), 0);
+        assert_eq!(timed.seen(), ["1"]);
+        assert!(timed.link.take_remaining_failures().is_empty());
     }
 }

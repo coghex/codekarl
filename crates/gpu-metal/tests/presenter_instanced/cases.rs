@@ -614,7 +614,199 @@ pub(crate) fn readback_scene_invalid_instances_are_skipped() {
     );
 }
 
-pub(crate) const CASES: [(&str, fn()); 8] = [
+// ---------------------------------------------------------------------------------------------
+// The date readout's pixel font (CK-197)
+// ---------------------------------------------------------------------------------------------
+
+/// The shipped font's PNG at `name` under `assets/ui/font`, decoded: its width, height and RGBA8 pixels.
+fn font_png(name: &str) -> (u32, u32, Vec<u8>) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/ui/font")
+        .join(name);
+    let mut reader = png::Decoder::new(std::io::BufReader::new(
+        std::fs::File::open(&path).expect("the shipped font image"),
+    ))
+    .read_info()
+    .expect("a PNG");
+    let mut bytes = vec![0; reader.output_buffer_size().expect("a size")];
+    let info = reader.next_frame(&mut bytes).expect("a frame");
+    assert_eq!(info.color_type, png::ColorType::Rgba, "{name}");
+    assert_eq!(info.bit_depth, png::BitDepth::Eight, "{name}");
+    bytes.truncate(info.buffer_size());
+    (info.width, info.height, bytes)
+}
+
+/// "9 Oct 768" as the application's `font.layout` lays it out from the committed font (`apps/codekarl` pins the same literals):
+/// the character, its x in font pixels and its glyph width. The string is 49 font pixels wide and every glyph 11 tall.
+const READOUT: [(char, i32, u32); 7] = [
+    ('9', 0, 5),
+    ('O', 10, 5),
+    ('c', 16, 5),
+    ('t', 22, 4),
+    ('7', 31, 5),
+    ('6', 37, 5),
+    ('8', 43, 5),
+];
+
+/// The date readout of a fixed string, off screen: a panel one font pixel larger than the text on every side with the glyph quads
+/// over it, at two points per font pixel, nearest sampled. Every pixel equals the composite of the font's PNGs computed on the
+/// CPU, the text colour is on screen exactly where a set pixel of a glyph lands, and the pixels around the panel are the clear
+/// colour. Negative control: drawing the panel after the glyphs fails the first check (it covers them); drawing at one point per
+/// font pixel fails the sizes.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the images, the layout, the draw, the CPU composite and the checks read best in one run"
+)]
+pub(crate) fn readback_scene_pixel_font_readout() {
+    const SCALE: i32 = 2;
+    const TEXT: [u8; 4] = [0xEC, 0xE3, 0xCB, 255];
+    const PANEL: [u8; 4] = [0x2A, 0x21, 0x19, 255];
+    let (width, height) = (110_u32, 30_u32);
+    let (origin_x, origin_y) = (4_i32, 2_i32);
+    let clear = [0.1, 0.2, 0.3];
+    let background = {
+        let [r, g, b] = clear_bytes(clear);
+        [r, g, b, 255]
+    };
+
+    // The images: the panel, then one per distinct glyph.
+    let mut pictures = vec![{
+        let (w, h, bytes) = font_png("panel.png");
+        assert_eq!((w, h, bytes.as_slice()), (1, 1, PANEL.as_slice()));
+        Picture {
+            width: w,
+            height: h,
+            bytes,
+        }
+    }];
+    let mut glyph_index = std::collections::BTreeMap::new();
+    let mut glyphs = Vec::new();
+    for (character, x, _) in READOUT {
+        let index = *glyph_index.entry(character).or_insert_with(|| {
+            let (w, h, bytes) = font_png(&format!("glyphs/U+{:04X}.png", u32::from(character)));
+            assert_eq!(h, 11, "{character}");
+            pictures.push(Picture {
+                width: w,
+                height: h,
+                bytes: bytes.clone(),
+            });
+            pictures.len() - 1
+        });
+        let (w, h) = (pictures[index].width, pictures[index].height);
+        let left = origin_x + SCALE + x * SCALE;
+        let top = origin_y + SCALE;
+        let destination = rect(
+            left,
+            top,
+            left + i32::try_from(w).expect("small") * SCALE,
+            top + i32::try_from(h).expect("small") * SCALE,
+        );
+        glyphs.push((index, destination));
+    }
+    let panel = rect(
+        origin_x,
+        origin_y,
+        origin_x + (49 + 2) * SCALE,
+        origin_y + (11 + 2) * SCALE,
+    );
+
+    let draw = |panel_first: bool| {
+        let mut list = Vec::new();
+        if panel_first {
+            list.push(of(0, panel));
+        }
+        list.extend(
+            glyphs
+                .iter()
+                .map(|&(index, destination)| of(index, destination)),
+        );
+        if !panel_first {
+            list.push(of(0, panel));
+        }
+        readback_scene(
+            width,
+            height,
+            clear,
+            None,
+            MetalFilter::Nearest,
+            &images(&pictures),
+            &list,
+        )
+        .expect("the readback works")
+    };
+
+    // The CPU composite of the same pictures, pixel for pixel.
+    let mut expected = vec![background; (width * height) as usize];
+    let mut fill = |destination: DestinationRect, picture: &Picture| {
+        for y in destination.top..destination.bottom {
+            for x in destination.left..destination.right {
+                // Nearest: the texel under the middle of the target pixel (the panel is one texel stretched over its rectangle).
+                let across = u32::try_from(x - destination.left).expect("inside");
+                let down = u32::try_from(y - destination.top).expect("inside");
+                let wide = u32::try_from(destination.right - destination.left).expect("a size");
+                let high = u32::try_from(destination.bottom - destination.top).expect("a size");
+                let px = across * picture.width / wide;
+                let py = down * picture.height / high;
+                let at_texel = ((py * picture.width + px) * 4) as usize;
+                let texel = &picture.bytes[at_texel..at_texel + 4];
+                if texel[3] != 0 {
+                    expected[(u32::try_from(y).expect("inside") * width
+                        + u32::try_from(x).expect("inside"))
+                        as usize] = [texel[0], texel[1], texel[2], texel[3]];
+                }
+            }
+        }
+    };
+    fill(panel, &pictures[0]);
+    for &(index, destination) in &glyphs {
+        fill(destination, &pictures[index]);
+    }
+
+    let pixels = draw(true);
+    for y in 0..height {
+        for x in 0..width {
+            assert_eq!(
+                target(&pixels, width, x, y),
+                expected[(y * width + x) as usize],
+                "({x}, {y})"
+            );
+        }
+    }
+    // The text colour is where the glyphs' set pixels are, four target pixels each: nothing was dropped or covered.
+    let set: usize = glyphs
+        .iter()
+        .map(|&(index, _)| {
+            pictures[index]
+                .bytes
+                .chunks_exact(4)
+                .filter(|texel| texel[3] != 0)
+                .count()
+        })
+        .sum();
+    let text = (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .filter(|&(x, y)| target(&pixels, width, x, y) == TEXT)
+        .count();
+    assert_eq!(
+        text,
+        set * 4,
+        "the text colour covers exactly the glyphs' set pixels at two points per font pixel"
+    );
+    // Around the panel the target is the clear colour, and the panel's corner is the panel colour.
+    assert_eq!(target(&pixels, width, 0, 0), background);
+    assert_eq!(target(&pixels, width, width - 1, height - 1), background);
+    assert_eq!(target(&pixels, width, 4, 2), PANEL);
+    // Negative control: the panel drawn last covers the text.
+    let covered = draw(false);
+    assert_eq!(
+        target(&covered, width, 6 + 2, 4 + 6),
+        PANEL,
+        "a panel drawn last hides the glyphs"
+    );
+    assert_ne!(covered, pixels);
+}
+
+pub(crate) const CASES: [(&str, fn()); 9] = [
     ("readback_scene_painter_order", readback_scene_painter_order),
     (
         "readback_scene_legacy_quad_is_below",
@@ -637,5 +829,9 @@ pub(crate) const CASES: [(&str, fn()); 8] = [
     (
         "readback_scene_invalid_instances_are_skipped",
         readback_scene_invalid_instances_are_skipped,
+    ),
+    (
+        "readback_scene_pixel_font_readout",
+        readback_scene_pixel_font_readout,
     ),
 ];

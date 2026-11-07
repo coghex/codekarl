@@ -38,8 +38,8 @@ use ck_log::Level;
 use ck_lua::Extension;
 use ck_runtime::{RunContext, RunEnd};
 use ck_window::{
-    Answer, Backend, CreatedWindow, LoopEnd, LoopSettings, NativeEvent, NativeWake, Notifier,
-    Presenter, RequestReader, UiLink, Wait,
+    Backend, CreatedWindow, LoopEnd, LoopSettings, NativeEvent, NativeWake, Notifier, Presenter,
+    RequestReader, UiLink, Wait,
 };
 
 use crate::lifecycle::{ResourceLatch, emit};
@@ -285,10 +285,9 @@ fn drain_late(quit: &AtomicBool, ui: &CodekarlUi, drain: Duration) -> Vec<String
         .checked_add(drain)
         .unwrap_or_else(Instant::now);
     loop {
-        while let Some(answer) = link.take_answer() {
-            if let Answer::Failed { message } = answer.answer {
-                failures.push(message);
-            }
+        // Results only: a drain after the loop never posts a new `game_time`.
+        while let Some(step) = link.take_late() {
+            failures.extend(step);
         }
         if ui.outstanding() == 0 || quit.load(Ordering::SeqCst) || link.is_disconnected() {
             return failures;

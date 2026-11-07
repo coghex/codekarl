@@ -14,6 +14,8 @@ ash = { version = "0.38", default-features = false, features = ["loaded", "debug
 ck-map = { path = "../map", features = ["test-support"] }
 ck-window = { path = "../window", features = ["test-support"] }
 ck-window-glfw = { path = "../window-glfw" }
+# The readout readback case decodes the shipped pixel font's PNGs.
+png = { version = "0.18", default-features = false }
 
 [[test]]
 name = "window"

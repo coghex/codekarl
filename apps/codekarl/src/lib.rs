@@ -75,8 +75,17 @@ mod config;
 mod demo_tests;
 #[cfg(test)]
 mod fakes;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the `font` extension of the readout slice loads it"
+    )
+)]
+mod font;
 mod frame_api;
 mod game;
+mod game_api;
 mod lifecycle;
 mod map_app;
 mod metrics;
@@ -94,6 +103,8 @@ mod metrics_windows_tests;
 mod mode;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod native;
+#[cfg(test)]
+mod readout_tests;
 mod render_api;
 mod resource_runtime;
 #[cfg(test)]
@@ -491,6 +502,23 @@ fn supervise(
             None => (None, None),
         },
     };
+    // With a game, the pixel font is read and checked now, so a missing or invalid one stops the run before anything starts.
+    let font = if config.game.is_some() {
+        let assets = config.render.assets.clone().unwrap_or_default();
+        match font::load(&assets) {
+            Ok(font) => Some(Arc::new(font)),
+            Err(message) => {
+                emit(
+                    Level::Error,
+                    "config",
+                    format_args!("[game] font: {message}"),
+                );
+                return FAILED;
+            }
+        }
+    } else {
+        None
+    };
     supervise_with_owner_factory(
         config,
         mode,
@@ -498,6 +526,7 @@ fn supervise(
         Content {
             map: loaded_map,
             game,
+            font,
         },
         windowed_plan,
         production_headless_plan,
@@ -510,6 +539,8 @@ fn supervise(
 struct Content {
     map: Option<ck_map::LoadedMap>,
     game: Option<game::setup::Prepared>,
+    /// The pixel font of the readout, loaded with a game.
+    font: Option<Arc<font::Font>>,
 }
 
 /// What a headless run does between start-up and the stop phase: nothing. The request slot is ended where the run phase
@@ -541,6 +572,7 @@ fn supervise_with_owner_factory(
     let Content {
         map: loaded_map,
         game,
+        font,
     } = content;
     let requests = Requests::new();
     let headless = matches!(mode, mode::Mode::Headless).then(|| Arc::new(HeadlessNotes::logging()));
@@ -594,15 +626,18 @@ fn supervise_with_owner_factory(
     let gameplay_wiring = connected
         .as_ref()
         .and_then(|connected| connected.gameplay.clone());
-    let (ui, sim_spawn) = match connected {
+    let time_registered = Arc::new(AtomicBool::new(false));
+    let (ui, sim_spawn, game_extension) = match connected {
         Some(connected) => (
             ui.with_sim(ui_link::SimLink {
                 controls: connected.controls,
                 slot: connected.slot,
+                time_registered: Arc::clone(&time_registered),
             }),
             Some(connected.spawn),
+            Some(game_api::extension(time_registered, Arc::clone(&wake))),
         ),
-        None => (ui, None),
+        None => (ui, None, None),
     };
     let writer = bridge
         .take_writer()
@@ -615,7 +650,7 @@ fn supervise_with_owner_factory(
     };
     let metrics = measurement_hub(config, mode);
     let window_loop_settings = loop_settings_measured(config, mode, metrics.as_deref());
-    let (ui_extensions, render_end) = scene_extensions(
+    let (mut ui_extensions, render_end) = scene_extensions(
         config,
         mode,
         writer,
@@ -624,6 +659,9 @@ fn supervise_with_owner_factory(
         &window_loop_settings,
         metrics.clone(),
     );
+    // `game.on_time` and `font.layout`: the UI VM's view of the simulation and of the pixel font, with a game only.
+    ui_extensions.extend(game_extension);
+    ui_extensions.extend(font.map(font::extension));
     let setup = Setup {
         // Replaced by the mode's backend for a windowed run (a headless run has no backend).
         backend: mode::Backend::NativeMetal,
