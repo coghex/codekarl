@@ -858,6 +858,7 @@ fn only_the_ui_vm_gets_the_texture_frame_and_scene_api_and_the_completion_hook()
             counted.fetch_add(1, Ordering::SeqCst);
             hook(completion);
         })),
+        gameplay: None,
     };
     let spawned = spawns(&vms, &ConfigValue::Table(BTreeMap::new()), Some(&wiring));
     let report = Runtime::new(Vec::new()).with_owners(spawned).run_report();

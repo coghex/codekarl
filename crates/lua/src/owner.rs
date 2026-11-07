@@ -31,6 +31,8 @@ pub struct VmSettings {
     pub entry: PathBuf,
     /// The configuration, copied in and shown to the script as the read-only `config`.
     pub config: ConfigValue,
+    /// The VM's standard-library and reproducibility policy (default [`Profile::Standard`]).
+    pub profile: Profile,
     /// The global tables of host functions and callback setters, installed in this order before the entry
     /// script runs (default empty). Table names are unique across the list, and so are callback names
     /// (a posted call names its callback); function and setter names belong to their own table.
@@ -60,12 +62,23 @@ impl VmSettings {
             name: name.into(),
             entry: entry.into(),
             config,
+            profile: Profile::Standard,
             extensions: Vec::new(),
             call_limit: 0,
             on_report: None,
             on_complete: None,
         }
     }
+}
+
+/// A VM's runtime profile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Profile {
+    /// The existing unrestricted safe standard-library behavior.
+    #[default]
+    Standard,
+    /// A reproducible gameplay surface with ordered table iteration and fixed collection points.
+    Deterministic,
 }
 
 impl fmt::Debug for VmSettings {
@@ -75,6 +88,7 @@ impl fmt::Debug for VmSettings {
             .field("name", &self.name)
             .field("entry", &self.entry)
             .field("config", &self.config)
+            .field("profile", &self.profile)
             .field("extensions", &self.extensions)
             .field("call_limit", &self.call_limit)
             .field(
@@ -150,6 +164,7 @@ impl VmOwner {
             name,
             entry,
             config,
+            profile,
             extensions,
             call_limit,
             on_report,
@@ -174,6 +189,7 @@ impl VmOwner {
             name: name.clone(),
             entry,
             config,
+            profile,
             extensions,
             on_report: wake,
             on_complete,
@@ -465,6 +481,21 @@ impl VmOwner {
     pub fn await_stopped(&mut self, deadline: Duration) -> Result<(), VmError> {
         self.require("await_stopped", &[VmState::Stopping])?;
         self.finish_stop(deadline)
+    }
+
+    /// Polls at most `within` for the result of [`request_stop`](Self::request_stop), and
+    /// **never abandons**: with no result in time it returns [`Progress::Pending`] and changes
+    /// nothing. When the stop report arrives it returns [`Progress::Done`] and moves the handle
+    /// to Ending; unlike [`await_stopped`](Self::await_stopped), it does not wait for the thread
+    /// to return. This lets a shared handle be polled without holding its mutex across a wait.
+    ///
+    /// # Errors
+    ///
+    /// [`VmError::State`] unless the handle is Stopping; otherwise as
+    /// [`await_stopped`](Self::await_stopped), except [`VmError::Deadline`].
+    pub fn poll_stopped(&mut self, within: Duration) -> Result<Progress, VmError> {
+        self.require("poll_stopped", &[VmState::Stopping])?;
+        self.poll_answer(within, Expected::Done, VmState::Ending)
     }
 
     fn send_stop(&mut self) {

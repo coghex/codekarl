@@ -18,14 +18,15 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use ck_lua::{ConfigValue, Extension, VmError, VmOwner, VmSettings};
+use ck_lua::{ConfigValue, Extension, HostFunction, Profile, VmError, VmOwner, VmSettings};
 use ck_render_2d::SceneBridge;
 use ck_runtime::{Outcome, Owner, OwnerError, OwnerSpawn, Progress, Report};
 
 use crate::config::VmConfig;
+use crate::game::gameplay::{Gameplay, GameplayVmHandle, GameplayWiring};
 use crate::lifecycle::Status;
 use crate::ui_link::{UiSlot, UiVm};
 
@@ -49,6 +50,8 @@ pub(crate) struct UiWiring {
     /// The completion hook of the UI VM: it publishes the scene after startup and after every posted callback. The
     /// gameplay VM never gets one.
     pub(crate) on_complete: Option<Arc<dyn Fn(ck_lua::Completion) + Send + Sync>>,
+    /// The canonical gameplay VM surface and shared run bridge, when a scenario and gameplay VM exist.
+    pub(crate) gameplay: Option<GameplayWiring>,
 }
 
 /// A shared [`VmOwner`] that `ck-runtime` can supervise.
@@ -60,6 +63,150 @@ pub(crate) struct VmAdapter {
     /// then finishes into an ended bridge, and its write is discarded and counted).
     bridge: Option<Arc<SceneBridge>>,
     notes: Option<Rc<crate::windowed::RunNotes>>,
+}
+
+struct GameplayVmAdapter {
+    name: String,
+    vm: GameplayVmHandle,
+    gameplay: Arc<Gameplay>,
+}
+
+impl GameplayVmAdapter {
+    fn wait_phase(
+        &self,
+        within: Duration,
+        mut poll: impl FnMut(&mut VmOwner) -> Result<ck_lua::Progress, VmError>,
+    ) -> Result<Progress, OwnerError> {
+        let limit = std::time::Instant::now().checked_add(within);
+        loop {
+            let generation = self.gameplay.report_generation();
+            let answer = poll(&mut self.vm.lock().unwrap_or_else(PoisonError::into_inner))
+                .map(progress)
+                .map_err(owner_error)?;
+            if answer == Progress::Done || within.is_zero() {
+                return Ok(answer);
+            }
+            let Some(left) =
+                limit.map(|limit| limit.saturating_duration_since(std::time::Instant::now()))
+            else {
+                return Ok(Progress::Pending);
+            };
+            if !self.gameplay.wait_report(generation, left) {
+                return Ok(Progress::Pending);
+            }
+        }
+    }
+}
+
+impl Owner for GameplayVmAdapter {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn wait_ready(&mut self, within: Duration) -> Result<(), OwnerError> {
+        match self.wait_phase(within, |vm| vm.poll_ready(Duration::ZERO))? {
+            Progress::Done => Ok(()),
+            Progress::Pending => Err(OwnerError::Deadline),
+        }
+    }
+
+    fn poll_ready(&mut self, within: Duration) -> Result<Progress, OwnerError> {
+        self.wait_phase(within, |vm| vm.poll_ready(Duration::ZERO))
+    }
+
+    fn request_start(&mut self) -> Result<(), OwnerError> {
+        self.vm
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .request_start()
+            .map_err(owner_error)
+    }
+
+    fn await_started(&mut self, within: Duration) -> Result<(), OwnerError> {
+        match self.wait_phase(within, |vm| vm.poll_started(Duration::ZERO))? {
+            Progress::Done => Ok(()),
+            Progress::Pending => Err(OwnerError::Deadline),
+        }
+    }
+
+    fn poll_started(&mut self, within: Duration) -> Result<Progress, OwnerError> {
+        self.wait_phase(within, |vm| vm.poll_started(Duration::ZERO))
+    }
+
+    fn request_stop(&mut self) -> Result<(), OwnerError> {
+        if self.gameplay.request_stop() {
+            self.gameplay.send_deferred_stop();
+        }
+        Ok(())
+    }
+
+    fn await_stopped(&mut self, within: Duration) -> Result<(), OwnerError> {
+        let began = std::time::Instant::now();
+        if !self.gameplay.wait_stop_released(within) {
+            return Err(OwnerError::Deadline);
+        }
+        let limit = began.checked_add(within);
+        let mut stop_reported = false;
+        loop {
+            let generation = self.gameplay.report_generation();
+            let finished = {
+                let mut vm = self.vm.lock().unwrap_or_else(PoisonError::into_inner);
+                if !stop_reported {
+                    match vm.poll_stopped(Duration::ZERO).map_err(owner_error)? {
+                        ck_lua::Progress::Pending => {}
+                        ck_lua::Progress::Done => stop_reported = true,
+                    }
+                }
+                stop_reported && vm.wait_finished(Duration::ZERO)
+            };
+            if finished {
+                return Ok(());
+            }
+            let Some(left) =
+                limit.map(|limit| limit.saturating_duration_since(std::time::Instant::now()))
+            else {
+                return Err(OwnerError::Deadline);
+            };
+            if left.is_zero() {
+                return Err(OwnerError::Deadline);
+            }
+            if stop_reported {
+                // The VM sends its final report before its thread returns. There is no later
+                // report wake for that return, so briefly poll the join state without holding the
+                // shared handle lock instead of sleeping until the whole stop budget expires.
+                std::thread::sleep(left.min(Duration::from_millis(1)));
+            } else if !self.gameplay.wait_report(generation, left) {
+                return Err(OwnerError::Deadline);
+            }
+        }
+    }
+
+    fn cancel(&mut self) {
+        self.gameplay.cancel_vm();
+    }
+
+    fn wait_finished(&mut self, within: Duration) -> bool {
+        let limit = std::time::Instant::now().checked_add(within);
+        loop {
+            let generation = self.gameplay.report_generation();
+            if self
+                .vm
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .wait_finished(Duration::ZERO)
+            {
+                return true;
+            }
+            let Some(left) =
+                limit.map(|limit| limit.saturating_duration_since(std::time::Instant::now()))
+            else {
+                return false;
+            };
+            if left.is_zero() || !self.gameplay.wait_report(generation, left) {
+                return false;
+            }
+        }
+    }
 }
 
 /// What the runtime is told about a `ck-lua` error: a missed deadline stays a deadline, and anything
@@ -179,6 +326,19 @@ pub(crate) fn spawns(
     vms.iter()
         .map(|vm| {
             let mut settings = VmSettings::new(vm.name.clone(), vm.entry.clone(), config.clone());
+            let gameplay = ui
+                .filter(|_| vm.name == "gameplay")
+                .and_then(|wiring| wiring.gameplay.clone());
+            if let Some(gameplay) = &gameplay {
+                settings.config = gameplay.config.clone();
+                settings.profile = Profile::Deterministic;
+                settings.call_limit = 1;
+                let report_gameplay = Arc::clone(&gameplay.runtime);
+                settings.on_report = Some(Arc::new(move || report_gameplay.report_wake()));
+                settings
+                    .extensions
+                    .push(gameplay_extension(&gameplay.runtime));
+            }
             let slot = ui.filter(|_| vm.name == UI_VM).map(|wiring| {
                 settings.extensions.clone_from(&wiring.extensions);
                 settings.call_limit = UI_CALL_LIMIT;
@@ -192,21 +352,42 @@ pub(crate) fn spawns(
             OwnerSpawn::new(vm.name.clone(), move || {
                 VmOwner::spawn(settings)
                     .map(|owner| {
-                        let shared: UiVm = Rc::new(RefCell::new(owner));
-                        if let Some(slot) = slot {
-                            *slot.borrow_mut() = Some(Rc::clone(&shared));
+                        if let Some(gameplay) = gameplay {
+                            let shared = Arc::new(Mutex::new(owner));
+                            gameplay.runtime.attach_vm(Arc::clone(&shared));
+                            return Box::new(GameplayVmAdapter {
+                                name,
+                                vm: shared,
+                                gameplay: gameplay.runtime,
+                            }) as Box<dyn Owner>;
                         }
-                        Box::new(VmAdapter {
-                            name,
-                            vm: shared,
-                            bridge,
-                            notes,
-                        }) as Box<dyn Owner>
+                        {
+                            let shared: UiVm = Rc::new(RefCell::new(owner));
+                            if let Some(slot) = slot {
+                                *slot.borrow_mut() = Some(Rc::clone(&shared));
+                            }
+                            Box::new(VmAdapter {
+                                name,
+                                vm: shared,
+                                bridge,
+                                notes,
+                            }) as Box<dyn Owner>
+                        }
                     })
                     .map_err(|error| error.to_string())
             })
         })
         .collect()
+}
+
+pub(crate) fn gameplay_extension(gameplay: &Arc<Gameplay>) -> Extension {
+    let random_gameplay = Arc::clone(gameplay);
+    let random: HostFunction = Arc::new(move |args| random_gameplay.random(args));
+    Extension::new("sim")
+        .function("random", random)
+        .raw_table_is_empty("is_empty")
+        .callback("on_month", "on_month")
+        .callback("on_day", "on_day")
 }
 
 /// The exit status of a supervised run. **3, forced immediate:** `missed` or `unfinished` is non-empty, or
@@ -515,6 +696,7 @@ mod tests {
             bridge: SceneBridge::new(ck_render_2d::Filter::Nearest),
             notes: Rc::new(crate::windowed::RunNotes::default()),
             on_complete: None,
+            gameplay: None,
         };
         let spawned = spawns(
             &vms,
@@ -556,6 +738,185 @@ mod tests {
             "{report:?}"
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn gameplay_vm_uses_its_canonical_profile_and_defers_stop_until_callbacks_finish() {
+        use ck_runtime::{RunEnd, Runtime};
+
+        let dir = crate::testing::Dir::new();
+        let entry = dir.0.join("gameplay.lua");
+        std::fs::write(
+            &entry,
+            r"
+assert(config.scenario == 'fixture')
+assert(config.start.year == 768 and config.start.month == 10 and config.start.day == 9 and config.start.hour == 0)
+assert(os == nil and io == nil and math.random == nil and debug == nil)
+local order = {}
+sim.on_month(function(date)
+  assert(date.year == 1 and date.month == 1 and date.day == 1 and date.hour == 0 and date.tick == 0)
+  order[#order + 1] = 'month'
+  assert(sim.random(1, 10) >= 1)
+end)
+sim.on_day(function(date)
+  assert(date.year == 1 and date.month == 1 and date.day == 1 and date.hour == 0 and date.tick == 0)
+  order[#order + 1] = 'day'
+  assert(sim.random(1, 10) >= 1)
+end)
+function shutdown() assert(table.concat(order, ',') == 'month,day') end
+",
+        )
+        .expect("write gameplay script");
+        let runtime = Gameplay::new(42);
+        let config = crate::game::gameplay::canonical_config(
+            "fixture",
+            ck_sim::Date {
+                year: 768,
+                month: 10,
+                day: 9,
+                hour: 0,
+            },
+        );
+        let wiring = UiWiring {
+            extensions: Vec::new(),
+            slot: Rc::new(RefCell::new(None)),
+            wake: Arc::new(|| {}),
+            bridge: SceneBridge::new(ck_render_2d::Filter::Nearest),
+            notes: Rc::new(crate::windowed::RunNotes::default()),
+            on_complete: None,
+            gameplay: Some(GameplayWiring {
+                runtime: Arc::clone(&runtime),
+                config,
+            }),
+        };
+        let vms = [VmConfig {
+            name: "gameplay".to_owned(),
+            entry,
+        }];
+        let spawned = spawns(
+            &vms,
+            &ConfigValue::Table(std::collections::BTreeMap::new()),
+            Some(&wiring),
+        );
+        let run_runtime = Arc::clone(&runtime);
+        let report = Runtime::new(Vec::new())
+            .with_owners(spawned)
+            .with_run(move |_| {
+                assert!(
+                    !run_runtime.request_stop(),
+                    "the stop is deferred while the simulation is in its tick"
+                );
+                let time = ck_sim::GameTime::from_hours(0);
+                let date = time.date().expect("the first date exists");
+                run_runtime
+                    .call("on_month", date, time)
+                    .expect("monthly callback finishes before stop");
+                run_runtime
+                    .call("on_day", date, time)
+                    .expect("daily callback finishes before stop");
+                run_runtime.simulation_ended();
+                RunEnd::Finished
+            })
+            .run_report();
+        assert_eq!(report.outcome, Outcome::Clean, "{report:?}");
+        assert!(report.missed.is_empty() && report.unfinished.is_empty());
+        assert_eq!(
+            runtime.stop_forwards(),
+            1,
+            "one deferred stop reaches the VM"
+        );
+    }
+
+    #[test]
+    fn gameplay_named_without_a_scenario_keeps_the_standard_profile_and_full_config() {
+        use ck_runtime::Runtime;
+
+        let skeleton = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../scripts/gameplay/main.lua"),
+        )
+        .expect("the gameplay skeleton exists");
+        let (dir, vms) = scripts(
+            "assert(config.backend == 'metal' and config.window == 1280)",
+            &format!(
+                "assert(sim == nil and type(os) == 'table' and type(math.random) == 'function')\n\
+                 assert(config.backend == 'metal' and config.window == 1280 and config.frame == 60 and config.log_level == 'debug')\n\
+                 {skeleton}"
+            ),
+        );
+        let config = ConfigValue::Table(
+            [
+                (
+                    "backend".to_owned(),
+                    ConfigValue::String("metal".to_owned()),
+                ),
+                ("window".to_owned(), ConfigValue::Integer(1280)),
+                ("frame".to_owned(), ConfigValue::Integer(60)),
+                (
+                    "log_level".to_owned(),
+                    ConfigValue::String("debug".to_owned()),
+                ),
+            ]
+            .into(),
+        );
+        let spawned = spawns(&vms, &config, None);
+        let report = Runtime::new(Vec::new()).with_owners(spawned).run_report();
+        assert_eq!(report.outcome, Outcome::Clean, "{report:?}");
+        assert!(report.missed.is_empty() && report.unfinished.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_stop_after_simulation_end_is_forwarded_once_by_the_runtime_owner() {
+        use ck_runtime::{RunEnd, Runtime};
+
+        let dir = crate::testing::Dir::new();
+        let entry = dir.0.join("gameplay.lua");
+        std::fs::write(&entry, "function shutdown() end\n").expect("the gameplay script");
+        let runtime = Gameplay::new(42);
+        let wiring = UiWiring {
+            extensions: Vec::new(),
+            slot: Rc::new(RefCell::new(None)),
+            wake: Arc::new(|| {}),
+            bridge: SceneBridge::new(ck_render_2d::Filter::Nearest),
+            notes: Rc::new(crate::windowed::RunNotes::default()),
+            on_complete: None,
+            gameplay: Some(GameplayWiring {
+                runtime: Arc::clone(&runtime),
+                config: crate::game::gameplay::canonical_config(
+                    "fixture",
+                    ck_sim::Date {
+                        year: 768,
+                        month: 10,
+                        day: 9,
+                        hour: 0,
+                    },
+                ),
+            }),
+        };
+        let vms = [VmConfig {
+            name: "gameplay".to_owned(),
+            entry,
+        }];
+        let spawned = spawns(
+            &vms,
+            &ConfigValue::Table(std::collections::BTreeMap::new()),
+            Some(&wiring),
+        );
+        let ended = Arc::clone(&runtime);
+        let report = Runtime::new(Vec::new())
+            .with_owners(spawned)
+            .with_run(move |_| {
+                ended.simulation_ended();
+                RunEnd::Finished
+            })
+            .run_report();
+        assert_eq!(report.outcome, Outcome::Clean, "{report:?}");
+        assert!(
+            report.missed.is_empty() && report.unfinished.is_empty(),
+            "{report:?}"
+        );
+        assert_eq!(runtime.stop_forwards(), 1, "one stop reaches the VM");
     }
 
     #[test]
@@ -705,6 +1066,7 @@ mod tests {
             bridge: Arc::clone(&bridge),
             notes: Rc::new(crate::windowed::RunNotes::default()),
             on_complete: None,
+            gameplay: None,
         };
         let spawned = spawns(
             &vms,

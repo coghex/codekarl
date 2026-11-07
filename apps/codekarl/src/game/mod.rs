@@ -18,6 +18,7 @@ use ck_sim::{Canonical, CanonicalError, Reader};
 
 pub(crate) mod controls;
 pub(crate) mod core;
+pub(crate) mod gameplay;
 pub(crate) mod hashes;
 pub(crate) mod owner;
 pub(crate) mod saves;

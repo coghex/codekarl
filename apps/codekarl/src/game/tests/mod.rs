@@ -22,6 +22,7 @@ use super::{
 use crate::testing::Dir;
 
 mod core_behaviour;
+mod gameplay_runtime;
 mod owner;
 mod presses;
 mod run;
@@ -245,6 +246,7 @@ impl Harness {
             saves.clone(),
             Rebuild {
                 scheduler: Box::new(move || scheduler(faults)),
+                reset: Box::new(|_| {}),
                 apply: apply_nothing,
             },
             outputs,
@@ -420,6 +422,7 @@ pub(crate) fn spawn_test_owner(
             std::env::temp_dir().join("codekarl-never-written"),
             Rebuild {
                 scheduler: Box::new(move || scheduler(faults)),
+                reset: Box::new(|_| {}),
                 apply: apply_nothing,
             },
             Outputs {

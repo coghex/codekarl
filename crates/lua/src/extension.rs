@@ -103,6 +103,7 @@ pub struct Extension {
     table: String,
     functions: Vec<(String, HostFunction)>,
     callbacks: Vec<Setter>,
+    raw_table_empty: Vec<String>,
 }
 
 impl fmt::Debug for Extension {
@@ -126,6 +127,7 @@ impl fmt::Debug for Extension {
                     .map(|setter| (&setter.name, &setter.callback))
                     .collect::<Vec<_>>(),
             )
+            .field("raw_table_empty", &self.raw_table_empty)
             .finish()
     }
 }
@@ -140,6 +142,7 @@ impl Extension {
             table: table.to_owned(),
             functions: Vec::new(),
             callbacks: Vec::new(),
+            raw_table_empty: Vec::new(),
         }
     }
 
@@ -147,6 +150,14 @@ impl Extension {
     #[must_use]
     pub fn function(mut self, name: &str, function: HostFunction) -> Self {
         self.functions.push((name.to_owned(), function));
+        self
+    }
+
+    /// Adds `table.name(value)`, which returns whether a raw Lua table has any keys and refuses any
+    /// non-table value. This avoids converting keys through the general-purpose host-value bridge.
+    #[must_use]
+    pub fn raw_table_is_empty(mut self, name: &str) -> Self {
+        self.raw_table_empty.push(name.to_owned());
         self
     }
 
@@ -215,6 +226,7 @@ impl Extension {
             .functions
             .iter()
             .map(|(name, _)| name)
+            .chain(self.raw_table_empty.iter())
             .chain(self.callbacks.iter().map(|setter| &setter.name));
         for name in names {
             if !identifier(name) {
@@ -275,6 +287,19 @@ impl Extension {
                 setter.name.as_str(),
                 lua.create_function(move |_, args: MultiValue| {
                     register(&registered, &label, &callback, &kind, &fatal, &args)
+                })?,
+            )?;
+        }
+        for name in &self.raw_table_empty {
+            let label = format!("{}.{name}", self.table);
+            table.set(
+                name.as_str(),
+                lua.create_function(move |_, value: Value| match value {
+                    Value::Table(value) => Ok(value.pairs::<Value, Value>().next().is_none()),
+                    other => Err(mlua::Error::runtime(format!(
+                        "bad argument #1 to '{label}' (table expected, got {})",
+                        other.type_name()
+                    ))),
                 })?,
             )?;
         }

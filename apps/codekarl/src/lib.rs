@@ -578,6 +578,9 @@ fn supervise_with_owner_factory(
         || CodekarlUi::new(Rc::clone(&slot)),
         |map| CodekarlUi::with_map(Rc::clone(&slot), Arc::clone(map)),
     );
+    let gameplay_wiring = connected
+        .as_ref()
+        .and_then(|connected| connected.gameplay.clone());
     let (ui, sim_spawn) = match connected {
         Some(connected) => (
             ui.with_sim(ui_link::SimLink {
@@ -645,6 +648,7 @@ fn supervise_with_owner_factory(
         bridge: Arc::clone(&bridge),
         notes: Rc::clone(&notes),
         on_complete: Some(render_end.completion_hook()),
+        gameplay: gameplay_wiring,
     };
     let deadlines = config.deadlines;
     let mut runtime = Runtime::new(runtime_services(
