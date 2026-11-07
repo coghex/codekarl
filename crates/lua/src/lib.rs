@@ -246,6 +246,7 @@ mod config;
 mod convert;
 mod deterministic;
 mod error;
+mod exit;
 mod extension;
 #[cfg(test)]
 mod hooks;
@@ -260,5 +261,6 @@ mod unwind;
 pub use call::{CallId, CallOutcome, CallResult, Completion, Progress};
 pub use config::ConfigValue;
 pub use error::{VmError, VmState};
+pub use exit::ExitWatch;
 pub use extension::{CallbackObserver, Extension, HostFunction};
 pub use owner::{Profile, VmOwner, VmSettings};

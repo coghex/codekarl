@@ -3,6 +3,7 @@
 //! Every wait is bounded. A fixture that blocks a callback releases it when its `Probe` drops, so a
 //! failed assertion cannot leave a worker waiting longer than `BOUND`; owners cancel when dropped.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -36,6 +37,102 @@ fn host(
     + 'static,
 ) -> HostFunction {
     Arc::new(function)
+}
+
+#[derive(Default)]
+struct ExitHoldState {
+    entered: bool,
+    released: bool,
+}
+
+struct ExitHold(Arc<(Mutex<ExitHoldState>, std::sync::Condvar)>);
+
+impl Drop for ExitHold {
+    fn drop(&mut self) {
+        let (state, changed) = &*self.0;
+        let mut state = lock(state);
+        state.entered = true;
+        changed.notify_all();
+        while !state.released {
+            state = changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+thread_local! {
+    static EXIT_HOLD: RefCell<Option<ExitHold>> = const { RefCell::new(None) };
+}
+
+fn exit_hold_extension(gate: Arc<(Mutex<ExitHoldState>, std::sync::Condvar)>) -> Extension {
+    Extension::new("hold").function(
+        "mark",
+        host(move |_| {
+            EXIT_HOLD.with(|slot| *slot.borrow_mut() = Some(ExitHold(Arc::clone(&gate))));
+            Ok(Vec::new())
+        }),
+    )
+}
+
+#[test]
+fn exit_watch_signals_without_taking_the_owner_handle_lock() {
+    let (mut owner, _dir) = spawn("exit_watch_lock", "");
+    owner.wait_ready(BOUND).expect("ready");
+    owner.request_stop().expect("stop requested");
+    let watch = owner.exit_watch();
+    let observed = watch.clone();
+    let shared = Arc::new(Mutex::new(owner));
+    let held = lock(&shared);
+    let (sent, received) = mpsc::channel();
+    let waiter = thread::spawn(move || {
+        let _ = sent.send(watch.wait(BOUND));
+    });
+    assert_eq!(received.recv_timeout(BOUND), Ok(true));
+    drop(held);
+    waiter.join().expect("watch waiter returns");
+    assert!(lock(&shared).wait_finished(Duration::ZERO));
+    assert!(
+        observed.wait(Duration::ZERO),
+        "zero duration observes a set signal"
+    );
+}
+
+#[test]
+fn wait_finished_deadline_does_not_join_a_held_later_tls_destructor() {
+    let gate = Arc::new((
+        Mutex::new(ExitHoldState::default()),
+        std::sync::Condvar::new(),
+    ));
+    let dir = Dir::new();
+    let mut settings = VmSettings::new(
+        "held_exit_tls",
+        dir.script("hold.mark()"),
+        super::empty_config(),
+    );
+    settings
+        .extensions
+        .push(exit_hold_extension(Arc::clone(&gate)));
+    let mut owner = VmOwner::spawn(settings).expect("the thread starts");
+    owner.wait_ready(BOUND).expect("the extension ran");
+    owner.request_stop().expect("stop requested");
+    assert_eq!(
+        owner.poll_stopped(BOUND).expect("stop report"),
+        Progress::Done
+    );
+
+    let (state, changed) = &*gate;
+    let state = lock(state);
+    let (mut state, timeout) = changed
+        .wait_timeout_while(state, BOUND, |state| !state.entered)
+        .unwrap_or_else(PoisonError::into_inner);
+    assert!(
+        state.entered && !timeout.timed_out(),
+        "the TLS destructor enters"
+    );
+    assert!(!owner.wait_finished(Duration::from_millis(20)));
+    state.released = true;
+    changed.notify_all();
+    drop(state);
+    assert!(owner.wait_finished(BOUND));
 }
 
 /// Holds the owner thread at each of `points` (every time it reaches one) until the test releases it,

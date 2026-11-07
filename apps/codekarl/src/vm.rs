@@ -21,7 +21,9 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use ck_lua::{ConfigValue, Extension, HostFunction, Profile, VmError, VmOwner, VmSettings};
+use ck_lua::{
+    ConfigValue, ExitWatch, Extension, HostFunction, Profile, VmError, VmOwner, VmSettings,
+};
 use ck_render_2d::SceneBridge;
 use ck_runtime::{Outcome, Owner, OwnerError, OwnerSpawn, Progress, Report};
 
@@ -69,6 +71,7 @@ struct GameplayVmAdapter {
     name: String,
     vm: GameplayVmHandle,
     gameplay: Arc<Gameplay>,
+    exit: ExitWatch,
 }
 
 impl GameplayVmAdapter {
@@ -149,33 +152,35 @@ impl Owner for GameplayVmAdapter {
         let mut stop_reported = false;
         loop {
             let generation = self.gameplay.report_generation();
-            let finished = {
+            if !stop_reported {
                 let mut vm = self.vm.lock().unwrap_or_else(PoisonError::into_inner);
-                if !stop_reported {
-                    match vm.poll_stopped(Duration::ZERO).map_err(owner_error)? {
-                        ck_lua::Progress::Pending => {}
-                        ck_lua::Progress::Done => stop_reported = true,
-                    }
+                stop_reported =
+                    vm.poll_stopped(Duration::ZERO).map_err(owner_error)? == ck_lua::Progress::Done;
+            }
+            if stop_reported {
+                let left = limit.map_or(within, |limit| {
+                    limit.saturating_duration_since(std::time::Instant::now())
+                });
+                if !self.exit.wait(left) {
+                    return Err(OwnerError::Deadline);
                 }
-                stop_reported && vm.wait_finished(Duration::ZERO)
-            };
-            if finished {
-                return Ok(());
+                let joined = self
+                    .vm
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .wait_finished(Duration::ZERO);
+                return if joined {
+                    Ok(())
+                } else {
+                    Err(OwnerError::Deadline)
+                };
             }
             let Some(left) =
                 limit.map(|limit| limit.saturating_duration_since(std::time::Instant::now()))
             else {
                 return Err(OwnerError::Deadline);
             };
-            if left.is_zero() {
-                return Err(OwnerError::Deadline);
-            }
-            if stop_reported {
-                // The VM sends its final report before its thread returns. There is no later
-                // report wake for that return, so briefly poll the join state without holding the
-                // shared handle lock instead of sleeping until the whole stop budget expires.
-                std::thread::sleep(left.min(Duration::from_millis(1)));
-            } else if !self.gameplay.wait_report(generation, left) {
+            if !self.gameplay.wait_report(generation, left) {
                 return Err(OwnerError::Deadline);
             }
         }
@@ -186,26 +191,13 @@ impl Owner for GameplayVmAdapter {
     }
 
     fn wait_finished(&mut self, within: Duration) -> bool {
-        let limit = std::time::Instant::now().checked_add(within);
-        loop {
-            let generation = self.gameplay.report_generation();
-            if self
-                .vm
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .wait_finished(Duration::ZERO)
-            {
-                return true;
-            }
-            let Some(left) =
-                limit.map(|limit| limit.saturating_duration_since(std::time::Instant::now()))
-            else {
-                return false;
-            };
-            if left.is_zero() || !self.gameplay.wait_report(generation, left) {
-                return false;
-            }
+        if !self.exit.wait(within) {
+            return false;
         }
+        self.vm
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .wait_finished(Duration::ZERO)
     }
 }
 
@@ -353,12 +345,14 @@ pub(crate) fn spawns(
                 VmOwner::spawn(settings)
                     .map(|owner| {
                         if let Some(gameplay) = gameplay {
+                            let exit = owner.exit_watch();
                             let shared = Arc::new(Mutex::new(owner));
                             gameplay.runtime.attach_vm(Arc::clone(&shared));
                             return Box::new(GameplayVmAdapter {
                                 name,
                                 vm: shared,
                                 gameplay: gameplay.runtime,
+                                exit,
                             }) as Box<dyn Owner>;
                         }
                         {
@@ -410,8 +404,33 @@ pub(crate) fn status_of(report: &Report, unproven_window: bool, late_failure: bo
 #[cfg(test)]
 mod tests {
     use ck_runtime::{Failure, ServiceError};
+    use std::sync::Condvar;
 
     use super::*;
+
+    #[derive(Default)]
+    struct AdapterExitState {
+        entered: bool,
+        released: bool,
+    }
+
+    struct AdapterExitHold(Arc<(Mutex<AdapterExitState>, Condvar)>);
+
+    impl Drop for AdapterExitHold {
+        fn drop(&mut self) {
+            let (state, changed) = &*self.0;
+            let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.entered = true;
+            changed.notify_all();
+            while !state.released {
+                state = changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+    }
+
+    thread_local! {
+        static ADAPTER_EXIT_HOLD: RefCell<Option<AdapterExitHold>> = const { RefCell::new(None) };
+    }
 
     #[test]
     fn an_unfinished_ui_owner_is_named_by_the_wait_finished_path() {
@@ -421,6 +440,55 @@ mod tests {
         note_unfinished_holder("gameplay", false, Some(&notes));
         note_unfinished_holder(UI_VM, true, Some(&notes));
         assert_eq!(&*notes.resource_holders.borrow(), &["UI VM"]);
+    }
+
+    #[test]
+    fn gameplay_stop_deadline_includes_a_held_tls_destructor_and_later_joins() {
+        let gate = Arc::new((Mutex::new(AdapterExitState::default()), Condvar::new()));
+        let dir = crate::testing::Dir::new();
+        let entry = dir.0.join("gameplay.lua");
+        std::fs::write(&entry, "hold.mark()\n").expect("entry script");
+        let hold_gate = Arc::clone(&gate);
+        let hold: HostFunction = Arc::new(move |_| {
+            ADAPTER_EXIT_HOLD.with(|slot| {
+                *slot.borrow_mut() = Some(AdapterExitHold(Arc::clone(&hold_gate)));
+            });
+            Ok(Vec::new())
+        });
+        let gameplay = Gameplay::new(7);
+        let mut settings = VmSettings::new(
+            "gameplay",
+            entry,
+            ConfigValue::Table(std::collections::BTreeMap::new()),
+        );
+        settings.extensions = vec![Extension::new("hold").function("mark", hold)];
+        let mut owner = VmOwner::spawn(settings).expect("VM starts");
+        owner
+            .wait_ready(Duration::from_secs(5))
+            .expect("entry runs");
+        let exit = owner.exit_watch();
+        let vm = Arc::new(Mutex::new(owner));
+        gameplay.attach_vm(Arc::clone(&vm));
+        let mut adapter = GameplayVmAdapter {
+            name: "gameplay".to_owned(),
+            vm,
+            gameplay: Arc::clone(&gameplay),
+            exit,
+        };
+
+        adapter.request_stop().expect("stop is deferred");
+        gameplay.simulation_ended();
+        assert_eq!(
+            adapter.await_stopped(Duration::from_millis(20)),
+            Err(OwnerError::Deadline)
+        );
+        let (state, changed) = &*gate;
+        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(state.entered, "the later thread-local destructor is held");
+        state.released = true;
+        changed.notify_all();
+        drop(state);
+        assert!(adapter.wait_finished(Duration::from_secs(5)));
     }
 
     fn report(outcome: Outcome, missed: &[&str], unfinished: &[&str]) -> Report {
