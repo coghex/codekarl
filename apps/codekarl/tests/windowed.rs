@@ -66,6 +66,8 @@ mod supervisor;
 use supervisor::{Seen, Split, Supervised};
 #[path = "../../../crates/window/tests/support/activation_watch.rs"]
 mod activation_watch;
+#[path = "held_pipe/mod.rs"]
+mod held_pipe;
 #[path = "supervisor/signal.rs"]
 mod signal;
 
@@ -156,6 +158,7 @@ static MAP_INPUT_CASE: AtomicBool = AtomicBool::new(false);
 static MAP_HOVER_CASE: AtomicBool = AtomicBool::new(false);
 static SIM_INPUT_CASE: AtomicBool = AtomicBool::new(false);
 static KEYS_CASE: AtomicBool = AtomicBool::new(false);
+static HELD_UI_CASE: AtomicBool = AtomicBool::new(false);
 
 fn mode() -> Mode {
     Mode::from_code(MODE.load(Ordering::SeqCst))
@@ -543,13 +546,14 @@ fn start(args: &[&OsStr]) -> Worker {
         // The directory the case writes its markers in: the worker's own scratch directory.
         command.env(SIM_INPUT_ENV, &scratch.0);
     }
-    if KEYS_CASE.load(Ordering::SeqCst) {
+    if KEYS_CASE.load(Ordering::SeqCst) || HELD_UI_CASE.load(Ordering::SeqCst) {
         // The directory the case writes its key files in: the worker's own scratch directory.
         command.env(KEY_FILES_ENV, &scratch.0);
     }
     let map_camera_observation = (MAP_INPUT_CASE.load(Ordering::SeqCst)
         || MAP_HOVER_CASE.load(Ordering::SeqCst)
-        || SIM_INPUT_CASE.load(Ordering::SeqCst))
+        || SIM_INPUT_CASE.load(Ordering::SeqCst)
+        || HELD_UI_CASE.load(Ordering::SeqCst))
     .then(|| report.with_extension("map-camera"));
     if let Some(path) = &map_camera_observation {
         command.env(MAP_CAMERA_ENV, path);
@@ -999,6 +1003,255 @@ fn press(markers: &Path, order: u32, code: u16, characters: &str) {
         format!("{code:x}:{characters}"),
     )
     .expect("a key file");
+}
+
+/// Presses a key and leaves it down (`D<hex>:<characters>`), as the worker's key poll reads it.
+fn hold(markers: &Path, order: u32, code: u16, characters: &str) {
+    fs::write(
+        markers.join(format!("{order:03}.key")),
+        format!("D{code:x}:{characters}"),
+    )
+    .expect("a key file");
+}
+
+/// Lets a held key up (`U<hex>:`).
+fn release_key(markers: &Path, order: u32, code: u16) {
+    fs::write(
+        markers.join(format!("{order:03}.key")),
+        format!("U{code:x}:"),
+    )
+    .expect("a key file");
+}
+
+/// The camera records the worker's observation file holds now.
+fn camera_records(worker: &Worker) -> usize {
+    let path = worker
+        .map_camera_observation
+        .clone()
+        .expect("the case observes the map camera");
+    held_pipe::cameras(&fs::read_to_string(path).unwrap_or_default()).len()
+}
+
+/// Waits until the camera records written **after** the first `baseline` ones satisfy `ready`. The observation file is the worker's
+/// own and starts empty; a camera record is appended only when a tick's input changed the camera. The baseline is taken once the log
+/// shows the UI is held (a delivery has happened, and the tick that precedes every update in a pass has already run), so only the
+/// keys this case injects can add records after it.
+fn wait_for_camera(
+    worker: &Worker,
+    within: Duration,
+    baseline: usize,
+    what: &str,
+    ready: impl Fn(&[(i64, i64, i64)]) -> bool,
+) {
+    let path = worker
+        .map_camera_observation
+        .clone()
+        .expect("the case observes the map camera");
+    let give_up = Instant::now() + within;
+    loop {
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        let cameras = held_pipe::cameras(&text);
+        if ready(&cameras[baseline.min(cameras.len())..]) {
+            return;
+        }
+        assert!(Instant::now() < give_up, "{what}; observed:\n{text}");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// A UI VM held in its `frame_update` callback does not stop the map: the camera moves under held pan keys while the callback is
+/// blocked reading a named pipe, a further key with a known transition is injected, and after the supervisor's release the UI logs
+/// every transition injected during the hold, exactly once and in order. The pipe never blocks the supervisor (`tests/held_pipe`).
+#[expect(
+    clippy::too_many_lines,
+    reason = "the script, the keys in the order the camera releases them and the checks read best in one run"
+)]
+fn a_held_ui_does_not_stop_the_map_and_gets_every_transition_after_the_release() {
+    let fixture = Fixture::new();
+    let map = fixture.map_fixture();
+    let pipe = held_pipe::HeldPipe::create(fixture.path("held.fifo")).expect("the held pipe");
+    let config_text = format!(
+        "[window]\nbackend = \"native-metal\"\n\n[map]\ndirectory = '{}'\n\n[frame]\nupdates_per_second = 60\n\n[input.bindings]\nui_marker = [\"KeyM\"]\n",
+        map.display()
+    );
+    let body = format!(
+        r"
+local START = {}
+local SETTLED = {}
+local FIFO = {}
+local function exists(path)
+  local file = io.open(path, 'r')
+  if file then file:close() return true end
+  return false
+end
+function startup()
+  local holding = false
+  local after = 0
+  frame.on_update(function(f)
+    for _, t in ipairs(f.transitions) do log.info('transition ' .. t.action .. ' ' .. t.kind) end
+    if not holding and exists(START) then
+      holding = true
+      log.info('holding')
+      local pipe = io.open(FIFO, 'r')
+      local line = pipe:read('l')
+      pipe:close()
+      log.info('released ' .. tostring(line))
+    end
+    if exists(SETTLED) then
+      after = after + 1
+      if after >= 30 then window.close() end
+    end
+  end)
+  window.on_opened(function() wait_for(HOLD) end)
+  window.open{{title = 'held ui', width = 400, height = 240, clear = {{0, 0, 0}}}}
+end
+",
+        lua_path(&fixture.path("start")),
+        lua_path(&fixture.path("settled")),
+        lua_path(pipe.path())
+    );
+    let config = fixture.windowed(&config_text, &body);
+    let args: Vec<&OsStr> = vec![OsStr::new("--config"), config.as_os_str()];
+    let worker = start(&args);
+    let markers = worker
+        .report
+        .parent()
+        .expect("the report's directory")
+        .to_path_buf();
+    let mut case = held_pipe::HeldCase::new(pipe, worker);
+    let within = Duration::from_secs(60);
+    wait_for(
+        case.worker(),
+        "window: window opened",
+        Duration::from_secs(30),
+    );
+    wait_for_drops(case.worker());
+    fixture.release();
+    // The start marker: the next delivery holds the UI VM on the pipe.
+    fs::write(fixture.path("start"), "x").expect("the start marker");
+    wait_for(case.worker(), "lua.ui: holding", within);
+    // Only camera records written from here on count: the baseline is the records already in the file.
+    let baseline = camera_records(case.worker());
+    // While the UI is held: a pan key goes down, and the camera must move.
+    hold(&markers, 1, 0x7B, ""); // ArrowLeft down
+    wait_for_camera(
+        case.worker(),
+        within,
+        baseline,
+        "the camera did not move under the held pan while the UI was held",
+        |cameras| !cameras.is_empty(),
+    );
+    release_key(&markers, 2, 0x7B);
+    // A further key with a known transition, then a pan the other way: the camera moving back proves that the tick took the earlier
+    // keys of the same ordered stream, with the UI still held.
+    press(&markers, 3, 0x2e, "m"); // KeyM: the bound `ui_marker` press and release
+    hold(&markers, 4, 0x7C, ""); // ArrowRight down
+    wait_for_camera(
+        case.worker(),
+        within,
+        baseline,
+        "the camera did not move back under the second pan while the UI was held",
+        |cameras| cameras.windows(2).any(|pair| pair[1].1 > pair[0].1),
+    );
+    release_key(&markers, 5, 0x7C);
+    // The release: one line into the pipe. The callback returns, and the later deliveries log what the hold stashed.
+    assert!(case.pipe().release(), "the release line was written");
+    wait_for(case.worker(), "lua.ui: released go", within);
+    wait_for(
+        case.worker(),
+        "lua.ui: transition move_right release",
+        within,
+    );
+    fs::write(fixture.path("settled"), "x").expect("the settled marker");
+    let seen = finish(case.take_worker());
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+    let held_at = seen.stdout.find("lua.ui: holding").expect("holding");
+    let released_at = seen.stdout.find("lua.ui: released go").expect("released");
+    assert!(held_at < released_at, "{}", seen.stdout);
+    let transitions: Vec<(usize, &str)> = seen
+        .stdout
+        .match_indices("lua.ui: transition ")
+        .map(|(at, found)| {
+            let rest = &seen.stdout[at + found.len()..];
+            (at, rest.lines().next().unwrap_or(""))
+        })
+        .collect();
+    assert_eq!(
+        transitions
+            .iter()
+            .map(|(_, text)| *text)
+            .collect::<Vec<_>>(),
+        [
+            "map_pan_left press",
+            "move_left press",
+            "map_pan_left release",
+            "move_left release",
+            "ui_marker press",
+            "ui_marker release",
+            "map_pan_right press",
+            "move_right press",
+            "map_pan_right release",
+            "move_right release",
+        ],
+        "every transition injected during the hold, once and in order: {}",
+        seen.stdout
+    );
+    assert!(
+        transitions.iter().all(|(at, _)| *at > released_at),
+        "none was delivered before the release: {}",
+        seen.stdout
+    );
+    assert!(
+        !seen.stdout.contains("ERROR") && !seen.stdout.contains("incomplete"),
+        "{}",
+        seen.stdout
+    );
+}
+
+/// The early-failure witness (supervisor side only): a worker whose UI script fails at load exits before it ever opens the pipe.
+/// The supervisor's release returns at once, the worker is reaped with its failure reported, both descriptors close, the FIFO is
+/// removed, and the case ends well within its deadline.
+fn a_worker_that_fails_before_opening_the_pipe_is_released_reaped_and_removed_at_once() {
+    let started = Instant::now();
+    let fixture = Fixture::new();
+    let pipe = held_pipe::HeldPipe::create(fixture.path("held.fifo")).expect("the held pipe");
+    let path = pipe.path().to_path_buf();
+    let config = fixture.windowed(
+        "[window]\nbackend = \"native-metal\"\n",
+        "error('the held-ui fixture fails at load')\n",
+    );
+    let args: Vec<&OsStr> = vec![OsStr::new("--config"), config.as_os_str()];
+    let mut case = held_pipe::HeldCase::new(pipe, start(&args));
+    let asked = Instant::now();
+    assert!(case.pipe().release(), "the first release writes the line");
+    assert!(
+        asked.elapsed() < Duration::from_secs(1),
+        "the release returned at once, though the worker never opened the pipe"
+    );
+    assert!(
+        !case.pipe().release(),
+        "the release is written at most once"
+    );
+    assert!(case.pipe().was_released());
+    let seen = case
+        .take_worker()
+        .live
+        .finish()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_ne!(seen.code, Some(0), "{}", seen.stdout);
+    assert!(
+        seen.stdout.contains("the held-ui fixture fails at load"),
+        "the failure is reported: {}",
+        seen.stdout
+    );
+    assert!(path.exists(), "the FIFO is still there until the case ends");
+    drop(case);
+    assert!(!path.exists(), "the FIFO was removed");
+    assert!(
+        started.elapsed() < DEADLINE / 2,
+        "the case ended well within its deadline: {:?}",
+        started.elapsed()
+    );
 }
 
 /// The time the UI VM hears of on a real window, with each key posted once the log shows the one before took effect: the first
@@ -2345,6 +2598,8 @@ fn cases() -> Vec<(&'static str, fn())> {
     let mut cases = vec![
         case!(a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally),
         case!(a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each),
+        case!(a_held_ui_does_not_stop_the_map_and_gets_every_transition_after_the_release),
+        case!(a_worker_that_fails_before_opening_the_pipe_is_released_reaped_and_removed_at_once),
         case!(a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally),
         case!(a_fixture_scenario_hover_delivers_a_place_name_and_nil_after_moving_away),
         case!(the_demo_placeholder_is_drawn_with_the_quads_generation_in_the_first_frame_and_the_run_closes_cleanly),
@@ -2405,6 +2660,10 @@ fn run_case(name: &str, case: fn()) -> bool {
         name == "a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each",
         Ordering::SeqCst,
     );
+    HELD_UI_CASE.store(
+        name == "a_held_ui_does_not_stop_the_map_and_gets_every_transition_after_the_release",
+        Ordering::SeqCst,
+    );
     let started = Instant::now();
     let passed = panic::catch_unwind(AssertUnwindSafe(case)).is_ok();
     ALLOW_UNFOCUSED_UPDATES.store(false, Ordering::SeqCst);
@@ -2413,6 +2672,7 @@ fn run_case(name: &str, case: fn()) -> bool {
     MAP_HOVER_CASE.store(false, Ordering::SeqCst);
     SIM_INPUT_CASE.store(false, Ordering::SeqCst);
     KEYS_CASE.store(false, Ordering::SeqCst);
+    HELD_UI_CASE.store(false, Ordering::SeqCst);
     println!(
         "test {name} [{}] ... {} ({:.1}s)",
         mode().word(),

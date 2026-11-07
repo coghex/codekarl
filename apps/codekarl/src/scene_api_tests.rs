@@ -18,7 +18,7 @@ use ck_resources::{
 };
 use ck_window::{Notifier, PixelSize, Requests, UpdateSettings, WindowDesc};
 
-use crate::frame_api::{self, FrameBackend};
+use crate::frame_api::{self, FrameBackend, FrameRegistration};
 use crate::render_api::{self, RenderEnd};
 use crate::testing::{Dir, error_in_ui, png, run_in_ui};
 use crate::texture_api;
@@ -184,6 +184,7 @@ impl Rig {
                 Kind::Native | Kind::Glfw => FrameBackend::Control(control.clone()),
                 Kind::Headless | Kind::NoService => FrameBackend::Headless,
             },
+            FrameRegistration::default(),
         );
         let window = window_api::extension(Requests::new().writer(Notifier::new()), headless, None);
         Self {

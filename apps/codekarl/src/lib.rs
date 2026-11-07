@@ -86,6 +86,7 @@ mod font;
 mod frame_api;
 mod game;
 mod game_api;
+mod input_stash;
 mod lifecycle;
 mod map_app;
 mod metrics;
@@ -421,6 +422,10 @@ fn runtime_services(
 }
 
 /// The `render`, `texture` and `frame` extensions of the UI VM for `mode`, and the end of the render extension's writer.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the run's wiring passes each dependency explicitly, as `supervise` does"
+)]
 fn scene_extensions(
     config: &config::Config,
     mode: mode::Mode,
@@ -429,6 +434,7 @@ fn scene_extensions(
     service: Option<ck_resources::ResourceService>,
     window_loop_settings: &ck_window::LoopSettings,
     metrics: Option<Arc<metrics::MetricsHub>>,
+    registration: frame_api::FrameRegistration,
 ) -> (Vec<ck_lua::Extension>, render_api::RenderEnd) {
     // The legacy `render.quad` goes through the compatibility lane only on an upgraded backend: both windowed backends are
     // (`native.rs` draws on `MetalBackend::with_resources` and `vulkan.rs` on `VulkanSinkSide::with_resources`, so CK-119's
@@ -455,6 +461,7 @@ fn scene_extensions(
                 }),
             mode::Mode::Headless => frame_api::FrameBackend::Headless,
         },
+        registration,
     );
     // `diagnostics.metrics_mark`: the mark in a windowed run (either backend), accepted and ignored in a headless one.
     let diagnostics = metrics::extension(metrics);
@@ -619,10 +626,15 @@ fn supervise_with_owner_factory(
     // The simulation owner, when the configuration has a game: the UI link carries the time presses to it and watches for its
     // terminal failure, and the runtime spawns it after every VM.
     let connected = game.map(|prepared| game::setup::connect(prepared, Arc::clone(&wake)));
-    let ui = map_controller.as_ref().map_or_else(
-        || CodekarlUi::new(Rc::clone(&slot)),
-        |map| CodekarlUi::with_map(Rc::clone(&slot), Arc::clone(map)),
-    );
+    // The UI VM's `frame.on_update` registration, published by the setter's observer and read by the input tick.
+    let frame_registration = frame_api::FrameRegistration::default();
+    let ui = map_controller
+        .as_ref()
+        .map_or_else(
+            || CodekarlUi::new(Rc::clone(&slot)),
+            |map| CodekarlUi::with_map(Rc::clone(&slot), Arc::clone(map)),
+        )
+        .with_registration(frame_registration.clone());
     let gameplay_wiring = connected
         .as_ref()
         .and_then(|connected| connected.gameplay.clone());
@@ -664,6 +676,7 @@ fn supervise_with_owner_factory(
         resource_service.clone(),
         &window_loop_settings,
         metrics.clone(),
+        frame_registration,
     );
     // `game.on_time`, `game.on_hover` and `font.layout`: the UI VM's view of the simulation, map and pixel font, with a game only.
     ui_extensions.extend(game_extension);

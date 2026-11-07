@@ -16,9 +16,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ck_window::{
-    Answer, Backend, CleanupResult, Clock, CreatedWindow, LoopEnd, LoopSettings, NativeEvent,
-    NativeWake, Notifier, PixelSize, PostError, Presenter, PresenterReport, RequestWriter,
-    Requests, UiAnswer, UiEvent, UiLink, Wait, WindowDesc, run_with_clock,
+    Answer, Backend, CleanupResult, Clock, CreatedWindow, InputTick, LoopEnd, LoopSettings,
+    NativeEvent, NativeWake, Notifier, PixelSize, PostError, Presenter, PresenterReport,
+    RequestWriter, Requests, UiAnswer, UiEvent, UiLink, Wait, WindowDesc, run_with_clock,
 };
 
 /// The longest a fake waits for something that must happen, and the longest a test runs.
@@ -719,6 +719,12 @@ pub(crate) struct UiHandle {
     /// Answers to give, in order, to each paced update that is posted.
     pub(crate) update_answers: Mutex<VecDeque<Answer>>,
     pub(crate) answers_taken: AtomicUsize,
+    /// Answers taken for paced updates (an update is outstanding while more were posted than answered).
+    pub(crate) answered_updates: AtomicUsize,
+    /// Every input tick the link consumed, in order.
+    pub(crate) ticks: Mutex<Vec<InputTick>>,
+    /// While set, the next `input` call fails with this message (and records no tick).
+    pub(crate) input_failure: Mutex<Option<String>>,
     notifier: Arc<Notifier>,
     log: Log,
 }
@@ -737,6 +743,9 @@ impl UiHandle {
             close_answers: Mutex::new(VecDeque::new()),
             update_answers: Mutex::new(VecDeque::new()),
             answers_taken: AtomicUsize::new(0),
+            answered_updates: AtomicUsize::new(0),
+            ticks: Mutex::new(Vec::new()),
+            input_failure: Mutex::new(None),
             notifier: Arc::clone(notifier),
             log: Arc::clone(log),
         })
@@ -756,6 +765,11 @@ impl UiHandle {
 
     pub(crate) fn posted(&self) -> Vec<UiEvent> {
         lock(&self.posts).clone()
+    }
+
+    /// The input ticks consumed so far.
+    pub(crate) fn ticks(&self) -> Vec<InputTick> {
+        lock(&self.ticks).clone()
     }
 }
 
@@ -798,10 +812,22 @@ impl UiLink for FakeUi {
         Ok(())
     }
 
+    fn input(&mut self, tick: &InputTick) -> Result<(), String> {
+        if let Some(message) = lock(&self.0.input_failure).take() {
+            return Err(message);
+        }
+        lock(&self.0.ticks).push(tick.clone());
+        note(&self.0.log, format!("ui.input dt={:?}", tick.dt));
+        Ok(())
+    }
+
     fn take_answer(&mut self) -> Option<UiAnswer> {
         let answer = lock(&self.0.answers).pop_front();
-        if answer.is_some() {
+        if let Some(taken) = &answer {
             self.0.answers_taken.fetch_add(1, Ordering::SeqCst);
+            if matches!(taken.event, UiEvent::Update(_)) {
+                self.0.answered_updates.fetch_add(1, Ordering::SeqCst);
+            }
         }
         answer
     }
@@ -914,6 +940,8 @@ pub(crate) struct Ran {
     pub(crate) end: LoopEnd,
     pub(crate) log: Vec<String>,
     pub(crate) posts: Vec<UiEvent>,
+    /// The input ticks the link consumed, in order.
+    pub(crate) ticks: Vec<InputTick>,
     pub(crate) waits: Vec<Wait>,
     pub(crate) deadlines: Vec<Option<Instant>>,
     pub(crate) delivered: Vec<usize>,
@@ -953,6 +981,7 @@ impl Rig {
             end,
             log: calls(&log),
             posts: ui.posted(),
+            ticks: ui.ticks(),
             waits,
             deadlines,
             delivered: lock(&delivered).clone(),

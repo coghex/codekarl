@@ -10,9 +10,7 @@ use ck_map::{
 use ck_render_2d::{
     MapCamera, MapInput, MapPublication, MapRules, MapTerrainKind, MapTerrainRule, SceneBridge,
 };
-use ck_window::{
-    ActionSnapshot, PointerEvent, PointerPosition, ScrollUnit, UpdateEvent, WindowDesc,
-};
+use ck_window::{ActionSnapshot, InputTick, PointerEvent, PointerPosition, ScrollUnit, WindowDesc};
 
 const MAP_INPUT_GENERATION: u64 = 1;
 const PAN_LEFT: &str = "map_pan_left";
@@ -229,7 +227,7 @@ impl<R: RiverViewSelector> MapController<R> {
         clippy::too_many_lines,
         reason = "pointer replay, keyboard control, and one publication form one ordered update"
     )]
-    pub(crate) fn update(&mut self, update: &UpdateEvent) -> Result<bool, String> {
+    pub(crate) fn update(&mut self, update: &InputTick) -> Result<bool, String> {
         let Some(mut camera) = self.camera else {
             return Ok(false);
         };
@@ -464,7 +462,7 @@ impl<R: RiverViewSelector> MapController<R> {
     }
 
     #[cfg(test)]
-    fn camera(&self) -> Option<Camera> {
+    pub(crate) fn camera(&self) -> Option<Camera> {
         self.camera
     }
 
@@ -1003,10 +1001,8 @@ pub(crate) mod tests {
         }
     }
 
-    fn update(actions: &[(&str, bool, bool)], dt: Duration) -> UpdateEvent {
-        UpdateEvent {
-            sequence: 1,
-            elapsed: dt,
+    fn update(actions: &[(&str, bool, bool)], dt: Duration) -> InputTick {
+        InputTick {
             dt,
             metrics: WindowMetrics {
                 points: (400, 320),
@@ -1043,7 +1039,7 @@ pub(crate) mod tests {
         position: Option<PointerPosition>,
         held: bool,
         overflow: bool,
-    ) -> UpdateEvent {
+    ) -> InputTick {
         let mut update = update(&[], Duration::ZERO);
         update.input.pointer_events = events;
         update.input.pointer_position = position;
@@ -1059,7 +1055,7 @@ pub(crate) mod tests {
         position: Option<PointerPosition>,
         held: bool,
         overflow: bool,
-    ) -> UpdateEvent {
+    ) -> InputTick {
         let mut update = pointer_update(events, position, held, overflow);
         update.metrics.points = (width, height);
         update.metrics.pixels = PixelSize {

@@ -1132,7 +1132,7 @@ fn unsafe_words(text: &str) -> usize {
 /// test support's `fcntl` calls. The Vulkan integration's five are in `src/vulkan/real.rs`. A source that
 /// is not here has none; a new `unsafe` anywhere (this crate's `lib.rs` included) changes a count and
 /// fails [`every_unsafe_of_codekarl_is_the_accepted_baseline_plus_the_five_of_the_vulkan_integration`].
-const BASELINE: [(&str, usize); 12] = [
+const BASELINE: [(&str, usize); 13] = [
     ("src/native.rs", 1),
     ("src/signals.rs", 16),
     ("src/lifecycle.rs", 1),
@@ -1150,6 +1150,8 @@ const BASELINE: [(&str, usize); 12] = [
     ("tests/vulkan_app.rs", 14),
     // CK-132: set_cloexec's F_GETFD and F_SETFD, each with a SAFETY comment.
     ("tests/common/mod.rs", 4),
+    // CK-206: the held-UI window cases' named pipe: `mkfifo`, with a SAFETY comment (the rest is the standard library's safe API).
+    ("tests/held_pipe/mod.rs", 1),
     // CK-130: the scale worker's filter FFI (`ck_app_t_install_input_filter`, `ck_app_t_dropped_keys`) and
     // signal mask, the same operations as the windowed worker's, each with a SAFETY comment.
     ("tests/scale_lua.rs", 7),
