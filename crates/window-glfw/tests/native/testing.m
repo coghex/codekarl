@@ -246,6 +246,55 @@ void ck_glfw_test_post_mouse_moved(int64_t window_number) {
     }
 }
 
+static NSEvent *ck_glfw_pointer_event(NSWindow *window, NSEventType type, double x, double y) {
+    const CGFloat height = NSHeight(window.contentView.bounds);
+    return [NSEvent mouseEventWithType:type
+                              location:NSMakePoint(x, height - y)
+                         modifierFlags:0
+                             timestamp:NSProcessInfo.processInfo.systemUptime
+                          windowNumber:window.windowNumber
+                               context:nil
+                           eventNumber:CK_TEST_INPUT_MARK
+                            clickCount:type == NSEventTypeLeftMouseDown ? 1 : 0
+                              pressure:type == NSEventTypeLeftMouseDown ? 1.0 : 0.0];
+}
+
+int32_t ck_glfw_test_dispatch_cursor_move(double x, double y) {
+    NSWindow *window = ck_window();
+    if (window == nil || !window.isVisible || !window.ignoresMouseEvents) return 0;
+    NSEvent *event = ck_glfw_pointer_event(window, NSEventTypeMouseMoved, x, y);
+    if (event == nil) return 0;
+    [window.contentView mouseMoved:event];
+    return 1;
+}
+
+int32_t ck_glfw_test_dispatch_left_button(int32_t down, double x, double y) {
+    NSWindow *window = ck_window();
+    if (window == nil || !window.isVisible || !window.ignoresMouseEvents) return 0;
+    NSEventType type = down ? NSEventTypeLeftMouseDown : NSEventTypeLeftMouseUp;
+    NSEvent *event = ck_glfw_pointer_event(window, type, x, y);
+    if (event == nil) return 0;
+    if (down) [window.contentView mouseDown:event];
+    else [window.contentView mouseUp:event];
+    return 1;
+}
+
+int32_t ck_glfw_test_dispatch_scroll(double x, double y, int32_t lines) {
+    NSWindow *window = ck_window();
+    if (window == nil || !window.isVisible || !window.ignoresMouseEvents || lines == 0) return 0;
+    NSPoint screen = [window convertPointToScreen:NSMakePoint(x, NSHeight(window.contentView.bounds) - y)];
+    NSPoint screen_top = NSMakePoint(screen.x, NSScreen.mainScreen.frame.size.height - screen.y);
+    CGEventRef raw = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 1, lines);
+    if (raw == NULL) return 0;
+    CGEventSetLocation(raw, screen_top);
+    CGEventSetIntegerValueField(raw, kCGEventSourceUserData, CK_TEST_INPUT_MARK);
+    NSEvent *event = [NSEvent eventWithCGEvent:raw];
+    CFRelease(raw);
+    if (event == nil) return 0;
+    [window.contentView scrollWheel:event];
+    return 1;
+}
+
 /* Schedules only the native restore operation on the main queue. GLFW's blocking wait services this queue; this helper
  * posts no NSEvent and calls no GLFW function, so the restore wake itself must end the wait. Main thread only. */
 int32_t ck_glfw_test_schedule_restore(uint32_t delay_milliseconds) {
