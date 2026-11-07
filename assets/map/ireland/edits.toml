@@ -1,4 +1,9 @@
-# CK-181 medieval pass, edits r7, for assets/map/ireland/edits.toml (2026-11-05). Supersedes r1, the WITHDRAWN r2, r3, r4, both r5 files and r6.
+# CK-181 medieval pass, edits r8, for assets/map/ireland/edits.toml (2026-11-07). Supersedes r1 to r7.
+# r8 = r7 plus two entries at the end, for CK-194 (milestone 7, slice 6): the owner, 2026-11-06, relayed by ck-manager
+# (g3wpwaetwu7maemckrwrtycjiw), on the island monasteries of Iniscealtra (Lough Derg) and Inisfallen (Lough Leane): "Make the islands land".
+# Each is one cell, the cell containing the named site, painted pasture. They come after every grow and tidy, so no other edit sees
+# them; only [settings]' usable ranking runs after them. Named-site seeds only; no noise or random term.
+# Was: CK-181 medieval pass, edits r7, for assets/map/ireland/edits.toml (2026-11-05). Supersedes r1, the WITHDRAWN r2, r3, r4, both r5 files and r6.
 # Author: ck-designer-1, under the owner's delegation of 2026-11-05 and their corrections: "a lot more 'noise' like these bogs were added
 # one at a time randomly, little disconnected bits instead of larger 'islands' of usable resources"; "noise shouldnt be used to place
 # these, we need to expand existing features in an intelligent way". ck-manager ruling (vzs2e27b): the draft's fbm-placed bog and
@@ -490,6 +495,24 @@ reason = "forest placement can cut bog patches; repeat the bog tidy"
 confidence = "n/a (method)"
 paint = "bog"
 tidy = { min_cells = 12, back = "pasture", keep_seed_points = true }
+
+[[edit]]
+id = "island-iniscealtra"
+area = "Inis Cealtra (Holy Island), Lough Derg: the one cell containing the monastery"
+reason = "the island (about 20 ha) is below the map's resolution and the derivation made its cell lake; the monastery of 768 stands on it (owner, 2026-11-06: \"Make the islands land\")"
+confidence = "high on the site, low on the extent (one cell of about 25 ha)"
+paint = "pasture"
+region = { circle = [52.91422, -8.44964, 0.3] }
+where = { terrain = ["lake"] }
+
+[[edit]]
+id = "island-inisfallen"
+area = "Inis Faithlinn (Inisfallen), Lough Leane: the one cell containing the monastery"
+reason = "the island (about 9 ha) is below the map's resolution and the derivation made its cell lake; the monastery of 768 stands on it (owner, 2026-11-06: \"Make the islands land\")"
+confidence = "high on the site, low on the extent (one cell of about 25 ha, larger than the island)"
+paint = "pasture"
+region = { circle = [52.04671, -9.53495, 0.3] }
+where = { terrain = ["lake"] }
 
 [settings]
 # Usable land, deterministic, no noise, applied once after every edit (per-edit usable lines are gone, except "false" on lakes).

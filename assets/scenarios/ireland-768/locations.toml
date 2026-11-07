@@ -1,0 +1,1033 @@
+[[location]]
+id = "armagh"
+name = "Ard Mhacha"
+lat = 54.3489
+lon = -6.6545
+kind = "monastery"
+size = 4
+buildings = ["church", "enclosure"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "clonmacnoise"
+name = "Cluain Mhic Nóis"
+lat = 53.3266
+lon = -7.9871
+kind = "monastery"
+size = 4
+buildings = ["church", "enclosure"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "kildare"
+name = "Cill Dara"
+lat = 53.1584
+lon = -6.912
+kind = "monastery"
+size = 4
+buildings = ["church", "enclosure"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "glendalough"
+name = "Gleann Dá Loch"
+lat = 53.0106
+lon = -6.3275
+kind = "monastery"
+size = 3
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "bangor"
+name = "Beannchar"
+lat = 54.6575
+lon = -5.674
+kind = "monastery"
+size = 3
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "durrow"
+name = "Darú"
+lat = 53.3257
+lon = -7.5196
+kind = "monastery"
+size = 3
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "clonard"
+name = "Cluain Ioraird"
+lat = 53.4525
+lon = -6.9683
+kind = "monastery"
+size = 3
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "lismore"
+name = "Lios Mór"
+lat = 52.1366
+lon = -7.932
+kind = "monastery"
+size = 3
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "clonfert"
+name = "Cluain Fearta"
+lat = 53.2394
+lon = -8.059
+kind = "monastery"
+size = 3
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "iniscealtra"
+name = "Inis Cealtra"
+lat = 52.915
+lon = -8.449
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "emly"
+name = "Imleach Iúir"
+lat = 52.4637
+lon = -8.3504
+kind = "monastery"
+size = 3
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "cork"
+name = "Corcaigh"
+lat = 51.8946
+lon = -8.4803
+kind = "monastery"
+size = 3
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "movilla"
+name = "Maigh Bhile"
+lat = 54.6017
+lon = -5.666
+kind = "monastery"
+size = 3
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "derry"
+name = "Doire"
+lat = 54.9958
+lon = -7.322
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "inishmurray"
+name = "Inis Muirígh"
+lat = 54.4318
+lon = -8.661
+kind = "monastery"
+size = 1
+buildings = ["church", "enclosure"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "skellig_michael"
+name = "Sceilg Mhichíl"
+lat = 51.772
+lon = -10.5394
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "monasterboice"
+name = "Mainistir Bhuithe"
+lat = 53.7774
+lon = -6.4176
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "finglas"
+name = "Fionnghlas"
+lat = 53.3905
+lon = -6.2985
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "lusk"
+name = "Lusca"
+lat = 53.5266
+lon = -6.166
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "swords"
+name = "Sord"
+lat = 53.4597
+lon = -6.218
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "terryglass"
+name = "Tír Dhá Ghlas"
+lat = 53.0517
+lon = -8.2
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "birr"
+name = "Biorra"
+lat = 53.0956
+lon = -7.9101
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "seirkieran"
+name = "Saighir Chiaráin"
+lat = 53.048
+lon = -7.805
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "roscrea"
+name = "Ros Cré"
+lat = 52.9529
+lon = -7.7985
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "lorrha"
+name = "Lothra"
+lat = 53.0925
+lon = -8.1218
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "mungret"
+name = "Mungairit"
+lat = 52.6325
+lon = -8.695
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "ardfert"
+name = "Ard Fhearta"
+lat = 52.3295
+lon = -9.7831
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "inisfallen"
+name = "Inis Faithlinn"
+lat = 52.047
+lon = -9.537
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "cloyne"
+name = "Cluain"
+lat = 51.8625
+lon = -8.1222
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "ardmore"
+name = "Aird Mhór"
+lat = 51.9483
+lon = -7.7262
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "ferns"
+name = "Fearna"
+lat = 52.59
+lon = -6.498
+kind = "monastery"
+size = 3
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "taghmon"
+name = "Teach Munna"
+lat = 52.3203
+lon = -6.6488
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "aghaboe"
+name = "Achadh Bhó"
+lat = 52.92
+lon = -7.5105
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "old_leighlin"
+name = "Seanleithghlinn"
+lat = 52.7365
+lon = -7.0253
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "clonenagh"
+name = "Cluain Eidhneach"
+lat = 53.011
+lon = -7.421
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "slane"
+name = "Baile Shláine"
+lat = 53.709
+lon = -6.544
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "duleek"
+name = "Damhliag"
+lat = 53.6554
+lon = -6.4203
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "trim"
+name = "Baile Átha Troim"
+lat = 53.5548
+lon = -6.792
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "louth"
+name = "Lú"
+lat = 53.954
+lon = -6.54
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "dromiskin"
+name = "Droim Ineasclainn"
+lat = 53.9216
+lon = -6.3986
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "dunleer"
+name = "Lann Léire"
+lat = 53.83
+lon = -6.395
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "fore"
+name = "Baile Fhobhair"
+lat = 53.6822
+lon = -7.2265
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "clones"
+name = "Cluain Eois"
+lat = 54.179
+lon = -7.233
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "devenish"
+name = "Daimhinis"
+lat = 54.37
+lon = -7.665
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "ardstraw"
+name = "Ard Sratha"
+lat = 54.736
+lon = -7.414
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "raphoe"
+name = "Ráth Bhoth"
+lat = 54.874
+lon = -7.599
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "fahan"
+name = "Fathain"
+lat = 55.0831
+lon = -7.4608
+kind = "monastery"
+size = 1
+buildings = ["church", "high_cross"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "low"
+
+[[location]]
+id = "carndonagh"
+name = "Carn Domhnach"
+lat = 55.2499
+lon = -7.272
+kind = "monastery"
+size = 1
+buildings = ["church", "high_cross"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "low"
+
+[[location]]
+id = "drumcliff"
+name = "Droim Chliabh"
+lat = 54.3263
+lon = -8.4955
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "cong"
+name = "Conga"
+lat = 53.5405
+lon = -9.2853
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "mayo"
+name = "Maigh Eo"
+lat = 53.7738
+lon = -9.102
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "tuam"
+name = "Tuaim"
+lat = 53.515
+lon = -8.854
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "annaghdown"
+name = "Eanach Dhúin"
+lat = 53.3875
+lon = -9.073
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "kilmacduagh"
+name = "Cill Mhic Duach"
+lat = 53.0505
+lon = -8.8879
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "killeany"
+name = "Cill Éinne"
+lat = 53.1066
+lon = -9.6633
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "inishbofin"
+name = "Inis Bó Finne"
+lat = 53.6153
+lon = -10.1912
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "tory"
+name = "Toraigh"
+lat = 55.265
+lon = -8.233
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "low"
+
+[[location]]
+id = "roscommon"
+name = "Ros Comáin"
+lat = 53.6315
+lon = -8.189
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "elphin"
+name = "Ail Finn"
+lat = 53.8502
+lon = -8.1978
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "ardagh"
+name = "Ardach"
+lat = 53.668
+lon = -7.694
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "scattery"
+name = "Inis Cathaigh"
+lat = 52.613
+lon = -9.518
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "nendrum"
+name = "Naondroim"
+lat = 54.5025
+lon = -5.656
+kind = "monastery"
+size = 2
+buildings = ["church", "enclosure"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "high"
+
+[[location]]
+id = "connor"
+name = "Coinnire"
+lat = 54.8
+lon = -6.295
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "low"
+
+[[location]]
+id = "antrim"
+name = "Aontroim"
+lat = 54.7246
+lon = -6.2108
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "saul"
+name = "Sabhall"
+lat = 54.343
+lon = -5.675
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "dromore"
+name = "Droim Mór"
+lat = 54.4148
+lon = -6.15
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "clondalkin"
+name = "Cluain Dolcáin"
+lat = 53.3213
+lon = -6.3955
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "rahan"
+name = "Raithean"
+lat = 53.2793
+lon = -7.6115
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "killeigh"
+name = "Cill Aichidh"
+lat = 53.219
+lon = -7.444
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "lemanaghan"
+name = "Liath Mancháin"
+lat = 53.293
+lon = -7.765
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "killala"
+name = "Cill Ala"
+lat = 54.213
+lon = -9.22
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "ross_carbery"
+name = "Ros Ó gCairbre"
+lat = 51.577
+lon = -9.034
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "ahenny"
+name = "Áth Eine"
+lat = 52.4125
+lon = -7.3933
+kind = "monastery"
+size = 1
+buildings = ["church", "high_cross"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "low"
+
+[[location]]
+id = "st_mullins"
+name = "Tigh Moling"
+lat = 52.4856
+lon = -6.9259
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
+confidence = "medium"
+
+[[location]]
+id = "tara"
+name = "Teamhair"
+lat = 53.5797
+lon = -6.6118
+kind = "royal_site"
+size = 3
+buildings = ["enclosure"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "high"
+
+[[location]]
+id = "cashel"
+name = "Caiseal"
+lat = 52.52
+lon = -7.8906
+kind = "royal_site"
+size = 3
+buildings = ["enclosure"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "high"
+
+[[location]]
+id = "rathcroghan"
+name = "Ráth Cruachan"
+lat = 53.802
+lon = -8.304
+kind = "royal_site"
+size = 3
+buildings = ["enclosure"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "medium"
+
+[[location]]
+id = "ailech"
+name = "Grianán Ailigh"
+lat = 55.0243
+lon = -7.4277
+kind = "royal_site"
+size = 3
+buildings = ["enclosure"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "medium"
+
+[[location]]
+id = "naas"
+name = "An Nás"
+lat = 53.2203
+lon = -6.663
+kind = "royal_site"
+size = 2
+buildings = ["enclosure"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "medium"
+
+[[location]]
+id = "downpatrick"
+name = "Dún Pádraig"
+lat = 54.33
+lon = -5.7135
+kind = "royal_site"
+size = 2
+buildings = ["enclosure", "church"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "medium"
+
+[[location]]
+id = "clogher"
+name = "Clochar"
+lat = 54.4112
+lon = -7.1714
+kind = "royal_site"
+size = 2
+buildings = ["enclosure", "church"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "medium"
+
+[[location]]
+id = "uisneach"
+name = "Uisneach"
+lat = 53.488
+lon = -7.558
+kind = "royal_site"
+size = 2
+buildings = ["enclosure"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "medium"
+
+[[location]]
+id = "knowth"
+name = "Cnóbha"
+lat = 53.7016
+lon = -6.4911
+kind = "ringfort"
+size = 2
+buildings = ["enclosure"]
+source = "Byrne (1973); Eogan's Knowth excavations"
+confidence = "high"
+
+[[location]]
+id = "lyons_hill"
+name = "Liamhain"
+lat = 53.3
+lon = -6.537
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "medium"
+
+[[location]]
+id = "rathangan"
+name = "Ráth Iomgháin"
+lat = 53.2175
+lon = -6.9975
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "medium"
+
+[[location]]
+id = "dunamase"
+name = "Dún Másc"
+lat = 53.0318
+lon = -7.2096
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "medium"
+
+[[location]]
+id = "knockainey"
+name = "Cnoc Áine"
+lat = 52.4803
+lon = -8.4787
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "medium"
+
+[[location]]
+id = "bruree"
+name = "Brú Rí"
+lat = 52.425
+lon = -8.66
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "medium"
+
+[[location]]
+id = "rathmore"
+name = "An Ráth Mhór"
+lat = 54.709
+lon = -6.17
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Byrne (1973); Lynn's Rathmore excavations"
+confidence = "low"
+
+[[location]]
+id = "dunseverick"
+name = "Dún Sobhairce"
+lat = 55.2371
+lon = -6.4398
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Byrne, Irish Kings and High-Kings (1973); annals"
+confidence = "medium"
+
+[[location]]
+id = "cahercommaun"
+name = "Cathair Chomáin"
+lat = 53.0147
+lon = -9.0706
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Hencken, Cahercommaun (1938)"
+confidence = "low"
+
+[[location]]
+id = "carraig_aille"
+name = "Carraig Aille"
+lat = 52.5167
+lon = -8.5116
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Ó Ríordáin's Lough Gur excavations (1949)"
+confidence = "low"
+
+[[location]]
+id = "lagore"
+name = "Loch Gabhair"
+lat = 53.518
+lon = -6.52
+kind = "crannog"
+size = 2
+buildings = ["enclosure"]
+source = "Hencken, Lagore crannog (1950); Byrne (1973)"
+confidence = "low"
+
+[[location]]
+id = "moynagh"
+name = "Maigh nEach"
+lat = 53.8172
+lon = -6.7588
+kind = "crannog"
+size = 1
+buildings = ["enclosure"]
+source = "Bradley's Moynagh Lough excavations (excavations.ie)"
+confidence = "low"
