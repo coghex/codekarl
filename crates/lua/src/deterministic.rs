@@ -1,11 +1,17 @@
 //! The optional gameplay profile: remove host-dependent facilities and make table order and
 //! value-to-text conversions independent of Lua's hash seed and allocation addresses.
 
-use mlua::{Function, Lua};
+use mlua::{Function, Lua, LuaString};
 
 /// Installs the deterministic script surface and returns the protected-call helper. It runs after
 /// the host surface and extensions are installed, but before any user chunk.
 pub(crate) fn install(lua: &Lua) -> mlua::Result<Function> {
+    let byte_less = lua.create_function(|_, (left, right): (LuaString, LuaString)| {
+        let left = left.as_bytes();
+        let right = right.as_bytes();
+        Ok(left.as_ref() < right.as_ref())
+    })?;
+    lua.globals().set("__ck_internal_byte_less", byte_less)?;
     let protected: Function = lua
         .load(BOOTSTRAP)
         .set_name("=ck-lua deterministic profile")
@@ -22,6 +28,7 @@ local native = {
   rawget = rawget, rawset = rawset,
   sort = table.sort, pack = table.pack, unpack = table.unpack,
   concat = table.concat, format = string.format,
+  byte_less = __ck_internal_byte_less,
   stdout = io.stdout, write = io.stdout.write,
   traceback = debug and debug.traceback,
 }
@@ -37,6 +44,7 @@ local function stable_tostring(value)
   end
   return native.tostring(value)
 end
+globals.__ck_internal_byte_less = nil
 globals.tostring = stable_tostring
 
 globals.print = function(...)
@@ -72,6 +80,7 @@ globals.pairs = function(value)
   native.sort(keys, function(a, b)
     local ta, tb = native.type(a), native.type(b)
     if ta ~= tb then return key_order[ta] < key_order[tb] end
+    if ta == 'string' then return native.byte_less(a, b) end
     return a < b
   end)
   local index = 0
@@ -86,6 +95,60 @@ globals.pairs = function(value)
   end
   return iterate, value, nil
 end
+
+local function stable_sort(value, comp)
+  if native.type(value) ~= 'table' then
+    error("bad argument #1 to 'sort' (table expected, got " .. native.type(value) .. ")", 2)
+  end
+  if comp ~= nil and native.type(comp) ~= 'function' then
+    error("bad argument #2 to 'sort' (function expected, got " .. native.type(comp) .. ")", 2)
+  end
+  local count = #value
+  if count < 2 then return end
+
+  local function before(left, right)
+    if comp ~= nil then return comp(left, right) end
+    local left_type, right_type = native.type(left), native.type(right)
+    if left_type ~= right_type or (left_type ~= 'number' and left_type ~= 'string') then
+      error('attempt to compare ' .. left_type .. ' with ' .. right_type, 3)
+    end
+    if left_type == 'string' then return native.byte_less(left, right) end
+    return left < right
+  end
+
+  -- One reusable run buffer keeps the merge schedule independent of time and allocation history.
+  local buffer = {}
+  local width = 1
+  while width < count do
+    local first = 1
+    while first <= count do
+      local middle = math.min(first + width - 1, count)
+      local last = math.min(first + width * 2 - 1, count)
+      if middle < last then
+        local length = last - first + 1
+        for offset = 1, length do buffer[offset] = value[first + offset - 1] end
+        local left = 1
+        local left_end = middle - first + 1
+        local right = left_end + 1
+        local output = first
+        while output <= last do
+          if left <= left_end and (right > length or not before(buffer[right], buffer[left])) then
+            value[output] = buffer[left]
+            left = left + 1
+          else
+            value[output] = buffer[right]
+            right = right + 1
+          end
+          output = output + 1
+        end
+      end
+      first = last + 1
+    end
+    width = width * 2
+  end
+end
+
+table.sort = stable_sort
 
 local native_setmetatable = native.setmetatable
 globals.setmetatable = function(value, mt)

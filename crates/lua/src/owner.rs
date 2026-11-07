@@ -13,13 +13,11 @@ use std::time::{Duration, Instant};
 use crate::call::{CallId, CallResult, Completion, Progress};
 use crate::config::ConfigValue;
 use crate::error::{VmError, VmState};
+use crate::exit::{self, ExitWatch};
 use crate::extension::{self, Extension};
 use crate::interrupt::Fatal;
 use crate::runner::{self, Command, Failure, Job, Report, Wake};
 use crate::unwind;
-
-/// How often `wait_finished` looks at whether the thread has ended.
-const POLL: Duration = Duration::from_millis(1);
 
 /// What a VM owner is created from.
 #[derive(Clone)]
@@ -113,6 +111,7 @@ pub struct VmOwner {
     reports: Receiver<Report>,
     cancel: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    exit: ExitWatch,
     /// Reports a non-blocking drain met that are not call results: kept for the next wait.
     held: VecDeque<Report>,
     /// Results of posted calls, not yet taken.
@@ -182,6 +181,7 @@ impl VmOwner {
         let (control, control_rx) = mpsc::channel();
         let (reports_tx, reports) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
+        let exit = ExitWatch::new();
         #[cfg(test)]
         crate::hooks::remember_cancel(&name, Arc::clone(&cancel));
         let wake: Option<Wake> = on_report;
@@ -198,9 +198,13 @@ impl VmOwner {
             fatal: Fatal::new(Arc::clone(&cancel)),
             cancel: Arc::clone(&cancel),
         };
+        let thread_exit = exit.clone();
         let thread = thread::Builder::new()
             .name(format!("ck-lua-{name}"))
-            .spawn(move || runner::thread_main(&job))?;
+            .spawn(move || {
+                exit::install(thread_exit);
+                runner::thread_main(&job);
+            })?;
         Ok(Self {
             name,
             state: VmState::Initialising,
@@ -208,6 +212,7 @@ impl VmOwner {
             reports,
             cancel,
             thread: Some(thread),
+            exit,
             held: VecDeque::new(),
             results: VecDeque::new(),
             outstanding: 0,
@@ -220,6 +225,12 @@ impl VmOwner {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns a clonable signal for this owner's thread exit, independent of the handle lock.
+    #[must_use]
+    pub fn exit_watch(&self) -> ExitWatch {
+        self.exit.clone()
     }
 
     /// The handle's state.
@@ -526,31 +537,21 @@ impl VmOwner {
         self.abandon();
     }
 
-    /// Waits at most `deadline` for the thread to end; `true` once it was observed finished and
-    /// joined (the handle is then Finished).
+    /// Waits at most `deadline` for the thread exit signal, then joins it; `true` once the
+    /// thread was observed finished and joined (the handle is then Finished).
     pub fn wait_finished(&mut self, deadline: Duration) -> bool {
-        let limit = Instant::now().checked_add(deadline);
-        loop {
-            match self.thread.take() {
-                None => {
-                    self.settle();
-                    return true;
-                }
-                Some(handle) if handle.is_finished() => {
-                    unwind::join(handle);
-                    self.settle();
-                    return true;
-                }
-                Some(handle) => self.thread = Some(handle),
-            }
-            let left = limit.map_or(POLL, |limit| {
-                limit.saturating_duration_since(Instant::now())
-            });
-            if left.is_zero() {
-                return false;
-            }
-            thread::sleep(left.min(POLL));
+        if self.thread.is_none() {
+            self.settle();
+            return true;
         }
+        if !self.exit.wait(deadline) {
+            return false;
+        }
+        if let Some(Err(payload)) = self.thread.take().map(JoinHandle::join) {
+            unwind::dispose(payload);
+        }
+        self.settle();
+        true
     }
 
     /// The thread was observed ended and joined: the handle is Finished, every result it sent is

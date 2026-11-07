@@ -43,6 +43,141 @@ print(callback, thread)
 }
 
 #[test]
+fn locale_mutation_is_removed_before_user_code_in_both_profiles() {
+    for (name, profile, source) in [
+        (
+            "standard_locale_guard",
+            Profile::Standard,
+            "assert(os ~= nil and os.time ~= nil and os.setlocale == nil)",
+        ),
+        (
+            "deterministic_locale_guard",
+            Profile::Deterministic,
+            "assert(os == nil)",
+        ),
+    ] {
+        let dir = Dir::new();
+        let entry = dir.script(source);
+        let mut settings = VmSettings::new(name, entry, empty_config());
+        settings.profile = profile;
+        let mut owner = VmOwner::spawn(settings).expect("the thread starts");
+        owner
+            .wait_ready(BOUND)
+            .expect("locale guard runs before entry");
+        owner.stop(BOUND).expect("the owner stops");
+    }
+}
+
+#[test]
+fn deterministic_pairs_and_sort_follow_byte_order_and_stable_merge_rules() {
+    let dir = Dir::new();
+    let entry = dir.script(
+        r#"
+local keyed = {['a'] = true, ['B'] = true, ['_'] = true, ['ab'] = true,
+  ['a\0'] = true, ['\xc3\xa9'] = true, ['Z'] = true}
+local keys = {}
+for key in pairs(keyed) do keys[#keys + 1] = key end
+assert(table.concat(keys, '\0') == 'B\0Z\0_\0a\0a\0\0ab\0\xc3\xa9')
+
+local numbers = {}
+for i = 300, 1, -1 do numbers[#numbers + 1] = i end
+table.sort(numbers)
+for i = 1, 300 do assert(numbers[i] == i) end
+
+local strings = {}
+for i = 300, 1, -1 do strings[#strings + 1] = string.char((i % 250) + 1) end
+table.sort(strings)
+for i = 2, #strings do assert(not (strings[i] < strings[i - 1])) end
+local high = {'\xc3\xa9', 'Z', 'a\0', 'ab', '_', 'B', 'a'}
+table.sort(high)
+assert(table.concat(high, '|') == 'B|Z|_|a|a\0|ab|\xc3\xa9')
+
+local records = {}
+for i = 1, 300 do records[i] = {key = i % 3, id = i} end
+table.sort(records, function(a, b) return a.key < b.key end)
+local previous = {-1, -1, -1}
+for i = 1, #records do
+  local item = records[i]
+  assert(item.id > previous[item.key + 1])
+  previous[item.key + 1] = item.id
+end
+
+local raw = {5, 1, 4, 2, 3}
+local proxy = setmetatable({}, {
+  __len = function() return 5 end,
+  __index = function(_, index) return raw[index] end,
+  __newindex = function(_, index, value) raw[index] = value end
+})
+assert(select('#', table.sort(proxy)) == 0)
+assert(table.concat(raw, ',') == '1,2,3,4,5')
+local ok_mixed, mixed_message = pcall(table.sort, {1, 'one'})
+assert(not ok_mixed and mixed_message:find('attempt to compare', 1, true))
+local ok_table, table_message = pcall(table.sort, 5)
+assert(not ok_table and table_message:find("bad argument #1 to 'sort' (table expected", 1, true))
+local ok_comp, comp_message = pcall(table.sort, {}, 5)
+assert(not ok_comp and comp_message:find("bad argument #2 to 'sort' (function expected", 1, true))
+local ok_error, error_message = pcall(table.sort, {3, 2, 1}, function() error('comparator boom') end)
+assert(not ok_error and error_message:find('comparator boom', 1, true))
+"#,
+    );
+    let mut settings = VmSettings::new("deterministic_sort_contract", entry, empty_config());
+    settings.profile = Profile::Deterministic;
+    let mut owner = VmOwner::spawn(settings).expect("the thread starts");
+    owner
+        .wait_ready(BOUND)
+        .expect("byte order and stable sort hold");
+    owner.stop(BOUND).expect("the owner stops");
+}
+
+fn inconsistent_sort_result(name: &str, comparator: &str) -> String {
+    let source = format!(
+        "local t = {{}}; for i = 1, 300 do t[i] = i end; local calls = 0; \
+         table.sort(t, function(a, b) calls = calls + 1; {comparator} end); \
+         log.info(calls .. ':' .. table.concat(t, ','))"
+    );
+    let dir = Dir::new();
+    let entry = dir.script(&source);
+    let mut settings = VmSettings::new(name, entry, empty_config());
+    settings.profile = Profile::Deterministic;
+    let mut owner = VmOwner::spawn(settings).expect("the thread starts");
+    owner
+        .wait_ready(BOUND)
+        .expect("inconsistent comparison returns");
+    let result = records(name).last().expect("the result was logged").clone();
+    owner.stop(BOUND).expect("the owner stops");
+    result
+}
+
+#[test]
+fn deterministic_sort_inconsistent_comparators_have_repeatable_permutations() {
+    for comparator in ["return true", "return calls % 2 == 0"] {
+        let first = inconsistent_sort_result("sort_inconsistent_a", comparator);
+        let second = inconsistent_sort_result("sort_inconsistent_b", comparator);
+        assert_eq!(first, second);
+    }
+}
+
+#[test]
+fn standard_profile_keeps_native_inconsistent_sort_error() {
+    let dir = Dir::new();
+    let entry = dir.script(
+        "local t = {}; for i = 1, 300 do t[i] = i end; \
+         local ok, message = pcall(table.sort, t, function() return true end); \
+         assert(not ok and message:find('invalid order function for sorting', 1, true))",
+    );
+    let mut owner = VmOwner::spawn(VmSettings::new(
+        "standard_native_sort",
+        entry,
+        empty_config(),
+    ))
+    .expect("the thread starts");
+    owner
+        .wait_ready(BOUND)
+        .expect("native sort keeps its diagnostic");
+    owner.stop(BOUND).expect("the owner stops");
+}
+
+#[test]
 fn deterministic_profile_normalizes_error_objects_and_fixes_the_entry_chunk_name() {
     let mut seen = Vec::new();
     for path in ["a-machine-specific-directory.lua", "another/path/entry.lua"] {

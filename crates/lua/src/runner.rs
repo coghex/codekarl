@@ -375,8 +375,8 @@ fn run(job: &Job) -> Result<Option<Report>, Failure> {
     let lua = if job.profile == Profile::Deterministic {
         // Lua's debug library is unsafe because it can inspect and mutate VM internals. The
         // deterministic bootstrap captures only `debug.traceback`, then removes the `debug`
-        // global before any gameplay chunk runs. We do not load `package`, `io`, `os`, or any
-        // other unsafe library, so gameplay cannot load C modules or reach the debug library.
+        // global before any gameplay chunk runs. `StdLib::ALL_SAFE` also loads `package`, `io`
+        // and `os`; the bootstrap removes those globals before gameplay can reach them.
         // SAFETY: no unsafe library except `debug` is opened, and the bootstrap removes its global
         // before executing untrusted gameplay source.
         unsafe { Lua::unsafe_new_with(StdLib::ALL_SAFE | StdLib::DEBUG, LuaOptions::default()) }
@@ -384,6 +384,11 @@ fn run(job: &Job) -> Result<Option<Report>, Failure> {
         Lua::new_with(StdLib::ALL_SAFE, LuaOptions::default())
             .map_err(|error| Failure::host(format!("cannot create the Lua state: {error}")))?
     };
+    // ALL_SAFE includes `os` in Standard (and Deterministic removes it in its bootstrap).
+    // Remove the process-wide locale mutator before installing or running any user code.
+    lua.load("os.setlocale = nil")
+        .exec()
+        .map_err(|error| Failure::host(format!("cannot disable os.setlocale: {error}")))?;
     let mut state = State {
         flush: None,
         callbacks: Callbacks::default(),
