@@ -82,6 +82,11 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     zoom_out_elapsed: Duration,
 }
 
+pub(crate) enum RoutedMapEvent {
+    Pointer(PointerEvent),
+    EndDrag,
+}
+
 #[derive(Clone, Copy)]
 struct Drag {
     anchor: PointerPosition,
@@ -216,6 +221,8 @@ impl<R: RiverViewSelector> MapController<R> {
         let camera = initial_camera(self.crop, view)?;
         let snapshot = self.snapshot(camera, self.bridge.metrics_generation().saturating_add(1))?;
         self.camera = Some(camera);
+        #[cfg(feature = "test-support")]
+        Self::observe_test_camera(camera)?;
         match self.bridge.stage_initial_camera(Arc::new(snapshot)) {
             MapPublication::Published => Ok(()),
             outcome => Err(format!("map lane refused the initial camera: {outcome:?}")),
@@ -223,11 +230,36 @@ impl<R: RiverViewSelector> MapController<R> {
     }
 
     /// Apply one paced input snapshot, publishing only when the camera or metrics changed.
+    #[cfg(test)]
+    pub(crate) fn update(&mut self, update: &InputTick) -> Result<bool, String> {
+        let events = update
+            .input
+            .pointer_events
+            .iter()
+            .copied()
+            .map(RoutedMapEvent::Pointer)
+            .collect::<Vec<_>>();
+        self.update_routed(
+            update,
+            &events,
+            update.input.pointer_position,
+            update.input.reset,
+        )
+    }
+
+    /// Applies the map's ordered share of a tick. `EndDrag` is an ownership boundary and is replayed
+    /// at its event position, before any later retained pointer event.
     #[expect(
         clippy::too_many_lines,
-        reason = "pointer replay, keyboard control, and one publication form one ordered update"
+        reason = "routed pointer replay, keyboard control, and one publication form one ordered update"
     )]
-    pub(crate) fn update(&mut self, update: &InputTick) -> Result<bool, String> {
+    pub(crate) fn update_routed(
+        &mut self,
+        update: &InputTick,
+        events: &[RoutedMapEvent],
+        hover_position: Option<PointerPosition>,
+        suppress_hover: bool,
+    ) -> Result<bool, String> {
         let Some(mut camera) = self.camera else {
             return Ok(false);
         };
@@ -242,7 +274,11 @@ impl<R: RiverViewSelector> MapController<R> {
         }
 
         // Pointer gestures are replayed before keyboard state, preserving the input contract.
-        for event in &update.input.pointer_events {
+        for routed in events {
+            let RoutedMapEvent::Pointer(event) = routed else {
+                self.end_drag();
+                continue;
+            };
             #[cfg(feature = "test-support")]
             Self::observe_test_pointer(*event)?;
             match *event {
@@ -364,10 +400,10 @@ impl<R: RiverViewSelector> MapController<R> {
         }
 
         self.pointer_position = update.input.pointer_position;
-        self.hover = if update.input.reset || update.input.pointer_held {
+        self.hover = if update.input.reset || update.input.pointer_held || suppress_hover {
             None
         } else {
-            self.pointer_position
+            hover_position
                 .filter(|position| pointer_in_view(*position, update.metrics.points))
                 .and_then(|position| {
                     hover_at(&mut self.markers, &self.location_names, camera, position)
@@ -384,6 +420,11 @@ impl<R: RiverViewSelector> MapController<R> {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// Ends a map-owned gesture without applying any movement to the next pointer position.
+    pub(crate) fn end_drag(&mut self) {
+        self.drag = None;
     }
 
     #[cfg(feature = "test-support")]
@@ -468,6 +509,10 @@ impl<R: RiverViewSelector> MapController<R> {
 
     pub(crate) fn hover(&self) -> Option<Hover> {
         self.hover.clone()
+    }
+
+    pub(crate) fn hit_regions(&self) -> Option<Arc<ck_render_2d::HitRegions>> {
+        self.bridge.hit_regions()
     }
 }
 
@@ -854,10 +899,24 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn hover_controller() -> MapController {
-        hover_controller_with_glyph(vec![vec!['#', 'd'], vec!['d', '#']])
+        hover_controller_with_bridge(SceneBridge::new(ck_render_2d::Filter::Nearest))
+    }
+
+    pub(crate) fn hover_controller_with_bridge(bridge: Arc<SceneBridge>) -> MapController {
+        hover_controller_with_glyph_and_bridge(vec![vec!['#', 'd'], vec!['d', '#']], bridge)
     }
 
     fn hover_controller_with_glyph(glyph: Vec<Vec<char>>) -> MapController {
+        hover_controller_with_glyph_and_bridge(
+            glyph,
+            SceneBridge::new(ck_render_2d::Filter::Nearest),
+        )
+    }
+
+    fn hover_controller_with_glyph_and_bridge(
+        glyph: Vec<Vec<char>>,
+        bridge: Arc<SceneBridge>,
+    ) -> MapController {
         let loaded = expanded_map();
         let crop = loaded.data.crop;
         let cell = ck_map::Cell {
@@ -890,7 +949,6 @@ pub(crate) mod tests {
             kinds: vec![kind],
             ..LocationKinds::default()
         };
-        let bridge = SceneBridge::new(ck_render_2d::Filter::Nearest);
         let mut controller = MapController::with_scenario_parts(
             &loaded,
             bridge,
@@ -1420,6 +1478,45 @@ pub(crate) mod tests {
                 .update(&pointer_update(Vec::new(), Some(end), false, false))
                 .expect("consumed pointer is idle")
         );
+    }
+
+    #[test]
+    fn an_ownership_end_drops_the_old_drag_without_panning_on_later_ticks() {
+        let mut controller = expanded_controller();
+        let before = controller.camera().expect("initial camera");
+        let anchor = PointerPosition {
+            x: 40 * 256,
+            y: 40 * 256,
+        };
+        let moved = PointerPosition {
+            x: 48 * 256,
+            y: 40 * 256,
+        };
+        let mut active = pointer_update(vec![], Some(moved), true, false);
+        active.input.pointer_events.clear();
+        controller
+            .update_routed(
+                &active,
+                &[
+                    RoutedMapEvent::Pointer(PointerEvent::Down(anchor)),
+                    RoutedMapEvent::Pointer(PointerEvent::Move(moved)),
+                ],
+                None,
+                true,
+            )
+            .expect("map gesture pans before ownership changes");
+        let after_map_gesture = controller.camera().expect("camera after map drag");
+        assert_ne!(after_map_gesture, before);
+
+        let ended = pointer_update(Vec::new(), None, false, false);
+        controller
+            .update_routed(&ended, &[RoutedMapEvent::EndDrag], None, true)
+            .expect("ending ownership does not pan");
+        let later = pointer_update(Vec::new(), Some(moved), true, false);
+        controller
+            .update_routed(&later, &[], None, true)
+            .expect("later UI-owned movement does not reach map");
+        assert_eq!(controller.camera(), Some(after_map_gesture));
     }
 
     #[test]

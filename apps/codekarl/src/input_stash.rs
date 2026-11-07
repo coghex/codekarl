@@ -12,7 +12,25 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use ck_window::{InputSnapshot, TRANSITION_CAPACITY, Transition};
+use ck_window::{InputSnapshot, PointerPosition, TRANSITION_CAPACITY, Transition};
+
+pub(crate) const POINTER_EVENT_CAPACITY: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PointerView {
+    pub(crate) position: PointerPosition,
+    pub(crate) held: bool,
+    pub(crate) over: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PointerViewEvent {
+    pub(crate) kind: &'static str,
+    pub(crate) position: PointerPosition,
+    pub(crate) key: Option<String>,
+    pub(crate) amount: Option<i32>,
+    pub(crate) unit: Option<&'static str>,
+}
 
 /// One action's share of the stash.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -29,6 +47,9 @@ pub(crate) struct InputStash {
     transitions: VecDeque<Transition>,
     overflow: bool,
     reset: bool,
+    pointer: Option<PointerView>,
+    pointer_events: VecDeque<PointerViewEvent>,
+    pointer_overflow: bool,
 }
 
 impl InputStash {
@@ -61,6 +82,8 @@ impl InputStash {
         self.transitions.clear();
         self.overflow = false;
         self.reset = false;
+        self.pointer_events.clear();
+        self.pointer_overflow = false;
     }
 
     /// The tick's input while no callback is registered: nothing of it is kept but each action's latest `held`.
@@ -69,6 +92,43 @@ impl InputStash {
         for action in &input.actions {
             self.actions.entry(action.name.clone()).or_default().held = action.held;
         }
+        if let Some(position) = input.pointer_position {
+            let over = self.pointer.as_ref().and_then(|old| old.over.clone());
+            self.pointer = Some(PointerView {
+                position,
+                held: input.pointer_held,
+                over,
+            });
+        } else if let Some(pointer) = &mut self.pointer {
+            pointer.held = input.pointer_held;
+        }
+    }
+
+    pub(crate) fn absorb_pointer(
+        &mut self,
+        latest: Option<PointerView>,
+        events: impl IntoIterator<Item = PointerViewEvent>,
+        pointer_overflow: bool,
+    ) {
+        if let Some(latest) = latest {
+            self.pointer = Some(latest);
+        }
+        for event in events {
+            if event.kind == "move"
+                && let Some(previous) = self.pointer_events.back_mut()
+                && previous.kind == "move"
+                && previous.key == event.key
+            {
+                *previous = event;
+                continue;
+            }
+            if self.pointer_events.len() == POINTER_EVENT_CAPACITY {
+                self.pointer_events.pop_front();
+                self.pointer_overflow = true;
+            }
+            self.pointer_events.push_back(event);
+        }
+        self.pointer_overflow |= pointer_overflow;
     }
 
     /// Each action as `(name, state)`, in name order.
@@ -90,11 +150,23 @@ impl InputStash {
     pub(crate) fn reset(&self) -> bool {
         self.reset
     }
+
+    pub(crate) fn pointer(&self) -> Option<&PointerView> {
+        self.pointer.as_ref()
+    }
+
+    pub(crate) fn pointer_events(&self) -> impl Iterator<Item = &PointerViewEvent> {
+        self.pointer_events.iter()
+    }
+
+    pub(crate) fn pointer_overflow(&self) -> bool {
+        self.pointer_overflow
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use ck_window::{ActionSnapshot, Edge};
+    use ck_window::{ActionSnapshot, Edge, PointerPosition};
 
     use super::*;
 
@@ -227,5 +299,60 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn pointer_moves_coalesce_and_the_bounded_queue_keeps_the_newest_events() {
+        let mut stash = InputStash::default();
+        let move_event = |x| PointerViewEvent {
+            kind: "move",
+            position: PointerPosition { x, y: 0 },
+            key: Some("panel".to_owned()),
+            amount: None,
+            unit: None,
+        };
+        stash.absorb_pointer(None, (0..4).map(move_event), false);
+        assert_eq!(stash.pointer_events.len(), 1);
+        assert_eq!(stash.pointer_events.back().unwrap().position.x, 3);
+
+        let event = |x| PointerViewEvent {
+            kind: "down",
+            position: PointerPosition { x, y: 0 },
+            key: None,
+            amount: None,
+            unit: None,
+        };
+        stash.absorb_pointer(None, (0..70).map(event), false);
+        assert_eq!(stash.pointer_events.len(), POINTER_EVENT_CAPACITY);
+        assert_eq!(stash.pointer_events.front().unwrap().position.x, 6);
+        assert_eq!(stash.pointer_events.back().unwrap().position.x, 69);
+        assert!(stash.pointer_overflow());
+    }
+
+    #[test]
+    fn unregistered_pointer_state_is_kept_but_events_and_overflow_are_dropped() {
+        let mut stash = InputStash::default();
+        let latest = PointerView {
+            position: PointerPosition { x: 256, y: 512 },
+            held: true,
+            over: Some("readout".to_owned()),
+        };
+        stash.absorb_pointer(
+            Some(latest.clone()),
+            [PointerViewEvent {
+                kind: "down",
+                position: latest.position,
+                key: Some("readout".to_owned()),
+                amount: None,
+                unit: None,
+            }],
+            true,
+        );
+        let mut current = snapshot(vec![action("a", true, false, false)], Vec::new());
+        current.pointer_held = true;
+        stash.follow_held(&current);
+        assert_eq!(stash.pointer(), Some(&latest));
+        assert_eq!(stash.pointer_events().count(), 0);
+        assert!(!stash.pointer_overflow());
     }
 }

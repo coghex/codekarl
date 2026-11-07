@@ -70,6 +70,8 @@ mod activation_watch;
 mod held_pipe;
 #[path = "supervisor/signal.rs"]
 mod signal;
+#[path = "support/ui_pointer_streams.rs"]
+mod ui_pointer_streams;
 
 /// The longest a window child may run.
 const DEADLINE: Duration = Duration::from_secs(60);
@@ -87,6 +89,7 @@ const MAP_INPUT_ENV: &str = "CK_WINDOWED_TEST_MAP_INPUT";
 const MAP_HOVER_ENV: &str = "CK_WINDOWED_TEST_MAP_HOVER";
 const SIM_INPUT_ENV: &str = "CK_WINDOWED_TEST_SIM_INPUT";
 const KEY_FILES_ENV: &str = "CK_WINDOWED_TEST_KEY_FILES";
+const UI_POINTER_ENV: &str = "CK_WINDOWED_TEST_UI_POINTER";
 const MAP_CAMERA_ENV: &str = "CK_MAP_TEST_CAMERA_OBSERVATION";
 const REAL_FOCUS_GATE_CASES: [&str; 1] =
     ["synthetic_focus_loss_without_worker_opt_in_keeps_the_pause"];
@@ -156,6 +159,7 @@ static ALLOW_UNFOCUSED_UPDATES: AtomicBool = AtomicBool::new(false);
 static QUEUE_FOCUS_LOST_FOR_CK163: AtomicBool = AtomicBool::new(false);
 static MAP_INPUT_CASE: AtomicBool = AtomicBool::new(false);
 static MAP_HOVER_CASE: AtomicBool = AtomicBool::new(false);
+static UI_POINTER_CASE: AtomicBool = AtomicBool::new(false);
 static SIM_INPUT_CASE: AtomicBool = AtomicBool::new(false);
 static KEYS_CASE: AtomicBool = AtomicBool::new(false);
 static HELD_UI_CASE: AtomicBool = AtomicBool::new(false);
@@ -542,6 +546,9 @@ fn start(args: &[&OsStr]) -> Worker {
         // The case writes this marker only after the hover callback receives the fixture place name.
         command.env(MAP_HOVER_ENV, &scratch.0);
     }
+    if UI_POINTER_CASE.load(Ordering::SeqCst) {
+        command.env(UI_POINTER_ENV, &scratch.0);
+    }
     if SIM_INPUT_CASE.load(Ordering::SeqCst) {
         // The directory the case writes its markers in: the worker's own scratch directory.
         command.env(SIM_INPUT_ENV, &scratch.0);
@@ -552,6 +559,7 @@ fn start(args: &[&OsStr]) -> Worker {
     }
     let map_camera_observation = (MAP_INPUT_CASE.load(Ordering::SeqCst)
         || MAP_HOVER_CASE.load(Ordering::SeqCst)
+        || UI_POINTER_CASE.load(Ordering::SeqCst)
         || SIM_INPUT_CASE.load(Ordering::SeqCst)
         || HELD_UI_CASE.load(Ordering::SeqCst))
     .then(|| report.with_extension("map-camera"));
@@ -837,6 +845,70 @@ end
         );
     }
     assert!(seen.stdout.lines().any(|line| line.starts_with("camera ")));
+}
+
+fn a_ui_hit_captures_a_click_while_an_outside_drag_pans_the_map() {
+    let fixture = Fixture::new();
+    let map = fixture.map_fixture();
+    let config_text = format!(
+        "[window]\nbackend = \"native-metal\"\n\n[map]\ndirectory = '{}'\n\n[frame]\nupdates_per_second = 60\n",
+        map.display()
+    );
+    let body = r#"
+local directory = assert(os.getenv('CK_WINDOWED_TEST_UI_POINTER'))
+function startup()
+render.set_hit("fixture_panel", {{x=0, y=0, width=40, height=40}})
+local down, up, published = false, false, false
+frame.on_update(function(update)
+  if not published then
+    published = true
+    log.info("ui-hit-published")
+  end
+  for _, event in ipairs((update.pointer and update.pointer.events) or {}) do
+    log.info("ui-pointer " .. event.kind .. " " .. (event.key or "false"))
+    if event.kind == "down" and event.key == "fixture_panel" then down = true end
+    if event.kind == "up" and event.key == "fixture_panel" then up = true end
+  end
+  if down and up then
+    local marker = io.open(directory .. "/ui-click-received", "w")
+    if marker then marker:write("x"); marker:close() end
+  end
+  local marker = io.open(directory .. "/map-drag-dispatched", "r")
+  if marker then marker:close(); window.close() end
+end)
+window.on_opened(function() wait_for(HOLD) end)
+window.open{title='UI pointer routing', width=400, height=240, clear={0,0,0}}
+end
+"#;
+    let config = fixture.windowed(&config_text, body);
+    UI_POINTER_CASE.store(true, Ordering::SeqCst);
+    let args: Vec<&OsStr> = vec![OsStr::new("--config"), config.as_os_str()];
+    let mut worker = start(&args);
+    wait_for(
+        &mut worker,
+        "window: window opened",
+        Duration::from_secs(30),
+    );
+    wait_for_drops(&worker);
+    fixture.release();
+    wait_for(
+        &mut worker,
+        "lua.ui: ui-hit-published",
+        Duration::from_secs(30),
+    );
+    let markers = worker.report.parent().expect("worker scratch directory");
+    fs::write(markers.join("ui-hit-go"), "x").expect("release the observed UI click");
+    let seen = finish(worker);
+    UI_POINTER_CASE.store(false, Ordering::SeqCst);
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+    assert_ui_pointer_streams(&seen, "native");
+}
+
+fn assert_ui_pointer_streams(seen: &Seen, backend: &str) {
+    // The helper's sidecar is appended after process stdout. Its marker handshake guarantees the cross-stream order:
+    // it injects the drag only after Lua observed down+up and wrote ui-click-received.
+    ui_pointer_streams::validate_combined_output(&seen.stdout, backend)
+        .unwrap_or_else(|error| panic!("{error}: {}", seen.stdout));
 }
 
 fn lat_lon_for_fixture_cell(x: i32, y: i32) -> (f64, f64) {
@@ -1878,7 +1950,7 @@ fn helper_threads_run_with_sigint_and_sigterm_blocked() {
 // ---------------------------------------------------------------------------------------------
 
 /// The names the filter exports.
-const FILTER_SYMBOLS: [&str; 9] = [
+const FILTER_SYMBOLS: [&str; 10] = [
     "ck_app_t_install_input_filter",
     "ck_app_t_dropped_keys",
     "ck_app_t_start_typist",
@@ -1888,6 +1960,7 @@ const FILTER_SYMBOLS: [&str; 9] = [
     "ck_app_t_schedule_sim_keys",
     "ck_app_t_schedule_key_files",
     "ck_app_t_schedule_map_pointer",
+    "ck_app_t_schedule_ui_pointer",
 ];
 
 fn contains(haystack: &[u8], needle: &str) -> bool {
@@ -2601,6 +2674,7 @@ fn cases() -> Vec<(&'static str, fn())> {
         case!(a_held_ui_does_not_stop_the_map_and_gets_every_transition_after_the_release),
         case!(a_worker_that_fails_before_opening_the_pipe_is_released_reaped_and_removed_at_once),
         case!(a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally),
+        case!(a_ui_hit_captures_a_click_while_an_outside_drag_pans_the_map),
         case!(a_fixture_scenario_hover_delivers_a_place_name_and_nil_after_moving_away),
         case!(the_demo_placeholder_is_drawn_with_the_quads_generation_in_the_first_frame_and_the_run_closes_cleanly),
         case!(a_window_opened_and_closed_by_the_script_exits_0_and_both_shutdowns_follow_the_close),
@@ -2655,6 +2729,10 @@ fn run_case(name: &str, case: fn()) -> bool {
         name == "a_fixture_scenario_hover_delivers_a_place_name_and_nil_after_moving_away",
         Ordering::SeqCst,
     );
+    UI_POINTER_CASE.store(
+        name == "a_ui_hit_captures_a_click_while_an_outside_drag_pans_the_map",
+        Ordering::SeqCst,
+    );
     SIM_INPUT_CASE.store(name == "a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally", Ordering::SeqCst);
     KEYS_CASE.store(
         name == "a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each",
@@ -2670,6 +2748,7 @@ fn run_case(name: &str, case: fn()) -> bool {
     QUEUE_FOCUS_LOST_FOR_CK163.store(false, Ordering::SeqCst);
     MAP_INPUT_CASE.store(false, Ordering::SeqCst);
     MAP_HOVER_CASE.store(false, Ordering::SeqCst);
+    UI_POINTER_CASE.store(false, Ordering::SeqCst);
     SIM_INPUT_CASE.store(false, Ordering::SeqCst);
     KEYS_CASE.store(false, Ordering::SeqCst);
     HELD_UI_CASE.store(false, Ordering::SeqCst);

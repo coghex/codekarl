@@ -47,6 +47,7 @@ use ck_resources::{RegistryId, ResourceState, TextureRef};
 use ck_window::{PixelSize, WindowDesc};
 
 use crate::filter::Filter;
+use crate::hit::{HitEdits, HitError, HitRect, HitRegions};
 use crate::map::{MapCamera, MapFrame, MapInput, MapPublication, MapRefusals, place_map};
 use crate::quad::{Metrics, Quad, QuadError, Snapshot};
 use crate::scene::{EditScene, FrameQuad, QuadKey, SceneFrame, SceneLimits, SceneLimitsError};
@@ -113,6 +114,7 @@ impl std::error::Error for AttachRefused {}
 struct State {
     scene: Option<Quad>,
     frame: Option<Arc<SceneFrame>>,
+    hit_regions: Option<Arc<HitRegions>>,
     map: Option<Arc<MapInput>>,
     camera: Option<Arc<MapCamera>>,
     /// What the presenter reports of refusing to make a map image (shared with every snapshot's map).
@@ -136,6 +138,7 @@ struct Displaced {
     snapshot: Option<Snapshot>,
     sink: Option<Arc<dyn QuadSink>>,
     frame: Option<Arc<SceneFrame>>,
+    hit_regions: Option<Arc<HitRegions>>,
     map: Option<Arc<MapInput>>,
     camera: Option<Arc<MapCamera>>,
 }
@@ -232,6 +235,7 @@ impl SceneBridge {
             state: Mutex::new(State {
                 scene: None,
                 frame: None,
+                hit_regions: None,
                 map: None,
                 camera: None,
                 map_refusals: Arc::new(MapRefusals::default()),
@@ -275,6 +279,7 @@ impl SceneBridge {
         Ok(SceneWriter {
             bridge: Arc::clone(self),
             edits: EditScene::new(self.registry, self.limits.max_quads),
+            hit_edits: HitEdits::default(),
             compat: RefCell::new(None),
             dirty: Cell::new(false),
             frame_number: 0,
@@ -287,6 +292,12 @@ impl SceneBridge {
             frame_drop_hook: None,
             not_sync: PhantomData,
         })
+    }
+
+    /// Clones the latest immutable hit regions, if the scene has been published.
+    #[must_use]
+    pub fn hit_regions(&self) -> Option<Arc<HitRegions>> {
+        self.lock().hit_regions.as_ref().map(Arc::clone)
     }
 
     /// Attaches the sink and publishes the current scene to it.
@@ -346,6 +357,7 @@ impl SceneBridge {
                 state.generation += 1;
             }
             displaced.frame = state.frame.take();
+            displaced.hit_regions = state.hit_regions.take();
             displaced.map = state.map.take();
             displaced.camera = state.camera.take();
             // Replace the consumer's latest snapshot before detaching it, so an idle sink cannot pin the scene frame or the map.
@@ -557,6 +569,7 @@ impl std::error::Error for WriterTaken {}
 pub struct SceneWriter {
     bridge: Arc<SceneBridge>,
     edits: EditScene,
+    hit_edits: HitEdits,
     compat: RefCell<Option<FrameQuad>>,
     dirty: Cell<bool>,
     frame_number: u64,
@@ -572,6 +585,18 @@ pub struct SceneWriter {
 }
 
 impl SceneWriter {
+    /// Replaces or removes one ordered pointer hit key in the next scene publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`HitError`] if the key, rectangle count, or resulting scene cap is invalid.
+    pub fn set_hit(&mut self, key: &str, rects: Option<Vec<HitRect>>) -> Result<(), HitError> {
+        if self.hit_edits.set(key, rects)? {
+            self.dirty.set(true);
+        }
+        Ok(())
+    }
+
     /// Sets the one quad, replacing any earlier one.
     pub fn set_quad(&self, quad: Quad) {
         self.bridge.write(Some(quad));
@@ -732,6 +757,7 @@ impl SceneWriter {
         }
 
         self.edits.build(&mut self.spare);
+        let hit_regions = Arc::new(self.hit_edits.publish());
         let next_number = self.frame_number.saturating_add(1);
         let frame = Arc::new(SceneFrame::new(
             next_number,
@@ -755,6 +781,7 @@ impl SceneWriter {
                 false
             } else {
                 displaced.frame = state.frame.replace(Arc::clone(&frame));
+                displaced.hit_regions = state.hit_regions.replace(hit_regions);
                 state.generation += 1;
                 state.counts.published += 1;
                 displaced.snapshot = state.publish();
@@ -765,6 +792,7 @@ impl SceneWriter {
         // Drop replaced snapshots and frames after releasing the bridge lock. If this was the last frame holder,
         // reclaim its vector for the next build; clearing it drops texture pins on the writer thread.
         drop(displaced.snapshot.take());
+        drop(displaced.hit_regions.take());
         if let Some(old) = displaced.frame.take() {
             match Arc::try_unwrap(old) {
                 Ok(old) => {

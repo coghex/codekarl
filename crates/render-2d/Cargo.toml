@@ -16,6 +16,7 @@ metal = ["dep:ck-gpu-metal", "dep:ck-window-cocoa"]
 vulkan = ["dep:ck-gpu-vulkan"]
 
 [dependencies]
+ck-input = { path = "../input" }
 ck-gpu-metal = { path = "../gpu-metal", optional = true }
 ck-gpu-vulkan = { path = "../gpu-vulkan", optional = true }
 ck-log = { path = "../log" }

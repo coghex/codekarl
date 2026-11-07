@@ -15,10 +15,39 @@ use super::support::{
     pixels, quad_at,
 };
 use crate::budget::MAX_RENDERER_IMAGES;
-use crate::{Filter, Phase, QuadSink, SceneBridge, SceneWriter, WriteCounts, WriterTaken};
+use crate::{Filter, HitRect, Phase, QuadSink, SceneBridge, SceneWriter, WriteCounts, WriterTaken};
 
 fn bridge() -> Arc<SceneBridge> {
     SceneBridge::new(Filter::Nearest)
+}
+
+#[test]
+fn hit_regions_publish_with_the_frame_and_do_not_keep_it_alive() {
+    let bridge = bridge();
+    let mut writer = take_writer(&bridge);
+    writer
+        .set_hit(
+            "panel",
+            Some(vec![HitRect::from_points(1.0, 2.0, 3.0, 4.0).unwrap()]),
+        )
+        .unwrap();
+    assert!(writer.publish());
+    assert_eq!(bridge.live_frames(), 1);
+    let held_regions = bridge.hit_regions().expect("published hit regions");
+    assert_eq!(held_regions.regions().len(), 1);
+    assert_eq!(held_regions.regions()[0].key(), "panel");
+
+    bridge.detach();
+    assert_eq!(bridge.live_frames(), 0, "the retained table owns no frame");
+    assert_eq!(
+        held_regions.regions().len(),
+        1,
+        "reader keeps its immutable view"
+    );
+    assert!(
+        bridge.hit_regions().is_none(),
+        "detach clears the bridge view"
+    );
 }
 
 fn take_writer(bridge: &Arc<SceneBridge>) -> SceneWriter {

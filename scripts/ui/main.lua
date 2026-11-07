@@ -109,11 +109,23 @@ if game ~= nil then
         width = (laid.width + 2) * FONT_POINTS_PER_PIXEL,
         height = (laid.height + 2) * FONT_POINTS_PER_PIXEL,
       }
+      render.set_hit("readout", {{
+        x = MARGIN,
+        y = MARGIN,
+        width = (laid.width + 2) * FONT_POINTS_PER_PIXEL,
+        height = (laid.height + 2) * FONT_POINTS_PER_PIXEL,
+      }})
     end
     local before = readout.width
     set(readout, text)
     if readout.width ~= before then
       render.set_rect(panel, MARGIN, MARGIN, (readout.width + 2) * FONT_POINTS_PER_PIXEL, (readout.height + 2) * FONT_POINTS_PER_PIXEL)
+      render.set_hit("readout", {{
+        x = MARGIN,
+        y = MARGIN,
+        width = (readout.width + 2) * FONT_POINTS_PER_PIXEL,
+        height = (readout.height + 2) * FONT_POINTS_PER_PIXEL,
+      }})
     end
   end)
 

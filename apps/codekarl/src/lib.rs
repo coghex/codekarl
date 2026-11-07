@@ -634,6 +634,7 @@ fn supervise_with_owner_factory(
             || CodekarlUi::new(Rc::clone(&slot)),
             |map| CodekarlUi::with_map(Rc::clone(&slot), Arc::clone(map)),
         )
+        .with_scene_bridge(Arc::clone(&bridge))
         .with_registration(frame_registration.clone());
     let gameplay_wiring = connected
         .as_ref()
