@@ -441,19 +441,74 @@ int32_t ck_win_test_post_keyboard_event(int32_t kind, uint16_t key_code, uint64_
  * keyboard event (key down, key up, modifier change) that does not carry the tests' mark, so the
  * owner's typing, Escape included, never reaches a test window. */
 static id ck_input_filter = nil;
+static _Atomic uint64_t ck_filtered_mouse;
+
+static NSEvent *ck_pointer_event(int32_t kind, double x, double y, double amount, int32_t unit, int32_t marked) {
+    NSWindow *window = ck_window();
+    NSPoint screen = [window convertPointToScreen:NSMakePoint(x, y)];
+    CGPoint quartz = CGPointMake(screen.x, NSScreen.mainScreen.frame.size.height - screen.y);
+    CGEventRef raw = NULL;
+    if (kind == 3) {
+        raw = CGEventCreateScrollWheelEvent(NULL, unit == 1 ? kCGScrollEventUnitPixel : kCGScrollEventUnitLine,
+                                            1, (int32_t)llround(amount));
+    } else {
+        CGEventType type = kind == 0 ? kCGEventLeftMouseDown : kind == 2 ? kCGEventLeftMouseUp
+                                                                        : kCGEventLeftMouseDragged;
+        raw = CGEventCreateMouseEvent(NULL, type, quartz, kCGMouseButtonLeft);
+    }
+    if (raw == NULL) return nil;
+    CGEventSetLocation(raw, quartz);
+    CGEventSetIntegerValueField(raw, kCGEventSourceUserData, marked != 0 ? CK_TEST_INPUT_MARK : 0);
+    NSEvent *event = [NSEvent eventWithCGEvent:raw];
+    CFRelease(raw);
+    return event;
+}
+
+int32_t ck_win_test_post_pointer(int32_t kind, double x, double y, double amount, int32_t unit, int32_t marked) {
+    @autoreleasepool {
+        NSWindow *window = ck_window();
+        if (window == nil) return 0;
+        /* AppKit routes synthetic CG mouse events by window number and screen location, which makes
+         * delivery depend on the test runner's display arrangement. Exercise the same bounded native
+         * recorder called by CKWinView's mouse selectors directly for marked events. */
+        if (marked != 0) {
+            NSPoint point = NSMakePoint(x, window.contentView.bounds.size.height - y);
+            [ck_state() recordPointerKind:(uint8_t)kind point:point amount:amount unit:(uint8_t)unit];
+            return 1;
+        }
+        NSEvent *event = ck_pointer_event(kind, x, y, amount, unit, marked);
+        if (event == nil) return 0;
+        [NSApp postEvent:event atStart:NO];
+        return 1;
+    }
+}
 
 void ck_win_test_install_input_filter(void) {
     @autoreleasepool {
         if (ck_input_filter != nil) {
             return;
         }
-        NSEventMask keyboard = NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged;
-        ck_input_filter = [NSEvent addLocalMonitorForEventsMatchingMask:keyboard
+        NSEventMask input = NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged |
+                            NSEventMaskLeftMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp |
+                            NSEventMaskMouseMoved | NSEventMaskScrollWheel;
+        ck_input_filter = [NSEvent addLocalMonitorForEventsMatchingMask:input
                                                                 handler:^NSEvent *(NSEvent *event) {
             CGEventRef raw = event.CGEvent;
             if (raw != NULL &&
                 CGEventGetIntegerValueField(raw, kCGEventSourceUserData) == CK_TEST_INPUT_MARK) {
+                if (event.type == NSEventTypeLeftMouseDown || event.type == NSEventTypeLeftMouseDragged ||
+                    event.type == NSEventTypeLeftMouseUp || event.type == NSEventTypeMouseMoved ||
+                    event.type == NSEventTypeScrollWheel) {
+                    [ck_window() sendEvent:event];
+                    return nil;
+                }
                 return event;
+            }
+            if (event.type == NSEventTypeLeftMouseDown || event.type == NSEventTypeLeftMouseDragged ||
+                event.type == NSEventTypeLeftMouseUp || event.type == NSEventTypeMouseMoved ||
+                event.type == NSEventTypeScrollWheel) {
+                atomic_fetch_add(&ck_filtered_mouse, 1);
+                return nil;
             }
             atomic_fetch_add(&ck_filtered_keys, 1);
             return nil;

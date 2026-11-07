@@ -6,7 +6,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use ck_input::{Key, KeyStates, TRANSITION_CAPACITY};
+use ck_input::{Key, KeyStates, PointerEvent, PointerPosition, TRANSITION_CAPACITY};
 use ck_window::{NativeEvent, Wait};
 
 /// GLFW names these tokens for US-layout positions on every supported platform (glfw3.h, Keyboard keys).
@@ -119,6 +119,10 @@ struct Transition {
 
 /// Key/focus state kept separate from the small window-state cells.
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "callback state preserves independent exact key and pointer held/loss conditions"
+)]
 struct InputPending {
     held: [bool; ck_input::KEY_COUNT],
     ring: [Option<Transition>; TRANSITION_CAPACITY],
@@ -129,6 +133,12 @@ struct InputPending {
     focus_lost: bool,
     focus_gain_at: Option<usize>,
     focus_gain_after_lost: bool,
+    pointers: [Option<PointerEvent>; 64],
+    pointer_head: usize,
+    pointer_len: usize,
+    pointer_position: Option<PointerPosition>,
+    pointer_held: bool,
+    pointer_overflow: bool,
 }
 
 impl Default for InputPending {
@@ -143,6 +153,12 @@ impl Default for InputPending {
             focus_lost: false,
             focus_gain_at: None,
             focus_gain_after_lost: false,
+            pointers: [None; 64],
+            pointer_head: 0,
+            pointer_len: 0,
+            pointer_position: None,
+            pointer_held: false,
+            pointer_overflow: false,
         }
     }
 }
@@ -197,6 +213,11 @@ impl InputPending {
         self.focus_lost = true;
         self.focus_gain_at = None;
         self.focus_gain_after_lost = false;
+        self.pointers = [None; 64];
+        self.pointer_head = 0;
+        self.pointer_len = 0;
+        self.pointer_held = false;
+        self.pointer_overflow = false;
     }
 
     fn focus_gained(&mut self) {
@@ -208,7 +229,12 @@ impl InputPending {
     }
 
     fn is_pending(&self) -> bool {
-        self.len > 0 || self.overflow || self.focus_lost || self.focus_gain_at.is_some()
+        self.len > 0
+            || self.overflow
+            || self.focus_lost
+            || self.focus_gain_at.is_some()
+            || self.pointer_len > 0
+            || self.pointer_overflow
     }
 
     fn take(&mut self) -> Vec<NativeEvent> {
@@ -263,7 +289,46 @@ impl InputPending {
         self.overflow = false;
         self.focus_gain_at = None;
         self.focus_gain_after_lost = false;
+        for offset in 0..self.pointer_len {
+            if let Some(event) = self.pointers[(self.pointer_head + offset) % 64] {
+                out.push(NativeEvent::Pointer(event));
+            }
+        }
+        if self.pointer_overflow
+            && let Some(position) = self.pointer_position
+        {
+            out.push(NativeEvent::PointerOverflow {
+                position,
+                held: self.pointer_held,
+            });
+        }
+        self.pointers = [None; 64];
+        self.pointer_head = 0;
+        self.pointer_len = 0;
+        self.pointer_overflow = false;
         out
+    }
+
+    fn pointer(&mut self, event: PointerEvent) {
+        let position = match event {
+            PointerEvent::Down(p) | PointerEvent::Move(p) | PointerEvent::Up(p) => p,
+            PointerEvent::Scroll { position, .. } => position,
+        };
+        self.pointer_position = Some(position);
+        match event {
+            PointerEvent::Down(_) => self.pointer_held = true,
+            PointerEvent::Up(_) => self.pointer_held = false,
+            _ => {}
+        }
+        if self.pointer_len == 64 {
+            self.pointers[self.pointer_head] = None;
+            self.pointer_head = (self.pointer_head + 1) % 64;
+            self.pointer_len -= 1;
+            self.pointer_overflow = true;
+        }
+        let tail = (self.pointer_head + self.pointer_len) % 64;
+        self.pointers[tail] = Some(event);
+        self.pointer_len += 1;
     }
 
     fn states(&self) -> KeyStates {
@@ -322,6 +387,10 @@ impl Pending {
     /// Records a key transition if it changes held state, or a repeat for a held key.
     pub(crate) fn record_key(&self, key: Key, down: bool, repeat: bool) {
         self.input.borrow_mut().record_key(key, down, repeat);
+    }
+
+    pub(crate) fn record_pointer(&self, event: PointerEvent) {
+        self.input.borrow_mut().pointer(event);
     }
 
     /// Records focus loss and resets all older key detail; later callbacks remain ordered after it.
@@ -453,6 +522,47 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn pointer_callback_records_order_fractional_lines_and_exact_overflow_state() {
+        let pending = Pending::default();
+        let start = PointerPosition { x: 10, y: 20 };
+        let end = PointerPosition { x: 30, y: 40 };
+        pending.record_pointer(PointerEvent::Down(start));
+        pending.record_pointer(PointerEvent::Move(end));
+        pending.record_pointer(PointerEvent::Scroll {
+            position: end,
+            amount: 128,
+            unit: ck_input::ScrollUnit::Lines,
+        });
+        pending.record_pointer(PointerEvent::Up(end));
+        assert_eq!(
+            pending.take().input,
+            [
+                NativeEvent::Pointer(PointerEvent::Down(start)),
+                NativeEvent::Pointer(PointerEvent::Move(end)),
+                NativeEvent::Pointer(PointerEvent::Scroll {
+                    position: end,
+                    amount: 128,
+                    unit: ck_input::ScrollUnit::Lines,
+                }),
+                NativeEvent::Pointer(PointerEvent::Up(end)),
+            ]
+        );
+
+        pending.record_pointer(PointerEvent::Down(start));
+        for index in 0..=64 {
+            let position = PointerPosition { x: index, y: 0 };
+            pending.record_pointer(PointerEvent::Move(position));
+        }
+        assert!(matches!(
+            pending.take().input.last(),
+            Some(NativeEvent::PointerOverflow {
+                position: PointerPosition { x: 64, y: 0 },
+                held: true
+            })
+        ));
     }
 
     #[test]

@@ -1371,6 +1371,7 @@ STEPS = [
         FAST,
         lambda: [
             cargo_test(["-p", "ck-input", "--lib"]),
+            cargo_test(["-p", "ck-input", "--test", "pointer_no_alloc"]),
             cargo_test(["-p", "ck-input", "--doc"]),
         ],
         analyze=True,

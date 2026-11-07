@@ -229,6 +229,20 @@ fn quiet(report: &PumpReport) -> bool {
         && report.absorbed_close_presses == 0
 }
 
+/// A wait interrupted only by native pointer movement is still quiet for the wake tests: the movement is
+/// input now, but it must not count as an unrelated close, key, button, scroll, or size event.
+fn quiet_except_pointer_moves(report: &PumpReport) -> bool {
+    report
+        .input
+        .iter()
+        .all(|event| matches!(event, NativeEvent::Pointer(ck_input::PointerEvent::Move(_))))
+        && report.close.is_none()
+        && report.pixel_size.is_none()
+        && !report.minimized
+        && !report.restored
+        && report.absorbed_close_presses == 0
+}
+
 /// Whether `returns` empty returns of the blocking pump within `elapsed` is a busy loop. System events end a
 /// blocking wait one at a time: the window being ordered or activated gives a handful, and a pointer moving
 /// over the window gives one per pointer event (about 120 a second). A busy loop returns at CPU speed,
@@ -292,7 +306,7 @@ fn bounded_wait(mut step: impl FnMut() -> (PumpReport, bool)) -> Result<WakeWait
     let mut early_returns = 0;
     loop {
         let (report, woken) = step();
-        if !quiet(&report) {
+        if !quiet_except_pointer_moves(&report) {
             return Err(format!("nothing else was asked for: {report:?}"));
         }
         if woken {
@@ -333,7 +347,7 @@ fn one_blocking_pump(
         })
     });
     let started = Instant::now();
-    assert!(quiet(&rig.pump(Wait::UntilEvent)));
+    assert!(quiet_except_pointer_moves(&rig.pump(Wait::UntilEvent)));
     let waited = started.elapsed();
     helper.join().expect("the waker ended");
     if let Some(disturber) = disturber {

@@ -68,6 +68,13 @@ BOOL ck_win_key_table_entry(NSUInteger position, uint16_t *code, uint8_t *key, c
     BOOL _focusGainedPending;
     uint32_t _gainAt;
     BOOL _gainAfterLost;
+    CKWinPointer _pointerRing[CK_WIN_POINTER_CAPACITY];
+    uint32_t _pointerHead;
+    uint32_t _pointerLength;
+    BOOL _pointerOverflow;
+    BOOL _pointerHeld;
+    int32_t _pointerX;
+    int32_t _pointerY;
 }
 @property(nonatomic, strong) NSApplication *application;
 @property(nonatomic, strong) CKWakeBox *wake;
@@ -98,6 +105,8 @@ BOOL ck_win_key_table_entry(NSUInteger position, uint16_t *code, uint8_t *key, c
 /* The window resigned / became key: a loss clears all key state and is delivered before anything recorded after. */
 - (void)recordFocusLost;
 - (void)recordFocusGained;
+- (void)recordPointerKind:(uint8_t)kind point:(NSPoint)point amount:(double)amount unit:(uint8_t)unit;
+- (void)takePointersInto:(CKWinEvents *)out;
 /* Fills `out` with at most `cap` key and focus entries (and the resync after an overflow), in recorded order; the
  * pump calls it before dispatch, so input recorded while it runs waits for the next pump. */
 - (void)takeKeysInto:(CKWinEvents *)out cap:(size_t)cap;

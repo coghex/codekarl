@@ -80,6 +80,9 @@ int32_t ck_win_test_post_key(uint16_t key_code, uint64_t modifier_flags, int32_t
 /* The other keyboard events: kind 1 is a key-up, kind 2 a modifier change. */
 int32_t ck_win_test_post_keyboard_event(int32_t kind, uint16_t key_code, uint64_t modifier_flags,
                                         int32_t marked);
+/* Posts a marked left-button or vertical-scroll event at a content point (kind: 0 down, 1 move/drag, 2 up, 3 scroll;
+ * unit: 0 lines, 1 precise points). */
+int32_t ck_win_test_post_pointer(int32_t kind, double x, double y, double amount, int32_t unit, int32_t marked);
 /* Installs, once for the process, the filter that drops every unmarked keyboard event (a local event
  * monitor). Main thread. */
 void ck_win_test_install_input_filter(void);

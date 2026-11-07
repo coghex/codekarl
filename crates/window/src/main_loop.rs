@@ -550,6 +550,12 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
             let mut record = |event: NativeEvent| match event {
                 NativeEvent::Key { key, down, repeat } => input.mapper.key(key, down, repeat),
                 NativeEvent::KeyResync(states) => input.mapper.resync(&states),
+                NativeEvent::Pointer(event) => {
+                    input.mapper.pointer(event);
+                }
+                NativeEvent::PointerOverflow { position, held } => {
+                    input.mapper.pointer_overflow(position, held);
+                }
                 NativeEvent::FocusLost => {
                     input.mapper.focus_lost();
                     input.focused = false;

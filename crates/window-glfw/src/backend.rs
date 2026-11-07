@@ -167,6 +167,82 @@ extern "C" fn on_key(
     }
 }
 
+fn pointer_position(x: f64, y: f64) -> Option<ck_input::PointerPosition> {
+    ck_input::PointerPosition::from_points(x, y)
+}
+
+extern "C" fn on_cursor(window: *mut GlfwWindow, x: f64, y: f64) {
+    let Some(position) = pointer_position(x, y) else {
+        return;
+    };
+    // SAFETY: GLFW invokes this callback on the main thread for a live backend window.
+    if let Some(state) = unsafe { callback_state_of(window) } {
+        state
+            .pending
+            .record_pointer(ck_input::PointerEvent::Move(position));
+    }
+}
+
+extern "C" fn on_mouse_button(window: *mut GlfwWindow, button: c_int, action: c_int, _mods: c_int) {
+    if button != ffi::MOUSE_BUTTON_LEFT {
+        return;
+    }
+    // SAFETY: callbacks run on the main thread for a live window.
+    let (Some(state), Some(position)) = (
+        unsafe { callback_state_of(window) },
+        cursor_position(window),
+    ) else {
+        return;
+    };
+    let event = if action == ffi::PRESS {
+        Some(ck_input::PointerEvent::Down(position))
+    } else if action == ffi::RELEASE {
+        Some(ck_input::PointerEvent::Up(position))
+    } else {
+        None
+    };
+    if let Some(event) = event {
+        state.pending.record_pointer(event);
+    }
+}
+
+fn cursor_position(window: *mut GlfwWindow) -> Option<ck_input::PointerPosition> {
+    unsafe extern "C" {
+        fn glfwGetCursorPos(window: *mut GlfwWindow, x: *mut f64, y: *mut f64);
+    }
+    let (mut x, mut y) = (0.0, 0.0);
+    // SAFETY: called from a GLFW callback on the main thread with its live window.
+    unsafe { glfwGetCursorPos(window, &raw mut x, &raw mut y) };
+    pointer_position(x, y)
+}
+
+extern "C" fn on_scroll(window: *mut GlfwWindow, _x: f64, y: f64) {
+    let Some(position) = cursor_position(window) else {
+        return;
+    };
+    if !y.is_finite() {
+        return;
+    }
+    let scaled = (y * 256.0)
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX));
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the rounded scroll amount is clamped to the i32 range"
+    )]
+    let amount = scaled as i32;
+    // SAFETY: callback runs on the main thread for a live window.
+    if let Some(state) = unsafe { callback_state_of(window) } {
+        state
+            .pending
+            .record_pointer(ck_input::PointerEvent::Scroll {
+                position,
+                amount,
+                unit: ck_input::ScrollUnit::Lines,
+            });
+    }
+}
+
 extern "C" fn on_focus(window: *mut GlfwWindow, focused: c_int) {
     // SAFETY: called by GLFW on the main thread for a window of a live backend (see `callback_state_of`).
     if let Some(state) = unsafe { callback_state_of(window) } {
@@ -615,6 +691,12 @@ impl Backend for GlfwBackend {
         };
         // SAFETY: as above; the key callback only records.
         unsafe { ffi::glfwSetKeyCallback(window.as_ptr(), Some(on_key)) };
+        // SAFETY: pointer callbacks only append bounded state while GLFW dispatches on the main thread.
+        unsafe { ffi::glfwSetCursorPosCallback(window.as_ptr(), Some(on_cursor)) };
+        // SAFETY: as above; only the left button is recorded.
+        unsafe { ffi::glfwSetMouseButtonCallback(window.as_ptr(), Some(on_mouse_button)) };
+        // SAFETY: as above; GLFW offsets are retained as fractional lines.
+        unsafe { ffi::glfwSetScrollCallback(window.as_ptr(), Some(on_scroll)) };
         // SAFETY: as above; the close callback only records.
         unsafe { ffi::glfwSetWindowCloseCallback(window.as_ptr(), Some(on_close)) };
         // SAFETY: as above; the framebuffer-size callback only records.

@@ -133,7 +133,8 @@ pub fn window_mouse_input_allowed() -> bool {
 // snapshot an `UpdateEvent` carries), so a caller needs no dependency of its own on `ck-input`.
 pub use backend::{Backend, CreatedWindow, NativeEvent, PixelSize, Wait};
 pub use ck_input::{
-    ActionSnapshot, Bindings, BindingsError, Edge, InputSnapshot, Key, KeyStates, Transition,
+    ActionSnapshot, Bindings, BindingsError, Edge, InputSnapshot, Key, KeyStates, PointerEvent,
+    PointerPosition, ScrollUnit, Transition,
 };
 pub use desc::{InvalidColour, MAX_DIMENSION, OpenError, WindowDesc};
 pub use link::{

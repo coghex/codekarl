@@ -10,7 +10,9 @@ use ck_map::{
 use ck_render_2d::{
     MapCamera, MapInput, MapPublication, MapRules, MapTerrainKind, MapTerrainRule, SceneBridge,
 };
-use ck_window::{ActionSnapshot, UpdateEvent, WindowDesc};
+use ck_window::{
+    ActionSnapshot, PointerEvent, PointerPosition, ScrollUnit, UpdateEvent, WindowDesc,
+};
 
 const MAP_INPUT_GENERATION: u64 = 1;
 const PAN_LEFT: &str = "map_pan_left";
@@ -49,9 +51,19 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     rivers: R,
     pan_pixels_per_frame: i32,
     zoom_steps_per_second: u32,
+    scroll_points_per_step: u32,
+    drag: Option<Drag>,
+    scroll_remainder: [i32; 2],
+    scroll_direction: [i8; 2],
     camera: Option<Camera>,
     zoom_in_elapsed: Duration,
     zoom_out_elapsed: Duration,
+}
+
+#[derive(Clone, Copy)]
+struct Drag {
+    anchor: PointerPosition,
+    applied: (i32, i32),
 }
 
 impl MapController<PreparedRivers> {
@@ -60,12 +72,14 @@ impl MapController<PreparedRivers> {
         bridge: Arc<SceneBridge>,
         pan_pixels_per_frame: u32,
         zoom_steps_per_second: u32,
+        scroll_points_per_step: u32,
     ) -> Result<Self, String> {
         Self::with_rivers(
             loaded,
             bridge,
             pan_pixels_per_frame,
             zoom_steps_per_second,
+            scroll_points_per_step,
             PreparedRivers::new(loaded.rivers.clone()),
         )
     }
@@ -77,6 +91,7 @@ impl<R: RiverViewSelector> MapController<R> {
         bridge: Arc<SceneBridge>,
         pan_pixels_per_frame: u32,
         zoom_steps_per_second: u32,
+        scroll_points_per_step: u32,
         rivers: R,
     ) -> Result<Self, String> {
         let crop = loaded.data.crop;
@@ -102,6 +117,10 @@ impl<R: RiverViewSelector> MapController<R> {
             pan_pixels_per_frame: i32::try_from(pan_pixels_per_frame)
                 .map_err(|_| "map pan_pixels_per_frame does not fit i32".to_owned())?,
             zoom_steps_per_second,
+            scroll_points_per_step,
+            drag: None,
+            scroll_remainder: [0; 2],
+            scroll_direction: [0; 2],
             camera: None,
             zoom_in_elapsed: Duration::ZERO,
             zoom_out_elapsed: Duration::ZERO,
@@ -121,16 +140,95 @@ impl<R: RiverViewSelector> MapController<R> {
     }
 
     /// Apply one paced input snapshot, publishing only when the camera or metrics changed.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pointer replay, keyboard control, and one publication form one ordered update"
+    )]
     pub(crate) fn update(&mut self, update: &UpdateEvent) -> Result<bool, String> {
         let Some(mut camera) = self.camera else {
             return Ok(false);
         };
+        #[cfg(feature = "test-support")]
+        let camera_before_input = camera;
         let view = ViewSize::from_points(update.metrics.points.0, update.metrics.points.1);
         let metrics_generation = self.bridge.metrics_generation();
         let mut changed = false;
         if camera.view != view {
             camera.resize(view);
             changed = true;
+        }
+
+        // Pointer gestures are replayed before keyboard state, preserving the input contract.
+        for event in &update.input.pointer_events {
+            #[cfg(feature = "test-support")]
+            Self::observe_test_pointer(*event)?;
+            match *event {
+                PointerEvent::Down(position) => {
+                    self.drag = Some(Drag {
+                        anchor: position,
+                        applied: (0, 0),
+                    });
+                }
+                PointerEvent::Move(position) | PointerEvent::Up(position) => {
+                    if let Some(drag) = &mut self.drag {
+                        let total = drag_delta(drag.anchor, position);
+                        let delta = (total.0 - drag.applied.0, total.1 - drag.applied.1);
+                        if delta != (0, 0) {
+                            let before = camera;
+                            camera.pan(delta.0, delta.1, self.crop);
+                            changed |= camera != before;
+                        }
+                        drag.applied = total;
+                    }
+                    if matches!(*event, PointerEvent::Up(_)) {
+                        self.drag = None;
+                    }
+                }
+                PointerEvent::Scroll {
+                    position,
+                    amount,
+                    unit,
+                } => {
+                    let index = usize::from(unit == ScrollUnit::Points);
+                    let direction = amount.signum() as i8;
+                    if direction != 0
+                        && self.scroll_direction[index] != 0
+                        && direction != self.scroll_direction[index]
+                    {
+                        self.scroll_remainder[index] = 0;
+                    }
+                    if direction != 0 {
+                        self.scroll_direction[index] = direction;
+                    }
+                    let threshold = match unit {
+                        ScrollUnit::Lines => 256_i32,
+                        ScrollUnit::Points => {
+                            i32::try_from(self.scroll_points_per_step.saturating_mul(256))
+                                .unwrap_or(i32::MAX)
+                        }
+                    };
+                    let total = self.scroll_remainder[index].saturating_add(amount);
+                    let steps = total / threshold;
+                    self.scroll_remainder[index] = total % threshold;
+                    for _ in 0..steps.unsigned_abs().min(75) {
+                        changed |= zoom_at(&mut camera, steps.signum() as i16, position, self.crop);
+                    }
+                }
+            }
+        }
+        if update.input.pointer_overflow {
+            if let (Some(drag), Some(position)) = (&mut self.drag, update.input.pointer_position) {
+                let total = drag_delta(drag.anchor, position);
+                let delta = (total.0 - drag.applied.0, total.1 - drag.applied.1);
+                if delta != (0, 0) {
+                    camera.pan(delta.0, delta.1, self.crop);
+                    changed = true;
+                }
+                drag.applied = total;
+            }
+            if !update.input.pointer_held {
+                self.drag = None;
+            }
         }
 
         let actions = &update.input.actions;
@@ -183,11 +281,57 @@ impl<R: RiverViewSelector> MapController<R> {
         }
 
         if changed || self.bridge.metrics_generation() != metrics_generation {
+            #[cfg(feature = "test-support")]
+            if camera != camera_before_input {
+                Self::observe_test_camera(camera)?;
+            }
             self.camera = Some(camera);
             self.publish_for_generation(camera, self.bridge.metrics_generation())?;
             return Ok(true);
         }
         Ok(false)
+    }
+
+    #[cfg(feature = "test-support")]
+    fn observe_test_camera(camera: Camera) -> Result<(), String> {
+        Self::append_test_observation(&format!(
+            "camera {} {} {}",
+            camera.step, camera.center.x, camera.center.y
+        ))
+    }
+
+    #[cfg(feature = "test-support")]
+    fn observe_test_pointer(event: PointerEvent) -> Result<(), String> {
+        let kind = match event {
+            PointerEvent::Down(_) => "down",
+            PointerEvent::Move(_) => "move",
+            PointerEvent::Up(_) => "up",
+            PointerEvent::Scroll {
+                unit: ScrollUnit::Lines,
+                ..
+            } => "scroll-lines",
+            PointerEvent::Scroll {
+                unit: ScrollUnit::Points,
+                ..
+            } => "scroll-points",
+        };
+        Self::append_test_observation(&format!("pointer {kind}"))
+    }
+
+    #[cfg(feature = "test-support")]
+    fn append_test_observation(line: &str) -> Result<(), String> {
+        use std::io::Write as _;
+
+        let Some(path) = std::env::var_os("CK_MAP_TEST_CAMERA_OBSERVATION") else {
+            return Ok(());
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|error| format!("cannot open map test observation: {error}"))?;
+        writeln!(file, "{line}")
+            .map_err(|error| format!("cannot write map test observation: {error}"))
     }
 
     fn snapshot(&mut self, camera: Camera, generation: u64) -> Result<MapCamera, String> {
@@ -240,6 +384,44 @@ fn change_step(camera: &mut Camera, direction: i16) -> bool {
     let step = (i16::from(camera.step) + direction).clamp(0, 75);
     let step = u8::try_from(step).expect("step is clamped to the u8 range");
     step != camera.step && camera.set_step(step)
+}
+
+fn drag_delta(anchor: PointerPosition, position: PointerPosition) -> (i32, i32) {
+    let divisor = 4 * 256;
+    let dx = (i64::from(position.x) - i64::from(anchor.x)).div_euclid(divisor);
+    let dy = (i64::from(position.y) - i64::from(anchor.y)).div_euclid(divisor);
+    (
+        i32::try_from(-dx).unwrap_or(i32::MIN),
+        i32::try_from(-dy).unwrap_or(i32::MIN),
+    )
+}
+
+fn zoom_at(camera: &mut Camera, direction: i16, position: PointerPosition, crop: Crop) -> bool {
+    let next = u8::try_from((i16::from(camera.step) + direction).clamp(0, 75))
+        .expect("zoom step is clamped to u8 range");
+    if next == camera.step {
+        return false;
+    }
+    let old_size = i64::from(STEP_SIZE[usize::from(camera.step)]);
+    let new_size = i64::from(STEP_SIZE[usize::from(next)]);
+    let cursor_x = i64::from(position.x).div_euclid(4 * 256);
+    let cursor_y = i64::from(position.y).div_euclid(4 * 256);
+    let top = camera.top_left();
+    let world_x = (i64::from(top.x) + cursor_x) * old_size + old_size / 2;
+    let world_y = (i64::from(top.y) + cursor_y) * old_size + old_size / 2;
+    let left = world_x.div_euclid(new_size) - cursor_x;
+    let upper = world_y.div_euclid(new_size) - cursor_y;
+    let center = FixedPoint {
+        x: i32::try_from((left + i64::from(camera.view.width / 2)) * new_size + new_size / 2)
+            .unwrap_or(i32::MAX),
+        y: i32::try_from((upper + i64::from(camera.view.height / 2)) * new_size + new_size / 2)
+            .unwrap_or(i32::MAX),
+    };
+    let Some(anchored) = Camera::new(next, center, camera.view, crop) else {
+        return false;
+    };
+    *camera = anchored;
+    true
 }
 
 fn initial_step(crop: Crop, view: ViewSize) -> u8 {
@@ -465,16 +647,60 @@ mod tests {
         loaded
     }
 
+    fn expanded_map() -> LoadedMap {
+        let mut loaded = loaded_map();
+        let crop = Crop {
+            width: 200,
+            height: 160,
+            ..loaded.data.crop
+        };
+        let length = usize::try_from(crop.width * crop.height).expect("fixture dimensions fit");
+        loaded.data.crop = crop;
+        loaded.data.cells = vec![ck_map::Surface::Sea { depth: 0 }; length];
+        loaded.data.elevations = vec![11_000; length];
+        loaded.grid_a.width = crop.width;
+        loaded.grid_a.height = crop.height;
+        loaded.grid_a.pixels = vec![[0, 0, 0, 255]; length];
+        loaded.grid_b.width = crop.width;
+        loaded.grid_b.height = crop.height;
+        loaded.grid_b.pixels = vec![[0x2a, 0xf8, 0, 255]; length];
+        loaded
+    }
+
     fn controller(pan: u32, zoom: u32) -> MapController {
         let loaded = loaded_map();
         let bridge = SceneBridge::new(ck_render_2d::Filter::Nearest);
         let mut controller =
-            MapController::new(&loaded, bridge, pan, zoom).expect("map lane accepts fixture");
+            MapController::new(&loaded, bridge, pan, zoom, 24).expect("map lane accepts fixture");
         controller
             .open(&WindowDesc {
                 title: "map controller test".to_owned(),
                 width: 400,
                 height: 320,
+                clear: [0.0; 3],
+            })
+            .expect("initial view is valid");
+        controller
+    }
+
+    fn expanded_controller() -> MapController {
+        expanded_controller_with(400, 320, 24)
+    }
+
+    fn expanded_controller_with(
+        width: u32,
+        height: u32,
+        scroll_points_per_step: u32,
+    ) -> MapController {
+        let loaded = expanded_map();
+        let bridge = SceneBridge::new(ck_render_2d::Filter::Nearest);
+        let mut controller = MapController::new(&loaded, bridge, 4, 20, scroll_points_per_step)
+            .expect("map lane accepts expanded fixture");
+        controller
+            .open(&WindowDesc {
+                title: "pointer controller test".to_owned(),
+                width,
+                height,
                 clear: [0.0; 3],
             })
             .expect("initial view is valid");
@@ -508,14 +734,72 @@ mod tests {
                 overflow: false,
                 reset: false,
                 overflow_count: 0,
+                pointer_events: Vec::new(),
+                pointer_position: None,
+                pointer_held: false,
+                pointer_overflow: false,
             },
         }
     }
 
+    fn pointer_update(
+        events: Vec<PointerEvent>,
+        position: Option<PointerPosition>,
+        held: bool,
+        overflow: bool,
+    ) -> UpdateEvent {
+        let mut update = update(&[], Duration::ZERO);
+        update.input.pointer_events = events;
+        update.input.pointer_position = position;
+        update.input.pointer_held = held;
+        update.input.pointer_overflow = overflow;
+        update
+    }
+
+    fn pointer_update_in_view(
+        width: u32,
+        height: u32,
+        events: Vec<PointerEvent>,
+        position: Option<PointerPosition>,
+        held: bool,
+        overflow: bool,
+    ) -> UpdateEvent {
+        let mut update = pointer_update(events, position, held, overflow);
+        update.metrics.points = (width, height);
+        update.metrics.pixels = PixelSize {
+            width: width.saturating_mul(2),
+            height: height.saturating_mul(2),
+        };
+        update
+    }
+
+    fn world_pixel_under(camera: Camera, position: PointerPosition) -> (i64, i64) {
+        let pixel = i64::from(STEP_SIZE[usize::from(camera.step)]);
+        let cursor_x = i64::from(position.x).div_euclid(4 * 256);
+        let cursor_y = i64::from(position.y).div_euclid(4 * 256);
+        let top_left = camera.top_left();
+        (
+            (i64::from(top_left.x) + cursor_x) * pixel + pixel / 2,
+            (i64::from(top_left.y) + cursor_y) * pixel + pixel / 2,
+        )
+    }
+
     fn at_step<R: RiverViewSelector>(controller: &mut MapController<R>, step: u8) -> Camera {
         let current = controller.camera.expect("opened camera");
-        let camera = Camera::new(step, current.center, current.view, controller.crop)
-            .expect("fixture camera");
+        let crop = controller.crop;
+        let center = FixedPoint {
+            x: i32::try_from(
+                i64::from(crop.origin.x) * ck_map::FIXED_PER_CELL
+                    + i64::from(crop.width) * ck_map::FIXED_PER_CELL / 2,
+            )
+            .expect("fixture center fits"),
+            y: i32::try_from(
+                i64::from(crop.origin.y) * ck_map::FIXED_PER_CELL
+                    + i64::from(crop.height) * ck_map::FIXED_PER_CELL / 2,
+            )
+            .expect("fixture center fits"),
+        };
+        let camera = Camera::new(step, center, current.view, crop).expect("fixture camera");
         controller.camera = Some(camera);
         camera
     }
@@ -538,6 +822,7 @@ mod tests {
             Arc::clone(&bridge),
             1,
             20,
+            24,
             CountingRivers::new(loaded.rivers.clone()),
         )
         .expect("map lane accepts fixture");
@@ -799,6 +1084,470 @@ mod tests {
         assert_eq!(
             controller.camera().expect("camera remains open").center.x,
             edge.center.x
+        );
+    }
+
+    #[test]
+    fn drag_replays_a_complete_gesture_and_applies_exact_whole_pixel_deltas() {
+        let mut controller = expanded_controller();
+        let before = controller.camera().expect("initial camera");
+        let anchor = PointerPosition {
+            x: 40 * 256,
+            y: 40 * 256,
+        };
+        let end = PointerPosition {
+            x: 46 * 256,
+            y: 31 * 256,
+        };
+        assert!(
+            controller
+                .update(&pointer_update(
+                    vec![
+                        PointerEvent::Down(anchor),
+                        PointerEvent::Move(end),
+                        PointerEvent::Up(end)
+                    ],
+                    Some(end),
+                    false,
+                    false,
+                ))
+                .expect("complete drag publishes")
+        );
+        let after = controller.camera().expect("camera remains open");
+        let pixel = i64::from(STEP_SIZE[usize::from(before.step)]);
+        assert_eq!(
+            i64::from(after.center.x) - i64::from(before.center.x),
+            -pixel
+        );
+        assert_eq!(
+            i64::from(after.center.y) - i64::from(before.center.y),
+            3 * pixel
+        );
+        assert!(
+            !controller
+                .update(&pointer_update(Vec::new(), Some(end), false, false))
+                .expect("consumed pointer is idle")
+        );
+    }
+
+    #[test]
+    fn drag_keeps_fractional_remainders_and_returns_exactly_to_its_anchor() {
+        let mut controller = expanded_controller();
+        let before = at_step(&mut controller, 74);
+        let anchor = PointerPosition {
+            x: 40 * 256,
+            y: 40 * 256,
+        };
+        controller
+            .update(&pointer_update(
+                vec![PointerEvent::Down(anchor)],
+                Some(anchor),
+                true,
+                false,
+            ))
+            .expect("drag starts at its anchor");
+        for x in [41, 42, 43, 44] {
+            controller
+                .update(&pointer_update(
+                    vec![PointerEvent::Move(PointerPosition {
+                        x: x * 256,
+                        y: anchor.y,
+                    })],
+                    Some(PointerPosition {
+                        x: x * 256,
+                        y: anchor.y,
+                    }),
+                    true,
+                    false,
+                ))
+                .expect("small drag move succeeds");
+        }
+        let moved = controller.camera().expect("moved camera");
+        let pixel = i64::from(STEP_SIZE[usize::from(before.step)]);
+        assert_eq!(
+            i64::from(moved.center.x) - i64::from(before.center.x),
+            -pixel
+        );
+        controller
+            .update(&pointer_update(
+                vec![PointerEvent::Move(anchor), PointerEvent::Up(anchor)],
+                Some(anchor),
+                false,
+                false,
+            ))
+            .expect("drag back to anchor succeeds");
+        assert_eq!(controller.camera(), Some(before));
+    }
+
+    #[test]
+    fn several_moves_before_the_first_update_keep_the_down_anchor() {
+        let mut controller = expanded_controller();
+        let before = at_step(&mut controller, 74);
+        let anchor = PointerPosition {
+            x: 40 * 256,
+            y: 40 * 256,
+        };
+        let final_position = PointerPosition {
+            x: 52 * 256,
+            y: 40 * 256,
+        };
+        controller
+            .update(&pointer_update(
+                vec![
+                    PointerEvent::Down(anchor),
+                    PointerEvent::Move(PointerPosition {
+                        x: 43 * 256,
+                        y: anchor.y,
+                    }),
+                    PointerEvent::Move(PointerPosition {
+                        x: 47 * 256,
+                        y: anchor.y,
+                    }),
+                    PointerEvent::Move(final_position),
+                    PointerEvent::Up(final_position),
+                ],
+                Some(final_position),
+                false,
+                false,
+            ))
+            .expect("whole gesture succeeds");
+        let after = controller.camera().expect("camera remains open");
+        assert_eq!(
+            after.center.x,
+            before.center.x - 3 * STEP_SIZE[usize::from(before.step)]
+        );
+    }
+
+    #[test]
+    fn cursor_world_pixel_stays_fixed_at_steps_zero_fifteen_forty_and_seventy_four() {
+        let mut controller = expanded_controller_with(401, 321, 24);
+        for step in [0, 15, 40, 74] {
+            for cursor in [
+                PointerPosition {
+                    x: 160 * 256,
+                    y: 120 * 256,
+                },
+                PointerPosition {
+                    x: 200 * 256,
+                    y: 160 * 256,
+                },
+                PointerPosition {
+                    x: 240 * 256,
+                    y: 200 * 256,
+                },
+            ] {
+                let before = at_step(&mut controller, step);
+                let world = world_pixel_under(before, cursor);
+                controller
+                    .update(&pointer_update_in_view(
+                        401,
+                        321,
+                        vec![PointerEvent::Scroll {
+                            position: cursor,
+                            amount: 256,
+                            unit: ScrollUnit::Lines,
+                        }],
+                        Some(cursor),
+                        false,
+                        false,
+                    ))
+                    .expect("anchored zoom succeeds");
+                let after = controller.camera().expect("camera remains open");
+                assert_eq!(after.step, step + 1);
+                let new_size = i64::from(STEP_SIZE[usize::from(after.step)]);
+                let cursor_x = i64::from(cursor.x).div_euclid(4 * 256);
+                let cursor_y = i64::from(cursor.y).div_euclid(4 * 256);
+                let top_left = after.top_left();
+                assert_eq!(
+                    i64::from(top_left.x) + cursor_x,
+                    world.0.div_euclid(new_size),
+                    "step={step}, cursor={cursor:?}, x"
+                );
+                assert_eq!(
+                    i64::from(top_left.y) + cursor_y,
+                    world.1.div_euclid(new_size),
+                    "step={step}, cursor={cursor:?}, y"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn precise_scroll_uses_the_default_and_configured_point_thresholds() {
+        for threshold in [24, 40] {
+            let mut controller = expanded_controller_with(400, 320, threshold);
+            let before = controller.camera().expect("initial camera");
+            let cursor = PointerPosition {
+                x: 160 * 256,
+                y: 120 * 256,
+            };
+            assert!(
+                controller
+                    .update(&pointer_update(
+                        vec![PointerEvent::Scroll {
+                            position: cursor,
+                            amount: i32::try_from(threshold * 256).expect("point threshold fits"),
+                            unit: ScrollUnit::Points,
+                        }],
+                        Some(cursor),
+                        false,
+                        false,
+                    ))
+                    .expect("precise scroll publishes")
+            );
+            assert_eq!(
+                controller.camera().expect("camera remains open").step,
+                before.step + 1
+            );
+        }
+    }
+
+    #[test]
+    fn scroll_uses_its_position_when_a_later_move_shares_the_snapshot() {
+        let mut controller = expanded_controller_with(401, 321, 24);
+        let before = at_step(&mut controller, 40);
+        let anchor = PointerPosition {
+            x: 160 * 256,
+            y: 120 * 256,
+        };
+        let later = PointerPosition {
+            x: 300 * 256,
+            y: 220 * 256,
+        };
+        let world = world_pixel_under(before, anchor);
+
+        controller
+            .update(&pointer_update_in_view(
+                401,
+                321,
+                vec![
+                    PointerEvent::Scroll {
+                        position: anchor,
+                        amount: 256,
+                        unit: ScrollUnit::Lines,
+                    },
+                    PointerEvent::Move(later),
+                ],
+                Some(later),
+                false,
+                false,
+            ))
+            .expect("scroll and later motion share one update");
+
+        let after = controller.camera().expect("camera remains open");
+        assert_eq!(after.step, before.step + 1);
+        let new_size = i64::from(STEP_SIZE[usize::from(after.step)]);
+        let cursor_x = i64::from(anchor.x).div_euclid(4 * 256);
+        let cursor_y = i64::from(anchor.y).div_euclid(4 * 256);
+        let top_left = after.top_left();
+        assert_eq!(
+            i64::from(top_left.x) + cursor_x,
+            world.0.div_euclid(new_size)
+        );
+        assert_eq!(
+            i64::from(top_left.y) + cursor_y,
+            world.1.div_euclid(new_size)
+        );
+    }
+
+    #[test]
+    fn known_drag_overflow_catches_up_and_lost_down_does_not_start_a_drag() {
+        let mut known = expanded_controller();
+        let before = at_step(&mut known, 74);
+        let anchor = PointerPosition {
+            x: 40 * 256,
+            y: 40 * 256,
+        };
+        let first = PointerPosition {
+            x: 44 * 256,
+            y: anchor.y,
+        };
+        known
+            .update(&pointer_update(
+                vec![PointerEvent::Down(anchor), PointerEvent::Move(first)],
+                Some(first),
+                true,
+                false,
+            ))
+            .expect("initial drag moves");
+        let latest = PointerPosition {
+            x: 52 * 256,
+            y: anchor.y,
+        };
+        known
+            .update(&pointer_update(Vec::new(), Some(latest), false, true))
+            .expect("overflow catches up and releases");
+        let after = known.camera().expect("camera remains open");
+        assert_eq!(
+            after.center.x,
+            before.center.x - 3 * STEP_SIZE[usize::from(before.step)]
+        );
+
+        let mut lost = expanded_controller();
+        let before = at_step(&mut lost, 74);
+        assert!(
+            !lost
+                .update(&pointer_update(Vec::new(), Some(latest), true, true))
+                .expect("overflow without a known Down is ignored")
+        );
+        assert_eq!(lost.camera(), Some(before));
+    }
+
+    #[test]
+    fn scroll_zoom_clamps_at_steps_zero_and_seventy_five() {
+        let cursor = PointerPosition {
+            x: 160 * 256,
+            y: 120 * 256,
+        };
+        let mut low = expanded_controller();
+        at_step(&mut low, 0);
+        assert!(
+            !low.update(&pointer_update(
+                vec![PointerEvent::Scroll {
+                    position: cursor,
+                    amount: -256,
+                    unit: ScrollUnit::Lines,
+                }],
+                Some(cursor),
+                false,
+                false
+            ))
+            .expect("low clamp is harmless")
+        );
+        assert_eq!(low.camera().expect("camera remains open").step, 0);
+
+        let mut high = expanded_controller();
+        at_step(&mut high, 75);
+        assert!(
+            !high
+                .update(&pointer_update(
+                    vec![PointerEvent::Scroll {
+                        position: cursor,
+                        amount: 256,
+                        unit: ScrollUnit::Lines,
+                    }],
+                    Some(cursor),
+                    false,
+                    false
+                ))
+                .expect("high clamp is harmless")
+        );
+        assert_eq!(high.camera().expect("camera remains open").step, 75);
+    }
+
+    #[test]
+    fn pointer_scroll_is_applied_before_keyboard_zoom_and_overlap_totals_two_steps() {
+        let mut controller = expanded_controller();
+        let before = at_step(&mut controller, 40);
+        let cursor = PointerPosition {
+            x: 180 * 256,
+            y: 140 * 256,
+        };
+        let mut expected = before;
+        zoom_at(&mut expected, 1, cursor, controller.crop);
+        change_step(&mut expected, 1);
+        let mut combined = pointer_update(
+            vec![PointerEvent::Scroll {
+                position: cursor,
+                amount: 256,
+                unit: ScrollUnit::Lines,
+            }],
+            Some(cursor),
+            false,
+            false,
+        );
+        combined.input.actions.push(ActionSnapshot {
+            name: ZOOM_IN.to_owned(),
+            held: true,
+            pressed: true,
+            released: false,
+        });
+        controller
+            .update(&combined)
+            .expect("ordered pointer and key zoom");
+        assert_eq!(controller.camera(), Some(expected));
+
+        let mut overlap = expanded_controller();
+        let start = at_step(&mut overlap, 40);
+        let scroll = PointerEvent::Scroll {
+            position: cursor,
+            amount: 256,
+            unit: ScrollUnit::Lines,
+        };
+        let first_update = pointer_update(vec![scroll], Some(cursor), false, false);
+        overlap
+            .update(&first_update)
+            .expect("first overlapped scroll");
+        let second_update = pointer_update(vec![scroll], Some(cursor), false, false);
+        overlap
+            .update(&second_update)
+            .expect("second overlapped scroll");
+        assert_eq!(
+            overlap.camera().expect("camera remains open").step,
+            start.step + 2
+        );
+    }
+
+    #[test]
+    fn scroll_accumulates_fractional_lines_and_zoom_steps_at_each_event_position() {
+        let mut controller = expanded_controller();
+        let before = controller.camera().expect("initial camera");
+        let cursor = PointerPosition {
+            x: 100 * 256,
+            y: 80 * 256,
+        };
+        assert!(
+            !controller
+                .update(&pointer_update(
+                    vec![PointerEvent::Scroll {
+                        position: cursor,
+                        amount: 128,
+                        unit: ScrollUnit::Lines
+                    },],
+                    Some(cursor),
+                    false,
+                    false
+                ))
+                .expect("fractional scroll is retained")
+        );
+        assert!(
+            controller
+                .update(&pointer_update(
+                    vec![PointerEvent::Scroll {
+                        position: cursor,
+                        amount: 128,
+                        unit: ScrollUnit::Lines
+                    },],
+                    Some(cursor),
+                    false,
+                    false
+                ))
+                .expect("one line zooms")
+        );
+        assert_eq!(
+            controller.camera().expect("camera remains open").step,
+            before.step + 1
+        );
+        assert!(
+            !controller
+                .update(&pointer_update(
+                    vec![
+                        PointerEvent::Scroll {
+                            position: cursor,
+                            amount: 128,
+                            unit: ScrollUnit::Lines
+                        },
+                        PointerEvent::Scroll {
+                            position: cursor,
+                            amount: -128,
+                            unit: ScrollUnit::Lines
+                        },
+                    ],
+                    Some(cursor),
+                    false,
+                    false
+                ))
+                .expect("reversal clears line remainder")
         );
     }
 

@@ -263,6 +263,23 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
     [self.state recordFlagsChangedCode:event.keyCode flags:event.modifierFlags];
 }
 
+- (void)mouseDown:(NSEvent *)event {
+    [self.state recordPointerKind:0 point:event.locationInWindow amount:0 unit:0];
+}
+- (void)mouseDragged:(NSEvent *)event {
+    [self.state recordPointerKind:1 point:event.locationInWindow amount:0 unit:0];
+}
+- (void)mouseUp:(NSEvent *)event {
+    [self.state recordPointerKind:2 point:event.locationInWindow amount:0 unit:0];
+}
+- (void)mouseMoved:(NSEvent *)event {
+    [self.state recordPointerKind:1 point:event.locationInWindow amount:0 unit:0];
+}
+- (void)scrollWheel:(NSEvent *)event {
+    [self.state recordPointerKind:3 point:event.locationInWindow amount:event.scrollingDeltaY
+                             unit:event.hasPreciseScrollingDeltas ? 1 : 0];
+}
+
 @end
 
 @implementation CKWinDelegate
@@ -314,7 +331,41 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
 - (BOOL)isPending {
     return self.closeSource != CK_WIN_CLOSE_NONE || self.pixelChanged || self.needsDisplay ||
            self.minimizedPending || self.restoredPending || _ringLength != 0 || _overflow || _focusLostPending ||
-           _focusGainedPending;
+           _focusGainedPending || _pointerLength != 0 || _pointerOverflow;
+}
+
+- (void)recordPointerKind:(uint8_t)kind point:(NSPoint)point amount:(double)amount unit:(uint8_t)unit {
+    if (self.view == nil) return;
+    NSPoint local = [self.view convertPoint:point fromView:nil];
+    double x = nearbyint(local.x * 256.0);
+    double y = nearbyint((self.view.bounds.size.height - local.y) * 256.0);
+    int32_t px = (int32_t)fmax((double)INT32_MIN, fmin((double)INT32_MAX, x));
+    int32_t py = (int32_t)fmax((double)INT32_MIN, fmin((double)INT32_MAX, y));
+    double scaled = nearbyint(amount * 256.0);
+    int32_t delta = (int32_t)fmax((double)INT32_MIN, fmin((double)INT32_MAX, scaled));
+    BOOL wasEmpty = ![self isPending];
+    _pointerX = px; _pointerY = py;
+    if (kind == 0) _pointerHeld = YES;
+    if (kind == 2) _pointerHeld = NO;
+    if (_pointerLength == CK_WIN_POINTER_CAPACITY) {
+        _pointerHead = (_pointerHead + 1) % CK_WIN_POINTER_CAPACITY;
+        _pointerLength -= 1;
+        _pointerOverflow = YES;
+    }
+    uint32_t tail = (_pointerHead + _pointerLength) % CK_WIN_POINTER_CAPACITY;
+    _pointerRing[tail] = (CKWinPointer){.kind = kind, .unit = unit, .x = px, .y = py, .amount = delta};
+    _pointerLength += 1;
+    [self afterRecord:wasEmpty];
+}
+
+- (void)takePointersInto:(CKWinEvents *)out {
+    out->pointer_count = _pointerLength;
+    out->pointer_overflow = _pointerOverflow ? 1 : 0;
+    out->pointer_held = _pointerHeld ? 1 : 0;
+    out->pointer_x = _pointerX; out->pointer_y = _pointerY;
+    for (uint32_t index = 0; index < _pointerLength; index++)
+        out->pointers[index] = _pointerRing[(_pointerHead + index) % CK_WIN_POINTER_CAPACITY];
+    _pointerHead = 0; _pointerLength = 0; _pointerOverflow = NO;
 }
 
 /* Every record goes through here: a move from an empty to a non-empty pending state posts one wake, so a
@@ -462,6 +513,10 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
 - (void)recordFocusLost {
     BOOL wasEmpty = ![self isPending];
     [self resetKeys];
+    _pointerHead = 0;
+    _pointerLength = 0;
+    _pointerOverflow = NO;
+    _pointerHeld = NO;
     _focusLostPending = YES;
     [self afterRecord:wasEmpty];
 }
@@ -710,6 +765,7 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
         state.delegate = delegate;
         state.knownWidth = pixels_wide;
         state.knownHeight = pixels_high;
+        window.acceptsMouseMovedEvents = YES;
         [window center];
         [window makeFirstResponder:view];
         if (activate) {
@@ -748,6 +804,7 @@ static void ck_win_pump_impl(CKWinHandle *handle, int wait, size_t cap, BOOL tim
         /* The key and focus state recorded before this pump is handed over now, before dispatch; what dispatch
          * records belongs to the next pump (and keeps the pump from sleeping). */
         [state takeKeysInto:out cap:cap];
+        [state takePointersInto:out];
         uint64_t taken = 0;
         while (taken < cap) {
             BOOL first = taken == 0 && block;

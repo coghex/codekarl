@@ -16,6 +16,209 @@ fn bindings(entries: &[(&str, &[&str])]) -> Bindings {
     make_bindings(entries).unwrap_or_else(|error| panic!("valid binding fixture: {error}"))
 }
 
+fn point(x: i32, y: i32) -> PointerPosition {
+    PointerPosition { x, y }
+}
+
+#[test]
+fn pointer_ring_preserves_order_coalesces_only_unsnapshotted_neighbors_and_acknowledges_by_watermark()
+ {
+    let mut mapper = Mapper::new(bindings(&[]));
+    mapper.pointer(PointerEvent::Down(point(0, 0)));
+    mapper.pointer(PointerEvent::Move(point(256, 512)));
+    mapper.pointer(PointerEvent::Move(point(512, 768)));
+    mapper.pointer(PointerEvent::Scroll {
+        position: point(512, 768),
+        amount: 256,
+        unit: ScrollUnit::Lines,
+    });
+    let snapshot = mapper.snapshot();
+    assert_eq!(
+        snapshot.pointer_events,
+        [
+            PointerEvent::Down(point(0, 0)),
+            PointerEvent::Move(point(512, 768)),
+            PointerEvent::Scroll {
+                position: point(512, 768),
+                amount: 256,
+                unit: ScrollUnit::Lines
+            },
+        ]
+    );
+
+    mapper.pointer(PointerEvent::Scroll {
+        position: point(512, 768),
+        amount: 256,
+        unit: ScrollUnit::Lines,
+    });
+    mapper.acknowledge(snapshot.sequence);
+    let next = mapper.snapshot();
+    assert_eq!(
+        next.pointer_events,
+        [PointerEvent::Scroll {
+            position: point(512, 768),
+            amount: 256,
+            unit: ScrollUnit::Lines,
+        }]
+    );
+}
+
+#[test]
+fn a_move_after_a_snapshot_is_not_coalesced_into_its_copied_move() {
+    let mut mapper = Mapper::new(bindings(&[]));
+    mapper.pointer(PointerEvent::Move(point(10, 20)));
+    let earlier = mapper.snapshot();
+    assert_eq!(earlier.pointer_events, [PointerEvent::Move(point(10, 20))]);
+
+    mapper.pointer(PointerEvent::Move(point(30, 40)));
+    mapper.acknowledge(earlier.sequence);
+    assert_eq!(
+        mapper.snapshot().pointer_events,
+        [PointerEvent::Move(point(30, 40))]
+    );
+}
+
+#[test]
+fn coalesced_scroll_saturates_and_snapshots_compare_equal_without_mutation() {
+    let mut mapper = Mapper::new(bindings(&[]));
+    mapper.pointer(PointerEvent::Scroll {
+        position: point(10, 20),
+        amount: i32::MAX - 1,
+        unit: ScrollUnit::Lines,
+    });
+    mapper.pointer(PointerEvent::Scroll {
+        position: point(10, 20),
+        amount: 8,
+        unit: ScrollUnit::Lines,
+    });
+    let first = mapper.snapshot();
+    assert_eq!(
+        first.pointer_events[0],
+        PointerEvent::Scroll {
+            position: point(10, 20),
+            amount: i32::MAX,
+            unit: ScrollUnit::Lines,
+        }
+    );
+    let second = mapper.snapshot();
+    assert_eq!(second.sequence, first.sequence + 1);
+    let mut second_payload = second;
+    second_payload.sequence = first.sequence;
+    assert_eq!(
+        first, second_payload,
+        "snapshot payload is stable until ack"
+    );
+}
+
+#[test]
+fn pointer_scroll_reversal_and_anchor_changes_start_new_records() {
+    let mut mapper = Mapper::new(bindings(&[]));
+    mapper.pointer(PointerEvent::Scroll {
+        position: point(1, 2),
+        amount: 300,
+        unit: ScrollUnit::Points,
+    });
+    mapper.pointer(PointerEvent::Scroll {
+        position: point(1, 2),
+        amount: 40,
+        unit: ScrollUnit::Points,
+    });
+    mapper.pointer(PointerEvent::Scroll {
+        position: point(1, 2),
+        amount: -20,
+        unit: ScrollUnit::Points,
+    });
+    mapper.pointer(PointerEvent::Scroll {
+        position: point(3, 2),
+        amount: -10,
+        unit: ScrollUnit::Points,
+    });
+    assert_eq!(
+        mapper.snapshot().pointer_events,
+        [
+            PointerEvent::Scroll {
+                position: point(1, 2),
+                amount: 340,
+                unit: ScrollUnit::Points
+            },
+            PointerEvent::Scroll {
+                position: point(1, 2),
+                amount: -20,
+                unit: ScrollUnit::Points
+            },
+            PointerEvent::Scroll {
+                position: point(3, 2),
+                amount: -10,
+                unit: ScrollUnit::Points
+            },
+        ]
+    );
+}
+
+#[test]
+fn pointer_overflow_keeps_exact_current_state_and_focus_loss_appends_release() {
+    let mut mapper = Mapper::new(bindings(&[]));
+    mapper.pointer(PointerEvent::Down(point(0, 0)));
+    for index in 0..=POINTER_CAPACITY {
+        mapper.pointer(PointerEvent::Scroll {
+            position: point(i32::try_from(index).expect("small event index fits"), 0),
+            amount: 256,
+            unit: ScrollUnit::Lines,
+        });
+    }
+    let overflow = mapper.snapshot();
+    assert!(overflow.pointer_overflow);
+    assert!(overflow.pointer_held);
+    assert_eq!(
+        overflow.pointer_position,
+        Some(point(
+            i32::try_from(POINTER_CAPACITY).expect("ring capacity fits"),
+            0
+        ))
+    );
+    assert_eq!(overflow.pointer_events.len(), POINTER_CAPACITY);
+    assert_eq!(
+        overflow.pointer_events.first(),
+        Some(&PointerEvent::Scroll {
+            position: point(1, 0),
+            amount: 256,
+            unit: ScrollUnit::Lines,
+        }),
+        "overflow drops the oldest Down and then retains the newest ring entries"
+    );
+    assert!(
+        !overflow
+            .pointer_events
+            .iter()
+            .any(|event| matches!(event, PointerEvent::Down(_)))
+    );
+
+    mapper.acknowledge(overflow.sequence);
+    mapper.focus_lost();
+    let released = mapper.snapshot();
+    assert!(!released.pointer_held);
+    assert_eq!(
+        released.pointer_events.last(),
+        Some(&PointerEvent::Up(point(
+            i32::try_from(POINTER_CAPACITY).expect("ring capacity fits"),
+            0,
+        )))
+    );
+    assert!(released.reset);
+}
+
+#[test]
+fn pointer_coordinates_use_finite_fixed_point_values_and_flooring_is_available_for_negative_positions()
+ {
+    assert_eq!(
+        PointerPosition::from_points(-4.5, 2.25),
+        Some(point(-1152, 576))
+    );
+    assert!(PointerPosition::from_points(f64::NAN, 0.0).is_none());
+    assert!(PointerPosition::from_points(f64::MAX, 0.0).is_none());
+    assert_eq!((-1_i32).div_euclid(4 * POINTER_FRACTION), -1);
+}
+
 fn action<'a>(snapshot: &'a InputSnapshot, name: &str) -> &'a ActionSnapshot {
     snapshot
         .actions

@@ -22,6 +22,7 @@ typedef struct CKWinWakeHandle CKWinWakeHandle;
  * focus loss and a focus gain, or one resync (which replaces the ring). */
 #define CK_WIN_RING_CAPACITY 256
 #define CK_WIN_OUT_MAX (CK_WIN_RING_CAPACITY + 2)
+#define CK_WIN_POINTER_CAPACITY 64
 
 /* The kinds of what a pump hands over, in recorded order. */
 #define CK_WIN_OUT_KEY 0          /* a key transition: key, down, repeat */
@@ -44,6 +45,14 @@ typedef struct {
     uint64_t released[2];
 } CKWinResync;
 
+typedef struct {
+    uint8_t kind; /* 0 down, 1 move, 2 up, 3 scroll */
+    uint8_t unit; /* 0 lines, 1 points */
+    int32_t x;    /* 1/256 point, origin top-left */
+    int32_t y;
+    int32_t amount; /* 1/256 selected scroll unit */
+} CKWinPointer;
+
 /* What one pump hands over: the bounded pending state, taken and cleared. */
 typedef struct {
     int32_t close_source;     /* CK_WIN_CLOSE_*: the first close in arrival order */
@@ -59,6 +68,12 @@ typedef struct {
     uint32_t out_count;       /* entries of `out` */
     CKWinOut out[CK_WIN_OUT_MAX];
     CKWinResync resync;       /* the payload of the CK_WIN_OUT_RESYNC entry, when there is one */
+    uint32_t pointer_count;
+    uint8_t pointer_overflow;
+    uint8_t pointer_held;
+    int32_t pointer_x;
+    int32_t pointer_y;
+    CKWinPointer pointers[CK_WIN_POINTER_CAPACITY];
 } CKWinEvents;
 
 /* The size of CKWinEvents, so the Rust side can refuse to run with a different layout. */

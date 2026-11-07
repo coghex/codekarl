@@ -82,6 +82,7 @@ const EXTERNAL_FORWARDING_FIXTURE_FLAG: &str = "--ck-activation-forwarding-fixtu
 const ALLOW_UNFOCUSED_UPDATES_FLAG: &str = "--ck-windowed-test-allow-unfocused-updates";
 const QUEUE_FOCUS_LOST_FOR_CK163_FLAG: &str = "--ck-windowed-test-queue-focus-lost-for-ck163";
 const MAP_INPUT_ENV: &str = "CK_WINDOWED_TEST_MAP_INPUT";
+const MAP_CAMERA_ENV: &str = "CK_MAP_TEST_CAMERA_OBSERVATION";
 const REAL_FOCUS_GATE_CASES: [&str; 1] =
     ["synthetic_focus_loss_without_worker_opt_in_keeps_the_pause"];
 
@@ -439,6 +440,7 @@ impl Fixture {
 struct Worker {
     live: Supervised,
     report: PathBuf,
+    map_camera_observation: Option<PathBuf>,
     /// Keeps the report's directory until the case is over.
     _scratch: Scratch,
 }
@@ -465,11 +467,18 @@ fn start(args: &[&OsStr]) -> Worker {
     if MAP_INPUT_CASE.load(Ordering::SeqCst) {
         command.env(MAP_INPUT_ENV, "1");
     }
+    let map_camera_observation = MAP_INPUT_CASE
+        .load(Ordering::SeqCst)
+        .then(|| report.with_extension("map-camera"));
+    if let Some(path) = &map_camera_observation {
+        command.env(MAP_CAMERA_ENV, path);
+    }
     command.args(args);
     let live = Supervised::spawn(command, DEADLINE).unwrap_or_else(|error| panic!("{error}"));
     Worker {
         live,
         report,
+        map_camera_observation,
         _scratch: scratch,
     }
 }
@@ -518,10 +527,17 @@ fn signal_target_refuses_zero_pid_or_unowned_child() {
 /// every unmarked key, so none may.
 fn finish(worker: Worker) -> Seen {
     let activation = worker.report.with_extension("activation");
-    let seen = worker
+    let observation_path = worker.map_camera_observation.clone();
+    let mut seen = worker
         .live
         .finish()
         .unwrap_or_else(|error| panic!("{error}"));
+    if let Some(path) = observation_path {
+        seen.stdout
+            .push_str(&fs::read_to_string(path).unwrap_or_else(|error| {
+                panic!("cannot read map camera test observation: {error}")
+            }));
+    }
     activation_watch::assert_report(
         &activation,
         "native.window",
@@ -674,7 +690,7 @@ fn the_demo_placeholder_is_drawn_with_the_quads_generation_in_the_first_frame_an
     assert!(!seen.stdout.contains("ERROR"), "{}", seen.stdout);
 }
 
-fn a_fixture_map_opens_moves_from_marked_pan_and_zoom_keys_and_closes_normally() {
+fn a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally() {
     let fixture = Fixture::new();
     let map = fixture.map_fixture();
     let config_text = format!(
@@ -709,6 +725,21 @@ end
         "{}",
         seen.stdout
     );
+    for event in [
+        "pointer down",
+        "pointer move",
+        "pointer up",
+        "pointer scroll-lines",
+        "pointer scroll-points",
+        "unmarked dropped 1",
+    ] {
+        assert!(
+            seen.stdout.lines().any(|line| line == event),
+            "{event}: {}",
+            seen.stdout
+        );
+    }
+    assert!(seen.stdout.lines().any(|line| line.starts_with("camera ")));
 }
 
 fn a_window_opened_and_closed_by_the_script_exits_0_and_both_shutdowns_follow_the_close() {
@@ -1196,13 +1227,14 @@ fn helper_threads_run_with_sigint_and_sigterm_blocked() {
 // ---------------------------------------------------------------------------------------------
 
 /// The names the filter exports.
-const FILTER_SYMBOLS: [&str; 6] = [
+const FILTER_SYMBOLS: [&str; 7] = [
     "ck_app_t_install_input_filter",
     "ck_app_t_dropped_keys",
     "ck_app_t_start_typist",
     "ck_app_t_typist_mask",
     "ck_app_t_post_key",
     "ck_app_t_schedule_map_keys",
+    "ck_app_t_schedule_map_pointer",
 ];
 
 fn contains(haystack: &[u8], needle: &str) -> bool {
@@ -1915,7 +1947,7 @@ fn feature_cases() -> Vec<(&'static str, fn())> {
 /// The cases, in the order they run.
 fn cases() -> Vec<(&'static str, fn())> {
     let mut cases = vec![
-        case!(a_fixture_map_opens_moves_from_marked_pan_and_zoom_keys_and_closes_normally),
+        case!(a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally),
         case!(the_demo_placeholder_is_drawn_with_the_quads_generation_in_the_first_frame_and_the_run_closes_cleanly),
         case!(a_window_opened_and_closed_by_the_script_exits_0_and_both_shutdowns_follow_the_close),
         case!(sigterm_after_window_opened_shuts_down_cleanly_and_exits_143),
@@ -1962,7 +1994,7 @@ fn run_case(name: &str, case: fn()) -> bool {
         Ordering::SeqCst,
     );
     MAP_INPUT_CASE.store(
-        name == "a_fixture_map_opens_moves_from_marked_pan_and_zoom_keys_and_closes_normally",
+        name == "a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally",
         Ordering::SeqCst,
     );
     let started = Instant::now();

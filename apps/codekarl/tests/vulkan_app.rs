@@ -94,6 +94,7 @@ const EXTERNAL_FORWARDING_FIXTURE_FLAG: &str = "--ck-activation-forwarding-fixtu
 const ALLOW_UNFOCUSED_UPDATES_FLAG: &str = "--ck-vulkan-test-allow-unfocused-updates";
 const QUEUE_FOCUS_LOST_FOR_CK163_FLAG: &str = "--ck-vulkan-test-queue-focus-lost-for-ck163";
 const MAP_INPUT_ENV: &str = "CK_VULKAN_TEST_MAP_INPUT";
+const MAP_CAMERA_ENV: &str = "CK_MAP_TEST_CAMERA_OBSERVATION";
 const REAL_FOCUS_GATE_CASES: [&str; 1] =
     ["synthetic_focus_loss_without_worker_opt_in_keeps_the_pause"];
 
@@ -550,6 +551,7 @@ impl Fixture {
 struct Worker {
     live: Supervised,
     report: PathBuf,
+    map_camera_observation: Option<PathBuf>,
     /// Where the window driver, if there is one, leaves `driver_failed`.
     driver_dir: Option<PathBuf>,
     /// Keeps the report's directory until the case is over.
@@ -599,10 +601,17 @@ fn start_with(args: &[&OsStr], driver: Option<(&str, &Path)>) -> Worker {
     if MAP_INPUT_CASE.load(Ordering::SeqCst) {
         command.env(MAP_INPUT_ENV, "1");
     }
+    let map_camera_observation = MAP_INPUT_CASE
+        .load(Ordering::SeqCst)
+        .then(|| report.with_extension("map-camera"));
+    if let Some(path) = &map_camera_observation {
+        command.env(MAP_CAMERA_ENV, path);
+    }
     let live = Supervised::spawn(command, DEADLINE).unwrap_or_else(|error| panic!("{error}"));
     Worker {
         live,
         report,
+        map_camera_observation,
         driver_dir: driver.map(|(_, dir)| dir.to_path_buf()),
         _scratch: scratch,
     }
@@ -671,17 +680,24 @@ fn finish(worker: Worker) -> Seen {
 /// [`finish`] for a case whose close is a marked key.
 fn finish_allowing_keys(worker: Worker) -> Seen {
     let activation = worker.report.with_extension("activation");
+    let observation_path = worker.map_camera_observation.clone();
     let driver_failed = worker.driver_dir.map(|dir| dir.join("driver_failed"));
     let driver_stage = driver_failed
         .as_ref()
         .map(|path| path.with_file_name("driver_stage"));
-    let seen = worker.live.finish().unwrap_or_else(|error| {
+    let mut seen = worker.live.finish().unwrap_or_else(|error| {
         let stage = driver_stage
             .as_ref()
             .and_then(|path| fs::read_to_string(path).ok())
             .unwrap_or_else(|| "no driver stage recorded".to_owned());
         panic!("{error}; window driver last stage: {stage}");
     });
+    if let Some(path) = observation_path {
+        seen.stdout
+            .push_str(&fs::read_to_string(path).unwrap_or_else(|error| {
+                panic!("cannot read map camera test observation: {error}")
+            }));
+    }
     activation_watch::assert_report(
         &activation,
         "vulkan.app",
@@ -812,7 +828,7 @@ fn a_window_opened_and_closed_by_the_script_exits_0_and_both_shutdowns_follow_th
     assert!(!seen.stdout.contains("ERROR"), "{}", seen.stdout);
 }
 
-fn a_fixture_map_opens_moves_from_marked_pan_and_zoom_keys_and_closes_normally() {
+fn a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally() {
     let fixture = Fixture::new();
     let map = fixture.map_fixture();
     let config_text = format!(
@@ -847,6 +863,20 @@ end
         "{}",
         seen.stdout
     );
+    for event in [
+        "pointer down",
+        "pointer move",
+        "pointer up",
+        "pointer scroll-lines",
+        "unmarked dropped 1",
+    ] {
+        assert!(
+            seen.stdout.lines().any(|line| line == event),
+            "{event}: {}",
+            seen.stdout
+        );
+    }
+    assert!(seen.stdout.lines().any(|line| line.starts_with("camera ")));
 }
 
 /// Milestone 4.5 on a real window, now through the compatibility lane: the quad set before `window.open` is drawn by the
@@ -1843,13 +1873,14 @@ fn sigterm_while_the_window_is_minimised_exits_143_with_a_proven_presenter_end()
 // ---------------------------------------------------------------------------------------------
 
 /// The names the test support exports.
-const FILTER_SYMBOLS: [&str; 9] = [
+const FILTER_SYMBOLS: [&str; 10] = [
     "ck_app_t_install_input_filter",
     "ck_app_t_dropped_keys",
     "ck_app_t_start_typist",
     "ck_app_t_typist_mask",
     "ck_app_t_post_key",
     "ck_app_t_schedule_map_keys",
+    "ck_app_t_schedule_map_pointer",
     "ck_app_t_miniaturize",
     "ck_app_t_deminiaturize",
     "ck_app_t_window_state",
@@ -1914,7 +1945,7 @@ macro_rules! case {
 /// The cases, in the order they run.
 fn cases() -> Vec<(&'static str, fn())> {
     vec![
-        case!(a_fixture_map_opens_moves_from_marked_pan_and_zoom_keys_and_closes_normally),
+        case!(a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally),
         case!(a_window_opened_and_closed_by_the_script_exits_0_and_both_shutdowns_follow_the_close),
         case!(the_demo_placeholder_is_drawn_with_the_quads_generation_in_the_first_frame_and_the_run_closes_cleanly),
         case!(sigterm_after_window_opened_shuts_down_cleanly_and_exits_143),
@@ -1954,7 +1985,7 @@ fn run_case(name: &str, case: fn()) -> bool {
         Ordering::SeqCst,
     );
     MAP_INPUT_CASE.store(
-        name == "a_fixture_map_opens_moves_from_marked_pan_and_zoom_keys_and_closes_normally",
+        name == "a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally",
         Ordering::SeqCst,
     );
     let started = Instant::now();

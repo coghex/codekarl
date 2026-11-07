@@ -5,12 +5,17 @@ use std::ffi::{c_char, c_void};
 
 /// The most entries one pump hands over (`CK_WIN_OUT_MAX`).
 pub(crate) const OUT_MAX: usize = 258;
+pub(crate) const POINTER_CAPACITY: usize = 64;
 
 /// The kinds of an entry (`CK_WIN_OUT_*`).
 pub(crate) const OUT_KEY: u8 = 0;
 pub(crate) const OUT_FOCUS_LOST: u8 = 1;
 pub(crate) const OUT_FOCUS_GAINED: u8 = 2;
 pub(crate) const OUT_RESYNC: u8 = 3;
+pub(crate) const POINTER_DOWN: u8 = 0;
+pub(crate) const POINTER_MOVE: u8 = 1;
+pub(crate) const POINTER_UP: u8 = 2;
+pub(crate) const POINTER_SCROLL: u8 = 3;
 
 /// One key or focus entry of a pump (`CKWinOut`).
 #[repr(C)]
@@ -31,6 +36,16 @@ pub(crate) struct RawResync {
     pub(crate) released: [u64; 2],
 }
 
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RawPointer {
+    pub(crate) kind: u8,
+    pub(crate) unit: u8,
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) amount: i32,
+}
+
 /// What one pump hands over (`CKWinEvents`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +63,12 @@ pub(crate) struct RawEvents {
     pub(crate) out_count: u32,
     pub(crate) out: [RawOut; OUT_MAX],
     pub(crate) resync: RawResync,
+    pub(crate) pointer_count: u32,
+    pub(crate) pointer_overflow: u8,
+    pub(crate) pointer_held: u8,
+    pub(crate) pointer_x: i32,
+    pub(crate) pointer_y: i32,
+    pub(crate) pointers: [RawPointer; POINTER_CAPACITY],
 }
 
 impl Default for RawEvents {
@@ -66,6 +87,12 @@ impl Default for RawEvents {
             out_count: 0,
             out: [RawOut::default(); OUT_MAX],
             resync: RawResync::default(),
+            pointer_count: 0,
+            pointer_overflow: 0,
+            pointer_held: 0,
+            pointer_x: 0,
+            pointer_y: 0,
+            pointers: [RawPointer::default(); POINTER_CAPACITY],
         }
     }
 }
