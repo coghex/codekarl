@@ -80,7 +80,7 @@ impl fmt::Display for HashKind {
         f.write_str(match self {
             Self::Scenario => "scenario",
             Self::Map => "map",
-            Self::Scripts => "scripts",
+            Self::Scripts => "scripts_hash",
         })
     }
 }

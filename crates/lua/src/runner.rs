@@ -16,6 +16,7 @@ use crate::call::{CallId, CallOutcome, CallResult, Completion};
 use crate::config::ConfigValue;
 use crate::extension::{Callbacks, Extension};
 use crate::interrupt::Fatal;
+use crate::owner::Profile;
 use crate::{convert, host, interrupt, unwind};
 
 /// What the handle asks the thread to do.
@@ -81,6 +82,7 @@ pub(crate) struct Job {
     pub(crate) name: String,
     pub(crate) entry: PathBuf,
     pub(crate) config: ConfigValue,
+    pub(crate) profile: Profile,
     pub(crate) extensions: Vec<Extension>,
     pub(crate) on_report: Option<Wake>,
     pub(crate) on_complete: Option<CompleteHook>,
@@ -167,6 +169,8 @@ struct State {
     callbacks: Callbacks,
     /// Told when teardown begins, so a host panic from a finalizer is told apart from one before.
     fatal: Fatal,
+    /// Lua-side xpcall helper for deterministic error normalization and traceback capture.
+    protected: Option<Function>,
     lua: Lua,
     /// The owner's name, for the test hooks.
     #[cfg(test)]
@@ -261,13 +265,18 @@ fn classify(job: &Job, error: &mlua::Error) -> Failure {
 }
 
 /// Calls the global function `name` if it is defined.
-fn call_global(job: &Job, lua: &Lua, name: &str) -> Result<(), Failure> {
-    let value: Value = lua
+fn call_global(job: &Job, state: &State, name: &str) -> Result<(), Failure> {
+    let value: Value = state
+        .lua
         .globals()
         .get(name)
         .map_err(|error| classify(job, &error))?;
     match value {
         Value::Nil => Ok(()),
+        Value::Function(function) if job.profile == Profile::Deterministic => {
+            let protected = state.protected.as_ref().expect("profile helper installed");
+            protected_call(job, protected, function, MultiValue::new()).map(|_| ())
+        }
         Value::Function(function) => function
             .call::<()>(())
             .map_err(|error| classify(job, &error)),
@@ -278,13 +287,68 @@ fn call_global(job: &Job, lua: &Lua, name: &str) -> Result<(), Failure> {
 }
 
 /// Runs the entry script's main chunk.
-fn run_main(job: &Job, lua: &Lua) -> Result<(), Failure> {
+fn run_main(job: &Job, state: &State) -> Result<(), Failure> {
     let source = std::fs::read(&job.entry)
         .map_err(|error| Failure::host(format!("cannot read {}: {error}", job.entry.display())))?;
-    lua.load(source)
-        .set_name(format!("@{}", job.entry.display()))
-        .exec()
-        .map_err(|error| classify(job, &error))
+    let name = if job.profile == Profile::Deterministic {
+        "@gameplay.lua".to_owned()
+    } else {
+        format!("@{}", job.entry.display())
+    };
+    let chunk = state
+        .lua
+        .load(source)
+        .set_name(name)
+        .into_function()
+        .map_err(|error| classify(job, &error))?;
+    if job.profile == Profile::Deterministic {
+        let protected = state.protected.as_ref().expect("profile helper installed");
+        protected_call(job, protected, chunk, MultiValue::new()).map(|_| ())
+    } else {
+        chunk.call::<()>(()).map_err(|error| classify(job, &error))
+    }
+}
+
+/// Calls a function through the deterministic profile's Lua error handler. The handler normalizes
+/// non-string errors before mlua can format them, and includes the original Lua traceback.
+fn protected_call(
+    job: &Job,
+    protected: &Function,
+    function: Function,
+    args: MultiValue,
+) -> Result<MultiValue, Failure> {
+    let mut input = MultiValue::new();
+    input.push_back(Value::Function(function));
+    input.extend(args);
+    let mut result = protected
+        .call::<MultiValue>(input)
+        .map_err(|error| classify(job, &error))?;
+    match result.pop_front() {
+        Some(Value::Boolean(true)) => Ok(result),
+        Some(Value::Boolean(false)) => {
+            let text = result.pop_front().map_or_else(
+                || "unknown Lua error".to_owned(),
+                |value| match value {
+                    Value::String(text) => text.to_string_lossy(),
+                    other => other.type_name().to_owned(),
+                },
+            );
+            let (message, traceback) = match text.split_once("\nstack traceback:") {
+                Some((message, rest)) => (message.to_owned(), format!("stack traceback:{rest}")),
+                None => (text, NO_FRAME.to_owned()),
+            };
+            if let Some(message) = job.fatal.message() {
+                Err(Failure::Panicked { message })
+            } else if job.cancel.load(Ordering::SeqCst) {
+                Err(Failure::Cancelled)
+            } else {
+                Err(Failure::Script { message, traceback })
+            }
+        }
+        _ => Err(Failure::host(
+            "deterministic protected call returned an invalid result",
+        )),
+    }
 }
 
 /// Whether the thread must end now. A host function that panicked is an error (a `Panicked` failure),
@@ -297,16 +361,34 @@ fn ending(job: &Job) -> Result<bool, Failure> {
     }
 }
 
+fn collect_if_deterministic(lua: &Lua, profile: Profile) -> mlua::Result<()> {
+    if profile == Profile::Deterministic {
+        lua.gc_collect()?;
+    }
+    Ok(())
+}
+
 /// The owner: initialise, report ready, serve requests, end. `Ok` is an end without a failure to
 /// report: `Some(Done)` is the reply to a stop, to be sent only after the state is flushed and
 /// dropped; `None` is a cancel or the handle going away.
 fn run(job: &Job) -> Result<Option<Report>, Failure> {
-    let lua = Lua::new_with(StdLib::ALL_SAFE, LuaOptions::default())
-        .map_err(|error| Failure::host(format!("cannot create the Lua state: {error}")))?;
+    let lua = if job.profile == Profile::Deterministic {
+        // Lua's debug library is unsafe because it can inspect and mutate VM internals. The
+        // deterministic bootstrap captures only `debug.traceback`, then removes the `debug`
+        // global before any gameplay chunk runs. We do not load `package`, `io`, `os`, or any
+        // other unsafe library, so gameplay cannot load C modules or reach the debug library.
+        // SAFETY: no unsafe library except `debug` is opened, and the bootstrap removes its global
+        // before executing untrusted gameplay source.
+        unsafe { Lua::unsafe_new_with(StdLib::ALL_SAFE | StdLib::DEBUG, LuaOptions::default()) }
+    } else {
+        Lua::new_with(StdLib::ALL_SAFE, LuaOptions::default())
+            .map_err(|error| Failure::host(format!("cannot create the Lua state: {error}")))?
+    };
     let mut state = State {
         flush: None,
         callbacks: Callbacks::default(),
         fatal: job.fatal.clone(),
+        protected: None,
         lua,
         #[cfg(test)]
         name: job.name.clone(),
@@ -332,6 +414,12 @@ fn run(job: &Job) -> Result<Option<Report>, Failure> {
             .install(&state.lua, &job.fatal, &state.callbacks)
             .map_err(|error| Failure::from_lua(&error))?;
     }
+    if job.profile == Profile::Deterministic {
+        state.protected = Some(
+            crate::deterministic::install(&state.lua).map_err(|error| Failure::from_lua(&error))?,
+        );
+        state.lua.gc_stop();
+    }
     #[cfg(test)]
     crate::hooks::install(&job.name, &state.lua).map_err(|error| Failure::from_lua(&error))?;
     #[cfg(test)]
@@ -348,7 +436,8 @@ fn run(job: &Job) -> Result<Option<Report>, Failure> {
     if ending(job)? {
         return Ok(None);
     }
-    run_main(job, &state.lua)?;
+    run_main(job, &state)?;
+    collect_if_deterministic(&state.lua, job.profile).map_err(|error| classify(job, &error))?;
     #[cfg(test)]
     crate::hooks::at(&job.name, crate::hooks::Point::AfterMain, Some(&state.lua));
     if ending(job)? {
@@ -371,7 +460,9 @@ fn serve(job: &Job, state: &State) -> Result<Option<Report>, Failure> {
             Command::Start => {
                 #[cfg(test)]
                 crate::hooks::at(&job.name, crate::hooks::Point::BeforeStartup, Some(lua));
-                call_global(job, lua, "startup")?;
+                call_global(job, state, "startup")?;
+                collect_if_deterministic(lua, job.profile)
+                    .map_err(|error| classify(job, &error))?;
                 if ending(job)? {
                     return Ok(None);
                 }
@@ -381,7 +472,7 @@ fn serve(job: &Job, state: &State) -> Result<Option<Report>, Failure> {
             Command::Stop => {
                 #[cfg(test)]
                 crate::hooks::at(&job.name, crate::hooks::Point::BeforeShutdown, Some(lua));
-                call_global(job, lua, "shutdown")?;
+                call_global(job, state, "shutdown")?;
                 // The reply waits for the flush and the state drop (see `thread_main`).
                 return Ok((!ending(job)?).then_some(Report::Done));
             }
@@ -413,16 +504,27 @@ fn run_call(
     // Cloned out of the map: the callback may call its own setter.
     let registered = state.callbacks.borrow().get(callback).cloned();
     let Some(function) = registered else {
+        collect_if_deterministic(&state.lua, job.profile).map_err(|error| classify(job, &error))?;
         return Ok(CallOutcome::NotRegistered);
     };
     let lua = &state.lua;
     let converted: mlua::Result<MultiValue> =
         args.iter().map(|arg| convert::to_lua(lua, arg)).collect();
-    let returned = converted.and_then(|values| function.call::<MultiValue>(values));
+    let returned = match converted {
+        Err(error) => Err(classify(job, &error)),
+        Ok(values) if job.profile == Profile::Deterministic => {
+            let protected = state.protected.as_ref().expect("profile helper installed");
+            protected_call(job, protected, function, values)
+        }
+        Ok(values) => function
+            .call::<MultiValue>(values)
+            .map_err(|error| classify(job, &error)),
+    };
+    collect_if_deterministic(&state.lua, job.profile).map_err(|error| classify(job, &error))?;
     match returned {
         // `serve` checks `ending` next, which catches a panic that could not unwind into the script.
         Ok(values) => Ok(returned_outcome(&values)),
-        Err(error) => match classify(job, &error) {
+        Err(failure) => match failure {
             Failure::Script { message, traceback } => {
                 Ok(CallOutcome::Failed { message, traceback })
             }

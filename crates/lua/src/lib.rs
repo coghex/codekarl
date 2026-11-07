@@ -244,6 +244,7 @@
 mod call;
 mod config;
 mod convert;
+mod deterministic;
 mod error;
 mod extension;
 #[cfg(test)]
@@ -260,4 +261,4 @@ pub use call::{CallId, CallOutcome, CallResult, Completion, Progress};
 pub use config::ConfigValue;
 pub use error::{VmError, VmState};
 pub use extension::{CallbackObserver, Extension, HostFunction};
-pub use owner::{VmOwner, VmSettings};
+pub use owner::{Profile, VmOwner, VmSettings};

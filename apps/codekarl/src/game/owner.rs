@@ -18,6 +18,7 @@ use ck_sim::Canonical;
 
 use super::{
     core::{Core, Flow, Message},
+    gameplay::Gameplay,
     slot::SimSlot,
 };
 
@@ -68,11 +69,26 @@ impl SimOwner {
     /// Starts the thread `ck-sim` running `core` (built by `build` on that thread) and returns the owner without waiting for it.
     ///
     /// `receiver` is the control channel whose sender the UI link holds.
+    #[cfg(test)]
     pub(crate) fn spawn<S, C>(
         sender: Sender<Message>,
         receiver: Receiver<Message>,
         slot: Arc<SimSlot>,
         build: impl FnOnce() -> Core<S, C> + Send + 'static,
+    ) -> Result<Self, String>
+    where
+        S: Canonical + Clone + Send + 'static,
+        C: Canonical + Send + 'static,
+    {
+        Self::spawn_with_gameplay(sender, receiver, slot, build, None)
+    }
+
+    pub(crate) fn spawn_with_gameplay<S, C>(
+        sender: Sender<Message>,
+        receiver: Receiver<Message>,
+        slot: Arc<SimSlot>,
+        build: impl FnOnce() -> Core<S, C> + Send + 'static,
+        gameplay: Option<Arc<Gameplay>>,
     ) -> Result<Self, String>
     where
         S: Canonical + Clone + Send + 'static,
@@ -86,6 +102,7 @@ impl SimOwner {
             .name("ck-sim".to_owned())
             .spawn(move || {
                 let _finished = guard;
+                let _gameplay_release = GameplayRelease(gameplay);
                 let mut core = build();
                 thread_ready.set();
                 serve(&mut core, &receiver);
@@ -113,6 +130,16 @@ impl SimOwner {
             && let Some(handle) = self.handle.take()
         {
             let _ = handle.join();
+        }
+    }
+}
+
+struct GameplayRelease(Option<Arc<Gameplay>>);
+
+impl Drop for GameplayRelease {
+    fn drop(&mut self) {
+        if let Some(gameplay) = &self.0 {
+            gameplay.simulation_ended();
         }
     }
 }

@@ -324,6 +324,54 @@ fn the_scripts_hash_is_the_gameplay_entry_script_or_nothing() {
 }
 
 #[test]
+fn a_quickload_refuses_a_one_byte_changed_gameplay_script_by_scripts_hash() {
+    let (_dir, game) = fixture();
+    let entry = game.scenario.parent().unwrap().join("gameplay.lua");
+    fs::write(&entry, "sim.on_day(function() end)\n").unwrap();
+    let vms = [VmConfig {
+        name: "gameplay".to_owned(),
+        entry: entry.clone(),
+    }];
+    let mut records = Vec::new();
+    let prepared = prepare(
+        &Request {
+            game: &game,
+            vms: &vms,
+            load: None,
+            seed: Some(42),
+        },
+        || Ok(42),
+        &mut |level, message| records.push((level, message)),
+    )
+    .expect("the original script prepares");
+    let bytes = prepared
+        .simulation
+        .save(prepared.identity.meta(42))
+        .to_bytes()
+        .expect("the game save encodes");
+    let path = quicksave_path(&game.saves);
+    fs::create_dir_all(&game.saves).unwrap();
+    fs::write(&path, bytes).unwrap();
+
+    let mut changed = fs::read(&entry).unwrap();
+    changed.push(b' ');
+    fs::write(&entry, changed).unwrap();
+    let refused = prepare(
+        &Request {
+            game: &game,
+            vms: &vms,
+            load: Some(&path),
+            seed: None,
+        },
+        || Ok(0),
+        &mut |level, message| records.push((level, message)),
+    )
+    .err()
+    .expect("a save with different gameplay script bytes is refused");
+    assert!(refused.contains("scripts_hash"), "{refused}");
+}
+
+#[test]
 fn a_content_hash_is_the_fnv_of_the_sorted_name_and_content_framing() {
     let mut framed = Vec::new();
     for (name, contents) in [("a", &[2_u8, 3][..]), ("b", &[1][..])] {

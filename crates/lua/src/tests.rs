@@ -1702,6 +1702,24 @@ fn stdout_child() {
     let Ok(mode) = std::env::var("CK_LUA_CHILD") else {
         return;
     };
+    if mode == "deterministic_print" {
+        let dir = Dir::new();
+        let entry = dir.script(
+            "local callback = function() end\nlocal thread = coroutine.create(function() end)\nprint(callback, thread)\n",
+        );
+        let mut settings = VmSettings::new("child", entry, empty_config());
+        settings.profile = crate::Profile::Deterministic;
+        let mut owner = VmOwner::spawn(settings).expect("the thread starts");
+        owner
+            .wait_ready(BOUND)
+            .expect("the deterministic entry runs");
+        owner.start(BOUND).expect("started");
+        owner.stop(BOUND).expect("stopped");
+        eprintln!("stopped");
+        let mut go = String::new();
+        let _ = io::stdin().read_line(&mut go);
+        return;
+    }
     let script = match mode.as_str() {
         "print" => "print('a', 1)",
         "flush" => "io.stdout:setvbuf('full')\nio.stdout:write('fragment')\n",
@@ -1823,6 +1841,11 @@ fn standard_print_arrives_on_a_piped_stdout() {
 }
 
 #[test]
+fn deterministic_print_writes_function_and_coroutine_type_names() {
+    assert!(child_writes("deterministic_print", "function\tthread\n"));
+}
+
+#[test]
 fn the_owner_flushes_buffered_stdout_before_it_finishes() {
     assert!(
         child_writes("flush", "fragment"),
@@ -1840,3 +1863,5 @@ fn the_owner_flush_survives_a_script_that_replaces_io() {
 
 #[path = "tests_calls.rs"]
 mod calls;
+#[path = "tests_profile.rs"]
+mod profile;

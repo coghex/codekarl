@@ -57,6 +57,8 @@ pub(crate) struct Outputs {
 pub(crate) struct Rebuild<S, C> {
     /// A new scheduler with the game's systems.
     pub(crate) scheduler: Box<dyn Fn() -> Scheduler<S> + Send>,
+    /// Resets external deterministic state to the seed of a successfully loaded simulation.
+    pub(crate) reset: Box<dyn Fn(u64) + Send>,
     /// How a command changes the state.
     pub(crate) apply: fn(&mut S, C),
 }
@@ -75,6 +77,7 @@ pub(crate) struct Core<S, C> {
     outputs: Outputs,
     published: Option<SimSnapshot>,
     failure_probe: FailureProbe<S>,
+    terminal_probe: Box<dyn FnMut() -> Option<String> + Send>,
     failed: bool,
 }
 
@@ -101,6 +104,7 @@ where
             outputs,
             published: None,
             failure_probe: Box::new(|_| None),
+            terminal_probe: Box::new(|| None),
             failed: false,
         };
         core.publish_if_changed();
@@ -114,6 +118,15 @@ where
         probe: impl FnMut(&S) -> Option<String> + Send + 'static,
     ) -> Self {
         self.failure_probe = Box::new(probe);
+        self
+    }
+
+    /// Lets a host callback mark a missed gameplay-VM deadline as a terminal run failure.
+    pub(crate) fn with_terminal_probe(
+        mut self,
+        probe: impl FnMut() -> Option<String> + Send + 'static,
+    ) -> Self {
+        self.terminal_probe = Box::new(probe);
         self
     }
 
@@ -249,6 +262,12 @@ where
         let began = self.simulation.date();
         match self.simulation.step() {
             Ok(errors) => {
+                if let Some(message) = (self.terminal_probe)() {
+                    self.log(Level::Error, format!("error sim: {message}"));
+                    self.fail(message);
+                    self.publish_if_changed();
+                    return;
+                }
                 if let Ok(date) = began
                     && date.hour == 0
                 {
@@ -315,6 +334,7 @@ where
         let path = quicksave_path(&self.saves);
         match self.load_from(&path) {
             Ok(simulation) => {
+                (self.rebuild.reset)(simulation.seed());
                 self.simulation = simulation;
                 self.clock = Clock::new();
                 self.paused = Some(PauseReason::Load);
