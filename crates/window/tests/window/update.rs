@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use ck_window::{
     Answer, Clock, CloseSource, LoopEnd, LoopMetrics, LoopSettings, MetricsWindow, NativeEvent,
-    PixelSize, PresenterReport, UiAnswer, UiEvent, UpdateEvent, UpdateSettings, Wait,
+    PixelSize, PointerEvent, PointerPosition, PresenterReport, UiAnswer, UiEvent, UpdateEvent,
+    UpdateSettings, Wait,
 };
 
 use crate::fakes::{DEADLINE, Rig, lock, owned, scenario};
@@ -212,6 +213,51 @@ fn active_updates_use_the_deadline_grid_ack_input_and_bound_delta() {
                     >= 2
             );
             assert_eq!(ran.end, LoopEnd::Quit);
+        },
+    );
+}
+
+#[test]
+fn pointer_events_reach_one_scheduled_update_and_idle_state_does_not_repeat_them() {
+    owned(
+        module_path!(),
+        "pointer_events_reach_one_scheduled_update_and_idle_state_does_not_repeat_them",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let clock = FakeClock::new();
+            let (ran, posts) = {
+                let mut rig = Rig::new();
+                configure_updates(&mut rig, &clock, 60, Duration::from_millis(20));
+                rig.backend.script.push_back(vec![
+                    NativeEvent::Pointer(PointerEvent::Down(PointerPosition { x: 256, y: 512 })),
+                    NativeEvent::Pointer(PointerEvent::Move(PointerPosition { x: 768, y: 1024 })),
+                    NativeEvent::Pointer(PointerEvent::Up(PointerPosition { x: 768, y: 1024 })),
+                ]);
+                lock(&rig.ui.update_answers).extend([Answer::Returned, Answer::Returned]);
+                quit_after_updates(&mut rig, 2);
+                let ui = Arc::clone(&rig.ui);
+                let ran = rig.run_collect_with_clock(&clock);
+                (ran, ui.posted())
+            };
+
+            let updates = extract_updates(&posts);
+            assert_eq!(ran.end, LoopEnd::Quit);
+            assert_eq!(updates.len(), 2);
+            assert_eq!(
+                updates[0].input.pointer_events,
+                [
+                    PointerEvent::Down(PointerPosition { x: 256, y: 512 }),
+                    PointerEvent::Move(PointerPosition { x: 768, y: 1024 }),
+                    PointerEvent::Up(PointerPosition { x: 768, y: 1024 }),
+                ]
+            );
+            assert!(updates[1].input.pointer_events.is_empty());
+            assert_eq!(
+                updates[1].input.pointer_position,
+                Some(PointerPosition { x: 768, y: 1024 })
+            );
+            assert!(!updates[1].input.pointer_held);
         },
     );
 }

@@ -26,6 +26,15 @@ pub enum NativeEvent {
     /// only the final state of every key and the taps lost (`docs/scene-design.md` §10.2). Applied in one step
     /// ([`ck_input::Mapper::resync`]).
     KeyResync(ck_input::KeyStates),
+    /// One ordered mouse event; pointer detail has its own bounded ring in `ck-input`.
+    Pointer(ck_input::PointerEvent),
+    /// Native pointer detail overflowed; the held state and latest position remain exact.
+    PointerOverflow {
+        /// Latest pointer position in the fixed 1/256-point representation.
+        position: ck_input::PointerPosition,
+        /// Whether the left button remains held.
+        held: bool,
+    },
     /// The window lost key focus: every held key is released.
     FocusLost,
     /// The window gained key focus.

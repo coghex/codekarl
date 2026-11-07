@@ -30,6 +30,7 @@ pub(crate) const COCOA_MENUBAR: c_int = 0x0005_1002;
 pub(crate) const RELEASE: c_int = 0;
 pub(crate) const PRESS: c_int = 1;
 pub(crate) const REPEAT: c_int = 2;
+pub(crate) const MOUSE_BUTTON_LEFT: c_int = 0;
 /// Keyboard token values from GLFW 3.4's `glfw3.h`.
 pub(crate) const KEY_UNKNOWN: c_int = -1;
 pub(crate) const KEY_SPACE: c_int = 32;
@@ -125,6 +126,10 @@ pub(crate) type ScaleCallback = extern "C" fn(window: *mut GlfwWindow, x: f32, y
 pub(crate) type RefreshCallback = extern "C" fn(window: *mut GlfwWindow);
 pub(crate) type FocusCallback = extern "C" fn(window: *mut GlfwWindow, focused: c_int);
 pub(crate) type IconifyCallback = extern "C" fn(window: *mut GlfwWindow, iconified: c_int);
+pub(crate) type CursorPosCallback = extern "C" fn(window: *mut GlfwWindow, x: f64, y: f64);
+pub(crate) type MouseButtonCallback =
+    extern "C" fn(window: *mut GlfwWindow, button: c_int, action: c_int, mods: c_int);
+pub(crate) type ScrollCallback = extern "C" fn(window: *mut GlfwWindow, x: f64, y: f64);
 
 unsafe extern "C" {
     pub(crate) fn glfwInit() -> c_int;
@@ -179,6 +184,18 @@ unsafe extern "C" {
         window: *mut GlfwWindow,
         callback: Option<IconifyCallback>,
     ) -> Option<IconifyCallback>;
+    pub(crate) fn glfwSetCursorPosCallback(
+        window: *mut GlfwWindow,
+        callback: Option<CursorPosCallback>,
+    ) -> Option<CursorPosCallback>;
+    pub(crate) fn glfwSetMouseButtonCallback(
+        window: *mut GlfwWindow,
+        callback: Option<MouseButtonCallback>,
+    ) -> Option<MouseButtonCallback>;
+    pub(crate) fn glfwSetScrollCallback(
+        window: *mut GlfwWindow,
+        callback: Option<ScrollCallback>,
+    ) -> Option<ScrollCallback>;
     pub(crate) fn glfwPollEvents();
     pub(crate) fn glfwWaitEvents();
     pub(crate) fn glfwWaitEventsTimeout(timeout: f64);

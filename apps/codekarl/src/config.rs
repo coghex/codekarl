@@ -21,6 +21,7 @@
 //! directory = "../maps/fixture"
 //! pan_pixels_per_frame = 4 # 1..=32, default 4
 //! zoom_steps_per_second = 20 # 1..=60, default 20
+//! scroll_points_per_step = 24 # 1..=256, default 24
 //!
 //! [input.bindings]        # optional; action name = the physical-key bindings that hold it (design §7.1)
 //! close = ["Escape"]      # the default; an explicit empty list unbinds an action
@@ -39,6 +40,9 @@
 //! optional (a `lua.<name>` table needs its `entry`), and an unknown key at any level is an error, not
 //! ignored. `[input]` has one sub-table, `bindings`; what an entry may say is `ck-input`'s grammar, and its refusal
 //! fails the load with its message naming the action and the entry. Both backends' loops use the bindings.
+//! `[map].scroll_points_per_step` applies to precise Cocoa point deltas. GLFW exposes fractional line offsets on
+//! both platforms; on macOS it scales precise trackpad deltas by 0.1 and drops the precision flag, so this setting
+//! does not apply to GLFW.
 //! `[frame]` has two keys, each optional with its default; a value outside its range fails the load naming the key, the
 //! value and the range. Both backends' loops pace the `frame_update` callback by them (and post nothing until a script
 //! registers one). Whether a configured backend can be opened is not checked here:
@@ -154,6 +158,7 @@ struct MapFields {
     directory: Option<PathBuf>,
     pan_pixels_per_frame: Option<i64>,
     zoom_steps_per_second: Option<i64>,
+    scroll_points_per_step: Option<i64>,
 }
 
 impl<'de> Deserialize<'de> for MapFields {
@@ -164,6 +169,7 @@ impl<'de> Deserialize<'de> for MapFields {
             directory: Option<PathBuf>,
             pan_pixels_per_frame: Option<i64>,
             zoom_steps_per_second: Option<i64>,
+            scroll_points_per_step: Option<i64>,
         }
 
         let fields: Fields = table_only(deserializer, "a table for `map`")?;
@@ -171,6 +177,7 @@ impl<'de> Deserialize<'de> for MapFields {
             directory: fields.directory,
             pan_pixels_per_frame: fields.pan_pixels_per_frame,
             zoom_steps_per_second: fields.zoom_steps_per_second,
+            scroll_points_per_step: fields.scroll_points_per_step,
         })
     }
 }
@@ -1111,6 +1118,7 @@ pub(crate) struct MapConfig {
     pub(crate) directory: PathBuf,
     pub(crate) pan_pixels_per_frame: u32,
     pub(crate) zoom_steps_per_second: u32,
+    pub(crate) scroll_points_per_step: u32,
 }
 
 impl Default for Config {
@@ -1286,10 +1294,19 @@ fn parse_map(path: &Path, base: &Path, map: Option<MapTable>) -> Result<Option<M
             path.display()
         ));
     }
+    let scroll = fields.scroll_points_per_step.unwrap_or(24);
+    if !(1..=256).contains(&scroll) {
+        return Err(format!(
+            "{}: [map]: scroll_points_per_step={scroll} is outside 1..=256",
+            path.display()
+        ));
+    }
     Ok(Some(MapConfig {
         directory: base.join(directory),
         pan_pixels_per_frame: u32::try_from(pan).expect("validated map pan range fits u32"),
         zoom_steps_per_second: u32::try_from(zoom).expect("validated map zoom range fits u32"),
+        scroll_points_per_step: u32::try_from(scroll)
+            .expect("validated scroll point range fits u32"),
     }))
 }
 
@@ -1383,6 +1400,7 @@ mod tests {
         );
         assert_eq!(map.pan_pixels_per_frame, 4);
         assert_eq!(map.zoom_steps_per_second, 20);
+        assert_eq!(map.scroll_points_per_step, 24);
         assert_eq!(
             defaults.bindings.action("map_pan_left").unwrap().bindings()[0]
                 .key()
@@ -1403,13 +1421,14 @@ mod tests {
         );
 
         let custom = parse_config(
-            "[map]\ndirectory = \"fixture\"\npan_pixels_per_frame = 9\nzoom_steps_per_second = 31\n\
+            "[map]\ndirectory = \"fixture\"\npan_pixels_per_frame = 9\nzoom_steps_per_second = 31\nscroll_points_per_step = 40\n\
              [input.bindings]\nmap_pan_left = [\"KeyA\"]\n",
         )
         .expect("custom map controls");
         let map = custom.map.expect("configured map");
         assert_eq!(map.pan_pixels_per_frame, 9);
         assert_eq!(map.zoom_steps_per_second, 31);
+        assert_eq!(map.scroll_points_per_step, 40);
         assert_eq!(
             custom.bindings.action("map_pan_left").unwrap().bindings()[0]
                 .key()
@@ -1431,6 +1450,8 @@ mod tests {
             ("pan_pixels_per_frame", "33", "1..=32"),
             ("zoom_steps_per_second", "0", "1..=60"),
             ("zoom_steps_per_second", "61", "1..=60"),
+            ("scroll_points_per_step", "0", "1..=256"),
+            ("scroll_points_per_step", "257", "1..=256"),
         ] {
             let text = format!("[map]\ndirectory = \"fixture\"\n{key} = {value}\n");
             let error = parse_config(&text).expect_err(&text);

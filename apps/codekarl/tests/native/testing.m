@@ -2,6 +2,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -18,12 +19,18 @@ extern void glfwPostEmptyEvent(void);
 /* The mark the tests' own synthetic keyboard events carry in kCGEventSourceUserData (real input carries 0), as in
  * ck-window-cocoa's test support. */
 #define CK_TEST_INPUT_MARK 0x434B54455354LL
+#define CK_TEST_POINTER_EVENT 0x434B50
 
 static id ck_app_input_filter = nil;
+static id ck_app_mouse_filter = nil;
 static id ck_app_map_keys_observer = nil;
+static id ck_app_map_pointer_observer = nil;
+static id ck_app_unmarked_observer = nil;
 static _Atomic uint64_t ck_app_dropped;
+static _Atomic uint64_t ck_app_dropped_mouse;
 static NSWindow *ck_app_the_window(int32_t *error);
 void ck_app_t_schedule_map_keys(void);
+void ck_app_t_schedule_map_pointer(void);
 
 /* The test-only input filter: a local event monitor, which AppKit runs inside -[NSApplication sendEvent:] before
  * the event reaches a window, its key equivalents, a responder or text dispatch. It drops every keyboard event
@@ -52,8 +59,27 @@ void ck_app_t_install_input_filter(void) {
             atomic_fetch_add(&ck_app_dropped, 1);
             return nil;
         }];
+        NSEventMask pointer = NSEventMaskLeftMouseDown | NSEventMaskLeftMouseDragged |
+            NSEventMaskLeftMouseUp | NSEventMaskMouseMoved | NSEventMaskScrollWheel;
+        ck_app_mouse_filter = [NSEvent addLocalMonitorForEventsMatchingMask:pointer
+                                                                      handler:^NSEvent *(NSEvent *event) {
+            CGEventRef raw = event.CGEvent;
+            BOOL marked = event.eventNumber == CK_TEST_POINTER_EVENT ||
+                (raw != NULL && CGEventGetIntegerValueField(raw, kCGEventSourceUserData) == CK_TEST_INPUT_MARK);
+            if (marked) {
+                int32_t error = CK_APP_T_NO_WINDOW;
+                NSWindow *window = ck_app_the_window(&error);
+                if (window != nil && !window.keyWindow) {
+                    [window sendEvent:event];
+                    return nil;
+                }
+                return event;
+            }
+            atomic_fetch_add(&ck_app_dropped_mouse, 1);
+            return nil;
+        }];
         if (getenv("CK_WINDOWED_TEST_MAP_INPUT") != NULL || getenv("CK_VULKAN_TEST_MAP_INPUT") != NULL) {
-            ck_app_t_schedule_map_keys();
+            ck_app_t_schedule_map_pointer();
         }
     }
 }
@@ -116,6 +142,112 @@ void ck_app_t_schedule_map_keys(void) {
         ck_app_map_keys_observer = nil;
         (void)ck_app_t_post_key(0x7B, 0, 0, "", 1);  /* ArrowLeft */
         (void)ck_app_t_post_key(0x18, 0, 0, "=", 1); /* Equal */
+    }];
+}
+
+/* Calls the production content-view handlers with marked synthetic NSEvents. AppKit sendEvent cannot deliver pointer
+ * events to this mouse-ignoring test window, so the manager-approved test-only seam skips only window routing. */
+static int32_t ck_app_t_send_map_pointer(void) {
+    int32_t error = CK_APP_T_NO_WINDOW;
+    NSWindow *window = ck_app_the_window(&error);
+    if (window == nil) return -1;
+    if (!window.isVisible || !window.ignoresMouseEvents) return -2;
+    NSView *view = window.contentView;
+
+    const NSInteger marked_event = CK_TEST_POINTER_EVENT;
+    const NSPoint drag_start = NSMakePoint(100.0, 80.0);
+    const NSPoint drag_end = NSMakePoint(132.0, 96.0);
+    NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
+                                        location:drag_start modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                                   windowNumber:window.windowNumber context:nil eventNumber:marked_event
+                                      clickCount:1 pressure:1.0];
+    NSEvent *drag = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDragged
+                                        location:drag_end modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                                   windowNumber:window.windowNumber context:nil eventNumber:marked_event
+                                      clickCount:1 pressure:1.0];
+    NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp
+                                      location:drag_end modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                                 windowNumber:window.windowNumber context:nil eventNumber:marked_event
+                                    clickCount:1 pressure:0.0];
+    if (down == nil || drag == nil || up == nil || down.windowNumber != window.windowNumber ||
+        drag.windowNumber != window.windowNumber || up.windowNumber != window.windowNumber) return -3;
+    @try {
+        [view mouseDown:down];
+        [view mouseDragged:drag];
+        [view mouseUp:up];
+    } @catch (NSException *exception) {
+        NSLog(@"marked mouse dispatch raised %@: %@", exception.name, exception.reason);
+        return -6;
+    }
+
+    NSPoint screen = [window convertPointToScreen:NSMakePoint(180.0, 120.0)];
+    NSPoint scroll_point = NSMakePoint(screen.x, NSScreen.mainScreen.frame.size.height - screen.y);
+    CGEventRef line_raw = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 1, 1);
+    CGEventRef precise_raw = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitPixel, 1, 24);
+    if (line_raw == NULL || precise_raw == NULL) {
+        if (line_raw != NULL) CFRelease(line_raw);
+        if (precise_raw != NULL) CFRelease(precise_raw);
+        return -4;
+    }
+    CGEventRef scrolls[] = {line_raw, precise_raw};
+    for (size_t i = 0; i < sizeof scrolls / sizeof scrolls[0]; i++) {
+        CGEventSetLocation(scrolls[i], scroll_point);
+        CGEventSetIntegerValueField(scrolls[i], kCGEventSourceUserData, CK_TEST_INPUT_MARK);
+        CGEventSetIntegerValueField(scrolls[i], kCGMouseEventWindowUnderMousePointer, window.windowNumber);
+    }
+    CGEventSetIntegerValueField(precise_raw, kCGScrollWheelEventPointDeltaAxis1, 24);
+    CGEventSetIntegerValueField(precise_raw, kCGScrollWheelEventIsContinuous, 1);
+    NSEvent *line = [NSEvent eventWithCGEvent:line_raw];
+    NSEvent *precise = [NSEvent eventWithCGEvent:precise_raw];
+    CFRelease(line_raw);
+    CFRelease(precise_raw);
+    if (line == nil || precise == nil) return -9;
+    @try {
+        [view scrollWheel:line];
+        [view scrollWheel:precise];
+    } @catch (NSException *exception) {
+        NSLog(@"marked scroll dispatch raised %@: %@", exception.name, exception.reason);
+        return -7;
+    }
+    return window.ignoresMouseEvents ? 1 : -8;
+}
+
+void ck_app_t_schedule_map_pointer(void) {
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    ck_app_map_pointer_observer = [center addObserverForName:NSWindowDidUpdateNotification
+                                   object:nil
+                                    queue:NSOperationQueue.mainQueue
+                               usingBlock:^(__unused NSNotification *notification) {
+        NSWindow *window = notification.object;
+        if (![window isKindOfClass:NSWindow.class] || !window.isVisible) return;
+        [NSNotificationCenter.defaultCenter removeObserver:ck_app_map_pointer_observer];
+        ck_app_map_pointer_observer = nil;
+        NSEvent *unmarked = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
+                                                location:NSMakePoint(150.0, 100.0)
+                                           modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                                          windowNumber:window.windowNumber context:nil eventNumber:0
+                                             clickCount:1 pressure:1.0];
+        if (unmarked != nil) [NSApp postEvent:unmarked atStart:NO];
+        int32_t result = ck_app_t_send_map_pointer();
+        if (result != 1) {
+            NSLog(@"test pointer delivery failed with result %d", result);
+        }
+        ck_app_unmarked_observer = [NSNotificationCenter.defaultCenter addObserverForName:NSWindowDidUpdateNotification
+                                        object:nil
+                                         queue:NSOperationQueue.mainQueue
+                                    usingBlock:^(__unused NSNotification *update) {
+            if (atomic_load(&ck_app_dropped_mouse) < 1) return;
+            [NSNotificationCenter.defaultCenter removeObserver:ck_app_unmarked_observer];
+            ck_app_unmarked_observer = nil;
+            const char *path = getenv("CK_MAP_TEST_CAMERA_OBSERVATION");
+            if (path != NULL) {
+                FILE *file = fopen(path, "a");
+                if (file != NULL) {
+                    fprintf(file, "unmarked dropped %llu\n", (unsigned long long)atomic_load(&ck_app_dropped_mouse));
+                    fclose(file);
+                }
+            }
+        }];
     }];
 }
 
@@ -186,13 +318,15 @@ static int32_t ck_app_on_main(int32_t (^work)(void)) {
     return result;
 }
 
-/* The process's one GLFW window, or nil with *error set to CK_APP_T_NO_WINDOW (none) or CK_APP_T_SEVERAL_WINDOWS
- * (more than one): a helper never guesses between windows. Main queue only. */
+/* The process's one Codekarl window (Cocoa or GLFW), or nil with *error set when none or several exist. Main queue only. */
 static NSWindow *ck_app_the_window(int32_t *error) {
     Class glfw = NSClassFromString(@"GLFWWindow");
+    Class cocoa_view = NSClassFromString(@"CKWinView");
     NSWindow *found = nil;
     for (NSWindow *window in [NSApp windows]) {
-        if (glfw != Nil && [window isKindOfClass:glfw]) {
+        BOOL is_codekarl_window = (glfw != Nil && [window isKindOfClass:glfw]) ||
+            (cocoa_view != Nil && [window.contentView isKindOfClass:cocoa_view]);
+        if (is_codekarl_window) {
             if (found != nil) {
                 *error = CK_APP_T_SEVERAL_WINDOWS;
                 return nil;

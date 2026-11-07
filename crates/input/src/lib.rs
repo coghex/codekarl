@@ -14,6 +14,93 @@ pub const KEY_COUNT: usize = 81;
 /// Capacity of the ordered action-transition ring.
 pub const TRANSITION_CAPACITY: usize = 256;
 
+/// Capacity of the ordered pointer-event ring.
+pub const POINTER_CAPACITY: usize = 64;
+
+/// Pointer positions and scroll amounts are measured in 1/256 of a point or unit.
+pub const POINTER_FRACTION: i32 = 256;
+
+/// A pointer position in the window-content coordinate system (top-left origin, y down), in 1/256 points.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PointerPosition {
+    /// Horizontal position in 1/256 points.
+    pub x: i32,
+    /// Vertical position in 1/256 points.
+    pub y: i32,
+}
+
+impl PointerPosition {
+    /// Converts finite point coordinates to the mapper's fixed point representation.
+    #[must_use]
+    pub fn from_points(x: f64, y: f64) -> Option<Self> {
+        fn fixed(value: f64) -> Option<i32> {
+            if !value.is_finite() {
+                return None;
+            }
+            let scaled = (value * f64::from(POINTER_FRACTION)).round();
+            if scaled < f64::from(i32::MIN) || scaled > f64::from(i32::MAX) {
+                return None;
+            }
+            // Bounds are checked and the value was rounded to an integer above.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the finite rounded value is range-checked against i32"
+            )]
+            Some(scaled as i32)
+        }
+        Some(Self {
+            x: fixed(x)?,
+            y: fixed(y)?,
+        })
+    }
+}
+
+/// The unit supplied by a scroll source. GLFW always reports lines; Cocoa preserves precise point deltas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ScrollUnit {
+    /// A conventional mouse-wheel line.
+    Lines,
+    /// A precise trackpad delta in points.
+    Points,
+}
+
+/// One ordered mouse event, with its own position so a later move cannot change a scroll anchor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PointerEvent {
+    /// The left button went down.
+    Down(PointerPosition),
+    /// The pointer moved.
+    Move(PointerPosition),
+    /// The left button went up.
+    Up(PointerPosition),
+    /// A vertical scroll amount in 1/256 of the selected unit.
+    Scroll {
+        /// Cursor position at this scroll event.
+        position: PointerPosition,
+        /// Signed amount in 1/256 units.
+        amount: i32,
+        /// Whether the amount is a line or point delta.
+        unit: ScrollUnit,
+    },
+}
+
+impl PointerEvent {
+    fn position(self) -> PointerPosition {
+        match self {
+            Self::Down(position)
+            | Self::Move(position)
+            | Self::Up(position)
+            | Self::Scroll { position, .. } => position,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PointerRecord {
+    event: PointerEvent,
+    sequence: u128,
+}
+
 /// A physical keyboard position in the supported W3C UI Events `code` set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -666,6 +753,10 @@ pub struct ActionSnapshot {
 
 /// An immutable copy of the mapper state at one sequence watermark.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "snapshot flags are independent latched input conditions"
+)]
 pub struct InputSnapshot {
     /// Monotonic snapshot identifier used by [`Mapper::acknowledge`].
     pub sequence: u128,
@@ -679,6 +770,14 @@ pub struct InputSnapshot {
     pub reset: bool,
     /// Cumulative, saturating count of discarded transition records.
     pub overflow_count: u64,
+    /// Ordered pointer detail retained for this snapshot.
+    pub pointer_events: Vec<PointerEvent>,
+    /// Latest known pointer position, even when the detail ring overflowed.
+    pub pointer_position: Option<PointerPosition>,
+    /// Whether the left button is held now.
+    pub pointer_held: bool,
+    /// Whether pointer detail overflowed since the last acknowledged snapshot.
+    pub pointer_overflow: bool,
 }
 
 /// The final physical state of every supported key, with the taps a native layer could not deliver in order, as one
@@ -793,6 +892,13 @@ pub struct Mapper {
     reset_sequence: Option<u128>,
     overflow_count: u64,
     close_presses: u32,
+    pointer_events: [Option<PointerRecord>; POINTER_CAPACITY],
+    pointer_head: usize,
+    pointer_len: usize,
+    pointer_position: Option<PointerPosition>,
+    pointer_held: bool,
+    pointer_overflow_sequence: Option<u128>,
+    last_snapshot_sequence: u128,
 }
 
 impl Mapper {
@@ -813,6 +919,13 @@ impl Mapper {
             reset_sequence: None,
             overflow_count: 0,
             close_presses: 0,
+            pointer_events: [None; POINTER_CAPACITY],
+            pointer_head: 0,
+            pointer_len: 0,
+            pointer_position: None,
+            pointer_held: false,
+            pointer_overflow_sequence: None,
+            last_snapshot_sequence: 0,
         }
     }
 
@@ -837,7 +950,77 @@ impl Mapper {
     pub fn focus_lost(&mut self) {
         self.keys = [0; 2];
         self.recompute_actions();
+        if self.pointer_held
+            && let Some(position) = self.pointer_position
+        {
+            self.pointer(PointerEvent::Up(position));
+        }
         self.reset_sequence = Some(self.next_sequence());
+    }
+
+    /// Records an ordered pointer event in fixed storage. Adjacent moves and compatible scrolls coalesce unless
+    /// the prior record has already been copied into an unacknowledged snapshot.
+    pub fn pointer(&mut self, event: PointerEvent) {
+        self.pointer_position = Some(event.position());
+        match event {
+            PointerEvent::Down(_) => self.pointer_held = true,
+            PointerEvent::Up(_) => self.pointer_held = false,
+            PointerEvent::Move(_) | PointerEvent::Scroll { .. } => {}
+        }
+
+        let tail_index = (self.pointer_head + self.pointer_len).wrapping_sub(1) % POINTER_CAPACITY;
+        let may_coalesce = self.pointer_len > 0
+            && self.pointer_events[tail_index]
+                .is_some_and(|record| record.sequence > self.last_snapshot_sequence);
+        if may_coalesce && let Some(previous) = self.pointer_events[tail_index].as_mut() {
+            match (previous.event, event) {
+                (PointerEvent::Move(_), PointerEvent::Move(_)) => {
+                    previous.event = event;
+                    return;
+                }
+                (
+                    PointerEvent::Scroll {
+                        position: old_position,
+                        amount: old_amount,
+                        unit: old_unit,
+                    },
+                    PointerEvent::Scroll {
+                        position: new_position,
+                        amount: new_amount,
+                        unit: new_unit,
+                    },
+                ) if old_position == new_position
+                    && old_unit == new_unit
+                    && old_amount.signum() == new_amount.signum() =>
+                {
+                    previous.event = PointerEvent::Scroll {
+                        position: new_position,
+                        amount: old_amount.saturating_add(new_amount),
+                        unit: new_unit,
+                    };
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if self.pointer_len == POINTER_CAPACITY {
+            self.pointer_events[self.pointer_head] = None;
+            self.pointer_head = (self.pointer_head + 1) % POINTER_CAPACITY;
+            self.pointer_len -= 1;
+            self.pointer_overflow_sequence = Some(self.next_sequence());
+        }
+        let tail = (self.pointer_head + self.pointer_len) % POINTER_CAPACITY;
+        let sequence = self.next_sequence();
+        self.pointer_events[tail] = Some(PointerRecord { event, sequence });
+        self.pointer_len += 1;
+    }
+
+    /// Resynchronises pointer state after a native callback ring discarded ordered detail.
+    pub fn pointer_overflow(&mut self, position: PointerPosition, held: bool) {
+        self.pointer_position = Some(position);
+        self.pointer_held = held;
+        self.pointer_overflow_sequence = Some(self.next_sequence());
     }
 
     /// Resynchronises with the final physical key states of a native layer that discarded ordered detail, in one step
@@ -913,6 +1096,7 @@ impl Mapper {
     pub fn snapshot(&mut self) -> InputSnapshot {
         self.sequence = self.sequence.wrapping_add(1);
         let sequence = self.sequence;
+        self.last_snapshot_sequence = sequence;
         let actions = self
             .bindings
             .actions
@@ -942,6 +1126,15 @@ impl Mapper {
             overflow: self.overflow_sequence.is_some(),
             reset: self.reset_sequence.is_some(),
             overflow_count: self.overflow_count,
+            pointer_events: (0..self.pointer_len)
+                .filter_map(|offset| {
+                    self.pointer_events[(self.pointer_head + offset) % POINTER_CAPACITY]
+                })
+                .map(|record| record.event)
+                .collect(),
+            pointer_position: self.pointer_position,
+            pointer_held: self.pointer_held,
+            pointer_overflow: self.pointer_overflow_sequence.is_some(),
         }
     }
 
@@ -986,6 +1179,23 @@ impl Mapper {
             self.transitions[self.transition_head] = None;
             self.transition_head = (self.transition_head + 1) % TRANSITION_CAPACITY;
             self.transition_len -= 1;
+        }
+        while self.pointer_len > 0 {
+            let Some(front) = self.pointer_events[self.pointer_head] else {
+                break;
+            };
+            if front.sequence > sequence {
+                break;
+            }
+            self.pointer_events[self.pointer_head] = None;
+            self.pointer_head = (self.pointer_head + 1) % POINTER_CAPACITY;
+            self.pointer_len -= 1;
+        }
+        if self
+            .pointer_overflow_sequence
+            .is_some_and(|stamp| stamp <= sequence)
+        {
+            self.pointer_overflow_sequence = None;
         }
     }
 

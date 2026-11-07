@@ -187,7 +187,7 @@ impl CocoaBackend {
 /// (it cannot) is dropped.
 fn input_events(raw: &RawEvents) -> Vec<NativeEvent> {
     let count = usize::try_from(raw.out_count).map_or(0, |count| count.min(raw.out.len()));
-    raw.out[..count]
+    let mut events: Vec<NativeEvent> = raw.out[..count]
         .iter()
         .filter_map(|entry| match entry.kind {
             ffi::OUT_KEY => Key::ALL
@@ -206,7 +206,44 @@ fn input_events(raw: &RawEvents) -> Vec<NativeEvent> {
             ))),
             _ => None,
         })
-        .collect()
+        .collect();
+    let pointer_count = usize::try_from(raw.pointer_count)
+        .unwrap_or(0)
+        .min(raw.pointers.len());
+    for pointer in &raw.pointers[..pointer_count] {
+        let position = ck_input::PointerPosition {
+            x: pointer.x,
+            y: pointer.y,
+        };
+        let event = match pointer.kind {
+            ffi::POINTER_DOWN => Some(ck_input::PointerEvent::Down(position)),
+            ffi::POINTER_MOVE => Some(ck_input::PointerEvent::Move(position)),
+            ffi::POINTER_UP => Some(ck_input::PointerEvent::Up(position)),
+            ffi::POINTER_SCROLL => Some(ck_input::PointerEvent::Scroll {
+                position,
+                amount: pointer.amount,
+                unit: if pointer.unit == 1 {
+                    ck_input::ScrollUnit::Points
+                } else {
+                    ck_input::ScrollUnit::Lines
+                },
+            }),
+            _ => None,
+        };
+        if let Some(event) = event {
+            events.push(NativeEvent::Pointer(event));
+        }
+    }
+    if raw.pointer_overflow != 0 {
+        events.push(NativeEvent::PointerOverflow {
+            position: ck_input::PointerPosition {
+                x: raw.pointer_x,
+                y: raw.pointer_y,
+            },
+            held: raw.pointer_held != 0,
+        });
+    }
+    events
 }
 
 /// Records one `debug` line for the close presses a pump absorbed, through `log_within`.

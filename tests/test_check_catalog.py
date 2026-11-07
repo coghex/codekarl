@@ -878,13 +878,17 @@ class GlfwGroups(unittest.TestCase):
 
 
 class InputGroup(unittest.TestCase):
-    """CK-120: the portable key mapper is pure and owns only its library and doc units."""
+    """CK-120: the portable input group owns its library, docs and allocation test."""
 
     def selected(self, path: str) -> set[str]:
         return {c.step.name for c in check.plan(check.STEPS, [path]).choices if c.selected}
 
     def test_01_crate_paths_select_the_pure_group_and_lints_only(self) -> None:
-        for path in ("crates/input/src/lib.rs", "crates/input/Cargo.toml"):
+        for path in (
+            "crates/input/src/lib.rs",
+            "crates/input/Cargo.toml",
+            "crates/input/tests/pointer_no_alloc.rs",
+        ):
             chosen = self.selected(path)
             self.assertIn("input.core", chosen, path)
             self.assertNotIn("unittest-lints", chosen)
@@ -904,12 +908,12 @@ class InputGroup(unittest.TestCase):
         self.assertNotIn("metal.gpu", chosen)
         self.assertNotIn("native.window", chosen)
 
-    def test_03_it_runs_exactly_the_plain_library_and_doc_units(self) -> None:
+    def test_03_it_runs_exactly_the_plain_input_units(self) -> None:
         step = next(step for step in check.STEPS if step.name == "input.core")
         units = group_units(step, TARGETS)
         self.assertEqual(
             {(kind, name) for _, kind, name, _, _ in units},
-            {("lib", "ck_input"), ("doc", "ck_input")},
+            {("lib", "ck_input"), ("doc", "ck_input"), ("test", "pointer_no_alloc")},
         )
         self.assertEqual({unit[0] for unit in units}, {"ck-input"})
         self.assertEqual({need_of(unit) for unit in units}, {"plain"})

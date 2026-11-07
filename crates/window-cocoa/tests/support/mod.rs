@@ -86,6 +86,14 @@ unsafe extern "C" {
         modifier_flags: u64,
         marked: i32,
     ) -> i32;
+    fn ck_win_test_post_pointer(
+        kind: i32,
+        x: f64,
+        y: f64,
+        amount: f64,
+        unit: i32,
+        marked: i32,
+    ) -> i32;
     fn ck_win_test_install_input_filter();
     fn ck_win_test_start_typist();
     fn ck_win_test_post_marker(id: i64, at_start: i32);
@@ -419,6 +427,20 @@ pub(crate) fn post_unmarked_keyboard_event(
     };
     // SAFETY: main thread; no pointers.
     unsafe { ck_win_test_post_keyboard_event(kind, key_code, modifier_flags, 0) != 0 }
+}
+
+/// Posts a marked synthetic mouse or scroll event at a content point.
+#[must_use]
+pub(crate) fn post_pointer(kind: i32, x: f64, y: f64, amount: f64, points: bool) -> bool {
+    // SAFETY: main thread; scalar arguments only.
+    unsafe { ck_win_test_post_pointer(kind, x, y, amount, i32::from(points), 1) != 0 }
+}
+
+/// Posts an unmarked pointer event, which the test input filter must drop.
+#[must_use]
+pub(crate) fn post_unmarked_pointer(kind: i32, x: f64, y: f64, amount: f64, points: bool) -> bool {
+    // SAFETY: main thread; scalar arguments only.
+    unsafe { ck_win_test_post_pointer(kind, x, y, amount, i32::from(points), 0) != 0 }
 }
 
 /// Installs, once for the process, the filter that drops every keyboard event without the tests' mark (a

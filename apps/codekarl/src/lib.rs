@@ -500,6 +500,7 @@ fn supervise_with_owner_factory(
             Arc::clone(&bridge),
             map.pan_pixels_per_frame,
             map.zoom_steps_per_second,
+            map.scroll_points_per_step,
         ) {
             Ok(controller) => Some(map_app::shared(controller)),
             Err(message) => {

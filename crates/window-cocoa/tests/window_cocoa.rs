@@ -456,6 +456,54 @@ fn real_input_is_dropped() {
     );
 }
 
+fn marked_pointer_events_reach_the_window_and_unmarked_mouse_is_filtered() {
+    let mut fixture = Fixture::open(300, 200);
+    assert!(support::post_unmarked_pointer(0, 20.0, 20.0, 0.0, false));
+    assert!(
+        fixture
+            .drain()
+            .input
+            .iter()
+            .all(|event| !matches!(event, NativeEvent::Pointer(_)))
+    );
+
+    for (kind, x, y, amount, points) in [
+        (0, 20.0, 20.0, 0.0, false),
+        (1, 30.0, 40.0, 0.0, false),
+        (2, 30.0, 40.0, 0.0, false),
+        (3, 40.0, 50.0, 1.0, false),
+    ] {
+        assert!(support::post_pointer(kind, x, y, amount, points));
+    }
+    let pointers: Vec<_> = fixture
+        .drain()
+        .input
+        .into_iter()
+        .filter_map(|event| {
+            if let NativeEvent::Pointer(pointer) = event {
+                Some(pointer)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        pointers.len(),
+        4,
+        "marked down, drag, up, and scroll are delivered"
+    );
+    assert!(matches!(pointers[0], ck_input::PointerEvent::Down(_)));
+    assert!(matches!(pointers[1], ck_input::PointerEvent::Move(_)));
+    assert!(matches!(pointers[2], ck_input::PointerEvent::Up(_)));
+    assert!(matches!(
+        pointers[3],
+        ck_input::PointerEvent::Scroll {
+            unit: ck_input::ScrollUnit::Lines,
+            ..
+        }
+    ));
+}
+
 /// 5. Cmd-Q, through the same dispatch.
 fn cmd_q_through_dispatch() {
     let mut fixture = Fixture::open(300, 200);
@@ -1005,7 +1053,7 @@ fn test_windows_let_clicks_through() {
 
 type Case = fn();
 
-const CASES: [(&str, Case); 40] = [
+const CASES: [(&str, Case); 41] = [
     ("create_and_destroy", create_and_destroy),
     (
         "production_open_still_asks_for_activation",
@@ -1019,6 +1067,10 @@ const CASES: [(&str, Case); 40] = [
     ("close_button", close_button),
     ("escape_through_dispatch", escape_through_dispatch),
     ("real_input_is_dropped", real_input_is_dropped),
+    (
+        "marked_pointer_events_reach_the_window_and_unmarked_mouse_is_filtered",
+        marked_pointer_events_reach_the_window_and_unmarked_mouse_is_filtered,
+    ),
     ("cmd_q_through_dispatch", cmd_q_through_dispatch),
     ("cap", cap),
     ("wake_ends_a_waiting_pump", wake_ends_a_waiting_pump),

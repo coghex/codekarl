@@ -7,6 +7,9 @@
 //! the window and the surface function cross the boundary as raw pointers and integers, through the one
 //! documented `unsafe` constructor on the consuming side.
 //!
+//! Scroll callbacks preserve GLFW's fractional offsets as line units. GLFW scales macOS precise trackpad offsets by
+//! 0.1 and does not expose whether an offset came from a trackpad; no normalization is applied here.
+//!
 //! # The Vulkan loader
 //!
 //! GLFW needs the Vulkan loader for `glfwGetRequiredInstanceExtensions` and surface creation, and by

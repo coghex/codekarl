@@ -422,6 +422,10 @@ impl Drive {
                 overflow: false,
                 reset: false,
                 overflow_count: 0,
+                pointer_events: Vec::new(),
+                pointer_position: None,
+                pointer_held: false,
+                pointer_overflow: false,
             },
         };
         self.ui
