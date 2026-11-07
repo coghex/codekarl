@@ -2104,7 +2104,53 @@ GUARDS: tuple[Guard, ...] = (
     Guard(
         "crates/map/tests/ireland.rs",
         "map.core",
-        ("assets/map/ireland/",),
+        ("assets/map/ireland/", "assets/scenarios/ireland-768/"),
+    ),
+    # The application tests that read shipped files or hash workspace inputs belong to rust.app.
+    Guard("apps/codekarl/src/font.rs", "rust.app", ("assets/ui/font/",)),
+    Guard(
+        "apps/codekarl/src/game/tests/gameplay_runtime.rs",
+        "rust.app",
+        ("scripts/gameplay/main.lua",),
+    ),
+    Guard(
+        "apps/codekarl/src/game/tests/mod.rs",
+        "rust.app",
+        ("assets/ui/font/font.toml",),
+    ),
+    Guard(
+        "apps/codekarl/src/game/tests/setup.rs",
+        "rust.app",
+        (
+            "Cargo.lock",
+            "rust-toolchain.toml",
+            "crates/sim/Cargo.toml",
+            "crates/lua/Cargo.toml",
+            "crates/sim/src/",
+            "crates/lua/src/",
+            "apps/codekarl/src/game/",
+        ),
+    ),
+    Guard(
+        "apps/codekarl/src/readout_tests.rs",
+        "rust.app",
+        ("assets/ui/font/", "scripts/ui/main.lua"),
+    ),
+    Guard(
+        "apps/codekarl/src/vm.rs",
+        "rust.app",
+        ("scripts/gameplay/main.lua",),
+    ),
+    # These off-screen GPU cases decode the same shipped font as part of their owning crate tests.
+    Guard(
+        "crates/gpu-metal/tests/presenter_instanced/cases.rs",
+        "metal.window-instanced",
+        ("assets/ui/font/",),
+    ),
+    Guard(
+        "crates/gpu-vulkan/tests/gpu_scene/mod.rs",
+        "vulkan.gpu",
+        ("assets/ui/font/",),
     ),
     # Native and Rust test support compiled into another crate's test targets.
     Guard(

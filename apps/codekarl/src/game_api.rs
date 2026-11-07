@@ -14,21 +14,48 @@ use crate::game::slot::{PauseReason, SimSnapshot};
 
 /// The callback `game.on_time` registers.
 pub(crate) const GAME_TIME: &str = "game_time";
+/// The callback `game.on_hover` registers.
+pub(crate) const GAME_HOVER: &str = "game_hover";
 
 /// The `game` extension. `registered` follows whether a callback is set; `wake` runs after each change so the loop's next pass
 /// delivers the current state to a callback that has just been registered.
 pub(crate) fn extension(
-    registered: Arc<AtomicBool>,
+    time_registered: Arc<AtomicBool>,
+    hover_registered: Arc<AtomicBool>,
     wake: Arc<dyn Fn() + Send + Sync>,
 ) -> Extension {
-    Extension::new("game").callback_observed(
-        "on_time",
-        GAME_TIME,
-        Arc::new(move |is_registered| {
-            registered.store(is_registered, Ordering::SeqCst);
-            wake();
-        }),
-    )
+    let time_wake = Arc::clone(&wake);
+    Extension::new("game")
+        .callback_observed(
+            "on_time",
+            GAME_TIME,
+            Arc::new(move |is_registered| {
+                time_registered.store(is_registered, Ordering::SeqCst);
+                time_wake();
+            }),
+        )
+        .callback_observed(
+            "on_hover",
+            GAME_HOVER,
+            Arc::new(move |is_registered| {
+                hover_registered.store(is_registered, Ordering::SeqCst);
+                wake();
+            }),
+        )
+}
+
+/// The callback argument for a hovered marker; `None` means Lua receives no arguments (`nil`).
+pub(crate) fn hover_arguments(hover: Option<&crate::map_app::Hover>) -> Vec<ConfigValue> {
+    let Some(hover) = hover else {
+        return Vec::new();
+    };
+    vec![ConfigValue::Table(BTreeMap::from([
+        ("id".to_owned(), ConfigValue::String(hover.id.clone())),
+        ("name".to_owned(), ConfigValue::String(hover.name.clone())),
+        ("left".to_owned(), ConfigValue::Integer(hover.left)),
+        ("right".to_owned(), ConfigValue::Integer(hover.right)),
+        ("y".to_owned(), ConfigValue::Integer(hover.y)),
+    ]))]
 }
 
 /// The table a `game_time` callback gets for `snapshot`.

@@ -94,6 +94,7 @@ const EXTERNAL_FORWARDING_FIXTURE_FLAG: &str = "--ck-activation-forwarding-fixtu
 const ALLOW_UNFOCUSED_UPDATES_FLAG: &str = "--ck-vulkan-test-allow-unfocused-updates";
 const QUEUE_FOCUS_LOST_FOR_CK163_FLAG: &str = "--ck-vulkan-test-queue-focus-lost-for-ck163";
 const MAP_INPUT_ENV: &str = "CK_VULKAN_TEST_MAP_INPUT";
+const MAP_HOVER_ENV: &str = "CK_VULKAN_TEST_MAP_HOVER";
 const SIM_INPUT_ENV: &str = "CK_VULKAN_TEST_SIM_INPUT";
 const KEY_FILES_ENV: &str = "CK_VULKAN_TEST_KEY_FILES";
 const MAP_CAMERA_ENV: &str = "CK_MAP_TEST_CAMERA_OBSERVATION";
@@ -162,6 +163,7 @@ static MODE: AtomicU8 = AtomicU8::new(0);
 static ALLOW_UNFOCUSED_UPDATES: AtomicBool = AtomicBool::new(false);
 static QUEUE_FOCUS_LOST_FOR_CK163: AtomicBool = AtomicBool::new(false);
 static MAP_INPUT_CASE: AtomicBool = AtomicBool::new(false);
+static MAP_HOVER_CASE: AtomicBool = AtomicBool::new(false);
 static SIM_INPUT_CASE: AtomicBool = AtomicBool::new(false);
 static KEYS_CASE: AtomicBool = AtomicBool::new(false);
 
@@ -539,6 +541,27 @@ impl Fixture {
         scenario
     }
 
+    /// Adds one named place to the small map fixture. The scenario uses the shipped font copied by
+    /// [`scenario_fixture`](Self::scenario_fixture), but does not copy the large Ireland dataset.
+    fn location_scenario_fixture(&self) -> PathBuf {
+        let scenario = self.scenario_fixture();
+        let map = self.path("assets/map/fixture");
+        fs::write(
+            map.join("location_kinds.toml"),
+            "[[kind]]\nid = \"town\"\nsizes = [1, 1]\ncatchment_m = [839]\nhouses = { count = [0], radius_cells_x256 = [0] }\nglyph = [\"#\"]\nlight = \"#ffffff\"\ndark = \"#000000\"\n\n[house]\nroof = \"#a9563b\"\nlight = \"#ece3cb\"\ndark = \"#2a2119\"\n",
+        )
+        .expect("write the fixture location kind");
+        let (latitude, longitude) = lat_lon_for_fixture_cell(23_883, 23_883);
+        fs::write(
+            scenario.join("locations.toml"),
+            format!(
+                "[[location]]\nid = \"fixture_town\"\nname = \"Fixture Town\"\nlat = {latitude}\nlon = {longitude}\nkind = \"town\"\nsize = 1\nbuildings = []\nsource = \"fixture\"\nconfidence = \"high\"\n"
+            ),
+        )
+        .expect("write the fixture location");
+        scenario
+    }
+
     fn has(&self, name: &str) -> bool {
         self.path(name).exists()
     }
@@ -646,6 +669,10 @@ fn start_with(args: &[&OsStr], driver: Option<(&str, &Path)>) -> Worker {
     if MAP_INPUT_CASE.load(Ordering::SeqCst) {
         command.env(MAP_INPUT_ENV, "1");
     }
+    if MAP_HOVER_CASE.load(Ordering::SeqCst) {
+        // The case writes this marker only after the hover callback receives the fixture place name.
+        command.env(MAP_HOVER_ENV, &scratch.0);
+    }
     if SIM_INPUT_CASE.load(Ordering::SeqCst) {
         // The directory the case writes its markers in: the worker's own scratch directory.
         command.env(SIM_INPUT_ENV, &scratch.0);
@@ -655,6 +682,7 @@ fn start_with(args: &[&OsStr], driver: Option<(&str, &Path)>) -> Worker {
         command.env(KEY_FILES_ENV, &scratch.0);
     }
     let map_camera_observation = (MAP_INPUT_CASE.load(Ordering::SeqCst)
+        || MAP_HOVER_CASE.load(Ordering::SeqCst)
         || SIM_INPUT_CASE.load(Ordering::SeqCst))
     .then(|| report.with_extension("map-camera"));
     if let Some(path) = &map_camera_observation {
@@ -743,7 +771,11 @@ fn finish_allowing_keys(worker: Worker) -> Seen {
             .as_ref()
             .and_then(|path| fs::read_to_string(path).ok())
             .unwrap_or_else(|| "no driver stage recorded".to_owned());
-        panic!("{error}; window driver last stage: {stage}");
+        let observation = observation_path
+            .as_ref()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .unwrap_or_else(|| "no map camera observation recorded".to_owned());
+        panic!("{error}; window driver last stage: {stage}\nmap camera observation before worker failure:\n{observation}");
     });
     if let Some(path) = observation_path {
         seen.stdout
@@ -930,6 +962,56 @@ end
         );
     }
     assert!(seen.stdout.lines().any(|line| line.starts_with("camera ")));
+}
+
+fn lat_lon_for_fixture_cell(x: i32, y: i32) -> (f64, f64) {
+    let radius = 6_378_137.0_f64;
+    let half = std::f64::consts::PI * radius;
+    let x_metres = (f64::from(x) + 0.5) * 839.0;
+    let y_metres = (f64::from(y) + 0.5) * 839.0;
+    let longitude = ((x_metres - half) / radius).to_degrees();
+    let latitude = 2.0 * ((half - y_metres) / radius).exp().atan() - std::f64::consts::FRAC_PI_2;
+    (latitude.to_degrees(), longitude)
+}
+
+fn a_fixture_scenario_hover_delivers_a_place_name_and_nil_after_moving_away() {
+    let fixture = Fixture::new();
+    let scenario = fixture.location_scenario_fixture();
+    let config_text = format!(
+        "[window]\nbackend = \"glfw-vulkan\"\n\n[game]\nscenario = '{}'\nsaves = '{}'\n\n[map]\nscroll_points_per_step = 1\n\n[frame]\nupdates_per_second = 60\n",
+        scenario.display(),
+        fixture.path("saves").display()
+    );
+    let body = r"
+local hovered, left = false, false
+local hover_dir = os.getenv('CK_VULKAN_TEST_MAP_HOVER')
+game.on_hover(function(value)
+  if value == nil then
+    if hovered then left = true; log.info('hover nil') end
+  else
+    hovered = true
+    log.info('hover-name ' .. value.id)
+    local marker = io.open(hover_dir .. '/hover-received', 'w')
+    if marker then marker:write('x'); marker:close() end
+  end
+end)
+frame.on_update(function()
+  if hovered and left then window.close() end
+end)
+window.on_opened(function() wait_for(HOLD) end)
+window.open{title = 'map hover', width = 400, height = 240, clear = {0, 0, 0}}
+";
+    let config = fixture.windowed(&config_text, body);
+    let seen = run_windowed(&fixture, &config, &[]);
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+    assert_in_order(
+        &seen.stdout,
+        &[
+            "hover-name fixture_town",
+            "hover nil",
+            "window: window closed",
+        ],
+    );
 }
 
 /// The simulation on a real window: the injected keys resume the game, pick speed 5, pan the map and then pause and quicksave
@@ -2258,6 +2340,7 @@ fn cases() -> Vec<(&'static str, fn())> {
         case!(a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally),
         case!(a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each),
         case!(a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally),
+        case!(a_fixture_scenario_hover_delivers_a_place_name_and_nil_after_moving_away),
         case!(a_window_opened_and_closed_by_the_script_exits_0_and_both_shutdowns_follow_the_close),
         case!(the_demo_placeholder_is_drawn_with_the_quads_generation_in_the_first_frame_and_the_run_closes_cleanly),
         case!(sigterm_after_window_opened_shuts_down_cleanly_and_exits_143),
@@ -2300,6 +2383,10 @@ fn run_case(name: &str, case: fn()) -> bool {
         name == "a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally",
         Ordering::SeqCst,
     );
+    MAP_HOVER_CASE.store(
+        name == "a_fixture_scenario_hover_delivers_a_place_name_and_nil_after_moving_away",
+        Ordering::SeqCst,
+    );
     SIM_INPUT_CASE.store(name == "a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally", Ordering::SeqCst);
     KEYS_CASE.store(
         name == "a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each",
@@ -2310,6 +2397,7 @@ fn run_case(name: &str, case: fn()) -> bool {
     ALLOW_UNFOCUSED_UPDATES.store(false, Ordering::SeqCst);
     QUEUE_FOCUS_LOST_FOR_CK163.store(false, Ordering::SeqCst);
     MAP_INPUT_CASE.store(false, Ordering::SeqCst);
+    MAP_HOVER_CASE.store(false, Ordering::SeqCst);
     SIM_INPUT_CASE.store(false, Ordering::SeqCst);
     KEYS_CASE.store(false, Ordering::SeqCst);
     println!(

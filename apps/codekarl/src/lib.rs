@@ -627,15 +627,21 @@ fn supervise_with_owner_factory(
         .as_ref()
         .and_then(|connected| connected.gameplay.clone());
     let time_registered = Arc::new(AtomicBool::new(false));
+    let hover_registered = Arc::new(AtomicBool::new(false));
     let (ui, sim_spawn, game_extension) = match connected {
         Some(connected) => (
             ui.with_sim(ui_link::SimLink {
                 controls: connected.controls,
                 slot: connected.slot,
                 time_registered: Arc::clone(&time_registered),
+                hover_registered: Arc::clone(&hover_registered),
             }),
             Some(connected.spawn),
-            Some(game_api::extension(time_registered, Arc::clone(&wake))),
+            Some(game_api::extension(
+                time_registered,
+                hover_registered,
+                Arc::clone(&wake),
+            )),
         ),
         None => (ui, None, None),
     };
@@ -659,7 +665,7 @@ fn supervise_with_owner_factory(
         &window_loop_settings,
         metrics.clone(),
     );
-    // `game.on_time` and `font.layout`: the UI VM's view of the simulation and of the pixel font, with a game only.
+    // `game.on_time`, `game.on_hover` and `font.layout`: the UI VM's view of the simulation, map and pixel font, with a game only.
     ui_extensions.extend(game_extension);
     ui_extensions.extend(font.map(font::extension));
     let setup = Setup {

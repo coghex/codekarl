@@ -195,12 +195,32 @@ struct State {
     pending: RefCell<VecDeque<(CallId, UiEvent)>>,
     /// The `game_time` calls posted and not yet answered (their results are taken and not given to the window loop).
     times: RefCell<Vec<CallId>>,
+    /// The `game_hover` calls posted and not yet answered.
+    hovers: RefCell<Vec<CallId>>,
     /// The snapshot last delivered through `game_time`, to post the next only when something displayed differs.
     delivered: Cell<Option<crate::game::slot::SimSnapshot>>,
+    /// Hover last posted; outer `None` means callback registration changed and needs a fresh delivery.
+    delivered_hover: RefCell<DeliveredHover>,
+    /// Which latest-wins channel gets the next free non-lifecycle call place.
+    next_update: Cell<UpdateChannel>,
     /// The text of the terminal failure `take_failure` returned, once.
     failure: RefCell<Option<String>>,
     /// A post reported that the VM ended.
     disconnected: Cell<bool>,
+}
+
+#[derive(Default)]
+enum DeliveredHover {
+    #[default]
+    Unsent,
+    Sent(Option<crate::map_app::Hover>),
+}
+
+#[derive(Clone, Copy, Default)]
+enum UpdateChannel {
+    #[default]
+    Time,
+    Hover,
 }
 
 /// The UI link: cheap to clone, and every clone shares the handle and what the link remembers, so the
@@ -220,6 +240,8 @@ pub(crate) struct SimLink {
     pub(crate) slot: std::sync::Arc<crate::game::slot::SimSlot>,
     /// Whether the UI VM has registered a `game.on_time` callback.
     pub(crate) time_registered: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the UI VM has registered a `game.on_hover` callback.
+    pub(crate) hover_registered: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl CodekarlUi {
@@ -271,7 +293,9 @@ impl CodekarlUi {
 
     /// The calls posted and not yet answered.
     pub(crate) fn outstanding(&self) -> usize {
-        self.state.pending.borrow().len() + self.state.times.borrow().len()
+        self.state.pending.borrow().len()
+            + self.state.times.borrow().len()
+            + self.state.hovers.borrow().len()
     }
 
     /// The names of the callbacks still running, oldest first.
@@ -289,6 +313,13 @@ impl CodekarlUi {
                 .borrow()
                 .iter()
                 .map(|_| crate::game_api::GAME_TIME),
+        );
+        names.extend(
+            self.state
+                .hovers
+                .borrow()
+                .iter()
+                .map(|_| crate::game_api::GAME_HOVER),
         );
         names
     }
@@ -310,9 +341,9 @@ impl CodekarlUi {
     /// Posts the latest simulation snapshot as `game_time`, when a callback is registered, something displayed differs from
     /// the last snapshot delivered and there is a free call place outside the one reserved for lifecycle posts. Otherwise
     /// nothing is posted and the next pass tries again; an older snapshot is never posted once a newer one exists.
-    fn deliver_time(&self) {
+    fn deliver_time(&self) -> bool {
         let Some(sim) = &self.sim else {
-            return;
+            return false;
         };
         if !sim
             .time_registered
@@ -320,10 +351,10 @@ impl CodekarlUi {
         {
             // A callback registered later gets the state at that time.
             self.state.delivered.set(None);
-            return;
+            return false;
         }
         let Some(snapshot) = sim.slot.latest() else {
-            return;
+            return false;
         };
         if self
             .state
@@ -331,13 +362,13 @@ impl CodekarlUi {
             .get()
             .is_some_and(|delivered| !snapshot.differs_from(&delivered))
         {
-            return;
+            return false;
         }
         if self.outstanding() >= UI_CALL_LIMIT - 1 {
-            return;
+            return false;
         }
         let Some(vm) = self.vm() else {
-            return;
+            return false;
         };
         let posted = vm.borrow_mut().post(
             crate::game_api::GAME_TIME,
@@ -346,6 +377,66 @@ impl CodekarlUi {
         if let Ok(id) = posted {
             self.state.times.borrow_mut().push(id);
             self.state.delivered.set(Some(snapshot));
+            return true;
+        }
+        false
+    }
+
+    /// Posts only a changed latest hover, outside the lifecycle-reserved call place.
+    fn deliver_hover(&self) -> bool {
+        let (Some(map), Some(sim)) = (&self.map, &self.sim) else {
+            return false;
+        };
+        if !sim
+            .hover_registered
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            *self.state.delivered_hover.borrow_mut() = DeliveredHover::Unsent;
+            return false;
+        }
+        let hover = crate::map_app::lock(map).hover();
+        if matches!(
+            &*self.state.delivered_hover.borrow(),
+            DeliveredHover::Sent(delivered) if delivered == &hover
+        ) || !self.state.hovers.borrow().is_empty()
+            || self.outstanding() >= UI_CALL_LIMIT - 1
+        {
+            return false;
+        }
+        let Some(vm) = self.vm() else {
+            return false;
+        };
+        if let Ok(id) = vm.borrow_mut().post(
+            crate::game_api::GAME_HOVER,
+            crate::game_api::hover_arguments(hover.as_ref()),
+        ) {
+            self.state.hovers.borrow_mut().push(id);
+            *self.state.delivered_hover.borrow_mut() = DeliveredHover::Sent(hover);
+            return true;
+        }
+        false
+    }
+
+    /// Gives both changed latest-wins channels a chance at each available place. When only one place
+    /// is free, the channel that did not get the previous successful delivery goes first.
+    fn deliver_updates(&self) {
+        let first = self.state.next_update.get();
+        let first_posted = match first {
+            UpdateChannel::Time => self.deliver_time(),
+            UpdateChannel::Hover => self.deliver_hover(),
+        };
+        let second = match first {
+            UpdateChannel::Time => UpdateChannel::Hover,
+            UpdateChannel::Hover => UpdateChannel::Time,
+        };
+        let second_posted = match second {
+            UpdateChannel::Time => self.deliver_time(),
+            UpdateChannel::Hover => self.deliver_hover(),
+        };
+        if first_posted || second_posted {
+            self.state
+                .next_update
+                .set(if first_posted { second } else { first });
         }
     }
 
@@ -367,6 +458,22 @@ impl CodekarlUi {
                     return Some(Taken::TimeFailed(format!(
                         "ui callback {} failed: {message}\n{traceback}",
                         crate::game_api::GAME_TIME
+                    )));
+                }
+                continue;
+            }
+            let hovered = {
+                let mut hovers = self.state.hovers.borrow_mut();
+                hovers
+                    .iter()
+                    .position(|id| *id == result.id)
+                    .map(|position| hovers.remove(position))
+            };
+            if hovered.is_some() {
+                if let CallOutcome::Failed { message, traceback } = result.outcome {
+                    return Some(Taken::HoverFailed(format!(
+                        "ui callback {} failed: {message}\n{traceback}",
+                        crate::game_api::GAME_HOVER
                     )));
                 }
                 continue;
@@ -396,7 +503,7 @@ impl CodekarlUi {
         loop {
             match self.take_next()? {
                 Taken::Answer(answer) => return Some(answer),
-                Taken::TimeFailed(message) => {
+                Taken::TimeFailed(message) | Taken::HoverFailed(message) => {
                     self.state.failure.borrow_mut().get_or_insert(message);
                 }
             }
@@ -411,7 +518,8 @@ impl CodekarlUi {
                 answer: Answer::Failed { message },
                 ..
             })
-            | Taken::TimeFailed(message) => vec![message],
+            | Taken::TimeFailed(message)
+            | Taken::HoverFailed(message) => vec![message],
             Taken::Answer(_) => Vec::new(),
         })
     }
@@ -423,6 +531,8 @@ enum Taken {
     Answer(UiAnswer),
     /// A `game_time` call failed: the message with its traceback.
     TimeFailed(String),
+    /// A `game_hover` call failed.
+    HoverFailed(String),
 }
 
 impl UiLink for CodekarlUi {
@@ -488,12 +598,11 @@ impl UiLink for CodekarlUi {
         if self.simulation_failed() {
             return None;
         }
-        self.deliver_time();
+        self.deliver_updates();
         let answer = self.next_answer();
-        if answer.is_none() {
-            // Results drained just now may have freed the call places a waiting snapshot needs, and no other wake may come.
-            self.deliver_time();
-        }
+        // Intake can drain hidden game_time/game_hover results before returning a frame answer. Those results may
+        // free the non-lifecycle places even when `answer` is Some; re-arm waiting deliveries after every drain.
+        self.deliver_updates();
         answer
     }
 
@@ -676,6 +785,205 @@ mod tests {
         let mut link = harness.ui.clone();
         link.post(CLOSE).expect("posted");
         assert_eq!(answer(&mut link).answer, Answer::NotRegistered);
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the callback delivery sequence is one end-to-end behavior"
+    )]
+    fn hover_delivery_is_change_only_tracks_camera_and_publishes_nil_on_leave() {
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let record: HostFunction = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |arguments| {
+                let value = match arguments.first().and_then(Option::as_ref) {
+                    Some(ConfigValue::Table(fields)) => match fields.get("name") {
+                        Some(ConfigValue::String(name)) => name.clone(),
+                        _ => "missing-name".to_owned(),
+                    },
+                    _ => "nil".to_owned(),
+                };
+                seen.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(value);
+                Ok(Vec::new())
+            })
+        };
+        let registered = Arc::new(AtomicBool::new(false));
+        let hover_registered = Arc::new(AtomicBool::new(false));
+        let harness = Harness::new(
+            "game.on_hover(function(h) window.record(h) end)\nframe.on_update(function() end)",
+            Extras {
+                functions: vec![("record", record)],
+                extensions: vec![
+                    frame_extension(),
+                    game_api::extension(
+                        Arc::clone(&registered),
+                        Arc::clone(&hover_registered),
+                        Arc::new(|| {}),
+                    ),
+                ],
+                ..Extras::default()
+            },
+        );
+        let map = crate::map_app::tests::window_case_hover_controller();
+        // The Cocoa helper injects at the fixture marker's center in window coordinates.
+        // The window adapter reports top-left coordinates to the map controller.
+        let pointer = ck_window::PointerPosition {
+            x: 200 * 256,
+            y: 120 * 256,
+        };
+        let map = crate::map_app::shared(map);
+        let slot = SimSlot::new(Arc::new(|| {}));
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut link = CodekarlUi::with_map(harness.ui.slot.clone(), map).with_sim(SimLink {
+            controls: crate::game::controls::SimControls::new(sender),
+            slot,
+            time_registered: registered,
+            hover_registered,
+        });
+        let wait_for_count = |link: &mut CodekarlUi, wanted: usize| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let _ = link.take_answer();
+                if seen
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len()
+                    >= wanted
+                {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "hover callback {wanted} was not delivered"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+        };
+        let mut first = update(1);
+        let UiEvent::Update(first) = &mut first else {
+            unreachable!();
+        };
+        first.metrics.points = (400, 240);
+        first.metrics.pixels = PixelSize {
+            width: 800,
+            height: 480,
+        };
+        first.input.pointer_position = Some(pointer);
+        first.input.pointer_events = vec![
+            ck_window::PointerEvent::Scroll {
+                position: pointer,
+                amount: 15 * 256,
+                unit: ck_window::ScrollUnit::Points,
+            },
+            ck_window::PointerEvent::Move(pointer),
+        ];
+        first.input.actions = vec![action("map_pan_left", false, true, true)];
+        first.input.transitions = vec![
+            Transition {
+                action: "map_pan_left".to_owned(),
+                edge: Edge::Press,
+            },
+            Transition {
+                action: "map_pan_left".to_owned(),
+                edge: Edge::Release,
+            },
+        ];
+        link.post(UiEvent::Update(first.clone()))
+            .expect("first update posted");
+
+        // Model more dropped owner input arriving after the pointer move, before the link gets a
+        // chance to publish the controller's hover to the UI VM.
+        let mut interleaved_keys = update(2);
+        let UiEvent::Update(interleaved_keys) = &mut interleaved_keys else {
+            unreachable!();
+        };
+        interleaved_keys.metrics.points = (400, 240);
+        interleaved_keys.metrics.pixels = PixelSize {
+            width: 800,
+            height: 480,
+        };
+        interleaved_keys.input.pointer_position = Some(pointer);
+        interleaved_keys.input.actions = vec![action("map_zoom_out", false, true, true)];
+        interleaved_keys.input.transitions = vec![
+            Transition {
+                action: "map_zoom_out".to_owned(),
+                edge: Edge::Press,
+            },
+            Transition {
+                action: "map_zoom_out".to_owned(),
+                edge: Edge::Release,
+            },
+        ];
+        link.post(UiEvent::Update(interleaved_keys.clone()))
+            .expect("interleaved key update posted");
+
+        let _ = answer(&mut link);
+        wait_for_count(&mut link, 1);
+        assert_eq!(seen.lock().unwrap().as_slice(), ["Fixture Town"]);
+
+        let mut still = update(3);
+        let UiEvent::Update(still) = &mut still else {
+            unreachable!();
+        };
+        still.metrics.points = (400, 240);
+        still.metrics.pixels = PixelSize {
+            width: 800,
+            height: 480,
+        };
+        still.input.pointer_position = Some(pointer);
+        link.post(UiEvent::Update(still.clone()))
+            .expect("still update posted");
+        let _ = answer(&mut link);
+        for _ in 0..5 {
+            let _ = link.take_answer();
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(seen.lock().unwrap().as_slice(), ["Fixture Town"]);
+
+        let mut pan = update(4);
+        let UiEvent::Update(pan) = &mut pan else {
+            unreachable!();
+        };
+        pan.metrics.points = (400, 240);
+        pan.metrics.pixels = PixelSize {
+            width: 800,
+            height: 480,
+        };
+        pan.input.actions = vec![action("map_pan_right", true, false, false)];
+        pan.input.pointer_position = Some(pointer);
+        link.post(UiEvent::Update(pan.clone()))
+            .expect("pan update posted");
+        let _ = answer(&mut link);
+        wait_for_count(&mut link, 2);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["Fixture Town", "Fixture Town"]
+        );
+
+        let mut leave = update(5);
+        let UiEvent::Update(leave) = &mut leave else {
+            unreachable!();
+        };
+        leave.metrics.points = (400, 240);
+        leave.metrics.pixels = PixelSize {
+            width: 800,
+            height: 480,
+        };
+        leave.input.pointer_position = Some(ck_window::PointerPosition {
+            x: 401 * 256,
+            y: 12 * 256,
+        });
+        link.post(UiEvent::Update(leave.clone()))
+            .expect("leave update posted");
+        let _ = answer(&mut link);
+        wait_for_count(&mut link, 3);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["Fixture Town", "Fixture Town", "nil"]
+        );
     }
 
     #[test]
@@ -1184,6 +1492,7 @@ mod tests {
         extras.functions.push(("record", record));
         extras.extensions.push(game_api::extension(
             Arc::clone(&registered),
+            Arc::new(AtomicBool::new(false)),
             Arc::new(|| {}),
         ));
         let harness = Harness::new(script, extras);
@@ -1193,6 +1502,7 @@ mod tests {
             controls: crate::game::controls::SimControls::new(sender),
             slot: Arc::clone(&slot),
             time_registered: registered,
+            hover_registered: Arc::new(AtomicBool::new(false)),
         });
         Timed {
             harness,
@@ -1407,6 +1717,318 @@ mod tests {
         );
         timed.pump_until(4);
         assert_eq!(timed.seen(), ["1", "2", "3", "4"]);
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one end-to-end regression proves a busy call drain rearms the changed hover"
+    )]
+    fn a_hover_changed_with_full_places_is_rearmed_when_the_drain_also_returns_a_frame_answer() {
+        let gate = Gate::new();
+        let entered = Arc::new(AtomicBool::new(false));
+        let hold: HostFunction = {
+            let gate = Arc::clone(&gate);
+            let entered = Arc::clone(&entered);
+            Arc::new(move |_| {
+                entered.store(true, Ordering::SeqCst);
+                gate.wait();
+                Ok(Vec::new())
+            })
+        };
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let record: HostFunction = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |arguments| {
+                let value = match arguments.first().and_then(Option::as_ref) {
+                    Some(ConfigValue::Table(fields)) => match fields.get("name") {
+                        Some(ConfigValue::String(name)) => name.clone(),
+                        _ => "missing-name".to_owned(),
+                    },
+                    _ => "nil".to_owned(),
+                };
+                seen.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(value);
+                Ok(Vec::new())
+            })
+        };
+        let time_registered = Arc::new(AtomicBool::new(false));
+        let hover_registered = Arc::new(AtomicBool::new(false));
+        let reports = Arc::new(AtomicUsize::new(0));
+        let harness = Harness::new(
+            "game.on_time(function() window.hold() end)\n\
+             game.on_hover(function(h) window.record(h) end)\n\
+             frame.on_update(function() end)",
+            Extras {
+                functions: vec![("hold", hold), ("record", record)],
+                extensions: vec![
+                    frame_extension(),
+                    game_api::extension(
+                        Arc::clone(&time_registered),
+                        Arc::clone(&hover_registered),
+                        Arc::new(|| {}),
+                    ),
+                ],
+                after_wake: Some({
+                    let reports = Arc::clone(&reports);
+                    Arc::new(move || {
+                        reports.fetch_add(1, Ordering::SeqCst);
+                    })
+                }),
+                ..Extras::default()
+            },
+        );
+        let map = crate::map_app::shared(crate::map_app::tests::window_case_hover_controller());
+        let slot = SimSlot::new(Arc::new(|| {}));
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut link =
+            CodekarlUi::with_map(harness.ui.slot.clone(), Arc::clone(&map)).with_sim(SimLink {
+                controls: crate::game::controls::SimControls::new(sender),
+                slot: Arc::clone(&slot),
+                time_registered,
+                hover_registered,
+            });
+
+        // Establish the unchanged nil delivery so the later marker hover is a distinct latest value.
+        link.deliver_hover();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+        {
+            let _ = link.take_answer();
+            assert!(
+                Instant::now() < deadline,
+                "the baseline nil hover was not delivered"
+            );
+            thread::yield_now();
+        }
+        while link.outstanding() > 0 {
+            let _ = link.take_answer();
+            assert!(
+                Instant::now() < deadline,
+                "the baseline hover result was not drained"
+            );
+            thread::yield_now();
+        }
+        seen.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+
+        // Put the frame answer first in the result queue, then use the remaining two places for
+        // held game_time calls. Change the controller hover only after those places are full, so
+        // time and hover will both be waiting for the one place freed by the frame answer.
+        link.post(update(1)).expect("frame update is posted first");
+        slot.publish(snapshot_at(1, 1, None));
+        link.deliver_updates();
+        slot.publish(snapshot_at(2, 1, None));
+        link.deliver_updates();
+        assert_eq!(link.outstanding(), 3);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !entered.load(Ordering::SeqCst) {
+            assert!(
+                Instant::now() < deadline,
+                "game_time did not enter the hold"
+            );
+            thread::yield_now();
+        }
+        let result_baseline = reports.load(Ordering::SeqCst);
+
+        let pointer = ck_window::PointerPosition {
+            x: 200 * 256,
+            y: 120 * 256,
+        };
+        let mut event = update(1);
+        let UiEvent::Update(update) = &mut event else {
+            unreachable!();
+        };
+        update.metrics.points = (400, 240);
+        update.metrics.pixels = PixelSize {
+            width: 800,
+            height: 480,
+        };
+        update.input.pointer_position = Some(pointer);
+        update.input.pointer_events = vec![
+            ck_window::PointerEvent::Scroll {
+                position: pointer,
+                amount: 15 * 256,
+                unit: ck_window::ScrollUnit::Points,
+            },
+            ck_window::PointerEvent::Move(pointer),
+        ];
+        let UiEvent::Update(controller_update) = &event else {
+            unreachable!();
+        };
+        crate::map_app::lock(&map)
+            .update(controller_update)
+            .expect("the direct controller replay succeeds");
+        assert_eq!(
+            crate::map_app::lock(&map)
+                .hover()
+                .as_ref()
+                .map(|hover| hover.name.as_str()),
+            Some("Fixture Town")
+        );
+        slot.publish(snapshot_at(3, 1, None));
+        assert_eq!(link.outstanding(), 3);
+
+        // No link polling while the owner completes the frame and blocks in game_time.
+        gate.open();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while reports.load(Ordering::SeqCst) < result_baseline + 2 {
+            assert!(
+                Instant::now() < deadline,
+                "the held game_time calls did not finish"
+            );
+            thread::yield_now();
+        }
+
+        // This intake returns the first frame answer while both time calls remain outstanding.
+        // The newer time snapshot and changed hover now compete for exactly one freed place.
+        let answer = link
+            .take_answer()
+            .expect("the first frame update answer is ready");
+        assert!(matches!(answer.event, UiEvent::Update(_)));
+        let rearmed = link.outstanding_names();
+        gate.open();
+        assert_eq!(
+            rearmed,
+            [
+                game_api::GAME_TIME,
+                game_api::GAME_TIME,
+                game_api::GAME_HOVER,
+            ],
+            "a steady stream of fresh time snapshots must not take the only place ahead of hover"
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the waiting hover was stranded after intake"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(
+            seen.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice(),
+            ["Fixture Town"]
+        );
+    }
+
+    #[test]
+    fn a_stream_of_hover_changes_cannot_starve_a_waiting_game_time_delivery() {
+        let time_registered = Arc::new(AtomicBool::new(false));
+        let hover_registered = Arc::new(AtomicBool::new(false));
+        let harness = Harness::new(
+            "game.on_time(function() end)\n\
+             game.on_hover(function() end)\n\
+             frame.on_update(function() end)",
+            Extras {
+                extensions: vec![
+                    frame_extension(),
+                    game_api::extension(
+                        Arc::clone(&time_registered),
+                        Arc::clone(&hover_registered),
+                        Arc::new(|| {}),
+                    ),
+                ],
+                ..Extras::default()
+            },
+        );
+        let map = crate::map_app::shared(crate::map_app::tests::window_case_hover_controller());
+        let slot = SimSlot::new(Arc::new(|| {}));
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut link =
+            CodekarlUi::with_map(harness.ui.slot.clone(), Arc::clone(&map)).with_sim(SimLink {
+                controls: crate::game::controls::SimControls::new(sender),
+                slot: Arc::clone(&slot),
+                time_registered,
+                hover_registered,
+            });
+
+        // The first frame is the ready answer at the head of the VM queue. A marker hover is
+        // delivered after it, making time the next fair choice when that frame frees one place.
+        link.post(update(1)).expect("first frame is posted");
+        let pointer = ck_window::PointerPosition {
+            x: 200 * 256,
+            y: 120 * 256,
+        };
+        let mut marker_event = update(2);
+        let UiEvent::Update(marker) = &mut marker_event else {
+            unreachable!();
+        };
+        marker.metrics.points = (400, 240);
+        marker.metrics.pixels = PixelSize {
+            width: 800,
+            height: 480,
+        };
+        marker.input.pointer_position = Some(pointer);
+        marker.input.pointer_events = vec![ck_window::PointerEvent::Move(pointer)];
+        crate::map_app::lock(&map)
+            .update(marker)
+            .expect("the marker hover is produced");
+        link.deliver_updates();
+        assert_eq!(link.outstanding_names(), ["frame_update", "game_hover"]);
+
+        link.post(update(3))
+            .expect("second frame fills the last place");
+        slot.publish(snapshot_at(1, 1, None));
+
+        // Keep changing the latest hover while all places are occupied. The already-posted hover
+        // remains in flight, so the latest hover cannot be sent until that result is drained.
+        let mut latest = update(4);
+        let UiEvent::Update(latest) = &mut latest else {
+            unreachable!();
+        };
+        latest.metrics.points = (400, 240);
+        latest.metrics.pixels = PixelSize {
+            width: 800,
+            height: 480,
+        };
+        for position in [
+            ck_window::PointerPosition {
+                x: 700 * 256,
+                y: 400 * 256,
+            },
+            pointer,
+            ck_window::PointerPosition {
+                x: 700 * 256,
+                y: 400 * 256,
+            },
+        ] {
+            latest.input.pointer_position = Some(position);
+            latest.input.pointer_events = vec![ck_window::PointerEvent::Move(position)];
+            crate::map_app::lock(&map)
+                .update(latest)
+                .expect("the latest hover change is valid");
+        }
+        assert!(crate::map_app::lock(&map).hover().is_none());
+        assert_eq!(link.outstanding(), 3);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let answer = loop {
+            if let Some(answer) = link.take_answer() {
+                break answer;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the ready frame answer did not arrive"
+            );
+            thread::yield_now();
+        };
+        assert!(matches!(answer.event, UiEvent::Update(_)));
+        assert_eq!(
+            link.outstanding_names(),
+            ["frame_update", game_api::GAME_TIME, "game_hover"],
+            "a stream of hover changes must not take the only place ahead of game_time"
+        );
     }
 
     #[test]
