@@ -1026,6 +1026,49 @@ class WindowBuildsOnInput(unittest.TestCase):
         self.assertIn("native.window", self.selected("crates/window-cocoa/native/window.m"))
 
 
+class SimGroup(unittest.TestCase):
+    """CK-190: the simulation core is an isolated plain Rust group with no GPU or window dependency."""
+
+    def selected(self, path: str) -> set[str]:
+        return {c.step.name for c in check.plan(check.STEPS, [path]).choices if c.selected}
+
+    def test_01_crate_paths_select_the_sim_group_and_no_gpu_or_window_group(self) -> None:
+        for path in (
+            "crates/sim/Cargo.toml",
+            "crates/sim/src/lib.rs",
+            "crates/sim/src/tests/clock.rs",
+        ):
+            chosen = self.selected(path)
+            self.assertIn("sim.core", chosen, path)
+            self.assertNotIn("unittest-lints", chosen, path)
+            for other in (
+                "metal.gpu",
+                "native.window",
+                "glfw.window",
+                "vulkan.window",
+                "vulkan.gpu",
+                "vulkan.app",
+                "rust.app",
+            ):
+                self.assertNotIn(other, chosen, f"{path}: {other}")
+
+    def test_02_other_crates_and_the_lockfile_do_not_select_it(self) -> None:
+        for path in ("Cargo.lock", "crates/map/src/lib.rs", "crates/input/src/lib.rs"):
+            self.assertNotIn("sim.core", self.selected(path), path)
+
+    def test_03_it_owns_only_the_sim_library_and_doc_units(self) -> None:
+        step = next(step for step in check.STEPS if step.name == "sim.core")
+        units = group_units(step, TARGETS)
+        self.assertEqual(
+            {(kind, name) for _, kind, name, _, _ in units},
+            {("lib", "ck_sim"), ("doc", "ck_sim")},
+        )
+        self.assertEqual({unit[0] for unit in units}, {"ck-sim"})
+        self.assertEqual({need_of(unit) for unit in units}, {"plain"})
+        self.assertEqual(step.needs, "plain")
+        self.assertEqual(step.category, "affected")
+
+
 class Render2dGroup(unittest.TestCase):
     """CK-90: the 2D renderer's core group, in the real catalog."""
 
