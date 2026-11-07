@@ -607,6 +607,8 @@ fn child_main(name: &str, dir: &Path) -> ! {
         config: Some(config),
         headless: false,
         backend: None,
+        load: None,
+        seed: None,
     };
     let shared = Shared {
         quit: Arc::new(AtomicBool::new(false)),
@@ -1126,16 +1128,18 @@ fn unsafe_words(text: &str) -> usize {
 
 /// The accepted `unsafe` of `codekarl`, per source (its `src` and `tests`, paths below the crate) and in
 /// words: the native path's presenter start, the signal wrappers and their tests, the logger's immediate
-/// exit, the boundary tests' liveness probe, the stderr redirection, the real-window tests' `kill` and filter FFI and the
+/// exit, the boundary tests' liveness probe, the stderr redirection, the simulation's seed entropy, the real-window tests' `kill` and filter FFI and the
 /// test support's `fcntl` calls. The Vulkan integration's five are in `src/vulkan/real.rs`. A source that
 /// is not here has none; a new `unsafe` anywhere (this crate's `lib.rs` included) changes a count and
 /// fails [`every_unsafe_of_codekarl_is_the_accepted_baseline_plus_the_five_of_the_vulkan_integration`].
-const BASELINE: [(&str, usize); 11] = [
+const BASELINE: [(&str, usize); 12] = [
     ("src/native.rs", 1),
     ("src/signals.rs", 16),
     ("src/lifecycle.rs", 1),
     ("src/boundary.rs", 2),
     ("src/lib.rs", 1),
+    // CK-195: the simulation's `getentropy`, for the master seed of a new game, with a SAFETY comment.
+    ("src/game/setup.rs", 1),
     ("src/vulkan/real.rs", 5),
     // The real-window test's `kill`, and the worker's (CK-131): the filter and typist FFI, the signal mask
     // (`pthread_sigmask` and its set operations) and the mask probe, each with a SAFETY comment.

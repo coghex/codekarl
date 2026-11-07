@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <pthread.h>
 #include <unistd.h>
 #define CK_APP_T_TIMEOUT (-3)
@@ -24,12 +25,14 @@ extern void glfwPostEmptyEvent(void);
 static id ck_app_input_filter = nil;
 static id ck_app_mouse_filter = nil;
 static id ck_app_map_keys_observer = nil;
+static id ck_app_sim_keys_observer = nil;
 static id ck_app_map_pointer_observer = nil;
 static id ck_app_unmarked_observer = nil;
 static _Atomic uint64_t ck_app_dropped;
 static _Atomic uint64_t ck_app_dropped_mouse;
 static NSWindow *ck_app_the_window(int32_t *error);
 void ck_app_t_schedule_map_keys(void);
+void ck_app_t_schedule_sim_keys(void);
 void ck_app_t_schedule_map_pointer(void);
 
 /* The test-only input filter: a local event monitor, which AppKit runs inside -[NSApplication sendEvent:] before
@@ -80,6 +83,9 @@ void ck_app_t_install_input_filter(void) {
         }];
         if (getenv("CK_WINDOWED_TEST_MAP_INPUT") != NULL || getenv("CK_VULKAN_TEST_MAP_INPUT") != NULL) {
             ck_app_t_schedule_map_pointer();
+        }
+        if (getenv("CK_WINDOWED_TEST_SIM_INPUT") != NULL || getenv("CK_VULKAN_TEST_SIM_INPUT") != NULL) {
+            ck_app_t_schedule_sim_keys();
         }
     }
 }
@@ -257,6 +263,80 @@ static _Atomic int32_t ck_app_typist_mask;
 
 int32_t ck_app_t_typist_mask(void) {
     return atomic_load(&ck_app_typist_mask);
+}
+
+/* Posts a marked tap (key-down, then key-up) of one key. */
+static void ck_app_tap(uint16_t code, const char *characters) {
+    NSEvent *down = ck_app_key(0, code, 0, 0, characters, 1);
+    NSEvent *up = ck_app_key(1, code, 0, 0, NULL, 1);
+    if (down != nil) {
+        [NSApp postEvent:down atStart:NO];
+    }
+    if (up != nil) {
+        [NSApp postEvent:up atStart:NO];
+    }
+}
+
+/* Posts a marked key-down, or a marked key-up, of one key. */
+static void ck_app_hold(uint16_t code, const char *characters, int down) {
+    NSEvent *event = ck_app_key(down ? 0 : 1, code, 0, 0, down ? characters : NULL, 1);
+    if (event != nil) {
+        [NSApp postEvent:event atStart:NO];
+    }
+}
+
+/* Whether `name` exists in the directory `dir`. */
+static BOOL ck_app_marker(const char *dir, const char *name) {
+    NSString *path = [[NSString stringWithUTF8String:dir] stringByAppendingPathComponent:
+                      [NSString stringWithUTF8String:name]];
+    return access(path.fileSystemRepresentation, F_OK) == 0;
+}
+
+/* Posts the simulation window test's marked keys in three batches, each when the test says so: Space and Digit5 (resume,
+ * then speed 5) as soon as AppKit reports a visible window; a map pan (ArrowLeft, held down) once the directory named by
+ * the environment holds a file `pan`; their key-ups, Space and F5 (pause, then quicksave) once it holds `pause`. The test writes each marker
+ * after it has seen the simulation's records show the game progress, so the batches are ordered by what happened, not by a
+ * count or a delay. The poll runs on the main queue every 5 ms and ends with the last batch. */
+void ck_app_t_schedule_sim_keys(void) {
+    const char *dir = getenv("CK_WINDOWED_TEST_SIM_INPUT");
+    if (dir == NULL) {
+        dir = getenv("CK_VULKAN_TEST_SIM_INPUT");
+    }
+    if (dir == NULL) {
+        return;
+    }
+    static char markers[1024];
+    strncpy(markers, dir, sizeof markers - 1);
+    ck_app_sim_keys_observer = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSWindowDidUpdateNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *notification) {
+        NSWindow *window = notification.object;
+        if (![window isKindOfClass:NSWindow.class] || !window.isVisible) {
+            return;
+        }
+        [NSNotificationCenter.defaultCenter removeObserver:ck_app_sim_keys_observer];
+        ck_app_sim_keys_observer = nil;
+        ck_app_tap(0x31, " "); /* Space */
+        ck_app_tap(0x17, "5"); /* Digit5 */
+        __block BOOL panned = NO;
+        dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, 5 * NSEC_PER_MSEC, NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(timer, ^{
+            if (!panned && ck_app_marker(markers, "pan")) {
+                panned = YES;
+                ck_app_hold(0x7B, "", 1); /* ArrowLeft down: a pan held while the game runs */
+            }
+            if (ck_app_marker(markers, "pause")) {
+                ck_app_hold(0x7B, "", 0); /* ArrowLeft up */
+                ck_app_tap(0x31, " "); /* Space */
+                ck_app_tap(0x60, "");  /* F5 */
+                dispatch_source_cancel(timer);
+            }
+        });
+        dispatch_resume(timer);
+    }];
 }
 
 /* The owner, typing without stopping: unmarked key-downs (Escape among them), a repeat, a key-up, modifier

@@ -306,6 +306,58 @@ fn a_callback_that_raises_ends_the_run_failed_with_its_traceback_after_a_proven_
 }
 
 #[test]
+fn a_terminal_simulation_failure_ends_a_windowed_run_failed_and_is_never_reported_as_a_pause() {
+    use crate::game::{
+        controls::{Control, SimControls},
+        core::Message,
+        slot::PauseReason,
+        tests::{Faults, Waiter, spawn_test_owner, start},
+    };
+    use crate::ui_link::SimLink;
+    use ck_runtime::Owner;
+
+    let harness = Harness::new(WINDOW, Extras::default());
+    let waiter = Arc::new(Waiter::default());
+    // A test system raises the terminal flag at the fourth tick, through the core's failure probe.
+    let (mut owner, sender, slot) = spawn_test_owner(
+        Faults {
+            error_at: None,
+            end_at: Some(start().hours() + 3),
+        },
+        &waiter,
+        vec![
+            Message::Control(Control::Speed(5)),
+            Message::Control(Control::TogglePause),
+        ],
+    );
+    waiter.wait_for(|| slot.failure().is_some());
+    let mut env = harness.env();
+    env.ui = harness.ui.clone().with_sim(SimLink {
+        controls: SimControls::new(sender),
+        slot: Arc::clone(&slot),
+    });
+    let latch = ResourceLatch::new();
+    let outcome = run_hooked_in(
+        &env,
+        &harness,
+        BackendScript::default(),
+        PresenterScript::default(),
+        &latch,
+        DRAIN,
+        |_| {},
+    );
+    let message = failed(&outcome.end);
+    assert!(message.contains("the gameplay VM ended"), "{message}");
+    assert!(outcome.events.iter().any(|event| event == "destroy_window"));
+    // It is a failure, not a pause.
+    assert_ne!(
+        slot.latest().expect("a snapshot").paused,
+        Some(PauseReason::Error)
+    );
+    assert!(owner.wait_finished(Duration::from_secs(10)));
+}
+
+#[test]
 fn a_backend_that_cannot_be_made_fails_the_run_with_nothing_unproven() {
     let harness = Harness::new(WINDOW, Extras::default());
     let latch = ResourceLatch::new();

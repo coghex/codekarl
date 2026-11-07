@@ -1,0 +1,348 @@
+//! The simulation core: a state machine with no thread and no real clock.
+//!
+//! It is given a monotonic time and the controls that arrived, runs the ticks that are due and says what to publish. The
+//! thread around it (see [`super::owner`]) only waits for the next control or the next tick and reads the time; tests drive
+//! the core with a fake time and never sleep.
+
+use std::{path::PathBuf, time::Duration};
+
+use ck_log::Level;
+use ck_sim::{Canonical, Clock, Date, Save, Scheduler, Simulation, Speed};
+
+use super::{
+    controls::Control,
+    saves::{Identity, quicksave_path, write_atomically},
+    slot::{PauseReason, SimSnapshot},
+};
+
+/// What reaches the simulation owner over its control channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Message {
+    /// A control the player asked for.
+    Control(Control),
+    /// Finish the tick that is running, if any, and end.
+    Stop,
+    /// End without running another tick.
+    Cancel,
+}
+
+/// Whether the owner goes on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Flow {
+    /// Keep serving.
+    Continue,
+    /// End the thread.
+    End,
+}
+
+/// The last representable date, shown when the calendar has ended.
+const LAST_DATE: Date = Date {
+    year: ck_sim::LAST_YEAR,
+    month: 12,
+    day: 31,
+    hour: 23,
+};
+
+/// The core's way out to the world: log records, snapshots and the terminal failure.
+pub(crate) struct Outputs {
+    /// Writes one record in category `sim`.
+    pub(crate) log: Box<dyn FnMut(Level, String) + Send>,
+    /// Publishes a snapshot whose displayed fields changed.
+    pub(crate) publish: Box<dyn FnMut(SimSnapshot) + Send>,
+    /// Records the terminal failure.
+    pub(crate) fail: Box<dyn FnMut(String) + Send>,
+}
+
+/// How a quickload builds the replacement game's systems and applies its commands.
+pub(crate) struct Rebuild<S, C> {
+    /// A new scheduler with the game's systems.
+    pub(crate) scheduler: Box<dyn Fn() -> Scheduler<S> + Send>,
+    /// How a command changes the state.
+    pub(crate) apply: fn(&mut S, C),
+}
+
+/// What a state may tell the core after a tick: a terminal failure of the simulation, which is not a pause.
+type FailureProbe<S> = Box<dyn FnMut(&S) -> Option<String> + Send>;
+
+/// The game: a [`Simulation`], its clock, why it is paused and the means to save and load it.
+pub(crate) struct Core<S, C> {
+    simulation: Simulation<S, C>,
+    clock: Clock,
+    paused: Option<PauseReason>,
+    identity: Identity,
+    saves: PathBuf,
+    rebuild: Rebuild<S, C>,
+    outputs: Outputs,
+    published: Option<SimSnapshot>,
+    failure_probe: FailureProbe<S>,
+    failed: bool,
+}
+
+impl<S, C> Core<S, C>
+where
+    S: Canonical + Clone + Send + 'static,
+    C: Canonical + Send + 'static,
+{
+    /// A game over `simulation`, paused at speed 1 with the reason `load`. It publishes its first snapshot at once.
+    pub(crate) fn new(
+        simulation: Simulation<S, C>,
+        identity: Identity,
+        saves: PathBuf,
+        rebuild: Rebuild<S, C>,
+        outputs: Outputs,
+    ) -> Self {
+        let mut core = Self {
+            simulation,
+            clock: Clock::new(),
+            paused: Some(PauseReason::Load),
+            identity,
+            saves,
+            rebuild,
+            outputs,
+            published: None,
+            failure_probe: Box::new(|_| None),
+            failed: false,
+        };
+        core.publish_if_changed();
+        core
+    }
+
+    /// Lets a test state end the simulation with a terminal failure after a tick.
+    #[cfg(test)]
+    pub(crate) fn with_failure_probe(
+        mut self,
+        probe: impl FnMut(&S) -> Option<String> + Send + 'static,
+    ) -> Self {
+        self.failure_probe = Box::new(probe);
+        self
+    }
+
+    fn log(&mut self, level: Level, message: String) {
+        (self.outputs.log)(level, message);
+    }
+
+    /// What the UI shows now.
+    pub(crate) fn snapshot(&self) -> SimSnapshot {
+        SimSnapshot {
+            tick: self.simulation.time(),
+            date: self.simulation.date().unwrap_or(LAST_DATE),
+            speed: self.clock.speed(),
+            paused: self.paused,
+        }
+    }
+
+    fn publish_if_changed(&mut self) {
+        let snapshot = self.snapshot();
+        if self
+            .published
+            .as_ref()
+            .is_none_or(|published| snapshot.differs_from(published))
+        {
+            self.published = Some(snapshot);
+            // Output only, at `debug`: what the UI will be told, for the tests that watch a real run's log.
+            self.log(Level::Debug, snapshot.to_string());
+            (self.outputs.publish)(snapshot);
+        }
+    }
+
+    /// How long the thread may wait for the next control before a tick is due: one tick's real time at the current speed, or
+    /// no limit while paused or after the end.
+    pub(crate) fn wait_hint(&self) -> Option<Duration> {
+        if self.paused.is_some() || self.failed {
+            return None;
+        }
+        let per_second = u64::from(self.clock.speed().hours_per_second());
+        Some(Duration::from_nanos(1_000_000_000 / per_second))
+    }
+
+    /// Acts on one message at time `now`.
+    pub(crate) fn dispatch(&mut self, message: Message, now: Duration) -> Flow {
+        match message {
+            Message::Control(control) => {
+                self.control(control, now);
+                if self.failed {
+                    Flow::End
+                } else {
+                    Flow::Continue
+                }
+            }
+            Message::Stop | Message::Cancel => Flow::End,
+        }
+    }
+
+    fn control(&mut self, control: Control, now: Duration) {
+        match control {
+            Control::TogglePause => self.toggle_pause(now),
+            Control::Speed(level) => self.set_level(level),
+            Control::Faster => self.set_level(self.clock.speed().level().saturating_add(1)),
+            Control::Slower => self.set_level(self.clock.speed().level().saturating_sub(1)),
+            Control::Quicksave => self.quicksave(),
+            Control::Quickload => self.quickload(),
+        }
+        self.publish_if_changed();
+    }
+
+    fn toggle_pause(&mut self, now: Duration) {
+        if self.paused.is_none() {
+            self.clock.pause();
+            self.paused = Some(PauseReason::Player);
+        } else if self.simulation.date().is_err() {
+            self.log(
+                Level::Warn,
+                "the calendar has ended; the game stays paused".to_owned(),
+            );
+        } else {
+            self.clock.resume(now);
+            self.paused = None;
+        }
+    }
+
+    /// Sets the speed to `level` clamped to 1 to 5; a paused game stays paused.
+    fn set_level(&mut self, level: u8) {
+        let level = level.clamp(1, 5);
+        if let Ok(speed) = Speed::new(level) {
+            self.clock.set_speed(speed);
+        }
+    }
+
+    /// Runs the ticks due at `now`, at most the clock's per-wake limit. Controls that arrive meanwhile (`poll`) take effect at
+    /// the next tick boundary: a pause stops the wake there, and a stop lets the tick that is running finish.
+    pub(crate) fn run_wake(
+        &mut self,
+        now: Duration,
+        poll: &mut dyn FnMut() -> Option<Message>,
+    ) -> Flow {
+        if self.drain(now, poll) == Flow::End {
+            return Flow::End;
+        }
+        let due = if self.paused.is_none() {
+            self.clock.due(now)
+        } else {
+            0
+        };
+        for _ in 0..due {
+            if self.drain(now, poll) == Flow::End {
+                return Flow::End;
+            }
+            if self.paused.is_some() {
+                break;
+            }
+            self.tick();
+            if self.failed {
+                return Flow::End;
+            }
+        }
+        Flow::Continue
+    }
+
+    fn drain(&mut self, now: Duration, poll: &mut dyn FnMut() -> Option<Message>) -> Flow {
+        while let Some(message) = poll() {
+            if self.dispatch(message, now) == Flow::End {
+                return Flow::End;
+            }
+        }
+        Flow::Continue
+    }
+
+    /// One whole tick; it is never cut short.
+    fn tick(&mut self) {
+        let began = self.simulation.date();
+        match self.simulation.step() {
+            Ok(errors) => {
+                if let Ok(date) = began
+                    && date.hour == 0
+                {
+                    self.log(
+                        Level::Info,
+                        format!("{:04}-{:02}-{:02}", date.year, date.month, date.day),
+                    );
+                }
+                if !errors.is_empty() {
+                    for error in &errors {
+                        self.log(Level::Error, error.to_string());
+                    }
+                    self.pause_for_error();
+                }
+                if let Some(message) = (self.failure_probe)(self.simulation.state()) {
+                    self.fail(message);
+                }
+            }
+            Err(error) => {
+                self.log(Level::Error, format!("{error}"));
+                self.pause_for_error();
+            }
+        }
+        self.publish_if_changed();
+    }
+
+    fn pause_for_error(&mut self) {
+        self.clock.pause();
+        self.paused = Some(PauseReason::Error);
+    }
+
+    /// A terminal failure: recorded once, never a pause, and the thread ends after the tick.
+    fn fail(&mut self, message: String) {
+        self.failed = true;
+        (self.outputs.fail)(message);
+    }
+
+    /// The game's save at the current tick boundary.
+    fn save(&self) -> Save<S> {
+        self.simulation
+            .save(self.identity.meta(self.simulation.seed()))
+    }
+
+    /// Writes `<saves>/quicksave.cksave` and carries on as it was.
+    fn quicksave(&mut self) {
+        let path = quicksave_path(&self.saves);
+        let date = self.snapshot().date;
+        let result = self
+            .save()
+            .to_bytes()
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| {
+                write_atomically(&path, &bytes)
+                    .map_err(|error| format!("cannot write {}: {error}", path.display()))
+            });
+        match result {
+            Ok(()) => self.log(Level::Info, format!("saved {} at {date}", path.display())),
+            Err(message) => self.log(Level::Error, format!("quicksave failed: {message}")),
+        }
+    }
+
+    /// Replaces the game with `<saves>/quicksave.cksave` at this boundary, or refuses and keeps the game as it is.
+    fn quickload(&mut self) {
+        let path = quicksave_path(&self.saves);
+        match self.load_from(&path) {
+            Ok(simulation) => {
+                self.simulation = simulation;
+                self.clock = Clock::new();
+                self.paused = Some(PauseReason::Load);
+                let date = self.snapshot().date;
+                self.log(Level::Info, format!("loaded {} at {date}", path.display()));
+            }
+            Err(message) => self.log(Level::Error, format!("quickload refused: {message}")),
+        }
+    }
+
+    fn load_from(&self, path: &std::path::Path) -> Result<Simulation<S, C>, String> {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let save = Save::<S>::from_bytes(&bytes, &self.identity.expected())
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        Simulation::from_save(save, (self.rebuild.scheduler)(), self.rebuild.apply)
+            .map_err(|error| format!("{}: {error}", path.display()))
+    }
+
+    /// The state digest, for tests.
+    #[cfg(test)]
+    pub(crate) fn digest(&self) -> u64 {
+        self.simulation.digest().expect("the state encodes")
+    }
+
+    /// The tick that runs next, for tests.
+    #[cfg(test)]
+    pub(crate) fn time(&self) -> ck_sim::GameTime {
+        self.simulation.time()
+    }
+}

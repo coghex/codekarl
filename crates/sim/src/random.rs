@@ -46,9 +46,10 @@ impl Fnv1a {
     }
 }
 
-/// The FNV-1a 64-bit hash of `bytes`.
+/// The FNV-1a 64-bit hash of `bytes`: the hash of stream ids, save checksums and the state digest, and so of the
+/// application's content hashes.
 #[must_use]
-pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
+pub fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash = Fnv1a::new();
     hash.update(bytes);
     hash.finish()

@@ -19,6 +19,7 @@ ck-log = { path = "../../crates/log" }
 ck-lua = { path = "../../crates/lua" }
 ck-map = { path = "../../crates/map" }
 ck-render-2d = { path = "../../crates/render-2d" }
+ck-sim = { path = "../../crates/sim" }
 ck-resources = { path = "../../crates/resources" }
 ck-window = { path = "../../crates/window" }
 ck-window-cocoa = { path = "../../crates/window-cocoa", optional = true }

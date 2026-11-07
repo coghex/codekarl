@@ -1,5 +1,11 @@
-//! Build script for `codekarl`. The program (the library and the binary) is pure Rust; this script exists for one
-//! thing: the test-only keyboard filter, typist and window helpers that the windowed tests (`tests/windowed.rs` for
+//! Build script for `codekarl`. The program (the library and the binary) is pure Rust. This script does two things.
+//!
+//! **The simulation source hash.** Saves carry a build id (design §5.3) that names the sources able to change a simulation
+//! result, not the executable's bytes, so every artifact built from the same sources has the same id: with Metal, Vulkan or
+//! both, debug or release, on any supported machine. [`simulation_sources`] hashes them and embeds the hash as
+//! `CK_SIM_SOURCES`.
+//!
+//! **The test support.** The other thing: the test-only keyboard filter, typist and window helpers that the windowed tests (`tests/windowed.rs` for
 //! `native-metal`, `tests/vulkan_app.rs` for `glfw-vulkan`) install before their first window, so the owner's typing
 //! (Escape included) never reaches a test window. It is compiled, with the one macOS deployment target and optionally
 //! the Clang static analyzer (as `ck-render-2d`'s and `ck-gpu-metal`'s scripts do), into an archive that only the
@@ -11,6 +17,91 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+
+/// The simulation's fixed source files, by workspace-relative path: the dependency versions (the Lua `mlua` builds included),
+/// the toolchain, and the manifests of the two crates whose code can change a result.
+const SOURCE_FILES: [&str; 4] = [
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "crates/sim/Cargo.toml",
+    "crates/lua/Cargo.toml",
+];
+
+/// The source directories: every `.rs` file under each is part of the set. `apps/codekarl/src/game/` holds all of the
+/// application's simulation code, and test files in these directories count too, which errs on the safe side.
+const SOURCE_DIRECTORIES: [&str; 3] =
+    ["crates/sim/src", "crates/lua/src", "apps/codekarl/src/game"];
+
+/// FNV-1a 64 of `bytes`, written inline because a build script cannot use `ck-sim`.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Adds the `.rs` files under `directory` to `files` as workspace-relative paths with `/` separators.
+fn collect_rust_files(root: &Path, relative: &str, files: &mut Vec<String>) {
+    let entries = std::fs::read_dir(root.join(relative))
+        .unwrap_or_else(|error| panic!("cannot read {relative}: {error}"));
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|error| panic!("cannot read {relative}: {error}"));
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .unwrap_or_else(|| panic!("{relative} holds a non-UTF-8 name"));
+        let child = format!("{relative}/{name}");
+        let kind = entry
+            .file_type()
+            .unwrap_or_else(|error| panic!("cannot stat {child}: {error}"));
+        if kind.is_dir() {
+            collect_rust_files(root, &child, files);
+        } else if kind.is_file()
+            && Path::new(name)
+                .extension()
+                .is_some_and(|extension| extension == "rs")
+        {
+            files.push(child);
+        }
+    }
+}
+
+/// Computes the simulation source hash and embeds it as `CK_SIM_SOURCES` (16 hex digits).
+///
+/// The files are sorted by workspace-relative path in byte order. Each contributes its path (a `u32` length and the UTF-8
+/// bytes), then its contents (a `u64` length and the bytes); the hash is the FNV-1a 64 of all of it.
+fn simulation_sources() {
+    let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let root = manifest
+        .parent()
+        .and_then(Path::parent)
+        .expect("the application lives two levels below the workspace root");
+    let mut files: Vec<String> = SOURCE_FILES.iter().map(|file| (*file).to_owned()).collect();
+    for directory in SOURCE_DIRECTORIES {
+        collect_rust_files(root, directory, &mut files);
+    }
+    files.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    let mut framed = Vec::new();
+    for file in &files {
+        let contents = std::fs::read(root.join(file))
+            .unwrap_or_else(|error| panic!("cannot read {file}: {error}"));
+        framed.extend_from_slice(
+            &u32::try_from(file.len())
+                .expect("a short path")
+                .to_le_bytes(),
+        );
+        framed.extend_from_slice(file.as_bytes());
+        framed.extend_from_slice(&(contents.len() as u64).to_le_bytes());
+        framed.extend_from_slice(&contents);
+    }
+    // Each listed file and each listed directory, so that adding a file there rebuilds too.
+    for path in SOURCE_FILES.iter().chain(SOURCE_DIRECTORIES.iter()) {
+        println!("cargo::rerun-if-changed={}", root.join(path).display());
+    }
+    println!("cargo::rustc-env=CK_SIM_SOURCES={:016x}", fnv1a(&framed));
+}
 
 /// The test support's native sources and its archive, linked into the integration tests only.
 const TESTING: (&[&str], &str) = (&["tests/native/testing.m"], "libcodekarl_testing.a");
@@ -158,6 +249,7 @@ fn build_archive(
 }
 
 fn main() {
+    simulation_sources();
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
         || (env::var_os("CARGO_FEATURE_METAL").is_none()
             && env::var_os("CARGO_FEATURE_VULKAN").is_none())

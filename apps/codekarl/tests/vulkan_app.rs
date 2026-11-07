@@ -94,6 +94,7 @@ const EXTERNAL_FORWARDING_FIXTURE_FLAG: &str = "--ck-activation-forwarding-fixtu
 const ALLOW_UNFOCUSED_UPDATES_FLAG: &str = "--ck-vulkan-test-allow-unfocused-updates";
 const QUEUE_FOCUS_LOST_FOR_CK163_FLAG: &str = "--ck-vulkan-test-queue-focus-lost-for-ck163";
 const MAP_INPUT_ENV: &str = "CK_VULKAN_TEST_MAP_INPUT";
+const SIM_INPUT_ENV: &str = "CK_VULKAN_TEST_SIM_INPUT";
 const MAP_CAMERA_ENV: &str = "CK_MAP_TEST_CAMERA_OBSERVATION";
 const REAL_FOCUS_GATE_CASES: [&str; 1] =
     ["synthetic_focus_loss_without_worker_opt_in_keeps_the_pause"];
@@ -160,6 +161,7 @@ static MODE: AtomicU8 = AtomicU8::new(0);
 static ALLOW_UNFOCUSED_UPDATES: AtomicBool = AtomicBool::new(false);
 static QUEUE_FOCUS_LOST_FOR_CK163: AtomicBool = AtomicBool::new(false);
 static MAP_INPUT_CASE: AtomicBool = AtomicBool::new(false);
+static SIM_INPUT_CASE: AtomicBool = AtomicBool::new(false);
 
 fn mode() -> Mode {
     Mode::from_code(MODE.load(Ordering::SeqCst))
@@ -499,6 +501,30 @@ impl Fixture {
         destination
     }
 
+    /// A scenario in this test's scratch directory, in the assets layout the loader resolves maps by: the scenario in
+    /// `assets/scenarios/fixture_768` names the map `fixture`, which is the app's accepted 2 x 2 fixture in `assets/map/fixture`.
+    /// The scenario starts on 768-01-01 and has no locations. Returns the scenario directory.
+    fn scenario_fixture(&self) -> PathBuf {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/map");
+        let root = self.path("assets");
+        let scenario = root.join("scenarios/fixture_768");
+        let map = root.join("map/fixture");
+        fs::create_dir_all(&scenario).expect("the fixture scenario directory");
+        fs::create_dir_all(&map).expect("the fixture map directory");
+        for entry in fs::read_dir(source).expect("the fixture map directory") {
+            let entry = entry.expect("a fixture map file");
+            fs::copy(entry.path(), map.join(entry.file_name()))
+                .expect("copy the valid map fixture");
+        }
+        fs::write(
+            scenario.join("scenario.toml"),
+            "id = \"fixture_768\"\nmap = \"fixture\"\nlocations = \"locations.toml\"\n[start]\nyear = 768\nmonth = 1\nday = 1\nhour = 0\n",
+        )
+        .expect("the scenario file");
+        fs::write(scenario.join("locations.toml"), "").expect("the locations file");
+        scenario
+    }
+
     fn has(&self, name: &str) -> bool {
         self.path(name).exists()
     }
@@ -601,9 +627,13 @@ fn start_with(args: &[&OsStr], driver: Option<(&str, &Path)>) -> Worker {
     if MAP_INPUT_CASE.load(Ordering::SeqCst) {
         command.env(MAP_INPUT_ENV, "1");
     }
-    let map_camera_observation = MAP_INPUT_CASE
-        .load(Ordering::SeqCst)
-        .then(|| report.with_extension("map-camera"));
+    if SIM_INPUT_CASE.load(Ordering::SeqCst) {
+        // The directory the case writes its markers in: the worker's own scratch directory.
+        command.env(SIM_INPUT_ENV, &scratch.0);
+    }
+    let map_camera_observation = (MAP_INPUT_CASE.load(Ordering::SeqCst)
+        || SIM_INPUT_CASE.load(Ordering::SeqCst))
+    .then(|| report.with_extension("map-camera"));
     if let Some(path) = &map_camera_observation {
         command.env(MAP_CAMERA_ENV, path);
     }
@@ -877,6 +907,113 @@ end
         );
     }
     assert!(seen.stdout.lines().any(|line| line.starts_with("camera ")));
+}
+
+/// The simulation on a real window: the injected keys resume the game, pick speed 5, pan the map and then pause and quicksave
+/// it, in that order (each batch is posted when the log shows the game has progressed, not after a delay). The daily records show the game ran, then stopped:
+/// none follows the quicksave record, however long the window stays open afterwards.
+fn a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally()
+ {
+    let fixture = Fixture::new();
+    let scenario = fixture.scenario_fixture();
+    let config_text = format!(
+        "[window]\nbackend = \"glfw-vulkan\"\n\n[game]\nscenario = '{}'\nsaves = '{}'\n\n[frame]\nupdates_per_second = 60\n\n[log.categories]\nmetrics = \"debug\"\nsim = \"debug\"\n",
+        scenario.display(),
+        fixture.path("saves").display()
+    );
+    // After the test has seen the quicksave it writes `settled`; the window then runs 120 more updates (about two seconds,
+    // a day and more at speed 5 each 140 ms) and closes. A game that had not paused would log more days in that time.
+    let body = format!(
+        r"
+local SETTLED = {}
+local function exists(path)
+  local file = io.open(path, 'r')
+  if file then file:close() return true end
+  return false
+end
+function startup()
+  local after = 0
+  frame.on_update(function()
+    if exists(SETTLED) then
+      after = after + 1
+      if after >= 120 then window.close() end
+    end
+  end)
+  window.on_opened(function() wait_for(HOLD) end)
+  window.open{{title = 'time controls', width = 400, height = 240, clear = {{0, 0, 0}}}}
+end
+",
+        lua_path(&fixture.path("settled"))
+    );
+    let config = fixture.windowed(&config_text, &body);
+    let mut args: Vec<&OsStr> = vec![OsStr::new("--config"), config.as_os_str()];
+    args.extend(["--seed", "42"].map(OsStr::new));
+    let mut worker = start(&args);
+    let markers = worker
+        .report
+        .parent()
+        .expect("the report's directory")
+        .to_path_buf();
+    wait_for(
+        &mut worker,
+        "window: window opened",
+        Duration::from_secs(30),
+    );
+    wait_for_drops(&worker);
+    fixture.release();
+    // The keys are posted in batches as the log shows the game progress: Space and Digit5 first, then (after two whole days)
+    // a pan, then (after another day) Space and F5.
+    wait_for(&mut worker, "sim: 0768-01-03", Duration::from_secs(60));
+    fs::write(markers.join("pan"), "x").expect("the pan marker");
+    wait_for(&mut worker, "sim: 0768-01-04", Duration::from_secs(60));
+    fs::write(markers.join("pause"), "x").expect("the pause marker");
+    wait_for(&mut worker, "sim: saved", Duration::from_secs(60));
+    fs::write(fixture.path("settled"), "x").expect("the settled marker");
+    let seen = finish(worker);
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+    assert_in_order(
+        &seen.stdout,
+        &[
+            "runtime: window: glfw-vulkan",
+            "sim: new game, seed 000000000000002a",
+            "sim: snapshot 0768-01-01 00:00 speed 1 paused (load)",
+            "window: window opened",
+            "sim: snapshot 0768-01-01 00:00 speed 1 running",
+            "sim: snapshot 0768-01-01 00:00 speed 5 running",
+            "sim: 0768-01-01",
+            "sim: snapshot 0768-01-04",
+            "speed 5 paused (player)",
+            "sim: saved",
+            "window: window closed",
+            "runtime: shutdown complete",
+        ],
+    );
+    // The game ran for at least a day and a half, and no day record follows the quicksave.
+    let (before_save, after_save) = seen
+        .stdout
+        .split_once("sim: saved")
+        .expect("the quicksave record");
+    assert!(count(before_save, "sim: 0768-01-") >= 2, "{}", seen.stdout);
+    assert_eq!(count(after_save, "sim: 0768-01-"), 0, "{}", seen.stdout);
+    assert!(fixture.has("saves/quicksave.cksave"), "{}", seen.stdout);
+    // The held pan changed the camera, as the map controller observed it.
+    assert!(
+        seen.stdout.lines().any(|line| line.starts_with("camera ")),
+        "{}",
+        seen.stdout
+    );
+    // The run's frame timing, from the existing per-frame records: recorded in the test output, not gated.
+    let timing = seen
+        .stdout
+        .lines()
+        .find(|line| line.contains("metrics: run: frames="))
+        .unwrap_or_else(|| panic!("no run timing record:\n{}", seen.stdout));
+    println!("glfw-vulkan 60 fps record: {timing}");
+    assert!(
+        !seen.stdout.contains("ERROR") && !seen.stdout.contains("incomplete"),
+        "{}",
+        seen.stdout
+    );
 }
 
 /// Milestone 4.5 on a real window, now through the compatibility lane: the quad set before `window.open` is drawn by the
@@ -1945,6 +2082,7 @@ macro_rules! case {
 /// The cases, in the order they run.
 fn cases() -> Vec<(&'static str, fn())> {
     vec![
+        case!(a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally),
         case!(a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally),
         case!(a_window_opened_and_closed_by_the_script_exits_0_and_both_shutdowns_follow_the_close),
         case!(the_demo_placeholder_is_drawn_with_the_quads_generation_in_the_first_frame_and_the_run_closes_cleanly),
@@ -1988,11 +2126,13 @@ fn run_case(name: &str, case: fn()) -> bool {
         name == "a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally",
         Ordering::SeqCst,
     );
+    SIM_INPUT_CASE.store(name == "a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally", Ordering::SeqCst);
     let started = Instant::now();
     let passed = panic::catch_unwind(AssertUnwindSafe(case)).is_ok();
     ALLOW_UNFOCUSED_UPDATES.store(false, Ordering::SeqCst);
     QUEUE_FOCUS_LOST_FOR_CK163.store(false, Ordering::SeqCst);
     MAP_INPUT_CASE.store(false, Ordering::SeqCst);
+    SIM_INPUT_CASE.store(false, Ordering::SeqCst);
     println!(
         "test {name} [{}] ... {} ({:.1}s)",
         mode().word(),

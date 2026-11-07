@@ -544,7 +544,7 @@ impl HeadlessDriver {
                 quit: Arc::new(AtomicBool::new(false)),
                 notifier: Notifier::new(),
             },
-            None,
+            crate::Content::default(),
             |_| panic!("a headless run has no window plan"),
             move |setup| {
                 let extension = setup.extension.function("probe", probe);

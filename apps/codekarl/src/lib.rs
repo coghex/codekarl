@@ -1,11 +1,16 @@
 //! The Codekarl program: the runtime command, and a Metal smoke test. The library holds all of it; the `codekarl`
 //! executable is a thin `main` that hands [`main_entry`] its arguments (see `src/main.rs`).
 //!
-//! `codekarl [--config PATH] [--headless | --backend NAME]` loads a TOML configuration (or uses the
+//! `codekarl [--config PATH] [--headless | --backend NAME] [--load PATH | --seed N]` loads a TOML configuration (or uses the
 //! built-in defaults), sets up logging on stdout, runs the runtime and shuts down. With a configuration
 //! that has `[lua.<name>]` tables, the runtime also supervises one Lua VM per table (see `vm`); with
 //! none, as with the built-in defaults, no VM runs. `--help`, `--version` and `--metal-smoke` do not start
 //! the runtime.
+//!
+//! **The simulation** (see `game`): with `[game] scenario` the run also has the game, on its own owner thread `sim`. A new game
+//! starts paused at the scenario's start date with a master seed from `--seed N` or the operating system; `--load PATH`
+//! starts from a save instead. Space pauses, `Digit1` to `Digit5` pick a speed, F5 quicksaves and F9 quickloads. Without
+//! `[game] scenario` there is no simulation and every run is as it was.
 //!
 //! **Windowed or headless** (see `mode`): a run is headless when there is no `--config`, when the
 //! configuration has no `[window]` table or one without `backend`, or with `--headless`; otherwise it is
@@ -71,6 +76,7 @@ mod demo_tests;
 #[cfg(test)]
 mod fakes;
 mod frame_api;
+mod game;
 mod lifecycle;
 mod map_app;
 mod metrics;
@@ -253,6 +259,19 @@ fn execute_with(
             }
         },
     };
+    for (given, option) in [
+        (options.load.is_some(), "--load"),
+        (options.seed.is_some(), "--seed"),
+    ] {
+        if given && config.game.is_none() {
+            emit(
+                Level::Error,
+                "config",
+                format_args!("{}", cli::needs_game(option)),
+            );
+            return FAILED;
+        }
+    }
     let mode = match mode::select(
         options.headless,
         options.backend,
@@ -284,7 +303,7 @@ fn execute_with(
     emit(Level::Info, "config", format_args!("{source}"));
     emit(Level::Info, "runtime", format_args!("features: {FEATURES}"));
     emit(Level::Info, "runtime", format_args!("window: {mode}"));
-    supervise(&config, mode, shared, windowed_plan)
+    supervise(&config, options, mode, shared, windowed_plan)
 }
 
 /// What the headless and windowed runs both end with, for the final records and the status.
@@ -435,29 +454,62 @@ fn scene_extensions(
 /// status (the late-failure fold and the final counts included).
 fn supervise(
     config: &config::Config,
+    options: &RunOptions,
     mode: mode::Mode,
     shared: Shared,
     windowed_plan: impl FnOnce(Setup) -> Plan,
 ) -> Status {
-    let loaded_map = match &config.map {
-        Some(map) => match ck_map::load_map(&map.directory) {
-            Ok(loaded) => Some(loaded),
-            Err(error) => {
-                emit(Level::Error, "config", format_args!("[map] {error}"));
-                return FAILED;
+    let (loaded_map, game) = match &config.game {
+        Some(game_config) => {
+            let request = game::setup::Request {
+                game: game_config,
+                vms: &config.vms,
+                load: options.load.as_deref(),
+                seed: options.seed,
+            };
+            let prepared = game::setup::prepare(
+                &request,
+                game::setup::operating_system_seed,
+                &mut |level, message| emit(level, "sim", format_args!("{message}")),
+            );
+            match prepared {
+                Ok(prepared) => (Some(prepared.scenario.map.clone()), Some(prepared)),
+                Err(message) => {
+                    emit(Level::Error, "config", format_args!("{message}"));
+                    return FAILED;
+                }
             }
+        }
+        None => match &config.map {
+            Some(map) => match ck_map::load_map(&map.directory) {
+                Ok(loaded) => (Some(loaded), None),
+                Err(error) => {
+                    emit(Level::Error, "config", format_args!("[map] {error}"));
+                    return FAILED;
+                }
+            },
+            None => (None, None),
         },
-        None => None,
     };
     supervise_with_owner_factory(
         config,
         mode,
         shared,
-        loaded_map,
+        Content {
+            map: loaded_map,
+            game,
+        },
         windowed_plan,
         production_headless_plan,
         |wiring, _, _| vm::spawns(&config.vms, &config.whole, Some(wiring)),
     )
+}
+
+/// What a run loads before it starts: the map, and the game when the configuration has one (its map is the scenario's).
+#[derive(Default)]
+struct Content {
+    map: Option<ck_map::LoadedMap>,
+    game: Option<game::setup::Prepared>,
 }
 
 /// What a headless run does between start-up and the stop phase: nothing. The request slot is ended where the run phase
@@ -477,7 +529,7 @@ fn supervise_with_owner_factory(
     config: &config::Config,
     mode: mode::Mode,
     shared: Shared,
-    loaded_map: Option<ck_map::LoadedMap>,
+    content: Content,
     windowed_plan: impl FnOnce(Setup) -> Plan,
     headless_plan: impl FnOnce(Setup) -> Plan,
     owner_factory: impl FnOnce(
@@ -486,6 +538,10 @@ fn supervise_with_owner_factory(
         &render_api::RenderEnd,
     ) -> Vec<ck_runtime::OwnerSpawn>,
 ) -> Status {
+    let Content {
+        map: loaded_map,
+        game,
+    } = content;
     let requests = Requests::new();
     let headless = matches!(mode, mode::Mode::Headless).then(|| Arc::new(HeadlessNotes::logging()));
     let slot = UiSlot::default();
@@ -511,10 +567,27 @@ fn supervise_with_owner_factory(
         (None, _) => None,
         (Some(_), None) => unreachable!("map loading follows map configuration"),
     };
+    let wake = {
+        let notifier = Arc::clone(&shared.notifier);
+        Arc::new(move || notifier.wake()) as Arc<dyn Fn() + Send + Sync>
+    };
+    // The simulation owner, when the configuration has a game: the UI link carries the time presses to it and watches for its
+    // terminal failure, and the runtime spawns it after every VM.
+    let connected = game.map(|prepared| game::setup::connect(prepared, Arc::clone(&wake)));
     let ui = map_controller.as_ref().map_or_else(
         || CodekarlUi::new(Rc::clone(&slot)),
         |map| CodekarlUi::with_map(Rc::clone(&slot), Arc::clone(map)),
     );
+    let (ui, sim_spawn) = match connected {
+        Some(connected) => (
+            ui.with_sim(ui_link::SimLink {
+                controls: connected.controls,
+                slot: connected.slot,
+            }),
+            Some(connected.spawn),
+        ),
+        None => (ui, None),
+    };
     let writer = bridge
         .take_writer()
         .expect("a new bridge hands out its one writer");
@@ -563,16 +636,12 @@ fn supervise_with_owner_factory(
         mode::Mode::Headless => headless_plan(setup),
         mode::Mode::Windowed(backend) => windowed_plan(Setup { backend, ..setup }),
     };
-    let wake = {
-        let notifier = Arc::clone(&shared.notifier);
-        Arc::new(move || notifier.wake()) as Arc<dyn Fn() + Send + Sync>
-    };
     let wiring = vm::UiWiring {
         extensions: std::iter::once(plan.extension)
             .chain(ui_extensions)
             .collect(),
         slot,
-        wake,
+        wake: Arc::clone(&wake),
         bridge: Arc::clone(&bridge),
         notes: Rc::clone(&notes),
         on_complete: Some(render_end.completion_hook()),
@@ -584,11 +653,13 @@ fn supervise_with_owner_factory(
         &notes,
         &render_end,
     ))
-    .with_owners(owner_factory(
-        &wiring,
-        resource_service.as_ref(),
-        &render_end,
-    ))
+    .with_owners(
+        owner_factory(&wiring, resource_service.as_ref(), &render_end)
+            .into_iter()
+            // After every configured VM: its stop request is the first one sent.
+            .chain(sim_spawn)
+            .collect(),
+    )
     .with_owner_deadlines(deadlines.start, deadlines.stop, deadlines.cleanup)
     .with_quit(shared.quit);
     if let Some(run) = plan.run {
@@ -776,6 +847,13 @@ mod tests {
         let config = config::load_text_for_test(&format!("[map]\ndirectory = {missing:?}\n"));
         let status = supervise(
             &config,
+            &RunOptions {
+                config: None,
+                headless: true,
+                backend: None,
+                load: None,
+                seed: None,
+            },
             mode::Mode::Headless,
             Shared {
                 quit: Arc::new(AtomicBool::new(false)),
@@ -852,7 +930,7 @@ mod tests {
                 quit: Arc::new(AtomicBool::new(false)),
                 notifier: Notifier::new(),
             },
-            None,
+            Content::default(),
             |setup| {
                 let backend_resources = Arc::clone(&observed_service);
                 Plan {
@@ -931,7 +1009,7 @@ mod tests {
                 quit: Arc::new(AtomicBool::new(false)),
                 notifier: Notifier::new(),
             },
-            None,
+            Content::default(),
             |setup| {
                 let bridge = Arc::clone(&setup.env.bridge);
                 let control = setup
@@ -1171,6 +1249,8 @@ mod tests {
             config: Some(config_path),
             headless: false,
             backend: None,
+            load: None,
+            seed: None,
         };
         let planned = Cell::new(false);
         let saw_custom = Cell::new(false);
@@ -1210,6 +1290,8 @@ mod tests {
             config: Some(frame_path),
             headless: false,
             backend: None,
+            load: None,
+            seed: None,
         };
         let planned_frame = Cell::new(0);
         let status = execute_with(
@@ -1248,6 +1330,8 @@ mod tests {
             config: Some(old_path),
             headless: false,
             backend: None,
+            load: None,
+            seed: None,
         };
         let legacy_bindings = config::Config::default().bindings;
         let saw_legacy = Cell::new(false);

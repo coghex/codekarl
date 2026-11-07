@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use crate::mode::Backend;
 
 /// The usage line printed by `--help`.
-pub(crate) const USAGE: &str = "Usage: codekarl [--config PATH] [--headless | --backend NAME] | --help | --version | --metal-smoke";
+pub(crate) const USAGE: &str = "Usage: codekarl [--config PATH] [--headless | --backend NAME] [--load PATH | --seed N] | --help | --version | --metal-smoke";
 
 /// What the runtime command asks for.
 #[derive(Debug, PartialEq, Eq)]
@@ -17,6 +17,10 @@ pub(crate) struct RunOptions {
     pub(crate) headless: bool,
     /// `--backend NAME`: the window backend, overriding the configuration's.
     pub(crate) backend: Option<Backend>,
+    /// `--load PATH`: start from a save file instead of the scenario's start.
+    pub(crate) load: Option<PathBuf>,
+    /// `--seed N`: the master seed of a new game.
+    pub(crate) seed: Option<u64>,
 }
 
 /// What the arguments ask for.
@@ -43,6 +47,8 @@ fn is_option_word(argument: &OsStr) -> bool {
         "--config",
         "--headless",
         "--backend",
+        "--load",
+        "--seed",
         "--help",
         "--version",
         "--metal-smoke",
@@ -56,7 +62,7 @@ const UNKNOWN: &str = "unknown arguments; use --help";
 /// Parses the arguments after the program name. The error is the one-line usage message that the
 /// executable prints after `codekarl: `.
 pub(crate) fn parse(args: &[OsString]) -> Result<Command, String> {
-    for option in ["--config", "--headless", "--backend"] {
+    for option in ["--config", "--headless", "--backend", "--load", "--seed"] {
         if args.iter().filter(|argument| is(argument, option)).count() > 1 {
             return Err(format!("{option} given more than once; use --help"));
         }
@@ -65,6 +71,8 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Command, String> {
         config: None,
         headless: false,
         backend: None,
+        load: None,
+        seed: None,
     };
     let mut arguments = args.iter();
     while let Some(argument) = arguments.next() {
@@ -92,6 +100,24 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Command, String> {
                 ));
             };
             options.backend = Some(backend);
+        } else if is(argument, "--load") {
+            match arguments.next() {
+                None => return Err("--load needs a path; use --help".into()),
+                Some(path) if is_option_word(path) => return Err(UNKNOWN.into()),
+                Some(path) => options.load = Some(PathBuf::from(path)),
+            }
+        } else if is(argument, "--seed") {
+            let Some(number) = arguments.next().filter(|number| !is_option_word(number)) else {
+                return Err("--seed needs a number; use --help".into());
+            };
+            let Some(seed) = number.to_str().and_then(parse_seed) else {
+                return Err(format!(
+                    "--seed {} is not a decimal number from 0 to {}; use --help",
+                    number.to_string_lossy(),
+                    u64::MAX
+                ));
+            };
+            options.seed = Some(seed);
         } else if args.len() == 1 && is(argument, "--help") {
             return Ok(Command::Help);
         } else if args.len() == 1 && is(argument, "--version") {
@@ -108,7 +134,35 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Command, String> {
     if options.backend.is_some() && options.config.is_none() {
         return Err("--backend needs --config with a [window] backend; use --help".into());
     }
+    if options.load.is_some() && options.seed.is_some() {
+        return Err(
+            "--load and --seed cannot be combined; a save holds its seed; use --help".into(),
+        );
+    }
+    if options.config.is_none() {
+        for (given, option) in [
+            (options.load.is_some(), "--load"),
+            (options.seed.is_some(), "--seed"),
+        ] {
+            if given {
+                return Err(needs_game(option));
+            }
+        }
+    }
     Ok(Command::Run(options))
+}
+
+/// The refusal of `--load` or `--seed` without a configuration that has `[game] scenario`.
+pub(crate) fn needs_game(option: &str) -> String {
+    format!("{option} needs --config with a [game] scenario; use --help")
+}
+
+/// A decimal `u64`: digits only, with no sign, prefix or separator.
+fn parse_seed(text: &str) -> Option<u64> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
 }
 
 #[cfg(test)]
@@ -133,6 +187,8 @@ mod tests {
             config: config.map(PathBuf::from),
             headless,
             backend,
+            load: None,
+            seed: None,
         }))
     }
 
@@ -160,7 +216,7 @@ mod tests {
     fn the_usage_line_is_the_one_the_specification_expects() {
         assert_eq!(
             USAGE,
-            "Usage: codekarl [--config PATH] [--headless | --backend NAME] | --help | --version | --metal-smoke"
+            "Usage: codekarl [--config PATH] [--headless | --backend NAME] [--load PATH | --seed N] | --help | --version | --metal-smoke"
         );
     }
 
@@ -344,6 +400,8 @@ mod tests {
                 config: Some(PathBuf::from(path)),
                 headless: false,
                 backend: None,
+                load: None,
+                seed: None,
             }))
         );
         assert_eq!(parse(&[OsString::from_vec(vec![0xff])]), unknown());
@@ -358,6 +416,121 @@ mod tests {
             ])
             .expect_err("an unknown backend")
             .starts_with("unknown backend x")
+        );
+    }
+
+    #[test]
+    fn load_and_seed_are_accepted_with_a_configuration_in_any_order() {
+        let with = |load: Option<&str>, seed: Option<u64>| {
+            Ok(Command::Run(RunOptions {
+                config: Some(PathBuf::from("c.toml")),
+                headless: false,
+                backend: None,
+                load: load.map(PathBuf::from),
+                seed,
+            }))
+        };
+        assert_eq!(
+            parse_strs(&["--config", "c.toml", "--load", "save.cksave"]),
+            with(Some("save.cksave"), None)
+        );
+        assert_eq!(
+            parse_strs(&["--load", "save.cksave", "--config", "c.toml"]),
+            with(Some("save.cksave"), None)
+        );
+        assert_eq!(
+            parse_strs(&["--config", "c.toml", "--seed", "42"]),
+            with(None, Some(42))
+        );
+        assert_eq!(
+            parse_strs(&["--seed", "0", "--config", "c.toml"]),
+            with(None, Some(0))
+        );
+        assert_eq!(
+            parse_strs(&["--seed", "18446744073709551615", "--config", "c.toml"]),
+            with(None, Some(u64::MAX))
+        );
+        // Leading zeros are digits.
+        assert_eq!(
+            parse_strs(&["--seed", "007", "--config", "c.toml"]),
+            with(None, Some(7))
+        );
+    }
+
+    #[test]
+    fn load_and_seed_together_are_refused_with_their_own_message() {
+        let message = "--load and --seed cannot be combined; a save holds its seed; use --help";
+        for args in [
+            ["--config", "c.toml", "--load", "s", "--seed", "1"],
+            ["--config", "c.toml", "--seed", "1", "--load", "s"],
+        ] {
+            assert_eq!(parse_strs(&args), Err(message.to_owned()));
+        }
+    }
+
+    #[test]
+    fn load_or_seed_without_a_configuration_is_refused_with_its_own_message() {
+        assert_eq!(
+            parse_strs(&["--load", "s"]),
+            Err("--load needs --config with a [game] scenario; use --help".to_owned())
+        );
+        assert_eq!(
+            parse_strs(&["--seed", "1"]),
+            Err("--seed needs --config with a [game] scenario; use --help".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_malformed_seed_is_refused() {
+        for text in [
+            "",
+            "-1",
+            "+1",
+            "0x2a",
+            "1_000",
+            "1,000",
+            " 1",
+            "1 ",
+            "1.5",
+            "abc",
+            "18446744073709551616",
+        ] {
+            let message = format!(
+                "--seed {text} is not a decimal number from 0 to 18446744073709551615; use --help"
+            );
+            assert_eq!(
+                parse_strs(&["--config", "c.toml", "--seed", text]),
+                Err(message),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn load_and_seed_need_a_value_and_may_not_repeat() {
+        assert_eq!(
+            parse_strs(&["--config", "c.toml", "--load"]),
+            Err("--load needs a path; use --help".to_owned())
+        );
+        assert_eq!(
+            parse_strs(&["--config", "c.toml", "--seed"]),
+            Err("--seed needs a number; use --help".to_owned())
+        );
+        assert_eq!(
+            parse_strs(&["--config", "c.toml", "--seed", "--headless"]),
+            Err("--seed needs a number; use --help".to_owned())
+        );
+        assert_eq!(
+            parse_strs(&["--config", "c.toml", "--load", "--headless"]),
+            unknown()
+        );
+        assert_eq!(
+            parse_strs(&["--config", "c.toml", "--load", "a", "--load", "b"]),
+            Err("--load given more than once; use --help".to_owned())
+        );
+        assert_eq!(
+            parse_strs(&["--config", "c.toml", "--seed", "1", "--seed", "2"]),
+            Err("--seed given more than once; use --help".to_owned())
         );
     }
 }
