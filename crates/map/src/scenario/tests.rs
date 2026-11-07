@@ -10,14 +10,20 @@ use crate::{Cell, Crop, MapData, Rgba8, STEP_SIZE, Surface, TerrainStyle, WorldP
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-struct Fixture(PathBuf);
+struct Fixture {
+    root: PathBuf,
+    scenario: PathBuf,
+}
 
 impl Fixture {
     fn new() -> Self {
         let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        let path =
+        let root =
             std::env::temp_dir().join(format!("ck-map-scenario-{}-{id}", std::process::id()));
-        fs::create_dir_all(path.join("map")).expect("create scenario map directory");
+        let scenario = root.join("scenarios/test_768");
+        let map = root.join("map/fixture");
+        fs::create_dir_all(&scenario).expect("create scenario directory");
+        fs::create_dir_all(&map).expect("create shared map directory");
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-data/valid");
         for name in [
             "map.toml",
@@ -27,30 +33,58 @@ impl Fixture {
             "usable.png",
             "elevation.png",
         ] {
-            fs::copy(source.join(name), path.join("map").join(name)).expect("copy map fixture");
+            fs::copy(source.join(name), map.join(name)).expect("copy map fixture");
         }
-        fs::write(path.join("scenario.toml"), "id = \"test_768\"\nmap = \"map\"\nlocations = \"locations.toml\"\n[start]\nyear = 768\nmonth = 10\nday = 9\nhour = 0\n").expect("write scenario");
-        fs::write(path.join("map/location_kinds.toml"), "[[kind]]\nid = \"town\"\nsizes = [1, 2]\ncatchment_m = [839, 2000]\nglyph = [\".#.\", \"#d#\", \".#.\"]\nlight = \"#d7c89b\"\ndark = \"#66583c\"\n[[building]]\nid = \"church\"\nglyph = [\"#\"]\nlight = \"#ffffff\"\ndark = \"#000000\"\n").expect("write kinds");
+        fs::write(scenario.join("scenario.toml"), "id = \"test_768\"\nmap = \"fixture\"\nlocations = \"locations.toml\"\n[start]\nyear = 768\nmonth = 10\nday = 9\nhour = 0\n").expect("write scenario");
+        fs::write(map.join("location_kinds.toml"), "[[kind]]\nid = \"town\"\nsizes = [1, 2]\ncatchment_m = [839, 2000]\nglyph = [\".#.\", \"#d#\", \".#.\"]\nlight = \"#d7c89b\"\ndark = \"#66583c\"\n[[building]]\nid = \"church\"\nglyph = [\"#\"]\nlight = \"#ffffff\"\ndark = \"#000000\"\n").expect("write kinds");
         let land = lat_lon_for_cell(23_882, 23_883);
         let mountain = lat_lon_for_cell(23_883, 23_883);
-        fs::write(path.join("locations.toml"), format!("[[location]]\nid = \"town_a\"\nname = \"Test Place\"\nlat = {}\nlon = {}\nkind = \"town\"\nsize = 1\nbuildings = [\"church\"]\nsource = \"fixture\"\nconfidence = \"high\"\n\n[[location]]\nid = \"town_b\"\nname = \"Mountain Place\"\nlat = {}\nlon = {}\nkind = \"town\"\nsize = 2\nbuildings = []\nsource = \"fixture\"\nconfidence = \"medium\"\n", land.0, land.1, mountain.0, mountain.1)).expect("write locations");
-        Self(path)
+        fs::write(scenario.join("locations.toml"), format!("[[location]]\nid = \"town_a\"\nname = \"Test Place\"\nlat = {}\nlon = {}\nkind = \"town\"\nsize = 1\nbuildings = [\"church\"]\nsource = \"fixture\"\nconfidence = \"high\"\n\n[[location]]\nid = \"town_b\"\nname = \"Mountain Place\"\nlat = {}\nlon = {}\nkind = \"town\"\nsize = 2\nbuildings = []\nsource = \"fixture\"\nconfidence = \"medium\"\n", land.0, land.1, mountain.0, mountain.1)).expect("write locations");
+        Self { root, scenario }
     }
 
     fn path(&self) -> &Path {
-        &self.0
+        &self.scenario
+    }
+    fn root(&self) -> &Path {
+        &self.root
+    }
+    fn map_path(&self, name: &str) -> PathBuf {
+        self.root.join("map").join(name)
+    }
+    fn copy_map_as(&self, name: &str) {
+        let destination = self.map_path(name);
+        fs::create_dir_all(&destination).expect("create named map directory");
+        for file in [
+            "map.toml",
+            "terrain.toml",
+            "rivers.toml",
+            "terrain.png",
+            "usable.png",
+            "elevation.png",
+            "location_kinds.toml",
+        ] {
+            fs::copy(self.map_path("fixture").join(file), destination.join(file))
+                .expect("copy named map fixture");
+        }
     }
     fn text(&self, path: &str) -> String {
-        fs::read_to_string(self.0.join(path)).expect("read fixture text")
+        fs::read_to_string(self.scenario.join(path)).expect("read fixture text")
     }
     fn write(&self, path: &str, text: &str) {
-        fs::write(self.0.join(path), text).expect("write fixture text");
+        fs::write(self.scenario.join(path), text).expect("write fixture text");
+    }
+    fn map_text(&self, path: &str) -> String {
+        fs::read_to_string(self.map_path("fixture").join(path)).expect("read map fixture text")
+    }
+    fn write_map(&self, path: &str, text: &str) {
+        fs::write(self.map_path("fixture").join(path), text).expect("write map fixture text");
     }
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
@@ -79,6 +113,7 @@ fn scenario_loads_map_locations_styles_and_catchment_owners() {
         }
     );
     assert_eq!(scenario.locations.len(), 2);
+    assert_eq!(scenario.location_kinds.kinds[0].id, "town");
     assert_eq!(scenario.locations[0].confidence, Confidence::High);
     assert_eq!(scenario.locations[0].building_indices, [0]);
     assert_eq!(scenario.catchment_owners.len(), 4);
@@ -134,30 +169,142 @@ fn unknown_fields_and_invalid_scenario_dates_are_source_qualified() {
 }
 
 #[test]
-fn scenario_paths_and_missing_map_are_refused() {
-    let fixture = Fixture::new();
-    fixture.write(
-        "scenario.toml",
-        &fixture
-            .text("scenario.toml")
-            .replace("map = \"map\"", "map = \"../map\""),
-    );
-    let error = load_scenario(fixture.path())
-        .expect_err("parent path refused")
-        .to_string();
-    assert!(error.contains("scenario.toml scenario.map"), "{error}");
+fn scenario_map_name_rule_rejects_invalid_names_and_accepts_48_characters() {
+    for name in ["../map", "map/fixture", ".", "", "Fixture"] {
+        let fixture = Fixture::new();
+        fixture.write(
+            "scenario.toml",
+            &fixture
+                .text("scenario.toml")
+                .replace("map = \"fixture\"", &format!("map = {name:?}")),
+        );
+        let error = load_scenario(fixture.path())
+            .expect_err("invalid map name refused")
+            .to_string();
+        assert_eq!(
+            error,
+            "scenario.toml scenario.map: must be a map name ([a-z0-9_]{1,48})"
+        );
+    }
 
     let fixture = Fixture::new();
+    let too_long = "a".repeat(49);
     fixture.write(
         "scenario.toml",
         &fixture
             .text("scenario.toml")
-            .replace("map = \"map\"", "map = \"missing\""),
+            .replace("map = \"fixture\"", &format!("map = {too_long:?}")),
+    );
+    assert_eq!(
+        load_scenario(fixture.path())
+            .expect_err("49-character map name refused")
+            .to_string(),
+        "scenario.toml scenario.map: must be a map name ([a-z0-9_]{1,48})"
+    );
+
+    let fixture = Fixture::new();
+    let maximum = "a".repeat(48);
+    fixture.copy_map_as(&maximum);
+    fixture.write(
+        "scenario.toml",
+        &fixture
+            .text("scenario.toml")
+            .replace("map = \"fixture\"", &format!("map = {maximum:?}")),
+    );
+    load_scenario(fixture.path()).expect("48-character map name is accepted");
+}
+
+#[test]
+fn scenario_layout_and_missing_map_are_refused_before_loading() {
+    let fixture = Fixture::new();
+    let misplaced = fixture.root().join("not-scenarios/test_768");
+    fs::create_dir_all(&misplaced).expect("create misplaced scenario directory");
+    fs::copy(
+        fixture.path().join("scenario.toml"),
+        misplaced.join("scenario.toml"),
+    )
+    .expect("copy scenario file");
+    fs::copy(
+        fixture.path().join("locations.toml"),
+        misplaced.join("locations.toml"),
+    )
+    .expect("copy locations file");
+    let error = load_scenario(&misplaced)
+        .expect_err("scenario outside the scenarios directory refused")
+        .to_string();
+    assert!(error.contains("scenario.toml scenario.map"), "{error}");
+    assert!(error.contains("<root>/scenarios/<directory>"), "{error}");
+
+    let fixture = Fixture::new();
+    let missing = fixture.map_path("missing");
+    fixture.write(
+        "scenario.toml",
+        &fixture
+            .text("scenario.toml")
+            .replace("map = \"fixture\"", "map = \"missing\""),
     );
     let error = load_scenario(fixture.path())
         .expect_err("missing map refused")
         .to_string();
-    assert!(error.contains("map.toml"), "{error}");
+    assert!(error.contains("scenario.toml scenario.map"), "{error}");
+    assert!(error.contains("missing"), "{error}");
+    assert!(error.contains(&missing.display().to_string()), "{error}");
+    assert!(
+        !error.contains("map.toml"),
+        "load_map must not run: {error}"
+    );
+}
+
+#[test]
+fn scenarios_can_share_one_named_map() {
+    let fixture = Fixture::new();
+    let second = fixture.root().join("scenarios/another");
+    fs::create_dir_all(&second).expect("create second scenario");
+    fs::write(
+        second.join("scenario.toml"),
+        fixture
+            .text("scenario.toml")
+            .replace("test_768", "another_768"),
+    )
+    .expect("write second scenario");
+    fs::copy(
+        fixture.path().join("locations.toml"),
+        second.join("locations.toml"),
+    )
+    .expect("copy second locations");
+
+    let first_loaded = load_scenario(fixture.path()).expect("first scenario loads");
+    let second_loaded = load_scenario(second).expect("second scenario loads");
+    assert_eq!(first_loaded.id, "test_768");
+    assert_eq!(second_loaded.id, "another_768");
+    assert_eq!(first_loaded.map.data.crop, second_loaded.map.data.crop);
+    assert_eq!(first_loaded.location_kinds, second_loaded.location_kinds);
+}
+
+#[cfg(unix)]
+#[test]
+fn scenario_symlinks_keep_the_lexical_assets_root() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = Fixture::new();
+    let target = fixture.root().join("external/scenario");
+    fs::create_dir_all(&target).expect("create external scenario target");
+    fs::copy(
+        fixture.path().join("scenario.toml"),
+        target.join("scenario.toml"),
+    )
+    .expect("copy scenario file");
+    fs::copy(
+        fixture.path().join("locations.toml"),
+        target.join("locations.toml"),
+    )
+    .expect("copy locations file");
+    let link = fixture.root().join("scenarios/linked");
+    symlink(&target, &link).expect("link scenario under lexical scenarios directory");
+
+    let scenario = load_scenario(link).expect("the lexical root supplies the shared map");
+    assert_eq!(scenario.id, "test_768");
+    assert_eq!(scenario.location_kinds.kinds[0].id, "town");
 }
 
 #[test]
@@ -337,10 +484,10 @@ fn kind_table_validates_ids_sizes_radii_glyphs_colours_and_unknown_keys() {
     ];
     for (old, new, message) in cases {
         let fixture = Fixture::new();
-        fixture.write(
-            "map/location_kinds.toml",
+        fixture.write_map(
+            "location_kinds.toml",
             &fixture
-                .text("map/location_kinds.toml")
+                .map_text("location_kinds.toml")
                 .replacen(old, new, 1),
         );
         let error = load_scenario(fixture.path())
@@ -386,10 +533,10 @@ fn kind_table_refuses_duplicate_ids_and_all_size_radius_and_glyph_limits() {
     ];
     for (old, new, message) in cases {
         let fixture = Fixture::new();
-        fixture.write(
-            "map/location_kinds.toml",
+        fixture.write_map(
+            "location_kinds.toml",
             &fixture
-                .text("map/location_kinds.toml")
+                .map_text("location_kinds.toml")
                 .replacen(old, new, 1),
         );
         let error = load_scenario(fixture.path())
@@ -400,9 +547,9 @@ fn kind_table_refuses_duplicate_ids_and_all_size_radius_and_glyph_limits() {
     }
 
     let fixture = Fixture::new();
-    fixture.write(
-        "map/location_kinds.toml",
-        &fixture.text("map/location_kinds.toml").replace(
+    fixture.write_map(
+        "location_kinds.toml",
+        &fixture.map_text("location_kinds.toml").replace(
             "[[building]]",
             "[[kind]]\nid = \"town\"\nsizes = [1, 1]\ncatchment_m = [839]\nglyph = [\"#\"]\nlight = \"#ffffff\"\ndark = \"#000000\"\n\n[[building]]",
         ),
@@ -415,9 +562,9 @@ fn kind_table_refuses_duplicate_ids_and_all_size_radius_and_glyph_limits() {
     );
 
     let fixture = Fixture::new();
-    fixture.write(
-        "map/location_kinds.toml",
-        &fixture.text("map/location_kinds.toml").replace(
+    fixture.write_map(
+        "location_kinds.toml",
+        &fixture.map_text("location_kinds.toml").replace(
             "light = \"#ffffff\"\ndark = \"#000000\"",
             "light = \"#ffffff\"\ndark = \"#000000\"\n\n[[building]]\nid = \"church\"\nglyph = [\"#\"]\nlight = \"#ffffff\"\ndark = \"#000000\"",
         ),
@@ -434,9 +581,9 @@ fn kind_table_refuses_duplicate_ids_and_all_size_radius_and_glyph_limits() {
 fn ten_row_glyph_refusal_names_its_table_entry() {
     let fixture = Fixture::new();
     let ten_rows = "glyph = [\"#\", \"#\", \"#\", \"#\", \"#\", \"#\", \"#\", \"#\", \"#\", \"#\"]";
-    fixture.write(
-        "map/location_kinds.toml",
-        &fixture.text("map/location_kinds.toml").replacen(
+    fixture.write_map(
+        "location_kinds.toml",
+        &fixture.map_text("location_kinds.toml").replacen(
             "glyph = [\".#.\", \"#d#\", \".#.\"]",
             ten_rows,
             1,
@@ -455,7 +602,7 @@ fn ten_row_glyph_refusal_names_its_table_entry() {
 #[test]
 fn locations_require_a_kinds_table() {
     let fixture = Fixture::new();
-    fs::remove_file(fixture.path().join("map/location_kinds.toml")).expect("remove kinds");
+    fs::remove_file(fixture.map_path("fixture").join("location_kinds.toml")).expect("remove kinds");
     let error = load_scenario(fixture.path())
         .expect_err("locations without a kinds table refused")
         .to_string();

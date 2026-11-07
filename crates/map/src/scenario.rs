@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -200,14 +200,14 @@ pub fn load_scenario(directory: impl AsRef<Path>) -> Result<Scenario, LoadError>
     let directory = directory.as_ref();
     let scenario_file: ScenarioFile = read_scenario_toml(directory, "scenario.toml")?;
     validate_id(&scenario_file.id, "scenario.toml", "scenario.id")?;
-    validate_relative_path(&scenario_file.map, "scenario.toml", "scenario.map")?;
+    validate_map_name(&scenario_file.map)?;
     validate_relative_path(
         &scenario_file.locations,
         "scenario.toml",
         "scenario.locations",
     )?;
     let start = validate_start(&scenario_file.start)?;
-    let map_directory = directory.join(&scenario_file.map);
+    let map_directory = scenario_map_directory(directory, &scenario_file.map)?;
     let map = crate::load_map(&map_directory)?;
     let locations_file: LocationsFile = read_scenario_toml(directory, &scenario_file.locations)?;
     let kinds = load_location_kinds(&map_directory)?;
@@ -234,6 +234,66 @@ pub fn load_scenario(directory: impl AsRef<Path>) -> Result<Scenario, LoadError>
         locations,
         catchment_owners,
     })
+}
+
+fn validate_map_name(value: &str) -> Result<(), LoadError> {
+    if value.is_empty()
+        || value.len() > 48
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return Err(LoadError::at(
+            "scenario.toml",
+            "scenario.map",
+            "must be a map name ([a-z0-9_]{1,48})",
+        ));
+    }
+    Ok(())
+}
+
+fn scenario_map_directory(directory: &Path, map_name: &str) -> Result<PathBuf, LoadError> {
+    let absolute = std::path::absolute(directory).map_err(|error| {
+        LoadError::at(
+            "scenario.toml",
+            "scenario.map",
+            format!("could not make scenario directory absolute: {error}"),
+        )
+    })?;
+    let Some(scenarios_directory) = absolute.parent() else {
+        return Err(scenario_layout_error());
+    };
+    let Some(assets_root) = scenarios_directory.parent() else {
+        return Err(scenario_layout_error());
+    };
+    if scenarios_directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some("scenarios")
+    {
+        return Err(scenario_layout_error());
+    }
+
+    let map_directory = assets_root.join("map").join(map_name);
+    if !map_directory.is_dir() {
+        return Err(LoadError::at(
+            "scenario.toml",
+            "scenario.map",
+            format!(
+                "map {map_name:?} was not found at {}",
+                map_directory.display()
+            ),
+        ));
+    }
+    Ok(map_directory)
+}
+
+fn scenario_layout_error() -> LoadError {
+    LoadError::at(
+        "scenario.toml",
+        "scenario.map",
+        "scenario directory must be <root>/scenarios/<directory> so maps can be resolved under <root>/map/<name>",
+    )
 }
 
 pub(crate) fn load_location_kinds(
