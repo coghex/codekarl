@@ -17,6 +17,8 @@ ck-gpu-metal = { path = ".", features = ["spare-faults"] }
 ck-map = { path = "../map", features = ["test-support"] }
 ck-window = { path = "../window", features = ["test-support"] }
 ck-window-cocoa = { path = "../window-cocoa" }
+# The readout readback cases decode the shipped pixel font's PNGs.
+png = { version = "0.18", default-features = false }
 
 [[test]]
 name = "presenter"

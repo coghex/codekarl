@@ -1328,3 +1328,175 @@ fn a_compatibility_upload_failure_is_reported_before_the_ordinary_one_and_only_f
         rig.finish();
     }
 }
+
+// ---- the date readout's pixel font (CK-197) ----
+
+/// A clear-colour channel as the byte the target holds.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is a fraction from 0 to 1, scaled to 0..=255 and rounded just before"
+)]
+fn byte(channel: f32) -> u8 {
+    (channel * 255.0).round() as u8
+}
+
+/// The shipped font's PNG at `name` under `assets/ui/font`, decoded: its width, height and RGBA8 pixels.
+fn font_png(name: &str) -> (u32, u32, Vec<u8>) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/ui/font")
+        .join(name);
+    let mut reader = png::Decoder::new(std::io::BufReader::new(
+        std::fs::File::open(&path).expect("the shipped font image"),
+    ))
+    .read_info()
+    .expect("a PNG");
+    let mut bytes = vec![0; reader.output_buffer_size().expect("a size")];
+    let info = reader.next_frame(&mut bytes).expect("a frame");
+    assert_eq!(info.color_type, png::ColorType::Rgba, "{name}");
+    assert_eq!(info.bit_depth, png::BitDepth::Eight, "{name}");
+    bytes.truncate(info.buffer_size());
+    (info.width, info.height, bytes)
+}
+
+/// "9 Oct 768" as the application's `font.layout` lays it out from the committed font (`apps/codekarl` pins the same literals):
+/// the character, its x in font pixels and its glyph width. The string is 49 font pixels wide and every glyph 11 tall.
+const READOUT: [(char, i32, u32); 7] = [
+    ('9', 0, 5),
+    ('O', 10, 5),
+    ('c', 16, 5),
+    ('t', 22, 4),
+    ('7', 31, 5),
+    ('6', 37, 5),
+    ('8', 43, 5),
+];
+
+/// The date readout of a fixed string, off screen: a panel one font pixel larger than the text on every side with the glyph
+/// quads over it, at two points per font pixel, nearest sampled. The frame equals the CPU composite of the font's PNGs pixel for
+/// pixel, the text colour is on screen exactly where a set glyph pixel lands (four target pixels each), and the pixels around the
+/// panel are the clear colour. Negative control: a panel drawn after the glyphs covers them and changes the frame.
+#[test]
+fn the_date_readout_draws_its_panel_and_glyphs_exactly() {
+    for mode in MODES {
+        the_date_readout_draws_its_panel_and_glyphs_exactly_in(mode);
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the images, the layout, the draw and its checks read best in one run"
+)]
+fn the_date_readout_draws_its_panel_and_glyphs_exactly_in(mode: Mode) {
+    const SCALE: i32 = 2;
+    const TEXT: [u8; 4] = [0xEC, 0xE3, 0xCB, 255];
+    const PANEL: [u8; 4] = [0x2A, 0x21, 0x19, 255];
+    let size = (110_u32, 30_u32);
+    let (origin_x, origin_y) = (4_i32, 2_i32);
+    let clear = [0.1, 0.2, 0.3];
+    let mut rig = Rig::new(mode, 16, 4, 64);
+
+    // Key 0 is the panel; the glyphs follow, one key per distinct character.
+    let (w, h, bytes) = font_png("panel.png");
+    assert_eq!((w, h, bytes.as_slice()), (1, 1, PANEL.as_slice()));
+    rig.show(0, w, h, Arc::new(Bytes(bytes)));
+    let mut keys = HashMap::new();
+    let mut glyphs = Vec::new();
+    for (character, x, _) in READOUT {
+        let key = *keys.entry(character).or_insert_with(|| {
+            let key = u32::try_from(rig.shown.len()).expect("a few keys");
+            let (w, h, bytes) = font_png(&format!("glyphs/U+{:04X}.png", u32::from(character)));
+            assert_eq!(h, 11, "{character}");
+            rig.show(key, w, h, Arc::new(Bytes(bytes)));
+            key
+        });
+        let shown = &rig.shown[&key];
+        let left = origin_x + SCALE + x * SCALE;
+        let top = origin_y + SCALE;
+        glyphs.push(instance(
+            key,
+            [
+                left,
+                top,
+                left + i32::try_from(shown.width).expect("small") * SCALE,
+                top + i32::try_from(shown.height).expect("small") * SCALE,
+            ],
+            WHOLE,
+        ));
+    }
+    let panel = instance(
+        0,
+        [
+            origin_x,
+            origin_y,
+            origin_x + (49 + 2) * SCALE,
+            origin_y + (11 + 2) * SCALE,
+        ],
+        WHOLE,
+    );
+    let mut readout = vec![panel];
+    readout.extend(glyphs.iter().copied());
+    let checker = checker_image();
+
+    let (pixels, counters) = rig.draw(size, clear, VulkanFilter::Nearest, readout.clone());
+    let expected = reference(
+        size,
+        clear,
+        VulkanFilter::Nearest,
+        &rig.shown,
+        &checker,
+        &readout,
+    );
+    assert_eq!(
+        differing(&pixels, &expected, 0),
+        0,
+        "the frame equals the composite of the font's images"
+    );
+    assert_eq!(counters.instances, 8, "the panel and seven glyphs");
+    assert_eq!(counters.skipped, 0);
+    assert_eq!(counters.checker, 0);
+
+    let pixel = |frame: &[u8], x: u32, y: u32| -> [u8; 4] {
+        let at = (y * size.0 + x) as usize * 4;
+        [frame[at], frame[at + 1], frame[at + 2], frame[at + 3]]
+    };
+    // The text colour is where the glyphs' set pixels are, four target pixels each: nothing was dropped or covered.
+    let set: usize = glyphs
+        .iter()
+        .map(|glyph| {
+            rig.shown[&glyph.key]
+                .pixels
+                .0
+                .chunks_exact(4)
+                .filter(|texel| texel[3] != 0)
+                .count()
+        })
+        .sum();
+    let text = (0..size.1)
+        .flat_map(|y| (0..size.0).map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(&pixels, x, y) == TEXT)
+        .count();
+    assert_eq!(
+        text,
+        set * 4,
+        "the text colour covers exactly the glyphs' set pixels"
+    );
+    let clear_bytes = clear.map(byte);
+    assert_eq!(
+        pixel(&pixels, 0, 0)[..3],
+        clear_bytes,
+        "outside the panel is the clear colour"
+    );
+    assert_eq!(pixel(&pixels, 4, 2), PANEL, "the panel's corner");
+
+    // Negative control: the panel drawn last covers the text.
+    let mut covered = glyphs.clone();
+    covered.push(panel);
+    let (hidden, _) = rig.draw(size, clear, VulkanFilter::Nearest, covered);
+    assert_ne!(hidden, pixels);
+    assert_eq!(
+        pixel(&hidden, 8, 10),
+        PANEL,
+        "a panel drawn last hides the glyphs"
+    );
+    rig.finish();
+}

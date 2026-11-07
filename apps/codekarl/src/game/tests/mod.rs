@@ -336,8 +336,9 @@ impl Harness {
 }
 
 /// Writes a scenario into `directory`, which must be `<root>/scenarios/<name>`: `scenario.toml` naming the map `fixture`, an
-/// empty `locations.toml`, and the application's fixture map in `<root>/map/fixture/`. The scenario starts on `start`.
-pub(super) fn write_scenario(directory: &std::path::Path, start: Date) {
+/// empty `locations.toml`, the application's fixture map in `<root>/map/fixture/` and the shipped `font.toml` in
+/// `<root>/ui/font/` (a run with a scenario reads it). The scenario starts on `start`.
+pub(crate) fn write_scenario(directory: &std::path::Path, start: Date) {
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/map");
     let root = directory
         .parent()
@@ -360,6 +361,14 @@ pub(super) fn write_scenario(directory: &std::path::Path, start: Date) {
     )
     .unwrap();
     std::fs::write(directory.join("locations.toml"), "").unwrap();
+    // A run with a scenario reads the pixel font from the assets root at start-up.
+    let font = root.join("ui/font");
+    std::fs::create_dir_all(&font).unwrap();
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/ui/font/font.toml"),
+        font.join("font.toml"),
+    )
+    .unwrap();
 }
 
 /// Waits, with a bound, for something another thread does: the wake callback notifies, the test checks its condition.

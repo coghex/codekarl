@@ -82,6 +82,7 @@ fn linked(harness: &Harness) -> (crate::ui_link::CodekarlUi, mpsc::Receiver<Mess
     let link = harness.ui.clone().with_sim(SimLink {
         controls: SimControls::new(sender),
         slot: SimSlot::new(Arc::new(|| {})),
+        time_registered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
     (link, receiver)
 }
