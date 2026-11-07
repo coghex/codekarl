@@ -662,7 +662,7 @@ fn supervise_with_owner_factory(
     let (ui, sim_spawn, game_extension) = match connected {
         Some(connected) => (
             ui.with_sim(ui_link::SimLink {
-                controls: connected.controls,
+                controls: connected.controls.clone(),
                 slot: connected.slot,
                 time_registered: Arc::clone(&time_registered),
                 hover_registered: Arc::clone(&hover_registered),
@@ -672,6 +672,7 @@ fn supervise_with_owner_factory(
                 time_registered,
                 hover_registered,
                 Arc::clone(&wake),
+                connected.controls,
             )),
         ),
         None => (ui, None, None),

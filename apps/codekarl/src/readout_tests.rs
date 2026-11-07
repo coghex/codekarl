@@ -11,6 +11,7 @@ use ck_lua::{CallOutcome, ConfigValue, Extension, HostFunction, Modules, VmOwner
 use ck_window::{Notifier, Requests};
 
 use crate::frame_api::{self, FrameBackend, FrameRegistration};
+use crate::game::core::Message;
 use crate::game::slot::{PauseReason, SimSnapshot};
 use crate::testing::Dir;
 use crate::window_api::FRAME_UPDATE;
@@ -143,6 +144,7 @@ pub(crate) struct Readout {
     registered: Arc<AtomicBool>,
     hover_registered: Arc<AtomicBool>,
     frame: FrameRegistration,
+    controls: std::sync::mpsc::Receiver<Message>,
     sequence: u32,
     _dir: Dir,
 }
@@ -167,6 +169,7 @@ impl Readout {
         window = window.function("record", recording(&log, "record"));
         let registered = Arc::new(AtomicBool::new(false));
         let hover_registered = Arc::new(AtomicBool::new(false));
+        let (control_sender, controls) = std::sync::mpsc::channel();
         let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let shipped_font = Arc::new(font::load(&assets).expect("the shipped font"));
         let config = ConfigValue::Table(match scale {
@@ -194,6 +197,7 @@ impl Readout {
             Arc::clone(&registered),
             Arc::clone(&hover_registered),
             Arc::new(|| {}),
+            crate::game::controls::SimControls::new(control_sender),
         ));
         settings.call_limit = 4;
         let mut owner = VmOwner::spawn(settings).expect("the UI VM spawns");
@@ -205,6 +209,7 @@ impl Readout {
             registered,
             hover_registered,
             frame,
+            controls,
             sequence: 0,
             _dir: dir,
         }
@@ -220,6 +225,16 @@ impl Readout {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    pub(crate) fn controls(&self) -> Vec<crate::game::controls::Control> {
+        self.controls
+            .try_iter()
+            .filter_map(|message| match message {
+                Message::Control(control) => Some(control),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The entries after the `n`th `record mark` entry, up to the next one.
@@ -477,7 +492,7 @@ fn the_readout_format() {
 }
 
 #[test]
-fn the_readout_creates_its_panel_first_then_touches_only_what_changed() {
+fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
     let mut readout = Readout::new("", None);
     assert!(
         readout.registered.load(Ordering::SeqCst),
@@ -485,35 +500,21 @@ fn the_readout_creates_its_panel_first_then_touches_only_what_changed() {
     );
     readout.deliver(&snapshot(14, 1, Some(PauseReason::Load)));
     let first = readout.entries();
-    // The panel's texture is loaded and its quad created before any glyph, at the margin and one font pixel larger than the text.
+    // The panel is at the snapped margin, with the fixed buttons and the paused readout in one row.
     assert_eq!(first[0], "load ui/font/panel.png");
     assert!(
         first[1].starts_with("create q1 ui/font/panel.png 8 8 "),
         "{first:?}"
     );
-    // "9 Oct 768 · 14:00 · paused" has 22 glyphs besides its 6 spaces: a quad for each, and the panel.
+    // The scene contains the panel, three background quads per each of eight buttons, their nine glyphs, and the readout glyphs.
     let text = "9 Oct 768 · 14:00 · paused";
     let glyphs = text.chars().filter(|c| *c != ' ').count();
     assert_eq!(
         first.iter().filter(|e| e.starts_with("create")).count(),
-        glyphs + 1,
+        glyphs + 1 + 8 * 3 + 9,
         "{first:?}"
     );
-    let laid = font::layout(
-        &font::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"))
-            .unwrap(),
-        text,
-    );
-    let ConfigValue::Table(laid) = laid else {
-        panic!("a table")
-    };
-    let ConfigValue::Integer(width) = laid["width"] else {
-        panic!("a width")
-    };
-    assert_eq!(
-        first[1],
-        format!("create q1 ui/font/panel.png 8 8 {} 26", (width + 2) * 2)
-    );
+    assert_eq!(first[1], "create q1 ui/font/panel.png 8 8 460 38");
 
     // Only the hour changes: one digit is replaced, the panel keeps its size.
     let before = readout.entries().len();

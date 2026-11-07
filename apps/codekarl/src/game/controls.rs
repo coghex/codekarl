@@ -71,8 +71,13 @@ impl SimControls {
     /// transitions (the caller writes the one record). A press sent after the owner ended is dropped.
     pub(crate) fn send(&self, input: &InputSnapshot) -> bool {
         for control in presses(input) {
-            let _ = self.sender.send(Message::Control(control));
+            self.send_control(control);
         }
         input.overflow
+    }
+
+    /// Sends one control through the same channel used by key presses. A control after the simulation owner ended is dropped.
+    pub(crate) fn send_control(&self, control: Control) {
+        let _ = self.sender.send(Message::Control(control));
     }
 }

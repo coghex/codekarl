@@ -389,6 +389,7 @@ fn the_late_drain_returns_a_failing_game_time_call_and_posts_nothing_new() {
                 Arc::clone(&registered),
                 Arc::new(AtomicBool::new(false)),
                 Arc::new(|| {}),
+                SimControls::new(std::sync::mpsc::channel().0),
             )],
             ..Extras::default()
         },

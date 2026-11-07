@@ -8,8 +8,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ck_lua::{ConfigValue, Extension};
+use ck_lua::{ConfigValue, Extension, HostFunction};
 
+use crate::game::controls::{self, SimControls};
 use crate::game::slot::{PauseReason, SimSnapshot};
 
 /// The callback `game.on_time` registers.
@@ -23,9 +24,11 @@ pub(crate) fn extension(
     time_registered: Arc<AtomicBool>,
     hover_registered: Arc<AtomicBool>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    controls: SimControls,
 ) -> Extension {
     let time_wake = Arc::clone(&wake);
     Extension::new("game")
+        .function("control", control_function(controls))
         .callback_observed(
             "on_time",
             GAME_TIME,
@@ -42,6 +45,20 @@ pub(crate) fn extension(
                 wake();
             }),
         )
+}
+
+/// `game.control(name)` sends the named time or save control over the run's simulation channel.
+fn control_function(controls: SimControls) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [Some(ConfigValue::String(name))] = arguments else {
+            return Err("game.control: expected one string argument (name)".to_owned());
+        };
+        let Some(control) = controls::control_of(name) else {
+            return Err(format!("game.control: unknown control name `{name}`"));
+        };
+        controls.send_control(control);
+        Ok(Vec::new())
+    })
 }
 
 /// The callback argument for a hovered marker; `None` means Lua receives no arguments (`nil`).

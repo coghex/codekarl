@@ -10,6 +10,81 @@ use ck_lua::ConfigValue;
 
 use crate::readout_tests::Readout;
 
+#[path = "../tests/support/time_bar.rs"]
+mod time_bar_witness;
+
+#[test]
+fn the_window_witness_assertions_validate_captured_output_offline() {
+    const CAPTURED: &str = "lua.ui: time-bar speed 1 load\nlua.ui: time-bar speed 3 load\nlua.ui: time-bar speed 3 running\nlua.ui: time-bar speed 3 player\nlua.ui: time-bar gap down\nlua.ui: time-bar gap up\nwindow: window closed\ncamera 0 782598144 782598144\ntime-bar-speed3-injected\ntime-bar-pause1-injected\ntime-bar-pause2-injected\ntime-bar-gap-drag-injected\ntime-bar-gap-drag-observed\n";
+    assert!(time_bar_witness::validate(CAPTURED).is_ok());
+    assert!(
+        time_bar_witness::validate(
+            &CAPTURED.replace("time-bar speed 3 running", "time-bar speed 2 running")
+        )
+        .is_err()
+    );
+    assert!(
+        time_bar_witness::validate(&CAPTURED.replace(
+            "camera 0 782598144 782598144",
+            "camera 0 782565376 782630912"
+        ))
+        .is_err()
+    );
+    assert!(time_bar_witness::script().contains("game.control(control_name)"));
+    let fixture = crate::testing::Dir::new();
+    time_bar_witness::install_fixture_assets(&fixture.0, &fixture.0);
+    assert!(fixture.0.join("lib/button.lua").is_file());
+    assert!(fixture.0.join("ui/button/normal.png").is_file());
+}
+
+#[test]
+fn the_window_witness_observes_down_move_and_up_in_one_real_ui_update() {
+    let mut readout = Readout::script(&time_bar_witness::script(), None);
+    readout.deliver(&crate::readout_tests::snapshot(
+        14,
+        3,
+        Some(crate::game::slot::PauseReason::Player),
+    ));
+    let event = |kind: &str, x: i64| {
+        ConfigValue::Table(BTreeMap::from([
+            ("kind".to_owned(), ConfigValue::String(kind.to_owned())),
+            ("key".to_owned(), ConfigValue::String("time_bar".to_owned())),
+            ("x".to_owned(), ConfigValue::Integer(x)),
+            ("y".to_owned(), ConfigValue::Integer(20)),
+        ]))
+    };
+    let pointer = ConfigValue::Table(BTreeMap::from([
+        ("x".to_owned(), ConfigValue::Integer(32)),
+        ("y".to_owned(), ConfigValue::Integer(20)),
+        ("held".to_owned(), ConfigValue::Bool(false)),
+        ("overflow".to_owned(), ConfigValue::Bool(false)),
+        (
+            "over".to_owned(),
+            ConfigValue::String("time_bar".to_owned()),
+        ),
+        (
+            "events".to_owned(),
+            ConfigValue::Array(vec![event("down", 32), event("move", 40), event("up", 40)]),
+        ),
+    ]));
+
+    readout.update(800, 600, Some(pointer));
+
+    let entries = readout.entries();
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry == "record time-bar gap down"),
+        "{entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry == "record time-bar gap up"),
+        "{entries:?}"
+    );
+}
+
 /// The records of a script (`window.record`), without the `record ` prefix and without the marks that split the scene calls.
 fn records(readout: &Readout) -> Vec<String> {
     readout
@@ -853,7 +928,7 @@ fn a_resize_relayouts_the_readout_and_a_shown_tooltip() {
         "{:?}",
         &readout.entries()[before..]
     );
-    // A wider window: the tooltip no longer needs to flip, and the readout is placed again (at the same anchored corner).
+    // A wider window: the tooltip no longer needs to flip, and the time bar remains at the same top-left anchor.
     readout.update(1200, 700, None);
     let after = readout.entries()[before..].to_vec();
     assert!(
@@ -861,7 +936,7 @@ fn a_resize_relayouts_the_readout_and_a_shown_tooltip() {
         "{after:?}"
     );
     assert!(
-        after.iter().any(|e| e.starts_with("set_hit readout 8 8 ")),
+        after.iter().any(|e| e.starts_with("set_hit time_bar 8 8 ")),
         "{after:?}"
     );
     assert!(
@@ -902,4 +977,190 @@ fn an_idle_update_makes_no_scene_call_and_a_change_the_dispatcher_reports_does()
     // A pointer over a key nobody registered, and then an event for it: the dispatcher is always called, and it finds no widget.
     readout.update(800, 600, Some(pointer(Some("elsewhere"), Vec::new())));
     assert_eq!(readout.entries().len(), before);
+}
+
+#[test]
+fn game_control_sends_the_ten_named_actions_and_refuses_bad_calls_without_sending() {
+    let readout = Readout::script(
+        r#"
+for _, name in ipairs{
+  "time_pause", "time_speed_1", "time_speed_2", "time_speed_3", "time_speed_4", "time_speed_5",
+  "time_faster", "time_slower", "game_quicksave", "game_quickload"
+} do game.control(name) end
+for _, args in ipairs{{"bad"}, {12}, {"time_pause", "time_faster"}, {}} do
+  local ok, err = pcall(game.control, table.unpack(args))
+  window.record(tostring(ok) .. " " .. tostring(err))
+end
+"#,
+        None,
+    );
+    assert_eq!(
+        readout.controls(),
+        [
+            crate::game::controls::Control::TogglePause,
+            crate::game::controls::Control::Speed(1),
+            crate::game::controls::Control::Speed(2),
+            crate::game::controls::Control::Speed(3),
+            crate::game::controls::Control::Speed(4),
+            crate::game::controls::Control::Speed(5),
+            crate::game::controls::Control::Faster,
+            crate::game::controls::Control::Slower,
+            crate::game::controls::Control::Quicksave,
+            crate::game::controls::Control::Quickload,
+        ]
+    );
+    let refusals = records(&readout);
+    assert_eq!(refusals.len(), 4);
+    assert!(
+        refusals[0].contains("bad"),
+        "unknown control error names its argument: {refusals:?}"
+    );
+    for refusal in &refusals[1..] {
+        assert!(
+            refusal.contains("game.control") && refusal.contains("name"),
+            "argument error names the game.control name argument: {refusals:?}"
+        );
+    }
+}
+
+#[test]
+fn the_time_bar_routes_its_buttons_through_game_controls() {
+    let mut readout = Readout::new("", None);
+    readout.deliver(&crate::readout_tests::snapshot(
+        14,
+        3,
+        Some(crate::game::slot::PauseReason::Player),
+    ));
+    let entries = readout.entries();
+    let broad_hit = entries
+        .iter()
+        .position(|entry| entry.starts_with("set_hit time_bar "))
+        .expect("the bar capture region");
+    let first_button = entries
+        .iter()
+        .position(|entry| entry.starts_with("set_hit button_1 "))
+        .expect("the pause button region");
+    assert!(broad_hit < first_button, "{entries:?}");
+    assert!(
+        !entries
+            .iter()
+            .any(|entry| entry.starts_with("set_hit readout ")),
+        "the former readout-only hit region is removed"
+    );
+    assert!(entries[0].starts_with("load ui/font/panel.png"));
+    assert!(entries[1].starts_with("create q1 ui/font/panel.png 8 8 "));
+
+    let expected = [
+        crate::game::controls::Control::TogglePause,
+        crate::game::controls::Control::Slower,
+        crate::game::controls::Control::Faster,
+        crate::game::controls::Control::Speed(1),
+        crate::game::controls::Control::Speed(2),
+        crate::game::controls::Control::Speed(3),
+        crate::game::controls::Control::Speed(4),
+        crate::game::controls::Control::Speed(5),
+    ];
+    for (index, control) in expected.into_iter().enumerate() {
+        let key = format!("button_{}", index + 1);
+        let hit = readout
+            .entries()
+            .into_iter()
+            .find(|entry| entry.starts_with(&format!("set_hit {key} ")))
+            .expect("a button hit region");
+        let rect: Vec<i64> = hit
+            .split_whitespace()
+            .skip(2)
+            .map(|part| part.parse().expect("an integer rectangle"))
+            .collect();
+        let (x, y) = (rect[0] + 1, rect[1] + 1);
+        let event = |kind: &str| {
+            ConfigValue::Table(BTreeMap::from([
+                ("kind".to_owned(), ConfigValue::String(kind.to_owned())),
+                ("key".to_owned(), ConfigValue::String(key.clone())),
+                ("x".to_owned(), ConfigValue::Integer(x)),
+                ("y".to_owned(), ConfigValue::Integer(y)),
+            ]))
+        };
+        let pointer = ConfigValue::Table(BTreeMap::from([
+            ("x".to_owned(), ConfigValue::Integer(x)),
+            ("y".to_owned(), ConfigValue::Integer(y)),
+            ("held".to_owned(), ConfigValue::Bool(false)),
+            ("overflow".to_owned(), ConfigValue::Bool(false)),
+            ("over".to_owned(), ConfigValue::String(key.clone())),
+            (
+                "events".to_owned(),
+                ConfigValue::Array(vec![event("down"), event("up")]),
+            ),
+        ]));
+        readout.update(800, 600, Some(pointer));
+        assert_eq!(readout.controls(), [control]);
+    }
+}
+
+#[test]
+fn the_time_bar_geometry_is_literal_at_both_scales_and_readout_width_keeps_buttons_fixed() {
+    let cases = [
+        (
+            2,
+            "create q1 ui/font/panel.png 8 8 460 38",
+            [
+                "set_hit button_1 12 12 16 30",
+                "set_hit button_2 36 12 20 30",
+                "set_hit button_3 58 12 20 30",
+                "set_hit button_4 86 12 20 30",
+                "set_hit button_5 108 12 20 30",
+                "set_hit button_6 130 12 20 30",
+                "set_hit button_7 152 12 20 30",
+                "set_hit button_8 174 12 20 30",
+            ],
+        ),
+        (
+            3,
+            "create q1 ui/font/panel.png 9 9 690 57",
+            [
+                "set_hit button_1 15 15 24 45",
+                "set_hit button_2 51 15 30 45",
+                "set_hit button_3 84 15 30 45",
+                "set_hit button_4 126 15 30 45",
+                "set_hit button_5 159 15 30 45",
+                "set_hit button_6 192 15 30 45",
+                "set_hit button_7 225 15 30 45",
+                "set_hit button_8 258 15 30 45",
+            ],
+        ),
+    ];
+    for (scale, panel, expected_hits) in cases {
+        let mut readout = Readout::new("", Some(scale));
+        readout.deliver(&crate::readout_tests::snapshot(
+            14,
+            3,
+            Some(crate::game::slot::PauseReason::Player),
+        ));
+        let before = readout.entries();
+        assert_eq!(before[1], panel);
+        let actual_hits: Vec<String> = before
+            .iter()
+            .filter(|entry| entry.starts_with("set_hit button_"))
+            .cloned()
+            .collect();
+        assert_eq!(actual_hits, expected_hits);
+
+        let before_resize = before.len();
+        readout.deliver(&crate::readout_tests::snapshot(14, 3, None));
+        let after = readout.entries();
+        let changed = &after[before_resize..];
+        let later_hits: Vec<String> = after
+            .iter()
+            .filter(|entry| entry.starts_with("set_hit button_"))
+            .cloned()
+            .collect();
+        assert_eq!(later_hits, actual_hits, "scale {scale}");
+        assert!(
+            changed
+                .iter()
+                .any(|entry| entry.starts_with("set_rect q1 8 8 ")
+                    || entry.starts_with("set_rect q1 9 9 ")),
+            "the panel width follows the readout at scale {scale}: {changed:?}"
+        );
+    }
 }

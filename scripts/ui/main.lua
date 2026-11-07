@@ -11,6 +11,7 @@ local ui = require("lib.ui")
 local text = require("lib.text")
 local panel = require("lib.panel")
 local pointer = require("lib.pointer")
+local button = require("lib.button")
 
 local P = ui.P
 local MARGIN = 8 -- points from the window's top and left edges
@@ -30,41 +31,102 @@ local function readout_text(time)
 end
 
 if game ~= nil then
-  -- The readout: a panel one UI pixel larger than the text on each side, anchored to the top-left corner. It is created with the
-  -- first `game_time`, the panel first so that the glyphs are drawn over it.
+  -- The time bar is created with the first `game_time`: one panel behind a row of controls and the changing readout.
   local readout = text.line(0, 0)
-  local readout_panel = nil
+  local time_panel = nil
+  local readout_x = nil
+  local row_y = nil
+  local row_height = nil
 
-  -- Places the panel, the hit region and the text for the readout's current text size.
-  local function fit_readout()
-    local width = (readout.width + 2) * P
-    local height = (readout.height + 2) * P
+  -- The panel follows only the readout width. The button positions and readout origin are fixed after first layout.
+  local function fit_bar()
+    local width = readout_x - time_panel.x + readout.width * P + 2 * P
+    local height = row_height + 4 * P
     local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
-    readout_panel:set_rect(x, y, width, height)
-    render.set_hit("readout", {{x = readout_panel.x, y = readout_panel.y, width = readout_panel.width, height = readout_panel.height}})
-    text.move(readout, readout_panel.x + P, readout_panel.y + P)
+    time_panel:set_rect(x, y, width, height)
+    render.set_hit("time_bar", {{x = time_panel.x, y = time_panel.y, width = time_panel.width, height = time_panel.height}})
+    text.move(readout, readout_x, row_y + (row_height - readout.height * P) / 2)
+  end
+
+  local function create_bar(content)
+    local groups = {
+      {{text = "||", name = "time_pause"}},
+      {{text = "-", name = "time_slower"}, {text = "+", name = "time_faster"}},
+      {
+        {text = "1", name = "time_speed_1"},
+        {text = "2", name = "time_speed_2"},
+        {text = "3", name = "time_speed_3"},
+        {text = "4", name = "time_speed_4"},
+        {text = "5", name = "time_speed_5"},
+      },
+    }
+    local button_height = 0
+    local content_width = 0
+    for group_index, group in ipairs(groups) do
+      if group_index > 1 then
+        content_width = content_width + 4 * P
+      end
+      for index, item in ipairs(group) do
+        local laid = font.layout(item.text)
+        item.width = (laid.width + 4) * P
+        item.height = (laid.height + 4) * P
+        button_height = math.max(button_height, item.height)
+        content_width = content_width + item.width
+        if index > 1 then
+          content_width = content_width + P
+        end
+      end
+    end
+    local laid_readout = font.layout(content)
+    local readout_width = laid_readout.width * P
+    local readout_height = laid_readout.height * P
+    row_height = button_height
+    local width = content_width + 4 * P + readout_width + 4 * P
+    local height = row_height + 4 * P
+    local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
+    -- The panel and its broad capture region precede all button regions in painter order.
+    time_panel = panel.new{x = x, y = y, width = width, height = height}
+    render.set_hit("time_bar", {{x = x, y = y, width = width, height = height}})
+    local cursor = x + 2 * P
+    row_y = y + 2 * P
+    for group_index, group in ipairs(groups) do
+      if group_index > 1 then
+        cursor = cursor + 4 * P
+      end
+      for index, item in ipairs(group) do
+        if index > 1 then
+          cursor = cursor + P
+        end
+        local control_name = item.name
+        button.new{
+          x = cursor,
+          y = row_y + (row_height - item.height) / 2,
+          text = item.text,
+          on_click = function() game.control(control_name) end,
+        }
+        cursor = cursor + item.width
+      end
+    end
+    readout_x = cursor + 4 * P
+    text.set(readout, content)
+    text.move(readout, readout_x, row_y + (row_height - readout_height) / 2)
   end
 
   game.on_time(function(time)
     local content = readout_text(time)
-    if readout_panel == nil then
-      local laid = font.layout(content)
-      local width = (laid.width + 2) * P
-      local height = (laid.height + 2) * P
-      local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
-      readout_panel = panel.new{x = x, y = y, width = width, height = height}
-      render.set_hit("readout", {{x = readout_panel.x, y = readout_panel.y, width = readout_panel.width, height = readout_panel.height}})
-      text.move(readout, readout_panel.x + P, readout_panel.y + P)
+    if time_panel == nil then
+      create_bar(content)
+      return
     end
     local before = readout.width
     text.set(readout, content)
     if readout.width ~= before then
-      fit_readout()
+      fit_bar()
     end
   end)
   relayouts[#relayouts + 1] = function()
-    if readout_panel ~= nil then
-      fit_readout()
+    if time_panel ~= nil then
+      fit_bar()
     end
   end
 
