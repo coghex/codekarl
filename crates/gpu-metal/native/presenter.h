@@ -36,6 +36,7 @@ typedef struct {
     int32_t handler_delay_ms;         /* the handlers linger this long after setting their tokens */
     int32_t completion_delay_ms;      /* the completion handler waits this long before setting its token */
     int32_t fail_texture_allocation;  /* the quad texture cannot be allocated */
+    int32_t fail_overlay_palette_allocation; /* the admitted map generation's overlay palette cannot be allocated (test) */
     int32_t fail_quad_encode;         /* the quad cannot be encoded: the frame is abandoned */
     int32_t retired_token_delay_ms;   /* a texture retired now is held by a token that arrives this much later */
     int32_t pause_after_reap_for_token; /* the frame step waits, right after its first look at a retired

@@ -109,6 +109,23 @@ fn input_with(generation: u64) -> Arc<MetalMapInput> {
     input_of(the_fixture(), generation)
 }
 
+fn input_with_palette(generation: u64, colour: [u8; 4]) -> Arc<MetalMapInput> {
+    let fixture = the_fixture();
+    let mut rules = rules_of(fixture);
+    rules.overlay_palette = vec![colour];
+    Arc::new(
+        MetalMapInput::new(
+            generation,
+            ORIGIN,
+            CROP,
+            fixture.grid_a.clone().into(),
+            fixture.grid_b.clone().into(),
+            &rules,
+        )
+        .expect("a valid one-colour overlay input"),
+    )
+}
+
 fn rect(left: i32, top: i32, right: i32, bottom: i32) -> DestinationRect {
     DestinationRect {
         left,
@@ -149,6 +166,20 @@ fn signed(value: u32) -> i32 {
 /// `view x 4 x scale` rectangle.
 fn map_of(input: &Arc<MetalMapInput>, top_left: [i32; 2], view: [u32; 2], scale: u32) -> MetalMap {
     map_at(input, STEP, top_left, view, scale)
+}
+
+fn map_with_palette(input: &Arc<MetalMapInput>, top_left: [i32; 2], view: [u32; 2]) -> MetalMap {
+    MetalMap::new_with_overlays(
+        Arc::clone(input),
+        STEP,
+        top_left,
+        view,
+        rect(0, 0, signed(view[0] * 4), signed(view[1] * 4)),
+        source(0.0, 0.0, float(view[0]), float(view[1])),
+        Vec::new(),
+        vec![[0, 0, 0]],
+    )
+    .expect("a valid map with one visible palette pixel")
 }
 
 /// [`map_of`] at a chosen zoom step.
@@ -1181,7 +1212,8 @@ pub(crate) fn map_absent_then_present() {
         (0, 0, 0),
         "no map, no map resource"
     );
-    publish(&slot, 3, map_of(&input_with(1), corner(), [5, 3], 1));
+    let input = input_with_palette(1, [210, 20, 30, 255]);
+    publish(&slot, 3, map_with_palette(&input, corner(), [5, 3]));
     assert!(rig.pump_until(BOUND, || presenter.drawn_generation() == Some(3)));
     assert_eq!(observer.map_passes(), 1);
     // And removing it again stops the pass but keeps the resident resources for the next frame with a map.
@@ -1189,7 +1221,7 @@ pub(crate) fn map_absent_then_present() {
     assert!(rig.pump_until(BOUND, || presenter.drawn_generation() == Some(4)));
     assert_eq!(observer.map_passes(), 1, "no map, no pass");
     assert_eq!(observer.map_targets_alive(), 1, "the target is kept");
-    publish(&slot, 5, map_of(&input_with(1), corner(), [5, 3], 1));
+    publish(&slot, 5, map_with_palette(&input, at(1, 0), [5, 3]));
     assert!(rig.pump_until(BOUND, || presenter.drawn_generation() == Some(5)));
     assert_eq!(observer.map_passes(), 2);
     assert_eq!(
@@ -1202,12 +1234,22 @@ pub(crate) fn map_absent_then_present() {
         1,
         "and the same size is not reallocated"
     );
+    assert_eq!(
+        observer.map_palettes_created(),
+        1,
+        "the input palette is reused across frames"
+    );
+    assert_eq!(observer.map_palettes_alive(), 1);
     await_presented(&mut rig, observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
 /// A resize replaces the target and a new input replaces the images; the old ones are retired and let go of only after the proof
 /// of the last command buffer that used them, which this case orders by a held completion, not by elapsed time.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep generation replacement and its completion-gated palette witness together"
+)]
 pub(crate) fn map_resize_retires_after_the_proof() {
     let mut rig = Rig::open();
     let probes = Probes::new();
@@ -1215,12 +1257,13 @@ pub(crate) fn map_resize_retires_after_the_proof() {
     let gate = Arc::new(AtomicI32::new(0));
     let hooks = TestHooks {
         frame_completion_gate: Some(Arc::clone(&gate)),
+        capture_frames: true,
         ..hooks_with(&probes, &slot)
     };
     let mut presenter = probes.start_ok(&rig, hooks);
     let observer = &probes.observer;
-    let input = input_with(1);
-    publish(&slot, 1, map_of(&input, corner(), [5, 3], 1));
+    let input = input_with_palette(1, [210, 20, 30, 255]);
+    publish(&slot, 1, map_with_palette(&input, corner(), [5, 3]));
     assert!(rig.pump_until(BOUND, || presenter.drawn_generation() == Some(1)));
     assert_eq!(
         (
@@ -1230,9 +1273,11 @@ pub(crate) fn map_resize_retires_after_the_proof() {
         ),
         (1, 0, 1)
     );
+    assert_eq!(observer.map_palettes_created(), 1);
+    assert_eq!(observer.map_palettes_alive(), 1);
     // The view grows while the first frame's command buffer is still outstanding: the step finds it so, and makes nothing.
     let steps = observer.frame_steps();
-    publish(&slot, 2, map_of(&input, corner(), [6, 4], 1));
+    publish(&slot, 2, map_with_palette(&input, corner(), [6, 4]));
     assert!(
         rig.pump_until(BOUND, || observer.frame_steps() > steps),
         "a step ran while the completion was held"
@@ -1247,9 +1292,29 @@ pub(crate) fn map_resize_retires_after_the_proof() {
         1,
         "no second target while the first is in use"
     );
+    assert_eq!(
+        observer.map_palettes_created(),
+        1,
+        "no new palette while the old frame is in flight"
+    );
+    assert_eq!(
+        observer.map_palettes_alive(),
+        1,
+        "the old palette remains held"
+    );
     assert_eq!(observer.map_retired(), 0);
     gate.store(1, Ordering::SeqCst);
     assert!(rig.pump_until(BOUND, || presenter.drawn_generation() == Some(2)));
+    assert!(rig.pump_until(BOUND, || observer.captures() >= 2));
+    assert_eq!(
+        first_map_pixel(
+            &observer
+                .captured_frame_at(0)
+                .expect("first captured generation")
+        ),
+        [210, 20, 30, 255],
+        "the first generation binds its resident palette"
+    );
     assert_eq!(observer.map_targets_created(), 2);
     assert_eq!(observer.map_last_target_size(), (6, 4));
     assert_eq!(observer.map_retired(), 1, "the old target was retired");
@@ -1261,9 +1326,32 @@ pub(crate) fn map_resize_retires_after_the_proof() {
     assert_eq!(observer.map_targets_alive(), 1);
     assert_eq!(observer.map_released_early(), 0);
     // A new input (another generation) replaces the images the same way.
-    publish(&slot, 3, map_of(&input_with(2), corner(), [6, 4], 1));
+    let replacement = input_with_palette(2, [30, 40, 220, 255]);
+    let captures_before_replacement = observer.captures();
+    publish(&slot, 3, map_with_palette(&replacement, corner(), [6, 4]));
     assert!(rig.pump_until(BOUND, || presenter.drawn_generation() == Some(3)));
+    assert!(rig.pump_until(BOUND, || observer.captures() > captures_before_replacement));
+    assert_eq!(
+        first_map_pixel(
+            &observer
+                .captured_frame()
+                .expect("replacement palette capture")
+        ),
+        [30, 40, 220, 255],
+        "the replacement generation binds its changed palette"
+    );
     assert_eq!(observer.map_grids_created(), 2);
+    assert_eq!(
+        observer.map_palettes_created(),
+        2,
+        "a changed generation uploads its changed palette"
+    );
+    assert_eq!(
+        observer.map_palettes_released(),
+        1,
+        "the old palette waited for its completion proof"
+    );
+    assert_eq!(observer.map_palettes_alive(), 1);
     assert_eq!(observer.map_targets_created(), 2, "the view did not change");
     assert_eq!(observer.map_retired(), 2);
     assert_eq!(observer.map_retired_released(), 2);
@@ -1272,6 +1360,7 @@ pub(crate) fn map_resize_retires_after_the_proof() {
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     assert_eq!(observer.map_targets_alive(), 0);
     assert_eq!(observer.map_grids_alive(), 0);
+    assert_eq!(observer.map_palettes_alive(), 0);
     assert_eq!(observer.map_released_early(), 0);
 }
 
@@ -1408,6 +1497,52 @@ pub(crate) fn map_a_refused_allocation_is_told_retried_and_cleared() {
     assert_eq!(told.cleared.load(Ordering::SeqCst), 1);
     await_presented(&mut rig, observer);
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
+}
+
+/// A palette refusal is reached at generation admission, preserves the current generation and retries without another publication.
+pub(crate) fn map_overlay_palette_refusal_retries_without_replacing_the_old_generation() {
+    let mut rig = Rig::open();
+    let probes = Probes::new();
+    let slot = MetalQuadSlot::new();
+    let told = Arc::new(Told::default());
+    let hooks = TestHooks {
+        fail_map_palette_allocations: 1,
+        ..hooks_with(&probes, &slot)
+    };
+    let mut presenter = probes.start_ok(&rig, hooks);
+    let observer = &probes.observer;
+    let first = input_with(1);
+    publish(&slot, 1, map_of(&first, corner(), [5, 3], 1));
+    assert!(rig.pump_until(BOUND, || presenter.drawn_generation() == Some(1)));
+    assert_eq!(observer.map_grids_created(), 1);
+
+    let second = input_with_palette(2, [30, 40, 220, 255]);
+    let map = map_with_palette(&second, corner(), [5, 3])
+        .with_refusals(Arc::clone(&told) as Arc<dyn MapRefusalSink>);
+    told.watch(observer);
+    publish(&slot, 2, map);
+    assert!(rig.pump_until(BOUND, || told.cleared.load(Ordering::SeqCst) == 1));
+    assert_eq!(told.refused.lock().expect("the messages").len(), 1);
+    assert!(
+        told.refused.lock().expect("the messages")[0].contains("overlay-palette"),
+        "{:?}",
+        told.refused.lock().expect("the messages")
+    );
+    assert_eq!(
+        *told.at_refused.lock().expect("the snapshots"),
+        [[1, 1, 0, 0]],
+        "the prior generation remains resident when palette allocation is refused"
+    );
+    assert_eq!(
+        observer.map_grids_created(),
+        2,
+        "the retry admits the new generation"
+    );
+    assert_eq!(observer.map_palettes_created(), 1);
+    assert_eq!(observer.map_palettes_alive(), 1);
+    await_presented(&mut rig, observer);
+    assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
+    assert_eq!(observer.map_palettes_alive(), 0);
 }
 
 /// A resize whose new target is refused while the old target is resident: the frame is drawn **without** the map (never with the old,
@@ -1600,7 +1735,7 @@ pub(crate) fn map_retired_target_waits_for_its_token() {
     assert_eq!(observer.map_targets_alive(), 0);
 }
 
-pub(crate) const CASES: [(&str, fn()); 17] = [
+pub(crate) const CASES: [(&str, fn()); 18] = [
     ("readback_map_full_rules", readback_map_full_rules),
     ("readback_map_rivers_overlay", readback_map_rivers_overlay),
     (
@@ -1636,6 +1771,10 @@ pub(crate) const CASES: [(&str, fn()); 17] = [
     (
         "map_a_refused_allocation_is_told_retried_and_cleared",
         map_a_refused_allocation_is_told_retried_and_cleared,
+    ),
+    (
+        "map_overlay_palette_refusal_retries_without_replacing_the_old_generation",
+        map_overlay_palette_refusal_retries_without_replacing_the_old_generation,
     ),
     (
         "map_a_refused_resize_draws_without_the_map_and_recovers",
