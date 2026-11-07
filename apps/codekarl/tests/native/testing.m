@@ -33,10 +33,12 @@ static id ck_app_unmarked_observer = nil;
 static _Atomic uint64_t ck_app_dropped;
 static _Atomic uint64_t ck_app_dropped_mouse;
 static NSWindow *ck_app_the_window(int32_t *error);
+static BOOL ck_app_marker(const char *dir, const char *name);
 void ck_app_t_schedule_map_keys(void);
 void ck_app_t_schedule_sim_keys(void);
 void ck_app_t_schedule_key_files(void);
 void ck_app_t_schedule_map_pointer(void);
+void ck_app_t_schedule_map_hover(void);
 
 /* The test-only input filter: a local event monitor, which AppKit runs inside -[NSApplication sendEvent:] before
  * the event reaches a window, its key equivalents, a responder or text dispatch. It drops every keyboard event
@@ -86,6 +88,9 @@ void ck_app_t_install_input_filter(void) {
         }];
         if (getenv("CK_WINDOWED_TEST_MAP_INPUT") != NULL || getenv("CK_VULKAN_TEST_MAP_INPUT") != NULL) {
             ck_app_t_schedule_map_pointer();
+        }
+        if (getenv("CK_WINDOWED_TEST_MAP_HOVER") != NULL || getenv("CK_VULKAN_TEST_MAP_HOVER") != NULL) {
+            ck_app_t_schedule_map_hover();
         }
         if (getenv("CK_WINDOWED_TEST_SIM_INPUT") != NULL || getenv("CK_VULKAN_TEST_SIM_INPUT") != NULL) {
             ck_app_t_schedule_sim_keys();
@@ -260,6 +265,66 @@ void ck_app_t_schedule_map_pointer(void) {
                 }
             }
         }];
+    }];
+}
+
+/* Zooms the fixture map around its centered place, hovers it, then moves away on later window updates. */
+static int32_t ck_app_t_send_hover_event(NSWindow *window, int32_t kind, double x, double y) {
+    if (!window.isVisible || !window.ignoresMouseEvents) return -1;
+    NSView *view = window.contentView;
+    const NSInteger marked_event = CK_TEST_POINTER_EVENT;
+    if (kind == 3) {
+        BOOL glfw_vulkan = getenv("CK_VULKAN_TEST_MAP_HOVER") != NULL;
+        NSPoint screen = [window convertPointToScreen:NSMakePoint(x, y)];
+        NSPoint screen_top = NSMakePoint(screen.x, NSScreen.mainScreen.frame.size.height - screen.y);
+        CGScrollEventUnit unit = glfw_vulkan ? kCGScrollEventUnitLine : kCGScrollEventUnitPixel;
+        CGEventRef raw = CGEventCreateScrollWheelEvent(NULL, unit, 1, 15);
+        if (raw == NULL) return -2;
+        CGEventSetLocation(raw, screen_top);
+        if (!glfw_vulkan) {
+            CGEventSetIntegerValueField(raw, kCGScrollWheelEventPointDeltaAxis1, 15);
+            CGEventSetIntegerValueField(raw, kCGScrollWheelEventIsContinuous, 1);
+        }
+        CGEventSetIntegerValueField(raw, kCGEventSourceUserData, CK_TEST_INPUT_MARK);
+        NSEvent *event = [NSEvent eventWithCGEvent:raw];
+        CFRelease(raw);
+        if (event == nil) return -3;
+        [view scrollWheel:event];
+        return 1;
+    }
+    NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeMouseMoved
+                                         location:NSMakePoint(x, y)
+                                    modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                                   windowNumber:window.windowNumber context:nil eventNumber:marked_event
+                                      clickCount:0 pressure:0.0];
+    if (event == nil || event.windowNumber != window.windowNumber) return -4;
+    [view mouseMoved:event];
+    return 1;
+}
+
+void ck_app_t_schedule_map_hover(void) {
+    __block NSUInteger stage = 0;
+    const char *markers = getenv("CK_WINDOWED_TEST_MAP_HOVER");
+    if (markers == NULL) markers = getenv("CK_VULKAN_TEST_MAP_HOVER");
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    ck_app_map_pointer_observer = [center addObserverForName:NSWindowDidUpdateNotification
+                                   object:nil
+                                    queue:NSOperationQueue.mainQueue
+                               usingBlock:^(__unused NSNotification *notification) {
+        NSWindow *window = notification.object;
+        if (![window isKindOfClass:NSWindow.class] || !window.isVisible) return;
+        int32_t result = 1;
+        if (stage == 0) {
+            result = ck_app_t_send_hover_event(window, 3, 200.0, 120.0);
+            if (result == 1) result = ck_app_t_send_hover_event(window, 1, 200.0, 120.0);
+            stage = 1;
+        } else if (stage == 1 && markers != NULL && ck_app_marker(markers, "hover-received")) {
+            result = ck_app_t_send_hover_event(window, 1, 8.0, 8.0);
+            [NSNotificationCenter.defaultCenter removeObserver:ck_app_map_pointer_observer];
+            ck_app_map_pointer_observer = nil;
+            stage = 2;
+        }
+        if (result != 1) NSLog(@"test hover dispatch failed with result %d", result);
     }];
 }
 

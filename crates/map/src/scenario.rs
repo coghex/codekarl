@@ -173,6 +173,22 @@ pub struct MarkerPixel {
     pub colour: Rgba8,
 }
 
+/// The inclusive global map-pixel rectangle that identifies one marker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MarkerHitRect {
+    location_index: usize,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+impl MarkerHitRect {
+    fn contains(self, pixel: WorldPixel) -> bool {
+        (self.left..=self.right).contains(&pixel.x) && (self.top..=self.bottom).contains(&pixel.y)
+    }
+}
+
 /// One prepared location overlay pixel with an index into the scenario palette.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LocationPixel {
@@ -258,6 +274,7 @@ pub struct PreparedMarkers {
     locations: Vec<Location>,
     kinds: LocationKinds,
     steps: Vec<Option<Vec<MarkerPixel>>>,
+    hit_rectangles: Vec<Option<Vec<MarkerHitRect>>>,
 }
 
 impl PreparedMarkers {
@@ -268,6 +285,7 @@ impl PreparedMarkers {
             locations,
             kinds,
             steps: vec![None; STEP_SIZE.len()],
+            hit_rectangles: vec![None; STEP_SIZE.len()],
         }
     }
 
@@ -278,6 +296,76 @@ impl PreparedMarkers {
             *slot = Some(prepare_markers(&self.locations, &self.kinds, step));
         }
         slot.as_deref()
+    }
+
+    /// Return the location drawn on top under a global map pixel.
+    ///
+    /// Hit rectangles are prepared once per zoom step and include the one-pixel
+    /// outline margin around the marker glyph. Later locations win overlaps, as
+    /// they do when marker pixels are prepared.
+    pub fn hit(&mut self, step: u8, world_pixel: WorldPixel) -> Option<usize> {
+        self.hit_with_search(step, world_pixel, |rectangles, pixel| {
+            rectangles
+                .iter()
+                .rfind(|rectangle| rectangle.contains(pixel))
+                .map(|rectangle| rectangle.location_index)
+        })
+    }
+
+    /// Return the inclusive global pixel bounds of a location's marker at `step`.
+    ///
+    /// The bounds use the same prepared rectangles as [`Self::hit`], including
+    /// the one-pixel outline margin. Houses and buildings do not change them.
+    pub fn hit_bounds(
+        &mut self,
+        step: u8,
+        location_index: usize,
+    ) -> Option<(WorldPixel, WorldPixel)> {
+        if step < 15 {
+            return None;
+        }
+        let slot = self.hit_rectangles.get_mut(usize::from(step))?;
+        if slot.is_none() {
+            *slot = Some(prepare_marker_hit_rectangles(
+                &self.locations,
+                &self.kinds,
+                step,
+            ));
+        }
+        let rectangle = slot
+            .as_deref()?
+            .iter()
+            .find(|item| item.location_index == location_index)?;
+        Some((
+            WorldPixel {
+                x: rectangle.left,
+                y: rectangle.top,
+            },
+            WorldPixel {
+                x: rectangle.right,
+                y: rectangle.bottom,
+            },
+        ))
+    }
+
+    fn hit_with_search(
+        &mut self,
+        step: u8,
+        world_pixel: WorldPixel,
+        search: impl FnOnce(&[MarkerHitRect], WorldPixel) -> Option<usize>,
+    ) -> Option<usize> {
+        if step < 15 {
+            return None;
+        }
+        let slot = self.hit_rectangles.get_mut(usize::from(step))?;
+        if slot.is_none() {
+            *slot = Some(prepare_marker_hit_rectangles(
+                &self.locations,
+                &self.kinds,
+                step,
+            ));
+        }
+        Some(search(slot.as_deref()?, world_pixel)).flatten()
     }
 
     /// Select visible marker pixels as view-relative coordinates.
@@ -982,6 +1070,60 @@ fn prepare_markers(locations: &[Location], kinds: &LocationKinds, step: u8) -> V
     pixels
         .into_iter()
         .map(|(pixel, colour)| MarkerPixel { pixel, colour })
+        .collect()
+}
+
+fn prepare_marker_hit_rectangles(
+    locations: &[Location],
+    kinds: &LocationKinds,
+    step: u8,
+) -> Vec<MarkerHitRect> {
+    if step < 15 {
+        return Vec::new();
+    }
+    let Some(pixel_size) = STEP_SIZE
+        .get(usize::from(step))
+        .map(|value| i64::from(*value))
+    else {
+        return Vec::new();
+    };
+
+    locations
+        .iter()
+        .enumerate()
+        .filter_map(|(location_index, location)| {
+            let kind = kinds.kinds.get(location.kind_index)?;
+            let width = i32::try_from(kind.glyph.first().map_or(0, Vec::len)).ok()?;
+            let height = i32::try_from(kind.glyph.len()).ok()?;
+            if width == 0 || height == 0 {
+                return None;
+            }
+            let center = WorldPixel {
+                x: clamp_i32(
+                    (i64::from(location.cell.x) * crate::FIXED_PER_CELL
+                        + crate::FIXED_PER_CELL / 2)
+                        .div_euclid(pixel_size),
+                ),
+                y: clamp_i32(
+                    (i64::from(location.cell.y) * crate::FIXED_PER_CELL
+                        + crate::FIXED_PER_CELL / 2)
+                        .div_euclid(pixel_size),
+                ),
+            };
+            // Match prepare_markers' centring, then include one pixel of
+            // margin on every side for the four-neighbour outline.
+            let glyph_left = center.x.saturating_sub(width >> 1);
+            let glyph_top = center.y.saturating_sub(height >> 1);
+            let glyph_right = glyph_left.saturating_add(width - 1);
+            let glyph_bottom = glyph_top.saturating_add(height - 1);
+            Some(MarkerHitRect {
+                location_index,
+                left: glyph_left.saturating_sub(1),
+                top: glyph_top.saturating_sub(1),
+                right: glyph_right.saturating_add(1),
+                bottom: glyph_bottom.saturating_add(1),
+            })
+        })
         .collect()
 }
 

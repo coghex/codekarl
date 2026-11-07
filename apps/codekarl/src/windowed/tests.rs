@@ -336,6 +336,7 @@ fn a_terminal_simulation_failure_ends_a_windowed_run_failed_and_is_never_reporte
         controls: SimControls::new(sender),
         slot: Arc::clone(&slot),
         time_registered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        hover_registered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
     let latch = ResourceLatch::new();
     let outcome = run_hooked_in(
@@ -386,6 +387,7 @@ fn the_late_drain_returns_a_failing_game_time_call_and_posts_nothing_new() {
         Extras {
             extensions: vec![crate::game_api::extension(
                 Arc::clone(&registered),
+                Arc::new(AtomicBool::new(false)),
                 Arc::new(|| {}),
             )],
             ..Extras::default()
@@ -397,6 +399,7 @@ fn the_late_drain_returns_a_failing_game_time_call_and_posts_nothing_new() {
         controls: SimControls::new(sender),
         slot: Arc::clone(&slot),
         time_registered: registered,
+        hover_registered: Arc::new(AtomicBool::new(false)),
     });
     slot.publish(snapshot(1));
     let _ = UiLink::take_answer(&mut link);

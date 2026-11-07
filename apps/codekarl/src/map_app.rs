@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use ck_map::{
-    Camera, Crop, FixedPoint, LoadedMap, LocationKinds, PreparedLocations, PreparedRivers,
-    STEP_SIZE, Scenario, TerrainKind, ViewSize, WorldPixel,
+    Camera, Crop, FixedPoint, LoadedMap, Location, LocationKinds, PreparedLocations,
+    PreparedMarkers, PreparedRivers, STEP_SIZE, Scenario, TerrainKind, ViewSize, WorldPixel,
 };
 use ck_render_2d::{
     MapCamera, MapInput, MapPublication, MapRules, MapTerrainKind, MapTerrainRule, SceneBridge,
@@ -30,6 +30,17 @@ struct MapControls {
 }
 
 pub(crate) type SharedController = Arc<Mutex<MapController>>;
+
+/// The current marker hover and its outer horizontal bounds in window points.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Hover {
+    pub(crate) location_index: usize,
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) left: i64,
+    pub(crate) right: i64,
+    pub(crate) y: i64,
+}
 
 pub(crate) trait RiverViewSelector {
     fn select_view(
@@ -57,6 +68,10 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     crop: Crop,
     rivers: R,
     locations: PreparedLocations,
+    markers: PreparedMarkers,
+    location_names: Vec<(String, String)>,
+    pointer_position: Option<PointerPosition>,
+    hover: Option<Hover>,
     overlay_palette: Vec<ck_map::Rgba8>,
     pan_pixels_per_frame: i32,
     zoom_steps_per_second: u32,
@@ -148,11 +163,16 @@ impl<R: RiverViewSelector> MapController<R> {
         bridge: Arc<SceneBridge>,
         controls: MapControls,
         rivers: R,
-        locations: Vec<ck_map::Location>,
+        locations: Vec<Location>,
         kinds: LocationKinds,
     ) -> Result<Self, String> {
         let crop = loaded.data.crop;
         let overlay_palette = kinds.overlay_palette();
+        let markers = PreparedMarkers::new(locations.clone(), kinds.clone());
+        let location_names = locations
+            .iter()
+            .map(|location| (location.id.clone(), location.name.clone()))
+            .collect();
         let location_cache = PreparedLocations::new(locations, kinds, crop);
         let rules = rules(loaded, &overlay_palette);
         let input = MapInput::new(
@@ -174,6 +194,10 @@ impl<R: RiverViewSelector> MapController<R> {
             crop,
             rivers,
             locations: location_cache,
+            markers,
+            location_names,
+            pointer_position: None,
+            hover: None,
             overlay_palette,
             pan_pixels_per_frame: i32::try_from(controls.pan_pixels_per_frame)
                 .map_err(|_| "map pan_pixels_per_frame does not fit i32".to_owned())?,
@@ -341,6 +365,17 @@ impl<R: RiverViewSelector> MapController<R> {
             self.zoom_out_elapsed = Duration::ZERO;
         }
 
+        self.pointer_position = update.input.pointer_position;
+        self.hover = if update.input.reset || update.input.pointer_held {
+            None
+        } else {
+            self.pointer_position
+                .filter(|position| pointer_in_view(*position, update.metrics.points))
+                .and_then(|position| {
+                    hover_at(&mut self.markers, &self.location_names, camera, position)
+                })
+        };
+
         if changed || self.bridge.metrics_generation() != metrics_generation {
             #[cfg(feature = "test-support")]
             if camera != camera_before_input {
@@ -432,6 +467,48 @@ impl<R: RiverViewSelector> MapController<R> {
     fn camera(&self) -> Option<Camera> {
         self.camera
     }
+
+    pub(crate) fn hover(&self) -> Option<Hover> {
+        self.hover.clone()
+    }
+}
+
+fn pointer_in_view(position: PointerPosition, points: (u32, u32)) -> bool {
+    position.x >= 0
+        && position.y >= 0
+        && i64::from(position.x) < i64::from(points.0) * 256
+        && i64::from(position.y) < i64::from(points.1) * 256
+}
+
+fn hover_at(
+    markers: &mut PreparedMarkers,
+    names: &[(String, String)],
+    camera: Camera,
+    position: PointerPosition,
+) -> Option<Hover> {
+    let map_x = i64::from(position.x).div_euclid(4 * 256);
+    let map_y = i64::from(position.y).div_euclid(4 * 256);
+    let top_left = camera.top_left();
+    let pixel = WorldPixel {
+        x: i32::try_from(i64::from(top_left.x) + map_x).ok()?,
+        y: i32::try_from(i64::from(top_left.y) + map_y).ok()?,
+    };
+    let index = markers.hit(camera.step, pixel)?;
+    let (id, name) = names.get(index)?;
+    let (marker_top_left, marker_bottom_right) = markers.hit_bounds(camera.step, index)?;
+    let left = (i64::from(marker_top_left.x) - i64::from(top_left.x)) * 4;
+    let right = (i64::from(marker_bottom_right.x) + 1 - i64::from(top_left.x)) * 4;
+    let y = (i64::from(marker_top_left.y) + i64::from(marker_bottom_right.y) + 1
+        - 2 * i64::from(top_left.y))
+        * 2;
+    Some(Hover {
+        location_index: index,
+        id: id.clone(),
+        name: name.clone(),
+        left,
+        right,
+        y,
+    })
 }
 
 pub(crate) fn shared(controller: MapController) -> SharedController {
@@ -610,7 +687,7 @@ fn rules(loaded: &LoadedMap, overlay_palette: &[ck_map::Rgba8]) -> MapRules {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::HashSet;
     use std::sync::Mutex;
@@ -776,6 +853,154 @@ mod tests {
             })
             .expect("initial view is valid");
         controller
+    }
+
+    pub(crate) fn hover_controller() -> MapController {
+        hover_controller_with_glyph(vec![vec!['#', 'd'], vec!['d', '#']])
+    }
+
+    fn hover_controller_with_glyph(glyph: Vec<Vec<char>>) -> MapController {
+        let loaded = expanded_map();
+        let crop = loaded.data.crop;
+        let cell = ck_map::Cell {
+            x: crop.origin.x + 100,
+            y: crop.origin.y + 80,
+        };
+        let kind = ck_map::LocationKind {
+            id: "test".to_owned(),
+            min_size: 1,
+            max_size: 1,
+            catchment_m: vec![0],
+            house_count: vec![0],
+            house_radius_cells_x256: vec![0],
+            glyph,
+            light: ck_map::Rgba8::opaque(255, 0, 0),
+            dark: ck_map::Rgba8::opaque(0, 0, 0),
+        };
+        let location = Location {
+            id: "fixture-town".to_owned(),
+            name: "Fixture Town".to_owned(),
+            cell,
+            kind_index: 0,
+            size: 1,
+            building_indices: Vec::new(),
+            catchment_m: None,
+            source: "test".to_owned(),
+            confidence: ck_map::Confidence::High,
+        };
+        let kinds = LocationKinds {
+            kinds: vec![kind],
+            ..LocationKinds::default()
+        };
+        let bridge = SceneBridge::new(ck_render_2d::Filter::Nearest);
+        let mut controller = MapController::with_scenario_parts(
+            &loaded,
+            bridge,
+            MapControls {
+                pan_pixels_per_frame: 1,
+                zoom_steps_per_second: 20,
+                scroll_points_per_step: 24,
+            },
+            PreparedRivers::new(Vec::new()),
+            vec![location],
+            kinds,
+        )
+        .expect("map lane accepts hover fixture");
+        let desc = WindowDesc {
+            title: "hover test".to_owned(),
+            width: 400,
+            height: 320,
+            clear: [0.0; 3],
+        };
+        controller.open(&desc).expect("initial view is valid");
+        let center = FixedPoint {
+            x: i32::try_from(
+                i64::from(cell.x) * ck_map::FIXED_PER_CELL + ck_map::FIXED_PER_CELL / 2,
+            )
+            .expect("fixture center fits"),
+            y: i32::try_from(
+                i64::from(cell.y) * ck_map::FIXED_PER_CELL + ck_map::FIXED_PER_CELL / 2,
+            )
+            .expect("fixture center fits"),
+        };
+        controller.camera = Some(
+            Camera::new(46, center, ViewSize::from_points(400, 320), crop)
+                .expect("fixture marker fits camera"),
+        );
+        controller
+    }
+
+    /// Mirrors the CK-198 window fixture: its 2 x 2 map, 400 x 240 view, one place at the
+    /// southeast cell, and the same one-point-per-zoom-step scroll control.
+    pub(crate) fn window_case_hover_controller() -> MapController {
+        let loaded = loaded_map();
+        let crop = loaded.data.crop;
+        let kind = ck_map::LocationKind {
+            id: "town".to_owned(),
+            min_size: 1,
+            max_size: 1,
+            catchment_m: vec![839],
+            house_count: vec![0],
+            house_radius_cells_x256: vec![0],
+            glyph: vec![vec!['#']],
+            light: ck_map::Rgba8::opaque(255, 255, 255),
+            dark: ck_map::Rgba8::opaque(0, 0, 0),
+        };
+        let location = Location {
+            id: "fixture_town".to_owned(),
+            name: "Fixture Town".to_owned(),
+            cell: ck_map::Cell {
+                x: crop.origin.x + 1,
+                y: crop.origin.y + 1,
+            },
+            kind_index: 0,
+            size: 1,
+            building_indices: Vec::new(),
+            catchment_m: None,
+            source: "fixture".to_owned(),
+            confidence: ck_map::Confidence::High,
+        };
+        let bridge = SceneBridge::new(ck_render_2d::Filter::Nearest);
+        let mut controller = MapController::with_scenario_parts(
+            &loaded,
+            bridge,
+            MapControls {
+                pan_pixels_per_frame: 1,
+                zoom_steps_per_second: 20,
+                scroll_points_per_step: 1,
+            },
+            PreparedRivers::new(Vec::new()),
+            vec![location],
+            LocationKinds {
+                kinds: vec![kind],
+                ..LocationKinds::default()
+            },
+        )
+        .expect("map lane accepts window-case hover fixture");
+        controller
+            .open(&WindowDesc {
+                title: "window-case hover fixture".to_owned(),
+                width: 400,
+                height: 240,
+                clear: [0.0; 3],
+            })
+            .expect("window-case initial view is valid");
+        controller
+    }
+
+    pub(crate) fn hover_pointer(controller: &mut MapController) -> PointerPosition {
+        let camera = controller.camera.expect("opened camera");
+        let bounds = controller
+            .markers
+            .hit_bounds(camera.step, 0)
+            .expect("fixture marker bounds");
+        let top_left = camera.top_left();
+        let x = (i64::from(bounds.0.x) - i64::from(top_left.x)) * 4;
+        let y = (i64::from(bounds.0.y) - i64::from(top_left.y)) * 4;
+        PointerPosition {
+            x: i32::try_from(x * 256).expect("pointer x fits"),
+            y: i32::try_from(y * 256).expect("pointer y fits"),
+        }
     }
 
     fn update(actions: &[(&str, bool, bool)], dt: Duration) -> UpdateEvent {
@@ -1632,5 +1857,142 @@ mod tests {
                 .expect("idle update succeeds")
         );
         assert_eq!(controller.camera(), Some(before));
+    }
+
+    #[test]
+    fn hover_tracks_marker_box_and_ends_on_reset_drag_or_outside_pointer() {
+        let mut controller = hover_controller();
+        let pointer = hover_pointer(&mut controller);
+        controller
+            .update(&pointer_update(Vec::new(), Some(pointer), false, false))
+            .expect("hover update");
+        let first = controller.hover().expect("marker is hovered");
+        assert_eq!(
+            (first.id.as_str(), first.name.as_str()),
+            ("fixture-town", "Fixture Town")
+        );
+        assert_eq!(first.location_index, 0);
+        assert!(first.right > first.left);
+
+        controller
+            .update(&pointer_update(Vec::new(), Some(pointer), false, false))
+            .expect("unchanged cursor update");
+        assert_eq!(controller.hover(), Some(first.clone()));
+
+        let mut pan = update(&[(PAN_RIGHT, true, false)], Duration::ZERO);
+        pan.input.pointer_position = Some(pointer);
+        controller.update(&pan).expect("pan under cursor");
+        let moved = controller.hover().expect("marker remains under cursor");
+        assert_ne!(moved.left, first.left, "the tooltip box follows the camera");
+
+        let mut reset = pointer_update(Vec::new(), Some(pointer), false, false);
+        reset.input.reset = true;
+        controller.update(&reset).expect("focus reset");
+        assert_eq!(controller.hover(), None);
+
+        controller
+            .update(&pointer_update(Vec::new(), Some(pointer), false, false))
+            .expect("hover again");
+        controller
+            .update(&pointer_update(Vec::new(), Some(pointer), true, false))
+            .expect("held left button");
+        assert_eq!(controller.hover(), None);
+
+        let outside = PointerPosition {
+            x: 401 * 256,
+            y: 10 * 256,
+        };
+        controller
+            .update(&pointer_update(Vec::new(), Some(outside), false, false))
+            .expect("outside pointer");
+        assert_eq!(controller.hover(), None);
+    }
+
+    #[test]
+    fn hover_box_is_in_window_points_at_two_steps_and_camera_positions() {
+        let mut controller = hover_controller();
+        let pointer = hover_pointer(&mut controller);
+        controller
+            .update(&pointer_update(Vec::new(), Some(pointer), false, false))
+            .expect("step 46 hover");
+        let at_center = controller.hover().expect("marker is hovered");
+        assert_eq!(
+            (at_center.left, at_center.right, at_center.y),
+            (192, 208, 160)
+        );
+
+        let crop = controller.crop;
+        let step = 15_u8;
+        let pixel = i64::from(STEP_SIZE[usize::from(step)]);
+        let center = FixedPoint {
+            x: i32::try_from(
+                i64::from(crop.origin.x + 100) * ck_map::FIXED_PER_CELL
+                    + ck_map::FIXED_PER_CELL / 2
+                    + pixel * 5,
+            )
+            .expect("offset center fits"),
+            y: i32::try_from(
+                i64::from(crop.origin.y + 80) * ck_map::FIXED_PER_CELL + ck_map::FIXED_PER_CELL / 2
+                    - pixel * 3,
+            )
+            .expect("offset center fits"),
+        };
+        controller.camera = Some(
+            Camera::new(step, center, ViewSize::from_points(400, 320), crop)
+                .expect("offset camera is valid"),
+        );
+        let pointer = hover_pointer(&mut controller);
+        controller
+            .update(&pointer_update(Vec::new(), Some(pointer), false, false))
+            .expect("step 15 hover");
+        let offset = controller.hover().expect("marker is hovered at step 15");
+        assert_eq!((offset.left, offset.right, offset.y), (172, 188, 172));
+
+        let mut odd_controller = hover_controller_with_glyph(vec![
+            vec!['.', '#', '.'],
+            vec!['#', 'd', '#'],
+            vec!['.', '#', '.'],
+        ]);
+        let pointer = hover_pointer(&mut odd_controller);
+        odd_controller
+            .update(&pointer_update(Vec::new(), Some(pointer), false, false))
+            .expect("step 46 odd-glyph hover");
+        let odd_at_center = odd_controller.hover().expect("odd marker is hovered");
+        assert_eq!(
+            (odd_at_center.left, odd_at_center.right, odd_at_center.y),
+            (192, 212, 162)
+        );
+
+        let crop = odd_controller.crop;
+        let step = 15_u8;
+        let pixel = i64::from(STEP_SIZE[usize::from(step)]);
+        let center = FixedPoint {
+            x: i32::try_from(
+                i64::from(crop.origin.x + 100) * ck_map::FIXED_PER_CELL
+                    + ck_map::FIXED_PER_CELL / 2
+                    + pixel * 5,
+            )
+            .expect("odd offset center fits"),
+            y: i32::try_from(
+                i64::from(crop.origin.y + 80) * ck_map::FIXED_PER_CELL + ck_map::FIXED_PER_CELL / 2
+                    - pixel * 3,
+            )
+            .expect("odd offset center fits"),
+        };
+        odd_controller.camera = Some(
+            Camera::new(step, center, ViewSize::from_points(400, 320), crop)
+                .expect("odd offset camera is valid"),
+        );
+        let pointer = hover_pointer(&mut odd_controller);
+        odd_controller
+            .update(&pointer_update(Vec::new(), Some(pointer), false, false))
+            .expect("step 15 odd-glyph hover");
+        let odd_offset = odd_controller
+            .hover()
+            .expect("odd marker is hovered at step 15");
+        assert_eq!(
+            (odd_offset.left, odd_offset.right, odd_offset.y),
+            (172, 192, 174)
+        );
     }
 }

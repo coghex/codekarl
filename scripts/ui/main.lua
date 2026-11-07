@@ -116,6 +116,61 @@ if game ~= nil then
       render.set_rect(panel, MARGIN, MARGIN, (readout.width + 2) * FONT_POINTS_PER_PIXEL, (readout.height + 2) * FONT_POINTS_PER_PIXEL)
     end
   end)
+
+  local tooltip = line(0, 0)
+  local tooltip_panel = nil
+  local tooltip_id = nil
+  local tooltip_visible = false
+  local WINDOW_WIDTH = 800
+  local HIDDEN = -1000000
+  game.on_hover(function(hover)
+    if hover == nil then
+      if tooltip_visible then
+        move(tooltip, HIDDEN, HIDDEN)
+        if tooltip_panel ~= nil then
+          render.set_rect(tooltip_panel, HIDDEN, HIDDEN,
+            (tooltip.width + 2) * FONT_POINTS_PER_PIXEL,
+            (tooltip.height + 2) * FONT_POINTS_PER_PIXEL)
+        end
+        tooltip_visible = false
+      end
+      return
+    end
+
+    local text_changed = tooltip_id ~= hover.id
+    local measured = text_changed and font.layout(hover.name) or nil
+    local padding = FONT_POINTS_PER_PIXEL
+    local width = measured and measured.width or tooltip.width
+    local height = measured and measured.height or tooltip.height
+    local panel_width = (width + 2) * FONT_POINTS_PER_PIXEL
+    local panel_height = (height + 2) * FONT_POINTS_PER_PIXEL
+    local panel_x = hover.right + 4
+    if panel_x + panel_width > WINDOW_WIDTH and hover.left - 4 - panel_width >= 0 then
+      panel_x = hover.left - 4 - panel_width
+    end
+    local panel_y = hover.y - panel_height / 2
+    if tooltip_panel == nil then
+      tooltip_panel = render.create_quad{
+        texture = texture_token("ui/font/panel.png"),
+        x = panel_x,
+        y = panel_y,
+        width = panel_width,
+        height = panel_height,
+      }
+      if text_changed then
+        set(tooltip, hover.name)
+      end
+      tooltip_id = hover.id
+    else
+      if text_changed then
+        set(tooltip, hover.name)
+      end
+      tooltip_id = hover.id
+      render.set_rect(tooltip_panel, panel_x, panel_y, panel_width, panel_height)
+    end
+    move(tooltip, panel_x + padding, panel_y + padding)
+    tooltip_visible = true
+  end)
 end
 
 print("ui: loaded")

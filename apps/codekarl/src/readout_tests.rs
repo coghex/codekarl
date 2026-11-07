@@ -105,6 +105,7 @@ struct Readout {
     owner: VmOwner,
     log: Log,
     registered: Arc<AtomicBool>,
+    hover_registered: Arc<AtomicBool>,
     _dir: Dir,
 }
 
@@ -123,6 +124,7 @@ impl Readout {
         let mut window = window_api::extension(requests.writer(Arc::clone(&notifier)), None, None);
         window = window.function("record", recording(&log, "record"));
         let registered = Arc::new(AtomicBool::new(false));
+        let hover_registered = Arc::new(AtomicBool::new(false));
         let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let shipped_font = Arc::new(font::load(&assets).expect("the shipped font"));
         let config = ConfigValue::Table(match scale {
@@ -141,6 +143,7 @@ impl Readout {
         settings.extensions.push(font::extension(shipped_font));
         settings.extensions.push(game_api::extension(
             Arc::clone(&registered),
+            Arc::clone(&hover_registered),
             Arc::new(|| {}),
         ));
         settings.call_limit = 4;
@@ -151,6 +154,7 @@ impl Readout {
             owner,
             log,
             registered,
+            hover_registered,
             _dir: dir,
         }
     }
@@ -181,6 +185,36 @@ impl Readout {
         let id = self
             .owner
             .post(game_api::GAME_TIME, vec![game_api::time_table(snapshot)])
+            .expect("posted");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(result) = self.owner.take_result() {
+                assert_eq!(result.id, id);
+                assert!(
+                    matches!(result.outcome, CallOutcome::Returned(_)),
+                    "{:?}",
+                    result.outcome
+                );
+                return;
+            }
+            assert!(Instant::now() < deadline, "the callback did not return");
+            std::thread::yield_now();
+        }
+    }
+
+    fn deliver_hover(&mut self, hover: Option<(&str, &str, i64, i64, i64)>) {
+        let arguments = hover.map_or_else(Vec::new, |(id, name, left, right, y)| {
+            vec![ConfigValue::Table(BTreeMap::from([
+                ("id".to_owned(), ConfigValue::String(id.to_owned())),
+                ("name".to_owned(), ConfigValue::String(name.to_owned())),
+                ("left".to_owned(), ConfigValue::Integer(left)),
+                ("right".to_owned(), ConfigValue::Integer(right)),
+                ("y".to_owned(), ConfigValue::Integer(y)),
+            ]))]
+        });
+        let id = self
+            .owner
+            .post(game_api::GAME_HOVER, arguments)
             .expect("posted");
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -411,5 +445,83 @@ fn the_readout_creates_its_panel_first_then_touches_only_what_changed() {
     assert!(
         third.iter().any(|e| e.starts_with("set_rect q1 8 8 ")),
         "{third:?}"
+    );
+}
+
+#[test]
+fn hover_tooltip_flips_moves_and_hides_while_reusing_its_quads() {
+    let mut readout = Readout::new("", None);
+    assert!(readout.hover_registered.load(Ordering::SeqCst));
+
+    readout.deliver_hover(Some(("town", "Alpha", 10, 20, 40)));
+    let first = readout.entries();
+    assert!(first[0].starts_with("load ui/font/panel.png"), "{first:?}");
+    assert!(
+        first[1].starts_with("create q1 ui/font/panel.png 24 27 "),
+        "{first:?}"
+    );
+    assert!(
+        first
+            .iter()
+            .any(|line| line.contains("ui/font/glyphs/U+0041.png")),
+        "{first:?}"
+    );
+    let created = first
+        .iter()
+        .filter(|line| line.starts_with("create"))
+        .count();
+
+    let before_move = first.len();
+    readout.deliver_hover(Some(("town", "Alpha", 700, 760, 80)));
+    let moved = readout.entries()[before_move..].to_vec();
+    // Alpha is 28 font pixels wide; the 2-point scale plus 2-pixel panel margin makes a 60-point
+    // panel. At left=700, its flipped x is exactly 700 - 4 - 60 = 636.
+    assert!(
+        moved.iter().any(|line| line == "set_rect q1 636 67 60 26"),
+        "{moved:?}"
+    );
+    assert!(
+        moved.iter().any(|line| line == "set_position q2 638 69"),
+        "{moved:?}"
+    );
+    assert_eq!(
+        moved
+            .iter()
+            .filter(|line| line.starts_with("create"))
+            .count(),
+        0,
+        "{moved:?}"
+    );
+
+    let before_hide = readout.entries().len();
+    readout.deliver_hover(None);
+    let hidden = readout.entries()[before_hide..].to_vec();
+    assert!(
+        hidden
+            .iter()
+            .any(|line| line.starts_with("set_rect q1 -1000000 -1000000 ")),
+        "{hidden:?}"
+    );
+    assert!(
+        hidden
+            .iter()
+            .any(|line| line.contains("set_position q2 -1000000 -1000000")),
+        "{hidden:?}"
+    );
+    assert_eq!(
+        hidden
+            .iter()
+            .filter(|line| line.starts_with("destroy"))
+            .count(),
+        0,
+        "{hidden:?}"
+    );
+    assert_eq!(
+        readout
+            .entries()
+            .iter()
+            .filter(|line| line.starts_with("create"))
+            .count(),
+        created
     );
 }

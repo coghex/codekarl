@@ -919,7 +919,7 @@ fn markers_obey_zoom_center_outline_overlap_and_view_selection() {
         kind_index: 1,
         ..place.clone()
     };
-    let overlap = prepare_markers(&[place, overlapping], &kinds, 15);
+    let overlap = prepare_markers(&[place.clone(), overlapping.clone()], &kinds, 15);
     assert_eq!(
         overlap
             .iter()
@@ -951,6 +951,69 @@ fn markers_obey_zoom_center_outline_overlap_and_view_selection() {
 }
 
 #[test]
+fn prepared_marker_hit_uses_outline_bounds_and_later_overlap_once_per_call() {
+    let glyph = |rows: &[&str]| rows.iter().map(|row| row.chars().collect()).collect();
+    let mut kinds = kind(1);
+    kinds.kinds[0].glyph = glyph(&[".#.", "#d#", ".#."]);
+    let mut later_kind = kinds.kinds[0].clone();
+    later_kind.id = "later".into();
+    kinds.kinds.push(later_kind);
+    let cell = Cell { x: 10, y: 10 };
+    let first = location("first", cell, None);
+    let later = Location {
+        kind_index: 1,
+        ..location("later", cell, None)
+    };
+    let center_at = |step: usize| {
+        let size = i64::from(STEP_SIZE[step]);
+        let coordinate =
+            (10_i64 * crate::FIXED_PER_CELL + crate::FIXED_PER_CELL / 2).div_euclid(size);
+        WorldPixel {
+            x: i32::try_from(coordinate).unwrap(),
+            y: i32::try_from(coordinate).unwrap(),
+        }
+    };
+    let center = center_at(15);
+    let mut prepared = super::PreparedMarkers::new(vec![first, later], kinds);
+    assert_eq!(prepared.hit(14, center), None);
+    assert_eq!(prepared.hit(15, center), Some(1));
+    assert_eq!(
+        prepared.hit(
+            15,
+            WorldPixel {
+                x: center.x - 2,
+                y: center.y - 2,
+            }
+        ),
+        Some(1),
+        "the glyph's one-pixel outline margin includes the outer corner"
+    );
+    assert_eq!(
+        prepared.hit(
+            15,
+            WorldPixel {
+                x: center.x - 3,
+                y: center.y,
+            }
+        ),
+        None,
+        "the first pixel beyond the hit box is not included"
+    );
+    assert_eq!(prepared.hit(46, center_at(46)), Some(1));
+
+    let mut searches = 0;
+    let result = prepared.hit_with_search(15, center, |rectangles, pixel| {
+        searches += 1;
+        rectangles
+            .iter()
+            .rfind(|rectangle| rectangle.contains(pixel))
+            .map(|rectangle| rectangle.location_index)
+    });
+    assert_eq!(result, Some(1));
+    assert_eq!(searches, 1, "one prepared-data search is made per hit call");
+}
+
+#[test]
 fn even_sized_marker_places_its_lower_right_cell_on_the_location_pixel() {
     let kinds = LocationKinds {
         kinds: vec![LocationKind {
@@ -979,12 +1042,73 @@ fn even_sized_marker_places_its_lower_right_cell_on_the_location_pixel() {
         )
         .unwrap(),
     };
-    let pixels = prepare_markers(&[center], &kinds, 15);
+    let pixels = prepare_markers(std::slice::from_ref(&center), &kinds, 15);
     assert!(
         pixels
             .iter()
             .any(|pixel| pixel.pixel == center_pixel && pixel.colour == kinds.kinds[0].light)
     );
+    let mut prepared = super::PreparedMarkers::new(vec![center], kinds);
+    assert_eq!(prepared.hit(15, center_pixel), Some(0));
+    assert_eq!(
+        prepared.hit(
+            15,
+            WorldPixel {
+                x: center_pixel.x - 2,
+                y: center_pixel.y - 2,
+            }
+        ),
+        Some(0),
+        "the even glyph keeps prepare_markers' lower-right centring before its outline margin"
+    );
+    assert_eq!(
+        prepared.hit(
+            15,
+            WorldPixel {
+                x: center_pixel.x + 2,
+                y: center_pixel.y,
+            }
+        ),
+        None,
+        "the even glyph's first pixel beyond its right outline edge is not a hit"
+    );
+    let step_46_center = WorldPixel {
+        x: i32::try_from(
+            (10_i64 * crate::FIXED_PER_CELL + crate::FIXED_PER_CELL / 2)
+                .div_euclid(i64::from(STEP_SIZE[46])),
+        )
+        .unwrap(),
+        y: i32::try_from(
+            (20_i64 * crate::FIXED_PER_CELL + crate::FIXED_PER_CELL / 2)
+                .div_euclid(i64::from(STEP_SIZE[46])),
+        )
+        .unwrap(),
+    };
+    assert_eq!(prepared.hit(46, step_46_center), Some(0));
+}
+
+#[test]
+fn prepared_marker_hit_does_not_make_houses_or_buildings_targets() {
+    let mut kinds = kind(1);
+    kinds.kinds[0].house_count = vec![1];
+    kinds.kinds[0].house_radius_cells_x256 = vec![2560];
+    let mut place = location("town_a", Cell { x: 10, y: 20 }, None);
+    place.building_indices = vec![0];
+    let mut locations = PreparedLocations::new(vec![place.clone()], kinds.clone(), crop());
+    let pixels = locations.pixels(46).expect("valid step").to_vec();
+    let mut markers = super::PreparedMarkers::new(vec![place], kinds);
+    let house_pixel = pixels
+        .iter()
+        .find(|pixel| pixel.palette_index >= 4 && markers.hit(46, pixel.pixel).is_none())
+        .expect("fixture has a house pixel outside the marker hit rectangle");
+    assert_eq!(markers.hit(46, house_pixel.pixel), None);
+    let building_pixel = pixels
+        .iter()
+        .find(|pixel| {
+            (2..4).contains(&pixel.palette_index) && markers.hit(46, pixel.pixel).is_none()
+        })
+        .expect("fixture has a building pixel outside the marker hit rectangle");
+    assert_eq!(markers.hit(46, building_pixel.pixel), None);
 }
 
 #[test]
