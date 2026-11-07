@@ -131,6 +131,10 @@ dependencies = [
 [[package]]
 name = "ck-sim"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml",
+]
 
 [[package]]
 name = "ck-window"

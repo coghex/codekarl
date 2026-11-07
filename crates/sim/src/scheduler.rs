@@ -2,7 +2,10 @@
 
 use std::{error::Error, fmt};
 
-use crate::calendar::{Date, GameTime};
+use crate::{
+    calendar::{Date, GameTime},
+    random::{RandomError, Stream, stream_id},
+};
 
 /// How often a system runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -69,6 +72,11 @@ pub enum SchedulerError {
         /// The refused name.
         name: String,
     },
+    /// Another system already has a stream with this name (or one with the same id), or the same name was listed twice.
+    DuplicateStream {
+        /// The refused stream name.
+        name: String,
+    },
 }
 
 impl fmt::Display for SchedulerError {
@@ -77,17 +85,57 @@ impl fmt::Display for SchedulerError {
             Self::DuplicateName { name } => {
                 write!(f, "a system named `{name}` is already registered")
             }
+            Self::DuplicateStream { name } => {
+                write!(f, "a stream named `{name}` is already registered")
+            }
         }
     }
 }
 
 impl Error for SchedulerError {}
 
-type System<S> = Box<dyn FnMut(&mut S, GameTime, Date) -> SystemResult + Send>;
+/// What a system is given besides the state: the tick's time and date, and its own random streams.
+///
+/// A system gets only the streams it was registered with, so it cannot reach another system's counters.
+pub struct Tick<'a> {
+    time: GameTime,
+    date: Date,
+    streams: &'a mut [Stream],
+}
+
+impl Tick<'_> {
+    /// The hour being run.
+    #[must_use]
+    pub const fn time(&self) -> GameTime {
+        self.time
+    }
+
+    /// The date of the hour being run.
+    #[must_use]
+    pub const fn date(&self) -> Date {
+        self.date
+    }
+
+    /// The system's stream called `name`, at this tick.
+    ///
+    /// # Errors
+    /// Returns [`RandomError::UnknownStream`] when the system was not registered with a stream of that name.
+    pub fn stream(&mut self, name: &str) -> Result<&mut Stream, RandomError> {
+        self.streams
+            .iter_mut()
+            .find(|stream| stream.name() == name)
+            .ok_or_else(|| RandomError::UnknownStream {
+                name: name.to_owned(),
+            })
+    }
+}
+
+type System<S> = Box<dyn FnMut(&mut S, &mut Tick<'_>) -> SystemResult + Send>;
 
 struct Registered<S> {
     name: String,
     cadence: Cadence,
+    streams: Vec<Stream>,
     run: System<S>,
 }
 
@@ -111,7 +159,8 @@ impl<S> Scheduler<S> {
         Self::default()
     }
 
-    /// Registers `system` under `name` on `cadence`. Within a cadence, systems run in registration order.
+    /// Registers `system` under `name` on `cadence`, with no random streams. Within a cadence, systems run in registration
+    /// order.
     ///
     /// # Errors
     /// Returns [`SchedulerError::DuplicateName`] when `name` is already registered; nothing is added.
@@ -119,7 +168,25 @@ impl<S> Scheduler<S> {
         &mut self,
         name: impl Into<String>,
         cadence: Cadence,
-        system: impl FnMut(&mut S, GameTime, Date) -> SystemResult + Send + 'static,
+        system: impl FnMut(&mut S, &mut Tick<'_>) -> SystemResult + Send + 'static,
+    ) -> Result<(), SchedulerError> {
+        self.register_with_streams(name, cadence, &[], system)
+    }
+
+    /// Registers `system` under `name` on `cadence`, with the random streams called `streams`.
+    ///
+    /// Stream names are fixed in code and unique across the scheduler. A system can draw only from its own streams, and
+    /// adding a stream never changes another stream's numbers.
+    ///
+    /// # Errors
+    /// Returns [`SchedulerError::DuplicateName`] when `name` is already registered and
+    /// [`SchedulerError::DuplicateStream`] when a stream name (or its id) is already taken or listed twice; nothing is added.
+    pub fn register_with_streams(
+        &mut self,
+        name: impl Into<String>,
+        cadence: Cadence,
+        streams: &[&str],
+        system: impl FnMut(&mut S, &mut Tick<'_>) -> SystemResult + Send + 'static,
     ) -> Result<(), SchedulerError> {
         let name = name.into();
         if self
@@ -129,19 +196,45 @@ impl<S> Scheduler<S> {
         {
             return Err(SchedulerError::DuplicateName { name });
         }
+        for (index, stream) in streams.iter().enumerate() {
+            let id = stream_id(stream);
+            let taken = self
+                .systems
+                .iter()
+                .flat_map(|registered| &registered.streams)
+                .any(|existing| existing.id() == id)
+                || streams[..index]
+                    .iter()
+                    .any(|earlier| stream_id(earlier) == id);
+            if taken {
+                return Err(SchedulerError::DuplicateStream {
+                    name: (*stream).to_owned(),
+                });
+            }
+        }
         self.systems.push(Registered {
             name,
             cadence,
+            streams: streams
+                .iter()
+                .map(|stream| Stream::new(0, *stream, GameTime::from_hours(0)))
+                .collect(),
             run: Box::new(system),
         });
         Ok(())
     }
 
-    /// Runs the systems due at `date`, coarser cadences first (yearly, monthly, daily, hourly).
+    /// Runs the systems due at `date` under the master `seed`, coarser cadences first (yearly, monthly, daily, hourly).
     ///
     /// A failing system is recorded with its name and the date, and the systems after it still run, so the result is
     /// the same whatever fails. The errors come back in the order the systems ran.
-    pub fn run(&mut self, state: &mut S, time: GameTime, date: Date) -> Vec<SystemError> {
+    pub fn run(
+        &mut self,
+        state: &mut S,
+        seed: u64,
+        time: GameTime,
+        date: Date,
+    ) -> Vec<SystemError> {
         let mut errors = Vec::new();
         for cadence in Cadence::RUN_ORDER {
             if !cadence.is_due(date) {
@@ -152,7 +245,15 @@ impl<S> Scheduler<S> {
                 .iter_mut()
                 .filter(|registered| registered.cadence == cadence)
             {
-                if let Err(error) = (registered.run)(state, time, date) {
+                for stream in &mut registered.streams {
+                    stream.start_tick(seed, time);
+                }
+                let mut tick = Tick {
+                    time,
+                    date,
+                    streams: &mut registered.streams,
+                };
+                if let Err(error) = (registered.run)(state, &mut tick) {
                     errors.push(SystemError {
                         system: registered.name.clone(),
                         date,

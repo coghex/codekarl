@@ -44,7 +44,7 @@ fn scheduler(log: &Log) -> Scheduler<()> {
                 .register(
                     format!("{label}-{number}"),
                     cadence,
-                    move |(), _, _| -> SystemResult {
+                    move |(), _| -> SystemResult {
                         log.lock().unwrap().push(format!("{label}-{number}"));
                         Ok(())
                     },
@@ -58,7 +58,7 @@ fn scheduler(log: &Log) -> Scheduler<()> {
 fn ran_at(time: GameTime) -> Vec<String> {
     let log = Log::default();
     let mut scheduler = scheduler(&log);
-    let errors = scheduler.run(&mut (), time, time.date().unwrap());
+    let errors = scheduler.run(&mut (), 0, time, time.date().unwrap());
     assert!(errors.is_empty());
     log.lock().unwrap().clone()
 }
@@ -125,15 +125,15 @@ fn the_leap_day_is_an_ordinary_day() {
 fn systems_receive_the_state_the_time_and_the_date() {
     let mut scheduler = Scheduler::<Vec<(GameTime, Date)>>::new();
     scheduler
-        .register("record", Cadence::Hourly, |state, time, date| {
-            state.push((time, date));
+        .register("record", Cadence::Hourly, |state, tick| {
+            state.push((tick.time(), tick.date()));
             Ok(())
         })
         .unwrap();
     let time = at(768, 10, 9, 5);
     let date = time.date().unwrap();
     let mut state = Vec::new();
-    assert!(scheduler.run(&mut state, time, date).is_empty());
+    assert!(scheduler.run(&mut state, 0, time, date).is_empty());
     assert_eq!(state, [(time, date)]);
 }
 
@@ -141,13 +141,13 @@ fn systems_receive_the_state_the_time_and_the_date() {
 fn a_duplicate_name_is_refused_even_on_another_cadence_and_adds_nothing() {
     let mut scheduler = Scheduler::<u32>::new();
     scheduler
-        .register("economy", Cadence::Daily, |count, _, _| {
+        .register("economy", Cadence::Daily, |count, _| {
             *count += 1;
             Ok(())
         })
         .unwrap();
     assert_eq!(
-        scheduler.register("economy", Cadence::Hourly, |count, _, _| {
+        scheduler.register("economy", Cadence::Hourly, |count, _| {
             *count += 100;
             Ok(())
         }),
@@ -157,7 +157,7 @@ fn a_duplicate_name_is_refused_even_on_another_cadence_and_adds_nothing() {
     );
     let time = at(768, 10, 9, 0);
     let mut count = 0;
-    scheduler.run(&mut count, time, time.date().unwrap());
+    scheduler.run(&mut count, 0, time, time.date().unwrap());
     assert_eq!(count, 1);
 }
 
@@ -168,14 +168,14 @@ fn a_failing_system_is_collected_and_its_peers_still_run() {
     for (name, fails) in [("before", false), ("fails", true), ("after", false)] {
         let log = Arc::clone(&log);
         simulation_scheduler
-            .register(name, Cadence::Hourly, move |(), _, _| -> SystemResult {
+            .register(name, Cadence::Hourly, move |(), _| -> SystemResult {
                 log.lock().unwrap().push(name.to_owned());
                 if fails { Err(Box::new(Broken)) } else { Ok(()) }
             })
             .unwrap();
     }
     let mut simulation =
-        Simulation::<(), ()>::new(at(768, 10, 9, 5), (), simulation_scheduler, |(), ()| {});
+        Simulation::<(), ()>::new(at(768, 10, 9, 5), 0, (), simulation_scheduler, |(), ()| {});
 
     let errors = simulation.step().unwrap();
 
@@ -209,11 +209,11 @@ fn several_failures_in_one_tick_come_back_in_run_order() {
         ("year", Cadence::Yearly),
     ] {
         scheduler
-            .register(name, cadence, |(), _, _| Err(Box::new(Broken)))
+            .register(name, cadence, |(), _| Err(Box::new(Broken)))
             .unwrap();
     }
     let time = at(769, 1, 1, 0);
-    let errors = scheduler.run(&mut (), time, time.date().unwrap());
+    let errors = scheduler.run(&mut (), 0, time, time.date().unwrap());
     assert_eq!(
         errors
             .iter()
@@ -234,12 +234,12 @@ fn the_calendar_ending_stops_the_step_without_running_anything() {
     .unwrap();
     let mut scheduler = Scheduler::<u32>::new();
     scheduler
-        .register("count", Cadence::Hourly, |count, _, _| {
+        .register("count", Cadence::Hourly, |count, _| {
             *count += 1;
             Ok(())
         })
         .unwrap();
-    let mut simulation = Simulation::<u32, ()>::new(last, 0, scheduler, |_, ()| {});
+    let mut simulation = Simulation::<u32, ()>::new(last, 0, 0, scheduler, |_, ()| {});
 
     assert!(simulation.step().unwrap().is_empty());
     assert_eq!(*simulation.state(), 1);
