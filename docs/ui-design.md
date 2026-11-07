@@ -91,7 +91,7 @@ From `.pipeline/coordination/m8-design/owner-answers-r1.md`. **No question is op
 - **The font:**
   - `assets/ui/font/font.toml` holds 5×7 glyphs in an 11-row box, with one PNG per glyph in a single colour (`#ece3cb`);
   - `font.layout(text)` returns glyph textures and offsets (`apps/codekarl/src/font.rs`);
-  - the scale is `[ui] font_points_per_pixel` (1–8, default 2).
+  - the scale is `[ui] points_per_pixel` (1–8, default 2), which owner Q3 renamed from `font_points_per_pixel` (CK-208, §3.3).
 - **The layout helpers:** `scripts/ui/main.lua`'s `line`/`set`/`move`/`destroy` keep one quad per glyph and touch only what changed.
 - **The panel background** is `assets/ui/font/panel.png`, one pixel of `#2a2119`, stretched.
 
