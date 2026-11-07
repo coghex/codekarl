@@ -1515,22 +1515,18 @@ fn the_demo_scene_runs_unchanged_on_glfw_vulkan_and_closes_by_a_marked_escape() 
     assert!(!seen.stdout.contains("incomplete"), "{}", seen.stdout);
     let record = final_record(&seen.stdout);
     assert_reconciled(&record);
-    // The binding notice, once, through the table at the demo's default 131,072 slots (the support query's answer is the
+    // The binding notice, once, through the table at the application's default 4,096 slots (the support query's answer is the
     // device's: the text says which), and the final record counts the same tables.
     assert_eq!(
         count(
             &seen.stdout,
-            "render: bindless table of 131072 slots (vkGetDescriptorSetLayoutSupport: "
+            "render: bindless table of 4096 slots (vkGetDescriptorSetLayoutSupport: "
         ),
         1,
         "{}",
         seen.stdout
     );
-    assert_eq!(
-        number_after(&record, "bindless_slots="),
-        131_072,
-        "{record}"
-    );
+    assert_eq!(number_after(&record, "bindless_slots="), 4_096, "{record}");
     assert!(
         !seen.stdout.contains("bindless unavailable"),
         "this device passes the gate:\n{}",
@@ -1869,7 +1865,7 @@ fn moving_a_quad_for_many_updates_uploads_nothing_but_a_reload_does() {
 
 /// The setting reaches the presenter (CK-128, now on `glfw-vulkan`): a fixture with `max_textures = 8`, `max_extra_revisions = 8`
 /// and `bindless_texture_slots = 17` (the rule's exact minimum) ends with `bindless_slots=17` in the final record, the observed
-/// capacity of the tables the presenter allocated, and the notice says so once; the default configuration shows 131072 (the
+/// capacity of the tables the presenter allocated, and the notice says so once; the default configuration shows 4096 (the
 /// negative control: a hard-coded count would show the same number twice).
 fn the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record() {
     let small = format!(
@@ -1896,11 +1892,7 @@ fn the_configured_bindless_slot_count_reaches_the_presenter_and_the_final_record
     assert_reconciled(&record);
     let default = lifecycle(MOVEMENT);
     let record = final_record(&default.stdout);
-    assert_eq!(
-        number_after(&record, "bindless_slots="),
-        131_072,
-        "{record}"
-    );
+    assert_eq!(number_after(&record, "bindless_slots="), 4_096, "{record}");
 }
 
 // Frame timing on a real window (milestone 5.5, issue 6, part B): `diagnostics.metrics_mark` and the one `metrics` record
