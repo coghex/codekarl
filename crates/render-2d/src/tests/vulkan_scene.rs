@@ -97,6 +97,7 @@ fn frame(
             width: 4.0,
             height: 5.0,
             clip: None,
+            tint: crate::Tint::WHITE,
         }),
         vec![FrameQuad {
             texture: placed.clone(),
@@ -105,6 +106,7 @@ fn frame(
             width: 3.0,
             height: 2.0,
             clip: None,
+            tint: crate::Tint::WHITE,
         }],
         Arc::new(AtomicUsize::new(1)),
         None,
@@ -201,6 +203,7 @@ fn clipped_compatibility_quad_keeps_its_key_even_when_no_instance_is_emitted() {
             width: 2.0,
             height: 2.0,
             clip: None,
+            tint: crate::Tint::WHITE,
         }),
         Vec::new(),
         Arc::new(AtomicUsize::new(1)),

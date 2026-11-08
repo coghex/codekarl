@@ -637,6 +637,7 @@ impl SceneWriter {
             width,
             height,
             clip: None,
+            tint: crate::Tint::WHITE,
         };
         let displaced;
         {
@@ -832,6 +833,17 @@ impl SceneWriter {
     /// Returns `QuadError` for an invalid key or non-finite coordinates.
     pub fn set_position(&mut self, key: QuadKey, x: f64, y: f64) -> Result<(), QuadError> {
         self.edits.set_position(key, x, y)?;
+        self.dirty.set(true);
+        Ok(())
+    }
+
+    /// Sets a live quad's premultiplied RGBA8 tint without changing its order, texture or geometry.
+    ///
+    /// # Errors
+    ///
+    /// Returns `QuadError` for a foreign or stale key.
+    pub fn set_tint(&mut self, key: QuadKey, tint: crate::Tint) -> Result<(), QuadError> {
+        self.edits.set_tint(key, tint)?;
         self.dirty.set(true);
         Ok(())
     }

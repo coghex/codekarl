@@ -405,6 +405,7 @@ impl<'a, K: Copy + Eq + std::hash::Hash + Send + 'static> SceneReadback<'a, K> {
                                 pixel(top + cell_px),
                             ],
                             source: [0.0, 0.0, 1.0, 1.0],
+                            tint: [255; 4],
                             slot,
                         },
                     );

@@ -13,7 +13,7 @@
 //! blend or the clip changes. In milestone 5.5 every scene instance and the compatibility instance share all three, so a frame is
 //! one batch. **No chunks** (design §11.3: chunks only where "justified by actual buffer/device limits"): core Vulkan sets no limit
 //! on `instanceCount` of a direct draw, the instance buffer holds `max_quads` instances (the bound of a frame) and `max_quads` fits
-//! `u32` (configuration), so no chunking exists. The per-revision mode keeps its 32-byte record and its per-texture batches.
+//! `u32` (configuration), so no chunking exists. Per-revision batches carry destination, source and tint.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
@@ -23,10 +23,10 @@ use ash::vk;
 use crate::frame::{InstanceRole, VulkanInstance, VulkanSceneSource};
 use crate::quad::DestinationRect;
 
-/// The data of a per-revision instance: the destination and the visible source, 32 bytes.
-pub(crate) const REVISION_RECORD_BYTES: usize = 32;
-/// The data of a bindless instance: the same plus the native slot (`u32`, vertex attribute 2), 36 bytes.
-pub(crate) const BINDLESS_RECORD_BYTES: usize = 36;
+/// The data of a per-revision instance: destination, visible source and tint, 36 bytes.
+pub(crate) const REVISION_RECORD_BYTES: usize = 36;
+/// Destination, visible source, premultiplied RGBA8 tint, and the bindless native slot.
+pub(crate) const BINDLESS_RECORD_BYTES: usize = 40;
 
 /// `data` rounded up, with checked arithmetic, to a multiple of `alignment` (0 and 1 impose none): the stride of a vertex binding
 /// on a device that reports `minVertexInputBindingStrideAlignment` (the portability subset's).
@@ -39,14 +39,14 @@ pub(crate) fn padded_stride(data: usize, alignment: u32) -> Option<usize> {
 /// How an instance is laid out in the instance buffer: the bytes of data and the stride between instances (the data, padded).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InstanceLayout {
-    /// Bytes of data in a record: 32, or 36 with the slot.
+    /// Bytes of data in a record: 36, or 40 with the slot.
     pub(crate) data: usize,
     /// Bytes between two records: what the vertex binding, the buffer size and every write use. At least `data`.
     pub(crate) stride: usize,
 }
 
 impl InstanceLayout {
-    /// The per-revision mode's: CK-157's 32-byte record, unchanged.
+    /// The per-revision mode's destination, source and tint.
     pub(crate) const PER_REVISION: Self = Self {
         data: REVISION_RECORD_BYTES,
         stride: REVISION_RECORD_BYTES,
@@ -74,6 +74,7 @@ impl InstanceLayout {
 pub(crate) struct InstanceRecord {
     pub(crate) destination: [f32; 4],
     pub(crate) source: [f32; 4],
+    pub(crate) tint: [u8; 4],
     pub(crate) slot: u32,
 }
 
@@ -83,15 +84,15 @@ impl InstanceRecord {
     pub(crate) fn write_to(self, layout: InstanceLayout, out: &mut [u8]) {
         debug_assert_eq!(out.len(), layout.stride);
         out.fill(0);
-        for (chunk, value) in out[..REVISION_RECORD_BYTES]
+        for (chunk, value) in out[..32]
             .chunks_exact_mut(4)
             .zip(self.destination.iter().chain(self.source.iter()))
         {
             chunk.copy_from_slice(&value.to_ne_bytes());
         }
+        out[32..36].copy_from_slice(&self.tint);
         if layout.has_slot() {
-            out[REVISION_RECORD_BYTES..BINDLESS_RECORD_BYTES]
-                .copy_from_slice(&self.slot.to_ne_bytes());
+            out[36..40].copy_from_slice(&self.slot.to_ne_bytes());
         }
     }
 }
@@ -194,7 +195,13 @@ struct Output<'a> {
 impl Output<'_> {
     /// Stores one drawn instance (the caller checked the capacity). A slot outside the table (never produced by the ledger)
     /// is skipped and counted, never written: an out-of-range index does not reach the GPU.
-    fn push(&mut self, binding: Binding, visible: [f32; 4], destination: DestinationRect) {
+    fn push(
+        &mut self,
+        binding: Binding,
+        visible: [f32; 4],
+        destination: DestinationRect,
+        tint: [u8; 4],
+    ) {
         let slot = match binding {
             Binding::Slot(slot) => {
                 if slot >= self.slots {
@@ -222,6 +229,7 @@ impl Output<'_> {
                     pixel(destination.bottom),
                 ],
                 source: visible,
+                tint,
             },
         );
         let index = u32::try_from(self.written).unwrap_or(u32::MAX);
@@ -250,7 +258,7 @@ impl Output<'_> {
                 } else {
                     self.counters.resolved += 1;
                     self.counters.pinned += u64::from(self.slots == 0);
-                    self.push(binding, source, destination);
+                    self.push(binding, source, destination, [255; 4]);
                 }
                 false
             }
@@ -327,10 +335,15 @@ pub(crate) fn build_scene<K: Copy + Eq + Hash, S: BuildHasher>(
         });
         if let Some(binding) = binding {
             output.counters.resolved += 1;
-            output.push(binding, instance.source, instance.destination);
+            output.push(
+                binding,
+                instance.source,
+                instance.destination,
+                instance.tint,
+            );
         } else {
             output.counters.checker += 1;
-            output.push(Binding::Checker, WHOLE, instance.destination);
+            output.push(Binding::Checker, WHOLE, instance.destination, instance.tint);
         }
     });
     if first && compat_expected && !gated {
@@ -372,6 +385,7 @@ mod tests {
                 bottom: 4,
             },
             source: [0.25, 0.25, 0.75, 0.75],
+            tint: [255; 4],
             role: InstanceRole::Scene,
         }
     }
@@ -864,44 +878,46 @@ mod tests {
 
     #[test]
     fn the_records_are_the_layouts_the_shaders_read() {
-        assert_eq!(InstanceLayout::PER_REVISION.stride, 32);
+        assert_eq!(InstanceLayout::PER_REVISION.stride, 36);
         assert_eq!(align_of::<InstanceRecord>(), 4);
-        // 36 bytes of data; the stride is padded to the queried alignment, and the padding is zero.
-        for (alignment, stride) in [(0, 36), (1, 36), (4, 36), (8, 40), (16, 48), (64, 64)] {
+        assert_eq!(std::mem::offset_of!(InstanceRecord, tint), 32);
+        assert_eq!(std::mem::offset_of!(InstanceRecord, slot), 36);
+        // 40 bytes of bindless data; the stride is padded to the queried alignment, and the padding is zero.
+        for (alignment, stride) in [(0, 40), (1, 40), (4, 40), (8, 40), (16, 48), (64, 64)] {
             let layout = InstanceLayout::bindless(alignment).expect("fits");
             assert_eq!(
                 (layout.data, layout.stride),
-                (36, stride),
+                (40, stride),
                 "alignment {alignment}"
             );
             let mut bytes = vec![0xAA_u8; layout.stride];
             InstanceRecord {
                 destination: [1.0, 2.0, 3.0, 4.0],
                 source: [0.25, 0.5, 0.75, 1.0],
+                tint: [17, 34, 51, 68],
                 slot: 0xDEAD_BEEF,
             }
             .write_to(layout, &mut bytes);
-            assert_eq!(
-                bytes[32..36],
-                0xDEAD_BEEF_u32.to_ne_bytes(),
-                "the slot follows the source"
-            );
+            assert_eq!(bytes[32..36], [17, 34, 51, 68], "tint follows the source");
+            assert_eq!(bytes[36..40], 0xDEAD_BEEF_u32.to_ne_bytes());
             assert!(
-                bytes[36..].iter().all(|byte| *byte == 0),
+                bytes[40..].iter().all(|byte| *byte == 0),
                 "padding is zero (alignment {alignment})"
             );
             assert_eq!(bytes[..4], 1.0_f32.to_ne_bytes());
             assert_eq!(bytes[28..32], 1.0_f32.to_ne_bytes());
         }
-        // The per-revision record has no slot: its 32 bytes are CK-157's.
-        let mut bytes = [0xAA_u8; 32];
+        // The per-revision record has tint but no slot.
+        let mut bytes = [0xAA_u8; 36];
         InstanceRecord {
             destination: [1.0, 2.0, 3.0, 4.0],
             source: [0.25, 0.5, 0.75, 1.0],
+            tint: [255; 4],
             slot: 9,
         }
         .write_to(InstanceLayout::PER_REVISION, &mut bytes);
         assert_eq!(bytes[16..20], 0.25_f32.to_ne_bytes());
+        assert_eq!(bytes[32..36], [255; 4]);
         assert_eq!(padded_stride(usize::MAX, 8), None, "checked arithmetic");
     }
 }

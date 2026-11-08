@@ -48,6 +48,7 @@ fn instance(key: u32, destination: DestinationRect) -> MetalInstance<u32> {
         key,
         destination,
         source: WHOLE,
+        tint: [255; 4],
         role: ck_gpu_metal::InstanceRole::Scene,
     }
 }
@@ -434,7 +435,7 @@ pub(crate) fn scene_checker_is_a_baseline_charge() {
     assert_eq!(ledger.baseline_charges, 0);
     assert_eq!(ledger.extra_revisions, 0);
     // The instance buffer: its charge is the measured allocation, which holds at least the logical product.
-    // The record is 48 bytes (the bindless slot and its padding): 16 more than the ordinary path's first 32.
+    // The 48-byte record keeps its original stride; tint occupies one former padding word.
     assert_eq!(stats.instance_buffer_bytes, 1024 * 48);
     assert!(
         stats.instance_buffer_allocated >= stats.instance_buffer_bytes,

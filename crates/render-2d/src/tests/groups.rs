@@ -494,6 +494,7 @@ fn placed_quad(
         width: quad.2,
         height: quad.3,
         clip,
+        tint: crate::Tint::WHITE,
     }
     .placement(&metrics(scale))
 }

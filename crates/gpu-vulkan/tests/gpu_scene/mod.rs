@@ -95,6 +95,7 @@ pub(crate) fn instance(key: u32, destination: [i32; 4], source: [f32; 4]) -> Vul
             bottom: destination[3],
         },
         source,
+        tint: [255; 4],
         role: InstanceRole::Scene,
     }
 }
@@ -505,6 +506,47 @@ fn runs(list: &[VulkanInstance<u32>]) -> u64 {
 fn sixty_four_quads_over_sixteen_textures_read_back_exactly_in_painter_order() {
     for mode in MODES {
         sixty_four_quads_over_sixteen_textures_read_back_exactly_in_painter_order_in(mode);
+    }
+}
+
+/// Opaque and translucent tints reach both Vulkan layouts as exact RGBA8 pixels without tint-based batch splits.
+#[test]
+fn per_quad_tint_is_exact_and_keeps_one_batch_in_both_modes() {
+    for mode in MODES {
+        let mut rig = Rig::new(mode, 1, 1, 4);
+        rig.show(0, 1, 1, Arc::new(Bytes(vec![255; 4])));
+        let quads = [
+            VulkanInstance {
+                tint: [79, 179, 200, 255],
+                ..instance(0, [0, 0, 1, 1], WHOLE)
+            },
+            VulkanInstance {
+                tint: [55, 10, 8, 128],
+                ..instance(0, [1, 0, 2, 1], WHOLE)
+            },
+            VulkanInstance {
+                tint: [255, 0, 0, 255],
+                ..instance(0, [2, 0, 3, 1], WHOLE)
+            },
+            VulkanInstance {
+                tint: [0, 255, 255, 255],
+                ..instance(0, [3, 0, 4, 1], WHOLE)
+            },
+        ];
+        let (pixels, counts) = rig.draw((4, 1), [0.0; 3], VulkanFilter::Nearest, quads.to_vec());
+        assert_eq!(
+            counts.batches, 1,
+            "{mode:?}: tint does not split a same-texture batch"
+        );
+        assert_eq!(&pixels[0..4], &[79, 179, 200, 255], "{mode:?}: opaque tint");
+        assert_eq!(
+            &pixels[4..8],
+            &[55, 10, 8, 255],
+            "{mode:?}: translucent tint over opaque black"
+        );
+        assert_eq!(&pixels[8..12], &[255, 0, 0, 255], "{mode:?}: red tint");
+        assert_eq!(&pixels[12..16], &[0, 255, 255, 255], "{mode:?}: cyan tint");
+        rig.finish();
     }
 }
 

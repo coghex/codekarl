@@ -77,6 +77,7 @@ impl VulkanSceneSource<TextureKey> for VulkanSceneFrame {
                     placed.source.right,
                     placed.source.bottom,
                 ],
+                tint: quad.tint.rgba(),
                 role,
             });
         }

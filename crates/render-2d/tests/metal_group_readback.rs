@@ -40,6 +40,7 @@ fn draw(pictures: &[Picture], instances: &[Instance]) -> Vec<u8> {
                 bottom: instance.destination[3],
             },
             source: instance.source,
+            tint: [255; 4],
         })
         .collect();
     let mut pixels = readback_scene(

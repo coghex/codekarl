@@ -7,8 +7,9 @@ layout(set = 0, binding = 0) uniform sampler scene_sampler;
 layout(set = 1, binding = 0) uniform texture2D scene_image;
 
 layout(location = 0) in vec2 coordinate;
+layout(location = 1) flat in vec4 tint;
 layout(location = 0) out vec4 colour;
 
 void main() {
-    colour = texture(sampler2D(scene_image, scene_sampler), coordinate);
+    colour = texture(sampler2D(scene_image, scene_sampler), coordinate) * tint;
 }

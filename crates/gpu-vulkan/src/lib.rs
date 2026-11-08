@@ -154,7 +154,7 @@
 //! surface: a [`VulkanFrameSlot`] of [`VulkanFrame`]s (a latest-value slot, like the quad's), a [`TextureDriver`] run on the
 //! render thread's passes, and the texture ledger's frame tickets. `start` and `start_2d` keep their own device.
 //!
-//! - **Drawing.** Instances are written in painter order into one host-visible buffer (32 bytes each, charged to
+//! - **Drawing.** Instances are written in painter order into one host-visible buffer (36 bytes each, including RGBA8 tint, charged to
 //!   `SceneLimits::binding_geometry_bytes` and counted against `maxMemoryAllocationCount`); adjacent equal revisions
 //!   share one instanced draw (`firstInstance` selects the batch, core Vulkan on a direct draw). A quad is six vertices of
 //!   a triangle list, not a strip: `MoltenVK` warns that Metal cannot disable primitive restart for a strip. The effective
