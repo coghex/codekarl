@@ -1656,16 +1656,24 @@ pub(crate) mod tests {
         );
 
         let mut clamped = hover_controller();
+        assert_crop_clamped_drag_does_not_select(&mut clamped);
+    }
+
+    fn assert_crop_clamped_drag_does_not_select(clamped: &mut MapController) {
         let initial = clamped.camera.expect("camera is open");
+        let crop_right = i32::try_from(
+            (i64::from(clamped.crop.origin.x) + i64::from(clamped.crop.width))
+                * ck_map::FIXED_PER_CELL,
+        )
+        .expect("crop edge fits");
+        let pan_pixel = STEP_SIZE[46];
         clamped.camera = Some(
             Camera::new(
                 46,
                 FixedPoint {
-                    x: i32::try_from(
-                        (i64::from(clamped.crop.origin.x) + i64::from(clamped.crop.width))
-                            * ck_map::FIXED_PER_CELL,
-                    )
-                    .expect("crop edge fits"),
+                    // Start inside the crop. The drag below requests a full pixel eastward,
+                    // crossing this short remainder so Camera::pan must clamp at the edge.
+                    x: crop_right - pan_pixel / 2,
                     y: initial.center.y,
                 },
                 initial.view,
@@ -1673,26 +1681,54 @@ pub(crate) mod tests {
             )
             .expect("camera clamps to crop edge"),
         );
-        let marker = hover_pointer(&mut clamped);
-        let moved = PointerPosition {
-            x: marker.x + 4 * 256,
-            y: marker.y,
+        let before = clamped.camera.expect("camera before crop-clamped drag");
+        assert!(
+            before.center.x < crop_right,
+            "the camera starts inside the crop"
+        );
+        let attempted_center = i64::from(before.center.x) + i64::from(pan_pixel);
+        assert!(
+            attempted_center > i64::from(crop_right),
+            "the pan crosses the crop edge"
+        );
+        let mut edge_camera = before;
+        edge_camera.pan(1, 0, clamped.crop);
+        assert_eq!(
+            edge_camera.center.x, crop_right,
+            "the requested pan clamps at the edge"
+        );
+        clamped.camera = Some(edge_camera);
+        let moved = hover_pointer(clamped);
+        clamped.camera = Some(before);
+        // Start one point right of the endpoint: the input quantizes to a one-pixel
+        // eastward pan, while the endpoint is the marker's position at the clamped edge.
+        let anchor = PointerPosition {
+            x: moved.x + 256,
+            y: moved.y,
         };
-        let before = clamped.camera;
+        let click_mutation_selection = clamped.selected_at(edge_camera, moved);
+        assert_eq!(
+            click_mutation_selection
+                .as_ref()
+                .map(|selection| selection.id.as_str()),
+            Some("fixture-town"),
+            "the endpoint remains on the marker, so a gesture-as-click mutation is observable"
+        );
         clamped
             .update(&pointer_update(
                 vec![
-                    PointerEvent::Down(marker),
+                    PointerEvent::Down(anchor),
                     PointerEvent::Move(moved),
-                    PointerEvent::Up(marker),
+                    PointerEvent::Up(moved),
                 ],
-                Some(marker),
+                Some(moved),
                 false,
                 false,
             ))
             .expect("crop-clamped drag is valid");
+        let after = clamped.camera.expect("camera after crop-clamped drag");
         assert_eq!(
-            clamped.camera, before,
+            after.center.x, crop_right,
             "the pan is clamped at the crop edge"
         );
         assert_eq!(
