@@ -343,7 +343,7 @@ pub(crate) fn build_scene<K: Copy + Eq + Hash, S: BuildHasher>(
             );
         } else {
             output.counters.checker += 1;
-            output.push(Binding::Checker, WHOLE, instance.destination, instance.tint);
+            output.push(Binding::Checker, WHOLE, instance.destination, [255; 4]);
         }
     });
     if first && compat_expected && !gated {
@@ -408,6 +408,10 @@ mod tests {
 
     /// Builds `instances` with keys 1 and 2 shown (handles 0x10 and 0x20) and every other key unresolved.
     fn run(instances: Vec<VulkanInstance<u32>>, capacity: usize) -> Run {
+        run_with_slots(instances, capacity, 0)
+    }
+
+    fn run_with_slots(instances: Vec<VulkanInstance<u32>>, capacity: usize, slots: u32) -> Run {
         let mut written = Vec::new();
         let mut resolutions = Vec::new();
         let mut batches = Vec::new();
@@ -416,7 +420,7 @@ mod tests {
             &Fixed(instances),
             (100, 100),
             capacity,
-            0,
+            slots,
             &mut |index, record| written.push((index, record)),
             &mut |key| {
                 resolutions.push(key);
@@ -527,6 +531,20 @@ mod tests {
             bits([0.25, 0.25, 0.75, 0.75])
         );
         assert_eq!((got.counters.checker, got.counters.resolved), (2, 1));
+    }
+
+    #[test]
+    fn checker_fallback_uses_identity_tint_in_both_layouts_and_resolved_images_keep_their_tint() {
+        let tint = [32, 64, 128, 160];
+        for slots in [0, 4] {
+            let mut missing = instance(7, 0);
+            missing.tint = [0; 4];
+            let mut resolved = instance(1, 4);
+            resolved.tint = tint;
+            let got = run_with_slots(vec![missing, resolved], 2, slots);
+            assert_eq!(got.written[0].1.tint, [255; 4], "slots={slots}: checker");
+            assert_eq!(got.written[1].1.tint, tint, "slots={slots}: resolved image");
+        }
     }
 
     #[test]

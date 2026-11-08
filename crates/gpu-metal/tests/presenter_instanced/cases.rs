@@ -607,6 +607,62 @@ pub(crate) fn readback_scene_checker() {
     }
 }
 
+/// A fully transparent tint cannot hide the fallback checker on either Metal binding path. The pixel helper converts the
+/// target's BGRA8 bytes back to RGBA before these assertions.
+pub(crate) fn readback_checker_fallback_uses_identity_tint_in_both_paths() {
+    let checker = checker_pixels();
+    let checker_pixel = |x: usize, y: usize| {
+        let offset = (y * CHECKER_SIDE as usize + x) * 4;
+        [
+            checker[offset],
+            checker[offset + 1],
+            checker[offset + 2],
+            checker[offset + 3],
+        ]
+    };
+    // At 64 x 64, pixel centers map 1:1 to checker texels: (1,1) is in cell (0,0), and (9,1) in (1,0).
+    let expected_magenta = checker_pixel(1, 1);
+    let expected_black = checker_pixel(9, 1);
+    assert_eq!(expected_magenta, MAGENTA);
+    assert_eq!(expected_black, BLACK);
+    for path in [
+        ReadbackPath::Ordinary,
+        ReadbackPath::Bindless {
+            texture_slots: 1,
+            chunk: u32::MAX,
+            force_out_of_range_at: None,
+        },
+    ] {
+        let (pixels, counts) = readback_scene_counted(
+            64,
+            64,
+            [0.0; 3],
+            None,
+            MetalFilter::Nearest,
+            &[],
+            &[ReadbackInstance {
+                texture: ReadbackTexture::Checker,
+                destination: rect(0, 0, 64, 64),
+                source: WHOLE,
+                tint: [0; 4],
+            }],
+            path,
+        )
+        .expect("the readback works");
+        assert_eq!(counts.checker, 1, "{path:?}: one checker fallback");
+        assert_eq!(
+            target(&pixels, 64, 1, 1),
+            expected_magenta,
+            "{path:?}: visible checker"
+        );
+        assert_eq!(
+            target(&pixels, 64, 9, 1),
+            expected_black,
+            "{path:?}: black checker cell"
+        );
+    }
+}
+
 /// An invalid instance (a source that is not finite or outside 0 to 1, an empty source or destination) is skipped, not
 /// drawn and not a panic; the instances after it are drawn. Negative control: drawing the invalid ones paints their
 /// cell and fails.
@@ -864,7 +920,7 @@ pub(crate) fn readback_scene_pixel_font_readout() {
     assert_ne!(covered, pixels);
 }
 
-pub(crate) const CASES: [(&str, fn()); 10] = [
+pub(crate) const CASES: [(&str, fn()); 11] = [
     ("readback_scene_painter_order", readback_scene_painter_order),
     (
         "readback_scene_per_quad_tint_is_exact_and_keeps_one_batch",
@@ -888,6 +944,10 @@ pub(crate) const CASES: [(&str, fn()); 10] = [
         readback_scene_normalised_source,
     ),
     ("readback_scene_checker", readback_scene_checker),
+    (
+        "readback_checker_fallback_uses_identity_tint_in_both_paths",
+        readback_checker_fallback_uses_identity_tint_in_both_paths,
+    ),
     (
         "readback_scene_invalid_instances_are_skipped",
         readback_scene_invalid_instances_are_skipped,

@@ -401,7 +401,7 @@ pub(crate) fn build_scene_in<K: Copy + Eq + Hash, S: BuildHasher>(
                 0,
                 WHOLE,
                 instance.destination,
-                instance.tint,
+                [255; 4],
             );
         }
     });
@@ -473,11 +473,16 @@ mod tests {
 
     /// Builds `instances` with keys 1 and 2 shown (handles 0x10 and 0x20) and every other key unresolved.
     fn run(instances: Vec<MetalInstance<u32>>, capacity: usize) -> Run {
+        run_in(instances, capacity, Layout::Ordinary)
+    }
+
+    fn run_in(instances: Vec<MetalInstance<u32>>, capacity: usize, layout: Layout) -> Run {
         let mut written = Vec::new();
         let mut resolutions = Vec::new();
         let mut batches = Vec::new();
         let mut resolved = HashMap::new();
-        let counters = build_scene(
+        let counters = build_scene_in(
+            layout,
             &Fixed(instances),
             (100, 100),
             capacity,
@@ -485,8 +490,20 @@ mod tests {
             &mut |key| {
                 resolutions.push(key);
                 match key {
-                    1 => Some(handle(0x10)),
-                    2 => Some(handle(0x20)),
+                    1 => Some(Resolved {
+                        handle: handle(0x10),
+                        slot: match layout {
+                            Layout::Ordinary => 0,
+                            Layout::Bindless { .. } => 1,
+                        },
+                    }),
+                    2 => Some(Resolved {
+                        handle: handle(0x20),
+                        slot: match layout {
+                            Layout::Ordinary => 0,
+                            Layout::Bindless { .. } => 2,
+                        },
+                    }),
                     _ => None,
                 }
             },
@@ -587,6 +604,27 @@ mod tests {
             bits([0.25, 0.25, 0.75, 0.75])
         );
         assert_eq!((got.counters.checker, got.counters.resolved), (2, 1));
+    }
+
+    #[test]
+    fn checker_fallback_uses_identity_tint_in_both_layouts_and_resolved_images_keep_their_tint() {
+        let tint = [32, 64, 128, 160];
+        for layout in [
+            Layout::Ordinary,
+            Layout::Bindless {
+                texture_slots: 4,
+                chunk: u32::MAX,
+                force_out_of_range_at: None,
+            },
+        ] {
+            let mut missing = instance(7, 0);
+            missing.tint = [0; 4];
+            let mut resolved = instance(1, 4);
+            resolved.tint = tint;
+            let got = run_in(vec![missing, resolved], 2, layout);
+            assert_eq!(got.written[0].1.tint, [255; 4], "{layout:?}: checker");
+            assert_eq!(got.written[1].1.tint, tint, "{layout:?}: resolved image");
+        }
     }
 
     #[test]

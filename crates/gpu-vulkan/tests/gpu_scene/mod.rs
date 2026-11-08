@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ck_gpu_vulkan::{
-    BindingChoice, BindlessLimits, CheckerProgress, DestinationRect, HeldCompat, InstanceRole,
-    LedgerCleanup, LedgerEvent, LedgerLimits, PixelSource, TextureLedger, TextureLimits,
-    TextureTestHooks, TextureWakes, VulkanFilter, VulkanFrame, VulkanInstance, VulkanSceneSource,
-    checker_pixels, readback_scene, readback_scene_with_held,
+    BindingChoice, BindlessLimits, CHECKER_SIDE, CheckerProgress, DestinationRect, HeldCompat,
+    InstanceRole, LedgerCleanup, LedgerEvent, LedgerLimits, PixelSource, TextureLedger,
+    TextureLimits, TextureTestHooks, TextureWakes, VulkanFilter, VulkanFrame, VulkanInstance,
+    VulkanSceneSource, checker_pixels, readback_scene, readback_scene_with_held,
 };
 
 use super::gpu_textures::{Bytes, Kit, PATIENCE, pattern};
@@ -1173,6 +1173,46 @@ fn the_compatibility_quad_is_drawn_with_its_image_or_the_held_one_and_never_the_
         the_compatibility_quad_is_drawn_with_its_image_or_the_held_one_and_never_the_checker_in(
             mode,
         );
+    }
+}
+
+/// A fully transparent tint leaves the fallback checker visible in each binding mode. Each Vulkan rig is shut down before
+/// the next mode starts, keeping one validation-enabled instance alive at a time.
+#[test]
+fn checker_fallback_uses_identity_tint_in_both_modes() {
+    let checker = checker_pixels();
+    let side = usize::try_from(CHECKER_SIDE).expect("small checker");
+    let checker_pixel = |x: usize, y: usize| {
+        let offset = (y * side + x) * 4;
+        [
+            checker[offset],
+            checker[offset + 1],
+            checker[offset + 2],
+            checker[offset + 3],
+        ]
+    };
+    // At 64 x 64, pixel centers map 1:1 to checker texels: (1,1) is in cell (0,0), and (9,1) in (1,0).
+    let expected_magenta = checker_pixel(1, 1);
+    let expected_black = checker_pixel(9, 1);
+    assert_eq!(expected_magenta, [255, 0, 255, 255]);
+    assert_eq!(expected_black, [0, 0, 0, 255]);
+    for mode in MODES {
+        let mut rig = Rig::new(mode, 1, 1, 1);
+        let mut missing = instance(9, [0, 0, 64, 64], WHOLE);
+        missing.tint = [0; 4];
+        let (pixels, counts) = rig.draw((64, 64), [0.0; 3], VulkanFilter::Nearest, vec![missing]);
+        assert_eq!(counts.checker, 1, "{mode:?}: one checker fallback");
+        assert_eq!(
+            pixel_at(&pixels, 64, 1, 1),
+            expected_magenta,
+            "{mode:?}: visible checker"
+        );
+        assert_eq!(
+            pixel_at(&pixels, 64, 9, 1),
+            expected_black,
+            "{mode:?}: black checker cell"
+        );
+        rig.finish();
     }
 }
 
