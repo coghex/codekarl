@@ -39,6 +39,11 @@ pub(crate) const LOG_WAIT: Duration = Duration::from_millis(100);
 pub(crate) const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 /// The longest the process waits, once, for an error record that is still unwritten at exit.
 pub(crate) const ERROR_GRACE: Duration = Duration::from_secs(2);
+/// How long a main-thread render progress record emitted off the end paths (the Vulkan notices and the first-frame records) may wait for
+/// the logger. `try_log` makes a bounded number of lock attempts and drops, and counts, the record when the writer holds the queue for
+/// longer; one counted drop ends a correct run with status 3. Ordinary contention clears within microseconds, so a few milliseconds
+/// admit the record, while a stalled or saturated logger still drops it after the bound.
+pub(crate) const PROGRESS_WAIT: Duration = Duration::from_millis(5);
 /// The exit status when the log was not fully written.
 pub(crate) const INCOMPLETE_SHUTDOWN: u8 = 3;
 
@@ -90,6 +95,96 @@ pub(crate) fn leaves_resources_unproven(latch_set: bool, name: Option<&str>) -> 
 pub(crate) fn control_deadline(shutdown: Option<Instant>) -> Instant {
     let own = Instant::now() + LOG_WAIT;
     shutdown.map_or(own, |shutdown| shutdown.min(own))
+}
+
+/// The deadline of a render progress record (or one pass of them): the earlier of now plus [`PROGRESS_WAIT`] and the shutdown deadline.
+pub(crate) fn progress_deadline() -> Instant {
+    progress_deadline_by(SHUTDOWN_DEADLINE.get().copied())
+}
+
+/// [`progress_deadline`] for a given shutdown deadline (the process-wide one is set once and for good, so the tests give their own).
+pub(crate) fn progress_deadline_by(shutdown: Option<Instant>) -> Instant {
+    let own = Instant::now() + PROGRESS_WAIT;
+    shutdown.map_or(own, |shutdown| shutdown.min(own))
+}
+
+/// Emits a main-thread `render` record. Off the end paths it may wait [`PROGRESS_WAIT`] for the logger (`log_within`), so that ordinary
+/// contention does not drop, and count, a record of a correct run. With `no_wait` (an end path, or any call after the stop was
+/// requested: the teardown's late reports) it goes through `try_log`, which never waits: the run is over and the caller's own budget is
+/// not spent on the logger. A stalled or saturated logger still drops the record, after the bound or at once, and counts it.
+pub(crate) fn progress_record(
+    no_wait: bool,
+    level: Level,
+    message: fmt::Arguments<'_>,
+) -> ck_log::Admission {
+    progress_record_until(no_wait, level, message, progress_deadline())
+}
+
+/// [`progress_record`] with the wait's deadline given (the tests give a long one, to hold the logger for as long as they need).
+pub(crate) fn progress_record_until(
+    no_wait: bool,
+    level: Level,
+    message: fmt::Arguments<'_>,
+    deadline: Instant,
+) -> ck_log::Admission {
+    if no_wait {
+        ck_log::try_log!(level, "render", "{message}")
+    } else {
+        // In the tests the seam fires when the record is formatted, which `log_within` does after reading the settings and right
+        // before its first admission attempt: the nearest point to the wait that the application can observe.
+        #[cfg(test)]
+        return ck_log::log_within!(
+            level,
+            deadline,
+            "render",
+            "{}",
+            wait_seam::Signalling(message)
+        );
+        #[cfg(not(test))]
+        ck_log::log_within!(level, deadline, "render", "{message}")
+    }
+}
+
+/// The tests' seam on the waiting branch of [`progress_record_until`]: how many times this thread took it, and a hook it calls just
+/// before it waits (so a test can tell, without a sleep, that the emitter is about to wait). Per thread, so tests in parallel do not
+/// count each other's waits.
+#[cfg(test)]
+pub(crate) mod wait_seam {
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        static WAITS: Cell<u64> = const { Cell::new(0) };
+        static HOOK: RefCell<Option<Box<dyn FnMut()>>> = const { RefCell::new(None) };
+    }
+
+    /// A message that tells the seam it is about to wait when the logger formats it.
+    pub(super) struct Signalling<'a>(pub(super) std::fmt::Arguments<'a>);
+
+    impl std::fmt::Display for Signalling<'_> {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            about_to_wait();
+            formatter.write_fmt(self.0)
+        }
+    }
+
+    fn about_to_wait() {
+        WAITS.with(|waits| waits.set(waits.get() + 1));
+        HOOK.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook();
+            }
+        });
+    }
+
+    /// How many times this thread has taken the waiting branch.
+    pub(crate) fn waits_taken() -> u64 {
+        WAITS.with(Cell::get)
+    }
+
+    /// Calls `hook` on this thread just before each wait, until the thread ends.
+    pub(crate) fn on_wait(hook: impl FnMut() + 'static) {
+        HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
 }
 
 /// The absolute deadline of one batch of control-path records: the earlier of now plus [`LOG_WAIT`] and the shutdown deadline.

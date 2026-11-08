@@ -483,6 +483,52 @@ fn the_first_frame_record_names_the_drawn_generation_once() {
     );
 }
 
+/// The first-frame record takes the wait before the stop request and never after it (the teardown's late reports), and is written
+/// either way: counted by the progress helper's seam, no clock. The late case sets the pending flag by hand, as a first-frame report
+/// the loop took after `request_stop` would.
+#[test]
+fn the_first_frame_record_takes_a_wait_before_the_stop_request_and_none_after_it() {
+    use crate::lifecycle::wait_seam::waits_taken;
+    let scenario = scenario();
+    let mut early = started(Script {
+        drawn_generation: Some(7),
+        ..Script::default()
+    });
+    let waits = waits_taken();
+    assert_eq!(
+        early.adapter.take_report(),
+        Some(PresenterReport::FirstFrameQueued)
+    );
+    assert!(
+        waits_taken() > waits,
+        "before the stop request the first-frame record waits for the logger"
+    );
+    let mut late = started(Script {
+        drawn_generation: Some(8),
+        ..Script::default()
+    });
+    late.adapter.request_stop();
+    let waits = waits_taken();
+    late.adapter.first_frame_pending = true;
+    let _ = late.adapter.take_report();
+    assert_eq!(
+        waits_taken(),
+        waits,
+        "after the stop request the first-frame record takes no wait"
+    );
+    let records = scenario.records();
+    assert_eq!(
+        count(&records, "render: first frame drawn, generation 7"),
+        1,
+        "{records:?}"
+    );
+    assert_eq!(
+        count(&records, "render: first frame drawn, generation 8"),
+        1,
+        "the late record is written too: {records:?}"
+    );
+}
+
 #[test]
 fn a_presenter_without_a_drawn_generation_writes_no_first_frame_record() {
     let scenario = scenario();
@@ -974,4 +1020,194 @@ fn an_instance_destroyed_before_the_loop_begins_has_its_messages_written_after_i
             .any(|(index, event)| event == "validation drain" && index > destroyed),
         "a drain after the destruction: {log:?}"
     );
+}
+
+/// How many records the installed logger has dropped, ever (the figure an incomplete flush reports).
+fn dropped_so_far() -> u64 {
+    let logger = ck_log::installed().expect("the logger is installed");
+    match logger.flush(Duration::from_millis(5)) {
+        ck_log::FlushOutcome::Complete => 0,
+        ck_log::FlushOutcome::Incomplete { dropped, .. } => dropped,
+    }
+}
+
+/// The logger refuses for a moment (its queue is full behind a held sink) and then makes room, as when the writer holds the queue
+/// for a moment under load: a render record that may wait is admitted and written, and nothing more is counted dropped. This is the
+/// condition that ended a correct run with status 3 (CK-220): a record sent through `try_log` is dropped and counted at once.
+/// Negative control: the same moment, with the record on an end path (`try_log`), drops and counts it, and takes no wait.
+///
+/// No sleep and no clock. The seam reports when the emitter enters the waiting branch (it fires when the logger formats the record,
+/// just before its first admission attempt); the test, holding the sink, waits for that event and only then releases the sink. The
+/// witness is structural: the record is `Queued`, exactly one wait was taken, and no new drop was counted, while the `try_log` control
+/// takes no wait and drops and counts. (Proving that the emitter is blocked *inside* `log_within` at the moment of the release would
+/// need a hook inside `ck-log`, which is out of scope.)
+#[test]
+fn a_render_record_outlasts_a_moments_contention_where_try_log_drops_and_counts_it() {
+    use crate::lifecycle::wait_seam::waits_taken;
+    let scenario = scenario();
+    let hold = hold_sink_and_fill_the_queue(&scenario);
+    let before = dropped_so_far();
+    // An end path: never waits, so the saturated queue drops the record and the logger counts it.
+    let waits = waits_taken();
+    let refused =
+        crate::lifecycle::progress_record(true, ck_log::Level::Info, format_args!("ck220 try"));
+    assert_eq!(refused, ck_log::Admission::Dropped);
+    assert_eq!(waits_taken(), waits, "an end-path record takes no wait");
+    assert_eq!(dropped_so_far(), before + 1, "try_log counted the drop");
+    // Off the end paths the record waits for the room.
+    let (about_to_wait, told) = std::sync::mpsc::channel();
+    let emitter = std::thread::spawn(move || {
+        crate::lifecycle::wait_seam::on_wait(move || {
+            about_to_wait.send(()).expect("the test listens");
+        });
+        // A deadline far past anything the test needs: the record leaves only by being admitted.
+        let admitted = crate::lifecycle::progress_record_until(
+            false,
+            ck_log::Level::Info,
+            format_args!("ck220 wait"),
+            Instant::now() + Duration::from_secs(600),
+        );
+        (admitted, waits_taken())
+    });
+    told.recv_timeout(Duration::from_secs(60))
+        .expect("the emitter said it is about to wait");
+    drop(hold);
+    let (admitted, emitter_waits) = emitter.join().expect("the emitter thread");
+    assert_eq!(admitted, ck_log::Admission::Queued);
+    assert_eq!(emitter_waits, 1, "the record took its one wait");
+    assert_eq!(
+        dropped_so_far(),
+        before + 1,
+        "the waiting record was not dropped"
+    );
+    let records = scenario.records();
+    assert_eq!(count(&records, "ck220 wait"), 1, "{records:?}");
+    assert_eq!(count(&records, "ck220 try"), 0, "{records:?}");
+}
+
+/// A writer that stays held past the bound still drops the record and the logger counts it: a genuinely stalled logger still ends the
+/// run with status 3. The bound here is already past (no wait is left to spend), so the record is refused at once; and with a bound
+/// that is still ahead, the held logger is what ends the wait, by the deadline, with the drop counted.
+#[test]
+fn a_render_record_still_drops_and_counts_when_the_logger_stays_held_past_its_bound() {
+    use crate::lifecycle::wait_seam::waits_taken;
+    let scenario = scenario();
+    let _hold = hold_sink_and_fill_the_queue(&scenario);
+    let before = dropped_so_far();
+    let waits = waits_taken();
+    let past = Instant::now();
+    let result = crate::lifecycle::progress_record_until(
+        false,
+        ck_log::Level::Info,
+        format_args!("ck220 stalled"),
+        past,
+    );
+    assert_eq!(result, ck_log::Admission::Dropped);
+    assert_eq!(
+        waits_taken(),
+        waits + 1,
+        "the record took its wait and it ended"
+    );
+    assert_eq!(dropped_so_far(), before + 1, "the drop was counted");
+    let ahead = crate::lifecycle::progress_record(
+        false,
+        ck_log::Level::Info,
+        format_args!("ck220 stalled again"),
+    );
+    assert_eq!(ahead, ck_log::Admission::Dropped);
+    assert_eq!(waits_taken(), waits + 2);
+    assert_eq!(
+        dropped_so_far(),
+        before + 2,
+        "the second drop was counted too"
+    );
+}
+
+/// The production bound is a few milliseconds, never past a shutdown deadline: a given deadline nearer than the bound clamps it, one
+/// already past gives no wait at all, and a far one leaves the bound.
+#[test]
+fn the_progress_bound_is_a_few_milliseconds_and_clamps_to_a_shutdown_deadline() {
+    use crate::lifecycle::{PROGRESS_WAIT, progress_deadline_by};
+    assert!(PROGRESS_WAIT <= Duration::from_millis(10));
+    let now = Instant::now();
+    let open = progress_deadline_by(None);
+    assert!(
+        open >= now && open <= Instant::now() + PROGRESS_WAIT,
+        "{open:?}"
+    );
+    let far = progress_deadline_by(Some(now + Duration::from_secs(60)));
+    assert!(
+        far <= Instant::now() + PROGRESS_WAIT,
+        "a far shutdown leaves the bound"
+    );
+    let near = now + Duration::from_millis(1);
+    assert_eq!(
+        progress_deadline_by(Some(near)),
+        near,
+        "a nearer shutdown clamps it"
+    );
+    let past = now.checked_sub(Duration::from_secs(1)).unwrap_or(now);
+    assert_eq!(
+        progress_deadline_by(Some(past)),
+        past,
+        "a shutdown already over leaves no wait"
+    );
+    // The process-wide form is one of these.
+    assert!(crate::lifecycle::progress_deadline() <= Instant::now() + PROGRESS_WAIT);
+}
+
+/// An end path's announcement never takes the wait, whatever the logger's state: with the sink held and validation messages pending,
+/// `announce(true)` (what `request_stop` and `poll_end` call) takes no wait. Structural, no clock: the waiting branch's count does not
+/// move; the positive control is the same call off the end paths, which takes it.
+#[test]
+fn an_end_paths_announcement_takes_no_wait_even_when_the_logger_is_saturated() {
+    use crate::lifecycle::wait_seam::waits_taken;
+    let scenario = scenario();
+    let _hold = hold_sink_and_fill_the_queue(&scenario);
+    let mut run = started(Script {
+        validation_now: (0..20)
+            .map(|index| (format!("[ERROR VALIDATION] VUID-x: message {index}"), false))
+            .collect(),
+        ..Script::default()
+    });
+    let waits = waits_taken();
+    for _ in 0..20 {
+        run.adapter.announce(true);
+    }
+    assert_eq!(waits_taken(), waits, "no end-path announcement took a wait");
+    // Positive control: off the end paths the same pending records are written through the waiting branch.
+    run.adapter.announce(false);
+    assert!(
+        waits_taken() > waits,
+        "an ordinary announcement waits for the logger"
+    );
+}
+
+/// Once the stop was requested, the teardown's late `take_report` calls (which `ck-window` makes after `request_stop` and `poll_end`)
+/// take no wait either, even over a saturated logger with validation messages pending and the first-frame record due. Before the
+/// stop request the same calls do take it.
+#[test]
+fn a_late_report_after_the_stop_request_takes_no_wait_even_when_the_logger_is_saturated() {
+    use crate::lifecycle::wait_seam::waits_taken;
+    let scenario = scenario();
+    let _hold = hold_sink_and_fill_the_queue(&scenario);
+    let mut run = started(Script {
+        validation_now: (0..20)
+            .map(|index| (format!("[ERROR VALIDATION] VUID-x: message {index}"), false))
+            .collect(),
+        ..Script::default()
+    });
+    // Before the stop request a report call takes the wait (the positive control).
+    let before_stop = waits_taken();
+    let _ = run.adapter.take_report();
+    assert!(
+        waits_taken() > before_stop,
+        "an ordinary report call waits for the logger"
+    );
+    run.adapter.request_stop();
+    let waits = waits_taken();
+    for _ in 0..20 {
+        let _ = run.adapter.take_report();
+    }
+    assert_eq!(waits_taken(), waits, "no late report call took a wait");
 }
