@@ -204,11 +204,22 @@ fn a_burst_of_presses_leaves_one_outstanding_until_it_is_answered() {
                     },
                     NativeEvent::CloseButton,
                 ]);
-                // Key repeat while the request is still outstanding.
+                // Key repeat while the request is still outstanding, and no answer waiting for it yet.
                 rig.backend.script.push_back(escape_pair().into());
-                rig.quit_at_pump(4);
-                // The request is declined, but only after the second batch has been absorbed.
-                lock(&rig.ui.close_answers).push_back(Answer::Decline);
+                // The decline arrives only at pump 3, after the second batch (pump 2) was pumped with the request still
+                // outstanding: that batch is absorbed. The quit comes at pump 5.
+                let ui = std::sync::Arc::clone(&rig.ui);
+                let quit = std::sync::Arc::clone(&rig.quit);
+                let notifier = std::sync::Arc::clone(&rig.notifier);
+                rig.backend.hook = Some(Box::new(move |call| {
+                    if call.index == 3 {
+                        ui.answer(press(CloseSource::Button), Answer::Decline);
+                    }
+                    if call.index == 5 {
+                        quit.store(true, Ordering::SeqCst);
+                        notifier.wake();
+                    }
+                }));
                 rig.run_collect()
             };
             assert_eq!(ran.end, LoopEnd::Quit);
@@ -216,6 +227,153 @@ fn a_burst_of_presses_leaves_one_outstanding_until_it_is_answered() {
                 ran.posts,
                 [press(CloseSource::Button)],
                 "one request, from the first press"
+            );
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// A close evaluated after the UI's answers (CK-214)
+// ---------------------------------------------------------------------------------------------
+
+fn escape_down() -> NativeEvent {
+    NativeEvent::Key {
+        key: ck_input::Key::Escape,
+        down: true,
+        repeat: false,
+    }
+}
+
+/// Pass 1 pumps the first close and posts its request; the link answers `Decline` when it is posted, so that answer is **waiting**
+/// when pass 2 pumps `second`. The run quits at pump 3, so a request that `second` makes must be posted in pass 2 itself.
+fn declined_then(
+    second: Vec<NativeEvent>,
+    first: NativeEvent,
+) -> (Vec<UiEvent>, Vec<String>, Vec<String>) {
+    let scenario = scenario();
+    let ran = {
+        let mut rig = Rig::new();
+        rig.backend.script.push_back(vec![first]);
+        rig.backend.script.push_back(second);
+        lock(&rig.ui.close_answers).push_back(Answer::Decline);
+        rig.quit_at_pump(3);
+        rig.run_collect()
+    };
+    assert_eq!(ran.end, LoopEnd::Quit);
+    let records = scenario.records();
+    (ran.posts, ran.log, records)
+}
+
+#[test]
+fn a_key_press_pumped_while_a_decline_waits_is_a_new_request_in_that_pass() {
+    owned(
+        module_path!(),
+        "a_key_press_pumped_while_a_decline_waits_is_a_new_request_in_that_pass",
+        DEADLINE,
+        || {
+            let (posts, log, records) = declined_then(
+                vec![
+                    escape_down(),
+                    NativeEvent::Key {
+                        key: ck_input::Key::Escape,
+                        down: false,
+                        repeat: false,
+                    },
+                ],
+                NativeEvent::CloseButton,
+            );
+            assert_eq!(
+                posts,
+                [press(CloseSource::Button), press(CloseSource::Key)],
+                "the second press was not absorbed by the request the waiting Decline had already retired"
+            );
+            // The second request was posted in pass 2: after the second pump entered and before the third.
+            let second_pump = at(&log, "backend.pump enter #2");
+            let second_post = at(&log, "ui.post CloseRequested { source: Key }");
+            assert!(second_pump < second_post, "{log:#?}");
+            assert!(
+                !log.iter()
+                    .any(|line| line.starts_with("backend.pump enter #3"))
+                    || at(&log, "backend.pump enter #3") > second_post,
+                "{log:#?}"
+            );
+            assert!(records.is_empty(), "nothing was absorbed: {records:?}");
+        },
+    );
+}
+
+#[test]
+fn a_close_button_pumped_while_a_decline_waits_is_a_new_request_in_that_pass() {
+    owned(
+        module_path!(),
+        "a_close_button_pumped_while_a_decline_waits_is_a_new_request_in_that_pass",
+        DEADLINE,
+        || {
+            let (posts, log, records) =
+                declined_then(vec![NativeEvent::CloseButton], NativeEvent::CloseButton);
+            assert_eq!(
+                posts,
+                [press(CloseSource::Button), press(CloseSource::Button)],
+                "button closes follow the same rule"
+            );
+            let second_pump = at(&log, "backend.pump enter #2");
+            let second_post = log
+                .iter()
+                .rposition(|line| line == "ui.post CloseRequested { source: Button }")
+                .expect("posted");
+            assert!(second_pump < second_post, "{log:#?}");
+            assert!(records.is_empty(), "nothing was absorbed: {records:?}");
+        },
+    );
+}
+
+#[test]
+fn with_a_decline_waiting_a_button_and_a_press_in_one_pump_make_one_request_and_absorb_the_other() {
+    owned(
+        module_path!(),
+        "with_a_decline_waiting_a_button_and_a_press_in_one_pump_make_one_request_and_absorb_the_other",
+        DEADLINE,
+        || {
+            let (posts, _log, records) = declined_then(
+                vec![escape_down(), NativeEvent::CloseButton],
+                NativeEvent::CloseButton,
+            );
+            assert_eq!(
+                posts,
+                [press(CloseSource::Button), press(CloseSource::Button)],
+                "the button is evaluated first (the order the evaluation had before the move), so the press is the absorbed one"
+            );
+            assert_eq!(
+                records,
+                ["DEBUG window: 1 close request(s) absorbed while one was outstanding"]
+            );
+        },
+    );
+}
+
+#[test]
+fn a_press_while_the_request_is_outstanding_and_no_answer_waits_is_still_absorbed() {
+    owned(
+        module_path!(),
+        "a_press_while_the_request_is_outstanding_and_no_answer_waits_is_still_absorbed",
+        DEADLINE,
+        || {
+            let scenario = scenario();
+            let ran = {
+                let mut rig = Rig::new();
+                rig.backend.script.push_back(vec![NativeEvent::CloseButton]);
+                rig.backend
+                    .script
+                    .push_back(vec![escape_down(), NativeEvent::CloseButton]);
+                // No scripted answer: the request stays outstanding through pass 2.
+                rig.quit_at_pump(3);
+                rig.run_collect()
+            };
+            assert_eq!(ran.end, LoopEnd::Quit);
+            assert_eq!(ran.posts, [press(CloseSource::Button)]);
+            assert_eq!(
+                scenario.records(),
+                ["DEBUG window: 2 close request(s) absorbed while one was outstanding"]
             );
         },
     );

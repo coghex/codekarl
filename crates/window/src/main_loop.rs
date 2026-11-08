@@ -583,9 +583,10 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         } else {
             Wait::Poll
         };
-        let mut absorbed = 0_usize;
+        // The window's close buttons this pump reported. They, and the close action's presses the mapper counted, are evaluated after
+        // step 5 (below), so that an answer already waiting for the outstanding request is applied first.
+        let mut button_closes = 0_usize;
         {
-            let close = &mut pass.close;
             let size = &mut pass.new_size;
             let redraw = &mut pass.redraw;
             let input = &mut self.input;
@@ -610,13 +611,7 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
                     input.minimized = true;
                 }
                 NativeEvent::Restored => input.minimized = false,
-                NativeEvent::CloseButton => {
-                    if *close == CloseEvent::Idle {
-                        *close = CloseEvent::ToPost(CloseSource::Button);
-                    } else {
-                        absorbed += 1;
-                    }
-                }
+                NativeEvent::CloseButton => button_closes += 1,
                 NativeEvent::PixelSizeChanged { width, height } => {
                     let pixel_size = PixelSize { width, height };
                     input.pixel_size = pixel_size;
@@ -663,23 +658,6 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
             }
         }
         self.refresh_updates(pass);
-        // The close action (design §10.1): a rising edge requests the close with source `key` - one outstanding at a
-        // time, later presses absorbed and counted below.
-        let presses = usize::try_from(self.input.mapper.take_close_presses()).unwrap_or(usize::MAX);
-        if presses > 0 {
-            if pass.close == CloseEvent::Idle {
-                pass.close = CloseEvent::ToPost(CloseSource::Key);
-                absorbed = absorbed.saturating_add(presses - 1);
-            } else {
-                absorbed = absorbed.saturating_add(presses);
-            }
-        }
-        if absorbed > 0 {
-            log(
-                Level::Debug,
-                format_args!("{absorbed} close request(s) absorbed while one was outstanding"),
-            );
-        }
         // 2. The quit flag, now and between the following steps.
         if self.quit_requested() {
             return Some(LoopEnd::Quit);
@@ -715,6 +693,9 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         if self.quit_requested() {
             return Some(LoopEnd::Quit);
         }
+        // The close requests this pass's pump recorded, now that the UI's answers have been taken: a Decline that was waiting for
+        // the outstanding request has retired it, so a fresh press is a new request and not absorbed.
+        self.request_closes(pass, button_closes);
         // 6. Post the events that are waiting.
         if let Some(end) = self.post_waiting(pass) {
             return Some(end);
@@ -737,6 +718,35 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         }
         pass.exhausted = reports_exhausted && answers_exhausted;
         None
+    }
+
+    /// Turns the close buttons the pump reported (`button_closes`) and the close action's presses (design §10.1: a rising edge, with
+    /// source `key`) into a request, evaluated **after** the UI's answers were taken (step 5): one request outstanding at a time, the
+    /// buttons first (in the order the backend reported them) and then the presses, every later one absorbed and counted.
+    fn request_closes(&mut self, pass: &mut Pass, button_closes: usize) {
+        let presses = usize::try_from(self.input.mapper.take_close_presses()).unwrap_or(usize::MAX);
+        let mut absorbed = 0_usize;
+        for _ in 0..button_closes {
+            if pass.close == CloseEvent::Idle {
+                pass.close = CloseEvent::ToPost(CloseSource::Button);
+            } else {
+                absorbed += 1;
+            }
+        }
+        if presses > 0 {
+            if pass.close == CloseEvent::Idle {
+                pass.close = CloseEvent::ToPost(CloseSource::Key);
+                absorbed = absorbed.saturating_add(presses - 1);
+            } else {
+                absorbed = absorbed.saturating_add(presses);
+            }
+        }
+        if absorbed > 0 {
+            log(
+                Level::Debug,
+                format_args!("{absorbed} close request(s) absorbed while one was outstanding"),
+            );
+        }
     }
 
     fn refresh_updates(&mut self, pass: &Pass) {
