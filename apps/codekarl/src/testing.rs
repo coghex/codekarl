@@ -90,6 +90,8 @@ pub(crate) struct Harness {
 /// What a test adds to the UI VM.
 #[derive(Default)]
 pub(crate) struct Extras {
+    /// Optional UI VM configuration for tests that exercise scale-dependent layout.
+    pub(crate) config: Option<ConfigValue>,
     pub(crate) functions: Vec<(&'static str, HostFunction)>,
     /// Called on the VM's owner thread after the notifier's wake, on every report wake.
     pub(crate) after_wake: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -134,7 +136,13 @@ impl Harness {
             extras.service.clone(),
             false,
         );
-        let mut settings = VmSettings::new("ui", entry, ConfigValue::Table(BTreeMap::new()));
+        let mut settings = VmSettings::new(
+            "ui",
+            entry,
+            extras
+                .config
+                .unwrap_or_else(|| ConfigValue::Table(BTreeMap::new())),
+        );
         // The completion hook the real UI VM has: the scene is published after startup and after every posted callback.
         settings.on_complete = Some(render_end.completion_hook());
         settings.extensions = vec![extension, render];

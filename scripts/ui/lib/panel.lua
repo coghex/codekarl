@@ -12,6 +12,7 @@ function panel.new(spec)
   self.y = ui.snap(spec.y)
   self.width = ui.snap_size(spec.width)
   self.height = ui.snap_size(spec.height)
+  self.owner = spec.owner
   self.quad = render.create_quad{
     texture = ui.texture(spec.texture or "ui/font/panel.png"),
     x = self.x,

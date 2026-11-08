@@ -17,16 +17,36 @@ use crate::game::slot::{PauseReason, SimSnapshot};
 pub(crate) const GAME_TIME: &str = "game_time";
 /// The callback `game.on_hover` registers.
 pub(crate) const GAME_HOVER: &str = "game_hover";
+/// The callback `game.on_select` registers.
+pub(crate) const GAME_SELECT: &str = "game_select";
 
 /// The `game` extension. `registered` follows whether a callback is set; `wake` runs after each change so the loop's next pass
 /// delivers the current state to a callback that has just been registered.
+#[cfg(test)]
 pub(crate) fn extension(
     time_registered: Arc<AtomicBool>,
     hover_registered: Arc<AtomicBool>,
     wake: Arc<dyn Fn() + Send + Sync>,
     controls: SimControls,
 ) -> Extension {
+    extension_with_select(
+        time_registered,
+        hover_registered,
+        Arc::new(AtomicBool::new(false)),
+        wake,
+        controls,
+    )
+}
+
+pub(crate) fn extension_with_select(
+    time_registered: Arc<AtomicBool>,
+    hover_registered: Arc<AtomicBool>,
+    select_registered: Arc<AtomicBool>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    controls: SimControls,
+) -> Extension {
     let time_wake = Arc::clone(&wake);
+    let hover_wake = Arc::clone(&wake);
     Extension::new("game")
         .function("control", control_function(controls))
         .callback_observed(
@@ -42,6 +62,14 @@ pub(crate) fn extension(
             GAME_HOVER,
             Arc::new(move |is_registered| {
                 hover_registered.store(is_registered, Ordering::SeqCst);
+                hover_wake();
+            }),
+        )
+        .callback_observed(
+            "on_select",
+            GAME_SELECT,
+            Arc::new(move |is_registered| {
+                select_registered.store(is_registered, Ordering::SeqCst);
                 wake();
             }),
         )
@@ -72,6 +100,31 @@ pub(crate) fn hover_arguments(hover: Option<&crate::map_app::Hover>) -> Vec<Conf
         ("left".to_owned(), ConfigValue::Integer(hover.left)),
         ("right".to_owned(), ConfigValue::Integer(hover.right)),
         ("y".to_owned(), ConfigValue::Integer(hover.y)),
+    ]))]
+}
+
+/// The argument for a selected place. Selection callbacks have no nil notification.
+pub(crate) fn select_arguments(selection: &crate::map_app::Selection) -> Vec<ConfigValue> {
+    vec![ConfigValue::Table(BTreeMap::from([
+        (
+            "seq".to_owned(),
+            ConfigValue::Integer(
+                i64::try_from(selection.seq).expect("selection sequence fits a Lua integer"),
+            ),
+        ),
+        ("id".to_owned(), ConfigValue::String(selection.id.clone())),
+        (
+            "name".to_owned(),
+            ConfigValue::String(selection.name.clone()),
+        ),
+        (
+            "kind".to_owned(),
+            ConfigValue::String(selection.kind.clone()),
+        ),
+        (
+            "size".to_owned(),
+            ConfigValue::Integer(i64::from(selection.size)),
+        ),
     ]))]
 }
 
@@ -106,4 +159,37 @@ pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
         ),
         ("paused".to_owned(), paused),
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_place_arguments_use_authored_kind_and_size_fields() {
+        let arguments = select_arguments(&crate::map_app::Selection {
+            seq: 7,
+            id: "fixture-town".to_owned(),
+            name: "Fixture Town".to_owned(),
+            kind: "town".to_owned(),
+            size: 3,
+        });
+        let [ConfigValue::Table(fields)] = arguments.as_slice() else {
+            panic!("selection callback gets one table");
+        };
+        assert_eq!(fields.get("seq"), Some(&ConfigValue::Integer(7)));
+        assert_eq!(
+            fields.get("id"),
+            Some(&ConfigValue::String("fixture-town".to_owned()))
+        );
+        assert_eq!(
+            fields.get("name"),
+            Some(&ConfigValue::String("Fixture Town".to_owned()))
+        );
+        assert_eq!(
+            fields.get("kind"),
+            Some(&ConfigValue::String("town".to_owned()))
+        );
+        assert_eq!(fields.get("size"), Some(&ConfigValue::Integer(3)));
+    }
 }

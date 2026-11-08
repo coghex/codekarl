@@ -10,8 +10,10 @@
 local ui = require("lib.ui")
 local text = require("lib.text")
 local panel = require("lib.panel")
+local label = require("lib.label")
 local pointer = require("lib.pointer")
 local button = require("lib.button")
+local windows = require("lib.window")
 
 local P = ui.P
 local MARGIN = 8 -- points from the window's top and left edges
@@ -22,6 +24,8 @@ local view = {width = OPEN_WIDTH, height = OPEN_HEIGHT}
 
 -- Relayouts of the anchored elements, run when the window's size changes. Each is registered by the element.
 local relayouts = {}
+local place_window = nil
+local help_window = nil
 
 -- The readout's text for a `game_time` table: `9 Oct 768 · 14:00 · speed 3`, or `... · paused` whatever the reason.
 local MONTHS = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
@@ -78,10 +82,13 @@ if game ~= nil then
       end
     end
     local laid_readout = font.layout(content)
+    local help_layout = font.layout("?")
+    local help_width = (help_layout.width + 4) * P
+    local help_height = (help_layout.height + 4) * P
     local readout_width = laid_readout.width * P
     local readout_height = laid_readout.height * P
     row_height = button_height
-    local width = content_width + 4 * P + readout_width + 4 * P
+    local width = content_width + help_width + readout_width + 12 * P
     local height = row_height + 4 * P
     local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
     -- The panel and its broad capture region precede all button regions in painter order.
@@ -107,7 +114,50 @@ if game ~= nil then
         cursor = cursor + item.width
       end
     end
-    readout_x = cursor + 4 * P
+    button.new{
+      x = cursor + 4 * P,
+      y = row_y + (row_height - help_height) / 2,
+      text = "?",
+      on_click = function()
+        if help_window ~= nil then
+          help_window:raise()
+          return
+        end
+        local lines = {
+          "drag: pan",
+          "scroll: zoom",
+          "click a place: details",
+          "space: pause",
+          "1-5: speed",
+          "esc: close window",
+        }
+        local width_px = 0
+        local height_px = 0
+        for _, line in ipairs(lines) do
+          local size = font.layout(line)
+          width_px = math.max(width_px, size.width)
+          height_px = height_px + size.height
+        end
+        height_px = height_px + (#lines - 1) * 2
+        local created
+        created = windows.new{
+          title = "Help",
+          content_width = width_px * P,
+          content_height = height_px * P,
+          on_close = function()
+            if help_window == created then help_window = nil end
+          end,
+        }
+        local y = 0
+        for _, line in ipairs(lines) do
+          local item = label.new{x = 0, y = y, text = line, group = created.content, owner = created}
+          local item_height = select(2, item:size())
+          y = y + item_height + 2 * P
+        end
+        help_window = created
+      end,
+    }
+    readout_x = cursor + 8 * P + help_width
     text.set(readout, content)
     text.move(readout, readout_x, row_y + (row_height - readout_height) / 2)
   end
@@ -129,6 +179,49 @@ if game ~= nil then
       fit_bar()
     end
   end
+
+  game.on_select(function(selection)
+    local lines = {
+      "id: " .. selection.id,
+      "kind: " .. selection.kind,
+      "size: " .. selection.size,
+    }
+    local width_px = 0
+    local height_px = 0
+    for _, line in ipairs(lines) do
+      local size = font.layout(line)
+      width_px = math.max(width_px, size.width)
+      height_px = height_px + size.height
+    end
+    height_px = height_px + (#lines - 1) * 2
+    if place_window == nil then
+      local created
+      created = windows.new{
+        title = selection.name,
+        content_width = width_px * P,
+        content_height = height_px * P,
+        on_close = function()
+          if place_window == created then place_window = nil end
+        end,
+      }
+      place_window = created
+    else
+      place_window:set_title(selection.name)
+      place_window:set_content_size(width_px * P, height_px * P)
+      place_window:raise()
+    end
+    if place_window.lines ~= nil then
+      for _, old in ipairs(place_window.lines) do old:destroy() end
+    end
+    place_window.lines = {}
+    local y = 0
+    for _, line in ipairs(lines) do
+      local item = label.new{x = 0, y = y, text = line, group = place_window.content, owner = place_window}
+      place_window.lines[#place_window.lines + 1] = item
+      local item_height = select(2, item:size())
+      y = y + item_height + 2 * P
+    end
+  end)
 
   -- The tooltip: a panel and a text line beside the hovered place, on the side that fits the window's current width.
   local tooltip = text.line(0, 0)
@@ -190,6 +283,7 @@ frame.on_update(function(update)
   if update.width ~= view.width or update.height ~= view.height then
     view.width = update.width
     view.height = update.height
+    windows.update_viewport(view.width, view.height)
     for _, relayout in ipairs(relayouts) do
       relayout()
     end
@@ -207,7 +301,7 @@ end)
 
 window.on_close_request(function(source)
   log.info("close requested by " .. source)
-  return true
+  return windows.close_request(source)
 end)
 
 function startup()

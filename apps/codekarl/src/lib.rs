@@ -660,6 +660,7 @@ fn supervise_with_owner_factory(
         .and_then(|connected| connected.gameplay.clone());
     let time_registered = Arc::new(AtomicBool::new(false));
     let hover_registered = Arc::new(AtomicBool::new(false));
+    let select_registered = Arc::new(AtomicBool::new(false));
     let (ui, sim_spawn, game_extension) = match connected {
         Some(connected) => (
             ui.with_sim(ui_link::SimLink {
@@ -667,11 +668,13 @@ fn supervise_with_owner_factory(
                 slot: connected.slot,
                 time_registered: Arc::clone(&time_registered),
                 hover_registered: Arc::clone(&hover_registered),
+                select_registered: Arc::clone(&select_registered),
             }),
             Some(connected.spawn),
-            Some(game_api::extension(
+            Some(game_api::extension_with_select(
                 time_registered,
                 hover_registered,
+                select_registered,
                 Arc::clone(&wake),
                 connected.controls,
             )),

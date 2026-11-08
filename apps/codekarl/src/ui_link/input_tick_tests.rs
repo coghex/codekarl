@@ -10,10 +10,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ck_input::{Bindings, Mapper, POINTER_CAPACITY};
 use ck_lua::{ConfigValue, HostFunction};
 use ck_window::{
-    ActionSnapshot, InputSnapshot, InputTick, PixelSize, PointerEvent, PostError, Transition,
-    UiEvent, UiLink, UpdateEvent, WindowMetrics,
+    ActionSnapshot, InputSnapshot, InputTick, PixelSize, PointerEvent, PostError, ScrollUnit,
+    Transition, UiEvent, UiLink, UpdateEvent, WindowMetrics,
 };
 
 use super::*;
@@ -245,8 +246,60 @@ fn mapped_link(
             slot: SimSlot::new(Arc::new(|| {})),
             time_registered: Arc::new(AtomicBool::new(false)),
             hover_registered: Arc::new(AtomicBool::new(false)),
+            select_registered: Arc::new(AtomicBool::new(false)),
         });
     (link, map, receiver, pointer)
+}
+
+#[test]
+fn raw_mapper_loss_with_a_retained_up_is_not_a_map_click_after_routing_to_idle() {
+    let held = held_ui();
+    let (mut link, map, _receiver, marker) = mapped_link(&held);
+    let mut mapper = Mapper::new(Bindings::from_entries(Vec::new()).expect("default bindings"));
+
+    mapper.pointer(PointerEvent::Down(marker));
+    let first = mapper.snapshot();
+    let first_sequence = first.sequence;
+    link.input(&tick(first))
+        .expect("map Down routes through CK-207");
+    mapper.acknowledge(first_sequence);
+
+    // Alternate move/scroll records so the mapper cannot coalesce adjacent moves. The ring loses
+    // earlier details while retaining the final Up at the marker.
+    for index in 0..=POINTER_CAPACITY {
+        let position = PointerPosition {
+            x: marker.x + i32::try_from(index % 2).expect("small offset") * 256,
+            y: marker.y,
+        };
+        mapper.pointer(PointerEvent::Move(position));
+        mapper.pointer(PointerEvent::Scroll {
+            position,
+            amount: 0,
+            unit: ScrollUnit::Lines,
+        });
+    }
+    mapper.pointer(PointerEvent::Up(marker));
+    let lost = mapper.snapshot();
+    assert!(
+        lost.pointer_overflow,
+        "the real mapper reports raw pointer loss"
+    );
+    assert_eq!(lost.pointer_events.last(), Some(&PointerEvent::Up(marker)));
+    let sequence = lost.sequence;
+    link.input(&tick(lost))
+        .expect("retained events route through CK-207");
+    mapper.acknowledge(sequence);
+
+    assert_eq!(
+        *link.state.pointer_owner.borrow(),
+        GestureOwner::Idle,
+        "the final Up leaves no map owner, so CK-207 masks the resync flag"
+    );
+    assert_eq!(
+        crate::map_app::lock(&map).selection(),
+        None,
+        "raw loss still reaches MapController separately and disqualifies the gesture"
+    );
 }
 
 pub(super) fn camera_of(map: &crate::map_app::SharedController) -> Option<ck_map::Camera> {
@@ -357,6 +410,17 @@ fn input_suppresses_map_hover_over_a_published_ui_region_and_restores_it_outside
     down.pointer_events = vec![PointerEvent::Down(pointer)];
     link.input(&tick(down)).expect("UI capture starts");
     assert!(crate::map_app::lock(&map).hover().is_none());
+
+    let mut release = idle();
+    release.pointer_position = Some(pointer);
+    release.pointer_events = vec![PointerEvent::Up(pointer)];
+    link.input(&tick(release))
+        .expect("UI capture releases over the marker");
+    assert_eq!(
+        crate::map_app::lock(&map).selection(),
+        None,
+        "a UI region over a marker owns the whole gesture"
+    );
 
     let outside = PointerPosition {
         x: pointer.x + 3 * 256,
@@ -589,6 +653,7 @@ fn a_post_refused_as_full_and_then_accepted_delivers_the_stash_once_and_the_cont
             slot: SimSlot::new(Arc::new(|| {})),
             time_registered: Arc::new(AtomicBool::new(false)),
             hover_registered: Arc::new(AtomicBool::new(false)),
+            select_registered: Arc::new(AtomicBool::new(false)),
         });
     // Three calls in flight leave only the place reserved for lifecycle posts: an update is refused.
     for _ in 0..3 {

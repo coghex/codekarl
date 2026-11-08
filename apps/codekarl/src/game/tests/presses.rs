@@ -96,6 +96,7 @@ fn linked(harness: &Harness) -> (crate::ui_link::CodekarlUi, mpsc::Receiver<Mess
         slot: SimSlot::new(Arc::new(|| {})),
         time_registered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         hover_registered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        select_registered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
     (link, receiver)
 }
