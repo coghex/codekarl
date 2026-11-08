@@ -5,19 +5,47 @@
 local pointer = {}
 
 local widgets = {} -- key -> widget
+local owners = {} -- key -> optional widget owner
 local pressed_keys = {} -- key -> true, the widgets whose gesture is pressed
 local last_over = false
 
-function pointer.register(key, widget)
+function pointer.register(key, widget, owner)
   widgets[key] = widget
+  owners[key] = owner
+  if owner ~= nil then
+    owner._pointer_children = owner._pointer_children or {}
+    owner._pointer_children[key] = true
+  end
 end
 
 -- Removes the widget; if it was the hovered one the dispatcher forgets the hover, and it is no longer pressed.
 function pointer.unregister(key)
+  local owner = owners[key]
+  if owner ~= nil and owner._pointer_children ~= nil then
+    owner._pointer_children[key] = nil
+  end
   widgets[key] = nil
+  owners[key] = nil
   pressed_keys[key] = nil
   if last_over == key then
     last_over = false
+  end
+end
+
+-- Destroys every pointer widget owned by a closing window; unregister removes it from this set.
+function pointer.unregister_owner(owner)
+  local keys = {}
+  for key in pairs(owner._pointer_children or {}) do
+    keys[#keys + 1] = key
+  end
+  table.sort(keys)
+  for _, key in ipairs(keys) do
+    local widget = widgets[key]
+    if widget ~= nil and widget.destroy ~= nil then
+      widget:destroy()
+    else
+      pointer.unregister(key)
+    end
   end
 end
 
@@ -59,6 +87,10 @@ function pointer.dispatch(p)
     if key then
       local widget = widgets[key]
       if widget ~= nil then
+        local owner = owners[key]
+        if event.kind == "down" and owner ~= nil and owner.on_child_down ~= nil then
+          owner:on_child_down(key)
+        end
         widget:on_event(event, eligible)
       end
     end

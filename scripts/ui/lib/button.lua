@@ -55,6 +55,7 @@ function button.new(spec)
   local self = setmetatable({}, button)
   self.on_click = spec.on_click
   self.group = spec.group
+  self.owner = spec.owner
   self.key = ui.key("button")
   self.x = ui.snap(spec.x)
   self.y = ui.snap(spec.y)
@@ -79,7 +80,7 @@ function button.new(spec)
   end
   text.set(self.line, spec.text or "")
   publish_region(self)
-  pointer.register(self.key, self)
+  pointer.register(self.key, self, self.owner)
   return self
 end
 

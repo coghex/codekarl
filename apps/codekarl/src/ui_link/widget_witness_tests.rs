@@ -152,6 +152,7 @@ fn a_lost_up_and_a_later_up_in_the_same_delivery_click_nothing_and_the_map_owns_
             slot: SimSlot::new(Arc::new(|| {})),
             time_registered: Arc::new(AtomicBool::new(false)),
             hover_registered: Arc::new(AtomicBool::new(false)),
+            select_registered: Arc::new(AtomicBool::new(false)),
         });
     let regions = harness
         .bridge

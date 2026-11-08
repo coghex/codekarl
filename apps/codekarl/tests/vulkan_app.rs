@@ -82,6 +82,8 @@ use supervisor::{Seen, Supervised};
 mod activation_watch;
 #[path = "held_pipe/mod.rs"]
 mod held_pipe;
+#[path = "support/map_selection_body.rs"]
+mod map_selection_fixture;
 #[path = "supervisor/signal.rs"]
 mod signal;
 #[path = "support/time_bar.rs"]
@@ -101,6 +103,7 @@ const ALLOW_UNFOCUSED_UPDATES_FLAG: &str = "--ck-vulkan-test-allow-unfocused-upd
 const QUEUE_FOCUS_LOST_FOR_CK163_FLAG: &str = "--ck-vulkan-test-queue-focus-lost-for-ck163";
 const MAP_INPUT_ENV: &str = "CK_VULKAN_TEST_MAP_INPUT";
 const MAP_HOVER_ENV: &str = "CK_VULKAN_TEST_MAP_HOVER";
+const MAP_SELECT_ENV: &str = "CK_VULKAN_TEST_MAP_SELECT";
 const SIM_INPUT_ENV: &str = "CK_VULKAN_TEST_SIM_INPUT";
 const KEY_FILES_ENV: &str = "CK_VULKAN_TEST_KEY_FILES";
 const UI_POINTER_ENV: &str = "CK_VULKAN_TEST_UI_POINTER";
@@ -172,6 +175,7 @@ static ALLOW_UNFOCUSED_UPDATES: AtomicBool = AtomicBool::new(false);
 static QUEUE_FOCUS_LOST_FOR_CK163: AtomicBool = AtomicBool::new(false);
 static MAP_INPUT_CASE: AtomicBool = AtomicBool::new(false);
 static MAP_HOVER_CASE: AtomicBool = AtomicBool::new(false);
+static MAP_SELECT_CASE: AtomicBool = AtomicBool::new(false);
 static UI_POINTER_CASE: AtomicBool = AtomicBool::new(false);
 static TIME_BAR_CASE: AtomicBool = AtomicBool::new(false);
 static SIM_INPUT_CASE: AtomicBool = AtomicBool::new(false);
@@ -631,6 +635,7 @@ struct Worker {
     live: Supervised,
     report: PathBuf,
     map_camera_observation: Option<PathBuf>,
+    map_select_observation: Option<PathBuf>,
     /// Where the window driver, if there is one, leaves `driver_failed`.
     driver_dir: Option<PathBuf>,
     /// Keeps the report's directory until the case is over.
@@ -684,6 +689,9 @@ fn start_with(args: &[&OsStr], driver: Option<(&str, &Path)>) -> Worker {
         // The case writes this marker only after the hover callback receives the fixture place name.
         command.env(MAP_HOVER_ENV, &scratch.0);
     }
+    if MAP_SELECT_CASE.load(Ordering::SeqCst) {
+        command.env(MAP_SELECT_ENV, &scratch.0);
+    }
     if UI_POINTER_CASE.load(Ordering::SeqCst) {
         command.env(UI_POINTER_ENV, &scratch.0);
     }
@@ -700,11 +708,15 @@ fn start_with(args: &[&OsStr], driver: Option<(&str, &Path)>) -> Worker {
     }
     let map_camera_observation = (MAP_INPUT_CASE.load(Ordering::SeqCst)
         || MAP_HOVER_CASE.load(Ordering::SeqCst)
+        || MAP_SELECT_CASE.load(Ordering::SeqCst)
         || UI_POINTER_CASE.load(Ordering::SeqCst)
         || TIME_BAR_CASE.load(Ordering::SeqCst)
         || SIM_INPUT_CASE.load(Ordering::SeqCst)
         || HELD_UI_CASE.load(Ordering::SeqCst))
     .then(|| report.with_extension("map-camera"));
+    let map_select_observation = MAP_SELECT_CASE
+        .load(Ordering::SeqCst)
+        .then(|| scratch.0.join("map-selection-observation.log"));
     if let Some(path) = &map_camera_observation {
         command.env(MAP_CAMERA_ENV, path);
     }
@@ -713,6 +725,7 @@ fn start_with(args: &[&OsStr], driver: Option<(&str, &Path)>) -> Worker {
         live,
         report,
         map_camera_observation,
+        map_select_observation,
         driver_dir: driver.map(|(_, dir)| dir.to_path_buf()),
         _scratch: scratch,
     }
@@ -782,6 +795,7 @@ fn finish(worker: Worker) -> Seen {
 fn finish_allowing_keys(worker: Worker) -> Seen {
     let activation = worker.report.with_extension("activation");
     let observation_path = worker.map_camera_observation.clone();
+    let map_select_observation_path = worker.map_select_observation.clone();
     let driver_failed = worker.driver_dir.map(|dir| dir.join("driver_failed"));
     let driver_stage = driver_failed
         .as_ref()
@@ -795,13 +809,22 @@ fn finish_allowing_keys(worker: Worker) -> Seen {
             .as_ref()
             .and_then(|path| fs::read_to_string(path).ok())
             .unwrap_or_else(|| "no map camera observation recorded".to_owned());
-        panic!("{error}; window driver last stage: {stage}\nmap camera observation before worker failure:\n{observation}");
+        let map_select_observation = map_select_observation_path
+            .as_ref()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .unwrap_or_else(|| "no map selection driver observation recorded".to_owned());
+        panic!("{error}; window driver last stage: {stage}\nmap camera observation before worker failure:\n{observation}\nmap selection driver observation before worker failure:\n{map_select_observation}");
     });
     if let Some(path) = observation_path {
         seen.stdout
             .push_str(&fs::read_to_string(path).unwrap_or_else(|error| {
                 panic!("cannot read map camera test observation: {error}")
             }));
+    }
+    if let Some(path) = map_select_observation_path
+        && let Ok(observation) = fs::read_to_string(path)
+    {
+        seen.stdout.push_str(&observation);
     }
     activation_watch::assert_report(
         &activation,
@@ -1142,6 +1165,76 @@ window.open{title = 'map hover', width = 400, height = 240, clear = {0, 0, 0}}
             "window: window closed",
         ],
     );
+}
+
+fn a_fixture_marker_click_opens_a_place_window() {
+    let fixture = Fixture::new();
+    let config = map_selection_fixture(&fixture);
+    let seen = run_windowed(&fixture, &config, &[]);
+    assert_map_selection_output(&seen);
+}
+
+fn map_selection_fixture(fixture: &Fixture) -> PathBuf {
+    time_bar_witness::install_fixture_assets(&fixture.path(""), &fixture.path("assets"));
+    let scenario = fixture.location_scenario_fixture();
+    let config_text = format!(
+        "[window]\nbackend = \"glfw-vulkan\"\n\n[game]\nscenario = '{}'\nsaves = '{}'\n\n[map]\nscroll_points_per_step = 1\n\n[frame]\nupdates_per_second = 60\n",
+        scenario.display(),
+        fixture.path("saves").display()
+    );
+    fixture.windowed(&config_text, map_selection_fixture::body())
+}
+
+fn map_selection_fixture_starts_windowlessly_with_its_rooted_ui_library() {
+    let fixture = Fixture::new();
+    let config = map_selection_fixture(&fixture);
+    let seen = run(&config, &["--headless"]);
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+}
+
+fn assert_map_selection_output(seen: &Seen) {
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+    assert_in_order(
+        &seen.stdout,
+        &[
+            "game_select fixture_town",
+            "place window opened",
+            "map marker drag opened nothing",
+            "help window opened",
+            "place window raised",
+            "place window moved",
+            "place window closed",
+            "help window closed",
+            "window: close requested",
+            "window: window closed",
+        ],
+    );
+    let observations: Vec<_> = seen.stdout.lines().collect();
+    let before = observations
+        .iter()
+        .position(|line| *line == "before-title-drag")
+        .expect("the driver recorded the start of the title drag");
+    let after = observations
+        .iter()
+        .position(|line| *line == "after-title-drag")
+        .expect("the driver recorded the end of the title drag");
+    assert!(
+        before < after,
+        "title drag markers bracket the observation: {observations:?}"
+    );
+    assert!(
+        !observations[before + 1..after]
+            .iter()
+            .any(|line| line.starts_with("camera ")),
+        "a UI title drag does not change the map camera: {observations:?}"
+    );
+}
+
+fn map_selection_output_assertion_accepts_the_captured_order_offline() {
+    assert_map_selection_output(&Seen {
+        code: Some(0),
+        stdout: "game_select fixture_town\nplace window opened\nmap marker drag opened nothing\nhelp window opened\nplace window raised\nplace window moved\nbefore-title-drag\nafter-title-drag\nplace window closed\nhelp window closed\nwindow: close requested\nwindow: window closed\n".into(),
+    });
 }
 
 /// The simulation on a real window: the injected keys resume the game, pick speed 5, pan the map and then pause and quicksave
@@ -2634,7 +2727,7 @@ fn sigterm_while_the_window_is_minimised_exits_143_with_a_proven_presenter_end()
 // ---------------------------------------------------------------------------------------------
 
 /// The names the test support exports.
-const FILTER_SYMBOLS: [&str; 13] = [
+const FILTER_SYMBOLS: [&str; 14] = [
     "ck_app_t_install_input_filter",
     "ck_app_t_dropped_keys",
     "ck_app_t_start_typist",
@@ -2642,6 +2735,7 @@ const FILTER_SYMBOLS: [&str; 13] = [
     "ck_app_t_post_key",
     "ck_app_t_schedule_map_keys",
     "ck_app_t_schedule_map_pointer",
+    "ck_app_t_schedule_map_select",
     "ck_app_t_schedule_ui_pointer",
     "ck_app_t_schedule_sim_keys",
     "ck_app_t_schedule_key_files",
@@ -2717,6 +2811,9 @@ fn cases() -> Vec<(&'static str, fn())> {
         case!(a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally),
         case!(a_ui_hit_captures_a_click_while_an_outside_drag_pans_the_map),
         case!(a_fixture_scenario_hover_delivers_a_place_name_and_nil_after_moving_away),
+        case!(a_fixture_marker_click_opens_a_place_window),
+        case!(map_selection_fixture_starts_windowlessly_with_its_rooted_ui_library),
+        case!(map_selection_output_assertion_accepts_the_captured_order_offline),
         case!(a_window_opened_and_closed_by_the_script_exits_0_and_both_shutdowns_follow_the_close),
         case!(the_demo_placeholder_is_drawn_with_the_quads_generation_in_the_first_frame_and_the_run_closes_cleanly),
         case!(sigterm_after_window_opened_shuts_down_cleanly_and_exits_143),
@@ -2763,6 +2860,11 @@ fn run_case(name: &str, case: fn()) -> bool {
         name == "a_fixture_scenario_hover_delivers_a_place_name_and_nil_after_moving_away",
         Ordering::SeqCst,
     );
+    MAP_SELECT_CASE.store(
+        name == "a_fixture_marker_click_opens_a_place_window"
+            || name == "map_selection_fixture_starts_windowlessly_with_its_rooted_ui_library",
+        Ordering::SeqCst,
+    );
     UI_POINTER_CASE.store(
         name == "a_ui_hit_captures_a_click_while_an_outside_drag_pans_the_map",
         Ordering::SeqCst,
@@ -2786,6 +2888,7 @@ fn run_case(name: &str, case: fn()) -> bool {
     QUEUE_FOCUS_LOST_FOR_CK163.store(false, Ordering::SeqCst);
     MAP_INPUT_CASE.store(false, Ordering::SeqCst);
     MAP_HOVER_CASE.store(false, Ordering::SeqCst);
+    MAP_SELECT_CASE.store(false, Ordering::SeqCst);
     UI_POINTER_CASE.store(false, Ordering::SeqCst);
     TIME_BAR_CASE.store(false, Ordering::SeqCst);
     SIM_INPUT_CASE.store(false, Ordering::SeqCst);

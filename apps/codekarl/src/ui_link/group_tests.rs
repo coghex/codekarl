@@ -5,14 +5,16 @@
 //! A real UI VM runs the library over the real `render` API and a real scene bridge with a recording sink; ticks come from `ck-input`'s
 //! `Mapper`. Nothing sleeps: every update, and every posted callback, is awaited.
 
+use std::collections::BTreeMap;
+use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use ck_input::{Bindings, Mapper};
 use ck_lua::{ConfigValue, HostFunction};
-use ck_render_2d::{FrameQuad, Metrics, POINT_DOMAIN, QuadSink, Snapshot};
+use ck_render_2d::{FrameQuad, HitRect, Metrics, POINT_DOMAIN, QuadSink, Snapshot};
 use ck_resources::{Assets, Mode, ResourceLimits, ResourceService, ServiceWakes};
-use ck_window::{PixelSize, PointerEvent, WindowDesc};
+use ck_window::{CloseSource, PixelSize, PointerEvent, PointerPosition, ScrollUnit, WindowDesc};
 
 use super::input_tick_tests::{Tables, answer, field, update};
 use super::widget_witness_tests::{points, run_tick};
@@ -21,6 +23,9 @@ use crate::game::controls::SimControls;
 use crate::game::slot::SimSlot;
 use crate::testing::{Extras, Harness, frame_extension};
 use crate::{font, ui_link::SimLink};
+
+#[path = "../../tests/support/map_selection_body.rs"]
+mod map_selection_fixture;
 
 /// What the sink last saw.
 #[derive(Default)]
@@ -76,15 +81,35 @@ end)
 struct Rig {
     harness: Harness,
     link: CodekarlUi,
+    map: crate::map_app::SharedController,
+    select_registered: Arc<AtomicBool>,
     mapper: Mapper,
     sink: Arc<Last>,
     tables: Tables,
+    map_pointer: PointerPosition,
     sequence: u64,
 }
 
 impl Rig {
     /// A UI VM whose script is the prelude, `script` and the reporting callback. The window is 400 by 320 points at 2 pixels per point.
     fn new(script: &str) -> Self {
+        Self::new_at_scale(script, 2)
+    }
+
+    fn new_at_scale(script: &str, scale: i64) -> Self {
+        Self::with_script(&format!("{PRELUDE}\n{script}\n{REPORT}"), scale)
+    }
+
+    /// Runs a fixture's full script without replacing its own frame callback with the reporting callback.
+    fn new_fixture_body(script: &str) -> Self {
+        Self::with_script(script, 2)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the shared real-VM harness setup stays together for all widget and fixture bodies"
+    )]
+    fn with_script(script: &str, scale: i64) -> Self {
         let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../assets")
             .canonicalize()
@@ -101,6 +126,17 @@ impl Rig {
         )
         .expect("a resource service");
         let tables: Tables = Arc::default();
+        let time_registered = Arc::new(AtomicBool::new(false));
+        let hover_registered = Arc::new(AtomicBool::new(false));
+        let select_registered = Arc::new(AtomicBool::new(false));
+        let (game_sender, _game_receiver) = mpsc::channel();
+        let game = crate::game_api::extension_with_select(
+            Arc::clone(&time_registered),
+            Arc::clone(&hover_registered),
+            Arc::clone(&select_registered),
+            Arc::new(|| {}),
+            SimControls::new(game_sender),
+        );
         let record: HostFunction = {
             let tables = Arc::clone(&tables);
             Arc::new(move |arguments| {
@@ -114,11 +150,19 @@ impl Rig {
             })
         };
         let harness = Harness::new(
-            &format!("{PRELUDE}\n{script}\n{REPORT}"),
+            script,
             Extras {
                 functions: vec![("record", record)],
+                config: Some(ConfigValue::Table(BTreeMap::from([(
+                    "ui".to_owned(),
+                    ConfigValue::Table(BTreeMap::from([(
+                        "points_per_pixel".to_owned(),
+                        ConfigValue::Integer(scale),
+                    )])),
+                )]))),
                 extensions: vec![
                     frame_extension(),
+                    game,
                     font::extension(Arc::new(font::load(&assets).expect("the shipped font"))),
                 ],
                 assets: Some(assets),
@@ -147,7 +191,8 @@ impl Rig {
                 attached,
             )
             .expect("attached");
-        let controller = crate::map_app::tests::hover_controller();
+        let mut controller = crate::map_app::tests::hover_controller();
+        let map_pointer = crate::map_app::tests::hover_pointer(&mut controller);
         let map = crate::map_app::shared(controller);
         let (sender, _receiver) = mpsc::channel();
         let link = CodekarlUi::with_map(harness.ui.slot.clone(), Arc::clone(&map))
@@ -155,15 +200,19 @@ impl Rig {
             .with_sim(SimLink {
                 controls: SimControls::new(sender),
                 slot: SimSlot::new(Arc::new(|| {})),
-                time_registered: Arc::new(AtomicBool::new(false)),
-                hover_registered: Arc::new(AtomicBool::new(false)),
+                time_registered,
+                hover_registered,
+                select_registered: Arc::clone(&select_registered),
             });
         Self {
             harness,
             link,
+            map,
+            select_registered,
             mapper: Mapper::new(Bindings::from_entries(Vec::new()).expect("default bindings")),
             sink,
             tables,
+            map_pointer,
             sequence: 0,
         }
     }
@@ -191,6 +240,20 @@ impl Rig {
             .expect("the update recorded a summary")
     }
 
+    /// Posts a frame update to the fixture's own callback and waits for its completion.
+    fn deliver_fixture_frame(&mut self) {
+        self.sequence += 1;
+        self.link
+            .post(update(self.sequence))
+            .expect("the fixture update is accepted");
+        let answered = answer(&mut self.link).answer;
+        assert_eq!(
+            answered,
+            Answer::Returned,
+            "fixture frame callback: {answered:?}"
+        );
+    }
+
     /// Runs the script's `window.on_opened` callback and waits (its edits are published by the completion hook).
     fn opened(&mut self) {
         self.link.post(UiEvent::Opened).expect("posted");
@@ -210,6 +273,231 @@ impl Rig {
             .expect("published regions")
             .key_at(points(x, y))
             .map(str::to_owned)
+    }
+}
+
+#[test]
+fn both_backend_map_selection_bodies_start_and_receive_pointer_events_in_a_real_ui_vm() {
+    const CHILD: &str = "CK_UI_LINK_MAP_SELECT_VM_CHILD";
+    const WINDOWED: &str = "CK_WINDOWED_TEST_MAP_SELECT";
+    const VULKAN: &str = "CK_VULKAN_TEST_MAP_SELECT";
+    const TEST_NAME: &str = "ui_link::group_tests::both_backend_map_selection_bodies_start_and_receive_pointer_events_in_a_real_ui_vm";
+
+    if std::env::var_os(CHILD).is_none() {
+        assert_both_backend_fixture_vms(CHILD, WINDOWED, VULKAN, TEST_NAME);
+        return;
+    }
+
+    let markers = std::env::var_os(WINDOWED)
+        .or_else(|| std::env::var_os(VULKAN))
+        .map(std::path::PathBuf::from)
+        .expect("the child has a backend worker marker directory");
+    run_map_selection_fixture_vm(&markers);
+}
+
+fn assert_both_backend_fixture_vms(child: &str, windowed: &str, vulkan: &str, test_name: &str) {
+    for (selected, other) in [(windowed, vulkan), (vulkan, windowed)] {
+        let markers = crate::testing::Dir::new();
+        let output = Command::new(std::env::current_exe().expect("the current test binary"))
+            .args(["--exact", test_name, "--nocapture"])
+            .env(child, "1")
+            .env(selected, &markers.0)
+            .env_remove(other)
+            .output()
+            .expect("the isolated real-VM fixture test");
+        assert!(
+            output.status.success(),
+            "the real-VM fixture test with {selected} failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_fixture_vm_markers(&markers.0, selected);
+    }
+}
+
+fn assert_fixture_vm_markers(markers: &std::path::Path, backend: &str) {
+    for (marker, message) in [
+        (
+            "frame-ready",
+            "fixture body must observe its first frame before the driver acts",
+        ),
+        (
+            "scroll-frame-observed",
+            "fixture body must observe a frame after the map-owned scroll",
+        ),
+        (
+            "place-ready",
+            "Lua must write place-ready to the worker marker directory",
+        ),
+        (
+            "fixture-frame-pointer-events",
+            "fixture body must receive pointer events in frame_update",
+        ),
+        (
+            "help-ready",
+            "pointer events must reach the fixture button callback",
+        ),
+    ] {
+        assert!(markers.join(marker).is_file(), "the {backend} {message}");
+    }
+}
+
+fn run_map_selection_fixture_vm(markers: &std::path::Path) {
+    let mut rig = Rig::new_fixture_body(map_selection_fixture::body());
+    open_map_selection_fixture(&mut rig, markers);
+    verify_map_owned_scroll(&mut rig, markers);
+    select_fixture_place(&mut rig, markers);
+    verify_map_marker_drag(&mut rig, markers);
+    open_and_raise_fixture_windows(&mut rig, markers);
+    move_fixture_place_window(&mut rig, markers);
+    close_fixture_windows(&mut rig, markers);
+}
+
+fn open_map_selection_fixture(rig: &mut Rig, markers: &std::path::Path) {
+    rig.opened();
+    assert!(
+        rig.select_registered
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "the fixture body registered its game_select callback"
+    );
+    rig.deliver_fixture_frame();
+    assert!(
+        markers.join("frame-ready").is_file(),
+        "the exact map-selection body must observe its first frame before input"
+    );
+}
+
+fn verify_map_owned_scroll(rig: &mut Rig, markers: &std::path::Path) {
+    rig.feed(&[PointerEvent::Scroll {
+        position: rig.map_pointer,
+        amount: -256,
+        unit: ScrollUnit::Lines,
+    }]);
+    std::fs::write(markers.join("scroll-injected"), "x")
+        .expect("the timer poll marks its map-owned scroll for the next UI frame");
+    rig.deliver_fixture_frame();
+    assert!(
+        markers.join("scroll-frame-observed").is_file(),
+        "the exact map-selection body must observe a frame after the scroll stage"
+    );
+    assert!(
+        !markers.join("fixture-frame-pointer-events").is_file(),
+        "a map-owned scroll is not delivered as UI pointer events"
+    );
+}
+
+fn select_fixture_place(rig: &mut Rig, markers: &std::path::Path) {
+    // A map-owned click exercises game.on_select and runs the fixture's place-window callback in this UI VM.
+    let map_pointer = (
+        f64::from(rig.map_pointer.x) / 256.0,
+        f64::from(rig.map_pointer.y) / 256.0,
+    );
+    rig.feed(&[down(map_pointer.0, map_pointer.1)]);
+    rig.feed(&[up(map_pointer.0, map_pointer.1)]);
+    assert!(
+        crate::map_app::lock(&rig.map).selection().is_some(),
+        "the fixture click must select its map marker before the link can deliver game_select"
+    );
+    rig.deliver_fixture_frame();
+    // game_select uses its own latest-wins channel, so the first frame's answer intake posts it;
+    // the next frame lets the real UI VM run the selection callback before the pointer witness.
+    rig.deliver_fixture_frame();
+    assert!(
+        markers.join("frame-ready").is_file(),
+        "the exact map-selection body must run a frame callback before accepting input"
+    );
+    assert!(
+        markers.join("place-ready").is_file(),
+        "a retained map click must deliver game_select to the fixture body"
+    );
+}
+
+fn verify_map_marker_drag(rig: &mut Rig, markers: &std::path::Path) {
+    // The window driver observes that dragging a map marker opened nothing before opening Help.
+    let dragged = PointerPosition {
+        x: rig.map_pointer.x + 20 * 256,
+        y: rig.map_pointer.y + 10 * 256,
+    };
+    rig.feed(&[down(
+        f64::from(rig.map_pointer.x) / 256.0,
+        f64::from(rig.map_pointer.y) / 256.0,
+    )]);
+    rig.feed(&[PointerEvent::Move(dragged)]);
+    rig.feed(&[up(
+        f64::from(dragged.x) / 256.0,
+        f64::from(dragged.y) / 256.0,
+    )]);
+    std::fs::write(markers.join("map-marker-drag-injected"), "x")
+        .expect("the map drag stage reached the UI frame callback");
+    rig.deliver_fixture_frame();
+    assert!(
+        markers.join("drag-verified").is_file(),
+        "the exact body must verify a map drag leaves the selected place window alone"
+    );
+}
+
+fn open_and_raise_fixture_windows(rig: &mut Rig, markers: &std::path::Path) {
+    // A separate UI-owned click reaches the same body's own frame callback with pointer events.
+    rig.feed(&[down(20.0, 20.0), up(20.0, 20.0)]);
+    rig.deliver_fixture_frame();
+    assert!(
+        markers.join("fixture-frame-pointer-events").is_file(),
+        "the exact map-selection body must run a pointer-bearing frame_update"
+    );
+    assert!(
+        markers.join("help-ready").is_file(),
+        "the pointer events must reach the fixture's actual button callback"
+    );
+    std::fs::write(markers.join("place-click-injected"), "x")
+        .expect("the place-window click stage reached the UI frame callback");
+    rig.feed(&[down(50.0, 100.0), up(50.0, 100.0)]);
+    rig.deliver_fixture_frame();
+    assert!(
+        markers.join("place-raised").is_file(),
+        "the exact body must observe the place window raised above Help"
+    );
+}
+
+fn move_fixture_place_window(rig: &mut Rig, markers: &std::path::Path) {
+    std::fs::write(markers.join("title-drag-injected"), "x")
+        .expect("the title drag stage reached the UI frame callback");
+    rig.feed(&[down(20.0, 70.0)]);
+    rig.feed(&[PointerEvent::Move(points(50.0, 90.0))]);
+    rig.feed(&[up(50.0, 90.0)]);
+    rig.deliver_fixture_frame();
+    assert!(
+        markers.join("title-moved").is_file(),
+        "the exact body must observe the place window moved by the title drag"
+    );
+}
+
+fn close_fixture_windows(rig: &mut Rig, markers: &std::path::Path) {
+    for (marker, wanted) in [
+        ("place-closed", Answer::Decline),
+        ("help-closed", Answer::Decline),
+        ("close-requested", Answer::Accept),
+    ] {
+        rig.link
+            .post(UiEvent::CloseRequested {
+                source: CloseSource::Key,
+            })
+            .expect("the Escape stage posts a key close request");
+        let got = answer(&mut rig.link);
+        assert_eq!(
+            got.answer, wanted,
+            "the Escape stage returns the right action"
+        );
+        if marker != "close-requested" {
+            assert!(
+                !markers.join(marker).exists(),
+                "the close callback must return before the driver step marker appears"
+            );
+            rig.deliver_fixture_frame();
+        }
+        assert!(
+            markers.join(marker).is_file(),
+            "the exact body must write its {marker} Escape marker"
+        );
     }
 }
 
@@ -357,6 +645,437 @@ window.on_opened(function() render.set_group_offset(g, 200, 0) end)
     let summary = rig.deliver();
     assert_eq!(text(&summary, "events"), "");
     assert_eq!(clicks(&summary), 0);
+}
+
+const DRAGGABLE_WINDOW: &str = r#"
+local windows = require("lib.window")
+w = windows.new{title = "Test", content_width = 120, content_height = 60, x = 24, y = 30}
+require("lib.panel").new{x = 0, y = 0, width = 20, height = 20, group = w.content}
+window.on_opened(function() end)
+"#;
+
+#[test]
+fn a_window_title_drag_moves_its_frame_and_hit_regions_together() {
+    let mut rig = Rig::new(DRAGGABLE_WINDOW);
+    let title = rig.key_at(30.0, 35.0).expect("the title is hittable");
+    assert!(title.starts_with("window_title_"));
+
+    rig.feed(&[
+        down(30.0, 35.0),
+        PointerEvent::Move(points(110.0, 115.0)),
+        up(110.0, 115.0),
+    ]);
+    let _ = rig.deliver();
+
+    assert_eq!(rig.key_at(30.0, 35.0), None, "old title bounds are removed");
+    assert_eq!(rig.key_at(110.0, 115.0).as_deref(), Some(title.as_str()));
+    let content = rig
+        .sink
+        .quads()
+        .into_iter()
+        .find(|quad| quad.clip.is_some())
+        .expect("the content group has a clipped quad");
+    assert_eq!((content.x, content.y), (110.0, 146.0));
+    let clip = content.clip.expect("content remains clipped");
+    assert_eq!(
+        (clip.x, clip.y, clip.width, clip.height),
+        (110.0, 146.0, 120.0, 60.0)
+    );
+}
+
+#[test]
+fn a_window_title_drag_ends_on_cancel_and_pointer_overflow() {
+    let script = r#"
+local windows = require("lib.window")
+local pointer = require("lib.pointer")
+w = windows.new{title = "Test", content_width = 120, content_height = 60, x = 24, y = 30}
+window.on_opened(function()
+  local function event(kind, x, y)
+    return {kind = kind, key = w.title_key, x = x, y = y, inside = true}
+  end
+  pointer.dispatch({overflow = false, held = true, events = {event("down", 30, 35)}})
+  pointer.dispatch({overflow = false, held = false, events = {event("cancel", 30, 35)}})
+  pointer.dispatch({overflow = false, held = false, events = {event("move", 80, 80)}})
+  local x, y = w:position()
+  assert(x == 24 and y == 30, "cancel ends the title drag")
+
+  pointer.dispatch({overflow = false, held = true, events = {event("down", 30, 35)}})
+  pointer.dispatch({overflow = true, held = false, events = {}})
+  pointer.dispatch({overflow = false, held = false, events = {event("move", 90, 90)}})
+  x, y = w:position()
+  assert(x == 24 and y == 30, "overflow ends the title drag")
+end)
+"#;
+    let mut rig = Rig::new(script);
+    rig.opened();
+}
+
+#[test]
+fn pressing_a_lower_windows_title_raises_it_and_owned_content_still_clicks() {
+    let script = r#"
+local windows = require("lib.window")
+local button = require("lib.button")
+first = windows.new{title = "First", content_width = 120, content_height = 60, x = 24, y = 30}
+button.new{x = 0, y = 0, text = "Go", group = first.content, owner = first, on_click = click}
+second = windows.new{title = "Second", content_width = 120, content_height = 60, x = 150, y = 30}
+window.on_opened(function() assert(windows.top() == first, "pressing the lower title raises its window") end)
+"#;
+    let mut rig = Rig::new(script);
+    rig.feed(&[down(30.0, 35.0), up(30.0, 35.0)]);
+    let _ = rig.deliver();
+    rig.opened();
+
+    let quads = rig.sink.quads();
+    let near = |left: f64, right: f64| (left - right).abs() < 0.01;
+    let first_frame = quads
+        .iter()
+        .position(|quad| {
+            near(quad.x, 24.0)
+                && near(quad.y, 30.0)
+                && near(quad.width, 132.0)
+                && near(quad.height, 102.0)
+        })
+        .expect("first window chrome quad");
+    let second_frame = quads
+        .iter()
+        .position(|quad| near(quad.x, 150.0) && near(quad.y, 30.0) && near(quad.height, 102.0))
+        .expect("second window chrome quad");
+    assert!(
+        first_frame > second_frame,
+        "raising the overlapping lower window moves its chrome above the other"
+    );
+
+    let origin_x = 24.0 + 6.0;
+    let origin_y = 30.0 + 30.0 + 6.0;
+    let point = (origin_x + 5.0, origin_y + 5.0);
+    assert!(
+        rig.key_at(point.0, point.1)
+            .is_some_and(|key| key.starts_with("button_")),
+        "the content button is published at its window-relative origin"
+    );
+    rig.feed(&[down(point.0, point.1), up(point.0, point.1)]);
+    let summary = rig.deliver();
+    assert_eq!(
+        clicks(&summary),
+        1,
+        "the owned content button receives the click"
+    );
+}
+
+#[test]
+fn window_geometry_updates_and_clamps_match_the_p2_contract() {
+    let script = r#"
+local windows = require("lib.window")
+local panel = require("lib.panel")
+windows.update_viewport(800, 600)
+w = windows.new{title = "A", content_width = 120, content_height = 60, x = 100, y = 100}
+panel.new{x = 0, y = 0, width = 10, height = 10, group = w.content}
+window.on_opened(function()
+  local width, height = w:size()
+  assert(width == 132 and height == 102, "P2 short-title outer size is literal")
+  local x, y = w:content_origin()
+  assert(x == 106 and y == 136, "content origin includes the title and padding")
+
+  w:move_to(-999, 9999)
+  x, y = w:position()
+  assert(x == -100 and y == 570, "left and bottom clamp")
+  w:move_to(9999, -999)
+  x, y = w:position()
+  assert(x == 768 and y == 0, "right and top clamp")
+
+  windows.update_viewport(20, 10)
+  x, y = w:position()
+  assert(x == -12 and y == 0, "the small viewport uses non-inverted bounds")
+  windows.update_viewport(1, 1)
+  x, y = w:position()
+  assert(x == -32 and y == 0, "the one-point viewport remains finite")
+  windows.update_viewport(800, 600)
+  x, y = w:position()
+  assert(x == -32 and y == 0, "the window returns within the ordinary clamp")
+
+  w:move_to(100, 100)
+  w:set_title("Long title")
+  width, height = w:size()
+  x, y = w:position()
+  assert(width == 140 and height == 102 and x == 100 and y == 100,
+    "long title widens without moving the top-left")
+  w:set_content_size(50, 40)
+  width, height = w:size()
+  x, y = w:position()
+  assert(width == 140 and height == 82 and x == 100 and y == 100,
+    "content resize updates outer size and preserves the position")
+end)
+"#;
+    let mut rig = Rig::new_at_scale(script, 2);
+    rig.opened();
+    let content = rig
+        .sink
+        .quads()
+        .into_iter()
+        .find(|quad| quad.clip.is_some())
+        .expect("the resized content group has a clipped quad");
+    let clip = content.clip.expect("content clip");
+    assert_eq!(
+        (clip.x, clip.y, clip.width, clip.height),
+        (106.0, 136.0, 50.0, 40.0)
+    );
+    let regions = rig
+        .harness
+        .bridge
+        .hit_regions()
+        .expect("updated hit regions");
+    let rect = |key: &str| {
+        regions
+            .regions()
+            .iter()
+            .find(|region| region.key() == key)
+            .expect("updated window key")
+            .rect()
+    };
+    assert_eq!(
+        rect("window_frame_1"),
+        HitRect::from_points(100.0, 100.0, 140.0, 82.0).unwrap()
+    );
+    assert_eq!(
+        rect("window_title_2"),
+        HitRect::from_points(100.0, 100.0, 118.0, 30.0).unwrap()
+    );
+    assert_eq!(
+        rect("button_3"),
+        HitRect::from_points(218.0, 100.0, 20.0, 30.0).unwrap()
+    );
+}
+
+#[test]
+fn p3_window_geometry_floors_the_grid_and_uses_the_narrow_fallback_literal() {
+    let script = r#"
+local windows = require("lib.window")
+windows.update_viewport(800, 601)
+w = windows.new{title = "A", content_width = 120, content_height = 60, x = 100, y = 100}
+local tiny = windows.new{title = "A", content_width = 3, content_height = 3, x = 20, y = 20}
+window.on_opened(function()
+  local width, height = w:size()
+  assert(width == 138 and height == 123, "P3 short-title outer size is literal")
+  w:move_to(9000, 9000)
+  local x, y = w:position()
+  assert(x == 750 and y == 555, "P3 right and floored bottom bounds are literal")
+  assert(x % 3 == 0 and y % 3 == 0, "clamped coordinates remain on the P3 grid")
+
+  windows.update_viewport(1, 1)
+  tiny:move_to(9000, 9000)
+  x, y = tiny:position()
+  local tiny_width = tiny:size()
+  assert(tiny_width == 72 and x == -24 and y == 0,
+    "narrow fallback is R - outer_w, with the close-button edge at zero")
+  windows.update_viewport(800, 601)
+  x, y = tiny:position()
+  assert(x == -24 and y == 0, "restoring the viewport keeps a valid ordinary-clamp position")
+
+  w:move_to(100, 100)
+  w:set_title("Long title")
+  width, height = w:size()
+  x, y = w:position()
+  assert(width == 210 and height == 123 and x == 99 and y == 99,
+    "P3 long-title outer size and grid-floored top-left are literal")
+end)
+"#;
+    let mut rig = Rig::new_at_scale(script, 3);
+    rig.opened();
+}
+
+#[test]
+fn window_chrome_content_and_hit_rectangles_match_the_p2_literals() {
+    let script = r#"
+local windows = require("lib.window")
+local label = require("lib.label")
+w = windows.new{title = "A", content_width = 120, content_height = 60, x = 24, y = 30}
+label.new{x = 0, y = 0, text = "A", group = w.content}
+window.on_opened(function() end)
+"#;
+    let mut rig = Rig::new_at_scale(script, 2);
+    rig.opened();
+
+    let quads = rig.sink.quads();
+    assert_eq!(
+        (quads[0].x, quads[0].y, quads[0].width, quads[0].height),
+        (24.0, 30.0, 132.0, 102.0)
+    );
+    let content = quads
+        .iter()
+        .find(|quad| quad.clip.is_some())
+        .expect("content label quad");
+    assert_eq!((content.x, content.y), (30.0, 66.0));
+    assert_eq!(
+        content.clip.unwrap(),
+        ck_render_2d::PointRect {
+            x: 30.0,
+            y: 66.0,
+            width: 120.0,
+            height: 60.0
+        }
+    );
+
+    let regions = rig.harness.bridge.hit_regions().unwrap();
+    let rect = |key: &str| {
+        regions
+            .regions()
+            .iter()
+            .find(|region| region.key() == key)
+            .unwrap()
+            .rect()
+    };
+    assert_eq!(
+        rect("window_frame_1"),
+        HitRect::from_points(24.0, 30.0, 132.0, 102.0).unwrap()
+    );
+    assert_eq!(
+        rect("window_title_2"),
+        HitRect::from_points(24.0, 30.0, 110.0, 30.0).unwrap()
+    );
+    assert_eq!(
+        rect("button_3"),
+        HitRect::from_points(134.0, 30.0, 20.0, 30.0).unwrap()
+    );
+}
+
+#[test]
+fn an_unowned_key_does_not_raise_a_window_and_escape_closes_only_the_top() {
+    let script = r#"
+local windows = require("lib.window")
+local button = require("lib.button")
+first = windows.new{title = "First", content_width = 120, content_height = 60, x = 24, y = 30}
+second = windows.new{title = "Second", content_width = 120, content_height = 60, x = 150, y = 30}
+button.new{x = 310, y = 200, text = "Free", on_click = function()
+  assert(windows.top() == second, "an unowned key does not raise a window")
+  click()
+end}
+window.on_opened(function()
+  assert(windows.top() == second)
+end)
+"#;
+    let mut rig = Rig::new(script);
+    rig.opened();
+    rig.feed(&[down(315.0, 205.0), up(315.0, 205.0)]);
+    let summary = rig.deliver();
+    assert_eq!(clicks(&summary), 1);
+
+    let escape = r#"
+local windows = require("lib.window")
+a = windows.new{title = "A", content_width = 20, content_height = 20, x = 10, y = 10}
+b = windows.new{title = "B", content_width = 20, content_height = 20, x = 40, y = 10}
+window.on_opened(function()
+  assert(windows.top() == b)
+  assert(windows.close_request("key") == false and b.closed and windows.top() == a,
+    "Escape closes the top and leaves the other window")
+  assert(windows.close_request("key") == false and a.closed and windows.top() == nil,
+    "second Escape closes the remaining window")
+  assert(windows.close_request("key") == true, "Escape with no windows requests application close")
+  assert(windows.close_request("button") == true, "the OS close button always requests application close")
+end)
+"#;
+    let mut rig = Rig::new(escape);
+    rig.opened();
+}
+
+#[test]
+fn the_production_place_window_updates_in_place_and_help_raises_on_a_second_click() {
+    let script = format!(
+        r"
+callbacks = {{}}
+local windows = require('lib.window')
+local label = require('lib.label')
+captured_place_lines = {{}}
+local actual_label_new = label.new
+label.new = function(spec)
+  if spec.owner ~= nil then captured_place_lines[#captured_place_lines + 1] = spec.text end
+  return actual_label_new(spec)
+end
+game = {{
+  on_time = function(callback) callbacks.time = callback end,
+  on_select = function(callback) callbacks.select = callback end,
+  on_hover = function(callback) callbacks.hover = callback end,
+  control = function() end,
+}}
+{} 
+callbacks.time({{day = 1, month = 1, year = 768, hour = 0, paused = true, speed = 1}})
+callbacks.select({{id = 'place-a', name = 'Place A', kind = 'town', size = 2}})
+place = windows.top()
+place:move_to(200, 200)
+callbacks.select({{id = 'place-b', name = 'A Much Longer Place', kind = 'city', size = 7}})
+assert(windows.top() == place, 'the second selection updates and raises the existing place window')
+assert(captured_place_lines[4] == 'id: place-b' and captured_place_lines[5] == 'kind: city' and captured_place_lines[6] == 'size: 7',
+  'updated place window lines use the selected fields literally')
+local x, y = place:position()
+assert(x == 200 and y == 200, 'place update preserves its top-left')
+local stage = 1
+local help
+frame.on_update(function()
+  if stage == 1 then
+    place:raise()
+  elseif stage == 2 then
+    help = windows.top()
+    place:raise()
+  elseif stage == 3 then
+    assert(windows.top() == help, 'a second Help click raises the existing Help window')
+    help:close()
+    assert(windows.top() == place, 'closing Help reveals the one updated place window')
+    place:close()
+    assert(windows.top() == nil, 'there is no duplicate place window')
+  end
+  stage = stage + 1
+end)
+",
+        include_str!("../../../../scripts/ui/main.lua")
+    );
+    let mut rig = Rig::new(&script);
+    rig.opened();
+    let regions = rig.harness.bridge.hit_regions().expect("published hits");
+    let help_key = regions
+        .regions()
+        .iter()
+        .take_while(|region| !region.key().starts_with("window_frame_"))
+        .filter(|region| region.key().starts_with("button_"))
+        .last()
+        .map(|region| region.key().to_owned())
+        .expect("the production time bar has a Help button");
+    let point = (0..400)
+        .flat_map(|y| (0..400).map(move |x| (f64::from(x) + 0.5, f64::from(y) + 0.5)))
+        .find(|(x, y)| regions.key_at(points(*x, *y)) == Some(help_key.as_str()))
+        .unwrap_or_else(|| {
+            panic!(
+                "the Help button {help_key} has a point in the viewport; regions: {:?}",
+                regions
+                    .regions()
+                    .iter()
+                    .map(ck_render_2d::HitRegion::key)
+                    .collect::<Vec<_>>()
+            )
+        });
+    rig.feed(&[down(point.0, point.1), up(point.0, point.1)]);
+    let _ = rig.deliver();
+    rig.feed(&[down(point.0, point.1), up(point.0, point.1)]);
+    let _ = rig.deliver();
+    let _ = rig.deliver();
+}
+
+#[test]
+fn a_close_button_click_closes_but_dragging_off_the_close_button_does_not() {
+    let script = r#"
+local windows = require("lib.window")
+w = windows.new{title = "A", content_width = 120, content_height = 60, x = 24, y = 30}
+window.on_opened(function()
+  local x = 134
+  local y = 35
+  pointer.dispatch({overflow = false, held = true, events = {{kind = "down", key = w.close_button.key, x = x, y = y, inside = true}}})
+  pointer.dispatch({overflow = false, held = false, events = {{kind = "up", key = w.close_button.key, x = 100, y = 60, inside = false}}})
+  assert(not w.closed, "press then drag off does not close")
+  pointer.dispatch({overflow = false, held = true, events = {{kind = "down", key = w.close_button.key, x = x, y = y, inside = true}}})
+  pointer.dispatch({overflow = false, held = false, events = {{kind = "up", key = w.close_button.key, x = x, y = y, inside = true}}})
+  assert(w.closed and windows.top() == nil, "clicking the close button destroys the window")
+end)
+"#;
+    let mut rig = Rig::new(script);
+    rig.opened();
 }
 
 #[test]

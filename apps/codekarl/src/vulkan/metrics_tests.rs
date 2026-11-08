@@ -306,10 +306,7 @@ fn the_records_reads_are_capped_by_what_remains_of_the_callers_budget() {
     );
     assert_eq!(
         figures_wait(Duration::from_secs(10)),
-        crate::metrics::SUMMARY_WAIT
-            .as_millis()
-            .try_into()
-            .expect("small"),
+        u64::try_from(crate::metrics::SUMMARY_WAIT.as_millis()).expect("small"),
         "plenty left: the summary wait itself"
     );
 }

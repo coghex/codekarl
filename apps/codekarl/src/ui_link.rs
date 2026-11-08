@@ -253,10 +253,14 @@ struct State {
     times: RefCell<Vec<CallId>>,
     /// The `game_hover` calls posted and not yet answered.
     hovers: RefCell<Vec<CallId>>,
+    /// The `game_select` calls posted and not yet answered.
+    selections: RefCell<Vec<CallId>>,
     /// The snapshot last delivered through `game_time`, to post the next only when something displayed differs.
     delivered: Cell<Option<crate::game::slot::SimSnapshot>>,
     /// Hover last posted; outer `None` means callback registration changed and needs a fresh delivery.
     delivered_hover: RefCell<DeliveredHover>,
+    /// Selection sequence last posted; cleared when no callback is registered.
+    delivered_selection: Cell<Option<u64>>,
     /// Which latest-wins channel gets the next free non-lifecycle call place.
     next_update: Cell<UpdateChannel>,
     /// The text of the terminal failure `take_failure` returned, once.
@@ -468,6 +472,17 @@ enum UpdateChannel {
     #[default]
     Time,
     Hover,
+    Select,
+}
+
+impl UpdateChannel {
+    fn next(self) -> Self {
+        match self {
+            Self::Time => Self::Hover,
+            Self::Hover => Self::Select,
+            Self::Select => Self::Time,
+        }
+    }
 }
 
 /// The UI link: cheap to clone, and every clone shares the handle and what the link remembers, so the
@@ -493,6 +508,8 @@ pub(crate) struct SimLink {
     pub(crate) time_registered: Arc<std::sync::atomic::AtomicBool>,
     /// Whether the UI VM has registered a `game.on_hover` callback.
     pub(crate) hover_registered: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the UI VM has registered a `game.on_select` callback.
+    pub(crate) select_registered: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl CodekarlUi {
@@ -563,6 +580,7 @@ impl CodekarlUi {
         self.state.pending.borrow().len()
             + self.state.times.borrow().len()
             + self.state.hovers.borrow().len()
+            + self.state.selections.borrow().len()
     }
 
     /// The names of the callbacks still running, oldest first.
@@ -587,6 +605,13 @@ impl CodekarlUi {
                 .borrow()
                 .iter()
                 .map(|_| crate::game_api::GAME_HOVER),
+        );
+        names.extend(
+            self.state
+                .selections
+                .borrow()
+                .iter()
+                .map(|_| crate::game_api::GAME_SELECT),
         );
         names
     }
@@ -704,26 +729,56 @@ impl CodekarlUi {
         false
     }
 
-    /// Gives both changed latest-wins channels a chance at each available place. When only one place
+    /// Posts only the current selection when its sequence has not been delivered to the registered callback.
+    fn deliver_select(&self) -> bool {
+        let (Some(map), Some(sim)) = (&self.map, &self.sim) else {
+            return false;
+        };
+        if !sim
+            .select_registered
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.state.delivered_selection.set(None);
+            return false;
+        }
+        let Some(selection) = crate::map_app::lock(map).selection() else {
+            return false;
+        };
+        if self.state.delivered_selection.get() == Some(selection.seq)
+            || !self.state.selections.borrow().is_empty()
+            || self.outstanding() >= UI_CALL_LIMIT - 1
+        {
+            return false;
+        }
+        let Some(vm) = self.vm() else {
+            return false;
+        };
+        if let Ok(id) = vm.borrow_mut().post(
+            crate::game_api::GAME_SELECT,
+            crate::game_api::select_arguments(&selection),
+        ) {
+            self.state.selections.borrow_mut().push(id);
+            self.state.delivered_selection.set(Some(selection.seq));
+            return true;
+        }
+        false
+    }
+
+    /// Gives each changed latest-wins channel a chance at each available place. When only one place
     /// is free, the channel that did not get the previous successful delivery goes first.
     fn deliver_updates(&self) {
         let first = self.state.next_update.get();
-        let first_posted = match first {
-            UpdateChannel::Time => self.deliver_time(),
-            UpdateChannel::Hover => self.deliver_hover(),
-        };
-        let second = match first {
-            UpdateChannel::Time => UpdateChannel::Hover,
-            UpdateChannel::Hover => UpdateChannel::Time,
-        };
-        let second_posted = match second {
-            UpdateChannel::Time => self.deliver_time(),
-            UpdateChannel::Hover => self.deliver_hover(),
-        };
-        if first_posted || second_posted {
-            self.state
-                .next_update
-                .set(if first_posted { second } else { first });
+        let mut channel = first;
+        for _ in 0..3 {
+            let accepted = match channel {
+                UpdateChannel::Time => self.deliver_time(),
+                UpdateChannel::Hover => self.deliver_hover(),
+                UpdateChannel::Select => self.deliver_select(),
+            };
+            if accepted {
+                self.state.next_update.set(channel.next());
+            }
+            channel = channel.next();
         }
     }
 
@@ -765,6 +820,22 @@ impl CodekarlUi {
                 }
                 continue;
             }
+            let selected = {
+                let mut selections = self.state.selections.borrow_mut();
+                selections
+                    .iter()
+                    .position(|id| *id == result.id)
+                    .map(|position| selections.remove(position))
+            };
+            if selected.is_some() {
+                if let CallOutcome::Failed { message, traceback } = result.outcome {
+                    return Some(Taken::SelectFailed(format!(
+                        "ui callback {} failed: {message}\n{traceback}",
+                        crate::game_api::GAME_SELECT
+                    )));
+                }
+                continue;
+            }
             let mut pending = self.state.pending.borrow_mut();
             let position = pending.iter().position(|(id, _)| *id == result.id)?;
             let (_, event) = pending.remove(position)?;
@@ -780,7 +851,9 @@ impl CodekarlUi {
         loop {
             match self.take_next()? {
                 Taken::Answer(answer) => return Some(answer),
-                Taken::TimeFailed(message) | Taken::HoverFailed(message) => {
+                Taken::TimeFailed(message)
+                | Taken::HoverFailed(message)
+                | Taken::SelectFailed(message) => {
                     self.state.failure.borrow_mut().get_or_insert(message);
                 }
             }
@@ -796,7 +869,8 @@ impl CodekarlUi {
                 ..
             })
             | Taken::TimeFailed(message)
-            | Taken::HoverFailed(message) => vec![message],
+            | Taken::HoverFailed(message)
+            | Taken::SelectFailed(message) => vec![message],
             Taken::Answer(_) => Vec::new(),
         })
     }
@@ -810,6 +884,8 @@ enum Taken {
     TimeFailed(String),
     /// A `game_hover` call failed.
     HoverFailed(String),
+    /// A `game_select` call failed.
+    SelectFailed(String),
 }
 
 impl UiLink for CodekarlUi {
@@ -907,6 +983,7 @@ impl UiLink for CodekarlUi {
                 &routed.map,
                 hover_position,
                 suppress_hover,
+                tick.input.pointer_overflow,
             )?;
         }
         if map_owns_gesture && tick.input.pointer_overflow && !tick.input.pointer_held {
@@ -1145,6 +1222,67 @@ mod tests {
     }
 
     #[test]
+    fn a_close_callback_step_marker_is_emitted_only_on_the_following_update() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record: HostFunction = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |arguments| {
+                if let Some(Some(ConfigValue::String(value))) = arguments.first() {
+                    seen.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(value.clone());
+                }
+                Ok(Vec::new())
+            })
+        };
+        let harness = Harness::new(
+            "local close_pending = false\n\
+             window.on_close_request(function()\n\
+               window.record('close-callback')\n\
+               close_pending = true\n\
+               return false\n\
+             end)\n\
+             frame.on_update(function()\n\
+               if close_pending then\n\
+                 window.record('step-marker')\n\
+                 close_pending = false\n\
+               end\n\
+             end)",
+            Extras {
+                functions: vec![("record", record)],
+                extensions: vec![frame_extension()],
+                ..Extras::default()
+            },
+        );
+        let mut link = harness.ui.clone();
+        let close = UiEvent::CloseRequested {
+            source: CloseSource::Key,
+        };
+        link.post(close.clone()).expect("close request posted");
+        let closed = answer(&mut link);
+        assert_eq!((closed.event, closed.answer), (close, Answer::Decline));
+        assert_eq!(
+            &*seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &["close-callback"],
+            "the close callback returned without emitting the driver's next-step marker"
+        );
+
+        let update = update(1);
+        link.post(update.clone()).expect("following update posted");
+        let updated = answer(&mut link);
+        assert_eq!((updated.event, updated.answer), (update, Answer::Returned));
+        assert_eq!(
+            &*seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &["close-callback", "step-marker"],
+            "the marker is emitted only when the next frame update runs"
+        );
+    }
+
+    #[test]
     fn no_callback_registered_is_the_default_answer() {
         let harness = Harness::new("", Extras::default());
         let mut link = harness.ui.clone();
@@ -1208,6 +1346,7 @@ mod tests {
             slot,
             time_registered: registered,
             hover_registered,
+            select_registered: Arc::new(AtomicBool::new(false)),
         });
         let wait_for_count = |link: &mut CodekarlUi, wanted: usize| {
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -1358,6 +1497,209 @@ mod tests {
         assert_eq!(
             seen.lock().unwrap().as_slice(),
             ["Fixture Town", "Fixture Town", "nil"]
+        );
+    }
+
+    #[test]
+    fn game_select_delivers_the_latest_current_selection_once_on_registration() {
+        let seen: Arc<std::sync::Mutex<Vec<BTreeMap<String, ConfigValue>>>> = Arc::default();
+        let record: HostFunction = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |arguments| {
+                let Some(Some(ConfigValue::Table(fields))) = arguments.first() else {
+                    return Err("game_select did not receive its selection table".to_owned());
+                };
+                seen.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(fields.clone());
+                Ok(Vec::new())
+            })
+        };
+        let time_registered = Arc::new(AtomicBool::new(false));
+        let hover_registered = Arc::new(AtomicBool::new(false));
+        let select_registered = Arc::new(AtomicBool::new(false));
+        let harness = Harness::new(
+            "game.on_select(function(selection) window.record(selection) end)",
+            Extras {
+                functions: vec![("record", record)],
+                extensions: vec![game_api::extension_with_select(
+                    Arc::clone(&time_registered),
+                    Arc::clone(&hover_registered),
+                    Arc::clone(&select_registered),
+                    Arc::new(|| {}),
+                    crate::game::controls::SimControls::new(std::sync::mpsc::channel().0),
+                )],
+                ..Extras::default()
+            },
+        );
+        let mut controller = crate::map_app::tests::hover_controller();
+        crate::map_app::tests::select_fixture(&mut controller);
+        assert_eq!(
+            controller
+                .selection()
+                .as_ref()
+                .map(|selection| selection.seq),
+            Some(1)
+        );
+        crate::map_app::tests::select_fixture(&mut controller);
+        assert_eq!(
+            controller
+                .selection()
+                .as_ref()
+                .map(|selection| selection.seq),
+            Some(2)
+        );
+        let map = crate::map_app::shared(controller);
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut link = CodekarlUi::with_map(harness.ui.slot.clone(), map).with_sim(SimLink {
+            controls: crate::game::controls::SimControls::new(sender),
+            slot: SimSlot::new(Arc::new(|| {})),
+            time_registered,
+            hover_registered,
+            select_registered: Arc::clone(&select_registered),
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !select_registered.load(Ordering::SeqCst) {
+            let _ = link.take_answer();
+            assert!(
+                Instant::now() < deadline,
+                "on_select registration was not observed"
+            );
+            thread::yield_now();
+        }
+        assert!(link.deliver_select());
+        while seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+        {
+            let _ = link.take_answer();
+            assert!(Instant::now() < deadline, "game_select was not delivered");
+            thread::yield_now();
+        }
+        let calls = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].get("seq"), Some(&ConfigValue::Integer(2)));
+        assert_eq!(
+            calls[0].get("id"),
+            Some(&ConfigValue::String("fixture-town".to_owned()))
+        );
+        assert_eq!(
+            calls[0].get("name"),
+            Some(&ConfigValue::String("Fixture Town".to_owned()))
+        );
+        assert_eq!(
+            calls[0].get("kind"),
+            Some(&ConfigValue::String("test".to_owned()))
+        );
+        assert_eq!(calls[0].get("size"), Some(&ConfigValue::Integer(1)));
+        assert!(
+            !link.deliver_select(),
+            "an unchanged sequence is not reposted"
+        );
+    }
+
+    #[test]
+    fn game_select_retries_after_full_and_posts_only_the_latest_selection() {
+        let gate = Gate::new();
+        let hold: HostFunction = {
+            let gate = Arc::clone(&gate);
+            Arc::new(move |_| {
+                gate.wait();
+                Ok(Vec::new())
+            })
+        };
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<i64>::new()));
+        let record: HostFunction = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |arguments| {
+                let Some(Some(ConfigValue::Table(fields))) = arguments.first() else {
+                    return Err("game_select did not receive a sequence".to_owned());
+                };
+                let Some(ConfigValue::Integer(seq)) = fields.get("seq") else {
+                    return Err("game_select did not receive an integer sequence".to_owned());
+                };
+                seen.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(*seq);
+                Ok(Vec::new())
+            })
+        };
+        let select_registered = Arc::new(AtomicBool::new(false));
+        let time_registered = Arc::new(AtomicBool::new(false));
+        let hover_registered = Arc::new(AtomicBool::new(false));
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let harness = Harness::new(
+            "game.on_select(function(selection) window.record(selection) end)\nwindow.on_opened(function() window.hold() end)",
+            Extras {
+                functions: vec![("hold", hold), ("record", record)],
+                extensions: vec![game_api::extension_with_select(
+                    Arc::clone(&time_registered),
+                    Arc::clone(&hover_registered),
+                    Arc::clone(&select_registered),
+                    Arc::new(|| {}),
+                    crate::game::controls::SimControls::new(sender.clone()),
+                )],
+                ..Extras::default()
+            },
+        );
+        let mut controller = crate::map_app::tests::hover_controller();
+        crate::map_app::tests::select_fixture(&mut controller);
+        crate::map_app::tests::select_fixture(&mut controller);
+        let map = crate::map_app::shared(controller);
+        let mut link = CodekarlUi::with_map(harness.ui.slot.clone(), map).with_sim(SimLink {
+            controls: crate::game::controls::SimControls::new(sender),
+            slot: SimSlot::new(Arc::new(|| {})),
+            time_registered,
+            hover_registered,
+            select_registered: Arc::clone(&select_registered),
+        });
+
+        // Observe callback registration through the public post path, then fill all call places
+        // with held callbacks. Selection seq 2 must be retained for a later retry.
+        link.post(update(1)).expect("registration update posted");
+        for _ in 0..UI_CALL_LIMIT - 1 {
+            link.post(UiEvent::Opened)
+                .expect("held lifecycle call fits");
+        }
+        assert_eq!(link.outstanding(), UI_CALL_LIMIT);
+        assert!(
+            !link.deliver_select(),
+            "Full defers, but does not consume, selection"
+        );
+        gate.open();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while link.outstanding() != 0 {
+            let _ = link.take_answer();
+            assert!(Instant::now() < deadline, "held calls did not drain");
+            thread::yield_now();
+        }
+        while seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+        {
+            let _ = link.take_answer();
+            assert!(
+                Instant::now() < deadline,
+                "retried game_select was not delivered"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(
+            *seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            [2],
+            "only the latest sequence is delivered after Full"
+        );
+        assert!(
+            !link.deliver_select(),
+            "the delivered sequence is not duplicated"
         );
     }
 
@@ -2456,6 +2798,7 @@ mod tests {
             slot: Arc::clone(&slot),
             time_registered: registered,
             hover_registered: Arc::new(AtomicBool::new(false)),
+            select_registered: Arc::new(AtomicBool::new(false)),
         });
         Timed {
             harness,
@@ -2742,6 +3085,7 @@ mod tests {
                 slot: Arc::clone(&slot),
                 time_registered,
                 hover_registered,
+                select_registered: Arc::new(AtomicBool::new(false)),
             });
 
         // Establish the unchanged nil delivery so the later marker hover is a distinct latest value.
@@ -2900,6 +3244,7 @@ mod tests {
                 slot: Arc::clone(&slot),
                 time_registered,
                 hover_registered,
+                select_registered: Arc::new(AtomicBool::new(false)),
             });
 
         // The first frame is the ready answer at the head of the VM queue. A marker hover is

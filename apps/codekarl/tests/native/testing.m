@@ -33,18 +33,24 @@ static id ck_app_unmarked_observer = nil;
 static id ck_app_ui_pointer_observer = nil;
 static dispatch_source_t ck_app_ui_pointer_timer = nil;
 static char ck_app_ui_pointer_dir[1024];
+static dispatch_source_t ck_app_map_select_timer = nil;
 static id ck_app_time_bar_observer = nil;
 static dispatch_source_t ck_app_time_bar_timer = nil;
 static char ck_app_time_bar_dir[1024];
+static char ck_app_map_select_dir[1024];
 static _Atomic uint64_t ck_app_dropped;
 static _Atomic uint64_t ck_app_dropped_mouse;
 static NSWindow *ck_app_the_window(int32_t *error);
 static BOOL ck_app_marker(const char *dir, const char *name);
+static void ck_app_write_marker(const char *dir, const char *name);
+static void ck_app_map_select_observe(const char *line);
+static void ck_app_map_select_transition(NSUInteger from, NSUInteger to, const char *marker);
 static void ck_app_tap(uint16_t code, const char *characters);
 void ck_app_t_schedule_map_keys(void);
 void ck_app_t_schedule_sim_keys(void);
 void ck_app_t_schedule_key_files(void);
 void ck_app_t_schedule_map_pointer(void);
+void ck_app_t_schedule_map_select(void);
 void ck_app_t_schedule_ui_pointer(void);
 void ck_app_t_schedule_time_bar(void);
 void ck_app_t_schedule_map_hover(void);
@@ -106,6 +112,9 @@ void ck_app_t_install_input_filter(void) {
         }
         if (getenv("CK_WINDOWED_TEST_MAP_HOVER") != NULL || getenv("CK_VULKAN_TEST_MAP_HOVER") != NULL) {
             ck_app_t_schedule_map_hover();
+        }
+        if (getenv("CK_WINDOWED_TEST_MAP_SELECT") != NULL || getenv("CK_VULKAN_TEST_MAP_SELECT") != NULL) {
+            ck_app_t_schedule_map_select();
         }
         if (getenv("CK_WINDOWED_TEST_SIM_INPUT") != NULL || getenv("CK_VULKAN_TEST_SIM_INPUT") != NULL) {
             ck_app_t_schedule_sim_keys();
@@ -489,7 +498,8 @@ static int32_t ck_app_t_send_hover_event(NSWindow *window, int32_t kind, double 
     NSView *view = window.contentView;
     const NSInteger marked_event = CK_TEST_POINTER_EVENT;
     if (kind == 3) {
-        BOOL glfw_vulkan = getenv("CK_VULKAN_TEST_MAP_HOVER") != NULL;
+        BOOL glfw_vulkan = getenv("CK_VULKAN_TEST_MAP_HOVER") != NULL ||
+            getenv("CK_VULKAN_TEST_MAP_SELECT") != NULL;
         NSPoint screen = [window convertPointToScreen:NSMakePoint(x, y)];
         NSPoint screen_top = NSMakePoint(screen.x, NSScreen.mainScreen.frame.size.height - screen.y);
         CGScrollEventUnit unit = glfw_vulkan ? kCGScrollEventUnitLine : kCGScrollEventUnitPixel;
@@ -515,6 +525,159 @@ static int32_t ck_app_t_send_hover_event(NSWindow *window, int32_t kind, double 
     if (event == nil || event.windowNumber != window.windowNumber) return -4;
     [view mouseMoved:event];
     return 1;
+}
+
+static int32_t ck_app_t_send_map_click(NSWindow *window, double x, double y) {
+    if (!window.isVisible || !window.ignoresMouseEvents) return -1;
+    NSView *view = window.contentView;
+    const NSInteger marked_event = CK_TEST_POINTER_EVENT;
+    NSPoint location = NSMakePoint(x, y);
+    NSEvent *move = [NSEvent mouseEventWithType:NSEventTypeMouseMoved
+                                         location:location modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                                    windowNumber:window.windowNumber context:nil eventNumber:marked_event
+                                       clickCount:0 pressure:0.0];
+    NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
+                                        location:location modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                                   windowNumber:window.windowNumber context:nil eventNumber:marked_event
+                                      clickCount:1 pressure:1.0];
+    NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp
+                                      location:location modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                                 windowNumber:window.windowNumber context:nil eventNumber:marked_event
+                                    clickCount:1 pressure:0.0];
+    if (move == nil || down == nil || up == nil || move.windowNumber != window.windowNumber ||
+        down.windowNumber != window.windowNumber || up.windowNumber != window.windowNumber) return -2;
+    @try {
+        [view mouseMoved:move];
+        [view mouseDown:down];
+        [view mouseUp:up];
+    } @catch (NSException *exception) {
+        NSLog(@"marked map click raised %@: %@", exception.name, exception.reason);
+        return -3;
+    }
+    return 1;
+}
+
+static int32_t ck_app_t_ui_click(NSWindow *window, double x, double y) {
+    NSPoint in_view = NSMakePoint(x, window.contentView.bounds.size.height - y);
+    NSPoint in_window = [window.contentView convertPoint:in_view toView:nil];
+    int32_t result = 1;
+    if (getenv("CK_VULKAN_TEST_MAP_SELECT") != NULL) {
+        result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, in_window);
+    }
+    if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDown, in_window);
+    if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseUp, in_window);
+    return result;
+}
+
+static int32_t ck_app_t_ui_drag(NSWindow *window, double x, double y, double end_x, double end_y) {
+    NSPoint start_view = NSMakePoint(x, window.contentView.bounds.size.height - y);
+    NSPoint end_view = NSMakePoint(end_x, window.contentView.bounds.size.height - end_y);
+    NSPoint start = [window.contentView convertPoint:start_view toView:nil];
+    NSPoint end = [window.contentView convertPoint:end_view toView:nil];
+    int32_t result = 1;
+    if (getenv("CK_VULKAN_TEST_MAP_SELECT") != NULL) {
+        result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, start);
+    }
+    if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDown, start);
+    if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDragged, end);
+    if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseUp, end);
+    return result;
+}
+
+/* Drive the place, help, raise, title-drag and Escape sequence through observable Lua markers. */
+void ck_app_t_schedule_map_select(void) {
+    __block NSUInteger stage = 0;
+    const char *dir = getenv("CK_WINDOWED_TEST_MAP_SELECT");
+    if (dir == NULL) dir = getenv("CK_VULKAN_TEST_MAP_SELECT");
+    if (dir == NULL) return;
+    strncpy(ck_app_map_select_dir, dir, sizeof ck_app_map_select_dir - 1);
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    ck_app_map_pointer_observer = [center addObserverForName:NSWindowDidUpdateNotification
+                                   object:nil
+                                    queue:NSOperationQueue.mainQueue
+                               usingBlock:^(__unused NSNotification *notification) {
+        NSWindow *window = notification.object;
+        if (![window isKindOfClass:NSWindow.class] || !window.isVisible) return;
+        [NSNotificationCenter.defaultCenter removeObserver:ck_app_map_pointer_observer];
+        ck_app_map_pointer_observer = nil;
+        ck_app_map_select_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(ck_app_map_select_timer, DISPATCH_TIME_NOW, 5 * NSEC_PER_MSEC, NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(ck_app_map_select_timer, ^{
+            if (!window.isVisible) return;
+            int32_t result = 1;
+            if (stage == 0 && ck_app_marker(ck_app_map_select_dir, "frame-ready")) {
+                result = ck_app_t_send_hover_event(window, 3, 200.0, 120.0);
+                if (result == 1) ck_app_write_marker(ck_app_map_select_dir, "scroll-injected");
+                ck_app_map_select_transition(stage, 1, "frame-ready");
+                stage = 1;
+            } else if (stage == 1 && ck_app_marker(ck_app_map_select_dir, "scroll-frame-observed")) {
+                result = ck_app_t_send_map_click(window, 200.0, 120.0);
+                ck_app_map_select_transition(stage, 2, "scroll-frame-observed");
+                stage = 2;
+            } else if (stage == 2 && ck_app_marker(ck_app_map_select_dir, "place-ready")) {
+                result = ck_app_t_ui_drag(window, 200.0, 120.0, 220.0, 130.0);
+                ck_app_write_marker(ck_app_map_select_dir, "map-marker-drag-injected");
+                ck_app_ui_pointer_line("map-marker-drag-injected");
+                ck_app_map_select_transition(stage, 3, "place-ready");
+                stage = 3;
+            } else if (stage == 3 && ck_app_marker(ck_app_map_select_dir, "drag-verified")) {
+                result = ck_app_t_ui_click(window, 20.0, 20.0);
+                ck_app_map_select_transition(stage, 4, "drag-verified");
+                stage = 4;
+            } else if (stage == 4 && ck_app_marker(ck_app_map_select_dir, "help-ready")) {
+                ck_app_write_marker(ck_app_map_select_dir, "place-click-injected");
+                result = ck_app_t_ui_click(window, 50.0, 100.0);
+                ck_app_map_select_transition(stage, 5, "help-ready");
+                stage = 5;
+            } else if (stage == 5 && ck_app_marker(ck_app_map_select_dir, "place-raised")) {
+                ck_app_ui_pointer_line("before-title-drag");
+                result = ck_app_t_ui_drag(window, 20.0, 70.0, 50.0, 90.0);
+                ck_app_write_marker(ck_app_map_select_dir, "title-drag-injected");
+                ck_app_map_select_transition(stage, 6, "place-raised");
+                stage = 6;
+            } else if (stage == 6 && ck_app_marker(ck_app_map_select_dir, "title-moved")) {
+                ck_app_ui_pointer_line("after-title-drag");
+                ck_app_map_select_observe("escape-1-injected stage=6");
+                ck_app_tap(0x35, "\e");
+                ck_app_map_select_transition(stage, 7, "title-moved");
+                stage = 7;
+            } else if (stage == 7 && ck_app_marker(ck_app_map_select_dir, "place-closed")) {
+                ck_app_map_select_observe("escape-2-injected stage=7");
+                ck_app_tap(0x35, "\e");
+                ck_app_map_select_transition(stage, 8, "place-closed");
+                stage = 8;
+            } else if (stage == 8 && ck_app_marker(ck_app_map_select_dir, "help-closed")) {
+                ck_app_map_select_observe("escape-3-injected stage=8");
+                ck_app_tap(0x35, "\e");
+                ck_app_map_select_transition(stage, 9, "help-closed");
+                stage = 9;
+            } else if (stage == 9 && ck_app_marker(ck_app_map_select_dir, "close-requested")) {
+                ck_app_map_select_transition(stage, 10, "close-requested");
+                dispatch_source_cancel(ck_app_map_select_timer);
+                ck_app_map_select_timer = nil;
+                stage = 10;
+            }
+            if (result != 1) NSLog(@"test map selection dispatch failed with result %d", result);
+        });
+        dispatch_resume(ck_app_map_select_timer);
+    }];
+}
+
+/* Keep this investigation's timeline in the worker scratch directory so a timeout retains the raw driver evidence. */
+static void ck_app_map_select_observe(const char *line) {
+    char path[1200];
+    snprintf(path, sizeof path, "%s/map-selection-observation.log", ck_app_map_select_dir);
+    FILE *file = fopen(path, "a");
+    if (file == NULL) return;
+    fprintf(file, "%s\n", line);
+    fclose(file);
+}
+
+static void ck_app_map_select_transition(NSUInteger from, NSUInteger to, const char *marker) {
+    char line[256];
+    snprintf(line, sizeof line, "stage-transition %lu->%lu marker=%s",
+             (unsigned long)from, (unsigned long)to, marker);
+    ck_app_map_select_observe(line);
 }
 
 void ck_app_t_schedule_map_hover(void) {
@@ -576,6 +739,13 @@ static BOOL ck_app_marker(const char *dir, const char *name) {
     NSString *path = [[NSString stringWithUTF8String:dir] stringByAppendingPathComponent:
                       [NSString stringWithUTF8String:name]];
     return access(path.fileSystemRepresentation, F_OK) == 0;
+}
+
+static void ck_app_write_marker(const char *dir, const char *name) {
+    char path[1200];
+    snprintf(path, sizeof path, "%s/%s", dir, name);
+    NSString *marker = [NSString stringWithUTF8String:path];
+    [@"x" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
 /* Posts the simulation window test's marked keys in three batches, each when the test says so: Space and Digit5 (resume,

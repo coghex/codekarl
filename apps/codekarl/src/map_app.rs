@@ -40,6 +40,16 @@ pub(crate) struct Hover {
     pub(crate) y: i64,
 }
 
+/// A selected place, delivered to the UI once per selecting click.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Selection {
+    pub(crate) seq: u64,
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) size: u8,
+}
+
 pub(crate) trait RiverViewSelector {
     fn select_view(
         &mut self,
@@ -68,6 +78,8 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     locations: PreparedLocations,
     markers: PreparedMarkers,
     location_names: Vec<(String, String)>,
+    location_details: Vec<(String, u8)>,
+    selection: Option<Selection>,
     pointer_position: Option<PointerPosition>,
     hover: Option<Hover>,
     overlay_palette: Vec<ck_map::Rgba8>,
@@ -91,6 +103,8 @@ pub(crate) enum RoutedMapEvent {
 struct Drag {
     anchor: PointerPosition,
     applied: (i32, i32),
+    dragged: bool,
+    eligible: bool,
 }
 
 impl MapController<PreparedRivers> {
@@ -176,6 +190,10 @@ impl<R: RiverViewSelector> MapController<R> {
             .iter()
             .map(|location| (location.id.clone(), location.name.clone()))
             .collect();
+        let location_details = locations
+            .iter()
+            .map(|location| (kinds.kinds[location.kind_index].id.clone(), location.size))
+            .collect();
         let location_cache = PreparedLocations::new(locations, kinds, crop);
         let rules = rules(loaded, &overlay_palette);
         let input = MapInput::new(
@@ -199,6 +217,8 @@ impl<R: RiverViewSelector> MapController<R> {
             locations: location_cache,
             markers,
             location_names,
+            location_details,
+            selection: None,
             pointer_position: None,
             hover: None,
             overlay_palette,
@@ -244,6 +264,7 @@ impl<R: RiverViewSelector> MapController<R> {
             &events,
             update.input.pointer_position,
             update.input.reset,
+            update.input.pointer_overflow,
         )
     }
 
@@ -259,6 +280,7 @@ impl<R: RiverViewSelector> MapController<R> {
         events: &[RoutedMapEvent],
         hover_position: Option<PointerPosition>,
         suppress_hover: bool,
+        raw_overflow: bool,
     ) -> Result<bool, String> {
         let Some(mut camera) = self.camera else {
             return Ok(false);
@@ -274,6 +296,9 @@ impl<R: RiverViewSelector> MapController<R> {
         }
 
         // Pointer gestures are replayed before keyboard state, preserving the input contract.
+        if raw_overflow && let Some(drag) = &mut self.drag {
+            drag.eligible = false;
+        }
         for routed in events {
             let RoutedMapEvent::Pointer(event) = routed else {
                 self.end_drag();
@@ -286,11 +311,14 @@ impl<R: RiverViewSelector> MapController<R> {
                     self.drag = Some(Drag {
                         anchor: position,
                         applied: (0, 0),
+                        dragged: false,
+                        eligible: !raw_overflow,
                     });
                 }
                 PointerEvent::Move(position) | PointerEvent::Up(position) => {
                     if let Some(drag) = &mut self.drag {
                         let total = drag_delta(drag.anchor, position);
+                        drag.dragged |= total != (0, 0);
                         let delta = (total.0 - drag.applied.0, total.1 - drag.applied.1);
                         if delta != (0, 0) {
                             let before = camera;
@@ -298,6 +326,12 @@ impl<R: RiverViewSelector> MapController<R> {
                             changed |= camera != before;
                         }
                         drag.applied = total;
+                        if matches!(*event, PointerEvent::Up(_)) {
+                            let click = drag.eligible && !drag.dragged;
+                            if click && let Some(selected) = self.selected_at(camera, position) {
+                                self.selection = Some(selected);
+                            }
+                        }
                     }
                     if matches!(*event, PointerEvent::Up(_)) {
                         self.drag = None;
@@ -509,6 +543,29 @@ impl<R: RiverViewSelector> MapController<R> {
 
     pub(crate) fn hover(&self) -> Option<Hover> {
         self.hover.clone()
+    }
+
+    pub(crate) fn selection(&self) -> Option<Selection> {
+        self.selection.clone()
+    }
+
+    fn selected_at(&mut self, camera: Camera, position: PointerPosition) -> Option<Selection> {
+        let hover = hover_at(&mut self.markers, &self.location_names, camera, position)?;
+        if camera.step < 15 {
+            return None;
+        }
+        let (kind, size) = self.location_details.get(hover.location_index)?.clone();
+        let seq = self
+            .selection
+            .as_ref()
+            .map_or(1, |selection| selection.seq.saturating_add(1));
+        Some(Selection {
+            seq,
+            id: hover.id,
+            name: hover.name,
+            kind,
+            size,
+        })
     }
 
     pub(crate) fn hit_regions(&self) -> Option<Arc<ck_render_2d::HitRegions>> {
@@ -1059,6 +1116,23 @@ pub(crate) mod tests {
         }
     }
 
+    pub(crate) fn select_fixture(controller: &mut MapController) {
+        controller
+            .camera
+            .as_mut()
+            .expect("opened camera")
+            .set_step(46);
+        let pointer = hover_pointer(controller);
+        controller
+            .update(&pointer_update(
+                vec![PointerEvent::Down(pointer), PointerEvent::Up(pointer)],
+                Some(pointer),
+                false,
+                false,
+            ))
+            .expect("fixture marker click is valid");
+    }
+
     fn update(actions: &[(&str, bool, bool)], dt: Duration) -> InputTick {
         InputTick {
             dt,
@@ -1481,6 +1555,227 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn only_a_retained_map_click_selects_a_marker_and_each_selection_advances_seq() {
+        let mut controller = hover_controller();
+        let marker = hover_pointer(&mut controller);
+        for seq in [1, 2] {
+            controller
+                .update(&pointer_update(
+                    vec![PointerEvent::Down(marker), PointerEvent::Up(marker)],
+                    Some(marker),
+                    false,
+                    false,
+                ))
+                .expect("marker click is accepted");
+            assert_eq!(
+                controller.selection(),
+                Some(Selection {
+                    seq,
+                    id: "fixture-town".to_owned(),
+                    name: "Fixture Town".to_owned(),
+                    kind: "test".to_owned(),
+                    size: 1,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn a_map_gesture_that_crosses_a_pixel_is_never_a_click_even_when_it_returns() {
+        let mut controller = hover_controller();
+        let marker = hover_pointer(&mut controller);
+        let moved = PointerPosition {
+            x: marker.x + 4 * 256,
+            y: marker.y,
+        };
+        controller
+            .update(&pointer_update(
+                vec![
+                    PointerEvent::Down(marker),
+                    PointerEvent::Move(moved),
+                    PointerEvent::Move(marker),
+                    PointerEvent::Up(marker),
+                ],
+                Some(marker),
+                false,
+                false,
+            ))
+            .expect("out and back gesture is valid");
+        assert_eq!(controller.selection(), None);
+    }
+
+    #[test]
+    fn empty_reset_replaced_up_and_crop_clamped_gestures_do_not_select() {
+        assert_empty_map_click_does_not_select();
+
+        let mut reset = hover_controller();
+        let marker = hover_pointer(&mut reset);
+        reset
+            .update(&pointer_update(
+                vec![PointerEvent::Down(marker)],
+                Some(marker),
+                true,
+                false,
+            ))
+            .expect("map gesture starts");
+        // CK-207 routes a reset as an ownership-aware EndDrag before replaying any later input.
+        reset.end_drag();
+        reset
+            .update(&pointer_update(
+                vec![PointerEvent::Up(marker)],
+                Some(marker),
+                false,
+                false,
+            ))
+            .expect("late up after reset is harmless");
+        assert_eq!(reset.selection(), None, "reset makes the click ineligible");
+
+        let mut replaced = hover_controller();
+        let marker = hover_pointer(&mut replaced);
+        replaced
+            .update(&pointer_update(
+                vec![PointerEvent::Down(marker)],
+                Some(marker),
+                true,
+                false,
+            ))
+            .expect("old gesture starts");
+        replaced.end_drag(); // CK-207's lost-Up ownership end before the replacement Down.
+        replaced
+            .update(&pointer_update(
+                vec![PointerEvent::Down(marker)],
+                Some(marker),
+                true,
+                false,
+            ))
+            .expect("replacement Down starts a distinct gesture");
+        assert_eq!(
+            replaced.selection(),
+            None,
+            "a Down cannot complete a lost-Up gesture"
+        );
+
+        let mut clamped = hover_controller();
+        let initial = clamped.camera.expect("camera is open");
+        clamped.camera = Some(
+            Camera::new(
+                46,
+                FixedPoint {
+                    x: i32::try_from(
+                        (i64::from(clamped.crop.origin.x) + i64::from(clamped.crop.width))
+                            * ck_map::FIXED_PER_CELL,
+                    )
+                    .expect("crop edge fits"),
+                    y: initial.center.y,
+                },
+                initial.view,
+                clamped.crop,
+            )
+            .expect("camera clamps to crop edge"),
+        );
+        let marker = hover_pointer(&mut clamped);
+        let moved = PointerPosition {
+            x: marker.x + 4 * 256,
+            y: marker.y,
+        };
+        let before = clamped.camera;
+        clamped
+            .update(&pointer_update(
+                vec![
+                    PointerEvent::Down(marker),
+                    PointerEvent::Move(moved),
+                    PointerEvent::Up(marker),
+                ],
+                Some(marker),
+                false,
+                false,
+            ))
+            .expect("crop-clamped drag is valid");
+        assert_eq!(
+            clamped.camera, before,
+            "the pan is clamped at the crop edge"
+        );
+        assert_eq!(
+            clamped.selection(),
+            None,
+            "crossing a pixel latches a drag even when clamped"
+        );
+    }
+
+    fn assert_empty_map_click_does_not_select() {
+        let mut empty = hover_controller();
+        let outside_marker = PointerPosition { x: 0, y: 0 };
+        empty
+            .update(&pointer_update(
+                vec![
+                    PointerEvent::Down(outside_marker),
+                    PointerEvent::Up(outside_marker),
+                ],
+                Some(outside_marker),
+                false,
+                false,
+            ))
+            .expect("empty-map click is valid");
+        assert_eq!(empty.selection(), None, "empty map has no place to select");
+    }
+
+    #[test]
+    fn raw_overflow_disqualifies_the_whole_map_gesture_including_an_up_tick() {
+        let mut controller = hover_controller();
+        let marker = hover_pointer(&mut controller);
+        controller
+            .update(&pointer_update(
+                vec![PointerEvent::Down(marker)],
+                Some(marker),
+                true,
+                false,
+            ))
+            .expect("map gesture starts");
+        controller
+            .update(&pointer_update(
+                vec![PointerEvent::Up(marker)],
+                Some(marker),
+                false,
+                true,
+            ))
+            .expect("overflow tick ends gesture without selecting");
+        assert_eq!(controller.selection(), None);
+
+        controller
+            .update(&pointer_update(
+                vec![PointerEvent::Down(marker), PointerEvent::Up(marker)],
+                Some(marker),
+                false,
+                true,
+            ))
+            .expect("same tick loss is conservative");
+        assert_eq!(controller.selection(), None);
+    }
+
+    #[test]
+    fn a_marker_is_not_selectable_before_the_prepared_hit_step() {
+        let mut controller = hover_controller();
+        let marker_at_step_46 = hover_pointer(&mut controller);
+        let initial = controller.camera.expect("opened camera");
+        controller.camera = Some(
+            Camera::new(14, initial.center, initial.view, controller.crop)
+                .expect("step 14 fixture camera is valid"),
+        );
+        controller
+            .update(&pointer_update(
+                vec![
+                    PointerEvent::Down(marker_at_step_46),
+                    PointerEvent::Up(marker_at_step_46),
+                ],
+                Some(marker_at_step_46),
+                false,
+                false,
+            ))
+            .expect("pre-marker click is valid");
+        assert_eq!(controller.selection(), None);
+    }
+
+    #[test]
     fn an_ownership_end_drops_the_old_drag_without_panning_on_later_ticks() {
         let mut controller = expanded_controller();
         let before = controller.camera().expect("initial camera");
@@ -1503,6 +1798,7 @@ pub(crate) mod tests {
                 ],
                 None,
                 true,
+                false,
             )
             .expect("map gesture pans before ownership changes");
         let after_map_gesture = controller.camera().expect("camera after map drag");
@@ -1510,11 +1806,11 @@ pub(crate) mod tests {
 
         let ended = pointer_update(Vec::new(), None, false, false);
         controller
-            .update_routed(&ended, &[RoutedMapEvent::EndDrag], None, true)
+            .update_routed(&ended, &[RoutedMapEvent::EndDrag], None, true, false)
             .expect("ending ownership does not pan");
         let later = pointer_update(Vec::new(), Some(moved), true, false);
         controller
-            .update_routed(&later, &[], None, true)
+            .update_routed(&later, &[], None, true, false)
             .expect("later UI-owned movement does not reach map");
         assert_eq!(controller.camera(), Some(after_map_gesture));
     }
