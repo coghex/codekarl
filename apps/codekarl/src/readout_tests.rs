@@ -86,10 +86,12 @@ fn hit_recording(log: &Log) -> HostFunction {
 }
 
 /// The scene calls the UI script makes, recorded: textures load to a token naming the file, quads get tokens `q1`, `q2`, ....
-fn scene(log: &Log) -> Vec<Extension> {
+/// The recording scene. Positions and sizes go to `log`; the tints (a quad's at creation, then every `render.set_tint`) go to `tints`,
+/// so the geometry literals of the tests are not cluttered by colours.
+fn scene(log: &Log, tints: &Log) -> Vec<Extension> {
     let quads = Arc::new(AtomicUsize::new(0));
     let create: HostFunction = {
-        let (log, quads) = (Arc::clone(log), quads);
+        let (log, quads, tints) = (Arc::clone(log), quads, Arc::clone(tints));
         Arc::new(move |arguments| {
             let Some(Some(table)) = arguments.first() else {
                 return Err("render.create_quad: a table".to_owned());
@@ -107,6 +109,10 @@ fn scene(log: &Log) -> Vec<Extension> {
                     field(table, "height")
                 ),
             );
+            let tint = field(table, "tint");
+            if !tint.is_empty() {
+                push(&tints, format!("create q{number} {tint}"));
+            }
             Ok(vec![ConfigValue::String(format!("q{number}"))])
         })
     };
@@ -126,6 +132,7 @@ fn scene(log: &Log) -> Vec<Extension> {
             .function("set_hit", hit_recording(log))
             .function("set_position", recording(log, "set_position"))
             .function("set_rect", recording(log, "set_rect"))
+            .function("set_tint", recording(tints, "set_tint"))
             .function("destroy_quad", recording(log, "destroy")),
         Extension::new("texture").function("load", load),
     ]
@@ -141,6 +148,7 @@ fn ui_scripts() -> std::path::PathBuf {
 pub(crate) struct Readout {
     owner: VmOwner,
     log: Log,
+    tints: Log,
     registered: Arc<AtomicBool>,
     hover_registered: Arc<AtomicBool>,
     frame: FrameRegistration,
@@ -163,10 +171,20 @@ impl Readout {
         let entry = dir.0.join("main.lua");
         fs::write(&entry, script).expect("the script");
         let log = Log::default();
+        let tints = Log::default();
         let notifier = Notifier::new();
         let requests = Requests::new();
         let mut window = window_api::extension(requests.writer(Arc::clone(&notifier)), None, None);
-        window = window.function("record", recording(&log, "record"));
+        // A record goes to both logs, so that the tints can be read between the script's marks too.
+        let (record_geometry, record_tints) =
+            (recording(&log, "record"), recording(&tints, "record"));
+        window = window.function(
+            "record",
+            Arc::new(move |arguments| {
+                record_tints(arguments)?;
+                record_geometry(arguments)
+            }),
+        );
         let registered = Arc::new(AtomicBool::new(false));
         let hover_registered = Arc::new(AtomicBool::new(false));
         let (control_sender, controls) = std::sync::mpsc::channel();
@@ -186,8 +204,11 @@ impl Readout {
         let mut settings = VmSettings::new("ui", entry, config);
         settings.modules = Modules::Rooted(ui_scripts());
         settings.extensions = vec![window];
-        settings.extensions.extend(scene(&log));
+        settings.extensions.extend(scene(&log, &tints));
         settings.extensions.push(font::extension(shipped_font));
+        settings.extensions.push(crate::theme::extension(Arc::new(
+            crate::theme::load(&assets).expect("the shipped theme"),
+        )));
         settings.extensions.push(frame_api::extension(
             false,
             FrameBackend::Headless,
@@ -206,6 +227,7 @@ impl Readout {
         Self {
             owner,
             log,
+            tints,
             registered,
             hover_registered,
             frame,
@@ -218,6 +240,14 @@ impl Readout {
     /// Whether the script has a `frame_update` callback registered.
     pub(crate) fn frame_registered(&self) -> bool {
         self.frame.state().1
+    }
+
+    /// The tints, in order: `create <quad> <colour>` for a quad created with one, and `set_tint <quad> <colour>`.
+    pub(crate) fn tints(&self) -> Vec<String> {
+        self.tints
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub(crate) fn entries(&self) -> Vec<String> {
@@ -240,6 +270,20 @@ impl Readout {
     /// The entries after the `n`th `record mark` entry, up to the next one.
     pub(crate) fn after_mark(&self, n: usize) -> Vec<String> {
         let entries = self.entries();
+        let marks: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.as_str() == "record mark")
+            .map(|(index, _)| index)
+            .collect();
+        let start = marks[n - 1] + 1;
+        let end = marks.get(n).copied().unwrap_or(entries.len());
+        entries[start..end].to_vec()
+    }
+
+    /// The tints after the `n`th `record mark`, up to the next one (see [`tints`](Self::tints)).
+    pub(crate) fn tints_after_mark(&self, n: usize) -> Vec<String> {
+        let entries = self.tints();
         let marks: Vec<usize> = entries
             .iter()
             .enumerate()
@@ -501,21 +545,24 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
     readout.deliver(&snapshot(14, 1, Some(PauseReason::Load)));
     let first = readout.entries();
     // The panel is at the snapped margin, with the fixed buttons and the paused readout in one row.
-    assert_eq!(first[0], "load ui/font/panel.png");
+    assert_eq!(first[0], "load ui/theme/cut3_tl_fill.png");
     assert!(
-        first[1].starts_with("create q1 ui/font/panel.png 8 8 "),
+        first[1].starts_with("create q1 ui/theme/cut3_tl_fill.png 8 8 "),
         "{first:?}"
     );
-    // The scene contains the panel, three background quads per each of ten buttons, their sixteen glyphs (`places` has six), and the
-    // readout glyphs.
+    // The scene contains the panel (a frame of eleven quads), a frame of eleven quads for each of ten buttons, their sixteen glyphs
+    // (`places` has six), and the readout glyphs.
     let text = "9 Oct 768 · 14:00 · paused";
     let glyphs = text.chars().filter(|c| *c != ' ').count();
     assert_eq!(
         first.iter().filter(|e| e.starts_with("create")).count(),
-        glyphs + 1 + 10 * 3 + 16,
+        glyphs + 11 + 10 * 11 + 16,
         "{first:?}"
     );
-    assert_eq!(first[1], "create q1 ui/font/panel.png 8 8 566 38");
+    assert!(
+        first.contains(&"set_hit time_bar 8 8 568 38".to_owned()),
+        "{first:?}"
+    );
 
     // Only the hour changes: one digit is replaced, the panel keeps its size.
     let before = readout.entries().len();
@@ -541,7 +588,7 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
     readout.deliver(&snapshot(15, 3, None));
     let third = readout.entries()[before..].to_vec();
     assert!(
-        third.iter().any(|e| e.starts_with("set_rect q1 8 8 ")),
+        third.iter().any(|e| e.starts_with("set_rect q2 ")),
         "{third:?}"
     );
 }
@@ -553,10 +600,33 @@ fn hover_tooltip_flips_moves_and_hides_while_reusing_its_quads() {
 
     readout.deliver_hover(Some(("town", "Alpha", 10, 20, 40)));
     let first = readout.entries();
-    assert!(first[0].starts_with("load ui/font/panel.png"), "{first:?}");
     assert!(
-        first[1].starts_with("create q1 ui/font/panel.png 24 28 "),
+        first[0].starts_with("load ui/theme/cut3_tl_fill.png"),
         "{first:?}"
+    );
+    // The tooltip is a frame (q1 to q11): 64 by 30 points beside the place (10..20, y 40): x 20 + 4, y 40 - 15 = 25 snapped to 26.
+    assert!(
+        first[1].starts_with("create q1 ui/theme/cut3_tl_fill.png 24 26 8 8"),
+        "{first:?}"
+    );
+    // All white on near-black: the near-black fill, the white outline and the white glyphs (the tooltip kind's colours).
+    let tints = readout.tints();
+    assert_eq!(
+        tints[..12],
+        [
+            "create q1 #15110a",
+            "create q2 #15110a",
+            "create q3 #15110a",
+            "create q4 #15110a",
+            "create q5 #15110a",
+            "create q6 #ece3cb",
+            "create q7 #ece3cb",
+            "create q8 #ece3cb",
+            "create q9 #ece3cb",
+            "create q10 #ece3cb",
+            "create q11 #ece3cb",
+            "create q12 #ece3cb",
+        ]
     );
     assert!(
         first
@@ -572,14 +642,14 @@ fn hover_tooltip_flips_moves_and_hides_while_reusing_its_quads() {
     let before_move = first.len();
     readout.deliver_hover(Some(("town", "Alpha", 700, 760, 80)));
     let moved = readout.entries()[before_move..].to_vec();
-    // Alpha is 28 font pixels wide; the 2-point scale plus 2-pixel panel margin makes a 60-point
-    // panel. At left=700, its flipped x is exactly 700 - 4 - 60 = 636. The panel's y, 80 - 13 = 67, snaps to the 2-point grid: 68.
+    // Alpha is 28 font pixels wide; the 2-point scale plus 2-pixel padding on each side makes a 64-point frame. At left=700, its
+    // flipped x is exactly 700 - 4 - 64 = 632. The frame's y, 80 - 15 = 65, snaps to the 2-point grid: 66. The text is 2 pixels in.
     assert!(
-        moved.iter().any(|line| line == "set_rect q1 636 68 60 26"),
+        moved.iter().any(|line| line == "set_rect q1 632 66 8 8"),
         "{moved:?}"
     );
     assert!(
-        moved.iter().any(|line| line == "set_position q2 638 70"),
+        moved.iter().any(|line| line == "set_position q12 636 70"),
         "{moved:?}"
     );
     assert_eq!(
@@ -597,13 +667,13 @@ fn hover_tooltip_flips_moves_and_hides_while_reusing_its_quads() {
     assert!(
         hidden
             .iter()
-            .any(|line| line.starts_with("set_rect q1 -1000000000000 -1000000000000 ")),
+            .any(|line| line.starts_with("set_rect q1 -1000000000000 -1000000000000 8 8")),
         "{hidden:?}"
     );
     assert!(
         hidden
             .iter()
-            .any(|line| line.contains("set_position q2 -1000000000000 -1000000000000")),
+            .any(|line| line.contains("set_position q12 -1000000000000 -1000000000000")),
         "{hidden:?}"
     );
     assert_eq!(

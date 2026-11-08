@@ -5,17 +5,22 @@ local text = require("lib.text")
 local label = {}
 label.__index = label
 
--- `label.new{x, y, text, group = nil}`, in points; with a `group` the glyphs go into it and the position is local to it.
+-- `label.new{x, y, text, group = nil, colour = nil}`, in points; with a `group` the glyphs go into it and the position is local to
+-- it. The text is tinted `colour` (the theme's text colour by default).
 function label.new(spec)
   local self = setmetatable({}, label)
   self.owner = spec.owner
-  self.line = text.line(spec.x, spec.y, spec.group)
+  self.line = text.line(spec.x, spec.y, spec.group, spec.colour)
   text.set(self.line, spec.text or "")
   return self
 end
 
 function label:set_text(content)
   text.set(self.line, content)
+end
+
+function label:set_colour(colour)
+  text.set_colour(self.line, colour)
 end
 
 function label:move(x, y)

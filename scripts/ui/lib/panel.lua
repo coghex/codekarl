@@ -1,41 +1,41 @@
--- A panel is one stretched quad.
+-- A panel is a cut-corner frame (lib/frame.lua) in the colours of a kind of the theme.
 local ui = require("lib.ui")
+local frame = require("lib.frame")
+local theme = require("lib.theme")
 
 local panel = {}
 panel.__index = panel
 
--- `panel.new{x, y, width, height, texture = "ui/font/panel.png", group = nil}`, in points. With a `group` the quad goes into it and the
+-- `panel.new{x, y, width, height, kind = "window", cut = 3, group = nil}`, in points. With a `group` the quads go into it and the
 -- position is local to the group (the engine applies the group's offset).
 function panel.new(spec)
   local self = setmetatable({}, panel)
-  self.x = ui.snap(spec.x)
-  self.y = ui.snap(spec.y)
-  self.width = ui.snap_size(spec.width)
-  self.height = ui.snap_size(spec.height)
+  local colours = theme.kind(spec.kind or "window")
   self.owner = spec.owner
-  self.quad = render.create_quad{
-    texture = ui.texture(spec.texture or "ui/font/panel.png"),
-    x = self.x,
-    y = self.y,
-    width = self.width,
-    height = self.height,
+  self.frame = frame.new{
+    x = spec.x,
+    y = spec.y,
+    width = spec.width,
+    height = spec.height,
+    cut = spec.cut or 3,
+    corners = "tl_br",
+    fill = colours.fill,
+    line = colours.outline,
     group = spec.group,
   }
+  self.x, self.y, self.width, self.height = self.frame.x, self.frame.y, self.frame.width, self.frame.height
   return self
 end
 
 function panel:set_rect(x, y, width, height)
-  self.x = ui.snap(x)
-  self.y = ui.snap(y)
-  self.width = ui.snap_size(width)
-  self.height = ui.snap_size(height)
-  render.set_rect(self.quad, self.x, self.y, self.width, self.height)
+  self.frame:set_rect(x, y, width, height)
+  self.x, self.y, self.width, self.height = self.frame.x, self.frame.y, self.frame.width, self.frame.height
 end
 
 function panel:destroy()
-  if self.quad ~= nil then
-    render.destroy_quad(self.quad)
-    self.quad = nil
+  if self.frame ~= nil then
+    self.frame:destroy()
+    self.frame = nil
   end
 end
 

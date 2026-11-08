@@ -114,6 +114,7 @@ mod signals;
 #[cfg(test)]
 mod testing;
 mod texture_api;
+mod theme;
 mod ui_link;
 mod vm;
 #[cfg_attr(
@@ -522,6 +523,14 @@ fn supervise(
             return FAILED;
         }
     };
+    // The theme is read and checked the same way, with the same rule (`<assets>/ui/theme.toml`).
+    let theme = match ui_theme(config) {
+        Ok(theme) => theme,
+        Err(message) => {
+            emit(Level::Error, "config", format_args!("{message}"));
+            return FAILED;
+        }
+    };
     supervise_with_owner_factory(
         config,
         mode,
@@ -530,6 +539,7 @@ fn supervise(
             map: loaded_map,
             game,
             font,
+            theme,
         },
         windowed_plan,
         production_headless_plan,
@@ -560,6 +570,30 @@ fn pixel_font(config: &config::Config) -> Result<Option<Arc<font::Font>>, String
         .map_err(|message| format!("[ui] font: {message}"))
 }
 
+/// The theme a run loads at start-up, under the font's rule: required with a game, optional for a `ui` VM with an assets directory
+/// (loaded when `<assets>/ui/theme.toml` exists).
+///
+/// # Errors
+/// The message of a refusal: with a game, a missing or invalid theme; without one, an invalid theme.
+fn ui_theme(config: &config::Config) -> Result<Option<Arc<theme::Theme>>, String> {
+    if config.game.is_some() {
+        let assets = config.render.assets.clone().unwrap_or_default();
+        return theme::load(&assets)
+            .map(|theme| Some(Arc::new(theme)))
+            .map_err(|message| format!("[game] theme: {message}"));
+    }
+    let has_ui = config.vms.iter().any(|vm| vm.name == vm::UI_VM);
+    let Some(assets) = config.render.assets.as_ref().filter(|_| has_ui) else {
+        return Ok(None);
+    };
+    if !assets.join("ui/theme.toml").is_file() {
+        return Ok(None);
+    }
+    theme::load(assets)
+        .map(|theme| Some(Arc::new(theme)))
+        .map_err(|message| format!("[ui] theme: {message}"))
+}
+
 /// What a run loads before it starts: the map, and the game when the configuration has one (its map is the scenario's).
 #[derive(Default)]
 struct Content {
@@ -567,6 +601,8 @@ struct Content {
     game: Option<game::setup::Prepared>,
     /// The pixel font, loaded with a game or when a `ui` VM's assets hold `ui/font/font.toml`.
     font: Option<Arc<font::Font>>,
+    /// The theme, loaded under the same rule from `ui/theme.toml`.
+    theme: Option<Arc<theme::Theme>>,
 }
 
 /// What a headless run does between start-up and the stop phase: nothing. The request slot is ended where the run phase
@@ -599,6 +635,7 @@ fn supervise_with_owner_factory(
         map: loaded_map,
         game,
         font,
+        theme,
     } = content;
     let requests = Requests::new();
     let headless = matches!(mode, mode::Mode::Headless).then(|| Arc::new(HeadlessNotes::logging()));
@@ -713,6 +750,7 @@ fn supervise_with_owner_factory(
     // font: with a game, or when the assets hold one).
     ui_extensions.extend(game_extension);
     ui_extensions.extend(font.map(font::extension));
+    ui_extensions.extend(theme.map(theme::extension));
     let setup = Setup {
         // Replaced by the mode's backend for a windowed run (a headless run has no backend).
         backend: mode::Backend::NativeMetal,
@@ -1069,6 +1107,89 @@ mod tests {
         ));
         let message = pixel_font(&config).expect_err("a game needs the font");
         assert!(message.starts_with("[game] font: "), "{message}");
+    }
+
+    fn shipped_theme() -> String {
+        std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/ui/theme.toml"),
+        )
+        .expect("the shipped theme")
+    }
+
+    /// Writes `text` as the assets' `ui/theme.toml` (the directory `ui_without_game` builds its configuration on).
+    fn put_theme(dir: &testing::Dir, text: &str) {
+        let assets = dir.0.join("assets");
+        std::fs::create_dir_all(assets.join("ui")).expect("the assets directory");
+        std::fs::write(assets.join("ui/theme.toml"), text).expect("the theme file");
+    }
+
+    #[test]
+    fn a_ui_vm_without_a_game_gets_the_theme_when_the_assets_hold_one() {
+        let dir = testing::Dir::new();
+        put_theme(&dir, &shipped_theme());
+        let config = ui_without_game(
+            &dir,
+            "assert(theme ~= nil, 'the theme extension')\n\
+             assert(theme.colour('body') == '#15110a', 'a colour')\n\
+             assert(theme.kind('place').divider == '#c9932e', 'the place divider')\n\
+             local kind = theme.kind('place')\n\
+             kind.divider = '#000000'\n\
+             assert(theme.kind('place').divider == '#c9932e', 'a changed result changes nothing else')\n\
+             assert(not pcall(theme.kind, 'nope') and not pcall(theme.colour, 3), 'errors')",
+            None,
+        );
+        assert!(ui_theme(&config).expect("a valid theme").is_some());
+        assert_eq!(headless(&config).code, 0);
+    }
+
+    #[test]
+    fn a_ui_vm_without_a_game_and_without_a_theme_file_gets_no_theme_extension() {
+        let dir = testing::Dir::new();
+        let config = ui_without_game(&dir, "assert(theme == nil)", None);
+        assert!(
+            ui_theme(&config)
+                .expect("no theme is not an error")
+                .is_none()
+        );
+        assert_eq!(headless(&config).code, 0);
+    }
+
+    #[test]
+    fn an_invalid_theme_is_a_startup_refusal_naming_the_table_and_key() {
+        let dir = testing::Dir::new();
+        put_theme(&dir, "[kind.a]\noutline = \"#000000\"\n");
+        let config = ui_without_game(&dir, "error('the ui script must not run')", None);
+        let message = ui_theme(&config).expect_err("an invalid theme");
+        assert!(
+            message.starts_with("[ui] theme: ") && message.ends_with("[kind.a]: missing `hot`"),
+            "{message}"
+        );
+        assert_eq!(headless(&config).code, FAILED.code);
+    }
+
+    #[test]
+    fn a_game_requires_the_theme_and_refuses_an_invalid_one() {
+        let dir = testing::Dir::new();
+        let empty = dir.0.join("empty");
+        std::fs::create_dir_all(&empty).expect("an empty assets directory");
+        let config = config::load_text_for_test(&format!(
+            "[game]\nscenario = \"s\"\n[render]\nassets = {empty:?}\n"
+        ));
+        let message = ui_theme(&config).expect_err("a game needs the theme");
+        assert!(
+            message.starts_with("[game] theme: cannot read ") && message.contains("theme.toml"),
+            "{message}"
+        );
+        std::fs::create_dir_all(empty.join("ui")).expect("the ui directory");
+        std::fs::write(empty.join("ui/theme.toml"), "[colour]\nbody = \"red\"\n").expect("a theme");
+        let message = ui_theme(&config).expect_err("an invalid theme");
+        assert!(
+            message.starts_with("[game] theme: ")
+                && message.ends_with("[colour] body: `red` is not a colour (#rrggbb or #rrggbbaa)"),
+            "{message}"
+        );
+        std::fs::write(empty.join("ui/theme.toml"), shipped_theme()).expect("the shipped theme");
+        assert!(ui_theme(&config).expect("a valid theme").is_some());
     }
 
     struct CompletedOwner;

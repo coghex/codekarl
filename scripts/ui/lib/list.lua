@@ -14,6 +14,7 @@
 -- parked at `ui.HIDDEN` otherwise, since one pointer has at most one hovered row and one pressed row.
 local ui = require("lib.ui")
 local text = require("lib.text")
+local theme = require("lib.theme")
 local pointer = require("lib.pointer")
 
 local P = ui.P
@@ -186,7 +187,7 @@ local function remove_row(self, index)
 end
 
 local function add_row(self, index)
-  local line = text.line(P, row_top(index) + P, self.rows_group)
+  local line = text.line(P, row_top(index) + P, self.rows_group, self.colours.text)
   text.set(line, self.items[index])
   self.lines[index] = line
   if self.on_select ~= nil then
@@ -296,26 +297,29 @@ function list.new(spec)
   self.row_keys = {}
   self.retired = {} -- keys of removed rows whose widgets stay registered until the next dispatch ends
   self.closed = false
+  self.colours = theme.kind(window.kind)
   recompute(self)
 
   self.rows_group = render.create_group()
   self.groups = {self.rows_group}
   -- The highlights are created before any text, so that the glyphs are drawn over them.
   self.hover_quad = render.create_quad{
-    texture = ui.texture("ui/button/hover.png"),
+    texture = ui.texture("ui/theme/white.png"),
     x = ui.HIDDEN,
     y = ui.HIDDEN,
     width = self.width,
     height = ROW,
     group = self.rows_group,
+    tint = self.colours.row_hover,
   }
   self.pressed_quad = render.create_quad{
-    texture = ui.texture("ui/button/pressed.png"),
+    texture = ui.texture("ui/theme/white.png"),
     x = ui.HIDDEN,
     y = ui.HIDDEN,
     width = self.width,
     height = ROW,
     group = self.rows_group,
+    tint = self.colours.row_pressed,
   }
   -- The viewport hit does not scroll: it is in the window's content group, below the rows.
   render.set_hit(self.area_key, {{x = self.x, y = self.y, width = self.width, height = self.view_height}}, window.content)

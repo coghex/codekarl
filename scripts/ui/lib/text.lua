@@ -2,6 +2,7 @@
 -- position are unchanged, moves it when only its position changed and replaces it when its glyph changed, so a readout whose
 -- digits change touches one quad (CK-197's reuse rule).
 local ui = require("lib.ui")
+local theme = require("lib.theme")
 
 local P = ui.P
 local text = {}
@@ -18,13 +19,34 @@ local function create_glyph(l, glyph, height)
     width = glyph.width * P,
     height = height * P,
     group = l.group,
+    tint = l.colour,
   }
 end
 
 -- An empty line whose top-left corner is the point (x, y), in points, snapped to the UI-pixel grid. Its glyph quads go into `group`
--- (a group token) when one is given, and the position is then local to the group.
-function text.line(x, y, group)
-  return {x = ui.snap(x), y = ui.snap(y), glyphs = {}, width = 0, height = 0, group = group}
+-- (a group token) when one is given, and the position is then local to the group. The glyphs are white art tinted `colour` (a
+-- colour string; the theme's text colour when not given).
+function text.line(x, y, group, colour)
+  return {
+    x = ui.snap(x),
+    y = ui.snap(y),
+    glyphs = {},
+    width = 0,
+    height = 0,
+    group = group,
+    colour = colour or theme.colour("text"),
+  }
+end
+
+-- Retints every glyph of the line; glyphs created later take the colour too. The same colour makes no call.
+function text.set_colour(l, colour)
+  if colour == l.colour then
+    return
+  end
+  l.colour = colour
+  for _, glyph in ipairs(l.glyphs) do
+    render.set_tint(glyph.quad, colour)
+  end
 end
 
 -- Lays `content` out and updates the line's quads to match, glyph by glyph in order. `width` and `height` are then the text's size

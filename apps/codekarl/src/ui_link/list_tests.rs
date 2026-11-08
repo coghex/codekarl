@@ -719,6 +719,50 @@ end)
 }
 
 #[test]
+fn a_hovered_row_and_a_pressed_row_show_the_white_highlight_in_the_themes_row_colours() {
+    let tint =
+        |red: u8, green: u8, blue: u8| ck_render_2d::Tint::from_straight(red, green, blue, 255);
+    let script = |drive: &str| {
+        format!(
+            r#"{HEADER}
+w = windows.new{{title = "Places", x = 100, y = 50, content_width = 200, content_height = 200}}
+lst = lists.new{{window = w, x = 0, y = 0, width = 100, rows = 5, items = names(20), on_select = function() end}}
+local function row(i) return lst.row_keys[i] end
+window.on_opened(function() {drive} end)
+"#
+        )
+    };
+    let shown = |rig: &Rig| -> Vec<(Rect, ck_render_2d::Tint)> {
+        rig.sink
+            .quads()
+            .iter()
+            .filter(|quad| (quad.width, quad.height) == (100.0, 26.0) && quad.x > -1.0e11)
+            .map(|quad| ((quad.x, quad.y, quad.width, quad.height), quad.tint))
+            .collect()
+    };
+    // The Places window is kind `window`: row_hover is its outline (#6e130f), row_pressed its hot colour (#a8261c). Row 3 is the
+    // third row of the list at the content origin (106, 86): y 86 + 2 * 26 = 138.
+    let mut rig = Rig::new(&script("dispatch({}, row(3))"));
+    rig.opened();
+    assert_eq!(
+        shown(&rig),
+        [((106.0, 138.0, 100.0, 26.0), tint(0x6e, 0x13, 0x0f))]
+    );
+    let mut rig = Rig::new(&script("dispatch({ev('down', row(3), 150, 125)}, row(3))"));
+    rig.opened();
+    assert_eq!(
+        shown(&rig),
+        [((106.0, 138.0, 100.0, 26.0), tint(0xa8, 0x26, 0x1c))]
+    );
+    // The highlight is the shared `white` texture: nothing loads the old button art.
+    assert!(
+        !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/ui/button")
+            .exists()
+    );
+}
+
+#[test]
 fn rows_have_the_hover_and_pressed_looks_drawn_by_quads_parked_when_unused() {
     let script = format!(
         r#"{HEADER}
@@ -1340,7 +1384,7 @@ fn the_judgment_accepts_a_good_run_and_refuses_each_way_a_run_can_be_wrong() {
 }
 
 /// The fixture's geometry, through the real code path: with the production `main.lua` behind the witness's wrappers over a mock `game`
-/// of 94 places, the `places` button's centre is (262, 27), the Places window opens at (100, 100) with the first row under
+/// of 94 places, the `places` button's centre is (264, 27), the Places window opens at (100, 100) with the first row under
 /// (126, 149), and the driver's clicks, wheel and row click (the real routing of marked events) make the markers appear in order.
 #[test]
 fn the_witness_fixture_reaches_each_marker_at_the_drivers_coordinates() {
@@ -1378,8 +1422,8 @@ end)
     assert!(marker("places-button-ready"));
     // The driver clicks the places button's centre.
     rig.feed(&[
-        PointerEvent::Down(points(262.0, 27.0)),
-        PointerEvent::Up(points(262.0, 27.0)),
+        PointerEvent::Down(points(264.0, 27.0)),
+        PointerEvent::Up(points(264.0, 27.0)),
     ]);
     rig.deliver_fixture_frame();
     assert!(!marker("places-ready"), "queued for the next frame");

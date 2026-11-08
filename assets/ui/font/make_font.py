@@ -5,7 +5,7 @@
 
 `font.toml` is the source: each glyph's `rows` ('#' set, '.' clear). A scene quad is one whole texture, so every glyph gets its
 own PNG, `glyphs/U+XXXX.png` (the code point in at least four upper-case hex digits) and `glyphs/replacement.png`. A set pixel is
-the text colour `#ece3cb` at full alpha and a clear pixel is transparent. `panel.png` is one opaque pixel of `#2a2119`, the
+opaque white (the colour comes from the quad's tint, CK-215/CK-216) and a clear pixel is transparent. `panel.png` is one opaque pixel of `#2a2119`, the
 background of the date readout and of the hover tooltip.
 
 The output is deterministic: the image data is deflated with *stored* blocks, so no compressor (and no zlib version) is
@@ -24,7 +24,7 @@ SIGNATURE = b"\x89PNG\r\n\x1a\n"
 STORED_BLOCK = 65535
 
 Pixel = tuple[int, int, int, int]
-TEXT: Pixel = (0xEC, 0xE3, 0xCB, 255)
+TEXT: Pixel = (255, 255, 255, 255)
 CLEAR: Pixel = (0, 0, 0, 0)
 PANEL: Pixel = (0x2A, 0x21, 0x19, 255)
 
@@ -63,7 +63,7 @@ def png(rows: list[list[Pixel]]) -> bytes:
 
 
 def glyph_png(rows: list[str]) -> bytes:
-    """The PNG of one glyph: '#' is the text colour, '.' is transparent."""
+    """The PNG of one glyph: '#' is opaque white, '.' is transparent."""
     return png([[TEXT if cell == "#" else CLEAR for cell in row] for row in rows])
 
 

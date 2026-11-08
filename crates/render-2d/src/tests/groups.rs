@@ -1084,6 +1084,7 @@ fn the_readback_scenes_place_to_literal_instances_and_mean_what_they_say() {
         image,
         destination,
         source,
+        tint: [255; 4],
     };
     let frames: Vec<(Meaning, &[Instance])> = scenes
         .frames
@@ -1185,6 +1186,16 @@ fn the_readback_scenes_place_to_literal_instances_and_mean_what_they_say() {
             ][..]
         )
     );
+    // The theme's frames: the place window at one and two points per UI pixel (80 by 60 and 160 by 120 target pixels) and the tinted
+    // glyphs; the quads' literals are the library's (`scripts/ui/lib/frame.lua`, pinned in `apps/codekarl`), and the checks above compare
+    // the pixels with the design's rule.
+    assert_eq!(scenes.frames[7].meaning, Meaning::PlaceWindow { scale: 1 });
+    assert_eq!(scenes.frames[7].size, (80, 60));
+    assert_eq!(scenes.frames[7].instances.len(), 11 + 8 + 1);
+    assert_eq!(scenes.frames[8].meaning, Meaning::PlaceWindow { scale: 2 });
+    assert_eq!(scenes.frames[8].size, (160, 120));
+    assert_eq!(scenes.frames[9].meaning, Meaning::TintedGlyphs);
+    assert_eq!(scenes.frames[9].instances.len(), 2);
     assert_eq!(scenes.frames[5].size, (100, 120));
     assert_eq!(scenes.frames[0].size, (80, 60));
 }

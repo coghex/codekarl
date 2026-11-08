@@ -2120,7 +2120,7 @@ GUARDS: tuple[Guard, ...] = (
     Guard(
         "apps/codekarl/src/game/tests/mod.rs",
         "rust.app",
-        ("assets/ui/font/font.toml",),
+        ("assets/ui/font/font.toml", "assets/ui/theme.toml"),
     ),
     Guard(
         "apps/codekarl/src/game/tests/setup.rs",
@@ -2145,8 +2145,14 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("scripts/gameplay/main.lua",),
     ),
-    # The startup font without a scenario (CK-208) loads the shipped font in its tests.
-    Guard("apps/codekarl/src/lib.rs", "rust.app", ("assets/ui/font/font.toml",)),
+    # The startup font without a scenario (CK-208) loads the shipped font in its tests, and the startup theme (CK-216) the shipped theme.
+    Guard(
+        "apps/codekarl/src/lib.rs",
+        "rust.app",
+        ("assets/ui/font/font.toml", "assets/ui/theme.toml"),
+    ),
+    # The theme's tests (CK-216) check the shipped theme and its art, and run the art scripts' `--check`.
+    Guard("apps/codekarl/src/theme.rs", "rust.app", ("assets/ui/",)),
     # The widget library's tests (CK-208, CK-210) run the shipped library over the shipped font and button textures.
     Guard(
         "apps/codekarl/src/ui_link/widget_witness_tests.rs",
@@ -2171,8 +2177,12 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("scripts/ui/main.lua", "assets/"),
     ),
-    # The time bar's window support (CK-209) reads the shipped UI script.
-    Guard("apps/codekarl/tests/support/time_bar.rs", "rust.app", ("scripts/ui/main.lua",)),
+    # The time bar's window support (CK-209) reads the shipped UI script, and stages the shipped theme and its art (CK-216).
+    Guard(
+        "apps/codekarl/tests/support/time_bar.rs",
+        "rust.app",
+        ("scripts/ui/main.lua", "assets/ui/"),
+    ),
     # These off-screen GPU cases decode the same shipped font as part of their owning crate tests.
     Guard(
         "crates/gpu-metal/tests/presenter_instanced/cases.rs",

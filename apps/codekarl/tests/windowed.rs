@@ -452,6 +452,7 @@ impl Fixture {
             fs::copy(entry.path(), font.join("glyphs").join(entry.file_name()))
                 .expect("copy a glyph");
         }
+        time_bar_witness::install_theme(&root);
         scenario
     }
 

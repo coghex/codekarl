@@ -179,6 +179,9 @@ impl Rig {
                     frame_extension(),
                     game,
                     font::extension(Arc::new(font::load(&assets).expect("the shipped font"))),
+                    crate::theme::extension(Arc::new(
+                        crate::theme::load(&assets).expect("the shipped theme"),
+                    )),
                 ],
                 assets: Some(assets),
                 service: Some(service),
@@ -747,14 +750,19 @@ window.on_opened(function() assert(windows.top() == first, "pressing the lower t
         .position(|quad| {
             near(quad.x, 24.0)
                 && near(quad.y, 30.0)
-                && near(quad.width, 132.0)
-                && near(quad.height, 102.0)
+                && near(quad.width, 16.0)
+                && near(quad.height, 16.0)
         })
-        .expect("first window chrome quad");
+        .expect("first window chrome quad (the body frame's top-left tile)");
     let second_frame = quads
         .iter()
-        .position(|quad| near(quad.x, 150.0) && near(quad.y, 30.0) && near(quad.height, 102.0))
-        .expect("second window chrome quad");
+        .position(|quad| {
+            near(quad.x, 150.0)
+                && near(quad.y, 30.0)
+                && near(quad.width, 16.0)
+                && near(quad.height, 16.0)
+        })
+        .expect("second window chrome quad (the body frame's top-left tile)");
     assert!(
         first_frame > second_frame,
         "raising the overlapping lower window moves its chrome above the other"
@@ -784,10 +792,10 @@ local windows = require("lib.window")
 local panel = require("lib.panel")
 windows.update_viewport(800, 600)
 w = windows.new{title = "A", content_width = 120, content_height = 60, x = 100, y = 100}
-panel.new{x = 0, y = 0, width = 10, height = 10, group = w.content}
+panel.new{x = 0, y = 0, width = 20, height = 20, group = w.content}
 window.on_opened(function()
   local width, height = w:size()
-  assert(width == 132 and height == 102, "P2 short-title outer size is literal")
+  assert(width == 132 and height == 106, "P2 short-title outer size is literal")
   local x, y = w:content_origin()
   assert(x == 106 and y == 136, "content origin includes the title and padding")
 
@@ -812,12 +820,12 @@ window.on_opened(function()
   w:set_title("Long title")
   width, height = w:size()
   x, y = w:position()
-  assert(width == 140 and height == 102 and x == 100 and y == 100,
+  assert(width == 150 and height == 106 and x == 100 and y == 100,
     "long title widens without moving the top-left")
   w:set_content_size(50, 40)
   width, height = w:size()
   x, y = w:position()
-  assert(width == 140 and height == 82 and x == 100 and y == 100,
+  assert(width == 150 and height == 86 and x == 100 and y == 100,
     "content resize updates outer size and preserves the position")
 end)
 "#;
@@ -849,15 +857,15 @@ end)
     };
     assert_eq!(
         rect("window_frame_1"),
-        HitRect::from_points(100.0, 100.0, 140.0, 82.0).unwrap()
+        HitRect::from_points(100.0, 100.0, 150.0, 86.0).unwrap()
     );
     assert_eq!(
         rect("window_title_2"),
-        HitRect::from_points(100.0, 100.0, 118.0, 30.0).unwrap()
+        HitRect::from_points(100.0, 100.0, 128.0, 30.0).unwrap()
     );
     assert_eq!(
         rect("button_3"),
-        HitRect::from_points(218.0, 100.0, 20.0, 30.0).unwrap()
+        HitRect::from_points(228.0, 100.0, 20.0, 30.0).unwrap()
     );
 }
 
@@ -870,7 +878,7 @@ w = windows.new{title = "A", content_width = 120, content_height = 60, x = 100, 
 local tiny = windows.new{title = "A", content_width = 3, content_height = 3, x = 20, y = 20}
 window.on_opened(function()
   local width, height = w:size()
-  assert(width == 138 and height == 123, "P3 short-title outer size is literal")
+  assert(width == 138 and height == 129, "P3 short-title outer size is literal")
   w:move_to(9000, 9000)
   local x, y = w:position()
   assert(x == 750 and y == 555, "P3 right and floored bottom bounds are literal")
@@ -880,17 +888,17 @@ window.on_opened(function()
   tiny:move_to(9000, 9000)
   x, y = tiny:position()
   local tiny_width = tiny:size()
-  assert(tiny_width == 72 and x == -24 and y == 0,
+  assert(tiny_width == 87 and x == -39 and y == 0,
     "narrow fallback is R - outer_w, with the close-button edge at zero")
   windows.update_viewport(800, 601)
   x, y = tiny:position()
-  assert(x == -24 and y == 0, "restoring the viewport keeps a valid ordinary-clamp position")
+  assert(x == -39 and y == 0, "restoring the viewport keeps a valid ordinary-clamp position")
 
   w:move_to(100, 100)
   w:set_title("Long title")
   width, height = w:size()
   x, y = w:position()
-  assert(width == 210 and height == 123 and x == 99 and y == 99,
+  assert(width == 225 and height == 129 and x == 99 and y == 99,
     "P3 long-title outer size and grid-floored top-left are literal")
 end)
 "#;
@@ -911,10 +919,52 @@ window.on_opened(function() end)
     rig.opened();
 
     let quads = rig.sink.quads();
-    assert_eq!(
-        (quads[0].x, quads[0].y, quads[0].width, quads[0].height),
-        (24.0, 30.0, 132.0, 102.0)
-    );
+    // The chrome in painter order: the body frame (cut 7, both corners: 66 by 53 UI pixels), the title bar (cut 7, top-left, 66 by 15),
+    // the title "A" at 8 UI pixels, and the close button (a cut-3 frame of 10 by 15 and its glyph).
+    let chrome: Vec<(f64, f64, f64, f64)> = quads[..32]
+        .iter()
+        .map(|quad| (quad.x, quad.y, quad.width, quad.height))
+        .collect();
+    let expected = [
+        // the body: fill tiles, bands, line tiles, edges
+        (24.0, 30.0, 16.0, 16.0),
+        (140.0, 120.0, 16.0, 16.0),
+        (40.0, 32.0, 114.0, 14.0),
+        (26.0, 46.0, 128.0, 74.0),
+        (26.0, 120.0, 114.0, 14.0),
+        (24.0, 30.0, 16.0, 16.0),
+        (140.0, 120.0, 16.0, 16.0),
+        (40.0, 30.0, 116.0, 2.0),
+        (154.0, 32.0, 2.0, 88.0),
+        (26.0, 134.0, 114.0, 2.0),
+        (24.0, 46.0, 2.0, 90.0),
+        // the title bar: fill tile, bands, line tile, edges
+        (24.0, 30.0, 16.0, 16.0),
+        (40.0, 32.0, 114.0, 14.0),
+        (26.0, 46.0, 128.0, 12.0),
+        (24.0, 30.0, 16.0, 16.0),
+        (40.0, 30.0, 116.0, 2.0),
+        (154.0, 32.0, 2.0, 28.0),
+        (26.0, 58.0, 128.0, 2.0),
+        (24.0, 46.0, 2.0, 14.0),
+        // the title: at x = 8 UI pixels (16 points) in
+        (40.0, 34.0, 10.0, 22.0),
+        // the close button's frame
+        (134.0, 30.0, 8.0, 8.0),
+        (146.0, 52.0, 8.0, 8.0),
+        (142.0, 32.0, 10.0, 6.0),
+        (136.0, 38.0, 16.0, 14.0),
+        (136.0, 52.0, 10.0, 6.0),
+        (134.0, 30.0, 8.0, 8.0),
+        (146.0, 52.0, 8.0, 8.0),
+        (142.0, 30.0, 12.0, 2.0),
+        (152.0, 32.0, 2.0, 20.0),
+        (136.0, 58.0, 10.0, 2.0),
+        (134.0, 38.0, 2.0, 22.0),
+        // and its glyph, centred in the button
+        (138.0, 34.0, 10.0, 22.0),
+    ];
+    assert_eq!(chrome, expected);
     let content = quads
         .iter()
         .find(|quad| quad.clip.is_some())
@@ -941,7 +991,7 @@ window.on_opened(function() end)
     };
     assert_eq!(
         rect("window_frame_1"),
-        HitRect::from_points(24.0, 30.0, 132.0, 102.0).unwrap()
+        HitRect::from_points(24.0, 30.0, 132.0, 106.0).unwrap()
     );
     assert_eq!(
         rect("window_title_2"),
@@ -951,6 +1001,74 @@ window.on_opened(function() end)
         rect("button_3"),
         HitRect::from_points(134.0, 30.0, 20.0, 30.0).unwrap()
     );
+}
+
+#[test]
+fn a_place_windows_chrome_has_the_cyan_outline_the_amber_divider_and_dark_title_text_and_a_window_has_no_divider()
+ {
+    let tint =
+        |red: u8, green: u8, blue: u8| ck_render_2d::Tint::from_straight(red, green, blue, 255);
+    let (body, cyan, amber, dark, red, light) = (
+        tint(0x15, 0x11, 0x0a),
+        tint(0x4f, 0xb3, 0xc8),
+        tint(0xc9, 0x93, 0x2e),
+        tint(0x15, 0x11, 0x0a),
+        tint(0x6e, 0x13, 0x0f),
+        tint(0xec, 0xe3, 0xcb),
+    );
+    let script = |kind: &str| {
+        format!(
+            r#"
+local windows = require("lib.window")
+w = windows.new{{title = "A", kind = "{kind}", content_width = 120, content_height = 60, x = 24, y = 30}}
+window.on_opened(function() end)
+"#
+        )
+    };
+    // A place window (P = 2): the body frame (11 quads) fills near-black and outlines cyan; the title bar (8 quads) is cyan; the divider
+    // (quad 19) is one amber UI pixel high on the row under the title bar, from the second to the second-to-last column; the title is
+    // dark; the close button is a title-style button: cyan, with a dark glyph.
+    let mut rig = Rig::new_at_scale(&script("place"), 2);
+    rig.opened();
+    let quads = rig.sink.quads();
+    for (index, quad) in quads[..11].iter().enumerate() {
+        assert_eq!(
+            quad.tint,
+            if index < 5 { body } else { cyan },
+            "body quad {index}"
+        );
+    }
+    for (index, quad) in quads[11..19].iter().enumerate() {
+        assert_eq!(quad.tint, cyan, "title bar quad {index}");
+    }
+    let divider = &quads[19];
+    assert_eq!(
+        (divider.x, divider.y, divider.width, divider.height),
+        (26.0, 60.0, 128.0, 2.0)
+    );
+    assert_eq!(divider.tint, amber);
+    assert_eq!(quads[20].tint, dark, "the title");
+    for (index, quad) in quads[21..32].iter().enumerate() {
+        assert_eq!(quad.tint, cyan, "close button frame quad {index}");
+    }
+    assert_eq!(quads[32].tint, dark, "the close button's glyph");
+    assert_eq!(quads.len(), 33);
+    // A window of the default kind: the red outline and no divider; the title and the close glyph are the text colour on the red bar.
+    let mut rig = Rig::new_at_scale(&script("window"), 2);
+    rig.opened();
+    let quads = rig.sink.quads();
+    for (index, quad) in quads[..11].iter().enumerate() {
+        assert_eq!(
+            quad.tint,
+            if index < 5 { body } else { red },
+            "body quad {index}"
+        );
+    }
+    assert_eq!(
+        quads[19].tint, light,
+        "the title follows the title bar directly: no divider quad"
+    );
+    assert_eq!(quads.len(), 32);
 }
 
 #[test]
@@ -1159,8 +1277,8 @@ local panel = require("lib.panel")
 local label = require("lib.label")
 g = render.create_group()
 render.set_group_offset(g, 100, 50)
-loose = panel.new{x = 4, y = 6, width = 10, height = 10}
-inside = panel.new{x = 4, y = 6, width = 10, height = 10, group = g}
+loose = panel.new{x = 4, y = 6, width = 20, height = 20}
+inside = panel.new{x = 4, y = 6, width = 20, height = 20, group = g}
 label.new{x = 20, y = 20, text = "A", group = g}
 a = button.new{x = 10, y = 10, text = "Go", on_click = click, group = g}
 window.on_opened(function() end)
@@ -1169,13 +1287,14 @@ window.on_opened(function() end)
     rig.opened();
     let frame = rig.sink.quads();
     let xs: Vec<(f64, f64)> = frame.iter().map(|quad| (quad.x, quad.y)).collect();
-    // Painter order: the base group first (the loose panel), then the group in its own creation order: the panel, the label's glyph and
-    // the button's three backgrounds and two glyphs. Every grouped quad is translated by the offset; the loose one is not.
+    // Painter order: the base group first (the loose panel's eleven quads), then the group in its own creation order: the panel's
+    // eleven, the label's glyph and the button's eleven and two glyphs. Every grouped quad is translated by the offset; the loose one
+    // is not.
     assert_eq!(xs[0], (4.0, 6.0), "the quad without a group");
-    assert_eq!(xs[1], (104.0, 56.0), "the grouped panel");
-    assert_eq!(xs[2], (120.0, 70.0), "the grouped label's glyph");
-    assert_eq!(xs[3], (110.0, 60.0), "the button's normal background");
-    assert_eq!(frame.len(), 1 + 1 + 1 + 3 + 2);
+    assert_eq!(xs[11], (104.0, 56.0), "the grouped panel");
+    assert_eq!(xs[22], (120.0, 70.0), "the grouped label's glyph");
+    assert_eq!(xs[23], (110.0, 60.0), "the button's frame");
+    assert_eq!(frame.len(), 11 + 11 + 1 + 11 + 2);
     // The hit key is the group's: its region is translated.
     assert_eq!(rig.key_at(115.0, 65.0).as_deref(), Some("button_1"));
     assert_eq!(rig.key_at(15.0, 15.0), None);
@@ -1238,9 +1357,8 @@ fn placed(quad: &FrameQuad) -> Option<(i64, i64, i64, i64)> {
     })
 }
 
-/// A button "Go" (32 by 30 points) at `local` in a group offset by `offset`, in the state `state`; returns the three backgrounds'
-/// frame quads and the current one's index.
-fn backgrounds(offset: (f64, f64), local: (f64, f64), state: &str) -> (Vec<FrameQuad>, usize) {
+/// A button "Go" (32 by 30 points) at `local` in a group offset by `offset`, in the state `state`: the eleven quads of its frame.
+fn frame_quads(offset: (f64, f64), local: (f64, f64), state: &str) -> Vec<FrameQuad> {
     let drive = match state {
         "normal" => "",
         "hover" => "pointer.dispatch({over = a.key, overflow = false, held = false, events = {}})",
@@ -1261,17 +1379,31 @@ window.on_opened(function() {drive} end)
     );
     let mut rig = Rig::new(&script);
     rig.opened();
-    let current = match state {
-        "normal" => 0,
-        "hover" => 1,
-        _ => 2,
-    };
-    (rig.sink.quads()[..3].to_vec(), current)
+    rig.sink.quads()[..11].to_vec()
+}
+
+/// The rectangle of a quad, in points.
+fn rect_of(quad: &FrameQuad) -> (f64, f64, f64, f64) {
+    (quad.x, quad.y, quad.width, quad.height)
+}
+
+/// The bounding box of the quads' rectangles: `(x, y, width, height)`.
+fn bounds(quads: &[FrameQuad]) -> (f64, f64, f64, f64) {
+    let left = quads.iter().map(|quad| quad.x).fold(f64::MAX, f64::min);
+    let top = quads.iter().map(|quad| quad.y).fold(f64::MAX, f64::min);
+    let right = quads
+        .iter()
+        .map(|quad| quad.x + quad.width)
+        .fold(f64::MIN, f64::max);
+    let bottom = quads
+        .iter()
+        .map(|quad| quad.y + quad.height)
+        .fold(f64::MIN, f64::max);
+    (left, top, right - left, bottom - top)
 }
 
 #[test]
-fn parked_backgrounds_are_never_placed_and_the_current_one_is_placed_by_the_ordinary_rule_at_the_domains_bounds()
- {
+fn a_frame_is_placed_by_the_ordinary_rule_at_the_domains_bounds_and_nothing_of_it_is_parked() {
     let edge = POINT_DOMAIN;
     // The button is laid out so that its hit rectangle stays inside the domain under the group's offset.
     let cases = [
@@ -1281,49 +1413,50 @@ fn parked_backgrounds_are_never_placed_and_the_current_one_is_placed_by_the_ordi
     ];
     for (offset, local) in cases {
         for state in ["normal", "hover", "pressed"] {
-            let (quads, current) = backgrounds(offset, local, state);
-            assert_eq!(quads.len(), 3);
-            for (index, quad) in quads.iter().enumerate() {
-                let result = placed(quad);
-                if index == current {
-                    let translated = (offset.0 + local.0, offset.1 + local.1, 32.0, 30.0);
-                    assert_eq!(
-                        result,
-                        expected_destination(translated, None),
-                        "{offset:?} {state}: the current background by the ordinary rule"
-                    );
-                } else {
-                    assert_eq!(
-                        result, None,
-                        "{offset:?} {state}: background {index} is parked and never drawn"
-                    );
-                }
+            let quads = frame_quads(offset, local, state);
+            assert_eq!(quads.len(), 11);
+            // The frame's quads cover the button's rectangle exactly, translated by the group's offset.
+            assert_eq!(
+                bounds(&quads),
+                (offset.0 + local.0, offset.1 + local.1, 32.0, 30.0),
+                "{offset:?} {state}"
+            );
+            for quad in &quads {
+                assert_eq!(
+                    placed(quad),
+                    expected_destination(rect_of(quad), None),
+                    "{offset:?} {state}: a quad of the frame by the ordinary rule"
+                );
             }
         }
     }
 }
 
 #[test]
-fn at_a_normal_position_exactly_one_background_shows_in_each_state() {
-    for state in ["normal", "hover", "pressed"] {
-        let (quads, current) = backgrounds((100.0, 50.0), (20.0, 10.0), state);
-        let shown: Vec<usize> = quads
-            .iter()
-            .enumerate()
-            .filter(|(_, quad)| placed(quad).is_some())
-            .map(|(index, _)| index)
-            .collect();
-        assert_eq!(shown, [current], "{state}");
-        assert_eq!(
-            placed(&quads[current]),
-            expected_destination((120.0, 60.0, 32.0, 30.0), None),
-            "{state}"
+fn at_a_normal_position_the_whole_frame_shows_in_each_state_with_the_look_of_the_state() {
+    let tint =
+        |red: u8, green: u8, blue: u8| ck_render_2d::Tint::from_straight(red, green, blue, 255);
+    for (state, fill, line) in [
+        ("normal", tint(0x15, 0x11, 0x0a), tint(0x6e, 0x13, 0x0f)),
+        ("hover", tint(0x15, 0x11, 0x0a), tint(0xa8, 0x26, 0x1c)),
+        ("pressed", tint(0xa8, 0x26, 0x1c), tint(0xa8, 0x26, 0x1c)),
+    ] {
+        let quads = frame_quads((100.0, 50.0), (20.0, 10.0), state);
+        assert!(
+            quads.iter().all(|quad| placed(quad).is_some()),
+            "{state}: every quad of the frame is drawn"
         );
+        assert_eq!(bounds(&quads), (120.0, 60.0, 32.0, 30.0), "{state}");
+        // Five fill quads, then six line quads, in the colours of the state.
+        for (index, quad) in quads.iter().enumerate() {
+            let want = if index < 5 { fill } else { line };
+            assert_eq!(quad.tint, want, "{state}: quad {index}");
+        }
     }
 }
 
 #[test]
-fn the_current_background_follows_a_clip_and_a_parked_one_never_does() {
+fn a_frame_follows_a_group_clip_quad_by_quad() {
     let script = r#"
 local button = require("lib.button")
 g = render.create_group()
@@ -1334,13 +1467,20 @@ window.on_opened(function() pointer.dispatch({over = a.key, overflow = false, he
 "#;
     let mut rig = Rig::new(script);
     rig.opened();
-    let quads = rig.sink.quads();
+    let quads = rig.sink.quads()[..11].to_vec();
     let clip = Some((110.0, 60.0, 16.0, 30.0));
-    assert_eq!(placed(&quads[0]), None);
-    assert_eq!(placed(&quads[2]), None);
-    assert_eq!(
-        placed(&quads[1]),
-        expected_destination((110.0, 60.0, 32.0, 30.0), clip)
-    );
-    assert_eq!(placed(&quads[1]), Some((220, 120, 252, 180)));
+    assert_eq!(bounds(&quads), (110.0, 60.0, 32.0, 30.0));
+    for quad in &quads {
+        assert_eq!(
+            placed(quad),
+            expected_destination(rect_of(quad), clip),
+            "{:?}",
+            rect_of(quad)
+        );
+    }
+    // The clip keeps the left half of the button: the quads wholly right of it are never drawn, the others are cut to it.
+    let drawn = quads.iter().filter(|quad| placed(quad).is_some()).count();
+    assert!(drawn > 0 && drawn < 11, "{drawn} of 11 quads are drawn");
+    assert_eq!(placed(&quads[0]), Some((220, 120, 236, 136)));
+    assert_eq!(placed(&quads[1]), None);
 }

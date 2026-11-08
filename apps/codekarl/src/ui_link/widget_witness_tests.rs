@@ -132,6 +132,9 @@ fn a_lost_up_and_a_later_up_in_the_same_delivery_click_nothing_and_the_map_owns_
             extensions: vec![
                 frame_extension(),
                 font::extension(Arc::new(font::load(&assets).expect("the shipped font"))),
+                crate::theme::extension(Arc::new(
+                    crate::theme::load(&assets).expect("the shipped theme"),
+                )),
             ],
             assets: Some(assets.clone()),
             service: Some(service),

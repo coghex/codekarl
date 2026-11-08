@@ -449,7 +449,7 @@ mod tests {
                 .iter()
                 .flat_map(|row| row.chars())
                 .flat_map(|cell| match cell {
-                    '#' => [0xEC, 0xE3, 0xCB, 0xFF],
+                    '#' => [0xFF, 0xFF, 0xFF, 0xFF],
                     _ => [0, 0, 0, 0],
                 })
                 .collect();
@@ -662,8 +662,8 @@ mod tests {
                 hour: 0,
             },
         );
-        // The scenario helper provides the shipped font; this test decides what the run finds.
-        fs::remove_dir_all(root.0.join("assets/ui")).unwrap();
+        // The scenario helper provides the shipped font and theme; this test decides what the run finds of the font.
+        fs::remove_dir_all(root.0.join("assets/ui/font")).unwrap();
         if let Some(text) = font {
             fs::create_dir_all(root.0.join("assets/ui/font")).unwrap();
             fs::write(root.0.join("assets/ui/font/font.toml"), text).unwrap();

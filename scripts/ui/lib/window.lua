@@ -1,13 +1,17 @@
 -- Draggable, clipped UI windows. Geometry and the public API use window points;
 -- the renderer applies each group's offset to the window-local contents.
 local ui = require("lib.ui")
-local panel = require("lib.panel")
+local frame = require("lib.frame")
 local label = require("lib.label")
 local button = require("lib.button")
+local theme = require("lib.theme")
 local pointer = require("lib.pointer")
 
 local P = ui.P
 local PAD = 3 * P
+local BOTTOM = 5 * P -- the bottom padding: the content rectangle lies wholly inside the bottom-right cut of 7
+local CUT = 7
+local TITLE_X = (CUT + 1) * P -- the title starts inside the cut title bar
 local windows = {}
 local viewport = {width = 800, height = 600}
 local counter = 0
@@ -66,22 +70,26 @@ end
 
 local function dimensions(self)
   local title = font.layout(self.title)
-  local close = font.layout("x")
+  local close_width = select(1, button.measure("x"))
   self.title_text_width = title.width * P
   self.title_text_height = title.height * P
   self.title_height = (title.height + 4) * P
-  self.close_width = (close.width + 4) * P
+  self.close_width = close_width
   self.outer_width = math.max(
     self.content_width + 2 * PAD,
-    PAD + self.title_text_width + 4 * P + self.close_width + P
+    TITLE_X + self.title_text_width + 4 * P + self.close_width + P
   )
-  self.outer_height = self.title_height + PAD + self.content_height + PAD
+  self.outer_height = self.title_height + PAD + self.content_height + BOTTOM
 end
 
 local function publish_chrome(self)
   self.frame:set_rect(0, 0, self.outer_width, self.outer_height)
+  self.title_bar:set_rect(0, 0, self.outer_width, self.title_height)
+  if self.divider ~= nil then
+    render.set_rect(self.divider, P, self.title_height, self.outer_width - 2 * P, P)
+  end
   local close_x = self.outer_width - self.close_width - P
-  self.title_line:move(3 * P, (self.title_height - self.title_text_height) / 2)
+  self.title_line:move(TITLE_X, (self.title_height - self.title_text_height) / 2)
   render.set_hit(self.frame_key, {
     {x = 0, y = 0, width = self.outer_width, height = self.outer_height},
   }, self.chrome)
@@ -135,6 +143,7 @@ function window.new(spec)
     content_height = ui.snap_size(spec.content_height or P),
     x = spec.x,
     y = spec.y,
+    kind = spec.kind or "window",
     on_close = spec.on_close,
     closed = false,
     attached = {},
@@ -150,8 +159,42 @@ function window.new(spec)
   self.x, self.y = clamp_position(self, self.x, self.y)
   self.chrome = render.create_group()
   self.content = render.create_group()
-  self.frame = panel.new{x = 0, y = 0, width = self.outer_width, height = self.outer_height, group = self.chrome}
-  self.title_line = label.new{x = 3 * P, y = 0, text = self.title, group = self.chrome}
+  local colours = theme.kind(self.kind)
+  self.colours = colours
+  self.frame = frame.new{
+    x = 0,
+    y = 0,
+    width = self.outer_width,
+    height = self.outer_height,
+    cut = CUT,
+    corners = "tl_br",
+    fill = colours.fill,
+    line = colours.outline,
+    group = self.chrome,
+  }
+  self.title_bar = frame.new{
+    x = 0,
+    y = 0,
+    width = self.outer_width,
+    height = self.title_height,
+    cut = CUT,
+    corners = "tl",
+    fill = colours.outline,
+    line = colours.outline,
+    group = self.chrome,
+  }
+  if colours.divider ~= nil then
+    self.divider = render.create_quad{
+      texture = ui.texture("ui/theme/white.png"),
+      x = P,
+      y = self.title_height,
+      width = self.outer_width - 2 * P,
+      height = P,
+      group = self.chrome,
+      tint = colours.divider,
+    }
+  end
+  self.title_line = label.new{x = TITLE_X, y = 0, text = self.title, group = self.chrome, colour = colours.title_text}
   self.frame_key = ui.key("window_frame")
   self.title_key = ui.key("window_title")
   render.set_hit(self.frame_key, {{x = 0, y = 0, width = self.outer_width, height = self.outer_height}}, self.chrome)
@@ -162,6 +205,8 @@ function window.new(spec)
     x = self.outer_width - self.close_width - P,
     y = 0,
     text = "x",
+    kind = self.kind,
+    style = "title",
     group = self.chrome,
     owner = self,
     on_click = function() self:close() end,

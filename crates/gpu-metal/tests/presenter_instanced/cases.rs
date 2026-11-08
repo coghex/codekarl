@@ -759,11 +759,11 @@ pub(crate) fn readback_scene_pixel_font_readout() {
         if panel_first {
             list.push(of(0, panel));
         }
-        list.extend(
-            glyphs
-                .iter()
-                .map(|&(index, destination)| of(index, destination)),
-        );
+        // The glyph images are white; the text colour is the instance's tint.
+        list.extend(glyphs.iter().map(|&(index, destination)| ReadbackInstance {
+            tint: TEXT,
+            ..of(index, destination)
+        }));
         if !panel_first {
             list.push(of(0, panel));
         }
@@ -803,7 +803,21 @@ pub(crate) fn readback_scene_pixel_font_readout() {
     };
     fill(panel, &pictures[0]);
     for &(index, destination) in &glyphs {
-        fill(destination, &pictures[index]);
+        // The CPU composite of a tinted glyph: its opaque white texels are the text colour (the tint), the clear ones stay clear.
+        let tinted = Picture {
+            width: pictures[index].width,
+            height: pictures[index].height,
+            bytes: pictures[index]
+                .bytes
+                .chunks_exact(4)
+                .flat_map(|texel| match texel {
+                    [255, 255, 255, 255] => TEXT,
+                    [_, _, _, 0] => [0; 4],
+                    other => panic!("a glyph texel is opaque white or clear: {other:?}"),
+                })
+                .collect(),
+        };
+        fill(destination, &tinted);
     }
 
     let pixels = draw(true);
