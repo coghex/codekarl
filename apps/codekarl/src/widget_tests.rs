@@ -1348,6 +1348,63 @@ fn the_time_bar_and_places_bar_follow_the_literal_layout_at_both_scales() {
 }
 
 #[test]
+fn a_duplicate_icon_name_is_refused_before_anything_is_created_and_a_unique_lists_destroy_removes_every_icon_quad()
+ {
+    let readout = Readout::script(
+        r#"
+local button = require("lib.button")
+window.record("mark")
+local ok, message = pcall(button.new, {x = 10, y = 20, kind = "time_bar", icons = {"pause", "play", "pause"}})
+window.record(tostring(ok) .. " " .. tostring(message):gsub("^.-button.new", "button.new", 1))
+window.record("mark")
+local created = button.new{x = 10, y = 20, kind = "time_bar", icons = {"pause", "play"}}
+window.record("mark")
+created:destroy()
+window.record("mark")
+"#,
+        None,
+    );
+    // The refusal names the duplicate and makes no scene call at all: no quad, no region, no texture load.
+    assert!(
+        readout
+            .after_mark(1)
+            .iter()
+            .any(|entry| entry == "record false button.new: icon `pause` is named twice in icons"),
+        "{:?}",
+        readout.after_mark(1)
+    );
+    assert!(
+        readout
+            .after_mark(1)
+            .iter()
+            .all(|entry| entry.starts_with("record ")),
+        "a refused button makes no scene call: {:?}",
+        readout.after_mark(1)
+    );
+    // A unique list creates its frame and both icons (and the region); destroying it removes every one of those quads.
+    let entries = readout.entries();
+    let created_quads: Vec<String> = readout
+        .after_mark(2)
+        .iter()
+        .filter(|entry| entry.starts_with("create "))
+        .map(|entry| entry.split(' ').nth(1).expect("a quad").to_owned())
+        .collect();
+    assert!(
+        created_quads.len() >= 13,
+        "the frame's eleven quads and two icons: {created_quads:?} in {entries:?}"
+    );
+    let mut destroyed: Vec<String> = readout
+        .after_mark(3)
+        .iter()
+        .filter_map(|entry| entry.strip_prefix("destroy ").map(str::to_owned))
+        .collect();
+    let mut wanted = created_quads;
+    wanted.sort();
+    destroyed.sort();
+    assert_eq!(destroyed, wanted, "every quad the button made is destroyed");
+}
+
+#[test]
 fn icon_buttons_precreate_all_icons_and_set_icon_only_retints_the_two_quads() {
     let readout = Readout::script(
         r#"
