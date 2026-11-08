@@ -644,6 +644,10 @@ fn supervise_with_owner_factory(
     };
     // The simulation owner, when the configuration has a game: the UI link carries the time presses to it and watches for its
     // terminal failure, and the runtime spawns it after every VM.
+    let places = game
+        .as_ref()
+        .map(|prepared| game_api::places_of(&prepared.scenario))
+        .unwrap_or_default();
     let connected = game.map(|prepared| game::setup::connect(prepared, Arc::clone(&wake)));
     // The UI VM's `frame.on_update` registration, published by the setter's observer and read by the input tick.
     let frame_registration = frame_api::FrameRegistration::default();
@@ -671,13 +675,16 @@ fn supervise_with_owner_factory(
                 select_registered: Arc::clone(&select_registered),
             }),
             Some(connected.spawn),
-            Some(game_api::extension_with_select(
-                time_registered,
-                hover_registered,
-                select_registered,
-                Arc::clone(&wake),
-                connected.controls,
-            )),
+            Some(
+                game_api::extension_with_select(
+                    time_registered,
+                    hover_registered,
+                    select_registered,
+                    Arc::clone(&wake),
+                    connected.controls,
+                )
+                .function("places", game_api::places_function(places)),
+            ),
         ),
         None => (ui, None, None),
     };

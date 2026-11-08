@@ -1127,7 +1127,7 @@ fn the_time_bar_geometry_is_literal_at_both_scales_and_readout_width_keeps_butto
     let cases = [
         (
             2,
-            "create q1 ui/font/panel.png 8 8 488 38",
+            "create q1 ui/font/panel.png 8 8 566 38",
             [
                 "set_hit button_1 12 12 16 30",
                 "set_hit button_2 36 12 20 30",
@@ -1138,11 +1138,12 @@ fn the_time_bar_geometry_is_literal_at_both_scales_and_readout_width_keeps_butto
                 "set_hit button_7 152 12 20 30",
                 "set_hit button_8 174 12 20 30",
                 "set_hit button_9 202 12 20 30",
+                "set_hit button_10 224 12 76 30",
             ],
         ),
         (
             3,
-            "create q1 ui/font/panel.png 9 9 732 57",
+            "create q1 ui/font/panel.png 9 9 849 57",
             [
                 "set_hit button_1 15 15 24 45",
                 "set_hit button_2 51 15 30 45",
@@ -1153,6 +1154,7 @@ fn the_time_bar_geometry_is_literal_at_both_scales_and_readout_width_keeps_butto
                 "set_hit button_7 225 15 30 45",
                 "set_hit button_8 258 15 30 45",
                 "set_hit button_9 300 15 30 45",
+                "set_hit button_10 333 15 114 45",
             ],
         ),
     ];

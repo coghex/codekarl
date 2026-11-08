@@ -128,6 +128,59 @@ pub(crate) fn select_arguments(selection: &crate::map_app::Selection) -> Vec<Con
     ]))]
 }
 
+/// One scenario location, as `game.places()` returns it: the fields and meanings of `game_select`'s (without `seq`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Place {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) size: u8,
+}
+
+/// The scenario's locations in file order, with the kind's id and the authored size, exactly as the map reports them to
+/// `game_select`.
+pub(crate) fn places_of(scenario: &ck_map::Scenario) -> Vec<Place> {
+    scenario
+        .locations
+        .iter()
+        .map(|location| Place {
+            id: location.id.clone(),
+            name: location.name.clone(),
+            kind: scenario.location_kinds.kinds[location.kind_index]
+                .id
+                .clone(),
+            size: location.size,
+        })
+        .collect()
+}
+
+/// `game.places()`: the scenario's locations in file order, as an array of `{id, name, kind, size}`. It is read-only scenario
+/// data (no simulation state, no new delivery); it takes no arguments.
+pub(crate) fn places_function(places: Vec<Place>) -> HostFunction {
+    let table = ConfigValue::Array(
+        places
+            .into_iter()
+            .map(|place| {
+                ConfigValue::Table(BTreeMap::from([
+                    ("id".to_owned(), ConfigValue::String(place.id)),
+                    ("name".to_owned(), ConfigValue::String(place.name)),
+                    ("kind".to_owned(), ConfigValue::String(place.kind)),
+                    (
+                        "size".to_owned(),
+                        ConfigValue::Integer(i64::from(place.size)),
+                    ),
+                ]))
+            })
+            .collect(),
+    );
+    Arc::new(move |arguments| {
+        if !arguments.is_empty() {
+            return Err("game.places: takes no arguments".to_owned());
+        }
+        Ok(vec![table.clone()])
+    })
+}
+
 /// The table a `game_time` callback gets for `snapshot`.
 pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
     let paused = match snapshot.paused {
@@ -191,5 +244,81 @@ mod tests {
             Some(&ConfigValue::String("town".to_owned()))
         );
         assert_eq!(fields.get("size"), Some(&ConfigValue::Integer(3)));
+    }
+
+    /// `game.places()` over the shipped Ireland 768 scenario: its 94 locations in file order, the first and last literal, each with the
+    /// kind's id and the authored size that `game_select` reports for the same location.
+    #[test]
+    fn places_returns_ireland_768s_locations_in_file_order_with_the_select_fields() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).expect("the shipped scenario loads");
+        let places = places_of(&scenario);
+        assert_eq!(places.len(), 94);
+        assert_eq!(
+            places[0],
+            Place {
+                id: "armagh".to_owned(),
+                name: "Ard Mhacha".to_owned(),
+                kind: "monastery".to_owned(),
+                size: 4,
+            }
+        );
+        assert_eq!(
+            places[93],
+            Place {
+                id: "moynagh".to_owned(),
+                name: "Maigh nEach".to_owned(),
+                kind: "crannog".to_owned(),
+                size: 1,
+            }
+        );
+        // File order, and the fields are the ones a selection of the same location carries.
+        for (place, location) in places.iter().zip(&scenario.locations) {
+            assert_eq!(place.id, location.id);
+            assert_eq!(place.name, location.name);
+            assert_eq!(place.size, location.size);
+            assert_eq!(
+                place.kind,
+                scenario.location_kinds.kinds[location.kind_index].id
+            );
+            let selected = select_arguments(&crate::map_app::Selection {
+                seq: 1,
+                id: place.id.clone(),
+                name: place.name.clone(),
+                kind: place.kind.clone(),
+                size: place.size,
+            });
+            let ConfigValue::Table(selected) = &selected[0] else {
+                panic!("a selection is a table");
+            };
+            assert_eq!(
+                selected.get("kind"),
+                Some(&ConfigValue::String(place.kind.clone()))
+            );
+            assert_eq!(
+                selected.get("size"),
+                Some(&ConfigValue::Integer(i64::from(place.size)))
+            );
+        }
+        // The host function returns them as one array of `{id, name, kind, size}` and takes no argument.
+        let function = places_function(places.clone());
+        let Ok(returned) = function(&[]) else {
+            panic!("game.places() with no arguments succeeds");
+        };
+        let [ConfigValue::Array(rows)] = returned.as_slice() else {
+            panic!("one array");
+        };
+        assert_eq!(rows.len(), 94);
+        let ConfigValue::Table(first) = &rows[0] else {
+            panic!("a table per place");
+        };
+        assert_eq!(
+            first.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["id", "kind", "name", "size"]
+        );
+        assert_eq!(first["name"], ConfigValue::String("Ard Mhacha".to_owned()));
+        let refused = function(&[Some(ConfigValue::Integer(1))]).unwrap_err();
+        assert_eq!(refused, "game.places: takes no arguments");
     }
 }

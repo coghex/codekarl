@@ -18,9 +18,9 @@ mod api {
 #[path = "group_readback/mod.rs"]
 mod group_readback;
 
-use group_readback::{CLEAR, Instance, Picture, SIZE, check, scenes};
+use group_readback::{CLEAR, Instance, Picture, check, scenes};
 
-fn draw(pictures: &[Picture], instances: &[Instance]) -> Vec<u8> {
+fn draw(pictures: &[Picture], size: (u32, u32), instances: &[Instance]) -> Vec<u8> {
     let images: Vec<ReadbackImage<'_>> = pictures
         .iter()
         .map(|picture| ReadbackImage {
@@ -44,8 +44,8 @@ fn draw(pictures: &[Picture], instances: &[Instance]) -> Vec<u8> {
         })
         .collect();
     let mut pixels = readback_scene(
-        SIZE.0,
-        SIZE.1,
+        size.0,
+        size.1,
         CLEAR,
         None,
         MetalFilter::Nearest,

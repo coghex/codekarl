@@ -51,6 +51,7 @@ void ck_app_t_schedule_sim_keys(void);
 void ck_app_t_schedule_key_files(void);
 void ck_app_t_schedule_map_pointer(void);
 void ck_app_t_schedule_map_select(void);
+void ck_app_t_schedule_places_list(void);
 void ck_app_t_schedule_ui_pointer(void);
 void ck_app_t_schedule_time_bar(void);
 void ck_app_t_schedule_map_hover(void);
@@ -113,7 +114,10 @@ void ck_app_t_install_input_filter(void) {
         if (getenv("CK_WINDOWED_TEST_MAP_HOVER") != NULL || getenv("CK_VULKAN_TEST_MAP_HOVER") != NULL) {
             ck_app_t_schedule_map_hover();
         }
-        if (getenv("CK_WINDOWED_TEST_MAP_SELECT") != NULL || getenv("CK_VULKAN_TEST_MAP_SELECT") != NULL) {
+        if (getenv("CK_TEST_PLACES_LIST") != NULL) {
+            /* The places list witness (its markers directory is the map-selection one). */
+            ck_app_t_schedule_places_list();
+        } else if (getenv("CK_WINDOWED_TEST_MAP_SELECT") != NULL || getenv("CK_VULKAN_TEST_MAP_SELECT") != NULL) {
             ck_app_t_schedule_map_select();
         }
         if (getenv("CK_WINDOWED_TEST_SIM_INPUT") != NULL || getenv("CK_VULKAN_TEST_SIM_INPUT") != NULL) {
@@ -658,6 +662,97 @@ void ck_app_t_schedule_map_select(void) {
                 stage = 10;
             }
             if (result != 1) NSLog(@"test map selection dispatch failed with result %d", result);
+        });
+        dispatch_resume(ck_app_map_select_timer);
+    }];
+}
+
+/* One marked wheel event over the point (x, y) (from the window's top-left corner, in points): `points` is the precise
+ * (trackpad) delta for the Cocoa backend and `lines` the line delta for glfw. A negative delta scrolls toward later items. */
+static int32_t ck_app_t_send_ui_scroll(NSWindow *window, double x, double y, int32_t points, int32_t lines) {
+    if (!window.isVisible || !window.ignoresMouseEvents) return -1;
+    BOOL glfw_vulkan = getenv("CK_VULKAN_TEST_MAP_SELECT") != NULL;
+    NSPoint in_view = NSMakePoint(x, window.contentView.bounds.size.height - y);
+    NSPoint in_window = [window.contentView convertPoint:in_view toView:nil];
+    /* The Cocoa backend reads -[NSEvent locationInWindow], which for an event built from a CGEvent (it has no window) is the
+     * location the CGEvent carries, flipped against the primary screen's height. The event goes straight to the view, so
+     * the location is the window-relative point itself: this flips it back to arrive as `in_window`. */
+    NSPoint screen_top = NSMakePoint(in_window.x, NSScreen.screens[0].frame.size.height - in_window.y);
+    /* GLFW's cursor position is the last cursor move, so it moves first (the same as a UI click). */
+    if (glfw_vulkan) {
+        int32_t moved = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, in_window);
+        if (moved != 1) return moved;
+    }
+    CGScrollEventUnit unit = glfw_vulkan ? kCGScrollEventUnitLine : kCGScrollEventUnitPixel;
+    CGEventRef raw = CGEventCreateScrollWheelEvent(NULL, unit, 1, glfw_vulkan ? lines : points);
+    if (raw == NULL) return -2;
+    CGEventSetLocation(raw, screen_top);
+    if (!glfw_vulkan) {
+        CGEventSetIntegerValueField(raw, kCGScrollWheelEventPointDeltaAxis1, points);
+        CGEventSetIntegerValueField(raw, kCGScrollWheelEventIsContinuous, 1);
+    }
+    CGEventSetIntegerValueField(raw, kCGEventSourceUserData, CK_TEST_INPUT_MARK);
+    NSEvent *event = [NSEvent eventWithCGEvent:raw];
+    CFRelease(raw);
+    if (event == nil) return -3;
+    [window.contentView scrollWheel:event];
+    return 1;
+}
+
+/* Drive the places list: click `places`, scroll over the list, click a row, then close the place window, the Places window and
+ * the application with Escape, each step when the Lua witness has written the marker for the one before it (the markers are
+ * written a frame after the callback that made them, so the scene they refer to is published). The geometry is the witness's:
+ * the places button's centre is at (262, 27) and the list's first row under (126, 149) when the Places window is at (100, 100). */
+void ck_app_t_schedule_places_list(void) {
+    __block NSUInteger stage = 0;
+    const char *dir = getenv("CK_WINDOWED_TEST_MAP_SELECT");
+    if (dir == NULL) dir = getenv("CK_VULKAN_TEST_MAP_SELECT");
+    if (dir == NULL) return;
+    strncpy(ck_app_map_select_dir, dir, sizeof ck_app_map_select_dir - 1);
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    ck_app_map_pointer_observer = [center addObserverForName:NSWindowDidUpdateNotification
+                                   object:nil
+                                    queue:NSOperationQueue.mainQueue
+                               usingBlock:^(__unused NSNotification *notification) {
+        NSWindow *window = notification.object;
+        if (![window isKindOfClass:NSWindow.class] || !window.isVisible) return;
+        [NSNotificationCenter.defaultCenter removeObserver:ck_app_map_pointer_observer];
+        ck_app_map_pointer_observer = nil;
+        ck_app_map_select_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(ck_app_map_select_timer, DISPATCH_TIME_NOW, 5 * NSEC_PER_MSEC, NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(ck_app_map_select_timer, ^{
+            if (!window.isVisible) return;
+            int32_t result = 1;
+            if (stage == 0 && ck_app_marker(ck_app_map_select_dir, "places-button-ready")) {
+                result = ck_app_t_ui_click(window, 262.0, 27.0);
+                ck_app_map_select_transition(stage, 1, "places-button-ready");
+                stage = 1;
+            } else if (stage == 1 && ck_app_marker(ck_app_map_select_dir, "places-ready")) {
+                ck_app_ui_pointer_line("before-list-scroll");
+                result = ck_app_t_send_ui_scroll(window, 126.0, 149.0, -15, -1);
+                ck_app_map_select_transition(stage, 2, "places-ready");
+                stage = 2;
+            } else if (stage == 2 && ck_app_marker(ck_app_map_select_dir, "list-scrolled")) {
+                ck_app_ui_pointer_line("after-list-scroll");
+                result = ck_app_t_ui_click(window, 126.0, 149.0);
+                ck_app_map_select_transition(stage, 3, "list-scrolled");
+                stage = 3;
+            } else if (stage == 3 && ck_app_marker(ck_app_map_select_dir, "place-ready")) {
+                ck_app_tap(0x35, "\e");
+                ck_app_map_select_transition(stage, 4, "place-ready");
+                stage = 4;
+            } else if (stage == 4 && ck_app_marker(ck_app_map_select_dir, "place-closed")) {
+                ck_app_tap(0x35, "\e");
+                ck_app_map_select_transition(stage, 5, "place-closed");
+                stage = 5;
+            } else if (stage == 5 && ck_app_marker(ck_app_map_select_dir, "places-closed")) {
+                ck_app_tap(0x35, "\e");
+                ck_app_map_select_transition(stage, 6, "places-closed");
+                dispatch_source_cancel(ck_app_map_select_timer);
+                ck_app_map_select_timer = nil;
+                stage = 6;
+            }
+            if (result != 1) NSLog(@"test places list dispatch failed with result %d", result);
         });
         dispatch_resume(ck_app_map_select_timer);
     }];

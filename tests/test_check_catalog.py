@@ -2158,6 +2158,19 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("assets/ui/", "scripts/ui/"),
     ),
+    # CK-212: the lists' tests run the shipped UI over the shipped font and art; `game.places` reads Ireland 768's locations.
+    Guard(
+        "apps/codekarl/src/ui_link/list_tests.rs",
+        "rust.app",
+        ("assets/ui/", "scripts/ui/"),
+    ),
+    Guard("apps/codekarl/src/game_api.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
+    # The places list's window witness (CK-212) runs the shipped UI script over Ireland 768 with the shipped assets.
+    Guard(
+        "apps/codekarl/tests/support/places_list.rs",
+        "rust.app",
+        ("scripts/ui/main.lua", "assets/"),
+    ),
     # The time bar's window support (CK-209) reads the shipped UI script.
     Guard("apps/codekarl/tests/support/time_bar.rs", "rust.app", ("scripts/ui/main.lua",)),
     # These off-screen GPU cases decode the same shipped font as part of their owning crate tests.

@@ -24,6 +24,30 @@ local function clamp(value, low, high)
   return math.max(low, math.min(value, high))
 end
 
+-- The groups of a window in drawing order: chrome, content, then each attached item's groups in attach order.
+local function stack(self)
+  local groups = {self.chrome, self.content}
+  for _, item in ipairs(self.attached) do
+    for _, group in ipairs(item.groups) do
+      groups[#groups + 1] = group
+    end
+  end
+  return groups
+end
+
+-- Lays the attached items out for the window's current position and content rectangle, in the callback that changed them.
+local function layout_items(self, only)
+  local origin_x, origin_y = self.x + PAD, self.y + self.title_height + PAD
+  local content_clip = {x = origin_x, y = origin_y, width = self.content_width, height = self.content_height}
+  if only ~= nil then
+    only:layout(origin_x, origin_y, content_clip)
+    return
+  end
+  for _, item in ipairs(self.attached) do
+    item:layout(origin_x, origin_y, content_clip)
+  end
+end
+
 local function limits(self)
   local visible = math.min(16 * P, self.outer_width)
   local low_x = visible - self.outer_width
@@ -84,13 +108,14 @@ local function set_position(self, x, y)
     width = self.content_width,
     height = self.content_height,
   })
+  layout_items(self)
 end
 
 local function raise(self)
   if self.closed then
     return
   end
-  render.raise_groups{self.chrome, self.content}
+  render.raise_groups(stack(self))
   for index, candidate in ipairs(windows) do
     if candidate == self then
       table.remove(windows, index)
@@ -112,6 +137,7 @@ function window.new(spec)
     y = spec.y,
     on_close = spec.on_close,
     closed = false,
+    attached = {},
     _pointer_children = {},
   }, Window)
   dimensions(self)
@@ -184,6 +210,34 @@ function Window:raise()
   raise(self)
 end
 
+-- Attaches an item (`groups`, `layout(origin_x, origin_y, content_clip)`, `destroy()`): it is laid out now and after every change of
+-- the window's position or content rectangle, its groups are drawn above the content in attach order, and it is destroyed when the
+-- window closes. Windows keep their own order: every window's stack is raised again, bottom first.
+function Window:attach(item)
+  if self.closed then
+    error("window:attach: the window is closed", 2)
+  end
+  self.attached[#self.attached + 1] = item
+  layout_items(self, item)
+  local groups = {}
+  for _, candidate in ipairs(windows) do
+    for _, group in ipairs(stack(candidate)) do
+      groups[#groups + 1] = group
+    end
+  end
+  render.raise_groups(groups)
+end
+
+-- Removes an item that destroyed itself.
+function Window:detach(item)
+  for index, candidate in ipairs(self.attached) do
+    if candidate == item then
+      table.remove(self.attached, index)
+      return
+    end
+  end
+end
+
 function Window:move_to(x, y)
   if not self.closed then
     set_position(self, x, y)
@@ -229,6 +283,12 @@ function Window:close()
   pointer.unregister_owner(self)
   render.set_hit(self.frame_key, nil, self.chrome)
   render.set_hit(self.title_key, nil, self.chrome)
+  -- The items go before the window's own groups: each removes its group, its keys and its registrations.
+  local attached = self.attached
+  self.attached = {}
+  for _, item in ipairs(attached) do
+    item:destroy()
+  end
   local chrome, content = self.chrome, self.content
   self.chrome, self.content = nil, nil
   render.destroy_group(chrome)

@@ -27,27 +27,37 @@ use crate::{font, ui_link::SimLink};
 #[path = "../../tests/support/map_selection_body.rs"]
 mod map_selection_fixture;
 
-/// What the sink last saw.
+/// What the sink last saw, and how many snapshots it has seen.
 #[derive(Default)]
-struct Last(Mutex<Option<Snapshot>>);
+pub(super) struct Last {
+    last: Mutex<Option<Snapshot>>,
+    published: std::sync::atomic::AtomicUsize,
+}
 
 impl QuadSink for Last {
     fn publish(&self, snapshot: Snapshot) -> Option<Snapshot> {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(snapshot);
+        *self.last.lock().unwrap_or_else(PoisonError::into_inner) = Some(snapshot);
+        self.published
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         None
     }
 }
 
 impl Last {
-    fn snapshot(&self) -> Snapshot {
-        self.0
+    /// How many snapshots were published: a callback that makes no scene call publishes none.
+    pub(super) fn count(&self) -> usize {
+        self.published.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub(super) fn snapshot(&self) -> Snapshot {
+        self.last
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
             .expect("a published snapshot")
     }
 
-    fn quads(&self) -> Vec<FrameQuad> {
+    pub(super) fn quads(&self) -> Vec<FrameQuad> {
         self.snapshot().scene.expect("a frame").quads().to_vec()
     }
 }
@@ -78,31 +88,36 @@ frame.on_update(function(f)
 end)
 "#;
 
-struct Rig {
-    harness: Harness,
-    link: CodekarlUi,
-    map: crate::map_app::SharedController,
+pub(super) struct Rig {
+    pub(super) harness: Harness,
+    pub(super) link: CodekarlUi,
+    pub(super) map: crate::map_app::SharedController,
     select_registered: Arc<AtomicBool>,
-    mapper: Mapper,
-    sink: Arc<Last>,
-    tables: Tables,
-    map_pointer: PointerPosition,
+    pub(super) mapper: Mapper,
+    pub(super) sink: Arc<Last>,
+    pub(super) tables: Tables,
+    pub(super) map_pointer: PointerPosition,
     sequence: u64,
 }
 
 impl Rig {
     /// A UI VM whose script is the prelude, `script` and the reporting callback. The window is 400 by 320 points at 2 pixels per point.
-    fn new(script: &str) -> Self {
+    pub(super) fn new(script: &str) -> Self {
         Self::new_at_scale(script, 2)
     }
 
-    fn new_at_scale(script: &str, scale: i64) -> Self {
+    pub(super) fn new_at_scale(script: &str, scale: i64) -> Self {
         Self::with_script(&format!("{PRELUDE}\n{script}\n{REPORT}"), scale)
     }
 
     /// Runs a fixture's full script without replacing its own frame callback with the reporting callback.
-    fn new_fixture_body(script: &str) -> Self {
+    pub(super) fn new_fixture_body(script: &str) -> Self {
         Self::with_script(script, 2)
+    }
+
+    /// [`new_fixture_body`](Self::new_fixture_body) at `scale` points per UI pixel.
+    pub(super) fn new_fixture_body_at_scale(script: &str, scale: i64) -> Self {
+        Self::with_script(script, scale)
     }
 
     #[expect(
@@ -218,7 +233,7 @@ impl Rig {
     }
 
     /// One input tick with these pointer events.
-    fn feed(&mut self, events: &[PointerEvent]) {
+    pub(super) fn feed(&mut self, events: &[PointerEvent]) {
         for event in events {
             self.mapper.pointer(*event);
         }
@@ -226,7 +241,7 @@ impl Rig {
     }
 
     /// Posts the next `frame_update`, waits for it, and returns what the script recorded for it.
-    fn deliver(&mut self) -> ConfigValue {
+    pub(super) fn deliver(&mut self) -> ConfigValue {
         self.sequence += 1;
         self.link
             .post(update(self.sequence))
@@ -241,7 +256,7 @@ impl Rig {
     }
 
     /// Posts a frame update to the fixture's own callback and waits for its completion.
-    fn deliver_fixture_frame(&mut self) {
+    pub(super) fn deliver_fixture_frame(&mut self) {
         self.sequence += 1;
         self.link
             .post(update(self.sequence))
@@ -255,7 +270,7 @@ impl Rig {
     }
 
     /// Runs the script's `window.on_opened` callback and waits (its edits are published by the completion hook).
-    fn opened(&mut self) {
+    pub(super) fn opened(&mut self) {
         self.link.post(UiEvent::Opened).expect("posted");
         let answered = answer(&mut self.link).answer;
         // Only a failure matters for `Opened`.
@@ -266,7 +281,7 @@ impl Rig {
     }
 
     /// The topmost published key at a point, if any.
-    fn key_at(&self, x: f64, y: f64) -> Option<String> {
+    pub(super) fn key_at(&self, x: f64, y: f64) -> Option<String> {
         self.harness
             .bridge
             .hit_regions()
@@ -1030,13 +1045,19 @@ end)
     let mut rig = Rig::new(&script);
     rig.opened();
     let regions = rig.harness.bridge.hit_regions().expect("published hits");
-    let help_key = regions
+    // The time bar's last button is `places`; Help (`?`) is the one before it.
+    let buttons: Vec<String> = regions
         .regions()
         .iter()
         .take_while(|region| !region.key().starts_with("window_frame_"))
         .filter(|region| region.key().starts_with("button_"))
-        .last()
         .map(|region| region.key().to_owned())
+        .collect();
+    let help_key = buttons
+        .iter()
+        .rev()
+        .nth(1)
+        .cloned()
         .expect("the production time bar has a Help button");
     let point = (0..400)
         .flat_map(|y| (0..400).map(move |x| (f64::from(x) + 0.5, f64::from(y) + 0.5)))

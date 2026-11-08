@@ -1070,11 +1070,15 @@ fn a_far_quad_is_accepted_and_simply_not_placed() {
 /// group is on top, what a hidden group draws, where an offset moves a quad, where a clip cuts and how the texels are trimmed).
 /// This is the windowless half of the readback: the backend targets draw the very same instances and must equal the reference.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the five frames' literal instances sit beside the checks that name them"
+)]
 fn the_readback_scenes_place_to_literal_instances_and_mean_what_they_say() {
     use super::group_readback::{Instance, Meaning, check, reference, scenes};
     let scenes = scenes();
-    check(&scenes, &mut |pictures, instances| {
-        reference(pictures, instances)
+    check(&scenes, &mut |pictures, size, instances| {
+        reference(pictures, size, instances)
     });
     let instance = |image, destination, source| Instance {
         image,
@@ -1133,4 +1137,54 @@ fn the_readback_scenes_place_to_literal_instances_and_mean_what_they_say() {
             ][..]
         )
     );
+    // The list's rows group, scrolled two whole rows (5 rows of 10 points, rows 3 to 7, exactly filling the view at pixels 10..110)
+    // and then half a row (rows 1 to 6: row 1 trimmed to its lower half at the top edge, row 6 to its upper half at the bottom edge).
+    // The rows do not overlap, so the group's painter order (creation order: after a scroll, the rows that entered the view were
+    // created last) does not matter; the instances are compared by position.
+    let mut by_position: Vec<(Meaning, Vec<Instance>)> = frames[5..]
+        .iter()
+        .map(|(meaning, instances)| {
+            let mut sorted = instances.to_vec();
+            sorted.sort_by_key(|instance| instance.destination);
+            (*meaning, sorted)
+        })
+        .collect();
+    let frames: Vec<(Meaning, &[Instance])> = frames[..5]
+        .iter()
+        .copied()
+        .chain(
+            by_position
+                .iter_mut()
+                .map(|(meaning, instances)| (*meaning, &instances[..])),
+        )
+        .collect();
+    assert_eq!(
+        frames[5],
+        (
+            Meaning::ListScrolledTwoRows,
+            &[
+                instance(3, [10, 10, 90, 30], whole),
+                instance(3, [10, 30, 90, 50], whole),
+                instance(3, [10, 50, 90, 70], whole),
+                instance(3, [10, 70, 90, 90], whole),
+                instance(3, [10, 90, 90, 110], whole),
+            ][..]
+        )
+    );
+    assert_eq!(
+        frames[6],
+        (
+            Meaning::ListScrolledHalfRow,
+            &[
+                instance(3, [10, 10, 90, 20], [0.0, 0.5, 1.0, 1.0]),
+                instance(3, [10, 20, 90, 40], whole),
+                instance(3, [10, 40, 90, 60], whole),
+                instance(3, [10, 60, 90, 80], whole),
+                instance(3, [10, 80, 90, 100], whole),
+                instance(3, [10, 100, 90, 110], [0.0, 0.0, 1.0, 0.5]),
+            ][..]
+        )
+    );
+    assert_eq!(scenes.frames[5].size, (100, 120));
+    assert_eq!(scenes.frames[0].size, (80, 60));
 }
