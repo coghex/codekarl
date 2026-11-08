@@ -86,12 +86,19 @@ local function checked_icons(icons)
   local count = 0
   local width = nil
   local copy = {}
+  local seen = {}
   for index, name in ipairs(icons) do
     count = count + 1
     local icon_width = ICON_WIDTHS[name]
     if icon_width == nil then
       error("button.new: unknown icon `" .. tostring(name) .. "`", 3)
     end
+    -- A repeated name would create a second quad that `icon_quads` (keyed by name) could never reach: `set_icon` would leave it
+    -- drawn and `destroy` could not remove it. It is refused here, before any frame, quad or region exists.
+    if seen[name] then
+      error("button.new: icon `" .. name .. "` is named twice in icons", 3)
+    end
+    seen[name] = true
     if width ~= nil and width ~= icon_width then
       error("button.new: icons must all have the same width", 3)
     end
