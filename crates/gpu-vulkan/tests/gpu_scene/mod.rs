@@ -420,7 +420,11 @@ pub(crate) fn reference(
             for x in d.left.max(0)..d.right.min(width as i32) {
                 let u = su + ((x - d.left) as f32 + 0.5) / dw * (eu - su);
                 let v = sv + ((y - d.top) as f32 + 0.5) / dh * (ev - sv);
-                let source = sample(image, u, v, how);
+                let mut source = sample(image, u, v, how);
+                // The instance's premultiplied tint multiplies the premultiplied texel (a tint of 255 leaves it).
+                for (channel, value) in source.iter_mut().enumerate() {
+                    *value *= f32::from(instance.tint[channel]) / 255.0;
+                }
                 let at = (y as usize * width as usize + x as usize) * 4;
                 let alpha = source[3] / 255.0;
                 for channel in 0..4 {
@@ -1454,16 +1458,20 @@ fn the_date_readout_draws_its_panel_and_glyphs_exactly_in(mode: Mode) {
         let shown = &rig.shown[&key];
         let left = origin_x + SCALE + x * SCALE;
         let top = origin_y + SCALE;
-        glyphs.push(instance(
-            key,
-            [
-                left,
-                top,
-                left + i32::try_from(shown.width).expect("small") * SCALE,
-                top + i32::try_from(shown.height).expect("small") * SCALE,
-            ],
-            WHOLE,
-        ));
+        // The glyph images are white; the text colour is the instance's tint.
+        glyphs.push(VulkanInstance {
+            tint: TEXT,
+            ..instance(
+                key,
+                [
+                    left,
+                    top,
+                    left + i32::try_from(shown.width).expect("small") * SCALE,
+                    top + i32::try_from(shown.height).expect("small") * SCALE,
+                ],
+                WHOLE,
+            )
+        });
     }
     let panel = instance(
         0,

@@ -702,7 +702,7 @@ static int32_t ck_app_t_send_ui_scroll(NSWindow *window, double x, double y, int
 /* Drive the places list: click `places`, scroll over the list, click a row, then close the place window, the Places window and
  * the application with Escape, each step when the Lua witness has written the marker for the one before it (the markers are
  * written a frame after the callback that made them, so the scene they refer to is published). The geometry is the witness's:
- * the places button's centre is at (262, 27) and the list's first row under (126, 149) when the Places window is at (100, 100). */
+ * the places button's centre is at (264, 27) and the list's first row under (126, 149) when the Places window is at (100, 100). */
 void ck_app_t_schedule_places_list(void) {
     __block NSUInteger stage = 0;
     const char *dir = getenv("CK_WINDOWED_TEST_MAP_SELECT");
@@ -724,7 +724,7 @@ void ck_app_t_schedule_places_list(void) {
             if (!window.isVisible) return;
             int32_t result = 1;
             if (stage == 0 && ck_app_marker(ck_app_map_select_dir, "places-button-ready")) {
-                result = ck_app_t_ui_click(window, 262.0, 27.0);
+                result = ck_app_t_ui_click(window, 264.0, 27.0);
                 ck_app_map_select_transition(stage, 1, "places-button-ready");
                 stage = 1;
             } else if (stage == 1 && ck_app_marker(ck_app_map_select_dir, "places-ready")) {

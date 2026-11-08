@@ -34,7 +34,8 @@ fn the_window_witness_assertions_validate_captured_output_offline() {
     let fixture = crate::testing::Dir::new();
     time_bar_witness::install_fixture_assets(&fixture.0, &fixture.0);
     assert!(fixture.0.join("lib/button.lua").is_file());
-    assert!(fixture.0.join("ui/button/normal.png").is_file());
+    assert!(fixture.0.join("ui/theme/white.png").is_file());
+    assert!(fixture.0.join("ui/theme.toml").is_file());
 }
 
 #[test]
@@ -132,12 +133,55 @@ fn quads(entries: &[String]) -> BTreeMap<String, Rect> {
     alive
 }
 
-/// The quads of `names` that are not parked.
-fn in_place(alive: &BTreeMap<String, Rect>, names: &[&str], hidden: i64) -> Vec<String> {
-    names
-        .iter()
-        .filter(|name| alive.get(**name).is_some_and(|rect| rect.0 != hidden))
-        .map(|name| (*name).to_owned())
+/// The tints of the frame whose first quad is `first` (11 quads for a frame cut at both corners, in painter order: five fill quads, then
+/// six line quads), replayed from the readout's tint log up to its `mark`th mark (all of it when `None`).
+fn frame_colours(readout: &Readout, first: usize, mark: Option<usize>) -> Vec<String> {
+    let mut colours = vec![String::new(); 11];
+    let mut marks = 0;
+    for entry in readout.tints() {
+        let parts: Vec<&str> = entry.split(' ').collect();
+        if entry == "record mark" {
+            marks += 1;
+            if mark == Some(marks) {
+                break;
+            }
+            continue;
+        }
+        if parts.len() != 3 || !matches!(parts[0], "create" | "set_tint") {
+            continue;
+        }
+        let Some(number) = parts[1]
+            .strip_prefix('q')
+            .and_then(|n| n.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        if (first..first + 11).contains(&number) {
+            colours[number - first] = parts[2].to_owned();
+        }
+    }
+    colours
+}
+
+/// The colours of a frame filled `fill` and outlined `line`: five fill quads, then six line quads.
+fn look(fill: &str, line: &str) -> Vec<String> {
+    let mut colours = vec![fill.to_owned(); 5];
+    colours.extend(vec![line.to_owned(); 6]);
+    colours
+}
+
+/// The `set_tint` calls that give quads `first` to `last` the colour.
+fn retint(first: usize, last: usize, colour: &str) -> Vec<String> {
+    (first..=last)
+        .map(|quad| format!("set_tint q{quad} {colour}"))
+        .collect()
+}
+
+/// The entries without the load and creation of the theme's frame quads (their literals are in `theme_tests`).
+fn without_frames(entries: Vec<String>) -> Vec<String> {
+    entries
+        .into_iter()
+        .filter(|entry| !entry.contains("ui/theme/"))
         .collect()
 }
 
@@ -266,23 +310,24 @@ local panel = require("lib.panel")
 window.record("P " .. ui.P)
 -- x = 8 snaps to 9 at P = 3.
 panel.new{x = 8, y = 8, width = 30, height = 30}
--- A centred panel 7 UI pixels wide (21 points) in an 800-point window: (800 - 21) / 2 = 389.5, which snaps to 390.
-local x, y = ui.anchor("centre", 21, 21, 0, 0, 800, 600)
+-- A centred panel 9 UI pixels wide (27 points) in an 800-point window: (800 - 27) / 2 = 386.5, which snaps to 387.
+local x, y = ui.anchor("centre", 27, 27, 0, 0, 800, 600)
 window.record("centre " .. x .. " " .. y)
-panel.new{x = x, y = y, width = 21, height = 21}
+panel.new{x = x, y = y, width = 27, height = 27}
 "#,
         Some(3),
     );
-    assert_eq!(records(&readout), ["P 3", "centre 390 291"]);
+    assert_eq!(records(&readout), ["P 3", "centre 387 288"]);
+    // Each panel is a frame of eleven quads; its first is the top-left tile, at the panel's snapped corner.
+    let entries = readout.entries();
+    assert_eq!(entries[0], "record P 3");
+    assert_eq!(entries[2], "create q1 ui/theme/cut3_tl_fill.png 9 9 12 12");
     assert_eq!(
-        readout.entries(),
-        [
-            "record P 3",
-            "load ui/font/panel.png",
-            "create q1 ui/font/panel.png 9 9 30 30",
-            "record centre 390 291",
-            "create q2 ui/font/panel.png 390 291 21 21",
-        ]
+        entries
+            .iter()
+            .filter(|entry| entry.starts_with("create q12 "))
+            .collect::<Vec<_>>(),
+        ["create q12 ui/theme/cut3_tl_fill.png 387 288 12 12"]
     );
 }
 
@@ -322,7 +367,7 @@ fn a_label_and_a_panel_snap_what_they_are_given_and_measure_in_points() {
         r#"
 local label = require("lib.label")
 local panel = require("lib.panel")
-local p = panel.new{x = 5, y = 7, width = 31, height = 0}
+local p = panel.new{x = 5, y = 7, width = 31, height = 17}
 window.record("panel " .. p.x .. " " .. p.y .. " " .. p.width .. " " .. p.height)
 local l = label.new{x = 8, y = 8, text = "Go"}
 window.record("size " .. table.concat({l:size()}, " "))
@@ -335,26 +380,28 @@ l:destroy()
     );
     assert_eq!(
         records(&readout),
-        ["panel 6 8 32 2", "size 24 22", "size 12 22"]
+        ["panel 6 8 32 18", "size 24 22", "size 12 22"]
     );
+    // The panel is a frame (11 quads, q1 to q11); the label's glyphs follow.
+    let entries = readout.entries();
+    assert_eq!(entries[1], "create q1 ui/theme/cut3_tl_fill.png 6 8 8 8");
     assert_eq!(
-        readout.entries()[..9],
+        without_frames(entries)[..8],
         [
-            "load ui/font/panel.png",
-            "create q1 ui/font/panel.png 6 8 32 2",
-            "record panel 6 8 32 2",
+            "record panel 6 8 32 18",
             "load ui/font/glyphs/U+0047.png",
-            "create q2 ui/font/glyphs/U+0047.png 8 8 10 22",
+            "create q12 ui/font/glyphs/U+0047.png 8 8 10 22",
             "load ui/font/glyphs/U+006F.png",
-            "create q3 ui/font/glyphs/U+006F.png 20 8 10 22",
+            "create q13 ui/font/glyphs/U+006F.png 20 8 10 22",
             "record size 24 22",
-            "destroy q3",
+            "destroy q13",
+            "record size 12 22",
         ]
     );
     // `move` to 9, 9 snaps to 10, 10 and repositions the one glyph; `destroy` removes it.
     assert_eq!(
-        readout.entries()[9..],
-        ["record size 12 22", "set_position q2 10 10", "destroy q2"]
+        without_frames(readout.entries())[8..],
+        ["set_position q12 10 10", "destroy q12"]
     );
 }
 
@@ -364,23 +411,42 @@ fn a_buttons_quads_are_literal_rectangles_at_two_points_per_pixel() {
         &format!("{GO_BUTTON}window.record('size ' .. table.concat({{b:size()}}, ' '))"),
         None,
     );
+    // 16 by 15 UI pixels: a cut-3 frame at (10, 20) under the text "Go" (12 wide, centred: its left edge is 2 pixels in).
     assert_eq!(
         readout.entries(),
         [
-            "load ui/button/normal.png",
-            "create q1 ui/button/normal.png 10 20 32 30",
-            "load ui/button/hover.png",
-            "create q2 ui/button/hover.png -1000000000000 -1000000000000 32 30",
-            "load ui/button/pressed.png",
-            "create q3 ui/button/pressed.png -1000000000000 -1000000000000 32 30",
+            "load ui/theme/cut3_tl_fill.png",
+            "create q1 ui/theme/cut3_tl_fill.png 10 20 8 8",
+            "load ui/theme/cut3_br_fill.png",
+            "create q2 ui/theme/cut3_br_fill.png 34 42 8 8",
+            "load ui/theme/white.png",
+            "create q3 ui/theme/white.png 18 22 22 6",
+            "create q4 ui/theme/white.png 12 28 28 14",
+            "create q5 ui/theme/white.png 12 42 22 6",
+            "load ui/theme/cut3_tl_line.png",
+            "create q6 ui/theme/cut3_tl_line.png 10 20 8 8",
+            "load ui/theme/cut3_br_line.png",
+            "create q7 ui/theme/cut3_br_line.png 34 42 8 8",
+            "create q8 ui/theme/white.png 18 20 24 2",
+            "create q9 ui/theme/white.png 40 22 2 20",
+            "create q10 ui/theme/white.png 12 48 22 2",
+            "create q11 ui/theme/white.png 10 28 2 22",
             "load ui/font/glyphs/U+0047.png",
-            "create q4 ui/font/glyphs/U+0047.png 14 24 10 22",
+            "create q12 ui/font/glyphs/U+0047.png 14 24 10 22",
             "load ui/font/glyphs/U+006F.png",
-            "create q5 ui/font/glyphs/U+006F.png 26 24 10 22",
+            "create q13 ui/font/glyphs/U+006F.png 26 24 10 22",
             "set_hit button_1 10 20 32 30",
             "record size 32 30",
         ]
     );
+    // The tints: the panel look (body fill, red outline), and the glyphs in the text colour.
+    let mut tints: Vec<String> = (1..=5)
+        .map(|quad| format!("create q{quad} #15110a"))
+        .collect();
+    tints.extend((6..=11).map(|quad| format!("create q{quad} #6e130f")));
+    tints.extend((12..=13).map(|quad| format!("create q{quad} #ece3cb")));
+    tints.push("record size 32 30".to_owned());
+    assert_eq!(readout.tints(), tints);
 }
 
 #[test]
@@ -389,19 +455,30 @@ fn a_buttons_quads_are_literal_rectangles_at_three_points_per_pixel() {
         &format!("{GO_BUTTON}window.record('size ' .. table.concat({{b:size()}}, ' '))"),
         Some(3),
     );
+    let entries = readout.entries();
+    // 16 by 15 UI pixels at (9, 21): the same frame, every edge three times a UI pixel.
     assert_eq!(
-        readout.entries(),
+        entries
+            .iter()
+            .filter(|entry| entry.starts_with("create")
+                || entry.starts_with("set_hit")
+                || entry.starts_with("record"))
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
         [
-            "load ui/button/normal.png",
-            "create q1 ui/button/normal.png 9 21 48 45",
-            "load ui/button/hover.png",
-            "create q2 ui/button/hover.png -999999999999 -999999999999 48 45",
-            "load ui/button/pressed.png",
-            "create q3 ui/button/pressed.png -999999999999 -999999999999 48 45",
-            "load ui/font/glyphs/U+0047.png",
-            "create q4 ui/font/glyphs/U+0047.png 15 27 15 33",
-            "load ui/font/glyphs/U+006F.png",
-            "create q5 ui/font/glyphs/U+006F.png 33 27 15 33",
+            "create q1 ui/theme/cut3_tl_fill.png 9 21 12 12",
+            "create q2 ui/theme/cut3_br_fill.png 45 54 12 12",
+            "create q3 ui/theme/white.png 21 24 33 9",
+            "create q4 ui/theme/white.png 12 33 42 21",
+            "create q5 ui/theme/white.png 12 54 33 9",
+            "create q6 ui/theme/cut3_tl_line.png 9 21 12 12",
+            "create q7 ui/theme/cut3_br_line.png 45 54 12 12",
+            "create q8 ui/theme/white.png 21 21 36 3",
+            "create q9 ui/theme/white.png 54 24 3 30",
+            "create q10 ui/theme/white.png 12 63 33 3",
+            "create q11 ui/theme/white.png 9 33 3 33",
+            "create q12 ui/font/glyphs/U+0047.png 15 27 15 33",
+            "create q13 ui/font/glyphs/U+006F.png 33 27 15 33",
             "set_hit button_1 9 21 48 45",
             "record size 48 45",
         ]
@@ -420,11 +497,11 @@ local ui = require("lib.ui")
 local b = button.new{x = 13, y = 17, text = "Hi", on_click = function() end}
 b:move(31, 29)
 b:set_text("Hello")
-panel.new{x = 7, y = 9, width = 55, height = 23}:set_rect(11, 13, 17, 19)
+panel.new{x = 7, y = 9, width = 55, height = 55}:set_rect(11, 13, 47, 49)
 local l = label.new{x = 1, y = 2, text = "ab"}
 l:move(23, 41)
-local x, y = ui.anchor("bottom_right", 33, 22, -8, -8, 801, 601)
-panel.new{x = x, y = y, width = 33, height = 22}
+local x, y = ui.anchor("bottom_right", 47, 45, -8, -8, 801, 601)
+panel.new{x = x, y = y, width = 47, height = 45}
 "#,
             Some(scale),
         );
@@ -447,7 +524,7 @@ panel.new{x = x, y = y, width = 33, height = 22}
 }
 
 #[test]
-fn a_buttons_background_is_one_quad_in_place_and_its_glyphs_stay_above() {
+fn a_buttons_frame_is_eleven_quads_below_its_glyphs_and_its_looks_are_tints_only() {
     let readout = Readout::script(
         &format!(
             "{GO_BUTTON}mark()\nsend(packet(key, {{}}), true)\nmark()\nsend(packet(key, {{ev('down', 12, 22)}}, false, true), true)\nmark()\nsend(packet(false, {{ev('up', 500, 500)}}), true)\nmark()\nb:set_text('Hello')\nmark()"
@@ -459,61 +536,56 @@ fn a_buttons_background_is_one_quad_in_place_and_its_glyphs_stay_above() {
         .iter()
         .position(|e| e == "record mark")
         .expect("a mark");
-    // Painter order is creation order: the three backgrounds precede every glyph.
+    // Painter order is creation order: the frame's eleven quads precede every glyph.
     let creates: Vec<&String> = entries[..first]
         .iter()
         .filter(|e| e.starts_with("create"))
         .collect();
+    assert_eq!(creates.len(), 13);
     assert!(
-        creates[..3].iter().all(|e| e.contains("ui/button/")),
+        creates[..11].iter().all(|e| e.contains("ui/theme/")),
         "{creates:?}"
     );
     assert!(
-        creates[3..].iter().all(|e| e.contains("glyphs")),
+        creates[11..].iter().all(|e| e.contains("glyphs")),
         "{creates:?}"
     );
-    for (index, expected) in [
-        (0, "q1"), // normal
-        (1, "q2"), // hover
-        (2, "q3"), // pressed
-        (3, "q1"), // the up outside ends the press: normal again
-    ] {
-        let upto = entries
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.as_str() == "record mark")
-            .nth(index)
-            .map(|(i, _)| i)
-            .expect("a mark");
-        let alive = quads(&entries[..upto]);
-        assert_eq!(
-            in_place(&alive, &["q1", "q2", "q3"], -1_000_000_000_000),
-            [expected],
-            "after mark {index}"
+    // No look moves a quad: the states differ in tints alone (every `after_mark` here is free of position calls).
+    for mark in 1..=3 {
+        assert!(
+            readout
+                .after_mark(mark)
+                .iter()
+                .all(|entry| !entry.starts_with("set_position")),
+            "mark {mark}"
         );
     }
-    // `set_text` grows the background (the one in place and the parked ones) and resets the region.
+    for (mark, fill, line) in [
+        (1, "#15110a", "#6e130f"), // normal
+        (2, "#15110a", "#a8261c"), // hover
+        (3, "#a8261c", "#a8261c"), // pressed
+        (4, "#15110a", "#6e130f"), // the up outside ends the press, and the pointer is not over: normal again
+    ] {
+        assert_eq!(
+            frame_colours(&readout, 1, Some(mark)),
+            look(fill, line),
+            "at mark {mark}"
+        );
+    }
+    // `set_text` grows the frame (every quad of it) and resets the region: the button is 30 UI pixels wide.
     let after = readout.after_mark(4);
     assert!(
         after.contains(&"set_hit button_1 10 20 60 30".to_owned()),
         "{after:?}"
     );
     assert!(
-        after.contains(&"set_rect q1 10 20 60 30".to_owned()),
-        "{after:?}"
-    );
-    assert!(
-        after.contains(&"set_rect q2 -1000000000000 -1000000000000 60 30".to_owned()),
-        "{after:?}"
-    );
-    assert!(
-        after.contains(&"set_rect q3 -1000000000000 -1000000000000 60 30".to_owned()),
+        after.contains(&"set_rect q9 68 22 2 20".to_owned()),
         "{after:?}"
     );
 }
 
 #[test]
-fn moving_a_button_moves_its_background_its_glyphs_and_its_region() {
+fn moving_a_button_moves_its_frame_its_glyphs_and_its_region() {
     let readout = Readout::script(
         &format!("{GO_BUTTON}mark()\nb:move(30, 40)\nmark()\nb:move(30, 40)\nmark()"),
         None,
@@ -521,17 +593,24 @@ fn moving_a_button_moves_its_background_its_glyphs_and_its_region() {
     assert_eq!(
         readout.after_mark(1),
         [
-            "set_position q1 30 40",
-            "set_position q4 34 44",
-            "set_position q5 46 44",
+            "set_rect q1 30 40 8 8",
+            "set_rect q2 54 62 8 8",
+            "set_rect q3 38 42 22 6",
+            "set_rect q4 32 48 28 14",
+            "set_rect q5 32 62 22 6",
+            "set_rect q6 30 40 8 8",
+            "set_rect q7 54 62 8 8",
+            "set_rect q8 38 40 24 2",
+            "set_rect q9 60 42 2 20",
+            "set_rect q10 32 68 22 2",
+            "set_rect q11 30 48 2 22",
+            "set_position q12 34 44",
+            "set_position q13 46 44",
             "set_hit button_1 30 40 32 30",
         ]
     );
-    // The same position again repositions the background and rewrites the region but moves no glyph.
-    assert_eq!(
-        readout.after_mark(2),
-        ["set_position q1 30 40", "set_hit button_1 30 40 32 30"]
-    );
+    // The same position again moves no quad and no glyph, and rewrites the region.
+    assert_eq!(readout.after_mark(2), ["set_hit button_1 30 40 32 30"]);
 }
 
 #[test]
@@ -552,6 +631,14 @@ fn destroying_a_button_removes_its_quads_and_its_region_and_it_stops_receiving_e
             "destroy q3",
             "destroy q4",
             "destroy q5",
+            "destroy q6",
+            "destroy q7",
+            "destroy q8",
+            "destroy q9",
+            "destroy q10",
+            "destroy q11",
+            "destroy q12",
+            "destroy q13",
         ]
     );
     // After the destroy nothing is registered: the event is ignored (the packet still reports its event and its `over`), and a
@@ -581,41 +668,24 @@ fn a_button_is_hover_when_the_pointer_is_over_it_pressed_on_a_down_and_clicks_on
         ),
         None,
     );
-    // over: hover (the normal background parks, the hover one comes into place)
-    assert_eq!(
-        readout.after_mark(1),
-        [
-            "set_position q1 -1000000000000 -1000000000000",
-            "set_position q2 10 20"
-        ]
-    );
-    // down: pressed
-    assert_eq!(
-        readout.after_mark(2),
-        [
-            "set_position q2 -1000000000000 -1000000000000",
-            "set_position q3 10 20"
-        ]
-    );
+    // over: hover (the outline takes the hot colour)
+    assert_eq!(readout.after_mark(1), Vec::<String>::new());
+    assert_eq!(readout.tints_after_mark(1), retint(6, 11, "#a8261c"));
+    // down: pressed (the fill takes the hot colour too; the text colour stays, `pressed_text` being the text colour)
+    assert_eq!(readout.after_mark(2), Vec::<String>::new());
+    assert_eq!(readout.tints_after_mark(2), retint(1, 5, "#a8261c"));
     // no click yet, and a move while pressed changes nothing on screen
     assert_eq!(readout.after_mark(3), ["record clicks 0"]);
+    assert_eq!(readout.tints_after_mark(3), ["record clicks 0"]);
     // up inside: one click, and the look is hover again (the pointer is still over the button)
+    assert_eq!(readout.after_mark(4), ["record clicks 1"]);
     assert_eq!(
-        readout.after_mark(4),
-        [
-            "set_position q3 -1000000000000 -1000000000000",
-            "set_position q2 10 20",
-            "record clicks 1",
-        ]
+        readout.tints_after_mark(4),
+        [retint(1, 5, "#15110a"), vec!["record clicks 1".to_owned()]].concat()
     );
     // out: normal
-    assert_eq!(
-        readout.after_mark(5),
-        [
-            "set_position q2 -1000000000000 -1000000000000",
-            "set_position q1 10 20"
-        ]
-    );
+    assert_eq!(readout.after_mark(5), Vec::<String>::new());
+    assert_eq!(readout.tints_after_mark(5), retint(6, 11, "#6e130f"));
 }
 
 #[test]
@@ -738,16 +808,13 @@ fn an_over_only_packet_changes_the_look_and_an_identical_one_makes_no_scene_call
         ),
         None,
     );
-    assert_eq!(
-        readout.after_mark(1),
-        [
-            "set_position q1 -1000000000000 -1000000000000",
-            "set_position q2 10 20"
-        ]
-    );
+    assert_eq!(readout.tints_after_mark(1), retint(6, 11, "#a8261c"));
     // identical: unchanged, no scene call (`held` alone is not a change)
+    assert!(readout.after_mark(1).is_empty());
     assert!(readout.after_mark(2).is_empty());
     assert!(readout.after_mark(3).is_empty());
+    assert!(readout.tints_after_mark(2).is_empty());
+    assert!(readout.tints_after_mark(3).is_empty());
 }
 
 #[test]
@@ -800,23 +867,20 @@ fn an_overflow_packet_with_no_events_and_the_button_up_releases_every_pressed_wi
         ),
         None,
     );
-    let entries = readout.entries();
-    let marked = entries
-        .iter()
-        .position(|e| e == "record mark")
-        .expect("a mark");
-    // both buttons were pressed: each one's pressed quad (q3 and q8) was in place
-    let before = quads(&entries[..marked]);
-    assert_eq!((before["q3"].0, before["q8"].0), (10, 100));
-    // after the packet both are normal again (q1 and q6 in place, the others parked), and nobody clicked
-    let after = quads(&entries);
+    // both buttons were pressed: each frame's fill and line are hot (the first button's quads are q1 to q13, the second's q14 to q26)
     assert_eq!(
-        in_place(
-            &after,
-            &["q1", "q2", "q3", "q6", "q7", "q8"],
-            -1_000_000_000_000
-        ),
-        ["q1", "q6"]
+        frame_colours(&readout, 1, Some(1)),
+        look("#a8261c", "#a8261c")
+    );
+    assert_eq!(
+        frame_colours(&readout, 14, Some(1)),
+        look("#a8261c", "#a8261c")
+    );
+    // after the packet both are normal again, and nobody clicked
+    assert_eq!(frame_colours(&readout, 1, None), look("#15110a", "#6e130f"));
+    assert_eq!(
+        frame_colours(&readout, 14, None),
+        look("#15110a", "#6e130f")
     );
     assert_eq!(records(&readout), ["clicks 0"]);
 }
@@ -832,16 +896,19 @@ fn an_overflow_packet_clicks_nothing_even_with_a_retained_down_and_up() {
     );
     // pressed, then released (the replay), then hover for the pointer now over the button; no click
     assert_eq!(
-        readout.after_mark(1),
+        readout.tints_after_mark(1),
         [
-            "set_position q1 -1000000000000 -1000000000000",
-            "set_position q3 10 20",
-            "set_position q3 -1000000000000 -1000000000000",
-            "set_position q1 10 20",
-            "set_position q1 -1000000000000 -1000000000000",
-            "set_position q2 10 20",
-            "record clicks 0",
+            retint(1, 5, "#a8261c"),
+            // the first press: hover was not yet told, so the line was normal and goes hot with the fill
+            retint(6, 11, "#a8261c"),
+            // released: back to normal
+            retint(1, 5, "#15110a"),
+            retint(6, 11, "#6e130f"),
+            // then hover (the pointer is over the button)
+            retint(6, 11, "#a8261c"),
+            vec!["record clicks 0".to_owned()],
         ]
+        .concat()
     );
 }
 
@@ -861,16 +928,10 @@ fn an_overflow_packet_that_ends_held_releases_the_pressed_button_and_the_next_cl
         None,
     );
     assert_eq!(records(&readout), ["clicks 0", "clicks 0", "clicks 1"]);
-    // after the overflow packet the button is not pressed: only the hover quad is in place (the pointer is over it)
-    let entries = readout.entries();
-    let marked = entries
-        .iter()
-        .position(|e| e == "record mark")
-        .expect("a mark");
-    let alive = quads(&entries[..marked]);
+    // after the overflow packet the button is not pressed: it has the hover look (the pointer is over it)
     assert_eq!(
-        in_place(&alive, &["q1", "q2", "q3"], -1_000_000_000_000),
-        ["q2"]
+        frame_colours(&readout, 1, Some(1)),
+        look("#15110a", "#a8261c")
     );
 }
 
@@ -883,23 +944,12 @@ fn the_cancel_of_a_gesture_clears_the_pressed_state_without_a_click() {
         ),
         None,
     );
-    let entries = readout.entries();
-    let first = entries
-        .iter()
-        .position(|e| e == "record mark")
-        .expect("a mark");
+    // pressed at the mark; the cancel clears the press, and the pointer is not over the button
     assert_eq!(
-        in_place(
-            &quads(&entries[..first]),
-            &["q1", "q2", "q3"],
-            -1_000_000_000_000
-        ),
-        ["q3"]
+        frame_colours(&readout, 1, Some(1)),
+        look("#a8261c", "#a8261c")
     );
-    assert_eq!(
-        in_place(&quads(&entries), &["q1", "q2", "q3"], -1_000_000_000_000),
-        ["q1"]
-    );
+    assert_eq!(frame_colours(&readout, 1, None), look("#15110a", "#6e130f"));
     assert_eq!(
         records(&readout).last().map(String::as_str),
         Some("clicks 0")
@@ -925,13 +975,19 @@ fn the_tooltip_flips_at_the_real_window_width() {
         readout
             .entries()
             .into_iter()
-            .find(|e| e.starts_with("create q1 ui/font/panel.png"))
+            .find(|e| e.starts_with("create q1 ui/theme/cut3_tl_fill.png"))
             .expect("the tooltip panel")
     };
-    // The panel is 60 points wide: at 800 it would end at 824, so it flips to the left of the place (700 - 4 - 60 = 636); at 1200 it
-    // fits on the right (760 + 4 = 764).
-    assert_eq!(flip_x(800), "create q1 ui/font/panel.png 636 68 60 26");
-    assert_eq!(flip_x(1200), "create q1 ui/font/panel.png 764 68 60 26");
+    // The tooltip's frame is 64 points wide (the name's 28 UI pixels plus 2 on each side): at 800 it would end at 828, so it flips to
+    // the left of the place (700 - 4 - 64 = 632); at 1200 it fits on the right (760 + 4 = 764).
+    assert_eq!(
+        flip_x(800),
+        "create q1 ui/theme/cut3_tl_fill.png 632 66 8 8"
+    );
+    assert_eq!(
+        flip_x(1200),
+        "create q1 ui/theme/cut3_tl_fill.png 764 66 8 8"
+    );
 }
 
 #[test]
@@ -955,8 +1011,9 @@ fn a_resize_relayouts_the_readout_and_a_shown_tooltip() {
     // A wider window: the tooltip no longer needs to flip, and the time bar remains at the same top-left anchor.
     readout.update(1200, 700, None);
     let after = readout.entries()[before..].to_vec();
+    // (The bar's frame is where it was: none of its quads is rewritten.)
     assert!(
-        after.iter().any(|e| e.starts_with("set_rect q1 8 8 ")),
+        after.iter().all(|e| !e.starts_with("set_rect q1 ")),
         "{after:?}"
     );
     assert!(
@@ -966,7 +1023,7 @@ fn a_resize_relayouts_the_readout_and_a_shown_tooltip() {
     assert!(
         after
             .iter()
-            .any(|e| e.starts_with("set_rect q") && e.ends_with(" 764 68 60 26")),
+            .any(|e| e.starts_with("set_rect q") && e.ends_with(" 764 66 8 8")),
         "{after:?}"
     );
 }
@@ -1071,8 +1128,8 @@ fn the_time_bar_routes_its_buttons_through_game_controls() {
             .any(|entry| entry.starts_with("set_hit readout ")),
         "the former readout-only hit region is removed"
     );
-    assert!(entries[0].starts_with("load ui/font/panel.png"));
-    assert!(entries[1].starts_with("create q1 ui/font/panel.png 8 8 "));
+    assert!(entries[0].starts_with("load ui/theme/cut3_tl_fill.png"));
+    assert!(entries[1].starts_with("create q1 ui/theme/cut3_tl_fill.png 8 8 "));
 
     let expected = [
         crate::game::controls::Control::TogglePause,
@@ -1127,34 +1184,34 @@ fn the_time_bar_geometry_is_literal_at_both_scales_and_readout_width_keeps_butto
     let cases = [
         (
             2,
-            "create q1 ui/font/panel.png 8 8 566 38",
+            "set_hit time_bar 8 8 568 38",
             [
-                "set_hit button_1 12 12 16 30",
-                "set_hit button_2 36 12 20 30",
-                "set_hit button_3 58 12 20 30",
-                "set_hit button_4 86 12 20 30",
-                "set_hit button_5 108 12 20 30",
-                "set_hit button_6 130 12 20 30",
-                "set_hit button_7 152 12 20 30",
-                "set_hit button_8 174 12 20 30",
-                "set_hit button_9 202 12 20 30",
-                "set_hit button_10 224 12 76 30",
+                "set_hit button_1 12 12 18 30",
+                "set_hit button_2 38 12 20 30",
+                "set_hit button_3 60 12 20 30",
+                "set_hit button_4 88 12 20 30",
+                "set_hit button_5 110 12 20 30",
+                "set_hit button_6 132 12 20 30",
+                "set_hit button_7 154 12 20 30",
+                "set_hit button_8 176 12 20 30",
+                "set_hit button_9 204 12 20 30",
+                "set_hit button_10 226 12 76 30",
             ],
         ),
         (
             3,
-            "create q1 ui/font/panel.png 9 9 849 57",
+            "set_hit time_bar 9 9 852 57",
             [
-                "set_hit button_1 15 15 24 45",
-                "set_hit button_2 51 15 30 45",
-                "set_hit button_3 84 15 30 45",
-                "set_hit button_4 126 15 30 45",
-                "set_hit button_5 159 15 30 45",
-                "set_hit button_6 192 15 30 45",
-                "set_hit button_7 225 15 30 45",
-                "set_hit button_8 258 15 30 45",
-                "set_hit button_9 300 15 30 45",
-                "set_hit button_10 333 15 114 45",
+                "set_hit button_1 15 15 27 45",
+                "set_hit button_2 54 15 30 45",
+                "set_hit button_3 87 15 30 45",
+                "set_hit button_4 129 15 30 45",
+                "set_hit button_5 162 15 30 45",
+                "set_hit button_6 195 15 30 45",
+                "set_hit button_7 228 15 30 45",
+                "set_hit button_8 261 15 30 45",
+                "set_hit button_9 303 15 30 45",
+                "set_hit button_10 336 15 114 45",
             ],
         ),
     ];
@@ -1166,7 +1223,7 @@ fn the_time_bar_geometry_is_literal_at_both_scales_and_readout_width_keeps_butto
             Some(crate::game::slot::PauseReason::Player),
         ));
         let before = readout.entries();
-        assert_eq!(before[1], panel);
+        assert!(before.contains(&panel.to_owned()), "scale {scale}: {panel}");
         let actual_hits: Vec<String> = before
             .iter()
             .filter(|entry| entry.starts_with("set_hit button_"))
@@ -1187,8 +1244,7 @@ fn the_time_bar_geometry_is_literal_at_both_scales_and_readout_width_keeps_butto
         assert!(
             changed
                 .iter()
-                .any(|entry| entry.starts_with("set_rect q1 8 8 ")
-                    || entry.starts_with("set_rect q1 9 9 ")),
+                .any(|entry| entry.starts_with("set_hit time_bar ")),
             "the panel width follows the readout at scale {scale}: {changed:?}"
         );
     }
@@ -1213,7 +1269,9 @@ fn the_tooltip_places_no_panel_while_hidden_and_exactly_one_when_shown() {
         let alive = quads(&entries);
         entries
             .iter()
-            .filter(|entry| entry.starts_with("create ") && entry.contains("ui/font/panel.png"))
+            .filter(|entry| {
+                entry.starts_with("create ") && entry.contains("ui/theme/cut3_tl_fill.png")
+            })
             .map(|entry| entry.split(' ').nth(1).expect("a quad name").to_owned())
             .filter_map(|name| alive.get(&name).copied())
             .collect()

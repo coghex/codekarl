@@ -1,0 +1,27 @@
+# The look (milestone 8, slice 7b; docs/ui-design.md §3.7). Colours are `#rrggbb` or `#rrggbbaa`.
+# `outline` and `hot` are required in every kind; `fill` (the body) defaults to `colour.body`, `text` to `colour.text`,
+# `title_text` and `pressed_text` to `colour.text`, `row_hover` and `row_pressed` to `outline` and `hot`;
+# `divider` is optional: a window of that kind has a dividing line under its title.
+
+[colour]
+body = "#15110a"   # every panel and window body: the map's near-black
+text = "#ece3cb"   # text and icons on a body
+
+[kind.window]      # a window with no kind of its own (Help, Places)
+outline = "#6e130f"
+hot = "#a8261c"    # hover outline, and the pressed fill
+
+[kind.time_bar]
+outline = "#6e130f"
+hot = "#a8261c"
+
+[kind.place]       # the location popup (the place window)
+outline = "#4fb3c8"
+hot = "#92ddea"
+title_text = "#15110a"
+pressed_text = "#15110a"
+divider = "#c9932e"
+
+[kind.tooltip]     # the hover tooltip: all white on black
+outline = "#ece3cb"
+hot = "#ece3cb"    # required by the rule; a tooltip has no states

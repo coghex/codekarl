@@ -110,7 +110,7 @@ fn field(
 }
 
 /// Parses the public straight-alpha hex color and converts it to the renderer's premultiplied RGBA8 form.
-fn parse_tint(function: &str, name: &str, value: &str) -> Result<Tint, String> {
+pub(crate) fn parse_tint(function: &str, name: &str, value: &str) -> Result<Tint, String> {
     let invalid = || format!("{function}: `{name}` must be #rrggbb or #rrggbbaa");
     let digits = value.strip_prefix('#').ok_or_else(invalid)?;
     if digits.len() != 6 && digits.len() != 8 {

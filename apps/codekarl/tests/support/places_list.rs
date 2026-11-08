@@ -3,7 +3,7 @@
 //!
 //! The driver clicks the `places` button, scrolls over the list, clicks a row, and closes the windows with Escape; this module only
 //! prepares the script and judges the combined output. Geometry the driver relies on, all validated offline by the windowless case:
-//! the time bar at the 8-point margin puts the `places` button's centre at (262, 27); the wrapper opens the Places window at (100, 100),
+//! the time bar at the 8-point margin puts the `places` button's centre at (264, 27); the wrapper opens the Places window at (100, 100),
 //! so its list's top-left corner is (106, 136), a row is 26 points high and the row under (126, 149) is the first, or, after a scroll
 //! of `s` points, the one at `(13 + s) / 26`.
 //!

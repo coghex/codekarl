@@ -160,7 +160,7 @@ impl Rig {
                     bottom: instance.destination[3],
                 },
                 source: instance.source,
-                tint: [255; 4],
+                tint: instance.tint,
                 role: InstanceRole::Scene,
             })
             .collect();

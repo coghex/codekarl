@@ -19,7 +19,7 @@ use ck_resources::{
 };
 use ck_window::{PixelSize, WindowDesc};
 
-use super::api::{Filter, Metrics, PointRect, QuadSink, SceneBridge, SceneWriter, Snapshot};
+use super::api::{Filter, Metrics, PointRect, QuadSink, SceneBridge, SceneWriter, Snapshot, Tint};
 
 /// The clear colour (the same as the other scene readbacks').
 pub(crate) const CLEAR: [f32; 3] = [0.1, 0.2, 0.3];
@@ -29,6 +29,10 @@ const GREEN: [u8; 4] = [0, 255, 0, 255];
 const BLUE: [u8; 4] = [0, 0, 255, 255];
 const YELLOW: [u8; 4] = [255, 255, 0, 255];
 const MAGENTA: [u8; 4] = [255, 0, 255, 255];
+/// The theme's place-window colours (`assets/ui/theme.toml`): the near-black body, the cyan outline and title bar, the amber divider.
+const BODY: [u8; 4] = [0x15, 0x11, 0x0a, 255];
+const CYAN: [u8; 4] = [0x4f, 0xb3, 0xc8, 255];
+const AMBER: [u8; 4] = [0xc9, 0x93, 0x2e, 255];
 
 /// The clear colour as the byte pixel a target holds.
 #[must_use]
@@ -55,6 +59,8 @@ pub(crate) struct Instance {
     pub(crate) image: usize,
     pub(crate) destination: [i32; 4],
     pub(crate) source: [f32; 4],
+    /// The quad's premultiplied RGBA8 tint (`[255; 4]` for none).
+    pub(crate) tint: [u8; 4],
 }
 
 /// What the frame means, in the checks.
@@ -74,6 +80,10 @@ pub(crate) enum Meaning {
     ListScrolledTwoRows,
     /// A scroll list's rows group scrolled by half a row.
     ListScrolledHalfRow,
+    /// A place window's frame (a 40 by 30 UI pixel body, title bar and divider), one UI pixel `scale` points.
+    PlaceWindow { scale: u32 },
+    /// One line of white glyphs tinted near-black over a cyan bar.
+    TintedGlyphs,
 }
 
 /// One published frame.
@@ -199,6 +209,7 @@ fn publish(writer: &mut SceneWriter, sink: &Last, keys: &[TextureKey], meaning: 
                     placed.source.right,
                     placed.source.bottom,
                 ],
+                tint: quad.tint.rgba(),
             })
         })
         .collect();
@@ -209,12 +220,17 @@ fn publish(writer: &mut SceneWriter, sink: &Last, keys: &[TextureKey], meaning: 
     }
 }
 
-/// The scenes: two scenes, five frames.
+/// The scenes: the groups' three scenes, the list's, the place window at two scales and the tinted glyphs.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the scenes are built in the order the frames are described, each with its writer calls beside the frame it publishes"
+)]
 pub(crate) fn scenes() -> Scenes {
     let service =
         ResourceService::new(ResourceLimits::DEFAULT, Mode::Headless).expect("headless resources");
-    let pictures = vec![solid(RED), solid(GREEN), strip(), bands()];
+    let mut pictures = vec![solid(RED), solid(GREEN), strip(), bands()];
+    pictures.extend(theme_pictures());
     let textures: Vec<(TextureKey, TextureRef<ResourceState>)> = pictures
         .iter()
         .map(|picture| texture(&service, picture))
@@ -316,11 +332,265 @@ pub(crate) fn scenes() -> Scenes {
         frames.push(publish(&mut writer, &sink, &keys, meaning));
     }
 
+    // Scenes 4 and 5: a place window's frame at one point and two points per UI pixel; scene 6: tinted glyphs over a cyan bar.
+    for scale in [1_u32, 2] {
+        let (_bridge, sink, mut writer) = scene((40 * scale, 30 * scale));
+        place_window(&mut writer, &textures, scale);
+        frames.push(publish(
+            &mut writer,
+            &sink,
+            &keys,
+            Meaning::PlaceWindow { scale },
+        ));
+    }
+    let (_bridge, sink, mut writer) = scene((20, 20));
+    let bar = writer
+        .create_quad(textures[WHITE].1.clone(), 0.0, 0.0, 20.0, 20.0)
+        .expect("the bar");
+    writer
+        .set_tint(bar, Tint::premultiplied(CYAN))
+        .expect("tinted");
+    let glyph = writer
+        .create_quad(textures[GLYPH].1.clone(), 2.0, 2.0, 10.0, 14.0)
+        .expect("the glyph");
+    writer
+        .set_tint(glyph, Tint::premultiplied(BODY))
+        .expect("tinted");
+    frames.push(publish(&mut writer, &sink, &keys, Meaning::TintedGlyphs));
+
     Scenes { pictures, frames }
 }
 
-/// The reference: the clear, then each instance in painter order, nearest sampled at the target pixel's centre (every picture is
-/// opaque, so source-over is a replacement).
+// ---------------------------------------------------------------------------------------------------------------------
+// The theme's frames (milestone 8, slice 7b)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// Picture indices of the theme's art in `Scenes::pictures`: the one white pixel, the cut-7 tiles and a white glyph.
+const WHITE: usize = 4;
+const TL_FILL: usize = 5;
+const BR_FILL: usize = 6;
+const TL_LINE: usize = 7;
+const BR_LINE: usize = 8;
+const GLYPH: usize = 9;
+
+/// Cut-corner tile of `cut + 1` pixels square (§4.2): `top_left` or bottom-right, its line or its fill.
+fn tile(cut: u32, top_left: bool, line: bool) -> Picture {
+    let side = cut + 1;
+    let mut bytes = Vec::new();
+    for j in 0..side {
+        for i in 0..side {
+            let set = if line {
+                i + j == cut
+            } else if top_left {
+                i + j > cut
+            } else {
+                i + j < cut
+            };
+            bytes.extend_from_slice(&if set { [255; 4] } else { [0; 4] });
+        }
+    }
+    Picture {
+        width: side,
+        height: side,
+        bytes,
+    }
+}
+
+/// A white five by seven glyph (an "A") over clear texels.
+fn glyph() -> Picture {
+    let rows = [
+        ".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#",
+    ];
+    Picture {
+        width: 5,
+        height: 7,
+        bytes: rows
+            .iter()
+            .flat_map(|row| row.chars())
+            .flat_map(|cell| if cell == '#' { [255; 4] } else { [0; 4] })
+            .collect(),
+    }
+}
+
+/// The theme's pictures, in the order of the constants above.
+fn theme_pictures() -> Vec<Picture> {
+    vec![
+        solid([255; 4]),
+        tile(7, true, false),
+        tile(7, false, false),
+        tile(7, true, true),
+        tile(7, false, true),
+        glyph(),
+    ]
+}
+
+/// One quad of a frame: the picture, whether it is tinted the fill or the line colour, and its rectangle in UI pixels
+/// `(x, y, width, height)`.
+struct Part {
+    image: usize,
+    line: bool,
+    rect: (u32, u32, u32, u32),
+}
+
+/// The quads of a cut-7 frame of `w` by `h` UI pixels, cut at the top-left and, with `bottom_right`, at the bottom-right, in painter
+/// order (the table of the design, §4.3).
+fn frame_parts(w: u32, h: u32, bottom_right: bool) -> Vec<Part> {
+    let c = 7;
+    let mut parts = Vec::new();
+    let mut add = |image, line, x1: u32, y1: u32, x2: u32, y2: u32| {
+        parts.push(Part {
+            image,
+            line,
+            rect: (x1, y1, x2 - x1 + 1, y2 - y1 + 1),
+        });
+    };
+    add(TL_FILL, false, 0, 0, c, c);
+    if bottom_right {
+        add(BR_FILL, false, w - 1 - c, h - 1 - c, w - 1, h - 1);
+    }
+    add(WHITE, false, c + 1, 1, w - 2, c);
+    add(
+        WHITE,
+        false,
+        1,
+        c + 1,
+        w - 2,
+        if bottom_right { h - 2 - c } else { h - 2 },
+    );
+    if bottom_right {
+        add(WHITE, false, 1, h - 1 - c, w - 2 - c, h - 2);
+    }
+    add(TL_LINE, true, 0, 0, c, c);
+    if bottom_right {
+        add(BR_LINE, true, w - 1 - c, h - 1 - c, w - 1, h - 1);
+    }
+    add(WHITE, true, c + 1, 0, w - 1, 0);
+    add(
+        WHITE,
+        true,
+        w - 1,
+        1,
+        w - 1,
+        if bottom_right { h - 2 - c } else { h - 1 },
+    );
+    add(
+        WHITE,
+        true,
+        1,
+        h - 1,
+        if bottom_right { w - 2 - c } else { w - 2 },
+        h - 1,
+    );
+    add(WHITE, true, 0, c + 1, 0, h - 1);
+    parts
+}
+
+/// The place window's scene: the body (fill near-black, outline cyan), the title bar (cyan) of 15 UI pixels and the amber divider
+/// under it, one UI pixel being `scale` points.
+fn place_window(
+    writer: &mut SceneWriter,
+    textures: &[(TextureKey, TextureRef<ResourceState>)],
+    scale: u32,
+) {
+    let scale_f = f64::from(scale);
+    let mut add = |part: &Part, fill: [u8; 4], line: [u8; 4], dx: u32| {
+        let (x, y, w, h) = part.rect;
+        let quad = writer
+            .create_quad(
+                textures[part.image].1.clone(),
+                f64::from(x + dx) * scale_f,
+                f64::from(y) * scale_f,
+                f64::from(w) * scale_f,
+                f64::from(h) * scale_f,
+            )
+            .expect("a frame quad");
+        writer
+            .set_tint(
+                quad,
+                Tint::premultiplied(if part.line { line } else { fill }),
+            )
+            .expect("tinted");
+    };
+    for part in frame_parts(40, 30, true) {
+        add(&part, BODY, CYAN, 0);
+    }
+    for part in frame_parts(40, 15, false) {
+        add(&part, CYAN, CYAN, 0);
+    }
+    let divider = writer
+        .create_quad(
+            textures[WHITE].1.clone(),
+            scale_f,
+            15.0 * scale_f,
+            38.0 * scale_f,
+            scale_f,
+        )
+        .expect("the divider");
+    writer
+        .set_tint(divider, Tint::premultiplied(AMBER))
+        .expect("tinted");
+}
+
+/// The pixels of a cut-7 frame by the design's rule (§4.2), independently of the quads: for each UI pixel of the `w` by `h` frame,
+/// `Some(true)` on the outline, `Some(false)` in the fill and `None` outside.
+fn frame_rule(w: u32, h: u32, bottom_right: bool) -> Vec<Option<bool>> {
+    let c = 7_u32;
+    let mut cells = vec![None; (w * h) as usize];
+    let mut outline = |x: u32, y: u32| cells[(y * w + x) as usize] = Some(true);
+    for x in c..w {
+        outline(x, 0);
+    }
+    for y in 0..(if bottom_right { h - c } else { h }) {
+        outline(w - 1, y);
+    }
+    for x in 0..(if bottom_right { w - c } else { w }) {
+        outline(x, h - 1);
+    }
+    for y in c..h {
+        outline(0, y);
+    }
+    for i in 0..=c {
+        outline(i, c - i);
+        if bottom_right {
+            outline(w - 1 - i, h - 1 - c + i);
+        }
+    }
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let inside_top_left = x + y > c;
+            let inside_bottom_right = !bottom_right || (w - 1 - x) + (h - 1 - y) > c;
+            if inside_top_left && inside_bottom_right && cells[(y * w + x) as usize].is_none() {
+                cells[(y * w + x) as usize] = Some(false);
+            }
+        }
+    }
+    cells
+}
+
+/// The place window as the design says its pixels are, per UI pixel (40 by 30): the clear colour outside, the body's near-black fill and
+/// cyan outline, the cyan title bar over them (rows 0 to 14), the amber divider on row 15 from column 1 to 38.
+fn place_window_rule() -> Vec<[u8; 4]> {
+    let mut pixels = vec![clear_pixel(); 40 * 30];
+    for (at, cell) in frame_rule(40, 30, true).into_iter().enumerate() {
+        match cell {
+            Some(true) => pixels[at] = CYAN,
+            Some(false) => pixels[at] = BODY,
+            None => {}
+        }
+    }
+    for (at, cell) in frame_rule(40, 15, false).into_iter().enumerate() {
+        if cell.is_some() {
+            pixels[at] = CYAN;
+        }
+    }
+    for x in 1..39 {
+        pixels[15 * 40 + x] = AMBER;
+    }
+    pixels
+}
+
+/// The reference: the clear, then each instance in painter order, nearest sampled at the target pixel's centre, tinted and composited
+/// source-over (the pictures' texels are opaque or clear, so that is a replacement or nothing).
 #[must_use]
 pub(crate) fn reference(pictures: &[Picture], size: (u32, u32), instances: &[Instance]) -> Vec<u8> {
     let (width, height) = size;
@@ -353,7 +623,35 @@ pub(crate) fn reference(pictures: &[Picture], size: (u32, u32), instances: &[Ins
                     .clamp(0, i64::from(picture.height) - 1);
                 let at = ((row * i64::from(picture.width) + column) * 4) as usize;
                 let to = (y as usize * width as usize + x as usize) * 4;
-                frame[to..to + 4].copy_from_slice(&picture.bytes[at..at + 4]);
+                // The tint multiplies the premultiplied texel channel by channel (exact for the opaque white and clear texels the
+                // theme's art is made of, with an opaque tint).
+                let mut texel = [0_u8; 4];
+                for (channel, out) in texel.iter_mut().enumerate() {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a product over 255, rounded, is at most 255"
+                    )]
+                    {
+                        *out = ((u16::from(picture.bytes[at + channel])
+                            * u16::from(instance.tint[channel])
+                            + 127)
+                            / 255) as u8;
+                    }
+                }
+                // Source-over of the premultiplied texel (the theme's art has only opaque and clear texels, so this is a replacement
+                // or nothing).
+                let alpha = u16::from(texel[3]);
+                for channel in 0..4 {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "source plus the attenuated destination is at most 255"
+                    )]
+                    {
+                        frame[to + channel] = (u16::from(texel[channel])
+                            + (u16::from(frame[to + channel]) * (255 - alpha) + 127) / 255)
+                            as u8;
+                    }
+                }
             }
         }
     }
@@ -522,6 +820,49 @@ pub(crate) fn check(scenes: &Scenes, draw: &mut Draw<'_>) {
                     "below the list's bottom edge"
                 );
                 assert_eq!(bounds(&pixels, size, RED).0, Some((10, 20, 90, 105)));
+            }
+            Meaning::PlaceWindow { scale } => {
+                // One UI pixel is `scale` points, 2 * scale target pixels: every target pixel is the design's pixel of its block.
+                let rule = place_window_rule();
+                let block = 2 * scale;
+                assert_eq!(size, (40 * block, 30 * block), "scale {scale}");
+                for y in 0..size.1 {
+                    for x in 0..size.0 {
+                        assert_eq!(
+                            pixel(&pixels, size, x, y),
+                            rule[((y / block) * 40 + x / block) as usize],
+                            "scale {scale}: target pixel ({x}, {y}), UI pixel ({}, {})",
+                            x / block,
+                            y / block
+                        );
+                    }
+                }
+                // The cut corners are the clear colour, the divider is amber, the title bar cyan.
+                assert_eq!(pixel(&pixels, size, 0, 0), clear);
+                assert_eq!(pixel(&pixels, size, 7 * block, 0), CYAN);
+                assert_eq!(pixel(&pixels, size, 20 * block, 15 * block), AMBER);
+                assert_eq!(pixel(&pixels, size, 20 * block, 20 * block), BODY);
+                assert_eq!(pixel(&pixels, size, 39 * block + 1, 29 * block + 1), clear);
+            }
+            Meaning::TintedGlyphs => {
+                // The glyph's set texels are exactly the near-black tint; the bar around them is cyan; the glyph's clear texels show
+                // the bar. The glyph is at (2, 2) points, 10 by 14: two points (four pixels) per texel; the 18 set texels cover 18 * 16
+                // target pixels.
+                let (found, count) = bounds(&pixels, size, BODY);
+                assert_eq!(count, 18 * 16, "the set texels, tinted exactly");
+                assert_eq!(found, Some((4, 4, 24, 32)));
+                assert_eq!(
+                    pixel(&pixels, size, 4 + 4, 4),
+                    BODY,
+                    "the top row's middle texel"
+                );
+                assert_eq!(
+                    pixel(&pixels, size, 4, 4),
+                    CYAN,
+                    "a clear texel shows the bar"
+                );
+                assert_eq!(bounds(&pixels, size, CYAN).1, 40 * 40 - 18 * 16);
+                assert_eq!(bounds(&pixels, size, [255; 4]).1, 0, "no untinted white");
             }
             Meaning::ChromeAndContent => {
                 // The chrome bar (0, 0, 40, 6) moved to y 2: pixels x 0..80, y 4..16.

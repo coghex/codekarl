@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-/// Copies the shipped Lua helpers and button art into the fixture roots used by the real application.
+/// Copies the shipped Lua helpers and the theme into the fixture roots used by the real application.
 pub(crate) fn install_fixture_assets(ui_root: &Path, assets_root: &Path) {
     let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let library = project.join("scripts/ui/lib");
@@ -11,11 +11,30 @@ pub(crate) fn install_fixture_assets(ui_root: &Path, assets_root: &Path) {
         let entry = entry.expect("a UI library entry");
         fs::copy(entry.path(), destination.join(entry.file_name())).expect("copy a UI helper");
     }
-    let buttons = project.join("assets/ui/button");
-    let destination = assets_root.join("ui/button");
-    fs::create_dir_all(&destination).expect("the fixture button art directory");
-    for name in ["normal.png", "hover.png", "pressed.png"] {
-        fs::copy(buttons.join(name), destination.join(name)).expect("copy a button texture");
+    install_theme(assets_root);
+}
+
+/// Copies the shipped theme (`ui/theme.toml` and the frame art `ui/theme/*.png`) into an assets root: a run with a scenario reads the
+/// theme at start-up, and the library loads the art.
+pub(crate) fn install_theme(assets_root: &Path) {
+    let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/ui");
+    let destination = assets_root.join("ui/theme");
+    fs::create_dir_all(&destination).expect("the fixture theme art directory");
+    fs::copy(
+        shipped.join("theme.toml"),
+        assets_root.join("ui/theme.toml"),
+    )
+    .expect("copy the shipped theme");
+    for entry in fs::read_dir(shipped.join("theme")).expect("the shipped theme art") {
+        let entry = entry.expect("a theme art entry");
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|extension| extension == "png")
+        {
+            fs::copy(entry.path(), destination.join(entry.file_name()))
+                .expect("copy a theme image");
+        }
     }
 }
 

@@ -15,6 +15,7 @@ local pointer = require("lib.pointer")
 local button = require("lib.button")
 local windows = require("lib.window")
 local lists = require("lib.list")
+local theme = require("lib.theme")
 
 local P = ui.P
 local MARGIN = 8 -- points from the window's top and left edges
@@ -76,9 +77,7 @@ if game ~= nil then
         content_width = content_width + 4 * P
       end
       for index, item in ipairs(group) do
-        local laid = font.layout(item.text)
-        item.width = (laid.width + 4) * P
-        item.height = (laid.height + 4) * P
+        item.width, item.height = button.measure(item.text)
         button_height = math.max(button_height, item.height)
         content_width = content_width + item.width
         if index > 1 then
@@ -87,12 +86,8 @@ if game ~= nil then
       end
     end
     local laid_readout = font.layout(content)
-    local help_layout = font.layout("?")
-    local help_width = (help_layout.width + 4) * P
-    local help_height = (help_layout.height + 4) * P
-    local places_layout = font.layout("places")
-    local places_width = (places_layout.width + 4) * P
-    local places_height = (places_layout.height + 4) * P
+    local help_width, help_height = button.measure("?")
+    local places_width, places_height = button.measure("places")
     local readout_width = laid_readout.width * P
     local readout_height = laid_readout.height * P
     row_height = button_height
@@ -100,7 +95,7 @@ if game ~= nil then
     local height = row_height + 4 * P
     local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
     -- The panel and its broad capture region precede all button regions in painter order.
-    time_panel = panel.new{x = x, y = y, width = width, height = height}
+    time_panel = panel.new{x = x, y = y, width = width, height = height, kind = "time_bar", cut = 3}
     render.set_hit("time_bar", {{x = x, y = y, width = width, height = height}})
     local cursor = x + 2 * P
     row_y = y + 2 * P
@@ -117,6 +112,7 @@ if game ~= nil then
           x = cursor,
           y = row_y + (row_height - item.height) / 2,
           text = item.text,
+          kind = "time_bar",
           on_click = function() game.control(control_name) end,
         }
         cursor = cursor + item.width
@@ -126,6 +122,7 @@ if game ~= nil then
       x = cursor + 4 * P,
       y = row_y + (row_height - help_height) / 2,
       text = "?",
+      kind = "time_bar",
       on_click = function()
         if help_window ~= nil then
           help_window:raise()
@@ -170,6 +167,7 @@ if game ~= nil then
       x = cursor + 4 * P + help_width + P,
       y = row_y + (row_height - places_height) / 2,
       text = "places",
+      kind = "time_bar",
       on_click = function() open_places() end,
     }
     readout_x = cursor + 9 * P + help_width + places_width
@@ -215,6 +213,7 @@ if game ~= nil then
       local created
       created = windows.new{
         title = selection.name,
+        kind = "place",
         content_width = width_px * P,
         content_height = height_px * P,
         on_close = function()
@@ -278,7 +277,8 @@ if game ~= nil then
   end
 
   -- The tooltip: a panel and a text line beside the hovered place, on the side that fits the window's current width.
-  local tooltip = text.line(0, 0)
+  local tooltip_colours = theme.kind("tooltip")
+  local tooltip = text.line(0, 0, nil, tooltip_colours.text)
   local tooltip_panel = nil
   local tooltip_id = nil
   local tooltip_visible = false
@@ -289,15 +289,15 @@ if game ~= nil then
     local measured = text_changed and font.layout(hover.name) or nil
     local width = measured and measured.width or tooltip.width
     local height = measured and measured.height or tooltip.height
-    local panel_width = (width + 2) * P
-    local panel_height = (height + 2) * P
+    local panel_width = math.max(width + 4, 9) * P
+    local panel_height = (height + 4) * P
     local panel_x = hover.right + 4
     if panel_x + panel_width > view.width and hover.left - 4 - panel_width >= 0 then
       panel_x = hover.left - 4 - panel_width
     end
     local panel_y = hover.y - panel_height / 2
     if tooltip_panel == nil then
-      tooltip_panel = panel.new{x = panel_x, y = panel_y, width = panel_width, height = panel_height}
+      tooltip_panel = panel.new{x = panel_x, y = panel_y, width = panel_width, height = panel_height, kind = "tooltip", cut = 3}
     else
       tooltip_panel:set_rect(panel_x, panel_y, panel_width, panel_height)
     end
@@ -305,7 +305,7 @@ if game ~= nil then
       text.set(tooltip, hover.name)
     end
     tooltip_id = hover.id
-    text.move(tooltip, tooltip_panel.x + P, tooltip_panel.y + P)
+    text.move(tooltip, tooltip_panel.x + 2 * P, tooltip_panel.y + 2 * P)
     tooltip_visible = true
   end
 
@@ -315,7 +315,7 @@ if game ~= nil then
       if tooltip_visible then
         text.move(tooltip, ui.HIDDEN, ui.HIDDEN)
         if tooltip_panel ~= nil then
-          tooltip_panel:set_rect(ui.HIDDEN, ui.HIDDEN, (tooltip.width + 2) * P, (tooltip.height + 2) * P)
+          tooltip_panel:set_rect(ui.HIDDEN, ui.HIDDEN, math.max(tooltip.width + 4, 9) * P, (tooltip.height + 4) * P)
         end
         tooltip_visible = false
       end

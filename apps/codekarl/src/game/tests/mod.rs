@@ -337,7 +337,7 @@ impl Harness {
 
 /// Writes a scenario into `directory`, which must be `<root>/scenarios/<name>`: `scenario.toml` naming the map `fixture`, an
 /// empty `locations.toml`, the application's fixture map in `<root>/map/fixture/` and the shipped `font.toml` in
-/// `<root>/ui/font/` (a run with a scenario reads it). The scenario starts on `start`.
+/// `<root>/ui/font/` and the shipped `theme.toml` in `<root>/ui/` (a run with a scenario reads both). The scenario starts on `start`.
 pub(crate) fn write_scenario(directory: &std::path::Path, start: Date) {
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/map");
     let root = directory
@@ -367,6 +367,12 @@ pub(crate) fn write_scenario(directory: &std::path::Path, start: Date) {
     std::fs::copy(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/ui/font/font.toml"),
         font.join("font.toml"),
+    )
+    .unwrap();
+    // ... and the theme (`ui/theme.toml`), under the same rule.
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/ui/theme.toml"),
+        root.join("ui/theme.toml"),
     )
     .unwrap();
 }
