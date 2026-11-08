@@ -5,6 +5,7 @@
 mod bridge;
 mod clear_only;
 mod fake;
+mod groups;
 mod idle;
 mod legacy;
 mod logging;
@@ -27,3 +28,12 @@ mod vulkan_refusal;
 mod vulkan_scene;
 #[cfg(feature = "vulkan")]
 mod vulkan_sink;
+
+/// `ck-render-2d`'s public items, under the name the group readback scenes (shared with the backends' integration targets) use.
+mod api {
+    pub(crate) use crate::*;
+}
+
+/// The scenes the Metal and Vulkan readback targets draw, run here against the CPU reference alone.
+#[path = "../../tests/group_readback/mod.rs"]
+mod group_readback;

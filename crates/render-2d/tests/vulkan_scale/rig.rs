@@ -981,6 +981,7 @@ where
         Filter::Nearest,
         ck_render_2d::SceneLimits {
             max_quads: config.scene_max_quads,
+            ..ck_render_2d::SceneLimits::DEFAULT
         },
     )
     .expect("valid scene limits");

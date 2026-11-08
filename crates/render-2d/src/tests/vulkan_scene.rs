@@ -96,6 +96,7 @@ fn frame(
             y: 2.0,
             width: 4.0,
             height: 5.0,
+            clip: None,
         }),
         vec![FrameQuad {
             texture: placed.clone(),
@@ -103,6 +104,7 @@ fn frame(
             y: 9.0,
             width: 3.0,
             height: 2.0,
+            clip: None,
         }],
         Arc::new(AtomicUsize::new(1)),
         None,
@@ -198,6 +200,7 @@ fn clipped_compatibility_quad_keeps_its_key_even_when_no_instance_is_emitted() {
             y: 100.0,
             width: 2.0,
             height: 2.0,
+            clip: None,
         }),
         Vec::new(),
         Arc::new(AtomicUsize::new(1)),

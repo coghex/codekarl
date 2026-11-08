@@ -47,6 +47,8 @@ pub enum QuadError {
     },
     /// A malformed token or a token of the wrong kind.
     Handle(HandleError),
+    /// The group a quad is created in is not usable.
+    Group(crate::group::GroupError),
     /// A key belongs to a different bridge.
     Foreign(QuadKey),
     /// A key is stale, destroyed, or its slot generation is exhausted.
@@ -69,6 +71,7 @@ impl fmt::Display for QuadError {
                 )
             }
             Self::Handle(error) => error.fmt(formatter),
+            Self::Group(error) => error.fmt(formatter),
             Self::Foreign(key) => write!(formatter, "quad {key} belongs to another scene"),
             Self::Stale(key) => write!(formatter, "quad {key} is no longer live"),
             Self::Full { capacity } => {

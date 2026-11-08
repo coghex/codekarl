@@ -188,6 +188,10 @@ def unit_need(unit: Unit) -> str:
             "vulkan_scale",
         ),  # CK-162: the same recipe on a real GLFW window (optional group `vulkan.scale`)
         ("ck-render-2d", "vulkan_window"),  # CK-159: the resource path on a real GLFW window
+        # CK-210: scene groups read back off screen. They open no window and need the GPU; they run in the window groups of their
+        # crate (`render2d.metal-window` and `render2d.vulkan-window`), whose class is the stricter one.
+        ("ck-render-2d", "metal_group_readback"),
+        ("ck-render-2d", "vulkan_group_readback"),
     }
     if package == "ck-window-cocoa" or (package, name) in windowed:
         return "window"
@@ -2141,6 +2145,21 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("scripts/gameplay/main.lua",),
     ),
+    # The startup font without a scenario (CK-208) loads the shipped font in its tests.
+    Guard("apps/codekarl/src/lib.rs", "rust.app", ("assets/ui/font/font.toml",)),
+    # The widget library's tests (CK-208, CK-210) run the shipped library over the shipped font and button textures.
+    Guard(
+        "apps/codekarl/src/ui_link/widget_witness_tests.rs",
+        "rust.app",
+        ("assets/ui/", "scripts/ui/"),
+    ),
+    Guard(
+        "apps/codekarl/src/ui_link/group_tests.rs",
+        "rust.app",
+        ("assets/ui/", "scripts/ui/"),
+    ),
+    # The time bar's window support (CK-209) reads the shipped UI script.
+    Guard("apps/codekarl/tests/support/time_bar.rs", "rust.app", ("scripts/ui/main.lua",)),
     # These off-screen GPU cases decode the same shipped font as part of their owning crate tests.
     Guard(
         "crates/gpu-metal/tests/presenter_instanced/cases.rs",

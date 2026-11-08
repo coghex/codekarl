@@ -8,7 +8,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// The longest string [`Token`]'s parser looks at: a quad token is 51 bytes, and anything longer is refused before any
+/// The longest string [`Token`]'s parser looks at: a group token is 52 bytes, and anything longer is refused before any
 /// field is read.
 pub const MAX_TOKEN_BYTES: usize = 64;
 
@@ -81,6 +81,9 @@ pub enum TokenKind {
     /// A quad of a quad registry. `ck-resources` stores no quads; the kind is defined here so version 1 of the format
     /// does not change when quad handles arrive.
     Quad,
+    /// A scene group of a quad registry's scene (`ck-render-2d`): an ordered set of quads that is raised, hidden, moved and clipped
+    /// as one. Written `group`.
+    Group,
 }
 
 impl TokenKind {
@@ -88,6 +91,7 @@ impl TokenKind {
         match self {
             Self::Texture => "tex",
             Self::Quad => "quad",
+            Self::Group => "group",
         }
     }
 }
@@ -97,6 +101,7 @@ impl fmt::Display for TokenKind {
         formatter.write_str(match self {
             Self::Texture => "texture",
             Self::Quad => "quad",
+            Self::Group => "group",
         })
     }
 }
@@ -148,7 +153,7 @@ pub enum TokenError {
     FieldCount,
     /// The first field is not `ck1`.
     UnknownVersion,
-    /// The second field is not `tex` or `quad`.
+    /// The second field is not `tex`, `quad` or `group`.
     UnknownKind,
     /// A number field is not exactly its width in lowercase hexadecimal digits.
     Malformed(TokenField),
@@ -165,7 +170,9 @@ impl fmt::Display for TokenError {
                 formatter.write_str("a handle token has exactly five `:`-separated fields")
             }
             Self::UnknownVersion => formatter.write_str("the handle token's version is not ck1"),
-            Self::UnknownKind => formatter.write_str("the handle token's kind is not tex or quad"),
+            Self::UnknownKind => {
+                formatter.write_str("the handle token's kind is not tex, quad or group")
+            }
             Self::Malformed(field) => write!(
                 formatter,
                 "the handle token's {field} field is not exactly its width in lowercase hexadecimal digits"
@@ -215,6 +222,7 @@ impl FromStr for Token {
         let kind = match kind {
             "tex" => TokenKind::Texture,
             "quad" => TokenKind::Quad,
+            "group" => TokenKind::Group,
             _ => return Err(TokenError::UnknownKind),
         };
         let registry = hex(registry, REGISTRY_DIGITS, TokenField::Registry)?;
@@ -260,7 +268,7 @@ mod tests {
 
     #[test]
     fn a_token_round_trips_at_the_minimum_and_maximum_of_every_field() {
-        for kind in [TokenKind::Texture, TokenKind::Quad] {
+        for kind in [TokenKind::Texture, TokenKind::Quad, TokenKind::Group] {
             for (registry, slot, generation) in [
                 (0, 0, 0),
                 (1, 1, 1),
@@ -284,6 +292,43 @@ mod tests {
         assert_eq!(quad, "ck1:quad:ffffffffffffffff:ffffffff:ffffffffffffffff");
         assert_eq!(quad.len(), 51);
         assert!(quad.len() <= MAX_TOKEN_BYTES);
+        let group = token(TokenKind::Group, u64::MAX, u32::MAX, u64::MAX).to_string();
+        assert_eq!(
+            group,
+            "ck1:group:ffffffffffffffff:ffffffff:ffffffffffffffff"
+        );
+        assert_eq!(group.len(), 52);
+        assert!(group.len() <= MAX_TOKEN_BYTES);
+    }
+
+    #[test]
+    fn the_group_kind_is_new_and_the_older_kinds_parse_as_before() {
+        let group = token(TokenKind::Group, 7, 3, 2).to_string();
+        assert_eq!(
+            group,
+            "ck1:group:0000000000000007:00000003:0000000000000002"
+        );
+        assert_eq!(group.parse::<Token>().map(|t| t.kind), Ok(TokenKind::Group));
+        assert_eq!(
+            TEXTURE.parse::<Token>().map(|t| t.kind),
+            Ok(TokenKind::Texture)
+        );
+        assert_eq!(
+            TEXTURE
+                .replace("tex", "quad")
+                .parse::<Token>()
+                .map(|t| t.kind),
+            Ok(TokenKind::Quad)
+        );
+        // Kinds are exact words: no prefix, case or plural.
+        for kind in ["groups", "Group", "grou", "GROUP", ""] {
+            assert_eq!(
+                TEXTURE.replace("tex", kind).parse::<Token>(),
+                Err(TokenError::UnknownKind),
+                "{kind}"
+            );
+        }
+        assert_eq!(TokenKind::Group.to_string(), "group");
     }
 
     /// Each string is refused with exactly its rule, and the refusal's message does not contain the string.

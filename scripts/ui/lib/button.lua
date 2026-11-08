@@ -15,10 +15,6 @@ local TEXTURES = {
 local button = {}
 button.__index = button
 
-local function inside(self, x, y)
-  return x >= self.x and x < self.x + self.width and y >= self.y and y < self.y + self.height
-end
-
 -- The size from the text's size in font pixels (UI pixels): the text plus the padding on each side, in points.
 local function resize(self, text_width, text_height)
   self.width = (text_width + 2 * PADDING) * P
@@ -26,7 +22,7 @@ local function resize(self, text_width, text_height)
 end
 
 local function publish_region(self)
-  render.set_hit(self.key, {{x = self.x, y = self.y, width = self.width, height = self.height}})
+  render.set_hit(self.key, {{x = self.x, y = self.y, width = self.width, height = self.height}}, self.group)
 end
 
 -- The look the state calls for: pressed while pressed, hover while hovered and not pressed, normal otherwise. A look that is
@@ -53,10 +49,12 @@ local function release(self)
   end
 end
 
--- `button.new{x, y, text, on_click}`, in points.
+-- `button.new{x, y, text, on_click, group = nil}`, in points. With a `group` the quads and the hit key go into it and the position is
+-- local to it (the engine applies the group's offset).
 function button.new(spec)
   local self = setmetatable({}, button)
   self.on_click = spec.on_click
+  self.group = spec.group
   self.key = ui.key("button")
   self.x = ui.snap(spec.x)
   self.y = ui.snap(spec.y)
@@ -64,7 +62,7 @@ function button.new(spec)
   self.pressed = false
   self.look = "normal"
   -- Measured before the quads are created (so they have their size); the glyphs are created after them, so they are on top.
-  self.line = text.line(self.x + PADDING * P, self.y + PADDING * P)
+  self.line = text.line(self.x + PADDING * P, self.y + PADDING * P, self.group)
   local measured = font.layout(spec.text or "")
   resize(self, measured.width, measured.height)
   self.quads = {}
@@ -76,6 +74,7 @@ function button.new(spec)
       y = parked and ui.HIDDEN or self.y,
       width = self.width,
       height = self.height,
+      group = self.group,
     }
   end
   text.set(self.line, spec.text or "")
@@ -96,7 +95,7 @@ function button:on_event(event, eligible)
     if self.pressed then
       release(self)
       show(self)
-      if eligible ~= false and inside(self, event.x, event.y) and self.on_click ~= nil then
+      if eligible ~= false and event.inside == true and self.on_click ~= nil then
         self.on_click()
       end
     end
@@ -148,7 +147,7 @@ function button:destroy()
     return
   end
   pointer.unregister(self.key)
-  render.set_hit(self.key, nil)
+  render.set_hit(self.key, nil, self.group)
   for _, name in ipairs({"normal", "hover", "pressed"}) do
     render.destroy_quad(self.quads[name])
   end

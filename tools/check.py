@@ -1126,6 +1126,9 @@ STEPS = [
                     "signals",
                     "--test",
                     "source_guard",
+                    # CK-207: the windowless regression for the window tests' output-stream assertions.
+                    "--test",
+                    "ui_pointer_streams",
                 ]
             ),
             cargo_test(["-p", "codekarl", "--test", "cli_spec"], ["--set", "plain"]),
@@ -1250,11 +1253,23 @@ STEPS = [
     Step(
         "render2d.metal-window",
         FAST,
-        lambda: [cargo_test(["-p", "ck-render-2d", "--test", "metal_window"])],
+        lambda: [
+            cargo_test(
+                [
+                    "-p",
+                    "ck-render-2d",
+                    "--test",
+                    "metal_window",
+                    # CK-210: scene groups read back off screen through the presenter (the GPU, no window).
+                    "--test",
+                    "metal_group_readback",
+                ]
+            )
+        ],
         full_spec=True,
         analyze=True,
         needs="window",
-        description="ck-render-2d's Metal backend test target on a real window.",
+        description="ck-render-2d's Metal backend test target on a real window, and its off-screen group readback.",
         paths=("crates/render-2d/",),
     ),
     # CK-142: the Metal presenter's windowed cases, split by the module they are listed in so that no window group nears the
@@ -1527,10 +1542,22 @@ STEPS = [
     Step(
         "render2d.vulkan-window",
         FAST,
-        lambda: [cargo_test(["-p", "ck-render-2d", "--test", "vulkan_window"])],
+        lambda: [
+            cargo_test(
+                [
+                    "-p",
+                    "ck-render-2d",
+                    "--test",
+                    "vulkan_window",
+                    # CK-210: scene groups read back off screen through the scene presenter under validation (the GPU, no window).
+                    "--test",
+                    "vulkan_group_readback",
+                ]
+            )
+        ],
         analyze=True,
         needs="window",
-        description="`ck-render-2d`'s Vulkan window test: the real resource path (service, resident driver, ledger, scene "
+        description="`ck-render-2d`'s Vulkan window test, and its off-screen group readback: the real resource path (service, resident driver, ledger, scene "
         "presenter) on a GLFW window under validation, with the surface's pixels captured, and the keyboard filter's isolation "
         "(real windows without taking the desktop's focus).",
         paths=("crates/render-2d/",),

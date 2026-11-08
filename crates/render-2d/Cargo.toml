@@ -71,3 +71,17 @@ name = "vulkan_scale"
 path = "tests/vulkan_scale.rs"
 harness = false
 required-features = ["vulkan"]
+
+# Scene groups read back on Metal (milestone 8, slice 4): real group scenes placed to instances and drawn off screen through the
+# presenter's own readback, and compared with a CPU reference exactly. An ordinary harness (no window); it needs the GPU.
+[[test]]
+name = "metal_group_readback"
+path = "tests/metal_group_readback.rs"
+required-features = ["metal"]
+
+# The same scenes read back on Vulkan, through the scene presenter's frame building and drawing under validation with synchronization
+# validation (no window).
+[[test]]
+name = "vulkan_group_readback"
+path = "tests/vulkan_group_readback.rs"
+required-features = ["vulkan"]

@@ -99,6 +99,7 @@ fn pointer_event_table(event: &crate::input_stash::PointerViewEvent) -> ConfigVa
         ("x".to_owned(), pointer_number(event.position.x)),
         ("y".to_owned(), pointer_number(event.position.y)),
         ("key".to_owned(), pointer_key(event.key.as_ref())),
+        ("inside".to_owned(), ConfigValue::Bool(event.inside)),
     ]);
     if let Some(amount) = event.amount {
         table.insert(
@@ -294,6 +295,7 @@ fn view_event(
         kind,
         position,
         key,
+        inside: false,
         amount: None,
         unit: None,
     }
@@ -441,6 +443,15 @@ fn route_pointer(
     }
     if matches!(owner, GestureOwner::Nobody) && !input.pointer_held {
         *owner = GestureOwner::Idle;
+    }
+    // Each event says whether it lay inside one of its key's published rectangles, decided here, once, against the very regions this
+    // tick routed with: the widget never recomputes geometry against a frame the player was not pointing at.
+    for event in &mut routed.ui {
+        event.inside = event
+            .key
+            .as_deref()
+            .zip(regions)
+            .is_some_and(|(key, regions)| regions.key_contains(key, event.position));
     }
     routed
 }
@@ -972,6 +983,8 @@ impl UiLink for CodekarlUi {
 }
 
 #[cfg(test)]
+mod group_tests;
+#[cfg(test)]
 mod input_tick_tests;
 #[cfg(test)]
 mod widget_witness_tests;
@@ -1461,10 +1474,8 @@ mod tests {
             writer
                 .set_hit(
                     key,
-                    Some(vec![
-                        ck_render_2d::HitRect::from_points(*x, *y, *width, *height)
-                            .expect("valid hit rectangle"),
-                    ]),
+                    Some(vec![ck_render_2d::PointRect::new(*x, *y, *width, *height)]),
+                    None,
                 )
                 .expect("valid hit key");
         }
@@ -2011,6 +2022,7 @@ mod tests {
                     kind: "down",
                     position,
                     key: Some("readout".to_owned()),
+                    inside: true,
                     amount: None,
                     unit: None,
                 },
@@ -2018,6 +2030,7 @@ mod tests {
                     kind: "scroll",
                     position,
                     key: Some("readout".to_owned()),
+                    inside: false,
                     amount: Some(-128),
                     unit: Some("lines"),
                 },
@@ -2051,6 +2064,12 @@ mod tests {
         assert_eq!(scroll["key"], ConfigValue::String("readout".to_owned()));
         assert_eq!(scroll["amount"], ConfigValue::Float(-0.5));
         assert_eq!(scroll["unit"], ConfigValue::String("lines".to_owned()));
+        // Every event says whether it was inside its key's published rectangles.
+        let ConfigValue::Table(down) = &events[0] else {
+            panic!("down event is a table");
+        };
+        assert_eq!(down["inside"], ConfigValue::Bool(true));
+        assert_eq!(scroll["inside"], ConfigValue::Bool(false));
     }
 
     #[test]

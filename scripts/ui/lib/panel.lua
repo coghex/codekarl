@@ -4,7 +4,8 @@ local ui = require("lib.ui")
 local panel = {}
 panel.__index = panel
 
--- `panel.new{x, y, width, height, texture = "ui/font/panel.png"}`, in points.
+-- `panel.new{x, y, width, height, texture = "ui/font/panel.png", group = nil}`, in points. With a `group` the quad goes into it and the
+-- position is local to the group (the engine applies the group's offset).
 function panel.new(spec)
   local self = setmetatable({}, panel)
   self.x = ui.snap(spec.x)
@@ -17,6 +18,7 @@ function panel.new(spec)
     y = self.y,
     width = self.width,
     height = self.height,
+    group = spec.group,
   }
   return self
 end

@@ -1329,3 +1329,370 @@ fn a_refused_load_never_defines_the_upload_span() {
         "the refused load defined nothing"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// render: groups (milestone 8, slice 4)
+// ---------------------------------------------------------------------------------------------
+
+/// Each group call's argument validation, as literals. Every refusal is a catchable Lua error starting with the function's name.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of every group call's refusal, read top to bottom"
+)]
+fn group_calls_validate_their_arguments_with_literal_messages() {
+    let rig = Rig::new(Kind::Native);
+    let texture = rig.token("return texture.load('a.png')");
+    let group = rig.token("return render.create_group()");
+    let quad = rig.token(&format!(
+        "return render.create_quad{{texture='{texture}', width=4, height=4}}"
+    ));
+    let cases: Vec<(String, &str)> = vec![
+        (
+            "render.create_group(1)".to_owned(),
+            "render.create_group: expected ()",
+        ),
+        (
+            "render.raise_group()".to_owned(),
+            "render.raise_group: expected (group)",
+        ),
+        (
+            "render.raise_group(5)".to_owned(),
+            "render.raise_group: expected a group token as argument 1",
+        ),
+        (
+            format!("render.raise_group('{quad}')"),
+            "render.raise_group: a quad handle was given where a group handle is needed",
+        ),
+        (
+            format!("render.raise_group('{texture}')"),
+            "render.raise_group: a texture handle was given where a group handle is needed",
+        ),
+        (
+            "render.raise_group('nonsense')".to_owned(),
+            "render.raise_group: a handle token has exactly five `:`-separated fields",
+        ),
+        (
+            format!("render.raise_group('{group}', 1)"),
+            "render.raise_group: expected (group)",
+        ),
+        (
+            format!("render.lower_group('{quad}')"),
+            "render.lower_group: a quad handle was given where a group handle is needed",
+        ),
+        (
+            "render.raise_groups()".to_owned(),
+            "render.raise_groups: expected one table of group tokens {g1, ..., gn}",
+        ),
+        (
+            "render.raise_groups(5)".to_owned(),
+            "render.raise_groups: expected one table of group tokens {g1, ..., gn}",
+        ),
+        (
+            "render.raise_groups{}".to_owned(),
+            "render.raise_groups: the group list is empty",
+        ),
+        (
+            format!("render.raise_groups{{'{group}', '{group}'}}"),
+            "render.raise_groups: the group list names a group twice",
+        ),
+        (
+            format!("render.raise_groups{{'{group}', 5}}"),
+            "render.raise_groups: entry 2 must be a group token string",
+        ),
+        (
+            format!("render.raise_groups{{'{quad}'}}"),
+            "render.raise_groups: a quad handle was given where a group handle is needed",
+        ),
+        (
+            format!("render.set_group_visible('{group}')"),
+            "render.set_group_visible: expected (group, visible)",
+        ),
+        (
+            format!("render.set_group_visible('{group}', 1)"),
+            "render.set_group_visible: `visible` must be a boolean",
+        ),
+        (
+            format!("render.set_group_offset('{group}', 1)"),
+            "render.set_group_offset: expected (group, x, y)",
+        ),
+        (
+            format!("render.set_group_offset('{group}', 'x', 2)"),
+            "render.set_group_offset: `x` must be a number",
+        ),
+        (
+            format!("render.set_group_offset('{group}', 1.5, 2)"),
+            "render.set_group_offset: x must be a whole number of points",
+        ),
+        (
+            format!("render.set_group_offset('{group}', 0/0, 2)"),
+            "render.set_group_offset: x must be a finite number",
+        ),
+        (
+            format!("render.set_group_offset('{group}', 8388608, 0)"),
+            "render.set_group_offset: x 8388608 is outside ±8388607 points",
+        ),
+        (
+            format!("render.set_group_offset('{group}', 0, -8388608)"),
+            "render.set_group_offset: y -8388608 is outside ±8388607 points",
+        ),
+        (
+            format!("render.set_group_clip('{group}')"),
+            "render.set_group_clip: expected (group, {x, y, width, height} | nil)",
+        ),
+        (
+            format!("render.set_group_clip('{group}', 5)"),
+            "render.set_group_clip: the clip must be a table or nil",
+        ),
+        (
+            format!("render.set_group_clip('{group}', {{x=0, y=0, width=1}})"),
+            "render.set_group_clip: `height` must be a number",
+        ),
+        (
+            format!("render.set_group_clip('{group}', {{x=0, y=0, width=1, height=1, z=1}})"),
+            "render.set_group_clip: unknown field `z`",
+        ),
+        (
+            format!("render.set_group_clip('{group}', {{x=0, y=0, width=0, height=1}})"),
+            "render.set_group_clip: width 0 is not greater than 0",
+        ),
+        (
+            format!("render.set_group_clip('{group}', {{x=8388607, y=0, width=1, height=1}})"),
+            "render.set_group_clip: right 8388608 is outside ±8388607 points",
+        ),
+        (
+            format!("render.destroy_group('{quad}')"),
+            "render.destroy_group: a quad handle was given where a group handle is needed",
+        ),
+        (
+            "render.destroy_group()".to_owned(),
+            "render.destroy_group: expected (group)",
+        ),
+        (
+            format!("render.create_quad{{texture='{texture}', width=4, height=4, group=5}}"),
+            "render.create_quad: `group` must be a group token string",
+        ),
+        (
+            format!("render.create_quad{{texture='{texture}', width=4, height=4, group='{quad}'}}"),
+            "render.create_quad: a quad handle was given where a group handle is needed",
+        ),
+        (
+            "render.set_hit('k', {{x=0,y=0,width=1,height=1}}, 5)".to_owned(),
+            "render.set_hit: `group` must be a group token string",
+        ),
+        (
+            format!("render.set_hit('k', {{{{x=0,y=0,width=1,height=1}}}}, '{quad}')"),
+            "render.set_hit: a quad handle was given where a group handle is needed",
+        ),
+        (
+            "render.set_hit('k', nil, nil, 1)".to_owned(),
+            "render.set_hit: expected (key, rects | nil, group?)",
+        ),
+        (
+            format!("render.set_hit('k', {{{{x=8388600,y=0,width=10,height=1}}}}, '{group}')"),
+            "render.set_hit: right 8388610 is outside ±8388607 points",
+        ),
+        (
+            format!("render.set_position('{group}', 1, 2)"),
+            "render.set_position: a group handle was given where a quad handle is needed",
+        ),
+        (
+            format!("render.destroy_quad('{group}')"),
+            "render.destroy_quad: a group handle was given where a quad handle is needed",
+        ),
+    ];
+    for (call, expected) in &cases {
+        assert_eq!(&rig.error(call), expected, "{call}");
+    }
+}
+
+/// A token of a destroyed group, and one of another scene's, are refused by every call that takes a group.
+#[test]
+fn a_destroyed_or_foreign_group_token_is_refused_by_every_group_call() {
+    let rig = Rig::new(Kind::Native);
+    let other = Rig::new(Kind::Native);
+    let texture = rig.token("return texture.load('a.png')");
+    let foreign = other.token("return render.create_group()");
+    let (mut owner, _dir) = rig.vm(&format!(
+        "local image = texture.load('a.png')\n\
+         local dead = render.create_group()\n\
+         render.destroy_group(dead)\n\
+         window.on_opened(function()\n\
+           local results = {{}}\n\
+           local function try(call) local ok, err = pcall(call); results[#results + 1] = ok and 'ok' or tostring(err) end\n\
+           for _, group in ipairs{{dead, '{foreign}'}} do\n\
+             try(function() render.raise_group(group) end)\n\
+             try(function() render.lower_group(group) end)\n\
+             try(function() render.raise_groups{{group}} end)\n\
+             try(function() render.set_group_visible(group, true) end)\n\
+             try(function() render.set_group_offset(group, 0, 0) end)\n\
+             try(function() render.set_group_clip(group, nil) end)\n\
+             try(function() render.destroy_group(group) end)\n\
+             try(function() render.create_quad{{texture = image, width = 1, height = 1, group = group}} end)\n\
+             try(function() render.set_hit('k', {{{{x=0,y=0,width=1,height=1}}}}, group) end)\n\
+           end\n\
+           return table.concat(results, '|')\n\
+         end)\n"
+    ));
+    let CallOutcome::Returned(values) = call(&mut owner, "opened") else {
+        panic!("the callback did not return");
+    };
+    let joined = string(values[0].as_ref()).to_owned();
+    let messages: Vec<&str> = joined.split('|').collect();
+    assert_eq!(messages.len(), 18);
+    for (index, message) in messages.iter().enumerate() {
+        let (what, tail) = if index < 9 {
+            ("destroyed", "is no longer live")
+        } else {
+            ("foreign", "belongs to another scene")
+        };
+        assert!(message.contains(tail), "{what} #{index}: {message}");
+        assert!(!message.contains("ok"), "{what} #{index}: {message}");
+    }
+    drop(texture);
+    let _ = owner.stop(Duration::from_secs(5));
+}
+
+/// The chrome and content pair at the API: one callback sets two groups' offsets and the content's clip and raises both, and one
+/// frame is published, with all of it in it.
+#[test]
+fn one_callback_that_moves_two_groups_clips_one_and_raises_publishes_one_frame() {
+    let rig = Rig::new(Kind::Native);
+    let attached = rig.seen.count();
+    let (mut owner, _dir) = rig.vm("local image = texture.load('a.png')\n\
+         local chrome, content\n\
+         function startup()\n\
+           content = render.create_group()\n\
+           chrome = render.create_group()\n\
+           render.create_quad{texture = image, x = 0, y = 0, width = 40, height = 20, group = content}\n\
+           render.create_quad{texture = image, x = 0, y = 0, width = 50, height = 10, group = chrome}\n\
+         end\n\
+         frame.on_update(function()\n\
+           render.set_group_offset(chrome, 10, 20)\n\
+           render.set_group_offset(content, 30, 40)\n\
+           render.set_group_clip(content, {x = 35, y = 40, width = 10, height = 100})\n\
+           render.raise_groups{content, chrome}\n\
+         end)\n");
+    assert_eq!(rig.seen.count(), attached + 1);
+    let frame = rig.seen.last().scene.expect("a frame");
+    assert_eq!(
+        frame
+            .quads()
+            .iter()
+            .map(|quad| quad.width)
+            .collect::<Vec<_>>(),
+        [40.0, 50.0],
+        "startup: content below chrome (creation order of the groups)"
+    );
+    assert!(matches!(
+        call(&mut owner, "frame_update"),
+        CallOutcome::Returned(_)
+    ));
+    assert_eq!(rig.seen.count(), attached + 2, "four edits, one frame");
+    let frame = rig.seen.last().scene.expect("a frame");
+    let quads = frame.quads();
+    // raise_groups{content, chrome}: chrome is topmost.
+    assert_eq!(
+        quads.iter().map(|quad| quad.width).collect::<Vec<_>>(),
+        [40.0, 50.0]
+    );
+    assert_eq!((quads[0].x, quads[0].y), (30.0, 40.0));
+    assert_eq!((quads[1].x, quads[1].y), (10.0, 20.0));
+    let clip = quads[0].clip.expect("the content quad is clipped");
+    assert_eq!(
+        (clip.x, clip.y, clip.width, clip.height),
+        (35.0, 40.0, 10.0, 100.0),
+        "the clip is absolute: the offset did not move it"
+    );
+    assert_eq!(quads[1].clip, None);
+    let _ = owner.stop(Duration::from_secs(5));
+}
+
+/// The point domain through the Lua API: the boundaries, the refusals that name their cause, and exact published edges.
+#[test]
+fn the_point_domain_boundaries_hold_through_the_api_and_publication_has_exact_edges() {
+    let rig = Rig::new(Kind::Native);
+    let (mut owner, _dir) = rig.vm(
+        "local g = render.create_group()\n\
+         local function try(call) local ok, err = pcall(call); return ok and 'ok' or tostring(err) end\n\
+         window.on_opened(function()\n\
+           local r = {}\n\
+           -- offsets: +-8388607 accepted, +-8388608 refused\n\
+           r[#r + 1] = try(function() render.set_group_offset(g, 8388607, -8388607) end)\n\
+           r[#r + 1] = try(function() render.set_group_offset(g, -8388607, 8388607) end)\n\
+           r[#r + 1] = try(function() render.set_group_offset(g, 8388608, 0) end)\n\
+           r[#r + 1] = try(function() render.set_group_offset(g, 0, -8388608) end)\n\
+           render.set_group_offset(g, 100, 0)\n\
+           -- a rectangle whose translated right edge lands on 8388607 is accepted; one point further is refused\n\
+           r[#r + 1] = try(function() render.set_hit('edge', {{x = 8388497, y = 0, width = 10, height = 1}}, g) end)\n\
+           r[#r + 1] = try(function() render.set_hit('past', {{x = 8388498, y = 0, width = 10, height = 1}}, g) end)\n\
+           -- an offset that would push the existing rectangle out is refused, and the old offset stays\n\
+           r[#r + 1] = try(function() render.set_group_offset(g, 101, 0) end)\n\
+           -- a clip edge outside the domain is refused; one on the edge is accepted\n\
+           r[#r + 1] = try(function() render.set_group_clip(g, {x = 8388607, y = 0, width = 1, height = 1}) end)\n\
+           r[#r + 1] = try(function() render.set_group_clip(g, {x = 8388606, y = 0, width = 1, height = 1}) end)\n\
+           return table.concat(r, '|')\n\
+         end)\n",
+    );
+    let CallOutcome::Returned(values) = call(&mut owner, "opened") else {
+        panic!("the callback did not return");
+    };
+    let results: Vec<String> = string(values[0].as_ref())
+        .split('|')
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(results[0], "ok");
+    assert_eq!(results[1], "ok");
+    assert!(
+        results[2].contains("x 8388608 is outside ±8388607 points"),
+        "{results:?}"
+    );
+    assert!(
+        results[3].contains("y -8388608 is outside ±8388607 points"),
+        "{results:?}"
+    );
+    assert_eq!(results[4], "ok", "right edge exactly at the domain's edge");
+    assert!(
+        results[5].contains("right 8388608 is outside ±8388607 points"),
+        "{results:?}"
+    );
+    assert!(
+        results[6].contains("hit key `edge`") && results[6].contains("right edge"),
+        "{results:?}"
+    );
+    assert!(results[7].contains("outside"), "{results:?}");
+    assert_eq!(results[8], "ok");
+    // Publication succeeded after the boundary cases, with exact edges: x 8388597..8388607 under the offset 100.
+    let regions = rig.bridge.hit_regions().expect("published regions");
+    assert_eq!(regions.regions().len(), 1);
+    assert_eq!(regions.regions()[0].key(), "edge");
+    let inside = ck_window::PointerPosition::from_points(8_388_606.5, 0.5).unwrap();
+    let outside = ck_window::PointerPosition::from_points(8_388_596.5, 0.5).unwrap();
+    assert!(regions.key_contains("edge", inside));
+    assert!(!regions.key_contains("edge", outside));
+    let _ = owner.stop(Duration::from_secs(5));
+}
+
+/// `destroy_group` through the API removes its quads from the next frame and its keys from the regions.
+#[test]
+fn destroy_group_removes_the_quads_and_keys_and_the_scene_cap_counts_every_group() {
+    let rig = Rig::new(Kind::Native);
+    let (mut owner, _dir) = rig.vm("local image = texture.load('a.png')\n\
+         local g\n\
+         function startup()\n\
+           g = render.create_group()\n\
+           render.create_quad{texture = image, width = 3, height = 3, group = g}\n\
+           render.create_quad{texture = image, width = 5, height = 5}\n\
+           render.set_hit('doomed', {{x = 0, y = 0, width = 10, height = 10}}, g)\n\
+         end\n\
+         window.on_opened(function() render.destroy_group(g) end)\n");
+    assert_eq!(rig.seen.rects().len(), 2);
+    assert!(rig.bridge.hit_regions().unwrap().contains_key("doomed"));
+    assert!(matches!(
+        call(&mut owner, "opened"),
+        CallOutcome::Returned(_)
+    ));
+    assert_eq!(rig.seen.rects(), [[0.0, 0.0, 5.0, 5.0]]);
+    assert!(!rig.bridge.hit_regions().unwrap().contains_key("doomed"));
+    let _ = owner.stop(Duration::from_secs(5));
+}

@@ -150,8 +150,9 @@ local key = b.key
 local function packet(over, events, overflow, held)
   return {x = 0, y = 0, held = held or false, over = over, overflow = overflow or false, events = events}
 end
+-- An event as routing gives it: `inside` says whether the position lay in the button's published rectangle (x 10..42, y 20..50).
 local function ev(kind, x, y)
-  return {kind = kind, x = x, y = y, key = key}
+  return {kind = kind, x = x, y = y, key = key, inside = x >= 10 and x < 42 and y >= 20 and y < 50}
 end
 -- Dispatches a packet and checks what `dispatch` reported.
 local function send(p, expect)
@@ -369,9 +370,9 @@ fn a_buttons_quads_are_literal_rectangles_at_two_points_per_pixel() {
             "load ui/button/normal.png",
             "create q1 ui/button/normal.png 10 20 32 30",
             "load ui/button/hover.png",
-            "create q2 ui/button/hover.png -1000000 -1000000 32 30",
+            "create q2 ui/button/hover.png -1000000000000 -1000000000000 32 30",
             "load ui/button/pressed.png",
-            "create q3 ui/button/pressed.png -1000000 -1000000 32 30",
+            "create q3 ui/button/pressed.png -1000000000000 -1000000000000 32 30",
             "load ui/font/glyphs/U+0047.png",
             "create q4 ui/font/glyphs/U+0047.png 14 24 10 22",
             "load ui/font/glyphs/U+006F.png",
@@ -394,9 +395,9 @@ fn a_buttons_quads_are_literal_rectangles_at_three_points_per_pixel() {
             "load ui/button/normal.png",
             "create q1 ui/button/normal.png 9 21 48 45",
             "load ui/button/hover.png",
-            "create q2 ui/button/hover.png -999999 -999999 48 45",
+            "create q2 ui/button/hover.png -999999999999 -999999999999 48 45",
             "load ui/button/pressed.png",
-            "create q3 ui/button/pressed.png -999999 -999999 48 45",
+            "create q3 ui/button/pressed.png -999999999999 -999999999999 48 45",
             "load ui/font/glyphs/U+0047.png",
             "create q4 ui/font/glyphs/U+0047.png 15 27 15 33",
             "load ui/font/glyphs/U+006F.png",
@@ -486,7 +487,7 @@ fn a_buttons_background_is_one_quad_in_place_and_its_glyphs_stay_above() {
             .expect("a mark");
         let alive = quads(&entries[..upto]);
         assert_eq!(
-            in_place(&alive, &["q1", "q2", "q3"], -1_000_000),
+            in_place(&alive, &["q1", "q2", "q3"], -1_000_000_000_000),
             [expected],
             "after mark {index}"
         );
@@ -502,11 +503,11 @@ fn a_buttons_background_is_one_quad_in_place_and_its_glyphs_stay_above() {
         "{after:?}"
     );
     assert!(
-        after.contains(&"set_rect q2 -1000000 -1000000 60 30".to_owned()),
+        after.contains(&"set_rect q2 -1000000000000 -1000000000000 60 30".to_owned()),
         "{after:?}"
     );
     assert!(
-        after.contains(&"set_rect q3 -1000000 -1000000 60 30".to_owned()),
+        after.contains(&"set_rect q3 -1000000000000 -1000000000000 60 30".to_owned()),
         "{after:?}"
     );
 }
@@ -583,12 +584,18 @@ fn a_button_is_hover_when_the_pointer_is_over_it_pressed_on_a_down_and_clicks_on
     // over: hover (the normal background parks, the hover one comes into place)
     assert_eq!(
         readout.after_mark(1),
-        ["set_position q1 -1000000 -1000000", "set_position q2 10 20"]
+        [
+            "set_position q1 -1000000000000 -1000000000000",
+            "set_position q2 10 20"
+        ]
     );
     // down: pressed
     assert_eq!(
         readout.after_mark(2),
-        ["set_position q2 -1000000 -1000000", "set_position q3 10 20"]
+        [
+            "set_position q2 -1000000000000 -1000000000000",
+            "set_position q3 10 20"
+        ]
     );
     // no click yet, and a move while pressed changes nothing on screen
     assert_eq!(readout.after_mark(3), ["record clicks 0"]);
@@ -596,7 +603,7 @@ fn a_button_is_hover_when_the_pointer_is_over_it_pressed_on_a_down_and_clicks_on
     assert_eq!(
         readout.after_mark(4),
         [
-            "set_position q3 -1000000 -1000000",
+            "set_position q3 -1000000000000 -1000000000000",
             "set_position q2 10 20",
             "record clicks 1",
         ]
@@ -604,7 +611,10 @@ fn a_button_is_hover_when_the_pointer_is_over_it_pressed_on_a_down_and_clicks_on
     // out: normal
     assert_eq!(
         readout.after_mark(5),
-        ["set_position q2 -1000000 -1000000", "set_position q1 10 20"]
+        [
+            "set_position q2 -1000000000000 -1000000000000",
+            "set_position q1 10 20"
+        ]
     );
 }
 
@@ -730,7 +740,10 @@ fn an_over_only_packet_changes_the_look_and_an_identical_one_makes_no_scene_call
     );
     assert_eq!(
         readout.after_mark(1),
-        ["set_position q1 -1000000 -1000000", "set_position q2 10 20"]
+        [
+            "set_position q1 -1000000000000 -1000000000000",
+            "set_position q2 10 20"
+        ]
     );
     // identical: unchanged, no scene call (`held` alone is not a change)
     assert!(readout.after_mark(2).is_empty());
@@ -798,7 +811,11 @@ fn an_overflow_packet_with_no_events_and_the_button_up_releases_every_pressed_wi
     // after the packet both are normal again (q1 and q6 in place, the others parked), and nobody clicked
     let after = quads(&entries);
     assert_eq!(
-        in_place(&after, &["q1", "q2", "q3", "q6", "q7", "q8"], -1_000_000),
+        in_place(
+            &after,
+            &["q1", "q2", "q3", "q6", "q7", "q8"],
+            -1_000_000_000_000
+        ),
         ["q1", "q6"]
     );
     assert_eq!(records(&readout), ["clicks 0"]);
@@ -817,11 +834,11 @@ fn an_overflow_packet_clicks_nothing_even_with_a_retained_down_and_up() {
     assert_eq!(
         readout.after_mark(1),
         [
-            "set_position q1 -1000000 -1000000",
+            "set_position q1 -1000000000000 -1000000000000",
             "set_position q3 10 20",
-            "set_position q3 -1000000 -1000000",
+            "set_position q3 -1000000000000 -1000000000000",
             "set_position q1 10 20",
-            "set_position q1 -1000000 -1000000",
+            "set_position q1 -1000000000000 -1000000000000",
             "set_position q2 10 20",
             "record clicks 0",
         ]
@@ -851,7 +868,10 @@ fn an_overflow_packet_that_ends_held_releases_the_pressed_button_and_the_next_cl
         .position(|e| e == "record mark")
         .expect("a mark");
     let alive = quads(&entries[..marked]);
-    assert_eq!(in_place(&alive, &["q1", "q2", "q3"], -1_000_000), ["q2"]);
+    assert_eq!(
+        in_place(&alive, &["q1", "q2", "q3"], -1_000_000_000_000),
+        ["q2"]
+    );
 }
 
 #[test]
@@ -869,11 +889,15 @@ fn the_cancel_of_a_gesture_clears_the_pressed_state_without_a_click() {
         .position(|e| e == "record mark")
         .expect("a mark");
     assert_eq!(
-        in_place(&quads(&entries[..first]), &["q1", "q2", "q3"], -1_000_000),
+        in_place(
+            &quads(&entries[..first]),
+            &["q1", "q2", "q3"],
+            -1_000_000_000_000
+        ),
         ["q3"]
     );
     assert_eq!(
-        in_place(&quads(&entries), &["q1", "q2", "q3"], -1_000_000),
+        in_place(&quads(&entries), &["q1", "q2", "q3"], -1_000_000_000_000),
         ["q1"]
     );
     assert_eq!(
@@ -1077,6 +1101,7 @@ fn the_time_bar_routes_its_buttons_through_game_controls() {
             ConfigValue::Table(BTreeMap::from([
                 ("kind".to_owned(), ConfigValue::String(kind.to_owned())),
                 ("key".to_owned(), ConfigValue::String(key.clone())),
+                ("inside".to_owned(), ConfigValue::Bool(true)),
                 ("x".to_owned(), ConfigValue::Integer(x)),
                 ("y".to_owned(), ConfigValue::Integer(y)),
             ]))
@@ -1163,4 +1188,55 @@ fn the_time_bar_geometry_is_literal_at_both_scales_and_readout_width_keeps_butto
             "the panel width follows the readout at scale {scale}: {changed:?}"
         );
     }
+}
+
+/// Whether any part of `rect` (in points) lies inside an 800 by 600 point window, which is where `main.lua` assumes the window is
+/// until the first update: a quad wholly outside it is never placed.
+fn on_screen(rect: Rect) -> bool {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a test window of a few hundred points"
+    )]
+    let (x, y, w, h) = (rect.0 as f64, rect.1 as f64, rect.2 as f64, rect.3 as f64);
+    x + w > 0.0 && x < 800.0 && y + h > 0.0 && y < 600.0
+}
+
+#[test]
+fn the_tooltip_places_no_panel_while_hidden_and_exactly_one_when_shown() {
+    let mut readout = Readout::new("", None);
+    let panel_rects = |readout: &Readout| -> Vec<Rect> {
+        let entries = readout.entries();
+        let alive = quads(&entries);
+        entries
+            .iter()
+            .filter(|entry| entry.starts_with("create ") && entry.contains("ui/font/panel.png"))
+            .map(|entry| entry.split(' ').nth(1).expect("a quad name").to_owned())
+            .filter_map(|name| alive.get(&name).copied())
+            .collect()
+    };
+    assert!(
+        panel_rects(&readout).is_empty(),
+        "no tooltip panel exists before the first hover"
+    );
+    readout.deliver_hover(Some(("town", "Alpha", 100, 160, 80)));
+    let shown = panel_rects(&readout);
+    assert_eq!(shown.len(), 1);
+    assert!(
+        on_screen(shown[0]),
+        "the shown tooltip's panel is placed: {shown:?}"
+    );
+    readout.deliver_hover(None);
+    let hidden = panel_rects(&readout);
+    assert_eq!(hidden.len(), 1, "the panel is parked, not destroyed");
+    assert!(
+        !on_screen(hidden[0]),
+        "the hidden tooltip's panel is not placed: {hidden:?}"
+    );
+    assert_eq!(hidden[0].0, -1_000_000_000_000, "parked at ui.HIDDEN");
+    readout.deliver_hover(Some(("town", "Alpha", 100, 160, 80)));
+    let again = panel_rects(&readout);
+    assert!(
+        on_screen(again[0]),
+        "and placed again when shown: {again:?}"
+    );
 }

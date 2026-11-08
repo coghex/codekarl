@@ -5,10 +5,10 @@ local text = require("lib.text")
 local label = {}
 label.__index = label
 
--- `label.new{x, y, text}`, in points.
+-- `label.new{x, y, text, group = nil}`, in points; with a `group` the glyphs go into it and the position is local to it.
 function label.new(spec)
   local self = setmetatable({}, label)
-  self.line = text.line(spec.x, spec.y)
+  self.line = text.line(spec.x, spec.y, spec.group)
   text.set(self.line, spec.text or "")
   return self
 end

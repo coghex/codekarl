@@ -13,8 +13,10 @@ function ui.snap(value)
   return math.floor(value / P + 0.5) * P
 end
 
--- A parking coordinate: far outside any window, on the UI-pixel grid like every other edge.
-ui.HIDDEN = ui.snap(-1000000)
+-- A parking coordinate on both axes, on the UI-pixel grid like every other edge: -1e12 points. A parked quad's right edge, after any
+-- group offset the engine allows (at most 8,388,607 points) and any quad size (at most 16,384 points), is at most
+-- -1e12 + 16,384 + 8,388,607, which is below 0: wholly left of, or above, the window, so it is never placed. -1e12 is exact in f64.
+ui.HIDDEN = ui.snap(-1e12)
 
 -- A size snapped to the grid, at least one UI pixel.
 function ui.snap_size(value)
