@@ -15,11 +15,18 @@ mod time_bar_witness;
 
 #[test]
 fn the_window_witness_assertions_validate_captured_output_offline() {
-    const CAPTURED: &str = "lua.ui: time-bar speed 1 load\nlua.ui: time-bar speed 3 load\nlua.ui: time-bar speed 3 running\nlua.ui: time-bar speed 3 player\nlua.ui: time-bar gap down\nlua.ui: time-bar gap up\nwindow: window closed\ncamera 0 782598144 782598144\ntime-bar-speed3-injected\ntime-bar-pause1-injected\ntime-bar-pause2-injected\ntime-bar-gap-drag-injected\ntime-bar-gap-drag-observed\n";
+    const CAPTURED: &str = "lua.ui: time-bar speed 1 load boxes 1\nlua.ui: time-bar icon play initial\nlua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar speed 4 load boxes 4\nlua.ui: time-bar speed 4 running boxes 4\nlua.ui: time-bar icon pause after\nlua.ui: time-bar box down\nlua.ui: time-bar box up\nwindow: window closed\ncamera 0 782598144 782598144\ntime-bar-fast-forward-injected\ntime-bar-resume-injected\ntime-bar-box-drag-injected\ntime-bar-box-drag-observed-injected\n";
     assert!(time_bar_witness::validate(CAPTURED).is_ok());
+    let out_of_order = CAPTURED
+        .replace("lua.ui: time-bar icon play initial\n", "")
+        .replace(
+            "lua.ui: time-bar speed 3 load boxes 3\n",
+            "lua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar icon play initial\n",
+        );
+    assert!(time_bar_witness::validate(&out_of_order).is_err());
     assert!(
         time_bar_witness::validate(
-            &CAPTURED.replace("time-bar speed 3 running", "time-bar speed 2 running")
+            &CAPTURED.replace("time-bar speed 4 running", "time-bar speed 3 running")
         )
         .is_err()
     );
@@ -30,7 +37,7 @@ fn the_window_witness_assertions_validate_captured_output_offline() {
         ))
         .is_err()
     );
-    assert!(time_bar_witness::script().contains("game.control(control_name)"));
+    assert!(time_bar_witness::script().contains("game.control(\"time_faster\")"));
     let fixture = crate::testing::Dir::new();
     time_bar_witness::install_fixture_assets(&fixture.0, &fixture.0);
     assert!(fixture.0.join("lib/button.lua").is_file());
@@ -75,13 +82,13 @@ fn the_window_witness_observes_down_move_and_up_in_one_real_ui_update() {
     assert!(
         entries
             .iter()
-            .any(|entry| entry == "record time-bar gap down"),
+            .any(|entry| entry == "record time-bar box down"),
         "{entries:?}"
     );
     assert!(
         entries
             .iter()
-            .any(|entry| entry == "record time-bar gap up"),
+            .any(|entry| entry == "record time-bar box up"),
         "{entries:?}"
     );
 }
@@ -1120,7 +1127,7 @@ fn the_time_bar_routes_its_buttons_through_game_controls() {
     let first_button = entries
         .iter()
         .position(|entry| entry.starts_with("set_hit button_1 "))
-        .expect("the pause button region");
+        .expect("the rewind button region");
     assert!(broad_hit < first_button, "{entries:?}");
     assert!(
         !entries
@@ -1128,18 +1135,25 @@ fn the_time_bar_routes_its_buttons_through_game_controls() {
             .any(|entry| entry.starts_with("set_hit readout ")),
         "the former readout-only hit region is removed"
     );
-    assert!(entries[0].starts_with("load ui/theme/cut3_tl_fill.png"));
-    assert!(entries[1].starts_with("create q1 ui/theme/cut3_tl_fill.png 8 8 "));
+    assert!(entries[0].starts_with("load ui/theme/cut6_tl_fill.png"));
+    assert!(entries[1].starts_with("create q1 ui/theme/cut6_tl_fill.png 8 8 "));
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.starts_with("set_hit button_"))
+            .count(),
+        5,
+        "three transports, Help and the separate Places button: {entries:?}"
+    );
+    assert!(
+        !entries.iter().any(|entry| entry.contains("time_speed_")),
+        "speed is no longer represented by buttons"
+    );
 
     let expected = [
-        crate::game::controls::Control::TogglePause,
         crate::game::controls::Control::Slower,
+        crate::game::controls::Control::TogglePause,
         crate::game::controls::Control::Faster,
-        crate::game::controls::Control::Speed(1),
-        crate::game::controls::Control::Speed(2),
-        crate::game::controls::Control::Speed(3),
-        crate::game::controls::Control::Speed(4),
-        crate::game::controls::Control::Speed(5),
     ];
     for (index, control) in expected.into_iter().enumerate() {
         let key = format!("button_{}", index + 1);
@@ -1180,74 +1194,390 @@ fn the_time_bar_routes_its_buttons_through_game_controls() {
 }
 
 #[test]
-fn the_time_bar_geometry_is_literal_at_both_scales_and_readout_width_keeps_buttons_fixed() {
-    let cases = [
-        (
-            2,
-            "set_hit time_bar 8 8 568 38",
-            [
-                "set_hit button_1 12 12 18 30",
-                "set_hit button_2 38 12 20 30",
-                "set_hit button_3 60 12 20 30",
-                "set_hit button_4 88 12 20 30",
-                "set_hit button_5 110 12 20 30",
-                "set_hit button_6 132 12 20 30",
-                "set_hit button_7 154 12 20 30",
-                "set_hit button_8 176 12 20 30",
-                "set_hit button_9 204 12 20 30",
-                "set_hit button_10 226 12 76 30",
-            ],
-        ),
-        (
-            3,
-            "set_hit time_bar 9 9 852 57",
-            [
-                "set_hit button_1 15 15 27 45",
-                "set_hit button_2 54 15 30 45",
-                "set_hit button_3 87 15 30 45",
-                "set_hit button_4 129 15 30 45",
-                "set_hit button_5 162 15 30 45",
-                "set_hit button_6 195 15 30 45",
-                "set_hit button_7 228 15 30 45",
-                "set_hit button_8 261 15 30 45",
-                "set_hit button_9 303 15 30 45",
-                "set_hit button_10 336 15 114 45",
-            ],
-        ),
-    ];
-    for (scale, panel, expected_hits) in cases {
+#[expect(
+    clippy::too_many_lines,
+    reason = "the literal checks form one two-scale layout contract"
+)]
+fn the_time_bar_and_places_bar_follow_the_literal_layout_at_both_scales() {
+    for scale in [2, 3] {
         let mut readout = Readout::new("", Some(scale));
+        readout.update(800, 600, None);
         readout.deliver(&crate::readout_tests::snapshot(
             14,
             3,
             Some(crate::game::slot::PauseReason::Player),
         ));
         let before = readout.entries();
-        assert!(before.contains(&panel.to_owned()), "scale {scale}: {panel}");
-        let actual_hits: Vec<String> = before
+        let time_bar = before
             .iter()
-            .filter(|entry| entry.starts_with("set_hit button_"))
-            .cloned()
+            .find(|entry| entry.starts_with("set_hit time_bar "))
+            .expect("time bar region");
+        let time_rect: Vec<i64> = time_bar
+            .split_whitespace()
+            .skip(2)
+            .map(|v| v.parse().unwrap())
             .collect();
-        assert_eq!(actual_hits, expected_hits);
+        let margin = if scale == 2 { 8 } else { 9 };
+        assert_eq!(
+            (time_rect[0], time_rect[1], time_rect[3]),
+            (margin, margin, 19 * scale)
+        );
+        for (index, (x, width)) in [(5, 13), (19, 11), (31, 13), (95, 10)]
+            .into_iter()
+            .enumerate()
+        {
+            let key = format!("button_{}", index + 1);
+            let entry = before
+                .iter()
+                .find(|line| line.starts_with(&format!("set_hit {key} ")))
+                .unwrap();
+            let rect: Vec<i64> = entry
+                .split_whitespace()
+                .skip(2)
+                .map(|v| v.parse().unwrap())
+                .collect();
+            assert_eq!(
+                rect,
+                [
+                    margin + x * scale,
+                    margin + 2 * scale,
+                    width * scale,
+                    15 * scale
+                ],
+                "scale {scale}, {key}"
+            );
+        }
+        let place_bar = before
+            .iter()
+            .find(|entry| entry.starts_with("set_hit places_bar "))
+            .unwrap();
+        let place_rect: Vec<i64> = place_bar
+            .split_whitespace()
+            .skip(2)
+            .map(|v| v.parse().unwrap())
+            .collect();
+        assert_eq!(
+            (place_rect[1], place_rect[3], place_rect[0] + place_rect[2]),
+            (margin, 19 * scale, 800 - 8)
+        );
+        let places_hit = before
+            .iter()
+            .position(|entry| entry.starts_with("set_hit places_bar "))
+            .unwrap();
+        let places_button = before
+            .iter()
+            .position(|entry| entry.starts_with("set_hit button_5 "))
+            .unwrap();
+        assert!(
+            places_hit < places_button,
+            "the broad region precedes its button: {before:?}"
+        );
+        let places_button_entry = &before[places_button];
+        let button_rect: Vec<i64> = places_button_entry
+            .split_whitespace()
+            .skip(2)
+            .map(|v| v.parse().unwrap())
+            .collect();
+        assert_eq!(button_rect[0], place_rect[0] + 5 * scale);
+        assert_eq!(button_rect[1], place_rect[1] + 2 * scale);
 
         let before_resize = before.len();
-        readout.deliver(&crate::readout_tests::snapshot(14, 3, None));
+        readout.update(1200, 700, None);
         let after = readout.entries();
         let changed = &after[before_resize..];
-        let later_hits: Vec<String> = after
+        let moved_places = changed
             .iter()
-            .filter(|entry| entry.starts_with("set_hit button_"))
-            .cloned()
+            .find(|entry| entry.starts_with("set_hit places_bar "))
+            .unwrap();
+        let moved_rect: Vec<i64> = moved_places
+            .split_whitespace()
+            .skip(2)
+            .map(|v| v.parse().unwrap())
             .collect();
-        assert_eq!(later_hits, actual_hits, "scale {scale}");
+        let right = if scale == 2 { 1200 - 8 } else { 1191 };
+        assert_eq!(moved_rect[0] + moved_rect[2], right);
         assert!(
             changed
                 .iter()
-                .any(|entry| entry.starts_with("set_hit time_bar ")),
-            "the panel width follows the readout at scale {scale}: {changed:?}"
+                .any(|entry| entry.starts_with("set_hit button_5 ")),
+            "the Places button follows its bar at scale {scale}: {changed:?}"
         );
+        let fixed_time_buttons: Vec<String> = after
+            .iter()
+            .filter(|entry| (1..=4).any(|i| entry.starts_with(&format!("set_hit button_{i} "))))
+            .cloned()
+            .collect();
+        let original_time_buttons: Vec<String> = before
+            .iter()
+            .filter(|entry| (1..=4).any(|i| entry.starts_with(&format!("set_hit button_{i} "))))
+            .cloned()
+            .collect();
+        assert_eq!(fixed_time_buttons, original_time_buttons);
     }
+}
+
+#[test]
+fn icon_buttons_precreate_all_icons_and_set_icon_only_retints_the_two_quads() {
+    let readout = Readout::script(
+        r#"
+local button = require("lib.button")
+local control = button.new{x = 10, y = 20, kind = "time_bar", icons = {"pause", "play"}}
+window.record("mark")
+control:set_icon("play")
+window.record("mark")
+control:set_icon("play")
+window.record("mark")
+local ok, message = pcall(control.set_icon, control, "rewind")
+window.record(tostring(ok) .. " " .. tostring(message))
+local ok2 = pcall(button.new, {x = 0, y = 0, kind = "time_bar", icons = {"pause", "rewind"}})
+window.record(tostring(ok2))
+"#,
+        None,
+    );
+    let created: Vec<_> = readout
+        .entries()
+        .iter()
+        .filter(|entry| entry.starts_with("create ") && entry.contains("ui/theme/icon_"))
+        .cloned()
+        .collect();
+    assert_eq!(created.len(), 2, "{created:?}");
+    assert!(created[0].contains("icon_pause.png"));
+    assert!(created[1].contains("icon_play.png"));
+    assert!(created[0].ends_with(" 14 24 14 22"), "{created:?}");
+    assert!(created[1].ends_with(" 14 24 14 22"), "{created:?}");
+    let ids: Vec<String> = created
+        .iter()
+        .map(|entry| entry.split_whitespace().nth(1).unwrap().to_owned())
+        .collect();
+    let tints = readout.tints();
+    let first_mark = tints
+        .iter()
+        .position(|entry| entry == "record mark")
+        .unwrap();
+    let second_mark = tints
+        .iter()
+        .skip(first_mark + 1)
+        .position(|entry| entry == "record mark")
+        .unwrap()
+        + first_mark
+        + 1;
+    let third_mark = tints
+        .iter()
+        .skip(second_mark + 1)
+        .position(|entry| entry == "record mark")
+        .unwrap()
+        + second_mark
+        + 1;
+    assert_eq!(
+        &tints[first_mark + 1..second_mark],
+        [
+            format!("set_tint {} #00000000", ids[0]),
+            format!("set_tint {} #ece3cb", ids[1])
+        ]
+    );
+    assert!(
+        tints[second_mark + 1..third_mark].is_empty(),
+        "same icon is a no-op"
+    );
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|entry| entry.contains("icon `rewind` is not in icons"))
+    );
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|entry| entry == "record false"),
+        "unequal icon widths are refused before drawing"
+    );
+}
+
+#[test]
+fn speed_boxes_follow_simulation_state_and_only_changed_boxes_are_retinted() {
+    for scale in [2, 3] {
+        for (speed, paused) in [
+            (1, None),
+            (3, None),
+            (5, None),
+            (3, Some(crate::game::slot::PauseReason::Player)),
+        ] {
+            let mut readout = Readout::new("", Some(scale));
+            readout.deliver(&crate::readout_tests::snapshot(14, speed, paused));
+            let expected: Vec<String> = (1..=5)
+                .map(|index| {
+                    if index <= speed {
+                        "#a8261c"
+                    } else {
+                        "#00000000"
+                    }
+                    .to_owned()
+                })
+                .collect();
+            assert_eq!(
+                speed_inner_tints(&readout, scale),
+                expected,
+                "P={scale}, speed={speed}, paused={paused:?}"
+            );
+            let outlines: Vec<_> = readout
+                .entries()
+                .into_iter()
+                .filter(|entry| {
+                    entry.starts_with("create ") && entry.contains("ui/theme/speed_box.png")
+                })
+                .collect();
+            assert_eq!(outlines.len(), 5, "{outlines:?}");
+            assert!(outlines.iter().all(|entry| entry.ends_with(&format!(
+                " {} {}",
+                7 * scale,
+                7 * scale
+            ))));
+            assert!(outlines.iter().all(|entry| {
+                let quad = entry.split_whitespace().nth(1).unwrap();
+                readout
+                    .tints()
+                    .iter()
+                    .any(|tint| tint == &format!("create {quad} #ece3cb"))
+            }));
+        }
+    }
+
+    let mut readout = Readout::new("", None);
+    readout.deliver(&crate::readout_tests::snapshot(14, 3, None));
+    let before_pause = readout.tints().len();
+    readout.deliver(&crate::readout_tests::snapshot(
+        14,
+        3,
+        Some(crate::game::slot::PauseReason::Player),
+    ));
+    let pause_changes = &readout.tints()[before_pause..];
+    assert_eq!(
+        pause_changes.len(),
+        2,
+        "pause/play precreated icons are retinted: {pause_changes:?}"
+    );
+    assert_eq!(
+        speed_inner_tints(&readout, 2),
+        ["#a8261c", "#a8261c", "#a8261c", "#00000000", "#00000000"]
+    );
+    let before_speed = readout.tints().len();
+    readout.deliver(&crate::readout_tests::snapshot(
+        14,
+        4,
+        Some(crate::game::slot::PauseReason::Player),
+    ));
+    let changed = &readout.tints()[before_speed..];
+    assert_eq!(
+        changed.len(),
+        1,
+        "one newly filled box while paused: {changed:?}"
+    );
+    assert!(changed[0].ends_with(" #a8261c"), "{changed:?}");
+    assert_eq!(
+        speed_inner_tints(&readout, 2),
+        ["#a8261c", "#a8261c", "#a8261c", "#a8261c", "#00000000"]
+    );
+}
+
+fn speed_inner_tints(readout: &Readout, scale: i64) -> Vec<String> {
+    let margin = if scale == 2 { 8 } else { 9 };
+    let mut tints = BTreeMap::new();
+    for entry in readout.tints() {
+        let mut fields = entry.split_whitespace();
+        if let Some("create" | "set_tint") = fields.next() {
+            tints.insert(
+                fields.next().unwrap().to_owned(),
+                fields.next().unwrap().to_owned(),
+            );
+        }
+    }
+    let mut inner = vec![String::new(); 5];
+    for entry in readout
+        .entries()
+        .iter()
+        .filter(|entry| entry.contains("ui/theme/white.png"))
+    {
+        let fields: Vec<_> = entry.split_whitespace().collect();
+        if fields.len() != 7
+            || fields[5] != (3 * scale).to_string()
+            || fields[6] != (3 * scale).to_string()
+        {
+            continue;
+        }
+        let x: i64 = fields[3].parse().unwrap();
+        let y: i64 = fields[4].parse().unwrap();
+        if let Some(index) = (0_usize..5).find(|index| {
+            let index = i64::try_from(*index).unwrap();
+            x == margin + (50 + index * 9) * scale && y == margin + 8 * scale
+        }) {
+            inner[index] = tints[fields[1]].clone();
+        }
+    }
+    inner
+}
+
+#[test]
+fn the_time_bar_date_has_no_transport_text_and_an_hour_change_replaces_only_its_glyph() {
+    let formatted = Readout::script(
+        r#"
+local date = require("lib.time")
+window.record(date.date({day = 9, month = 10, year = 768, hour = 14, speed = 3, paused = true}))
+"#,
+        None,
+    );
+    assert!(
+        formatted
+            .entries()
+            .iter()
+            .any(|entry| entry == "record 9 Oct 768 · 14:00")
+    );
+
+    let mut readout = Readout::new("", None);
+    readout.deliver(&crate::readout_tests::snapshot(14, 3, None));
+    let before = readout.entries().len();
+    readout.deliver(&crate::readout_tests::snapshot(15, 3, None));
+    let changed = &readout.entries()[before..];
+    assert_eq!(changed.len(), 3, "one date glyph is replaced: {changed:?}");
+    assert!(changed[0].starts_with("destroy "), "{changed:?}");
+    assert!(
+        changed[1] == "load ui/font/glyphs/U+0035.png",
+        "{changed:?}"
+    );
+    assert!(
+        changed[2].contains("ui/font/glyphs/U+0035.png"),
+        "{changed:?}"
+    );
+}
+
+#[test]
+fn the_time_bar_theme_requires_both_speed_colours() {
+    let readout = Readout::script(
+        r##"
+theme.kind = function() return {outline = "#000000", hot = "#ffffff"} end
+local look = require("lib.theme")
+local ok, message = pcall(look.kind, "time_bar")
+window.record(tostring(ok) .. " " .. tostring(message))
+theme.kind = function() return {outline = "#000000", hot = "#ffffff", speed_box = "#ece3cb"} end
+local ok2, message2 = pcall(look.kind, "time_bar")
+window.record(tostring(ok2) .. " " .. tostring(message2))
+"##,
+        None,
+    );
+    let errors: Vec<_> = readout
+        .entries()
+        .into_iter()
+        .filter(|entry| entry.starts_with("record false "))
+        .collect();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(
+        errors[0].contains("[kind.time_bar] missing `speed_box`"),
+        "{errors:?}"
+    );
+    assert!(
+        errors[1].contains("[kind.time_bar] missing `speed_fill`"),
+        "{errors:?}"
+    );
 }
 
 /// Whether any part of `rect` (in points) lies inside an 800 by 600 point window, which is where `main.lua` assumes the window is

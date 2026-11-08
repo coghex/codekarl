@@ -10,6 +10,9 @@ local P = ui.P
 local PADDING = 2 -- UI pixels on each side of the text
 local CUT = 3
 local LEAST = 2 * CUT + 3 -- the least size of a cut-3 frame, in UI pixels
+local ICON_HEIGHT = 11
+local ICON_WIDTHS = {rewind = 9, fast_forward = 9, pause = 7, play = 7}
+local TRANSPARENT = "#00000000"
 
 local button = {}
 button.__index = button
@@ -65,7 +68,55 @@ end
 local function show(self)
   local fill, line, ink = look_of(self)
   self.frame:set_colours(fill, line)
-  text.set_colour(self.line, ink)
+  if self.icons ~= nil then
+    local current = self.icon_quads[self.icon]
+    if current.tint ~= ink then
+      render.set_tint(current.quad, ink)
+      current.tint = ink
+    end
+  else
+    text.set_colour(self.line, ink)
+  end
+end
+
+local function checked_icons(icons)
+  if type(icons) ~= "table" or #icons == 0 then
+    error("button.new: icons must be a non-empty array", 3)
+  end
+  local count = 0
+  local width = nil
+  local copy = {}
+  for index, name in ipairs(icons) do
+    count = count + 1
+    local icon_width = ICON_WIDTHS[name]
+    if icon_width == nil then
+      error("button.new: unknown icon `" .. tostring(name) .. "`", 3)
+    end
+    if width ~= nil and width ~= icon_width then
+      error("button.new: icons must all have the same width", 3)
+    end
+    width = icon_width
+    copy[index] = name
+  end
+  local entries = 0
+  for _ in pairs(icons) do entries = entries + 1 end
+  if entries ~= count then
+    error("button.new: icons must be a non-empty array", 3)
+  end
+  return copy, width
+end
+
+local function icon_tint(self)
+  local _, _, ink = look_of(self)
+  return ink
+end
+
+local function retint_icon(self, name, colour)
+  local icon = self.icon_quads[name]
+  if icon.tint ~= colour then
+    render.set_tint(icon.quad, colour)
+    icon.tint = colour
+  end
 end
 
 local function release(self)
@@ -75,9 +126,9 @@ local function release(self)
   end
 end
 
--- `button.new{x, y, text, on_click, kind = "window", style = "panel", group = nil}`, in points. With a `group` the quads and the hit
--- key go into it and the position is local to it (the engine applies the group's offset). `style = "title"` is the look on a
--- title bar.
+-- `button.new{x, y, text, on_click, kind = "window", style = "panel", group = nil}` or `button.new{..., icons = {...}, icon = name}`.
+-- With a `group` the quads and the hit key go into it and the position is local to it (the engine applies the group's offset).
+-- `style = "title"` is the look on a title bar. Icons are all created up front and `:set_icon` only retints them.
 function button.new(spec)
   local self = setmetatable({}, button)
   self.on_click = spec.on_click
@@ -90,8 +141,27 @@ function button.new(spec)
   self.y = ui.snap(spec.y)
   self.hovered = false
   self.pressed = false
-  local measured = font.layout(spec.text or "")
-  resize(self, measured.width, measured.height)
+  local icon_width = nil
+  if spec.icons ~= nil then
+    self.icons, icon_width = checked_icons(spec.icons)
+    self.icon = spec.icon or self.icons[1]
+    local found = false
+    for _, name in ipairs(self.icons) do
+      if name == self.icon then found = true end
+    end
+    if not found then
+      error("button.new: icon must be named in icons", 2)
+    end
+    self.width = (icon_width + 2 * PADDING) * P
+    self.height = (ICON_HEIGHT + 4) * P
+    self.text_x = 0
+  else
+    if spec.icon ~= nil then
+      error("button.new: icon requires icons", 2)
+    end
+    local measured = font.layout(spec.text or "")
+    resize(self, measured.width, measured.height)
+  end
   local fill, line, ink = look_of(self)
   -- The frame is created before the glyphs, so they are on top.
   self.frame = frame.new{
@@ -105,8 +175,29 @@ function button.new(spec)
     line = line,
     group = self.group,
   }
-  self.line = text.line(self.x + self.text_x, self.y + PADDING * P, self.group, ink)
-  text.set(self.line, spec.text or "")
+  if self.icons ~= nil then
+    self.icon_quads = {}
+    for _, name in ipairs(self.icons) do
+      local width = ICON_WIDTHS[name]
+      local colour = name == self.icon and ink or TRANSPARENT
+      self.icon_quads[name] = {
+        quad = render.create_quad{
+          texture = ui.texture("ui/theme/icon_" .. name .. ".png"),
+          x = self.x + ((icon_width + 2 * PADDING - width) // 2) * P,
+          y = self.y + 2 * P,
+          width = width * P,
+          height = ICON_HEIGHT * P,
+          group = self.group,
+          tint = colour,
+        },
+        tint = colour,
+        width = width,
+      }
+    end
+  else
+    self.line = text.line(self.x + self.text_x, self.y + PADDING * P, self.group, ink)
+    text.set(self.line, spec.text or "")
+  end
   publish_region(self)
   pointer.register(self.key, self, self.owner)
   return self
@@ -148,17 +239,42 @@ function button:move(x, y)
   self.x = ui.snap(x)
   self.y = ui.snap(y)
   self.frame:set_rect(self.x, self.y, self.width, self.height)
-  text.move(self.line, self.x + self.text_x, self.y + PADDING * P)
+  if self.icons ~= nil then
+    for name, icon in pairs(self.icon_quads) do
+      render.set_position(icon.quad, self.x + ((self.width // P - icon.width) // 2) * P, self.y + 2 * P)
+    end
+  else
+    text.move(self.line, self.x + self.text_x, self.y + PADDING * P)
+  end
   publish_region(self)
 end
 
 -- Sets the text, resizes the background and resets the region.
 function button:set_text(content)
+  if self.icons ~= nil then
+    error("button.set_text: icon buttons do not have text", 2)
+  end
   text.set(self.line, content)
   resize(self, self.line.width, self.line.height)
   self.frame:set_rect(self.x, self.y, self.width, self.height)
   text.move(self.line, self.x + self.text_x, self.y + PADDING * P)
   publish_region(self)
+end
+
+-- Changes the shown icon by retinting its already-created quad and the next one; same-icon calls do nothing.
+function button:set_icon(name)
+  if self.icons == nil then
+    error("button.set_icon: this button has no icons", 2)
+  end
+  if self.icon_quads[name] == nil then
+    error("button.set_icon: icon `" .. tostring(name) .. "` is not in icons", 2)
+  end
+  if name == self.icon then
+    return
+  end
+  retint_icon(self, self.icon, TRANSPARENT)
+  retint_icon(self, name, icon_tint(self))
+  self.icon = name
 end
 
 -- The size in points.
@@ -173,7 +289,14 @@ function button:destroy()
   pointer.unregister(self.key)
   render.set_hit(self.key, nil, self.group)
   self.frame:destroy()
-  text.destroy(self.line)
+  if self.line ~= nil then
+    text.destroy(self.line)
+  end
+  if self.icon_quads ~= nil then
+    for _, icon in pairs(self.icon_quads) do
+      render.destroy_quad(icon.quad)
+    end
+  end
   self.frame = nil
 end
 

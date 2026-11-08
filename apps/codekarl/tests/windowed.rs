@@ -615,6 +615,19 @@ fn wait_for(worker: &mut Worker, needle: &str, within: Duration) {
         .unwrap_or_else(|error| panic!("{error}"));
 }
 
+/// Polls a fixture marker without relying on a sleep or a log line emitted before a callback has returned.
+fn wait_for_marker(path: &Path, within: Duration) {
+    let deadline = Instant::now() + within;
+    while !path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "{} never appeared",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// In a typing run, waits until the filter has dropped keys, so the case proves something about typing (a quiet
 /// run needs nothing). Bounded.
 fn wait_for_drops(worker: &Worker) {
@@ -919,12 +932,16 @@ fn a_fixture_scenario_time_bar_changes_speed_pause_and_captures_a_gap_drag() {
     wait_for_drops(&worker);
     fixture.release();
     let within = Duration::from_secs(30);
-    wait_for(&mut worker, "lua.ui: time-bar speed 1 load", within);
-    fs::write(markers.join("time-bar-go"), "x").expect("release the speed button click");
-    wait_for(&mut worker, "lua.ui: time-bar speed 3 load", within);
-    wait_for(&mut worker, "lua.ui: time-bar speed 3 running", within);
-    wait_for(&mut worker, "lua.ui: time-bar speed 3 player", within);
-    wait_for(&mut worker, "lua.ui: time-bar gap up", within);
+    wait_for(&mut worker, "lua.ui: time-bar speed 3 load boxes 3", within);
+    wait_for_marker(&markers.join("time-bar-speed3-paused"), within);
+    fs::write(markers.join("time-bar-go"), "x").expect("release the fast-forward click");
+    wait_for(&mut worker, "lua.ui: time-bar speed 4 load boxes 4", within);
+    wait_for(
+        &mut worker,
+        "lua.ui: time-bar speed 4 running boxes 4",
+        within,
+    );
+    wait_for(&mut worker, "lua.ui: time-bar box up", within);
     wait_for(&mut worker, "window: window closed", within);
     let seen = finish(worker);
     TIME_BAR_CASE.store(false, Ordering::SeqCst);
@@ -1085,7 +1102,7 @@ fn places_list_fixture(fixture: &Fixture) -> PathBuf {
 
 /// The judgment accepts the output a good run leaves (what the log and the driver's sidecar print, in that order).
 fn places_list_output_assertion_accepts_a_captured_run_offline() {
-    let output = "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places list s=16\nINFO  lua.ui: place window opened Cluain Mhic Nóis\nINFO  lua.ui: place window expected Cluain Mhic Nóis\nINFO  lua.ui: place window closed\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 782598144 782598144\nbefore-list-scroll\nafter-list-scroll\n";
+    let output = "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places bar raised\nINFO  lua.ui: places list s=16\nINFO  lua.ui: place window opened Cluain Mhic Nóis\nINFO  lua.ui: place window expected Cluain Mhic Nóis\nINFO  lua.ui: place window closed\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 782598144 782598144\nbefore-list-scroll\nafter-list-scroll\n";
     places_list_witness::validate(output).unwrap_or_else(|error| panic!("{error}"));
     assert!(places_list_witness::validate("").is_err());
 }

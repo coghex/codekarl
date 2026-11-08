@@ -2,7 +2,7 @@
 --
 -- `theme.colour(name)` is a `[colour]` value and `theme.kind(name)` a kind's colours: `outline`, `hot`, `fill`, `text`, `title_text`,
 -- `pressed_text`, `divider` (nil when the kind has none), `row_hover` and `row_pressed`. Every colour is the string as written
--- (`#rrggbb` or `#rrggbbaa`), the form `render.set_tint` and `tint =` take.
+-- (`#rrggbb` or `#rrggbbaa`), the form `render.set_tint` and `tint =` take. `time_bar` also requires `speed_box` and `speed_fill`.
 local host = theme -- the host's table; this module's own `theme` shadows it below
 
 local theme = {}
@@ -28,6 +28,13 @@ function theme.kind(name)
   end
   local raw = loaded().kind(name)
   local text = loaded().colour("text")
+  if name == "time_bar" then
+    for _, key in ipairs({"speed_box", "speed_fill"}) do
+      if raw[key] == nil then
+        error("theme.kind: [kind.time_bar] missing `" .. key .. "`", 2)
+      end
+    end
+  end
   kept = {
     outline = raw.outline,
     hot = raw.hot,
@@ -38,6 +45,8 @@ function theme.kind(name)
     divider = raw.divider,
     row_hover = raw.row_hover or raw.outline,
     row_pressed = raw.row_pressed or raw.hot,
+    speed_box = raw.speed_box,
+    speed_fill = raw.speed_fill,
   }
   kinds[name] = kept
   return kept
