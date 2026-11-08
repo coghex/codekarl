@@ -1929,6 +1929,8 @@ def alive(pid: int) -> bool:
 #   passes in the real tree;
 # - `.cargo/config.toml` forces the one MACOSX_DEPLOYMENT_TARGET that the native code, the shaders
 #   and the link of the clippy, doc and test builds use;
+# - `scripts` holds the shipped Lua that Rust tests `include_str!` at compile time (CK-218: the application's UI tests
+#   include `scripts/ui/main.lua`), so Clippy and the test build need it;
 # - `stubs` is on the strict-mypy path (`tools:stubs`), and the bare `ruff check` and
 #   `ruff format --check` lint its `.pyi` files. Strict mypy itself runs after the test step, where
 #   this test stops the recipe, so it is not reached.
@@ -1944,6 +1946,7 @@ TOOLCHAIN_INPUTS = (
     "crates",
     "pyproject.toml",
     "rust-toolchain.toml",
+    "scripts",
     "specs",
     "stubs",
     "tests",
