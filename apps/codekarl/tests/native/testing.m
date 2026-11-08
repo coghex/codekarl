@@ -43,6 +43,8 @@ static _Atomic uint64_t ck_app_dropped_mouse;
 static NSWindow *ck_app_the_window(int32_t *error);
 static BOOL ck_app_marker(const char *dir, const char *name);
 static BOOL ck_app_map_select_point(double *x, double *y);
+static BOOL ck_app_map_select_named_point(const char *name, double *x, double *y);
+static BOOL ck_app_map_select_list_point(double *x, double *y);
 static void ck_app_write_marker(const char *dir, const char *name);
 static void ck_app_map_select_observe(const char *line);
 static void ck_app_map_select_transition(NSUInteger from, NSUInteger to, const char *marker);
@@ -365,16 +367,26 @@ static int32_t ck_app_t_time_bar_click(NSWindow *window, double x, double y) {
 
 static int ck_app_t_time_bar_advance(NSWindow *window, int phase) {
     if (phase == 0 && ck_app_time_bar_marker("time-bar-go")) {
+        int32_t result = ck_app_t_time_bar_click(window, 174.0, 27.0); /* speed box 5 */
+        if (result != 1) NSLog(@"test time-bar speed 5 click failed with result %d", result);
+        ck_app_time_bar_line("time-bar-speed5-click-injected");
+        return 1;
+    } else if (phase == 1 && ck_app_time_bar_marker("time-bar-speed5-paused")) {
+        int32_t result = ck_app_t_time_bar_click(window, 142.0, 27.0); /* speed box 3; reset before fast-forward */
+        if (result != 1) NSLog(@"test time-bar speed 3 reset click failed with result %d", result);
+        ck_app_time_bar_line("time-bar-speed3-reset-injected");
+        return 2;
+    } else if (phase == 2 && ck_app_time_bar_marker("time-bar-speed3-reset-paused")) {
         int32_t result = ck_app_t_time_bar_click(window, 83.0, 27.0); /* fast-forward */
         if (result != 1) NSLog(@"test time-bar fast-forward click failed with result %d", result);
         ck_app_time_bar_line("time-bar-fast-forward-injected");
-        return 1;
-    } else if (phase == 1 && ck_app_time_bar_marker("time-bar-speed4-paused")) {
+        return 3;
+    } else if (phase == 3 && ck_app_time_bar_marker("time-bar-speed4-paused")) {
         int32_t result = ck_app_t_time_bar_click(window, 57.0, 27.0); /* resume */
         if (result != 1) NSLog(@"test time-bar resume click failed with result %d", result);
         ck_app_time_bar_line("time-bar-resume-injected");
-        return 2;
-    } else if (phase == 2 && ck_app_time_bar_marker("time-bar-speed4-running")) {
+        return 4;
+    } else if (phase == 4 && ck_app_time_bar_marker("time-bar-speed4-running")) {
         NSPoint box_view = NSMakePoint(147.0, window.contentView.bounds.size.height - 27.0);
         NSPoint end_view = NSMakePoint(210.0, window.contentView.bounds.size.height - 90.0);
         NSPoint start = [window.contentView convertPoint:box_view toView:nil];
@@ -385,17 +397,17 @@ static int ck_app_t_time_bar_advance(NSWindow *window, int phase) {
         if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseUp, end);
         if (result != 1) NSLog(@"test time-bar box drag failed with result %d", result);
         ck_app_time_bar_line("time-bar-box-drag-injected");
-        return 3;
-    } else if (phase == 3 && ck_app_time_bar_marker("time-bar-box-drag-observed")) {
+        return 5;
+    } else if (phase == 5 && ck_app_time_bar_marker("time-bar-box-drag-observed")) {
         ck_app_time_bar_write_marker("time-bar-done");
         ck_app_time_bar_line("time-bar-box-drag-observed-injected");
         ck_app_tap(0x35, "\e"); /* Escape closes the fixture window through its normal handler. */
-        return 4;
+        return 6;
     }
     return phase;
 }
 
-/* Fast-forwards at speed 3, resumes, then drags from a speed box; each next input waits for Lua's observed state. */
+/* Clicks speed 5 while paused, restores speed 3, fast-forwards, resumes, then drags from a speed box; every input waits for Lua's state. */
 void ck_app_t_schedule_time_bar(void) {
     const char *dir = getenv("CK_WINDOWED_TEST_TIME_BAR");
     if (dir == NULL) dir = getenv("CK_VULKAN_TEST_TIME_BAR");
@@ -415,7 +427,7 @@ void ck_app_t_schedule_time_bar(void) {
         dispatch_source_set_timer(ck_app_time_bar_timer, DISPATCH_TIME_NOW, 5 * NSEC_PER_MSEC, NSEC_PER_MSEC);
         dispatch_source_set_event_handler(ck_app_time_bar_timer, ^{
             phase = ck_app_t_time_bar_advance(window, phase);
-            if (phase == 4) {
+            if (phase == 6) {
                 dispatch_source_cancel(ck_app_time_bar_timer);
                 ck_app_time_bar_timer = nil;
             }
@@ -721,26 +733,26 @@ void ck_app_t_schedule_places_list(void) {
                 stage = 1;
             } else if (stage == 1 && ck_app_marker(ck_app_map_select_dir, "places-ready")) {
                 double x = 0.0, y = 0.0;
-                if (!ck_app_map_select_point(&x, &y)) return;
-                result = ck_app_t_ui_click(window, x, y);
+                if (!ck_app_map_select_list_point(&x, &y)) return;
+                ck_app_ui_pointer_line("before-list-scroll");
+                result = ck_app_t_send_ui_scroll(window, x, y, -15, -1);
                 ck_app_map_select_transition(stage, 2, "places-ready");
                 stage = 2;
-            } else if (stage == 2 && ck_app_marker(ck_app_map_select_dir, "places-raised")) {
-                ck_app_ui_pointer_line("before-list-scroll");
-                result = ck_app_t_send_ui_scroll(window, 126.0, 149.0, -15, -1);
-                ck_app_map_select_transition(stage, 3, "places-raised");
-                stage = 3;
-            } else if (stage == 3 && ck_app_marker(ck_app_map_select_dir, "list-scrolled")) {
+            } else if (stage == 2 && ck_app_marker(ck_app_map_select_dir, "list-scrolled")) {
+                double x = 0.0, y = 0.0;
+                if (!ck_app_map_select_list_point(&x, &y)) return;
                 ck_app_ui_pointer_line("after-list-scroll");
-                result = ck_app_t_ui_click(window, 126.0, 149.0);
-                ck_app_map_select_transition(stage, 4, "list-scrolled");
+                result = ck_app_t_ui_click(window, x, y);
+                ck_app_map_select_transition(stage, 3, "list-scrolled");
+                stage = 3;
+            } else if (stage == 3 && ck_app_marker(ck_app_map_select_dir, "place-ready")) {
+                ck_app_tap(0x35, "\e");
+                ck_app_map_select_transition(stage, 4, "place-ready");
                 stage = 4;
-            } else if (stage == 4 && ck_app_marker(ck_app_map_select_dir, "place-ready")) {
-                ck_app_tap(0x35, "\e");
-                ck_app_map_select_transition(stage, 5, "place-ready");
-                stage = 5;
-            } else if (stage == 5 && ck_app_marker(ck_app_map_select_dir, "place-closed")) {
-                ck_app_tap(0x35, "\e");
+            } else if (stage == 4 && ck_app_marker(ck_app_map_select_dir, "place-closed")) {
+                double x = 0.0, y = 0.0;
+                if (!ck_app_map_select_named_point("places-title-center", &x, &y)) return;
+                result = ck_app_t_ui_click(window, x, y);
                 ck_app_map_select_transition(stage, 6, "place-closed");
                 stage = 6;
             } else if (stage == 6 && ck_app_marker(ck_app_map_select_dir, "places-closed")) {
@@ -841,6 +853,31 @@ static BOOL ck_app_map_select_point(double *x, double *y) {
     if (file == NULL) return NO;
     BOOL read = fscanf(file, "%lf %lf", x, y) == 2;
     fclose(file);
+    return read;
+}
+
+static BOOL ck_app_map_select_named_point(const char *name, double *x, double *y) {
+    char path[1200];
+    snprintf(path, sizeof path, "%s/%s", ck_app_map_select_dir, name);
+    FILE *file = fopen(path, "r");
+    if (file == NULL) return NO;
+    BOOL read = fscanf(file, "%lf %lf", x, y) == 2;
+    fclose(file);
+    return read;
+}
+
+static BOOL ck_app_map_select_list_point(double *x, double *y) {
+    char path[1200];
+    snprintf(path, sizeof path, "%s/places-window-geometry", ck_app_map_select_dir);
+    FILE *file = fopen(path, "r");
+    if (file == NULL) return NO;
+    double left = 0.0, top = 0.0, width = 0.0, height = 0.0, title_height = 0.0;
+    BOOL read = fscanf(file, "%lf %lf %lf %lf %lf", &left, &top, &width, &height, &title_height) == 5;
+    fclose(file);
+    if (read) {
+        *x = left + 26.0;
+        *y = top + title_height + 19.0;
+    }
     return read;
 }
 

@@ -386,12 +386,14 @@ mod tests {
         names.insert("white.png".to_owned());
         let speed_box =
             Image::decode(fs::File::open(directory.join("speed_box.png")).unwrap()).unwrap();
-        assert_eq!((speed_box.width(), speed_box.height()), (7, 7));
-        let mut expected_box = vec![0; 7 * 7 * 4];
-        for y in 0..7 {
-            for x in 0..7 {
-                if x == 0 || x == 6 || y == 0 || y == 6 {
-                    let offset = (y * 7 + x) * 4;
+        assert_eq!((speed_box.width(), speed_box.height()), (6, 11));
+        let mut expected_box = vec![0; 6 * 11 * 4];
+        for y in 0..11 {
+            for x in 0..6 {
+                if (y == 0 || y == 10) && (1..=4).contains(&x)
+                    || (x == 0 || x == 5) && (1..=9).contains(&y)
+                {
+                    let offset = (y * 6 + x) * 4;
                     expected_box[offset..offset + 4].copy_from_slice(&[255; 4]);
                 }
             }

@@ -90,6 +90,7 @@ fn hit_recording(log: &Log) -> HostFunction {
 /// so the geometry literals of the tests are not cluttered by colours.
 fn scene(log: &Log, tints: &Log) -> Vec<Extension> {
     let quads = Arc::new(AtomicUsize::new(0));
+    let groups = Arc::new(AtomicUsize::new(0));
     let create: HostFunction = {
         let (log, quads, tints) = (Arc::clone(log), quads, Arc::clone(tints));
         Arc::new(move |arguments| {
@@ -126,13 +127,23 @@ fn scene(log: &Log, tints: &Log) -> Vec<Extension> {
             Ok(vec![ConfigValue::String(format!("t:{name}"))])
         })
     };
+    let create_group: HostFunction = {
+        let (log, groups) = (Arc::clone(log), groups);
+        Arc::new(move |_| {
+            let number = groups.fetch_add(1, Ordering::SeqCst) + 1;
+            push(&log, format!("create_group g{number}"));
+            Ok(vec![ConfigValue::String(format!("g{number}"))])
+        })
+    };
     vec![
         Extension::new("render")
+            .function("create_group", create_group)
             .function("create_quad", create)
             .function("set_hit", hit_recording(log))
             .function("set_position", recording(log, "set_position"))
             .function("set_rect", recording(log, "set_rect"))
             .function("set_tint", recording(tints, "set_tint"))
+            .function("set_group_visible", recording(log, "set_group_visible"))
             .function("destroy_quad", recording(log, "destroy")),
         Extension::new("texture").function("load", load),
     ]
@@ -556,7 +567,7 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
     let text = "9 Oct 768 · 14:00";
     let glyphs = text.chars().filter(|c| *c != ' ').count();
     assert_eq!(
-        first.iter().filter(|e| e.starts_with("create")).count(),
+        first.iter().filter(|e| e.starts_with("create ")).count(),
         glyphs + 2 * 11 + 5 * 11 + 4 + 1 + 6 + 10,
         "{first:?}"
     );
