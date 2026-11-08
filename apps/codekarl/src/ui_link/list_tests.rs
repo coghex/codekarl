@@ -1252,6 +1252,18 @@ game = {{
   control = function() end,
   places = function() return places_data end,
 }}
+local real_frame_on_update = frame.on_update
+local frame_callbacks = {{}}
+frame.on_update = function(callback)
+  if callback == nil then
+    frame_callbacks = {{}}
+    return real_frame_on_update(nil)
+  end
+  frame_callbacks[#frame_callbacks + 1] = callback
+  real_frame_on_update(function(update)
+    for _, registered in ipairs(frame_callbacks) do registered(update) end
+  end)
+end
 {main}
 {HEADER}
 callbacks.time({{day = 1, month = 1, year = 768, hour = 0, paused = false, speed = 1}})
@@ -1291,7 +1303,9 @@ fn point_of(rig: &Rig, key: &str) -> (f64, f64) {
 #[test]
 fn the_places_button_opens_a_twelve_row_list_of_every_place_and_a_row_opens_the_place_window() {
     let mut rig = Rig::new_fixture_body(&places_script());
-    // The time bar's last button is `places` (Help is the one before it).
+    // Apply the initial viewport size so the separate top-right Places bar is anchored to the test window.
+    rig.deliver_fixture_frame();
+    // The Places button is the last button (Help remains on the top-left time bar).
     let regions = rig.harness.bridge.hit_regions().expect("regions");
     let buttons: Vec<String> = regions
         .regions()
@@ -1339,7 +1353,7 @@ fn the_places_button_opens_a_twelve_row_list_of_every_place_and_a_row_opens_the_
 /// place at the click on `index`-th name.
 fn captured(scroll: u32, title: &str, expected: &str) -> String {
     format!(
-        "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places list s={scroll}\nINFO  lua.ui: place window opened {title}\nINFO  lua.ui: place window expected {expected}\nINFO  lua.ui: place window closed\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 1 1\nbefore-list-scroll\nafter-list-scroll\n"
+        "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places bar raised\nINFO  lua.ui: places list s={scroll}\nINFO  lua.ui: place window opened {title}\nINFO  lua.ui: place window expected {expected}\nINFO  lua.ui: place window closed\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 1 1\nbefore-list-scroll\nafter-list-scroll\n"
     )
 }
 
@@ -1384,7 +1398,7 @@ fn the_judgment_accepts_a_good_run_and_refuses_each_way_a_run_can_be_wrong() {
 }
 
 /// The fixture's geometry, through the real code path: with the production `main.lua` behind the witness's wrappers over a mock `game`
-/// of 94 places, the `places` button's centre is (264, 27), the Places window opens at (100, 100) with the first row under
+/// of 94 places, the `places` button's centre comes from its published region, the Places window opens at (100, 100) with the first row under
 /// (126, 149), and the driver's clicks, wheel and row click (the real routing of marked events) make the markers appear in order.
 #[test]
 fn the_witness_fixture_reaches_each_marker_at_the_drivers_coordinates() {
@@ -1420,15 +1434,28 @@ end)
     assert!(!marker("places-button-ready"));
     rig.deliver_fixture_frame();
     assert!(marker("places-button-ready"));
-    // The driver clicks the places button's centre.
+    // The separate bar is re-anchored to the fixture's initial viewport before the center is chosen.
+    let (x, y) = point_of(&rig, "button_5");
     rig.feed(&[
-        PointerEvent::Down(points(264.0, 27.0)),
-        PointerEvent::Up(points(264.0, 27.0)),
+        PointerEvent::Down(points(x, y)),
+        PointerEvent::Up(points(x, y)),
     ]);
     rig.deliver_fixture_frame();
     assert!(!marker("places-ready"), "queued for the next frame");
     rig.deliver_fixture_frame();
     assert!(marker("places-ready"));
+    // A second click raises the existing Places window without recreating its list.
+    rig.feed(&[
+        PointerEvent::Down(points(x, y)),
+        PointerEvent::Up(points(x, y)),
+    ]);
+    rig.deliver_fixture_frame();
+    assert!(
+        !marker("places-raised"),
+        "the callback marker waits for the next frame"
+    );
+    rig.deliver_fixture_frame();
+    assert!(marker("places-raised"));
     // The Places window is at (100, 100): its content origin is (106, 136), and the first row is under (126, 149).
     let key = rig
         .key_at(126.0, 149.0)

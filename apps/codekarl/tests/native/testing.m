@@ -42,6 +42,7 @@ static _Atomic uint64_t ck_app_dropped;
 static _Atomic uint64_t ck_app_dropped_mouse;
 static NSWindow *ck_app_the_window(int32_t *error);
 static BOOL ck_app_marker(const char *dir, const char *name);
+static BOOL ck_app_map_select_point(double *x, double *y);
 static void ck_app_write_marker(const char *dir, const char *name);
 static void ck_app_map_select_observe(const char *line);
 static void ck_app_map_select_transition(NSUInteger from, NSUInteger to, const char *marker);
@@ -364,42 +365,37 @@ static int32_t ck_app_t_time_bar_click(NSWindow *window, double x, double y) {
 
 static int ck_app_t_time_bar_advance(NSWindow *window, int phase) {
     if (phase == 0 && ck_app_time_bar_marker("time-bar-go")) {
-        int32_t result = ck_app_t_time_bar_click(window, 140.0, 27.0); /* speed 3 */
-        if (result != 1) NSLog(@"test time-bar speed click failed with result %d", result);
-        ck_app_time_bar_line("time-bar-speed3-injected");
+        int32_t result = ck_app_t_time_bar_click(window, 83.0, 27.0); /* fast-forward */
+        if (result != 1) NSLog(@"test time-bar fast-forward click failed with result %d", result);
+        ck_app_time_bar_line("time-bar-fast-forward-injected");
         return 1;
-    } else if (phase == 1 && ck_app_time_bar_marker("time-bar-speed3-applied")) {
-        int32_t result = ck_app_t_time_bar_click(window, 20.0, 20.0); /* pause */
-        if (result != 1) NSLog(@"test time-bar first pause click failed with result %d", result);
-        ck_app_time_bar_line("time-bar-pause1-injected");
+    } else if (phase == 1 && ck_app_time_bar_marker("time-bar-speed4-paused")) {
+        int32_t result = ck_app_t_time_bar_click(window, 57.0, 27.0); /* resume */
+        if (result != 1) NSLog(@"test time-bar resume click failed with result %d", result);
+        ck_app_time_bar_line("time-bar-resume-injected");
         return 2;
-    } else if (phase == 2 && ck_app_time_bar_marker("time-bar-running")) {
-        int32_t result = ck_app_t_time_bar_click(window, 20.0, 20.0); /* pause again */
-        if (result != 1) NSLog(@"test time-bar second pause click failed with result %d", result);
-        ck_app_time_bar_line("time-bar-pause2-injected");
-        return 3;
-    } else if (phase == 3 && ck_app_time_bar_marker("time-bar-paused-again")) {
-        NSPoint gap_view = NSMakePoint(32.0, window.contentView.bounds.size.height - 20.0);
-        NSPoint end_view = NSMakePoint(80.0, window.contentView.bounds.size.height - 70.0);
-        NSPoint start = [window.contentView convertPoint:gap_view toView:nil];
+    } else if (phase == 2 && ck_app_time_bar_marker("time-bar-speed4-running")) {
+        NSPoint box_view = NSMakePoint(147.0, window.contentView.bounds.size.height - 27.0);
+        NSPoint end_view = NSMakePoint(210.0, window.contentView.bounds.size.height - 90.0);
+        NSPoint start = [window.contentView convertPoint:box_view toView:nil];
         NSPoint end = [window.contentView convertPoint:end_view toView:nil];
         int32_t result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, start);
         if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDown, start);
         if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDragged, end);
         if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseUp, end);
-        if (result != 1) NSLog(@"test time-bar gap drag failed with result %d", result);
-        ck_app_time_bar_line("time-bar-gap-drag-injected");
-        return 4;
-    } else if (phase == 4 && ck_app_time_bar_marker("time-bar-drag-observed")) {
+        if (result != 1) NSLog(@"test time-bar box drag failed with result %d", result);
+        ck_app_time_bar_line("time-bar-box-drag-injected");
+        return 3;
+    } else if (phase == 3 && ck_app_time_bar_marker("time-bar-box-drag-observed")) {
         ck_app_time_bar_write_marker("time-bar-done");
-        ck_app_time_bar_line("time-bar-gap-drag-observed");
+        ck_app_time_bar_line("time-bar-box-drag-observed-injected");
         ck_app_tap(0x35, "\e"); /* Escape closes the fixture window through its normal handler. */
-        return 5;
+        return 4;
     }
     return phase;
 }
 
-/* Drives speed and pause buttons, then drags from a gap in the bar; every next input waits for Lua's observed state. */
+/* Fast-forwards at speed 3, resumes, then drags from a speed box; each next input waits for Lua's observed state. */
 void ck_app_t_schedule_time_bar(void) {
     const char *dir = getenv("CK_WINDOWED_TEST_TIME_BAR");
     if (dir == NULL) dir = getenv("CK_VULKAN_TEST_TIME_BAR");
@@ -419,7 +415,7 @@ void ck_app_t_schedule_time_bar(void) {
         dispatch_source_set_timer(ck_app_time_bar_timer, DISPATCH_TIME_NOW, 5 * NSEC_PER_MSEC, NSEC_PER_MSEC);
         dispatch_source_set_event_handler(ck_app_time_bar_timer, ^{
             phase = ck_app_t_time_bar_advance(window, phase);
-            if (phase == 5) {
+            if (phase == 4) {
                 dispatch_source_cancel(ck_app_time_bar_timer);
                 ck_app_time_bar_timer = nil;
             }
@@ -564,10 +560,7 @@ static int32_t ck_app_t_send_map_click(NSWindow *window, double x, double y) {
 static int32_t ck_app_t_ui_click(NSWindow *window, double x, double y) {
     NSPoint in_view = NSMakePoint(x, window.contentView.bounds.size.height - y);
     NSPoint in_window = [window.contentView convertPoint:in_view toView:nil];
-    int32_t result = 1;
-    if (getenv("CK_VULKAN_TEST_MAP_SELECT") != NULL) {
-        result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, in_window);
-    }
+    int32_t result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, in_window);
     if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDown, in_window);
     if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseUp, in_window);
     return result;
@@ -578,10 +571,7 @@ static int32_t ck_app_t_ui_drag(NSWindow *window, double x, double y, double end
     NSPoint end_view = NSMakePoint(end_x, window.contentView.bounds.size.height - end_y);
     NSPoint start = [window.contentView convertPoint:start_view toView:nil];
     NSPoint end = [window.contentView convertPoint:end_view toView:nil];
-    int32_t result = 1;
-    if (getenv("CK_VULKAN_TEST_MAP_SELECT") != NULL) {
-        result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, start);
-    }
+    int32_t result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, start);
     if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDown, start);
     if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDragged, end);
     if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseUp, end);
@@ -699,10 +689,10 @@ static int32_t ck_app_t_send_ui_scroll(NSWindow *window, double x, double y, int
     return 1;
 }
 
-/* Drive the places list: click `places`, scroll over the list, click a row, then close the place window, the Places window and
+/* Drive the places list: click `places`, click again to raise it, scroll over the list, click a row, then close both windows and
  * the application with Escape, each step when the Lua witness has written the marker for the one before it (the markers are
- * written a frame after the callback that made them, so the scene they refer to is published). The geometry is the witness's:
- * the places button's centre is at (264, 27) and the list's first row under (126, 149) when the Places window is at (100, 100). */
+ * written a frame after the callback that made them, so the scene they refer to is published). The Places button's centre is read
+ * from a marker written by the real UI callback; the list's first row is under (126, 149) when the Places window is at (100, 100). */
 void ck_app_t_schedule_places_list(void) {
     __block NSUInteger stage = 0;
     const char *dir = getenv("CK_WINDOWED_TEST_MAP_SELECT");
@@ -724,33 +714,41 @@ void ck_app_t_schedule_places_list(void) {
             if (!window.isVisible) return;
             int32_t result = 1;
             if (stage == 0 && ck_app_marker(ck_app_map_select_dir, "places-button-ready")) {
-                result = ck_app_t_ui_click(window, 264.0, 27.0);
+                double x = 0.0, y = 0.0;
+                if (!ck_app_map_select_point(&x, &y)) return;
+                result = ck_app_t_ui_click(window, x, y);
                 ck_app_map_select_transition(stage, 1, "places-button-ready");
                 stage = 1;
             } else if (stage == 1 && ck_app_marker(ck_app_map_select_dir, "places-ready")) {
-                ck_app_ui_pointer_line("before-list-scroll");
-                result = ck_app_t_send_ui_scroll(window, 126.0, 149.0, -15, -1);
+                double x = 0.0, y = 0.0;
+                if (!ck_app_map_select_point(&x, &y)) return;
+                result = ck_app_t_ui_click(window, x, y);
                 ck_app_map_select_transition(stage, 2, "places-ready");
                 stage = 2;
-            } else if (stage == 2 && ck_app_marker(ck_app_map_select_dir, "list-scrolled")) {
+            } else if (stage == 2 && ck_app_marker(ck_app_map_select_dir, "places-raised")) {
+                ck_app_ui_pointer_line("before-list-scroll");
+                result = ck_app_t_send_ui_scroll(window, 126.0, 149.0, -15, -1);
+                ck_app_map_select_transition(stage, 3, "places-raised");
+                stage = 3;
+            } else if (stage == 3 && ck_app_marker(ck_app_map_select_dir, "list-scrolled")) {
                 ck_app_ui_pointer_line("after-list-scroll");
                 result = ck_app_t_ui_click(window, 126.0, 149.0);
-                ck_app_map_select_transition(stage, 3, "list-scrolled");
-                stage = 3;
-            } else if (stage == 3 && ck_app_marker(ck_app_map_select_dir, "place-ready")) {
-                ck_app_tap(0x35, "\e");
-                ck_app_map_select_transition(stage, 4, "place-ready");
+                ck_app_map_select_transition(stage, 4, "list-scrolled");
                 stage = 4;
-            } else if (stage == 4 && ck_app_marker(ck_app_map_select_dir, "place-closed")) {
+            } else if (stage == 4 && ck_app_marker(ck_app_map_select_dir, "place-ready")) {
                 ck_app_tap(0x35, "\e");
-                ck_app_map_select_transition(stage, 5, "place-closed");
+                ck_app_map_select_transition(stage, 5, "place-ready");
                 stage = 5;
-            } else if (stage == 5 && ck_app_marker(ck_app_map_select_dir, "places-closed")) {
+            } else if (stage == 5 && ck_app_marker(ck_app_map_select_dir, "place-closed")) {
                 ck_app_tap(0x35, "\e");
-                ck_app_map_select_transition(stage, 6, "places-closed");
+                ck_app_map_select_transition(stage, 6, "place-closed");
+                stage = 6;
+            } else if (stage == 6 && ck_app_marker(ck_app_map_select_dir, "places-closed")) {
+                ck_app_tap(0x35, "\e");
+                ck_app_map_select_transition(stage, 7, "places-closed");
                 dispatch_source_cancel(ck_app_map_select_timer);
                 ck_app_map_select_timer = nil;
-                stage = 6;
+                stage = 7;
             }
             if (result != 1) NSLog(@"test places list dispatch failed with result %d", result);
         });
@@ -834,6 +832,16 @@ static BOOL ck_app_marker(const char *dir, const char *name) {
     NSString *path = [[NSString stringWithUTF8String:dir] stringByAppendingPathComponent:
                       [NSString stringWithUTF8String:name]];
     return access(path.fileSystemRepresentation, F_OK) == 0;
+}
+
+static BOOL ck_app_map_select_point(double *x, double *y) {
+    char path[1200];
+    snprintf(path, sizeof path, "%s/places-button-center", ck_app_map_select_dir);
+    FILE *file = fopen(path, "r");
+    if (file == NULL) return NO;
+    BOOL read = fscanf(file, "%lf %lf", x, y) == 2;
+    fclose(file);
+    return read;
 }
 
 static void ck_app_write_marker(const char *dir, const char *name) {

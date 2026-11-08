@@ -1,9 +1,9 @@
-//! The places list's window witness (milestone 8, slice 6): the shipped `scripts/ui/main.lua` run unchanged over Ireland 768, with
+//! The places list's window witness (milestone 8, slices 6 and 7c): the shipped `scripts/ui/main.lua` run unchanged over Ireland 768, with
 //! observation wrappers installed before it and markers the native driver (`native/testing.m`, `ck_app_t_schedule_places_list`) polls.
 //!
 //! The driver clicks the `places` button, scrolls over the list, clicks a row, and closes the windows with Escape; this module only
-//! prepares the script and judges the combined output. Geometry the driver relies on, all validated offline by the windowless case:
-//! the time bar at the 8-point margin puts the `places` button's centre at (264, 27); the wrapper opens the Places window at (100, 100),
+//! prepares the script and judges the combined output. The new Places bar publishes the button's centre to a marker; the wrapper opens
+//! the Places window at (100, 100),
 //! so its list's top-left corner is (106, 136), a row is 26 points high and the row under (126, 149) is the first, or, after a scroll
 //! of `s` points, the one at `(13 + s) / 26`.
 //!
@@ -26,11 +26,19 @@ local function touch(name)
 end
 -- Markers wait one frame: the scene a callback edited is published when the callback returns, and the driver acts on a marker.
 local queued = {}
-local function mark(name) queued[#queued + 1] = name end
+local function mark(name, contents) queued[#queued + 1] = {name, contents} end
 local function flush()
   local ready = queued
   queued = {}
-  for _, name in ipairs(ready) do touch(name) end
+  for _, marker in ipairs(ready) do
+    if marker[2] == nil then
+      touch(marker[1])
+    else
+      local file = assert(io.open(directory .. '/' .. marker[1], 'w'))
+      file:write(marker[2])
+      file:close()
+    end
+  end
 end
 
 local windows_library = require('lib.window')
@@ -39,8 +47,25 @@ local button_library = require('lib.button')
 
 local real_button_new = button_library.new
 button_library.new = function(spec)
+  local clicks = 0
+  if spec.text == 'places' then
+    local on_click = spec.on_click
+    spec.on_click = function(...)
+      local result = on_click(...)
+      clicks = clicks + 1
+      if clicks == 2 then
+        log.info('places bar raised')
+        mark('places-raised')
+      end
+      return result
+    end
+  end
   local created = real_button_new(spec)
-  if spec.text == 'places' then mark('places-button-ready') end
+  if spec.text == 'places' then
+    local width, height = created:size()
+    mark('places-button-center', string.format('%.0f %.0f', spec.x + width / 2, spec.y + height / 2))
+    mark('places-button-ready')
+  end
   return created
 end
 
@@ -137,6 +162,7 @@ pub(crate) fn validate(output: &str) -> Result<(), String> {
     };
     next("lua.ui: places window opened")?;
     next("lua.ui: places list opened 94 items 12 rows")?;
+    next("lua.ui: places bar raised")?;
     let scrolled = next("lua.ui: places list s=")?;
     let scroll: u32 = lines[scrolled]
         .rsplit_once("places list s=")
@@ -164,6 +190,19 @@ pub(crate) fn validate(output: &str) -> Result<(), String> {
     next("lua.ui: places window closed")?;
     next("lua.ui: close requested by key")?;
     next("window: window closed")?;
+    if lines
+        .iter()
+        .filter(|line| line.contains("lua.ui: places window opened"))
+        .count()
+        != 1
+        || lines
+            .iter()
+            .filter(|line| line.contains("lua.ui: places list opened"))
+            .count()
+            != 1
+    {
+        return Err("the second Places button click opened a duplicate window or list".to_owned());
+    }
     let before = lines
         .iter()
         .position(|line| *line == "before-list-scroll")

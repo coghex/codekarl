@@ -343,6 +343,20 @@ mod tests {
         pixels
     }
 
+    /// The pixel rows of one time-bar icon: the seven listed rows start at row 2 and column 1.
+    fn expected_icon(width: usize, shape: &[&str]) -> Vec<u8> {
+        let mut pixels = vec![0; width * 11 * 4];
+        for (row, pattern) in shape.iter().enumerate() {
+            for (column, byte) in pattern.bytes().enumerate() {
+                if byte == b'#' {
+                    let offset = ((row + 2) * width + column + 1) * 4;
+                    pixels[offset..offset + 4].copy_from_slice(&[255; 4]);
+                }
+            }
+        }
+        pixels
+    }
+
     #[test]
     fn the_art_scripts_report_their_images_up_to_date() {
         // `make_theme.py --check` and `make_font.py --check` fail when a committed image differs from what the script writes, or is
@@ -370,6 +384,63 @@ mod tests {
         assert_eq!((white.width(), white.height()), (1, 1));
         assert_eq!(white.pixels(), [255, 255, 255, 255]);
         names.insert("white.png".to_owned());
+        let speed_box =
+            Image::decode(fs::File::open(directory.join("speed_box.png")).unwrap()).unwrap();
+        assert_eq!((speed_box.width(), speed_box.height()), (7, 7));
+        let mut expected_box = vec![0; 7 * 7 * 4];
+        for y in 0..7 {
+            for x in 0..7 {
+                if x == 0 || x == 6 || y == 0 || y == 6 {
+                    let offset = (y * 7 + x) * 4;
+                    expected_box[offset..offset + 4].copy_from_slice(&[255; 4]);
+                }
+            }
+        }
+        assert_eq!(speed_box.pixels(), expected_box);
+        names.insert("speed_box.png".to_owned());
+        let icons: [(&str, usize, &[&str]); 4] = [
+            (
+                "rewind",
+                9,
+                &[
+                    "...#...#", "..##..##", ".###.###", "########", ".###.###", "..##..##",
+                    "...#...#",
+                ],
+            ),
+            (
+                "fast_forward",
+                9,
+                &[
+                    "#...#...", "##..##..", "###.###.", "########", "###.###.", "##..##..",
+                    "#...#...",
+                ],
+            ),
+            (
+                "pause",
+                7,
+                &[
+                    "##.##.", "##.##.", "##.##.", "##.##.", "##.##.", "##.##.", "##.##.",
+                ],
+            ),
+            (
+                "play",
+                7,
+                &[
+                    "#.....", "##....", "###...", "####..", "###...", "##....", "#.....",
+                ],
+            ),
+        ];
+        for (name, width, shape) in icons {
+            let file = format!("icon_{name}.png");
+            let image = Image::decode(fs::File::open(directory.join(&file)).unwrap()).unwrap();
+            assert_eq!(
+                (image.width(), image.height()),
+                (u32::try_from(width).expect("icon widths fit in u32"), 11),
+                "{file}"
+            );
+            assert_eq!(image.pixels(), expected_icon(width, shape), "{file}");
+            names.insert(file);
+        }
         for cut in [3_usize, 6, 7] {
             for corner in ["tl", "br"] {
                 for part in ["fill", "line"] {

@@ -1,9 +1,10 @@
-"""Writes the images of the cut-corner frames (milestone 8, slice 7b), next to this script.
+"""Writes the images of the cut-corner frames and the time-bar controls (milestone 8, slices 7b/7c).
 
     python3 make_theme.py            write the images
     python3 make_theme.py --check    fail if a committed image differs from what this script writes, or is missing or extra
 
-`white.png` is one opaque white pixel: the frames' bands and edges are stretched copies of it, tinted by the theme. For each cut
+`white.png` is one opaque white pixel: the frames' bands and edges are stretched copies of it, tinted by the theme. `speed_box.png`
+is the one-pixel outline of a 7 by 7 speed indicator. The four `icon_*.png` files are white 11-row glyphs for the time bar. For each cut
 `c` in 3, 6 and 7 there are four tiles of `(c + 1) x (c + 1)` pixels, opaque white or transparent:
 
 - `cut<c>_tl_line.png` and `cut<c>_tl_fill.png`, the top-left corner: pixel `(i, j)` is line where `i + j == c`, fill where
@@ -25,6 +26,18 @@ Pixel = tuple[int, int, int, int]
 WHITE: Pixel = (255, 255, 255, 255)
 CLEAR: Pixel = (0, 0, 0, 0)
 CUTS = (3, 6, 7)
+ICONS = {
+    "rewind": (
+        9,
+        ("...#...#", "..##..##", ".###.###", "########", ".###.###", "..##..##", "...#...#"),
+    ),
+    "fast_forward": (
+        9,
+        ("#...#...", "##..##..", "###.###.", "########", "###.###.", "##..##..", "#...#..."),
+    ),
+    "pause": (7, ("##.##.",) * 7),
+    "play": (7, ("#.....", "##....", "###...", "####..", "###...", "##....", "#.....")),
+}
 
 
 def font_png() -> Callable[[list[list[Pixel]]], bytes]:
@@ -52,10 +65,28 @@ def tile(cut: int, corner: str, part: str) -> list[list[Pixel]]:
     return rows
 
 
+def icon(width: int, shape: tuple[str, ...]) -> list[list[Pixel]]:
+    """An 11-row glyph, with its seven shape rows starting at row 2 and one blank column at left."""
+    rows = [[CLEAR for _ in range(width)] for _ in range(11)]
+    for y, pattern in enumerate(shape, start=2):
+        for x, pixel in enumerate(pattern, start=1):
+            if pixel == "#":
+                rows[y][x] = WHITE
+    return rows
+
+
+def speed_box() -> list[list[Pixel]]:
+    """A 7 by 7 one-pixel outline."""
+    return [[WHITE if x in (0, 6) or y in (0, 6) else CLEAR for x in range(7)] for y in range(7)]
+
+
 def images() -> dict[Path, bytes]:
     """Every image the theme has, by path."""
     png = font_png()
     found = {HERE / "white.png": png([[WHITE]])}
+    found[HERE / "speed_box.png"] = png(speed_box())
+    for name, (width, shape) in ICONS.items():
+        found[HERE / f"icon_{name}.png"] = png(icon(width, shape))
     for cut in CUTS:
         for corner in ("tl", "br"):
             for part in ("fill", "line"):

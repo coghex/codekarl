@@ -14,6 +14,12 @@ hot = "#a8261c"    # hover outline, and the pressed fill
 [kind.time_bar]
 outline = "#6e130f"
 hot = "#a8261c"
+speed_box = "#ece3cb"
+speed_fill = "#a8261c"
+
+[kind.places_bar]
+outline = "#6e130f"
+hot = "#a8261c"
 
 [kind.place]       # the location popup (the place window)
 outline = "#4fb3c8"

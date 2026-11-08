@@ -513,10 +513,11 @@ fn the_scale_comes_from_the_ui_table_of_the_configuration() {
 #[test]
 fn the_readout_format() {
     let readout = Readout::new(
-        "window.record(readout_text({year = 768, month = 10, day = 9, hour = 14, speed = 3, paused = false}))\n\
-         window.record(readout_text({year = 768, month = 10, day = 9, hour = 14, speed = 3, paused = 'error'}))\n\
-         window.record(readout_text({year = 1, month = 1, day = 1, hour = 5, speed = 1, paused = 'load'}))\n\
-         window.record(readout_text({year = 9999, month = 12, day = 31, hour = 23, speed = 5, paused = false}))",
+        "local date = require('lib.time').date\n\
+         window.record(date({year = 768, month = 10, day = 9, hour = 14}))\n\
+         window.record(date({year = 768, month = 10, day = 9, hour = 14}))\n\
+         window.record(date({year = 1, month = 1, day = 1, hour = 5}))\n\
+         window.record(date({year = 9999, month = 12, day = 31, hour = 23}))",
         None,
     );
     let records: Vec<String> = readout
@@ -527,10 +528,10 @@ fn the_readout_format() {
     assert_eq!(
         records,
         [
-            "record 9 Oct 768 · 14:00 · speed 3",
-            "record 9 Oct 768 · 14:00 · paused",
-            "record 1 Jan 1 · 05:00 · paused",
-            "record 31 Dec 9999 · 23:00 · speed 5",
+            "record 9 Oct 768 · 14:00",
+            "record 9 Oct 768 · 14:00",
+            "record 1 Jan 1 · 05:00",
+            "record 31 Dec 9999 · 23:00",
         ]
     );
 }
@@ -544,24 +545,31 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
     );
     readout.deliver(&snapshot(14, 1, Some(PauseReason::Load)));
     let first = readout.entries();
-    // The panel is at the snapped margin, with the fixed buttons and the paused readout in one row.
-    assert_eq!(first[0], "load ui/theme/cut3_tl_fill.png");
+    // The cut-6 panel is at the snapped margin with fixed transport controls, boxes, Help and a date-only readout.
+    assert_eq!(first[0], "load ui/theme/cut6_tl_fill.png");
     assert!(
-        first[1].starts_with("create q1 ui/theme/cut3_tl_fill.png 8 8 "),
+        first[1].starts_with("create q1 ui/theme/cut6_tl_fill.png 8 8 "),
         "{first:?}"
     );
-    // The scene contains the panel (a frame of eleven quads), a frame of eleven quads for each of ten buttons, their sixteen glyphs
-    // (`places` has six), and the readout glyphs.
-    let text = "9 Oct 768 · 14:00 · paused";
+    // Two panels and five buttons use cut-6 frames; icons are precreated (including both pause/play states), and the five boxes
+    // have separate outline and fill quads.
+    let text = "9 Oct 768 · 14:00";
     let glyphs = text.chars().filter(|c| *c != ' ').count();
     assert_eq!(
         first.iter().filter(|e| e.starts_with("create")).count(),
-        glyphs + 11 + 10 * 11 + 16,
+        glyphs + 2 * 11 + 5 * 11 + 4 + 1 + 6 + 10,
         "{first:?}"
     );
     assert!(
-        first.contains(&"set_hit time_bar 8 8 568 38".to_owned()),
+        first
+            .iter()
+            .any(|entry| entry.starts_with("set_hit time_bar 8 8 ")),
         "{first:?}"
+    );
+    assert!(
+        first
+            .iter()
+            .any(|entry| entry.starts_with("set_hit places_bar "))
     );
 
     // Only the hour changes: one digit is replaced, the panel keeps its size.
@@ -583,12 +591,15 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
         "{second:?}"
     );
 
-    // Running at speed 3 is a longer text: the panel follows the text's width.
+    // Speed changes only the two inner boxes whose fill state changes; the date and panel width are independent of speed.
     let before = readout.entries().len();
+    let before_tints = readout.tints().len();
     readout.deliver(&snapshot(15, 3, None));
     let third = readout.entries()[before..].to_vec();
+    let tint_calls = &readout.tints()[before_tints..];
+    assert_eq!(tint_calls.len(), 4, "{tint_calls:?}");
     assert!(
-        third.iter().any(|e| e.starts_with("set_rect q2 ")),
+        !third.iter().any(|entry| entry.starts_with("set_rect")),
         "{third:?}"
     );
 }

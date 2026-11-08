@@ -16,6 +16,7 @@ local button = require("lib.button")
 local windows = require("lib.window")
 local lists = require("lib.list")
 local theme = require("lib.theme")
+local date_text = require("lib.time")
 
 local P = ui.P
 local MARGIN = 8 -- points from the window's top and left edges
@@ -30,97 +31,37 @@ local place_window = nil
 local help_window = nil
 local places_window = nil
 
--- The readout's text for a `game_time` table: `9 Oct 768 · 14:00 · speed 3`, or `... · paused` whatever the reason.
-local MONTHS = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
-local function readout_text(time)
-  local state = time.paused and "paused" or ("speed " .. time.speed)
-  return string.format("%d %s %d · %02d:00 · %s", time.day, MONTHS[time.month], time.year, time.hour, state)
-end
-
 if game ~= nil then
-  -- The time bar is created with the first `game_time`: one panel behind a row of controls and the changing readout.
-  local readout = text.line(0, 0)
+  -- The time bar is created with the first `game_time`: fixed transport controls and speed boxes, then the changing date.
+  local time_colours = theme.kind("time_bar")
+  local readout = text.line(0, 0, nil, time_colours.text)
   local time_panel = nil
   local readout_x = nil
-  local row_y = nil
-  local row_height = nil
+  local places_panel = nil
+  local places_button = nil
+  local speed_boxes = {}
+  local time_controls = {}
+  local shown_speed = nil
+  local shown_paused = nil
 
-  -- The panel follows only the readout width. The button positions and readout origin are fixed after first layout.
+  -- The panel follows only the date width. The control positions and readout origin stay fixed.
   local function fit_bar()
-    local width = readout_x - time_panel.x + readout.width * P + 2 * P
-    local height = row_height + 4 * P
+    local width = readout_x - time_panel.x + readout.width * P + 5 * P
+    local height = 19 * P
     local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
     time_panel:set_rect(x, y, width, height)
     render.set_hit("time_bar", {{x = time_panel.x, y = time_panel.y, width = time_panel.width, height = time_panel.height}})
-    text.move(readout, readout_x, row_y + (row_height - readout.height * P) / 2)
+    text.move(readout, readout_x, y + 4 * P)
   end
 
-  -- Defined below, with the places window.
+  -- Defined below, with the Places window.
   local open_places
 
-  local function create_bar(content)
-    local groups = {
-      {{text = "||", name = "time_pause"}},
-      {{text = "-", name = "time_slower"}, {text = "+", name = "time_faster"}},
-      {
-        {text = "1", name = "time_speed_1"},
-        {text = "2", name = "time_speed_2"},
-        {text = "3", name = "time_speed_3"},
-        {text = "4", name = "time_speed_4"},
-        {text = "5", name = "time_speed_5"},
-      },
-    }
-    local button_height = 0
-    local content_width = 0
-    for group_index, group in ipairs(groups) do
-      if group_index > 1 then
-        content_width = content_width + 4 * P
-      end
-      for index, item in ipairs(group) do
-        item.width, item.height = button.measure(item.text)
-        button_height = math.max(button_height, item.height)
-        content_width = content_width + item.width
-        if index > 1 then
-          content_width = content_width + P
-        end
-      end
-    end
-    local laid_readout = font.layout(content)
+  local function help_button(x, y)
     local help_width, help_height = button.measure("?")
-    local places_width, places_height = button.measure("places")
-    local readout_width = laid_readout.width * P
-    local readout_height = laid_readout.height * P
-    row_height = button_height
-    local width = content_width + help_width + places_width + readout_width + 13 * P
-    local height = row_height + 4 * P
-    local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
-    -- The panel and its broad capture region precede all button regions in painter order.
-    time_panel = panel.new{x = x, y = y, width = width, height = height, kind = "time_bar", cut = 3}
-    render.set_hit("time_bar", {{x = x, y = y, width = width, height = height}})
-    local cursor = x + 2 * P
-    row_y = y + 2 * P
-    for group_index, group in ipairs(groups) do
-      if group_index > 1 then
-        cursor = cursor + 4 * P
-      end
-      for index, item in ipairs(group) do
-        if index > 1 then
-          cursor = cursor + P
-        end
-        local control_name = item.name
-        button.new{
-          x = cursor,
-          y = row_y + (row_height - item.height) / 2,
-          text = item.text,
-          kind = "time_bar",
-          on_click = function() game.control(control_name) end,
-        }
-        cursor = cursor + item.width
-      end
-    end
-    button.new{
-      x = cursor + 4 * P,
-      y = row_y + (row_height - help_height) / 2,
+    return button.new{
+      x = x,
+      y = y,
       text = "?",
       kind = "time_bar",
       on_click = function()
@@ -162,23 +103,91 @@ if game ~= nil then
         help_window = created
       end,
     }
-    -- The places button joins the bar after `?`, one UI pixel apart.
-    button.new{
-      x = cursor + 4 * P + help_width + P,
-      y = row_y + (row_height - places_height) / 2,
+  end
+
+  local function fit_places_bar()
+    if places_panel == nil then return end
+    local x, y = ui.anchor("top_right", places_panel.width, places_panel.height, -MARGIN, MARGIN, view.width, view.height)
+    places_panel:set_rect(x, y, places_panel.width, places_panel.height)
+    render.set_hit("places_bar", {{x = x, y = y, width = places_panel.width, height = places_panel.height}})
+    places_button:move(x + 5 * P, y + 2 * P)
+  end
+
+  local function create_places_bar()
+    local places_width, places_height = button.measure("places")
+    local width, height = 5 * P + places_width + 5 * P, 19 * P
+    local x, y = ui.anchor("top_right", width, height, -MARGIN, MARGIN, view.width, view.height)
+    places_panel = panel.new{x = x, y = y, width = width, height = height, kind = "places_bar", cut = 6}
+    -- Publish the bar capture before the button's narrower region.
+    render.set_hit("places_bar", {{x = x, y = y, width = width, height = height}})
+    places_button = button.new{
+      x = x + 5 * P,
+      y = y + 2 * P,
       text = "places",
-      kind = "time_bar",
+      kind = "places_bar",
       on_click = function() open_places() end,
     }
-    readout_x = cursor + 9 * P + help_width + places_width
+  end
+
+  local function update_speed(time)
+    for index, box in ipairs(speed_boxes) do
+      local filled = index <= time.speed
+      if box.filled ~= filled then
+        render.set_tint(box.quad, filled and time_colours.speed_fill or "#00000000")
+        box.filled = filled
+      end
+    end
+    shown_speed = time.speed
+  end
+
+  local function create_bar(time, content)
+    local help_width = select(1, button.measure("?"))
+    local date_left = 95 + help_width / P + 4
+    local width = (date_left + font.layout(content).width + 5) * P
+    local height = 19 * P
+    local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
+    -- The panel and broad capture region precede all button regions.
+    time_panel = panel.new{x = x, y = y, width = width, height = height, kind = "time_bar", cut = 6}
+    render.set_hit("time_bar", {{x = x, y = y, width = width, height = height}})
+
+    local row_y = y + 2 * P
+    button.new{x = x + 5 * P, y = row_y, icons = {"rewind"}, icon = "rewind", kind = "time_bar",
+      on_click = function() game.control("time_slower") end}
+    time_controls.pause = button.new{x = x + 19 * P, y = row_y, icons = {"pause", "play"},
+      icon = time.paused and "play" or "pause", kind = "time_bar",
+      on_click = function() game.control("time_pause") end}
+    button.new{x = x + 31 * P, y = row_y, icons = {"fast_forward"}, icon = "fast_forward", kind = "time_bar",
+      on_click = function() game.control("time_faster") end}
+
+    for index = 1, 5 do
+      local box_x = x + (48 + 9 * (index - 1)) * P
+      render.create_quad{
+        texture = ui.texture("ui/theme/speed_box.png"),
+        x = box_x, y = y + 6 * P, width = 7 * P, height = 7 * P,
+        tint = time_colours.speed_box,
+      }
+      local filled = index <= time.speed
+      local inner = render.create_quad{
+        texture = ui.texture("ui/theme/white.png"),
+        x = box_x + 2 * P, y = y + 8 * P, width = 3 * P, height = 3 * P,
+        tint = filled and time_colours.speed_fill or "#00000000",
+      }
+      speed_boxes[index] = {quad = inner, filled = filled}
+    end
+    shown_speed = time.speed
+    shown_paused = not not time.paused
+
+    help_button(x + 95 * P, row_y)
+    readout_x = x + date_left * P
     text.set(readout, content)
-    text.move(readout, readout_x, row_y + (row_height - readout_height) / 2)
+    text.move(readout, readout_x, y + 4 * P)
+    create_places_bar()
   end
 
   game.on_time(function(time)
-    local content = readout_text(time)
+    local content = date_text.date(time)
     if time_panel == nil then
-      create_bar(content)
+      create_bar(time, content)
       return
     end
     local before = readout.width
@@ -186,12 +195,21 @@ if game ~= nil then
     if readout.width ~= before then
       fit_bar()
     end
+    if time.speed ~= shown_speed then update_speed(time) end
+    local paused = not not time.paused
+    if paused ~= shown_paused then
+      -- The second button key is stable: rewind is first and the pause/play control is second.
+      -- Keep the button object rather than routing state changes through a scene-wide rebuild.
+      time_controls.pause:set_icon(paused and "play" or "pause")
+      shown_paused = paused
+    end
   end)
   relayouts[#relayouts + 1] = function()
     if time_panel ~= nil then
       fit_bar()
     end
   end
+  relayouts[#relayouts + 1] = fit_places_bar
 
   -- Opens or updates the place window with a place's `id`, `name`, `kind` and `size` (`game_select`'s fields, a map click's or
   -- a places-list row's).
