@@ -70,6 +70,8 @@ mod activation_watch;
 mod held_pipe;
 #[path = "support/map_selection_body.rs"]
 mod map_selection_fixture;
+#[path = "support/places_list.rs"]
+mod places_list_witness;
 #[path = "supervisor/signal.rs"]
 mod signal;
 #[path = "support/time_bar.rs"]
@@ -166,6 +168,10 @@ static QUEUE_FOCUS_LOST_FOR_CK163: AtomicBool = AtomicBool::new(false);
 static MAP_INPUT_CASE: AtomicBool = AtomicBool::new(false);
 static MAP_HOVER_CASE: AtomicBool = AtomicBool::new(false);
 static MAP_SELECT_CASE: AtomicBool = AtomicBool::new(false);
+/// The places-list cases (they also set `MAP_SELECT_CASE`, whose markers directory and observation files they share).
+static PLACES_CASE: AtomicBool = AtomicBool::new(false);
+/// Tells the native driver to run the places-list scenario instead of the map-selection one.
+const PLACES_LIST_ENV: &str = "CK_TEST_PLACES_LIST";
 static UI_POINTER_CASE: AtomicBool = AtomicBool::new(false);
 static TIME_BAR_CASE: AtomicBool = AtomicBool::new(false);
 static SIM_INPUT_CASE: AtomicBool = AtomicBool::new(false);
@@ -557,6 +563,9 @@ fn start(args: &[&OsStr]) -> Worker {
     }
     if MAP_SELECT_CASE.load(Ordering::SeqCst) {
         command.env(MAP_SELECT_ENV, &scratch.0);
+    }
+    if PLACES_CASE.load(Ordering::SeqCst) {
+        command.env(PLACES_LIST_ENV, "1");
     }
     if UI_POINTER_CASE.load(Ordering::SeqCst) {
         command.env(UI_POINTER_ENV, &scratch.0);
@@ -1053,6 +1062,38 @@ fn map_selection_fixture(fixture: &Fixture) -> PathBuf {
         fixture.path("saves").display()
     );
     fixture.windowed(&config_text, map_selection_fixture::body())
+}
+
+/// The Places window on a real window over Ireland 768: an injected click on `places` opens the 94-place list, an injected wheel over it
+/// scrolls it (the UI logs the scroll) and leaves the map camera alone, and an injected click on a row opens the place window of
+/// the place under it.
+fn a_places_click_opens_the_list_a_wheel_scrolls_it_and_a_row_click_opens_the_place_window() {
+    let fixture = Fixture::new();
+    let config = places_list_fixture(&fixture);
+    let seen = run_windowed(&fixture, &config, &[]);
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+    places_list_witness::validate(&seen.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {}", seen.stdout));
+}
+
+fn places_list_fixture(fixture: &Fixture) -> PathBuf {
+    time_bar_witness::install_fixture_assets(&fixture.path(""), &fixture.path("assets"));
+    let config_text = places_list_witness::config_text("native-metal", &fixture.path("saves"));
+    fixture.windowed(&config_text, &places_list_witness::script())
+}
+
+/// The judgment accepts the output a good run leaves (what the log and the driver's sidecar print, in that order).
+fn places_list_output_assertion_accepts_a_captured_run_offline() {
+    let output = "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places list s=16\nINFO  lua.ui: place window opened Cluain Mhic Nóis\nINFO  lua.ui: place window expected Cluain Mhic Nóis\nINFO  lua.ui: place window closed\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 782598144 782598144\nbefore-list-scroll\nafter-list-scroll\n";
+    places_list_witness::validate(output).unwrap_or_else(|error| panic!("{error}"));
+    assert!(places_list_witness::validate("").is_err());
+}
+
+fn places_list_fixture_starts_windowlessly_with_its_rooted_ui_library() {
+    let fixture = Fixture::new();
+    let config = places_list_fixture(&fixture);
+    let seen = run(&config, &["--headless"]);
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
 }
 
 fn map_selection_fixture_starts_windowlessly_with_its_rooted_ui_library() {
@@ -2096,7 +2137,7 @@ fn helper_threads_run_with_sigint_and_sigterm_blocked() {
 // ---------------------------------------------------------------------------------------------
 
 /// The names the filter exports.
-const FILTER_SYMBOLS: [&str; 11] = [
+const FILTER_SYMBOLS: [&str; 12] = [
     "ck_app_t_install_input_filter",
     "ck_app_t_dropped_keys",
     "ck_app_t_start_typist",
@@ -2107,6 +2148,7 @@ const FILTER_SYMBOLS: [&str; 11] = [
     "ck_app_t_schedule_key_files",
     "ck_app_t_schedule_map_pointer",
     "ck_app_t_schedule_map_select",
+    "ck_app_t_schedule_places_list",
     "ck_app_t_schedule_ui_pointer",
 ];
 
@@ -2826,6 +2868,9 @@ fn cases() -> Vec<(&'static str, fn())> {
         case!(a_fixture_scenario_hover_delivers_a_place_name_and_nil_after_moving_away),
         case!(a_fixture_marker_click_opens_a_place_window),
         case!(map_selection_fixture_starts_windowlessly_with_its_rooted_ui_library),
+        case!(a_places_click_opens_the_list_a_wheel_scrolls_it_and_a_row_click_opens_the_place_window),
+        case!(places_list_fixture_starts_windowlessly_with_its_rooted_ui_library),
+        case!(places_list_output_assertion_accepts_a_captured_run_offline),
         case!(map_selection_output_assertion_accepts_the_captured_order_offline),
         case!(the_demo_placeholder_is_drawn_with_the_quads_generation_in_the_first_frame_and_the_run_closes_cleanly),
         case!(a_window_opened_and_closed_by_the_script_exits_0_and_both_shutdowns_follow_the_close),
@@ -2882,7 +2927,13 @@ fn run_case(name: &str, case: fn()) -> bool {
     );
     MAP_SELECT_CASE.store(
         name == "a_fixture_marker_click_opens_a_place_window"
+            || name == "a_places_click_opens_the_list_a_wheel_scrolls_it_and_a_row_click_opens_the_place_window"
+            || name == "places_list_fixture_starts_windowlessly_with_its_rooted_ui_library"
             || name == "map_selection_fixture_starts_windowlessly_with_its_rooted_ui_library",
+        Ordering::SeqCst,
+    );
+    PLACES_CASE.store(
+        name == "a_places_click_opens_the_list_a_wheel_scrolls_it_and_a_row_click_opens_the_place_window",
         Ordering::SeqCst,
     );
     UI_POINTER_CASE.store(
@@ -2909,6 +2960,7 @@ fn run_case(name: &str, case: fn()) -> bool {
     MAP_INPUT_CASE.store(false, Ordering::SeqCst);
     MAP_HOVER_CASE.store(false, Ordering::SeqCst);
     MAP_SELECT_CASE.store(false, Ordering::SeqCst);
+    PLACES_CASE.store(false, Ordering::SeqCst);
     UI_POINTER_CASE.store(false, Ordering::SeqCst);
     TIME_BAR_CASE.store(false, Ordering::SeqCst);
     SIM_INPUT_CASE.store(false, Ordering::SeqCst);

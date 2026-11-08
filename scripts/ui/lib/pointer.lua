@@ -8,6 +8,7 @@ local widgets = {} -- key -> widget
 local owners = {} -- key -> optional widget owner
 local pressed_keys = {} -- key -> true, the widgets whose gesture is pressed
 local last_over = false
+local deferred = {} -- functions to run when the next dispatch ends
 
 function pointer.register(key, widget, owner)
   widgets[key] = widget
@@ -47,6 +48,19 @@ function pointer.unregister_owner(owner)
       pointer.unregister(key)
     end
   end
+end
+
+-- The widget registered under `key`, if any.
+function pointer.widget(key)
+  return widgets[key]
+end
+
+-- Runs `fn` when the running dispatch ends, or, when none is running, when the next one ends. A widget that retires a key (its row
+-- scrolled out of view) unregisters it this way: the events the UI has not been given yet were routed against the frame the player was
+-- pointing at, and the next packet may still name the key, so it still reaches the widget it was meant for. Nothing routed after the
+-- retiring edit was published can name it.
+function pointer.defer(fn)
+  deferred[#deferred + 1] = fn
 end
 
 function pointer.pressed(key, is_pressed)
@@ -117,6 +131,11 @@ function pointer.dispatch(p)
   -- After an overflow packet every widget still pressed is released, whether or not the button is held.
   if overflow then
     release_all()
+  end
+  local pending = deferred
+  deferred = {}
+  for _, fn in ipairs(pending) do
+    fn()
   end
   return changed
 end

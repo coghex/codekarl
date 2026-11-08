@@ -1064,6 +1064,8 @@ mod group_tests;
 #[cfg(test)]
 mod input_tick_tests;
 #[cfg(test)]
+mod list_tests;
+#[cfg(test)]
 mod widget_witness_tests;
 
 #[cfg(test)]

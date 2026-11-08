@@ -25,7 +25,7 @@ mod api {
 #[path = "group_readback/mod.rs"]
 mod group_readback;
 
-use group_readback::{CLEAR, Instance, Picture, SIZE, check, scenes};
+use group_readback::{CLEAR, Instance, Picture, check, scenes};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 const SLOTS: u32 = 131_072;
@@ -148,7 +148,7 @@ impl Rig {
         }
     }
 
-    fn draw(&mut self, instances: &[Instance]) -> Vec<u8> {
+    fn draw(&mut self, size: (u32, u32), instances: &[Instance]) -> Vec<u8> {
         let placed: Vec<VulkanInstance<u32>> = instances
             .iter()
             .map(|instance| VulkanInstance {
@@ -174,7 +174,7 @@ impl Rig {
             &self.context,
             self.queue.as_mut().expect("the queue exists"),
             self.ledger.as_ref().expect("the ledger exists"),
-            SIZE,
+            size,
             CLEAR,
             &frame,
             64,
@@ -232,7 +232,7 @@ impl Rig {
 fn run(choice: BindingChoice) {
     let scenes = scenes();
     let mut rig = Rig::new(&scenes.pictures, choice);
-    check(&scenes, &mut |_, instances| rig.draw(instances));
+    check(&scenes, &mut |_, size, instances| rig.draw(size, instances));
     rig.finish();
 }
 

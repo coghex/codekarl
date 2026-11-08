@@ -14,6 +14,7 @@ local label = require("lib.label")
 local pointer = require("lib.pointer")
 local button = require("lib.button")
 local windows = require("lib.window")
+local lists = require("lib.list")
 
 local P = ui.P
 local MARGIN = 8 -- points from the window's top and left edges
@@ -26,6 +27,7 @@ local view = {width = OPEN_WIDTH, height = OPEN_HEIGHT}
 local relayouts = {}
 local place_window = nil
 local help_window = nil
+local places_window = nil
 
 -- The readout's text for a `game_time` table: `9 Oct 768 · 14:00 · speed 3`, or `... · paused` whatever the reason.
 local MONTHS = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
@@ -51,6 +53,9 @@ if game ~= nil then
     render.set_hit("time_bar", {{x = time_panel.x, y = time_panel.y, width = time_panel.width, height = time_panel.height}})
     text.move(readout, readout_x, row_y + (row_height - readout.height * P) / 2)
   end
+
+  -- Defined below, with the places window.
+  local open_places
 
   local function create_bar(content)
     local groups = {
@@ -85,10 +90,13 @@ if game ~= nil then
     local help_layout = font.layout("?")
     local help_width = (help_layout.width + 4) * P
     local help_height = (help_layout.height + 4) * P
+    local places_layout = font.layout("places")
+    local places_width = (places_layout.width + 4) * P
+    local places_height = (places_layout.height + 4) * P
     local readout_width = laid_readout.width * P
     local readout_height = laid_readout.height * P
     row_height = button_height
-    local width = content_width + help_width + readout_width + 12 * P
+    local width = content_width + help_width + places_width + readout_width + 13 * P
     local height = row_height + 4 * P
     local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
     -- The panel and its broad capture region precede all button regions in painter order.
@@ -157,7 +165,14 @@ if game ~= nil then
         help_window = created
       end,
     }
-    readout_x = cursor + 8 * P + help_width
+    -- The places button joins the bar after `?`, one UI pixel apart.
+    button.new{
+      x = cursor + 4 * P + help_width + P,
+      y = row_y + (row_height - places_height) / 2,
+      text = "places",
+      on_click = function() open_places() end,
+    }
+    readout_x = cursor + 9 * P + help_width + places_width
     text.set(readout, content)
     text.move(readout, readout_x, row_y + (row_height - readout_height) / 2)
   end
@@ -180,7 +195,9 @@ if game ~= nil then
     end
   end
 
-  game.on_select(function(selection)
+  -- Opens or updates the place window with a place's `id`, `name`, `kind` and `size` (`game_select`'s fields, a map click's or
+  -- a places-list row's).
+  local function show_place(selection)
     local lines = {
       "id: " .. selection.id,
       "kind: " .. selection.kind,
@@ -221,7 +238,44 @@ if game ~= nil then
       local item_height = select(2, item:size())
       y = y + item_height + 2 * P
     end
-  end)
+  end
+
+  game.on_select(show_place)
+
+  -- The places window: every location of the scenario, in file order, in a scroll list. A row opens the place window.
+  open_places = function()
+    if places_window ~= nil then
+      places_window:raise()
+      return
+    end
+    local places = game.places()
+    local names = {}
+    local widest = 0
+    for index, place in ipairs(places) do
+      names[index] = place.name
+      widest = math.max(widest, font.layout(place.name).width)
+    end
+    local list_width = (widest + 2) * P
+    local created
+    created = windows.new{
+      title = "Places",
+      content_width = list_width,
+      content_height = 12 * lists.ROW,
+      on_close = function()
+        if places_window == created then places_window = nil end
+      end,
+    }
+    lists.new{
+      window = created,
+      x = 0,
+      y = 0,
+      width = list_width,
+      rows = 12,
+      items = names,
+      on_select = function(index) show_place(places[index]) end,
+    }
+    places_window = created
+  end
 
   -- The tooltip: a panel and a text line beside the hovered place, on the side that fits the window's current width.
   local tooltip = text.line(0, 0)

@@ -506,15 +506,16 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
         first[1].starts_with("create q1 ui/font/panel.png 8 8 "),
         "{first:?}"
     );
-    // The scene contains the panel, three background quads per each of nine buttons, their ten glyphs, and the readout glyphs.
+    // The scene contains the panel, three background quads per each of ten buttons, their sixteen glyphs (`places` has six), and the
+    // readout glyphs.
     let text = "9 Oct 768 · 14:00 · paused";
     let glyphs = text.chars().filter(|c| *c != ' ').count();
     assert_eq!(
         first.iter().filter(|e| e.starts_with("create")).count(),
-        glyphs + 1 + 9 * 3 + 10,
+        glyphs + 1 + 10 * 3 + 16,
         "{first:?}"
     );
-    assert_eq!(first[1], "create q1 ui/font/panel.png 8 8 488 38");
+    assert_eq!(first[1], "create q1 ui/font/panel.png 8 8 566 38");
 
     // Only the hour changes: one digit is replaced, the panel keeps its size.
     let before = readout.entries().len();
