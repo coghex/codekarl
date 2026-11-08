@@ -41,8 +41,9 @@ use crate::windowed::{self, GpuFigures, RunClosure, RunEnv, RunNotes};
 /// screen. A plain record of the real run, for whoever reads the log, and what the real-window test looks for
 /// (with a fixture that writes nothing after the window opens). Everything else is a forward.
 ///
-/// The record never waits: `take_report` is `ck-window`'s non-waiting call, so it goes through `try_log` and a
-/// refused record is dropped and counted by the logger.
+/// The record waits at most a few milliseconds for the logger ([`crate::lifecycle::PROGRESS_WAIT`]), so that ordinary contention does
+/// not drop it; once `request_stop` was called it never waits (the teardown's late `take_report` calls), it goes through `try_log`,
+/// and a refused record is dropped and counted by the logger.
 struct Reporting {
     inner: MetalBackend,
     /// The first frame was reported, and its record has not been written yet.
@@ -53,6 +54,8 @@ struct Reporting {
     metrics: Option<Arc<MetricsHub>>,
     /// The `metrics` record was written.
     reported: bool,
+    /// `request_stop` was called: from then on the first-frame record never waits for the logger (the teardown's late reports).
+    stopping: bool,
     /// The run's resource service, whose loader counters the record reads.
     resources: ck_resources::ResourceService,
 }
@@ -157,16 +160,19 @@ impl Gpu2d for Reporting {
             && let Some(generation) = self.inner.drawn_generation()
         {
             self.pending = false;
-            let _ = ck_log::try_log!(
+            // Before the stop is requested: a few milliseconds' wait, so that the writer holding the queue for a moment does not
+            // drop (and count) the one record of the run; after it, never (see `lifecycle::progress_record`).
+            let _ = crate::lifecycle::progress_record(
+                self.stopping,
                 Level::Debug,
-                "render",
-                "first frame drawn, generation {generation}"
+                format_args!("first frame drawn, generation {generation}"),
             );
         }
         report
     }
 
     fn request_stop(&mut self) {
+        self.stopping = true;
         // The window loop has begun its teardown: this is the run's one end timestamp for the measured window, sent to both owners.
         if let Some(hub) = self.metrics.clone() {
             // A window marked and not yet handed over goes first, so the presenter holds it when the end arrives.
@@ -299,6 +305,7 @@ pub(crate) fn run_closure_with(
                 notes: Rc::clone(&env.notes),
                 metrics: env.metrics.clone(),
                 reported: false,
+                stopping: false,
                 resources: service_for_metrics,
             },
             Arc::clone(&env.bridge),

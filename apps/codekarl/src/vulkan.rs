@@ -388,9 +388,23 @@ impl<S: Stack> Run<S> {
     /// batch gets one bounded wait instead ([`drain_validation_by`](Self::drain_validation_by)), so none is lost to the end. Every
     /// closing drain has an absolute budget: `poll_end`'s own (the presenter's end), or, on the loop's teardown and window
     /// creation, which have no caller budget, one control-path deadline per step shared by that step's drains. This form is the
-    /// non-closing pass, which never waits.
+    /// non-closing pass, which waits at most one short bound ([`PROGRESS_WAIT`](crate::lifecycle::PROGRESS_WAIT)) for the whole pass.
     fn drain_validation(&self) {
         self.drain_validation_by(false, None);
+    }
+
+    /// The non-closing pass **without** the bounded wait: every refused record goes through `try_log` and waits for the next call.
+    /// [`announce`](VulkanAdapter::announce) uses it on the end paths (`request_stop`, `poll_end`), which never spend their own budget
+    /// on the logger: the destruction's closing drain is the one that waits there.
+    fn drain_validation_without_waiting(&self) {
+        let drained = {
+            let state = self.state.borrow();
+            state
+                .log
+                .as_ref()
+                .map(|log| self.stack.drain_validation(log))
+        };
+        self.write_validation_pass(drained.unwrap_or_default(), false, None, false);
     }
 
     /// [`drain_validation`](Self::drain_validation) whose closing wait is also capped by the caller's own absolute budget `by`
@@ -408,6 +422,18 @@ impl<S: Stack> Run<S> {
 
     /// Turns `drained` (and what earlier calls left pending) into records and writes them: see [`drain_validation`](Self::drain_validation).
     fn write_validation(&self, drained: ValidationDrain, closing: bool, by: Option<Instant>) {
+        self.write_validation_pass(drained, closing, by, true);
+    }
+
+    /// [`write_validation`](Self::write_validation); `waits` says whether a non-closing pass may wait its short bound
+    /// ([`PROGRESS_WAIT`](crate::lifecycle::PROGRESS_WAIT)) or sends every record through `try_log` (an end path's announcement).
+    fn write_validation_pass(
+        &self,
+        drained: ValidationDrain,
+        closing: bool,
+        by: Option<Instant>,
+        waits: bool,
+    ) {
         let mut state = self.state.borrow_mut();
         for entry in drained.entries {
             state.pending_validation.push_back(if entry.loader_notice {
@@ -447,8 +473,17 @@ impl<S: Stack> Run<S> {
                 }
             }
         } else {
+            // One short bound for the whole pass (a stalled logger costs a call at most that, not one wait per record): the first
+            // record not admitted in time ends the pass and waits, with the rest, for the next call.
+            let deadline = crate::lifecycle::progress_deadline();
             while let Some((level, text)) = state.pending_validation.front() {
-                if ck_log::try_log!(*level, "render", "{text}") == Admission::Dropped {
+                let admission = crate::lifecycle::progress_record_until(
+                    !waits,
+                    *level,
+                    format_args!("{text}"),
+                    deadline,
+                );
+                if admission == Admission::Dropped {
                     break;
                 }
                 state.pending_validation.pop_front();
@@ -734,9 +769,10 @@ impl NativeWake for NoWake {
 /// **The format notice** (design §7.3). Every [`Gpu2d`] call first takes the notice from the presenter
 /// ([`Running::take_notice`]) and logs it as one
 /// `warn render: textured quad skipped: the glfw-vulkan surface format is <format>, not UNORM` record through
-/// `try_log`, which never waits. While the run is active a refused record is kept and tried again at the next
-/// call; on the end paths (`request_stop`, `poll_end`) a refused record is given up (the logger counts the
-/// drop). When `poll_end` observes the end, the notice is taken once more **before** the remaining reports are
+/// `log_within` with a bound of a few milliseconds ([`PROGRESS_WAIT`](crate::lifecycle::PROGRESS_WAIT)), so that ordinary lock
+/// contention does not drop it. While the run is active a record still refused after the bound is kept and tried again at the next
+/// call; on the end paths (`request_stop`, `poll_end`) it goes through `try_log`, which never waits, and a refused record is given up
+/// (the logger counts the drop). When `poll_end` observes the end, the notice is taken once more **before** the remaining reports are
 /// drained and the presenter's handle is released (or retained, on an unproven end), so a notice recorded after
 /// the last ordinary call is not lost; any time spent logging comes out of `poll_end`'s own budget.
 ///
@@ -765,6 +801,8 @@ pub(crate) struct VulkanAdapter<S: Stack> {
     drawn_at_end: Option<u64>,
     /// The `metrics` record was written.
     reported: bool,
+    /// [`Gpu2d::request_stop`] was called: from then on no record waits for the logger, the teardown's late reports included.
+    stopping: bool,
 }
 
 impl<S: Stack> VulkanAdapter<S> {
@@ -780,6 +818,7 @@ impl<S: Stack> VulkanAdapter<S> {
             first_frame_pending: false,
             drawn_at_end: None,
             reported: false,
+            stopping: false,
         }
     }
 
@@ -926,24 +965,35 @@ impl<S: Stack> VulkanAdapter<S> {
     /// Takes the presenter's notice (if it has one) and logs it, if there is one to log; says whether it tried.
     /// Called first thing by every [`Gpu2d`] method, all of which run on the main thread.
     ///
-    /// **It never waits:** the record goes through `try_log`, which takes or drops it at once. Off the end paths
-    /// a dropped record is kept and tried again at the next call; on the end paths (`closing`) it is given up, as
-    /// the run is over, and the logger has counted the drop. A [`Gpu2d`] method's own deadline is therefore never
-    /// spent on the logger.
+    /// **Off the end paths it waits at most [`PROGRESS_WAIT`](crate::lifecycle::PROGRESS_WAIT)** (a few milliseconds) for the logger
+    /// (`log_within`), so that the writer holding the queue for a moment does not drop, and count, a record of a correct run (one
+    /// counted drop ends a run with status 3). A record still refused after the bound (a stalled or saturated logger) is kept and
+    /// tried again at the next call. **On the end paths (`closing`) it never waits:** the record goes through `try_log`, which takes
+    /// or drops it at once, and a refused one is given up, as the run is over, and the logger has counted the drop. A [`Gpu2d`]
+    /// method's own deadline is therefore never spent on the logger on an end path.
     fn announce(&mut self, closing: bool) -> bool {
         // The validation log first: what the layer said since the last call (records that were refused wait here).
         // (With `try_log`, even on an end path: the destruction's own drain, after it, is the one that waits.)
-        self.run.drain_validation();
+        // After the stop was requested every call is an end path's, whatever it says: the loop's teardown still takes the presenter's
+        // late reports (`take_report`), and none of those may wait for the logger.
+        let no_wait = closing || self.stopping;
+        if no_wait {
+            self.run.drain_validation_without_waiting();
+        } else {
+            self.run.drain_validation();
+        }
         let mut tried = false;
         if self.notice.is_none() {
             self.notice = self.with(Running::take_notice).flatten();
         }
         if let Some(format) = &self.notice {
             tried = true;
-            let admission = ck_log::try_log!(
+            let admission = crate::lifecycle::progress_record(
+                no_wait,
                 Level::Warn,
-                "render",
-                "textured quad skipped: the glfw-vulkan surface format is {format}, not UNORM"
+                format_args!(
+                    "textured quad skipped: the glfw-vulkan surface format is {format}, not UNORM"
+                ),
             );
             if admission != Admission::Dropped || closing {
                 self.notice = None;
@@ -957,14 +1007,20 @@ impl<S: Stack> VulkanAdapter<S> {
             // One record per run: a `warn` for the logged fallback (the gate refused the device; the text names every failed row),
             // an `info` for the bindless table (its size and the support query's answer).
             let admission = if note.fallback {
-                ck_log::try_log!(
+                crate::lifecycle::progress_record(
+                    no_wait,
                     Level::Warn,
-                    "render",
-                    "bindless unavailable ({}); drawing through per-revision descriptor sets",
-                    note.text
+                    format_args!(
+                        "bindless unavailable ({}); drawing through per-revision descriptor sets",
+                        note.text
+                    ),
                 )
             } else {
-                ck_log::try_log!(Level::Info, "render", "{}", note.text)
+                crate::lifecycle::progress_record(
+                    no_wait,
+                    Level::Info,
+                    format_args!("{}", note.text),
+                )
             };
             if admission != Admission::Dropped || closing {
                 self.binding = None;
@@ -984,10 +1040,10 @@ impl<S: Stack> VulkanAdapter<S> {
             .or(self.drawn_at_end);
         if let Some(generation) = generation {
             self.first_frame_pending = false;
-            let _ = ck_log::try_log!(
+            let _ = crate::lifecycle::progress_record(
+                self.stopping,
                 Level::Debug,
-                "render",
-                "first frame drawn, generation {generation}"
+                format_args!("first frame drawn, generation {generation}"),
             );
         }
     }
@@ -1063,6 +1119,7 @@ impl<S: Stack> Gpu2d for VulkanAdapter<S> {
     }
 
     fn request_stop(&mut self) {
+        self.stopping = true;
         self.announce(true);
         // The window loop has begun its teardown: this is the run's one end timestamp for the measured window, sent to both owners
         // (a window marked and not yet handed over goes first, so the presenter holds it when the end arrives).
