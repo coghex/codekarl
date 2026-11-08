@@ -1125,6 +1125,10 @@ fn a_fixture_scenario_time_bar_changes_speed_pause_and_captures_a_gap_drag() {
         .unwrap_or_else(|error| panic!("{error}: {}", seen.stdout));
 }
 
+fn time_bar_output_assertion_rejects_the_capture_and_accepts_a_doctored_drag_offline() {
+    time_bar_witness::captured_failure_and_doctored_output_are_checked_offline();
+}
+
 fn assert_ui_pointer_streams(seen: &Seen, backend: &str) {
     // The helper's sidecar is appended after process stdout. Its marker handshake guarantees the cross-stream order:
     // it injects the drag only after Lua observed down+up and wrote ui-click-received.
@@ -1220,7 +1224,7 @@ fn places_list_fixture(fixture: &Fixture) -> PathBuf {
 
 /// The judgment accepts the output a good run leaves (what the log and the driver's sidecar print, in that order).
 fn places_list_output_assertion_accepts_a_captured_run_offline() {
-    let output = "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places bar raised\nINFO  lua.ui: places list s=16\nINFO  lua.ui: place window opened Cluain Mhic Nóis\nINFO  lua.ui: place window expected Cluain Mhic Nóis\nINFO  lua.ui: place window closed\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 782598144 782598144\nbefore-list-scroll\nafter-list-scroll\n";
+    let output = "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places list s=16\nINFO  lua.ui: place window opened Cluain Mhic Nóis\nINFO  lua.ui: place window expected Cluain Mhic Nóis\nINFO  lua.ui: place window closed\nINFO  lua.ui: places title clicked\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 782598144 782598144\nbefore-list-scroll\nafter-list-scroll\n";
     places_list_witness::validate(output).unwrap_or_else(|error| panic!("{error}"));
     assert!(places_list_witness::validate("").is_err());
 }
@@ -2854,6 +2858,7 @@ fn cases() -> Vec<(&'static str, fn())> {
         case!(a_fixture_scenario_resumes_picks_a_speed_pans_pauses_and_saves_from_marked_keys_and_closes_normally),
         case!(a_fixture_scenarios_time_callback_follows_speed_pause_and_load_one_delivery_each),
         case!(a_fixture_scenario_time_bar_changes_speed_pause_and_captures_a_gap_drag),
+        case!(time_bar_output_assertion_rejects_the_capture_and_accepts_a_doctored_drag_offline),
         case!(a_held_ui_does_not_stop_the_map_and_gets_every_transition_after_the_release),
         case!(a_worker_that_fails_before_opening_the_pipe_is_released_reaped_and_removed_at_once),
         case!(a_fixture_map_opens_pans_and_zooms_from_marked_pointer_events_and_closes_normally),

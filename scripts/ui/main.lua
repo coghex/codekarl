@@ -39,6 +39,8 @@ if game ~= nil then
   local readout_x = nil
   local places_panel = nil
   local places_button = nil
+  local places_group = nil
+  local places_bar_visible = true
   local speed_boxes = {}
   local time_controls = {}
   local shown_speed = nil
@@ -109,46 +111,126 @@ if game ~= nil then
     if places_panel == nil then return end
     local x, y = ui.anchor("top_right", places_panel.width, places_panel.height, -MARGIN, MARGIN, view.width, view.height)
     places_panel:set_rect(x, y, places_panel.width, places_panel.height)
-    render.set_hit("places_bar", {{x = x, y = y, width = places_panel.width, height = places_panel.height}})
+    render.set_hit("places_bar", {{x = x, y = y, width = places_panel.width, height = places_panel.height}}, places_group)
     places_button:move(x + 5 * P, y + 2 * P)
+  end
+
+  local function set_places_bar_visible(visible)
+    if places_group ~= nil and places_bar_visible ~= visible then
+      render.set_group_visible(places_group, visible)
+      places_bar_visible = visible
+    end
   end
 
   local function create_places_bar()
     local places_width, places_height = button.measure("places")
     local width, height = 5 * P + places_width + 5 * P, 19 * P
     local x, y = ui.anchor("top_right", width, height, -MARGIN, MARGIN, view.width, view.height)
-    places_panel = panel.new{x = x, y = y, width = width, height = height, kind = "places_bar", cut = 6}
+    places_group = render.create_group()
+    places_panel = panel.new{
+      x = x, y = y, width = width, height = height, kind = "places_bar", cut = 6, group = places_group,
+    }
     -- Publish the bar capture before the button's narrower region.
-    render.set_hit("places_bar", {{x = x, y = y, width = width, height = height}})
+    render.set_hit("places_bar", {{x = x, y = y, width = width, height = height}}, places_group)
     places_button = button.new{
       x = x + 5 * P,
       y = y + 2 * P,
       text = "places",
       kind = "places_bar",
+      group = places_group,
       on_click = function() open_places() end,
     }
   end
 
-  local function update_speed(time)
-    for index, box in ipairs(speed_boxes) do
-      local filled = index <= time.speed
-      if box.filled ~= filled then
-        render.set_tint(box.quad, filled and time_colours.speed_fill or "#00000000")
-        box.filled = filled
+  local function update_speed_box(box)
+    local outline = time_colours.speed_box
+    if box.hovered or box.pressed then outline = time_colours.hot end
+    if outline ~= box.outline_tint then
+      render.set_tint(box.outline, outline)
+      box.outline_tint = outline
+    end
+    local filled = box.index <= shown_speed or box.pressed
+    local inner = filled and time_colours.speed_fill or "#00000000"
+    if inner ~= box.inner_tint then
+      render.set_tint(box.inner, inner)
+      box.inner_tint = inner
+    end
+  end
+
+  local function speed_box_widget(index, key)
+    local box = {index = index, key = key, hovered = false, pressed = false}
+    function box:on_event(event, eligible)
+      if event.kind == "down" then
+        if not self.pressed then
+          self.pressed = true
+          pointer.pressed(self.key, true)
+          update_speed_box(self)
+        end
+      elseif event.kind == "up" then
+        if self.pressed then
+          self.pressed = false
+          pointer.pressed(self.key, false)
+          update_speed_box(self)
+          if eligible ~= false and event.inside == true then
+            game.control("time_speed_" .. self.index)
+          end
+        end
+      elseif event.kind == "cancel" then
+        self.pressed = false
+        pointer.pressed(self.key, false)
+        update_speed_box(self)
       end
     end
+    function box:on_hover(hovered)
+      self.hovered = hovered
+      update_speed_box(self)
+    end
+    function box:on_overflow()
+      self.pressed = false
+      pointer.pressed(self.key, false)
+      update_speed_box(self)
+    end
+    return box
+  end
+
+  local function update_speed(time)
     shown_speed = time.speed
+    for index, box in ipairs(speed_boxes) do
+      update_speed_box(box)
+    end
   end
 
   local function create_bar(time, content)
     local help_width = select(1, button.measure("?"))
-    local date_left = 95 + help_width / P + 4
+    local date_left = 90 + help_width / P + 4
     local width = (date_left + font.layout(content).width + 5) * P
     local height = 19 * P
     local x, y = ui.anchor("top_left", width, height, MARGIN, MARGIN, view.width, view.height)
     -- The panel and broad capture region precede all button regions.
     time_panel = panel.new{x = x, y = y, width = width, height = height, kind = "time_bar", cut = 6}
     render.set_hit("time_bar", {{x = x, y = y, width = width, height = height}})
+    for index = 1, 5 do
+      local box_x = x + (48 + 8 * (index - 1)) * P
+      local outline = render.create_quad{
+        texture = ui.texture("ui/theme/speed_box.png"),
+        x = box_x, y = y + 4 * P, width = 6 * P, height = 11 * P,
+        tint = time_colours.speed_box,
+      }
+      local filled = index <= time.speed
+      local inner_tint = filled and time_colours.speed_fill or "#00000000"
+      local inner = render.create_quad{
+        texture = ui.texture("ui/theme/white.png"),
+        x = box_x + 2 * P, y = y + 6 * P, width = 2 * P, height = 7 * P,
+        tint = inner_tint,
+      }
+      local key = "speed_" .. index
+      local widget = speed_box_widget(index, key)
+      widget.outline, widget.outline_tint = outline, time_colours.speed_box
+      widget.inner, widget.inner_tint = inner, inner_tint
+      speed_boxes[index] = widget
+      render.set_hit(key, {{x = x + (47 + 8 * (index - 1)) * P, y = y + 2 * P, width = 8 * P, height = 15 * P}})
+      pointer.register(key, widget)
+    end
 
     local row_y = y + 2 * P
     button.new{x = x + 5 * P, y = row_y, icons = {"rewind"}, icon = "rewind", kind = "time_bar",
@@ -159,25 +241,10 @@ if game ~= nil then
     button.new{x = x + 31 * P, y = row_y, icons = {"fast_forward"}, icon = "fast_forward", kind = "time_bar",
       on_click = function() game.control("time_faster") end}
 
-    for index = 1, 5 do
-      local box_x = x + (48 + 9 * (index - 1)) * P
-      render.create_quad{
-        texture = ui.texture("ui/theme/speed_box.png"),
-        x = box_x, y = y + 6 * P, width = 7 * P, height = 7 * P,
-        tint = time_colours.speed_box,
-      }
-      local filled = index <= time.speed
-      local inner = render.create_quad{
-        texture = ui.texture("ui/theme/white.png"),
-        x = box_x + 2 * P, y = y + 8 * P, width = 3 * P, height = 3 * P,
-        tint = filled and time_colours.speed_fill or "#00000000",
-      }
-      speed_boxes[index] = {quad = inner, filled = filled}
-    end
     shown_speed = time.speed
     shown_paused = not not time.paused
 
-    help_button(x + 95 * P, row_y)
+    help_button(x + 90 * P, row_y)
     readout_x = x + date_left * P
     text.set(readout, content)
     text.move(readout, readout_x, y + 4 * P)
@@ -259,9 +326,9 @@ if game ~= nil then
 
   game.on_select(show_place)
 
-  -- The places window: every location of the scenario, in file order, in a scroll list. A row opens the place window.
+  -- The places dropdown: every location in file order. A row opens the place popup and leaves this list open.
   open_places = function()
-    if places_window ~= nil then
+    if places_window ~= nil and not places_window.closed then
       places_window:raise()
       return
     end
@@ -273,15 +340,28 @@ if game ~= nil then
       widest = math.max(widest, font.layout(place.name).width)
     end
     local list_width = (widest + 2) * P
+    local title_width = font.layout("places").width * P
+    local outer_width = math.max(list_width + 6 * P, 12 * P + title_width, 17 * P)
     local created
     created = windows.new{
-      title = "Places",
+      title = "places",
+      fixed = true,
       content_width = list_width,
       content_height = 12 * lists.ROW,
+      kind = "places_bar",
+      x = 0,
+      y = 0,
+      on_title_click = function() created:close() end,
       on_close = function()
-        if places_window == created then places_window = nil end
+        if places_window == created then
+          places_window = nil
+          set_places_bar_visible(true)
+        end
       end,
     }
+    local width, height = created:size()
+    local x, y = ui.anchor("top_right", width, height, -MARGIN, MARGIN, view.width, view.height)
+    created:move_to(x, y)
     lists.new{
       window = created,
       x = 0,
@@ -292,6 +372,15 @@ if game ~= nil then
       on_select = function(index) show_place(places[index]) end,
     }
     places_window = created
+    set_places_bar_visible(false)
+  end
+
+  relayouts[#relayouts + 1] = function()
+    if places_window ~= nil and not places_window.closed then
+      local width, height = places_window:size()
+      local x, y = ui.anchor("top_right", width, height, -MARGIN, MARGIN, view.width, view.height)
+      places_window:move_to(x, y)
+    end
   end
 
   -- The tooltip: a panel and a text line beside the hovered place, on the side that fits the window's current width.

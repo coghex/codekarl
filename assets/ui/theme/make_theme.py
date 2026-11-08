@@ -1,10 +1,10 @@
-"""Writes the images of the cut-corner frames and the time-bar controls (milestone 8, slices 7b/7c).
+"""Writes the images of the cut-corner frames and the time-bar controls (milestone 8, slices 7b/7c/owner follow-up).
 
     python3 make_theme.py            write the images
     python3 make_theme.py --check    fail if a committed image differs from what this script writes, or is missing or extra
 
 `white.png` is one opaque white pixel: the frames' bands and edges are stretched copies of it, tinted by the theme. `speed_box.png`
-is the one-pixel outline of a 7 by 7 speed indicator. The four `icon_*.png` files are white 11-row glyphs for the time bar. For each cut
+is the one-pixel rounded outline of a 6 by 11 speed indicator. The four `icon_*.png` files are white 11-row glyphs for the time bar. For each cut
 `c` in 3, 6 and 7 there are four tiles of `(c + 1) x (c + 1)` pixels, opaque white or transparent:
 
 - `cut<c>_tl_line.png` and `cut<c>_tl_fill.png`, the top-left corner: pixel `(i, j)` is line where `i + j == c`, fill where
@@ -76,8 +76,16 @@ def icon(width: int, shape: tuple[str, ...]) -> list[list[Pixel]]:
 
 
 def speed_box() -> list[list[Pixel]]:
-    """A 7 by 7 one-pixel outline."""
-    return [[WHITE if x in (0, 6) or y in (0, 6) else CLEAR for x in range(7)] for y in range(7)]
+    """A 6 by 11 one-pixel outline with transparent corner pixels."""
+    return [
+        [
+            WHITE
+            if (y in (0, 10) and x in (1, 2, 3, 4)) or (x in (0, 5) and y in range(1, 10))
+            else CLEAR
+            for x in range(6)
+        ]
+        for y in range(11)
+    ]
 
 
 def images() -> dict[Path, bytes]:

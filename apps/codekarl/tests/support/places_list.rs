@@ -1,11 +1,8 @@
 //! The places list's window witness (milestone 8, slices 6 and 7c): the shipped `scripts/ui/main.lua` run unchanged over Ireland 768, with
 //! observation wrappers installed before it and markers the native driver (`native/testing.m`, `ck_app_t_schedule_places_list`) polls.
 //!
-//! The driver clicks the `places` button, scrolls over the list, clicks a row, and closes the windows with Escape; this module only
-//! prepares the script and judges the combined output. The new Places bar publishes the button's centre to a marker; the wrapper opens
-//! the Places window at (100, 100),
-//! so its list's top-left corner is (106, 136), a row is 26 points high and the row under (126, 149) is the first, or, after a scroll
-//! of `s` points, the one at `(13 + s) / 26`.
+//! The driver clicks the `places` button, scrolls over the list, clicks a row, closes the place popup with Escape and the dropdown by its
+//! title. The wrapper publishes the real dropdown geometry so input follows the production point-based anchor.
 //!
 //! **Markers are written one frame after the callback that made them returns**, so that the scene the callback edited has been
 //! published (and the router holds its regions) before the driver acts on the marker.
@@ -27,6 +24,12 @@ end
 -- Markers wait one frame: the scene a callback edited is published when the callback returns, and the driver acts on a marker.
 local queued = {}
 local function mark(name, contents) queued[#queued + 1] = {name, contents} end
+local emitted = {}
+local function mark_once(name, contents)
+  if emitted[name] then return end
+  emitted[name] = true
+  mark(name, contents)
+end
 local function flush()
   local ready = queued
   queued = {}
@@ -47,24 +50,11 @@ local button_library = require('lib.button')
 
 local real_button_new = button_library.new
 button_library.new = function(spec)
-  local clicks = 0
-  if spec.text == 'places' then
-    local on_click = spec.on_click
-    spec.on_click = function(...)
-      local result = on_click(...)
-      clicks = clicks + 1
-      if clicks == 2 then
-        log.info('places bar raised')
-        mark('places-raised')
-      end
-      return result
-    end
-  end
   local created = real_button_new(spec)
   if spec.text == 'places' then
     local width, height = created:size()
     mark('places-button-center', string.format('%.0f %.0f', spec.x + width / 2, spec.y + height / 2))
-    mark('places-button-ready')
+    mark_once('places-button-ready')
   end
   return created
 end
@@ -75,30 +65,42 @@ local real_list_new = lists_library.new
 lists_library.new = function(spec)
   observed = real_list_new(spec)
   log.info('places list opened ' .. #spec.items .. ' items ' .. spec.rows .. ' rows')
-  mark('places-ready')
+  mark_once('places-ready')
   return observed
 end
 
 local real_windows_new = windows_library.new
 windows_library.new = function(spec)
-  local places = spec.title == 'Places'
-  if places then
-    -- A known place for the driver's coordinates.
-    spec.x, spec.y = 100, 100
-  end
+  local places = spec.title == 'places'
   local real_close = spec.on_close
+  local real_title_click = spec.on_title_click
+  if places then
+    spec.on_title_click = function(clicked)
+      log.info('places title clicked')
+      mark_once('places-title-clicked')
+      if real_title_click ~= nil then real_title_click(clicked) end
+    end
+  end
   spec.on_close = function(closing)
     if places then
       log.info('places window closed')
-      mark('places-closed')
+      mark_once('places-closed')
     else
       log.info('place window closed')
-      mark('place-closed')
+      mark_once('place-closed')
     end
     if real_close ~= nil then real_close(closing) end
   end
   local created = real_windows_new(spec)
   if places then
+    local real_move_to = created.move_to
+    function created:move_to(x, y)
+      real_move_to(self, x, y)
+      local left, top = self:position()
+      local width, height = self:size()
+      mark('places-window-geometry', string.format('%d %d %d %d %d', left, top, width, height, self.title_height))
+      mark('places-title-center', string.format('%.0f %.0f', left + width / 2, top + self.title_height / 2))
+    end
     log.info('places window opened')
   else
     log.info('place window opened ' .. spec.title)
@@ -106,7 +108,7 @@ windows_library.new = function(spec)
     -- no scroll) at the list's current scroll, whatever the backend's wheel delta made that.
     local index = math.floor((13 + observed.s) / lists_library.ROW) + 1
     log.info('place window expected ' .. game.places()[index].name)
-    mark('place-ready')
+    mark_once('place-ready')
   end
   return created
 end
@@ -121,7 +123,7 @@ frame.on_update = function(callback)
     if observed ~= nil and not observed.closed and observed.s ~= last_s then
       last_s = observed.s
       log.info('places list s=' .. observed.s)
-      if observed.s > 0 then mark('list-scrolled') end
+      if observed.s > 0 then mark_once('list-scrolled') end
     end
   end)
 end
@@ -162,7 +164,6 @@ pub(crate) fn validate(output: &str) -> Result<(), String> {
     };
     next("lua.ui: places window opened")?;
     next("lua.ui: places list opened 94 items 12 rows")?;
-    next("lua.ui: places bar raised")?;
     let scrolled = next("lua.ui: places list s=")?;
     let scroll: u32 = lines[scrolled]
         .rsplit_once("places list s=")
@@ -187,6 +188,7 @@ pub(crate) fn validate(output: &str) -> Result<(), String> {
         ));
     }
     next("lua.ui: place window closed")?;
+    next("lua.ui: places title clicked")?;
     next("lua.ui: places window closed")?;
     next("lua.ui: close requested by key")?;
     next("window: window closed")?;

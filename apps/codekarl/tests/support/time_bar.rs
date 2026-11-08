@@ -50,8 +50,12 @@ local function time_bar_log(message)
 end
 local time_bar_directory = os.getenv("CK_WINDOWED_TEST_TIME_BAR") or os.getenv("CK_VULKAN_TEST_TIME_BAR")
 local time_bar_markers = {}
+local time_bar_emitted_markers = {}
 local function time_bar_mark(name)
-  if time_bar_directory ~= nil then time_bar_markers[#time_bar_markers + 1] = name end
+  if time_bar_directory ~= nil and not time_bar_emitted_markers[name] then
+    time_bar_emitted_markers[name] = true
+    time_bar_markers[#time_bar_markers + 1] = name
+  end
 end
 local function time_bar_flush_markers()
   local ready = time_bar_markers
@@ -77,7 +81,7 @@ end
     );
     script.insert_str(
         0,
-        "local time_bar_initialized = false\nlocal time_bar_saw_box_down = false\n",
+        "local time_bar_initialized = false\nlocal time_bar_saw_speed5 = false\nlocal time_bar_speed_box_down = nil\nlocal time_bar_speed_box_dragged = false\n",
     );
     let time = r#"game.on_time(function(time)
     local state = time.paused and tostring(time.paused) or "running"
@@ -87,7 +91,10 @@ end
       game.control("time_faster")
       game.control("time_faster")
     elseif time_bar_directory and time.speed == 3 and state == "load" then
-      time_bar_mark("time-bar-speed3-paused")
+      time_bar_mark(time_bar_saw_speed5 and "time-bar-speed3-reset-paused" or "time-bar-speed3-paused")
+    elseif time_bar_directory and time.speed == 5 and state == "load" then
+      time_bar_saw_speed5 = true
+      time_bar_mark("time-bar-speed5-paused")
     elseif time_bar_directory and time.speed == 4 and state == "load" then
       time_bar_mark("time-bar-speed4-paused")
     elseif time_bar_directory and time.speed == 4 and state == "running" then
@@ -98,13 +105,16 @@ end
     let frame = r#"frame.on_update(function(update)
   time_bar_flush_markers()
   for _, event in ipairs((update.pointer and update.pointer.events) or {}) do
-    if event.key == "time_bar" and event.kind == "down" then
-      time_bar_saw_box_down = true
-      time_bar_log("time-bar box down")
-    elseif event.key == "time_bar" and event.kind == "up" and time_bar_saw_box_down then
-      time_bar_saw_box_down = false
-      time_bar_mark("time-bar-box-drag-observed")
-      time_bar_log("time-bar box up")
+    if event.kind == "down" and event.key and string.match(event.key, "^speed_[1-5]$") then
+      time_bar_speed_box_down = event.key
+      time_bar_speed_box_dragged = false
+      time_bar_log("time-bar box down " .. event.key .. " inside " .. tostring(event.inside))
+    elseif event.kind == "move" and time_bar_speed_box_down ~= nil and not event.inside then
+      time_bar_speed_box_dragged = true
+    elseif event.kind == "up" and event.key == time_bar_speed_box_down then
+      time_bar_speed_box_down = nil
+      if time_bar_speed_box_dragged then time_bar_mark("time-bar-box-drag-observed") end
+      time_bar_log("time-bar box up " .. event.key .. " inside " .. tostring(event.inside))
     end
   end
   pointer.dispatch(update.pointer)
@@ -136,14 +146,16 @@ pub(crate) fn validate(output: &str) -> Result<(), String> {
     }
     let lua = [
         "lua.ui: time-bar speed 3 load boxes 3",
+        "lua.ui: time-bar speed 5 load boxes 5",
+        "lua.ui: time-bar speed 3 load boxes 3",
         "lua.ui: time-bar speed 4 load boxes 4",
-        "lua.ui: time-bar speed 4 running boxes 4",
-        "lua.ui: time-bar icon pause after",
-        "lua.ui: time-bar box down",
-        "lua.ui: time-bar box up",
+        "lua.ui: time-bar box down speed_3 inside true",
+        "lua.ui: time-bar box up speed_3 inside false",
         "window: window closed",
     ];
     let sidecar = [
+        "time-bar-speed5-click-injected",
+        "time-bar-speed3-reset-injected",
         "time-bar-fast-forward-injected",
         "time-bar-resume-injected",
         "time-bar-box-drag-injected",
@@ -159,6 +171,23 @@ pub(crate) fn validate(output: &str) -> Result<(), String> {
             start += offset + 1;
         }
     }
+    let up = output
+        .find("lua.ui: time-bar box up speed_3 inside false")
+        .ok_or("the speed-box drag must release outside speed_3")?;
+    let closed = output
+        .find("window: window closed")
+        .ok_or("the fixture window did not close")?;
+    if !output[up..closed].contains("lua.ui: time-bar speed 4 running boxes 4") {
+        return Err("releasing outside speed_3 changed the selected speed".to_owned());
+    }
+    for independent_event in [
+        "lua.ui: time-bar speed 4 running boxes 4",
+        "lua.ui: time-bar icon pause after",
+    ] {
+        if !output.contains(independent_event) {
+            return Err(format!("{independent_event:?} is missing"));
+        }
+    }
     let cameras: Vec<&str> = output
         .lines()
         .filter(|line| line.starts_with("camera "))
@@ -169,4 +198,43 @@ pub(crate) fn validate(output: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Exercises the revised assertion against the captured failure shape and its corrected output.
+pub(crate) fn captured_failure_and_doctored_output_are_checked_offline() {
+    // When set, this points to the retained full failed run. The short fallback is the relevant
+    // excerpt so this offline contract also runs in clean copies without pipeline evidence.
+    let captured = std::env::var_os("CK219_FAILURE_CAPTURE")
+        .and_then(|path| fs::read_to_string(path).ok())
+        .unwrap_or_else(|| {
+            r"
+INFO lua.ui: time-bar speed 1 load boxes 1
+INFO lua.ui: time-bar icon play initial
+INFO lua.ui: time-bar speed 3 load boxes 3
+INFO lua.ui: time-bar speed 4 load boxes 4
+INFO lua.ui: time-bar speed 4 running boxes 4
+INFO lua.ui: time-bar icon pause after
+INFO lua.ui: time-bar speed 4 running boxes 4
+"
+            .to_owned()
+        });
+    assert!(
+        validate(&captured).is_err(),
+        "the original failed capture must stay failing"
+    );
+
+    // Add the expected speed-box key and outside release to that same capture. Speed remains 4
+    // after the up, and the camera line is unchanged by the captured drag.
+    let mut doctored = captured;
+    doctored.push_str(
+        "\ntime-bar-speed5-click-injected\nINFO lua.ui: time-bar speed 5 load boxes 5\
+         \nINFO lua.ui: time-bar speed 3 load boxes 3\ntime-bar-speed3-reset-injected\
+         \ntime-bar-fast-forward-injected\nINFO lua.ui: time-bar speed 4 load boxes 4\
+         \ntime-bar-resume-injected\ntime-bar-box-drag-injected\
+         \nINFO lua.ui: time-bar box down speed_3 inside true\
+         \nINFO lua.ui: time-bar box up speed_3 inside false\
+         \nINFO lua.ui: time-bar speed 4 running boxes 4\
+         \ntime-bar-box-drag-observed-injected\nwindow: window closed\ncamera 0 782598144 782598144\n",
+    );
+    validate(&doctored).unwrap_or_else(|error| panic!("doctored capture: {error}"));
 }

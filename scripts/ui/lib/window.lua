@@ -70,14 +70,22 @@ end
 
 local function dimensions(self)
   local title = font.layout(self.title)
-  local close_width = select(1, button.measure("x"))
   self.title_text_width = title.width * P
   self.title_text_height = title.height * P
   self.title_height = (title.height + 4) * P
+  local close_width = 0
+  if not self.fixed then
+    close_width = select(1, button.measure("x"))
+  end
   self.close_width = close_width
+  local title_width = TITLE_X + self.title_text_width + 4 * P
+  if not self.fixed then
+    title_width = title_width + close_width + P
+  end
   self.outer_width = math.max(
     self.content_width + 2 * PAD,
-    TITLE_X + self.title_text_width + 4 * P + self.close_width + P
+    title_width,
+    self.fixed and 17 * P or 0
   )
   self.outer_height = self.title_height + PAD + self.content_height + BOTTOM
 end
@@ -88,15 +96,17 @@ local function publish_chrome(self)
   if self.divider ~= nil then
     render.set_rect(self.divider, P, self.title_height, self.outer_width - 2 * P, P)
   end
-  local close_x = self.outer_width - self.close_width - P
+  local title_hit_width = self.fixed and self.outer_width or self.outer_width - self.close_width - P
   self.title_line:move(TITLE_X, (self.title_height - self.title_text_height) / 2)
   render.set_hit(self.frame_key, {
     {x = 0, y = 0, width = self.outer_width, height = self.outer_height},
   }, self.chrome)
   render.set_hit(self.title_key, {
-    {x = 0, y = 0, width = close_x, height = self.title_height},
+    {x = 0, y = 0, width = title_hit_width, height = self.title_height},
   }, self.chrome)
-  self.close_button:move(close_x, 0)
+  if self.close_button ~= nil then
+    self.close_button:move(self.outer_width - self.close_width - P, 0)
+  end
   render.set_group_clip(self.content, {
     x = self.x + PAD,
     y = self.y + self.title_height + PAD,
@@ -144,7 +154,9 @@ function window.new(spec)
     x = spec.x,
     y = spec.y,
     kind = spec.kind or "window",
+    fixed = spec.fixed == true,
     on_close = spec.on_close,
+    on_title_click = spec.on_title_click,
     closed = false,
     attached = {},
     _pointer_children = {},
@@ -201,16 +213,18 @@ function window.new(spec)
   pointer.register(self.frame_key, self, self)
   render.set_hit(self.title_key, {{x = 0, y = 0, width = self.outer_width, height = self.title_height}}, self.chrome)
   pointer.register(self.title_key, self, self)
-  self.close_button = button.new{
-    x = self.outer_width - self.close_width - P,
-    y = 0,
-    text = "x",
-    kind = self.kind,
-    style = "title",
-    group = self.chrome,
-    owner = self,
-    on_click = function() self:close() end,
-  }
+  if not self.fixed then
+    self.close_button = button.new{
+      x = self.outer_width - self.close_width - P,
+      y = 0,
+      text = "x",
+      kind = self.kind,
+      style = "title",
+      group = self.chrome,
+      owner = self,
+      on_click = function() self:close() end,
+    }
+  end
   publish_chrome(self)
   render.set_group_offset(self.chrome, self.x, self.y)
   render.set_group_offset(self.content, self.x + PAD, self.y + self.title_height + PAD)
@@ -231,8 +245,19 @@ function Window:on_event(event, eligible)
     return
   end
   if event.kind == "down" and event.key == self.title_key then
-    self.drag = {x = event.x, y = event.y, left = self.x, top = self.y}
+    if self.fixed then
+      self.title_pressed = true
+    else
+      self.drag = {x = event.x, y = event.y, left = self.x, top = self.y}
+    end
     pointer.pressed(self.title_key, true)
+  elseif event.kind == "up" and self.fixed and event.key == self.title_key then
+    local clicked = self.title_pressed and event.inside == true
+    self.title_pressed = false
+    pointer.pressed(self.title_key, false)
+    if clicked and self.on_title_click ~= nil then
+      self.on_title_click(self)
+    end
   elseif (event.kind == "move" or event.kind == "up") and self.drag ~= nil then
     set_position(self, self.drag.left + event.x - self.drag.x, self.drag.top + event.y - self.drag.y)
     if event.kind == "up" then
@@ -241,6 +266,7 @@ function Window:on_event(event, eligible)
     end
   elseif event.kind == "cancel" then
     self.drag = nil
+    self.title_pressed = false
     pointer.pressed(self.title_key, false)
   end
 end
@@ -248,6 +274,7 @@ end
 function Window:on_hover() end
 function Window:on_overflow()
   self.drag = nil
+  self.title_pressed = false
   pointer.pressed(self.title_key, false)
 end
 
@@ -323,6 +350,7 @@ function Window:close()
   if self.closed then return end
   self.closed = true
   self.drag = nil
+  self.title_pressed = false
   pointer.unregister(self.frame_key)
   pointer.unregister(self.title_key)
   pointer.unregister_owner(self)

@@ -15,8 +15,9 @@ mod time_bar_witness;
 
 #[test]
 fn the_window_witness_assertions_validate_captured_output_offline() {
-    const CAPTURED: &str = "lua.ui: time-bar speed 1 load boxes 1\nlua.ui: time-bar icon play initial\nlua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar speed 4 load boxes 4\nlua.ui: time-bar speed 4 running boxes 4\nlua.ui: time-bar icon pause after\nlua.ui: time-bar box down\nlua.ui: time-bar box up\nwindow: window closed\ncamera 0 782598144 782598144\ntime-bar-fast-forward-injected\ntime-bar-resume-injected\ntime-bar-box-drag-injected\ntime-bar-box-drag-observed-injected\n";
+    const CAPTURED: &str = "lua.ui: time-bar speed 1 load boxes 1\nlua.ui: time-bar icon play initial\nlua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar speed 5 load boxes 5\nlua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar speed 4 load boxes 4\nlua.ui: time-bar icon pause after\nlua.ui: time-bar box down speed_3 inside true\nlua.ui: time-bar box up speed_3 inside false\nlua.ui: time-bar speed 4 running boxes 4\nwindow: window closed\ncamera 0 782598144 782598144\ntime-bar-speed5-click-injected\ntime-bar-speed3-reset-injected\ntime-bar-fast-forward-injected\ntime-bar-resume-injected\ntime-bar-box-drag-injected\ntime-bar-box-drag-observed-injected\n";
     assert!(time_bar_witness::validate(CAPTURED).is_ok());
+    time_bar_witness::captured_failure_and_doctored_output_are_checked_offline();
     let out_of_order = CAPTURED
         .replace("lua.ui: time-bar icon play initial\n", "")
         .replace(
@@ -53,12 +54,13 @@ fn the_window_witness_observes_down_move_and_up_in_one_real_ui_update() {
         3,
         Some(crate::game::slot::PauseReason::Player),
     ));
-    let event = |kind: &str, x: i64| {
+    let event = |kind: &str, x: i64, inside: bool| {
         ConfigValue::Table(BTreeMap::from([
             ("kind".to_owned(), ConfigValue::String(kind.to_owned())),
-            ("key".to_owned(), ConfigValue::String("time_bar".to_owned())),
+            ("key".to_owned(), ConfigValue::String("speed_3".to_owned())),
             ("x".to_owned(), ConfigValue::Integer(x)),
             ("y".to_owned(), ConfigValue::Integer(20)),
+            ("inside".to_owned(), ConfigValue::Bool(inside)),
         ]))
     };
     let pointer = ConfigValue::Table(BTreeMap::from([
@@ -66,13 +68,14 @@ fn the_window_witness_observes_down_move_and_up_in_one_real_ui_update() {
         ("y".to_owned(), ConfigValue::Integer(20)),
         ("held".to_owned(), ConfigValue::Bool(false)),
         ("overflow".to_owned(), ConfigValue::Bool(false)),
-        (
-            "over".to_owned(),
-            ConfigValue::String("time_bar".to_owned()),
-        ),
+        ("over".to_owned(), ConfigValue::String("speed_3".to_owned())),
         (
             "events".to_owned(),
-            ConfigValue::Array(vec![event("down", 32), event("move", 40), event("up", 40)]),
+            ConfigValue::Array(vec![
+                event("down", 32, true),
+                event("move", 40, false),
+                event("up", 40, false),
+            ]),
         ),
     ]));
 
@@ -82,13 +85,13 @@ fn the_window_witness_observes_down_move_and_up_in_one_real_ui_update() {
     assert!(
         entries
             .iter()
-            .any(|entry| entry == "record time-bar box down"),
+            .any(|entry| entry == "record time-bar box down speed_3 inside true"),
         "{entries:?}"
     );
     assert!(
         entries
             .iter()
-            .any(|entry| entry == "record time-bar box up"),
+            .any(|entry| entry == "record time-bar box up speed_3 inside false"),
         "{entries:?}"
     );
 }
@@ -1222,7 +1225,7 @@ fn the_time_bar_and_places_bar_follow_the_literal_layout_at_both_scales() {
             (time_rect[0], time_rect[1], time_rect[3]),
             (margin, margin, 19 * scale)
         );
-        for (index, (x, width)) in [(5, 13), (19, 11), (31, 13), (95, 10)]
+        for (index, (x, width)) in [(5, 13), (19, 11), (31, 13), (90, 10)]
             .into_iter()
             .enumerate()
         {
@@ -1246,6 +1249,34 @@ fn the_time_bar_and_places_bar_follow_the_literal_layout_at_both_scales() {
                 ],
                 "scale {scale}, {key}"
             );
+        }
+        let mut speed_rects = Vec::new();
+        for index in 1..=5 {
+            let key = format!("speed_{index}");
+            let entry = before
+                .iter()
+                .find(|line| line.starts_with(&format!("set_hit {key} ")))
+                .unwrap();
+            let rect: Vec<i64> = entry
+                .split_whitespace()
+                .skip(2)
+                .map(|part| part.parse().unwrap())
+                .collect();
+            let box_index = index - 1;
+            assert_eq!(
+                rect,
+                [
+                    margin + (47 + 8 * box_index) * scale,
+                    margin + 2 * scale,
+                    8 * scale,
+                    15 * scale,
+                ],
+                "P={scale}, {key}"
+            );
+            speed_rects.push(rect);
+        }
+        for adjacent in speed_rects.windows(2) {
+            assert_eq!(adjacent[0][0] + adjacent[0][2], adjacent[1][0]);
         }
         let place_bar = before
             .iter()
@@ -1430,8 +1461,8 @@ fn speed_boxes_follow_simulation_state_and_only_changed_boxes_are_retinted() {
             assert_eq!(outlines.len(), 5, "{outlines:?}");
             assert!(outlines.iter().all(|entry| entry.ends_with(&format!(
                 " {} {}",
-                7 * scale,
-                7 * scale
+                6 * scale,
+                11 * scale
             ))));
             assert!(outlines.iter().all(|entry| {
                 let quad = entry.split_whitespace().nth(1).unwrap();
@@ -1500,8 +1531,8 @@ fn speed_inner_tints(readout: &Readout, scale: i64) -> Vec<String> {
     {
         let fields: Vec<_> = entry.split_whitespace().collect();
         if fields.len() != 7
-            || fields[5] != (3 * scale).to_string()
-            || fields[6] != (3 * scale).to_string()
+            || fields[5] != (2 * scale).to_string()
+            || fields[6] != (7 * scale).to_string()
         {
             continue;
         }
@@ -1509,12 +1540,167 @@ fn speed_inner_tints(readout: &Readout, scale: i64) -> Vec<String> {
         let y: i64 = fields[4].parse().unwrap();
         if let Some(index) = (0_usize..5).find(|index| {
             let index = i64::try_from(*index).unwrap();
-            x == margin + (50 + index * 9) * scale && y == margin + 8 * scale
+            x == margin + (50 + index * 8) * scale && y == margin + 6 * scale
         }) {
             inner[index] = tints[fields[1]].clone();
         }
     }
     inner
+}
+
+#[test]
+fn speed_boxes_click_their_named_speed_and_release_without_clicking_on_cancel_or_overflow() {
+    use crate::game::controls::Control;
+
+    for index in 1..=5 {
+        let mut readout = Readout::new("", Some(2));
+        readout.deliver(&crate::readout_tests::snapshot(14, 3, None));
+        let key = format!("speed_{index}");
+        let hit = readout
+            .entries()
+            .into_iter()
+            .find(|entry| entry.starts_with(&format!("set_hit {key} ")))
+            .expect("the speed hit region");
+        let rect: Vec<i64> = hit
+            .split_whitespace()
+            .skip(2)
+            .map(|part| part.parse().expect("integer hit rectangle"))
+            .collect();
+        let (x, y) = (rect[0] + rect[2] / 2, rect[1] + rect[3] / 2);
+        let event = |kind: &str, inside: bool| {
+            ConfigValue::Table(BTreeMap::from([
+                ("kind".to_owned(), ConfigValue::String(kind.to_owned())),
+                ("key".to_owned(), ConfigValue::String(key.clone())),
+                ("inside".to_owned(), ConfigValue::Bool(inside)),
+                ("x".to_owned(), ConfigValue::Integer(x)),
+                ("y".to_owned(), ConfigValue::Integer(y)),
+            ]))
+        };
+        let packet = |events: Vec<ConfigValue>, overflow: bool| {
+            ConfigValue::Table(BTreeMap::from([
+                ("x".to_owned(), ConfigValue::Integer(x)),
+                ("y".to_owned(), ConfigValue::Integer(y)),
+                ("held".to_owned(), ConfigValue::Bool(false)),
+                ("overflow".to_owned(), ConfigValue::Bool(overflow)),
+                ("over".to_owned(), ConfigValue::String(key.clone())),
+                ("events".to_owned(), ConfigValue::Array(events)),
+            ]))
+        };
+        readout.update(
+            800,
+            600,
+            Some(packet(vec![event("down", true), event("up", true)], false)),
+        );
+        assert_eq!(readout.controls(), [Control::Speed(index)]);
+    }
+
+    let mut readout = Readout::new("", Some(2));
+    readout.deliver(&crate::readout_tests::snapshot(14, 3, None));
+    let key = "speed_4".to_owned();
+    let event = |kind: &str, inside: bool| {
+        ConfigValue::Table(BTreeMap::from([
+            ("kind".to_owned(), ConfigValue::String(kind.to_owned())),
+            ("key".to_owned(), ConfigValue::String(key.clone())),
+            ("inside".to_owned(), ConfigValue::Bool(inside)),
+            ("x".to_owned(), ConfigValue::Integer(120)),
+            ("y".to_owned(), ConfigValue::Integer(20)),
+        ]))
+    };
+    let packet = |events: Vec<ConfigValue>, overflow: bool| {
+        ConfigValue::Table(BTreeMap::from([
+            ("x".to_owned(), ConfigValue::Integer(120)),
+            ("y".to_owned(), ConfigValue::Integer(20)),
+            ("held".to_owned(), ConfigValue::Bool(false)),
+            ("overflow".to_owned(), ConfigValue::Bool(overflow)),
+            ("over".to_owned(), ConfigValue::String(key.clone())),
+            ("events".to_owned(), ConfigValue::Array(events)),
+        ]))
+    };
+    readout.update(
+        800,
+        600,
+        Some(packet(vec![event("down", true), event("up", false)], false)),
+    );
+    assert!(
+        readout.controls().is_empty(),
+        "an up outside does not select a speed"
+    );
+    readout.update(
+        800,
+        600,
+        Some(packet(
+            vec![
+                event("down", true),
+                event("cancel", false),
+                event("up", true),
+            ],
+            false,
+        )),
+    );
+    assert!(readout.controls().is_empty(), "cancel ends the press");
+    readout.update(
+        800,
+        600,
+        Some(packet(vec![event("down", true), event("up", true)], true)),
+    );
+    assert!(
+        readout.controls().is_empty(),
+        "overflow makes every event ineligible"
+    );
+}
+
+#[test]
+fn speed_box_hover_recolors_its_outline_and_press_fills_its_inner_bar() {
+    let mut readout = Readout::new("", Some(2));
+    readout.deliver(&crate::readout_tests::snapshot(14, 1, None));
+    let key = "speed_2".to_owned();
+    let outlines: Vec<_> = readout
+        .entries()
+        .into_iter()
+        .filter(|entry| entry.contains("ui/theme/speed_box.png") && entry.starts_with("create "))
+        .collect();
+    assert_eq!(outlines.len(), 5);
+    let outline_id = outlines[1].split_whitespace().nth(1).unwrap();
+    let inner = readout
+        .entries()
+        .into_iter()
+        .find(|entry| entry.ends_with("124 20 4 14") && entry.contains("ui/theme/white.png"))
+        .expect("second speed's inner bar at scale two");
+    let inner_id = inner.split_whitespace().nth(1).unwrap();
+    let event = |kind: &str| {
+        ConfigValue::Table(BTreeMap::from([
+            ("kind".to_owned(), ConfigValue::String(kind.to_owned())),
+            ("key".to_owned(), ConfigValue::String(key.clone())),
+            ("inside".to_owned(), ConfigValue::Bool(true)),
+            ("x".to_owned(), ConfigValue::Integer(126)),
+            ("y".to_owned(), ConfigValue::Integer(27)),
+        ]))
+    };
+    let packet = |events: Vec<ConfigValue>, held: bool| {
+        ConfigValue::Table(BTreeMap::from([
+            ("x".to_owned(), ConfigValue::Integer(126)),
+            ("y".to_owned(), ConfigValue::Integer(27)),
+            ("held".to_owned(), ConfigValue::Bool(held)),
+            ("overflow".to_owned(), ConfigValue::Bool(false)),
+            ("over".to_owned(), ConfigValue::String(key.clone())),
+            ("events".to_owned(), ConfigValue::Array(events)),
+        ]))
+    };
+
+    readout.update(800, 600, Some(packet(Vec::new(), false)));
+    assert!(
+        readout
+            .tints()
+            .contains(&format!("set_tint {outline_id} #a8261c")),
+        "hover tints: {:?}",
+        readout.tints()
+    );
+    readout.update(800, 600, Some(packet(vec![event("down")], true)));
+    assert!(
+        readout
+            .tints()
+            .contains(&format!("set_tint {inner_id} #a8261c"))
+    );
 }
 
 #[test]

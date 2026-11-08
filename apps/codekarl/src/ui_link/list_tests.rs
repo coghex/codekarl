@@ -1272,6 +1272,10 @@ local steps = {{
     local top = windows.top()
     lst = top.attached[1]
     note("title=" .. top.title)
+    note("fixed=" .. tostring(top.fixed))
+    note("close_button=" .. tostring(top.close_button ~= nil))
+    note("width=" .. select(1, top:size()))
+    note("title_key=" .. top.title_key)
     note("items=" .. #lst.items)
     note("rows=" .. lst.rows)
     local n = 0
@@ -1285,7 +1289,14 @@ local steps = {{
   end,
 }}
 local n = 0
-window.on_opened(function() n = n + 1; steps[n]() end)
+window.on_opened(function()
+  n = n + 1
+  if steps[n] ~= nil then
+    steps[n]()
+  else
+    note("top=" .. windows.top().title)
+  end
+end)
 "#,
         main = include_str!("../../../../scripts/ui/main.lua"),
     )
@@ -1301,7 +1312,11 @@ fn point_of(rig: &Rig, key: &str) -> (f64, f64) {
 }
 
 #[test]
-fn the_places_button_opens_a_twelve_row_list_of_every_place_and_a_row_opens_the_place_window() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one dropdown lifecycle exercises selection, Escape and title close in order"
+)]
+fn the_places_dropdown_stays_open_after_selection_and_closes_on_escape_or_title_click() {
     let mut rig = Rig::new_fixture_body(&places_script());
     // Apply the initial viewport size so the separate top-right Places bar is anchored to the test window.
     rig.deliver_fixture_frame();
@@ -1321,19 +1336,21 @@ fn the_places_button_opens_a_twelve_row_list_of_every_place_and_a_row_opens_the_
     ]);
     rig.deliver_fixture_frame();
     rig.opened();
-    assert_eq!(note_of(&rig, "title"), "Places");
+    assert_eq!(note_of(&rig, "title"), "places");
+    assert_eq!(note_of(&rig, "fixed"), "true");
+    assert_eq!(note_of(&rig, "close_button"), "false");
+    assert!(note_of(&rig, "width").parse::<f64>().unwrap() >= 17.0);
     assert_eq!(note_of(&rig, "items"), "30");
     assert_eq!(note_of(&rig, "rows"), "12");
     // 12 rows in view of 30 items: at most 13 keys.
     let keys: usize = note_of(&rig, "keys").parse().expect("a count");
     assert!(keys == 12 || keys == 13, "{keys}");
     let base = note_of(&rig, "base");
-    // A second click on `places` raises the one window instead of opening another.
-    rig.feed(&[
-        PointerEvent::Down(points(x, y)),
-        PointerEvent::Up(points(x, y)),
-    ]);
-    rig.deliver_fixture_frame();
+    assert_ne!(
+        rig.key_at(x, y).as_deref(),
+        Some(places_button.as_str()),
+        "the bar is hidden while its dropdown is open"
+    );
     // Row 3: a click opens (or updates) the place window with that location.
     let (row_x, row_y) = point_of(&rig, &format!("{base}_row_3"));
     rig.feed(&[
@@ -1343,6 +1360,77 @@ fn the_places_button_opens_a_twelve_row_list_of_every_place_and_a_row_opens_the_
     rig.deliver_fixture_frame();
     rig.opened();
     assert_eq!(note_of(&rig, "top"), "Place 3");
+    assert!(
+        rig.key_at(row_x, row_y).is_some(),
+        "the dropdown remains open behind the place window"
+    );
+
+    assert!(rig.escape(), "Escape closes the top place window");
+    rig.opened();
+    assert_eq!(
+        note_of(&rig, "top"),
+        "places",
+        "the dropdown remains after its place popup closes"
+    );
+    assert!(rig.escape(), "Escape closes the places dropdown");
+    assert_eq!(
+        rig.key_at(x, y).as_deref(),
+        Some(places_button.as_str()),
+        "closing restores the Places button"
+    );
+
+    rig.feed(&[
+        PointerEvent::Down(points(x, y)),
+        PointerEvent::Up(points(x, y)),
+    ]);
+    rig.deliver_fixture_frame();
+    let row_one = "_row_1";
+    assert!(
+        rig.harness
+            .bridge
+            .hit_regions()
+            .unwrap()
+            .regions()
+            .iter()
+            .any(|region| region.key().ends_with(row_one)),
+        "reopening resets the list to its first row"
+    );
+    assert!(
+        !rig.harness
+            .bridge
+            .hit_regions()
+            .unwrap()
+            .regions()
+            .iter()
+            .any(|region| region.key().ends_with("_row_13"))
+    );
+    let title_key = rig
+        .harness
+        .bridge
+        .hit_regions()
+        .unwrap()
+        .regions()
+        .iter()
+        .find(|region| region.key().starts_with("window_title_"))
+        .expect("the reopened dropdown title")
+        .key()
+        .to_owned();
+    let (title_x, title_y) = point_of(&rig, &title_key);
+    rig.feed(&[
+        PointerEvent::Down(points(title_x, title_y)),
+        PointerEvent::Up(points(title_x, title_y)),
+    ]);
+    rig.deliver_fixture_frame();
+    assert!(
+        rig.key_at(title_x, title_y)
+            .is_none_or(|key| !key.starts_with("window_")),
+        "a title click closes the fixed dropdown"
+    );
+    assert_eq!(
+        rig.key_at(x, y).as_deref(),
+        Some(places_button.as_str()),
+        "the bar returns after title close"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1353,7 +1441,7 @@ fn the_places_button_opens_a_twelve_row_list_of_every_place_and_a_row_opens_the_
 /// place at the click on `index`-th name.
 fn captured(scroll: u32, title: &str, expected: &str) -> String {
     format!(
-        "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places bar raised\nINFO  lua.ui: places list s={scroll}\nINFO  lua.ui: place window opened {title}\nINFO  lua.ui: place window expected {expected}\nINFO  lua.ui: place window closed\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 1 1\nbefore-list-scroll\nafter-list-scroll\n"
+        "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places list s={scroll}\nINFO  lua.ui: place window opened {title}\nINFO  lua.ui: place window expected {expected}\nINFO  lua.ui: place window closed\nINFO  lua.ui: places title clicked\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 1 1\nbefore-list-scroll\nafter-list-scroll\n"
     )
 }
 
@@ -1397,9 +1485,8 @@ fn the_judgment_accepts_a_good_run_and_refuses_each_way_a_run_can_be_wrong() {
     }
 }
 
-/// The fixture's geometry, through the real code path: with the production `main.lua` behind the witness's wrappers over a mock `game`
-/// of 94 places, the `places` button's centre comes from its published region, the Places window opens at (100, 100) with the first row under
-/// (126, 149), and the driver's clicks, wheel and row click (the real routing of marked events) make the markers appear in order.
+/// The fixture's geometry, through the real code path: production `main.lua` over 94 places publishes its point-anchored dropdown, and
+/// the fixture follows the resulting row and title coordinates through the real pointer router.
 #[test]
 fn the_witness_fixture_reaches_each_marker_at_the_drivers_coordinates() {
     let markers = crate::testing::Dir::new();
@@ -1444,42 +1531,142 @@ end)
     assert!(!marker("places-ready"), "queued for the next frame");
     rig.deliver_fixture_frame();
     assert!(marker("places-ready"));
-    // A second click raises the existing Places window without recreating its list.
-    rig.feed(&[
-        PointerEvent::Down(points(x, y)),
-        PointerEvent::Up(points(x, y)),
-    ]);
-    rig.deliver_fixture_frame();
     assert!(
-        !marker("places-raised"),
-        "the callback marker waits for the next frame"
+        !rig.harness
+            .bridge
+            .hit_regions()
+            .unwrap()
+            .contains_key("button_5"),
+        "the Places bar is hidden while its dropdown is open"
     );
-    rig.deliver_fixture_frame();
-    assert!(marker("places-raised"));
-    // The Places window is at (100, 100): its content origin is (106, 136), and the first row is under (126, 149).
-    let key = rig
-        .key_at(126.0, 149.0)
-        .expect("a key under the list point");
+    let geometry = std::fs::read_to_string(markers.0.join("places-window-geometry"))
+        .expect("the dropdown geometry marker");
+    let geometry: Vec<f64> = geometry
+        .split_whitespace()
+        .map(|value| value.parse().unwrap())
+        .collect();
+    let row_x = geometry[0] + 26.0;
+    let row_y = geometry[1] + geometry[4] + 19.0;
+    let key = rig.key_at(row_x, row_y).unwrap_or_else(|| {
+        panic!("no row at derived point ({row_x}, {row_y}) from geometry {geometry:?}")
+    });
     assert!(key.contains("_row_1"), "{key}");
     assert!(
-        rig.key_at(126.0, 135.0)
+        rig.key_at(row_x, row_y - 14.0)
             .is_none_or(|key| !key.contains("_row_"))
     );
     // The driver's wheel (the Cocoa delta, 15 points toward later items) scrolls the list by 16 points.
-    rig.feed(&[scroll_points(126.0, 149.0, -15)]);
+    rig.feed(&[scroll_points(row_x, row_y, -15)]);
     rig.deliver_fixture_frame();
     rig.deliver_fixture_frame();
     assert!(marker("list-scrolled"));
     // The driver's click on the same point is now on the second row: it opens that place's window.
     rig.feed(&[
-        PointerEvent::Down(points(126.0, 149.0)),
-        PointerEvent::Up(points(126.0, 149.0)),
+        PointerEvent::Down(points(row_x, row_y)),
+        PointerEvent::Up(points(row_x, row_y)),
     ]);
     rig.deliver_fixture_frame();
     rig.deliver_fixture_frame();
     assert!(marker("place-ready"));
     rig.opened();
     assert_eq!(note_of(&rig, "top"), "Place 2");
+    let title = std::fs::read_to_string(markers.0.join("places-title-center"))
+        .expect("the dropdown title center marker");
+    let title: Vec<f64> = title
+        .split_whitespace()
+        .map(|value| value.parse().unwrap())
+        .collect();
+    assert!(
+        rig.key_at(title[0], title[1])
+            .is_some_and(|key| key.starts_with("window_title_")),
+        "the marker point lands on a window title"
+    );
+    rig.feed(&[
+        PointerEvent::Down(points(title[0], title[1])),
+        PointerEvent::Up(points(title[0], title[1])),
+    ]);
+    rig.deliver_fixture_frame();
+    rig.deliver_fixture_frame();
+    assert!(marker("places-title-clicked"));
+    assert!(marker("places-closed"));
+}
+
+#[test]
+fn the_open_dropdown_anchors_and_reanchors_in_points_at_both_scales() {
+    let main_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua");
+    let main = std::fs::read_to_string(main_path).expect("the production UI script");
+    for scale in [2_i64, 3] {
+        let script = format!(
+            r#"
+callbacks = {{}}
+places_data = {{{{id="one", name="One", kind="town", size=1}}}}
+game = {{
+  on_time = function(callback) callbacks.time = callback end,
+  on_select = function(callback) callbacks.select = callback end,
+  on_hover = function(callback) callbacks.hover = callback end,
+  control = function() end,
+  places = function() return places_data end,
+}}
+function note(text) window.record(text) end
+local windows = require("lib.window")
+local real_new = windows.new
+windows.new = function(spec)
+  local created = real_new(spec)
+  if spec.title == "places" then
+    local real_move_to = created.move_to
+    function created:move_to(x, y)
+      real_move_to(self, x, y)
+      local left, top = self:position()
+      local width, height = self:size()
+      note(string.format("places-geometry %d %d %d %d", left, top, width, height))
+    end
+  end
+  return created
+end
+{main}
+callbacks.time({{day=1, month=1, year=768, hour=0, paused=false, speed=1}})
+"#
+        );
+        let mut rig = Rig::new_fixture_body_at_scale(&script, scale);
+        rig.deliver_fixture_frame_at(800, 600, u32::try_from(scale).unwrap());
+        let regions = rig.harness.bridge.hit_regions().expect("regions");
+        let (x, y) = (0..2400)
+            .flat_map(|y| {
+                (0..2400).map(move |x| (f64::from(x) / 2.0 + 0.25, f64::from(y) / 2.0 + 0.25))
+            })
+            .find(|(x, y)| regions.key_at(points(*x, *y)) == Some("button_5"))
+            .expect("the Places button hit region at 800 points wide");
+        rig.feed(&[
+            PointerEvent::Down(points(x, y)),
+            PointerEvent::Up(points(x, y)),
+        ]);
+        rig.deliver_fixture_frame_at(800, 600, u32::try_from(scale).unwrap());
+        let geometry = |line: &str| -> Vec<i64> {
+            line.split_whitespace()
+                .skip(1)
+                .map(|part| part.parse().unwrap())
+                .collect()
+        };
+        let records = notes(&rig);
+        let opened = records
+            .iter()
+            .find(|line| line.starts_with("places-geometry "))
+            .expect("the dropdown is positioned after opening");
+        let opened = geometry(opened);
+        let margin = if scale == 2 { 8 } else { 9 };
+        let snap = |value: i64| ((value + scale / 2) / scale) * scale;
+        assert_eq!((opened[0], opened[1]), (snap(800 - opened[2] - 8), margin));
+
+        rig.deliver_fixture_frame_at(1200, 700, u32::try_from(scale).unwrap());
+        let moved = notes(&rig)
+            .into_iter()
+            .rev()
+            .find(|line| line.starts_with("places-geometry "))
+            .expect("the dropdown is repositioned after resize");
+        let moved = geometry(&moved);
+        assert_eq!((moved[0], moved[1]), (snap(1200 - moved[2] - 8), margin));
+    }
 }
 
 /// The witness's configuration is one the application accepts, for either backend (the window targets write it to their scratch

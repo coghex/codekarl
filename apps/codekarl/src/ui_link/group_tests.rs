@@ -14,7 +14,10 @@ use ck_input::{Bindings, Mapper};
 use ck_lua::{ConfigValue, HostFunction};
 use ck_render_2d::{FrameQuad, HitRect, Metrics, POINT_DOMAIN, QuadSink, Snapshot};
 use ck_resources::{Assets, Mode, ResourceLimits, ResourceService, ServiceWakes};
-use ck_window::{CloseSource, PixelSize, PointerEvent, PointerPosition, ScrollUnit, WindowDesc};
+use ck_window::{
+    CloseSource, PixelSize, PointerEvent, PointerPosition, ScrollUnit, UiEvent, UpdateEvent,
+    WindowDesc, WindowMetrics,
+};
 
 use super::input_tick_tests::{Tables, answer, field, update};
 use super::widget_witness_tests::{points, run_tick};
@@ -272,6 +275,31 @@ impl Rig {
         );
     }
 
+    /// Posts a fixture frame at an explicit window size and pixel scale.
+    pub(super) fn deliver_fixture_frame_at(&mut self, width: u32, height: u32, scale: u32) {
+        self.sequence += 1;
+        self.link
+            .post(UiEvent::Update(UpdateEvent {
+                sequence: self.sequence,
+                elapsed: std::time::Duration::from_millis(16),
+                dt: std::time::Duration::from_millis(16),
+                metrics: WindowMetrics {
+                    points: (width, height),
+                    pixels: PixelSize {
+                        width: width * scale,
+                        height: height * scale,
+                    },
+                },
+            }))
+            .expect("fixture update is accepted");
+        let answered = answer(&mut self.link).answer;
+        assert_eq!(
+            answered,
+            Answer::Returned,
+            "fixture frame callback: {answered:?}"
+        );
+    }
+
     /// Runs the script's `window.on_opened` callback and waits (its edits are published by the completion hook).
     pub(super) fn opened(&mut self) {
         self.link.post(UiEvent::Opened).expect("posted");
@@ -281,6 +309,16 @@ impl Rig {
             !matches!(answered, Answer::Failed { .. }),
             "the opened callback failed: {answered:?}"
         );
+    }
+
+    /// Routes Escape through the app's real window close-request callback.
+    pub(super) fn escape(&mut self) -> bool {
+        self.link
+            .post(UiEvent::CloseRequested {
+                source: CloseSource::Key,
+            })
+            .expect("the Escape close request is accepted");
+        matches!(answer(&mut self.link).answer, Answer::Decline)
     }
 
     /// The topmost published key at a point, if any.
@@ -726,6 +764,47 @@ end)
 "#;
     let mut rig = Rig::new(script);
     rig.opened();
+}
+
+#[test]
+fn a_fixed_window_has_an_exact_seventeen_pixel_minimum_at_both_scales_and_title_click_closes() {
+    for scale in [2, 3] {
+        let script = r#"
+local windows = require("lib.window")
+local pointer = require("lib.pointer")
+w = windows.new{title = "", fixed = true, content_width = require("lib.ui").P, content_height = 20, x = 24, y = 30,
+  on_title_click = function() w:close() end}
+window.on_opened(function()
+  local width = w:size()
+  assert(width == 17 * require("lib.ui").P, "fixed windows with empty title and one-pixel content use the exact minimum")
+  assert(w.close_button == nil, "fixed windows have no close button")
+  local original_x, original_y = w:position()
+  local key = w.title_key
+  local function event(kind, x, y, inside)
+    return {kind = kind, key = key, x = x, y = y, inside = inside}
+  end
+  pointer.dispatch({overflow = false, held = true, events = {event("down", 30, 35, true)}})
+  pointer.dispatch({overflow = false, held = true, events = {event("move", 90, 95, true)}})
+  local x, y = w:position()
+  assert(x == original_x and y == original_y, "a fixed title does not drag")
+  pointer.dispatch({overflow = false, held = false, events = {event("up", 90, 95, false)}})
+  assert(not w.closed, "release outside does not close")
+  pointer.dispatch({overflow = false, held = true, events = {event("down", 30, 35, true)}})
+  pointer.dispatch({overflow = false, held = false, events = {event("cancel", 30, 35, false)}})
+  pointer.dispatch({overflow = false, held = false, events = {event("up", 30, 35, true)}})
+  assert(not w.closed, "cancel does not leave a title click armed")
+  pointer.dispatch({overflow = false, held = true, events = {event("down", 30, 35, true)}})
+  pointer.dispatch({overflow = true, held = false, events = {}})
+  pointer.dispatch({overflow = false, held = false, events = {event("up", 30, 35, true)}})
+  assert(not w.closed, "overflow does not leave a title click armed")
+  pointer.dispatch({overflow = false, held = true, events = {event("down", 30, 35, true)}})
+  pointer.dispatch({overflow = false, held = false, events = {event("up", 30, 35, true)}})
+  assert(w.closed and windows.top() == nil, "a title click closes the fixed window")
+end)
+"#;
+        let mut rig = Rig::new_at_scale(script, scale);
+        rig.opened();
+    }
 }
 
 #[test]
