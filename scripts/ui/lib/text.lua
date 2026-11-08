@@ -17,12 +17,14 @@ local function create_glyph(l, glyph, height)
     y = l.y,
     width = glyph.width * P,
     height = height * P,
+    group = l.group,
   }
 end
 
--- An empty line whose top-left corner is the point (x, y), in points, snapped to the UI-pixel grid.
-function text.line(x, y)
-  return {x = ui.snap(x), y = ui.snap(y), glyphs = {}, width = 0, height = 0}
+-- An empty line whose top-left corner is the point (x, y), in points, snapped to the UI-pixel grid. Its glyph quads go into `group`
+-- (a group token) when one is given, and the position is then local to the group.
+function text.line(x, y, group)
+  return {x = ui.snap(x), y = ui.snap(y), glyphs = {}, width = 0, height = 0, group = group}
 end
 
 -- Lays `content` out and updates the line's quads to match, glyph by glyph in order. `width` and `height` are then the text's size

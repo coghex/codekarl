@@ -47,7 +47,8 @@ use ck_resources::{RegistryId, ResourceState, TextureRef};
 use ck_window::{PixelSize, WindowDesc};
 
 use crate::filter::Filter;
-use crate::hit::{HitEdits, HitError, HitRect, HitRegions};
+use crate::group::{GroupError, GroupKey, PointRect};
+use crate::hit::{HitError, HitRegions};
 use crate::map::{MapCamera, MapFrame, MapInput, MapPublication, MapRefusals, place_map};
 use crate::quad::{Metrics, Quad, QuadError, Snapshot};
 use crate::scene::{EditScene, FrameQuad, QuadKey, SceneFrame, SceneLimits, SceneLimitsError};
@@ -278,8 +279,7 @@ impl SceneBridge {
         state.writer_taken = true;
         Ok(SceneWriter {
             bridge: Arc::clone(self),
-            edits: EditScene::new(self.registry, self.limits.max_quads),
-            hit_edits: HitEdits::default(),
+            edits: EditScene::new(self.registry, self.limits.max_quads, self.limits.max_groups),
             compat: RefCell::new(None),
             dirty: Cell::new(false),
             frame_number: 0,
@@ -569,7 +569,6 @@ impl std::error::Error for WriterTaken {}
 pub struct SceneWriter {
     bridge: Arc<SceneBridge>,
     edits: EditScene,
-    hit_edits: HitEdits,
     compat: RefCell<Option<FrameQuad>>,
     dirty: Cell<bool>,
     frame_number: u64,
@@ -587,11 +586,21 @@ pub struct SceneWriter {
 impl SceneWriter {
     /// Replaces or removes one ordered pointer hit key in the next scene publication.
     ///
+    /// `group` is the group the key belongs to, or the base group when `None`; a key keeps the group it was first set in, and
+    /// removing it needs no group (a group that is named must be the key's own). The rectangles are in window points: each must be
+    /// finite, have a positive size and keep an extent in pointer units, and every edge, as set and as translated by the group's
+    /// current offset, must lie in the point domain ([`crate::POINT_DOMAIN`]). Nothing changes on a refusal.
+    ///
     /// # Errors
     ///
-    /// Returns a [`HitError`] if the key, rectangle count, or resulting scene cap is invalid.
-    pub fn set_hit(&mut self, key: &str, rects: Option<Vec<HitRect>>) -> Result<(), HitError> {
-        if self.hit_edits.set(key, rects)? {
+    /// Returns a [`HitError`] if the key, the group, a rectangle, the rectangle count or the resulting scene cap is invalid.
+    pub fn set_hit(
+        &mut self,
+        key: &str,
+        rects: Option<Vec<PointRect>>,
+        group: Option<GroupKey>,
+    ) -> Result<(), HitError> {
+        if self.edits.set_hit(key, rects, group)? {
             self.dirty.set(true);
         }
         Ok(())
@@ -627,6 +636,7 @@ impl SceneWriter {
             y,
             width,
             height,
+            clip: None,
         };
         let displaced;
         {
@@ -691,9 +701,128 @@ impl SceneWriter {
         width: f64,
         height: f64,
     ) -> Result<QuadKey, QuadError> {
-        let key = self.edits.create(texture, x, y, width, height)?;
+        let key = self.edits.create(texture, x, y, width, height, None)?;
         self.dirty.set(true);
         Ok(key)
+    }
+
+    /// Creates a persistent quad on top of the quads of `group` (the base group when `None`), in that group's own order.
+    ///
+    /// # Errors
+    ///
+    /// Returns `QuadError` if geometry is invalid, the group is not usable or the scene is full.
+    pub fn create_quad_in(
+        &mut self,
+        group: Option<GroupKey>,
+        texture: TextureRef<ResourceState>,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> Result<QuadKey, QuadError> {
+        let key = self.edits.create(texture, x, y, width, height, group)?;
+        self.dirty.set(true);
+        Ok(key)
+    }
+
+    /// Creates an empty, visible group with offset (0, 0) and no clip, on top of all groups.
+    ///
+    /// # Errors
+    ///
+    /// [`GroupError::Full`] when the scene already has `max_groups` groups.
+    pub fn create_group(&mut self) -> Result<GroupKey, GroupError> {
+        let key = self.edits.create_group()?;
+        self.dirty.set(true);
+        Ok(key)
+    }
+
+    /// Puts the group on top of all groups.
+    ///
+    /// # Errors
+    ///
+    /// [`GroupError`] for a stale or foreign key.
+    pub fn raise_group(&mut self, key: GroupKey) -> Result<(), GroupError> {
+        self.edits.raise_group(key)?;
+        self.dirty.set(true);
+        Ok(())
+    }
+
+    /// Puts the group just above the base group.
+    ///
+    /// # Errors
+    ///
+    /// [`GroupError`] for a stale or foreign key.
+    pub fn lower_group(&mut self, key: GroupKey) -> Result<(), GroupError> {
+        self.edits.lower_group(key)?;
+        self.dirty.set(true);
+        Ok(())
+    }
+
+    /// Puts the listed groups on top in that order (the last topmost), as one edit.
+    ///
+    /// # Errors
+    ///
+    /// [`GroupError`] if the list is empty, names a group twice or names a group that is not live; nothing changes.
+    pub fn raise_groups(&mut self, keys: &[GroupKey]) -> Result<(), GroupError> {
+        self.edits.raise_groups(keys)?;
+        self.dirty.set(true);
+        Ok(())
+    }
+
+    /// Shows or hides a group. A hidden group's quads keep their order, offset and clip but are left out of the frame.
+    ///
+    /// # Errors
+    ///
+    /// [`GroupError`] for a stale or foreign key.
+    pub fn set_group_visible(&mut self, key: GroupKey, visible: bool) -> Result<(), GroupError> {
+        self.edits.set_group_visible(key, visible)?;
+        self.dirty.set(true);
+        Ok(())
+    }
+
+    /// Moves a group by a whole number of points: every quad of the group is translated by it when a frame is built.
+    ///
+    /// # Errors
+    ///
+    /// [`GroupError`] for a stale key, an offset that is not finite, whole and inside the point domain, or an offset that would move
+    /// a hit rectangle of the group outside it.
+    pub fn set_group_offset(&mut self, key: GroupKey, x: f64, y: f64) -> Result<(), GroupError> {
+        self.edits.set_group_offset(key, x, y)?;
+        self.dirty.set(true);
+        Ok(())
+    }
+
+    /// Sets or removes a group's clip, a rectangle in absolute window points (the offset does not move it).
+    ///
+    /// # Errors
+    ///
+    /// [`GroupError`] for a stale key or a rectangle that is not finite, positive in size and inside the point domain.
+    pub fn set_group_clip(
+        &mut self,
+        key: GroupKey,
+        clip: Option<PointRect>,
+    ) -> Result<(), GroupError> {
+        self.edits.set_group_clip(key, clip)?;
+        self.dirty.set(true);
+        Ok(())
+    }
+
+    /// Destroys a group, all its quads (their texture references are dropped on this writer thread) and all its hit keys.
+    ///
+    /// # Errors
+    ///
+    /// [`GroupError`] for a stale or foreign key.
+    pub fn destroy_group(&mut self, key: GroupKey) -> Result<(), GroupError> {
+        let removed = self.edits.destroy_group(key)?;
+        self.dirty.set(true);
+        drop(removed);
+        Ok(())
+    }
+
+    /// The number of live groups, the base group not counted.
+    #[must_use]
+    pub fn group_count(&self) -> u32 {
+        self.edits.group_count()
     }
 
     /// Moves a live quad without changing its painter order or texture.
@@ -757,7 +886,7 @@ impl SceneWriter {
         }
 
         self.edits.build(&mut self.spare);
-        let hit_regions = Arc::new(self.hit_edits.publish());
+        let hit_regions = Arc::new(self.edits.publish_hits());
         let next_number = self.frame_number.saturating_add(1);
         let frame = Arc::new(SceneFrame::new(
             next_number,

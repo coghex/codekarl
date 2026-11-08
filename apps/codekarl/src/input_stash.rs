@@ -28,6 +28,9 @@ pub(crate) struct PointerViewEvent {
     pub(crate) kind: &'static str,
     pub(crate) position: PointerPosition,
     pub(crate) key: Option<String>,
+    /// Whether the position lay inside one of `key`'s published rectangles (translated and clipped), in the regions the router used at
+    /// the tick that routed the event. Always false without a key.
+    pub(crate) inside: bool,
     pub(crate) amount: Option<i32>,
     pub(crate) unit: Option<&'static str>,
 }
@@ -308,6 +311,7 @@ mod tests {
             kind: "move",
             position: PointerPosition { x, y: 0 },
             key: Some("panel".to_owned()),
+            inside: false,
             amount: None,
             unit: None,
         };
@@ -319,6 +323,7 @@ mod tests {
             kind: "down",
             position: PointerPosition { x, y: 0 },
             key: None,
+            inside: false,
             amount: None,
             unit: None,
         };
@@ -343,6 +348,7 @@ mod tests {
                 kind: "down",
                 position: latest.position,
                 key: Some("readout".to_owned()),
+                inside: false,
                 amount: None,
                 unit: None,
             }],

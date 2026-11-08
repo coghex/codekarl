@@ -596,13 +596,13 @@ fn hover_tooltip_flips_moves_and_hides_while_reusing_its_quads() {
     assert!(
         hidden
             .iter()
-            .any(|line| line.starts_with("set_rect q1 -1000000 -1000000 ")),
+            .any(|line| line.starts_with("set_rect q1 -1000000000000 -1000000000000 ")),
         "{hidden:?}"
     );
     assert!(
         hidden
             .iter()
-            .any(|line| line.contains("set_position q2 -1000000 -1000000")),
+            .any(|line| line.contains("set_position q2 -1000000000000 -1000000000000")),
         "{hidden:?}"
     );
     assert_eq!(

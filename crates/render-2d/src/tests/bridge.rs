@@ -15,7 +15,9 @@ use super::support::{
     pixels, quad_at,
 };
 use crate::budget::MAX_RENDERER_IMAGES;
-use crate::{Filter, HitRect, Phase, QuadSink, SceneBridge, SceneWriter, WriteCounts, WriterTaken};
+use crate::{
+    Filter, Phase, PointRect, QuadSink, SceneBridge, SceneWriter, WriteCounts, WriterTaken,
+};
 
 fn bridge() -> Arc<SceneBridge> {
     SceneBridge::new(Filter::Nearest)
@@ -28,7 +30,8 @@ fn hit_regions_publish_with_the_frame_and_do_not_keep_it_alive() {
     writer
         .set_hit(
             "panel",
-            Some(vec![HitRect::from_points(1.0, 2.0, 3.0, 4.0).unwrap()]),
+            Some(vec![PointRect::new(1.0, 2.0, 3.0, 4.0)]),
+            None,
         )
         .unwrap();
     assert!(writer.publish());

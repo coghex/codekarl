@@ -398,9 +398,10 @@ fn scene_bridge(config: &config::Config) -> Arc<SceneBridge> {
         config.render.filter,
         ck_render_2d::SceneLimits {
             max_quads: config.render.max_quads,
+            max_groups: config.render.max_groups,
         },
     )
-    .expect("configuration has validated render.max_quads")
+    .expect("configuration has validated render.max_quads and render.max_groups")
 }
 
 /// The runtime services of a run: the resource service's loader pool and its teardown, when the mode has a service.

@@ -410,6 +410,8 @@ class Levels(CheckFixture):
                     "signals",
                     "--test",
                     "source_guard",
+                    "--test",
+                    "ui_pointer_streams",
                     *flags,
                 ],
                 [
@@ -510,7 +512,19 @@ class Levels(CheckFixture):
         )
         self.assertEqual(
             by_name["render2d.metal-window"].commands(),
-            [["cargo", "test", "-p", "ck-render-2d", "--test", "metal_window", *flags]],
+            [
+                [
+                    "cargo",
+                    "test",
+                    "-p",
+                    "ck-render-2d",
+                    "--test",
+                    "metal_window",
+                    "--test",
+                    "metal_group_readback",
+                    *flags,
+                ]
+            ],
         )
         # CK-142: the presenter's windowed cases, one group per set (the old `--set window` is an error now).
         for name in ("window-core", "window-scene", "window-compat", "window-instanced"):

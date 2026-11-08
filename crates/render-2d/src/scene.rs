@@ -4,7 +4,7 @@
 //! alone walks the live scene. It builds a frame before taking the bridge lock, then exchanges one `Arc` while the
 //! lock is held. A frame pins its textures independently of the public tokens.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 #[cfg(test)]
 use std::sync::Arc;
@@ -13,6 +13,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ck_resources::{HandleError, RegistryId, ResourceState, TextureRef, Token, TokenKind};
 
+use crate::group::{GroupError, GroupKey, PointRect, in_domain};
+use crate::hit::{
+    GroupHits, HIT_RECTS_PER_KEY, HIT_RECTS_PER_SCENE, HitError, HitRect, HitRegions, valid_key,
+};
 use crate::quad::{Metrics, PixelRect, QuadError, SourceRect, edges, trimmed, validate_rect};
 
 /// A generational handle for one persistent quad in one bridge's scene.
@@ -84,34 +88,48 @@ impl fmt::Display for QuadKey {
     }
 }
 
-/// The maximum number of live quads in one scene.
+/// The capacities of one scene: live quads and live groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SceneLimits {
-    /// Maximum live quads. Valid from 1 through 1,048,576.
+    /// Maximum live quads, in every group together. Valid from 1 through 1,048,576.
     pub max_quads: u32,
+    /// Maximum live groups, the base group not counted. Valid from 1 through 65,536.
+    pub max_groups: u32,
 }
 
 impl SceneLimits {
     /// The default scene capacity.
-    pub const DEFAULT: Self = Self { max_quads: 131_072 };
+    pub const DEFAULT: Self = Self {
+        max_quads: 131_072,
+        max_groups: 4_096,
+    };
     const MAX: u32 = 1_048_576;
+    const MAX_GROUPS: u32 = 65_536;
 
-    /// Validates the configured capacity.
+    /// Validates the configured capacities.
     ///
     /// # Errors
     ///
-    /// Returns a [`SceneLimitsError`] naming `max_quads` when it is outside 1..=1,048,576.
+    /// Returns a [`SceneLimitsError`] naming `max_quads` when it is outside 1..=1,048,576, or `max_groups` when it is outside
+    /// 1..=65,536.
     pub fn validate(self) -> Result<Self, SceneLimitsError> {
-        if (1..=Self::MAX).contains(&self.max_quads) {
-            Ok(self)
-        } else {
-            Err(SceneLimitsError {
+        if !(1..=Self::MAX).contains(&self.max_quads) {
+            return Err(SceneLimitsError {
                 field: "max_quads",
                 value: u64::from(self.max_quads),
                 min: 1,
                 max: u64::from(Self::MAX),
-            })
+            });
         }
+        if !(1..=Self::MAX_GROUPS).contains(&self.max_groups) {
+            return Err(SceneLimitsError {
+                field: "max_groups",
+                value: u64::from(self.max_groups),
+                min: 1,
+                max: u64::from(Self::MAX_GROUPS),
+            });
+        }
+        Ok(self)
     }
 }
 
@@ -158,6 +176,9 @@ pub struct FrameQuad {
     pub width: f64,
     /// Height in window points.
     pub height: f64,
+    /// The clip of the quad's group, in absolute window points (the group's offset does not move it), or `None`. The visible part of
+    /// the quad is its destination intersected with the window and with this rectangle, both in pixels.
+    pub clip: Option<PointRect>,
 }
 
 /// A placed frame quad. Source coordinates are normalized fractions of the active texture.
@@ -218,8 +239,27 @@ impl FrameQuad {
         }
         let window_width = i32::try_from(metrics.pixels.width).unwrap_or(i32::MAX);
         let window_height = i32::try_from(metrics.pixels.height).unwrap_or(i32::MAX);
-        let (visible_left, visible_right) = (left.max(0), right.min(window_width));
-        let (visible_top, visible_bottom) = (top.max(0), bottom.min(window_height));
+        let (mut visible_left, mut visible_right) = (left.max(0), right.min(window_width));
+        let (mut visible_top, mut visible_bottom) = (top.max(0), bottom.min(window_height));
+        if let Some(clip) = &self.clip {
+            // The clip's pixel edges are rounded by the same rule as the quad's.
+            let (clip_left, clip_right) = edges(
+                clip.x,
+                clip.width,
+                metrics.points_width,
+                metrics.pixels.width,
+            );
+            let (clip_top, clip_bottom) = edges(
+                clip.y,
+                clip.height,
+                metrics.points_height,
+                metrics.pixels.height,
+            );
+            visible_left = visible_left.max(clip_left);
+            visible_right = visible_right.min(clip_right);
+            visible_top = visible_top.max(clip_top);
+            visible_bottom = visible_bottom.min(clip_bottom);
+        }
         if visible_left >= visible_right || visible_top >= visible_bottom {
             return None;
         }
@@ -352,11 +392,20 @@ impl SceneFrame {
 pub(crate) struct EditScene {
     registry: RegistryId,
     capacity: u32,
+    group_capacity: u32,
     slots: Vec<Slot>,
-    order_head: Option<u32>,
-    order_tail: Option<u32>,
     free: VecDeque<u32>,
     live: u32,
+    /// The group table. Index 0 is the base group: always live, always at the bottom, with no key.
+    groups: Vec<GroupSlot>,
+    group_free: VecDeque<u32>,
+    /// The live group indices in painter order, bottom first; `order[0]` is the base group.
+    order: Vec<u32>,
+    live_groups: u32,
+    /// The group each hit key was first set in.
+    hit_owner: HashMap<String, u32>,
+    /// Hit rectangles in the scene, as set.
+    hit_count: usize,
 }
 
 #[derive(Debug)]
@@ -365,6 +414,36 @@ struct Slot {
     quad: Option<EditableQuad>,
     previous: Option<u32>,
     next: Option<u32>,
+    /// The group the quad is in (an index into the group table).
+    group: u32,
+}
+
+#[derive(Debug)]
+struct GroupSlot {
+    generation: u64,
+    live: bool,
+    visible: bool,
+    offset: (f64, f64),
+    clip: Option<PointRect>,
+    /// The group's own quad order, bottom first.
+    head: Option<u32>,
+    tail: Option<u32>,
+    hits: GroupHits,
+}
+
+impl GroupSlot {
+    fn fresh(generation: u64) -> Self {
+        Self {
+            generation,
+            live: true,
+            visible: true,
+            offset: (0.0, 0.0),
+            clip: None,
+            head: None,
+            tail: None,
+            hits: GroupHits::default(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -376,21 +455,74 @@ pub(crate) struct EditableQuad {
     height: f64,
 }
 
+/// One quad of a frame being built, with what its group applies to it.
+pub(crate) struct VisibleQuad<'a> {
+    quad: &'a EditableQuad,
+    offset: (f64, f64),
+    clip: Option<PointRect>,
+}
+
+/// The quads that go into a frame, in painter order: group by group, bottom first, skipping hidden groups; within a group, in the
+/// group's own creation order.
+pub(crate) struct VisibleQuads<'a> {
+    scene: &'a EditScene,
+    next_group: usize,
+    group: usize,
+    current: Option<u32>,
+}
+
+impl<'a> Iterator for VisibleQuads<'a> {
+    type Item = VisibleQuad<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(index) = self.current {
+                let slot = &self.scene.slots[usize::try_from(index).unwrap_or(usize::MAX)];
+                self.current = slot.next;
+                let group = &self.scene.groups[self.group];
+                return Some(VisibleQuad {
+                    quad: slot.quad.as_ref().expect("order links name live slots"),
+                    offset: group.offset,
+                    clip: group.clip,
+                });
+            }
+            let index =
+                usize::try_from(*self.scene.order.get(self.next_group)?).unwrap_or(usize::MAX);
+            self.next_group += 1;
+            let group = &self.scene.groups[index];
+            if group.visible {
+                self.group = index;
+                self.current = group.head;
+            }
+        }
+    }
+}
+
 impl EditScene {
-    pub(crate) fn new(registry: RegistryId, capacity: u32) -> Self {
+    pub(crate) fn new(registry: RegistryId, capacity: u32, group_capacity: u32) -> Self {
         Self {
             registry,
             capacity,
+            group_capacity,
             slots: Vec::new(),
-            order_head: None,
-            order_tail: None,
             free: VecDeque::new(),
             live: 0,
+            groups: vec![GroupSlot::fresh(1)],
+            group_free: VecDeque::new(),
+            order: vec![0],
+            live_groups: 0,
+            hit_owner: HashMap::new(),
+            hit_count: 0,
         }
     }
 
     pub(crate) fn len(&self) -> u32 {
         self.live
+    }
+
+    /// The live groups, the base group not counted.
+    pub(crate) fn group_count(&self) -> u32 {
+        self.live_groups
     }
 
     fn validate_key(&self, key: QuadKey) -> Result<usize, QuadError> {
@@ -404,6 +536,20 @@ impl EditScene {
         }
     }
 
+    /// The index of a live group named by `key`. The base group has no key, so slot 0 is never live to a caller.
+    fn validate_group(&self, key: GroupKey) -> Result<usize, GroupError> {
+        if key.registry() != self.registry {
+            return Err(GroupError::Foreign(key));
+        }
+        let index = usize::try_from(key.slot()).unwrap_or(usize::MAX);
+        match self.groups.get(index) {
+            Some(group) if index != 0 && group.live && group.generation == key.generation() => {
+                Ok(index)
+            }
+            _ => Err(GroupError::Stale(key)),
+        }
+    }
+
     pub(crate) fn create(
         &mut self,
         texture: TextureRef<ResourceState>,
@@ -411,8 +557,13 @@ impl EditScene {
         y: f64,
         width: f64,
         height: f64,
+        group: Option<GroupKey>,
     ) -> Result<QuadKey, QuadError> {
         validate_rect(x, y, width, height)?;
+        let group = match group {
+            Some(key) => self.validate_group(key).map_err(QuadError::Group)?,
+            None => 0,
+        };
         if self.live >= self.capacity {
             return Err(QuadError::Full {
                 capacity: self.capacity,
@@ -429,11 +580,12 @@ impl EditScene {
                 quad: None,
                 previous: None,
                 next: None,
+                group: 0,
             });
             self.slots.len() - 1
         };
         let slot_id = u32::try_from(index).expect("scene capacity fits the key slot");
-        let previous = self.order_tail;
+        let previous = self.groups[group].tail;
         self.slots[index].quad = Some(EditableQuad {
             texture,
             x,
@@ -443,12 +595,13 @@ impl EditScene {
         });
         self.slots[index].previous = previous;
         self.slots[index].next = None;
+        self.slots[index].group = u32::try_from(group).expect("the group table fits u32");
         if let Some(previous) = previous {
             self.slots[usize::try_from(previous).unwrap_or(usize::MAX)].next = Some(slot_id);
         } else {
-            self.order_head = Some(slot_id);
+            self.groups[group].head = Some(slot_id);
         }
-        self.order_tail = Some(slot_id);
+        self.groups[group].tail = Some(slot_id);
         self.live += 1;
         Ok(QuadKey::new(
             self.registry,
@@ -490,47 +643,300 @@ impl EditScene {
         Ok(())
     }
 
-    pub(crate) fn destroy(&mut self, key: QuadKey) -> Result<EditableQuad, QuadError> {
-        let index = self.validate_key(key)?;
+    /// Takes the quad in slot `index` out of its group's order and frees the slot.
+    fn remove_quad(&mut self, index: usize, slot_id: u32) -> EditableQuad {
+        let group = usize::try_from(self.slots[index].group).unwrap_or(usize::MAX);
         let previous = self.slots[index].previous;
         let next = self.slots[index].next;
         if let Some(previous) = previous {
             self.slots[usize::try_from(previous).unwrap_or(usize::MAX)].next = next;
         } else {
-            self.order_head = next;
+            self.groups[group].head = next;
         }
         if let Some(next) = next {
             self.slots[usize::try_from(next).unwrap_or(usize::MAX)].previous = previous;
         } else {
-            self.order_tail = previous;
+            self.groups[group].tail = previous;
         }
         let slot = &mut self.slots[index];
         slot.previous = None;
         slot.next = None;
-        let removed = slot.quad.take().expect("validated live quad");
+        let removed = slot.quad.take().expect("a live quad");
         self.live -= 1;
         if slot.generation != u64::MAX {
             slot.generation += 1;
-            self.free.push_back(key.slot);
+            self.free.push_back(slot_id);
         }
+        removed
+    }
+
+    pub(crate) fn destroy(&mut self, key: QuadKey) -> Result<EditableQuad, QuadError> {
+        let index = self.validate_key(key)?;
+        Ok(self.remove_quad(index, key.slot))
+    }
+
+    // ----- groups -----
+
+    /// Creates an empty, visible group with offset (0, 0) and no clip, on top of all groups.
+    pub(crate) fn create_group(&mut self) -> Result<GroupKey, GroupError> {
+        if self.live_groups >= self.group_capacity {
+            return Err(GroupError::Full {
+                capacity: self.group_capacity,
+            });
+        }
+        let index = if let Some(index) = self.group_free.pop_front() {
+            let index = usize::try_from(index).unwrap_or(usize::MAX);
+            let generation = self.groups[index].generation;
+            self.groups[index] = GroupSlot::fresh(generation);
+            index
+        } else {
+            self.groups.try_reserve(1).map_err(|_| GroupError::Full {
+                capacity: self.group_capacity,
+            })?;
+            self.groups.push(GroupSlot::fresh(1));
+            self.groups.len() - 1
+        };
+        let slot = u32::try_from(index).expect("the group capacity fits the key slot");
+        self.order.push(slot);
+        self.live_groups += 1;
+        Ok(GroupKey::new(
+            self.registry,
+            slot,
+            self.groups[index].generation,
+        ))
+    }
+
+    fn position_of(&self, index: usize) -> usize {
+        self.order
+            .iter()
+            .position(|&entry| usize::try_from(entry).unwrap_or(usize::MAX) == index)
+            .expect("a live group is in the order")
+    }
+
+    fn slot_of(index: usize) -> u32 {
+        u32::try_from(index).expect("the group table fits u32")
+    }
+
+    pub(crate) fn raise_group(&mut self, key: GroupKey) -> Result<(), GroupError> {
+        let index = self.validate_group(key)?;
+        let position = self.position_of(index);
+        let entry = self.order.remove(position);
+        self.order.push(entry);
+        Ok(())
+    }
+
+    /// Puts the group just above the base group.
+    pub(crate) fn lower_group(&mut self, key: GroupKey) -> Result<(), GroupError> {
+        let index = self.validate_group(key)?;
+        let position = self.position_of(index);
+        let entry = self.order.remove(position);
+        self.order.insert(1, entry);
+        Ok(())
+    }
+
+    /// Puts the listed groups on top in that order (the last topmost), as one edit. Refused, changing nothing, if the list is
+    /// empty, names a group twice or names a group that is not live.
+    pub(crate) fn raise_groups(&mut self, keys: &[GroupKey]) -> Result<(), GroupError> {
+        if keys.is_empty() {
+            return Err(GroupError::BadList { reason: "is empty" });
+        }
+        let mut indices = Vec::with_capacity(keys.len());
+        for key in keys {
+            indices.push(self.validate_group(*key)?);
+        }
+        let mut seen = indices.clone();
+        seen.sort_unstable();
+        if seen.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(GroupError::BadList {
+                reason: "names a group twice",
+            });
+        }
+        self.order
+            .retain(|&entry| !indices.contains(&usize::try_from(entry).unwrap_or(usize::MAX)));
+        self.order.extend(indices.into_iter().map(Self::slot_of));
+        Ok(())
+    }
+
+    pub(crate) fn set_group_visible(
+        &mut self,
+        key: GroupKey,
+        visible: bool,
+    ) -> Result<(), GroupError> {
+        let index = self.validate_group(key)?;
+        self.groups[index].visible = visible;
+        Ok(())
+    }
+
+    /// Sets the group's offset, in whole points inside the point domain. Refused, changing nothing, if a hit rectangle of the group
+    /// would leave the domain under it.
+    pub(crate) fn set_group_offset(
+        &mut self,
+        key: GroupKey,
+        x: f64,
+        y: f64,
+    ) -> Result<(), GroupError> {
+        let index = self.validate_group(key)?;
+        for (field, value) in [("x", x), ("y", y)] {
+            if !value.is_finite() {
+                return Err(GroupError::NotFinite { field });
+            }
+            if value.fract() != 0.0 {
+                return Err(GroupError::NotIntegral { field });
+            }
+            in_domain(field, value)?;
+        }
+        self.groups[index].hits.check_offset(x, y)?;
+        self.groups[index].offset = (x, y);
+        Ok(())
+    }
+
+    /// Sets or removes the group's clip, in absolute window points.
+    pub(crate) fn set_group_clip(
+        &mut self,
+        key: GroupKey,
+        clip: Option<PointRect>,
+    ) -> Result<(), GroupError> {
+        let index = self.validate_group(key)?;
+        if let Some(clip) = clip {
+            clip.check()?;
+        }
+        self.groups[index].clip = clip;
+        Ok(())
+    }
+
+    /// Destroys the group, its quads (returned, to be dropped by the caller) and its hit keys.
+    pub(crate) fn destroy_group(&mut self, key: GroupKey) -> Result<Vec<EditableQuad>, GroupError> {
+        let index = self.validate_group(key)?;
+        let mut removed = Vec::new();
+        while let Some(head) = self.groups[index].head {
+            removed.push(self.remove_quad(usize::try_from(head).unwrap_or(usize::MAX), head));
+        }
+        self.hit_count -= self.groups[index].hits.rect_count();
+        for name in self.groups[index].hits.names() {
+            self.hit_owner.remove(name);
+        }
+        let generation = self.groups[index].generation;
+        self.groups[index] = GroupSlot::fresh(generation);
+        self.groups[index].live = false;
+        if generation != u64::MAX {
+            self.groups[index].generation = generation + 1;
+            self.group_free.push_back(key.slot());
+        }
+        let position = self.position_of(index);
+        self.order.remove(position);
+        self.live_groups -= 1;
         Ok(removed)
     }
 
+    // ----- hit regions -----
+
+    /// Replaces or removes one hit key. `group` is the group the key belongs to (the base group if none); a key keeps the group it was
+    /// first set in. Everything is validated before anything changes; `Ok(true)` when something changed.
+    pub(crate) fn set_hit(
+        &mut self,
+        key: &str,
+        rects: Option<Vec<PointRect>>,
+        group: Option<GroupKey>,
+    ) -> Result<bool, HitError> {
+        if !valid_key(key) {
+            return Err(HitError::BadKey);
+        }
+        let named = match group {
+            Some(group) => Some(self.validate_group(group).map_err(HitError::Group)?),
+            None => None,
+        };
+        let owner = self.hit_owner.get(key).copied();
+        let owner = owner.map(|owner| usize::try_from(owner).unwrap_or(usize::MAX));
+        let Some(rects) = rects else {
+            // Removing needs no group; a group that is named must be the key's own.
+            let Some(owner) = owner else {
+                return Ok(false);
+            };
+            if named.is_some_and(|named| named != owner) {
+                return Err(HitError::GroupMismatch);
+            }
+            self.hit_count -= self.groups[owner].hits.remove(key);
+            self.hit_owner.remove(key);
+            return Ok(true);
+        };
+        let target = named.unwrap_or(0);
+        if owner.is_some_and(|owner| owner != target) {
+            return Err(HitError::GroupMismatch);
+        }
+        if !(1..=HIT_RECTS_PER_KEY).contains(&rects.len()) {
+            return Err(HitError::BadRectCount { count: rects.len() });
+        }
+        let (dx, dy) = self.groups[target].offset;
+        for rect in &rects {
+            rect.check().map_err(HitError::Group)?;
+            // The rectangle must keep an extent in pointer units as set, as before groups existed.
+            HitRect::from_points(rect.x, rect.y, rect.width, rect.height)?;
+            rect.translated(dx, dy)
+                .check_edges()
+                .map_err(HitError::Group)?;
+        }
+        let prior = self.groups[target]
+            .hits
+            .rects(key)
+            .map_or(0, <[PointRect]>::len);
+        let count = self.hit_count - prior + rects.len();
+        if count > HIT_RECTS_PER_SCENE {
+            return Err(HitError::SceneFull { count });
+        }
+        self.hit_count = count;
+        self.groups[target].hits.replace(key, rects);
+        self.hit_owner.insert(key.to_owned(), Self::slot_of(target));
+        Ok(true)
+    }
+
+    /// The hit regions to publish: group by group in painter order, a hidden group publishing none.
+    pub(crate) fn publish_hits(&self) -> HitRegions {
+        let mut regions = Vec::with_capacity(self.hit_count);
+        for &index in &self.order {
+            let group = &self.groups[usize::try_from(index).unwrap_or(usize::MAX)];
+            if group.visible {
+                group
+                    .hits
+                    .publish_into(&mut regions, group.offset.0, group.offset.1, group.clip);
+            }
+        }
+        HitRegions::from_regions(regions)
+    }
+
+    // ----- frames -----
+
+    /// The quads of the next frame, in painter order.
+    pub(crate) fn visible_quads(&self) -> VisibleQuads<'_> {
+        VisibleQuads {
+            scene: self,
+            next_group: 0,
+            group: 0,
+            current: None,
+        }
+    }
+
     pub(crate) fn build(&self, target: &mut Vec<FrameQuad>) {
+        self.build_from(self.visible_quads(), target);
+    }
+
+    /// Builds the frame from `quads` (the walk of [`EditScene::visible_quads`], or a test's wrapper around it): each quad is
+    /// translated by its group's offset and keeps its group's clip.
+    pub(crate) fn build_from<'a>(
+        &self,
+        quads: impl Iterator<Item = VisibleQuad<'a>>,
+        target: &mut Vec<FrameQuad>,
+    ) {
         target.clear();
         target.reserve(usize::try_from(self.live).unwrap_or(usize::MAX));
-        let mut current = self.order_head;
-        while let Some(index) = current {
-            let slot = &self.slots[usize::try_from(index).unwrap_or(usize::MAX)];
-            let quad = slot.quad.as_ref().expect("order links name live slots");
+        for visible in quads {
             target.push(FrameQuad {
-                texture: quad.texture.clone(),
-                x: quad.x,
-                y: quad.y,
-                width: quad.width,
-                height: quad.height,
+                texture: visible.quad.texture.clone(),
+                x: visible.quad.x + visible.offset.0,
+                y: visible.quad.y + visible.offset.1,
+                width: visible.quad.width,
+                height: visible.quad.height,
+                clip: visible.clip,
             });
-            current = slot.next;
         }
     }
 }

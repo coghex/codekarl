@@ -12,6 +12,10 @@
 //! - `render.clear_quad()` clears the quad. On the **upgraded** backend (the flag the composition sets: both windowed
 //!   backends) both legacy calls go through [`LegacyLane`], with its errors prefixed `render.quad:`; on headless runs they keep
 //!   exactly the path above;
+//! - the group calls of milestone 8, slice 4 (`docs/ui-design.md` §3.4): `render.create_group()` → a group token,
+//!   `render.create_quad{..., group=}`, `render.raise_group(g)`, `render.lower_group(g)`, `render.raise_groups{g1, ..., gn}`,
+//!   `render.set_group_visible(g, bool)`, `render.set_group_offset(g, x, y)`, `render.set_group_clip(g, {x, y, width, height} | nil)`,
+//!   `render.destroy_group(g)` and `render.set_hit(key, rects | nil, g?)`. Each validates before it changes anything;
 //! - the scene API of the design (§8.2): `render.create_quad{texture=, x=, y=, width=, height=}` → a quad token,
 //!   `render.set_position(quad, x, y)`, `render.set_rect(quad, x, y, width, height)` and `render.destroy_quad(quad)`. Each
 //!   validates every argument before it changes anything, and reports a refusal as an ordinary Lua error starting with the
@@ -47,7 +51,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ck_lua::{Completion, ConfigValue, Extension, HostFunction};
 use ck_render_2d::{
-    Assets, HitRect, LegacyError, LegacyLane, Quad, QuadKey, SceneWriter, validate_rect,
+    Assets, GroupKey, LegacyError, LegacyLane, PointRect, Quad, QuadKey, SceneWriter, validate_rect,
 };
 use ck_resources::{AdmitError, ResourceService, TextureKey};
 
@@ -88,7 +92,7 @@ type LaneSeam = Arc<dyn Fn(&'static str) + Send + Sync>;
 /// The keys `render.quad` takes.
 const FIELDS: [&str; 5] = ["image", "x", "y", "width", "height"];
 /// The keys `render.create_quad` takes.
-const QUAD_FIELDS: [&str; 5] = ["texture", "x", "y", "width", "height"];
+const QUAD_FIELDS: [&str; 6] = ["texture", "x", "y", "width", "height", "group"];
 
 /// A number field: absent (`None`), or a number; anything else is an error naming the field.
 fn field(
@@ -126,6 +130,26 @@ fn quad_argument(function: &str, arguments: &[Option<ConfigValue>]) -> Result<Qu
         ));
     };
     QuadKey::from_token(text).map_err(|error| format!("{function}: {error}"))
+}
+
+/// A group token argument at `position` of `function`'s arguments: a string, parsed strictly.
+fn group_argument(
+    function: &str,
+    arguments: &[Option<ConfigValue>],
+    position: usize,
+) -> Result<GroupKey, String> {
+    let Some(Some(ConfigValue::String(text))) = arguments.get(position) else {
+        return Err(format!(
+            "{function}: expected a group token as argument {}",
+            position + 1
+        ));
+    };
+    group_from(function, text)
+}
+
+/// A group token, parsed strictly.
+fn group_from(function: &str, text: &str) -> Result<GroupKey, String> {
+    GroupKey::from_token(text).map_err(|error| format!("{function}: {error}"))
 }
 
 /// The exact number of arguments, or the error.
@@ -303,6 +327,13 @@ impl Shared {
         };
         let key = TextureKey::from_token(texture)
             .map_err(|error| format!("render.create_quad: {error}"))?;
+        let group = match table.get("group") {
+            None => None,
+            Some(ConfigValue::String(text)) => Some(group_from("render.create_quad", text)?),
+            Some(_) => {
+                return Err("render.create_quad: `group` must be a group token string".into());
+            }
+        };
         let x = field("render.create_quad", table, "x")?.unwrap_or(0.0);
         let y = field("render.create_quad", table, "y")?.unwrap_or(0.0);
         let width = field("render.create_quad", table, "width")?
@@ -323,7 +354,7 @@ impl Shared {
             .retain(key)
             .map_err(|error| format!("render.create_quad: {error}"))?;
         let quad = writer
-            .create_quad(reference, x, y, width, height)
+            .create_quad_in(group, reference, x, y, width, height)
             .map_err(|error| format!("render.create_quad: {error}"))?;
         self.note_accepted();
         Ok(vec![ConfigValue::String(quad.token().to_string())])
@@ -392,7 +423,9 @@ impl Shared {
 
     fn set_hit(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
         const F: &str = "render.set_hit";
-        arity(F, arguments, 2, "(key, rects | nil)")?;
+        if !(2..=3).contains(&arguments.len()) {
+            return Err(format!("{F}: expected (key, rects | nil, group?)"));
+        }
         let Some(Some(ConfigValue::String(key))) = arguments.first() else {
             return Err(format!("{F}: `key` must be a string"));
         };
@@ -425,14 +458,16 @@ impl Shared {
                             index + 1
                         ));
                     }
-                    rects.push(
-                        HitRect::from_points(x, y, width, height)
-                            .map_err(|error| format!("{F}: rect {}: {error}", index + 1))?,
-                    );
+                    rects.push(PointRect::new(x, y, width, height));
                 }
                 Some(rects)
             }
             Some(_) => return Err(format!("{F}: `rects` must be an array or nil")),
+        };
+        let group = match arguments.get(2) {
+            None | Some(None) => None,
+            Some(Some(ConfigValue::String(text))) => Some(group_from(F, text)?),
+            Some(Some(_)) => return Err(format!("{F}: `group` must be a group token string")),
         };
         let mut writer = self.writer();
         let Some(writer) = writer.as_mut() else {
@@ -442,10 +477,180 @@ impl Shared {
             return Err(format!("{F}: {}", AdmitError::Ended));
         }
         writer
-            .set_hit(key, rects)
+            .set_hit(key, rects, group)
             .map_err(|error| format!("{F}: {error}"))?;
         self.note_accepted();
         Ok(Vec::new())
+    }
+
+    /// Runs one group edit on the writer, after the cheap argument checks and the ended check, and counts it as accepted.
+    fn edit_groups(
+        &self,
+        function: &str,
+        edit: impl FnOnce(&mut SceneWriter) -> Result<(), String>,
+    ) -> Result<Vec<ConfigValue>, String> {
+        let mut writer = self.writer();
+        let Some(writer) = writer.as_mut() else {
+            return Err(format!("{function}: {}", AdmitError::Ended));
+        };
+        if writer.is_ended() {
+            return Err(format!("{function}: {}", AdmitError::Ended));
+        }
+        edit(writer)?;
+        self.note_accepted();
+        Ok(Vec::new())
+    }
+
+    fn create_group(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
+        const F: &str = "render.create_group";
+        arity(F, arguments, 0, "()")?;
+        let mut token = None;
+        self.edit_groups(F, |writer| {
+            token = Some(
+                writer
+                    .create_group()
+                    .map_err(|error| format!("{F}: {error}"))?,
+            );
+            Ok(())
+        })?;
+        let group = token.expect("the edit ran");
+        Ok(vec![ConfigValue::String(group.token().to_string())])
+    }
+
+    fn raise_group(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
+        const F: &str = "render.raise_group";
+        arity(F, arguments, 1, "(group)")?;
+        let group = group_argument(F, arguments, 0)?;
+        self.edit_groups(F, |writer| {
+            writer
+                .raise_group(group)
+                .map_err(|error| format!("{F}: {error}"))
+        })
+    }
+
+    fn lower_group(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
+        const F: &str = "render.lower_group";
+        arity(F, arguments, 1, "(group)")?;
+        let group = group_argument(F, arguments, 0)?;
+        self.edit_groups(F, |writer| {
+            writer
+                .lower_group(group)
+                .map_err(|error| format!("{F}: {error}"))
+        })
+    }
+
+    fn raise_groups(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
+        const F: &str = "render.raise_groups";
+        // One table of group tokens: an array, or the empty table (which the writer refuses as an empty list).
+        let list: &[ConfigValue] = match arguments {
+            [Some(ConfigValue::Array(items))] => items,
+            [Some(ConfigValue::Table(table))] if table.is_empty() => &[],
+            _ => {
+                return Err(format!(
+                    "{F}: expected one table of group tokens {{g1, ..., gn}}"
+                ));
+            }
+        };
+        let mut groups = Vec::with_capacity(list.len());
+        for (index, item) in list.iter().enumerate() {
+            let ConfigValue::String(text) = item else {
+                return Err(format!(
+                    "{F}: entry {} must be a group token string",
+                    index + 1
+                ));
+            };
+            groups.push(group_from(F, text)?);
+        }
+        self.edit_groups(F, |writer| {
+            writer
+                .raise_groups(&groups)
+                .map_err(|error| format!("{F}: {error}"))
+        })
+    }
+
+    fn set_group_visible(
+        &self,
+        arguments: &[Option<ConfigValue>],
+    ) -> Result<Vec<ConfigValue>, String> {
+        const F: &str = "render.set_group_visible";
+        arity(F, arguments, 2, "(group, visible)")?;
+        let group = group_argument(F, arguments, 0)?;
+        let Some(Some(ConfigValue::Bool(visible))) = arguments.get(1) else {
+            return Err(format!("{F}: `visible` must be a boolean"));
+        };
+        let visible = *visible;
+        self.edit_groups(F, |writer| {
+            writer
+                .set_group_visible(group, visible)
+                .map_err(|error| format!("{F}: {error}"))
+        })
+    }
+
+    fn set_group_offset(
+        &self,
+        arguments: &[Option<ConfigValue>],
+    ) -> Result<Vec<ConfigValue>, String> {
+        const F: &str = "render.set_group_offset";
+        arity(F, arguments, 3, "(group, x, y)")?;
+        let group = group_argument(F, arguments, 0)?;
+        let (x, y) = (
+            number_argument(F, arguments, 1, "x")?,
+            number_argument(F, arguments, 2, "y")?,
+        );
+        self.edit_groups(F, |writer| {
+            writer
+                .set_group_offset(group, x, y)
+                .map_err(|error| format!("{F}: {error}"))
+        })
+    }
+
+    fn set_group_clip(
+        &self,
+        arguments: &[Option<ConfigValue>],
+    ) -> Result<Vec<ConfigValue>, String> {
+        const F: &str = "render.set_group_clip";
+        arity(F, arguments, 2, "(group, {x, y, width, height} | nil)")?;
+        let group = group_argument(F, arguments, 0)?;
+        let clip = match arguments.get(1).and_then(Option::as_ref) {
+            None => None,
+            Some(ConfigValue::Table(table)) => {
+                if let Some(unknown) = table
+                    .keys()
+                    .find(|key| !["x", "y", "width", "height"].contains(&key.as_str()))
+                {
+                    return Err(format!("{F}: unknown field `{unknown}`"));
+                }
+                let value = |name: &str| -> Result<f64, String> {
+                    table
+                        .get(name)
+                        .and_then(number)
+                        .ok_or_else(|| format!("{F}: `{name}` must be a number"))
+                };
+                Some(PointRect::new(
+                    value("x")?,
+                    value("y")?,
+                    value("width")?,
+                    value("height")?,
+                ))
+            }
+            Some(_) => return Err(format!("{F}: the clip must be a table or nil")),
+        };
+        self.edit_groups(F, |writer| {
+            writer
+                .set_group_clip(group, clip)
+                .map_err(|error| format!("{F}: {error}"))
+        })
+    }
+
+    fn destroy_group(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
+        const F: &str = "render.destroy_group";
+        arity(F, arguments, 1, "(group)")?;
+        let group = group_argument(F, arguments, 0)?;
+        self.edit_groups(F, |writer| {
+            writer
+                .destroy_group(group)
+                .map_err(|error| format!("{F}: {error}"))
+        })
     }
 }
 
@@ -599,6 +804,14 @@ fn build(shared: &Arc<Shared>) -> Extension {
         .function("set_rect", function(Shared::set_rect))
         .function("destroy_quad", function(Shared::destroy_quad))
         .function("set_hit", function(Shared::set_hit))
+        .function("create_group", function(Shared::create_group))
+        .function("raise_group", function(Shared::raise_group))
+        .function("lower_group", function(Shared::lower_group))
+        .function("raise_groups", function(Shared::raise_groups))
+        .function("set_group_visible", function(Shared::set_group_visible))
+        .function("set_group_offset", function(Shared::set_group_offset))
+        .function("set_group_clip", function(Shared::set_group_clip))
+        .function("destroy_group", function(Shared::destroy_group))
 }
 
 #[cfg(test)]

@@ -46,7 +46,7 @@ frame.on_update(function(f)
 end)
 "#;
 
-fn points(x: f64, y: f64) -> PointerPosition {
+pub(super) fn points(x: f64, y: f64) -> PointerPosition {
     PointerPosition::from_points(x, y).expect("a position")
 }
 
@@ -72,7 +72,7 @@ fn clicks_of(table: &ConfigValue) -> i64 {
 }
 
 /// Runs one tick of the real path: the mapper's snapshot goes to the link's input step, and then it is acknowledged, as the loop does.
-fn run_tick(mapper: &mut Mapper, link: &mut CodekarlUi) {
+pub(super) fn run_tick(mapper: &mut Mapper, link: &mut CodekarlUi) {
     let snapshot = mapper.snapshot();
     let sequence = snapshot.sequence;
     link.input(&tick(snapshot)).expect("the tick is consumed");

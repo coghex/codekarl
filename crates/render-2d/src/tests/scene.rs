@@ -63,7 +63,14 @@ fn quad_tokens_round_trip_and_reject_texture_tokens() {
 #[test]
 fn slots_reuse_oldest_first_and_stale_or_foreign_keys_are_refused() {
     let service = service();
-    let bridge = SceneBridge::with_limits(Filter::Nearest, SceneLimits { max_quads: 4 }).unwrap();
+    let bridge = SceneBridge::with_limits(
+        Filter::Nearest,
+        SceneLimits {
+            max_quads: 4,
+            ..SceneLimits::DEFAULT
+        },
+    )
+    .unwrap();
     let other = SceneBridge::new(Filter::Nearest);
     let mut writer = bridge.take_writer().unwrap();
     let foreign = other
@@ -106,7 +113,14 @@ fn slots_reuse_oldest_first_and_stale_or_foreign_keys_are_refused() {
 #[test]
 fn exhausted_generation_slots_are_never_reused() {
     let service = service();
-    let bridge = SceneBridge::with_limits(Filter::Nearest, SceneLimits { max_quads: 1 }).unwrap();
+    let bridge = SceneBridge::with_limits(
+        Filter::Nearest,
+        SceneLimits {
+            max_quads: 1,
+            ..SceneLimits::DEFAULT
+        },
+    )
+    .unwrap();
     let mut writer = bridge.take_writer().unwrap();
     let first = writer
         .create_quad(texture(&service).1, 0.0, 0.0, 1.0, 1.0)
@@ -123,21 +137,35 @@ fn exhausted_generation_slots_are_never_reused() {
 #[test]
 fn capacity_and_geometry_refusals_leave_scene_unchanged() {
     assert_eq!(SceneLimits::default().max_quads, 131_072);
-    assert!(SceneLimits { max_quads: 1 }.validate().is_ok());
     assert!(
         SceneLimits {
-            max_quads: 1_048_576
+            max_quads: 1,
+            ..SceneLimits::DEFAULT
         }
         .validate()
         .is_ok()
     );
-    let invalid = SceneLimits { max_quads: 0 }.validate().unwrap_err();
+    assert!(
+        SceneLimits {
+            max_quads: 1_048_576,
+            ..SceneLimits::DEFAULT
+        }
+        .validate()
+        .is_ok()
+    );
+    let invalid = SceneLimits {
+        max_quads: 0,
+        ..SceneLimits::DEFAULT
+    }
+    .validate()
+    .unwrap_err();
     assert_eq!((invalid.field, invalid.value), ("max_quads", 0));
     assert!(matches!(
         SceneBridge::with_limits(
             Filter::Nearest,
             SceneLimits {
-                max_quads: 1_048_577
+                max_quads: 1_048_577,
+                ..SceneLimits::DEFAULT
             }
         ),
         Err(SceneLimitsError {
@@ -147,7 +175,14 @@ fn capacity_and_geometry_refusals_leave_scene_unchanged() {
     ));
 
     let service = service();
-    let bridge = SceneBridge::with_limits(Filter::Nearest, SceneLimits { max_quads: 1 }).unwrap();
+    let bridge = SceneBridge::with_limits(
+        Filter::Nearest,
+        SceneLimits {
+            max_quads: 1,
+            ..SceneLimits::DEFAULT
+        },
+    )
+    .unwrap();
     let sink = RecordingSink::new();
     attach(&bridge, &sink);
     let mut writer = bridge.take_writer().unwrap();
@@ -625,6 +660,7 @@ fn frame_placement_matches_legacy_destination_and_normalized_source() {
             y,
             width,
             height,
+            clip: None,
         };
         let old_place = legacy.place(&metrics);
         let frame_place = frame.place(&metrics);
@@ -678,6 +714,7 @@ fn place_is_placement_plus_the_texture_for_every_geometry_case() {
                 y,
                 width,
                 height,
+                clip: None,
             };
             let placement = frame.placement(&metrics);
             let placed = frame.place(&metrics);

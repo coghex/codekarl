@@ -779,6 +779,7 @@ struct RenderFields {
     filter: Option<FilterName>,
     assets: Option<String>,
     max_quads: Option<u64>,
+    max_groups: Option<u64>,
     bindless_texture_slots: Option<u64>,
 }
 
@@ -803,6 +804,8 @@ pub(crate) struct RenderConfig {
     pub(crate) assets: Option<PathBuf>,
     /// Maximum quads in one scene.
     pub(crate) max_quads: u32,
+    /// Maximum groups in one scene, the base group not counted (milestone 8, slice 4).
+    pub(crate) max_groups: u32,
     /// The entry count of the bindless texture tables (design §7.1): at least `max_textures + max_extra_revisions + 1` (the
     /// checker's slot 0), checked at configuration time against the `[resources]` values.
     pub(crate) bindless_texture_slots: u32,
@@ -873,6 +876,7 @@ impl Default for RenderConfig {
             filter: ImageFilter::Nearest,
             assets: None,
             max_quads: SceneLimits::DEFAULT.max_quads,
+            max_groups: SceneLimits::DEFAULT.max_groups,
             bindless_texture_slots: DEFAULT_BINDLESS_TEXTURE_SLOTS,
         }
     }
@@ -1327,6 +1331,33 @@ fn check_pixel_font(
     Ok(())
 }
 
+/// The scene's two capacities from `[render]`: `max_quads` (1 to 1,048,576) and `max_groups` (1 to 65,536), each with its default.
+fn scene_capacities(path: &Path, render: &RenderFields) -> Result<(u32, u32), String> {
+    let max_quads = render
+        .max_quads
+        .unwrap_or(u64::from(SceneLimits::DEFAULT.max_quads));
+    if !(1..=1_048_576).contains(&max_quads) {
+        return Err(format!(
+            "{}: [render]: max_quads={max_quads} is outside 1..=1048576",
+            path.display()
+        ));
+    }
+    let max_quads = u32::try_from(max_quads)
+        .map_err(|_| format!("{}: [render]: max_quads does not fit u32", path.display()))?;
+    let max_groups = render
+        .max_groups
+        .unwrap_or(u64::from(SceneLimits::DEFAULT.max_groups));
+    if !(1..=65_536).contains(&max_groups) {
+        return Err(format!(
+            "{}: [render]: max_groups={max_groups} is outside 1..=65536",
+            path.display()
+        ));
+    }
+    let max_groups = u32::try_from(max_groups)
+        .map_err(|_| format!("{}: [render]: max_groups does not fit u32", path.display()))?;
+    Ok((max_quads, max_groups))
+}
+
 fn parse(path: &Path, text: &str) -> Result<Config, String> {
     let file = toml::from_str::<File>(text).map_err(|error| describe(path, text, &error))?;
     let whole = text
@@ -1367,19 +1398,7 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
     check_pixel_font(path, &file.ui.0, game.is_some(), file.render.0.filter)?;
     let resources = ResourceConfig::parse(file.resources.0)
         .map_err(|error| format!("{}: {error}", path.display()))?;
-    let max_quads = file
-        .render
-        .0
-        .max_quads
-        .unwrap_or(u64::from(SceneLimits::DEFAULT.max_quads));
-    if !(1..=1_048_576).contains(&max_quads) {
-        return Err(format!(
-            "{}: [render]: max_quads={max_quads} is outside 1..=1048576",
-            path.display()
-        ));
-    }
-    let max_quads = u32::try_from(max_quads)
-        .map_err(|_| format!("{}: [render]: max_quads does not fit u32", path.display()))?;
+    let (max_quads, max_groups) = scene_capacities(path, &file.render.0)?;
     let bindless_texture_slots =
         bindless_slots(path, file.render.0.bindless_texture_slots, &resources)?;
     let vms = file
@@ -1406,6 +1425,7 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
                 .map_or(ImageFilter::Nearest, |name| name.0),
             assets: Some(base.join(file.render.0.assets.as_deref().unwrap_or(DEFAULT_ASSETS))),
             max_quads,
+            max_groups,
             bindless_texture_slots,
         },
         frame: FrameConfig {
@@ -1697,6 +1717,14 @@ mod tests {
                 "{error}"
             );
         }
+        for value in ["0", "65537"] {
+            let text = format!("[render]\nmax_groups={value}\n");
+            let error = parse_config(&text).expect_err(&text);
+            assert!(
+                error.contains("max_groups") && error.contains("1..=65536"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -1765,6 +1793,14 @@ mod tests {
                 panic!("render.max_quads={value} endpoint must be accepted: {error}")
             });
         }
+        for value in ["1", "4096", "65536"] {
+            let text = format!("[render]\nmax_groups={value}\n");
+            let config = parse_config(&text).unwrap_or_else(|error| {
+                panic!("render.max_groups={value} endpoint must be accepted: {error}")
+            });
+            assert_eq!(config.render.max_groups.to_string(), value);
+        }
+        assert_eq!(parse_config("").unwrap().render.max_groups, 4_096);
     }
 
     #[test]

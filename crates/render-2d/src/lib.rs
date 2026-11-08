@@ -25,6 +25,7 @@ mod bridge;
 pub mod budget;
 mod clear_only;
 mod filter;
+mod group;
 mod hit;
 mod legacy;
 pub mod map;
@@ -55,6 +56,7 @@ pub use bridge::{
 pub use ck_resources::{Assets, AssetsError, DecodeError, DecodeLimits, Image, TooLarge};
 pub use clear_only::ClearOnly;
 pub use filter::{Filter, UnknownFilter};
+pub use group::{GroupError, GroupKey, POINT_DOMAIN, PointRect};
 pub use hit::{HIT_RECTS_PER_KEY, HIT_RECTS_PER_SCENE, HitError, HitRect, HitRegion, HitRegions};
 pub use legacy::{Admission, LegacyError, LegacyLane};
 pub use map::{
