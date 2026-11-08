@@ -44,6 +44,8 @@ pub struct MetalInstance<K> {
     /// The visible part of the texture as fractions of it, from its top-left corner: `[left, top, right, bottom]`, each
     /// finite and from 0.0 to 1.0, `right` greater than `left` and `bottom` greater than `top`.
     pub source: [f32; 4],
+    /// Premultiplied RGBA8 tint multiplier.
+    pub tint: [u8; 4],
     /// What the quad is for: [`InstanceRole::Scene`] for every quad but the compatibility quad.
     pub role: InstanceRole,
 }
@@ -348,6 +350,7 @@ mod tests {
                 bottom,
             },
             source,
+            tint: [255; 4],
             role: InstanceRole::Scene,
         }
     }

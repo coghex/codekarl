@@ -49,13 +49,13 @@ fn module(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, Error>
 }
 
 /// The vertex input's binding and attributes for `instance`'s layout, and how many attributes the record has: the destination
-/// and the source, and in the bindless record the native slot (`R32_UINT`, location 2, after the 32 bytes of the others).
+/// the source and RGBA8 tint, plus the bindless native slot (`R32_UINT`, location 3).
 fn vertex_input_arrays(
     instance: InstanceLayout,
 ) -> Result<
     (
         [vk::VertexInputBindingDescription; 1],
-        [vk::VertexInputAttributeDescription; 3],
+        [vk::VertexInputAttributeDescription; 4],
         usize,
     ),
     Error,
@@ -76,13 +76,14 @@ fn vertex_input_arrays(
     let attributes = [
         attribute(0, vk::Format::R32G32B32A32_SFLOAT, 0),
         attribute(1, vk::Format::R32G32B32A32_SFLOAT, 16),
-        attribute(2, vk::Format::R32_UINT, 32),
+        attribute(2, vk::Format::R8G8B8A8_UNORM, 32),
+        attribute(3, vk::Format::R32_UINT, 36),
     ];
-    // The slot is an attribute of the bindless record only: the per-revision record is CK-157's 32 bytes.
+    // Tint is present in both layouts; the slot is an attribute of the bindless record only.
     Ok((
         bindings,
         attributes,
-        if instance.has_slot() { 3 } else { 2 },
+        if instance.has_slot() { 4 } else { 3 },
     ))
 }
 

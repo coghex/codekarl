@@ -5,7 +5,8 @@
 
 use ck_gpu_metal::{
     CHECKER_CELL, CHECKER_SIDE, DestinationRect, MetalFilter, MetalQuad, PixelSource,
-    ReadbackImage, ReadbackInstance, ReadbackTexture, checker_pixels, readback_scene,
+    ReadbackImage, ReadbackInstance, ReadbackPath, ReadbackTexture, checker_pixels, readback_scene,
+    readback_scene_counted,
 };
 
 use std::sync::Arc;
@@ -112,6 +113,7 @@ fn instance(
         texture,
         destination,
         source,
+        tint: [255; 4],
     }
 }
 
@@ -216,6 +218,48 @@ pub(crate) fn readback_scene_painter_order() {
     // Columns covered by a single instance do not (columns 0 and 1 are A's alone).
     assert_eq!(target(&forward, 8, 0, 1), target(&backward, 8, 0, 1));
     assert_eq!(target(&forward, 8, 1, 1), target(&backward, 8, 1, 1));
+}
+
+/// Per-instance premultiplied tint reaches the ordinary Metal pipeline, including alpha blending, without splitting a shared-texture run.
+pub(crate) fn readback_scene_per_quad_tint_is_exact_and_keeps_one_batch() {
+    let white = solid(1, 1, WHITE);
+    let list = [
+        ReadbackInstance {
+            tint: [79, 179, 200, 255],
+            ..instance(ReadbackTexture::Image(0), rect(0, 0, 1, 1), WHOLE)
+        },
+        ReadbackInstance {
+            tint: [55, 10, 8, 128],
+            ..instance(ReadbackTexture::Image(0), rect(1, 0, 2, 1), WHOLE)
+        },
+        ReadbackInstance {
+            tint: [255, 0, 0, 255],
+            ..instance(ReadbackTexture::Image(0), rect(2, 0, 3, 1), WHOLE)
+        },
+        ReadbackInstance {
+            tint: [0, 255, 255, 255],
+            ..instance(ReadbackTexture::Image(0), rect(3, 0, 4, 1), WHOLE)
+        },
+    ];
+    let (pixels, counts) = readback_scene_counted(
+        4,
+        1,
+        [0.0; 3],
+        None,
+        MetalFilter::Nearest,
+        &images(&[white]),
+        &list,
+        ReadbackPath::Ordinary,
+    )
+    .expect("the readback works");
+    assert_eq!(
+        counts.batches, 1,
+        "tint does not split the same-texture run"
+    );
+    assert_eq!(at(&pixels, 4, 0, 0), [79, 179, 200, 255]);
+    assert_eq!(at(&pixels, 4, 1, 0), [55, 10, 8, 255]);
+    assert_eq!(at(&pixels, 4, 2, 0), [255, 0, 0, 255]);
+    assert_eq!(at(&pixels, 4, 3, 0), [0, 255, 255, 255]);
 }
 
 /// A legacy quad and a scene instance over the same pixels: the scene instance is on top (the legacy quad is below every
@@ -806,8 +850,12 @@ pub(crate) fn readback_scene_pixel_font_readout() {
     assert_ne!(covered, pixels);
 }
 
-pub(crate) const CASES: [(&str, fn()); 9] = [
+pub(crate) const CASES: [(&str, fn()); 10] = [
     ("readback_scene_painter_order", readback_scene_painter_order),
+    (
+        "readback_scene_per_quad_tint_is_exact_and_keeps_one_batch",
+        readback_scene_per_quad_tint_is_exact_and_keeps_one_batch,
+    ),
     (
         "readback_scene_legacy_quad_is_below",
         readback_scene_legacy_quad_is_below,

@@ -19,17 +19,18 @@ layout(set = 0, binding = 1) uniform sampler frame_sampler;
 layout(set = 1, binding = 0) uniform texture2D scene_images[];
 
 layout(location = 0) in vec2 coordinate;
-layout(location = 1) flat in uint table_slot;
+layout(location = 1) flat in vec4 tint;
+layout(location = 2) flat in uint table_slot;
 layout(location = 0) out vec4 colour;
 
 void main() {
     if (table_slot == 0u) {
         colour = textureLod(
             nonuniformEXT(sampler2D(scene_images[nonuniformEXT(table_slot)], checker_sampler)),
-            coordinate, 0.0);
+            coordinate, 0.0) * tint;
     } else {
         colour = textureLod(
             nonuniformEXT(sampler2D(scene_images[nonuniformEXT(table_slot)], frame_sampler)),
-            coordinate, 0.0);
+            coordinate, 0.0) * tint;
     }
 }

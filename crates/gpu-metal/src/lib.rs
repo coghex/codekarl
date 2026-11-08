@@ -144,7 +144,7 @@
 //! - **A frame is built through its ticket.** For each [`MetalInstance`] the presenter checks it (finite, inside 0 to 1,
 //!   non-empty; an invalid one is skipped and counted and takes no slot), resolves its key through the frame's ticket (the
 //!   active revision, pinned once per revision per frame; repeated keys reuse the first answer through a per-frame map, so
-//!   the cost is one lookup per drawn quad and no scan of the loaded textures), and writes one 32-byte record into the
+//!   the cost is one lookup per drawn quad and no scan of the loaded textures), and writes one 48-byte record into the
 //!   **instance buffer**. A key with nothing shown draws the **checker** (a 64 x 64 magenta/black texture of 8 x 8-pixel
 //!   cells) over its destination. **Adjacent** instances with the same texture are one instanced draw; nothing is sorted
 //!   by texture, so painter order holds. The legacy quad is drawn first, below every scene quad, with its own texture and

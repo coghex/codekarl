@@ -71,6 +71,12 @@ impl Seen {
                 .collect()
         })
     }
+
+    fn tints(&self) -> Vec<[u8; 4]> {
+        self.last().scene.map_or_else(Vec::new, |frame| {
+            frame.quads().iter().map(|quad| quad.tint.rgba()).collect()
+        })
+    }
 }
 
 /// The backend a rig is composed for.
@@ -520,6 +526,39 @@ fn argument_errors_are_catchable_name_the_function_and_change_nothing() {
     assert_eq!(after.metadata.reserved, before.metadata.reserved);
 }
 
+#[test]
+fn set_tint_errors_are_catchable_and_leave_the_scene_unchanged() {
+    let rig = Rig::new(Kind::Native);
+    let texture = rig.token("return texture.load('a.png')");
+    let quad = rig.token(&format!(
+        "return render.create_quad{{texture='{texture}', width=4, height=4}}"
+    ));
+    let before = (rig.seen.count(), rig.seen.tints());
+    for (call, prefix) in [
+        (
+            format!("render.create_quad{{texture='{texture}', width=4, height=4, tint=12}}"),
+            "render.create_quad:",
+        ),
+        (
+            format!("render.create_quad{{texture='{texture}', width=4, height=4, tint='#12xz00'}}"),
+            "render.create_quad:",
+        ),
+        (
+            format!("render.set_tint('{quad}', '#12xz00')"),
+            "render.set_tint:",
+        ),
+        (format!("render.set_tint('{quad}', 12)"), "render.set_tint:"),
+        (
+            format!("render.set_tint('{texture}', '#ffffff')"),
+            "render.set_tint:",
+        ),
+    ] {
+        let error = rig.error(&call);
+        assert!(error.starts_with(prefix), "{call}: {error}");
+        assert_eq!((rig.seen.count(), rig.seen.tints()), before);
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // render: quads and publication
 // ---------------------------------------------------------------------------------------------
@@ -534,7 +573,7 @@ fn quads_are_created_moved_resized_and_destroyed_and_a_callback_publishes_one_fr
     let (mut owner, _dir) = rig.vm("local image = texture.load('a.png')\n\
          local first, second\n\
          function startup()\n\
-           first = render.create_quad{texture = image, x = 1, y = 2, width = 10, height = 20}\n\
+           first = render.create_quad{texture = image, x = 1, y = 2, width = 10, height = 20, tint = '#6e130f80'}\n\
            second = render.create_quad{texture = image, width = 30, height = 40}\n\
          end\n\
          frame.on_update(function()\n\
@@ -542,6 +581,7 @@ fn quads_are_created_moved_resized_and_destroyed_and_a_callback_publishes_one_fr
            render.set_rect(second, 7, 8, 9, 10)\n\
            render.set_position(first, 11, 12)\n\
            render.set_position(second, 13, 14)\n\
+           render.set_tint(second, '#4fb3c8')\n\
          end)\n\
          window.on_opened(function() render.destroy_quad(first) end)\n");
     // startup(): two creations, one frame, painter order = creation order, x and y default to 0.
@@ -554,6 +594,7 @@ fn quads_are_created_moved_resized_and_destroyed_and_a_callback_publishes_one_fr
         rig.seen.rects(),
         [[1.0, 2.0, 10.0, 20.0], [0.0, 0.0, 30.0, 40.0]]
     );
+    assert_eq!(rig.seen.tints(), [[55, 10, 8, 128], [255; 4]]);
     // One callback, four edits, one frame.
     assert!(matches!(
         call(&mut owner, "frame_update"),
@@ -568,6 +609,7 @@ fn quads_are_created_moved_resized_and_destroyed_and_a_callback_publishes_one_fr
         rig.seen.rects(),
         [[11.0, 12.0, 10.0, 20.0], [13.0, 14.0, 9.0, 10.0]]
     );
+    assert_eq!(rig.seen.tints(), [[55, 10, 8, 128], [79, 179, 200, 255]]);
     // A callback that edits nothing publishes nothing.
     assert!(matches!(
         call(&mut owner, "window_nothing"),
@@ -581,6 +623,7 @@ fn quads_are_created_moved_resized_and_destroyed_and_a_callback_publishes_one_fr
     ));
     assert_eq!(rig.seen.count(), attached + 3);
     assert_eq!(rig.seen.rects(), [[13.0, 14.0, 9.0, 10.0]]);
+    assert_eq!(rig.seen.tints(), [[79, 179, 200, 255]]);
     let _ = owner.stop(Duration::from_secs(5));
 }
 

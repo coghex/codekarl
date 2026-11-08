@@ -4,7 +4,7 @@
 //! [`MetalSceneSource`] for its quads in painter order, validates each, resolves its key to a texture handle through
 //! a caller-supplied function (the frame ticket in production), writes one [`InstanceRecord`] per drawn quad and groups
 //! **adjacent** instances with the same texture into one [`Batch`]. Nothing is sorted by texture (a textured alpha scene
-//! cannot generally be sorted by texture), and the cost is one validation, one map lookup and one 32-byte write per
+//! cannot generally be sorted by texture), and the cost is one validation, one map lookup and one 48-byte write per
 //! quad: O(drawn quads), with no scan of the loaded textures.
 
 use std::collections::HashMap;
@@ -19,9 +19,9 @@ pub(crate) const INSTANCE_STRIDE: usize = size_of::<InstanceRecord>();
 
 /// One instance as the instanced vertex function reads it: the destination rectangle in drawable pixels and the visible
 /// part of the texture as fractions of it, each `[left, top, right, bottom]`, then the backend-private texture index (the
-/// native slot of the image in the bindless table, slot 0 being the checker) and three words of padding. The record is **48
-/// bytes** (16 more than the ordinary path's 32): `InstanceData` in `quad.metal` has two `float4` and a `uint4`, so the
-/// shader's stride is the `float4` alignment. At 50,000 quads that is 0.8 MB more per instance buffer.
+/// native slot of the image in the bindless table, slot 0 being the checker), its tint in the first former padding word, and two
+/// words of padding. The record remains **48 bytes**: `InstanceData` in `quad.metal` has two `float4` and a `uint4`, so the
+/// shader's stride is the `float4` alignment.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct InstanceRecord {
@@ -29,7 +29,9 @@ pub(crate) struct InstanceRecord {
     pub(crate) source: [f32; 4],
     /// The index into the bindless table (ignored by the ordinary path).
     pub(crate) slot: u32,
-    pub(crate) padding: [u32; 3],
+    /// Premultiplied RGBA8 tint in the first word of the existing uint4.
+    pub(crate) tint: [u8; 4],
+    pub(crate) padding: [u32; 2],
 }
 
 /// One instanced draw: the instances `first..first + count` of the buffer, all with `texture`. A null `texture` is the
@@ -182,6 +184,7 @@ impl Output<'_> {
         slot: u32,
         visible: [f32; 4],
         destination: DestinationRect,
+        tint: [u8; 4],
     ) {
         let mut slot = slot;
         if let Layout::Bindless {
@@ -215,7 +218,8 @@ impl Output<'_> {
                 ],
                 source: visible,
                 slot,
-                padding: [0; 3],
+                tint,
+                padding: [0; 2],
             },
         );
         let index = u32::try_from(self.written).unwrap_or(u32::MAX);
@@ -252,7 +256,7 @@ impl Output<'_> {
                 } else {
                     self.counters.resolved += 1;
                     self.counters.pinned += 1;
-                    self.push(texture, 0, source, destination);
+                    self.push(texture, 0, source, destination, [255; 4]);
                 }
                 false
             }
@@ -266,7 +270,7 @@ impl Output<'_> {
                     self.counters.dropped += 1;
                 } else {
                     self.counters.resolved += 1;
-                    self.push(std::ptr::null_mut(), slot, source, destination);
+                    self.push(std::ptr::null_mut(), slot, source, destination, [255; 4]);
                 }
                 false
             }
@@ -388,10 +392,17 @@ pub(crate) fn build_scene_in<K: Copy + Eq + Hash, S: BuildHasher>(
                 texture.slot,
                 instance.source,
                 instance.destination,
+                instance.tint,
             );
         } else {
             output.counters.checker += 1;
-            output.push(std::ptr::null_mut(), 0, WHOLE, instance.destination);
+            output.push(
+                std::ptr::null_mut(),
+                0,
+                WHOLE,
+                instance.destination,
+                instance.tint,
+            );
         }
     });
     if first && compat_expected && !gated {
@@ -440,6 +451,7 @@ mod tests {
                 bottom: 4,
             },
             source: [0.25, 0.25, 0.75, 0.75],
+            tint: [255; 4],
             role: InstanceRole::Scene,
         }
     }
@@ -802,5 +814,6 @@ mod tests {
         assert_eq!(INSTANCE_STRIDE, 48);
         assert_eq!(align_of::<InstanceRecord>(), 4);
         assert_eq!(std::mem::offset_of!(InstanceRecord, slot), 32);
+        assert_eq!(std::mem::offset_of!(InstanceRecord, tint), 36);
     }
 }

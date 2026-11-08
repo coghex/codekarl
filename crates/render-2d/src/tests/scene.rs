@@ -61,6 +61,68 @@ fn quad_tokens_round_trip_and_reject_texture_tokens() {
 }
 
 #[test]
+fn tint_rounds_straight_channels_and_publishes_only_as_a_scene_edit() {
+    use crate::Tint;
+
+    assert_eq!(
+        Tint::from_straight(255, 255, 255, 128).rgba(),
+        [128, 128, 128, 128]
+    );
+    assert_eq!(Tint::from_straight(10, 20, 30, 0).rgba(), [0, 0, 0, 0]);
+    assert_eq!(Tint::default(), Tint::WHITE);
+
+    let service = service();
+    let bridge = SceneBridge::new(Filter::Nearest);
+    let sink = RecordingSink::new();
+    attach(&bridge, &sink);
+    let mut writer = bridge.take_writer().unwrap();
+    let key = writer
+        .create_quad(texture(&service).1, 1.0, 2.0, 3.0, 4.0)
+        .unwrap();
+    assert!(writer.publish());
+    let original = latest_snapshot(&sink).scene.unwrap().quads()[0].clone();
+    assert_eq!(original.tint, Tint::WHITE);
+
+    let tint = Tint::from_straight(0x6e, 0x13, 0x0f, 0x80);
+    writer.set_tint(key, tint).unwrap();
+    assert_eq!(sink.count(), 2, "tint edits wait for publication");
+    assert!(writer.publish());
+    let changed = latest_snapshot(&sink).scene.unwrap().quads()[0].clone();
+    assert_eq!(changed.tint, tint);
+    assert_eq!(
+        (changed.x, changed.y, changed.width, changed.height),
+        (original.x, original.y, original.width, original.height)
+    );
+    assert_eq!(changed.texture.key(), original.texture.key());
+    assert!(!writer.publish());
+}
+
+#[test]
+fn set_tint_refuses_foreign_and_stale_quad_keys() {
+    let service = service();
+    let bridge = SceneBridge::new(Filter::Nearest);
+    let other = SceneBridge::new(Filter::Nearest);
+    let mut writer = bridge.take_writer().unwrap();
+    let foreign = other
+        .take_writer()
+        .unwrap()
+        .create_quad(texture(&service).1, 0.0, 0.0, 1.0, 1.0)
+        .unwrap();
+    let stale = writer
+        .create_quad(texture(&service).1, 0.0, 0.0, 1.0, 1.0)
+        .unwrap();
+    writer.destroy_quad(stale).unwrap();
+    assert!(matches!(
+        writer.set_tint(foreign, crate::Tint::WHITE),
+        Err(QuadError::Foreign(_))
+    ));
+    assert!(matches!(
+        writer.set_tint(stale, crate::Tint::WHITE),
+        Err(QuadError::Stale(_))
+    ));
+}
+
+#[test]
 fn slots_reuse_oldest_first_and_stale_or_foreign_keys_are_refused() {
     let service = service();
     let bridge = SceneBridge::with_limits(
@@ -661,6 +723,7 @@ fn frame_placement_matches_legacy_destination_and_normalized_source() {
             width,
             height,
             clip: None,
+            tint: crate::Tint::WHITE,
         };
         let old_place = legacy.place(&metrics);
         let frame_place = frame.place(&metrics);
@@ -715,6 +778,7 @@ fn place_is_placement_plus_the_texture_for_every_geometry_case() {
                 width,
                 height,
                 clip: None,
+                tint: crate::Tint::WHITE,
             };
             let placement = frame.placement(&metrics);
             let placed = frame.place(&metrics);

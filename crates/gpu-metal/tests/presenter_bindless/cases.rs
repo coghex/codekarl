@@ -75,6 +75,7 @@ fn of(index: usize, destination: DestinationRect) -> ReadbackInstance {
         texture: ReadbackTexture::Image(index),
         destination,
         source: WHOLE,
+        tint: [255; 4],
     }
 }
 
@@ -253,6 +254,45 @@ pub(crate) fn bindless_painter_order_and_blending_match_the_ordinary_path() {
     );
 }
 
+/// Bindless Metal passes opaque and translucent premultiplied tints per instance in one draw.
+pub(crate) fn bindless_per_quad_tint_is_exact_and_keeps_one_batch() {
+    let white = solid(1, 1, [255; 4]);
+    let list = [
+        ReadbackInstance {
+            tint: [79, 179, 200, 255],
+            ..of(0, rect(0, 0, 1, 1))
+        },
+        ReadbackInstance {
+            tint: [55, 10, 8, 128],
+            ..of(0, rect(1, 0, 2, 1))
+        },
+        ReadbackInstance {
+            tint: [255, 0, 0, 255],
+            ..of(0, rect(2, 0, 3, 1))
+        },
+        ReadbackInstance {
+            tint: [0, 255, 255, 255],
+            ..of(0, rect(3, 0, 4, 1))
+        },
+    ];
+    let (pixels, counts) = readback_scene_counted(
+        4,
+        1,
+        [0.0; 3],
+        None,
+        MetalFilter::Nearest,
+        &images(&[white]),
+        &list,
+        bindless(2),
+    )
+    .expect("the readback works");
+    assert_eq!(counts.batches, 1, "the bindless table draws one scene run");
+    assert_eq!(at(&pixels, 4, 0, 0), [79, 179, 200, 255]);
+    assert_eq!(at(&pixels, 4, 1, 0), [55, 10, 8, 255]);
+    assert_eq!(at(&pixels, 4, 2, 0), [255, 0, 0, 255]);
+    assert_eq!(at(&pixels, 4, 3, 0), [0, 255, 255, 255]);
+}
+
 /// Instances whose textures alternate keep their order inside one draw: twenty overlapping translucent instances of two
 /// images, alternating, give the ordinary path's pixels from twenty draws. Negative control: grouping the run by texture
 /// (all of image 0, then all of image 1) changes the stacking and fails the equality.
@@ -315,6 +355,7 @@ pub(crate) fn bindless_checker_stays_sharp_under_a_linear_frame_inside_the_same_
                 texture: ReadbackTexture::Checker,
                 destination: rect(0, 0, signed, signed),
                 source: WHOLE,
+                tint: [255; 4],
             },
             of(0, rect(signed, 0, 2 * signed, signed)),
         ];
@@ -513,7 +554,7 @@ pub(crate) fn readback_bindless_each_table_buffer_has_exactly_the_configured_ent
 }
 
 /// The cases of this module.
-pub(crate) const CASES: [(&str, fn()); 7] = [
+pub(crate) const CASES: [(&str, fn()); 8] = [
     (
         "readback_bindless_one_draw_for_ten_thousand_instances_over_five_thousand_textures",
         bindless_one_draw_for_ten_thousand_instances_over_five_thousand_textures,
@@ -521,6 +562,10 @@ pub(crate) const CASES: [(&str, fn()); 7] = [
     (
         "readback_bindless_painter_order_and_blending_match_the_ordinary_path",
         bindless_painter_order_and_blending_match_the_ordinary_path,
+    ),
+    (
+        "readback_bindless_per_quad_tint_is_exact_and_keeps_one_batch",
+        bindless_per_quad_tint_is_exact_and_keeps_one_batch,
     ),
     (
         "readback_bindless_alternating_textures_keep_painter_order_in_one_draw",

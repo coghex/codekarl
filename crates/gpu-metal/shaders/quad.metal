@@ -16,6 +16,7 @@ struct QuadUniforms {
 struct QuadVertex {
     float4 position [[position]];
     float2 texcoord;
+    float4 tint [[flat]];
 };
 
 vertex QuadVertex ck_quad_vertex(uint vertex_id [[vertex_id]], constant QuadUniforms &uniforms [[buffer(0)]]) {
@@ -27,12 +28,13 @@ vertex QuadVertex ck_quad_vertex(uint vertex_id [[vertex_id]], constant QuadUnif
     out.position = float4(pixel.x / uniforms.viewport.x * 2.0 - 1.0,
                           1.0 - pixel.y / uniforms.viewport.y * 2.0, 0.0, 1.0);
     out.texcoord = texcoord;
+    out.tint = float4(1.0f);
     return out;
 }
 
 fragment float4 ck_quad_fragment(QuadVertex in [[stage_in]], texture2d<float> image [[texture(0)]],
                                  sampler image_sampler [[sampler(0)]]) {
-    return image.sample(image_sampler, in.texcoord);
+    return image.sample(image_sampler, in.texcoord) * in.tint;
 }
 
 /* The instanced scene (milestone 5): the same strip, the same pixel-to-clip conversion and texture-coordinate mapping, with
@@ -44,7 +46,7 @@ struct InstanceData {
     float4 destination; /* left, top, right, bottom, in drawable pixels */
     float4 source;      /* left, top, right, bottom, as fractions of the texture */
     uint slot;          /* the image's entry in the bindless table (the bindless pipeline only; slot 0 is the checker) */
-    uint padding0;      /* the record is 48 bytes: two float4 and a uint4 (`InstanceRecord` in batch.rs) */
+    uchar4 tint;        /* first word of the existing uint4; record remains 48 bytes */
     uint padding1;
     uint padding2;
 };
@@ -66,6 +68,7 @@ vertex QuadVertex ck_quad_instance_vertex(uint vertex_id [[vertex_id]], uint ins
     out.position = float4(pixel.x / uniforms.viewport.x * 2.0 - 1.0,
                           1.0 - pixel.y / uniforms.viewport.y * 2.0, 0.0, 1.0);
     out.texcoord = texcoord;
+    out.tint = float4(instance.tint) / 255.0f;
     return out;
 }
 
@@ -84,6 +87,7 @@ struct BindlessEntry {
 struct BindlessVertex {
     float4 position [[position]];
     float2 texcoord;
+    float4 tint [[flat]];
     uint slot [[flat]];
 };
 
@@ -98,6 +102,7 @@ vertex BindlessVertex ck_quad_bindless_vertex(uint vertex_id [[vertex_id]], uint
     out.position = float4(pixel.x / uniforms.viewport.x * 2.0 - 1.0,
                           1.0 - pixel.y / uniforms.viewport.y * 2.0, 0.0, 1.0);
     out.texcoord = texcoord;
+    out.tint = float4(instance.tint) / 255.0f;
     out.slot = instance.slot;
     return out;
 }
@@ -108,9 +113,9 @@ fragment float4 ck_quad_bindless_fragment(BindlessVertex in [[stage_in]],
                                           sampler image_sampler [[sampler(1)]]) {
     texture2d<float> image = table[in.slot].image;
     if (in.slot == 0u) {
-        return image.sample(checker_sampler, in.texcoord);
+        return image.sample(checker_sampler, in.texcoord) * in.tint;
     }
-    return image.sample(image_sampler, in.texcoord);
+    return image.sample(image_sampler, in.texcoord) * in.tint;
 }
 
 /* The map pass (milestone 6, slices 1 and 6): one triangle that covers the whole map target, drawn with the full colour rules of

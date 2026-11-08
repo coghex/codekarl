@@ -3372,6 +3372,8 @@ pub struct ReadbackInstance {
     pub destination: DestinationRect,
     /// The visible part of the texture as fractions of it, `[left, top, right, bottom]`.
     pub source: [f32; 4],
+    /// Premultiplied RGBA8 tint multiplier.
+    pub tint: [u8; 4],
 }
 
 /// Which path an off-screen scene is drawn through ([`readback_scene_counted`]).
@@ -3454,6 +3456,7 @@ pub fn readback_scene_counted(
                     },
                     destination: instance.destination,
                     source: instance.source,
+                    tint: instance.tint,
                     role: InstanceRole::Scene,
                 });
             }
@@ -3495,7 +3498,8 @@ pub fn readback_scene_counted(
             destination: [0.0; 4],
             source: [0.0; 4],
             slot: 0,
-            padding: [0; 3],
+            tint: [255; 4],
+            padding: [0; 2],
         };
         instances.len()
     ];

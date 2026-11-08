@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ck_resources::{HandleError, RegistryId, ResourceState, TextureRef, Token, TokenKind};
 
+use crate::Tint;
 use crate::group::{GroupError, GroupKey, PointRect, in_domain};
 use crate::hit::{
     GroupHits, HIT_RECTS_PER_KEY, HIT_RECTS_PER_SCENE, HitError, HitRect, HitRegions, valid_key,
@@ -179,6 +180,8 @@ pub struct FrameQuad {
     /// The clip of the quad's group, in absolute window points (the group's offset does not move it), or `None`. The visible part of
     /// the quad is its destination intersected with the window and with this rectangle, both in pixels.
     pub clip: Option<PointRect>,
+    /// Premultiplied per-quad tint, RGBA8.
+    pub tint: Tint,
 }
 
 /// A placed frame quad. Source coordinates are normalized fractions of the active texture.
@@ -453,6 +456,7 @@ pub(crate) struct EditableQuad {
     y: f64,
     width: f64,
     height: f64,
+    tint: Tint,
 }
 
 /// One quad of a frame being built, with what its group applies to it.
@@ -592,6 +596,7 @@ impl EditScene {
             y,
             width,
             height,
+            tint: Tint::WHITE,
         });
         self.slots[index].previous = previous;
         self.slots[index].next = None;
@@ -619,6 +624,16 @@ impl EditScene {
             .expect("validated live quad");
         quad.x = x;
         quad.y = y;
+        Ok(())
+    }
+
+    pub(crate) fn set_tint(&mut self, key: QuadKey, tint: Tint) -> Result<(), QuadError> {
+        let index = self.validate_key(key)?;
+        self.slots[index]
+            .quad
+            .as_mut()
+            .expect("validated live quad")
+            .tint = tint;
         Ok(())
     }
 
@@ -936,6 +951,7 @@ impl EditScene {
                 width: visible.quad.width,
                 height: visible.quad.height,
                 clip: visible.clip,
+                tint: visible.quad.tint,
             });
         }
     }

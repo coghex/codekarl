@@ -42,6 +42,7 @@ fn scene_instance(key: u32, destination: DestinationRect) -> MetalInstance<u32> 
         key,
         destination,
         source: WHOLE,
+        tint: [255; 4],
         role: InstanceRole::Scene,
     }
 }
@@ -51,6 +52,7 @@ fn compat_instance(key: u32, destination: DestinationRect) -> MetalInstance<u32>
         key,
         destination,
         source: WHOLE,
+        tint: [255; 4],
         role: InstanceRole::Compat,
     }
 }

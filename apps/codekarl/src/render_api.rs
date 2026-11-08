@@ -51,7 +51,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ck_lua::{Completion, ConfigValue, Extension, HostFunction};
 use ck_render_2d::{
-    Assets, GroupKey, LegacyError, LegacyLane, PointRect, Quad, QuadKey, SceneWriter, validate_rect,
+    Assets, GroupKey, LegacyError, LegacyLane, PointRect, Quad, QuadKey, SceneWriter, Tint,
+    validate_rect,
 };
 use ck_resources::{AdmitError, ResourceService, TextureKey};
 
@@ -92,7 +93,7 @@ type LaneSeam = Arc<dyn Fn(&'static str) + Send + Sync>;
 /// The keys `render.quad` takes.
 const FIELDS: [&str; 5] = ["image", "x", "y", "width", "height"];
 /// The keys `render.create_quad` takes.
-const QUAD_FIELDS: [&str; 6] = ["texture", "x", "y", "width", "height", "group"];
+const QUAD_FIELDS: [&str; 7] = ["texture", "x", "y", "width", "height", "group", "tint"];
 
 /// A number field: absent (`None`), or a number; anything else is an error naming the field.
 fn field(
@@ -106,6 +107,32 @@ fn field(
             .map(Some)
             .ok_or_else(|| format!("{function}: `{name}` must be a number")),
     }
+}
+
+/// Parses the public straight-alpha hex color and converts it to the renderer's premultiplied RGBA8 form.
+fn parse_tint(function: &str, name: &str, value: &str) -> Result<Tint, String> {
+    let invalid = || format!("{function}: `{name}` must be #rrggbb or #rrggbbaa");
+    let digits = value.strip_prefix('#').ok_or_else(invalid)?;
+    if digits.len() != 6 && digits.len() != 8 {
+        return Err(invalid());
+    }
+    let bytes = digits.as_bytes();
+    let nibble = |value: u8| match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    };
+    let byte = |offset: usize| -> Result<u8, String> {
+        let high = nibble(bytes[offset]).ok_or_else(invalid)?;
+        let low = nibble(bytes[offset + 1]).ok_or_else(invalid)?;
+        Ok((high << 4) | low)
+    };
+    let r = byte(0)?;
+    let g = byte(2)?;
+    let b = byte(4)?;
+    let a = if digits.len() == 8 { byte(6)? } else { 255 };
+    Ok(Tint::from_straight(r, g, b, a))
 }
 
 /// A number argument at `position` of `function`'s arguments.
@@ -340,6 +367,11 @@ impl Shared {
             .ok_or("render.create_quad: `width` is missing")?;
         let height = field("render.create_quad", table, "height")?
             .ok_or("render.create_quad: `height` is missing")?;
+        let tint = match table.get("tint") {
+            None => Tint::WHITE,
+            Some(ConfigValue::String(value)) => parse_tint("render.create_quad", "tint", value)?,
+            Some(_) => return Err("render.create_quad: `tint` must be #rrggbb or #rrggbbaa".into()),
+        };
         // Every cheap check comes before the backend/ended refusal and before any reference is taken.
         validate_rect(x, y, width, height)
             .map_err(|error| format!("render.create_quad: {error}"))?;
@@ -356,6 +388,11 @@ impl Shared {
         let quad = writer
             .create_quad_in(group, reference, x, y, width, height)
             .map_err(|error| format!("render.create_quad: {error}"))?;
+        if tint != Tint::WHITE {
+            writer
+                .set_tint(quad, tint)
+                .map_err(|error| format!("render.create_quad: {error}"))?;
+        }
         self.note_accepted();
         Ok(vec![ConfigValue::String(quad.token().to_string())])
     }
@@ -377,6 +414,26 @@ impl Shared {
         };
         writer
             .set_position(quad, x, y)
+            .map_err(|error| format!("{F}: {error}"))?;
+        self.note_accepted();
+        Ok(Vec::new())
+    }
+
+    fn set_tint(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
+        const F: &str = "render.set_tint";
+        arity(F, arguments, 2, "(quad, color)")?;
+        let quad = quad_argument(F, arguments)?;
+        let Some(ConfigValue::String(value)) = arguments.get(1).and_then(Option::as_ref) else {
+            return Err(format!("{F}: `color` must be #rrggbb or #rrggbbaa"));
+        };
+        let tint = parse_tint(F, "color", value)?;
+        self.scene_service(F)?;
+        let mut writer = self.writer();
+        let Some(writer) = writer.as_mut() else {
+            return Err(format!("{F}: {}", AdmitError::Ended));
+        };
+        writer
+            .set_tint(quad, tint)
             .map_err(|error| format!("{F}: {error}"))?;
         self.note_accepted();
         Ok(Vec::new())
@@ -801,6 +858,7 @@ fn build(shared: &Arc<Shared>) -> Extension {
         .function("clear_quad", function(Shared::clear_quad))
         .function("create_quad", function(Shared::create_quad))
         .function("set_position", function(Shared::set_position))
+        .function("set_tint", function(Shared::set_tint))
         .function("set_rect", function(Shared::set_rect))
         .function("destroy_quad", function(Shared::destroy_quad))
         .function("set_hit", function(Shared::set_hit))

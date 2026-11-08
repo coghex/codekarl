@@ -95,6 +95,7 @@ impl MetalSceneSource<TextureKey> for SceneFrameSource {
                     placed.source.right,
                     placed.source.bottom,
                 ],
+                tint: quad.tint.rgba(),
                 role,
             });
         }

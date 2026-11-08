@@ -20,7 +20,7 @@
 //!   log tolerates narrowly (`instance.rs`): [`create_table_layout`] marks that one call.
 //! - **The final stage is judged once.** The rows cover the next stage's needs too (its two sampler bindings and its
 //!   non-uniform index), so a device is never accepted here and refused one stage later. The last row is the instance stride
-//!   (milestone 5.5, issue 6): the bindless record's 36 bytes, padded to the portability subset's queried
+//!   (milestone 5.5, issue 6): the bindless record's 40 bytes, padded to the portability subset's queried
 //!   `minVertexInputBindingStrideAlignment`, must fit `maxVertexInputBindingStride` (at least 2,048 on every device, so the row is
 //!   unreachable in practice, but it is judged here and the owner's logged fallback applies if it ever fails).
 
@@ -588,8 +588,8 @@ mod tests {
         }
     }
 
-    /// The stride row judges the record padded to the portability subset's alignment: 36 bytes (an alignment of 1, this Mac's), 40
-    /// (8), 48 (16). A device whose `maxVertexInputBindingStride` is below the padded stride falls back, naming the row.
+    /// The stride row judges the 40-byte bindless record padded to the portability subset's alignment: 40 bytes (1, 4 or 8), 48
+    /// (16). A device whose `maxVertexInputBindingStride` is below the padded stride falls back, naming the row.
     #[test]
     fn the_stride_row_judges_the_padded_record() {
         let at = |alignment, max| {
@@ -599,8 +599,8 @@ mod tests {
             evaluate(&caps, N)
         };
         assert!(
-            at(1, 36).is_empty() && at(0, 36).is_empty(),
-            "no alignment: 36"
+            at(1, 40).is_empty() && at(0, 40).is_empty(),
+            "no alignment: 40"
         );
         assert!(at(8, 40).is_empty());
         assert_eq!(at(8, 39), ["maxVertexInputBindingStride 39 < 40 requested"]);
@@ -609,7 +609,7 @@ mod tests {
             at(16, 47),
             ["maxVertexInputBindingStride 47 < 48 requested"]
         );
-        assert!(at(4, 36).is_empty(), "36 is already a multiple of 4");
+        assert!(at(4, 40).is_empty(), "40 is already a multiple of 4");
     }
 
     #[test]

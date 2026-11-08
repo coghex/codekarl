@@ -63,6 +63,7 @@ fn quad(key: u32, left: i32, top: i32, side: i32) -> VulkanInstance<u32> {
             bottom: top + side,
         },
         source: WHOLE,
+        tint: [255; 4],
         role: InstanceRole::Scene,
     }
 }

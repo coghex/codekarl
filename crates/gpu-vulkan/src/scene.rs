@@ -367,8 +367,8 @@ pub(crate) trait SceneStart: Send + Sync {
     ) -> Result<Box<dyn SceneObject>, Error>;
     /// The instance buffer's bounds.
     fn limits(&self) -> SceneLimits;
-    /// How an instance is laid out in the buffer, decided before the buffer is made: the bindless mode's padded 36 bytes when the
-    /// gate will pass, else the per-revision mode's 32. The same pure rows the ledger evaluates at its start, which the presenter
+    /// How an instance is laid out in the buffer, decided before the buffer is made: the bindless mode's padded 40 bytes when the
+    /// gate will pass, else the per-revision mode's 36. The same pure rows the ledger evaluates at its start, which the presenter
     /// checks against what the ledger then did.
     ///
     /// # Errors

@@ -43,6 +43,7 @@ mod quad;
 mod renderer;
 mod resident;
 mod scene;
+mod tint;
 #[cfg(feature = "vulkan")]
 mod vulkan;
 #[cfg(feature = "vulkan")]
@@ -93,6 +94,7 @@ pub use resident::{
     ResidentRefusal, ResidentStats, WakeRelay,
 };
 pub use scene::{FrameQuad, PlacedFrameQuad, QuadKey, SceneFrame, SceneLimits, SceneLimitsError};
+pub use tint::Tint;
 #[cfg(feature = "vulkan")]
 pub use vulkan::VulkanResourceLimits;
 #[cfg(feature = "vulkan")]
