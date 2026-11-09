@@ -2,12 +2,17 @@
 //! is resident [`map_residency`](crate::map_residency)'s; this module creates, records and destroys.
 //!
 //! - **[`MapPipeline`]**: the map pass's render pass (one `R8G8B8A8_UNORM` colour attachment, kept in `COLOR_ATTACHMENT_OPTIMAL` by the
-//!   pass; the layouts change by the explicit barriers below), its descriptor set layout (three sampled images: grid A, grid B, the
-//!   rules), a pool, the pipeline layout (a 32-byte push constant for the fragment stage) and the pipeline (the full-target triangle,
-//!   dynamic viewport and scissor, no blending).
-//! - **[`MapInputObjects`]**: grid A, grid B and the rules (an 80 x 258 image) as `R8G8B8A8_UNORM` optimal-tiling images (`SAMPLED |
-//!   TRANSFER_DST`), their memory, views, one descriptor set naming them, and one host-visible staging buffer holding all three. The
-//!   upload is recorded in the frame's command buffer before the map pass and counts as done only once the frame is submitted.
+//!   pass; the layouts change by the explicit barriers below), its descriptor set layouts (set 0: four sampled images, grid A, grid B,
+//!   the rules and the owner grid, and the overlay palette's storage buffer; set 1: the map mode's value table, a storage buffer), a
+//!   pool, the pipeline layout (a 32-byte push constant for the fragment stage) and the pipeline (the full-target triangle, dynamic
+//!   viewport and scissor, no blending).
+//! - **[`MapInputObjects`]**: grid A, grid B, the rules (an 80 x 258 image) and the owner grid (a 1 x 1 "owned by nobody" image for a
+//!   map with no modes) as `R8G8B8A8_UNORM` optimal-tiling images (`SAMPLED | TRANSFER_DST`), their memory, views, one descriptor set
+//!   naming them, and one host-visible staging buffer holding all four. The upload is recorded in the frame's command buffer before
+//!   the map pass and counts as done only once the frame is submitted.
+//! - **[`MapTableObjects`]**: the value table of one map-mode revision (one `u32` per place, in a host-visible storage buffer written
+//!   when it is made and never again) and its descriptor set (set 1). A frame with no mode reads a four-byte dummy and tells the shader
+//!   to ignore it (the push constants' last word).
 //! - **[`MapTargetObjects`]**: the map target, an `R8G8B8A8_UNORM` image of the view's size (`COLOR_ATTACHMENT | SAMPLED`), its view and
 //!   framebuffer, and the descriptor set (of the legacy quad's own set layout, one combined image sampler with the nearest sampler) that
 //!   the window pass draws it through.
@@ -45,19 +50,27 @@ const LOCATION_FRAGMENT_SPIRV: &[u8] =
 
 /// The format of every map image, the target included.
 pub(crate) const MAP_FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
-/// The push constants: `origin`, `crop` and `top_left`, each two `i32`, then the zoom step and a zero.
+/// The push constants: `origin`, `crop` and `top_left`, each two `i32`, then the zoom step and the map-mode flag (1 when a mode shows).
 const PUSH_BYTES: u32 = 32;
-/// The descriptor sets the pool holds: an input and a retired input (three images each), a target and a retired target (the window
-/// pass's combined image sampler each).
-const POOL_SETS: u32 = 4;
+/// The descriptor sets the pool holds: an input and a retired input (four images and the palette each), a target and a retired target
+/// (the window pass's combined image sampler each), and a table and a retired table (one storage buffer each).
+const POOL_SETS: u32 = 6;
+/// The sampled images of an input's set: grid A, grid B, the rules, the palette's slot (a buffer, binding 3) and the owner grid.
+const INPUT_IMAGES: usize = 4;
+/// The binding of the owner grid in the input's set (the palette's storage buffer is 3).
+const OWNER_BINDING: u32 = 4;
+/// The owner grid of an input that has none: one texel, owned by nobody (`0xFFFF`).
+const NO_OWNERS: [u8; 4] = [255, 255, 0, 255];
 
 /// What a frame's map pass records. Plain data: it names no object, so it is carried from the frame's preparation to its recording.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MapRecord {
     /// The input's upload is recorded in this frame (it was never submitted).
     pub(crate) upload: bool,
-    /// The push constants: `origin`, `crop` and `top_left`, the zoom step and a zero.
+    /// The push constants: `origin`, `crop` and `top_left`, the zoom step and the map-mode flag.
     pub(crate) constants: [i32; 8],
+    /// The revision of the mode table this frame reads (`None`: no mode shows, and the dummy table is read).
+    pub(crate) table_revision: Option<u64>,
     /// The view, which is the target's size, in map pixels.
     pub(crate) view: [u32; 2],
     /// Where the enlarged map lands, in drawable pixels.
@@ -87,8 +100,9 @@ impl MapRecord {
                 left,
                 top,
                 i32::from(map.step()),
-                0,
+                i32::from(map.mode().is_some()),
             ],
+            table_revision: map.mode().map(|(revision, _)| revision),
             view: map.view(),
             destination: map.destination(),
             source: map.source(),
@@ -127,6 +141,7 @@ fn module(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, Failur
 pub(crate) struct MapPipeline {
     pub(crate) pass: Option<vk::RenderPass>,
     pub(crate) set_layout: Option<vk::DescriptorSetLayout>,
+    pub(crate) table_set_layout: Option<vk::DescriptorSetLayout>,
     pub(crate) pool: Option<vk::DescriptorPool>,
     pub(crate) layout: Option<vk::PipelineLayout>,
     pub(crate) pipeline: Option<vk::Pipeline>,
@@ -139,6 +154,7 @@ impl MapPipeline {
     pub(crate) fn exists(&self) -> bool {
         self.pass.is_some()
             || self.set_layout.is_some()
+            || self.table_set_layout.is_some()
             || self.pool.is_some()
             || self.layout.is_some()
             || self.pipeline.is_some()
@@ -172,6 +188,7 @@ impl MapPipeline {
                 .map_err(|code| ("vkCreateRenderPass", code))?,
         );
         let mut bindings: Vec<vk::DescriptorSetLayoutBinding<'_>> = (0..3)
+            .chain(std::iter::once(OWNER_BINDING))
             .map(|binding| {
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(binding)
@@ -192,16 +209,28 @@ impl MapPipeline {
         let set_layout = unsafe { device.create_descriptor_set_layout(&set_layout_info, None) }
             .map_err(|code| ("vkCreateDescriptorSetLayout", code))?;
         self.set_layout = Some(set_layout);
+        let table_bindings = [vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+        let table_layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&table_bindings);
+        // SAFETY: the device is live and `table_layout_info` (with its binding) is valid for the call.
+        let table_set_layout =
+            unsafe { device.create_descriptor_set_layout(&table_layout_info, None) }
+                .map_err(|code| ("vkCreateDescriptorSetLayout", code))?;
+        self.table_set_layout = Some(table_set_layout);
         let sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::SAMPLED_IMAGE)
-                .descriptor_count(6),
+                .descriptor_count(8),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(2),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(2),
+                .descriptor_count(4),
         ];
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
@@ -212,7 +241,7 @@ impl MapPipeline {
             unsafe { device.create_descriptor_pool(&pool_info, None) }
                 .map_err(|code| ("vkCreateDescriptorPool", code))?,
         );
-        let layouts = [set_layout];
+        let layouts = [set_layout, table_set_layout];
         let ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
@@ -500,6 +529,10 @@ impl MapPipeline {
             // SAFETY: nothing uses the layout.
             unsafe { device.destroy_descriptor_set_layout(set_layout, None) };
         }
+        if let Some(set_layout) = self.table_set_layout.take() {
+            // SAFETY: nothing uses the layout.
+            unsafe { device.destroy_descriptor_set_layout(set_layout, None) };
+        }
         if let Some(pass) = self.pass.take() {
             // SAFETY: the pipeline and the framebuffers made against it are destroyed.
             unsafe { device.destroy_render_pass(pass, None) };
@@ -590,24 +623,25 @@ impl MapImage {
     }
 }
 
-/// A map input on the device: grid A, grid B and the palette, their descriptor set, and the one staging buffer of their upload.
+/// A map input on the device: grid A, grid B, the rules and the owner grid, the palette, their descriptor set, and the one staging
+/// buffer of their upload.
 #[derive(Default)]
 pub(crate) struct MapInputObjects {
-    images: [MapImage; 3],
+    images: [MapImage; INPUT_IMAGES],
     set: Option<vk::DescriptorSet>,
     staging: Option<vk::Buffer>,
     staging_memory: Option<vk::DeviceMemory>,
     palette_buffer: Option<vk::Buffer>,
     palette_memory: Option<vk::DeviceMemory>,
-    /// The three images' sizes, and the byte offset of each in the staging buffer.
-    extents: [(u32, u32); 3],
-    offsets: [u64; 3],
+    /// The images' sizes, and the byte offset of each in the staging buffer.
+    extents: [(u32, u32); INPUT_IMAGES],
+    offsets: [u64; INPUT_IMAGES],
     /// The input's generation (informational).
     pub(crate) generation: u64,
 }
 
 impl MapInputObjects {
-    /// Creates the three images, their descriptor set and the staging buffer filled with the three images' bytes.
+    /// Creates the images, their descriptor set and the staging buffer filled with the images' bytes.
     pub(crate) fn create(
         &mut self,
         device: &ash::Device,
@@ -618,11 +652,20 @@ impl MapInputObjects {
     ) -> Result<(), Failure> {
         self.generation = input.generation();
         let [width, height] = input.size();
-        let parts: [&[u8]; 3] = [input.grid_a(), input.grid_b(), input.rules_image()];
+        let (owner_extent, owner_grid) = input
+            .owner_grid()
+            .map_or(((1, 1), &NO_OWNERS[..]), |grid| ((width, height), grid));
+        let parts: [&[u8]; INPUT_IMAGES] = [
+            input.grid_a(),
+            input.grid_b(),
+            input.rules_image(),
+            owner_grid,
+        ];
         self.extents = [
             (width, height),
             (width, height),
             (RULES_WIDTH, RULES_HEIGHT),
+            owner_extent,
         ];
         let mut total = 0_u64;
         for (offset, part) in self.offsets.iter_mut().zip(parts) {
@@ -724,10 +767,16 @@ impl MapInputObjects {
         let writes: Vec<vk::WriteDescriptorSet<'_>> = infos
             .iter()
             .enumerate()
-            .map(|(binding, info)| {
+            .map(|(position, info)| {
+                // Grid A, grid B and the rules are bindings 0 to 2; binding 3 is the palette's buffer, so the owner grid is 4.
+                let binding = if position == INPUT_IMAGES - 1 {
+                    OWNER_BINDING
+                } else {
+                    u32::try_from(position).unwrap_or(0)
+                };
                 vk::WriteDescriptorSet::default()
                     .dst_set(set)
-                    .dst_binding(u32::try_from(binding).unwrap_or(0))
+                    .dst_binding(binding)
                     .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                     .image_info(info)
             })
@@ -753,7 +802,7 @@ impl MapInputObjects {
         &mut self,
         device: &ash::Device,
         memory_properties: &vk::PhysicalDeviceMemoryProperties,
-        parts: &[&[u8]; 3],
+        parts: &[&[u8]; INPUT_IMAGES],
         total: u64,
         faults: QuadFaults,
     ) -> Result<(), Failure> {
@@ -796,7 +845,7 @@ impl MapInputObjects {
         Ok(())
     }
 
-    /// Records the upload of the three images: barriers to transfer destination, the buffer-to-image copies and barriers to shader
+    /// Records the upload of the images: barriers to transfer destination, the buffer-to-image copies and barriers to shader
     /// read. Before the map pass, outside any render pass, in the same command buffer.
     fn record_upload(&self, device: &ash::Device, cmd: vk::CommandBuffer) {
         let Some(staging) = self.staging else {
@@ -923,6 +972,109 @@ impl MapInputObjects {
             unsafe { device.destroy_buffer(buffer, None) };
         }
         if let Some(memory) = self.palette_memory.take() {
+            // SAFETY: the buffer bound to the allocation was destroyed above.
+            unsafe { device.free_memory(memory, None) };
+        }
+    }
+}
+
+/// The value table of one map-mode revision on the device (one `u32` per place, `0xFFFF` for a place with nothing to show) and the
+/// descriptor set (set 1) that names it. Written once when it is made, by the host, into host-visible coherent memory: nothing
+/// uploads it, and no frame in flight can see it change, because a new revision is a new table.
+#[derive(Default)]
+pub(crate) struct MapTableObjects {
+    buffer: Option<vk::Buffer>,
+    memory: Option<vk::DeviceMemory>,
+    set: Option<vk::DescriptorSet>,
+    /// The revision it was made for (`None`: the dummy of a frame with no mode).
+    pub(crate) revision: Option<u64>,
+}
+
+impl MapTableObjects {
+    /// Makes the table of `values` (the dummy of four zero bytes for `None`) and its descriptor set.
+    pub(crate) fn create(
+        &mut self,
+        device: &ash::Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        pipeline: &MapPipeline,
+        mode: Option<(u64, &[u16])>,
+    ) -> Result<(), Failure> {
+        self.revision = mode.map(|(revision, _)| revision);
+        let values = mode.map_or(&[][..], |(_, values)| values);
+        let byte_count = u64::try_from(values.len().max(1) * 4)
+            .map_err(|_| ("vkCreateBuffer", vk::Result::ERROR_OUT_OF_HOST_MEMORY))?;
+        let info = vk::BufferCreateInfo::default()
+            .size(byte_count)
+            .usage(vk::BufferUsageFlags::STORAGE_BUFFER)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        // SAFETY: the device is live and the buffer description is valid.
+        let buffer = unsafe { device.create_buffer(&info, None) }
+            .map_err(|code| ("vkCreateBuffer", code))?;
+        self.buffer = Some(buffer);
+        // SAFETY: `buffer` was created by this device.
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let memory = allocate(
+            device,
+            memory_properties,
+            requirements,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            false,
+        )?;
+        self.memory = Some(memory);
+        // SAFETY: the allocation satisfies the buffer's memory requirements.
+        unsafe { device.bind_buffer_memory(buffer, memory, 0) }
+            .map_err(|code| ("vkBindBufferMemory", code))?;
+        let mut bytes = vec![0_u8; usize::try_from(byte_count).unwrap_or(4)];
+        for (chunk, value) in bytes.chunks_exact_mut(4).zip(values) {
+            chunk.copy_from_slice(&u32::from(*value).to_ne_bytes());
+        }
+        // SAFETY: the buffer memory is host-visible and not currently mapped.
+        let mapped =
+            unsafe { device.map_memory(memory, 0, byte_count, vk::MemoryMapFlags::empty()) }
+                .map_err(|code| ("vkMapMemory", code))?;
+        // SAFETY: the mapped range is `byte_count` bytes and `bytes` has exactly that many.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast::<u8>(), bytes.len()) };
+        // SAFETY: the memory was mapped above and the host write is complete.
+        unsafe { device.unmap_memory(memory) };
+        let (Some(pool), Some(set_layout)) = (pipeline.pool, pipeline.table_set_layout) else {
+            return Err((
+                "vkAllocateDescriptorSets",
+                vk::Result::ERROR_INITIALIZATION_FAILED,
+            ));
+        };
+        let layouts = [set_layout];
+        let allocate_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(pool)
+            .set_layouts(&layouts);
+        // SAFETY: the pool and the layout are live and `allocate_info` is valid for the call.
+        let set = unsafe { device.allocate_descriptor_sets(&allocate_info) }
+            .map_err(|code| ("vkAllocateDescriptorSets", code))?[0];
+        self.set = Some(set);
+        let buffer_info = [vk::DescriptorBufferInfo::default()
+            .buffer(buffer)
+            .offset(0)
+            .range(vk::WHOLE_SIZE)];
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(set)
+            .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .buffer_info(&buffer_info);
+        // SAFETY: the set is fresh (no submitted work uses it) and the write names a live buffer.
+        unsafe { device.update_descriptor_sets(&[write], &[]) };
+        Ok(())
+    }
+
+    /// Destroys what exists, the set returning to `pool`. Only when no submitted frame uses it.
+    pub(crate) fn destroy(&mut self, device: &ash::Device, pool: Option<vk::DescriptorPool>) {
+        if let (Some(set), Some(pool)) = (self.set.take(), pool) {
+            // SAFETY: no submitted frame uses the set. A failure to free it is not an error: the pool's destruction frees it.
+            let _ = unsafe { device.free_descriptor_sets(pool, &[set]) };
+        }
+        if let Some(buffer) = self.buffer.take() {
+            // SAFETY: no submitted frame uses the buffer.
+            unsafe { device.destroy_buffer(buffer, None) };
+        }
+        if let Some(memory) = self.memory.take() {
             // SAFETY: the buffer bound to the allocation was destroyed above.
             unsafe { device.free_memory(memory, None) };
         }
@@ -1216,6 +1368,8 @@ pub(crate) struct MapObjects {
     pub(crate) target: Option<MapTargetObjects>,
     pub(crate) retired_input: Option<MapInputObjects>,
     pub(crate) retired_target: Option<MapTargetObjects>,
+    pub(crate) table: Option<MapTableObjects>,
+    pub(crate) retired_table: Option<MapTableObjects>,
 }
 
 impl MapObjects {
@@ -1226,6 +1380,8 @@ impl MapObjects {
             || self.target.is_some()
             || self.retired_input.is_some()
             || self.retired_target.is_some()
+            || self.table.is_some()
+            || self.retired_table.is_some()
     }
 }
 
@@ -1281,10 +1437,15 @@ pub(crate) fn record_map_pass(
     device: &ash::Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     cmd: vk::CommandBuffer,
-    objects: (&MapPipeline, &MapInputObjects, &MapTargetObjects),
+    objects: (
+        &MapPipeline,
+        &MapInputObjects,
+        &MapTargetObjects,
+        &MapTableObjects,
+    ),
     record: &MapRecord,
 ) -> Result<(), Failure> {
-    let (pipeline, input, target) = objects;
+    let (pipeline, input, target, table) = objects;
     let (Some(graphics), Some(layout), Some(pass)) =
         (pipeline.pipeline, pipeline.layout, pipeline.pass)
     else {
@@ -1292,8 +1453,8 @@ pub(crate) fn record_map_pass(
     };
     target.upload_rivers(device, memory_properties, &record.rivers)?;
     target.upload_locations(device, memory_properties, &record.locations)?;
-    let (Some(image), Some(framebuffer), Some(set)) =
-        (target.image(), target.framebuffer, input.set)
+    let (Some(image), Some(framebuffer), Some(set), Some(table_set)) =
+        (target.image(), target.framebuffer, input.set, table.set)
     else {
         return Ok(());
     };
@@ -1371,14 +1532,14 @@ pub(crate) fn record_map_pass(
     unsafe { device.cmd_set_viewport(cmd, 0, &[viewport]) };
     // SAFETY: as above.
     unsafe { device.cmd_set_scissor(cmd, 0, &[area]) };
-    // SAFETY: the set was allocated from the pipeline's layout and written.
+    // SAFETY: the input's set (0) and the mode table's (1) were allocated from the pipeline's layouts and written.
     unsafe {
         device.cmd_bind_descriptor_sets(
             cmd,
             vk::PipelineBindPoint::GRAPHICS,
             layout,
             0,
-            &[set],
+            &[set, table_set],
             &[],
         );
     }
@@ -1510,6 +1671,12 @@ impl Gpu {
                 observer.map_target_released(false);
             }
         }
+        for mut table in [objects.retired_table.take(), objects.table.take()]
+            .into_iter()
+            .flatten()
+        {
+            table.destroy(&self.device, pool);
+        }
         objects.pipeline.destroy(&self.device);
     }
 
@@ -1519,12 +1686,14 @@ impl Gpu {
         cmd: vk::CommandBuffer,
         record: &MapRecord,
     ) -> Result<(), Failure> {
-        if let (Some(input), Some(target)) = (&self.map.input, &self.map.target) {
+        if let (Some(input), Some(target), Some(table)) =
+            (&self.map.input, &self.map.target, &self.map.table)
+        {
             record_map_pass(
                 &self.device,
                 &self.memory,
                 cmd,
-                (&self.map.pipeline, input, target),
+                (&self.map.pipeline, input, target, table),
                 record,
             )?;
         }

@@ -6,7 +6,9 @@
 use ck_gpu_vulkan::{MapRefusalSink, VulkanMap, VulkanScene};
 
 use super::{Arc, Case, Harness, Ordering, finish_proven};
-use crate::window_scene::map::{Told, bgra, corner, expected_pixel, input_with, map_of};
+use crate::window_scene::map::{
+    Told, bgra, corner, expected_pixel, input_with, map_of, moded_input, moded_map, moded_pixel,
+};
 
 impl Harness {
     /// Publishes a scene (generation `generation`) that carries `map` and no quad.
@@ -113,8 +115,63 @@ fn quad_slot_a_refusal_is_retried_and_a_resize_retires_the_old_target() {
     finish_proven(harness, &mut presenter);
 }
 
+/// Through a live presenter, which keeps its resident input across frames: each new revision of a map mode's values replaces the
+/// resident table (the old one retired under the proof of its last submit), turning the mode off draws the plain map, and turning it on
+/// again draws the table of its own revision. Every captured frame is compared, pixel for pixel, with the reference for the table then
+/// showing; the input is made once and the target made once.
+fn quad_slot_map_modes_replace_the_resident_table_and_off_draws_the_plain_map() {
+    let mut harness = Harness::new();
+    let input = moded_input(1);
+    let top_left = {
+        let [x, y] = corner();
+        [x + 60, y + 80]
+    };
+    let first = ck_map::fixture::mode_values(0);
+    let second = ck_map::fixture::mode_values(1);
+    // The mode showing in each frame: a revision and its values, or none (the plain map).
+    let frames: [Option<(u64, &[u16])>; 4] = [
+        Some((1, &first)),
+        Some((2, &second)),
+        None,
+        Some((3, &first)),
+    ];
+    harness.publish_map(1, moded_map(&input, top_left, [16, 12], frames[0]));
+    let mut presenter = harness.start(harness.hooks());
+    let mut seen = Vec::new();
+    for (index, mode) in frames.iter().enumerate() {
+        let generation = u64::try_from(index + 1).expect("small");
+        if index > 0 {
+            harness.publish_map(generation, moded_map(&input, top_left, [16, 12], *mode));
+        }
+        harness.wait_generation(&presenter, generation);
+        let capture = harness.capture_of(generation);
+        for y in 0..48 {
+            for x in 0..64 {
+                assert_eq!(
+                    bgra(&capture, x, y),
+                    moded_pixel(top_left, x / 4, y / 4, mode.map(|(_, values)| values)),
+                    "frame {index}: ({x}, {y})"
+                );
+            }
+        }
+        seen.push(capture);
+    }
+    assert_ne!(
+        (0..48).map(|y| bgra(&seen[0], 1, y)).collect::<Vec<_>>(),
+        (0..48).map(|y| bgra(&seen[1], 1, y)).collect::<Vec<_>>(),
+        "the revisions draw different images"
+    );
+    let stats = harness.probes.observer.map_stats();
+    assert_eq!(
+        (stats.inputs_created, stats.targets_created),
+        (1, 1),
+        "the input is made once and the target once: {stats:?}"
+    );
+    finish_proven(harness, &mut presenter);
+}
+
 /// The quad-slot presenter's map cases.
-pub(crate) const CASES: [(&str, Case); 2] = [
+pub(crate) const CASES: [(&str, Case); 3] = [
     (
         "quad_slot_map_in_the_first_frame_is_drawn_enlarged",
         quad_slot_map_in_the_first_frame_is_drawn_enlarged,
@@ -122,5 +179,9 @@ pub(crate) const CASES: [(&str, Case); 2] = [
     (
         "quad_slot_a_refusal_is_retried_and_a_resize_retires_the_old_target",
         quad_slot_a_refusal_is_retried_and_a_resize_retires_the_old_target,
+    ),
+    (
+        "quad_slot_map_modes_replace_the_resident_table_and_off_draws_the_plain_map",
+        quad_slot_map_modes_replace_the_resident_table_and_off_draws_the_plain_map,
     ),
 ];

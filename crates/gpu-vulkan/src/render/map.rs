@@ -18,7 +18,9 @@
 use ash::vk;
 
 use crate::gpu::Gpu;
-use crate::gpu_map::{MapInputObjects, MapRecord, MapTargetObjects, device_checks};
+use crate::gpu_map::{
+    MapInputObjects, MapRecord, MapTableObjects, MapTargetObjects, device_checks,
+};
 use crate::hooks::{Observer, TestHooks};
 use crate::ledger::Ledger;
 use crate::map::VulkanMap;
@@ -97,8 +99,12 @@ impl MapDriver {
         // What the proofs allow goes first, so a retired holder whose submit is proven does not make this frame wait.
         self.reap(cx.gpu, cx.ledger, cx.observer, cx.may_dispose);
         let input = map.input();
-        let need = self.residency.need(input.generation(), map.view());
-        if need.input || need.target {
+        let need = self.residency.need(
+            input.generation(),
+            map.view(),
+            map.mode().map(|(revision, _)| revision),
+        );
+        if need.input || need.target || need.table {
             if self.residency.admission(need) == Admission::Wait {
                 if let Some(observer) = cx.observer {
                     observer.map_admission_wait();
@@ -135,6 +141,10 @@ impl MapDriver {
     /// device is out of memory) destroys what was made and changes nothing else, so the resident objects and the books stay as they
     /// were. Only when both exist do the bookkeeping, the retirement of the old objects and the install follow. `Ok(Some(reason))`
     /// is a refusal; an error that is not about memory is a `Failed`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the new objects are made into temporaries, then the books, the retirements and the install follow in one transaction"
+    )]
     fn replace(
         &mut self,
         cx: &mut MapContext<'_>,
@@ -168,6 +178,24 @@ impl MapDriver {
             }
             made_input = Some(objects);
         }
+        let mut made_table = None;
+        if need.table {
+            let mut objects = MapTableObjects::default();
+            let created = objects.create(
+                &cx.gpu.device,
+                &cx.gpu.memory,
+                &cx.gpu.map.pipeline,
+                map.mode().map(|(revision, values)| (revision, &values[..])),
+            );
+            if let Err(call) = created {
+                objects.destroy(&cx.gpu.device, pool);
+                if let Some(mut input) = made_input {
+                    input.destroy(&cx.gpu.device, pool);
+                }
+                return Self::creation_failure(cx.ledger, "mode table", call);
+            }
+            made_table = Some(objects);
+        }
         let mut made_target = None;
         if need.target {
             let mut objects = MapTargetObjects::default();
@@ -184,13 +212,19 @@ impl MapDriver {
                 if let Some(mut input) = made_input {
                     input.destroy(&cx.gpu.device, pool);
                 }
+                if let Some(mut table) = made_table {
+                    table.destroy(&cx.gpu.device, pool);
+                }
                 return Self::creation_failure(cx.ledger, "target", call);
             }
             made_target = Some(objects);
         }
-        let replaced = self
-            .residency
-            .replace(need, map.input().generation(), map.view());
+        let replaced = self.residency.replace(
+            need,
+            map.input().generation(),
+            map.view(),
+            map.mode().map(|(revision, _)| revision),
+        );
         let device = &cx.gpu.device;
         if replaced.input == Displaced::DestroyNow
             && let Some(mut old) = cx.gpu.map.input.take()
@@ -219,6 +253,17 @@ impl MapDriver {
             if let Some(observer) = cx.observer {
                 observer.map_retired();
             }
+        }
+        if replaced.table == Displaced::DestroyNow
+            && let Some(mut old) = cx.gpu.map.table.take()
+        {
+            old.destroy(device, pool);
+        }
+        if replaced.table == Displaced::Retired {
+            cx.gpu.map.retired_table = cx.gpu.map.table.take();
+        }
+        if let Some(table) = made_table {
+            cx.gpu.map.table = Some(table);
         }
         if let Some(input) = made_input {
             cx.gpu.map.input = Some(input);
@@ -306,6 +351,12 @@ impl MapDriver {
                 }
             }
             self.residency.retired_input_destroyed();
+        }
+        if reapable.table {
+            if let Some(mut table) = gpu.map.retired_table.take() {
+                table.destroy(&gpu.device, pool);
+            }
+            self.residency.retired_table_destroyed();
         }
         if reapable.target {
             if let Some(mut target) = gpu.map.retired_target.take() {

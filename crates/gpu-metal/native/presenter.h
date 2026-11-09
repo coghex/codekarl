@@ -107,6 +107,15 @@ typedef struct {
     uint32_t location_count;
     const uint8_t *overlay_palette; /* overlay_palette_count RGBA8 colours, resident with this map input */
     uint32_t overlay_palette_count;
+    /* The map modes (milestone 9, slice 8): `owners` is the owner grid, an RGBA8 image of the crop's size (R, G the high and low bytes of
+     * the owning place's index, 0xFFFF for none), given with the grids, or NULL for a map with no modes (a 1 x 1 "nobody" image is made).
+     * `mode` 1 means a map mode shows: `mode_values` (`mode_count` uint16, one per place, 0 to 1000 or 0xFFFF for a place with nothing
+     * to show) is its table at `mode_revision`; the presenter makes a table when the revision is not the resident one's. */
+    const uint8_t *owners;
+    int32_t mode;
+    uint64_t mode_revision;
+    const uint16_t *mode_values;
+    uint32_t mode_count;
 } CKPrMap;
 
 /* The pixels of a new texture: given only when the quad's image differs from the resident texture's. */

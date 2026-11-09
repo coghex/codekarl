@@ -68,6 +68,8 @@ use supervisor::{Seen, Split, Supervised};
 mod activation_watch;
 #[path = "held_pipe/mod.rs"]
 mod held_pipe;
+#[path = "support/map_modes.rs"]
+mod map_modes_witness;
 #[path = "support/map_selection_body.rs"]
 mod map_selection_fixture;
 #[path = "support/places_list.rs"]
@@ -1109,6 +1111,43 @@ fn places_list_output_assertion_accepts_a_captured_run_offline() {
     let output = "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places list s=16\nINFO  lua.ui: place window opened Cluain Mhic Nóis\nINFO  lua.ui: place window expected Cluain Mhic Nóis\nINFO  lua.ui: location tab people: 1280\nINFO  lua.ui: place window closed\nINFO  lua.ui: places title clicked\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 782598144 782598144\nbefore-list-scroll\nafter-list-scroll\n";
     places_list_witness::validate(output).unwrap_or_else(|error| panic!("{error}"));
     assert!(places_list_witness::validate("").is_err());
+}
+
+/// The map modes on a real window over Ireland 768: the shipped UI's two mode buttons' handlers are pressed in turn (stockpile, yield,
+/// off, stockpile) a number of frames apart, each one reaching the host and the map lane and drawn by the real presenter off the real
+/// economy views, and the run closes normally.
+fn switching_the_map_modes_draws_each_and_the_run_closes_normally() {
+    let fixture = Fixture::new();
+    let config = map_modes_fixture(&fixture);
+    let seen = run_windowed(&fixture, &config, &[]);
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+    map_modes_witness::validate(&seen.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {}", seen.stdout));
+}
+
+fn map_modes_fixture(fixture: &Fixture) -> PathBuf {
+    time_bar_witness::install_fixture_assets(&fixture.path(""), &fixture.path("assets"));
+    let config_text = places_list_witness::config_text("native-metal", &fixture.path("saves"));
+    fixture.windowed(&config_text, &map_modes_witness::script())
+}
+
+/// The judgment accepts the output a good run leaves, and refuses a run with a press missing or a refusal in it.
+fn map_modes_output_assertion_accepts_a_captured_run_offline() {
+    map_modes_witness::validate(map_modes_witness::CAPTURED)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(map_modes_witness::validate("").is_err());
+    let refused = map_modes_witness::CAPTURED
+        .replace("set_map_mode yield ok", "set_map_mode yield refused boom");
+    assert!(map_modes_witness::validate(&refused).is_err());
+    let unfinished = map_modes_witness::CAPTURED.replace("map modes done\n", "");
+    assert!(map_modes_witness::validate(&unfinished).is_err());
+}
+
+fn map_modes_fixture_starts_windowlessly_with_its_rooted_ui_library() {
+    let fixture = Fixture::new();
+    let config = map_modes_fixture(&fixture);
+    let seen = run(&config, &["--headless"]);
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
 }
 
 fn places_list_fixture_starts_windowlessly_with_its_rooted_ui_library() {
@@ -2895,6 +2934,9 @@ fn cases() -> Vec<(&'static str, fn())> {
         case!(map_selection_fixture_starts_windowlessly_with_its_rooted_ui_library),
         case!(a_places_click_opens_the_list_a_wheel_scrolls_it_and_a_row_click_opens_the_place_window),
         case!(places_list_fixture_starts_windowlessly_with_its_rooted_ui_library),
+        case!(switching_the_map_modes_draws_each_and_the_run_closes_normally),
+        case!(map_modes_output_assertion_accepts_a_captured_run_offline),
+        case!(map_modes_fixture_starts_windowlessly_with_its_rooted_ui_library),
         case!(places_list_output_assertion_accepts_a_captured_run_offline),
         case!(map_selection_output_assertion_accepts_the_captured_order_offline),
         case!(the_demo_placeholder_is_drawn_with_the_quads_generation_in_the_first_frame_and_the_run_closes_cleanly),

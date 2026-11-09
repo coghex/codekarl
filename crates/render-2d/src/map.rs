@@ -45,6 +45,21 @@
 //! placed by the points-to-pixels rule the legacy quad uses (each edge lands at the rounded product of its position in points and the
 //! axis scale). A partial map pixel at the right or bottom edge is cropped, never stretched ([`place_map`]).
 //!
+//! # Map modes (milestone 9, slice 8; `docs/economy-design.md` section 3.22)
+//!
+//! A map may carry an **owner grid** ([`MapInput::with_owners`]): one `u16` per crop cell, row-major, the index of the place that owns the
+//! cell or [`MODE_UNOWNED`] (`0xFFFF`) for none, uploaded once per loaded map with its [`MapInput`]. A **mode** ([`MapMode`]) is a table
+//! of one `u16` per place: a position on the colour ramp from 0 through [`MODE_VALUE_MAX`] (1000), or [`MODE_UNCOLOURED`] (`0xFFFF`) for a
+//! place with nothing to show; red (0) and uncoloured never collide. It is published with a revision, as an immutable value, beside the
+//! camera ([`SceneBridge::publish_mode`](crate::SceneBridge::publish_mode)); a mode with no table is **off**, and the frame is then the
+//! frame without a mode, byte for byte. `ck-map`'s reference rule (`mode` module) gives the colours: each cell shows the floored mean of
+//! the values of the counted cells of its 5 x 5 box, from red through yellow to green, over the terrain and under the rivers and the
+//! locations.
+//!
+//! **Validation at this lane.** The owner grid's length is the crop's `width x height`, each index is below the place count or
+//! `0xFFFF`, and the place count is below `0xFFFF`; a mode's table length is the place count and each value is at most 1000 or `0xFFFF`.
+//! A violation is refused with a named [`MapError`]; the lane keeps what it accepted before.
+//!
 //! # Publication
 //!
 //! [`SceneBridge::publish_map`](crate::SceneBridge::publish_map) and
@@ -76,6 +91,18 @@ pub const SIDE_MAX: u32 = 16_384;
 
 /// How many window points one map pixel covers on each axis.
 pub const POINTS_PER_PIXEL: u32 = 4;
+
+/// An owner-grid entry for a cell no place owns.
+pub const MODE_UNOWNED: u16 = 0xFFFF;
+
+/// A mode value for a place that is not coloured (no capacity, say).
+pub const MODE_UNCOLOURED: u16 = 0xFFFF;
+
+/// The largest mode value: green.
+pub const MODE_VALUE_MAX: u16 = 1000;
+
+/// The width, in texels, of the image a GPU owner makes of a mode table: place `i` is texel `(i % MODE_TABLE_WIDTH, i / MODE_TABLE_WIDTH)`.
+pub const MODE_TABLE_WIDTH: u32 = 256;
 
 /// Why a map input or a camera was refused: a named, first problem.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,9 +208,49 @@ pub enum MapError {
         /// Number of available colours.
         colours: usize,
     },
+    /// An owner grid whose length is not the crop's `width x height`.
+    OwnerGridLength {
+        /// The length the crop needs.
+        expected: usize,
+        /// The length given.
+        actual: usize,
+    },
+    /// An owner index that is neither below the place count nor `0xFFFF`.
+    OwnerIndex {
+        /// The cell's column within the crop.
+        x: u32,
+        /// The cell's row within the crop.
+        y: u32,
+        /// The index.
+        index: u16,
+        /// The place count.
+        places: usize,
+    },
+    /// A place count that cannot be indexed without meeting the `0xFFFF` marker.
+    OwnerPlaces {
+        /// The place count.
+        places: usize,
+    },
+    /// A mode table whose length is not the place count.
+    ModeTableLength {
+        /// The place count.
+        expected: usize,
+        /// The table's length.
+        actual: usize,
+    },
+    /// A mode value that is neither at most 1000 nor `0xFFFF`.
+    ModeValue {
+        /// The place the value belongs to.
+        place: usize,
+        /// The value.
+        value: u16,
+    },
+    /// A mode table for a map with no owner grid.
+    ModeWithoutOwners,
 }
 
 impl std::fmt::Display for MapError {
+    #[expect(clippy::too_many_lines, reason = "one arm per named refusal")]
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Size {
@@ -258,6 +325,34 @@ impl std::fmt::Display for MapError {
                 formatter,
                 "location pixel {position} uses palette index {index}; the palette has {colours} colours"
             ),
+            Self::OwnerGridLength { expected, actual } => write!(
+                formatter,
+                "the owner grid has {actual} entries; the crop needs {expected} (width x height)"
+            ),
+            Self::OwnerIndex {
+                x,
+                y,
+                index,
+                places,
+            } => write!(
+                formatter,
+                "the owner grid cell ({x}, {y}) names place {index}; there are {places} places and {MODE_UNOWNED:#06x} means none"
+            ),
+            Self::OwnerPlaces { places } => write!(
+                formatter,
+                "{places} places cannot be indexed below the {MODE_UNOWNED:#06x} marker"
+            ),
+            Self::ModeTableLength { expected, actual } => write!(
+                formatter,
+                "the mode table has {actual} values; the map has {expected} places"
+            ),
+            Self::ModeValue { place, value } => write!(
+                formatter,
+                "the mode value of place {place} is {value}; it must be at most {MODE_VALUE_MAX} or {MODE_UNCOLOURED:#06x}"
+            ),
+            Self::ModeWithoutOwners => {
+                formatter.write_str("a mode table needs a map with an owner grid")
+            }
         }
     }
 }
@@ -417,6 +512,36 @@ pub struct MapInput {
     grid_a: Arc<[u8]>,
     grid_b: Arc<[u8]>,
     rules: Arc<MapRules>,
+    owners: Option<MapOwners>,
+}
+
+/// The owner grid of a loaded map and its place count: validated, immutable, shared.
+#[derive(Debug, Clone)]
+pub struct MapOwners {
+    places: usize,
+    indices: Arc<[u16]>,
+    image: Arc<[u8]>,
+}
+
+impl MapOwners {
+    /// The number of places the grid indexes.
+    #[must_use]
+    pub fn places(&self) -> usize {
+        self.places
+    }
+
+    /// The owner of each crop cell, row-major: a place index below [`places`](Self::places) or [`MODE_UNOWNED`].
+    #[must_use]
+    pub fn indices(&self) -> &Arc<[u16]> {
+        &self.indices
+    }
+
+    /// The grid as an RGBA8 image of the crop's size, as the GPU reads it: R the high byte of the index, G its low byte, B zero and
+    /// A 255 (so an unowned cell is `255, 255, 0, 255`).
+    #[must_use]
+    pub fn image(&self) -> &Arc<[u8]> {
+        &self.image
+    }
 }
 
 impl MapInput {
@@ -527,7 +652,65 @@ impl MapInput {
             grid_a: grid_a.into(),
             grid_b: grid_b.into(),
             rules: Arc::new(rules),
+            owners: None,
         })
+    }
+
+    /// This input with the owner grid of its crop: `owners` has one entry per crop cell, row-major (the place index that owns the cell,
+    /// or [`MODE_UNOWNED`]), and `places` is the number of places.
+    ///
+    /// # Errors
+    ///
+    /// [`MapError::OwnerPlaces`] for a place count that reaches `0xFFFF`, [`MapError::OwnerGridLength`] for a grid that is not
+    /// `width x height` entries, and [`MapError::OwnerIndex`] for the first entry that is neither below `places` nor `0xFFFF`.
+    pub fn with_owners(mut self, owners: Vec<u16>, places: usize) -> Result<Self, MapError> {
+        if places >= usize::from(MODE_UNOWNED) {
+            return Err(MapError::OwnerPlaces { places });
+        }
+        let [width, height] = self.size;
+        let expected =
+            usize::try_from(u64::from(width) * u64::from(height)).map_err(|_| MapError::Size {
+                what: "crop",
+                width,
+                height,
+            })?;
+        if owners.len() != expected {
+            return Err(MapError::OwnerGridLength {
+                expected,
+                actual: owners.len(),
+            });
+        }
+        if let Some(position) = owners
+            .iter()
+            .position(|&index| index != MODE_UNOWNED && usize::from(index) >= places)
+        {
+            let cell = u32::try_from(position).unwrap_or(u32::MAX);
+            return Err(MapError::OwnerIndex {
+                x: cell % width,
+                y: cell / width,
+                index: owners[position],
+                places,
+            });
+        }
+        let image: Vec<u8> = owners
+            .iter()
+            .flat_map(|index| {
+                let [high, low] = index.to_be_bytes();
+                [high, low, 0, 255]
+            })
+            .collect();
+        self.owners = Some(MapOwners {
+            places,
+            indices: owners.into(),
+            image: image.into(),
+        });
+        Ok(self)
+    }
+
+    /// The owner grid, when the map has one.
+    #[must_use]
+    pub fn owners(&self) -> Option<&MapOwners> {
+        self.owners.as_ref()
     }
 
     /// The generation that orders inputs.
@@ -723,6 +906,57 @@ impl MapCamera {
     }
 }
 
+/// A map mode as the map pass reads it: immutable, one per change of the values or of the mode, ordered by its revision (a newer one has
+/// a larger one). With no table it is **off**.
+#[derive(Debug)]
+pub struct MapMode {
+    revision: u64,
+    values: Option<Arc<[u16]>>,
+}
+
+impl MapMode {
+    /// A mode showing `values`, one per place (a position on the ramp from 0 through 1000, or [`MODE_UNCOLOURED`]), at `revision`.
+    ///
+    /// # Errors
+    ///
+    /// [`MapError::ModeValue`] for the first value that is neither at most 1000 nor `0xFFFF`. The table's length is checked against
+    /// the map's places when it is published ([`SceneBridge::publish_mode`](crate::SceneBridge::publish_mode)).
+    pub fn new(revision: u64, values: Vec<u16>) -> Result<Self, MapError> {
+        if let Some((place, &value)) = values
+            .iter()
+            .enumerate()
+            .find(|&(_, &value)| value > MODE_VALUE_MAX && value != MODE_UNCOLOURED)
+        {
+            return Err(MapError::ModeValue { place, value });
+        }
+        Ok(Self {
+            revision,
+            values: Some(values.into()),
+        })
+    }
+
+    /// The mode that shows nothing: the frame without a map mode.
+    #[must_use]
+    pub fn off(revision: u64) -> Self {
+        Self {
+            revision,
+            values: None,
+        }
+    }
+
+    /// The revision that orders modes.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The value of each place, or `None` when the mode is off.
+    #[must_use]
+    pub fn values(&self) -> Option<&Arc<[u16]>> {
+        self.values.as_ref()
+    }
+}
+
 /// Where the enlarged map lands: the destination in whole drawable pixels (clipped to the window) and the part of the map image drawn
 /// there, in **map pixels**.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -794,6 +1028,8 @@ pub struct MapFrame {
     pub camera: Arc<MapCamera>,
     /// Where the enlarged map lands, or `None` when nothing of it shows (a zero-size window, a view clipped away).
     pub placement: Option<MapPlacement>,
+    /// The map mode showing, or `None` for the plain map: only a mode with a table that fits the input's owner grid is carried.
+    pub mode: Option<Arc<MapMode>>,
     /// Where a backend's presenter says it refused to make a map image, and that it later could
     /// ([`SceneBridge::take_map_refusal`](crate::SceneBridge::take_map_refusal) reads it).
     pub refusals: Arc<MapRefusals>,

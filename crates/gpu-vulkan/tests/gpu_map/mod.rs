@@ -18,8 +18,8 @@ use ck_gpu_vulkan::{
     readback_map, readback_quad,
 };
 use ck_map::{
-    FIXED_PER_CELL, PreparedLocations, PreparedRivers, RiverLine, STEP_SIZE, ViewSize, WorldPixel,
-    fixture, reference_colour_with_locations,
+    FIXED_PER_CELL, ModeInputs, PreparedLocations, PreparedRivers, RiverLine, STEP_SIZE, ViewSize,
+    WorldPixel, fixture, reference_colour_with_locations, stockpile_value, yield_values,
 };
 
 use super::{assert_log_clean, destroy, validated_with};
@@ -997,4 +997,275 @@ fn the_camera_types_refuse_what_the_pass_cannot_draw() {
             "{bad:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The map modes (milestone 9, slice 8)
+// ---------------------------------------------------------------------------------------------
+
+/// The fixture's owner grid as the GPU takes it: RGBA8, R and G the high and low bytes of each cell's place, B zero, A 255.
+fn owner_image(owners: &[u16]) -> Arc<[u8]> {
+    owners
+        .iter()
+        .flat_map(|index| {
+            let [high, low] = index.to_be_bytes();
+            [high, low, 0, 255]
+        })
+        .collect::<Vec<u8>>()
+        .into()
+}
+
+/// An input with the fixture's owner grid over its four places.
+fn moded_input(generation: u64) -> Arc<VulkanMapInput> {
+    let fixture = the_fixture();
+    Arc::new(
+        VulkanMapInput::new(
+            generation,
+            ORIGIN,
+            CROP,
+            fixture.grid_a.clone().into(),
+            fixture.grid_b.clone().into(),
+            &rules_of(fixture),
+        )
+        .expect("a valid input")
+        .with_owners(
+            owner_image(&fixture::mode_owners()),
+            fixture::MODE_PLACE_COUNT,
+        )
+        .expect("a valid owner grid"),
+    )
+}
+
+/// The map of `input` at `step`, showing `values` as revision `revision`.
+fn moded_map(
+    input: &Arc<VulkanMapInput>,
+    scenario: &fixture::Scenario,
+    mode: Option<(u64, &[u16])>,
+) -> VulkanMap {
+    let map = map_at(input, scenario.step, scenario.top_left, scenario.view, 1);
+    match mode {
+        Some((revision, values)) => map
+            .with_mode(revision, values.to_vec().into())
+            .expect("a table that fits the places"),
+        None => map,
+    }
+}
+
+/// The map target the reference gives under `values`.
+fn moded_reference(scenario: &fixture::Scenario, values: &[u16]) -> Vec<u8> {
+    let owners = fixture::mode_owners();
+    the_fixture().reference_image_with_mode(
+        scenario.step,
+        scenario.top_left,
+        scenario.view,
+        &ModeInputs {
+            owners: &owners,
+            values,
+        },
+    )
+}
+
+fn drawn_target(
+    instance: &ck_gpu_vulkan::Instance,
+    scenario: &fixture::Scenario,
+    map: &VulkanMap,
+) -> Vec<u8> {
+    readback_map(
+        instance,
+        scenario.view[0] * 4,
+        scenario.view[1] * 4,
+        CLEAR,
+        Some(map),
+        None,
+    )
+    .expect("the readback works")
+    .target
+    .expect("a map target")
+}
+
+/// The two views the mode cases draw: one and a half cells per map pixel (the coarse zoom, blocks of the blend) and a tenth of a cell
+/// (the fine zoom, all three octaves of sub-cell detail over the blend).
+fn mode_scenarios() -> Vec<fixture::Scenario> {
+    fixture::Fixture::scenarios()
+        .into_iter()
+        .filter(|scenario| {
+            matches!(
+                scenario.name,
+                "one and a half cells per pixel" | "a tenth of a cell, inside"
+            )
+        })
+        .collect()
+}
+
+/// In each mode, at two zoom steps, the map target equals the reference byte for byte; after a revision of the values (a new table) it
+/// equals the reference for the new values, and differs from the old; and with the mode off it equals the plain map the earlier
+/// slices drew. The stockpile table comes from stored volumes against capacities (the fourth place has none, so it is uncoloured), the
+/// yield table from projected yields relative to each other.
+#[test]
+fn the_map_modes_equal_the_reference_at_two_zoom_steps_after_a_revision_and_off_is_the_plain_map() {
+    let (_loader, instance, log) = rig!();
+    let input = moded_input(1);
+    let stockpile = vec![
+        stockpile_value(0, 1000),
+        stockpile_value(500, 1000),
+        stockpile_value(900, 900),
+        stockpile_value(5, 0),
+    ];
+    assert_eq!(stockpile, [0, 500, 1000, 0xFFFF]);
+    let yields = yield_values(&[Some(40), Some(100), Some(70), None]);
+    assert_eq!(yields, [0, 1000, 500, 0xFFFF]);
+    let revised = fixture::mode_values(1);
+    let scenarios = mode_scenarios();
+    assert_eq!(scenarios.len(), 2, "two zoom steps");
+    for scenario in &scenarios {
+        let plain = the_fixture().reference_image(scenario.step, scenario.top_left, scenario.view);
+        let mut seen = Vec::new();
+        for (name, revision, values) in [
+            ("stockpile", 1, &stockpile),
+            ("yield", 2, &yields),
+            ("a revision", 3, &revised),
+        ] {
+            let map = moded_map(&input, scenario, Some((revision, values)));
+            let got = drawn_target(&instance, scenario, &map);
+            let want = moded_reference(scenario, values);
+            let wrong = got
+                .chunks_exact(4)
+                .zip(want.chunks_exact(4))
+                .enumerate()
+                .filter(|(_, (got, want))| got != want)
+                .map(|(index, (got, want))| {
+                    (
+                        index % scenario.view[0] as usize,
+                        index / scenario.view[0] as usize,
+                        got,
+                        want,
+                    )
+                })
+                .take(5)
+                .collect::<Vec<_>>();
+            assert!(
+                wrong.is_empty(),
+                "{} / {name}: differs from the reference at (x, y, got, want) {wrong:?}",
+                scenario.name
+            );
+            assert_ne!(
+                got, plain,
+                "{} / {name}: the mode changed the map",
+                scenario.name
+            );
+            seen.push(got);
+        }
+        assert!(
+            seen[0] != seen[1] && seen[1] != seen[2] && seen[0] != seen[2],
+            "{}: each table draws its own image",
+            scenario.name
+        );
+        // Off: the same input and view, no mode, is the plain map.
+        let map = moded_map(&input, scenario, None);
+        assert_eq!(
+            drawn_target(&instance, scenario, &map),
+            plain,
+            "{}: off",
+            scenario.name
+        );
+    }
+    assert_log_clean(&log);
+    assert_eq!(instance.retained_readbacks(), 0);
+    destroy(instance);
+    assert_log_clean(&log);
+}
+
+/// An input with an owner grid and no mode, and a map whose input has no owner grid, draw the plain map; a table that is not one value
+/// per place never reaches the presenter.
+#[test]
+fn an_input_without_a_mode_draws_the_plain_map_and_a_wrong_table_is_refused() {
+    let (_loader, instance, log) = rig!();
+    let scenario = mode_scenarios().remove(0);
+    let plain = the_fixture().reference_image(scenario.step, scenario.top_left, scenario.view);
+    for input in [moded_input(1), input_with(2)] {
+        let map = moded_map(&input, &scenario, None);
+        assert_eq!(drawn_target(&instance, &scenario, &map), plain);
+    }
+    let input = moded_input(3);
+    for length in [0, 1, 3, 5] {
+        let map = map_at(&input, scenario.step, scenario.top_left, scenario.view, 1);
+        assert_eq!(
+            map.with_mode(1, vec![0; length].into())
+                .expect_err("refused"),
+            VulkanMapError::ModeTable {
+                expected: fixture::MODE_PLACE_COUNT,
+                actual: length
+            }
+        );
+    }
+    let no_owners = input_with(4);
+    let map = map_at(
+        &no_owners,
+        scenario.step,
+        scenario.top_left,
+        scenario.view,
+        1,
+    );
+    assert_eq!(
+        map.with_mode(1, vec![0; 4].into()).expect_err("refused"),
+        VulkanMapError::ModeTable {
+            expected: 0,
+            actual: 4
+        }
+    );
+    let fixture = the_fixture();
+    let short: Arc<[u8]> = vec![255; 8].into();
+    assert_eq!(
+        VulkanMapInput::new(
+            1,
+            ORIGIN,
+            CROP,
+            fixture.grid_a.clone().into(),
+            fixture.grid_b.clone().into(),
+            &rules_of(fixture),
+        )
+        .expect("valid")
+        .with_owners(short, 4)
+        .expect_err("refused"),
+        VulkanMapError::OwnerGridLength {
+            expected: 24 * 16 * 4,
+            actual: 8
+        }
+    );
+    assert_log_clean(&log);
+    destroy(instance);
+    assert_log_clean(&log);
+}
+
+/// A map with no places has an empty mode table, and a frame that shows it is the plain map: nothing is owned, so nothing is read.
+#[test]
+fn a_mode_of_a_map_with_no_places_draws_the_plain_map() {
+    let (_loader, instance, log) = rig!();
+    let fixture = the_fixture();
+    let input = Arc::new(
+        VulkanMapInput::new(
+            1,
+            ORIGIN,
+            CROP,
+            fixture.grid_a.clone().into(),
+            fixture.grid_b.clone().into(),
+            &rules_of(fixture),
+        )
+        .expect("a valid input")
+        .with_owners(owner_image(&vec![0xFFFF; 24 * 16]), 0)
+        .expect("an owner grid of no places"),
+    );
+    for scenario in &mode_scenarios() {
+        let plain = fixture.reference_image(scenario.step, scenario.top_left, scenario.view);
+        let map = moded_map(&input, scenario, Some((1, &[])));
+        assert_eq!(
+            drawn_target(&instance, scenario, &map),
+            plain,
+            "{}",
+            scenario.name
+        );
+    }
+    assert_log_clean(&log);
+    destroy(instance);
+    assert_log_clean(&log);
 }

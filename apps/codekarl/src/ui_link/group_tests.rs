@@ -1248,7 +1248,7 @@ end)
     let mut rig = Rig::new(&script);
     rig.opened();
     let regions = rig.harness.bridge.hit_regions().expect("published hits");
-    // The time bar's last button is `places`; Help (`?`) is the one before it.
+    // The buttons in creation order: the three transports, Help (`?`), `places`, and the two map modes'.
     let buttons: Vec<String> = regions
         .regions()
         .iter()
@@ -1259,7 +1259,7 @@ end)
     let help_key = buttons
         .iter()
         .rev()
-        .nth(1)
+        .nth(3)
         .cloned()
         .expect("the production time bar has a Help button");
     let point = (0..400)

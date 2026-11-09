@@ -19,8 +19,9 @@ use ck_gpu_metal::{
     PixelSource, SourceRect, readback_clear, readback_map, readback_quad,
 };
 use ck_map::{
-    FIXED_PER_CELL, PreparedLocations, PreparedRivers, RiverCoverage, RiverLine, STEP_SIZE,
-    ViewSize, WorldPixel, fixture, reference_colour_with_locations,
+    FIXED_PER_CELL, ModeInputs, PreparedLocations, PreparedRivers, RiverCoverage, RiverLine,
+    STEP_SIZE, ViewSize, WorldPixel, fixture, reference_colour_with_locations, stockpile_value,
+    yield_values,
 };
 
 use super::{BOUND, CleanupResult, Duration, Probes, Rig, TestHooks, await_presented, end};
@@ -1735,7 +1736,336 @@ pub(crate) fn map_retired_target_waits_for_its_token() {
     assert_eq!(observer.map_targets_alive(), 0);
 }
 
-pub(crate) const CASES: [(&str, fn()); 18] = [
+// ---------------------------------------------------------------------------------------------
+// The map modes (milestone 9, slice 8)
+// ---------------------------------------------------------------------------------------------
+
+/// The fixture's owner grid as the GPU takes it: RGBA8, R and G the high and low bytes of each cell's place, B zero, A 255.
+fn owner_image(owners: &[u16]) -> Arc<[u8]> {
+    owners
+        .iter()
+        .flat_map(|index| {
+            let [high, low] = index.to_be_bytes();
+            [high, low, 0, 255]
+        })
+        .collect::<Vec<u8>>()
+        .into()
+}
+
+/// An input with the fixture's owner grid over its four places.
+fn moded_input(generation: u64) -> Arc<MetalMapInput> {
+    let fixture = the_fixture();
+    Arc::new(
+        MetalMapInput::new(
+            generation,
+            ORIGIN,
+            CROP,
+            fixture.grid_a.clone().into(),
+            fixture.grid_b.clone().into(),
+            &rules_of(fixture),
+        )
+        .expect("a valid input")
+        .with_owners(
+            owner_image(&fixture::mode_owners()),
+            fixture::MODE_PLACE_COUNT,
+        )
+        .expect("a valid owner grid"),
+    )
+}
+
+/// The map of `input` for `scenario`, showing `mode` (a revision and one value per place) when given.
+fn moded_map(
+    input: &Arc<MetalMapInput>,
+    scenario: &fixture::Scenario,
+    mode: Option<(u64, &[u16])>,
+) -> MetalMap {
+    let map = map_at(input, scenario.step, scenario.top_left, scenario.view, 1);
+    match mode {
+        Some((revision, values)) => map
+            .with_mode(revision, values.to_vec().into())
+            .expect("a table that fits the places"),
+        None => map,
+    }
+}
+
+/// The map target the reference gives under `values`.
+fn moded_reference(scenario: &fixture::Scenario, values: &[u16]) -> Vec<u8> {
+    let owners = fixture::mode_owners();
+    the_fixture().reference_image_with_mode(
+        scenario.step,
+        scenario.top_left,
+        scenario.view,
+        &ModeInputs {
+            owners: &owners,
+            values,
+        },
+    )
+}
+
+fn drawn_target(scenario: &fixture::Scenario, map: &MetalMap) -> Vec<u8> {
+    readback_map(
+        scenario.view[0] * 4,
+        scenario.view[1] * 4,
+        CLEAR,
+        Some(map),
+        None,
+    )
+    .expect("the readback works")
+    .target
+    .expect("a map target")
+}
+
+/// The two views the mode cases draw: one and a half cells per map pixel (the coarse zoom) and a tenth of a cell (the fine zoom, all
+/// three octaves of sub-cell detail over the blend).
+fn mode_scenarios() -> Vec<fixture::Scenario> {
+    fixture::Fixture::scenarios()
+        .into_iter()
+        .filter(|scenario| {
+            matches!(
+                scenario.name,
+                "one and a half cells per pixel" | "a tenth of a cell, inside"
+            )
+        })
+        .collect()
+}
+
+/// In each mode, at two zoom steps, the map target equals the reference byte for byte; after a revision of the values (a new table) it
+/// equals the reference for the new values, and differs from the old; and with the mode off it equals the plain map the earlier
+/// slices drew. The stockpile table comes from stored volumes against capacities (the fourth place has none, so it is uncoloured), the
+/// yield table from projected yields relative to each other.
+pub(crate) fn readback_map_modes() {
+    let input = moded_input(1);
+    let stockpile = vec![
+        stockpile_value(0, 1000),
+        stockpile_value(500, 1000),
+        stockpile_value(900, 900),
+        stockpile_value(5, 0),
+    ];
+    assert_eq!(stockpile, [0, 500, 1000, 0xFFFF]);
+    let yields = yield_values(&[Some(40), Some(100), Some(70), None]);
+    assert_eq!(yields, [0, 1000, 500, 0xFFFF]);
+    let revised = fixture::mode_values(1);
+    let scenarios = mode_scenarios();
+    assert_eq!(scenarios.len(), 2, "two zoom steps");
+    for scenario in &scenarios {
+        let plain = the_fixture().reference_image(scenario.step, scenario.top_left, scenario.view);
+        let mut seen = Vec::new();
+        for (name, revision, values) in [
+            ("stockpile", 1, &stockpile),
+            ("yield", 2, &yields),
+            ("a revision", 3, &revised),
+        ] {
+            let map = moded_map(&input, scenario, Some((revision, values)));
+            let got = drawn_target(scenario, &map);
+            let want = moded_reference(scenario, values);
+            let wrong = got
+                .chunks_exact(4)
+                .zip(want.chunks_exact(4))
+                .enumerate()
+                .filter(|(_, (got, want))| got != want)
+                .map(|(index, (got, want))| {
+                    (
+                        index % scenario.view[0] as usize,
+                        index / scenario.view[0] as usize,
+                        got,
+                        want,
+                    )
+                })
+                .take(5)
+                .collect::<Vec<_>>();
+            assert!(
+                wrong.is_empty(),
+                "{} / {name}: differs from the reference at (x, y, got, want) {wrong:?}",
+                scenario.name
+            );
+            assert_ne!(
+                got, plain,
+                "{} / {name}: the mode changed the map",
+                scenario.name
+            );
+            seen.push(got);
+        }
+        assert!(
+            seen[0] != seen[1] && seen[1] != seen[2] && seen[0] != seen[2],
+            "{}: each table draws its own image",
+            scenario.name
+        );
+        // Off: the same input and view, no mode, is the plain map.
+        let map = moded_map(&input, scenario, None);
+        assert_eq!(
+            drawn_target(scenario, &map),
+            plain,
+            "{}: off",
+            scenario.name
+        );
+    }
+}
+
+/// An input with an owner grid and no mode, and an input with no owner grid, draw the plain map; a table that is not one value per
+/// place never reaches the presenter.
+pub(crate) fn readback_map_mode_refusals() {
+    let scenario = mode_scenarios().remove(0);
+    let plain = the_fixture().reference_image(scenario.step, scenario.top_left, scenario.view);
+    for input in [moded_input(1), input_with(2)] {
+        let map = moded_map(&input, &scenario, None);
+        assert_eq!(drawn_target(&scenario, &map), plain);
+    }
+    let input = moded_input(3);
+    for length in [0, 1, 3, 5] {
+        let map = map_at(&input, scenario.step, scenario.top_left, scenario.view, 1);
+        assert_eq!(
+            map.with_mode(1, vec![0; length].into())
+                .expect_err("refused"),
+            MetalMapError::ModeTable {
+                expected: fixture::MODE_PLACE_COUNT,
+                actual: length
+            }
+        );
+    }
+    let no_owners = input_with(4);
+    let map = map_at(
+        &no_owners,
+        scenario.step,
+        scenario.top_left,
+        scenario.view,
+        1,
+    );
+    assert_eq!(
+        map.with_mode(1, vec![0; 4].into()).expect_err("refused"),
+        MetalMapError::ModeTable {
+            expected: 0,
+            actual: 4
+        }
+    );
+    let fixture = the_fixture();
+    let short: Arc<[u8]> = vec![255; 8].into();
+    assert_eq!(
+        MetalMapInput::new(
+            1,
+            ORIGIN,
+            CROP,
+            fixture.grid_a.clone().into(),
+            fixture.grid_b.clone().into(),
+            &rules_of(fixture),
+        )
+        .expect("valid")
+        .with_owners(short, 4)
+        .expect_err("refused"),
+        MetalMapError::OwnerGridLength {
+            expected: 24 * 16 * 4,
+            actual: 8
+        }
+    );
+}
+
+/// A map with no places has an empty mode table, and a frame that shows it is the plain map: nothing is owned, so nothing is read.
+pub(crate) fn readback_map_mode_with_no_places() {
+    let fixture = the_fixture();
+    let input = Arc::new(
+        MetalMapInput::new(
+            1,
+            ORIGIN,
+            CROP,
+            fixture.grid_a.clone().into(),
+            fixture.grid_b.clone().into(),
+            &rules_of(fixture),
+        )
+        .expect("a valid input")
+        .with_owners(owner_image(&vec![0xFFFF; 24 * 16]), 0)
+        .expect("an owner grid of no places"),
+    );
+    for scenario in &mode_scenarios() {
+        let plain = the_fixture().reference_image(scenario.step, scenario.top_left, scenario.view);
+        let map = moded_map(&input, scenario, Some((1, &[])));
+        assert_eq!(drawn_target(scenario, &map), plain, "{}", scenario.name);
+    }
+}
+
+/// Through a live presenter, which keeps its resident input across frames: a mode's table is replaced by each new revision (the old one
+/// retired under the proof of its last command buffer), turning the mode off draws the plain map, and turning it on again draws the
+/// table of its own revision. Every captured frame is compared, pixel for pixel, with the reference for the table then showing; the
+/// input is uploaded once and the target made once.
+pub(crate) fn map_modes_replace_the_resident_table_and_off_draws_the_plain_map() {
+    let mut rig = Rig::open();
+    let probes = Probes::new();
+    let slot = MetalQuadSlot::new();
+    let corner20 = fixture::Fixture::crop_top_left(20);
+    let scenario = fixture::Scenario {
+        name: "retained",
+        step: 20,
+        top_left: [corner20.x - 2, corner20.y - 2],
+        view: [16, 12],
+    };
+    let input = moded_input(1);
+    let first = fixture::mode_values(0);
+    let second = fixture::mode_values(1);
+    // The mode showing in each frame: a revision and its values, or none (the plain map).
+    let frames: [Option<(u64, &[u16])>; 4] = [
+        Some((1, &first)),
+        Some((2, &second)),
+        None,
+        Some((3, &first)),
+    ];
+    let plain = the_fixture().reference_image(scenario.step, scenario.top_left, scenario.view);
+    let expected_for = |mode: Option<(u64, &[u16])>| match mode {
+        Some((_, values)) => moded_reference(&scenario, values),
+        None => plain.clone(),
+    };
+    // The first map is published before the presenter starts, so that the first frame the presenter draws and captures is the one with
+    // the map (as `map_in_the_first_frame`), never a frame before any publication.
+    publish(&slot, 1, moded_map(&input, &scenario, frames[0]));
+    let mut presenter = probes.start_ok(&rig, hooks_with(&probes, &slot));
+    let observer = &probes.observer;
+    for (index, mode) in frames.iter().enumerate() {
+        let expected = expected_for(*mode);
+        let generation = u64::try_from(index + 1).expect("small");
+        // A capture arrives once its command buffer completed: the frame of this generation is the next one after those so far.
+        let captured_before = if index == 0 { 0 } else { observer.captures() };
+        if index > 0 {
+            publish(&slot, generation, moded_map(&input, &scenario, *mode));
+        }
+        assert!(
+            rig.pump_until(BOUND, || presenter.drawn_generation() == Some(generation)
+                && observer.captures() > captured_before),
+            "frame {index} is drawn and captured"
+        );
+        let captured = observer.captured_frame().expect("a captured frame");
+        for py in 0..48 {
+            for px in 0..64 {
+                let offset = usize::try_from(((py / 4) * 16 + px / 4) * 4).expect("small");
+                assert_eq!(
+                    bgra_at(&captured.pixels, captured.width, px, py),
+                    [
+                        expected[offset],
+                        expected[offset + 1],
+                        expected[offset + 2],
+                        expected[offset + 3]
+                    ],
+                    "frame {index}: drawable pixel ({px}, {py})"
+                );
+            }
+        }
+    }
+    assert_ne!(
+        expected_for(frames[0]),
+        expected_for(frames[1]),
+        "the revisions draw different images"
+    );
+    assert_eq!(
+        observer.map_grids_created(),
+        1,
+        "the input is uploaded once"
+    );
+    assert_eq!(
+        observer.map_targets_created(),
+        1,
+        "and the target made once"
+    );
+    await_presented(&mut rig, observer);
+    assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
+}
+
+pub(crate) const CASES: [(&str, fn()); 22] = [
     ("readback_map_full_rules", readback_map_full_rules),
     ("readback_map_rivers_overlay", readback_map_rivers_overlay),
     (
@@ -1762,6 +2092,16 @@ pub(crate) const CASES: [(&str, fn()); 18] = [
         readback_map_none_is_the_frame_without_a_map,
     ),
     ("readback_map_refusals", readback_map_refusals),
+    ("readback_map_modes", readback_map_modes),
+    ("readback_map_mode_refusals", readback_map_mode_refusals),
+    (
+        "readback_map_mode_with_no_places",
+        readback_map_mode_with_no_places,
+    ),
+    (
+        "map_modes_replace_the_resident_table_and_off_draws_the_plain_map",
+        map_modes_replace_the_resident_table_and_off_draws_the_plain_map,
+    ),
     ("map_in_the_first_frame", map_in_the_first_frame),
     ("map_absent_then_present", map_absent_then_present),
     (

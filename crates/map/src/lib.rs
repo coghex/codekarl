@@ -10,10 +10,15 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "test-support")]
 pub mod fixture;
 mod loading;
+mod mode;
 mod scenario;
 
 pub use loading::{
     LoadError, LoadedMap, LoadedTerrain, MAX_CROP_DIMENSION, PackedGrid, TerrainKind, load_map,
+};
+pub use mode::{
+    MODE_UNCOLOURED, MODE_UNOWNED, MODE_VALUE_MAX, ModeInputs, mode_colour, mode_value_at_cell,
+    stockpile_value, yield_values,
 };
 pub use scenario::{
     BuildingKind, Confidence, HouseStyle, Location, LocationKind, LocationKinds, LocationPixel,
@@ -471,6 +476,22 @@ pub fn reference_colour_with_locations(
     rivers: &BTreeSet<WorldPixel>,
     locations: &BTreeMap<WorldPixel, Rgba8>,
 ) -> Option<Rgba8> {
+    reference_colour_with_mode(map, step, pixel, rivers, locations, None)
+}
+
+/// The reference colour with a map mode (`docs/economy-design.md` section 3.22): rivers and locations first, as without a mode; then,
+/// when `mode` is given and the cell under the pixel's (moved) sample point has a counted neighbour in its 5 x 5 box, the mode's colour
+/// ([`mode_value_at_cell`], [`mode_colour`]); otherwise the terrain colour. With `mode` of `None` this is
+/// [`reference_colour_with_locations`] exactly.
+#[must_use]
+pub fn reference_colour_with_mode(
+    map: &MapData,
+    step: u8,
+    pixel: WorldPixel,
+    rivers: &BTreeSet<WorldPixel>,
+    locations: &BTreeMap<WorldPixel, Rgba8>,
+    mode: Option<&ModeInputs<'_>>,
+) -> Option<Rgba8> {
     if usize::from(step) >= STEP_SIZE.len() {
         return None;
     }
@@ -491,6 +512,11 @@ pub fn reference_colour_with_locations(
     let moved = jittered_point(unmoved, step)?;
     if !inside_crop(map.crop, moved) {
         return Some(map.sea);
+    }
+    if let Some(mode) = mode
+        && let Some(value) = mode::mode_value_at_point(map, mode, moved)
+    {
+        return Some(mode_colour(value));
     }
     let surface = map.surface_at_point(moved)?;
     let mut colour = match surface {
@@ -810,6 +836,8 @@ fn bresenham(start: WorldPixel, end: WorldPixel, pixels: &mut BTreeSet<WorldPixe
     Some(())
 }
 
+#[cfg(test)]
+mod mode_tests;
 #[cfg(test)]
 mod tests;
 

@@ -14,7 +14,7 @@ use crate::map::{
 use crate::{Filter, Metrics, PixelRect, QuadSink, SceneBridge, SourceRect};
 
 /// A grid of `width x height` cells, every one `cell`.
-fn grid(width: u32, height: u32, cell: [u8; 4]) -> Vec<u8> {
+pub(super) fn grid(width: u32, height: u32, cell: [u8; 4]) -> Vec<u8> {
     cell.repeat(usize::try_from(width * height).unwrap())
 }
 
@@ -35,7 +35,7 @@ fn land() -> MapTerrainRule {
 }
 
 /// A valid rule table of `count` land types (the step table is a plain descending ramp, not `ck-map`'s).
-fn rules(count: usize) -> MapRules {
+pub(super) fn rules(count: usize) -> MapRules {
     MapRules {
         terrains: vec![land(); count],
         sea: [5, 8, 14, 255],
@@ -49,7 +49,7 @@ fn rules(count: usize) -> MapRules {
 }
 
 /// A valid input of `width x height` cells: terrain 1 everywhere, elevation zero.
-fn input(generation: u64, width: u32, height: u32) -> Arc<MapInput> {
+pub(super) fn input(generation: u64, width: u32, height: u32) -> Arc<MapInput> {
     Arc::new(
         MapInput::new(
             generation,
@@ -63,7 +63,7 @@ fn input(generation: u64, width: u32, height: u32) -> Arc<MapInput> {
     )
 }
 
-fn camera(view: [u32; 2], metrics_generation: u64) -> Arc<MapCamera> {
+pub(super) fn camera(view: [u32; 2], metrics_generation: u64) -> Arc<MapCamera> {
     Arc::new(
         MapCamera::new(40, [5, -6], view, Vec::new(), metrics_generation).expect("a valid camera"),
     )
@@ -77,7 +77,7 @@ fn metrics(points: (u32, u32), pixel_size: PixelSize) -> Metrics {
     }
 }
 
-fn attached() -> (Arc<SceneBridge>, Arc<RecordingSink>) {
+pub(super) fn attached() -> (Arc<SceneBridge>, Arc<RecordingSink>) {
     let bridge = SceneBridge::new(Filter::Nearest);
     let sink = RecordingSink::new();
     bridge

@@ -1320,7 +1320,7 @@ fn the_places_dropdown_stays_open_after_selection_and_closes_on_escape_or_title_
     let mut rig = Rig::new_fixture_body(&places_script());
     // Apply the initial viewport size so the separate top-right Places bar is anchored to the test window.
     rig.deliver_fixture_frame();
-    // The Places button is the last button (Help remains on the top-left time bar).
+    // The Places button is the third from last (Help remains on the top-left time bar, and the map modes' two buttons follow it).
     let regions = rig.harness.bridge.hit_regions().expect("regions");
     let buttons: Vec<String> = regions
         .regions()
@@ -1328,7 +1328,7 @@ fn the_places_dropdown_stays_open_after_selection_and_closes_on_escape_or_title_
         .map(|region| region.key().to_owned())
         .filter(|key| key.starts_with("button_"))
         .collect();
-    let places_button = buttons.last().expect("buttons").clone();
+    let places_button = buttons.iter().rev().nth(2).expect("buttons").clone();
     let (x, y) = point_of(&rig, &places_button);
     rig.feed(&[
         PointerEvent::Down(points(x, y)),

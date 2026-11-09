@@ -49,7 +49,9 @@ use ck_window::{PixelSize, WindowDesc};
 use crate::filter::Filter;
 use crate::group::{GroupError, GroupKey, PointRect};
 use crate::hit::{HitError, HitRegions};
-use crate::map::{MapCamera, MapFrame, MapInput, MapPublication, MapRefusals, place_map};
+use crate::map::{
+    MapCamera, MapError, MapFrame, MapInput, MapMode, MapPublication, MapRefusals, place_map,
+};
 use crate::quad::{Metrics, Quad, QuadError, Snapshot};
 use crate::scene::{EditScene, FrameQuad, QuadKey, SceneFrame, SceneLimits, SceneLimitsError};
 
@@ -118,6 +120,7 @@ struct State {
     hit_regions: Option<Arc<HitRegions>>,
     map: Option<Arc<MapInput>>,
     camera: Option<Arc<MapCamera>>,
+    mode: Option<Arc<MapMode>>,
     /// What the presenter reports of refusing to make a map image (shared with every snapshot's map).
     map_refusals: Arc<MapRefusals>,
     /// Counts the metrics the bridge has had (attach and every pixel-size change); a camera is for exactly one of them.
@@ -142,6 +145,7 @@ struct Displaced {
     hit_regions: Option<Arc<HitRegions>>,
     map: Option<Arc<MapInput>>,
     camera: Option<Arc<MapCamera>>,
+    mode: Option<Arc<MapMode>>,
 }
 
 impl State {
@@ -163,6 +167,14 @@ impl State {
         })
     }
 
+    /// The stored mode, when it has a table that fits `input`'s owner grid (a newer map with other places leaves an older table unused).
+    fn mode_for(&self, input: &MapInput) -> Option<Arc<MapMode>> {
+        let mode = self.mode.as_ref()?;
+        let values = mode.values()?;
+        let owners = input.owners()?;
+        (values.len() == owners.places()).then(|| Arc::clone(mode))
+    }
+
     /// The map lane's contribution to a snapshot made with `metrics`: the input and a camera computed for these very metrics, placed.
     /// A camera computed for earlier metrics (a resize since) contributes nothing until the matching one is published, so a frame never
     /// pairs a view size with metrics it was not computed for.
@@ -176,6 +188,7 @@ impl State {
             input: Arc::clone(input),
             camera: Arc::clone(camera),
             placement: place_map(camera.view(), metrics),
+            mode: self.mode_for(input),
             refusals: Arc::clone(&self.map_refusals),
         })
     }
@@ -239,6 +252,7 @@ impl SceneBridge {
                 hit_regions: None,
                 map: None,
                 camera: None,
+                mode: None,
                 map_refusals: Arc::new(MapRefusals::default()),
                 metrics_generation: 0,
                 metrics: None,
@@ -360,6 +374,7 @@ impl SceneBridge {
             displaced.hit_regions = state.hit_regions.take();
             displaced.map = state.map.take();
             displaced.camera = state.camera.take();
+            displaced.mode = state.mode.take();
             // Replace the consumer's latest snapshot before detaching it, so an idle sink cannot pin the scene frame or the map.
             if state.phase == Phase::Attached
                 && (displaced.frame.is_some() || displaced.map.is_some())
@@ -443,6 +458,55 @@ impl SceneBridge {
         };
         drop(displaced);
         outcome
+    }
+
+    /// Publishes the map mode (the values each place shows, or off): stored, and sent to the sink when one is attached.
+    ///
+    /// # Errors
+    ///
+    /// With a map published, [`MapError::ModeWithoutOwners`] for a table when the map has no owner grid and
+    /// [`MapError::ModeTableLength`] when the table's length is not the map's place count. A refused mode changes nothing: the lane
+    /// keeps the mode it accepted before. (A table published before the map is held, and carried only while it fits the map's places.)
+    ///
+    /// # Returns
+    ///
+    /// [`MapPublication::Stale`] when `mode` is not newer than the stored one (its revision is not larger), and
+    /// [`MapPublication::Detached`] after [`detach`](Self::detach); neither changes anything.
+    pub fn publish_mode(&self, mode: Arc<MapMode>) -> Result<MapPublication, MapError> {
+        let mut displaced = Displaced::default();
+        let outcome = {
+            let mut state = self.lock();
+            if let (Some(values), Some(input)) = (mode.values(), state.map.as_ref()) {
+                match input.owners() {
+                    None => return Err(MapError::ModeWithoutOwners),
+                    Some(owners) if owners.places() != values.len() => {
+                        return Err(MapError::ModeTableLength {
+                            expected: owners.places(),
+                            actual: values.len(),
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
+            if state.phase == Phase::Ended {
+                displaced.mode = Some(mode);
+                MapPublication::Detached
+            } else if state
+                .mode
+                .as_ref()
+                .is_some_and(|held| mode.revision() <= held.revision())
+            {
+                displaced.mode = Some(mode);
+                MapPublication::Stale
+            } else {
+                displaced.mode = state.mode.replace(mode);
+                state.generation += 1;
+                displaced.snapshot = state.publish();
+                MapPublication::Published
+            }
+        };
+        drop(displaced);
+        Ok(outcome)
     }
 
     /// Stages the initial camera before the first presenter attach. The caller computes it from the accepted window description;

@@ -10,6 +10,7 @@ mod idle;
 mod legacy;
 mod logging;
 mod map;
+mod map_mode;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal_refusal;
 #[cfg(all(feature = "metal", target_os = "macos"))]

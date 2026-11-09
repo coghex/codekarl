@@ -4,7 +4,7 @@
     python3 make_theme.py --check    fail if a committed image differs from what this script writes, or is missing or extra
 
 `white.png` is one opaque white pixel: the frames' bands and edges are stretched copies of it, tinted by the theme. `speed_box.png`
-is the one-pixel rounded outline of a 6 by 11 speed indicator. The four `icon_*.png` files are white 11-row glyphs for the time bar. For each cut
+is the one-pixel rounded outline of a 6 by 11 speed indicator. The `icon_*.png` files are white 11-row glyphs: four for the time bar and two for the map modes. For each cut
 `c` in 3, 6 and 7 there are four tiles of `(c + 1) x (c + 1)` pixels, opaque white or transparent:
 
 - `cut<c>_tl_line.png` and `cut<c>_tl_fill.png`, the top-left corner: pixel `(i, j)` is line where `i + j == c`, fill where
@@ -37,6 +37,15 @@ ICONS = {
     ),
     "pause": (7, ("##.##.",) * 7),
     "play": (7, ("#.....", "##....", "###...", "####..", "###...", "##....", "#.....")),
+    # The map modes' buttons (milestone 9, slice 8): a barrel of stores, and three bars that rise (the yield).
+    "stockpile": (
+        9,
+        ("..####..", ".######.", "########", "########", "########", ".######.", "..####.."),
+    ),
+    "yield": (
+        9,
+        ("......##", "......##", "...##.##", "...##.##", "##.##.##", "##.##.##", "##.##.##"),
+    ),
 }
 
 

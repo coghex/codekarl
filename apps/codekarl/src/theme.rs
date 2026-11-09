@@ -376,6 +376,52 @@ mod tests {
         }
     }
 
+    /// The time bar's and the map modes' icons: name, width in pixels and the seven shape rows after the two blank ones.
+    const ICONS: [(&str, usize, &[&str]); 6] = [
+        (
+            "rewind",
+            9,
+            &[
+                "...#...#", "..##..##", ".###.###", "########", ".###.###", "..##..##", "...#...#",
+            ],
+        ),
+        (
+            "fast_forward",
+            9,
+            &[
+                "#...#...", "##..##..", "###.###.", "########", "###.###.", "##..##..", "#...#...",
+            ],
+        ),
+        (
+            "pause",
+            7,
+            &[
+                "##.##.", "##.##.", "##.##.", "##.##.", "##.##.", "##.##.", "##.##.",
+            ],
+        ),
+        (
+            "play",
+            7,
+            &[
+                "#.....", "##....", "###...", "####..", "###...", "##....", "#.....",
+            ],
+        ),
+        (
+            "stockpile",
+            9,
+            &[
+                "..####..", ".######.", "########", "########", "########", ".######.", "..####..",
+            ],
+        ),
+        (
+            "yield",
+            9,
+            &[
+                "......##", "......##", "...##.##", "...##.##", "##.##.##", "##.##.##", "##.##.##",
+            ],
+        ),
+    ];
+
     #[test]
     fn each_tile_png_equals_its_rule_pixel_for_pixel_and_no_other_png_is_there() {
         let directory = assets().join("ui/theme");
@@ -400,38 +446,7 @@ mod tests {
         }
         assert_eq!(speed_box.pixels(), expected_box);
         names.insert("speed_box.png".to_owned());
-        let icons: [(&str, usize, &[&str]); 4] = [
-            (
-                "rewind",
-                9,
-                &[
-                    "...#...#", "..##..##", ".###.###", "########", ".###.###", "..##..##",
-                    "...#...#",
-                ],
-            ),
-            (
-                "fast_forward",
-                9,
-                &[
-                    "#...#...", "##..##..", "###.###.", "########", "###.###.", "##..##..",
-                    "#...#...",
-                ],
-            ),
-            (
-                "pause",
-                7,
-                &[
-                    "##.##.", "##.##.", "##.##.", "##.##.", "##.##.", "##.##.", "##.##.",
-                ],
-            ),
-            (
-                "play",
-                7,
-                &[
-                    "#.....", "##....", "###...", "####..", "###...", "##....", "#.....",
-                ],
-            ),
-        ];
+        let icons = ICONS;
         for (name, width, shape) in icons {
             let file = format!("icon_{name}.png");
             let image = Image::decode(fs::File::open(directory.join(&file)).unwrap()).unwrap();

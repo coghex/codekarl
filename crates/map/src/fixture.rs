@@ -8,13 +8,13 @@
 //! relief and cap boundary, coast cells and interior cells, and land that touches the crop's edge so that the outside of the crop is a
 //! water neighbour.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     BuildingKind, Cell, Confidence, Crop, FixedPoint, HouseStyle, LoadedMap, LoadedTerrain,
-    Location, LocationKind, LocationKinds, MapData, PackedGrid, Rgba8, RiverLine, STEP_SIZE,
-    Scenario as LoadedScenario, ScenarioStart, Surface, TerrainKind, TerrainStyle, WorldPixel,
-    reference_colour,
+    Location, LocationKind, LocationKinds, MODE_UNCOLOURED, MODE_UNOWNED, MapData, ModeInputs,
+    PackedGrid, Rgba8, RiverLine, STEP_SIZE, Scenario as LoadedScenario, ScenarioStart, Surface,
+    TerrainKind, TerrainStyle, WorldPixel, reference_colour, reference_colour_with_mode,
 };
 
 /// The crop's global origin cell.
@@ -484,6 +484,87 @@ impl Fixture {
         other.terrains[2].style.second = Rgba8::opaque(0xff, 0x00, 0xff);
         other.data.terrains[0].second = Rgba8::opaque(0xff, 0x00, 0xff);
         other
+    }
+}
+
+/// The places of the map-mode fixture: where each one is (a crop column and row) and how far its catchment reaches, in cells.
+const MODE_PLACES: [([u32; 2], u32); 4] = [([6, 8], 4), ([17, 10], 4), ([10, 3], 3), ([20, 3], 2)];
+
+/// The number of places of the map-mode fixture: three coloured and one with no capacity.
+pub const MODE_PLACE_COUNT: usize = MODE_PLACES.len();
+
+/// The owner grid of the map-mode fixture, one `u16` per crop cell, row-major: every cell belongs to the nearest of four places within
+/// that place's reach (ties to the lower index), or to nobody (`0xFFFF`). The catchments touch and cross land, coast and the lake, and
+/// two of them meet, so the blend has borders, interiors, edges against unowned cells and isolated cells.
+///
+/// # Panics
+///
+/// Never: the four places' indices fit `u16`.
+#[must_use]
+pub fn mode_owners() -> Vec<u16> {
+    let mut owners = Vec::new();
+    for y in 0..SIZE[1] {
+        for x in 0..SIZE[0] {
+            let mut best: Option<(u32, u16)> = None;
+            for (index, (at, reach)) in MODE_PLACES.iter().enumerate() {
+                let (dx, dy) = (x.abs_diff(at[0]), y.abs_diff(at[1]));
+                let distance = dx * dx + dy * dy;
+                if distance <= reach * reach && best.is_none_or(|(nearest, _)| distance < nearest) {
+                    best = Some((distance, u16::try_from(index).expect("four places")));
+                }
+            }
+            owners.push(best.map_or(MODE_UNOWNED, |(_, index)| index));
+        }
+    }
+    owners
+}
+
+/// A value table for the map-mode fixture: `revision` 0 and 1 give different values, and the fourth place never has a colour.
+#[must_use]
+pub fn mode_values(revision: u8) -> Vec<u16> {
+    match revision {
+        0 => vec![0, 500, 1000, MODE_UNCOLOURED],
+        _ => vec![1000, 123, 777, MODE_UNCOLOURED],
+    }
+}
+
+impl Fixture {
+    /// The reference's image of a view under a map mode ([`reference_colour_with_mode`], no rivers
+    /// or locations): `view.0 x view.1` RGBA8 pixels, rows top first.
+    ///
+    /// # Panics
+    ///
+    /// As [`Fixture::reference`].
+    #[must_use]
+    pub fn reference_image_with_mode(
+        &self,
+        step: u8,
+        top_left: [i32; 2],
+        view: [u32; 2],
+        mode: &ModeInputs<'_>,
+    ) -> Vec<u8> {
+        let mut image = Vec::with_capacity(view[0] as usize * view[1] as usize * 4);
+        for y in 0..view[1] {
+            for x in 0..view[0] {
+                let pixel = WorldPixel {
+                    x: top_left[0] + i32::try_from(x).expect("x"),
+                    y: top_left[1] + i32::try_from(y).expect("y"),
+                };
+                image.extend_from_slice(
+                    &reference_colour_with_mode(
+                        &self.data,
+                        step,
+                        pixel,
+                        &BTreeSet::new(),
+                        &BTreeMap::new(),
+                        Some(mode),
+                    )
+                    .expect("the pixel's sample point fits")
+                    .0,
+                );
+            }
+        }
+        image
     }
 }
 

@@ -147,7 +147,7 @@ struct MapUniforms {
     int2 crop;     /* the crop's size in cells */
     int2 top_left; /* the camera's top-left world pixel (I_left, J_top) */
     int step;      /* the zoom step s, 0 to 75 */
-    int unused;
+    int mode;      /* 1 when a map mode shows (milestone 9, slice 8), else 0 */
 };
 
 vertex float4 ck_map_vertex(uint vertex_id [[vertex_id]]) {
@@ -310,10 +310,53 @@ static int map_signed_pair(uint4 texel, bool second) {
     return int(second ? map_u16(texel.b, texel.a) : map_u16(texel.r, texel.g)) - 11000;
 }
 
+/* The map modes (milestone 9, slice 8; docs/economy-design.md section 3.22): the owner grid is a fourth RGBA8 image of the crop's size
+ * (R and G the high and low bytes of the index of the place that owns the cell, 0xFFFF for none) and the mode's value table is a buffer
+ * with one uint per place (0 to 1000, 0xFFFF for a place with nothing to show). With `uniforms.mode` set, a pixel shows the floored mean
+ * of the values of the counted cells of the 5 x 5 box around the cell under its moved sample point, from red through yellow to green,
+ * exactly as ck-map's `mode` module computes it; a pixel with no counted cell keeps its terrain colour. */
+constant uint MODE_NONE = 0xFFFFu;
+constant uint MODE_MAX = 1000u;
+
+static float4 map_mode_colour(uint value) {
+    value = min(value, MODE_MAX);
+    uint3 rgb = value <= 500u ? uint3(255u, value * 255u / 500u, 0u) : uint3((MODE_MAX - value) * 255u / 500u, 255u, 0u);
+    return float4(float3(rgb) / 255.0, 1.0);
+}
+
+static bool map_mode_value(constant MapUniforms &uniforms, texture2d<float, access::read> owners,
+                           device const uint *values, int2 cell, thread uint &value) {
+    uint sum = 0u;
+    uint count = 0u;
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            int2 at = cell + int2(dx, dy);
+            if (any(at < int2(0)) || any(at >= uniforms.crop)) {
+                continue;
+            }
+            uint4 o = map_bytes(owners.read(uint2(at)));
+            uint owner = map_u16(o.r, o.g);
+            if (owner == MODE_NONE) {
+                continue;
+            }
+            uint v = values[owner];
+            if (v == MODE_NONE) {
+                continue;
+            }
+            sum += min(v, MODE_MAX);
+            count++;
+        }
+    }
+    value = count == 0u ? 0u : sum / count;
+    return count != 0u;
+}
+
 fragment float4 ck_map_fragment(float4 position [[position]], constant MapUniforms &uniforms [[buffer(0)]],
+                                device const uint *mode_values [[buffer(1)]],
                                 texture2d<float, access::read> grid_a [[texture(0)]],
                                 texture2d<float, access::read> grid_b [[texture(1)]],
-                                texture2d<float, access::read> rules [[texture(2)]]) {
+                                texture2d<float, access::read> rules [[texture(2)]],
+                                texture2d<float, access::read> owners [[texture(3)]]) {
     int2 pixel = uniforms.top_left + int2(position.xy);
     uint4 step_bytes = map_bytes(rules.read(uint2(uint(uniforms.step), RULES_ROW_STEPS)));
     int p = int((step_bytes.r << 16u) | (step_bytes.g << 8u) | step_bytes.b);
@@ -321,6 +364,13 @@ fragment float4 ck_map_fragment(float4 position [[position]], constant MapUnifor
     MapSurface surface = map_surface(uniforms, grid_a, grid_b, rules, pixel, p);
     if (surface.outside) {
         return rules.read(uint2(0u, RULES_ROW_GLOBALS)); /* the sea */
+    }
+    if (uniforms.mode != 0) {
+        uint mode_value;
+        int2 cell = (surface.moved - (uniforms.origin << FIXED_PER_CELL_SHIFT)) >> FIXED_PER_CELL_SHIFT;
+        if (map_mode_value(uniforms, owners, mode_values, cell, mode_value)) {
+            return map_mode_colour(mode_value);
+        }
     }
     if (surface.kind == KIND_LAKE) {
         return rules.read(uint2(2u, RULES_ROW_GLOBALS));

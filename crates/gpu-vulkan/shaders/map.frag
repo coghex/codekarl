@@ -12,6 +12,12 @@
 //     kind (0 land, 1 sea, 2 lake, 3 mountain), 0, 255;
 //   row 256: texels 0 sea, 1 shallow sea, 2 lake, 3 river, 4 = shallow threshold (high byte, low byte);
 //   row 257: texel s = the map pixel size P(s) at step s, in 1/32768 cell, as three bytes (high first).
+// The map modes (milestone 9, slice 8; `docs/economy-design.md` section 3.22): the owner grid is a fourth RGBA8 image of the crop's size
+// (binding 4: R and G the high and low bytes of the index of the place that owns the cell, 0xFFFF for none), and the mode's value table
+// is a storage buffer (set 1) with one uint per place (0 to 1000, 0xFFFF for a place with nothing to show). With `camera.mode` set, a
+// pixel shows the floored mean of the values of the counted cells of the 5 x 5 box around the cell under its moved sample point, from
+// red through yellow to green, exactly as `ck-map`'s `mode` module computes it; a pixel with no counted cell keeps its terrain colour.
+//
 // A unorm byte read as a float and scaled by 255 rounds back to the original integer on every GPU and on Metal. `gl_FragCoord` has
 // its origin at the target's top-left corner and a half at the pixel centre, so its integer part is the pixel's column and row.
 
@@ -20,12 +26,16 @@ layout(push_constant) uniform Camera {
     ivec2 crop;     // the crop's size in cells
     ivec2 top_left; // the camera's top-left world pixel (I_left, J_top)
     int zoom;       // the zoom step s, 0 to 75
-    int unused;
+    int mode;       // 1 when a map mode shows, else 0
 } camera;
 
 layout(set = 0, binding = 0) uniform texture2D grid_a;
 layout(set = 0, binding = 1) uniform texture2D grid_b;
 layout(set = 0, binding = 2) uniform texture2D rules;
+layout(set = 0, binding = 4) uniform texture2D owners;
+layout(set = 1, binding = 0) readonly buffer ModeValues {
+    uint values[];
+} mode_values;
 
 layout(location = 0) out vec4 colour;
 
@@ -38,6 +48,8 @@ const uint KIND_SEA = 1u;
 const uint KIND_LAKE = 2u;
 const uint KIND_MOUNTAIN = 3u;
 const int FIXED_PER_CELL_SHIFT = 15;
+const uint MODE_NONE = 0xFFFFu;
+const uint MODE_MAX = 1000u;
 
 uvec4 map_bytes(vec4 texel) {
     return uvec4(texel * 255.0 + 0.5);
@@ -196,6 +208,41 @@ int map_signed_pair(uvec4 texel, bool second) {
     return int(second ? map_u16(texel.b, texel.a) : map_u16(texel.r, texel.g)) - 11000;
 }
 
+// The colour of a map-mode value: red (255, 0, 0) at 0, yellow (255, 255, 0) at 500, green (0, 255, 0) at 1000, linear and floored.
+vec4 map_mode_colour(uint value) {
+    value = min(value, MODE_MAX);
+    uvec3 rgb = value <= 500u ? uvec3(255u, value * 255u / 500u, 0u) : uvec3((MODE_MAX - value) * 255u / 500u, 255u, 0u);
+    return vec4(vec3(rgb) / 255.0, 1.0);
+}
+
+// Whether the cell has a counted cell in its 5 x 5 box, and the floored mean of their values. A cell is counted when a place owns it
+// and that place has a value; the box is clipped to the crop.
+bool map_mode_value(ivec2 cell, out uint value) {
+    uint sum = 0u;
+    uint count = 0u;
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            ivec2 at = cell + ivec2(dx, dy);
+            if (any(lessThan(at, ivec2(0))) || any(greaterThanEqual(at, camera.crop))) {
+                continue;
+            }
+            uvec4 o = map_bytes(texelFetch(owners, at, 0));
+            uint owner = map_u16(o.r, o.g);
+            if (owner == MODE_NONE) {
+                continue;
+            }
+            uint v = mode_values.values[owner];
+            if (v == MODE_NONE) {
+                continue;
+            }
+            sum += min(v, MODE_MAX);
+            count++;
+        }
+    }
+    value = count == 0u ? 0u : sum / count;
+    return count != 0u;
+}
+
 void main() {
     ivec2 pixel = camera.top_left + ivec2(gl_FragCoord.xy);
     uvec4 step_bytes = map_bytes(rule_texel(uint(camera.zoom), RULES_ROW_STEPS));
@@ -205,6 +252,14 @@ void main() {
     if (surface.outside) {
         colour = rule_texel(0u, RULES_ROW_GLOBALS); // the sea
         return;
+    }
+    if (camera.mode != 0) {
+        uint mode_value;
+        ivec2 cell = (surface.moved - (camera.origin << FIXED_PER_CELL_SHIFT)) >> FIXED_PER_CELL_SHIFT;
+        if (map_mode_value(cell, mode_value)) {
+            colour = map_mode_colour(mode_value);
+            return;
+        }
     }
     if (surface.kind == KIND_LAKE) {
         colour = rule_texel(2u, RULES_ROW_GLOBALS);

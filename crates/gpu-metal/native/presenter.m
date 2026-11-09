@@ -148,6 +148,8 @@ static void ck_obs_max(CKPrObserverState *observer, int index, int64_t value) {
 /* The opaque map-pixel overlay drawn after the terrain pass. */
 @property(nonatomic, strong) id<MTLRenderPipelineState> mapRivers;
 @property(nonatomic, strong) id<MTLRenderPipelineState> mapLocations;
+/* The value table a frame with no map mode binds (four zero bytes), which the map shader is told not to read. */
+@property(nonatomic, strong) id<MTLBuffer> mapNoTable;
 @property(nonatomic, strong) id<MTLSamplerState> nearest;
 @property(nonatomic, strong) id<MTLSamplerState> linear;
 @end
@@ -191,6 +193,12 @@ static void ck_obs_max(CKPrObserverState *observer, int index, int64_t value) {
 @property(nonatomic, strong) id<MTLTexture> mapGridB;
 @property(nonatomic, strong) id<MTLTexture> mapRules;
 @property(nonatomic, strong) id<MTLBuffer> mapPalette;
+/* The map modes (milestone 9, slice 8): the owner grid (resident with the input) and the value table of the revision showing (nil
+ * with no mode; replaced, and the old one retired, by a new revision). */
+@property(nonatomic, strong) id<MTLTexture> mapOwners;
+@property(nonatomic, strong) id<MTLBuffer> mapTable;
+@property(nonatomic) uint64_t mapTableRevision;
+@property(nonatomic) uint32_t mapTableCount;
 @property(nonatomic) uint64_t mapGeneration;
 @property(nonatomic, strong) id<MTLTexture> mapTarget;
 @property(nonatomic, strong) NSArray *retiredMap;
@@ -341,6 +349,8 @@ typedef struct {
     __unsafe_unretained id<MTLTexture> rules;
     __unsafe_unretained id<MTLBuffer> palette;
     __unsafe_unretained id<MTLTexture> target;
+    __unsafe_unretained id<MTLTexture> owners;
+    __unsafe_unretained id<MTLBuffer> table;
 } CKPrMapDraw;
 
 /* The map pass's uniforms, as the shader reads them (`MapUniforms` in quad.metal): 32 bytes. */
@@ -349,7 +359,7 @@ typedef struct {
     int32_t crop[2];
     int32_t top_left[2];
     int32_t step;
-    int32_t unused;
+    int32_t mode; /* 1 when a map mode shows */
 } CKPrMapUniforms;
 
 /* The map pass: one full-target triangle into the map target, in its own render pass in the frame's command buffer, before the
@@ -368,12 +378,14 @@ static BOOL ck_encode_map_pass(id<MTLCommandBuffer> command, CKPrQuadKit *kit, c
                                 {(int32_t)draw->map->crop[0], (int32_t)draw->map->crop[1]},
                                 {draw->map->top_left[0], draw->map->top_left[1]},
                                 draw->map->step,
-                                0};
+                                draw->map->mode != 0 ? 1 : 0};
     [encoder setRenderPipelineState:kit.map];
     [encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
     [encoder setFragmentTexture:draw->grid_a atIndex:0];
     [encoder setFragmentTexture:draw->grid_b atIndex:1];
     [encoder setFragmentTexture:draw->rules atIndex:2];
+    [encoder setFragmentTexture:draw->owners atIndex:3];
+    [encoder setFragmentBuffer:(draw->map->mode != 0 ? draw->table : kit.mapNoTable) offset:0 atIndex:1];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     if (draw->map->location_count != 0) {
         NSUInteger location_bytes = (NSUInteger)draw->map->location_count * sizeof(uint32_t[3]);
@@ -449,6 +461,7 @@ static id<MTLCommandBuffer> ck_encode_frame(id<MTLCommandQueue> queue, id<MTLTex
     BOOL mapping = map_draw != NULL && map_draw->map != NULL && map_draw->map->present != 0;
     if (mapping) {
         if (kit == nil || kit.map == nil || map_draw->grid_a == nil || map_draw->grid_b == nil || map_draw->rules == nil ||
+            map_draw->owners == nil || (map_draw->map->mode != 0 && map_draw->table == nil) || kit.mapNoTable == nil ||
             map_draw->target == nil || !ck_encode_map_pass(command, kit, map_draw, reason)) {
             if (*reason == nil) {
                 *reason = @"the map could not be encoded";
@@ -807,6 +820,11 @@ static CKPrQuadKit *ck_make_quad_kit(id<MTLDevice> device, const uint8_t *librar
     kit.map = map;
     kit.mapRivers = map_rivers;
     kit.mapLocations = map_locations;
+    kit.mapNoTable = [device newBufferWithLength:sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    if (kit.mapNoTable == nil) {
+        *reason = @"the map's empty value table could not be created";
+        return nil;
+    }
     for (int linear = 0; linear < 2; linear++) {
         MTLSamplerDescriptor *sampler = [MTLSamplerDescriptor new];
         MTLSamplerMinMagFilter filter = linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
@@ -962,10 +980,11 @@ static id<MTLTexture> ck_make_map_target(id<MTLDevice> device, uint32_t width, u
     return texture;
 }
 
-/* The three images of one map input (grid A, grid B, the rules as one RGBA8 image of CK_MAP_RULES_WIDTH x CK_MAP_RULES_HEIGHT
- * texels) for `map`, which carries the grids and the rules. NO with a reason. */
+/* The images of one map input (grid A, grid B, the rules as one RGBA8 image of CK_MAP_RULES_WIDTH x CK_MAP_RULES_HEIGHT texels, and the
+ * owner grid: the crop's size when the map has one, else one texel owned by nobody) for `map`, which carries the grids and the rules.
+ * NO with a reason. */
 static BOOL ck_make_map_inputs(id<MTLDevice> device, const CKPrMap *map, int32_t fail, id<MTLTexture> *grid_a,
-                               id<MTLTexture> *grid_b, id<MTLTexture> *rules, NSString **reason) {
+                               id<MTLTexture> *grid_b, id<MTLTexture> *rules, id<MTLTexture> *owners, NSString **reason) {
     if (map->grid_a == NULL || map->grid_b == NULL || map->rules == NULL) {
         *reason = @"the map's grids or rules are missing";
         return NO;
@@ -979,7 +998,38 @@ static BOOL ck_make_map_inputs(id<MTLDevice> device, const CKPrMap *map, int32_t
         return NO;
     }
     *rules = ck_make_map_image(device, CK_MAP_RULES_WIDTH, CK_MAP_RULES_HEIGHT, map->rules, fail, @"rules", reason);
-    return *rules != nil;
+    if (*rules == nil) {
+        return NO;
+    }
+    static const uint8_t nobody[4] = {255, 255, 0, 255};
+    if (map->owners != NULL) {
+        *owners = ck_make_map_image(device, map->crop[0], map->crop[1], map->owners, fail, @"owner grid", reason);
+    } else {
+        *owners = ck_make_map_image(device, 1, 1, nobody, fail, @"owner grid", reason);
+    }
+    return *owners != nil;
+}
+
+/* A map mode's value table: one uint32 per place (widened from the uint16 the lane gives), shared storage, read by the map pass. nil
+ * with a reason. */
+static id<MTLBuffer> ck_make_map_table(id<MTLDevice> device, const CKPrMap *map, NSString **reason) {
+    /* A map with no places has an empty table: one zero word stands for it, and no cell is owned, so it is never read. */
+    NSUInteger words = map->mode_count == 0 ? 1 : (NSUInteger)map->mode_count;
+    if (map->mode_count != 0 && map->mode_values == NULL) {
+        *reason = @"the map's mode table has no values";
+        return nil;
+    }
+    id<MTLBuffer> table = [device newBufferWithLength:words * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    if (table == nil) {
+        *reason = @"the map's mode table could not be allocated";
+        return nil;
+    }
+    uint32_t *contents = (uint32_t *)table.contents;
+    contents[0] = 0;
+    for (uint32_t place = 0; place < map->mode_count; place++) {
+        contents[place] = map->mode_values[place];
+    }
+    return table;
 }
 
 /* Lets go of the retired map resources once the token of the last command buffer that used them has arrived; never once the
@@ -1041,11 +1091,17 @@ static int ck_map_admit(CKPrCoreState *core, const CKPrMap *map, const CKPrFault
                       core.mapTarget.height != map->view[1];
     BOOL replaces_grids = new_grids && core.mapGridA != nil;
     BOOL replaces_target = new_target && core.mapTarget != nil;
+    /* The mode's table: a new one for a revision (or place count) that is not resident, and none once the mode is off. */
+    BOOL want_table = map->mode != 0;
+    BOOL new_table = want_table ? (core.mapTable == nil || core.mapTableRevision != map->mode_revision ||
+                                   core.mapTableCount != map->mode_count)
+                                : core.mapTable != nil;
+    BOOL replaces_table = new_table && core.mapTable != nil;
     if (!new_grids && core.mapGridA == nil) {
         *why = @"a map was drawn with no grids to read";
         return 2;
     }
-    if ((replaces_grids || replaces_target) && core.retiredMap != nil) {
+    if ((replaces_grids || replaces_target || replaces_table) && core.retiredMap != nil) {
         ck_obs_add(observer, CK_OBS_MAP_ADMISSION_WAITS, 1);
         return 1;
     }
@@ -1053,9 +1109,18 @@ static int ck_map_admit(CKPrCoreState *core, const CKPrMap *map, const CKPrFault
     id<MTLTexture> grid_b = nil;
     id<MTLTexture> rules = nil;
     id<MTLBuffer> palette = nil;
+    id<MTLTexture> owners = nil;
+    id<MTLBuffer> table = nil;
     id<MTLTexture> target = nil;
-    if (new_grids && !ck_make_map_inputs(core.device, map, faults->fail_texture_allocation, &grid_a, &grid_b, &rules, why)) {
+    if (new_grids &&
+        !ck_make_map_inputs(core.device, map, faults->fail_texture_allocation, &grid_a, &grid_b, &rules, &owners, why)) {
         return 3;
+    }
+    if (new_table && want_table) {
+        table = ck_make_map_table(core.device, map, why);
+        if (table == nil) {
+            return 3;
+        }
     }
     if (new_grids && map->overlay_palette_count != 0) {
         if (faults->fail_overlay_palette_allocation) {
@@ -1078,18 +1143,22 @@ static int ck_map_admit(CKPrCoreState *core, const CKPrMap *map, const CKPrFault
             return 3;
         }
     }
-    if (replaces_grids || replaces_target) {
+    if (replaces_grids || replaces_target || replaces_table) {
         NSMutableArray *old = [NSMutableArray array];
         if (replaces_grids) {
             [old addObject:core.mapGridA];
             [old addObject:core.mapGridB];
             [old addObject:core.mapRules];
+            [old addObject:core.mapOwners];
             if (core.mapPalette != nil) {
                 [old addObject:core.mapPalette];
             }
         }
         if (replaces_target) {
             [old addObject:core.mapTarget];
+        }
+        if (replaces_table) {
+            [old addObject:core.mapTable];
         }
         core.retiredMap = old;
         core.retiredMapToken = ck_retirement_token(core, faults->retired_token_delay_ms);
@@ -1102,6 +1171,7 @@ static int ck_map_admit(CKPrCoreState *core, const CKPrMap *map, const CKPrFault
         core.mapGridA = grid_a;
         core.mapGridB = grid_b;
         core.mapRules = rules;
+        core.mapOwners = owners;
         core.mapPalette = palette;
         core.mapGeneration = map->generation;
         ck_obs_add(observer, CK_OBS_MAP_GRIDS_CREATED, 1);
@@ -1111,6 +1181,11 @@ static int ck_map_admit(CKPrCoreState *core, const CKPrMap *map, const CKPrFault
             ck_obs_add(observer, CK_OBS_MAP_PALETTES_ALIVE, 1);
         }
         *grids_uploaded = 1;
+    }
+    if (new_table) {
+        core.mapTable = table;
+        core.mapTableRevision = want_table ? map->mode_revision : 0;
+        core.mapTableCount = want_table ? map->mode_count : 0;
     }
     if (new_target) {
         core.mapTarget = target;
@@ -1402,7 +1477,9 @@ CKPrFrame ck_pr_frame_quad(CKPrCore *handle, const float rgb[3], uint32_t width,
                                     .grid_b = core.mapGridB,
                                     .rules = core.mapRules,
                                     .palette = core.mapPalette,
-                                    .target = core.mapTarget};
+                                    .target = core.mapTarget,
+                                    .owners = core.mapOwners,
+                                    .table = core.mapTable};
             id<MTLCommandBuffer> command =
                 ck_encode_frame(core.queue, drawable.texture, rgb, faults, core.quadKit, core.quadTexture,
                                 quad, packet, core.instanceBuffer, &map_draw, capture, ticket, &ledgerToken,
@@ -1606,6 +1683,8 @@ void ck_pr_release_all(CKPrCore *handle) {
         core.mapGridA = nil;
         core.mapGridB = nil;
         core.mapRules = nil;
+        core.mapOwners = nil;
+        core.mapTable = nil;
         core.mapPalette = nil;
         core.mapTarget = nil;
         core.retiredMap = nil;
@@ -1928,11 +2007,20 @@ int ck_pr_readback_map(uint32_t width, uint32_t height, const float rgb[3], cons
         id<MTLTexture> grid_b = nil;
         id<MTLTexture> rules = nil;
         id<MTLBuffer> palette = nil;
+        id<MTLTexture> owners = nil;
+        id<MTLBuffer> table = nil;
         id<MTLTexture> target = nil;
         if (mapping) {
-            if (!ck_make_map_inputs(device, map, 0, &grid_a, &grid_b, &rules, &reason)) {
+            if (!ck_make_map_inputs(device, map, 0, &grid_a, &grid_b, &rules, &owners, &reason)) {
                 ck_message(error, capacity, reason);
                 return 1;
+            }
+            if (map->mode != 0) {
+                table = ck_make_map_table(device, map, &reason);
+                if (table == nil) {
+                    ck_message(error, capacity, reason);
+                    return 1;
+                }
             }
             if (map->overlay_palette_count != 0) {
                 NSUInteger palette_bytes = (NSUInteger)map->overlay_palette_count * sizeof(uint8_t[4]);
@@ -1955,7 +2043,9 @@ int ck_pr_readback_map(uint32_t width, uint32_t height, const float rgb[3], cons
                             .grid_b = grid_b,
                             .rules = rules,
                             .palette = palette,
-                            .target = target};
+                            .target = target,
+                            .owners = owners,
+                            .table = table};
         BOOL partial = NO;
         id<MTLCommandBuffer> command =
             ck_encode_frame(queue, window, rgb, NULL, kit, picture, drawing ? quad : NULL, NULL, nil, &draw, nil, NULL,
