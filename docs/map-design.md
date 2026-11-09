@@ -657,13 +657,14 @@ just snow caps, but glaciation".
   byte for byte.
 - **Vulkan is compile-only for now** (Firm, owner 2026-11-09, `owner-direction-vulkan-r1.md`): until a native Linux machine with a real
   GPU is in the test loop, new render features land on native Metal only. A change to grid A's packing or another shared format updates
-  the Vulkan code just enough to compile. The Vulkan port, with its own readback fixtures, is economy-design slice 11 at milestone end.
+  the Vulkan code just enough to compile. The Vulkan port, with its own readback fixtures, is economy-design slice 11, parked until the
+  owner says so.
 - **Slices** (economy-design §4):
   - **9a:** the data and loading;
   - **9:** the economy's use;
   - **10a:** the default look (§12.3–§12.4), on native Metal;
   - **10b:** the elevation mode (§12.5), on native Metal;
-  - **11:** the Vulkan catch-up.
+  - **11:** the Vulkan catch-up (parked).
 
 ### 12.7 Sources
 
