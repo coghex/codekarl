@@ -14,7 +14,7 @@ use crate::{
         controls::Control,
         core::{Core, Outputs, Rebuild},
         gameplay::{Gameplay, canonical_config},
-        setup::register_gameplay_callbacks,
+        setup::{register_economy_callback, register_gameplay_lua_callbacks},
     },
     testing::Dir,
     vm::gameplay_extension,
@@ -142,18 +142,39 @@ impl RuntimeHarness {
         let failures = Arc::new(Mutex::new(Vec::new()));
         let published_logs = Arc::clone(&logs);
         let published_failures = Arc::clone(&failures);
+        let economy_rules = Arc::new(
+            ck_economy::Rules::load(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../assets/game/economy.toml"),
+            )
+            .expect("the shipped economy rules load for the runtime witness"),
+        );
         let make_scheduler = {
             let runtime = Arc::clone(&gameplay);
             let trace = trace.cloned();
+            let rules = Arc::clone(&economy_rules);
             move || {
                 let mut scheduler = Scheduler::<GameState>::new();
-                if let Some(trace) = &trace {
+                register_economy_callback(&mut scheduler, Arc::clone(&rules));
+                if let Some(trace_ref) = &trace {
+                    let trace = Arc::clone(trace_ref);
+                    scheduler
+                        .register(
+                            "test.economy_complete",
+                            Cadence::Daily { hour: 12 },
+                            move |_, _| {
+                                locked(&trace).push("economy_complete".to_owned());
+                                Ok(())
+                            },
+                        )
+                        .expect("the economy order witness is registered after economy");
+                    let cadence_trace = Arc::clone(trace_ref);
                     for (name, cadence, label) in [
                         ("test.monthly", Cadence::Daily { hour: 12 }, "rust_monthly"),
                         ("test.daily", Cadence::Daily { hour: 12 }, "rust_daily"),
                         ("test.hourly", Cadence::Hourly, "rust_hourly"),
                     ] {
-                        let trace = Arc::clone(trace);
+                        let trace = Arc::clone(&cadence_trace);
                         scheduler
                             .register(name, cadence, move |_, _| {
                                 locked(&trace).push(label.to_owned());
@@ -162,7 +183,7 @@ impl RuntimeHarness {
                             .expect("test scheduler names are unique");
                     }
                 }
-                register_gameplay_callbacks(&mut scheduler, &runtime);
+                register_gameplay_lua_callbacks(&mut scheduler, &runtime);
                 scheduler
             }
         };
@@ -412,6 +433,7 @@ sim.on_day(function() test_order.mark('lua_day') end)
     assert_eq!(
         &trace[12..],
         [
+            "economy_complete",
             "rust_monthly",
             "rust_daily",
             "lua_month",

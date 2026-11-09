@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 
+use ck_economy::Rules;
 use ck_log::Level;
 use ck_runtime::OwnerSpawn;
 use ck_sim::{Cadence, Date, GameTime, Save, Scheduler, Simulation};
@@ -49,7 +50,7 @@ pub(crate) struct Prepared {
     pub(super) simulation: Simulation<GameState, GameCommand>,
     pub(super) gameplay: Option<GameplayWiring>,
     /// The shared economy rules the view is derived with; `None` for assets that predate M9.
-    economy_rules: Option<Arc<ck_economy::Rules>>,
+    economy_rules: Option<Arc<Rules>>,
     saves: PathBuf,
 }
 
@@ -103,6 +104,7 @@ pub(crate) fn prepare(
             directory.display()
         )
     })?;
+    let economy_rules = economy::load_rules(asset_root)?.map(Arc::new);
     let identity = Identity {
         build: build_id(),
         scenario: scenario.id.clone(),
@@ -120,7 +122,8 @@ pub(crate) fn prepare(
         .iter()
         .any(|vm| vm.name == GAMEPLAY_VM)
         .then(|| Gameplay::new(0));
-    let scheduler = || gameplay_scheduler(gameplay_runtime.as_ref());
+    let scheduler =
+        || gameplay_scheduler_with_rules(gameplay_runtime.as_ref(), economy_rules.clone());
     let simulation = if let Some(path) = request.load {
         let bytes = std::fs::read(path)
             .map_err(|error| format!("cannot read save {}: {error}", path.display()))?;
@@ -159,7 +162,6 @@ pub(crate) fn prepare(
         runtime,
         config: gameplay::canonical_config(&scenario.id, start),
     });
-    let economy_rules = economy::load_rules(asset_root)?.map(Arc::new);
     Ok(Prepared {
         scenario,
         identity,
@@ -197,6 +199,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         .map(|location| location.id.clone())
         .collect();
     let wiring_gameplay = gameplay.clone();
+    let wiring_rules = economy_rules.clone();
     let (sender, receiver) = channel();
     let slot = SimSlot::new(wake);
     let controls = SimControls::new(sender.clone());
@@ -207,6 +210,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         let runtime = gameplay.as_ref().map(|wiring| Arc::clone(&wiring.runtime));
         let terminal_runtime = runtime.clone();
         let scheduler_runtime = runtime.clone();
+        let scheduler_rules = wiring_rules.clone();
         let reset_runtime = runtime.clone();
         let build = move || {
             Core::new_with_views(
@@ -214,7 +218,12 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                 identity,
                 saves,
                 Rebuild {
-                    scheduler: Box::new(move || gameplay_scheduler(scheduler_runtime.as_ref())),
+                    scheduler: Box::new(move || {
+                        gameplay_scheduler_with_rules(
+                            scheduler_runtime.as_ref(),
+                            scheduler_rules.clone(),
+                        )
+                    }),
                     reset: Box::new(move |seed| {
                         if let Some(runtime) = &reset_runtime {
                             runtime.set_seed(seed);
@@ -248,31 +257,52 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
     }
 }
 
-pub(crate) fn gameplay_scheduler(gameplay: Option<&Arc<Gameplay>>) -> Scheduler<GameState> {
-    let mut scheduler = Scheduler::new();
-    let Some(gameplay) = gameplay else {
-        return scheduler;
-    };
-    register_gameplay_callbacks(&mut scheduler, gameplay);
+fn gameplay_scheduler_with_rules(
+    gameplay: Option<&Arc<Gameplay>>,
+    rules: Option<Arc<Rules>>,
+) -> Scheduler<GameState> {
+    let mut scheduler = Scheduler::<GameState>::new();
+    if let Some(rules) = rules {
+        register_economy_callback(&mut scheduler, rules);
+    } else {
+        scheduler
+            .register(
+                "economy.daily",
+                Cadence::Daily { hour: ECONOMY_HOUR },
+                |_, _| Ok(()),
+            )
+            .expect("the economy system name is unique");
+    }
+    if let Some(gameplay) = gameplay {
+        register_gameplay_lua_callbacks(&mut scheduler, gameplay);
+    }
     scheduler
 }
 
-pub(crate) fn register_gameplay_callbacks(
-    scheduler: &mut Scheduler<GameState>,
-    gameplay: &Arc<Gameplay>,
-) {
+pub(crate) fn register_economy_callback(scheduler: &mut Scheduler<GameState>, rules: Arc<Rules>) {
     scheduler
         .register(
             "economy.daily",
             Cadence::Daily { hour: ECONOMY_HOUR },
-            |_, _| Ok(()),
+            move |state, tick| {
+                ck_economy::run_monthly_production(&rules, &mut state.economy, tick.date())
+                    .map(|_| ())
+                    .map_err(io::Error::other)
+                    .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
+            },
         )
         .expect("the economy system name is unique");
+}
+
+pub(crate) fn register_gameplay_lua_callbacks(
+    scheduler: &mut Scheduler<GameState>,
+    gameplay: &Arc<Gameplay>,
+) {
     let monthly = Arc::clone(gameplay);
     scheduler
         .register(
             "gameplay.on_month",
-            Cadence::Daily { hour: 12 },
+            Cadence::Daily { hour: ECONOMY_HOUR },
             move |_, tick| {
                 if tick.date().day != 1 {
                     return Ok(());
@@ -288,7 +318,7 @@ pub(crate) fn register_gameplay_callbacks(
     scheduler
         .register(
             "gameplay.on_day",
-            Cadence::Daily { hour: 12 },
+            Cadence::Daily { hour: ECONOMY_HOUR },
             move |_, tick| {
                 daily
                     .call("on_day", tick.date(), tick.time())
