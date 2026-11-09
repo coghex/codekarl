@@ -15,7 +15,7 @@ mod time_bar_witness;
 
 #[test]
 fn the_window_witness_assertions_validate_captured_output_offline() {
-    const CAPTURED: &str = "lua.ui: time-bar speed 1 load boxes 1\nlua.ui: time-bar icon play initial\nlua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar speed 5 load boxes 5\nlua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar speed 4 load boxes 4\nlua.ui: time-bar icon pause after\nlua.ui: time-bar box down speed_3 inside true\nlua.ui: time-bar box up speed_3 inside false\nlua.ui: time-bar speed 4 running boxes 4\nwindow: window closed\ncamera 0 782598144 782598144\ntime-bar-speed5-click-injected\ntime-bar-speed3-reset-injected\ntime-bar-fast-forward-injected\ntime-bar-resume-injected\ntime-bar-box-drag-injected\ntime-bar-box-drag-observed-injected\n";
+    const CAPTURED: &str = "lua.ui: time-bar speed 1 load boxes 1\nlua.ui: time-bar icon play initial\nlua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar speed 5 load boxes 5\nlua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar speed 4 load boxes 4\nlua.ui: time-bar icon pause after\nlua.ui: time-bar box down speed_3 inside true\nlua.ui: time-bar box up speed_3 inside false\nlua.ui: time-bar speed 4 running boxes 4\nwindow: window closed\ncamera 0 782630912 782630912\ntime-bar-speed5-click-injected\ntime-bar-speed3-reset-injected\ntime-bar-fast-forward-injected\ntime-bar-resume-injected\ntime-bar-box-drag-injected\ntime-bar-box-drag-observed-injected\n";
     assert!(time_bar_witness::validate(CAPTURED).is_ok());
     time_bar_witness::captured_failure_and_doctored_output_are_checked_offline();
     let out_of_order = CAPTURED
@@ -33,8 +33,8 @@ fn the_window_witness_assertions_validate_captured_output_offline() {
     );
     assert!(
         time_bar_witness::validate(&CAPTURED.replace(
-            "camera 0 782598144 782598144",
-            "camera 0 782565376 782630912"
+            "camera 0 782630912 782630912",
+            "camera 0 782598144 782663680"
         ))
         .is_err()
     );

@@ -996,6 +996,8 @@ APP_NATIVE_WINDOW_FILES = (
     *APP_SOURCE_FILES,
     "apps/codekarl/tests/windowed.rs",
     "apps/codekarl/tests/native/",
+    # CK-231's window witness, compiled into `windowed.rs` (and `vulkan_app.rs`) as a support module.
+    "apps/codekarl/tests/support/map_modes.rs",
 )
 VULKAN_APP_FILES = (
     "apps/codekarl/Cargo.toml",
@@ -1003,6 +1005,7 @@ VULKAN_APP_FILES = (
     "apps/codekarl/src/vulkan.rs",
     "apps/codekarl/src/vulkan/",
     "apps/codekarl/tests/native/",
+    "apps/codekarl/tests/support/map_modes.rs",
     "apps/codekarl/tests/vulkan_app.rs",
 )
 APP_METAL_GPU_FILES = (
@@ -1078,7 +1081,9 @@ STEPS = [
                 "warnings",
             ]
         ],
-        description="Clippy over every workspace target (compiles all tests, runs none).",
+        description="Clippy over every workspace target with all features (compiles all tests, runs none). It is the compile check of the "
+        "Vulkan path: ck-gpu-vulkan, ck-window-glfw, the Vulkan render-2d code and the application's Vulkan tests are compiled here, which is "
+        "all that runs of them while Vulkan is compile-only.",
         category="floor",
     ),
     Step(
@@ -1113,6 +1118,9 @@ STEPS = [
                     "--lib",
                     "--bin",
                     "codekarl",
+                    # The headless economy soak's binary: a thin `main` over the library, whose tests run with it.
+                    "--bin",
+                    "economy-soak",
                     "--test",
                     "cli_spec_unit",
                     "--test",
@@ -1488,11 +1496,12 @@ STEPS = [
     ),
     Step(
         "glfw.window",
-        FAST,
+        (),
         lambda: [cargo_test(["-p", "ck-window-glfw", "--test", "window_glfw"])],
         analyze=True,
+        category="optional",
         needs="window",
-        description="The GLFW backend's window tests: real windows through GLFW and the Vulkan loader with keyboard and mouse input ignored.",
+        description="The GLFW backend's window tests: real windows through GLFW and the Vulkan loader with keyboard and mouse input ignored. Optional (owner decision 2026-11-09): Vulkan is compile-only until a Linux GPU machine is in the test loop, so this group runs only when named.",
         paths=("crates/window-glfw/",),
     ),
     Step(
@@ -1521,27 +1530,29 @@ STEPS = [
     ),
     Step(
         "vulkan.gpu",
-        FAST,
+        (),
         lambda: [
             cargo_test(["-p", "ck-gpu-vulkan", "--lib"]),
             cargo_test(["-p", "ck-gpu-vulkan", "--doc"]),
             cargo_test(["-p", "ck-gpu-vulkan", "--test", "gpu"]),
         ],
         analyze=True,
+        category="optional",
         needs="gpu",
         description="The Vulkan presenter's tests that open no window: the ledger's logic, the loader, the "
         "instance, the off-screen readback under validation and the loader's lifetime (the hook isolation "
-        "is `vulkan.isolation`).",
+        "is `vulkan.isolation`). Optional (owner decision 2026-11-09): Vulkan is compile-only until a Linux GPU machine is in the test loop, so this group runs only when named.",
         paths=("crates/gpu-vulkan/",),
     ),
     Step(
         "vulkan.window",
-        FAST,
+        (),
         lambda: [cargo_test(["-p", "ck-gpu-vulkan", "--test", "window"])],
         analyze=True,
+        category="optional",
         needs="window",
         description="The Vulkan presenter's window tests: real GLFW windows, real presents under validation "
-        "and every ledger transition, without taking desktop focus.",
+        "and every ledger transition, without taking desktop focus. Optional (owner decision 2026-11-09): Vulkan is compile-only until a Linux GPU machine is in the test loop, so this group runs only when named.",
         paths=("crates/gpu-vulkan/",),
     ),
     # CK-80: the application's `glfw-vulkan` path end to end. Its binary tests open real GLFW windows without
@@ -1553,7 +1564,7 @@ STEPS = [
     # windows, so it needs the window slot. `render2d.core`'s commands do not run this target.
     Step(
         "render2d.vulkan-window",
-        FAST,
+        (),
         lambda: [
             cargo_test(
                 [
@@ -1568,21 +1579,23 @@ STEPS = [
             )
         ],
         analyze=True,
+        category="optional",
         needs="window",
         description="`ck-render-2d`'s Vulkan window test, and its off-screen group readback: the real resource path (service, resident driver, ledger, scene "
         "presenter) on a GLFW window under validation, with the surface's pixels captured, and the keyboard filter's isolation "
-        "(real windows without taking the desktop's focus).",
+        "(real windows without taking the desktop's focus). Optional (owner decision 2026-11-09): Vulkan is compile-only until a Linux GPU machine is in the test loop, so this group runs only when named.",
         paths=("crates/render-2d/",),
     ),
     Step(
         "vulkan.app",
-        FAST,
+        (),
         lambda: [cargo_test(["-p", "codekarl", "--test", "vulkan_app"])],
         analyze=True,
+        category="optional",
         needs="window",
         description="The application's glfw-vulkan path with a real GLFW window and Vulkan under validation, run in "
         "process behind the keyboard filter: close, signal, the backend override, the shipped demonstration "
-        "configurations, the common demonstration, the texture lifecycle and the minimised window.",
+        "configurations, the common demonstration, the texture lifecycle and the minimised window. Optional (owner decision 2026-11-09): Vulkan is compile-only until a Linux GPU machine is in the test loop, so this group runs only when named.",
         paths=VULKAN_APP_FILES,
     ),
     *(unittest_step(group, modules) for group, modules in UNITTEST_GROUPS),

@@ -20,6 +20,38 @@ from gate.records import Author, PointerSchema1, ReviewRow, SubmissionSubject, i
 from pipeline import pijul
 from sessionfix import CopilotSession, no_agent
 
+# The model classes these tests run against: a fixture, never `~/.config/model-classes.toml`, so that re-pointing a class to another
+# model (the owner does that) changes no test. The expectations below are written against these models.
+FIXTURE_MASTER = """schema_version = 1
+
+[classes.S]
+claude = { model = "claude-opus-5-5", effort = "high" }
+codex = { model = "gpt-6-astra", effort = "high" }
+
+[classes.A]
+claude = { model = "claude-opus-5-5", effort = "high" }
+codex = { model = "gpt-6.1-sol", effort = "high" }
+
+[classes.B]
+claude = { model = "claude-sonnet-5-5", effort = "high" }
+codex = { model = "gpt-6-luna", effort = "high" }
+
+[clients.copilot.model_aliases]
+"claude-opus-5-5" = "claude-opus-5.5"
+"claude-sonnet-5-5" = "claude-sonnet-5.5"
+"""
+
+
+def setUpModule() -> None:
+    """Every test of this module reads the fixture class master through `CK_MODEL_CLASSES`."""
+    directory = tempfile.TemporaryDirectory(prefix="ck-gate-classes-")
+    unittest.addModuleCleanup(directory.cleanup)
+    path = Path(directory.name) / "model-classes.toml"
+    path.write_text(FIXTURE_MASTER)
+    patcher = mock.patch.dict(os.environ, {"CK_MODEL_CLASSES": str(path)})
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
 
 def author(identity: str, session: str, family: str) -> Author:
     return {

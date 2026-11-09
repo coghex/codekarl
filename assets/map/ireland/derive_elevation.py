@@ -156,7 +156,11 @@ def map_toml(crop: Crop) -> str:
         f"height = {crop.height}\n\n"
         "[layers]\n"
         'terrain = "terrain.png"\n'
-        'usable = "usable.png"\n'
+        'fertility = "fertility.png"\n'
+        'climate_temperature = "climate_temperature.png"\n'
+        'climate_gdd = "climate_gdd.png"\n'
+        'climate_rainfall = "climate_rainfall.png"\n'
+        'climate_glacier = "climate_glacier.png"\n'
         'elevation = "elevation.png"\n'
         'terrain_rules = "terrain.toml"\n'
         'rivers = "rivers.toml"\n'

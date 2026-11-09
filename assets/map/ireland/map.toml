@@ -8,7 +8,11 @@ height = 959
 
 [layers]
 terrain = "terrain.png"
-usable = "usable.png"
+fertility = "fertility.png"
+climate_temperature = "climate_temperature.png"
+climate_gdd = "climate_gdd.png"
+climate_rainfall = "climate_rainfall.png"
+climate_glacier = "climate_glacier.png"
 elevation = "elevation.png"
 terrain_rules = "terrain.toml"
 rivers = "rivers.toml"

@@ -1,8 +1,8 @@
-# CK-181 medieval pass, edits r8, for assets/map/ireland/edits.toml (2026-11-07). Supersedes r1 to r7.
+# CK-181 terrain-edit history (r8) plus CK-234 owner-signed terrain corrections and computed climate/fertility settings (M9).
 # r8 = r7 plus two entries at the end, for CK-194 (milestone 7, slice 6): the owner, 2026-11-06, relayed by ck-manager
 # (g3wpwaetwu7maemckrwrtycjiw), on the island monasteries of Iniscealtra (Lough Derg) and Inisfallen (Lough Leane): "Make the islands land".
 # Each is one cell, the cell containing the named site, painted pasture. They come after every grow and tidy, so no other edit sees
-# them; only [settings]' usable ranking runs after them. Named-site seeds only; no noise or random term.
+# them. The final settings derive climate, glaciation and fertility after every terrain edit.
 # Was: CK-181 medieval pass, edits r7, for assets/map/ireland/edits.toml (2026-11-05). Supersedes r1, the WITHDRAWN r2, r3, r4, both r5 files and r6.
 # Author: ck-designer-1, under the owner's delegation of 2026-11-05 and their corrections: "a lot more 'noise' like these bogs were added
 # one at a time randomly, little disconnected bits instead of larger 'islands' of usable resources"; "noise shouldnt be used to place
@@ -18,17 +18,17 @@
 #      rounded spreads following the ground, not squares.
 #   3. tidy = { min_cells, back }: patches of `paint` under min_cells become `back`; patches of `back` under min_cells that are entirely
 #      enclosed by `paint` become `paint`. Use terrain_min_patch if it does exactly this, at these points in the order.
-#   4. The usable keys in [settings].
+#   4. [settings.climate] and [settings.fertility] hold the normative computed-layer values.
 # A plain edit (no grow) paints every cell of the region that passes `where`: that is how terrain-rule seeds are laid.
-# The reclamation, Lough Neagh and callows entries are r1's, minus their per-edit usable lines.
+# The reclamation, Lough Neagh and callows entries retain their signed terrain intent.
 #
 # Owner decisions 2026-11-05 (relayed verbatim by ck-manager, ujpdcqkm): "66 is arbitrary target requirement, we dont need to strictly
 # adhere to it. if there are named bogs/woods then they should be included ... as for the usable land hugging rivers, i think that's
 # fairly realistic, we dont want each area of land to have the same amount of usable land, some areas are naturally more valuable and
 # that is something we want to represent".
 # r6 = r4 plus: the eleven wood edits before all bog edits with slope_min 0.01 (ck-manager ruling i9jc48iu), and the 18 named western
-# blanket-bog sites (western-bog-sites-r1.md) as further seed_points. usable_local_radius is NOT used: usable land follows rivers and
-# good land unevenly, as in r4. The western `share = 0.66` is only an upper cap on growth, not a target; growth there is bounded by the
+# blanket-bog sites (western-bog-sites-r1.md) as further seed_points. Fertility now follows the signed climate and valley formula.
+# The western `share = 0.66` is only an upper cap on growth, not a target; growth there is bounded by the
 # 10 km max_distance from named places.
 # r7 changes from r6 (ck-worker-2's check of the 63 named sites, named-sites-check-r6.md: 14 had no cell of their terrain; the owner:
 # "if there are named bogs/woods then they should be included"):
@@ -205,7 +205,6 @@ confidence = "high on the lowering, low on the extent"
 paint = "lake"
 region = { box = [54.45, 54.75, -6.65, -6.25] }
 where = { terrain = ["pasture", "forest", "bog", "marsh"], elevation_max = 11, near_water_max = 1 }
-usable = "false"
 
 [[edit]]
 id = "lough-neagh-margin"
@@ -514,17 +513,69 @@ paint = "pasture"
 region = { circle = [52.04671, -9.53495, 0.3] }
 where = { terrain = ["lake"] }
 
-[settings]
-# Usable land, deterministic, no noise, applied once after every edit (per-edit usable lines are gone, except "false" on lakes).
-# For each terrain, the usable cells are the ones that rank best on suitability, at mock-up 2's shares (the owner's "fine for now").
-# Suitability = rank(elevation - mean elevation within usable_relative_radius cells) + rank(slope) + rank(distance to water, capped
-# at usable_water_cap cells), each rank normalised over the map, summed, then box-blurred over usable_smooth cells; lower is better.
-# "Water" includes the rasterised river lines of rivers.toml, so usable land follows the river valleys and lowlands inland, not only
-# the coasts and loughs; relative elevation ranks each valley floor against its own surroundings.
-usable = "suitability"
-usable_shares = { pasture = 0.32, forest = 0.28, bog = 0.20, marsh = 0.15, mountain = 0.08 }
-usable_relative_radius = 15
-usable_water = ["sea", "lake", "rivers"]
-usable_water_cap = 12
-usable_smooth = 4
-usable_min_patch = 20
+# Owner-signed valley-floor corrections, applied before climate and fertility are derived.
+[[edit]]
+id = "glendalough-laragh-avonmore-pasture"
+area = "Glendalough–Laragh valley floor and Avonmore lowland below 200 m"
+reason = "owner-signed terrain correction for the monastic city's farmed valley"
+confidence = "medium on the valley-floor extent"
+paint = "pasture"
+region = { box = [52.92, 53.12, -6.43, -6.15] }
+where = { terrain = ["forest", "bog", "marsh"], elevation_min = 1, elevation_max = 200, slope_max = 0.10 }
+
+[[edit]]
+id = "rahan-clodiagh-dry-ground-pasture"
+area = "Dry ground by the Clodiagh at Rahan"
+reason = "owner-signed terrain correction so the few dry valley cells can support Rahan"
+confidence = "medium on the exact few-cell extent"
+paint = "pasture"
+region = { circle = [53.146, -7.646, 1.5] }
+where = { terrain = ["forest"], elevation_min = 1, elevation_max = 120, slope_max = 0.10 }
+
+[settings.climate]
+# World latitude tables (absolute degrees); the signed model has 4.2 C ocean warming for Ireland.
+latitude_deg = [0, 15, 30, 45, 55, 60, 70, 90]
+zonal_mean_c = [27, 26, 20, 11, 5, 2, -8, -25]
+ocean_half_range_c = [1, 1.5, 2.5, 3.5, 4, 5, 7, 12]
+continental_half_range_c = [1, 4, 10, 14, 17, 19, 22, 25]
+zonal_rainfall_mm = [2000, 1000, 300, 700, 900, 900, 500, 200]
+ocean_effect_c = 4.2
+cell_metres = 839.0
+maritime_length_km = 1200.0
+westerly_min_deg = 30.0
+westerly_max_deg = 60.0
+lapse_c_per_km = 6.5
+gdd_base_c = 5.0
+days_per_month = 30.4
+warmest_month_phase = 6.5
+moisture_recovery_per_km = 0.01
+rainfall_base_factor = 1.2
+uplift_factor_per_m_km = 0.02
+uplift_cap_factor = 1.6
+height_rainfall_factor_per_km = 1.5
+moisture_depletion = 0.0015
+moisture_floor = 0.05
+rainfall_smooth_width = 7
+glacier_ohmura_a = 966.0
+glacier_ohmura_b = 230.0
+glacier_ohmura_c = 5.87
+
+[settings.fertility]
+cell_metres = 839.0
+flow_epsilon_m = 0.001
+channel_min_area_km2 = 2.0
+channel_full_area_km2 = 500.0
+valley_spread_cells = 2
+valley_max_above_m = 20.0
+valley_decay_per_ring = 0.25
+slope_full_pct = 3.0
+slope_zero_pct = 20.0
+warmth_min_gdd = 600.0
+warmth_full_gdd = 1400.0
+dryness_min_mm = 250.0
+dryness_full_mm = 500.0
+wetness_full_mm = 900.0
+wetness_zero_mm = 2000.0
+wetness_falloff = 0.6
+wetness_floor = 0.4
+terrain_values = { pasture = [550, 450], forest = [400, 400], marsh = [350, 450], bog = [50, 150], mountain = [100, 100] }

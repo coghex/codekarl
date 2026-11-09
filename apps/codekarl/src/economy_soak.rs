@@ -300,6 +300,10 @@ mod tests {
                 .unwrap()
                 .starts_with("768,768,11,armagh,0,peasant,1000,600,400,")
         );
+        assert_eq!(
+            first.lines().nth(1).unwrap(),
+            "768,768,11,armagh,0,peasant,1000,600,400,1000:0:0,1000,384370,oats=100000;barley=120000;peas_beans=120000;vegetables=40000;apples=150000;dairy=40000;beef=10000;pork=9000;mutton=8000;fish=30000;seabirds=20000;ale=60000;mead=300000;wine=600000;honey=120000;herbs=100000;wool=40000;beeswax=150000;hides=200000;cattle=2400000;pigs=600000;sheep=300000,apples=99;dairy=2285;ale=441;mead=44,pop0:oats=11968;barley=3989;peas_beans=997;vegetables=1994;dairy=3461;beef=997;pork=997;mutton=997|pop1:oats=2393;barley=797;peas_beans=199;vegetables=398;apples=35;dairy=637;beef=199;pork=199;mutton=199;ale=161;mead=15|pop2:oats=1795;barley=598;peas_beans=149;vegetables=299;apples=32;dairy=514;beef=149;pork=149;mutton=149;ale=145;mead=13|building0.holdings:oats=40;barley=12;apples=30;dairy=204;beef=4;pork=4;mutton=4;ale=133;mead=14|building1.farm:oats=40;barley=12;dairy=172;beef=4;pork=4;mutton=4|building2.storehouse:|building2.account.pop0:|building2.account.pop1:|building2.account.pop2:|building2.account.communal:,cattle=635;pigs=424;sheep=357,"
+        );
     }
 
     #[test]

@@ -192,7 +192,9 @@ pub(crate) fn validate(output: &str) -> Result<(), String> {
         .lines()
         .filter(|line| line.starts_with("camera "))
         .collect();
-    if cameras != ["camera 0 782598144 782598144"] {
+    // The 4x4 fixture crop is centred on world cell (23884, 23884), or fixed point
+    // (782630912, 782630912); the speed-box capture must leave that initial camera unchanged.
+    if cameras != ["camera 0 782630912 782630912"] {
         return Err(format!(
             "a bar-captured drag changed the map camera: {cameras:?}"
         ));
@@ -234,7 +236,7 @@ INFO lua.ui: time-bar speed 4 running boxes 4
          \nINFO lua.ui: time-bar box down speed_3 inside true\
          \nINFO lua.ui: time-bar box up speed_3 inside false\
          \nINFO lua.ui: time-bar speed 4 running boxes 4\
-         \ntime-bar-box-drag-observed-injected\nwindow: window closed\ncamera 0 782598144 782598144\n",
+         \ntime-bar-box-drag-observed-injected\nwindow: window closed\ncamera 0 782630912 782630912\n",
     );
     validate(&doctored).unwrap_or_else(|error| panic!("doctored capture: {error}"));
 }

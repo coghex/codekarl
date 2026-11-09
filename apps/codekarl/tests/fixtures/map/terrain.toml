@@ -1,4 +1,5 @@
 shallow_threshold = 20
+display_usable_pm = 500
 
 [water]
 sea = "123456"
@@ -6,9 +7,6 @@ shallow_sea = "234567"
 lake = "345678"
 river = "456789"
 
-[usable]
-usable = "00ff00"
-unusable = "ff0000"
 
 [[terrain]]
 name = "sea"

@@ -58,8 +58,12 @@ fn fixture() -> TempDir {
         "terrain.toml",
         "rivers.toml",
         "terrain.png",
-        "usable.png",
+        "fertility.png",
         "elevation.png",
+        "climate_temperature.png",
+        "climate_gdd.png",
+        "climate_rainfall.png",
+        "climate_glacier.png",
     ] {
         fs::copy(source.join(name), directory.path().join(name)).expect("copy map fixture");
     }
@@ -78,8 +82,12 @@ fn scenario_fixture() -> ScenarioFixture {
         "terrain.toml",
         "rivers.toml",
         "terrain.png",
-        "usable.png",
+        "fertility.png",
         "elevation.png",
+        "climate_temperature.png",
+        "climate_gdd.png",
+        "climate_rainfall.png",
+        "climate_glacier.png",
     ] {
         fs::copy(source.join(name), map.join(name)).expect("copy map fixture");
     }
@@ -118,7 +126,7 @@ dark = \"#2a2119\"
 ",
     )
     .expect("write kinds");
-    let (latitude, longitude) = lat_lon_for_cell(23_883, 23_883);
+    let (latitude, longitude) = lat_lon_for_cell(23_884, 23_883);
     fs::write(
         scenario.join("locations.toml"),
         format!(
@@ -264,7 +272,7 @@ fn scenario_preview_writes_markers_catchments_and_draws_rivers_last() {
     );
     assert!(output.path().join("catchments.png").is_file());
     let catchments = decode_png(&output.path().join("catchments.png"));
-    assert_eq!((catchments.0, catchments.1), (2, 2));
+    assert_eq!((catchments.0, catchments.1), (4, 4));
 
     let scenario = load_scenario(input.path()).expect("scenario fixture loads");
     let mut markers =
@@ -424,7 +432,7 @@ fn large_fixture(width: u32, height: u32) -> TempDir {
     let directory = fixture();
     let mut map = fs::read_to_string(directory.path().join("map.toml")).expect("read map");
     map = map.replace(
-        "width = 2\nheight = 2",
+        "width = 4\nheight = 4",
         &format!("width = {width}\nheight = {height}"),
     );
     fs::write(directory.path().join("map.toml"), map).expect("grow crop metadata");
@@ -432,10 +440,18 @@ fn large_fixture(width: u32, height: u32) -> TempDir {
     let pixel_count =
         usize::try_from(width).expect("width") * usize::try_from(height).expect("height");
     let mut terrain = Vec::with_capacity(pixel_count * 3);
-    let mut usable = Vec::with_capacity(pixel_count * 3);
-    for _ in 0..pixel_count {
-        terrain.extend_from_slice(&[0, 255, 0]);
-        usable.extend_from_slice(&[0, 255, 0]);
+    let mut fertility = Vec::with_capacity(pixel_count);
+    let mut elevations = Vec::with_capacity(pixel_count * 2);
+    for index in 0..pixel_count {
+        let x = index % usize::try_from(width).expect("width");
+        let y = index / usize::try_from(width).expect("width");
+        let edge = x == 0
+            || y == 0
+            || x + 1 == usize::try_from(width).expect("width")
+            || y + 1 == usize::try_from(height).expect("height");
+        terrain.extend_from_slice(if edge { &[0, 0, 255] } else { &[0, 255, 0] });
+        fertility.push(if edge { 0 } else { 125 });
+        elevations.extend_from_slice(&(if edge { 10_000_u16 } else { 21_000_u16 }).to_be_bytes());
     }
     write_png(
         &directory.path().join("terrain.png"),
@@ -446,17 +462,44 @@ fn large_fixture(width: u32, height: u32) -> TempDir {
         &terrain,
     );
     write_png(
-        &directory.path().join("usable.png"),
+        &directory.path().join("fertility.png"),
         width,
         height,
-        ColorType::Rgb,
+        ColorType::Grayscale,
         BitDepth::Eight,
-        &usable,
+        &fertility,
     );
-    let mut elevations = Vec::with_capacity(pixel_count * 2);
-    for _ in 0..pixel_count {
-        elevations.extend_from_slice(&21_000_u16.to_be_bytes());
+    for name in [
+        "climate_temperature.png",
+        "climate_gdd.png",
+        "climate_rainfall.png",
+    ] {
+        let mut values = Vec::with_capacity(pixel_count * 2);
+        let sample = if name == "climate_temperature.png" {
+            1100_u16
+        } else {
+            1000_u16
+        };
+        for _ in 0..pixel_count {
+            values.extend_from_slice(&sample.to_be_bytes());
+        }
+        write_png(
+            &directory.path().join(name),
+            width,
+            height,
+            ColorType::Grayscale,
+            BitDepth::Sixteen,
+            &values,
+        );
     }
+    write_png(
+        &directory.path().join("climate_glacier.png"),
+        width,
+        height,
+        ColorType::Grayscale,
+        BitDepth::Eight,
+        &vec![0; pixel_count],
+    );
     write_png(
         &directory.path().join("elevation.png"),
         width,

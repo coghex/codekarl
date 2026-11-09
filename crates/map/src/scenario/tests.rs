@@ -32,8 +32,12 @@ impl Fixture {
             "terrain.toml",
             "rivers.toml",
             "terrain.png",
-            "usable.png",
+            "fertility.png",
             "elevation.png",
+            "climate_temperature.png",
+            "climate_gdd.png",
+            "climate_rainfall.png",
+            "climate_glacier.png",
         ] {
             fs::copy(source.join(name), map.join(name)).expect("copy map fixture");
         }
@@ -72,8 +76,8 @@ dark = \"#2a2119\"
 ",
         )
         .expect("write kinds");
-        let land = lat_lon_for_cell(23_882, 23_883);
-        let mountain = lat_lon_for_cell(23_883, 23_883);
+        let land = lat_lon_for_cell(23_884, 23_883);
+        let mountain = lat_lon_for_cell(23_884, 23_884);
         fs::write(scenario.join("locations.toml"), format!("[[location]]\nid = \"town_a\"\nname = \"Test Place\"\nlat = {}\nlon = {}\nkind = \"town\"\nsize = 1\nbuildings = [\"church\"]\nsource = \"fixture\"\nconfidence = \"high\"\n\n[[location]]\nid = \"town_b\"\nname = \"Mountain Place\"\nlat = {}\nlon = {}\nkind = \"town\"\nsize = 2\nbuildings = []\nsource = \"fixture\"\nconfidence = \"medium\"\n", land.0, land.1, mountain.0, mountain.1)).expect("write locations");
         Self { root, scenario }
     }
@@ -95,8 +99,12 @@ dark = \"#2a2119\"
             "terrain.toml",
             "rivers.toml",
             "terrain.png",
-            "usable.png",
+            "fertility.png",
             "elevation.png",
+            "climate_temperature.png",
+            "climate_gdd.png",
+            "climate_rainfall.png",
+            "climate_glacier.png",
             "location_kinds.toml",
         ] {
             fs::copy(self.map_path("fixture").join(file), destination.join(file))
@@ -151,7 +159,7 @@ fn scenario_loads_map_locations_styles_and_catchment_owners() {
     assert_eq!(scenario.location_kinds.kinds[0].id, "town");
     assert_eq!(scenario.locations[0].confidence, Confidence::High);
     assert_eq!(scenario.locations[0].building_indices, [0]);
-    assert_eq!(scenario.catchment_owners.len(), 4);
+    assert_eq!(scenario.catchment_owners.len(), 16);
     assert_eq!(scenario.catchment_owners[2], Some(0));
     assert_eq!(scenario.catchment_owners[3], Some(1));
 }
@@ -427,7 +435,7 @@ fn duplicate_unknown_key_and_bad_radius_locations_are_refused() {
 
 #[test]
 fn location_placement_refuses_crop_sea_lake_and_duplicate_cells() {
-    let land = lat_lon_for_cell(23_882, 23_883);
+    let land = lat_lon_for_cell(23_884, 23_883);
     let sea = lat_lon_for_cell(23_882, 23_882);
     let fixture = Fixture::new();
     let mut locations = fixture.text("locations.toml");
@@ -444,7 +452,7 @@ fn location_placement_refuses_crop_sea_lake_and_duplicate_cells() {
     );
 
     let fixture = Fixture::new();
-    let lake = lat_lon_for_cell(23_883, 23_882);
+    let lake = lat_lon_for_cell(23_883, 23_883);
     let mut locations = fixture.text("locations.toml");
     locations = locations.replace(
         &format!("lat = {}\nlon = {}", land.0, land.1),
@@ -459,9 +467,9 @@ fn location_placement_refuses_crop_sea_lake_and_duplicate_cells() {
     );
 
     let fixture = Fixture::new();
-    let second = lat_lon_for_cell(23_882, 23_883);
+    let second = lat_lon_for_cell(23_884, 23_883);
     let mut locations = fixture.text("locations.toml");
-    let target = lat_lon_for_cell(23_883, 23_883);
+    let target = lat_lon_for_cell(23_884, 23_884);
     locations = locations.replace(
         &format!("lat = {}\nlon = {}", target.0, target.1),
         &format!("lat = {}\nlon = {}", second.0, second.1),
@@ -694,6 +702,13 @@ fn map_data(origin: Cell, width: u32, height: u32) -> MapData {
             count
         ],
         elevations: vec![11_000; count],
+        fertility: vec![500; count],
+        climate_temperature_tenths: vec![100; count],
+        climate_gdd: vec![1000; count],
+        climate_rainfall_mm: vec![1000; count],
+        glacier: vec![false; count],
+        display_usable: vec![true; count],
+        display_usable_pm: 500,
         terrains: vec![TerrainStyle {
             solid: Rgba8::opaque(1, 2, 3),
             second: Rgba8::opaque(1, 2, 3),

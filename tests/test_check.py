@@ -71,6 +71,15 @@ RUST_STEPS = (
     "render2d.vulkan-window",
     "vulkan.app",
 )
+# CK-238 (owner decision 2026-11-09): Vulkan is compile-only until a Linux GPU machine is in the test loop. These five groups are
+# optional (no level includes them; they run only when named), and clippy compiles the Vulkan targets.
+VULKAN_OPTIONAL_STEPS = (
+    "glfw.window",
+    "vulkan.gpu",
+    "vulkan.window",
+    "render2d.vulkan-window",
+    "vulkan.app",
+)
 FULL_SPEC_STEPS = {
     "rust.core",
     "rust.app",
@@ -323,7 +332,7 @@ class Levels(CheckFixture):
                 "doctor.graphics",
                 "clippy",
                 "doc",
-                *RUST_STEPS,
+                *(name for name in RUST_STEPS if name not in VULKAN_OPTIONAL_STEPS),
                 *UNITTEST_STEPS,
                 "mypy",
                 "chat-ci",
@@ -339,13 +348,16 @@ class Levels(CheckFixture):
                 "doctor.graphics",
                 "clippy",
                 "doc",
-                *RUST_STEPS,
+                *(name for name in RUST_STEPS if name not in VULKAN_OPTIONAL_STEPS),
                 *UNITTEST_STEPS,
                 "mypy",
                 "chat-ci",
             ],
         )
         by_name = {step.name: step for step in check.STEPS}
+        # The Vulkan GPU and window groups are in no level: optional, run only when named, exactly as `metal.scale` is.
+        for name in VULKAN_OPTIONAL_STEPS:
+            self.assertEqual((by_name[name].category, by_name[name].levels), ("optional", ()), name)
         self.assertEqual(by_name["fmt"].commands(), [["cargo", "fmt", "--all", "--", "--check"]])
         self.assertEqual(
             by_name["clippy"].commands(),
@@ -406,6 +418,9 @@ class Levels(CheckFixture):
                     "--lib",
                     "--bin",
                     "codekarl",
+                    # The headless economy soak's binary: a thin `main` over the library, whose tests run with it.
+                    "--bin",
+                    "economy-soak",
                     "--test",
                     "cli_spec_unit",
                     "--test",
@@ -626,6 +641,7 @@ class Levels(CheckFixture):
                 "apps/codekarl/src/vulkan.rs",
                 "apps/codekarl/src/vulkan/",
                 "apps/codekarl/tests/native/",  # CK-159: its native source
+                "apps/codekarl/tests/support/map_modes.rs",  # CK-231: the map modes' window witness
                 "apps/codekarl/tests/vulkan_app.rs",
             ),
         )

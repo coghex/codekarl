@@ -1,6 +1,10 @@
 use super::*;
 
 fn fixture(cells: Vec<Surface>) -> MapData {
+    let display_usable = cells
+        .iter()
+        .map(|cell| matches!(cell, Surface::Land { usable: true, .. }))
+        .collect();
     MapData {
         crop: Crop {
             origin: Cell { x: 10, y: 20 },
@@ -9,6 +13,13 @@ fn fixture(cells: Vec<Surface>) -> MapData {
         },
         cells,
         elevations: vec![11_004; 9],
+        fertility: vec![500; 9],
+        climate_temperature_tenths: vec![100; 9],
+        climate_gdd: vec![1000; 9],
+        climate_rainfall_mm: vec![1000; 9],
+        glacier: vec![false; 9],
+        display_usable,
+        display_usable_pm: 500,
         terrains: vec![TerrainStyle {
             solid: Rgba8::opaque(1, 2, 3),
             second: Rgba8::opaque(4, 5, 6),
@@ -45,6 +56,11 @@ fn encoded_elevation_map() -> MapData {
         height: 2,
     };
     map.elevations = vec![11_000, 11_100, 11_400, 12_000];
+    map.fertility = vec![500; 4];
+    map.climate_temperature_tenths = vec![100; 4];
+    map.climate_gdd = vec![1000; 4];
+    map.climate_rainfall_mm = vec![1000; 4];
+    map.glacier = vec![false; 4];
     map
 }
 
@@ -300,6 +316,7 @@ fn colour_rules_cover_usable_unusable_coast_and_crop_outside() {
         terrain: 0,
         usable: false,
     };
+    map.display_usable[4] = false;
     assert_eq!(
         reference_colour(&map, 50, interior, &BTreeSet::new()),
         Some(map.terrains[0].dark)
@@ -308,6 +325,7 @@ fn colour_rules_cover_usable_unusable_coast_and_crop_outside() {
         terrain: 0,
         usable: true,
     };
+    map.display_usable[4] = true;
     map.cells[1] = Surface::Lake;
     let coast = pixels_for_cell(cell, 50)
         .into_iter()
@@ -357,6 +375,7 @@ fn colour_rule_thresholds_and_river_overlay_are_integer_and_ordered() {
         terrain: 0,
         usable: true,
     };
+    map.display_usable[4] = true;
     map.elevations.fill(11_016);
     assert_eq!(
         reference_colour(&map, 50, pixel, &BTreeSet::new()),
@@ -374,6 +393,7 @@ fn colour_rule_thresholds_and_river_overlay_are_integer_and_ordered() {
         terrain: 0,
         usable: false,
     };
+    map.display_usable[4] = false;
     let dark_cap = pixels_for_cell(Cell { x: 11, y: 21 }, 50)
         .into_iter()
         .find(|candidate| bayer(*candidate) < 8)

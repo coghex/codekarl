@@ -59,7 +59,7 @@ pub struct LoadedMap {
     pub data: MapData,
     /// The terrain table and palette, indexed by grid A's red byte.
     pub terrain_types: Vec<LoadedTerrain>,
-    /// Grid A: terrain index, usable bit, zero, opaque alpha.
+    /// Grid A: terrain index, thresholded fertility bit, zero, opaque alpha.
     pub grid_a: PackedGrid,
     /// Grid B: encoded elevation high byte, low byte, zero, opaque alpha.
     pub grid_b: PackedGrid,
@@ -184,21 +184,59 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
         ));
     }
     let water = parse_water(&terrain_file.water, &map_file.layers.terrain_rules)?;
-    let usable_keys = parse_usable_keys(&terrain_file.usable, &map_file.layers.terrain_rules)?;
+    if terrain_file.display_usable_pm > 1000 {
+        return Err(LoadError::at(
+            &map_file.layers.terrain_rules,
+            "display_usable_pm",
+            "must be in 0..=1000",
+        ));
+    }
 
     let terrain_image =
         decode_key_image(directory, &map_file.layers.terrain, crop.width, crop.height)?;
-    let usable_image =
-        decode_key_image(directory, &map_file.layers.usable, crop.width, crop.height)?;
+    let fertility_image = decode_gray8_image(
+        directory,
+        &map_file.layers.fertility,
+        crop.width,
+        crop.height,
+    )?;
     let elevation_image = decode_elevation_image(
         directory,
         &map_file.layers.elevation,
         crop.width,
         crop.height,
     )?;
+    let temperature_image = decode_gray16_image(
+        directory,
+        &map_file.layers.climate_temperature,
+        crop.width,
+        crop.height,
+    )?;
+    let gdd_image = decode_gray16_image(
+        directory,
+        &map_file.layers.climate_gdd,
+        crop.width,
+        crop.height,
+    )?;
+    let rainfall_image = decode_gray16_image(
+        directory,
+        &map_file.layers.climate_rainfall,
+        crop.width,
+        crop.height,
+    )?;
+    let glacier_image = decode_gray8_image(
+        directory,
+        &map_file.layers.climate_glacier,
+        crop.width,
+        crop.height,
+    )?;
     if terrain_image.pixels.len() != pixel_count
-        || usable_image.pixels.len() != pixel_count
+        || fertility_image.len() != pixel_count
         || elevation_image.len() != pixel_count
+        || temperature_image.len() != pixel_count
+        || gdd_image.len() != pixel_count
+        || rainfall_image.len() != pixel_count
+        || glacier_image.len() != pixel_count
     {
         return Err(LoadError::new(
             "map.toml",
@@ -232,6 +270,10 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
     let mut cells = Vec::with_capacity(pixel_count);
     let mut packed_a = Vec::with_capacity(pixel_count);
     let mut packed_b = Vec::with_capacity(pixel_count);
+    let mut fertility = Vec::with_capacity(pixel_count);
+    let mut climate_temperature_tenths = Vec::with_capacity(pixel_count);
+    let mut glacier = Vec::with_capacity(pixel_count);
+    let mut display_usable = Vec::with_capacity(pixel_count);
     let crop_width = usize::try_from(crop.width)
         .map_err(|_| LoadError::at("map.toml", "crop.width", "does not fit address space"))?;
     for (pixel_index, &raw_elevation) in elevation_image.iter().enumerate() {
@@ -247,18 +289,103 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
                 ),
             ));
         };
-        let usable = match usable_image.pixels[pixel_index] {
-            colour if colour == usable_keys.0 => true,
-            colour if colour == usable_keys.1 => false,
-            colour => {
-                return Err(LoadError::at(
-                    &map_file.layers.usable,
-                    format!("pixel ({x}, {y})"),
-                    format!("unknown usable key {}", hex_colour(colour)),
-                ));
-            }
-        };
+        let fertility_sample = fertility_image[pixel_index];
+        if fertility_sample > 250 {
+            return Err(LoadError::at(
+                &map_file.layers.fertility,
+                format!("pixel ({x}, {y})"),
+                format!("stored fertility {fertility_sample} exceeds 250"),
+            ));
+        }
+        let fertility_pm = u32::from(fertility_sample).checked_mul(4).ok_or_else(|| {
+            LoadError::at(
+                &map_file.layers.fertility,
+                format!("pixel ({x}, {y})"),
+                "fertility overflow",
+            )
+        })?;
+        let temperature = temperature_image[pixel_index];
+        if !(400..=1500).contains(&temperature) {
+            return Err(LoadError::at(
+                &map_file.layers.climate_temperature,
+                format!("pixel ({x}, {y})"),
+                format!("stored temperature {temperature} is outside 400..=1500"),
+            ));
+        }
+        let gdd = gdd_image[pixel_index];
+        if gdd > 12_000 {
+            return Err(LoadError::at(
+                &map_file.layers.climate_gdd,
+                format!("pixel ({x}, {y})"),
+                format!("stored GDD {gdd} exceeds 12000"),
+            ));
+        }
+        let rainfall = rainfall_image[pixel_index];
+        if rainfall > 15_000 {
+            return Err(LoadError::at(
+                &map_file.layers.climate_rainfall,
+                format!("pixel ({x}, {y})"),
+                format!("stored rainfall {rainfall} exceeds 15000"),
+            ));
+        }
+        let glacier_value = glacier_image[pixel_index];
+        if glacier_value != 0 && glacier_value != 255 {
+            return Err(LoadError::at(
+                &map_file.layers.climate_glacier,
+                format!("pixel ({x}, {y})"),
+                format!("stored glacier flag {glacier_value} must be 0 or 255"),
+            ));
+        }
         let terrain = &terrain_types[terrain_index];
+        let is_water = matches!(terrain.kind, TerrainKind::Sea | TerrainKind::Lake);
+        let is_glacier = glacier_value == 255;
+        if is_water && fertility_pm != 0 {
+            return Err(LoadError::at(
+                &map_file.layers.fertility,
+                format!("pixel ({x}, {y})"),
+                "water cell must have zero fertility",
+            ));
+        }
+        if is_water && is_glacier {
+            return Err(LoadError::at(
+                &map_file.layers.climate_glacier,
+                format!("pixel ({x}, {y})"),
+                "water cell cannot be a glacier",
+            ));
+        }
+        if is_glacier && fertility_pm != 0 {
+            return Err(LoadError::at(
+                &map_file.layers.fertility,
+                format!("pixel ({x}, {y})"),
+                "glacier cell must have zero fertility",
+            ));
+        }
+        fertility.push(u16::try_from(fertility_pm).map_err(|_| {
+            LoadError::at(
+                &map_file.layers.fertility,
+                format!("pixel ({x}, {y})"),
+                "fertility does not fit u16",
+            )
+        })?);
+        climate_temperature_tenths.push(i16::try_from(i32::from(temperature) - 1000).map_err(
+            |_| {
+                LoadError::at(
+                    &map_file.layers.climate_temperature,
+                    format!("pixel ({x}, {y})"),
+                    "temperature does not fit i16",
+                )
+            },
+        )?);
+        glacier.push(is_glacier);
+        let display_bit = fertility_pm >= u32::from(terrain_file.display_usable_pm);
+        display_usable.push(display_bit);
+        if !is_water && (x == 0 || y == 0 || x + 1 == crop.width || y + 1 == crop.height) {
+            return Err(LoadError::at(
+                &map_file.layers.terrain,
+                format!("pixel ({x}, {y})"),
+                "crop edge must be water",
+            ));
+        }
         let surface = match terrain.kind {
             TerrainKind::Sea => Surface::Sea {
                 depth: ENCODED_ELEVATION_OFFSET.saturating_sub(raw_elevation),
@@ -272,13 +399,13 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
                         "land terrain has no style",
                     )
                 })?,
-                usable,
+                usable: fertility_pm > 0,
             },
         };
         cells.push(surface);
         packed_a.push([
             u8::try_from(terrain_index).unwrap_or_default(),
-            u8::from(usable),
+            u8::from(display_bit),
             0,
             255,
         ]);
@@ -306,6 +433,13 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
         crop,
         cells,
         elevations: elevation_image,
+        fertility,
+        climate_temperature_tenths,
+        climate_gdd: gdd_image,
+        climate_rainfall_mm: rainfall_image,
+        glacier,
+        display_usable,
+        display_usable_pm: terrain_file.display_usable_pm,
         terrains: styles,
         sea: water.sea,
         shallow_sea: water.shallow_sea,
@@ -599,19 +733,6 @@ struct WaterColours {
     river: Rgba8,
 }
 
-fn parse_usable_keys(usable: &UsableFile, filename: &str) -> Result<([u8; 3], [u8; 3]), LoadError> {
-    let yes = parse_colour(&usable.usable, filename, "usable.usable")?;
-    let no = parse_colour(&usable.unusable, filename, "usable.unusable")?;
-    if yes == no {
-        return Err(LoadError::at(
-            filename,
-            "usable",
-            "usable and unusable key colours must differ",
-        ));
-    }
-    Ok((yes, no))
-}
-
 fn colour_field(
     value: Option<&str>,
     filename: &str,
@@ -846,6 +967,81 @@ fn decode_elevation_image(
         .collect())
 }
 
+fn decode_gray8_image(
+    directory: &Path,
+    filename: &str,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, LoadError> {
+    let path = input_path(directory, filename)?;
+    let file = File::open(&path).map_err(|error| LoadError::new(filename, error))?;
+    let decoder = png::Decoder::new(BufReader::new(file));
+    let mut reader = decoder
+        .read_info()
+        .map_err(|error| LoadError::new(filename, error))?;
+    let info = reader.info();
+    if info.width != width || info.height != height {
+        return Err(LoadError::at(
+            filename,
+            "dimensions",
+            format!(
+                "expected {width}x{height}, found {}x{}",
+                info.width, info.height
+            ),
+        ));
+    }
+    if info.color_type != png::ColorType::Grayscale || info.bit_depth != png::BitDepth::Eight {
+        return Err(LoadError::new(filename, "image must be 8-bit grayscale"));
+    }
+    let size = reader
+        .output_buffer_size()
+        .ok_or_else(|| LoadError::new(filename, "decoded image size overflows address space"))?;
+    let mut output = vec![0; size];
+    let frame = reader
+        .next_frame(&mut output)
+        .map_err(|error| LoadError::new(filename, error))?;
+    Ok(output[..frame.buffer_size()].to_vec())
+}
+
+fn decode_gray16_image(
+    directory: &Path,
+    filename: &str,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u16>, LoadError> {
+    let path = input_path(directory, filename)?;
+    let file = File::open(&path).map_err(|error| LoadError::new(filename, error))?;
+    let decoder = png::Decoder::new(BufReader::new(file));
+    let mut reader = decoder
+        .read_info()
+        .map_err(|error| LoadError::new(filename, error))?;
+    let info = reader.info();
+    if info.width != width || info.height != height {
+        return Err(LoadError::at(
+            filename,
+            "dimensions",
+            format!(
+                "expected {width}x{height}, found {}x{}",
+                info.width, info.height
+            ),
+        ));
+    }
+    if info.color_type != png::ColorType::Grayscale || info.bit_depth != png::BitDepth::Sixteen {
+        return Err(LoadError::new(filename, "image must be 16-bit grayscale"));
+    }
+    let size = reader
+        .output_buffer_size()
+        .ok_or_else(|| LoadError::new(filename, "decoded image size overflows address space"))?;
+    let mut output = vec![0; size];
+    let frame = reader
+        .next_frame(&mut output)
+        .map_err(|error| LoadError::new(filename, error))?;
+    Ok(output[..frame.buffer_size()]
+        .chunks_exact(2)
+        .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+        .collect())
+}
+
 fn load_rivers(directory: &Path, filename: &str, crop: Crop) -> Result<Vec<RiverLine>, LoadError> {
     let file: RiversFile = read_toml(directory, filename)?;
     let mut lines = Vec::with_capacity(file.river.len());
@@ -914,8 +1110,12 @@ struct CropFile {
 #[derive(Deserialize)]
 struct LayersFile {
     terrain: String,
-    usable: String,
+    fertility: String,
     elevation: String,
+    climate_temperature: String,
+    climate_gdd: String,
+    climate_rainfall: String,
+    climate_glacier: String,
     terrain_rules: String,
     rivers: String,
 }
@@ -923,8 +1123,8 @@ struct LayersFile {
 #[serde(deny_unknown_fields)]
 struct TerrainFile {
     shallow_threshold: u16,
+    display_usable_pm: u16,
     water: WaterFile,
-    usable: UsableFile,
     terrain: Vec<TerrainEntry>,
 }
 #[derive(Deserialize)]
@@ -934,12 +1134,6 @@ struct WaterFile {
     shallow_sea: String,
     lake: String,
     river: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UsableFile {
-    usable: String,
-    unusable: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

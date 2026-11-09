@@ -22,6 +22,13 @@ fn all_land(width: u32, height: u32) -> MapData {
             count
         ],
         elevations: vec![11_004; count],
+        fertility: vec![1000; count],
+        climate_temperature_tenths: vec![100; count],
+        climate_gdd: vec![1000; count],
+        climate_rainfall_mm: vec![1000; count],
+        glacier: vec![false; count],
+        display_usable: vec![true; count],
+        display_usable_pm: 500,
         terrains: vec![TerrainStyle {
             solid: Rgba8::opaque(1, 2, 3),
             second: Rgba8::opaque(4, 5, 6),

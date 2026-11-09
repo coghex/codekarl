@@ -3,12 +3,16 @@ cell_metres = 839.0
 
 [crop]
 origin = [23882, 23882]
-width = 2
-height = 2
+width = 4
+height = 4
 
 [layers]
 terrain = "terrain.png"
-usable = "usable.png"
+fertility = "fertility.png"
 elevation = "elevation.png"
+climate_temperature = "climate_temperature.png"
+climate_gdd = "climate_gdd.png"
+climate_rainfall = "climate_rainfall.png"
+climate_glacier = "climate_glacier.png"
 terrain_rules = "terrain.toml"
 rivers = "rivers.toml"
