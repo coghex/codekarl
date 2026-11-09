@@ -226,22 +226,36 @@ pub(crate) fn register_gameplay_callbacks(
     scheduler: &mut Scheduler<GameState>,
     gameplay: &Arc<Gameplay>,
 ) {
+    scheduler
+        .register("economy.daily", Cadence::Daily { hour: 12 }, |_, _| Ok(()))
+        .expect("the economy system name is unique");
     let monthly = Arc::clone(gameplay);
     scheduler
-        .register("gameplay.on_month", Cadence::Monthly, move |_, tick| {
-            monthly
-                .call("on_month", tick.date(), tick.time())
-                .map_err(io::Error::other)
-                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
-        })
+        .register(
+            "gameplay.on_month",
+            Cadence::Daily { hour: 12 },
+            move |_, tick| {
+                if tick.date().day != 1 {
+                    return Ok(());
+                }
+                monthly
+                    .call("on_month", tick.date(), tick.time())
+                    .map_err(io::Error::other)
+                    .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
+            },
+        )
         .expect("the gameplay monthly system name is unique");
     let daily = Arc::clone(gameplay);
     scheduler
-        .register("gameplay.on_day", Cadence::Daily, move |_, tick| {
-            daily
-                .call("on_day", tick.date(), tick.time())
-                .map_err(io::Error::other)
-                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
-        })
+        .register(
+            "gameplay.on_day",
+            Cadence::Daily { hour: 12 },
+            move |_, tick| {
+                daily
+                    .call("on_day", tick.date(), tick.time())
+                    .map_err(io::Error::other)
+                    .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
+            },
+        )
         .expect("the gameplay daily system name is unique");
 }

@@ -10,25 +10,40 @@ use crate::{
 /// How often a system runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cadence {
-    /// On 1 January at hour 0.
-    Yearly,
-    /// On the 1st of each month at hour 0.
-    Monthly,
-    /// At hour 0 of each day.
-    Daily,
+    /// On 1 January at `hour` (0 to 23).
+    Yearly {
+        /// The hour, 0 to 23.
+        hour: u8,
+    },
+    /// On the 1st of each month at `hour` (0 to 23).
+    Monthly {
+        /// The hour, 0 to 23.
+        hour: u8,
+    },
+    /// At `hour` (0 to 23) of each day.
+    Daily {
+        /// The hour, 0 to 23.
+        hour: u8,
+    },
     /// On every tick.
     Hourly,
 }
 
 impl Cadence {
-    /// The order a tick runs the cadences in: coarser first.
-    const RUN_ORDER: [Self; 4] = [Self::Yearly, Self::Monthly, Self::Daily, Self::Hourly];
+    const fn order(self) -> u8 {
+        match self {
+            Self::Yearly { .. } => 0,
+            Self::Monthly { .. } => 1,
+            Self::Daily { .. } => 2,
+            Self::Hourly => 3,
+        }
+    }
 
     const fn is_due(self, date: Date) -> bool {
         match self {
-            Self::Yearly => date.month == 1 && date.day == 1 && date.hour == 0,
-            Self::Monthly => date.day == 1 && date.hour == 0,
-            Self::Daily => date.hour == 0,
+            Self::Yearly { hour } => date.month == 1 && date.day == 1 && date.hour == hour,
+            Self::Monthly { hour } => date.day == 1 && date.hour == hour,
+            Self::Daily { hour } => date.hour == hour,
             Self::Hourly => true,
         }
     }
@@ -77,6 +92,11 @@ pub enum SchedulerError {
         /// The refused stream name.
         name: String,
     },
+    /// A yearly, monthly or daily cadence was registered outside hour 0 to 23.
+    HourOutOfRange {
+        /// The refused hour.
+        hour: u8,
+    },
 }
 
 impl fmt::Display for SchedulerError {
@@ -88,6 +108,7 @@ impl fmt::Display for SchedulerError {
             Self::DuplicateStream { name } => {
                 write!(f, "a stream named `{name}` is already registered")
             }
+            Self::HourOutOfRange { hour } => write!(f, "cadence hour {hour} is outside 0 to 23"),
         }
     }
 }
@@ -188,6 +209,15 @@ impl<S> Scheduler<S> {
         streams: &[&str],
         system: impl FnMut(&mut S, &mut Tick<'_>) -> SystemResult + Send + 'static,
     ) -> Result<(), SchedulerError> {
+        let cadence_hour = match cadence {
+            Cadence::Yearly { hour } | Cadence::Monthly { hour } | Cadence::Daily { hour } => {
+                Some(hour)
+            }
+            Cadence::Hourly => None,
+        };
+        if let Some(hour) = cadence_hour.filter(|hour| *hour >= 24) {
+            return Err(SchedulerError::HourOutOfRange { hour });
+        }
         let name = name.into();
         if self
             .systems
@@ -236,15 +266,10 @@ impl<S> Scheduler<S> {
         date: Date,
     ) -> Vec<SystemError> {
         let mut errors = Vec::new();
-        for cadence in Cadence::RUN_ORDER {
-            if !cadence.is_due(date) {
-                continue;
-            }
-            for registered in self
-                .systems
-                .iter_mut()
-                .filter(|registered| registered.cadence == cadence)
-            {
+        for order in 0..4 {
+            for registered in self.systems.iter_mut().filter(|registered| {
+                registered.cadence.order() == order && registered.cadence.is_due(date)
+            }) {
                 for stream in &mut registered.streams {
                     stream.start_tick(seed, time);
                 }

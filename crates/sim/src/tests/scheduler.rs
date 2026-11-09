@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{Cadence, Date, GameTime, Scheduler, SchedulerError, Simulation, SystemResult};
+use crate::{Cadence, Date, GameTime, Save, Scheduler, SchedulerError, Simulation, SystemResult};
 
 type Log = Arc<Mutex<Vec<String>>>;
 
@@ -34,9 +34,9 @@ fn scheduler(log: &Log) -> Scheduler<()> {
     let mut scheduler = Scheduler::new();
     for (cadence, label) in [
         (Cadence::Hourly, "hourly"),
-        (Cadence::Daily, "daily"),
-        (Cadence::Monthly, "monthly"),
-        (Cadence::Yearly, "yearly"),
+        (Cadence::Daily { hour: 0 }, "daily"),
+        (Cadence::Monthly { hour: 0 }, "monthly"),
+        (Cadence::Yearly { hour: 0 }, "yearly"),
     ] {
         for number in [1, 2] {
             let log = Arc::clone(log);
@@ -78,6 +78,92 @@ fn the_new_year_runs_yearly_then_monthly_then_daily_then_hourly_each_in_registra
             "hourly-2"
         ]
     );
+}
+
+#[test]
+fn noon_cadences_run_coarse_first_and_do_not_run_at_midnight() {
+    let log = Log::default();
+    let mut scheduler = Scheduler::new();
+    for (name, cadence) in [
+        ("hourly", Cadence::Hourly),
+        ("daily", Cadence::Daily { hour: 12 }),
+        ("monthly", Cadence::Monthly { hour: 12 }),
+        ("yearly", Cadence::Yearly { hour: 12 }),
+    ] {
+        let log = Arc::clone(&log);
+        scheduler
+            .register(name, cadence, move |(), _| {
+                log.lock().unwrap().push(name.to_owned());
+                Ok(())
+            })
+            .unwrap();
+    }
+    let noon = at(769, 1, 1, 12);
+    assert!(
+        scheduler
+            .run(&mut (), 0, noon, noon.date().unwrap())
+            .is_empty()
+    );
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["yearly", "monthly", "daily", "hourly"]
+    );
+
+    log.lock().unwrap().clear();
+    let midnight = at(769, 1, 1, 0);
+    assert!(
+        scheduler
+            .run(&mut (), 0, midnight, midnight.date().unwrap())
+            .is_empty()
+    );
+    assert_eq!(*log.lock().unwrap(), ["hourly"]);
+}
+
+#[test]
+fn a_coarse_cadence_refuses_an_hour_outside_the_day() {
+    let mut scheduler = Scheduler::<()>::new();
+    assert_eq!(
+        scheduler.register("bad", Cadence::Daily { hour: 24 }, |(), _| Ok(())),
+        Err(SchedulerError::HourOutOfRange { hour: 24 })
+    );
+}
+
+#[test]
+fn a_noon_schedule_saved_at_eleven_or_noon_continues_to_the_same_digest() {
+    use super::world::{expected, meta, start};
+
+    fn scheduler() -> Scheduler<u64> {
+        let mut scheduler = Scheduler::new();
+        scheduler
+            .register("economy", Cadence::Daily { hour: 12 }, |balance, _| {
+                *balance += 1;
+                Ok(())
+            })
+            .unwrap();
+        scheduler
+    }
+
+    let finish = GameTime::from_hours(start().hours() + 72);
+    for save_hour in [11, 12] {
+        let mut original = Simulation::<u64, u64>::new(start(), 42, 0, scheduler(), |_, _| {});
+        let save_time = GameTime::from_hours(start().hours() + save_hour);
+        while original.time() < save_time {
+            original.step().unwrap();
+        }
+        let bytes = original.save(meta(42)).to_bytes().unwrap();
+        let save = Save::from_bytes(&bytes, &expected()).unwrap();
+        let mut loaded = Simulation::<u64, u64>::from_save(save, scheduler(), |_, _| {}).unwrap();
+        assert_eq!(loaded.digest().unwrap(), original.digest().unwrap());
+
+        while original.time() < finish {
+            original.step().unwrap();
+        }
+        while loaded.time() < finish {
+            loaded.step().unwrap();
+        }
+        assert_eq!(loaded.digest().unwrap(), original.digest().unwrap());
+        assert_eq!(*loaded.state(), 3, "one economy tick per noon");
+    }
 }
 
 #[test]
@@ -141,7 +227,7 @@ fn systems_receive_the_state_the_time_and_the_date() {
 fn a_duplicate_name_is_refused_even_on_another_cadence_and_adds_nothing() {
     let mut scheduler = Scheduler::<u32>::new();
     scheduler
-        .register("economy", Cadence::Daily, |count, _| {
+        .register("economy", Cadence::Daily { hour: 0 }, |count, _| {
             *count += 1;
             Ok(())
         })
@@ -205,8 +291,8 @@ fn several_failures_in_one_tick_come_back_in_run_order() {
     let mut scheduler = Scheduler::<()>::new();
     for (name, cadence) in [
         ("hour", Cadence::Hourly),
-        ("day", Cadence::Daily),
-        ("year", Cadence::Yearly),
+        ("day", Cadence::Daily { hour: 0 }),
+        ("year", Cadence::Yearly { hour: 0 }),
     ] {
         scheduler
             .register(name, cadence, |(), _| Err(Box::new(Broken)))

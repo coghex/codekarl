@@ -82,16 +82,21 @@ pub(crate) fn scheduler(faults: Faults) -> Scheduler<World> {
         )
         .unwrap();
     scheduler
-        .register_with_streams("daily", Cadence::Daily, &["test.daily"], |world, tick| {
-            let draw = tick.stream("test.daily")?.draw();
-            world.daily = world.daily.rotate_left(5) ^ draw;
-            Ok(())
-        })
+        .register_with_streams(
+            "daily",
+            Cadence::Daily { hour: 0 },
+            &["test.daily"],
+            |world, tick| {
+                let draw = tick.stream("test.daily")?.draw();
+                world.daily = world.daily.rotate_left(5) ^ draw;
+                Ok(())
+            },
+        )
         .unwrap();
     scheduler
         .register_with_streams(
             "monthly",
-            Cadence::Monthly,
+            Cadence::Monthly { hour: 0 },
             &["test.monthly"],
             |world, tick| {
                 let draw = tick.stream("test.monthly")?.range_i64(-50, 50)?;
