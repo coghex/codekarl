@@ -192,13 +192,10 @@ mod tests {
 
         let (state, report) = starting_economy(&assets, &directory, &scenario).unwrap();
         assert_eq!(state.places.len(), 94);
-        assert_eq!(report.len(), 46, "authored cuts are reported: {report:?}");
-        assert!(report.contains(
-            &"durrow holdings: cut levels 10 -> 3 (no method has enough land or sea)".to_owned()
-        ));
-        assert!(report.contains(
-            &"dunseverick farm: cut levels 4 -> 2 (no method has enough land or sea)".to_owned()
-        ));
+        assert!(
+            report.is_empty(),
+            "the computed fertility data avoids authored farm cuts: {report:?}"
+        );
         let mayo = state
             .places
             .iter()

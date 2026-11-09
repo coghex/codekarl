@@ -320,6 +320,20 @@ pub struct MapData {
     pub cells: Vec<Surface>,
     /// Row-major encoded elevations (`metres + 11_000`) for every crop cell.
     pub elevations: Vec<u16>,
+    /// Fertility in per-thousand units, one entry per crop cell.
+    pub fertility: Vec<u16>,
+    /// Mean annual temperature in tenths of a degree Celsius.
+    pub climate_temperature_tenths: Vec<i16>,
+    /// Growing degree-days above 5 °C, rounded to whole degree-days.
+    pub climate_gdd: Vec<u16>,
+    /// Annual rainfall in whole millimetres.
+    pub climate_rainfall_mm: Vec<u16>,
+    /// Whether each crop cell is glaciated by the climate model.
+    pub glacier: Vec<bool>,
+    /// Per-cell interim display bit used by the existing CPU reference palette.
+    pub display_usable: Vec<bool>,
+    /// Fertility threshold used for the interim packed-grid usable bit.
+    pub display_usable_pm: u16,
     /// Terrain palettes indexed by each land cell's terrain id.
     pub terrains: Vec<TerrainStyle>,
     /// Sea base tone.
@@ -359,6 +373,28 @@ impl MapData {
         }
         if self.elevations.len() != expected {
             return Err("elevation count does not match crop dimensions");
+        }
+        if self.fertility.len() != expected
+            || self.climate_temperature_tenths.len() != expected
+            || self.climate_gdd.len() != expected
+            || self.climate_rainfall_mm.len() != expected
+            || self.glacier.len() != expected
+            || self.display_usable.len() != expected
+        {
+            return Err("climate and fertility counts do not match crop dimensions");
+        }
+        if self.fertility.iter().any(|value| *value > 1000)
+            || self
+                .climate_temperature_tenths
+                .iter()
+                .any(|value| !(-600..=500).contains(value))
+            || self.climate_gdd.iter().any(|value| *value > 12_000)
+            || self.climate_rainfall_mm.iter().any(|value| *value > 15_000)
+        {
+            return Err("climate or fertility value is outside supported bounds");
+        }
+        if self.display_usable_pm > 1000 {
+            return Err("display usable threshold must be in 0..=1000");
         }
         if self.shallow_threshold == 0 {
             return Err("shallow threshold must be nonzero");
@@ -530,7 +566,12 @@ pub fn reference_colour_with_mode(
             }
         }
         Surface::Lake => map.lake,
-        Surface::Land { terrain, usable } => {
+        Surface::Land { terrain, .. } => {
+            let cell = cell_of(moved);
+            let Some(index) = map.cell_index(cell) else {
+                return Some(map.sea);
+            };
+            let usable = *map.display_usable.get(index)?;
             let style = *map.terrains.get(usize::from(terrain))?;
             if style.relief_high <= style.relief_low
                 || (style.mountain && style.cap_high <= style.cap_low)

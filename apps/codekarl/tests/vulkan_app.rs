@@ -509,7 +509,7 @@ impl Fixture {
         self.scratch.0.join(name)
     }
 
-    /// Copies the app's accepted 2 x 2 fixture into this test's scratch directory.
+    /// Copies the app's accepted 4 x 4 fixture into this test's scratch directory.
     fn map_fixture(&self) -> PathBuf {
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/map");
         let destination = self.path("map");
@@ -519,8 +519,12 @@ impl Fixture {
             "terrain.toml",
             "rivers.toml",
             "terrain.png",
-            "usable.png",
+            "fertility.png",
             "elevation.png",
+            "climate_temperature.png",
+            "climate_gdd.png",
+            "climate_rainfall.png",
+            "climate_glacier.png",
         ] {
             fs::copy(source.join(name), destination.join(name))
                 .expect("copy the valid map fixture");
@@ -529,7 +533,7 @@ impl Fixture {
     }
 
     /// A scenario in this test's scratch directory, in the assets layout the loader resolves maps by: the scenario in
-    /// `assets/scenarios/fixture_768` names the map `fixture`, which is the app's accepted 2 x 2 fixture in `assets/map/fixture`.
+    /// `assets/scenarios/fixture_768` names the map `fixture`, which is the app's accepted 4 x 4 fixture in `assets/map/fixture`.
     /// The scenario starts on 768-01-01 and has no locations. Returns the scenario directory.
     fn scenario_fixture(&self) -> PathBuf {
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/map");
@@ -575,7 +579,8 @@ impl Fixture {
             "[[kind]]\nid = \"town\"\nsizes = [1, 1]\ncatchment_m = [839]\nhouses = { count = [0], radius_cells_x256 = [0] }\nglyph = [\"#\"]\nlight = \"#ffffff\"\ndark = \"#000000\"\n\n[house]\nroof = \"#a9563b\"\nlight = \"#ece3cb\"\ndark = \"#2a2119\"\n",
         )
         .expect("write the fixture location kind");
-        let (latitude, longitude) = lat_lon_for_fixture_cell(23_883, 23_883);
+        // The expanded fixture crop has a lake at (1, 1); keep the marker on the plains cell (2, 1).
+        let (latitude, longitude) = lat_lon_for_fixture_cell(23_884, 23_883);
         fs::write(
             scenario.join("locations.toml"),
             format!(

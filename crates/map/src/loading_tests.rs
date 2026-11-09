@@ -21,8 +21,12 @@ impl Fixture {
             "terrain.toml",
             "rivers.toml",
             "terrain.png",
-            "usable.png",
+            "fertility.png",
             "elevation.png",
+            "climate_temperature.png",
+            "climate_gdd.png",
+            "climate_rainfall.png",
+            "climate_glacier.png",
         ] {
             fs::copy(source.join(name), path.join(name)).expect("copy valid fixture");
         }
@@ -51,25 +55,46 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn valid_fixture_preserves_elevation_and_exact_packed_bytes() {
+fn valid_fixture_loads_climate_fertility_and_preserves_packed_bytes() {
     let fixture = Fixture::copy();
     let loaded = load_map(&fixture.0).expect("valid fixture loads");
     assert_eq!(loaded.data.crop.origin.x, 23_882);
     assert_eq!(loaded.data.crop.origin.y, 23_882);
-    assert_eq!(loaded.data.elevations, [10_000, 11_000, 12_000, 500]);
+    assert_eq!((loaded.data.crop.width, loaded.data.crop.height), (4, 4));
+    assert_eq!(loaded.data.elevations[0], 10_000);
+    assert_eq!(loaded.data.elevations[5], 11_000);
+    assert_eq!(loaded.data.elevations[6], 12_000);
+    assert_eq!(loaded.data.elevations[10], 500);
+    assert_eq!(loaded.data.fertility[6], 496);
+    assert_eq!(loaded.data.fertility[10], 500);
+    assert_eq!(loaded.data.climate_temperature_tenths, [100; 16]);
+    assert_eq!(loaded.data.climate_gdd, [1000; 16]);
+    assert_eq!(loaded.data.climate_rainfall_mm, [1000; 16]);
     assert_eq!(
         loaded.data.cells,
         [
             Surface::Sea { depth: 1_000 },
+            Surface::Sea { depth: 1_000 },
+            Surface::Sea { depth: 1_000 },
+            Surface::Sea { depth: 1_000 },
+            Surface::Sea { depth: 1_000 },
             Surface::Lake,
             Surface::Land {
                 terrain: 0,
-                usable: true,
+                usable: true
             },
+            Surface::Sea { depth: 1_000 },
+            Surface::Sea { depth: 1_000 },
+            Surface::Sea { depth: 1_000 },
             Surface::Land {
                 terrain: 1,
-                usable: false,
+                usable: true
             },
+            Surface::Sea { depth: 1_000 },
+            Surface::Sea { depth: 1_000 },
+            Surface::Sea { depth: 1_000 },
+            Surface::Sea { depth: 1_000 },
+            Surface::Sea { depth: 1_000 },
         ]
     );
     assert_eq!(
@@ -85,26 +110,226 @@ fn valid_fixture_preserves_elevation_and_exact_packed_bytes() {
             TerrainKind::Mountain,
         ]
     );
-    assert_eq!(
-        loaded.grid_a.pixels,
-        [
-            [0, 1, 0, 255],
-            [1, 0, 0, 255],
-            [2, 1, 0, 255],
-            [3, 0, 0, 255],
-        ]
-    );
-    assert_eq!(
-        loaded.grid_b.pixels,
-        [
-            [0x27, 0x10, 0, 255],
-            [0x2a, 0xf8, 0, 255],
-            [0x2e, 0xe0, 0, 255],
-            [0x01, 0xf4, 0, 255],
-        ]
-    );
+    assert_eq!(loaded.grid_a.pixels[6], [2, 0, 0, 255]);
+    assert_eq!(loaded.grid_a.pixels[10], [3, 1, 0, 255]);
+    assert_eq!(loaded.grid_b.pixels[0], [0x27, 0x10, 0, 255]);
+    assert_eq!(loaded.grid_b.pixels[5], [0x2a, 0xf8, 0, 255]);
+    assert_eq!(loaded.grid_b.pixels[6], [0x2e, 0xe0, 0, 255]);
+    assert_eq!(loaded.grid_b.pixels[10], [0x01, 0xf4, 0, 255]);
     assert_eq!(loaded.rivers.len(), 1);
     assert_eq!(loaded.rivers[0].points.len(), 2);
+}
+
+#[test]
+fn fertility_zero_and_four_drive_land_usability_independently_of_display_cutoff() {
+    let fixture = Fixture::copy();
+    let mut samples = vec![0; 16];
+    samples[6] = 1;
+    write_png(
+        &fixture.0.join("fertility.png"),
+        ColorType::Grayscale,
+        BitDepth::Eight,
+        &samples,
+        None,
+    );
+    let loaded = load_map(&fixture.0).expect("four per-thousand fertility loads");
+    assert_eq!(loaded.data.fertility[6], 4);
+    assert!(matches!(
+        loaded.data.cells[6],
+        Surface::Land { usable: true, .. }
+    ));
+    assert_eq!(
+        loaded.grid_a.pixels[6][1], 0,
+        "496/500 display threshold remains separate"
+    );
+}
+
+#[test]
+fn every_computed_layer_requires_the_crop_dimensions() {
+    for (filename, colour, depth, bytes) in [
+        (
+            "fertility.png",
+            ColorType::Grayscale,
+            BitDepth::Eight,
+            vec![0; 12],
+        ),
+        (
+            "climate_temperature.png",
+            ColorType::Grayscale,
+            BitDepth::Sixteen,
+            vec![0; 24],
+        ),
+        (
+            "climate_gdd.png",
+            ColorType::Grayscale,
+            BitDepth::Sixteen,
+            vec![0; 24],
+        ),
+        (
+            "climate_rainfall.png",
+            ColorType::Grayscale,
+            BitDepth::Sixteen,
+            vec![0; 24],
+        ),
+        (
+            "climate_glacier.png",
+            ColorType::Grayscale,
+            BitDepth::Eight,
+            vec![0; 12],
+        ),
+    ] {
+        let fixture = Fixture::copy();
+        write_png_sized(&fixture.0.join(filename), 3, 4, colour, depth, &bytes, None);
+        assert_error(&fixture, &format!("{filename} dimensions"), "expected 4x4");
+    }
+}
+
+#[test]
+fn a_missing_file_named_as_a_computed_layer_is_rejected() {
+    let fixture = Fixture::copy();
+    fs::remove_file(fixture.0.join("climate_rainfall.png"))
+        .expect("remove the named climate layer");
+    assert_error(&fixture, "climate_rainfall.png", "No such file");
+}
+
+#[test]
+fn fertility_bounds_and_water_consistency_are_named() {
+    let fixture = Fixture::copy();
+    let mut values = vec![0; 16];
+    values[0] = 251;
+    write_png(
+        &fixture.0.join("fertility.png"),
+        ColorType::Grayscale,
+        BitDepth::Eight,
+        &values,
+        None,
+    );
+    assert_error(&fixture, "fertility.png pixel (0, 0)", "exceeds 250");
+
+    let fixture = Fixture::copy();
+    let mut values = vec![0; 16];
+    values[0] = 1;
+    write_png(
+        &fixture.0.join("fertility.png"),
+        ColorType::Grayscale,
+        BitDepth::Eight,
+        &values,
+        None,
+    );
+    assert_error(
+        &fixture,
+        "fertility.png pixel (0, 0)",
+        "water cell must have zero fertility",
+    );
+
+    let mut values = [0_u16; 16];
+    values[0] = 399;
+    let fixture = Fixture::copy();
+    write_png(
+        &fixture.0.join("climate_temperature.png"),
+        ColorType::Grayscale,
+        BitDepth::Sixteen,
+        &values
+            .iter()
+            .flat_map(|value| value.to_be_bytes())
+            .collect::<Vec<_>>(),
+        None,
+    );
+    assert_error(
+        &fixture,
+        "climate_temperature.png pixel (0, 0)",
+        "outside 400..=1500",
+    );
+}
+
+#[test]
+fn climate_gdd_and_rainfall_bounds_are_named() {
+    let fixture = Fixture::copy();
+    let mut values = [0_u16; 16];
+    values[0] = 12_001;
+    let bytes = values
+        .iter()
+        .flat_map(|value| value.to_be_bytes())
+        .collect::<Vec<_>>();
+    write_png(
+        &fixture.0.join("climate_gdd.png"),
+        ColorType::Grayscale,
+        BitDepth::Sixteen,
+        &bytes,
+        None,
+    );
+    assert_error(&fixture, "climate_gdd.png pixel (0, 0)", "exceeds 12000");
+
+    let fixture = Fixture::copy();
+    let mut values = [0_u16; 16];
+    values[0] = 15_001;
+    let bytes = values
+        .iter()
+        .flat_map(|value| value.to_be_bytes())
+        .collect::<Vec<_>>();
+    write_png(
+        &fixture.0.join("climate_rainfall.png"),
+        ColorType::Grayscale,
+        BitDepth::Sixteen,
+        &bytes,
+        None,
+    );
+    assert_error(
+        &fixture,
+        "climate_rainfall.png pixel (0, 0)",
+        "exceeds 15000",
+    );
+}
+
+#[test]
+fn glacier_flags_and_fertility_consistency_are_named() {
+    let fixture = Fixture::copy();
+    let mut values = [0; 16];
+    values[0] = 7;
+    write_png(
+        &fixture.0.join("climate_glacier.png"),
+        ColorType::Grayscale,
+        BitDepth::Eight,
+        &values,
+        None,
+    );
+    assert_error(
+        &fixture,
+        "climate_glacier.png pixel (0, 0)",
+        "must be 0 or 255",
+    );
+
+    let fixture = Fixture::copy();
+    let mut values = [0; 16];
+    values[0] = 255;
+    write_png(
+        &fixture.0.join("climate_glacier.png"),
+        ColorType::Grayscale,
+        BitDepth::Eight,
+        &values,
+        None,
+    );
+    assert_error(
+        &fixture,
+        "climate_glacier.png pixel (0, 0)",
+        "water cell cannot be a glacier",
+    );
+
+    let fixture = Fixture::copy();
+    let mut values = [0; 16];
+    values[6] = 255;
+    write_png(
+        &fixture.0.join("climate_glacier.png"),
+        ColorType::Grayscale,
+        BitDepth::Eight,
+        &values,
+        None,
+    );
+    assert_error(
+        &fixture,
+        "fertility.png pixel (2, 1)",
+        "glacier cell must have zero fertility",
+    );
 }
 
 #[test]
@@ -115,7 +340,7 @@ fn indexed_and_rgb_key_layers_are_equivalent_and_rgba_must_be_opaque() {
         &rgb.0.join("terrain.png"),
         ColorType::Indexed,
         BitDepth::Eight,
-        &[0, 1, 2, 3],
+        &[0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 3, 0, 0, 0, 0, 0],
         Some(&[0, 0, 255, 0, 255, 255, 0, 255, 0, 255, 0, 255]),
     );
     let indexed = load_map(&rgb.0).expect("indexed fixture loads");
@@ -131,7 +356,7 @@ fn indexed_and_rgb_key_layers_are_equivalent_and_rgba_must_be_opaque() {
         ],
         None,
     );
-    assert_error(&rgba, "terrain.png pixel (1, 1)", "alpha must be 255");
+    assert_error(&rgba, "terrain.png pixel (3, 0)", "alpha must be 255");
 }
 
 #[test]
@@ -156,7 +381,15 @@ fn colour_metadata_chunks_do_not_change_stored_samples() {
     let plain = Fixture::copy();
     let expected = load_map(&plain.0).expect("plain fixture loads");
     let managed = Fixture::copy();
-    for name in ["terrain.png", "usable.png", "elevation.png"] {
+    for name in [
+        "terrain.png",
+        "fertility.png",
+        "elevation.png",
+        "climate_temperature.png",
+        "climate_gdd.png",
+        "climate_rainfall.png",
+        "climate_glacier.png",
+    ] {
         let path = managed.0.join(name);
         let bytes = fs::read(&path).expect("read png");
         let mut bytes = insert_chunk(
@@ -215,11 +448,11 @@ fn names_projection_cell_crop_and_image_sizes_are_validated() {
     assert_error(&fixture, "map.toml cell_metres", "expected 839");
 
     let fixture = Fixture::copy();
-    fixture.replace("map.toml", "width = 2", "width = 0");
+    fixture.replace("map.toml", "width = 4", "width = 0");
     assert_error(&fixture, "map.toml crop", "nonzero");
 
     let fixture = Fixture::copy();
-    fixture.replace("map.toml", "width = 2", "width = 8193");
+    fixture.replace("map.toml", "width = 4", "width = 8193");
     assert_error(&fixture, "map.toml crop", "limit");
 
     let fixture = Fixture::copy();
@@ -231,8 +464,8 @@ fn names_projection_cell_crop_and_image_sizes_are_validated() {
     assert_error(&fixture, "map.toml crop.origin", "nonnegative");
 
     let fixture = Fixture::copy();
-    fixture.replace("map.toml", "width = 2", "width = 3");
-    assert_error(&fixture, "terrain.png dimensions", "expected 3x2");
+    fixture.replace("map.toml", "width = 4", "width = 5");
+    assert_error(&fixture, "terrain.png dimensions", "expected 5x4");
 }
 
 #[test]
@@ -249,13 +482,13 @@ fn key_pixels_and_key_image_formats_are_validated() {
 
     let fixture = Fixture::copy();
     write_png(
-        &fixture.0.join("usable.png"),
+        &fixture.0.join("fertility.png"),
         ColorType::Rgb,
         BitDepth::Eight,
         &[1, 2, 3, 255, 0, 0, 0, 255, 0, 255, 0, 255],
         None,
     );
-    assert_error(&fixture, "usable.png pixel (0, 0)", "unknown usable key");
+    assert_error(&fixture, "fertility.png", "8-bit grayscale");
 
     let fixture = Fixture::copy();
     write_png(
@@ -384,8 +617,41 @@ fn write_png(
     bytes: &[u8],
     palette: Option<&[u8]>,
 ) {
+    let expected = match (colour, depth) {
+        (ColorType::Rgb, BitDepth::Eight) => 4 * 4 * 3,
+        (ColorType::Rgba, BitDepth::Eight) => 4 * 4 * 4,
+        (
+            ColorType::Grayscale | ColorType::Indexed,
+            BitDepth::Eight | BitDepth::Four | BitDepth::Two | BitDepth::One,
+        ) => {
+            let bits = match depth {
+                BitDepth::Eight => 8,
+                BitDepth::Four => 4,
+                BitDepth::Two => 2,
+                BitDepth::One => 1,
+                BitDepth::Sixteen => unreachable!(),
+            };
+            (16_usize * bits).div_ceil(8)
+        }
+        _ => bytes.len(),
+    };
+    let expanded = (0..expected)
+        .map(|index| bytes[index % bytes.len()])
+        .collect::<Vec<_>>();
+    write_png_sized(path, 4, 4, colour, depth, &expanded, palette);
+}
+
+fn write_png_sized(
+    path: &Path,
+    width: u32,
+    height: u32,
+    colour: ColorType,
+    depth: BitDepth,
+    bytes: &[u8],
+    palette: Option<&[u8]>,
+) {
     let file = fs::File::create(path).expect("create png");
-    let mut encoder = png::Encoder::new(file, 2, 2);
+    let mut encoder = png::Encoder::new(file, width, height);
     encoder.set_color(colour);
     encoder.set_depth(depth);
     if let Some(palette) = palette {

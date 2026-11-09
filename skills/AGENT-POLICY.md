@@ -110,6 +110,21 @@ review, and publication still needs the gate's checks. Passing CI alone does
 not authorize publication. The owner's deferrals (busy Codex stop through chat;
 the untested live recovery cases) remain known limitations, not tasks.
 
+## Rendering backends
+
+Owner decision, 2026-11-09: until a native Linux machine with a real GPU is in the test loop, Vulkan is compile-only here (on this Mac it
+would test MoltenVK, not Linux).
+
+- **Render features land on native-metal.** A spec no longer requires "on both backends". The Vulkan catch-up (CK-239) and the Linux
+  enablement are **parked until the owner says so** (owner, 2026-11-09, `m9-design/owner-direction-linux-r1.md`): they are not a
+  milestone gate, and no Vulkan port is dispatched at a milestone's end.
+- **The Vulkan path keeps compiling.** A change to a backend-neutral interface (`ck-render-2d`, `ck-window`) or to a shared GPU data
+  format still updates the Vulkan code enough to keep compiling; Clippy (every workspace target, all features) is the compile check.
+- **Its GPU and window groups are optional** (`glfw.window`, `vulkan.gpu`, `vulkan.window`, `render2d.vulkan-window`, `vulkan.app`): no
+  planned check, level or batch selects them, so a Vulkan GPU or window failure does not block a submission, and no GPU/window slot run
+  is spent on them. Name one with `--group` only when the owner or manager asks.
+- No MoltenVK performance work. Vulkan stays compile-only; the owner decides if and when the groups and parity return.
+
 ## Visible sessions and communication
 
 Use the existing Codekarl cmux group and owner-provided terminals, preserving the

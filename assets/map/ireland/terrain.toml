@@ -2,10 +2,11 @@
 # and never write this file. The colours are mock-up 2's (docs/map-design.md section 8); the relief and mix values are its rules.
 #
 # `key` is the colour that stands for the type in terrain.png, so that a hand edit in an image editor is a paint stroke. The keys
-# of the land types are their solid colours; sea and lake have keys of their own. usable.png has two keys, below.
+# of the land types are their solid colours; sea and lake have keys of their own. fertility is derived by apply_edits.py; display_usable_pm is the interim grid threshold.
 
 # Under this depth, in metres, the sea dithers towards the shallow-sea tone.
 shallow_threshold = 60
+display_usable_pm = 500
 
 [water]
 sea = "05080e"
@@ -13,9 +14,6 @@ shallow_sea = "0b1422"
 lake = "0b1422"
 river = "3a78c2"
 
-[usable]
-usable = "ffffff"
-unusable = "000000"
 
 [[terrain]]
 name = "sea"

@@ -1,83 +1,10 @@
-"""Applies `edits.toml`, the owner-delegated corrections toward medieval Ireland, to the first draft. Deterministic: no noise, no chance.
+"""Apply the terrain edits and derive Ireland's climate, glacier and fertility layers.
 
-    python3 apply_edits.py [--out DIR] [--force]
-
-Reads `terrain.png`, `usable.png`, `elevation.png`, `map.toml`, `terrain.toml` and `rivers.toml` from `--out` (default: next to this
-script), applies every `[[edit]]` of `edits.toml` there in file order (each sees what the earlier ones left) and then its `[settings]`,
-and writes the three images back. It records the SHA-256 of the `edits.toml` it applied in `edits.applied` and **refuses to run again
-on the same files** unless `--force` is given. Running `derive_elevation.py` or `draft_terrain.py` with `--force` regenerates the draft
-and removes `edits.applied`, so the whole chain is: derive, draft, apply. Needs `numpy` and `Pillow`.
-
-The target period is "medieval, before the 17th-century clearances and the 18th-20th-century drainage and reclamation". The owner's
-rule for how bog, forest and usable land are placed (2026-11-05): "noise shouldnt be used to place these, we need to expand existing
-features in an intelligent way". So they **grow** from features that exist, by rules that stop on terrain (slope, elevation, distance
-from the seed), not on chance. Nothing here draws a random or noise value.
-
-An edit is one change with the reason for it; `SOURCES.md`'s guesswork log cites it by `id`. There are three kinds:
-
-```toml
-[[edit]]                             # 1. paint: every cell of the region that passes `where`
-id = "wexford-north-slob-sea"
-area = "North Slob, Wexford Harbour"
-reason = "embanked and drained in the 1840s-50s"
-confidence = "high"                  # free text
-paint = "sea"                        # sea | lake | pasture | forest | bog | marsh | mountain
-region = { polygon = [[lat, lon], ...] }   # or { box = [south, north, west, east] } or { circle = [lat, lon, radius_km] }
-where = { terrain = ["pasture"], elevation_min = 0, elevation_max = 4, slope_min = 0.0, slope_max = 0.02,
-          near_water_max = 8, far_from_water_min = 20 }
-depth = 2                            # paint = sea only: the depth in metres the cells get (default 2)
-usable = "false"                     # optional: keep (default), true or false, for the changed cells
-
-[[edit]]                             # 2. grow: spread from existing features
-id = "bog-ulster-lowlands"
-...
-paint = "bog"
-region = { ... }
-where = { ... }                      # the STOP RULE: the only cells the growth may take
-grow = { from = ["bog"], seed_where = { elevation_min = 200, slope_max = 0.08 }, share = 0.25, max_distance = 30, order = "wet",
-         seed_points = [[lat, lon]], seed_radius = 2, seed_over = ["pasture", "forest", "marsh"] }
-
-[[edit]]                             # 3. tidy: remove fragments and fill real holes
-id = "tidy-bog"
-area = "..."
-reason = "..."
-paint = "bog"
-tidy = { min_cells = 12, back = "pasture", keep_seed_points = true }
-
-[settings]                           # optional, once, after every edit
-usable = "suitability"
-usable_shares = { pasture = 0.32, forest = 0.28, bog = 0.20, marsh = 0.15, mountain = 0.08 }
-usable_relative_radius = 15          # elevation is ranked against the mean within this many cells
-usable_water = ["sea", "lake", "rivers"]
-usable_water_cap = 12                # cells: farther from water than this ranks the same
-usable_smooth = 4                    # cells over which the suitability is box-blurred
-usable_local_radius = 30             # optional: the box mean of the suitability within this many cells is subtracted before thresholding
-usable_min_patch = 20                # usable and unusable patches smaller than this many cells merge into their surroundings
-```
-
-* **paint** changes every cell of the region that passes `where`: the terrain it has now (`terrain`), its elevation in metres, its slope
-  (rise over run) and its distance in cells to the nearest water (sea or lake), at most or at least a number. Painting sea sets the
-  elevation to `-depth` (the land mask is elevation 1 m or more); painting a land type on a cell that is sea raises it to 2 m; a lake
-  keeps its elevation. Sea is always unusable.
-* **grow** takes cells that pass `where`, never any other. The seeds are the cells of the region whose terrain now is one of `from` (a
-  terrain name, or `"rivers"` for the cells the rivers of `rivers.toml` pass through), the cells of the region that pass `seed_where`
-  (a `where` table: a rule of the ground, not a list of places), and the cell under each of `seed_points` with its eight neighbours
-  (known locations). **Named sites always count:** with `seed_radius = R` and `seed_over = [terrains]`, the cells within R cells (a square of
-  `2R + 1` cells) of each seed point, inside the region, whose terrain is one of `seed_over` take the painted terrain whatever `where`
-  says, and they are seeds; the growth then continues under `where`. Growth
-  spreads from the seeds to eight-neighbour cells, a ring at a time counted from the seed (`max_distance` is the straight-line distance in cells from the seed the growth came from, so spreads are rounded and follow the ground), in an order that
-  is a rule of the ground: `wet` takes the lowest, then flattest, ground first (a basin fills from its floor up), `near` takes the nearest
-  cells first (a compact block round the seed), `dry_slope` takes the steepest, then highest, ground first (valley sides and hill
-  flanks). Ties go to the lowest row-major index. It stops when `share` of the region's land (not lake or sea) is of the painted
-  terrain, cells that already were counting, or when nothing eligible is left.
-* **tidy** takes no region: over the whole map, patches (four-neighbour) of `paint` smaller than `min_cells` go back to `back`, and
-  patches of `back` smaller than `min_cells` whose whole border is `paint` (real enclosed holes) become `paint`. With
-  `keep_seed_points = true` a patch that contains, or touches within one cell, a seed point of an earlier growth with the same `paint`
-  is never removed (a coastal named site's patch can be under `min_cells`).
-* **usable = "suitability"**: for each terrain type its usable cells are the ones that rank best for being flat, low against their
-  surroundings and near water (the sea, lakes and the rivers of `rivers.toml`): the ranks over the whole map of the elevation minus the
-  mean within `usable_relative_radius` cells, of the slope and of the distance to water (capped), summed and box-blurred over
-  `usable_smooth` cells (and, with `usable_local_radius`, minus its own box mean within that many cells, so each district ranks its land against its surroundings), lowest first, at the type's share (mock-up 2's). The patches follow the valleys and the lowlands.
+Run `python3 apply_edits.py [--out DIR] [--force]`; `--self-test` runs the
+stdlib-only equilibrium-line vectors. Terrain edits run in TOML order. Climate
+and fertility are then computed from the edited terrain and elevation using the
+normative algorithm settings in `edits.toml`. The input digest is written to
+`edits.applied`; an existing marker requires `--force`.
 """
 
 from __future__ import annotations
@@ -86,16 +13,35 @@ import argparse
 import hashlib
 import heapq
 import math
+import sys
 import tomllib
 from collections import deque
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-from draft_terrain import ELEVATION_OFFSET, distance_to, terrain_keys
-from ireland_grid import CELL_GROUND_M, Array, Crop
-from numpy.typing import NDArray
-from PIL import Image, ImageDraw
+ELA_TOLERANCE_C = 0.01
+
+
+def _run_ela_self_test() -> None:
+    """Run the Ohmura ELA vectors without importing third-party modules."""
+    coefficients = (966.0, 230.0, 5.87)
+    for precipitation, expected in ((300.0, -3.15), (1000.0, 0.15), (3000.0, 7.43)):
+        a, b, c = coefficients[2], coefficients[1], coefficients[0] - precipitation
+        value = (-b + math.sqrt(b * b - 4.0 * a * c)) / (2.0 * a)
+        if abs(value - expected) > ELA_TOLERANCE_C:
+            raise SystemExit(f"T_ela({precipitation}) = {value:.4f}, expected {expected:.2f}")
+    print("T_ela self-test: 3 vectors passed")
+
+
+if "--self-test" in sys.argv:
+    _run_ela_self_test()
+    raise SystemExit(0)
+
+import numpy as np  # noqa: E402 -- --self-test must run before optional image dependencies load
+from draft_terrain import ELEVATION_OFFSET, distance_to, terrain_keys  # noqa: E402
+from ireland_grid import CELL_GROUND_M, Array, Crop  # noqa: E402
+from numpy.typing import NDArray  # noqa: E402
+from PIL import Image, ImageDraw  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 
@@ -137,20 +83,10 @@ FIELDS = {
     "where",
     "grow",
     "tidy",
-    "usable",
     "depth",
 }
 REQUIRED = ("id", "area", "reason", "paint")
-SETTINGS = (
-    "usable",
-    "usable_shares",
-    "usable_relative_radius",
-    "usable_water",
-    "usable_water_cap",
-    "usable_smooth",
-    "usable_local_radius",
-    "usable_min_patch",
-)
+SETTINGS = ("climate", "fertility")
 POLYGON_SUPERSAMPLE = 4
 POLYGON_COVER = 0.5
 KM_PER_DEGREE = 111.0
@@ -164,41 +100,39 @@ Cell = tuple[int, int]
 
 
 class State:
-    """The three layers being edited, in memory."""
+    """The terrain and elevation layers edited before climate derivation."""
 
     def __init__(self, out: Path) -> None:
         self.directory = out
         self.crop = Crop.of_map_toml(out / "map.toml")
         self.keys = terrain_keys(out / "terrain.toml")
+        self.display_usable_pm = int(
+            tomllib.loads((out / "terrain.toml").read_text(encoding="utf-8")).get(
+                "display_usable_pm", 500
+            )
+        )
         with Image.open(out / "elevation.png") as image:
             self.elevation: Array = np.asarray(image, dtype=np.float64) - ELEVATION_OFFSET
         with Image.open(out / "terrain.png") as image:
             rgb = np.asarray(image.convert("RGB"))
-        with Image.open(out / "usable.png") as image:
-            usable_rgb = np.asarray(image.convert("RGB"))
         self.terrain = np.full(self.elevation.shape, -1, dtype=np.int8)
         for index, name in enumerate(NAMES):
             self.terrain[(rgb == self.keys[name]).all(axis=2)] = index
         if (self.terrain < 0).any():
             message = "terrain.png has a pixel that is not a key of terrain.toml"
             raise SystemExit(message)
-        self.usable: Grid = (usable_rgb == self.keys["usable"]).all(axis=2)
         self.longitude, self.latitude = self.crop.centres()
         self.slope: Array = np.hypot(*np.gradient(self.elevation, CELL_GROUND_M))
         self.seed_cells_by_paint: dict[int, list[Cell]] = {}
 
     def write(self, out: Path) -> None:
-        """Writes the three images."""
+        """Writes the two edited base images."""
         rgb = np.zeros((*self.terrain.shape, 3), dtype=np.uint8)
         for index, name in enumerate(NAMES):
             rgb[self.terrain == index] = self.keys[name]
-        mask = np.zeros((*self.terrain.shape, 3), dtype=np.uint8)
-        mask[:] = self.keys["unusable"]
-        mask[self.usable] = self.keys["usable"]
         stored = np.clip(self.elevation + ELEVATION_OFFSET, 0, 65535).astype(np.uint16)
         Image.fromarray(stored).save(out / "elevation.png")
         Image.fromarray(rgb).save(out / "terrain.png")
-        Image.fromarray(mask).save(out / "usable.png")
 
     def land(self) -> Grid:
         """Land that is not a lake."""
@@ -211,6 +145,25 @@ class State:
     def refresh_slope(self) -> None:
         """Computes the slope again (after an edit changed the elevation)."""
         self.slope = np.hypot(*np.gradient(self.elevation, CELL_GROUND_M))
+
+
+def river_cells(state: State) -> Grid:
+    """Rasterize configured river paths for edit growth seeds."""
+    document = tomllib.loads((state.directory / "rivers.toml").read_text(encoding="utf-8"))
+    image = Image.new("L", (state.crop.width, state.crop.height), 0)
+    draw = ImageDraw.Draw(image)
+    for river in document.get("river", []):
+        points = [
+            tuple(
+                round(value) for value in state.crop.cell_of(point["latitude"], point["longitude"])
+            )
+            for point in river["points"]
+        ]
+        if len(points) > 1:
+            draw.line(points, fill=1, width=1)
+        elif points:
+            draw.point(points[0], fill=1)
+    return np.asarray(image, dtype=np.uint8) > 0
 
 
 def region_mask(state: State, region: dict[str, Any], identifier: str) -> Grid:
@@ -468,16 +421,6 @@ def tidy_terrain(state: State, edit: dict[str, Any]) -> int:
     return changed + fill_enclosed(state, paint, back, minimum)
 
 
-def usable_flag(value: object, identifier: str) -> bool | None:
-    """`True`, `False` or None (keep), from an entry's `usable` (the strings `"true"` and `"false"` are booleans)."""
-    if value in ("keep", None):
-        return None
-    if value in ("true", "false", True, False):
-        return value in ("true", True)
-    message = f'edit {identifier}: usable is keep, true or false (use [settings] usable = "suitability" for the rest)'
-    raise SystemExit(message)
-
-
 def apply_edit(state: State, edit: dict[str, Any]) -> int:
     """Applies one edit; returns how many cells it changed."""
     identifier = edit["id"]
@@ -498,11 +441,6 @@ def apply_edit(state: State, edit: dict[str, Any]) -> int:
         state.refresh_slope()
     elif paint != "lake":
         state.elevation[cells & (state.elevation < 1)] = LAND_ELEVATION
-    flag = usable_flag(edit.get("usable"), identifier)
-    if paint == "sea" or flag is False:
-        state.usable[cells] = False
-    elif flag:
-        state.usable[cells] = True
     return int(cells.sum())
 
 
@@ -516,88 +454,310 @@ def box_blur(field: Array, radius: int) -> Array:
     ) / (side * side)
 
 
-def rank_fraction(field: Array) -> Array:
-    """The rank of each cell among all cells, from 0 (lowest) to 1; equal values rank by position."""
-    order = np.argsort(field, axis=None, kind="stable")
-    ranks = np.empty(field.size)
-    ranks[order] = np.arange(field.size)
-    return (ranks / field.size).reshape(field.shape)
+def interpolate(latitude: Array, knots: list[float], values: list[float]) -> Array:
+    """Piecewise-linear lookup used by the signed latitude climate tables."""
+    return np.interp(
+        latitude, np.asarray(knots, dtype=np.float64), np.asarray(values, dtype=np.float64)
+    )
 
 
-def river_cells(state: State) -> Grid:
-    """The cells that any river of `rivers.toml` passes through."""
-    rivers = tomllib.loads((state.directory / "rivers.toml").read_text(encoding="utf-8"))["river"]
+def priority_flood(elevation: Array, water: Grid, epsilon: float) -> Array:
+    """Fill inland depressions from every water cell and crop edge, preserving the normative D8 ordering."""
+    height, width = elevation.shape
+    surface = elevation.copy()
+    surface[water] = -1e9
+    filled = np.full((height, width), np.inf, dtype=np.float64)
+    seen = np.zeros((height, width), dtype=bool)
+    queue: list[tuple[float, int, int]] = []
+    for row in range(height):
+        for column in range(width):
+            if water[row, column] or row in (0, height - 1) or column in (0, width - 1):
+                filled[row, column] = surface[row, column]
+                seen[row, column] = True
+                heapq.heappush(queue, (filled[row, column], row, column))
+    while queue:
+        level, row, column = heapq.heappop(queue)
+        for d_row, d_column in NEIGHBOURS8:
+            next_row, next_column = row + d_row, column + d_column
+            if (
+                0 <= next_row < height
+                and 0 <= next_column < width
+                and not seen[next_row, next_column]
+            ):
+                seen[next_row, next_column] = True
+                filled[next_row, next_column] = max(surface[next_row, next_column], level + epsilon)
+                heapq.heappush(queue, (filled[next_row, next_column], next_row, next_column))
+    return filled
+
+
+def flow_accumulation(state: State, settings: dict[str, Any]) -> tuple[Array, Array]:
+    """Return D8 upstream area in km² and the prototype's ground slope in percent."""
+    elevation = state.elevation
+    land = state.land()
+    ground_m = float(settings["cell_metres"]) * np.cos(np.radians(state.latitude))
+    ground_m = np.maximum(ground_m, 1.0)
+    slope_y, slope_x = np.gradient(elevation.astype(np.float64))
+    slope = np.hypot(slope_x, slope_y) / ground_m * 100.0
+    filled = priority_flood(elevation, ~land, float(settings["flow_epsilon_m"]))
+    area = np.where(land, (ground_m / 1000.0) ** 2, 0.0)
+    order = np.argsort(-filled, axis=None)
+    accumulation = area.ravel().copy()
+    flat = filled.ravel()
+    height, width = elevation.shape
+    for raw_index in order:
+        index = int(raw_index)
+        row, column = divmod(index, width)
+        if not land[row, column]:
+            continue
+        best: int | None = None
+        drop = 0.0
+        for d_row, d_column in NEIGHBOURS8:
+            next_row, next_column = row + d_row, column + d_column
+            if 0 <= next_row < height and 0 <= next_column < width:
+                next_index = next_row * width + next_column
+                candidate = (flat[index] - flat[next_index]) / math.hypot(d_row, d_column)
+                if candidate > drop:
+                    drop = candidate
+                    best = next_index
+        if best is not None:
+            accumulation[best] += accumulation[index]
+    return accumulation.reshape(elevation.shape), slope
+
+
+def climate_fields(  # noqa: PLR0915 -- keep the prototype's climate, moisture, seasonal and snowline steps together
+    state: State, settings: dict[str, Any]
+) -> tuple[Array, Array, Array, Array, Array]:
+    """Compute mean temperature, seasonal half-range, GDD, smoothed rain and glacier mask."""
     height, width = state.elevation.shape
-    image = Image.new("L", (width, height), 0)
-    drawing = ImageDraw.Draw(image)
-    for river in rivers:
-        line = [
-            state.crop.cell_of(point["latitude"], point["longitude"]) for point in river["points"]
-        ]
-        drawing.line(line, fill=1, width=1)
-    return np.asarray(image) > 0
-
-
-def suitability_usable(state: State, settings: dict[str, Any]) -> Grid:
-    """Usable land by suitability: per terrain type, the cells that rank best for flat, low and near water, at the type's share."""
-    water = np.zeros_like(state.usable)
-    kinds = settings.get("usable_water", ["sea", "lake", "rivers"])
-    if "sea" in kinds:
-        water |= state.elevation < 1
-    if "lake" in kinds:
-        water |= state.terrain == LAKE
-    if "rivers" in kinds:
-        water |= river_cells(state)
-    cap = int(settings.get("usable_water_cap", 12))
-    near = np.minimum(distance_to(water, limit=cap), cap)
-    relative = state.elevation - box_blur(
-        state.elevation, int(settings.get("usable_relative_radius", 15))
+    lat = np.abs(state.latitude[:, 0])
+    climate_rows = settings
+    knots = climate_rows["latitude_deg"]
+    zonal = interpolate(lat, knots, climate_rows["zonal_mean_c"])[:, None]
+    ocean_range = interpolate(lat, knots, climate_rows["ocean_half_range_c"])[:, None]
+    continent_range = interpolate(lat, knots, climate_rows["continental_half_range_c"])[:, None]
+    zonal_rain = interpolate(lat, knots, climate_rows["zonal_rainfall_mm"])[:, None]
+    ground_km = (float(climate_rows["cell_metres"]) * np.cos(np.radians(lat)) / 1000.0)[:, None]
+    ground_km = np.maximum(ground_km, 1e-12)
+    sea = state.terrain == SEA
+    lake = state.terrain == LAKE
+    land = state.land()
+    maritime_distance = np.zeros((height, width), dtype=np.float64)
+    rain = np.zeros((height, width), dtype=np.float64)
+    absolute_lat = np.abs(state.latitude[:, 0])
+    for row in range(height):
+        westerly = (
+            float(climate_rows["westerly_min_deg"])
+            <= absolute_lat[row]
+            < float(climate_rows["westerly_max_deg"])
+        )
+        columns = range(width) if westerly else range(width - 1, -1, -1)
+        distance = 0.0
+        moisture = 1.0
+        previous = 0.0
+        for column in columns:
+            if sea[row, column]:
+                distance = 0.0
+            else:
+                distance += float(ground_km[row, 0])
+            maritime_distance[row, column] = distance
+            if sea[row, column] or lake[row, column]:
+                moisture = min(
+                    1.0,
+                    moisture
+                    + float(climate_rows["moisture_recovery_per_km"]) * float(ground_km[row, 0]),
+                )
+                previous = (
+                    0.0 if sea[row, column] else max(0.0, float(state.elevation[row, column]))
+                )
+                rain[row, column] = zonal_rain[row, 0] * moisture
+                continue
+            elevation = max(0.0, float(state.elevation[row, column]))
+            uplift = max(0.0, (elevation - previous) / (float(ground_km[row, 0]) * 1000.0)) * 1000.0
+            rain_factor = moisture * (
+                float(climate_rows["rainfall_base_factor"])
+                + min(
+                    float(climate_rows["uplift_cap_factor"]),
+                    float(climate_rows["uplift_factor_per_m_km"]) * uplift,
+                )
+                + float(climate_rows["height_rainfall_factor_per_km"]) * elevation / 1000.0
+            )
+            rain[row, column] = zonal_rain[row, 0] * rain_factor
+            moisture = max(
+                float(climate_rows["moisture_floor"]),
+                moisture
+                - float(climate_rows["moisture_depletion"])
+                * rain_factor
+                * float(ground_km[row, 0]),
+            )
+            previous = elevation
+    maritime = np.exp(-maritime_distance / float(climate_rows["maritime_length_km"]))
+    mean = (
+        zonal
+        + float(climate_rows["ocean_effect_c"]) * maritime
+        - float(climate_rows["lapse_c_per_km"]) * np.maximum(state.elevation, 0.0) / 1000.0
     )
-    suitability = box_blur(
-        rank_fraction(relative) + rank_fraction(state.slope) + rank_fraction(near),
-        int(settings.get("usable_smooth", 4)),
+    half = ocean_range + (continent_range - ocean_range) * (1.0 - maritime)
+    months = np.arange(12, dtype=np.float64)
+    phase = np.cos(2.0 * math.pi * (months - float(climate_rows["warmest_month_phase"])) / 12.0)
+    south = state.latitude < 0
+    phase_south = np.cos(
+        2.0 * math.pi * ((months + 6.0) % 12.0 - float(climate_rows["warmest_month_phase"])) / 12.0
     )
-    if "usable_local_radius" in settings:
-        suitability = suitability - box_blur(suitability, int(settings["usable_local_radius"]))
-    usable = np.zeros_like(state.usable)
-    shares = settings["usable_shares"]
-    for name, share in shares.items():
-        cells = state.terrain == NAMES.index(name)
-        if cells.any():
-            usable |= cells & (suitability <= np.quantile(suitability[cells], float(share)))
-    return usable
+    gdd = np.zeros_like(mean)
+    for month in range(12):
+        seasonal = np.where(south, phase_south[month], phase[month])
+        gdd += np.maximum(0.0, mean + half * seasonal - float(climate_rows["gdd_base_c"])) * float(
+            climate_rows["days_per_month"]
+        )
+    radius = int(climate_rows["rainfall_smooth_width"]) // 2
+    rain = box_blur(rain, radius)
+    ela_a = float(climate_rows["glacier_ohmura_a"])
+    ela_b = float(climate_rows["glacier_ohmura_b"])
+    ela_c = float(climate_rows["glacier_ohmura_c"])
+    summer_factor = (math.cos(math.pi / 4.0) + 2.0 * math.cos(math.pi / 12.0)) / 3.0
+    discriminant = ela_b * ela_b - 4.0 * ela_c * (ela_a - rain)
+    if np.any(discriminant < 0):
+        row, column = np.argwhere(discriminant < 0)[0]
+        raise SystemExit(
+            f"climate_glacier cell ({row}, {column}) has no real T_ela for rainfall {rain[row, column]}"
+        )
+    ela = (-ela_b + np.sqrt(discriminant)) / (2.0 * ela_c)
+    glacier = land & ((mean + summer_factor * half) <= ela)
+    return mean, half, gdd, rain, glacier
 
 
-def merge_small_usable(usable: Grid, land: Grid, minimum: int) -> Grid:
-    """`usable` with the usable and the unusable patches smaller than `minimum` cells (on land) flipped into their surroundings."""
-    if minimum <= 1:
-        return usable
-    merged = usable.copy()
-    for wanted in (True, False):
-        for patch in components((merged == wanted) & land):
-            if len(patch) < minimum:
-                rows, columns = zip(*patch, strict=True)
-                merged[list(rows), list(columns)] = not wanted
-    return merged
+def fertility_field(
+    state: State, settings: dict[str, Any], gdd: Array, rainfall: Array, glacier: Grid
+) -> Array:
+    """Calculate the prototype's valley, slope and climate fertility score in per-thousand units."""
+    land = state.land()
+    accumulation, slope = flow_accumulation(state, settings)
+    minimum = float(settings["channel_min_area_km2"])
+    maximum = float(settings["channel_full_area_km2"])
+    channel = (
+        np.clip(
+            np.log10(np.maximum(accumulation, 1e-9) / minimum) / math.log10(maximum / minimum),
+            0.0,
+            1.0,
+        )
+        * 1000.0
+    )
+    channel[~land] = 0.0
+    valley = channel.copy()
+    radius = int(settings["valley_spread_cells"])
+    for d_row in range(-radius, radius + 1):
+        for d_column in range(-radius, radius + 1):
+            if d_row == 0 and d_column == 0:
+                continue
+            source = np.roll(np.roll(channel, d_row, axis=0), d_column, axis=1)
+            source_elevation = np.roll(np.roll(state.elevation, d_row, axis=0), d_column, axis=1)
+            allowed = (state.elevation - source_elevation) <= float(settings["valley_max_above_m"])
+            candidate = source * (
+                1.0 - float(settings["valley_decay_per_ring"]) * max(abs(d_row), abs(d_column))
+            )
+            valley = np.maximum(valley, np.where(allowed, candidate, 0.0))
+    valley[~land] = 0.0
+    slope_factor = np.clip(
+        (float(settings["slope_zero_pct"]) - slope)
+        / (float(settings["slope_zero_pct"]) - float(settings["slope_full_pct"])),
+        0.0,
+        1.0,
+    )
+    warmth = np.clip(
+        (gdd - float(settings["warmth_min_gdd"]))
+        / (float(settings["warmth_full_gdd"]) - float(settings["warmth_min_gdd"])),
+        0.0,
+        1.0,
+    )
+    dryness = np.clip(
+        (rainfall - float(settings["dryness_min_mm"]))
+        / (float(settings["dryness_full_mm"]) - float(settings["dryness_min_mm"])),
+        0.0,
+        1.0,
+    )
+    wetness = np.clip(
+        1.0
+        - float(settings["wetness_falloff"])
+        * (rainfall - float(settings["wetness_full_mm"]))
+        / (float(settings["wetness_zero_mm"]) - float(settings["wetness_full_mm"])),
+        float(settings["wetness_floor"]),
+        1.0,
+    )
+    climate = warmth * dryness * wetness
+    fertility = np.zeros_like(gdd)
+    terrain_values = settings["terrain_values"]
+    for name in NAMES[PASTURE:]:
+        base, valley_bonus = terrain_values[name]
+        mask = state.terrain == NAMES.index(name)
+        fertility[mask] = float(base) + float(valley_bonus) * valley[mask] / 1000.0
+    fertility = np.floor(np.clip(fertility * slope_factor * climate, 0.0, 1000.0))
+    fertility[~land | glacier] = 0.0
+    return fertility
+
+
+def check_bounds(layer: str, values: Array, lower: float, upper: float) -> None:
+    """Fail with the first offending layer value and row/column before encoding."""
+    invalid = ~np.isfinite(values) | (values < lower) | (values > upper)
+    if invalid.any():
+        row, column = np.argwhere(invalid)[0]
+        raise SystemExit(
+            f"{layer} cell ({row}, {column}) value {values[row, column]!r} outside {lower}..={upper}"
+        )
+
+
+def compute_layers(state: State, settings: dict[str, Any]) -> None:
+    """Compute and write fertility, glacier and climate layers from the edited terrain."""
+    if set(settings) != set(SETTINGS):
+        raise SystemExit(f"[settings]: expected exactly {SETTINGS}, found {sorted(settings)}")
+    climate_settings = settings["climate"]
+    fertility_settings = settings["fertility"]
+    land = state.land()
+    edge = np.zeros_like(land)
+    edge[0, :] = edge[-1, :] = True
+    edge[:, 0] = edge[:, -1] = True
+    offending = land & edge
+    if offending.any():
+        row, column = np.argwhere(offending)[0]
+        raise SystemExit(f"terrain crop edge must be water; first offending cell ({row}, {column})")
+    mean, _half, gdd, rainfall, glacier = climate_fields(state, climate_settings)
+    fertility = fertility_field(state, fertility_settings, gdd, rainfall, glacier)
+    check_bounds("climate_temperature", mean, -60.0, 50.0)
+    check_bounds("climate_gdd", gdd, 0.0, 12_000.0)
+    check_bounds("climate_rainfall", rainfall, 0.0, 15_000.0)
+    check_bounds("fertility", fertility, 0.0, 1000.0)
+    temperature_stored = (
+        np.where(mean * 10 >= 0, np.floor(mean * 10 + 0.5), np.ceil(mean * 10 - 0.5)) + 1000
+    )
+    gdd_stored = np.floor(gdd + 0.5)
+    rainfall_stored = np.floor(rainfall + 0.5)
+    fertility_stored = np.minimum(250, np.floor((fertility + 2.0) / 4.0))
+    for name, values, lower, upper in (
+        ("climate_temperature", temperature_stored, 400, 1500),
+        ("climate_gdd", gdd_stored, 0, 12000),
+        ("climate_rainfall", rainfall_stored, 0, 15000),
+        ("fertility", fertility_stored, 0, 250),
+    ):
+        check_bounds(name, values, lower, upper)
+    output = {
+        "fertility.png": fertility_stored.astype(np.uint8),
+        "climate_glacier.png": glacier.astype(np.uint8) * 255,
+        "climate_temperature.png": temperature_stored.astype(np.uint16),
+        "climate_gdd.png": gdd_stored.astype(np.uint16),
+        "climate_rainfall.png": rainfall_stored.astype(np.uint16),
+    }
+    for filename, values in output.items():
+        Image.fromarray(values).save(state.directory / filename)
+    state.fertility = fertility
+    state.glacier = glacier
 
 
 def apply_settings(state: State, settings: dict[str, Any]) -> None:
-    """The `[settings]` table, after every edit."""
-    unknown = set(settings) - set(SETTINGS)
-    if unknown:
-        message = f"[settings]: unknown {sorted(unknown)}"
-        raise SystemExit(message)
-    if settings.get("usable") == "suitability":
-        state.usable = suitability_usable(state, settings)
-    if "usable_min_patch" in settings:
-        state.usable = merge_small_usable(
-            state.usable, state.land(), int(settings["usable_min_patch"])
-        )
-    state.usable &= state.land()
+    """Run the configured climate and fertility derivation once, after all terrain edits."""
+    compute_layers(state, settings)
 
 
 def check_edits(edits: list[dict[str, Any]]) -> None:
-    """Rejects an edit table that is malformed, naming the edit."""
+    """Reject an edit table that is malformed, naming the edit."""
     seen: set[str] = set()
     for position, edit in enumerate(edits, start=1):
         identifier = edit.get("id", f"#{position}")
@@ -615,15 +775,21 @@ def check_edits(edits: list[dict[str, Any]]) -> None:
 
 
 def shares(state: State) -> list[str]:
-    """The share of land (not lake) of each terrain type, and of usable land."""
+    """The share of land (not lake) by terrain and nonzero computed fertility."""
     land = state.land()
     total = max(int(land.sum()), 1)
     lines = [f"land cells {total}"]
     for index in range(PASTURE, len(NAMES)):
         count = int(((state.terrain == index) & land).sum())
         lines.append(f"  {NAMES[index]}: {count} ({100 * count / total:.1f} %)")
-    usable = int((state.usable & land).sum())
-    lines.append(f"  usable: {usable} ({100 * usable / total:.1f} % of land)")
+    fertility = getattr(state, "fertility", None)
+    if fertility is not None:
+        fertile = int(((fertility > 0) & land).sum())
+        threshold = int(((fertility >= state.display_usable_pm) & land).sum())
+        lines.append(f"  fertility > 0: {fertile} ({100 * fertile / total:.1f} % of land)")
+        lines.append(
+            f"  fertility >= {state.display_usable_pm}: {threshold} ({100 * threshold / total:.1f} % of land)"
+        )
     return lines
 
 
@@ -672,7 +838,11 @@ def main() -> None:
     parser.add_argument(
         "--force", action="store_true", help="apply again over files that already have the edits"
     )
+    parser.add_argument("--self-test", action="store_true", help="run stdlib-only T_ela vectors")
     arguments = parser.parse_args()
+    if arguments.self_test:
+        _run_ela_self_test()
+        return
     apply(arguments.out, force=arguments.force)
 
 

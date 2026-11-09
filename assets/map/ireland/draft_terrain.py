@@ -1,8 +1,8 @@
-"""Writes the FIRST DRAFT of `terrain.png` and `usable.png`. It reproduces the first draft only.
+"""Writes the FIRST DRAFT of `terrain.png`. It reproduces the first draft only.
 
     python3 draft_terrain.py [--source DIR] [--out DIR] [--force]
 
-After the owner's session the committed `terrain.png` and `usable.png` are this draft plus the hand edits listed in the guesswork log
+After the owner's session the committed `terrain.png` are this draft plus the hand edits listed in the guesswork log
 of `SOURCES.md`, so **running this script again destroys those edits**: it writes into `--out` (default: next to this script) and
 refuses to overwrite either file unless `--force` is given. `derive_elevation.py` stays fully reproducible.
 
@@ -250,12 +250,9 @@ def usable_cells(classes: Classes) -> Grid:
 
 
 def terrain_keys(path: Path) -> dict[str, tuple[int, int, int]]:
-    """The key colour of each terrain name, and the two usable keys (`usable`, `unusable`), from `terrain.toml`."""
+    """The key colour of each terrain name from `terrain.toml`."""
     rules = tomllib.loads(path.read_text(encoding="utf-8"))
-    keys = {entry["name"]: _colour(entry["key"]) for entry in rules["terrain"]}
-    keys["usable"] = _colour(rules["usable"]["usable"])
-    keys["unusable"] = _colour(rules["usable"]["unusable"])
-    return keys
+    return {entry["name"]: _colour(entry["key"]) for entry in rules["terrain"]}
 
 
 def _colour(text: str) -> tuple[int, int, int]:
@@ -263,8 +260,8 @@ def _colour(text: str) -> tuple[int, int, int]:
 
 
 def draft(source: Path, out: Path, *, force: bool) -> None:
-    """Writes `terrain.png` and `usable.png`."""
-    targets = [out / "terrain.png", out / "usable.png"]
+    """Writes the initial `terrain.png`; computed fertility is added by `apply_edits.py`."""
+    targets = [out / "terrain.png"]
     existing = [target.name for target in targets if target.exists()]
     if existing and not force:
         message = f"{', '.join(existing)} already exist in {out} (the committed copies carry hand edits); pass --force to overwrite"
@@ -285,26 +282,18 @@ def draft(source: Path, out: Path, *, force: bool) -> None:
     for index, name in enumerate(CLASSES):
         terrain[classes == index] = keys["sea" if name == "none" else name]
     terrain[lake] = keys["lake"]
-    usable = usable_cells(np.where(lake, 0, classes).astype(np.uint8))
-    mask = np.zeros((*classes.shape, 3), dtype=np.uint8)
-    mask[:] = keys["unusable"]
-    mask[usable] = keys["usable"]
     Image.fromarray(terrain).save(targets[0])
-    Image.fromarray(mask).save(targets[1])
     (out / "edits.applied").unlink(missing_ok=True)
-    report(classes, lake, usable, (dropped, flagged))
+    report(classes, lake, (dropped, flagged))
 
 
-def report(classes: Classes, lake: Grid, usable: Grid, lakes: tuple[list[str], list[str]]) -> None:
+def report(classes: Classes, lake: Grid, lakes: tuple[list[str], list[str]]) -> None:
     """Prints the share of each class: the number to compare with mock-up 2."""
     land = int((classes > 0).sum()) - int((lake & (classes > 0)).sum())
     print(f"land cells (not lake) {land}; lake cells {int(lake.sum())}")
     for index, name in enumerate(CLASSES[1:], start=1):
         cells = int(((classes == index) & ~lake).sum())
         print(f"  {name}: {cells} ({100 * cells / max(land, 1):.1f} % of land)")
-    print(
-        f"usable {int((usable & ~lake).sum())} ({100 * int((usable & ~lake).sum()) / max(land, 1):.1f} % of land)"
-    )
     print("lakes dropped as modern:", ", ".join(lakes[0]) or "none")
     print('lakes Natural Earth classes "Reservoir" and kept:', ", ".join(lakes[1]) or "none")
 

@@ -1,9 +1,10 @@
 //! Ireland's shipped map data (`assets/map/ireland/`, milestone 6, slice 5) loads and validates with `ck-map`'s own loader, so the data
 //! cannot drift out of the format whoever edits its images and tables by hand.
 
+use std::fs;
 use std::path::Path;
 
-use ck_map::{ScenarioStart, TerrainKind, load_map, load_scenario};
+use ck_map::{ScenarioStart, Surface, TerrainKind, cell_of, load_map, load_scenario, project};
 
 #[test]
 #[expect(
@@ -96,4 +97,103 @@ fn ireland_768_scenario_resolves_its_map_and_loads_all_locations() {
         );
     }
     assert!(!scenario.map.rivers.is_empty());
+}
+
+#[test]
+fn ireland_fertility_climate_glaciers_and_owner_pins_match_ck234() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/map/ireland");
+    let map = load_map(&directory).unwrap_or_else(|error| panic!("{error}"));
+    let land = map
+        .data
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| matches!(cell, Surface::Land { .. }))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert!(!land.is_empty());
+    let fertile = land
+        .iter()
+        .filter(|index| map.data.fertility[**index] > 0)
+        .count();
+    let display_fertile = land
+        .iter()
+        .filter(|index| map.data.fertility[**index] >= map.data.display_usable_pm)
+        .count();
+    assert!(
+        fertile * 100 >= land.len() * 95,
+        "{fertile}/{} land cells have fertility",
+        land.len()
+    );
+    assert!(
+        (30..=55).contains(&(display_fertile * 100 / land.len())),
+        "{display_fertile}/{} cells meet the display threshold",
+        land.len()
+    );
+    assert!(
+        !map.data.glacier.iter().any(|value| *value),
+        "Ireland should have no glacier cells"
+    );
+
+    let cell_index = |latitude: f64, longitude: f64| {
+        let cell = cell_of(project(latitude, longitude).expect("place projects"));
+        let x =
+            u32::try_from(cell.x - map.data.crop.origin.x).expect("place is east of crop origin");
+        let y =
+            u32::try_from(cell.y - map.data.crop.origin.y).expect("place is south of crop origin");
+        assert!(
+            x < map.data.crop.width && y < map.data.crop.height,
+            "place is inside the crop"
+        );
+        usize::try_from(y * map.data.crop.width + x).expect("index fits")
+    };
+    for (name, latitude, longitude) in [("Emly", 52.465, -8.349), ("Tara", 53.578, -6.611)] {
+        let index = cell_index(latitude, longitude);
+        assert!(
+            map.data.fertility[index] >= 500,
+            "{name} fertility is {}‰",
+            map.data.fertility[index]
+        );
+    }
+    for (name, latitude, longitude, minimum, maximum) in [
+        ("Valentia", 51.94, -10.24, 100, 118),
+        ("Dublin", 53.35, -6.26, 85, 105),
+    ] {
+        let index = cell_index(latitude, longitude);
+        let temperature = map.data.climate_temperature_tenths[index];
+        assert!(
+            (minimum..=maximum).contains(&temperature),
+            "{name} mean temperature is {temperature} tenths °C"
+        );
+    }
+    let dublin = cell_index(53.35, -6.26);
+    assert!(map.data.climate_rainfall_mm[dublin] < 900);
+
+    let northwest = cell_of(project(55.0, -10.5).expect("northwest projects"));
+    let southeast = cell_of(project(52.9, -8.5).expect("southeast projects"));
+    let mut wet_upland = false;
+    for global_y in northwest.y..=southeast.y {
+        for global_x in northwest.x..=southeast.x {
+            let x = u32::try_from(global_x - map.data.crop.origin.x).expect("in crop");
+            let y = u32::try_from(global_y - map.data.crop.origin.y).expect("in crop");
+            let index = usize::try_from(y * map.data.crop.width + x).expect("index fits");
+            if matches!(map.data.cells[index], Surface::Land { .. })
+                && map.data.climate_rainfall_mm[index] > 1800
+            {
+                wet_upland = true;
+                break;
+            }
+        }
+        if wet_upland {
+            break;
+        }
+    }
+    assert!(
+        wet_upland,
+        "Mayo/Galway uplands need a cell above 1,800 mm annual rainfall"
+    );
+    let edits =
+        fs::read_to_string(directory.join("edits.toml")).expect("read signed terrain edits");
+    assert!(edits.contains("glendalough-laragh-avonmore-pasture"));
+    assert!(edits.contains("rahan-clodiagh-dry-ground-pasture"));
 }

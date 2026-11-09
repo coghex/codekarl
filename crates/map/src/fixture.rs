@@ -201,6 +201,7 @@ pub fn fixture() -> Fixture {
     let (width, height) = (SIZE[0] as usize, SIZE[1] as usize);
     let mut cells = Vec::with_capacity(width * height);
     let mut elevations = Vec::with_capacity(width * height);
+    let mut fertility = Vec::with_capacity(width * height);
     let mut grid_a = Vec::with_capacity(width * height * 4);
     let mut grid_b = Vec::with_capacity(width * height * 4);
     for (y, row) in LAYOUT.iter().enumerate() {
@@ -208,6 +209,7 @@ pub fn fixture() -> Fixture {
         for (x, letter) in row.chars().enumerate() {
             let (xi, yi) = (i32::try_from(x).expect("x"), i32::try_from(y).expect("y"));
             let usable = (xi * 3 + yi * 5) % 4 != 0;
+            let fertility_pm = if usable { 500 } else { 0 };
             let (index, metres) = match letter {
                 // A shelf: the depth runs from 0 to 128 metres around the 40 metre threshold.
                 '~' => (0_u8, -((xi * 7 + yi * 13) % 17) * 8),
@@ -221,6 +223,7 @@ pub fn fixture() -> Fixture {
             };
             let raw = u16::try_from(metres + 11_000).expect("elevation fits");
             elevations.push(raw);
+            fertility.push(fertility_pm);
             cells.push(match terrains[usize::from(index)].kind {
                 Kind::Sea => Surface::Sea {
                     depth: 11_000_u16.saturating_sub(raw),
@@ -235,6 +238,7 @@ pub fn fixture() -> Fixture {
             grid_b.extend_from_slice(&[raw.to_be_bytes()[0], raw.to_be_bytes()[1], 0, 255]);
         }
     }
+    let display_usable = fertility.iter().map(|value| *value >= 500).collect();
     let data = MapData {
         crop: Crop {
             origin: Cell {
@@ -246,6 +250,13 @@ pub fn fixture() -> Fixture {
         },
         cells,
         elevations,
+        fertility,
+        climate_temperature_tenths: vec![100; width * height],
+        climate_gdd: vec![1000; width * height],
+        climate_rainfall_mm: vec![1000; width * height],
+        glacier: vec![false; width * height],
+        display_usable,
+        display_usable_pm: 500,
         terrains: terrains[2..].iter().map(|terrain| terrain.style).collect(),
         sea: SEA,
         shallow_sea: SHALLOW_SEA,

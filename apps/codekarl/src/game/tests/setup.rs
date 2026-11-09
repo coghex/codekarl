@@ -263,8 +263,12 @@ fn the_map_hash_covers_the_map_file_every_layer_and_the_location_kinds() {
         &[
             "map.toml",
             "terrain.png",
-            "usable.png",
+            "fertility.png",
             "elevation.png",
+            "climate_temperature.png",
+            "climate_gdd.png",
+            "climate_rainfall.png",
+            "climate_glacier.png",
             "terrain.toml",
             "rivers.toml",
             "location_kinds.toml",

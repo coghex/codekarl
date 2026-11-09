@@ -104,6 +104,18 @@ def legacy(identifier: str, hashes: list[str]) -> ManifestLegacy:
     }
 
 
+def setUpModule() -> None:
+    """Every test of this module reads the fixture class master (`GateCriteria.MASTER`) through `CK_MODEL_CLASSES`, never the owner's
+    `~/.config/model-classes.toml`, so that re-pointing a class to another model changes no test."""
+    directory = tempfile.TemporaryDirectory(prefix="ck-criteria-classes-")
+    unittest.addModuleCleanup(directory.cleanup)
+    path = Path(directory.name) / "model-classes.toml"
+    path.write_text(GateCriteria.MASTER)
+    patcher = mock.patch.dict(os.environ, {"CK_MODEL_CLASSES": str(path)})
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 class GateCriteria(unittest.TestCase):
     def setUp(self) -> None:
         no_agent(self)

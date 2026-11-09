@@ -74,8 +74,18 @@ affect it. **Floor** groups always run (fmt, ruff, ShellCheck, the doctor, Clipp
 opens a window). **Affected** groups run when a changed path matches their patterns: the Rust tests of
 the backend-neutral crates (`rust.core`) and of the application without a real window (`rust.app`,
 `rust.app-default`), the Metal tests that need the GPU but no window (`metal.gpu`, `app.metal-gpu`), the native tests
-that open real windows with keyboard and mouse input ignored (`native.window` for Cocoa, `app.native-window`, the presenter's `metal.window-*` groups, `glfw.window`, `vulkan.window`, `render2d.vulkan-window` and `vulkan.app`), except for explicitly named focus cases (`glfw.window-focus`), each Python test group and the
-chat CI. **Optional** groups run only when named. Docs and editor files are claimed by the doctor group.
+that open real windows with keyboard and mouse input ignored (`native.window` for Cocoa, `app.native-window` and the presenter's `metal.window-*` groups), each Python test group and the
+chat CI. **Optional** groups run only when named: the scale runs, the GLFW focus cases (`glfw.window-focus`) and the Vulkan GPU and
+window groups (`glfw.window`, `vulkan.gpu`, `vulkan.window`, `render2d.vulkan-window` and `vulkan.app`). Docs and editor files are
+claimed by the doctor group.
+
+**Vulkan is compile-only here** (owner decision, 2026-11-09). The `glfw-vulkan` path is kept and must keep compiling, but until a
+native Linux machine with a real GPU is in the test loop, its GPU and window groups are optional, so no planned check, level or batch
+runs them; on this Mac they would test MoltenVK, not Linux. Clippy, which compiles every workspace target with all features, is the
+compile check (`glfw.core` and `vulkan.isolation` open no window or GPU and stay affected). New render features land on native-metal
+only; a change to a backend-neutral interface or a shared GPU data format still updates the Vulkan code enough to compile. The Vulkan
+catch-up (CK-239) and Linux enablement are parked until the owner says so (2026-11-09): not a milestone gate, and Vulkan stays
+compile-only.
 
 - `tools/ck check --changed` is the planned check: it compares your copy with the accepted base
   (recorded and unrecorded changes, additions, deletions, both paths of a move, mode changes), selects

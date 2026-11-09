@@ -1,30 +1,38 @@
 # Ireland's map data: sources, derivation and guesswork
 
 This directory is Ireland and its associated offshore islands in the map format of `ck-map` (`docs/map-design.md` section 9.5), for
-milestone 6, slice 5 (CK-181), updated by CK-194 for the Ireland-768 scenario. **It is a draft toward medieval Ireland, approved by the owner at three preview views on 2026-11-05 (below); no file in it has a hand edit: every committed layer is reproduced byte for byte by the scripts and edits r8 in `edits.toml`.** The elevation, the
-coast and the larger loughs come from real data; which terrain a cell has, which land is usable and the course of most rivers do not (see
-the guesswork log).
+milestone 6, slice 5 (CK-181), updated by CK-194 for the Ireland-768 scenario and CK-234 for computed climate, fertility and glacier
+layers. **It is a draft toward medieval Ireland, approved by the owner at three preview views on 2026-11-05 (below); no generated layer
+has a hand edit: terrain includes the r8 and CK-234 signed edits, and the climate, glacier and fertility layers are generated from that
+terrain and elevation. The full draft-to-output chain is reproducible byte for byte by the scripts and `edits.toml`.** The elevation, the
+coast and the larger loughs come from real data; terrain, climate, fertility and most river courses are modeled or estimated (see the
+guesswork log).
 
 | File | What it is | Kept by |
 |---|---|---|
 | `map.toml` | the crop and the layer names | `derive_elevation.py` |
 | `elevation.png` | 16-bit grey, `elevation + 11000` in metres | `derive_elevation.py` (fully reproducible) |
 | `terrain.toml` | the terrain types, their keys, palette and rules | by hand |
-| `terrain.png` | the terrain type of each cell, as its key colour | `draft_terrain.py`, then `apply_edits.py` (edits r8; no hand edit) |
-| `usable.png` | usable (`ffffff`) or not (`000000`) | `draft_terrain.py`, then `apply_edits.py` (edits r8; no hand edit) |
+| `terrain.png` | the terrain type of each cell, as its key colour | `draft_terrain.py`, then `apply_edits.py` (edits r8 and CK-234; no hand edit) |
+| `fertility.png` | 8-bit grayscale fertility, stored as `min(250, floor(fertility_pm / 4))`; decoded per mille is the sample times four | `apply_edits.py` |
+| `climate_temperature.png` | 16-bit grayscale, mean temperature in tenths of °C with a +1000 offset | `apply_edits.py` |
+| `climate_gdd.png` | 16-bit grayscale growing degree days above 5 °C | `apply_edits.py` |
+| `climate_rainfall.png` | 16-bit grayscale annual rainfall in mm | `apply_edits.py` |
+| `climate_glacier.png` | 8-bit grayscale; 255 means glacier, 0 means no glacier | `apply_edits.py` |
 | `rivers.toml` | the major rivers, as latitude and longitude points | `derive_rivers.py`, unchanged (no hand edit) |
-| `edits.toml` | the owner-delegated corrections toward medieval Ireland: one entry per change, with its reason (cited by `id` in the guesswork log below) | by hand (ck-designer-1, owner-delegated); r8 adds the two monastery islands at the owner's direction |
+| `edits.toml` | the owner-delegated corrections toward medieval Ireland: one entry per change, with its reason (cited by `id` in the guesswork log below) | by hand (ck-designer-1, owner-delegated); r8 adds the monastery islands and CK-234 adds two terrain corrections |
 | `apply_edits.py` | applies `edits.toml` over the draft, in order, deterministically | |
 | `edits.applied` | records that the edits were applied to these images (the SHA-256 of `edits.toml`) | `apply_edits.py` |
 | `ireland_grid.py` | the world grid and tile arithmetic the scripts share | |
 
-**The committed `elevation.png`, `terrain.png` and `usable.png` are the first draft plus edits r8 in `edits.toml` (the medieval corrections);
-`rivers.toml` is `derive_rivers.py`'s output unchanged. Hand edits made after them are listed in the guesswork log.** Running `draft_terrain.py` or
+**The committed `elevation.png` is the elevation draft; `terrain.png` is that terrain draft plus edits r8 and the two CK-234 corrections.
+The five computed climate, glacier and fertility layers are generated after all edits, and `rivers.toml` is `derive_rivers.py`'s output
+unchanged. Hand-kept inputs are listed in the guesswork log.** Running `draft_terrain.py` or
 `derive_rivers.py` again reproduces the first draft only and destroys those edits, so both refuse to overwrite their files unless
 `--force` is given; `apply_edits.py` refuses to run twice over the same files (`edits.applied`) unless `--force` is given.
 `derive_elevation.py` can be run again at any time, but its `--force` regenerates `elevation.png` and so removes the edits' sea paint:
-after it, run `draft_terrain.py --force` and `apply_edits.py` again. The chain is: derive elevation, draft terrain, derive rivers, apply the edits (the edits read `rivers.toml` for the usable-land
-suitability, and the rivers are derived from the first draft's elevation, before the edits change it).
+after it, run `draft_terrain.py --force`, derive rivers, and `apply_edits.py` again. The chain is: derive elevation, draft terrain, derive
+rivers from the draft elevation, then apply terrain edits followed by climate and fertility derivation.
 
 ## The crop
 
@@ -73,20 +81,36 @@ the authority for the grid.
 
 ## The derivation
 
-Needs Python 3.11 or newer with `numpy` and `Pillow` (run with numpy 2.3.4 and Pillow 12.2.0). From a checkout:
+Needs Python 3.11 or newer with `numpy` and `Pillow`. The CK-234 generation and reproduction check used Python 3.14.8, NumPy 2.3.4,
+and Pillow 12.2.0. From a checkout:
 
 ```
 python3 assets/map/ireland/derive_elevation.py --source ../ireland-source --force   # map.toml, elevation.png
-python3 assets/map/ireland/draft_terrain.py    --source ../ireland-source --force   # terrain.png, usable.png (the first draft only)
+python3 assets/map/ireland/draft_terrain.py    --source ../ireland-source --force   # terrain.png (the first draft only)
 python3 assets/map/ireland/derive_rivers.py    --source ../ireland-source --force   # rivers.toml (from the draft elevation)
 python3 assets/map/ireland/apply_edits.py                                           # edits.toml over the draft layers
 ```
 
-This is the exact order that produced the committed bytes, and it reproduces them: run into an empty scratch directory with
-`--out DIR` (copy `terrain.toml`, `edits.toml` and the scripts there first; `terrain.toml` is a hand-written input), the four steps
-write `map.toml`, `elevation.png`, `terrain.png`, `usable.png`, `rivers.toml` and `edits.applied`, and `cmp` finds all of them, and
-`terrain.toml` and `edits.toml` as inputs, **identical to the committed files** (checked 2026-11-05 with the cached sources: map.toml,
-elevation.png, terrain.png, usable.png, rivers.toml and edits.applied byte for byte the same).
+The derivation order is elevation, terrain draft, rivers, then all terrain edits and the computed layers. The CK-234 correction was regenerated on
+2026-11-09 from the accepted r8 `terrain.png` and `elevation.png`, applying only the two CK-234 owner-signed edits
+(`glendalough-laragh-avonmore-pasture` and `rahan-clodiagh-dry-ground-pasture`) plus the climate and fertility settings. This is the
+same final state as the full draft → r8 → CK-234 chain: r8 was already present in the accepted base and was not applied again. The
+corrected files are reproduced by that procedure byte for byte. The terrain and computed-layer SHA-256 hashes are:
+
+| File | SHA-256 |
+|---|---|
+| `elevation.png` (unchanged accepted base) | `6009b9991092749d59b82b887921cf3e421d8547063c46466308406b2d0e097f` |
+| `terrain.png` | `cd471c15440715aa4d296e65a60164fd361cc5eaeeceb9565c4607602f052cc2` |
+| `fertility.png` | `91c4c081ba0b581c854d03580c7145d0d0e48af57220e20fbff97e5d9c34e48c` |
+| `climate_temperature.png` | `8011f92404a55364b6bf266fb8f2ceac506fcd4dba380407cd1b9a5633d5ad48` |
+| `climate_gdd.png` | `ca7fe864ff9ceb1057e0b2bb625369e0bf8e573262608b0d725896544c030770` |
+| `climate_rainfall.png` | `fd80dda78f36b764592f3a90f5e067dfd677def7d0733432685c3b6deae3eee5` |
+| `climate_glacier.png` | `578726b5c37cdecbf847de48fb1d8d015ba631081ec9a8af9cf78a9d513ae512` |
+| `edits.applied` | `a63c176d222e97063cbcb60f0322828f3996a90e437e6e7ce2bec4f9e561ea6b` |
+
+`edits.applied` retains the SHA-256 of the full `edits.toml`. The reproduction check used the Python, NumPy and Pillow versions above.
+`derive_elevation.py` and `derive_rivers.py` retain their source-cache requirements and reproduce their own outputs from the cached source
+set.
 
 `--source` is the download cache (not committed). Each script's header documents its rules; the parameters:
 
@@ -102,7 +126,7 @@ elevation.png, terrain.png, usable.png, rivers.toml and edits.applied byte for b
   water and marsh noise > 0.45; mountain where e > 300 + (mountain noise - 0.5) x 140; then two passes of a 3 x 3 majority filter. The
   noise is a hash-based value noise with fixed seeds (fractal, 4 octaves, base scales 40, 50, 30 and 16 cells for mountain, bog, forest and
   marsh). These are the rules of mock-up 2 (`.pipeline/coordination/map-design/mockup/build_data.py`).
-- **Usable land (the first draft only; the committed `usable.png` is recomputed by `apply_edits.py`, below):** `0.62 x noise(10 cells) + 0.28 x noise(3.2 cells)` thresholded, for each terrain type separately, at the quantile that
+- **Initial draft's former binary usable land (historical; removed by CK-234):** `0.62 x noise(10 cells) + 0.28 x noise(3.2 cells)` thresholded, for each terrain type separately, at the quantile that
   gives it the share of mock-up 2: pasture 32 %, forest 28 %, bog 20 %, marsh 15 %, mountain 8 %.
 - **Lakes:** Natural Earth lake polygons drawn at 4 times the resolution; a cell is a lake where more than half of it is covered, on land
   only. Dropped as modern: Poulaphouca (Blessington) Reservoir, 1940 (and, by name, Inniscarra and Carrigadrohid, 1950s dams on the Lee,
@@ -113,6 +137,40 @@ elevation.png, terrain.png, usable.png, rivers.toml and edits.applied byte for b
   drainage area within 4 cells, and the line between them follows the downhill path of the elevation grid (depressions filled), or, where
   that does not reach the next anchor, the cheapest path over the grid (a step costs less where the drainage area is greater). Lines are
   simplified with a tolerance of 0.6 cell.
+
+### Computed climate, glaciers and fertility (`apply_edits.py`, CK-234)
+
+After all entries in `edits.toml` have changed the terrain, `apply_edits.py` computes the map layers from the edited terrain and
+`elevation.png`. The numeric tables and tunable values are in `[settings.climate]` and `[settings.fertility]` in `edits.toml`; the
+algorithms are the Python implementations checked against the owner-reviewed prototypes in `m9-design/mockups/fertility-r3-flow.py`,
+`m9-design/mockups/climate-r1/climate.py`, and `m9-design/mockups/fertility-with-climate.py`. The prototype copies are design references,
+not runtime dependencies.
+
+- **Climate:** monthly sea-level temperature and precipitation bands are interpolated by latitude; seasonal temperature uses the
+  configured north/south phases, elevation lapse rate, and maritime influence. Westerly and easterly moisture walks use the configured
+  wind direction and ocean-effect decay. Annual rainfall is accumulated from the configured monthly totals and smoothed with the
+  configured box radius. Growing degree days sum monthly mean temperature above the base temperature. These are modeled fields, not
+  station observations or a downscaled climate product.
+- **Glaciers:** the equilibrium-line temperature solves the configured Ohmura quadratic from annual precipitation; elevation is compared
+  to the configured snowline and uplift rules. The ELA relation is attributed to Ohmura, Kasser and Funk (1992), and Ohmura and
+  Boettcher (2018); citations are listed in `docs/map-design.md` §12.7 and the owner-signed `m9-design/map-look-design-r4.md`. The
+  `--self-test` mode runs three ELA vectors using only Python's standard library.
+- **Fertility:** the configured climate, soil, slope, terrain, and distance-to-water factors combine into per-mille fertility. Surface
+  land is usable for simulation when fertility is greater than zero. Water and glacier cells must have zero fertility. This continuous
+  value is distinct from the renderer's coarse display grid: `terrain.toml` sets `display_usable_pm = 500`, and Grid A displays a cell as
+  usable only at or above that threshold.
+- **Encoding and bounds:** fertility uses an 8-bit sample `min(250, floor(fertility_pm / 4))` and the loader decodes it as sample × 4;
+  this deliberately distinguishes 0 from a positive value of 4. Temperature stores `round_half_away(celsius × 10) + 1000`, so the
+  permitted -60..50 °C range is 400..1500. GDD is rounded to an integer in 0..12000, rainfall to an integer in 0..15000 mm, and glacier
+  samples are exactly 0 or 255. Out-of-range values and inconsistent water/glacier fertility are rejected by `ck-map` with the layer and
+  offending cell identified.
+- **Shipped-map checks:** `crates/map/tests/ireland.rs` checks that at least 95% of land has nonzero fertility, 30–55% reaches the
+  display threshold, Emly and Tara reach 500 per mille, Valentia and Dublin temperatures stay within their named ranges, a Mayo/Galway
+  upland cell exceeds 1,800 mm annual rainfall, Dublin stays below 900 mm, and Ireland contains no glacier cell. The two signed terrain
+  corrections `glendalough-laragh-avonmore-pasture` and `rahan-clodiagh-dry-ground-pasture` are also pinned there.
+
+For the checked CK-234 reproduction, see `.pipeline/coordination/runtime-m55/ck234-repro.log`; it records the SHA-256 of each generated
+file. The cell-scale climate and fertility are estimates from the cited model and configured tables, not measured historical fields.
 
 ### The terrain keys (`terrain.png`)
 
@@ -126,12 +184,13 @@ elevation.png, terrain.png, usable.png, rivers.toml and edits.applied byte for b
 | marsh | land | `5c3e25` | `5c3e25` | 5.5 % |
 | mountain | mountain | `7f8187` | `7f8187` | 4.4 % |
 
-Usable land in the draft is 26.7 % of land. The palette and rules are in `terrain.toml` (mock-up 2's values).
+The original binary draft marked 26.7 % of land usable. CK-234 replaces that layer with modeled continuous fertility; the palette and
+terrain rules remain in `terrain.toml` (mock-up 2's values).
 
 ## Guesswork log
 
 **What is real:** the coast (at modern sea level, but for the reclamations below), the elevation and the sea depth (above) and the
-larger loughs. **What is invented:** which terrain each land cell has, which land is usable, and the course of the rivers (Natural Earth's
+larger loughs. **What is modeled or estimated:** terrain, climate, fertility, glacier extent, and the course of the rivers (Natural Earth's
 vertices and hand-placed anchors, snapped to the valley floor of a 500 m grid). Each departure from a source is listed below, by area,
 with its reason, so later research can correct it.
 
@@ -139,7 +198,7 @@ with its reason, so later research can correct it.
 
 | Area | Departure from the sources | Reason |
 |---|---|---|
-| The whole map | Terrain types and usable land are **invented** by rules on elevation, slope, distance to water and noise | no medieval land-cover source; the first draft only needs to look like mock-up 2 |
+| The whole map | Terrain, climate, fertility and glacier layers are modeled estimates; the initial binary usable layer was noise-based and has been removed | no medieval land-cover source or historical climate grid was available for this draft |
 | The whole map | The coast is the modern coast at 0 m: no medieval sea level or tidal flat (the reclamations below aside) | a source to correct with is a later question |
 | Kintyre, Arran, Sanda and the islands north-east of Antrim; Pembrokeshire | painted sea at 80 m (2251 land cells) | only Ireland and its offshore islands are land (spec item 2); the two boxes are a working rule |
 | Small islands | The Fastnet Rock, a rock of under 1 cell, is lost; Skellig Michael, the Tearaghts, the Copelands and the Saltees are one to seven cells | the cell is about 500 m; a cell is land where more than half its samples are above 0 m |
@@ -263,14 +322,15 @@ Final shares of land (not lake) after the edits, against the draft and the chang
 
 | Share of land | The draft | After the edits | Rough target |
 |---|---|---|---|
-| pasture | 48.0 % | 41.1 % | about 40 % |
-| forest | 21.3 % | 26.7 % | about 25 % |
+| pasture | 48.0 % | 41.2 % | about 40 % |
+| forest | 21.3 % | 26.6 % | about 25 % |
 | bog | 20.8 % | 22.1 % | about 23 % |
 | marsh | 5.5 % | 5.7 % | about 7 % |
 | mountain | 4.4 % | 4.4 % | unchanged |
-| usable | 26.7 % | 25.4 % | the owner's "fine for now" |
+| fertility > 0 (usable) | 26.7 % (legacy binary draft) | 98.3 % | at least 95 % (loader pin) |
+| fertility ≥ 500‰ (display usable) | — | 40.2 % | 30–55 % (loader pin) |
 
-Patch sizes after the edits (cells; draft 2 had 1310 bog patches with a median of 3): bog: 257 patches, smallest 12, median 46, largest 19063; forest: 239 patches, smallest 10, median 45, largest 25101.
+Patch sizes after the edits (cells; draft 2 had 1310 bog patches with a median of 3): bog: 258 patches, smallest 12, median 46, largest 19063; forest: 253 patches, smallest 10, median 41, largest 25101.
 
 Why so few cells change in some reclamations (the Wexford slobs, Lough Swilly, Strangford): at 500 m the elevation grid already holds much of
 the slob land at 0 m (sea), and the cells are large; the edits change what the grid shows as land at the stated heights.
@@ -286,8 +346,9 @@ Hand edits made after `edits.toml` go here, one row each (area, change, reason, 
 ### Edits r8 (CK-194), owner direction 2026-11-06
 
 The owner directed, verbatim, "Make the islands land" (relayed by ck-manager). Edits r8 applies this to the one map cell containing
-each monastery below. It changes only the terrain at those two cells; elevation and rivers are unchanged. The usable ranking is global,
-so its output also changes at another cell; the CK-194 submission lists every changed usable cell and its before/after value.
+each monastery below. It changes only the terrain at those two cells; elevation and rivers are unchanged. At CK-194 the binary usable
+ranking was global, so its output also changed at another cell; CK-234 replaced that layer with computed fertility. That historical
+CK-194 binary output is no longer used by the map loader.
 
 | Edit | Area | Change | Reason | Confidence | Cells |
 |---|---|---|---|---|---|

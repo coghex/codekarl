@@ -814,7 +814,8 @@ class GlfwGroups(unittest.TestCase):
 
     def test_01_the_crates_paths_select_its_groups_and_never_the_native_ones(self) -> None:
         chosen = self.selected("crates/window-glfw/src/backend.rs")
-        self.assertTrue({"glfw.core", "glfw.window"} <= chosen)
+        self.assertIn("glfw.core", chosen)
+        self.assertNotIn("glfw.window", chosen)  # CK-238: optional, run only when named
         self.assertFalse({"doctor.graphics", "unittest-lints"} & chosen)
         for other in ("native.window", "metal.gpu", "rust.core", "rust.app", "rust.app-default"):
             self.assertNotIn(other, chosen, other)
@@ -831,7 +832,8 @@ class GlfwGroups(unittest.TestCase):
             "tools/bootstrap",
         ):
             self.assertNotIn("glfw.window", self.selected(path), path)
-        self.assertIn("glfw.window", self.selected("crates/window-glfw/tests/window_glfw.rs"))
+        # CK-238: not even the crate's own window tests select it; it runs only when named.
+        self.assertNotIn("glfw.window", self.selected("crates/window-glfw/tests/window_glfw.rs"))
         # The plain group follows the window core and the toolchain files; it opens no window.
         self.assertNotIn("glfw.core", self.selected("crates/window/src/lib.rs"))
         self.assertNotIn("glfw.core", self.selected("Cargo.lock"))
@@ -854,7 +856,7 @@ class GlfwGroups(unittest.TestCase):
         self.assertEqual(focus.env, (("CK_WINDOW_GLFW_FOCUS", "1"),))
         plan = check.plan(check.STEPS, ["crates/window-glfw/tests/window_glfw.rs"])
         choices = {choice.step.name: choice.selected for choice in plan.choices}
-        self.assertTrue(choices["glfw.window"])
+        self.assertFalse(choices["glfw.window"])  # CK-238: optional like the focus cases
         self.assertFalse(choices["glfw.window-focus"])
         named = check.plan(check.STEPS, None, ["glfw.window-focus"])
         self.assertTrue(
@@ -1342,8 +1344,9 @@ class CrateOwnedWindowGroups(unittest.TestCase):
                 "metal.window-compat",
                 "metal.window-instanced",
             },
-            "crates/gpu-vulkan/tests/window.rs": {"vulkan.window"},
-            "apps/codekarl/tests/vulkan_app.rs": {"vulkan.app"},
+            # CK-238: the Vulkan window groups are optional (owner decision 2026-11-09), so no change selects them.
+            "crates/gpu-vulkan/tests/window.rs": set(),
+            "apps/codekarl/tests/vulkan_app.rs": set(),
         }
         all_window_groups = {step.name for step in check.STEPS if step.needs == "window"}
         for path, expected in owners.items():
@@ -1360,7 +1363,7 @@ class CrateOwnedWindowGroups(unittest.TestCase):
                 else set()
             )
             if path.startswith("crates/render-2d/"):
-                allowed |= {"render2d.metal-window", "render2d.vulkan-window"}
+                allowed |= {"render2d.metal-window"}
             self.assertFalse((all_window_groups - allowed) & chosen, (path, sorted(chosen)))
 
     def test_02_gpu_crate_paths_do_not_select_the_other_backend(self) -> None:
@@ -1368,7 +1371,9 @@ class CrateOwnedWindowGroups(unittest.TestCase):
         vulkan = self.selected("crates/gpu-vulkan/src/lib.rs")
         self.assertTrue({"metal.gpu", "metal.window-core", "metal.window-scene"} <= metal)
         self.assertFalse({"vulkan.gpu", "vulkan.window", "vulkan.app"} & metal)
-        self.assertTrue({"vulkan.gpu", "vulkan.window"} <= vulkan)
+        # CK-238: Vulkan's GPU and window groups are optional; the crate's change selects only its windowless guard.
+        self.assertIn("vulkan.isolation", vulkan)
+        self.assertFalse({"vulkan.gpu", "vulkan.window", "vulkan.app"} & vulkan)
         self.assertFalse({"metal.gpu", "native.window", "app.native-window"} & vulkan)
 
     def test_03_window_groups_keep_their_classification(self) -> None:
@@ -1651,11 +1656,11 @@ class ApplicationLibrary(unittest.TestCase):
             self.assertIn("app.native-window", chosen, path)
             for other in ("glfw.window", "vulkan.window", "vulkan.gpu"):
                 self.assertNotIn(other, chosen, f"{path}: {other}")
-        # CK-159: the build script and the native support are also the `glfw-vulkan` tests' (they run behind the same filter),
-        # so they select `vulkan.app` as well; the native tests alone do not.
+        # CK-159: the build script and the native support are also the `glfw-vulkan` tests' (they run behind the same filter). CK-238:
+        # `vulkan.app` is optional, so no change selects it, these included.
         self.assertNotIn("vulkan.app", self.selected("apps/codekarl/tests/windowed.rs"))
         for path in ("apps/codekarl/build.rs", "apps/codekarl/tests/native/testing.m"):
-            self.assertIn("vulkan.app", self.selected(path), path)
+            self.assertNotIn("vulkan.app", self.selected(path), path)
 
     def test_02_the_libraries_unit_tests_and_doctests_and_the_thin_binary_belong_to_rust_app(
         self,
@@ -1703,7 +1708,9 @@ class Render2dVulkanSink(unittest.TestCase):
         for path in ("crates/gpu-vulkan/src/lib.rs", "crates/gpu-vulkan/src/quad.rs"):
             chosen = self.selected(path)
             self.assertNotIn("render2d.core", chosen, path)
-            self.assertIn("vulkan.gpu", chosen, path)
+            # CK-238: the Vulkan GPU group is optional; the crate's windowless guard is what a change selects.
+            self.assertIn("vulkan.isolation", chosen, path)
+            self.assertNotIn("vulkan.gpu", chosen, path)
             for forbidden in ("metal.gpu", "native.window"):
                 self.assertNotIn(forbidden, chosen, f"{path}: {forbidden}")
 
@@ -1823,7 +1830,9 @@ class VulkanGroups(unittest.TestCase):
             "crates/gpu-vulkan/tests/gpu_quad/mod.rs",
         ):
             chosen = self.selected(path)
-            self.assertTrue({"vulkan.gpu", "vulkan.isolation"} <= chosen, path)
+            # CK-238: `vulkan.gpu` is optional (runs only when named); the crate's windowless guard is what a change selects.
+            self.assertIn("vulkan.isolation", chosen, path)
+            self.assertNotIn("vulkan.gpu", chosen, path)
             self.assertNotIn("doctor.graphics", chosen)
             self.assertNotIn("unittest-lints", chosen)
             for other in ("native.window", "metal.gpu", "metal.isolation", "glfw.window"):
@@ -1835,10 +1844,12 @@ class VulkanGroups(unittest.TestCase):
             {(package, kind, name) for package, kind, name, _, _ in group_units(step, TARGETS)},
         )
 
-    def test_01_the_crates_paths_select_its_groups_and_never_the_native_ones(self) -> None:
+    def test_01_the_crates_paths_select_only_its_guard_and_never_the_native_ones(self) -> None:
         for path in ("crates/gpu-vulkan/src/render.rs", "crates/gpu-vulkan/tests/window.rs"):
             chosen = self.selected(path)
-            self.assertTrue({"vulkan.gpu", "vulkan.window"} <= chosen, path)
+            # CK-238: the GPU and window groups are optional (run only when named).
+            self.assertIn("vulkan.isolation", chosen, path)
+            self.assertFalse({"vulkan.gpu", "vulkan.window"} & chosen, path)
             self.assertNotIn("doctor.graphics", chosen)
             self.assertNotIn("unittest-lints", chosen)
             for other in (
@@ -1886,6 +1897,113 @@ class VulkanGroups(unittest.TestCase):
         self.assertEqual(crate, units | gpu_units | static_units)
 
 
+class VulkanOptionalGroups(unittest.TestCase):
+    """CK-238 (owner decision 2026-11-09): Vulkan is compile-only until a Linux GPU machine is in the test loop, so its GPU and window
+    groups are optional: no change, fail-wide plan or level selects them, and naming one still runs it."""
+
+    NAMES = ("glfw.window", "vulkan.gpu", "vulkan.window", "render2d.vulkan-window", "vulkan.app")
+    REASON = "optional: runs only when requested by name"
+
+    def choices(
+        self, changed: list[str] | None, requested: list[str] | None = None
+    ) -> dict[str, check.Choice]:
+        plan = check.plan(check.STEPS, changed, requested or [])
+        return {choice.step.name: choice for choice in plan.choices}
+
+    def test_01_a_change_under_the_vulkan_crates_or_the_app_manifest_selects_none_of_the_five(
+        self,
+    ) -> None:
+        for path in (
+            "crates/gpu-vulkan/src/render.rs",
+            "crates/gpu-vulkan/shaders/map.frag",
+            "crates/gpu-vulkan/tests/window.rs",
+            "crates/window-glfw/src/backend.rs",
+            "crates/window-glfw/tests/window_glfw.rs",
+            "crates/render-2d/src/vulkan.rs",
+            "apps/codekarl/Cargo.toml",
+            "apps/codekarl/tests/vulkan_app.rs",
+        ):
+            chosen = self.choices([path])
+            for name in self.NAMES:
+                self.assertFalse(chosen[name].selected, f"{path}: {name}")
+                self.assertEqual(chosen[name].why, self.REASON, f"{path}: {name}")
+
+    def test_02_the_windowless_vulkan_and_glfw_groups_stay_affected(self) -> None:
+        by_name = {step.name: step for step in check.STEPS}
+        for name in ("glfw.core", "vulkan.isolation"):
+            self.assertEqual(by_name[name].category, "affected", name)
+            self.assertNotEqual(by_name[name].levels, (), name)
+        chosen = self.choices(["crates/gpu-vulkan/src/lib.rs", "crates/window-glfw/src/lib.rs"])
+        self.assertTrue(chosen["vulkan.isolation"].selected and chosen["glfw.core"].selected)
+
+    def test_03_naming_a_group_still_selects_it_and_a_fail_wide_plan_does_not(self) -> None:
+        for name in self.NAMES:
+            named = self.choices(None, [name])
+            self.assertTrue(named[name].selected, name)
+            self.assertEqual(named[name].why, "requested by name", name)
+            self.assertEqual(
+                [other for other in self.NAMES if named[other].selected],
+                [name],
+                "only the named one",
+            )
+        # An unclaimed path, and a change set that could not be computed, select every affected group and still none of these.
+        for plan in (
+            check.plan(check.STEPS, ["brand-new-top-level/file.txt"]),
+            check.plan(check.STEPS, None, failure="the base could not be read"),
+        ):
+            chosen = {choice.step.name: choice for choice in plan.choices}
+            for name in self.NAMES:
+                self.assertFalse(chosen[name].selected, name)
+                self.assertEqual(chosen[name].why, self.REASON, name)
+            self.assertTrue(chosen["vulkan.isolation"].selected)
+
+    def test_04_no_level_includes_them_and_clippy_is_the_compile_check_the_description_says_so(
+        self,
+    ) -> None:
+        by_name = {step.name: step for step in check.STEPS}
+        for name in self.NAMES:
+            self.assertEqual((by_name[name].category, by_name[name].levels), ("optional", ()), name)
+            self.assertIn("Vulkan is compile-only", by_name[name].description, name)
+        for level in ("quick", "fast", "full"):
+            self.assertFalse(set(self.NAMES) & set(check.select(level)), level)
+        clippy = by_name["clippy"]
+        self.assertEqual(clippy.category, "floor")
+        self.assertIn("--workspace", clippy.commands()[0])
+        self.assertIn("--all-targets", clippy.commands()[0])
+        self.assertIn("--all-features", clippy.commands()[0])
+        self.assertIn("compile check of the Vulkan path", clippy.description)
+
+    def test_06_the_map_modes_window_witness_belongs_to_the_native_window_group(self) -> None:
+        witness = "apps/codekarl/tests/support/map_modes.rs"
+        chosen = {c.step.name for c in check.plan(check.STEPS, [witness]).choices if c.selected}
+        self.assertIn("app.native-window", chosen)
+        self.assertNotIn("vulkan.app", chosen)  # optional: only by name
+        # The shipped UI script it runs selects no window group.
+        script = {
+            c.step.name
+            for c in check.plan(check.STEPS, ["scripts/ui/main.lua"]).choices
+            if c.selected
+        }
+        self.assertNotIn("app.native-window", script)
+
+    def test_05_the_policy_text_states_the_rule_in_both_files(self) -> None:
+        agents = (REPO / "AGENTS.md").read_text()
+        policy = (REPO / "skills/AGENT-POLICY.md").read_text()
+        for name in self.NAMES:
+            self.assertIn(name, agents, name)
+        self.assertIn("compile-only", agents)
+        self.assertIn("Linux", agents)
+        self.assertIn("native-metal", policy)
+        self.assertIn("catch-up", policy)
+        self.assertIn("parked until the owner says so", policy)
+        self.assertIn("parked until the owner says so", agents)
+        # The catch-up is not scheduled at a milestone's end: the owner parked it (CK-239 and Linux enablement).
+        self.assertNotIn("one catch-up issue", policy)
+        self.assertIn("not a\n  milestone gate", policy)
+        self.assertIn("not a milestone gate", agents)
+        self.assertIn("compiling", policy)
+
+
 class VulkanAppGroups(unittest.TestCase):
     """CK-80: the application's glfw-vulkan path, in the real catalog."""
 
@@ -1902,12 +2020,13 @@ class VulkanAppGroups(unittest.TestCase):
     def selected(self, path: str) -> set[str]:
         return {c.step.name for c in check.plan(check.STEPS, [path]).choices if c.selected}
 
-    def test_01_the_paths_of_the_path_select_the_vulkan_app_group_and_never_the_native_window_ones(
+    def test_01_the_paths_of_the_path_never_select_the_optional_vulkan_app_group_or_the_native_window_ones(
         self,
     ) -> None:
         for path in self.OWN:
             chosen = self.selected(path)
-            self.assertIn("vulkan.app", chosen, path)
+            # CK-238: optional (owner decision 2026-11-09), so not even its own files select it; only naming it does.
+            self.assertNotIn("vulkan.app", chosen, path)
             self.assertNotIn("doctor.graphics", chosen, path)
             for other in (
                 "native.window",
@@ -1918,13 +2037,13 @@ class VulkanAppGroups(unittest.TestCase):
             ):
                 self.assertNotIn(other, chosen, f"{path}: {other}")
 
-    def test_01b_the_build_script_and_the_native_support_select_the_vulkan_app_group_and_the_native_window_groups(
+    def test_01b_the_build_script_and_the_native_support_select_the_native_window_groups_and_not_vulkan_app(
         self,
     ) -> None:
-        """Application-owned support selects only the app's own native and Vulkan window groups."""
+        """Application-owned support selects only the app's own native window group (CK-238: `vulkan.app` is optional)."""
         for path in ("apps/codekarl/build.rs", "apps/codekarl/tests/native/testing.m"):
             chosen = self.selected(path)
-            self.assertIn("vulkan.app", chosen, path)
+            self.assertNotIn("vulkan.app", chosen, path)
             self.assertIn("app.native-window", chosen, path)
             self.assertNotIn("doctor.graphics", chosen, path)
             for group in (
@@ -1968,7 +2087,7 @@ class VulkanAppGroups(unittest.TestCase):
         """CK-99: the app manifest carries Vulkan wiring; CK-186 also assigns it to both app groups."""
         for path in ("apps/codekarl/Cargo.toml",):
             chosen = self.selected(path)
-            self.assertIn("vulkan.app", chosen, path)
+            self.assertNotIn("vulkan.app", chosen, path)  # CK-238: optional
             self.assertIn("app.native-window", chosen, path)
             self.assertIn("app.metal-gpu", chosen, path)
             for forbidden in ("metal.gpu", "native.window"):
@@ -2115,8 +2234,29 @@ GUARDS: tuple[Guard, ...] = (
     Guard(
         "apps/codekarl/src/game/tests/gameplay_runtime.rs",
         "rust.app",
-        ("scripts/gameplay/main.lua",),
+        ("scripts/gameplay/main.lua", "assets/game/economy.toml"),
     ),
+    # CK-227 (the base lacked these rows, since its planned selection did not include `unittest-catalog`): the soak reads Ireland 768
+    # by default, the economy view's tests load the shipped rules and Ireland's start, the UI link's Ireland test loads its scenario,
+    # and the location panel's tests run the shipped UI script.
+    Guard(
+        "apps/codekarl/src/economy_soak.rs",
+        "rust.app",
+        ("assets/scenarios/ireland-768/", "assets/game/economy.toml"),
+    ),
+    Guard("apps/codekarl/src/game/view.rs", "rust.app", ("assets/",)),
+    Guard("apps/codekarl/src/ui_link.rs", "rust.app", ("assets/",)),
+    # CK-231 (the same gap): the map modes' tests load Ireland 768's map and places, and their window witness runs the shipped UI script.
+    Guard("apps/codekarl/src/map_modes.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
+    # Its window witness is a support module of `windowed.rs` (and `vulkan_app.rs`), so `app.native-window` is its owner and an edit of the
+    # file selects it; a change to the shipped UI script it runs deliberately selects no window group (the owner's rule).
+    Guard(
+        "apps/codekarl/tests/support/map_modes.rs",
+        "app.native-window",
+        ("scripts/ui/main.lua",),
+        unselected=(("scripts/ui/main.lua", OWNER_RULE),),
+    ),
+    Guard("apps/codekarl/src/ui_link/location_tests.rs", "rust.app", ("scripts/ui/main.lua",)),
     Guard(
         "apps/codekarl/src/game/tests/mod.rs",
         "rust.app",
@@ -2633,13 +2773,14 @@ class GuardInventory(unittest.TestCase):
         rows = {
             "crates/window-glfw/src/backend.rs": "glfw.core",
             "crates/window-cocoa/native/window.m": "native.window",
-            "apps/codekarl/src/vulkan/real.rs": "vulkan.app",
-            "apps/codekarl/tests/vulkan_app.rs": "vulkan.app",
         }
         for path, group in rows.items():
             self.assertIn(group, self.selected(path), path)
+        # CK-238: the Vulkan app group is optional, so its own files select no guard of it.
+        for path in ("apps/codekarl/src/vulkan/real.rs", "apps/codekarl/tests/vulkan_app.rs"):
+            self.assertNotIn("vulkan.app", self.selected(path), path)
 
-    def test_05_the_shared_glfw_test_support_selects_the_vulkan_window_tests_and_the_glfw_ones(
+    def test_05_the_shared_glfw_test_support_selects_no_vulkan_or_glfw_window_group(
         self,
     ) -> None:
         for path in (
@@ -2647,7 +2788,7 @@ class GuardInventory(unittest.TestCase):
             "crates/window-glfw/tests/native/testing.m",
         ):
             chosen = self.selected(path)
-            self.assertIn("glfw.window", chosen, path)
+            self.assertNotIn("glfw.window", chosen, path)  # CK-238: optional
             self.assertNotIn("vulkan.window", chosen, path)
             self.assertNotIn("vulkan.gpu", chosen, path)
         # Nothing else of the GLFW crate reaches the Vulkan groups.
