@@ -73,6 +73,7 @@ mod cli;
 mod config;
 #[cfg(test)]
 mod demo_tests;
+mod economy_soak;
 #[cfg(test)]
 mod fakes;
 #[cfg_attr(
@@ -128,6 +129,14 @@ mod vulkan;
 #[cfg(test)]
 mod widget_tests;
 mod window_api;
+
+/// Run the headless economy soak tool from its command-line arguments.
+///
+/// # Errors
+/// Returns a message for invalid arguments, scenario/setup failures, or economy arithmetic refusal.
+pub fn economy_soak_main(arguments: impl IntoIterator<Item = String>) -> Result<String, String> {
+    economy_soak::run(arguments)
+}
 #[cfg_attr(
     all(
         not(test),

@@ -418,7 +418,7 @@ fn literals(text: &str) -> Vec<&str> {
     found
 }
 
-/// What under `src/` names the test-only keyboard filter, reads the process arguments outside `main.rs`, or names
+/// What under `src/` names the test-only keyboard filter, reads the process arguments outside a binary entrypoint, or names
 /// a flag, setting, identifier or environment variable that could turn keyboard input off (in code, across line
 /// breaks): `(file, line, rule)`. Comments are not code; a name like `key_bindings`, `handle_key_down` or `NO_COLOR`
 /// is not a switch.
@@ -443,12 +443,13 @@ fn keyboard_offences(root: &Path) -> Vec<(String, usize, &'static str)> {
             {
                 found.push((relative.clone(), number + 1, "names the keyboard filter"));
             }
-            if relative != "src/main.rs" && (line.contains("args_os") || line.contains("env::args"))
+            if !matches!(relative.as_str(), "src/main.rs" | "src/bin/economy_soak.rs")
+                && (line.contains("args_os") || line.contains("env::args"))
             {
                 found.push((
                     relative.clone(),
                     number + 1,
-                    "reads the process arguments outside src/main.rs",
+                    "reads the process arguments outside a binary entrypoint",
                 ));
             }
             // A flag or a setting written as a literal, or any identifier (a field, a variant, a function).
@@ -490,11 +491,17 @@ fn nothing_in_the_program_names_the_keyboard_filter_or_reads_the_arguments_outsi
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let found = keyboard_offences(root);
     assert!(found.is_empty(), "{found:?}");
-    // The guard looks at the right files: `main.rs` does read the arguments, and so is the one file that may.
+    // Binary entrypoints own their arguments; library and application modules do not.
     let main = fs::read_to_string(root.join("src/main.rs")).expect("the thin main");
     assert!(
         main.contains("args_os"),
         "src/main.rs reads the process arguments"
+    );
+    let soak = fs::read_to_string(root.join("src/bin/economy_soak.rs"))
+        .expect("the standalone economy soak binary");
+    assert!(
+        soak.contains("env::args"),
+        "the economy soak binary reads its process arguments"
     );
 }
 
@@ -593,7 +600,7 @@ fn the_keyboard_guard_refuses_each_stated_family_and_passes_legitimate_input_cod
             .collect()
     };
     let filter = "names the keyboard filter";
-    let arguments = "reads the process arguments outside src/main.rs";
+    let arguments = "reads the process arguments outside a binary entrypoint";
     let switch = "names a flag, setting or identifier that turns keyboard input off";
     let environment = "reads an environment variable that could turn keyboard input off";
     assert_eq!(at(1), [filter]);

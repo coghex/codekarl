@@ -34,6 +34,10 @@ toml = { version = "1.1.8", default-features = false, features = ["parse", "serd
 name = "cli_spec"
 harness = false  # per-case results and skips appear in plain `cargo test` output
 
+[[bin]]
+name = "economy-soak"
+path = "src/bin/economy_soak.rs"
+
 # The windowed cases run the program in process behind a test-only keyboard filter: AppKit needs the process's main
 # thread, so the executable is a supervisor and a worker (`harness = false`), like `ck-render-2d`'s `metal_window`.
 [[test]]

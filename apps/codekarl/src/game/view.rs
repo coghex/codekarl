@@ -337,7 +337,7 @@ fn place_view(rules: &Rules, place: &PlaceState) -> PlaceView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ck_economy::{Employment, StorehouseAccounts};
+    use ck_economy::{CounterBuckets, Employment, StorehouseAccounts};
     use std::path::Path;
 
     fn shipped_rules() -> Rules {
@@ -370,6 +370,7 @@ mod tests {
         };
         PlaceState {
             id: "fixture".to_owned(),
+            counters: CounterBuckets::default(),
             pops: vec![PopState {
                 kind: "peasant".to_owned(),
                 culture: "ulaid".to_owned(),
@@ -378,6 +379,7 @@ mod tests {
                 dependents: 40,
                 employment: vec![Employment::default(); 2],
                 stock,
+                counters: CounterBuckets::default(),
             }],
             buildings: vec![
                 BuildingState {
@@ -391,6 +393,15 @@ mod tests {
                     }],
                     stock: farm_stock,
                     storehouse_accounts: None,
+                    production_carries: vec![vec![0; goods]; 2],
+                    method_suitability: vec![vec![0; goods]; 2],
+                    herd_birth_carries: vec![0; 3],
+                    herd_death_carries: vec![0; 3],
+                    herd_product_carries: vec![0; goods],
+                    herd_grazing_sums: vec![0; 3],
+                    wage_carries: vec![0; goods],
+                    pay_carries: vec![0; goods],
+                    fee_carries: Vec::new(),
                 },
                 BuildingState {
                     kind: "storehouse".to_owned(),
@@ -400,6 +411,15 @@ mod tests {
                     employment: vec![Employment::default()],
                     stock: account,
                     storehouse_accounts: Some(accounts),
+                    production_carries: Vec::new(),
+                    method_suitability: Vec::new(),
+                    herd_birth_carries: Vec::new(),
+                    herd_death_carries: Vec::new(),
+                    herd_product_carries: Vec::new(),
+                    herd_grazing_sums: Vec::new(),
+                    wage_carries: vec![0; goods],
+                    pay_carries: vec![0; goods],
+                    fee_carries: vec![vec![0; goods]; 2],
                 },
             ],
             prices_milli: rules
