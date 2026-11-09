@@ -130,6 +130,8 @@ with sources, and **Open** what is still to decide.
 **Eating, wages, payday and barter (owner, 2026-11-08, answering review r13)**
 - **Eating:** a pop eats an equal share of all the food available in its stockpile.
 - **Zero-hunger goods** (herbs, wool, beeswax) have a **ticking consumption** that benefits the pop's needs while depleting the good.
+  **Since (owner, 2026-11-09):** only herbs and beeswax tick, at a rate per pop type. Wool, hides and linen are consumed by a later
+  clothing need (§3.7 step 6).
 - **Diet shares:**
   - the subsistence farm keeps one production method, but the diet share sets how much of each good it produces;
   - the diet share sets the peasant class's (each class's) demand values;
@@ -275,7 +277,8 @@ The numbers are placeholders for tuning.
 | fish | pound (dried or salted) | low | ✓ | a little | | holdings, fishing method (Firm) |
 | (garden) vegetables, herbs | as above | | | | | the fishing method's garden (Firm) |
 | seabirds | bird | low | ✓ | a little | | holdings, fishing method (Firm) |
-| wool, hides, beeswax | pound | none | | | | farm, holdings: goods with no need value, for later crafts |
+| beeswax | pound | none | | ✓ (small) | | holdings: ticked (§3.7 step 6) |
+| wool, hides | pound, hide | none | | | | farm, holdings: held for the later clothing need (§3.7 step 6) |
 
 Wheat waits (vision: too dear for ordinary pops). Hops are left out (§2).
 
@@ -550,9 +553,26 @@ monks die").
      when that is positive. The result is the same as opening one at a time. Its hunger goes to
      `pantry_hunger[g]`, and its tier values to the tier balances. Then eat `eat_g` from `pantry_hunger[g]`. Because `eat_g ≤ H_g`, the
      units always suffice.
-  6. **Ticking goods (Firm, r14):** each zero-hunger good the pop holds (herbs, wool, beeswax) is used at a fixed rate per person per
-     day (data), `portion(size, rate_g, 10⁶, carry_g)` whole units, while it lasts. Its tier values enter the balances. Wool and beeswax
-     have no tier values in §3.12, so the data gives them small niceties (Proposal).
+  6. **Ticking goods (Firm, owner-signed 2026-11-09):** herbs and beeswax only. Each is used at a fixed rate **per person per day, by pop
+     type** (data, in millionths of a unit), `portion(size, rate_g,type, 10⁶, carry_g)` whole units, while it lasts. Its tier values enter
+     the balances.
+
+     | Good | Monk | Labourer | Peasant | Niceties per unit | Luxuries per unit |
+     |---|---|---|---|---|---|
+     | herbs | 6,000 (2.2 lb a year) | 2,000 (0.73 lb) | 1,000 (0.37 lb) | 10 | 5 |
+     | beeswax | 4,000 (1.46 lb a year) | 500 (0.18 lb) | 250 (0.09 lb) | 5 | – |
+
+     - "A monk would use more beeswax than a peasant" (owner): altar and liturgical candles for monks, while peasants lit with tallow
+       and rushlights; herbs for the kitchen and infirmary.
+     - A holdings level (about 6 monk-people and 8 labourer-people) uses about 10 of its 10 lb of beeswax and 18 of its 20 lb of herbs a
+       year.
+     - Sources: Sapoznik (2019), wax bought by great English houses (200–1,400 lb a year) and a parish church's minimum (about 15 lb).
+       Record: `m9-design/ticking-goods-proposal-r1.md`, `owner-direction-clothing-r2.md`.
+     - **Wool and hides do not tick** and have no tier values: "wool and linen dont tick, they are consumed" (owner). A pop holds them,
+       within its storage limits, until **a later clothing slice** (after M9): clothing becomes a separate need beside food and housing,
+       filled by wool, linen (a flax crop on the farm) and hides, each giving a different amount of rudimentary clothing. Tailors later
+       make clothing that fulfils niceties. A shortfall raises deaths in cold months, by the place's computed monthly temperature, and
+       lowers satisfaction.
   7. **Tiers:** for each tier, take up to `need` from its balance. `taken × 1000 / need` ‰ is today's fulfilment, and 1000 when `size` is
      0.
 - **Example:** a pop holding 300 bu of oats and 100 bu of barley (with oats 18 and barley 28 person-days a bushel) eats about 66% of
@@ -764,7 +784,7 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
 | honey | pound | 0.45 kg | 0.35 L | 0.7 | – | 2 | 2 | 120 |
 | herbs | pound (dried) | 0.45 kg | 2 L | – | – | 10 | 5 | 100 |
 | wool | pound (fleece) | 0.45 kg | 3 L | – | – | – | – | 40 |
-| beeswax | pound | 0.45 kg | 0.5 L | – | – | – | – | 150 |
+| beeswax | pound | 0.45 kg | 0.5 L | – | – | 5 | – | 150 |
 | hides | hide (dried) | 10 kg | 30 L | – | – | – | – | 200 |
 | cattle (live) | head | 250 kg | (herd) | – | – | – | – | 2,400 |
 | pigs (live) | head | 80 kg | (herd) | – | – | – | – | 600 |
