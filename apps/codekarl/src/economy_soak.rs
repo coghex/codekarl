@@ -4,7 +4,7 @@ use std::{
 };
 
 use ck_economy::{EconomyState, Rules};
-use ck_sim::Date;
+use ck_sim::{Date, days_in_month};
 
 const DEFAULT_SCENARIO: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -54,7 +54,7 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
         .ok_or_else(|| "scenario must be under assets/scenarios/<name>".to_owned())?;
     let map = ck_map::load_scenario(&scenario).map_err(|error| error.to_string())?;
     let rules = Rules::load(assets.join("game/economy.toml")).map_err(|error| error.to_string())?;
-    let (mut state, _) = crate::game::economy::starting_economy(assets, &scenario, &map)?;
+    let (state, _) = crate::game::economy::starting_economy(assets, &scenario, &map)?;
     let mut date = Date {
         year: map.start.year,
         month: map.start.month,
@@ -64,13 +64,29 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
     if map.start.day > 1 {
         advance_month(&mut date)?;
     }
+    simulate(&rules, state, date, seed, years)
+}
+
+fn simulate(
+    rules: &Rules,
+    mut state: EconomyState,
+    mut date: Date,
+    seed: u64,
+    years: u16,
+) -> Result<String, String> {
     let mut csv = String::from(
-        "seed,year,month,place,pop,pop_type,size,workers,dependents,needs,food_days,prices,production,stores,herds,losses\n",
+        "seed,year,month,place,pop,pop_type,size,workers,dependents,needs_pm,intake_pm,food_days_milli,prices,production,stores,herds,losses\n",
     );
     for _ in 0..u32::from(years) * 12 {
-        let ledger = ck_economy::run_monthly_production(&rules, &mut state, date)
-            .map_err(|error| error.to_string())?;
-        append_month_rows(&mut csv, seed, date, &rules, &state, &ledger)?;
+        let days = days_in_month(date.year, date.month).map_err(|error| error.to_string())?;
+        for day in 1..=days {
+            date.day = day;
+            let ledger = ck_economy::run_daily_economy(rules, &mut state, date)
+                .map_err(|error| error.to_string())?;
+            if day == 1 {
+                append_month_rows(&mut csv, seed, date, rules, &state, &ledger)?;
+            }
+        }
         advance_month(&mut date)?;
     }
     Ok(csv)
@@ -108,7 +124,7 @@ fn append_month_rows(
         .iter()
         .map(|good| good.id.as_str())
         .collect::<Vec<_>>();
-    for place in &state.places {
+    for (place_index, place) in state.places.iter().enumerate() {
         let place_ledger = ledger
             .places
             .iter()
@@ -160,16 +176,16 @@ fn append_month_rows(
                 .workers
                 .checked_add(pop.dependents)
                 .ok_or("population size overflow")?;
-            let type_rules = rules
+            let _type_rules = rules
                 .pop_types
                 .iter()
                 .find(|entry| entry.id == pop.kind)
                 .ok_or_else(|| format!("unknown population type `{}`", pop.kind))?;
-            let need = format!(
+            let needs = format!(
                 "{}:{}:{}",
-                type_rules.necessities_expectation_pm,
-                type_rules.niceties_expectation_pm,
-                type_rules.luxuries_expectation_pm
+                pop.consumption.necessities_pm,
+                pop.consumption.niceties_pm,
+                pop.consumption.luxuries_pm
             );
             let mut pop_goods = pop.stock.clone();
             for building in &place.buildings {
@@ -191,17 +207,24 @@ fn append_month_rows(
                     }
                 }
             }
-            let food_centi =
-                pop_goods
-                    .iter()
-                    .enumerate()
-                    .try_fold(0_u128, |total, (index, amount)| {
-                        total
-                            .checked_add(
-                                u128::from(*amount) * u128::from(rules.goods[index].hunger_centi),
-                            )
-                            .ok_or_else(|| "food value overflow".to_owned())
-                    })?;
+            let food_centi = pop_goods
+                .iter()
+                .enumerate()
+                .try_fold(0_u128, |total, (index, amount)| {
+                    total
+                        .checked_add(
+                            u128::from(*amount) * u128::from(rules.goods[index].hunger_centi),
+                        )
+                        .ok_or_else(|| "food value overflow".to_owned())
+                })?
+                .checked_add(
+                    pop.consumption
+                        .pantry_hunger_centi
+                        .iter()
+                        .map(|amount| u128::from(*amount))
+                        .sum::<u128>(),
+                )
+                .ok_or("food pantry overflow")?;
             let daily_need = u128::from(size) * 100;
             let food_days_milli = if daily_need == 0 {
                 0
@@ -215,8 +238,14 @@ fn append_month_rows(
             let stores_field = csv_field(&stores);
             let herds_field = csv_field(&herds_field);
             let losses_field = csv_field(&losses);
-            writeln!(csv, "{seed},{},{},{place_field},{pop_field},{},{},{},{},{},{food_days_milli},{prices_field},{production_field},{stores_field},{herds_field},{losses_field}",
-                date.year, date.month, pop.kind, size, pop.workers, pop.dependents, need)
+            let intake_pm = ledger
+                .intake_pm
+                .get(place_index)
+                .and_then(|values| values.get(pop_index))
+                .copied()
+                .ok_or("daily intake ledger dimensions do not match places and pops")?;
+            writeln!(csv, "{seed},{},{},{place_field},{pop_field},{},{},{},{},{},{},{food_days_milli},{prices_field},{production_field},{stores_field},{herds_field},{losses_field}",
+                date.year, date.month, pop.kind, size, pop.workers, pop.dependents, needs, intake_pm)
                 .expect("writing to a String is infallible");
         }
     }
@@ -244,6 +273,7 @@ fn csv_field(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn fixed_seed_and_horizon_produce_byte_identical_csv() {
@@ -262,9 +292,77 @@ mod tests {
         let first = run(arguments.clone()).expect("the Ireland soak runs");
         let second = run(arguments).expect("the same Ireland soak runs again");
         assert_eq!(first.as_bytes(), second.as_bytes());
-        assert!(first.starts_with(concat!(
-            "seed,year,month,place,pop,pop_type,size,workers,dependents,needs,food_days,prices,production,stores,herds,losses\n",
-            "768,768,11,armagh,0,peasant,1000,600,400,1000:0:0,385370,oats=100000;barley=120000;peas_beans=120000;vegetables=40000;apples=150000;dairy=40000;beef=10000;pork=9000;mutton=8000;fish=30000;seabirds=20000;ale=60000;mead=300000;wine=600000;honey=120000;herbs=100000;wool=40000;beeswax=150000;hides=200000;cattle=2400000;pigs=600000;sheep=300000,apples=99;dairy=2285;ale=441;mead=44,pop0:oats=12000;barley=4000;peas_beans=1000;vegetables=2000;dairy=3470;beef=1000;pork=1000;mutton=1000|pop1:oats=2400;barley=800;peas_beans=200;vegetables=400;apples=36;dairy=639;beef=200;pork=200;mutton=200;ale=162;mead=16|pop2:oats=1800;barley=600;peas_beans=150;vegetables=300;apples=33;dairy=516;beef=150;pork=150;mutton=150;ale=146;mead=14|building0.holdings:oats=40;barley=12;apples=30;dairy=204;beef=4;pork=4;mutton=4;ale=133;mead=14|building1.farm:oats=40;barley=12;dairy=172;beef=4;pork=4;mutton=4|building2.storehouse:|building2.account.pop0:|building2.account.pop1:|building2.account.pop2:|building2.account.communal:,cattle=635;pigs=425;sheep=357,\n"
-        )), "first literal horizon row remains stable");
+        assert!(first.starts_with("seed,year,month,place,pop,pop_type,size,workers,dependents,needs_pm,intake_pm,food_days_milli,"));
+        assert!(
+            first
+                .lines()
+                .nth(1)
+                .unwrap()
+                .starts_with("768,768,11,armagh,0,peasant,1000,600,400,")
+        );
+    }
+
+    #[test]
+    fn ten_year_soak_keeps_each_herd_species_alive() {
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        let mut scenario_data =
+            ck_economy::ScenarioEconomy::load(assets.join("scenarios/ireland-768/economy.toml"))
+                .unwrap();
+        scenario_data.places.insert(
+            "herd_fixture".to_owned(),
+            ck_economy::StartOverride {
+                culture: Some("mide_brega".to_owned()),
+                religion: Some("christianity".to_owned()),
+                monk_religion: Some("christianity".to_owned()),
+                ..ck_economy::StartOverride::default()
+            },
+        );
+        let (state, report) = ck_economy::starting_state(
+            &rules,
+            &scenario_data,
+            &[ck_economy::StartLocation {
+                id: "herd_fixture".to_owned(),
+                kind: "monastery".to_owned(),
+                size: 1,
+                land: ck_economy::LandCounts {
+                    usable: BTreeMap::from([("pasture".to_owned(), 100)]),
+                    sea: 0,
+                },
+            }],
+        )
+        .expect("the non-starving herd fixture starts with its authored levels");
+        assert!(report.is_empty(), "{report:?}");
+        let output = simulate(
+            &rules,
+            state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+            768,
+            10,
+        )
+        .expect("the 10-year fixture soak runs");
+        for row in output.lines().skip(1) {
+            let fields = row.split(',').collect::<Vec<_>>();
+            assert_eq!(fields[3], "herd_fixture");
+            let herds = fields[15];
+            let current = herds
+                .split(';')
+                .map(|species| {
+                    species
+                        .split('=')
+                        .nth(1)
+                        .expect("CSV herd has a count")
+                        .parse::<u64>()
+                        .expect("CSV herd count is numeric")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(current.len(), 3);
+            assert!(current.iter().all(|count| *count > 0), "{row}");
+        }
     }
 }

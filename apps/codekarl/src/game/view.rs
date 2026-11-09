@@ -2,13 +2,14 @@
 //! simulation builds and the UI reads. The UI never reads the live state.
 //!
 //! A view is built from the state at three moments: at the start, after a load, and after each day's systems (the noon tick).
-//! Each carries a revision that rises with every new view, including a load. The numbers this slice's state does not have
-//! yet (the three needs, satisfaction, wages, monthly births, deaths and overflow losses) are `0` until the slices that
-//! produce them.
+//! Each carries a revision that rises with every new view, including a load. Numbers this slice's state does not have yet
+//! (wages, monthly births, deaths and overflow losses) are `0` until their producing slices land.
 //!
 //! Everything here is simulation-side code: it lives in `game/` so that the build id covers it (a change to the display rules
 //! is a change to what a save means to the UI, and the numbers it derives are checked by tests).
 
+#[cfg(test)]
+use ck_economy::PopConsumption;
 use ck_economy::{BuildingState, EconomyState, PlaceState, PopState, Rules};
 
 /// A pop's store, in millilitres per person (design §3.15: 720 L).
@@ -54,11 +55,11 @@ pub(crate) struct PopView {
     pub(crate) unemployed: u64,
     /// Whole days of food held (the store and the storehouse accounts) at a full daily need.
     pub(crate) food_days: u64,
-    /// The three needs, in ‰ (`0` until the eating slice).
+    /// The three needs, in ‰.
     pub(crate) necessities: u64,
     pub(crate) niceties: u64,
     pub(crate) luxuries: u64,
-    /// Satisfaction, −100 to +100 (`0` until the eating slice).
+    /// Satisfaction, −100 to +100.
     pub(crate) satisfaction: i64,
     /// Last month's births and deaths (`0` until the births slice).
     pub(crate) births: u64,
@@ -185,7 +186,14 @@ fn food_centi(rules: &Rules, place: &PlaceState, pop_index: usize) -> u64 {
                 sum.saturating_add(units.saturating_mul(u64::from(good.hunger_centi)))
             })
     };
-    let own = held(&place.pops[pop_index].stock);
+    let pop = &place.pops[pop_index];
+    let pantry = pop
+        .consumption
+        .pantry_hunger_centi
+        .iter()
+        .copied()
+        .fold(0_u64, u64::saturating_add);
+    let own = held(&pop.stock).saturating_add(pantry);
     place
         .buildings
         .iter()
@@ -228,10 +236,10 @@ fn pop_view(rules: &Rules, place: &PlaceState, index: usize) -> PopView {
         employed,
         unemployed: pop.workers.saturating_sub(employed),
         food_days: days_of(food_centi(rules, place, index), size_of(pop)),
-        necessities: 0,
-        niceties: 0,
-        luxuries: 0,
-        satisfaction: 0,
+        necessities: u64::from(pop.consumption.necessities_pm),
+        niceties: u64::from(pop.consumption.niceties_pm),
+        luxuries: u64::from(pop.consumption.luxuries_pm),
+        satisfaction: i64::from(pop.consumption.satisfaction),
         births: 0,
         deaths: 0,
     }
@@ -471,6 +479,15 @@ mod tests {
                 dependents: 40,
                 employment: vec![Employment::default(); 2],
                 stock,
+                consumption: PopConsumption {
+                    pantry_hunger_centi: vec![0; goods],
+                    ticking_carries: vec![0; goods],
+                    necessities_pm: 700,
+                    niceties_pm: 350,
+                    luxuries_pm: 100,
+                    satisfaction: 5,
+                    ..PopConsumption::default()
+                },
                 counters: CounterBuckets::default(),
             }],
             buildings: vec![
@@ -570,7 +587,7 @@ mod tests {
                 pop.luxuries,
                 pop.satisfaction
             ),
-            (0, 0, 0, 0)
+            (700, 350, 100, 5)
         );
         assert_eq!((pop.births, pop.deaths), (0, 0));
 
