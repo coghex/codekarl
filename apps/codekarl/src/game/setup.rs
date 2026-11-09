@@ -2,6 +2,7 @@
 //! opens or a thread starts, so a refusal is a configuration error and nothing is left running.
 
 use std::{
+    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -78,6 +79,10 @@ pub(crate) fn operating_system_seed() -> Result<u64, String> {
 /// # Errors
 /// A message for a configuration error: the scenario or its start date, an unreadable file, a save that is refused (with its
 /// named error), or a seed that cannot be had.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Scenario identity, rules-derived qualities, save loading and deterministic startup are configured together before the owner starts."
+)]
 pub(crate) fn prepare(
     request: &Request<'_>,
     entropy: impl FnOnce() -> Result<u64, String>,
@@ -105,6 +110,20 @@ pub(crate) fn prepare(
         )
     })?;
     let economy_rules = economy::load_rules(asset_root)?.map(Arc::new);
+    let quality_by_place = if let Some(rules) = economy_rules.as_deref() {
+        economy::land_counts(&scenario, &rules.terrain_order)?
+            .into_iter()
+            .enumerate()
+            .map(|(index, land)| {
+                Ok((
+                    scenario.locations[index].id.clone(),
+                    ck_economy::mean_fertility(&land).map_err(|error| error.to_string())?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, String>>()?
+    } else {
+        BTreeMap::new()
+    };
     let identity = Identity {
         build: build_id(),
         scenario: scenario.id.clone(),
@@ -122,8 +141,13 @@ pub(crate) fn prepare(
         .iter()
         .any(|vm| vm.name == GAMEPLAY_VM)
         .then(|| Gameplay::new(0));
-    let scheduler =
-        || gameplay_scheduler_with_rules(gameplay_runtime.as_ref(), economy_rules.clone());
+    let scheduler = || {
+        gameplay_scheduler_with_rules(
+            gameplay_runtime.as_ref(),
+            economy_rules.clone(),
+            quality_by_place.clone(),
+        )
+    };
     let simulation = if let Some(path) = request.load {
         let bytes = std::fs::read(path)
             .map_err(|error| format!("cannot read save {}: {error}", path.display()))?;
@@ -198,6 +222,25 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         .iter()
         .map(|location| location.id.clone())
         .collect();
+    let land_by_place = if let Some(rules) = economy_rules.as_deref() {
+        economy::land_counts(&scenario, &rules.terrain_order)
+            .expect("the already-loaded scenario has valid catchments")
+            .into_iter()
+            .enumerate()
+            .map(|(index, land)| (scenario.locations[index].id.clone(), land))
+            .collect::<BTreeMap<_, _>>()
+    } else {
+        BTreeMap::new()
+    };
+    let quality_by_place = land_by_place
+        .iter()
+        .map(|(id, land)| {
+            (
+                id.clone(),
+                ck_economy::mean_fertility(land).expect("validated map fertility"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let wiring_gameplay = gameplay.clone();
     let wiring_rules = economy_rules.clone();
     let (sender, receiver) = channel();
@@ -211,6 +254,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         let terminal_runtime = runtime.clone();
         let scheduler_runtime = runtime.clone();
         let scheduler_rules = wiring_rules.clone();
+        let scheduler_quality = quality_by_place.clone();
         let reset_runtime = runtime.clone();
         let build = move || {
             Core::new_with_views(
@@ -222,6 +266,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                         gameplay_scheduler_with_rules(
                             scheduler_runtime.as_ref(),
                             scheduler_rules.clone(),
+                            scheduler_quality.clone(),
                         )
                     }),
                     reset: Box::new(move |seed| {
@@ -237,7 +282,12 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                     fail: Box::new(move |message| failing.fail(message)),
                 },
                 Some(Box::new(move |state: &GameState| {
-                    view::build(economy_rules.as_deref(), &state.economy, &place_ids)
+                    view::build_with_land(
+                        economy_rules.as_deref(),
+                        &state.economy,
+                        &place_ids,
+                        &land_by_place,
+                    )
                 })),
             )
             .with_terminal_probe(move || {
@@ -260,10 +310,11 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
 fn gameplay_scheduler_with_rules(
     gameplay: Option<&Arc<Gameplay>>,
     rules: Option<Arc<Rules>>,
+    quality_by_place: BTreeMap<String, u16>,
 ) -> Scheduler<GameState> {
     let mut scheduler = Scheduler::<GameState>::new();
     if let Some(rules) = rules {
-        register_economy_callback(&mut scheduler, rules);
+        register_economy_callback_with_quality(&mut scheduler, rules, quality_by_place);
     } else {
         scheduler
             .register(
@@ -279,16 +330,30 @@ fn gameplay_scheduler_with_rules(
     scheduler
 }
 
+#[cfg(test)]
 pub(crate) fn register_economy_callback(scheduler: &mut Scheduler<GameState>, rules: Arc<Rules>) {
+    register_economy_callback_with_quality(scheduler, rules, BTreeMap::new());
+}
+
+fn register_economy_callback_with_quality(
+    scheduler: &mut Scheduler<GameState>,
+    rules: Arc<Rules>,
+    quality_by_place: BTreeMap<String, u16>,
+) {
     scheduler
         .register(
             "economy.daily",
             Cadence::Daily { hour: ECONOMY_HOUR },
             move |state, tick| {
-                ck_economy::run_daily_economy(&rules, &mut state.economy, tick.date())
-                    .map(|_| ())
-                    .map_err(io::Error::other)
-                    .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
+                ck_economy::run_daily_economy_with_quality(
+                    &rules,
+                    &mut state.economy,
+                    tick.date(),
+                    &quality_by_place,
+                )
+                .map(|_| ())
+                .map_err(io::Error::other)
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
             },
         )
         .expect("the economy system name is unique");

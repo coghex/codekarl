@@ -285,6 +285,21 @@ fn the_map_hash_covers_the_map_file_every_layer_and_the_location_kinds() {
 }
 
 #[test]
+fn the_rules_hash_changes_when_a_building_footprint_changes() {
+    let dir = Dir::new();
+    let game_rules = dir.0.join("game/economy.toml");
+    let terrain_rules = dir.0.join("map/ireland/terrain.toml");
+    fs::create_dir_all(game_rules.parent().unwrap()).unwrap();
+    fs::create_dir_all(terrain_rules.parent().unwrap()).unwrap();
+    fs::write(&game_rules, "[footprint_m2]\nfarm = 2000\n").unwrap();
+    fs::write(&terrain_rules, "[suitability]\n").unwrap();
+
+    let before = hashes::rules_hash(&dir.0).unwrap();
+    fs::write(&game_rules, "[footprint_m2]\nfarm = 2001\n").unwrap();
+    assert_ne!(hashes::rules_hash(&dir.0).unwrap(), before);
+}
+
+#[test]
 fn the_scripts_hash_is_the_gameplay_entry_script_or_nothing() {
     let dir = Dir::new();
     let entry = dir.0.join("gameplay.lua");

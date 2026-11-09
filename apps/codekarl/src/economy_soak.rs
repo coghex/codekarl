@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fmt::Write as FmtWrite,
     path::{Path, PathBuf},
 };
@@ -55,6 +56,16 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
     let map = ck_map::load_scenario(&scenario).map_err(|error| error.to_string())?;
     let rules = Rules::load(assets.join("game/economy.toml")).map_err(|error| error.to_string())?;
     let (state, _) = crate::game::economy::starting_economy(assets, &scenario, &map)?;
+    let quality_by_place = crate::game::economy::land_counts(&map, &rules.terrain_order)?
+        .into_iter()
+        .enumerate()
+        .map(|(index, land)| {
+            Ok((
+                map.locations[index].id.clone(),
+                ck_economy::mean_fertility(&land).map_err(|error| error.to_string())?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
     let mut date = Date {
         year: map.start.year,
         month: map.start.month,
@@ -64,7 +75,7 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
     if map.start.day > 1 {
         advance_month(&mut date)?;
     }
-    simulate(&rules, state, date, seed, years)
+    simulate(&rules, state, date, seed, years, &quality_by_place)
 }
 
 fn simulate(
@@ -73,6 +84,7 @@ fn simulate(
     mut date: Date,
     seed: u64,
     years: u16,
+    quality_by_place: &BTreeMap<String, u16>,
 ) -> Result<String, String> {
     let mut csv = String::from(
         "seed,year,month,place,pop,pop_type,size,workers,dependents,needs_pm,intake_pm,food_days_milli,prices,production,stores,herds,losses\n",
@@ -81,8 +93,13 @@ fn simulate(
         let days = days_in_month(date.year, date.month).map_err(|error| error.to_string())?;
         for day in 1..=days {
             date.day = day;
-            let ledger = ck_economy::run_daily_economy(rules, &mut state, date)
-                .map_err(|error| error.to_string())?;
+            let ledger = ck_economy::run_daily_economy_with_quality(
+                rules,
+                &mut state,
+                date,
+                quality_by_place,
+            )
+            .map_err(|error| error.to_string())?;
             if day == 1 {
                 append_month_rows(&mut csv, seed, date, rules, &state, &ledger)?;
             }
@@ -336,7 +353,7 @@ mod tests {
         );
         assert_eq!(
             first.lines().nth(1).unwrap(),
-            "768,768,11,armagh,0,peasant,1000,600,400,1000:0:0,1000,384370,oats=95000;barley=114000;peas_beans=114000;vegetables=42000;apples=157500;dairy=42000;beef=10500;pork=9450;mutton=8400;fish=30000;seabirds=20000;ale=63000;mead=315000;wine=600000;honey=126000;herbs=105000;wool=40000;beeswax=150000;hides=200000;cattle=2400000;pigs=600000;sheep=300000,apples=99;dairy=2285;ale=441;mead=44,pop0:oats=11968;barley=3989;peas_beans=997;vegetables=1994;dairy=3461;beef=997;pork=997;mutton=997|pop1:oats=2393;barley=797;peas_beans=199;vegetables=398;apples=35;dairy=637;beef=199;pork=199;mutton=199;ale=161;mead=15|pop2:oats=1795;barley=598;peas_beans=149;vegetables=299;apples=32;dairy=514;beef=149;pork=149;mutton=149;ale=145;mead=13|building0.holdings:oats=40;barley=12;apples=30;dairy=204;beef=4;pork=4;mutton=4;ale=133;mead=14|building1.farm:oats=40;barley=12;dairy=172;beef=4;pork=4;mutton=4|building2.storehouse:|building2.account.pop0:|building2.account.pop1:|building2.account.pop2:|building2.account.communal:,cattle=635;pigs=424;sheep=357,"
+            "768,768,11,armagh,0,peasant,1000,600,400,1000:0:0,1000,384370,oats=95000;barley=114000;peas_beans=114000;vegetables=42000;apples=157500;dairy=42000;beef=10500;pork=9450;mutton=8400;fish=30000;seabirds=20000;ale=63000;mead=315000;wine=600000;honey=126000;herbs=105000;wool=40000;beeswax=150000;hides=200000;cattle=2400000;pigs=600000;sheep=300000,apples=78;dairy=2285;ale=346;mead=34,pop0:oats=11968;barley=3989;peas_beans=997;vegetables=1994;dairy=3461;beef=997;pork=997;mutton=997|pop1:oats=2393;barley=797;peas_beans=199;vegetables=398;apples=27;dairy=637;beef=199;pork=199;mutton=199;ale=126;mead=11|pop2:oats=1795;barley=598;peas_beans=149;vegetables=299;apples=25;dairy=514;beef=149;pork=149;mutton=149;ale=114;mead=10|building0.holdings:oats=40;barley=12;apples=24;dairy=204;beef=4;pork=4;mutton=4;ale=104;mead=11|building1.farm:oats=40;barley=12;dairy=172;beef=4;pork=4;mutton=4|building2.storehouse:|building2.account.pop0:|building2.account.pop1:|building2.account.pop2:|building2.account.communal:,cattle=635;pigs=424;sheep=357,"
         );
     }
 
@@ -364,7 +381,9 @@ mod tests {
                 kind: "monastery".to_owned(),
                 size: 1,
                 land: ck_economy::LandCounts {
-                    usable: BTreeMap::from([("pasture".to_owned(), 100)]),
+                    land_cells: BTreeMap::from([("pasture".to_owned(), 100)]),
+                    fertility_pm: BTreeMap::from([("pasture".to_owned(), 100_000)]),
+                    fertile_cells: 100,
                     sea: 0,
                 },
             }],
@@ -382,6 +401,7 @@ mod tests {
             },
             768,
             10,
+            &BTreeMap::from([("herd_fixture".to_owned(), 1000)]),
         )
         .expect("the 10-year fixture soak runs");
         for row in output.lines().skip(1) {

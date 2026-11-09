@@ -131,6 +131,16 @@ pub struct Rules {
     pub religions: Vec<String>,
     /// Land terrain names in the same order as the map terrain palette.
     pub terrain_order: Vec<String>,
+    /// Footprint per building level, in square metres.
+    pub footprint_m2: BTreeMap<String, i64>,
+    /// Buildable allowance before terrain contributions, in square metres.
+    pub buildable_base_m2: u64,
+    /// Buildable allowance per land cell by terrain, in square metres.
+    pub buildable_per_cell_m2: BTreeMap<String, u64>,
+    /// Starting development in thousandths.
+    pub starting_development_pm: u32,
+    /// Fertility that preserves the existing output, in per-mille.
+    pub fertility_reference_pm: u16,
     /// Building definitions.
     pub buildings: Vec<BuildingType>,
     /// Seasonal shares by product, each summing to 1000.
@@ -211,6 +221,62 @@ impl Rules {
             "terrain_order",
             self.terrain_order.iter().map(String::as_str),
         )?;
+        if self.buildable_base_m2 == 0 {
+            return Err(refuse(
+                "buildable_base_m2".to_owned(),
+                "must be positive".to_owned(),
+            ));
+        }
+        if self.starting_development_pm == 0 {
+            return Err(refuse(
+                "starting_development_pm".to_owned(),
+                "must be positive".to_owned(),
+            ));
+        }
+        if self.fertility_reference_pm == 0 {
+            return Err(refuse(
+                "fertility_reference_pm".to_owned(),
+                "must be positive".to_owned(),
+            ));
+        }
+        for building in &self.buildings {
+            let Some(value) = self.footprint_m2.get(&building.id) else {
+                return Err(refuse(
+                    format!("footprint_m2.{}", building.id),
+                    "entry is missing".to_owned(),
+                ));
+            };
+            if *value <= 0 {
+                return Err(refuse(
+                    format!("footprint_m2.{}", building.id),
+                    "must be positive".to_owned(),
+                ));
+            }
+        }
+        for building in self.footprint_m2.keys() {
+            if !self.buildings.iter().any(|item| item.id == *building) {
+                return Err(refuse(
+                    format!("footprint_m2.{building}"),
+                    "unknown building".to_owned(),
+                ));
+            }
+        }
+        for terrain in &self.terrain_order {
+            if !self.buildable_per_cell_m2.contains_key(terrain) {
+                return Err(refuse(
+                    format!("buildable_per_cell_m2.{terrain}"),
+                    "entry is missing".to_owned(),
+                ));
+            }
+        }
+        for terrain in self.buildable_per_cell_m2.keys() {
+            if !self.terrain_order.contains(terrain) {
+                return Err(refuse(
+                    format!("buildable_per_cell_m2.{terrain}"),
+                    "terrain is absent from terrain_order".to_owned(),
+                ));
+            }
+        }
         if self.price_k_pm > 10_000 {
             return Err(refuse(
                 "price_k_pm".to_owned(),
@@ -815,8 +881,12 @@ pub fn largest_remainder(total: u64, weights: &[u64]) -> Result<Vec<u64>, &'stat
 /// Plain, derived cell counts supplied by the map adapter.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LandCounts {
-    /// Usable cells by terrain key.
-    pub usable: BTreeMap<String, u32>,
+    /// All owned land cells by terrain key, excluding glaciers.
+    pub land_cells: BTreeMap<String, u32>,
+    /// Sum of fertility per-mille by terrain key, excluding glaciers.
+    pub fertility_pm: BTreeMap<String, u64>,
+    /// Owned land cells whose fertility is above zero, excluding glaciers.
+    pub fertile_cells: u32,
     /// Sea cells in the catchment.
     pub sea: u32,
 }
@@ -1013,18 +1083,9 @@ pub fn starting_state(
         let mut land = location.land.clone();
         let mut buildings = Vec::new();
         let mut remaining_sea = land.sea;
-        let mut farm_land_total = land
-            .usable
-            .values()
-            .try_fold(0_u32, |total, cells| total.checked_add(*cells))
-            .ok_or_else(|| DataError {
-                file: "map land counts".to_owned(),
-                entry: location.id.clone(),
-                problem: "usable cell count overflow".to_owned(),
-            })?;
         let mut production = BTreeMap::<String, u64>::new();
-        // Holdings take farming land before the farm, while coastal levels share
-        // the same finite sea-cell budget across both buildings.
+        // Holdings take fertility before the farm. Fishing needs nearby sea but
+        // does not consume a finite sea-cell budget.
         for (slot, kind) in [(1_usize, "holdings"), (0_usize, "farm")] {
             let wanted = authored[slot];
             if wanted == 0 {
@@ -1043,10 +1104,10 @@ pub fn starting_state(
                 wanted,
                 &mut land,
                 &mut remaining_sea,
-                &mut farm_land_total,
                 &production,
                 &pops,
                 location.land.sea > 0,
+                mean_fertility(&location.land)?,
             )?;
             let actual = assignment.method_levels.iter().sum();
             if actual < wanted {
@@ -1122,12 +1183,30 @@ pub fn starting_state(
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let footprint = building_footprint(rules, &buildings)?;
+        let prepared_m2 = footprint
+            .checked_add(rules.buildable_base_m2)
+            .ok_or_else(|| {
+                missing_data(
+                    format!("places.{}.prepared_m2", location.id),
+                    "prepared area overflow",
+                )
+            })?;
+        let max_buildable = max_buildable_m2(rules, rules.starting_development_pm, &location.land)?;
+        if footprint > prepared_m2.min(max_buildable) {
+            report.push(format!(
+                "{} starts over building cap: footprint {footprint} m², prepared {prepared_m2} m², max_buildable {max_buildable} m²",
+                location.id
+            ));
+        }
         state.places.push(PlaceState {
             id: location.id.clone(),
             coastal: location.land.sea > 0,
             pops,
             buildings,
             prices_milli,
+            prepared_m2,
+            development_pm: rules.starting_development_pm,
             price_drift_carries: vec![0; rules.goods.len()],
             counters: CounterBuckets::default(),
         });
@@ -1141,6 +1220,104 @@ fn missing_data(entry: String, problem: &str) -> DataError {
         entry,
         problem: problem.to_owned(),
     }
+}
+
+/// Mean fertility of the land cells that can produce farm room, floored in ‰.
+///
+/// # Errors
+/// Refuses when the fertility sum exceeds `u64` or the mean exceeds `u16`.
+pub fn mean_fertility(land: &LandCounts) -> Result<u16, DataError> {
+    if land.fertile_cells == 0 {
+        return Ok(0);
+    }
+    let total = land
+        .fertility_pm
+        .values()
+        .try_fold(0_u64, |sum, value| sum.checked_add(*value))
+        .ok_or_else(|| missing_data("map fertility".to_owned(), "fertility sum overflow"))?;
+    u16::try_from(total / u64::from(land.fertile_cells))
+        .map_err(|_| missing_data("map fertility".to_owned(), "mean fertility exceeds u16"))
+}
+
+/// Derive maximum buildable area from the current map and development.
+///
+/// # Errors
+/// Refuses missing terrain data or checked area overflow.
+pub fn max_buildable_m2(
+    rules: &Rules,
+    development_pm: u32,
+    land: &LandCounts,
+) -> Result<u64, DataError> {
+    let terrain_area = land
+        .land_cells
+        .iter()
+        .try_fold(0_u128, |sum, (terrain, cells)| {
+            let per_cell = rules.buildable_per_cell_m2.get(terrain).ok_or_else(|| {
+                missing_data(
+                    format!("buildable_per_cell_m2.{terrain}"),
+                    "entry is missing",
+                )
+            })?;
+            sum.checked_add(u128::from(*cells) * u128::from(*per_cell))
+                .ok_or_else(|| missing_data("max_buildable".to_owned(), "land area overflow"))
+        })?;
+    let base = u128::from(rules.buildable_base_m2)
+        .checked_add(terrain_area)
+        .ok_or_else(|| missing_data("max_buildable".to_owned(), "base area overflow"))?;
+    let area = base
+        .checked_mul(u128::from(development_pm))
+        .ok_or_else(|| missing_data("max_buildable".to_owned(), "development scaling overflow"))?
+        / 1000;
+    u64::try_from(area).map_err(|_| missing_data("max_buildable".to_owned(), "area exceeds u64"))
+}
+
+fn building_footprint(rules: &Rules, buildings: &[BuildingState]) -> Result<u64, DataError> {
+    buildings.iter().try_fold(0_u64, |sum, building| {
+        let per_level = rules
+            .footprint_m2
+            .get(&building.kind)
+            .copied()
+            .ok_or_else(|| {
+                missing_data(
+                    format!("footprint_m2.{}", building.kind),
+                    "entry is missing",
+                )
+            })?;
+        let area = u64::try_from(per_level)
+            .ok()
+            .and_then(|value| value.checked_mul(u64::from(building.levels)))
+            .ok_or_else(|| {
+                missing_data(
+                    format!("footprint_m2.{}", building.kind),
+                    "footprint overflow or negative value",
+                )
+            })?;
+        sum.checked_add(area)
+            .ok_or_else(|| missing_data("footprint".to_owned(), "footprint sum overflow"))
+    })
+}
+
+/// True when adding `extra_footprint_m2` leaves the place within both land limits.
+///
+/// # Errors
+/// Refuses footprint overflow or missing map/footprint data.
+pub fn can_build(
+    rules: &Rules,
+    place: &PlaceState,
+    land: &LandCounts,
+    extra_footprint_m2: u64,
+) -> Result<bool, DataError> {
+    let footprint = building_footprint(rules, &place.buildings)?;
+    let proposed = footprint.checked_add(extra_footprint_m2).ok_or_else(|| {
+        missing_data(
+            format!("places.{}.footprint", place.id),
+            "proposed footprint overflow",
+        )
+    })?;
+    let cap = place
+        .prepared_m2
+        .min(max_buildable_m2(rules, place.development_pm, land)?);
+    Ok(proposed <= cap)
 }
 
 fn make_pop(
@@ -1232,10 +1409,10 @@ fn assign_building_levels(
     wanted: u32,
     land: &mut LandCounts,
     remaining_sea: &mut u32,
-    farming_cells: &mut u32,
     prior_sell: &BTreeMap<String, u64>,
     pops: &[PopState],
     coastal: bool,
+    quality_pm: u16,
 ) -> Result<BuildingAssignment, DataError> {
     let mut assigned = vec![0_u32; building.methods.len()];
     let mut method_suitability = vec![vec![0_u64; rules.goods.len()]; building.methods.len()];
@@ -1247,15 +1424,17 @@ fn assign_building_levels(
         let mut best: Option<(usize, u128, Option<String>)> = None;
         for (index, method) in building.methods.iter().enumerate() {
             let terrain = if method.resource == "sea" {
-                if *remaining_sea < 4 {
+                if *remaining_sea == 0 {
                     continue;
                 }
                 None
             } else {
-                if *farming_cells < u32::from(building.land_per_level) {
-                    continue;
-                }
-                choose_terrain(rules, method, land)
+                choose_terrain(
+                    rules,
+                    method,
+                    land,
+                    u64::from(building.land_per_level) * 1000,
+                )
             };
             if method.resource != "sea" && terrain.is_none() {
                 continue;
@@ -1278,6 +1457,7 @@ fn assign_building_levels(
                     good_id,
                     *base_output,
                     terrain.as_deref(),
+                    quality_pm,
                 )?;
                 let sell_before = u128::from(prior_sell.get(good_id).copied().unwrap_or(0))
                     .checked_add(u128::from(output.get(good_id).copied().unwrap_or(0)))
@@ -1351,20 +1531,25 @@ fn assign_building_levels(
             }
         }
         if method.resource == "sea" {
-            *remaining_sea -= 4;
-            used_sea += 4;
+            used_sea = used_sea.saturating_add(1);
         } else if let Some(terrain) = terrain.as_ref() {
-            let cells = land
-                .usable
+            let fertility = land
+                .fertility_pm
                 .get_mut(terrain)
                 .expect("selected terrain exists");
-            *cells -= u32::from(building.land_per_level);
-            *farming_cells -= u32::from(building.land_per_level);
-            used_land += u32::from(building.land_per_level);
+            let cost = u64::from(building.land_per_level) * 1000;
+            *fertility -= cost;
+            used_land = used_land.saturating_add(u32::from(building.land_per_level));
         }
         for (good_id, quantity) in &method.annual_output {
-            let produced =
-                starting_method_output(rules, method, good_id, *quantity, terrain.as_deref())?;
+            let produced = starting_method_output(
+                rules,
+                method,
+                good_id,
+                *quantity,
+                terrain.as_deref(),
+                quality_pm,
+            )?;
             let produced = u64::try_from(produced)
                 .map_err(|_| missing_data("projection".to_owned(), "annual output exceeds u64"))?;
             let current = output.entry(good_id.clone()).or_default();
@@ -1389,17 +1574,37 @@ fn starting_method_output(
     good_id: &str,
     base_output: u64,
     terrain: Option<&str>,
+    quality_pm: u16,
 ) -> Result<u128, DataError> {
     let suitability = method_suitability_pm(rules, method, good_id, terrain);
-    u128::from(base_output)
+    let mut numerator = u128::from(base_output)
         .checked_mul(u128::from(suitability))
         .ok_or_else(|| {
             missing_data(
                 format!("buildings.methods.{}.annual_output.{good_id}", method.id),
                 "annual output estimate overflow",
             )
-        })
-        .map(|output| output / 1000)
+        })?;
+    let mut denominator = 1000_u128;
+    if method.resource != "sea" {
+        numerator = numerator
+            .checked_mul(u128::from(quality_pm))
+            .ok_or_else(|| {
+                missing_data(
+                    format!("buildings.methods.{}.annual_output.{good_id}", method.id),
+                    "fertility scaled output overflow",
+                )
+            })?;
+        denominator = denominator
+            .checked_mul(u128::from(rules.fertility_reference_pm))
+            .ok_or_else(|| {
+                missing_data(
+                    "fertility_reference_pm".to_owned(),
+                    "output denominator overflow",
+                )
+            })?;
+    }
+    Ok(numerator / denominator)
 }
 
 fn building_coverage_pm(
@@ -2005,10 +2210,15 @@ fn normalized_diet_shares(
         .map_err(|problem| missing_data("diet profile".to_owned(), problem))
 }
 
-fn choose_terrain(rules: &Rules, method: &Method, land: &LandCounts) -> Option<String> {
+fn choose_terrain(
+    rules: &Rules,
+    method: &Method,
+    land: &LandCounts,
+    fertility_needed: u64,
+) -> Option<String> {
     let mut best: Option<(u128, usize, String)> = None;
     for (index, terrain) in rules.terrain_order.iter().enumerate() {
-        if land.usable.get(terrain).copied().unwrap_or(0) < 2 {
+        if land.fertility_pm.get(terrain).copied().unwrap_or(0) < fertility_needed {
             continue;
         }
         let suitability = rules.suitability.get(terrain);
@@ -2863,6 +3073,10 @@ pub struct PlaceState {
     pub buildings: Vec<BuildingState>,
     /// Saved local prices in good order, represented in thousandths.
     pub prices_milli: Vec<u64>,
+    /// Saved area prepared for construction, in square metres.
+    pub prepared_m2: u64,
+    /// Saved development in thousandths.
+    pub development_pm: u32,
     /// Signed daily price-drift carries in good order, with denominator 1000.
     pub price_drift_carries: Vec<i64>,
     /// Display-only monthly event counters.
@@ -4063,14 +4277,28 @@ fn consume_pop_tracked(
 /// # Errors
 /// Refuses malformed saved dimensions, missing seasonal data, or checked arithmetic overflow;
 /// on refusal, `state` is unchanged.
-#[expect(
-    clippy::too_many_lines,
-    reason = "The first-of-month order keeps production, herd updates, payday and storehouse accounting in one rollback boundary."
-)]
 pub fn run_monthly_production(
     rules: &Rules,
     state: &mut EconomyState,
     date: Date,
+) -> Result<ProductionLedger, DataError> {
+    run_monthly_production_with_quality(rules, state, date, &BTreeMap::new())
+}
+
+/// Monthly production with map-derived farmland quality per place id.
+///
+/// # Errors
+/// Refuses malformed saved state, missing seasonal data, or checked arithmetic overflow;
+/// on refusal, `state` is unchanged.
+#[expect(
+    clippy::too_many_lines,
+    reason = "The first-of-month order keeps production, herd updates, payday and storehouse accounting in one rollback boundary."
+)]
+pub fn run_monthly_production_with_quality(
+    rules: &Rules,
+    state: &mut EconomyState,
+    date: Date,
+    quality_by_place: &BTreeMap<String, u16>,
 ) -> Result<ProductionLedger, DataError> {
     if date.day != 1 {
         return Ok(ProductionLedger::new(rules.goods.len()));
@@ -4079,6 +4307,10 @@ pub fn run_monthly_production(
     let mut next = state.clone();
     let mut ledger = ProductionLedger::new(rules.goods.len());
     for place in &mut next.places {
+        let quality_pm = quality_by_place
+            .get(&place.id)
+            .copied()
+            .unwrap_or(rules.fertility_reference_pm);
         roll_counter_month(&mut place.counters);
         for pop in &mut place.pops {
             roll_counter_month(&mut pop.counters);
@@ -4220,11 +4452,18 @@ pub fn run_monthly_production(
                     );
                     let suitability =
                         u128::from(building.method_suitability[method_index][good_index]);
+                    let farming = method.resource != "sea";
+                    let (quality_factor, reference_factor) = if farming {
+                        reduced_ratio(quality_pm, rules.fertility_reference_pm)
+                    } else {
+                        (1, 1)
+                    };
                     let numerator = u128::from(*annual)
                         .checked_mul(suitability)
                         .and_then(|value| value.checked_mul(month_share))
                         .and_then(|value| value.checked_mul(u128::from(method_staffed)))
                         .and_then(|value| value.checked_mul(u128::from(coverage_efficiency)))
+                        .and_then(|value| value.checked_mul(u128::from(quality_factor)))
                         .and_then(|value| {
                             value.checked_add(u128::from(
                                 building.production_carries[method_index][good_index],
@@ -4241,6 +4480,7 @@ pub fn run_monthly_production(
                         })?;
                     let denominator = u128::from(method_positions)
                         .checked_mul(1_000_000_000)
+                        .and_then(|value| value.checked_mul(u128::from(reference_factor)))
                         .ok_or_else(|| {
                             missing_data(
                                 "production.denominator".to_owned(),
@@ -4676,14 +4916,44 @@ pub fn run_daily_economy(
     state: &mut EconomyState,
     date: Date,
 ) -> Result<ProductionLedger, DataError> {
+    run_daily_economy_with_quality(rules, state, date, &BTreeMap::new())
+}
+
+/// Daily economy tick with the map-derived farmland quality for each place.
+///
+/// # Errors
+/// Returns the first named production or consumption data error and leaves `state` unchanged.
+pub fn run_daily_economy_with_quality(
+    rules: &Rules,
+    state: &mut EconomyState,
+    date: Date,
+    quality_by_place: &BTreeMap<String, u16>,
+) -> Result<ProductionLedger, DataError> {
     let mut next = state.clone();
     update_daily_prices(rules, &mut next)?;
-    let mut ledger = run_monthly_production(rules, &mut next, date)?;
+    let mut ledger = run_monthly_production_with_quality(rules, &mut next, date, quality_by_place)?;
     let (intake_pm, daily_consumption) = run_daily_consumption_with_ledger(rules, &mut next, date)?;
     ledger.intake_pm = intake_pm;
     ledger.daily_consumption = Some(daily_consumption);
     *state = next;
     Ok(ledger)
+}
+
+fn reduced_ratio(value: u16, reference: u16) -> (u16, u16) {
+    if value == 0 {
+        return (0, 1);
+    }
+    let divisor = gcd_u16(value, reference);
+    (value / divisor, reference / divisor)
+}
+
+fn gcd_u16(mut left: u16, mut right: u16) -> u16 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left.max(1)
 }
 
 impl Canonical for EconomyState {
@@ -4731,6 +5001,8 @@ impl Canonical for EconomyState {
                 building.fee_carries.encode(out)?;
             }
             place.prices_milli.encode(out)?;
+            place.prepared_m2.encode(out)?;
+            place.development_pm.encode(out)?;
             place.price_drift_carries.encode(out)?;
             encode_counters(&place.counters, out)?;
         }
@@ -4792,6 +5064,8 @@ impl Canonical for EconomyState {
                 pops,
                 buildings,
                 prices_milli: Vec::<u64>::decode(input)?,
+                prepared_m2: u64::decode(input)?,
+                development_pm: u32::decode(input)?,
                 price_drift_carries: Vec::<i64>::decode(input)?,
                 counters: decode_counters(input)?,
             });
@@ -4861,6 +5135,104 @@ fn decode_employment(input: &mut Reader<'_>) -> Result<Vec<Employment>, Canonica
 mod tests {
     use super::*;
 
+    #[test]
+    fn buildable_area_uses_all_land_and_scales_with_checked_development() {
+        let rules = tiny_rules();
+        let land = LandCounts {
+            land_cells: BTreeMap::from([("pasture".to_owned(), 1)]),
+            fertility_pm: BTreeMap::new(),
+            fertile_cells: 0,
+            sea: 0,
+        };
+        assert_eq!(max_buildable_m2(&rules, 1000, &land).unwrap(), 20_300);
+        assert_eq!(max_buildable_m2(&rules, 500, &land).unwrap(), 10_150);
+        assert_eq!(max_buildable_m2(&rules, 2000, &land).unwrap(), 40_600);
+        let mixed = LandCounts {
+            land_cells: BTreeMap::from([("pasture".to_owned(), 2), ("bog".to_owned(), 3)]),
+            ..land.clone()
+        };
+        assert_eq!(max_buildable_m2(&rules, 1000, &mixed).unwrap(), 21_050);
+        let huge = LandCounts {
+            land_cells: BTreeMap::from([("pasture".to_owned(), u32::MAX)]),
+            ..land
+        };
+        let mut huge_rules = rules.clone();
+        huge_rules
+            .buildable_per_cell_m2
+            .insert("pasture".to_owned(), u64::MAX);
+        assert!(max_buildable_m2(&huge_rules, u32::MAX, &huge).is_err());
+    }
+
+    #[test]
+    fn farmland_quality_is_the_floored_mean_of_fertile_cells_only() {
+        assert_eq!(mean_fertility(&LandCounts::default()).unwrap(), 0);
+        assert_eq!(
+            mean_fertility(&LandCounts {
+                fertility_pm: BTreeMap::from([("pasture".to_owned(), 4)]),
+                fertile_cells: 1,
+                ..LandCounts::default()
+            })
+            .unwrap(),
+            4
+        );
+        assert_eq!(
+            mean_fertility(&LandCounts {
+                fertility_pm: BTreeMap::from(
+                    [("pasture".to_owned(), 8), ("forest".to_owned(), 5),]
+                ),
+                fertile_cells: 3,
+                ..LandCounts::default()
+            })
+            .unwrap(),
+            4
+        );
+    }
+
+    #[test]
+    fn starting_footprints_are_saved_and_construction_obeys_the_smaller_cap() {
+        let data = tiny_start_data();
+        let location = StartLocation {
+            id: "built".to_owned(),
+            kind: "ringfort".to_owned(),
+            size: 1,
+            land: LandCounts {
+                land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
+                fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
+                fertile_cells: 8,
+                sea: 0,
+            },
+        };
+        let rules = tiny_rules();
+        let (state, report) =
+            starting_state(&rules, &data, std::slice::from_ref(&location)).unwrap();
+        assert!(report.is_empty());
+        let place = &state.places[0];
+        assert_eq!(place.prepared_m2, 22_200);
+        assert_eq!(place.development_pm, 1000);
+        let footprint = building_footprint(&rules, &place.buildings).unwrap();
+        let mut switched = place.buildings.clone();
+        switched[0].method_levels = vec![0, 1];
+        assert_eq!(building_footprint(&rules, &switched).unwrap(), footprint);
+        assert!(can_build(&rules, place, &location.land, 20_000).unwrap());
+        assert!(!can_build(&rules, place, &location.land, 20_001).unwrap());
+
+        let mut overbuilt_rules = rules;
+        overbuilt_rules
+            .footprint_m2
+            .insert("farm".to_owned(), 30_000);
+        let (overbuilt, report) =
+            starting_state(&overbuilt_rules, &data, std::slice::from_ref(&location)).unwrap();
+        assert_eq!(
+            report,
+            [
+                "built starts over building cap: footprint 30200 m², prepared 50200 m², max_buildable 22400 m²"
+            ]
+        );
+        let place = &overbuilt.places[0];
+        assert!(!can_build(&overbuilt_rules, place, &location.land, 0).unwrap());
+        assert!(!can_build(&overbuilt_rules, place, &location.land, 1).unwrap());
+    }
+
     type RuleMutation = Box<dyn Fn(&mut Rules)>;
 
     fn tiny_rules() -> Rules {
@@ -4890,7 +5262,18 @@ mod tests {
             starting_needs_pm: BTreeMap::from([("peasant".to_owned(), [1000, 0, 0])]),
             cultures: vec!["connachta".to_owned()],
             religions: vec!["christianity".to_owned()],
-            terrain_order: vec!["pasture".to_owned()],
+            terrain_order: vec!["pasture".to_owned(), "bog".to_owned()],
+            footprint_m2: BTreeMap::from([
+                ("farm".to_owned(), 2000),
+                ("storehouse".to_owned(), 200),
+            ]),
+            buildable_base_m2: 20_000,
+            buildable_per_cell_m2: BTreeMap::from([
+                ("pasture".to_owned(), 300),
+                ("bog".to_owned(), 150),
+            ]),
+            starting_development_pm: 1000,
+            fertility_reference_pm: 550,
             buildings: vec![
                 BuildingType {
                     id: "farm".to_owned(),
@@ -5083,6 +5466,8 @@ mod tests {
                 pops: vec![drawer, starver],
                 buildings: vec![storehouse, farm],
                 prices_milli: vec![1000; goods],
+                prepared_m2: 0,
+                development_pm: 0,
                 price_drift_carries: vec![0; goods],
                 counters: CounterBuckets::default(),
             }],
@@ -5227,6 +5612,8 @@ mod tests {
                     },
                 ],
                 prices_milli: vec![0; goods],
+                prepared_m2: 0,
+                development_pm: 0,
                 price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
@@ -5449,7 +5836,7 @@ mod tests {
                     },
                 )]),
             )]),
-            places: ["fort", "island", "coast"]
+            places: ["fort", "island", "coast", "inland", "built", "farm"]
                 .into_iter()
                 .map(|id| (id.to_owned(), ordinary_place()))
                 .collect(),
@@ -5573,6 +5960,8 @@ mod tests {
                 .iter()
                 .map(|good| good.base_price * 1000)
                 .collect(),
+            prepared_m2: 0,
+            development_pm: 0,
             price_drift_carries: vec![0; rules.goods.len()],
             counters: CounterBuckets::default(),
         };
@@ -5698,6 +6087,8 @@ mod tests {
                 .iter()
                 .map(|good| good.base_price * 1000)
                 .collect(),
+            prepared_m2: 0,
+            development_pm: 0,
             price_drift_carries: vec![0; rules.goods.len()],
             counters: CounterBuckets::default(),
         };
@@ -5725,6 +6116,8 @@ mod tests {
             }],
             buildings: Vec::new(),
             prices_milli: vec![100_000],
+            prepared_m2: 0,
+            development_pm: 0,
             price_drift_carries: vec![0],
             counters: CounterBuckets::default(),
         };
@@ -6038,6 +6431,36 @@ mod tests {
     )]
     fn rules_validation_refusals_are_table_driven_and_name_the_entry() {
         let cases: Vec<(&str, RuleMutation)> = vec![
+            (
+                "buildable_base_m2",
+                Box::new(|rules| rules.buildable_base_m2 = 0),
+            ),
+            (
+                "starting_development_pm",
+                Box::new(|rules| rules.starting_development_pm = 0),
+            ),
+            (
+                "fertility_reference_pm",
+                Box::new(|rules| rules.fertility_reference_pm = 0),
+            ),
+            (
+                "footprint_m2.farm",
+                Box::new(|rules| {
+                    rules.footprint_m2.insert("farm".to_owned(), -1);
+                }),
+            ),
+            (
+                "footprint_m2.farm",
+                Box::new(|rules| {
+                    rules.footprint_m2.remove("farm");
+                }),
+            ),
+            (
+                "buildable_per_cell_m2.pasture",
+                Box::new(|rules| {
+                    rules.buildable_per_cell_m2.remove("pasture");
+                }),
+            ),
             ("price_k_pm", Box::new(|rules| rules.price_k_pm = 10_001)),
             ("goods[0]", Box::new(|rules| rules.goods[0].base_price = 0)),
             (
@@ -6371,7 +6794,9 @@ mod tests {
             kind: "ringfort".to_owned(),
             size: 1,
             land: LandCounts {
-                usable: BTreeMap::from([("pasture".to_owned(), 2)]),
+                land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
+                fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
+                fertile_cells: 8,
                 sea: 0,
             },
         };
@@ -6457,6 +6882,8 @@ mod tests {
                     },
                 ],
                 prices_milli: vec![100_000],
+                prepared_m2: 22_200,
+                development_pm: 1000,
             }]
         );
     }
@@ -6485,7 +6912,9 @@ mod tests {
                 kind: "ringfort".to_owned(),
                 size: 1,
                 land: LandCounts {
-                    usable: BTreeMap::from([("pasture".to_owned(), 4)]),
+                    land_cells: BTreeMap::from([("pasture".to_owned(), 4)]),
+                    fertility_pm: BTreeMap::from([("pasture".to_owned(), 4000)]),
+                    fertile_cells: 4,
                     sea: 0,
                 },
             }],
@@ -6589,6 +7018,106 @@ mod tests {
     }
 
     #[test]
+    fn monthly_farm_output_scales_by_fertility_without_changing_the_reference_carry() {
+        let run_year = |quality_pm: Option<u16>| {
+            let mut rules = tiny_rules();
+            rules.seasons.insert(
+                "food".to_owned(),
+                vec![83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 87],
+            );
+            rules.seasons.insert(
+                "herd_births".to_owned(),
+                vec![1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            );
+            let (mut state, _) = starting_state(
+                &rules,
+                &tiny_start_data(),
+                &[StartLocation {
+                    id: "farm".to_owned(),
+                    kind: "ringfort".to_owned(),
+                    size: 1,
+                    land: LandCounts {
+                        land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
+                        fertility_pm: BTreeMap::from([("pasture".to_owned(), 2_000)]),
+                        fertile_cells: 2,
+                        sea: 0,
+                    },
+                }],
+            )
+            .unwrap();
+            let qualities = quality_pm
+                .map(|quality| BTreeMap::from([("farm".to_owned(), quality)]))
+                .unwrap_or_default();
+            let mut output = 0_u64;
+            let mut final_carry = 0_u64;
+            for month in 1..=12 {
+                let ledger = if quality_pm.is_some() {
+                    run_monthly_production_with_quality(
+                        &rules,
+                        &mut state,
+                        Date {
+                            year: 768,
+                            month,
+                            day: 1,
+                            hour: 12,
+                        },
+                        &qualities,
+                    )
+                } else {
+                    run_monthly_production(
+                        &rules,
+                        &mut state,
+                        Date {
+                            year: 768,
+                            month,
+                            day: 1,
+                            hour: 12,
+                        },
+                    )
+                }
+                .unwrap();
+                output += ledger.produced[0];
+                final_carry = state.places[0].buildings[0].production_carries[0][0];
+            }
+            (output, final_carry)
+        };
+        let reference = run_year(None);
+        assert_eq!(run_year(Some(550)), reference);
+        assert_eq!(run_year(Some(1100)).0, reference.0 * 2);
+        assert_eq!(run_year(Some(0)), (0, 0));
+    }
+
+    #[test]
+    fn zero_fertility_suppresses_farm_output_but_keeps_fishing_unchanged() {
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        let mut reference = shipped_production_fixture(&rules);
+        reference.places[0].buildings[1].method_levels = vec![1, 0];
+        let mut barren = reference.clone();
+        let date = Date {
+            year: 768,
+            month: 9,
+            day: 1,
+            hour: 12,
+        };
+        let baseline = run_monthly_production(&rules, &mut reference, date).unwrap();
+        let barren = run_monthly_production_with_quality(
+            &rules,
+            &mut barren,
+            date,
+            &BTreeMap::from([("fixture".to_owned(), 0)]),
+        )
+        .unwrap();
+        let good_index = |id: &str| rules.goods.iter().position(|good| good.id == id).unwrap();
+        assert_eq!(barren.produced[good_index("apples")], 0);
+        assert!(baseline.produced[good_index("apples")] > 0);
+        assert_eq!(
+            barren.produced[good_index("fish")],
+            baseline.produced[good_index("fish")]
+        );
+    }
+
+    #[test]
     fn conservation_ledger_balances_goods_and_herds_after_monthly_systems() {
         let mut rules = tiny_rules();
         rules.goods[0].pop_limit_milli = 1_000_000_000;
@@ -6608,7 +7137,9 @@ mod tests {
                 kind: "ringfort".to_owned(),
                 size: 1,
                 land: LandCounts {
-                    usable: BTreeMap::from([("pasture".to_owned(), 4)]),
+                    land_cells: BTreeMap::from([("pasture".to_owned(), 4)]),
+                    fertility_pm: BTreeMap::from([("pasture".to_owned(), 4000)]),
+                    fertile_cells: 4,
                     sea: 0,
                 },
             }],
@@ -6748,6 +7279,7 @@ mod tests {
                 methods: vec![rules.buildings[0].methods[0].clone()],
             },
         );
+        rules.footprint_m2.insert("holdings".to_owned(), 4000);
         let mut data = tiny_start_data();
         let defaults = data
             .defaults
@@ -6768,7 +7300,9 @@ mod tests {
                 kind: "ringfort".to_owned(),
                 size: 1,
                 land: LandCounts {
-                    usable: BTreeMap::from([("pasture".to_owned(), 6)]),
+                    land_cells: BTreeMap::from([("pasture".to_owned(), 6)]),
+                    fertility_pm: BTreeMap::from([("pasture".to_owned(), 6000)]),
+                    fertile_cells: 6,
                     sea: 0,
                 },
             }],
@@ -6797,12 +7331,21 @@ mod tests {
         let rules = tiny_rules();
         let method = &rules.buildings[0].methods[0];
         assert_eq!(
-            starting_method_output(&rules, method, "beef", 1100, Some("pasture")),
+            starting_method_output(&rules, method, "beef", 1100, Some("pasture"), 550),
             Ok(825)
         );
         assert_eq!(
-            starting_method_output(&rules, method, "food", 300, Some("pasture")),
+            starting_method_output(&rules, method, "food", 300, Some("pasture"), 550),
             Ok(300)
+        );
+        assert_eq!(
+            starting_method_output(&rules, method, "food", 300, Some("pasture"), 275),
+            Ok(150)
+        );
+        assert!(
+            starting_method_output(&rules, method, "food", 300, Some("pasture"), 275).unwrap()
+                < starting_method_output(&rules, method, "food", 300, Some("pasture"), 550)
+                    .unwrap()
         );
     }
 
@@ -6922,11 +7465,16 @@ mod tests {
         );
         let method = &rules.buildings[0].methods[0];
         let land = LandCounts {
-            usable: BTreeMap::from([("pasture".to_owned(), 2), ("forest".to_owned(), 2)]),
+            land_cells: BTreeMap::from([("pasture".to_owned(), 2), ("forest".to_owned(), 2)]),
+            fertility_pm: BTreeMap::from([
+                ("pasture".to_owned(), 2000),
+                ("forest".to_owned(), 2000),
+            ]),
+            fertile_cells: 4,
             sea: 0,
         };
         assert_eq!(
-            choose_terrain(&rules, method, &land).as_deref(),
+            choose_terrain(&rules, method, &land, 2000).as_deref(),
             Some("forest")
         );
 
@@ -6941,13 +7489,61 @@ mod tests {
             .unwrap()
             .insert("crops".to_owned(), 100);
         assert_eq!(
-            choose_terrain(&rules, method, &land).as_deref(),
+            choose_terrain(&rules, method, &land, 2000).as_deref(),
             Some("pasture")
         );
     }
 
     #[test]
-    fn coastal_method_uses_the_shared_sea_cap_and_fishing_has_no_herds() {
+    fn field_room_refuses_1999_and_consumes_exactly_2000_fertility() {
+        let rules = tiny_rules();
+        let building = &rules.buildings[0];
+        let mut remaining_sea = 0;
+        let mut just_short = LandCounts {
+            land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
+            fertility_pm: BTreeMap::from([("pasture".to_owned(), 1999)]),
+            fertile_cells: 2,
+            sea: 0,
+        };
+        let refused = assign_building_levels(
+            &rules,
+            building,
+            1,
+            &mut just_short,
+            &mut remaining_sea,
+            &BTreeMap::new(),
+            &[],
+            false,
+            550,
+        )
+        .unwrap();
+        assert_eq!(refused.method_levels, [0]);
+        assert_eq!(just_short.fertility_pm["pasture"], 1999);
+
+        let mut exact_room = LandCounts {
+            land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
+            fertility_pm: BTreeMap::from([("pasture".to_owned(), 2000)]),
+            fertile_cells: 2,
+            sea: 0,
+        };
+        let accepted = assign_building_levels(
+            &rules,
+            building,
+            1,
+            &mut exact_room,
+            &mut remaining_sea,
+            &BTreeMap::new(),
+            &[],
+            false,
+            550,
+        )
+        .unwrap();
+        assert_eq!(accepted.method_levels, [1]);
+        assert_eq!(exact_room.fertility_pm["pasture"], 0);
+    }
+
+    #[test]
+    fn coastal_methods_need_nearby_sea_but_one_sea_cell_allows_many_levels() {
         let mut rules = tiny_rules();
         rules.goods.push(Good {
             id: "fish".to_owned(),
@@ -6980,6 +7576,23 @@ mod tests {
             .get_mut("1")
             .unwrap()
             .farm_levels = 3;
+        let (no_sea, _) = starting_state(
+            &rules,
+            &data,
+            &[StartLocation {
+                id: "inland".to_owned(),
+                kind: "ringfort".to_owned(),
+                size: 1,
+                land: LandCounts {
+                    land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
+                    fertility_pm: BTreeMap::from([("pasture".to_owned(), 2000)]),
+                    fertile_cells: 2,
+                    sea: 0,
+                },
+            }],
+        )
+        .unwrap();
+        assert_eq!(no_sea.places[0].buildings[0].method_levels[1], 0);
         let (state, report) = starting_state(
             &rules,
             &data,
@@ -6988,23 +7601,24 @@ mod tests {
                 kind: "ringfort".to_owned(),
                 size: 1,
                 land: LandCounts {
-                    usable: BTreeMap::from([("pasture".to_owned(), 2)]),
-                    sea: 4,
+                    land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
+                    fertility_pm: BTreeMap::from([("pasture".to_owned(), 2000)]),
+                    fertile_cells: 2,
+                    sea: 1,
                 },
             }],
         )
         .unwrap();
-        assert_eq!(
-            report,
-            ["coast farm: cut levels 3 -> 2 (no method has enough land or sea)"]
+        assert!(
+            report.is_empty(),
+            "one sea cell must not cap coastal levels: {report:?}"
         );
         let farm = &state.places[0].buildings[0];
         assert_eq!(
-            farm.method_levels,
-            [1, 1],
-            "one level chooses fish, then the shared sea limit leaves the land method"
+            farm.method_levels[1], 3,
+            "fishing levels are not capped by sea/4"
         );
-        assert_eq!(farm.levels, 2);
+        assert_eq!(farm.levels, 3);
     }
 
     #[test]
@@ -7026,6 +7640,7 @@ mod tests {
                 methods: vec![farm_method],
             },
         );
+        rules.footprint_m2.insert("holdings".to_owned(), 4000);
         rules.pop_types.push(PopType {
             id: "monk".to_owned(),
             dependent_pm: 100,
@@ -7081,7 +7696,9 @@ mod tests {
                 kind: "ringfort".to_owned(),
                 size: 1,
                 land: LandCounts {
-                    usable: BTreeMap::from([("pasture".to_owned(), 2)]),
+                    land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
+                    fertility_pm: BTreeMap::from([("pasture".to_owned(), 2000)]),
+                    fertile_cells: 2,
                     sea: 0,
                 },
             }],
@@ -7215,6 +7832,8 @@ mod tests {
                     },
                 ],
                 prices_milli: vec![120_000],
+                prepared_m2: 23_456,
+                development_pm: 875,
             }],
         };
         let bytes = state.to_bytes().unwrap();
@@ -7320,7 +7939,9 @@ mod tests {
                 kind: "ringfort".to_owned(),
                 size: 1,
                 land: LandCounts {
-                    usable: BTreeMap::from([("pasture".to_owned(), 2)]),
+                    land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
+                    fertility_pm: BTreeMap::from([("pasture".to_owned(), 2000)]),
+                    fertile_cells: 2,
                     sea: 0,
                 },
             }],
@@ -7467,6 +8088,8 @@ mod tests {
         holdings_type.owner_workers =
             BTreeMap::from([("monk".to_owned(), 5), ("labourer".to_owned(), 10)]);
         rules.buildings = vec![farm_type.clone(), holdings_type.clone()];
+        rules.footprint_m2 =
+            BTreeMap::from([("farm".to_owned(), 2000), ("holdings".to_owned(), 4000)]);
 
         let pop = |workers, employment| PopState {
             kind: "peasant".to_owned(),
@@ -7540,6 +8163,8 @@ mod tests {
                 ],
                 buildings: vec![building("farm", 500_000), building("holdings", 700_000)],
                 prices_milli: vec![0],
+                prepared_m2: 0,
+                development_pm: 0,
                 price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
@@ -7622,6 +8247,8 @@ mod tests {
                     fee_carries: Vec::new(),
                 }],
                 prices_milli: vec![0; rules.goods.len()],
+                prepared_m2: 0,
+                development_pm: 0,
                 price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
@@ -7899,6 +8526,8 @@ mod tests {
                 pops: vec![pop],
                 buildings: Vec::new(),
                 prices_milli: vec![1000],
+                prepared_m2: 0,
+                development_pm: 0,
                 price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
@@ -7954,6 +8583,8 @@ mod tests {
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![100_000],
+                prepared_m2: 0,
+                development_pm: 0,
                 price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
@@ -8018,6 +8649,8 @@ mod tests {
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000; 2],
+                prepared_m2: 0,
+                development_pm: 0,
                 price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
@@ -8077,6 +8710,8 @@ mod tests {
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000; goods],
+                prepared_m2: 0,
+                development_pm: 0,
                 price_drift_carries: vec![0; goods],
                 counters: CounterBuckets::default(),
             }],
@@ -8134,6 +8769,8 @@ mod tests {
                 pops: vec![pop.clone()],
                 buildings: Vec::new(),
                 prices_milli: vec![1000, 1000],
+                prepared_m2: 0,
+                development_pm: 0,
                 price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
@@ -8228,6 +8865,8 @@ mod tests {
             pops: vec![pop],
             buildings: vec![storehouse, farm],
             prices_milli: vec![1000],
+            prepared_m2: 0,
+            development_pm: 0,
             price_drift_carries: Vec::new(),
             counters: CounterBuckets::default(),
         };
@@ -8318,6 +8957,8 @@ mod tests {
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000, 1000],
+                prepared_m2: 0,
+                development_pm: 0,
                 price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
@@ -8393,6 +9034,8 @@ mod tests {
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000; 3],
+                prepared_m2: 0,
+                development_pm: 0,
                 price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
@@ -8482,6 +9125,8 @@ mod tests {
                 pops: vec![pop],
                 buildings: vec![building],
                 prices_milli: vec![1000; goods],
+                prepared_m2: 0,
+                development_pm: 0,
                 price_drift_carries: vec![0; goods],
                 counters: CounterBuckets::default(),
             }
@@ -8642,6 +9287,8 @@ mod tests {
             pops: vec![pop],
             buildings: vec![building],
             prices_milli: vec![1000],
+            prepared_m2: 0,
+            development_pm: 0,
             price_drift_carries: Vec::new(),
             counters: CounterBuckets::default(),
         };

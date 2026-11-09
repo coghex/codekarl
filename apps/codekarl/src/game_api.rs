@@ -426,6 +426,15 @@ pub(crate) fn place_table(place: &PlaceView) -> ConfigValue {
             integer(place.storage_capacity_ml / 1000),
         ),
         ("overflow_lost", integer(place.overflow_lost)),
+        ("footprint_m2", integer(place.footprint_m2)),
+        ("prepared_m2", integer(place.prepared_m2)),
+        ("max_buildable_m2", integer(place.max_buildable_m2)),
+        ("development_pm", integer(u64::from(place.development_pm))),
+        (
+            "farmland_quality_pm",
+            integer(u64::from(place.farmland_quality_pm)),
+        ),
+        ("field_room", integer(place.field_room)),
         (
             "prices",
             ConfigValue::Array(
@@ -673,10 +682,16 @@ mod tests {
             [
                 "buildings",
                 "dependents",
+                "development_pm",
+                "farmland_quality_pm",
+                "field_room",
                 "food_days",
+                "footprint_m2",
                 "id",
+                "max_buildable_m2",
                 "overflow_lost",
                 "pops",
+                "prepared_m2",
                 "prices",
                 "storage_capacity_l",
                 "storage_used_l",
@@ -730,6 +745,12 @@ mod tests {
             overflow_lost: 0,
             projected_yield: 0,
             has_economy: true,
+            footprint_m2: 4_200,
+            prepared_m2: 24_200,
+            max_buildable_m2: 25_000,
+            development_pm: 1000,
+            farmland_quality_pm: 550,
+            field_room: 12,
             pops: vec![PopView {
                 kind: "peasant".to_owned(),
                 culture: "ulaid".to_owned(),
@@ -767,6 +788,12 @@ mod tests {
         };
         assert_eq!(fields["storage_used_l"], ConfigValue::Integer(5_400));
         assert_eq!(fields["storage_capacity_l"], ConfigValue::Integer(86_400));
+        assert_eq!(fields["footprint_m2"], ConfigValue::Integer(4_200));
+        assert_eq!(fields["prepared_m2"], ConfigValue::Integer(24_200));
+        assert_eq!(fields["max_buildable_m2"], ConfigValue::Integer(25_000));
+        assert_eq!(fields["development_pm"], ConfigValue::Integer(1000));
+        assert_eq!(fields["farmland_quality_pm"], ConfigValue::Integer(550));
+        assert_eq!(fields["field_room"], ConfigValue::Integer(12));
         let ConfigValue::Array(prices) = &fields["prices"] else {
             panic!("an array");
         };
