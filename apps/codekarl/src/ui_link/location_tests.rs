@@ -1,0 +1,521 @@
+//! The location panel (milestone 9, slice 3) in a real UI VM: the shipped `scripts/ui/main.lua` run over a stub `game` whose
+//! `game.place` serves fixture views, with the panel's list rows recorded as the lists are created and updated.
+//!
+//! A script step runs in the VM when the test posts `Opened`; the tests read what the steps `note`d. Nothing sleeps.
+
+use std::fmt::Write;
+
+use ck_lua::ConfigValue;
+use ck_window::PointerEvent;
+
+use super::group_tests::Rig;
+use super::widget_witness_tests::points;
+
+/// The Lua before `main.lua`: the stub `game`, the fixture views (revision 1 and 2 of the place `rowan`, and an empty place) and
+/// observers of the panel's lists, tabs and window.
+const PREFIX: &str = r#"
+callbacks = {}
+place_calls = {}
+local function price(good, milli, base) return {good = good, price_milli = milli, base = base} end
+local function rowan(workers, births)
+  return {
+    id = "rowan", workers = workers, dependents = 40, food_days = 215,
+    storage_used_l = 5400, storage_capacity_l = 86400, overflow_lost = 0,
+    prices = {price("oats", 100000, 100), price("ale", 2500, 2)},
+    pops = {{kind = "peasant", culture = "ulaid", religion = "christianity", workers = workers, dependents = 40, employed = 70,
+      unemployed = workers - 70, food_days = 215, necessities = 0, niceties = 0, luxuries = 0, satisfaction = 0,
+      births = births, deaths = 1}},
+    buildings = {
+      {kind = "farm", levels = 3, methods = {{id = "mixed_farming", levels = 3}}, filled = 25, open = 5,
+        herds = {{species = "cattle", head = 27, maximum = 36}}, store_used_l = 1, store_capacity_l = 3500, wage = 0},
+      {kind = "storehouse", levels = 1, methods = {}, filled = 0, open = 2, herds = {}, store_used_l = 0,
+        store_capacity_l = 36000, wage = 0},
+    },
+  }
+end
+local nobody = {
+  id = "nobody", workers = 0, dependents = 0, food_days = 0, storage_used_l = 0, storage_capacity_l = 0, overflow_lost = 0,
+  prices = {}, pops = {}, buildings = {},
+}
+-- A place whose pop's culture is a long word of fada-bearing letters, which wrapping must cut between characters.
+local fada = rowan(80, 2)
+fada.id = "fada"
+fada.pops[1].culture = string.rep("\u{D3}", 40)
+VIEWS = {[1] = {rowan = rowan(80, 2), nobody = nobody, fada = fada}, [2] = {rowan = rowan(90, 0), nobody = nobody}}
+game = {
+  on_time = function(callback) callbacks.time = callback end,
+  on_select = function(callback) callbacks.select = callback end,
+  on_hover = function(callback) callbacks.hover = callback end,
+  control = function() end,
+  places = function() return {} end,
+  place = function(id, revision)
+    place_calls[#place_calls + 1] = id .. "@" .. revision
+    local view = VIEWS[revision]
+    if view == nil or view[id] == nil then error("game.place: no " .. id .. " at " .. revision) end
+    return view[id]
+  end,
+}
+function note(text) window.record(text) end
+function time(hour, revision)
+  callbacks.time({year = 768, month = 1, day = 1, hour = hour, paused = false, speed = 1, economy_revision = revision})
+end
+function select_place(id, name) callbacks.select({id = id, name = name, kind = "town", size = 3}) end
+
+-- Every list's rows, as created and as replaced.
+local lists = require("lib.list")
+local real_list_new = lists.new
+lists.new = function(spec)
+  local created = real_list_new(spec)
+  note("rows " .. table.concat(created.items, "|"))
+  local real_set_items = created.set_items
+  function created:set_items(items)
+    note("rows " .. table.concat(items, "|"))
+    real_set_items(self, items)
+  end
+  list_object = created
+  return created
+end
+local tabs_library = require("lib.tabs")
+local real_tabs_new = tabs_library.new
+tabs_library.new = function(spec)
+  tabs_object = real_tabs_new(spec)
+  return tabs_object
+end
+local windows = require("lib.window")
+local real_windows_new = windows.new
+windows.new = function(spec)
+  panel_window = real_windows_new(spec)
+  return panel_window
+end
+-- The centre of each tab button, in window points, for the driver to click.
+function announce_tabs()
+  local x, y = panel_window:position()
+  for index, item in ipairs(tabs_object.items) do
+    local width, height = tabs_object.buttons[index]:size()
+    note(string.format("tab %s %d %d %s", item.key, x + tabs_object.buttons[index].x + width / 2,
+      y + tabs_object.buttons[index].y + height / 2, tabs_object.buttons[index].text or ""))
+  end
+end
+-- Whether the title and the tabs sit inside the panel without touching: the shown title ends before the first tab, the last tab
+-- ends inside the window, and the whole title is kept.
+function announce_fit(expected_title)
+  local width = panel_window:size()
+  local first = tabs_object.buttons[1]
+  local last = tabs_object.buttons[#tabs_object.buttons]
+  local last_width = last:size()
+  note(string.format("fit title=%s tabs_right=%s title_clear=%s", tostring(panel_window.title == expected_title),
+    tostring(last.x + last_width <= width), tostring(8 * require("lib.ui").P + panel_window.title_text_width <= first.x)))
+  note("tabs_left " .. tostring(first.x >= 0))
+  local apart = true
+  for index = 1, #tabs_object.buttons - 1 do
+    local button, width = tabs_object.buttons[index], tabs_object.buttons[index]:size()
+    apart = apart and button.x + width <= tabs_object.buttons[index + 1].x
+  end
+  apart = apart and last.x + last_width <= panel_window.outer_width and (panel_window.close_button == nil or last.x + last_width <= panel_window.close_button.x)
+  note("apart " .. tostring(apart))
+  note("shown " .. panel_window.shown_title)
+  note("list_rows " .. list_object.rows)
+end
+function announce_floor() note("floor " .. require("lib.location").min_width()) end
+function announce_geometry()
+  local x, y = panel_window:position()
+  local width, height = panel_window:size()
+  note(string.format("panel %d %d %d %d", x, y, width, height))
+end
+steps = {}
+"#;
+
+fn script(steps: &[&str]) -> String {
+    let main_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua");
+    let main = std::fs::read_to_string(main_path).expect("the production UI script");
+    let mut queued = String::new();
+    for step in steps {
+        writeln!(queued, "steps[#steps + 1] = function()\n{step}\nend")
+            .expect("a string takes text");
+    }
+    // `main.lua` registers its own `on_opened`; the step runner replaces it, after it.
+    format!(
+        "{PREFIX}\n{main}\n{queued}\nwindow.on_opened(function() table.remove(steps, 1)() end)\n"
+    )
+}
+
+/// A rig at 2 points per pixel, its window set to 1800 by 900 points: the left third is 600 points, wide enough for every fixture
+/// line without wrapping.
+fn rig(steps: &[&str]) -> Rig {
+    let mut rig = Rig::new_fixture_body_at_scale(&script(steps), 2);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    rig
+}
+
+fn notes(rig: &Rig) -> Vec<String> {
+    rig.tables
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter_map(|value| match value {
+            ConfigValue::String(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The lists' rows, in the order they were created or replaced, as text.
+fn rows(rig: &Rig) -> Vec<String> {
+    notes(rig)
+        .into_iter()
+        .filter_map(|line| line.strip_prefix("rows ").map(str::to_owned))
+        .collect()
+}
+
+fn tab_point(rig: &Rig, key: &str) -> (f64, f64) {
+    let prefix = format!("tab {key} ");
+    let line = notes(rig)
+        .into_iter()
+        .rev()
+        .find(|line| line.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("no tab {key}: {:?}", notes(rig)));
+    let mut parts = line[prefix.len()..].split_whitespace();
+    let x = parts.next().unwrap().parse().unwrap();
+    let y = parts.next().unwrap().parse().unwrap();
+    (x, y)
+}
+
+fn click_tab(rig: &mut Rig, key: &str) {
+    click_tab_at(rig, key, (1800, 900));
+}
+
+/// Clicks the tab `key` and delivers a frame at the window size `(width, height)`.
+fn click_tab_at(rig: &mut Rig, key: &str, (width, height): (u32, u32)) {
+    let (x, y) = tab_point(rig, key);
+    rig.feed(&[
+        PointerEvent::Down(points(x, y)),
+        PointerEvent::Up(points(x, y)),
+    ]);
+    // A frame at the rig's own size, so that the pointer is dispatched without the window being resized.
+    rig.deliver_fixture_frame_at(width, height, 2);
+}
+
+const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|food: 215 days|storage: 5400 / 86400 L|lost to overflow last month: 0|prices (base):|  oats 100 (100)|  ale 2.5 (2)";
+const POPS_ROWS: &str = "peasant ulaid christianity|  workers: 80|  dependents: 40|  employed: 70|  unemployed: 10|  food: 215 days|  needs: 0% 0% 0%|  satisfaction: 0|  births 2, deaths 1 ^";
+const BUILDINGS_ROWS: &str = "farm|  levels: mixed_farming 3|  positions: 25 filled, 5 open|  cattle: 27 / 36|  store: 1 / 3500 L|  wage: 0||storehouse|  levels: 1|  positions: 0 filled, 2 open|  store: 0 / 36000 L|  wage: 0";
+
+#[test]
+fn the_three_tabs_show_a_fixture_places_lines_as_literals_and_a_click_switches_between_them() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('rowan', 'Rowan')",
+        "announce_tabs()",
+        "announce_tabs()",
+        "announce_tabs()",
+    ]);
+    rig.opened();
+    // Selecting opens the panel on the Location tab.
+    assert_eq!(rows(&rig), [LOCATION_ROWS]);
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    assert_eq!(rows(&rig), [LOCATION_ROWS, POPS_ROWS]);
+    click_tab(&mut rig, "buildings");
+    assert_eq!(rows(&rig), [LOCATION_ROWS, POPS_ROWS, BUILDINGS_ROWS]);
+    // And back; a click on the tab already showing changes nothing.
+    click_tab(&mut rig, "location");
+    click_tab(&mut rig, "location");
+    assert_eq!(
+        rows(&rig),
+        [LOCATION_ROWS, POPS_ROWS, BUILDINGS_ROWS, LOCATION_ROWS]
+    );
+}
+
+#[test]
+fn a_place_of_nobody_has_zeroes_and_empty_pops_and_buildings() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('nobody', 'Nobody')",
+        "announce_tabs()",
+    ]);
+    rig.opened();
+    assert_eq!(
+        rows(&rig),
+        [
+            "people: 0|  workers: 0|  dependents: 0|food: 0 days|storage: 0 / 0 L|lost to overflow last month: 0|prices (base):"
+        ]
+    );
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    click_tab(&mut rig, "buildings");
+    assert_eq!(&rows(&rig)[1..], ["no pops", "no buildings"]);
+}
+
+#[test]
+fn the_panel_refreshes_on_a_new_revision_and_not_on_a_date_alone() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('rowan', 'Rowan')",
+        // Only the date moves: the same revision.
+        "time(2, 1) time(3, 1)",
+        // A new revision refreshes the open panel from its own view.
+        "time(12, 2)",
+        "note('calls ' .. table.concat(place_calls, ','))",
+    ]);
+    rig.opened();
+    rig.opened();
+    assert_eq!(
+        rows(&rig),
+        [LOCATION_ROWS],
+        "a date alone refreshes nothing"
+    );
+    rig.opened();
+    let refreshed = LOCATION_ROWS.replace("people: 120|  workers: 80", "people: 130|  workers: 90");
+    assert_eq!(rows(&rig), [LOCATION_ROWS.to_owned(), refreshed]);
+    rig.opened();
+    assert_eq!(
+        notes(&rig).last().map(String::as_str),
+        Some("calls rowan@1,rowan@2"),
+        "one read for the selection and one for the new revision, none for the dates"
+    );
+}
+
+#[test]
+fn a_selection_reads_the_newest_revision_the_ui_has_seen() {
+    let mut rig = rig(&[
+        "time(1, 1) time(12, 2) select_place('rowan', 'Rowan')",
+        "note('calls ' .. table.concat(place_calls, ','))",
+    ]);
+    rig.opened();
+    rig.opened();
+    assert_eq!(
+        notes(&rig).last().map(String::as_str),
+        Some("calls rowan@2")
+    );
+}
+
+#[test]
+fn a_selection_before_any_view_says_so_and_reads_nothing() {
+    let mut rig = rig(&[
+        "select_place('rowan', 'Rowan')",
+        "note('calls ' .. #place_calls)",
+        // The first view arrives: the open panel fills in.
+        "time(1, 1)",
+    ]);
+    rig.opened();
+    assert_eq!(rows(&rig), ["economy: not published yet"]);
+    rig.opened();
+    assert_eq!(notes(&rig).last().map(String::as_str), Some("calls 0"));
+    rig.opened();
+    assert_eq!(rows(&rig).last().map(String::as_str), Some(LOCATION_ROWS));
+}
+
+#[test]
+fn selecting_another_place_keeps_the_tab_showing() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('rowan', 'Rowan')",
+        "announce_tabs()",
+        "select_place('nobody', 'Nobody')",
+    ]);
+    rig.opened();
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    rig.opened();
+    // The Pops tab is still showing for the other place.
+    assert_eq!(rows(&rig).last().map(String::as_str), Some("no pops"));
+}
+
+#[test]
+fn the_panel_fills_the_left_third_below_the_time_bar_and_follows_a_resize() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('rowan', 'Rowan') announce_geometry()",
+        "announce_geometry()",
+    ]);
+    rig.opened();
+    // 1800 points wide: the left third is 600 points; the time bar is 8 + 38 points down, and the panel sits a margin below it.
+    assert_eq!(
+        notes(&rig).last().map(String::as_str),
+        Some("panel 0 54 600 846")
+    );
+    rig.deliver_fixture_frame_at(1200, 700, 2);
+    rig.opened();
+    assert_eq!(
+        notes(&rig).last().map(String::as_str),
+        Some("panel 0 54 400 646")
+    );
+}
+
+const LONG_NAME: &str = "Droim Ineasclainn";
+
+#[test]
+fn a_long_place_name_never_widens_the_panel_past_the_left_third_at_three_points_a_pixel() {
+    let select = format!(
+        "time(1, 1) select_place('rowan', '{LONG_NAME}') announce_geometry() announce_fit('{LONG_NAME}')"
+    );
+    let mut rig = Rig::new_fixture_body_at_scale(
+        &script(&[
+            &select,
+            // The same name again after a narrower resize, and another long name through the title change.
+            &format!("announce_geometry() announce_fit('{LONG_NAME}')"),
+            "select_place('rowan', 'Cluain Mhic N\u{F3}is') announce_geometry() announce_fit('Cluain Mhic N\u{F3}is')",
+        ]),
+        3,
+    );
+    rig.deliver_fixture_frame_at(800, 600, 3);
+    rig.opened();
+    // 800 points: a third is 266, snapped to the 3-point pixel grid: 267. The whole name needs far more, so it is clipped, not the panel
+    // widened.
+    let panel = |rig: &Rig| {
+        let line = notes(rig)
+            .into_iter()
+            .rev()
+            .find(|line| line.starts_with("panel "))
+            .expect("a panel line");
+        let parts: Vec<i64> = line
+            .split_whitespace()
+            .skip(1)
+            .map(|part| part.parse().unwrap())
+            .collect();
+        (parts[0], parts[2])
+    };
+    assert_eq!(panel(&rig), (0, 267));
+    let fit = |rig: &Rig| {
+        notes(rig)
+            .into_iter()
+            .rev()
+            .find(|line| line.starts_with("fit "))
+            .expect("a fit line")
+    };
+    assert_eq!(fit(&rig), "fit title=true tabs_right=true title_clear=true");
+    let shown = |rig: &Rig| {
+        notes(rig)
+            .into_iter()
+            .rev()
+            .find(|line| line.starts_with("shown "))
+            .expect("a shown line")
+    };
+    assert!(shown(&rig).ends_with(".."), "{}", shown(&rig));
+    assert!(shown(&rig).len() < "shown ".len() + LONG_NAME.len() + 2);
+    // A narrower window: the panel follows, the title clips further, the tabs stay inside.
+    rig.deliver_fixture_frame_at(600, 600, 3);
+    rig.opened();
+    assert_eq!(panel(&rig), (0, 201));
+    assert_eq!(fit(&rig), "fit title=true tabs_right=true title_clear=true");
+    // Another name, through the title change: the width is still the third, and a name with a fada is cut between characters.
+    rig.opened();
+    assert_eq!(panel(&rig), (0, 201));
+    assert_eq!(fit(&rig), "fit title=true tabs_right=true title_clear=true");
+}
+
+#[test]
+fn a_window_taller_than_the_lists_row_limit_opens_and_resizes_with_a_usable_list() {
+    let mut rig = Rig::new_fixture_body_at_scale(
+        &script(&[
+            "time(1, 1) select_place('rowan', 'Rowan') announce_fit('Rowan')",
+            "announce_fit('Rowan')",
+        ]),
+        1,
+    );
+    // At 1 point a pixel a row is 13 points: 3,600 points leave room for more than the limit of 256 rows.
+    rig.deliver_fixture_frame_at(1800, 3600, 1);
+    rig.opened();
+    assert_eq!(
+        notes(&rig)
+            .iter()
+            .rev()
+            .find(|line| line.starts_with("list_rows "))
+            .map(String::as_str),
+        Some("list_rows 256")
+    );
+    // A resize that keeps it that tall rebuilds the list without failing.
+    rig.deliver_fixture_frame_at(1700, 3700, 1);
+    rig.opened();
+    assert_eq!(
+        notes(&rig)
+            .iter()
+            .rev()
+            .find(|line| line.starts_with("list_rows "))
+            .map(String::as_str),
+        Some("list_rows 256")
+    );
+}
+
+#[test]
+fn a_long_word_of_fada_bearing_letters_wraps_between_characters() {
+    let mut rig = Rig::new_fixture_body_at_scale(
+        &script(&["time(1, 1) select_place('fada', 'Fada')", "announce_tabs()"]),
+        2,
+    );
+    // 300 points: the content is about 45 font pixels wide, so the 40 letters need many rows.
+    rig.deliver_fixture_frame_at(300, 600, 2);
+    rig.opened();
+    rig.opened();
+    // A byte cut inside a letter would have failed the callback when the row crossed to the host; here every letter survives.
+    click_tab_at(&mut rig, "pops", (300, 600));
+    let pops = rows(&rig).last().cloned().expect("the Pops rows");
+    assert_eq!(pops.matches('\u{D3}').count(), 40, "{pops}");
+    assert!(pops.split('|').count() > 10, "the word wrapped: {pops}");
+}
+
+/// The narrow layouts: below the least width that holds the tabs, the close button and the frame the panel is that width and extends
+/// past the window; nothing raises, the title is empty when it has no room, and every control lies inside the panel, apart from the
+/// others and clear of the title.
+fn narrow_layout(scale: i64, width: u32, expect_floor: bool) {
+    const NAME: &str = "Droim Ineasclainn";
+    let mut rig = Rig::new_fixture_body_at_scale(
+        &script(&[&format!(
+            "time(1, 1) select_place('rowan', '{NAME}') announce_floor() announce_geometry() announce_fit('{NAME}')"
+        )]),
+        scale,
+    );
+    rig.deliver_fixture_frame_at(width, 800, u32::try_from(scale).unwrap());
+    rig.opened();
+    let line = |rig: &Rig, prefix: &str| {
+        notes(rig)
+            .into_iter()
+            .rev()
+            .find(|line| line.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix}: {:?}", notes(rig)))
+    };
+    let floor: i64 = line(&rig, "floor ")
+        .trim_start_matches("floor ")
+        .parse()
+        .unwrap();
+    let panel: Vec<i64> = line(&rig, "panel ")
+        .split_whitespace()
+        .skip(1)
+        .map(|part| part.parse().unwrap())
+        .collect();
+    let third = i64::from(width) / 3;
+    assert!(
+        panel[2] >= floor && panel[2] >= third - scale,
+        "{panel:?} floor {floor}"
+    );
+    if expect_floor {
+        assert!(
+            floor > third,
+            "the floor is above the third: {floor} > {third}"
+        );
+        assert_eq!(
+            panel[2], floor,
+            "the panel is its floor wide, and passes the window"
+        );
+    }
+    // The whole name is kept; the tabs are inside the panel, apart from each other and the close button, and clear of the title.
+    assert_eq!(
+        line(&rig, "fit "),
+        "fit title=true tabs_right=true title_clear=true"
+    );
+    assert_eq!(line(&rig, "tabs_left "), "tabs_left true");
+    assert_eq!(line(&rig, "apart "), "apart true");
+    if expect_floor {
+        assert_eq!(line(&rig, "shown "), "shown ", "no room: no title");
+    }
+}
+
+#[test]
+fn at_eight_points_a_pixel_in_a_300_point_window_the_panel_is_its_floor_and_passes_the_window() {
+    narrow_layout(8, 300, true);
+}
+
+#[test]
+fn at_eight_points_a_pixel_in_an_800_point_window_the_panel_is_its_floor() {
+    narrow_layout(8, 800, true);
+}
+
+#[test]
+fn at_three_points_a_pixel_in_a_600_point_window_the_third_holds_the_controls() {
+    narrow_layout(3, 600, false);
+}

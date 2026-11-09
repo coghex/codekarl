@@ -445,4 +445,5 @@ function list:destroy()
 end
 
 list.ROW = ROW
+list.MAX_ROWS = MAX_ROWS
 return list

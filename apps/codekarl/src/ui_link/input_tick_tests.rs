@@ -242,6 +242,7 @@ fn mapped_link(
     let (sender, receiver) = mpsc::channel();
     let link =
         CodekarlUi::with_map(held.harness.ui.slot.clone(), Arc::clone(&map)).with_sim(SimLink {
+            views: Arc::default(),
             controls: SimControls::new(sender),
             slot: SimSlot::new(Arc::new(|| {})),
             time_registered: Arc::new(AtomicBool::new(false)),
@@ -649,6 +650,7 @@ fn a_post_refused_as_full_and_then_accepted_delivers_the_stash_once_and_the_cont
         .clone()
         .with_scene_bridge(Arc::clone(&harness.bridge))
         .with_sim(SimLink {
+            views: Arc::default(),
             controls: SimControls::new(sender),
             slot: SimSlot::new(Arc::new(|| {})),
             time_registered: Arc::new(AtomicBool::new(false)),

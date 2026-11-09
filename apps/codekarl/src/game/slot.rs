@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ck_sim::{Date, GameTime, Speed};
 
+use super::view::EconomyView;
+
 /// Why the game is paused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PauseReason {
@@ -16,7 +18,7 @@ pub(crate) enum PauseReason {
 }
 
 /// What the UI shows of the simulation, at one moment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SimSnapshot {
     /// The hour that runs next.
     pub(crate) tick: GameTime,
@@ -26,6 +28,11 @@ pub(crate) struct SimSnapshot {
     pub(crate) speed: Speed,
     /// `None` while running.
     pub(crate) paused: Option<PauseReason>,
+    /// The revision of [`economy`](Self::economy): it rises with every new view, a load included, and is `0` while there is
+    /// none.
+    pub(crate) economy_revision: u64,
+    /// The economy view of that revision, immutable and published in this same write as the time fields (design §6).
+    pub(crate) economy: Option<Arc<EconomyView>>,
 }
 
 impl std::fmt::Display for SimSnapshot {
@@ -42,9 +49,12 @@ impl std::fmt::Display for SimSnapshot {
 }
 
 impl SimSnapshot {
-    /// Whether anything the UI displays differs: the date (to the hour), the speed or the pause.
+    /// Whether anything the UI displays differs: the date (to the hour), the speed, the pause or the economy revision.
     pub(crate) fn differs_from(&self, other: &Self) -> bool {
-        self.date != other.date || self.speed != other.speed || self.paused != other.paused
+        self.date != other.date
+            || self.speed != other.speed
+            || self.paused != other.paused
+            || self.economy_revision != other.economy_revision
     }
 }
 
@@ -95,7 +105,7 @@ impl SimSlot {
 
     /// The latest snapshot, if one was published.
     pub(crate) fn latest(&self) -> Option<SimSnapshot> {
-        self.locked().latest
+        self.locked().latest.clone()
     }
 
     /// The terminal failure, if the simulation has one. It is never cleared.

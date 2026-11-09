@@ -17,6 +17,7 @@ local windows = require("lib.window")
 local lists = require("lib.list")
 local theme = require("lib.theme")
 local date_text = require("lib.time")
+local location = require("lib.location")
 
 local P = ui.P
 local MARGIN = 8 -- points from the window's top and left edges
@@ -27,7 +28,6 @@ local view = {width = OPEN_WIDTH, height = OPEN_HEIGHT}
 
 -- Relayouts of the anchored elements, run when the window's size changes. Each is registered by the element.
 local relayouts = {}
-local place_window = nil
 local help_window = nil
 local places_window = nil
 
@@ -251,7 +251,20 @@ if game ~= nil then
     create_places_bar()
   end
 
+  -- The location panel: the left third of the screen below the time bar, filled from the economy view of the revision `game_time`
+  -- carries (`game.place`), never from live state.
+  local location_panel = location.new{
+    view = view,
+    top = function()
+      if time_panel ~= nil then
+        return time_panel.y + time_panel.height + MARGIN
+      end
+      return 0
+    end,
+  }
+
   game.on_time(function(time)
+    location_panel:set_revision(time.economy_revision)
     local content = date_text.date(time)
     if time_panel == nil then
       create_bar(time, content)
@@ -278,50 +291,14 @@ if game ~= nil then
   end
   relayouts[#relayouts + 1] = fit_places_bar
 
-  -- Opens or updates the place window with a place's `id`, `name`, `kind` and `size` (`game_select`'s fields, a map click's or
-  -- a places-list row's).
+  -- A place's `id` and `name` (`game_select`'s fields, a map click's or a places-list row's) open the location panel, or show that
+  -- place in it. The places list only selects.
   local function show_place(selection)
-    local lines = {
-      "id: " .. selection.id,
-      "kind: " .. selection.kind,
-      "size: " .. selection.size,
-    }
-    local width_px = 0
-    local height_px = 0
-    for _, line in ipairs(lines) do
-      local size = font.layout(line)
-      width_px = math.max(width_px, size.width)
-      height_px = height_px + size.height
-    end
-    height_px = height_px + (#lines - 1) * 2
-    if place_window == nil then
-      local created
-      created = windows.new{
-        title = selection.name,
-        kind = "place",
-        content_width = width_px * P,
-        content_height = height_px * P,
-        on_close = function()
-          if place_window == created then place_window = nil end
-        end,
-      }
-      place_window = created
-    else
-      place_window:set_title(selection.name)
-      place_window:set_content_size(width_px * P, height_px * P)
-      place_window:raise()
-    end
-    if place_window.lines ~= nil then
-      for _, old in ipairs(place_window.lines) do old:destroy() end
-    end
-    place_window.lines = {}
-    local y = 0
-    for _, line in ipairs(lines) do
-      local item = label.new{x = 0, y = y, text = line, group = place_window.content, owner = place_window}
-      place_window.lines[#place_window.lines + 1] = item
-      local item_height = select(2, item:size())
-      y = y + item_height + 2 * P
-    end
+    location_panel:show(selection)
+  end
+
+  relayouts[#relayouts + 1] = function()
+    location_panel:relayout()
   end
 
   game.on_select(show_place)

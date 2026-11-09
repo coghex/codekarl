@@ -45,18 +45,20 @@ local function publish_region(self)
   render.set_hit(self.key, {{x = self.x, y = self.y, width = self.width, height = self.height}}, self.group)
 end
 
--- The colours the state calls for (the theme's table of the design: fill, line, text), pressed over hover over normal.
+-- The colours the state calls for (the theme's table of the design: fill, line, text), pressed over hover over normal. A selected
+-- button (a tab that is showing) looks pressed until it is deselected.
 local function look_of(self)
   local kind = self.colours
+  local down = self.pressed or self.selected
   if self.style == "title" then
-    if self.pressed then
+    if down then
       return kind.hot, kind.hot, kind.pressed_text
     elseif self.hovered then
       return kind.fill, kind.hot, kind.text
     end
     return kind.outline, kind.outline, kind.title_text
   end
-  if self.pressed then
+  if down then
     return kind.hot, kind.hot, kind.pressed_text
   elseif self.hovered then
     return kind.fill, kind.hot, kind.text
@@ -254,6 +256,16 @@ function button:move(x, y)
     text.move(self.line, self.x + self.text_x, self.y + PADDING * P)
   end
   publish_region(self)
+end
+
+-- Marks the button as selected (it keeps the pressed look) or not.
+function button:set_selected(selected)
+  selected = selected == true
+  if self.selected == selected then
+    return
+  end
+  self.selected = selected
+  show(self)
 end
 
 -- Sets the text, resizes the background and resets the region.

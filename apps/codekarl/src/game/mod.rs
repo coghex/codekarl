@@ -13,6 +13,7 @@
 //! - [`hashes`]: the content hashes a save is checked against.
 //! - [`slot`]: the latest-wins snapshot the owner publishes, and the terminal failure.
 //! - [`setup`]: starting a new game or loading one, before anything runs.
+//! - [`view`]: the immutable economy view the snapshot carries to the UI (milestone 9).
 
 use ck_sim::{Canonical, CanonicalError, Reader};
 
@@ -27,6 +28,7 @@ pub(crate) mod setup;
 pub(crate) mod slot;
 #[cfg(test)]
 pub(crate) mod tests;
+pub(crate) mod view;
 
 /// The simulation state. M9 slice 2 stores its deterministic starting economy.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -219,6 +219,7 @@ impl Rig {
         let link = CodekarlUi::with_map(harness.ui.slot.clone(), Arc::clone(&map))
             .with_scene_bridge(Arc::clone(&harness.bridge))
             .with_sim(SimLink {
+                views: Arc::default(),
                 controls: SimControls::new(sender),
                 slot: SimSlot::new(Arc::new(|| {})),
                 time_registered,
@@ -1190,33 +1191,38 @@ end)
 }
 
 #[test]
-fn the_production_place_window_updates_in_place_and_help_raises_on_a_second_click() {
+fn the_production_place_panel_updates_in_place_and_help_raises_on_a_second_click() {
     let script = format!(
         r"
 callbacks = {{}}
 local windows = require('lib.window')
-local label = require('lib.label')
-captured_place_lines = {{}}
-local actual_label_new = label.new
-label.new = function(spec)
-  if spec.owner ~= nil then captured_place_lines[#captured_place_lines + 1] = spec.text end
-  return actual_label_new(spec)
+local lists = require('lib.list')
+-- The panel's lists, as they are created: a second selection must update the one panel, not open another.
+created_lists = 0
+local actual_list_new = lists.new
+lists.new = function(spec)
+  created_lists = created_lists + 1
+  return actual_list_new(spec)
 end
 game = {{
   on_time = function(callback) callbacks.time = callback end,
   on_select = function(callback) callbacks.select = callback end,
   on_hover = function(callback) callbacks.hover = callback end,
   control = function() end,
+  place = function(id, revision)
+    return {{id = id, workers = 0, dependents = 0, food_days = 0, storage_used_l = 0, storage_capacity_l = 0,
+      overflow_lost = 0, prices = {{}}, pops = {{}}, buildings = {{}}}}
+  end,
 }}
 {} 
-callbacks.time({{day = 1, month = 1, year = 768, hour = 0, paused = true, speed = 1}})
+callbacks.time({{day = 1, month = 1, year = 768, hour = 0, paused = true, speed = 1, economy_revision = 1}})
 callbacks.select({{id = 'place-a', name = 'Place A', kind = 'town', size = 2}})
 place = windows.top()
 place:move_to(200, 200)
 callbacks.select({{id = 'place-b', name = 'A Much Longer Place', kind = 'city', size = 7}})
 assert(windows.top() == place, 'the second selection updates and raises the existing place window')
-assert(captured_place_lines[4] == 'id: place-b' and captured_place_lines[5] == 'kind: city' and captured_place_lines[6] == 'size: 7',
-  'updated place window lines use the selected fields literally')
+assert(place.title == 'A Much Longer Place', 'the update gives the window the selected place name')
+assert(created_lists == 1, 'the update refreshes the one panel list and opens no other')
 local x, y = place:position()
 assert(x == 200 and y == 200, 'place update preserves its top-left')
 local stage = 1

@@ -61,6 +61,18 @@ fn land_counts_from_cells(
     Ok(counts)
 }
 
+/// The shared economy rules of `asset_root`, or `None` for assets that predate M9 (no `game/economy.toml`), which have no
+/// economy to show.
+pub(crate) fn load_rules(asset_root: &Path) -> Result<Option<Rules>, String> {
+    let path = asset_root.join("game/economy.toml");
+    if !path.exists() {
+        return Ok(None);
+    }
+    Rules::load(&path)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
 /// Build the scenario's deterministic opening economy; fixture scenarios that
 /// predate M9 deliberately retain the empty state.
 pub(crate) fn starting_economy(

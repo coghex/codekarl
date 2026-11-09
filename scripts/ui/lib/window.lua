@@ -28,6 +28,13 @@ local function clamp(value, low, high)
   return math.max(low, math.min(value, high))
 end
 
+-- The content size, in points, that makes a window `outer_width` by `outer_height` points whatever its title says: every title is one
+-- font height tall, and the content sits inside the padding, under the title bar and above the bottom padding.
+local function content_of(outer_width, outer_height)
+  local title_height = (font.layout("").height + 4) * P
+  return outer_width - 2 * PAD, outer_height - title_height - PAD - BOTTOM
+end
+
 -- The groups of a window in drawing order: chrome, content, then each attached item's groups in attach order.
 local function stack(self)
   local groups = {self.chrome, self.content}
@@ -68,25 +75,61 @@ local function clamp_position(self, x, y)
   return clamp(ui.snap(x), low_x, high_x), clamp(ui.snap(y), 0, high_y)
 end
 
+-- The title to show when the window keeps its given width (`clip_title`): the whole title if it fits in the room the tabs and the close
+-- button leave, else its longest start that does, cut between characters, with two dots, else nothing. `window.title` always keeps the whole title.
+local function clipped_title(self)
+  local reserved = 0
+  for _, item in ipairs(self.title_items) do
+    if item.reserved_width ~= nil then
+      reserved = reserved + item:reserved_width()
+    end
+  end
+  local room = self.outer_width - TITLE_X - 4 * P - reserved
+  if self.close_width > 0 then
+    room = room - self.close_width - P
+  end
+  if font.layout(self.title).width * P <= room then
+    return self.title
+  end
+  local count = utf8.len(self.title) or 0
+  while count > 0 do
+    local text = self.title:sub(1, utf8.offset(self.title, count + 1) - 1) .. ".."
+    if font.layout(text).width * P <= room then
+      return text
+    end
+    count = count - 1
+  end
+  -- Not even the two dots fit: no title.
+  return ""
+end
+
 local function dimensions(self)
   local title = font.layout(self.title)
-  self.title_text_width = title.width * P
-  self.title_text_height = title.height * P
   self.title_height = (title.height + 4) * P
   local close_width = 0
   if not self.fixed then
     close_width = select(1, button.measure("x"))
   end
   self.close_width = close_width
-  local title_width = TITLE_X + self.title_text_width + 4 * P
-  if not self.fixed then
-    title_width = title_width + close_width + P
+  if self.clip_title then
+    -- The width is the one asked for, whatever the title: the title is clipped to fit instead.
+    self.outer_width = math.max(self.content_width + 2 * PAD, self.fixed and 17 * P or 0)
+    self.shown_title = clipped_title(self)
+  else
+    self.shown_title = self.title
+    local title_width = TITLE_X + title.width * P + 4 * P
+    if not self.fixed then
+      title_width = title_width + close_width + P
+    end
+    self.outer_width = math.max(
+      self.content_width + 2 * PAD,
+      title_width,
+      self.fixed and 17 * P or 0
+    )
   end
-  self.outer_width = math.max(
-    self.content_width + 2 * PAD,
-    title_width,
-    self.fixed and 17 * P or 0
-  )
+  local shown = font.layout(self.shown_title)
+  self.title_text_width = shown.width * P
+  self.title_text_height = shown.height * P
   self.outer_height = self.title_height + PAD + self.content_height + BOTTOM
 end
 
@@ -97,6 +140,10 @@ local function publish_chrome(self)
     render.set_rect(self.divider, P, self.title_height, self.outer_width - 2 * P, P)
   end
   local title_hit_width = self.fixed and self.outer_width or self.outer_width - self.close_width - P
+  if self.title_line_text ~= self.shown_title then
+    self.title_line_text = self.shown_title
+    self.title_line:set_text(self.shown_title)
+  end
   self.title_line:move(TITLE_X, (self.title_height - self.title_text_height) / 2)
   render.set_hit(self.frame_key, {
     {x = 0, y = 0, width = self.outer_width, height = self.outer_height},
@@ -106,6 +153,9 @@ local function publish_chrome(self)
   }, self.chrome)
   if self.close_button ~= nil then
     self.close_button:move(self.outer_width - self.close_width - P, 0)
+  end
+  for _, item in ipairs(self.title_items) do
+    item:place_in_title(self)
   end
   render.set_group_clip(self.content, {
     x = self.x + PAD,
@@ -146,6 +196,10 @@ end
 function window.new(spec)
   spec = spec or {}
   counter = counter + 1
+  if spec.outer_width ~= nil then
+    -- The window's whole size is given (a panel that fills part of the screen): its content is what is left.
+    spec.content_width, spec.content_height = content_of(spec.outer_width, spec.outer_height)
+  end
   local self = setmetatable({
     id = counter,
     title = spec.title or "",
@@ -155,10 +209,12 @@ function window.new(spec)
     y = spec.y,
     kind = spec.kind or "window",
     fixed = spec.fixed == true,
+    clip_title = spec.clip_title == true,
     on_close = spec.on_close,
     on_title_click = spec.on_title_click,
     closed = false,
     attached = {},
+    title_items = {},
     _pointer_children = {},
   }, Window)
   dimensions(self)
@@ -206,7 +262,8 @@ function window.new(spec)
       tint = colours.divider,
     }
   end
-  self.title_line = label.new{x = TITLE_X, y = 0, text = self.title, group = self.chrome, colour = colours.title_text}
+  self.title_line_text = self.shown_title
+  self.title_line = label.new{x = TITLE_X, y = 0, text = self.shown_title, group = self.chrome, colour = colours.title_text}
   self.frame_key = ui.key("window_frame")
   self.title_key = ui.key("window_title")
   render.set_hit(self.frame_key, {{x = 0, y = 0, width = self.outer_width, height = self.outer_height}}, self.chrome)
@@ -332,9 +389,37 @@ function Window:set_title(title)
   if self.closed then return end
   self.title = title
   dimensions(self)
-  self.title_line:set_text(title)
   publish_chrome(self)
   set_position(self, self.x, self.y)
+end
+
+-- The room the title bar leaves for items of its own (tabs): from the end of the title text to the close button (or the edge), in
+-- points from the window's left edge.
+function Window:title_bounds()
+  local right = self.outer_width - P
+  if self.close_button ~= nil then
+    right = self.outer_width - self.close_width - 2 * P
+  end
+  return TITLE_X + self.title_text_width + 3 * P, right
+end
+
+-- Adds an item to the title bar: `place_in_title(window)` is called now and whenever the title bar changes, and the item's quads
+-- belong to the window's `chrome` group, which the window destroys.
+function Window:add_title_item(item)
+  if self.closed then
+    error("window:add_title_item: the window is closed", 2)
+  end
+  self.title_items[#self.title_items + 1] = item
+  -- A window that clips its title gives the item room first.
+  dimensions(self)
+  publish_chrome(self)
+  set_position(self, self.x, self.y)
+end
+
+-- Gives the window a whole size, outer width by outer height, as its content size does.
+function Window:set_outer_size(width, height)
+  local content_width, content_height = content_of(width, height)
+  self:set_content_size(content_width, content_height)
 end
 
 function Window:set_content_size(width, height)
@@ -375,6 +460,16 @@ function Window:close()
   if self.on_close ~= nil then
     self.on_close(self)
   end
+end
+
+-- The least outer width, in points, of a window whose title bar holds `reserved` points of items of its own (tabs) beside its close
+-- button (unless `fixed`): the title start, the items, the close button and a gap each side, and at least the frame's 17 UI pixels.
+function window.min_outer_width(reserved, fixed)
+  local close = 0
+  if not fixed then
+    close = (button.measure("x")) + P
+  end
+  return math.max(17 * P, TITLE_X + reserved + close + 2 * P)
 end
 
 function window.top()
