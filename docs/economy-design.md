@@ -995,7 +995,14 @@ pops move, the herd stays. These are counts, not individual animals, so livestoc
   - **food (E6: one basis, the 240-day target):** `buy_g = max(0, ⌈share_g × need × 240 / (1000 × hunger_g)⌉ − holding_g)` units, where
     `holding_g` counts the store and the pop's account. `share_g` is the pop type's profile normalised for the place (§3.17), and `need`
     and `hunger_g` are in hundredths. r14's 30-day rule is removed;
-  - **niceties and luxuries:** the tier profile's goods, up to the type's expectation over the same 240 days, minus holdings.
+  - **niceties and luxuries** (Firm, owner 2026-11-09, `owner-direction-tier-orders-r1.md`): the tier profile's goods, up to the
+    type's expectation over the same 240 days, minus holdings. Exactly, for each tier `T` and each good `g` in the type's tier profile:
+    - `G_T = ⌊exp_T × need × 240 / 1000⌋`, with `exp_T` the expectation in ‰ (§3.12);
+    - `u_T,g = ⌈s_T,g × G_T / (1000 × v_T,g)⌉` units, with `s_T,g` the good's tier share in ‰ (§3.17) and `v_T,g` its tier value
+      (×100); 0 when any factor is 0;
+    - **a unit gives both tiers, so the target is the larger want:** `t_g = max(u_niceties,g, u_luxuries,g)`, and
+      `buy_g = max(0, t_g − holding_g)`. A good also in the diet buys up to the larger of its food target and `t_g`;
+    - sell orders are unchanged.
 - **Sell orders (r17, C6: one basis with buying):**
   - **a pop:** its food above a target holding of 240 days (the full-intake threshold of §3.7), taken from each good in proportion;
   - **a building:** its stockpile plus its communal account, above its owner pops' 60-day draw.
@@ -1047,7 +1054,14 @@ profile of the goods it wants for niceties and luxuries.
 | vegetables | 50 | 50 | 80 |
 | fish (coastal places only; elsewhere renormalised away) | 30 | 30 | 100 |
 
-**Tier profiles:** labourers ale and honey; monks ale, mead, apples and herbs; peasants none.
+**Tier profiles:** labourers ale and honey; monks ale, mead, apples and herbs; peasants none. Each tier's goods have **fixed shares**
+in ‰ (Firm, owner 2026-11-09; data, tunable), started at a holdings level's yearly output × the tier value, so a balanced place sits
+near base. Equal shares were rejected: labourers would want about 18 lb of honey per 240 days against about 3 lb made a head a year.
+
+| Type | Niceties | Luxuries |
+|---|---|---|
+| labourer | ale 952, honey 48 | honey 1000 (expectation 0, so no orders) |
+| monk | ale 708, mead 71, apples 133, herbs 88 | mead 286, apples 536, herbs 178 |
 
 The shares are from the research (cereals the bulk, oats before barley, dairy large, then meat). Monks eat more fish (fast days) and
 labourers more meat.
@@ -1541,6 +1555,8 @@ fields cut. The engine's load report is the authority.
 
 ## Provenance
 
+- 2026-11-09: §3.16's tier buy orders and §3.17's tier shares, the owner's choices with the designer (`owner-direction-tier-orders-r1.md`,
+  for CK-230, ck-manager `2k8btgqz6cgyebcpyvhwu2hu4a`).
 - 2026-11-09: the owner's rulings, relayed by ck-manager: §3.22's yield definition (CK-231 F3, `sn2ctfm4skwzufr9ufhu8jnd9s` and
   `puf5ybyn8vj3zyrke5xnrgtqca`) and §3.10's starting needs (CK-228 B1, `tp3pvvw3a6d9dszdvhahifek9e`).
 - 2026-11-09: the owner's Vulkan direction (`owner-direction-vulkan-r1.md`, relayed by ck-manager, `jryeeakppnwyirhsfet4ku97ia`): §4's
