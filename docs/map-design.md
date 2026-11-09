@@ -45,6 +45,8 @@ verdict on the second: "that looks good".
 
 ### 3.1 Ground and terrain colours
 
+> Since M9, the default map draws land by fertility and hillside dither, not usable or unusable (§12.3). **Superseded since M9 (owner, 2026-11-09): see §12.**
+
 - **Firm.** The sea is a cool black. Unusable land is a warm black. Most of the screen is dark: "i want most of the screen to be dark
   typically".
 - **Firm.** All land has a terrain type, and each type has a colour. Usable land (§5.3) is drawn in the type's solid colour. Unusable land is
@@ -65,6 +67,8 @@ verdict on the second: "that looks good".
   outlined every terrain area; the owner agreed it was too busy.)
 
 ### 3.3 Dithering
+
+> Since M9, fertility uses a blue-noise pattern and relief is a hillside dither from slope (§12.3). **Superseded since M9 (owner, 2026-11-09): see §12.**
 
 - **Firm.** Dithering is two-tone and marks features of the world, such as elevation; it is not a camera effect. It is pinned to the
   world, so it does not crawl when the view pans.
@@ -136,6 +140,8 @@ verdict on the second: "that looks good".
 
 ### 5.3 Usable land
 
+> Since M9, usable land is computed fertility, from the terrain, drainage, slope and a computed climate (§12.1–§12.2). **Superseded since M9 (owner, 2026-11-09): see §12.**
+
 - **Firm.** Land is usable when it is open to development or resource extraction; land that is not is the dark "wasteland". Usable land is
   authored, not computed at run time.
 - **Firm (on mock-up 1).** The share of dark land in the mock-ups is "fine for now".
@@ -188,6 +194,7 @@ verdict on the second: "that looks good".
 - **Open.** A faint terrain-hint dither on the political map (the owner floated it; mock-up 2 has it as a button). How de facto rule and
   occupation are shown.
 - **Proposal.** Every map mode is a colouring rule over the same world data, with its palette in data, so a new mode needs no new renderer.
+- **Firm (2026-11-09).** An elevation map mode shows actual height from black to white (§12.5).
 
 ## 7. Open questions carried forward
 
@@ -344,6 +351,8 @@ One convention, used by the files, the loader, the reference function, the previ
 
 ### 9.4 The colour function (the reference)
 
+> Since M9, rules 4–6 (usable land, unusable land, snow caps) are replaced by §12.3–§12.4's rules. **Superseded since M9 (owner, 2026-11-09): see §12.**
+
 The reference is a Rust function in `ck-map`. It takes the map, the step and a world pixel, and returns an RGBA8 colour. The GPU map pass
 must give the same bytes for every pixel; that is what "the same picture on both backends" means. The readback fixtures in §9.2 check it on
 each backend, and so Metal and Vulkan also match each other. The spec writes each rule out exactly. In outline:
@@ -376,6 +385,8 @@ each backend, and so Metal and Vulkan also match each other. The spec writes eac
   between steps; a majority rule is a possible later refinement.
 
 ### 9.5 Files, loading and packing
+
+> Since M9, `usable.png` is replaced by `fertility.png` and the climate layers, and grid A's packing changes (§12.6). **Superseded since M9 (owner, 2026-11-09): see §12.**
 
 | File | Holds |
 |---|---|
@@ -475,6 +486,201 @@ owner's reading of the running map plus windowless tests. **Firm (owner, 15:18Z)
 1. ck-designer-1 drafts one issue spec per §10 slice; ck-manager files milestone 6 and routes the specs to review.
 2. Implementation does not start until the owner says so: "File only".
 
+## 12. Land, climate and the look since M9 (Firm: owner-signed, 2026-11-09)
+
+The owner redesigned usable land, added a computed climate, and set the map's look in a series of mock-up sessions on 2026-11-09. The
+signed records are in `.pipeline/coordination/m9-design/`:
+- `usable-land-proposal-r4.md` (23221a44): fertility and climate;
+- `map-look-design-r4.md` (33f0615e): the look, glaciation and the elevation mode;
+- their mock-ups, in `mockups/`.
+
+The owner's direction: the system "is meant to work around the globe", so every rule uses only what any map has (terrain, elevation,
+latitude and a few per-map values), with geographical, not Ireland-specific, sources. The economy's use of fertility is in
+`docs/economy-design.md` §3.24.
+
+### 12.1 Fertility (per cell, in thousandths)
+
+**Firm.** Each land cell has a fertility from 0 to 1000 ("a percentage to each spot with a formula"; river valleys near 100%, plain land
+near 50%):
+
+`fertility = clamp((base_t + valley_t × V ÷ 1000) × slope_factor × climate_factor, 0, 1000)`
+
+- **The terrain values** are data:
+
+  | Terrain | `base_t` | `valley_t` |
+  |---|---|---|
+  | pasture | 550 | 450 |
+  | forest | 400 | 400 |
+  | marsh | 350 | 450 |
+  | bog | 50 | 150 |
+  | mountain | 100 | 100 |
+
+- **The valley score `V`** (0–1000) comes from the elevation alone (owner: valleys "from the elevation data", not drawn rivers):
+  - fill the depressions (priority-flood);
+  - drain each cell to its steepest-descent neighbour (D8), and accumulate the upstream area;
+  - score 0 at ≤ 2 km², rising on a log scale to 1000 at ≥ 500 km²;
+  - spread to cells within 2 cells and ≤ 20 m above the channel, losing 25% per ring.
+- **The slope factor:** 1000 at ≤ 3% ground slope, falling to 0 at 20% (FAO agro-ecological zoning rates suitability by slope class).
+- **The climate factor** = warmth × dryness × wetness:
+  - **warmth:** 0 at ≤ 600 growing degree-days (above 5 °C), rising to 1000 at ≥ 1,400;
+  - **dryness:** 0 at ≤ 250 mm a year, rising to 1000 at ≥ 500 mm;
+  - **wetness:** 1000 at ≤ 900 mm, falling to 400 at ≥ 2,000 mm. Waterlogging limits tillage, but wet land still grazes.
+- **Glacier cells** have fertility 0 (§12.4).
+- **"Usable"** means fertility > 0.
+
+### 12.2 Climate (computed from geography)
+
+**Firm.** The owner chose to build climate now and to compute it ("computing it would be the right move"). It replaces the earlier
+latitude ceiling. Weather, the year-to-year variation, comes later.
+
+- **World tables by absolute latitude** (data):
+
+  | Latitude | Sea-level mean °C | Half annual range, ocean | Half annual range, deep continent | Zonal rainfall (mm) |
+  |---|---|---|---|---|
+  | 0° | 27 | 1 | 1 | 2,000 |
+  | 15° | 26 | 1.5 | 4 | 1,000 |
+  | 30° | 20 | 2.5 | 10 | 300 |
+  | 45° | 11 | 3.5 | 14 | 700 |
+  | 55° | 5 | 4 | 17 | 900 |
+  | 60° | 2 | 5 | 19 | 900 |
+  | 70° | −8 | 7 | 22 | 500 |
+  | 90° | −25 | 12 | 25 | 200 |
+
+- **Prevailing wind by band:**
+
+  | Band | Wind |
+  |---|---|
+  | 0–30° | easterly trades |
+  | 30–60° | westerlies |
+  | 60–90° | polar easterlies |
+
+- **Per map:** the ocean temperature effect of its coasts, in °C. Ireland's North Atlantic is +4.2; a cold current is negative.
+  - Western Europe's mildness comes mainly from westerly winds carrying ocean air, more than from the current's own heat (Seager et al.
+    2002), so the wind is the main mechanism and the coast's value an adjustment.
+- **Per cell:**
+  - **maritime influence** `exp(−d ÷ 1,200 km)`, where `d` is the distance over land along the wind since the sea;
+  - **mean temperature** = the zonal mean + ocean effect × maritime influence − 6.5 °C per km of height;
+  - **the half range** moves from the ocean value to the continental value as maritime influence falls;
+  - **months** follow a cosine, warmest in mid-July in the north and mid-January in the south;
+  - **growing degree-days** = the sum of max(0, monthly mean − 5 °C) × 30.4;
+  - **rainfall:**
+    - moisture walks along the wind from the sea (recovering over water);
+    - each land cell rains `zonal × moisture × (1.2 + min(1.6, 0.02 × uplift in m/km) + 1.5 × height in km)`;
+    - the moisture is depleted by 0.0015 × rain × km, which makes rain shadows;
+    - it is smoothed across the wind.
+- **The Ireland check (prototype):**
+
+  | Station | Model | Approximate real |
+  |---|---|---|
+  | Valentia | 10.9 °C, 1,440 mm | 10.9 °C, ~1,550 mm |
+  | Dublin | 9.4 °C, 700 mm | ~730 mm |
+  | Shannon | 975 mm | ~980 mm |
+  | Kilkenny | 840 mm | ~850 mm |
+
+  The western mountains reach 2,000+ mm.
+- **The generator** computes climate and fertility after the terrain edits. It writes `fertility.png` and the climate layers, reproduced
+  byte for byte (slice 9a). The constants live in `edits.toml` `[settings.climate]` and `[settings.fertility]`.
+
+### 12.3 The default map: fertility gradient and hillside dither
+
+**Firm (owner choices on the mock-ups).**
+
+- **Fertility is a darkness gradient:** "full color is 100% usable land, and the dark colors i have been using are the 0%".
+  - A pixel is bright when `blue16[wy mod 16][wx mod 16] < ⌊256 × (fertility ÷ 1000)^2.5⌋`, and dark otherwise.
+  - The curve is γ 2.5 ("gamma looks best at 2.5").
+  - `blue16` is a fixed 16 × 16 void-and-cluster blue-noise ranking (Ulichney), committed as data and pinned to the world. It replaced
+    the 4×4 ordered pattern, which formed a "plaid" ("that blue noise is a huge improvement").
+- **Hillsides are a dither pattern from slope, not absolute height:** "i want hilsides to have a dither pattern, not absolute
+  elevation".
+  - **The light** comes from azimuth 337.5° (north-north-west, data). The owner accepted the cartographic convention: light from below
+    makes relief read inverted, and 337.5° inverts least (Biland and Çöltekin 2017).
+  - **Per cell,** `d` is the rise away from the light, from the elevation gradient over ground distance.
+  - **The soft curve** `shade = d ÷ (|d| + d₀)` has d₀ = 1/80 per zoom step, in data ("i like soft 80x the most"). It is half strength
+    at a 1.25% slope and never saturates, so steep ground keeps a dither gradient.
+  - **The dither:** with `strength = ⌊16 × |shade|⌋`, a pixel takes the relief tone when `bayer4ᴮ[wy mod 4][wx mod 4] < strength`.
+    `bayer4ᴮ` is the 4×4 ordered matrix, rotated and mirrored so it does not align with the blue noise.
+  - **The relief tones:**
+    - on bright pixels, slopes facing away from the light take the terrain's `second` tone;
+    - on dark pixels, slopes facing the light take its `dark_lit` tone, `dark + 2 × (dark_second − dark)`, as data ("2x looks the
+      best").
+- **Rivers, the coast outline, places and houses** draw over the land as before.
+- **Removed:**
+  - the usable/unusable split;
+  - the old height-band relief (`relief_low`, `relief_high`, `mix`);
+  - the height-based snow caps;
+  - slice 9a's interim `display_usable_pm`.
+
+### 12.4 Glaciation
+
+**Firm.** "snow caps are not elevation based but climate based, this should put glaciers at sealevel at the poles, so its more than
+just snow caps, but glaciation".
+
+- **A cell is glacier** when its summer temperature (the warmest three months) is at or below the equilibrium-line temperature for its
+  annual precipitation. That uses Ohmura's relation (Ohmura, Kasser and Funk 1992; Ohmura and Boettcher 2018),
+  `P = 966 + 230 T + 5.87 T²` (P in mm, T in °C), as cited in the EGU 2020 cirque-glacier study.
+  - About −3 °C at 300 mm, 0 °C at 1,000 mm and +7 °C at 3,000 mm.
+  - The paper uses free-air June–August temperature; the model uses the warmest three months of the surface climate.
+- **What it gives:**
+  - wet maritime mountains hold glaciers in milder summers, and dry polar land needs colder ones;
+  - at the poles the ice reaches sea level, consistent with Köppen's ice-cap climate (warmest month below 0 °C);
+  - Ireland has none.
+- **Glaciers** draw in the ice colour `#e8e9ed`, with its own second tone and the hillside dither, whatever the terrain beneath. Their
+  fertility and building land are 0.
+- **Seasonal snow** belongs to weather, later.
+
+### 12.5 The elevation map mode
+
+**Firm.** "a seperate elevation mode that uses black to white to represent actual elevation", with a square-root curve.
+
+- **Land:** `grey = ⌊255 × √(max(0, elevation) ÷ 8,848)⌋`, the same fixed scale on every map. Ireland's highest ground is about grey 79.
+- **Sea and lake** keep their colours. There is no dither.
+- **Rivers and places** draw over it.
+- It joins the stockpile and yield modes (`docs/economy-design.md` §3.22).
+
+### 12.6 Data and packing
+
+- **Files:**
+  - `fertility.png`: 8-bit grey, the value × 4 = thousandths;
+  - `climate_temperature.png`: 16-bit, °C × 10 + 1000;
+  - `climate_gdd.png`: 16-bit;
+  - `climate_rainfall.png`: 16-bit, mm;
+  - `climate_glacier.png`: 1 bit.
+
+  They replace `usable.png`, and `map.toml` `[layers]` names them.
+- **Grid A:**
+  - R is the terrain index;
+  - G is fertility ÷ 4 (0–250), with 255 meaning glacier;
+  - B is the signed hillside strength (−16…+16, offset by 128), precomputed per cell at load.
+- **Grid B** keeps the elevation.
+- **The reference colour function** in `ck-map` and both GPU owners implement §12.3–§12.5. Readback fixtures on Metal and Vulkan compare
+  byte for byte.
+- **Slices:**
+  - **9a:** the data and loading;
+  - **9:** the economy's use;
+  - **the map-look slice:** the renderer, on both backends together.
+
+### 12.7 Sources
+
+- **Agriculture and soils:**
+  - [FAO/IIASA, GAEZ 2007](https://www.fao.org/docrep/pdf/010/a1075e/a1075e01.pdf);
+  - [FAO Soils Portal: histosols](https://www.fao.org/soils-portal/soil-management/management-of-some-problem-soils/highly-organic-soils/en/);
+  - [topographic wetness index, HESS 2014](https://hess.copernicus.org/articles/18/3623/2014/);
+  - [Geographical: floodplains](https://geographical.co.uk/science-environment/why-do-we-live-on-floodplains).
+- **Climate:**
+  - [Seager et al. 2002](https://ocp.ldeo.columbia.edu/res/div/ocp/gs/pubs/Seager_etal_QJ_2002.pdf);
+  - [Yamamoto et al. 2015](https://www.aoml.noaa.gov/ftp/phod/sklee/projects/amoc_postdocs/yamamoto_elal_2015_cd.pdf);
+  - [Britannica: lapse rate](https://www.britannica.com/science/lapse-rate);
+  - [Humboldt Current](https://en.wikipedia.org/wiki/Humboldt_Current);
+  - [growing degree-day](https://en.wikipedia.org/wiki/Growing_degree-day);
+  - [Rothamsted 2022 on excess water](https://repository.rothamsted.ac.uk/download/498a0c0c494497e0a746ace3bd0ab2cd32c6c4cf834b9a66291ea4cf3da70885/1419875/1-s2.0-S0308521X22001366-main.pdf);
+  - [Climate of Ireland](https://en.wikipedia.org/wiki/Climate_of_Ireland), used as the check region.
+- **Relief and glaciers:**
+  - [Çöltekin et al. 2018](https://isprs-archives.copernicus.org/articles/XLII-4/101/2018/);
+  - [Biland and Çöltekin 2017](https://intranet.inegi.org.mx/calidad/doc/2019/Indicadores_CyE/Guia_didactica/2017_Biland-NNW_CAGIS.pdf);
+  - [EGU 2020, palaeo cirque glacier ELAs](https://presentations.copernicus.org/EGU2020/EGU2020-16981_presentation.pdf);
+  - [Ohmura, Kasser and Funk 1992](https://www.cambridge.org/core/services/aop-cambridge-core/content/view/8DCF1C24E32A6781CC365853535CD16F/S0022143000002276a.pdf/climate-at-the-equilibrium-line-of-glaciers.pdf);
+  - [Köppen climate classification](https://en.wikipedia.org/wiki/K%C3%B6ppen_climate_classification).
+
 ## Provenance
 
 Drafted 2026-11-02 by ck-designer-1. Revision 2 the same day, after design review 1; revision 3 (editorial) after both re-reviews approved
@@ -482,3 +688,6 @@ it; revision 4 (editorial) aligns §9.4 rule 2 and §9.7 with the reviewed specs
 reviewer-1 owner addendum, `docs/vision.md`, `docs/game/diplomacy.md`, `docs/scene-design.md` and `docs/render-design.md`, and reading of
 `crates/gpu-metal` (the frame encoder and its off-screen path, the ledger), `crates/gpu-vulkan` (the render pass, readback and ledger),
 `crates/render-2d` (the points-to-pixels rule), `crates/input` and `apps/codekarl`. No code, issues, builds or runs.
+
+Revision 5, 2026-11-09, by ck-designer-1: §12 (land, climate and the look since M9), from the owner's signed records
+(`usable-land-proposal-r4.md`, `map-look-design-r4.md`), with pointers at the passages it supersedes.
