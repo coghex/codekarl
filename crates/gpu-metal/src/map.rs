@@ -67,6 +67,20 @@ pub enum MetalMapError {
     Destination,
     /// A source that is not finite, not inside the view, or empty.
     Source,
+    /// An owner grid whose length is not `width * height * 4` bytes.
+    OwnerGridLength {
+        /// The length the crop needs.
+        expected: usize,
+        /// The length given.
+        actual: usize,
+    },
+    /// A mode table given to an input that has no owner grid, or whose length is not the input's place count.
+    ModeTable {
+        /// The place count the input's owner grid has (zero with none).
+        expected: usize,
+        /// The table's length.
+        actual: usize,
+    },
     /// A river pixel outside the view.
     RiverOutsideView {
         /// The zero-based position in the submitted river list.
@@ -129,6 +143,14 @@ impl std::fmt::Display for MetalMapError {
                 formatter,
                 "zoom step {step} is past the last ({})",
                 STEP_COUNT - 1
+            ),
+            Self::OwnerGridLength { expected, actual } => write!(
+                formatter,
+                "the owner grid has {actual} bytes; the crop needs {expected}"
+            ),
+            Self::ModeTable { expected, actual } => write!(
+                formatter,
+                "the mode table has {actual} values; the map has {expected} places"
             ),
             Self::Camera => formatter.write_str("the camera's sample points do not fit the 32-bit fixed-point world"),
             Self::Destination => formatter.write_str("the map's destination has no area"),
@@ -344,6 +366,9 @@ pub struct MetalMapInput {
     rules: Arc<[u8]>,
     overlay_palette: Arc<[u8]>,
     steps: [i32; STEP_COUNT],
+    /// The owner grid (map modes): an RGBA8 image of the crop's size (R, G the high and low bytes of the owning place's index,
+    /// `0xFFFF` for none) and the place count; `None` for a map with no modes.
+    owners: Option<(Arc<[u8]>, usize)>,
 }
 
 impl MetalMapInput {
@@ -399,7 +424,35 @@ impl MetalMapInput {
             rules: image.into(),
             overlay_palette: overlay_palette.into(),
             steps: rules.steps,
+            owners: None,
         })
+    }
+
+    /// This input with the owner grid the map modes read (`docs/economy-design.md` section 3.22): an RGBA8 image of the crop's size
+    /// (`size.0 * size.1 * 4` bytes; R and G the high and low bytes of the index of the place that owns the cell, `0xFFFF` for none;
+    /// B zero, A 255) and the number of places. The renderer validates the indices; the presenter checks the length it must size the
+    /// image by.
+    ///
+    /// # Errors
+    ///
+    /// [`MetalMapError::OwnerGridLength`] for a grid that is not the crop's size.
+    pub fn with_owners(mut self, grid: Arc<[u8]>, places: usize) -> Result<Self, MetalMapError> {
+        let expected = usize::try_from(u64::from(self.size[0]) * u64::from(self.size[1]) * 4)
+            .map_err(|_| MetalMapError::Size)?;
+        if grid.len() != expected {
+            return Err(MetalMapError::OwnerGridLength {
+                expected,
+                actual: grid.len(),
+            });
+        }
+        self.owners = Some((grid, places));
+        Ok(self)
+    }
+
+    /// The number of places the owner grid indexes (zero with no owner grid).
+    #[must_use]
+    pub fn places(&self) -> usize {
+        self.owners.as_ref().map_or(0, |(_, places)| *places)
     }
 
     /// The generation that identifies the input: the presenter uploads a generation once.
@@ -436,6 +489,8 @@ pub struct MetalMap {
     rivers: Arc<[[u32; 2]]>,
     locations: Arc<[[u32; 3]]>,
     refusals: Option<Arc<dyn MapRefusalSink>>,
+    /// The map mode showing (its revision and one value per place), or `None` for the plain map.
+    mode: Option<(u64, Arc<[u16]>)>,
 }
 
 impl std::fmt::Debug for MetalMap {
@@ -451,6 +506,10 @@ impl std::fmt::Debug for MetalMap {
             .field("river_pixels", &self.rivers.len())
             .field("location_pixels", &self.locations.len())
             .field("refusals", &self.refusals.is_some())
+            .field(
+                "mode_revision",
+                &self.mode.as_ref().map(|(revision, _)| revision),
+            )
             .finish()
     }
 }
@@ -613,7 +672,26 @@ impl MetalMap {
             rivers: rivers.into(),
             locations: locations.into(),
             refusals: None,
+            mode: None,
         })
+    }
+
+    /// This map showing a map mode: `values` is one position on the colour ramp per place (0 through 1000, or `0xFFFF` for a place
+    /// with nothing to show), published at `revision`. The pass blends them over the terrain by the rule of `ck-map`'s `mode` module.
+    ///
+    /// # Errors
+    ///
+    /// [`MetalMapError::ModeTable`] when the input has no owner grid or `values` is not one per place.
+    pub fn with_mode(mut self, revision: u64, values: Arc<[u16]>) -> Result<Self, MetalMapError> {
+        let expected = self.input.places();
+        if self.input.owners.is_none() || values.len() != expected {
+            return Err(MetalMapError::ModeTable {
+                expected,
+                actual: values.len(),
+            });
+        }
+        self.mode = Some((revision, values));
+        Ok(self)
     }
 
     /// River pixels in view coordinates, sorted and deduplicated by `ck-map`.
@@ -675,6 +753,11 @@ pub(crate) struct NativeMap {
     location_count: u32,
     overlay_palette: *const u8,
     overlay_palette_count: u32,
+    owners: *const u8,
+    mode: i32,
+    mode_revision: u64,
+    mode_values: *const u16,
+    mode_count: u32,
 }
 
 impl NativeMap {
@@ -698,6 +781,11 @@ impl NativeMap {
         location_count: 0,
         overlay_palette: std::ptr::null(),
         overlay_palette_count: 0,
+        owners: std::ptr::null(),
+        mode: 0,
+        mode_revision: 0,
+        mode_values: std::ptr::null(),
+        mode_count: 0,
     };
 
     /// The native description of `map`; `with_grids` also names the input's images' bytes (the first frame of a generation).
@@ -740,6 +828,21 @@ impl NativeMap {
             overlay_palette: input.overlay_palette.as_ptr(),
             overlay_palette_count: u32::try_from(input.overlay_palette.len() / 4)
                 .unwrap_or(u32::MAX),
+            // The owner grid goes with the grids (the first frame of a generation); the mode's table is named on every frame, and the
+            // presenter makes a new one only when its revision is not the resident one's.
+            owners: match (&input.owners, with_grids) {
+                (Some((grid, _)), true) => grid.as_ptr(),
+                _ => std::ptr::null(),
+            },
+            mode: i32::from(map.mode.is_some()),
+            mode_revision: map.mode.as_ref().map_or(0, |(revision, _)| *revision),
+            mode_values: map
+                .mode
+                .as_ref()
+                .map_or(std::ptr::null(), |(_, values)| values.as_ptr()),
+            mode_count: map.mode.as_ref().map_or(0, |(_, values)| {
+                u32::try_from(values.len()).unwrap_or(u32::MAX)
+            }),
         }
     }
 }

@@ -186,6 +186,26 @@ pub(crate) fn places_function(places: Vec<Place>) -> HostFunction {
     })
 }
 
+/// `game.set_map_mode(name)`: shows the map mode `"stockpile"` or `"yield"`, or the plain map for `"off"`. The values come from the
+/// newest view the UI has been given. An unknown name, or a map the lane refuses a table for, is an error.
+pub(crate) fn set_map_mode_function(modes: Arc<crate::map_modes::MapModes>) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [Some(ConfigValue::String(name))] = arguments else {
+            return Err("game.set_map_mode: expected one string argument (name)".to_owned());
+        };
+        let Some(mode) = crate::map_modes::Mode::parse(name) else {
+            return Err(format!(
+                "game.set_map_mode: unknown mode `{name}` (expected off, stockpile or yield)"
+            ));
+        };
+        if let Err(message) = modes.set(mode) {
+            let _ = ck_log::try_log!(ck_log::Level::Warn, "map", "{message}");
+            return Err(format!("game.set_map_mode: {message}"));
+        }
+        Ok(Vec::new())
+    })
+}
+
 /// How many views the cache can hold at most: the views of the `game_time` calls the UI link may have outstanding (at most
 /// [`UI_CALL_LIMIT`] less the place reserved for lifecycle calls) and the one most recently completed. It is the bound, not the rule
 /// by which views leave (see [`ViewCache`]).
@@ -213,7 +233,12 @@ struct CacheInner {
 #[derive(Default)]
 pub(crate) struct ViewCache {
     inner: Mutex<CacheInner>,
+    /// Told of each view as it is posted, once (the map modes' values come from the newest view).
+    observer: std::sync::OnceLock<ViewObserver>,
 }
+
+/// What a view cache tells of a posted view: its revision and the view.
+pub(crate) type ViewObserver = Arc<dyn Fn(u64, &Arc<EconomyView>) + Send + Sync>;
 
 impl CacheInner {
     /// Drops every view that is neither pinned by a pending call nor the last completed one, noting the highest that left.
@@ -241,13 +266,25 @@ impl ViewCache {
     /// Keeps `view` under `revision` for a `game_time` call about to be posted, and pins it until that call completes or is
     /// [`unpost`](Self::unpost)ed. A revision already held keeps its first view (a revision names one view).
     pub(crate) fn post(&self, revision: u64, view: Arc<EconomyView>) {
-        let mut inner = self.locked();
-        inner.views.entry(revision).or_insert(view);
-        *inner.pins.entry(revision).or_default() += 1;
-        debug_assert!(
-            inner.views.len() <= VIEW_CACHE_CAPACITY,
-            "the UI link posts at most the call limit's worth of calls, so the cache cannot outgrow its bound"
-        );
+        let told = Arc::clone(&view);
+        {
+            let mut inner = self.locked();
+            inner.views.entry(revision).or_insert(view);
+            *inner.pins.entry(revision).or_default() += 1;
+            debug_assert!(
+                inner.views.len() <= VIEW_CACHE_CAPACITY,
+                "the UI link posts at most the call limit's worth of calls, so the cache cannot outgrow its bound"
+            );
+        }
+        // Outside the lock: the observer may publish to the map lane.
+        if let Some(observer) = self.observer.get() {
+            observer(revision, &told);
+        }
+    }
+
+    /// Has `observer` told of every view posted from now on. Set once; a second call changes nothing.
+    pub(crate) fn observe_with(&self, observer: ViewObserver) {
+        let _ = self.observer.set(observer);
     }
 
     fn unpin(inner: &mut CacheInner, revision: u64) {
@@ -691,6 +728,8 @@ mod tests {
                 base: 100,
             }],
             overflow_lost: 0,
+            projected_yield: 0,
+            has_economy: true,
             pops: vec![PopView {
                 kind: "peasant".to_owned(),
                 culture: "ulaid".to_owned(),

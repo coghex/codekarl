@@ -1145,8 +1145,8 @@ fn the_time_bar_routes_its_buttons_through_game_controls() {
             .iter()
             .filter(|entry| entry.starts_with("set_hit button_"))
             .count(),
-        5,
-        "three transports, Help and the separate Places button: {entries:?}"
+        7,
+        "three transports, Help, the separate Places button and the two map-mode buttons: {entries:?}"
     );
     assert!(
         !entries.iter().any(|entry| entry.contains("time_speed_")),

@@ -55,6 +55,29 @@ game = {
     return view[id]
   end,
 }
+-- The map-mode buttons (milestone 9, slice 8): `game.set_map_mode` records its calls, and fails when `fail_mode` is set.
+set_mode_calls = {}
+fail_mode = false
+game.set_map_mode = function(name)
+  if fail_mode then error("game.set_map_mode: refused") end
+  set_mode_calls[#set_mode_calls + 1] = name
+end
+local buttons_library = require("lib.button")
+local real_button_new = buttons_library.new
+mode_buttons = {}
+buttons_library.new = function(spec)
+  local created = real_button_new(spec)
+  if spec.icon == "stockpile" or spec.icon == "yield" then mode_buttons[spec.icon] = created end
+  return created
+end
+function announce_modes()
+  for _, key in ipairs({"stockpile", "yield"}) do
+    local button = mode_buttons[key]
+    local width, height = button:size()
+    note(string.format("mode %s %d %d %s", key, button.x + width / 2, button.y + height / 2, tostring(button.selected == true)))
+  end
+  note("modes_called " .. table.concat(set_mode_calls, ","))
+end
 function note(text) window.record(text) end
 function time(hour, revision)
   callbacks.time({year = 768, month = 1, day = 1, hour = hour, paused = false, speed = 1, economy_revision = revision})
@@ -518,4 +541,107 @@ fn at_eight_points_a_pixel_in_an_800_point_window_the_panel_is_its_floor() {
 #[test]
 fn at_three_points_a_pixel_in_a_600_point_window_the_third_holds_the_controls() {
     narrow_layout(3, 600, false);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The map-mode buttons (milestone 9, slice 8)
+// ---------------------------------------------------------------------------------------------
+
+/// The last announced centre of the mode button `key`, and whether it is selected.
+fn mode_button(rig: &Rig, key: &str) -> (f64, f64, bool) {
+    let prefix = format!("mode {key} ");
+    let line = notes(rig)
+        .into_iter()
+        .rev()
+        .find(|line| line.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("no mode button {key}: {:?}", notes(rig)));
+    let mut parts = line[prefix.len()..].split_whitespace();
+    let x = parts.next().unwrap().parse().unwrap();
+    let y = parts.next().unwrap().parse().unwrap();
+    (x, y, parts.next().unwrap() == "true")
+}
+
+/// The modes the script has asked for, in order.
+fn modes_called(rig: &Rig) -> Vec<String> {
+    let line = notes(rig)
+        .into_iter()
+        .rev()
+        .find_map(|line| line.strip_prefix("modes_called ").map(str::to_owned))
+        .expect("modes were announced");
+    line.split(',')
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Presses the mode button `key` and delivers a frame.
+fn press_mode(rig: &mut Rig, key: &str) {
+    let (x, y, _) = mode_button(rig, key);
+    rig.feed(&[
+        PointerEvent::Down(points(x, y)),
+        PointerEvent::Up(points(x, y)),
+    ]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+}
+
+#[test]
+fn the_mode_buttons_publish_the_mode_and_a_second_press_turns_it_off() {
+    let mut rig = rig(&[
+        "time(1, 1)",
+        "announce_modes()",
+        "announce_modes()",
+        "announce_modes()",
+        "announce_modes()",
+        "announce_modes()",
+    ]);
+    rig.opened();
+    rig.opened();
+    // Nothing is asked for, and nothing is selected, until a button is pressed.
+    assert_eq!(modes_called(&rig), Vec::<String>::new());
+    assert!(!mode_button(&rig, "stockpile").2 && !mode_button(&rig, "yield").2);
+    press_mode(&mut rig, "stockpile");
+    rig.opened();
+    assert_eq!(modes_called(&rig), ["stockpile"]);
+    assert!(
+        mode_button(&rig, "stockpile").2 && !mode_button(&rig, "yield").2,
+        "the mode that shows is selected"
+    );
+    // The same button again turns the mode off.
+    press_mode(&mut rig, "stockpile");
+    rig.opened();
+    assert_eq!(modes_called(&rig), ["stockpile", "off"]);
+    assert!(!mode_button(&rig, "stockpile").2 && !mode_button(&rig, "yield").2);
+    // The other button changes the mode with no off between.
+    press_mode(&mut rig, "yield");
+    press_mode(&mut rig, "stockpile");
+    rig.opened();
+    assert_eq!(
+        modes_called(&rig),
+        ["stockpile", "off", "yield", "stockpile"]
+    );
+    assert!(mode_button(&rig, "stockpile").2 && !mode_button(&rig, "yield").2);
+}
+
+#[test]
+fn a_mode_the_lane_refuses_leaves_the_buttons_and_the_mode_as_they_were() {
+    let mut rig = rig(&[
+        "time(1, 1)",
+        "fail_mode = true announce_modes()",
+        "announce_modes()",
+        "fail_mode = false announce_modes()",
+        "announce_modes()",
+    ]);
+    rig.opened();
+    rig.opened();
+    press_mode(&mut rig, "yield");
+    rig.opened();
+    // The refused press changed nothing: no mode was set, and no button is selected.
+    assert_eq!(modes_called(&rig), Vec::<String>::new());
+    assert!(!mode_button(&rig, "yield").2 && !mode_button(&rig, "stockpile").2);
+    // Once the lane takes it, the same press works.
+    rig.opened();
+    press_mode(&mut rig, "yield");
+    rig.opened();
+    assert_eq!(modes_called(&rig), ["yield"]);
+    assert!(mode_button(&rig, "yield").2);
 }

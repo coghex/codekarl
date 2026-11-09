@@ -19,6 +19,12 @@ const FARM_STORE_ML_PER_EMPLOYEE: u64 = 100_000;
 const HOLDINGS_STORE_ML_PER_EMPLOYEE: u64 = 1_170_000;
 /// A storehouse level's store, in millilitres: 50 people's worth of a pop store (design §3.18).
 const STOREHOUSE_STORE_ML_PER_LEVEL: u64 = 50 * POP_STORE_ML_PER_PERSON;
+/// The goods a herd gives (design §3.14): they follow the herd, not the land, so a method's annual output at the land's suitability
+/// does not count them. Dairy counts through the herd (see [`DAIRY_LB_PER_COW_A_YEAR`]); the meats do not count at all (the owner's
+/// rulings of 2026-11-09: herd is not food, but dairy counts toward the yield and the meat does not); wool and hides are not food.
+const HERD_GOODS: [&str; 6] = ["beef", "pork", "mutton", "dairy", "wool", "hides"];
+/// What a cow gives a year at full coverage (design §3.14: dairy is `cattle × 72` pounds, set by the herd's size).
+const DAIRY_LB_PER_COW_A_YEAR: u64 = 72;
 /// The species of a building's herd, in the order the state holds them, with each one's maximum head per farming level
 /// (design §3.14).
 const HERDS: [(&str, u64); 3] = [("cattle", 12), ("pigs", 8), ("sheep", 7)];
@@ -97,6 +103,12 @@ pub(crate) struct PlaceView {
     pub(crate) prices: Vec<PriceView>,
     /// Last month's losses to overflow (`0` until the payday slice).
     pub(crate) overflow_lost: u64,
+    /// The projected annual food of the land, the sea and the dairy herd (design §3.22, the yield map mode): every food good a method
+    /// makes from the land's suitability (crops, fish, the garden) over a full year at the levels the place has, and the cattle's
+    /// dairy at 72 pounds a cow, in hundredths of a person-day. Full staffing and coverage are assumed, and the meats do not count.
+    pub(crate) projected_yield: u64,
+    /// Whether the place has an economy at all: pops or buildings. A place of nobody has nothing for a map mode to show.
+    pub(crate) has_economy: bool,
     pub(crate) pops: Vec<PopView>,
     pub(crate) buildings: Vec<BuildingView>,
 }
@@ -111,6 +123,26 @@ impl EconomyView {
     /// The view of the place called `id`.
     pub(crate) fn place(&self, id: &str) -> Option<&PlaceView> {
         self.places.iter().find(|place| place.id == id)
+    }
+
+    /// The stockpile map mode's value of each place, in scenario order: stored volume against capacity in thousandths, or
+    /// [`ck_map::MODE_UNCOLOURED`] for a place with no capacity (design §3.22).
+    pub(crate) fn stockpile_values(&self) -> Vec<u16> {
+        self.places
+            .iter()
+            .map(|place| ck_map::stockpile_value(place.storage_used_ml, place.storage_capacity_ml))
+            .collect()
+    }
+
+    /// The yield map mode's value of each place, in scenario order: the projected annual yield relative to the other places, red at
+    /// the least and green at the most (design §3.22). A place with no economy is [`ck_map::MODE_UNCOLOURED`] and sets neither end.
+    pub(crate) fn yield_values(&self) -> Vec<u16> {
+        let yields: Vec<Option<u64>> = self
+            .places
+            .iter()
+            .map(|place| place.has_economy.then_some(place.projected_yield))
+            .collect();
+        ck_map::yield_values(&yields)
     }
 }
 
@@ -212,6 +244,62 @@ fn building_capacity_ml(building: &BuildingState, employees: u64) -> u64 {
         "storehouse" => u64::from(building.levels).saturating_mul(STOREHOUSE_STORE_ML_PER_LEVEL),
         _ => 0,
     }
+}
+
+/// A building's projected annual food, in hundredths of a person-day: for each method with levels, each food good that is not a herd's
+/// at its annual output scaled by the land's suitability (`method_suitability` is the sum over the levels, in ‰ of the output at
+/// suitability 1000), and the dairy of the building's cattle (72 pounds a cow a year). The meats do not count.
+fn projected_yield(rules: &Rules, building: &BuildingState) -> u64 {
+    let Some(definition) = rules
+        .buildings
+        .iter()
+        .find(|candidate| candidate.id == building.kind)
+    else {
+        return 0;
+    };
+    let mut total = 0_u128;
+    for (index, method) in definition.methods.iter().enumerate() {
+        if building
+            .method_levels
+            .get(index)
+            .is_none_or(|levels| *levels == 0)
+        {
+            continue;
+        }
+        for (good_id, annual) in &method.annual_output {
+            if HERD_GOODS.contains(&good_id.as_str()) {
+                continue;
+            }
+            let Some((good_index, good)) = rules
+                .goods
+                .iter()
+                .enumerate()
+                .find(|(_, good)| &good.id == good_id)
+            else {
+                continue;
+            };
+            let suitability = building
+                .method_suitability
+                .get(index)
+                .and_then(|row| row.get(good_index))
+                .copied()
+                .unwrap_or(0);
+            let units = u128::from(*annual) * u128::from(suitability) / 1000;
+            total = total.saturating_add(units * u128::from(good.hunger_centi));
+        }
+    }
+    // Dairy follows the herd, whatever the methods: the cattle (the first species) at 72 pounds a head.
+    if let (Some(cattle), Some(dairy)) = (
+        building.herds.first(),
+        rules.goods.iter().find(|good| good.id == "dairy"),
+    ) {
+        total = total.saturating_add(
+            u128::from(*cattle)
+                * u128::from(DAIRY_LB_PER_COW_A_YEAR)
+                * u128::from(dairy.hunger_centi),
+        );
+    }
+    u64::try_from(total).unwrap_or(u64::MAX)
 }
 
 fn building_view(rules: &Rules, building: &BuildingState) -> BuildingView {
@@ -329,6 +417,10 @@ fn place_view(rules: &Rules, place: &PlaceState) -> PlaceView {
         storage_capacity_ml: capacity,
         prices,
         overflow_lost: 0,
+        projected_yield: place.buildings.iter().fold(0_u64, |sum, building| {
+            sum.saturating_add(projected_yield(rules, building))
+        }),
+        has_economy: !place.pops.is_empty() || !place.buildings.is_empty(),
         pops,
         buildings,
     }
@@ -557,6 +649,156 @@ mod tests {
         );
     }
 
+    /// A view of places named by `used / capacity` stores and a projected yield (a place with an economy).
+    fn view_of(places: &[(u64, u64, u64)]) -> EconomyView {
+        EconomyView {
+            places: places
+                .iter()
+                .enumerate()
+                .map(|(index, (used, capacity, yield_))| PlaceView {
+                    id: format!("place-{index}"),
+                    storage_used_ml: *used,
+                    storage_capacity_ml: *capacity,
+                    projected_yield: *yield_,
+                    has_economy: true,
+                    ..PlaceView::default()
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_stockpile_values_are_stored_volume_over_capacity_in_thousandths() {
+        let view = view_of(&[
+            (0, 1_000, 0),
+            (500, 1_000, 0),
+            (1_000, 1_000, 0),
+            (1, 3, 0),
+            (9, 0, 0),
+        ]);
+        assert_eq!(
+            view.stockpile_values(),
+            [0, 500, 1000, 333, ck_map::MODE_UNCOLOURED]
+        );
+        // A place of nobody has no capacity and so no colour; red (empty) is a colour.
+        let mut nobody = view_of(&[(0, 1_000, 0)]);
+        nobody.places.push(PlaceView {
+            id: "absent".to_owned(),
+            ..PlaceView::default()
+        });
+        assert_eq!(nobody.stockpile_values(), [0, ck_map::MODE_UNCOLOURED]);
+    }
+
+    #[test]
+    fn the_yield_values_are_relative_across_the_places_that_have_an_economy() {
+        let mut view = view_of(&[(0, 1, 100), (0, 1, 300), (0, 1, 200), (0, 1, 100)]);
+        assert_eq!(view.yield_values(), [0, 1000, 500, 0]);
+        // A place of nobody sets neither the least nor the most, and has no colour.
+        view.places.push(PlaceView {
+            id: "absent".to_owned(),
+            projected_yield: 0,
+            ..PlaceView::default()
+        });
+        assert_eq!(
+            view.yield_values(),
+            [0, 1000, 500, 0, ck_map::MODE_UNCOLOURED]
+        );
+        // Equal yields everywhere are the middle of the ramp.
+        let level = view_of(&[(0, 1, 7), (0, 1, 7)]);
+        assert_eq!(level.yield_values(), [500, 500]);
+        // A place with an economy and no yield at all is the least, not nobody.
+        let barren = view_of(&[(0, 1, 0), (0, 1, 40)]);
+        assert_eq!(barren.yield_values(), [0, 1000]);
+    }
+
+    /// The fixture place's projected yield with `change` applied to its farm.
+    fn yield_with(rules: &Rules, change: impl Fn(&mut BuildingState)) -> u64 {
+        let mut place = fixture(rules);
+        change(&mut place.buildings[0]);
+        let state = EconomyState {
+            places: vec![place],
+        };
+        build(Some(rules), &state, &["fixture".to_owned()]).places[0].projected_yield
+    }
+
+    #[test]
+    fn a_places_projected_yield_is_its_crops_and_fish_a_year_at_the_lands_suitability() {
+        let rules = shipped_rules();
+        let hunger = |good: &str| u64::from(rules.goods[index_of(&rules, good)].hunger_centi);
+        // The fixture farm's herd is 27 cattle: its dairy is the whole yield while the land gives nothing.
+        let dairy_only = 27 * 72 * hunger("dairy");
+        assert_eq!(yield_with(&rules, |_| {}), dairy_only);
+        // Two levels of oats at full suitability and one of barley at half.
+        let crops = |farm: &mut BuildingState| {
+            farm.method_suitability[0][index_of(&rules, "oats")] = 2_000;
+            farm.method_suitability[0][index_of(&rules, "barley")] = 500;
+        };
+        let expected = 300 * 2_000 / 1_000 * hunger("oats") + 50 * 500 / 1_000 * hunger("barley");
+        assert!(expected > 0);
+        assert_eq!(yield_with(&rules, crops), dairy_only + expected);
+        // A method with no levels adds nothing, whatever its suitability.
+        assert_eq!(
+            yield_with(&rules, |farm| {
+                farm.method_suitability[1][index_of(&rules, "fish")] = 5_000;
+            }),
+            dairy_only
+        );
+    }
+
+    #[test]
+    fn dairy_counts_at_seventy_two_pounds_a_cow_a_year_and_follows_the_herd_not_the_land() {
+        let rules = shipped_rules();
+        let hunger = u64::from(rules.goods[index_of(&rules, "dairy")].hunger_centi);
+        assert!(hunger > 0, "dairy is food");
+        // One cow gives 72 pounds; the yield scales with the cattle and with nothing else of the herd.
+        assert_eq!(
+            yield_with(&rules, |farm| farm.herds = vec![1, 0, 0]),
+            72 * hunger
+        );
+        assert_eq!(
+            yield_with(&rules, |farm| farm.herds = vec![10, 18, 15]),
+            720 * hunger
+        );
+        assert_eq!(
+            yield_with(&rules, |farm| farm.herds = vec![0, 18, 15]),
+            0,
+            "pigs and sheep give no dairy"
+        );
+        // The land's suitability for dairy does not change it: the herd sets the dairy.
+        assert_eq!(
+            yield_with(&rules, |farm| {
+                farm.herds = vec![5, 0, 0];
+                farm.method_suitability[0][index_of(&rules, "dairy")] = 9_000;
+            }),
+            5 * 72 * hunger
+        );
+    }
+
+    #[test]
+    fn meat_does_not_count_toward_the_yield() {
+        let rules = shipped_rules();
+        let base = yield_with(&rules, |_| {});
+        for meat in ["beef", "pork", "mutton"] {
+            assert!(
+                rules.goods[index_of(&rules, meat)].hunger_centi > 0,
+                "{meat} is food"
+            );
+            // A method's output of the meat at any suitability adds nothing.
+            assert_eq!(
+                yield_with(&rules, |farm| {
+                    farm.method_suitability[0][index_of(&rules, meat)] = 3_000;
+                }),
+                base,
+                "{meat}"
+            );
+        }
+        assert_eq!(
+            yield_with(&rules, |farm| farm.herds = vec![27, 1_000, 1_000]),
+            base,
+            "pigs and sheep, the meat herds, add nothing"
+        );
+    }
+
     #[test]
     fn the_shipped_start_builds_a_view_for_every_ireland_place_without_overflow() {
         let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
@@ -573,6 +815,24 @@ mod tests {
         let view = build(Some(&rules), &state, &ids);
         assert_eq!(view.places.len(), 94);
         assert!(view.places.iter().any(|place| place.workers > 0));
+        // The map modes: a value for every place, the stockpile ones on the ramp, and a spread of yields across the map.
+        let stockpile = view.stockpile_values();
+        let yields = view.yield_values();
+        assert_eq!((stockpile.len(), yields.len()), (94, 94));
+        assert!(
+            stockpile
+                .iter()
+                .all(|value| *value <= 1000 || *value == ck_map::MODE_UNCOLOURED)
+        );
+        assert!(
+            yields
+                .iter()
+                .all(|value| *value <= 1000 || *value == ck_map::MODE_UNCOLOURED)
+        );
+        assert!(
+            yields.contains(&0) && yields.contains(&1000),
+            "the least and the most yield are the ends of the ramp"
+        );
         for place in &view.places {
             assert!(
                 place.storage_used_ml <= place.storage_capacity_ml,

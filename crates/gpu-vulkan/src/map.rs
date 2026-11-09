@@ -69,6 +69,20 @@ pub enum VulkanMapError {
     Destination,
     /// A source that is not finite, not inside the view, or empty.
     Source,
+    /// An owner grid whose length is not `width * height * 4` bytes.
+    OwnerGridLength {
+        /// The length the crop needs.
+        expected: usize,
+        /// The length given.
+        actual: usize,
+    },
+    /// A mode table given to an input that has no owner grid, or whose length is not the input's place count.
+    ModeTable {
+        /// The place count the input's owner grid has (zero with none).
+        expected: usize,
+        /// The table's length.
+        actual: usize,
+    },
     /// A river pixel outside the view.
     RiverOutsideView {
         /// The zero-based position in the submitted river list.
@@ -131,6 +145,14 @@ impl std::fmt::Display for VulkanMapError {
                 formatter,
                 "zoom step {step} is past the last ({})",
                 STEP_COUNT - 1
+            ),
+            Self::OwnerGridLength { expected, actual } => write!(
+                formatter,
+                "the owner grid has {actual} bytes; the crop needs {expected}"
+            ),
+            Self::ModeTable { expected, actual } => write!(
+                formatter,
+                "the mode table has {actual} values; the map has {expected} places"
             ),
             Self::Camera => formatter.write_str("the camera's sample points do not fit the 32-bit fixed-point world"),
             Self::Destination => formatter.write_str("the map's destination has no area"),
@@ -346,6 +368,9 @@ pub struct VulkanMapInput {
     rules: Arc<[u8]>,
     overlay_palette: Arc<[u8]>,
     steps: [i32; STEP_COUNT],
+    /// The owner grid (map modes): an RGBA8 image of the crop's size (R, G the high and low bytes of the owning place's index,
+    /// `0xFFFF` for none) and the place count; `None` for a map with no modes.
+    owners: Option<(Arc<[u8]>, usize)>,
 }
 
 impl VulkanMapInput {
@@ -401,7 +426,40 @@ impl VulkanMapInput {
             rules: image.into(),
             overlay_palette: overlay_palette.into(),
             steps: rules.steps,
+            owners: None,
         })
+    }
+
+    /// This input with the owner grid the map modes read (`docs/economy-design.md` section 3.22): an RGBA8 image of the crop's size
+    /// (`size.0 * size.1 * 4` bytes; R and G the high and low bytes of the index of the place that owns the cell, `0xFFFF` for none;
+    /// B zero, A 255) and the number of places. The renderer validates the indices; the presenter checks the length it must size
+    /// the image by.
+    ///
+    /// # Errors
+    ///
+    /// [`VulkanMapError::OwnerGridLength`] for a grid that is not the crop's size.
+    pub fn with_owners(mut self, grid: Arc<[u8]>, places: usize) -> Result<Self, VulkanMapError> {
+        let expected = usize::try_from(u64::from(self.size[0]) * u64::from(self.size[1]) * 4)
+            .map_err(|_| VulkanMapError::Size)?;
+        if grid.len() != expected {
+            return Err(VulkanMapError::OwnerGridLength {
+                expected,
+                actual: grid.len(),
+            });
+        }
+        self.owners = Some((grid, places));
+        Ok(self)
+    }
+
+    /// The number of places the owner grid indexes (zero with no owner grid).
+    #[must_use]
+    pub fn places(&self) -> usize {
+        self.owners.as_ref().map_or(0, |(_, places)| *places)
+    }
+
+    /// The owner grid image, when the input has one.
+    pub(crate) fn owner_grid(&self) -> Option<&[u8]> {
+        self.owners.as_ref().map(|(grid, _)| &**grid)
     }
 
     /// The generation that identifies the input: the presenter uploads a generation once.
@@ -470,6 +528,8 @@ pub struct VulkanMap {
     rivers: Arc<[[u32; 2]]>,
     locations: Arc<[[u32; 3]]>,
     refusals: Option<Arc<dyn MapRefusalSink>>,
+    /// The map mode showing (its revision and one value per place), or `None` for the plain map.
+    mode: Option<(u64, Arc<[u16]>)>,
 }
 
 impl std::fmt::Debug for VulkanMap {
@@ -485,6 +545,10 @@ impl std::fmt::Debug for VulkanMap {
             .field("river_pixels", &self.rivers.len())
             .field("location_pixels", &self.locations.len())
             .field("refusals", &self.refusals.is_some())
+            .field(
+                "mode_revision",
+                &self.mode.as_ref().map(|(revision, _)| revision),
+            )
             .finish()
     }
 }
@@ -647,7 +711,33 @@ impl VulkanMap {
             rivers: rivers.into(),
             locations: locations.into(),
             refusals: None,
+            mode: None,
         })
+    }
+
+    /// This map showing a map mode: `values` is one position on the colour ramp per place (0 through 1000, or `0xFFFF` for a place
+    /// with nothing to show), published at `revision`. The pass blends them over the terrain by the rule of `ck-map`'s `mode` module.
+    ///
+    /// # Errors
+    ///
+    /// [`VulkanMapError::ModeTable`] when the input has no owner grid or `values` is not one per place.
+    pub fn with_mode(mut self, revision: u64, values: Arc<[u16]>) -> Result<Self, VulkanMapError> {
+        let expected = self.input.places();
+        if self.input.owner_grid().is_none() || values.len() != expected {
+            return Err(VulkanMapError::ModeTable {
+                expected,
+                actual: values.len(),
+            });
+        }
+        self.mode = Some((revision, values));
+        Ok(self)
+    }
+
+    /// The mode's revision and values, when a mode shows.
+    pub(crate) fn mode(&self) -> Option<(u64, &Arc<[u16]>)> {
+        self.mode
+            .as_ref()
+            .map(|(revision, values)| (*revision, values))
     }
 
     /// River pixels in view coordinates, sorted and deduplicated by `ck-map`.

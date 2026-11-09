@@ -61,7 +61,8 @@ pub use group::{GroupError, GroupKey, POINT_DOMAIN, PointRect};
 pub use hit::{HIT_RECTS_PER_KEY, HIT_RECTS_PER_SCENE, HitError, HitRect, HitRegion, HitRegions};
 pub use legacy::{Admission, LegacyError, LegacyLane};
 pub use map::{
-    MapCamera, MapError, MapFrame, MapInput, MapPlacement, MapPublication, MapRefusals, MapRules,
+    MODE_TABLE_WIDTH, MODE_UNCOLOURED, MODE_UNOWNED, MODE_VALUE_MAX, MapCamera, MapError, MapFrame,
+    MapInput, MapMode, MapOwners, MapPlacement, MapPublication, MapRefusals, MapRules,
     MapTerrainKind, MapTerrainRule, STEP_COUNT, TERRAIN_MAX, place_map,
 };
 /// The presenter's frame-timing types (milestone 5, issue 10b-1), which the application reads through the backend: the application

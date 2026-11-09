@@ -90,6 +90,7 @@ mod game_api;
 mod input_stash;
 mod lifecycle;
 mod map_app;
+mod map_modes;
 mod metrics;
 #[cfg_attr(
     all(
@@ -712,6 +713,12 @@ fn supervise_with_owner_factory(
     let hover_registered = Arc::new(AtomicBool::new(false));
     let select_registered = Arc::new(AtomicBool::new(false));
     let view_cache = Arc::new(game_api::ViewCache::default());
+    // The map modes (the UI's two buttons choose one): their values come from each view the UI link hands the VM.
+    let map_modes = Arc::new(map_modes::MapModes::new(Arc::clone(&bridge), places.len()));
+    view_cache.observe_with({
+        let modes = Arc::clone(&map_modes);
+        Arc::new(move |revision, view| modes.observe(revision, view))
+    });
     let (ui, sim_spawn, game_extension) = match connected {
         Some(connected) => (
             ui.with_sim(ui_link::SimLink {
@@ -732,7 +739,8 @@ fn supervise_with_owner_factory(
                     connected.controls,
                 )
                 .function("places", game_api::places_function(places))
-                .function("place", game_api::place_function(view_cache)),
+                .function("place", game_api::place_function(view_cache))
+                .function("set_map_mode", game_api::set_map_mode_function(map_modes)),
             ),
         ),
         None => (ui, None, None),

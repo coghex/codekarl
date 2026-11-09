@@ -564,13 +564,13 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
         first[1].starts_with("create q1 ui/theme/cut6_tl_fill.png 8 8 "),
         "{first:?}"
     );
-    // Two panels and five buttons use cut-6 frames; icons are precreated (including both pause/play states), and the five boxes
-    // have separate outline and fill quads.
+    // Three panels (the time bar, the places bar and the map modes' bar) and seven buttons use cut-6 frames; icons are precreated
+    // (including both pause/play states, and the two map modes'), and the five boxes have separate outline and fill quads.
     let text = "9 Oct 768 · 14:00";
     let glyphs = text.chars().filter(|c| *c != ' ').count();
     assert_eq!(
         first.iter().filter(|e| e.starts_with("create ")).count(),
-        glyphs + 2 * 11 + 5 * 11 + 4 + 1 + 6 + 10,
+        glyphs + 3 * 11 + 7 * 11 + 6 + 1 + 6 + 10,
         "{first:?}"
     );
     assert!(

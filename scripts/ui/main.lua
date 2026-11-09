@@ -41,6 +41,10 @@ if game ~= nil then
   local places_button = nil
   local places_group = nil
   local places_bar_visible = true
+  local modes_panel = nil
+  local modes_group = nil
+  local mode_buttons = {}
+  local shown_mode = "off"
   local speed_boxes = {}
   local time_controls = {}
   local shown_speed = nil
@@ -139,6 +143,56 @@ if game ~= nil then
       kind = "places_bar",
       group = places_group,
       on_click = function() open_places() end,
+    }
+  end
+
+  -- The map modes' bar (milestone 9, slice 8): two icon buttons, left of the places bar, choose the map mode that colours each place red
+  -- to green: the goods in store against the most it holds, or the year's yield against the other places'. The button of the mode
+  -- that shows is selected; pressing it turns the mode off, pressing the other changes the mode.
+  local MODE_BUTTON_WIDTH = 13 -- UI pixels: the 9-pixel icon and the button's padding
+  local MODES_WIDTH = 5 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 5
+
+  local function modes_origin()
+    return ui.anchor("top_right", MODES_WIDTH * P, 19 * P, -(MARGIN + places_panel.width + 4 * P), MARGIN, view.width, view.height)
+  end
+
+  local function fit_modes_bar()
+    if modes_panel == nil or places_panel == nil then return end
+    local x, y = modes_origin()
+    modes_panel:set_rect(x, y, MODES_WIDTH * P, 19 * P)
+    render.set_hit("modes_bar", {{x = x, y = y, width = MODES_WIDTH * P, height = 19 * P}}, modes_group)
+    mode_buttons.stockpile:move(x + 5 * P, y + 2 * P)
+    mode_buttons.yield:move(x + (5 + MODE_BUTTON_WIDTH + 3) * P, y + 2 * P)
+  end
+
+  local function select_mode(name)
+    local wanted = name == shown_mode and "off" or name
+    -- A mode the map lane refuses leaves the one that showed.
+    if not pcall(game.set_map_mode, wanted) then
+      return
+    end
+    shown_mode = wanted
+    for key, mode_button in pairs(mode_buttons) do
+      mode_button:set_selected(key == shown_mode)
+    end
+  end
+
+  local function create_modes_bar()
+    local x, y = modes_origin()
+    modes_group = render.create_group()
+    modes_panel = panel.new{
+      x = x, y = y, width = MODES_WIDTH * P, height = 19 * P, kind = "places_bar", cut = 6, group = modes_group,
+    }
+    -- Publish the bar capture before the buttons' narrower regions.
+    render.set_hit("modes_bar", {{x = x, y = y, width = MODES_WIDTH * P, height = 19 * P}}, modes_group)
+    mode_buttons.stockpile = button.new{
+      x = x + 5 * P, y = y + 2 * P, icons = {"stockpile"}, icon = "stockpile", kind = "places_bar", group = modes_group,
+      on_click = function() select_mode("stockpile") end,
+    }
+    mode_buttons.yield = button.new{
+      x = x + (5 + MODE_BUTTON_WIDTH + 3) * P, y = y + 2 * P, icons = {"yield"}, icon = "yield", kind = "places_bar",
+      group = modes_group,
+      on_click = function() select_mode("yield") end,
     }
   end
 
@@ -249,6 +303,7 @@ if game ~= nil then
     text.set(readout, content)
     text.move(readout, readout_x, y + 4 * P)
     create_places_bar()
+    create_modes_bar()
   end
 
   -- The location panel: the left third of the screen below the time bar, filled from the economy view of the revision `game_time`
@@ -290,6 +345,7 @@ if game ~= nil then
     end
   end
   relayouts[#relayouts + 1] = fit_places_bar
+  relayouts[#relayouts + 1] = fit_modes_bar
 
   -- A place's `id` and `name` (`game_select`'s fields, a map click's or a places-list row's) open the location panel, or show that
   -- place in it. The places list only selects.

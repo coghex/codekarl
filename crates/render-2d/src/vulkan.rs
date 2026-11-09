@@ -300,17 +300,21 @@ pub(crate) fn vulkan_map_cached(
     let gpu_input = if let Some(held) = held {
         held
     } else {
-        let made = Arc::new(
-            VulkanMapInput::new(
-                input.generation(),
-                input.origin(),
-                input.size(),
-                Arc::clone(input.grid_a()),
-                Arc::clone(input.grid_b()),
-                &vulkan_rules(input.rules()),
-            )
-            .map_err(refused)?,
-        );
+        let mut made = VulkanMapInput::new(
+            input.generation(),
+            input.origin(),
+            input.size(),
+            Arc::clone(input.grid_a()),
+            Arc::clone(input.grid_b()),
+            &vulkan_rules(input.rules()),
+        )
+        .map_err(refused)?;
+        if let Some(owners) = input.owners() {
+            made = made
+                .with_owners(Arc::clone(owners.image()), owners.places())
+                .map_err(refused)?;
+        }
+        let made = Arc::new(made);
         *cached = Some(Arc::downgrade(&made));
         made
     };
@@ -335,6 +339,17 @@ pub(crate) fn vulkan_map_cached(
         camera.locations().as_ref().to_vec(),
     )
     .map_err(refused)?;
+    // The map mode showing: its values at its revision (a frame with no mode, or a mode that is off, draws the plain map).
+    let map = match frame
+        .mode
+        .as_ref()
+        .and_then(|mode| Some((mode.revision(), mode.values()?)))
+    {
+        Some((revision, values)) => map
+            .with_mode(revision, Arc::clone(values))
+            .map_err(refused)?,
+        None => map,
+    };
     // Where the presenter tells the publisher it refused to make a map image (and that it later could).
     Ok(Some(map.with_refusals(
         Arc::clone(&frame.refusals) as Arc<dyn VulkanRefusalSink>

@@ -22,7 +22,8 @@ use crate::draw::{
 };
 use crate::error::vk_error;
 use crate::gpu_map::{
-    MapInputObjects, MapObjects, MapRecord, MapTargetObjects, record_map_pass, record_map_quad,
+    MapInputObjects, MapObjects, MapRecord, MapTableObjects, MapTargetObjects, record_map_pass,
+    record_map_quad,
 };
 use crate::hooks::QuadFaults;
 use crate::instance::InstanceInner;
@@ -106,6 +107,12 @@ impl Objects<'_> {
             .flatten()
         {
             target.destroy(device, map_pool);
+        }
+        for mut table in [self.map.retired_table.take(), self.map.table.take()]
+            .into_iter()
+            .flatten()
+        {
+            table.destroy(device, map_pool);
         }
         self.map.pipeline.destroy(device);
         let descriptor_pool = self.pipeline.pool;
@@ -678,6 +685,15 @@ fn create_map_objects(
     );
     objects.map.input = Some(input);
     created?;
+    let mut table = MapTableObjects::default();
+    let created = table.create(
+        device,
+        memory_properties,
+        &objects.map.pipeline,
+        map.mode().map(|(revision, values)| (revision, &values[..])),
+    );
+    objects.map.table = Some(table);
+    created?;
     let mut target = MapTargetObjects::default();
     let created = target.create(
         device,
@@ -860,15 +876,18 @@ fn record(
         objects.texture.record_upload(device, cmd);
     }
     let map_record = job.map.map(|map| MapRecord::of(map, true));
-    if let (Some(record), Some(input), Some(target)) =
-        (&map_record, &objects.map.input, &mut objects.map.target)
-    {
+    if let (Some(record), Some(input), Some(target), Some(table)) = (
+        &map_record,
+        &objects.map.input,
+        &mut objects.map.target,
+        &objects.map.table,
+    ) {
         // The presenter's own map pass: the upload, the barriers and the pass.
         record_map_pass(
             device,
             memory_properties,
             cmd,
-            (&objects.map.pipeline, input, target),
+            (&objects.map.pipeline, input, target, table),
             record,
         )?;
     }

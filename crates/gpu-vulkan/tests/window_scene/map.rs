@@ -91,6 +91,71 @@ pub(crate) fn input_with(generation: u64) -> Arc<VulkanMapInput> {
     )
 }
 
+/// An input with the fixture's owner grid over its four places (the map modes' tables are one value per place).
+pub(crate) fn moded_input(generation: u64) -> Arc<VulkanMapInput> {
+    let fixture = the_fixture();
+    let owners: Vec<u8> = fixture::mode_owners()
+        .iter()
+        .flat_map(|index| {
+            let [high, low] = index.to_be_bytes();
+            [high, low, 0, 255]
+        })
+        .collect();
+    Arc::new(
+        VulkanMapInput::new(
+            generation,
+            ORIGIN,
+            CROP,
+            fixture.grid_a.clone().into(),
+            fixture.grid_b.clone().into(),
+            &rules_of(fixture),
+        )
+        .expect("a valid input")
+        .with_owners(owners.into(), fixture::MODE_PLACE_COUNT)
+        .expect("a valid owner grid"),
+    )
+}
+
+/// [`map_of`] showing the map mode `mode` (a revision and one value per place), or the plain map.
+pub(crate) fn moded_map(
+    input: &Arc<VulkanMapInput>,
+    top_left: [i32; 2],
+    view: [u32; 2],
+    mode: Option<(u64, &[u16])>,
+) -> VulkanMap {
+    let map = map_of(input, top_left, view);
+    match mode {
+        Some((revision, values)) => map
+            .with_mode(revision, values.to_vec().into())
+            .expect("a table that fits the places"),
+        None => map,
+    }
+}
+
+/// The reference's RGBA colour of map pixel `(x, y)` of a view at `top_left` under the map mode `values` (the plain map for `None`).
+pub(crate) fn moded_pixel(top_left: [i32; 2], x: u32, y: u32, values: Option<&[u16]>) -> [u8; 4] {
+    let Some(values) = values else {
+        return expected_pixel(top_left, x, y);
+    };
+    let owners = fixture::mode_owners();
+    ck_map::reference_colour_with_mode(
+        &the_fixture().data,
+        STEP,
+        WorldPixel {
+            x: top_left[0] + i32::try_from(x).expect("small"),
+            y: top_left[1] + i32::try_from(y).expect("small"),
+        },
+        &std::collections::BTreeSet::new(),
+        &std::collections::BTreeMap::new(),
+        Some(&ck_map::ModeInputs {
+            owners: &owners,
+            values,
+        }),
+    )
+    .expect("the pixel's sample point fits")
+    .0
+}
+
 /// The map of `input` seen from `top_left` through a `view`, enlarged four times into the window's top-left corner.
 pub(crate) fn map_of(input: &Arc<VulkanMapInput>, top_left: [i32; 2], view: [u32; 2]) -> VulkanMap {
     let side = |value: u32| i32::try_from(value * 4).expect("small");

@@ -126,6 +126,7 @@ impl MapController<PreparedRivers> {
             PreparedRivers::new(loaded.rivers.clone()),
             Vec::new(),
             LocationKinds::default(),
+            &[],
         )
     }
 
@@ -147,6 +148,7 @@ impl MapController<PreparedRivers> {
             PreparedRivers::new(scenario.map.rivers.clone()),
             scenario.locations.clone(),
             scenario.location_kinds.clone(),
+            &scenario.catchment_owners,
         )
     }
 }
@@ -172,9 +174,12 @@ impl<R: RiverViewSelector> MapController<R> {
             rivers,
             Vec::new(),
             LocationKinds::default(),
+            &[],
         )
     }
 
+    /// `owners` is the scenario's catchment owner of every crop cell (a place's index in `locations`, or none), empty for a map with
+    /// no places: the owner grid the map modes read goes to the lane with the map.
     fn with_scenario_parts(
         loaded: &LoadedMap,
         bridge: Arc<SceneBridge>,
@@ -182,8 +187,10 @@ impl<R: RiverViewSelector> MapController<R> {
         rivers: R,
         locations: Vec<Location>,
         kinds: LocationKinds,
+        owners: &[Option<usize>],
     ) -> Result<Self, String> {
         let crop = loaded.data.crop;
+        let locations_count = locations.len();
         let overlay_palette = kinds.overlay_palette();
         let markers = PreparedMarkers::new(locations.clone(), kinds.clone());
         let location_names = locations
@@ -205,6 +212,23 @@ impl<R: RiverViewSelector> MapController<R> {
             rules,
         )
         .map_err(|error| format!("map lane refused the loaded map: {error}"))?;
+        let places = locations_count;
+        let input = if owners.is_empty() {
+            input
+        } else {
+            let owners = owners
+                .iter()
+                .map(|owner| {
+                    owner.map_or(Ok(ck_render_2d::MODE_UNOWNED), |index| {
+                        u16::try_from(index)
+                            .map_err(|_| format!("place index {index} does not fit the owner grid"))
+                    })
+                })
+                .collect::<Result<Vec<u16>, String>>()?;
+            input
+                .with_owners(owners, places)
+                .map_err(|error| format!("map lane refused the owner grid: {error}"))?
+        };
         let input = Arc::new(input);
         match bridge.publish_map(Arc::clone(&input)) {
             MapPublication::Published => {}
@@ -1017,6 +1041,7 @@ pub(crate) mod tests {
             PreparedRivers::new(Vec::new()),
             vec![location],
             kinds,
+            &[],
         )
         .expect("map lane accepts hover fixture");
         let desc = WindowDesc {
@@ -1088,6 +1113,7 @@ pub(crate) mod tests {
                 kinds: vec![kind],
                 ..LocationKinds::default()
             },
+            &[],
         )
         .expect("map lane accepts window-case hover fixture");
         controller

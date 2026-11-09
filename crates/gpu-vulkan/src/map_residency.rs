@@ -1,11 +1,13 @@
 //! The map's bookkeeping (milestone 6, slice 1): pure, with no Vulkan call in it, so every rule is tested without a device.
 //!
-//! The render thread owns at most **one resident input** (grid A, grid B and the palette, with the staging buffers of its upload), **one
-//! resident target**, and at most **one retired input and one retired target** (the presenter has one frame in flight, so no more than
-//! one retired holder of each kind can still be in use):
+//! The render thread owns at most **one resident input** (grid A, grid B, the owner grid and the palette, with the staging buffers of its
+//! upload), **one resident target**, **one resident mode table** (the values a map mode shows, by revision; a dummy while no mode shows),
+//! and at most **one retired holder of each kind** (the presenter has one frame in flight, so no more than one retired holder of each
+//! kind can still be in use):
 //!
 //! - an input is *resident* while it is the one the map pass reads; a target while it is the one the map pass writes and the window
-//!   pass samples; each is *retired* once a new input or a new view size replaced it;
+//!   pass samples; a table while it is the one the map pass reads its values from; each is *retired* once a new input, a new view size
+//!   or a new revision (or a mode turned off or on) replaced it. A table is written once, when it is made, and never changed;
 //! - a retired holder is destroyed once the ledger has the proof of the last submit that used it, and a holder that no submit ever used
 //!   is destroyed at once;
 //! - an input counts as *uploaded* only once the frame that recorded its upload has been **submitted**: a frame abandoned after
@@ -24,6 +26,8 @@ pub(crate) struct Need {
     pub(crate) input: bool,
     /// A new target (its size is not the resident one's).
     pub(crate) target: bool,
+    /// A new mode table (its revision is not the resident one's; `None` is the dummy table of a frame with no mode).
+    pub(crate) table: bool,
 }
 
 /// Whether the replacements a frame needs may be made now.
@@ -54,10 +58,16 @@ pub(crate) struct Replaced {
     pub(crate) input: Displaced,
     /// The old target.
     pub(crate) target: Displaced,
+    /// The old mode table.
+    pub(crate) table: Displaced,
 }
 
 /// What may be destroyed now, given the proofs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one flag per kind of holder: the input, the target, the staging buffers and the table"
+)]
 pub(crate) struct Reapable {
     /// The retired input.
     pub(crate) input: bool,
@@ -65,6 +75,8 @@ pub(crate) struct Reapable {
     pub(crate) target: bool,
     /// The staging buffers of the resident input (its upload is proven finished).
     pub(crate) staging: bool,
+    /// The retired mode table.
+    pub(crate) table: bool,
 }
 
 #[derive(Debug)]
@@ -83,19 +95,28 @@ struct ResidentTarget {
     last_use: Option<u64>,
 }
 
+#[derive(Debug)]
+struct ResidentTable {
+    /// The revision the table was made for; `None` for the dummy table of a frame with no mode.
+    revision: Option<u64>,
+    last_use: Option<u64>,
+}
+
 /// The bookkeeping (see the module documentation).
 #[derive(Debug, Default)]
 pub(crate) struct MapResidency {
     input: Option<ResidentInput>,
     target: Option<ResidentTarget>,
-    /// The last use of the retired input / target (`Some`: it waits for that proof).
+    table: Option<ResidentTable>,
+    /// The last use of the retired input / target / table (`Some`: it waits for that proof).
     retired_input: Option<u64>,
     retired_target: Option<u64>,
+    retired_table: Option<u64>,
 }
 
 impl MapResidency {
-    /// What `generation` and a `view` of this size need that is not resident.
-    pub(crate) fn need(&self, generation: u64, view: [u32; 2]) -> Need {
+    /// What `generation`, a `view` of this size and a mode table of `revision` need that is not resident.
+    pub(crate) fn need(&self, generation: u64, view: [u32; 2], revision: Option<u64>) -> Need {
         Need {
             input: self
                 .input
@@ -105,13 +126,18 @@ impl MapResidency {
                 .target
                 .as_ref()
                 .is_none_or(|target| target.size != view),
+            table: self
+                .table
+                .as_ref()
+                .is_none_or(|table| table.revision != revision),
         }
     }
 
     /// Whether `need` may be met now: a replacement that retires a holder needs the retired slot of that kind free.
     pub(crate) fn admission(&self, need: Need) -> Admission {
         let blocked = (need.input && self.input.is_some() && self.retired_input.is_some())
-            || (need.target && self.target.is_some() && self.retired_target.is_some());
+            || (need.target && self.target.is_some() && self.retired_target.is_some())
+            || (need.table && self.table.is_some() && self.retired_table.is_some());
         if blocked {
             Admission::Wait
         } else {
@@ -121,7 +147,13 @@ impl MapResidency {
 
     /// The new objects exist: they become the resident ones, and the old ones are retired (or, if no submit ever used them, to be
     /// destroyed now). Only after [`admission`](Self::admission) said [`Admission::Go`].
-    pub(crate) fn replace(&mut self, need: Need, generation: u64, view: [u32; 2]) -> Replaced {
+    pub(crate) fn replace(
+        &mut self,
+        need: Need,
+        generation: u64,
+        view: [u32; 2],
+        revision: Option<u64>,
+    ) -> Replaced {
         let mut replaced = Replaced::default();
         if need.input {
             let old = self.input.replace(ResidentInput {
@@ -140,6 +172,14 @@ impl MapResidency {
             });
             let (existed, last_use) = old.map_or((false, None), |old| (true, old.last_use));
             replaced.target = Self::displaced(existed, last_use, &mut self.retired_target);
+        }
+        if need.table {
+            let old = self.table.replace(ResidentTable {
+                revision,
+                last_use: None,
+            });
+            let (existed, last_use) = old.map_or((false, None), |old| (true, old.last_use));
+            replaced.table = Self::displaced(existed, last_use, &mut self.retired_table);
         }
         replaced
     }
@@ -174,6 +214,9 @@ impl MapResidency {
         if let Some(target) = &mut self.target {
             target.last_use = Some(number);
         }
+        if let Some(table) = &mut self.table {
+            table.last_use = Some(number);
+        }
     }
 
     /// What may be destroyed given the highest proven submit number.
@@ -183,6 +226,7 @@ impl MapResidency {
             input: proven(self.retired_input),
             target: proven(self.retired_target),
             staging: proven(self.input.as_ref().and_then(|input| input.upload)),
+            table: proven(self.retired_table),
         }
     }
 
@@ -196,6 +240,11 @@ impl MapResidency {
         self.retired_target = None;
     }
 
+    /// The retired mode table was destroyed.
+    pub(crate) fn retired_table_destroyed(&mut self) {
+        self.retired_table = None;
+    }
+
     /// The resident input's staging buffers were destroyed.
     pub(crate) fn staging_destroyed(&mut self) {
         if let Some(input) = &mut self.input {
@@ -206,7 +255,9 @@ impl MapResidency {
     /// Whether a retired holder still waits for its proof.
     #[cfg(test)]
     pub(crate) fn retired_waiting(&self) -> bool {
-        self.retired_input.is_some() || self.retired_target.is_some()
+        self.retired_input.is_some()
+            || self.retired_target.is_some()
+            || self.retired_table.is_some()
     }
 
     /// The resident input's generation, if there is one.
@@ -226,16 +277,17 @@ mod tests {
     /// A residency with input generation 1 and a `VIEW` target, submitted as `number` with the upload.
     fn resident(number: u64) -> MapResidency {
         let mut residency = MapResidency::default();
-        let need = residency.need(1, VIEW);
+        let need = residency.need(1, VIEW, None);
         assert_eq!(
             need,
             Need {
                 input: true,
-                target: true
+                target: true,
+                table: true
             }
         );
         assert_eq!(residency.admission(need), Admission::Go);
-        assert_eq!(residency.replace(need, 1, VIEW), Replaced::default());
+        assert_eq!(residency.replace(need, 1, VIEW, None), Replaced::default());
         assert!(residency.upload_pending());
         residency.submitted(number, true);
         assert!(!residency.upload_pending());
@@ -246,21 +298,22 @@ mod tests {
     fn the_same_generation_and_size_need_nothing() {
         let residency = resident(1);
         assert_eq!(
-            residency.need(1, VIEW),
+            residency.need(1, VIEW, None),
             Need {
                 input: false,
-                target: false
+                target: false,
+                table: false
             }
         );
-        assert!(residency.need(2, VIEW).input);
-        assert!(residency.need(1, BIGGER).target);
+        assert!(residency.need(2, VIEW, None).input);
+        assert!(residency.need(1, BIGGER, None).target);
     }
 
     #[test]
     fn an_upload_counts_only_once_the_frame_was_submitted() {
         let mut residency = MapResidency::default();
-        let need = residency.need(1, VIEW);
-        residency.replace(need, 1, VIEW);
+        let need = residency.need(1, VIEW, None);
+        residency.replace(need, 1, VIEW, None);
         // A frame abandoned after recording the upload submits nothing: the upload is still pending for the next frame.
         assert!(residency.upload_pending());
         // A submit without the upload (the input already uploaded elsewhere cannot happen) leaves it pending.
@@ -282,16 +335,17 @@ mod tests {
     #[test]
     fn a_replaced_target_is_retired_and_destroyed_only_once_its_last_submit_is_proven() {
         let mut residency = resident(2);
-        let need = residency.need(1, BIGGER);
+        let need = residency.need(1, BIGGER, None);
         assert_eq!(
             need,
             Need {
                 input: false,
-                target: true
+                target: true,
+                table: false
             }
         );
         assert_eq!(residency.admission(need), Admission::Go);
-        let replaced = residency.replace(need, 1, BIGGER);
+        let replaced = residency.replace(need, 1, BIGGER, None);
         assert_eq!(
             replaced,
             Replaced {
@@ -312,16 +366,17 @@ mod tests {
     #[test]
     fn a_second_replacement_waits_while_the_retired_holder_of_its_kind_waits() {
         let mut residency = resident(2);
-        let need = residency.need(1, BIGGER);
-        residency.replace(need, 1, BIGGER);
+        let need = residency.need(1, BIGGER, None);
+        residency.replace(need, 1, BIGGER, None);
         residency.submitted(3, false);
         // Another resize while the first retired target is not proven: the frame waits, and nothing changes.
-        let again = residency.need(1, [7, 5]);
+        let again = residency.need(1, [7, 5], None);
         assert_eq!(residency.admission(again), Admission::Wait);
         // A new input is another kind: it may go ahead.
         let input = Need {
             input: true,
             target: false,
+            table: false,
         };
         assert_eq!(residency.admission(input), Admission::Go);
         // Once the retired target is proven and destroyed, the resize goes.
@@ -333,16 +388,17 @@ mod tests {
     #[test]
     fn an_object_no_submit_used_is_destroyed_at_once_not_retired() {
         let mut residency = MapResidency::default();
-        let need = residency.need(1, VIEW);
-        residency.replace(need, 1, VIEW);
+        let need = residency.need(1, VIEW, None);
+        residency.replace(need, 1, VIEW, None);
         // The first frame never submitted, and the view changes: the old input and target are destroyed now.
-        let need = residency.need(2, BIGGER);
-        let replaced = residency.replace(need, 2, BIGGER);
+        let need = residency.need(2, BIGGER, None);
+        let replaced = residency.replace(need, 2, BIGGER, None);
         assert_eq!(
             replaced,
             Replaced {
                 input: Displaced::DestroyNow,
                 target: Displaced::DestroyNow,
+                table: Displaced::Nothing,
             }
         );
         assert!(!residency.retired_waiting());
@@ -352,8 +408,8 @@ mod tests {
     #[test]
     fn a_new_input_retires_the_old_one_with_the_old_submit() {
         let mut residency = resident(5);
-        let need = residency.need(2, VIEW);
-        let replaced = residency.replace(need, 2, VIEW);
+        let need = residency.need(2, VIEW, None);
+        let replaced = residency.replace(need, 2, VIEW, None);
         assert_eq!(
             (replaced.input, replaced.target),
             (Displaced::Retired, Displaced::Nothing)
@@ -364,5 +420,73 @@ mod tests {
         );
         assert!(!residency.reapable(4).input);
         assert!(residency.reapable(5).input);
+    }
+
+    #[test]
+    fn a_new_revision_replaces_the_table_and_retires_the_old_one_with_its_last_submit() {
+        let mut residency = resident(3);
+        // The same revision (here the dummy) needs nothing; a revision needs a table.
+        assert!(!residency.need(1, VIEW, None).table);
+        let need = residency.need(1, VIEW, Some(7));
+        assert_eq!(
+            need,
+            Need {
+                input: false,
+                target: false,
+                table: true
+            }
+        );
+        assert_eq!(residency.admission(need), Admission::Go);
+        let replaced = residency.replace(need, 1, VIEW, Some(7));
+        assert_eq!(
+            replaced,
+            Replaced {
+                table: Displaced::Retired,
+                ..Replaced::default()
+            }
+        );
+        assert!(
+            !residency.reapable(2).table,
+            "its last use, submit 3, is not proven"
+        );
+        assert!(residency.reapable(3).table);
+        residency.retired_table_destroyed();
+        assert!(!residency.retired_waiting());
+        assert!(
+            !residency.need(1, VIEW, Some(7)).table,
+            "the revision is resident now"
+        );
+        assert!(residency.need(1, VIEW, Some(8)).table);
+        assert!(
+            residency.need(1, VIEW, None).table,
+            "turning the mode off is a replacement too"
+        );
+    }
+
+    #[test]
+    fn a_second_revision_waits_while_the_retired_table_waits() {
+        let mut residency = resident(2);
+        let need = residency.need(1, VIEW, Some(1));
+        residency.replace(need, 1, VIEW, Some(1));
+        residency.submitted(3, false);
+        let again = residency.need(1, VIEW, Some(2));
+        assert_eq!(residency.admission(again), Admission::Wait);
+        // A resize is another kind: it goes ahead.
+        let resize = residency.need(1, BIGGER, Some(1));
+        assert_eq!(residency.admission(resize), Admission::Go);
+        assert!(residency.reapable(2).table);
+        residency.retired_table_destroyed();
+        assert_eq!(residency.admission(again), Admission::Go);
+    }
+
+    #[test]
+    fn a_table_no_submit_used_is_destroyed_at_once_not_retired() {
+        let mut residency = MapResidency::default();
+        let need = residency.need(1, VIEW, Some(1));
+        residency.replace(need, 1, VIEW, Some(1));
+        let need = residency.need(1, VIEW, Some(2));
+        let replaced = residency.replace(need, 1, VIEW, Some(2));
+        assert_eq!(replaced.table, Displaced::DestroyNow);
+        assert!(!residency.retired_waiting());
     }
 }
