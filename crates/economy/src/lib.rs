@@ -142,6 +142,9 @@ pub struct Rules {
     pub ticking_rates_million: BTreeMap<String, BTreeMap<String, u64>>,
     /// Diet shares by profile and good, in ‰.
     pub diet_profiles: BTreeMap<String, BTreeMap<String, u16>>,
+    /// Niceties and luxuries buy-order shares by population type and tier, in ‰.
+    #[serde(default)]
+    pub comfort_profiles: BTreeMap<String, BTreeMap<String, BTreeMap<String, u16>>>,
     /// Land suitability by terrain and product key, in ‰.
     pub suitability: BTreeMap<String, BTreeMap<String, u16>>,
     /// Grazing suitability by terrain and animal key, in ‰.
@@ -438,6 +441,69 @@ impl Rules {
                 }
             }
         }
+        for pop_type in &self.pop_types {
+            let Some(tiers) = self.comfort_profiles.get(&pop_type.id) else {
+                return Err(refuse(
+                    format!("comfort_profiles.{}", pop_type.id),
+                    "profile is missing".to_owned(),
+                ));
+            };
+            for tier in ["niceties", "luxuries"] {
+                if !tiers.contains_key(tier) {
+                    return Err(refuse(
+                        format!("comfort_profiles.{}.{}", pop_type.id, tier),
+                        "tier profile is missing".to_owned(),
+                    ));
+                }
+            }
+        }
+        for (profile, tiers) in &self.comfort_profiles {
+            if !self.pop_types.iter().any(|pop| pop.id == *profile) {
+                return Err(refuse(
+                    format!("comfort_profiles.{profile}"),
+                    "unknown population type".to_owned(),
+                ));
+            }
+            for (tier, shares) in tiers {
+                if tier != "niceties" && tier != "luxuries" {
+                    return Err(refuse(
+                        format!("comfort_profiles.{profile}.{tier}"),
+                        "tier must be niceties or luxuries".to_owned(),
+                    ));
+                }
+                if !shares.is_empty()
+                    && shares.values().copied().map(u32::from).sum::<u32>() != 1000
+                {
+                    return Err(refuse(
+                        format!("comfort_profiles.{profile}.{tier}"),
+                        "shares must sum to 1000".to_owned(),
+                    ));
+                }
+                for (good, share) in shares {
+                    let Some(definition) = self.goods.iter().find(|item| item.id == *good) else {
+                        return Err(refuse(
+                            format!("comfort_profiles.{profile}.{tier}.{good}"),
+                            "unknown good".to_owned(),
+                        ));
+                    };
+                    let tier_value = if tier == "niceties" {
+                        definition.niceties_centi
+                    } else {
+                        definition.luxuries_centi
+                    };
+                    if *share > 1000 || tier_value == 0 {
+                        return Err(refuse(
+                            format!("comfort_profiles.{profile}.{tier}.{good}"),
+                            if tier_value == 0 {
+                                "good has zero value in this tier".to_owned()
+                            } else {
+                                "share must be in 0..=1000".to_owned()
+                            },
+                        ));
+                    }
+                }
+            }
+        }
         for (terrain, values) in &self.suitability {
             if terrain != "sea" && !self.terrain_order.contains(terrain) {
                 return Err(refuse(
@@ -700,6 +766,16 @@ pub fn target_price(
     let lower = (base_m * 200).div_euclid(1000).max(1);
     let upper = (base_m * 5000).div_euclid(1000);
     u64::try_from(raw.clamp(lower, upper)).map_err(|_| "target price is outside u64")
+}
+
+/// Value whole good units in the local price representation (milli-value units).
+///
+/// # Errors
+/// Returns an error if the checked value multiplication overflows.
+pub fn value_at_price(units: u128, price_milli: u64) -> Result<u128, &'static str> {
+    units
+        .checked_mul(u128::from(price_milli))
+        .ok_or("local price value overflow")
 }
 
 /// Split a weighted total into integer shares by largest remainder in input order.
@@ -1048,9 +1124,11 @@ pub fn starting_state(
             .collect::<Result<Vec<_>, _>>()?;
         state.places.push(PlaceState {
             id: location.id.clone(),
+            coastal: location.land.sea > 0,
             pops,
             buildings,
             prices_milli,
+            price_drift_carries: vec![0; rules.goods.len()],
             counters: CounterBuckets::default(),
         });
     }
@@ -1205,25 +1283,23 @@ fn assign_building_levels(
                     .checked_add(u128::from(output.get(good_id).copied().unwrap_or(0)))
                     .ok_or_else(|| missing_data("projection".to_owned(), "supply overflow"))?;
                 let buy_units = projected_buy_units(rules, pops, good_id, coastal)?;
-                let buy_value = buy_units
-                    .checked_mul(u128::from(good.base_price))
-                    .ok_or_else(|| {
-                        missing_data("projection".to_owned(), "demand value overflow")
-                    })?;
-                let sell_value = sell_before
-                    .checked_mul(u128::from(good.base_price))
-                    .ok_or_else(|| {
-                        missing_data("projection".to_owned(), "supply value overflow")
-                    })?;
+                let base_milli = good.base_price.checked_mul(1000).ok_or_else(|| {
+                    missing_data(
+                        format!("goods.{}.base_price", good.id),
+                        "base price in thousandths overflows u64",
+                    )
+                })?;
+                let buy_value = value_at_price(buy_units, base_milli)
+                    .map_err(|problem| missing_data("projection".to_owned(), problem))?;
+                let sell_value = value_at_price(sell_before, base_milli)
+                    .map_err(|problem| missing_data("projection".to_owned(), problem))?;
                 let price = target_price(good.base_price, buy_value, sell_value, rules.price_k_pm)
                     .map_err(|problem| missing_data(format!("target_price.{good_id}"), problem))?;
-                estimate = estimate
-                    .checked_add(output_units.checked_mul(u128::from(price)).ok_or_else(|| {
-                        missing_data("projection".to_owned(), "method value overflow")
-                    })?)
-                    .ok_or_else(|| {
-                        missing_data("projection".to_owned(), "method value sum overflow")
-                    })?;
+                let output_value = value_at_price(output_units, price)
+                    .map_err(|problem| missing_data("projection".to_owned(), problem))?;
+                estimate = estimate.checked_add(output_value).ok_or_else(|| {
+                    missing_data("projection".to_owned(), "method value sum overflow")
+                })?;
             }
             estimate = estimate
                 .checked_mul(u128::from(building.overhead_pm))
@@ -1570,6 +1646,343 @@ fn projected_buy_units(
             .ok_or_else(|| missing_data("projection".to_owned(), "diet demand sum overflow"))?;
     }
     Ok(total)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct DailyMarketOrders {
+    buy_units: Vec<u128>,
+    sell_units: Vec<u128>,
+}
+
+fn food_target_units(
+    rules: &Rules,
+    pop_kind: &str,
+    people: u64,
+    good_index: usize,
+    coastal: bool,
+    days: u64,
+) -> Result<u128, DataError> {
+    let good = rules
+        .goods
+        .get(good_index)
+        .ok_or_else(|| missing_data("market.good".to_owned(), "good index is outside rules"))?;
+    if good.hunger_centi == 0 || people == 0 {
+        return Ok(0);
+    }
+    let profile = rules
+        .diet_profiles
+        .get(pop_kind)
+        .ok_or_else(|| missing_data(format!("diet_profiles.{pop_kind}"), "profile is missing"))?;
+    let shares = normalized_diet_shares(rules, profile, coastal)?;
+    let share = u128::from(shares[good_index]);
+    if share == 0 {
+        return Ok(0);
+    }
+    let need = u128::from(people)
+        .checked_mul(100)
+        .ok_or_else(|| missing_data("market.need".to_owned(), "daily need overflow"))?;
+    let numerator = share
+        .checked_mul(need)
+        .and_then(|value| value.checked_mul(u128::from(days)))
+        .ok_or_else(|| {
+            missing_data("market.food_target".to_owned(), "target numerator overflow")
+        })?;
+    let denominator = 1000_u128
+        .checked_mul(u128::from(good.hunger_centi))
+        .ok_or_else(|| {
+            missing_data(
+                "market.food_target".to_owned(),
+                "target denominator overflow",
+            )
+        })?;
+    let whole = numerator / denominator;
+    whole
+        .checked_add(u128::from(numerator % denominator != 0))
+        .ok_or_else(|| missing_data("market.food_target".to_owned(), "target units overflow"))
+}
+
+fn tier_target_units(
+    rules: &Rules,
+    pop_kind: &str,
+    people: u64,
+    good_index: usize,
+    tier: usize,
+) -> Result<u128, DataError> {
+    let good = rules
+        .goods
+        .get(good_index)
+        .ok_or_else(|| missing_data("market.good".to_owned(), "good index is outside rules"))?;
+    let pop_type = rules
+        .pop_types
+        .iter()
+        .find(|pop| pop.id == pop_kind)
+        .ok_or_else(|| {
+            missing_data(
+                format!("pop_types.{pop_kind}"),
+                "population type is missing",
+            )
+        })?;
+    let (tier_name, expectation, value) = match tier {
+        1 => (
+            "niceties",
+            pop_type.niceties_expectation_pm,
+            good.niceties_centi,
+        ),
+        2 => (
+            "luxuries",
+            pop_type.luxuries_expectation_pm,
+            good.luxuries_centi,
+        ),
+        _ => {
+            return Err(missing_data(
+                "market.tier".to_owned(),
+                "tier index must be 1 or 2",
+            ));
+        }
+    };
+    let share = rules
+        .comfort_profiles
+        .get(pop_kind)
+        .and_then(|profile| profile.get(tier_name))
+        .and_then(|shares| shares.get(&good.id))
+        .copied()
+        .unwrap_or(0);
+    if expectation == 0 || share == 0 || value == 0 || people == 0 {
+        return Ok(0);
+    }
+    let need = u128::from(people)
+        .checked_mul(100)
+        .ok_or_else(|| missing_data("market.need".to_owned(), "daily need overflow"))?;
+    let tier_target = u128::from(expectation)
+        .checked_mul(need)
+        .and_then(|target| target.checked_mul(240))
+        .ok_or_else(|| missing_data("market.tier_target".to_owned(), "target overflow"))?
+        / 1000;
+    let numerator = u128::from(share)
+        .checked_mul(tier_target)
+        .ok_or_else(|| missing_data("market.tier_want".to_owned(), "want numerator overflow"))?;
+    let denominator = 1000_u128
+        .checked_mul(u128::from(value))
+        .ok_or_else(|| missing_data("market.tier_want".to_owned(), "want denominator overflow"))?;
+    let whole = numerator / denominator;
+    whole
+        .checked_add(u128::from(numerator % denominator != 0))
+        .ok_or_else(|| missing_data("market.tier_want".to_owned(), "want units overflow"))
+}
+
+fn pop_market_holding(
+    place: &PlaceState,
+    pop_index: usize,
+    good_index: usize,
+) -> Result<u128, DataError> {
+    let pop = place
+        .pops
+        .get(pop_index)
+        .ok_or_else(|| missing_data("market.pop".to_owned(), "pop index is outside place"))?;
+    let mut holding =
+        u128::from(*pop.stock.get(good_index).ok_or_else(|| {
+            missing_data("market.pop.stock".to_owned(), "good dimension mismatch")
+        })?);
+    for building in &place.buildings {
+        if let Some(accounts) = &building.storehouse_accounts {
+            let account = accounts.pops.get(pop_index).ok_or_else(|| {
+                missing_data(
+                    format!("places.{}.storehouse.accounts", place.id),
+                    "pop account dimension mismatch",
+                )
+            })?;
+            let amount = account.get(good_index).ok_or_else(|| {
+                missing_data(
+                    "market.storehouse.account".to_owned(),
+                    "good dimension mismatch",
+                )
+            })?;
+            holding = holding.checked_add(u128::from(*amount)).ok_or_else(|| {
+                missing_data("market.pop.holding".to_owned(), "holding sum overflow")
+            })?;
+        }
+    }
+    Ok(holding)
+}
+
+fn building_market_holding(
+    rules: &Rules,
+    place: &PlaceState,
+    building: &BuildingState,
+    good_index: usize,
+) -> Result<u128, DataError> {
+    if let Some(accounts) = &building.storehouse_accounts {
+        if accounts.communal.len() != rules.goods.len()
+            || accounts
+                .pops
+                .iter()
+                .any(|account| account.len() != rules.goods.len())
+            || storehouse_physical_stock_checked(rules, accounts)? != building.stock
+        {
+            return Err(missing_data(
+                format!("places.{}.storehouse", place.id),
+                "storehouse physical stock differs from its accounts",
+            ));
+        }
+        return Ok(u128::from(*accounts.communal.get(good_index).ok_or_else(
+            || {
+                missing_data(
+                    "market.storehouse.communal".to_owned(),
+                    "good dimension mismatch",
+                )
+            },
+        )?));
+    }
+    Ok(u128::from(*building.stock.get(good_index).ok_or_else(
+        || {
+            missing_data(
+                "market.building.stock".to_owned(),
+                "good dimension mismatch",
+            )
+        },
+    )?))
+}
+
+fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketOrders, DataError> {
+    let goods = rules.goods.len();
+    let mut orders = DailyMarketOrders {
+        buy_units: vec![0; goods],
+        sell_units: vec![0; goods],
+    };
+    for (pop_index, pop) in place.pops.iter().enumerate() {
+        let people = pop.workers.checked_add(pop.dependents).ok_or_else(|| {
+            missing_data("market.pop.size".to_owned(), "population size overflow")
+        })?;
+        for (good_index, good) in rules.goods.iter().enumerate() {
+            let holding = pop_market_holding(place, pop_index, good_index)?;
+            let target =
+                food_target_units(rules, &pop.kind, people, good_index, place.coastal, 240)?;
+            let comfort_target = tier_target_units(rules, &pop.kind, people, good_index, 1)?
+                .max(tier_target_units(rules, &pop.kind, people, good_index, 2)?);
+            let buy_target = target.max(comfort_target);
+            let buy = buy_target.saturating_sub(holding);
+            orders.buy_units[good_index] = orders.buy_units[good_index]
+                .checked_add(buy)
+                .ok_or_else(|| missing_data("market.buy".to_owned(), "buy order overflow"))?;
+            if good.hunger_centi > 0 {
+                let sell = holding.saturating_sub(target);
+                orders.sell_units[good_index] = orders.sell_units[good_index]
+                    .checked_add(sell)
+                    .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
+            }
+        }
+    }
+    for building in &place.buildings {
+        if building.employment.len() != place.pops.len() {
+            return Err(missing_data(
+                format!("places.{}.buildings.{}.employment", place.id, building.kind),
+                "employment dimensions do not match place pops",
+            ));
+        }
+        for (good_index, good) in rules.goods.iter().enumerate() {
+            let holding = building_market_holding(rules, place, building, good_index)?;
+            let mut owner_reserve = 0_u128;
+            for (pop_index, employment) in building.employment.iter().enumerate() {
+                if employment.owners == 0 {
+                    continue;
+                }
+                let pop = &place.pops[pop_index];
+                let target = food_target_units(
+                    rules,
+                    &pop.kind,
+                    employment.owners,
+                    good_index,
+                    place.coastal,
+                    60,
+                )?;
+                owner_reserve = owner_reserve.checked_add(target).ok_or_else(|| {
+                    missing_data("market.owner_reserve".to_owned(), "owner reserve overflow")
+                })?;
+            }
+            if good.hunger_centi > 0 {
+                let sell = holding.saturating_sub(owner_reserve);
+                orders.sell_units[good_index] = orders.sell_units[good_index]
+                    .checked_add(sell)
+                    .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
+            } else {
+                orders.sell_units[good_index] = orders.sell_units[good_index]
+                    .checked_add(holding)
+                    .ok_or_else(|| missing_data("market.sell".to_owned(), "sell order overflow"))?;
+            }
+        }
+    }
+    Ok(orders)
+}
+
+fn daily_price_target(
+    rules: &Rules,
+    good: &Good,
+    current_milli: u64,
+    buy_units: u128,
+    sell_units: u128,
+) -> Result<u64, DataError> {
+    if buy_units == 0 && sell_units == 0 {
+        return Ok(current_milli);
+    }
+    let buy_value = value_at_price(buy_units, current_milli)
+        .map_err(|problem| missing_data("market.buy_value".to_owned(), problem))?;
+    let sell_value = value_at_price(sell_units, current_milli)
+        .map_err(|problem| missing_data("market.sell_value".to_owned(), problem))?;
+    target_price(good.base_price, buy_value, sell_value, rules.price_k_pm)
+        .map_err(|problem| missing_data(format!("target_price.{}", good.id), problem))
+}
+
+fn update_daily_prices(rules: &Rules, state: &mut EconomyState) -> Result<(), DataError> {
+    rules.validate("economy rules")?;
+    for place in &mut state.places {
+        if place.prices_milli.len() != rules.goods.len()
+            || place.price_drift_carries.len() != rules.goods.len()
+        {
+            return Err(missing_data(
+                format!("places.{}.prices", place.id),
+                "saved price dimensions do not match goods",
+            ));
+        }
+        let orders = daily_market_orders(rules, place)?;
+        for (index, good) in rules.goods.iter().enumerate() {
+            let current = place.prices_milli[index];
+            let maximum = good.base_price.checked_mul(5000).ok_or_else(|| {
+                missing_data(
+                    format!("goods.{}.base_price", good.id),
+                    "price clamp overflow",
+                )
+            })?;
+            if current == 0 || current > maximum {
+                return Err(missing_data(
+                    format!("places.{}.prices.{}", place.id, good.id),
+                    "saved local price is outside its clamp",
+                ));
+            }
+            let target = daily_price_target(
+                rules,
+                good,
+                current,
+                orders.buy_units[index],
+                orders.sell_units[index],
+            )?;
+            let value = i64::try_from(current).map_err(|_| {
+                missing_data("market.price".to_owned(), "current price exceeds i64")
+            })?;
+            let target = i64::try_from(target)
+                .map_err(|_| missing_data("market.price".to_owned(), "target price exceeds i64"))?;
+            place.prices_milli[index] = u64::try_from(drift_value(
+                value,
+                target,
+                100,
+                1000,
+                &mut place.price_drift_carries[index],
+                1,
+                i64::try_from(maximum).unwrap_or(i64::MAX),
+            )?)
+            .map_err(|_| missing_data("market.price".to_owned(), "drifted price is negative"))?;
+        }
+    }
+    Ok(())
 }
 
 fn normalized_diet_shares(
@@ -2437,17 +2850,21 @@ fn settle_overflow(
     Ok(())
 }
 
-/// A location's economy state and saved local base prices.
+/// A location's economy state and saved local prices.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlaceState {
     /// Scenario-local location key.
     pub id: String,
+    /// Whether the location's catchment includes sea, which enables its authored fish diet share.
+    pub coastal: bool,
     /// Pops in authored order.
     pub pops: Vec<PopState>,
     /// Buildings in authored order.
     pub buildings: Vec<BuildingState>,
-    /// Saved prices in good order, represented in thousandths.
+    /// Saved local prices in good order, represented in thousandths.
     pub prices_milli: Vec<u64>,
+    /// Signed daily price-drift carries in good order, with denominator 1000.
+    pub price_drift_carries: Vec<i64>,
     /// Display-only monthly event counters.
     pub counters: CounterBuckets,
 }
@@ -4249,7 +4666,7 @@ pub fn run_monthly_production(
     Ok(ledger)
 }
 
-/// Run one noon economy tick: first-of-month production, then drawing, eating and needs.
+/// Run one noon economy tick: prices, first-of-month production, then drawing, eating and needs.
 /// The state commits only when both phases succeed.
 ///
 /// # Errors
@@ -4260,6 +4677,7 @@ pub fn run_daily_economy(
     date: Date,
 ) -> Result<ProductionLedger, DataError> {
     let mut next = state.clone();
+    update_daily_prices(rules, &mut next)?;
     let mut ledger = run_monthly_production(rules, &mut next, date)?;
     let (intake_pm, daily_consumption) = run_daily_consumption_with_ledger(rules, &mut next, date)?;
     ledger.intake_pm = intake_pm;
@@ -4273,6 +4691,7 @@ impl Canonical for EconomyState {
         encode_length(self.places.len(), out)?;
         for place in &self.places {
             place.id.encode(out)?;
+            place.coastal.encode(out)?;
             encode_length(place.pops.len(), out)?;
             for pop in &place.pops {
                 pop.kind.encode(out)?;
@@ -4312,6 +4731,7 @@ impl Canonical for EconomyState {
                 building.fee_carries.encode(out)?;
             }
             place.prices_milli.encode(out)?;
+            place.price_drift_carries.encode(out)?;
             encode_counters(&place.counters, out)?;
         }
         Ok(())
@@ -4321,6 +4741,7 @@ impl Canonical for EconomyState {
         let mut places = Vec::with_capacity(place_count);
         for _ in 0..place_count {
             let id = String::decode(input)?;
+            let coastal = bool::decode(input)?;
             let count = input.length()?;
             let mut pops = Vec::with_capacity(count);
             for _ in 0..count {
@@ -4367,9 +4788,11 @@ impl Canonical for EconomyState {
             }
             places.push(PlaceState {
                 id,
+                coastal,
                 pops,
                 buildings,
                 prices_milli: Vec::<u64>::decode(input)?,
+                price_drift_carries: Vec::<i64>::decode(input)?,
                 counters: decode_counters(input)?,
             });
         }
@@ -4504,6 +4927,13 @@ mod tests {
                 "peasant".to_owned(),
                 BTreeMap::from([("food".to_owned(), 1000)]),
             )]),
+            comfort_profiles: BTreeMap::from([(
+                "peasant".to_owned(),
+                BTreeMap::from([
+                    ("niceties".to_owned(), BTreeMap::new()),
+                    ("luxuries".to_owned(), BTreeMap::new()),
+                ]),
+            )]),
             suitability: BTreeMap::from([(
                 "pasture".to_owned(),
                 BTreeMap::from([("crops".to_owned(), 1000), ("food".to_owned(), 1000)]),
@@ -4518,6 +4948,16 @@ mod tests {
             )]),
             price_k_pm: 500,
         }
+    }
+
+    fn add_empty_comfort_profile(rules: &mut Rules, pop_kind: &str) {
+        rules.comfort_profiles.insert(
+            pop_kind.to_owned(),
+            BTreeMap::from([
+                ("niceties".to_owned(), BTreeMap::new()),
+                ("luxuries".to_owned(), BTreeMap::new()),
+            ]),
+        );
     }
 
     #[expect(
@@ -4639,9 +5079,11 @@ mod tests {
         let state = EconomyState {
             places: vec![PlaceState {
                 id: "daily_fixture".to_owned(),
+                coastal: false,
                 pops: vec![drawer, starver],
                 buildings: vec![storehouse, farm],
                 prices_milli: vec![1000; goods],
+                price_drift_carries: vec![0; goods],
                 counters: CounterBuckets::default(),
             }],
         };
@@ -4669,6 +5111,7 @@ mod tests {
         EconomyState {
             places: vec![PlaceState {
                 id: "fixture".to_owned(),
+                coastal: false,
                 pops: vec![
                     pop(
                         "peasant",
@@ -4784,6 +5227,7 @@ mod tests {
                     },
                 ],
                 prices_milli: vec![0; goods],
+                price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
         }
@@ -4917,7 +5361,7 @@ mod tests {
             levels: 1,
             method_levels: vec![1, 0, 0],
             herds: Vec::new(),
-            employment: vec![Employment::default(); 2],
+            employment: vec![Employment::default()],
             stock: vec![0],
             storehouse_accounts: Some(StorehouseAccounts {
                 pops: vec![vec![0], vec![0]],
@@ -5018,6 +5462,293 @@ mod tests {
         assert_eq!(target_price(120, 8, 7, 500), Ok(123_999));
         assert_eq!(target_price(120, 7, 8, 1000), Ok(111_999));
         assert_eq!(target_price(120, 0, 0, 500), Ok(120_000));
+        assert_eq!(target_price(120, 1, 0, 10_000), Ok(600_000));
+        assert_eq!(target_price(120, 0, 1, 10_000), Ok(24_000));
+        assert_eq!(value_at_price(12, 1500), Ok(18_000));
+        assert_eq!(
+            value_at_price(u128::MAX, 2),
+            Err("local price value overflow")
+        );
+    }
+
+    #[test]
+    fn comfort_order_targets_match_the_owner_signed_literal_vectors() {
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        rules.validate("economy rules").unwrap();
+        let index = |id: &str| rules.goods.iter().position(|good| good.id == id).unwrap();
+        let expectations = [("ale", 213), ("apples", 16), ("mead", 22), ("herbs", 11)];
+        for (good, target) in expectations {
+            assert_eq!(
+                tier_target_units(&rules, "monk", 10, index(good), 1)
+                    .unwrap()
+                    .max(tier_target_units(&rules, "monk", 10, index(good), 2).unwrap()),
+                target,
+                "monk {good}"
+            );
+        }
+        for (good, target) in [("ale", 172), ("honey", 18)] {
+            assert_eq!(
+                tier_target_units(&rules, "labourer", 10, index(good), 1).unwrap(),
+                target,
+                "labourer {good}"
+            );
+        }
+        assert_eq!(
+            tier_target_units(&rules, "peasant", 10, index("ale"), 1),
+            Ok(0)
+        );
+
+        let mut invalid = rules.clone();
+        invalid
+            .comfort_profiles
+            .get_mut("monk")
+            .unwrap()
+            .get_mut("niceties")
+            .unwrap()
+            .insert("ale".to_owned(), 951);
+        assert_eq!(
+            invalid.validate("economy rules").unwrap_err().entry,
+            "comfort_profiles.monk.niceties"
+        );
+        let mut zero_value = rules;
+        zero_value
+            .comfort_profiles
+            .get_mut("monk")
+            .unwrap()
+            .get_mut("niceties")
+            .unwrap()
+            .insert("ale".to_owned(), 707);
+        zero_value
+            .comfort_profiles
+            .get_mut("monk")
+            .unwrap()
+            .get_mut("niceties")
+            .unwrap()
+            .insert("oats".to_owned(), 1);
+        assert_eq!(
+            zero_value.validate("economy rules").unwrap_err().entry,
+            "comfort_profiles.monk.niceties.oats"
+        );
+        zero_value.comfort_profiles.remove("peasant");
+        assert_eq!(
+            zero_value.validate("economy rules").unwrap_err().entry,
+            "comfort_profiles.peasant"
+        );
+    }
+
+    #[test]
+    fn luxury_dominant_comfort_want_uses_the_larger_tier_target() {
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let mut rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        rules
+            .pop_types
+            .iter_mut()
+            .find(|pop| pop.id == "monk")
+            .unwrap()
+            .luxuries_expectation_pm = 500;
+        let mead = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "mead")
+            .unwrap();
+        let pop = PopState {
+            kind: "monk".to_owned(),
+            culture: "connachta".to_owned(),
+            religion: "christianity".to_owned(),
+            workers: 10,
+            dependents: 0,
+            employment: Vec::new(),
+            stock: vec![0; rules.goods.len()],
+            consumption: PopConsumption::default(),
+            counters: CounterBuckets::default(),
+        };
+        let place = PlaceState {
+            id: "luxury_market".to_owned(),
+            coastal: true,
+            pops: vec![pop],
+            buildings: Vec::new(),
+            prices_milli: rules
+                .goods
+                .iter()
+                .map(|good| good.base_price * 1000)
+                .collect(),
+            price_drift_carries: vec![0; rules.goods.len()],
+            counters: CounterBuckets::default(),
+        };
+        assert_eq!(tier_target_units(&rules, "monk", 10, mead, 1), Ok(22));
+        assert_eq!(tier_target_units(&rules, "monk", 10, mead, 2), Ok(86));
+        assert_eq!(
+            daily_market_orders(&rules, &place).unwrap().buy_units[mead],
+            86
+        );
+    }
+
+    fn assert_account_order_targets(rules: &Rules, place: &PlaceState) {
+        let index = |id: &str| rules.goods.iter().position(|good| good.id == id).unwrap();
+        let orders = daily_market_orders(rules, place).unwrap();
+        assert_eq!(
+            orders.buy_units[index("apples")],
+            36,
+            "food target 52 wins over comfort target 16, less 16 held"
+        );
+        for good in ["ale", "mead", "herbs"] {
+            assert_eq!(
+                orders.buy_units[index(good)],
+                0,
+                "held {good} target is satisfied"
+            );
+        }
+        assert_eq!(
+            pop_market_holding(place, 0, index("apples")).unwrap(),
+            16,
+            "the pop account, rather than duplicate storehouse stock, supplies its holding"
+        );
+        assert_eq!(
+            orders.sell_units[index("apples")],
+            7,
+            "the building sells its 20 apples above the owner's 13-unit 60-day draw; storehouse physical stock is not counted again"
+        );
+    }
+
+    #[test]
+    fn pop_comfort_orders_subtract_pop_storehouse_accounts_once() {
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let mut rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        rules
+            .diet_profiles
+            .get_mut("monk")
+            .unwrap()
+            .insert("oats".to_owned(), 250);
+        rules
+            .diet_profiles
+            .get_mut("monk")
+            .unwrap()
+            .insert("apples".to_owned(), 100);
+        let index = |id: &str| rules.goods.iter().position(|good| good.id == id).unwrap();
+        let mut account = vec![0; rules.goods.len()];
+        for (good, amount) in [("ale", 213), ("apples", 16), ("mead", 22), ("herbs", 11)] {
+            account[index(good)] = amount;
+        }
+        let communal = vec![0; rules.goods.len()];
+        let accounts = StorehouseAccounts {
+            pops: vec![account.clone()],
+            communal,
+        };
+        let physical = storehouse_physical_stock(&rules, &accounts);
+        let pop = PopState {
+            kind: "monk".to_owned(),
+            culture: "connachta".to_owned(),
+            religion: "christianity".to_owned(),
+            workers: 10,
+            dependents: 0,
+            employment: vec![Employment::default(); 2],
+            stock: vec![0; rules.goods.len()],
+            consumption: PopConsumption::default(),
+            counters: CounterBuckets::default(),
+        };
+        let storehouse = BuildingState {
+            kind: "storehouse".to_owned(),
+            levels: 1,
+            method_levels: vec![1, 0, 0],
+            herds: Vec::new(),
+            employment: vec![Employment::default()],
+            stock: physical,
+            storehouse_accounts: Some(accounts),
+            production_carries: Vec::new(),
+            method_suitability: Vec::new(),
+            herd_birth_carries: Vec::new(),
+            herd_death_carries: Vec::new(),
+            herd_product_carries: Vec::new(),
+            herd_grazing_sums: Vec::new(),
+            wage_carries: vec![0; rules.goods.len()],
+            pay_carries: vec![0; rules.goods.len()],
+            fee_carries: Vec::new(),
+        };
+        let mut farm_stock = vec![0; rules.goods.len()];
+        farm_stock[index("apples")] = 20;
+        let farm = BuildingState {
+            kind: "farm".to_owned(),
+            levels: 1,
+            method_levels: vec![1],
+            herds: vec![0; 3],
+            employment: vec![Employment {
+                owners: 10,
+                workers: 0,
+            }],
+            stock: farm_stock,
+            storehouse_accounts: None,
+            production_carries: Vec::new(),
+            method_suitability: Vec::new(),
+            herd_birth_carries: Vec::new(),
+            herd_death_carries: Vec::new(),
+            herd_product_carries: Vec::new(),
+            herd_grazing_sums: Vec::new(),
+            wage_carries: vec![0; rules.goods.len()],
+            pay_carries: vec![0; rules.goods.len()],
+            fee_carries: Vec::new(),
+        };
+        let place = PlaceState {
+            id: "market_fixture".to_owned(),
+            coastal: true,
+            pops: vec![pop],
+            buildings: vec![storehouse, farm],
+            prices_milli: rules
+                .goods
+                .iter()
+                .map(|good| good.base_price * 1000)
+                .collect(),
+            price_drift_carries: vec![0; rules.goods.len()],
+            counters: CounterBuckets::default(),
+        };
+        assert_account_order_targets(&rules, &place);
+    }
+
+    #[test]
+    fn a_balanced_market_holds_base_price_and_drift_keeps_its_fractional_carry() {
+        let rules = tiny_rules();
+        let target = food_target_units(&rules, "peasant", 1, 0, false, 240).unwrap();
+        assert_eq!(target, 240);
+        let place = PlaceState {
+            id: "balanced".to_owned(),
+            coastal: false,
+            pops: vec![PopState {
+                kind: "peasant".to_owned(),
+                culture: "connachta".to_owned(),
+                religion: "christianity".to_owned(),
+                workers: 1,
+                dependents: 0,
+                employment: Vec::new(),
+                stock: vec![u64::try_from(target).unwrap()],
+                consumption: PopConsumption::default(),
+                counters: CounterBuckets::default(),
+            }],
+            buildings: Vec::new(),
+            prices_milli: vec![100_000],
+            price_drift_carries: vec![0],
+            counters: CounterBuckets::default(),
+        };
+        let mut state = EconomyState {
+            places: vec![place],
+        };
+        assert_eq!(
+            daily_market_orders(&rules, &state.places[0]).unwrap(),
+            DailyMarketOrders {
+                buy_units: vec![0],
+                sell_units: vec![0],
+            }
+        );
+        update_daily_prices(&rules, &mut state).unwrap();
+        assert_eq!(state.places[0].prices_milli, [100_000]);
+
+        state.places[0].pops[0].stock[0] = 0;
+        state.places[0].prices_milli[0] = 100_001;
+        update_daily_prices(&rules, &mut state).unwrap();
+        assert_eq!(state.places[0].prices_milli, [105_000]);
+        assert_eq!(state.places[0].price_drift_carries, [900]);
+        update_daily_prices(&rules, &mut state).unwrap();
+        assert_eq!(state.places[0].prices_milli, [109_500]);
+        assert_eq!(state.places[0].price_drift_carries, [900]);
     }
 
     #[test]
@@ -5650,7 +6381,9 @@ mod tests {
             state.places,
             vec![PlaceState {
                 id: "fort".to_owned(),
+                price_drift_carries: vec![0],
                 counters: CounterBuckets::default(),
+                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -5987,6 +6720,8 @@ mod tests {
                 luxuries_expectation_pm: 0,
             },
         ]);
+        add_empty_comfort_profile(&mut rules, "monk");
+        add_empty_comfort_profile(&mut rules, "labourer");
         rules
             .starting_needs_pm
             .insert("monk".to_owned(), [1000, 0, 0]);
@@ -6301,6 +7036,7 @@ mod tests {
             niceties_expectation_pm: 0,
             luxuries_expectation_pm: 0,
         });
+        add_empty_comfort_profile(&mut rules, "monk");
         rules
             .starting_needs_pm
             .insert("monk".to_owned(), [1000, 0, 0]);
@@ -6318,6 +7054,7 @@ mod tests {
             niceties_expectation_pm: 0,
             luxuries_expectation_pm: 0,
         });
+        add_empty_comfort_profile(&mut rules, "labourer");
         rules
             .starting_needs_pm
             .insert("labourer".to_owned(), [1000, 0, 0]);
@@ -6405,7 +7142,9 @@ mod tests {
         let state = EconomyState {
             places: vec![PlaceState {
                 id: "a".to_owned(),
+                price_drift_carries: vec![-321],
                 counters: CounterBuckets::default(),
+                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "irish".to_owned(),
@@ -6692,6 +7431,8 @@ mod tests {
         let mut labourer = rules.pop_types[0].clone();
         labourer.id = "labourer".to_owned();
         rules.pop_types.extend([monk, labourer]);
+        add_empty_comfort_profile(&mut rules, "monk");
+        add_empty_comfort_profile(&mut rules, "labourer");
         rules
             .starting_needs_pm
             .insert("monk".to_owned(), [1000, 0, 0]);
@@ -6768,6 +7509,7 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "fort".to_owned(),
+                coastal: false,
                 pops: vec![
                     pop(
                         2,
@@ -6798,6 +7540,7 @@ mod tests {
                 ],
                 buildings: vec![building("farm", 500_000), building("holdings", 700_000)],
                 prices_milli: vec![0],
+                price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
         };
@@ -6848,6 +7591,7 @@ mod tests {
         let no_workers = EconomyState {
             places: vec![PlaceState {
                 id: "ownerless".to_owned(),
+                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -6878,6 +7622,7 @@ mod tests {
                     fee_carries: Vec::new(),
                 }],
                 prices_milli: vec![0; rules.goods.len()],
+                price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
         };
@@ -7150,9 +7895,11 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "empty".to_owned(),
+                coastal: false,
                 pops: vec![pop],
                 buildings: Vec::new(),
                 prices_milli: vec![1000],
+                price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
         };
@@ -7189,6 +7936,7 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "test".to_owned(),
+                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -7206,6 +7954,7 @@ mod tests {
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![100_000],
+                price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
         };
@@ -7251,6 +8000,7 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "test".to_owned(),
+                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -7268,6 +8018,7 @@ mod tests {
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000; 2],
+                price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
         };
@@ -7308,6 +8059,7 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "test".to_owned(),
+                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -7325,6 +8077,7 @@ mod tests {
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000; goods],
+                price_drift_carries: vec![0; goods],
                 counters: CounterBuckets::default(),
             }],
         };
@@ -7377,9 +8130,11 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "test".to_owned(),
+                coastal: false,
                 pops: vec![pop.clone()],
                 buildings: Vec::new(),
                 prices_milli: vec![1000, 1000],
+                price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
         };
@@ -7469,9 +8224,11 @@ mod tests {
         };
         let mut place = PlaceState {
             id: "test".to_owned(),
+            coastal: false,
             pops: vec![pop],
             buildings: vec![storehouse, farm],
             prices_milli: vec![1000],
+            price_drift_carries: Vec::new(),
             counters: CounterBuckets::default(),
         };
         draw_pop(&rules, &mut place, 0).unwrap();
@@ -7543,6 +8300,7 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "test".to_owned(),
+                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -7560,6 +8318,7 @@ mod tests {
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000, 1000],
+                price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
         };
@@ -7616,6 +8375,7 @@ mod tests {
         let mut state = EconomyState {
             places: vec![PlaceState {
                 id: "test".to_owned(),
+                coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
@@ -7633,6 +8393,7 @@ mod tests {
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000; 3],
+                price_drift_carries: Vec::new(),
                 counters: CounterBuckets::default(),
             }],
         };
@@ -7717,9 +8478,11 @@ mod tests {
             };
             PlaceState {
                 id: "test".to_owned(),
+                coastal: false,
                 pops: vec![pop],
                 buildings: vec![building],
                 prices_milli: vec![1000; goods],
+                price_drift_carries: vec![0; goods],
                 counters: CounterBuckets::default(),
             }
         };
@@ -7875,9 +8638,11 @@ mod tests {
         };
         let mut place = PlaceState {
             id: "test".to_owned(),
+            coastal: false,
             pops: vec![pop],
             buildings: vec![building],
             prices_milli: vec![1000],
+            price_drift_carries: Vec::new(),
             counters: CounterBuckets::default(),
         };
         let mut ledger = DailyConsumptionLedger {

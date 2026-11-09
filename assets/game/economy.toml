@@ -393,6 +393,23 @@ peas_beans=70
 vegetables=80
 fish=100
 
+[comfort_profiles.labourer.niceties]
+ale=952
+honey=48
+[comfort_profiles.labourer.luxuries]
+honey=1000
+[comfort_profiles.peasant.niceties]
+[comfort_profiles.peasant.luxuries]
+[comfort_profiles.monk.niceties]
+ale=708
+mead=71
+apples=133
+herbs=88
+[comfort_profiles.monk.luxuries]
+mead=286
+apples=536
+herbs=178
+
 [suitability.pasture]
 crops=700
 cattle=1000

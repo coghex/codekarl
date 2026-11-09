@@ -470,6 +470,7 @@ mod tests {
         };
         PlaceState {
             id: "fixture".to_owned(),
+            coastal: false,
             counters: CounterBuckets::default(),
             pops: vec![PopState {
                 kind: "peasant".to_owned(),
@@ -536,6 +537,7 @@ mod tests {
                 .iter()
                 .map(|good| good.base_price * 1000)
                 .collect(),
+            price_drift_carries: vec![0; rules.goods.len()],
         }
     }
 

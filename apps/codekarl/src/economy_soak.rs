@@ -292,6 +292,40 @@ mod tests {
         let first = run(arguments.clone()).expect("the Ireland soak runs");
         let second = run(arguments).expect("the same Ireland soak runs again");
         assert_eq!(first.as_bytes(), second.as_bytes());
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        let mut price_extrema = BTreeMap::<String, (u64, u64)>::new();
+        for row in first.lines().skip(1) {
+            let fields = row.split(',').collect::<Vec<_>>();
+            for pair in fields[12].split(';') {
+                let (good, price) = pair.split_once('=').unwrap();
+                let price = price.parse::<u64>().unwrap();
+                let extrema = price_extrema
+                    .entry(good.to_owned())
+                    .or_insert((price, price));
+                extrema.0 = extrema.0.min(price);
+                extrema.1 = extrema.1.max(price);
+            }
+        }
+        for good in &rules.goods {
+            let (minimum, maximum) = price_extrema[&good.id];
+            assert!(
+                minimum >= good.base_price * 200,
+                "{} minimum {minimum}",
+                good.id
+            );
+            assert!(
+                maximum <= good.base_price * 5000,
+                "{} maximum {maximum}",
+                good.id
+            );
+        }
+        assert!(
+            price_extrema
+                .values()
+                .any(|(minimum, maximum)| minimum < maximum),
+            "the fixture year must show a seasonal price change"
+        );
         assert!(first.starts_with("seed,year,month,place,pop,pop_type,size,workers,dependents,needs_pm,intake_pm,food_days_milli,"));
         assert!(
             first
@@ -302,7 +336,7 @@ mod tests {
         );
         assert_eq!(
             first.lines().nth(1).unwrap(),
-            "768,768,11,armagh,0,peasant,1000,600,400,1000:0:0,1000,384370,oats=100000;barley=120000;peas_beans=120000;vegetables=40000;apples=150000;dairy=40000;beef=10000;pork=9000;mutton=8000;fish=30000;seabirds=20000;ale=60000;mead=300000;wine=600000;honey=120000;herbs=100000;wool=40000;beeswax=150000;hides=200000;cattle=2400000;pigs=600000;sheep=300000,apples=99;dairy=2285;ale=441;mead=44,pop0:oats=11968;barley=3989;peas_beans=997;vegetables=1994;dairy=3461;beef=997;pork=997;mutton=997|pop1:oats=2393;barley=797;peas_beans=199;vegetables=398;apples=35;dairy=637;beef=199;pork=199;mutton=199;ale=161;mead=15|pop2:oats=1795;barley=598;peas_beans=149;vegetables=299;apples=32;dairy=514;beef=149;pork=149;mutton=149;ale=145;mead=13|building0.holdings:oats=40;barley=12;apples=30;dairy=204;beef=4;pork=4;mutton=4;ale=133;mead=14|building1.farm:oats=40;barley=12;dairy=172;beef=4;pork=4;mutton=4|building2.storehouse:|building2.account.pop0:|building2.account.pop1:|building2.account.pop2:|building2.account.communal:,cattle=635;pigs=424;sheep=357,"
+            "768,768,11,armagh,0,peasant,1000,600,400,1000:0:0,1000,384370,oats=95000;barley=114000;peas_beans=114000;vegetables=42000;apples=157500;dairy=42000;beef=10500;pork=9450;mutton=8400;fish=30000;seabirds=20000;ale=63000;mead=315000;wine=600000;honey=126000;herbs=105000;wool=40000;beeswax=150000;hides=200000;cattle=2400000;pigs=600000;sheep=300000,apples=99;dairy=2285;ale=441;mead=44,pop0:oats=11968;barley=3989;peas_beans=997;vegetables=1994;dairy=3461;beef=997;pork=997;mutton=997|pop1:oats=2393;barley=797;peas_beans=199;vegetables=398;apples=35;dairy=637;beef=199;pork=199;mutton=199;ale=161;mead=15|pop2:oats=1795;barley=598;peas_beans=149;vegetables=299;apples=32;dairy=514;beef=149;pork=149;mutton=149;ale=145;mead=13|building0.holdings:oats=40;barley=12;apples=30;dairy=204;beef=4;pork=4;mutton=4;ale=133;mead=14|building1.farm:oats=40;barley=12;dairy=172;beef=4;pork=4;mutton=4|building2.storehouse:|building2.account.pop0:|building2.account.pop1:|building2.account.pop2:|building2.account.communal:,cattle=635;pigs=424;sheep=357,"
         );
     }
 
