@@ -79,19 +79,22 @@ with sources, and **Open** what is still to decide.
 **Buildings, land and fishing (owner, 2026-11-08, answering review r7)**
 - **Fish** is added (with seabirds).
 - **Locations have no strict rules on which buildings are built there.** The scenario sets each place up however we want.
-- **A farm's maximum size** is set by the usable land in the location's radius. On the islands that is 0.
+- **A farm's maximum size** is set by the usable land in the location's radius. On the islands that is 0. (Owner, 2026-11-09: this caps
+  the farming levels; the farm's coastal levels have their own limit, §3.4.)
 - **A monastery's holdings** are sized by its land in the same way.
 - **Island monasteries** have monastery levels but no farm levels. They use a **separate production method for fishing,** which takes up
   less space. When a monastery's holdings are larger than its land allows a farming monastery to be, the farming method is forbidden,
   and it supplies only fish and seabirds. **Refined by the owner during review r9, below:** a monastery fishes only when that is truly all it has (it cannot hold
-  one farming level, §3.4), and its fishing includes a garden.
+  one farming level, §3.4), and its fishing includes a garden. **Superseded by the owner on 2026-11-09:** a monastery fishes when that
+  is the more profitable method, and an island may have coastal farm levels where the scenario authors them (§3.4, §3.13).
 - **Monks:** only Christian pops can be recruited, and every monk pop is Christian. Culture does not matter.
 - **Starting stockpiles** are set up at the beginning, and wages are drawn from them until the first production is paid.
 
 **Storage, herds and fishing (owner, 2026-11-08, during review r9)**
 - **Goods are stored in real units,** such as bushels, each with a realistic weight and cargo size.
 - **Fishing monasteries have a garden** for herbs and vegetables.
-- **A monastery switches from farming to fishing only when that is truly all it has:** no usable land.
+- **A monastery switches from farming to fishing only when it is profitable to switch** (owner, 2026-11-09, replacing r9's "only when
+  that is truly all it has: no usable land"). Methods are chosen by value, never authored per place, each within its own limit (§3.4).
 - **Fishing grounds are not yet designed.** The ocean could provide a resource area with its own fishing radius, and other coastal
   buildings could have other, more profitable coastal methods later.
 - **Herds are tracked with the buildings:**
@@ -343,7 +346,8 @@ monastery's holdings, both, or neither. The kind-and-size tables of §3.12–3.1
 **Maximum sizes from land (Firm).**
 - A building's maximum levels are derived at load from its place's catchment, as land counts are (r5's adapter, hashed through the build
   id, never saved):
-  - **subsistence farm:** `max = free usable cells / 2`, floored. It is 0 on the islands;
+  - **subsistence farm, farming:** `max = free usable cells / 2`, floored. Its coastal levels share the sea budget with the holdings'
+    fishing (below). The farm's size is the sum of the two (owner, 2026-11-09);
   - **holdings, farming:** `max = usable cells / 2`, floored. Farming levels of the holdings and the farm together cannot exceed the
     land;
   - **fishing, holdings and the farm's coastal method together:** `max = sea cells in the catchment / 4`, floored, shared by both
@@ -365,16 +369,23 @@ monastery's holdings, both, or neither. The kind-and-size tables of §3.12–3.1
     - so the second fishing level sees the first level's fish already supplied, and a lower price;
   - **the order:** places in file order; within a place, the holdings, then the farm; levels one at a time. Each assigned level's
     annual output joins the sell side before the next choice. No eating planner and no live orders are used, so nothing is circular;
-  - ties go in method order (farming before fishing);
-  - a building with only one method (the subsistence farm in M9) assigns them all to it.
+  - ties go in method order (farming before fishing).
 - **The result** is a count of levels per method in each building, which is saved. Each farming level of the holdings has its herd
   (§3.14), and fishing levels have none.
 - **Staffing per method (r14, exact):** there is no integer `staffed_m`. Each method's output takes its share of staffing exactly
   inside the numerator, each month: `portion(annual_g × staffed × levels_m × season_pm_g[month], suitability_g × cov, levels × workers_per_level × 10⁹, carry_g)` (r17: by season, §3.19).
   - Staffing is conserved and never rounded; only whole goods are floored.
   - Coverage applies to the whole building.
-- **Chosen once in M9.** Changing a level's method mid-game is the vision's conversion, with starting goods and disruption, and comes
-  with construction. It is out of scope.
+- **Chosen once in M9.** Changing a level's method mid-game is the vision's conversion, and comes with construction. It is out of
+  scope. The owner has set its rules for later (2026-11-09):
+  - **cost:** the level loses the goods of its old method, and the new method produces nothing for its first month;
+  - **lock:** a switch starts a countdown that locks the level's method until the end of the year. This matters for the future real
+    farms: a fishing village must not switch to oats in September, collect the harvest, and switch back;
+  - **room:** a switch must fit the target method's limit, so it can never put a building over a cap. A monastery with no land can
+    never switch to farming. Owner: "if a monastary has no land, it shouldnt ever be over the cap, so that rule would never apply to a
+    switch, only newly built farm";
+  - so the cut below applies only to authored levels at load, and the room check to newly built levels. Neither ever deletes an
+    existing level.
 - **Limits:** farming levels by usable land, and fishing levels by the fish available (the sea-cell stand-in until fishing grounds
   exist). Authored levels that fit under no method's limit are cut, and the load report lists them.
 - **Every monastery is productive** (Firm, for now). The load report names any place where no method can hold a level, so that the
@@ -803,8 +814,9 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
 
 **The levels** are authored per building, in the scenario's `economy.toml`. Kind and size give the defaults, per-place entries can set
 any building (Firm: no strict rules), and every value goes into the guesswork log.
-- **Island houses** (`skellig_michael`, `inishmurray` and any other with no usable land) have holdings levels and no farm. Their holdings
-  use fishing (§3.4).
+- **Island houses** (`skellig_michael`, `inishmurray` and any other with no usable land) have holdings levels. Their holdings use
+  fishing (§3.4). An island may also have coastal farm levels where the scenario authors them (owner, 2026-11-09). Inishmurray authors
+  none: its peasants fill the holdings' labourer positions, and the surplus is unemployed.
 - **Farms:** where the guesses do not fit the land, the maximum of §3.4 cuts them.
 
 | Kind | Size | Subsistence farm levels | Holdings levels |
@@ -816,8 +828,9 @@ any building (Firm: no strict rules), and every value goes into the guesswork lo
 
 - **Pops and levels do not have to agree.** A pop larger than its jobs has unemployed workers, and a building larger than its pop has
   open positions. Both are legitimate starting states.
-- **Land still binds.** Levels × 2 cells must fit in the free usable catchment. A default that does not fit is cut to what fits, and the
-  load report lists it.
+- **Limits still bind.** Each method's levels must fit that method's own limit (§3.4): farming by usable land, and coastal and fishing
+  levels by the shared sea budget. Authored levels that fit no method's limit are cut at load, and the load report lists them (owner,
+  2026-11-09).
 - **No new levels in M9.** A level is added only through construction, funded by the location's investment. That is a separate process,
   not yet designed, and out of scope (§5).
 
@@ -968,7 +981,7 @@ labourers more meat.
 
 **The profiles drive three things (Firm):**
 1. **What the subsistence farm grows.**
-   - Its one method's annual crop food is a total in person-days per level, scaled by suitability.
+   - Its mixed-farming method's annual crop food is a total in person-days per level, scaled by suitability.
    - That total is split among the crops it can grow (oats, barley, peas and beans, vegetables), by its worker pops' profiles
      renormalised over those crops, weighted by workers. The result is `cshare_g` in ‰, summing to 1000 by largest remainder in table
      order.
@@ -1096,6 +1109,8 @@ Per terrain (`terrain.toml` gains these columns, hashed with the rules):
   - population is capped by fixed jobs until construction exists;
   - wealth is capped by store volume until storehouses can grow, and public granaries arrive.
 - **Construction:** how a location funds and builds a new level (owner, 2026-11-08: "a whole other process that we havent discussed").
+  Already fixed (owner, 2026-11-09): a new level is placed only if its method has room, and existing levels are never deleted to make
+  room. Conversion's cost, lock and room rules are in §3.4.
 - What else feeds satisfaction (the vision's culture and religion relations come later).
 - The literacy rule.
 - How a monastery's specialty goods are produced (methods later, Firm).
@@ -1121,7 +1136,7 @@ Per terrain (`terrain.toml` gains these columns, hashed with the rules):
 - **Merchants and marketplaces:** trade between places, the marketplace building with its large stockpile, merchant pops, radius and
   transport. These are **the next milestone** (Firm, owner 2026-11-08), designed in their own session.
 - Coin, taxes and tithes.
-- Method conversion mid-game, and unproductive monasteries (owner: later).
+- Method conversion mid-game (its rules are recorded in §3.4), and unproductive monasteries (owner: later).
 - Specific production methods, and method changes.
 - Construction and expansion: new levels (the owner's separate process, §3.13).
 - General migration. M9 moves people only to fill open positions, including from nearby places (§3.5).
