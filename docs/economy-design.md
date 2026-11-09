@@ -352,7 +352,8 @@ monastery's holdings, both, or neither. The kind-and-size tables of §3.12–3.1
     land;
   - **fishing, holdings and the farm's coastal method together:** `max = sea cells in the catchment / 4`, floored, shared by both
     buildings (r17) (Proposal: 4 sea cells per level; "less space", Firm). This
-    is a stand-in until fishing grounds exist: a sea resource area with its own fishing radius (Open).
+    is a stand-in until fishing grounds exist: a sea resource area with its own fishing radius (Open). **Replaced in slice 9 (§3.23,
+    owner 2026-11-09):** fishing is limited by building footprint, not fish, and needs at least one sea cell in the catchment.
 - **The land order.** The holdings take their land first; the farm takes what is left.
 - **Choosing methods per level (Firm, r13; Proposal mechanism).** At the start, each building assigns its authored levels **one at a
   time**. Each level takes the method with the highest **estimated net value** that still has room under its limit:
@@ -1103,6 +1104,129 @@ Per terrain (`terrain.toml` gains these columns, hashed with the rules):
   tests, as M6 and M7's map work did.
 - **Switching:** two map-mode buttons on the UI select the mode, or turn it off.
 
+### 3.23 Buildable land, footprints and development (Firm, owner-signed 2026-11-09; a follow-up slice)
+
+**Status:**
+- This is the design for **slice 9**, a follow-up slice. It replaces §3.4's sea-cell fishing cap (`sea cells / 4`).
+- Slices 3–8 stay as written.
+- Signed text: `land-footprint-design-r2.md` (sha256 186187ef), with the owner's answers.
+- Crowding capacity (§3.8) and how development's parts combine stay the owner's.
+- **Pending (owner direction, 2026-11-09):** the usable-land layer is being rebuilt for 768, and clearing land applies to buildings
+  only. The starting prepared building land is set by that proposal. The calibration below was measured on the current layer.
+
+**Fields and footprints are two limits (Firm).**
+
+- **Fields** stay as they are. They are the usable cells around the place, and farming levels need them (§3.4). A larger radius at
+  higher development is later.
+- **Footprint** is a second, separate limit, on buildings:
+  - every building level has a footprint, in square metres;
+  - a place's footprints add up to at most its **maximum buildable land**;
+  - it is a **hard cap**. Once a place is full, a building must be destroyed before a new one is built. Construction is designed later;
+  - it applies at land and coastal places alike.
+- **A farm level** takes many fields and a little footprint. **Set to fishing,** it keeps the same footprint and needs no fields.
+- **Fishing is limited by footprint,** meaning housing, boats and a larger pier, not by fish. Early medieval fishing was far too small to
+  overfish. The sea-cell cap (`sea cells / 4`, §3.4) and fishing grounds as a limit are withdrawn.
+  - **Fishing requires fishing waters nearby** (owner, Q5): a fishing method, on the holdings or the farm's coastal method, needs at
+    least one sea cell in the catchment. This decides eligibility only, never size.
+
+**Footprint per level (Proposal).**
+
+| Building level | Footprint | Basis |
+|---|---|---|
+| subsistence farm (mixed farming or coastal) | 2,000 m² | a farmstead: see below |
+| monastery: its holdings level (farming or fishing) | 4,000 m² | Firm: more room than a farm (owner, Q3); twice a farm level |
+| storehouse | 200 m² | Guess |
+
+- **Subsistence farm.**
+  - About 19 people per level (150 peasants on 8 levels).
+  - A ringfort's interior is about 30 m across, and with its bank and ditch about 45 m, so about 1,600 m².
+  - Deer Park Farms had double-walled round houses about 7.5 m across, several in one rath.
+  - Rounded up for yards and outbuildings.
+- **The monastery.**
+  - **Owner, Q3:** "a monastary should take more room than a subsistance farm, the monsastic holdings should be wrapped up in the
+    monstary building as a whole i think, unless they own other buildings, but that hasnt been implemented yet".
+  - So the holdings are the monastery building, and its footprint covers the church, cells, workshops and enclosure.
+  - Buildings a monastery owns elsewhere are not implemented.
+  - **Check, Armagh:** its default levels give 18 ha (50 farm at 2,000 m², 20 holdings at 4,000 m²). That is a little above the
+    largest early church enclosures, about 400 m across, which fits the largest church settlement.
+  - **Check, Skellig Michael:** its 2 levels give 0.8 ha for its terraces, cells and gardens, on an island of 21.9 ha.
+- **Storehouse:** a kiln, barn or souterrain.
+
+**Maximum buildable land (Firm form; Proposal numbers).**
+
+`max_buildable = development × (base + Σ over the catchment's land cells of b_terrain) / 1000`, in m², with development in thousandths.
+
+- **`base` = 20,000 m² (2 ha)** at every place: the settlement core, so that islands and small catchments can always hold their house.
+  - That is an enclosure about 160 m across, mid-range for early church enclosures (about 30–400 m; Leo Swan's aerial survey found one
+    of about 110 m at Clogher, Co. Clare).
+  - It was raised from r1's 1 ha so that the larger monastery footprint fits at the start (owner, Q3).
+- **`b_terrain`** is the buildable allowance per land cell, of about 24 ha ground:
+
+  | Terrain | m² per cell | Basis |
+  |---|---|---|
+  | pasture | 300 | see below |
+  | forest | 250 | Guess: buildable once cleared |
+  | marsh | 150 | Guess: flood-prone land; a Clare study finds few sites on alluvium |
+  | bog | 150 | Guess: monasteries such as Clonmacnoise and Durrow stand on dry ridges among bogs |
+  | mountain | 75 | almost no ringforts stand on high ground (the Clare study) |
+  | sea, lake | 0 | |
+
+- **Basis for pasture.**
+  - Ireland averages just over one ringfort per 2 km², at about 1,600 m² each. That is about 190 m² per cell nationally.
+  - Ringforts cluster on good grazing soils (Stout), so good land gets about 1.5 times the national figure.
+- **Derived at load** from the catchment, like the land counts. It is never saved.
+
+**Calibration: today's starting state against this cap (Guess).**
+
+These are approximate figures from my own script over `terrain.png`, `usable.png` and the scenario's levels, with farm levels after the
+fields cut. The engine's load report is the authority.
+
+- **Occupancy** (starting footprints ÷ max buildable, at development 1000):
+
+  | Statistic | Occupancy |
+  |---|---|
+  | median | 45% |
+  | highest (glendalough) | 96% |
+  | places over 90% | 4 |
+  | places over 100% | 0 |
+
+  So no starting level is cut by footprint.
+- **Examples:**
+
+  | Place | Occupancy |
+  |---|---|
+  | Armagh | 64% |
+  | Clonmacnoise | 93% |
+  | Glendalough | 96% |
+  | Annaghdown | 78% |
+  | Tara | 40% |
+  | Cashel | 41% |
+  | Skellig Michael | 40% |
+  | Inishmurray | 40% |
+
+- **Tuning (owner, Q2):** these values are a starting point, to be tuned once a run shows how the cap plays. Scaling the base and every
+  `b_terrain` moves the median directly.
+
+**Development (Firm hooks; parts reserved for the owner).**
+
+- **The value:**
+  - per place, in thousandths, starting at 1000 everywhere for now;
+  - it scales the maximum buildable land (above) and enters crowding as a soft population cap (§3.8, the owner's).
+- **Its parts:** the number of building levels at the place, plus a time part that **slowly drifts up**. Events can lower it.
+  - Reserved for the owner: how the parts combine, how fast it drifts, and which events lower it.
+- **Engineering placement** (ck-manager's notes):
+  - the value is **saved**, because its drift and event losses cannot be recomputed;
+  - buildable land and footprint totals are derived at load;
+  - a **floor** keeps capacity from reaching zero;
+  - diminishing returns from levels arrive with construction, so levels, development, capacity and people cannot run away.
+
+**Load and later rules.**
+
+- **At load,** authored levels must fit both their method's fields (farming) and the place's footprint. A level that does not fit is cut
+  and listed in the load report. This keeps §3.13's rule and adds the footprint.
+- **Newly built levels** (construction, later) are placed only if their footprint fits. Existing levels are never deleted to make room.
+  A method switch keeps the footprint, so it never breaks the footprint cap (§3.4's conversion rules).
+
 ## 4. Still open (next sessions)
 
 - **Known limits (C8):**
@@ -1127,6 +1251,7 @@ Per terrain (`terrain.toml` gains these columns, hashed with the rules):
   | 6 | births, deaths, drift, hiring and movement (C9: before the market) | 5 |
   | 7 | local prices, computed and shown (no barter) | 5 |
   | 8 | the two map modes, on both backends | 4 |
+  | 9 | buildable land, footprints and development fixed at 1000 (§3.23), replacing the sea-cell cap; before CK-229 (slice 6) | 2 |
 
   Slice 2 includes the starting method choice, with its two pure primitives (`target_price` and the diet-profile projection, §3.4)
   frozen there and reused by slice 6. Slices 1 and 2 can run together, and so can 3 and 4. Each slice carries the §6 coverage for what it adds.
@@ -1274,9 +1399,20 @@ Per terrain (`terrain.toml` gains these columns, hashed with the rules):
 - [UCD: Jessica Gleman, ale in early medieval Ireland](https://www.ucd.ie/archaeology/research/phd/gleman_jessica)
 - [Trinity College Dublin FoodCult](https://tcd.ie/trinitylongroomhub/news/2024/foodcultthe-conversation-)
 - [Searching for medieval ale (BYO)](https://byo.com/articles/searching-for-medieval-ale/)
+- [Raths, Crannogs, and Cashels (encyclopedia.com)](https://encyclopedia.com/humanities/encyclopedias-almanacs-transcripts-and-maps/raths-crannogs-and-cashels)
+- [Ringfort](https://en.wikipedia.org/wiki/Ringfort)
+- [Stout, *The Irish Ringfort*, reviewed in History Ireland](https://historyireland.com/irish-ringforts-matthew-stout-four-courts-pressgroup-for-the-study-of-irish-historic-settlement-19-95-isbn-1-85182-300-x/)
+- [Clare County Library: ringfort distribution in Bunratty Lower](https://clarelibrary.ie/eolas/coclare/archaeology/ryan/part1_ringforts_stoneforts_dist_factors.htm)
+- [Deer Park Farms (encyclopedia.com)](https://encyclopedia.com/humanities/encyclopedias-almanacs-transcripts-and-maps/deer-park-farms), and [Excavations 1986](https://excavations.ie/report/1986/Antrim/0000631/)
+- [Irish Field Monuments (National Monuments Service)](https://archaeology.ie/app/uploads/2025/01/irish-field-monuments.pdf)
+- [Clogher, Co. Clare ecclesiastical enclosure](https://www.irishhistory.com/places/ecclesiastical-enclosure-clogher-co-clare/)
+- [UNESCO: Skellig Michael](https://whc.unesco.org/document/154192)
+- [Montgomery et al. 2015: Lough Swilly fish traps](https://pure.ulster.ac.uk/ws/files/11494816/Montgomery_et_al_2015.pdf)
 
 ## Provenance
 
+- 2026-11-09: §3.23 buildable land, footprints and development (`land-footprint-design-r2.md`, 186187ef), the owner's
+  sign-off with the designer; slice 9 added.
 - r19, 2026-11-08, for review r18's five remaining items (`economy-design-review-r18.md`, 0ab757f5).
 - r18, 2026-11-08: review r17's E1–E6, and the owner's two account answers.
 - r17, 2026-11-08: the owner's session on the fresh review (`design-fun-review-r1.md`, 2d526c24). It covers C1–C10, storehouses, the
