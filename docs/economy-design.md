@@ -346,7 +346,8 @@ monastery's holdings, both, or neither. The kind-and-size tables of §3.12–3.1
 **Maximum sizes from land (Firm).**
 - A building's maximum levels are derived at load from its place's catchment, as land counts are (r5's adapter, hashed through the build
   id, never saved):
-  - **subsistence farm, farming:** `max = free usable cells / 2`, floored. Its coastal levels share the sea budget with the holdings'
+  - **subsistence farm, farming:** `max = free usable cells / 2`, floored. **Since slice 9, "usable cells" are fertility sums in
+    cell-equivalents (§3.24).** Its coastal levels share the sea budget with the holdings'
     fishing (below). The farm's size is the sum of the two (owner, 2026-11-09);
   - **holdings, farming:** `max = usable cells / 2`, floored. Farming levels of the holdings and the farm together cannot exceed the
     land;
@@ -1111,8 +1112,11 @@ Per terrain (`terrain.toml` gains these columns, hashed with the rules):
 - Slices 3–8 stay as written.
 - Signed text: `land-footprint-design-r2.md` (sha256 186187ef), with the owner's answers.
 - Crowding capacity (§3.8) and how development's parts combine stay the owner's.
-- **Pending (owner direction, 2026-11-09):** the usable-land layer is being rebuilt for 768, and clearing land applies to buildings
-  only. The starting prepared building land is set by that proposal. The calibration below was measured on the current layer.
+- **Since signed (owner, 2026-11-09):**
+  - usable land is now computed fertility, with a computed climate (§3.24, and `docs/map-design.md` §12);
+  - clearing land applies to buildings only;
+  - prepared land and starting over the cap are below, under **Load and later rules**;
+  - the calibration below was measured on the old usable layer.
 
 **Fields and footprints are two limits (Firm).**
 
@@ -1222,10 +1226,46 @@ fields cut. The engine's load report is the authority.
 
 **Load and later rules.**
 
-- **At load,** authored levels must fit both their method's fields (farming) and the place's footprint. A level that does not fit is cut
-  and listed in the load report. This keeps §3.13's rule and adds the footprint.
-- **Newly built levels** (construction, later) are placed only if their footprint fits. Existing levels are never deleted to make room.
-  A method switch keeps the footprint, so it never breaks the footprint cap (§3.4's conversion rules).
+- **At load,** authored farming levels must fit their fields (§3.4), and a level that does not fit is cut and listed.
+- **Footprint never cuts** (owner, 2026-11-09: "being over the limit should be allowed, just not building over that limit"). A place may
+  start over its building cap; the load report lists it.
+- **Prepared land** (owner, 2026-11-09):
+  - a place's building cap is `min(prepared, max_buildable)`;
+  - `prepared` starts at the built footprint plus the 2 ha base, and is **saved**;
+  - clearing raises it, using labour and time through a temporary building (construction, later). Pasture clears quickly, and bog is
+    arduous and slow.
+- **Newly built levels** (construction, later) are placed only if `footprint + new ≤ cap`. A place over its cap builds nothing until it
+  is back under. Existing levels are never deleted to make room. A method switch keeps the footprint, so it never changes the total
+  (§3.4's conversion rules).
+- **The starting method choice ignores footprint.** A level's footprint is the same whatever its method.
+
+### 3.24 Land fertility and climate in the economy (Firm, owner-signed 2026-11-09; slices 9a and 9)
+
+- **The map side** is `docs/map-design.md` §12: the fertility formula, the computed climate, glaciation and the look.
+- **Signed text:** `usable-land-proposal-r4.md` (23221a44) and `map-look-design-r4.md` (33f0615e).
+- **The owner's decisions:**
+  - a percentage per cell from a formula, with "river valleys ... closer to 100% and the more plain land ... closer to 50";
+  - the fertility does "both" jobs: farm room and yield;
+  - climate is computed now, and weather comes later.
+- **Farm room:**
+  - a place's field room per terrain is the sum of its land cells' fertility ÷ 1000, in cell-equivalents. It replaces the usable cell
+    counts of §3.4;
+  - a farming level on terrain *t* uses 2 cell-equivalents of *t*, the same `land_per_level` as before;
+  - holdings still take land before the farm;
+  - fishing and coastal levels need sea, not fields, and are limited by footprint (§3.23).
+- **Farmland quality and yield:**
+  - `quality‰ = ⌊Σ fertility ÷ cells with fertility > 0⌋` per place, derived at load;
+  - farming output is multiplied by `quality ÷ 550` inside the exact production `portion`, so an average place yields what the earlier
+    tuning gave;
+  - the per-crop suitability (§3.21) is unchanged: it says which crops suit the ground, and fertility says how good the ground is;
+  - fishing is unaffected.
+- **Glaciers:** fertility 0 and building land 0 (`b_ice = 0`, §3.23).
+- **Expected on the Ireland map** (prototype):
+  - farmland quality runs from 14% to 78% across places, with a median of 51%;
+  - Tara, Cashel and Emly are among the richest, and the bog-ringed Clonmacnoise and Durrow yield less per farm;
+  - only Glendalough and Rahan run short of fields, and the signed terrain edits fix both;
+  - the islands fish.
+- **Not yet:** weather (year-to-year harvest variation) and per-crop climate limits.
 
 ## 4. Still open (next sessions)
 
@@ -1251,7 +1291,9 @@ fields cut. The engine's load report is the authority.
   | 6 | births, deaths, drift, hiring and movement (C9: before the market) | 5 |
   | 7 | local prices, computed and shown (no barter) | 5 |
   | 8 | the two map modes, on both backends | 4 |
-  | 9 | buildable land, footprints and development fixed at 1000 (§3.23), replacing the sea-cell cap; before CK-229 (slice 6) | 2 |
+  | 9a | the computed climate and fertility map data, and glaciation (`docs/map-design.md` §12) | 2 |
+  | 9 | buildable land, footprints, development fixed at 1000 (§3.23), and fertility's farm room and yield (§3.24); before CK-229 (slice 6) | 9a |
+  | — | the map look: the fertility gradient, the hillside dither, glaciers and the elevation mode (map-design §12.3–§12.5), on both backends | 9a |
 
   Slice 2 includes the starting method choice, with its two pure primitives (`target_price` and the diet-profile projection, §3.4)
   frozen there and reused by slice 6. Slices 1 and 2 can run together, and so can 3 and 4. Each slice carries the §6 coverage for what it adds.
@@ -1408,9 +1450,14 @@ fields cut. The engine's load report is the authority.
 - [Clogher, Co. Clare ecclesiastical enclosure](https://www.irishhistory.com/places/ecclesiastical-enclosure-clogher-co-clare/)
 - [UNESCO: Skellig Michael](https://whc.unesco.org/document/154192)
 - [Montgomery et al. 2015: Lough Swilly fish traps](https://pure.ulster.ac.uk/ws/files/11494816/Montgomery_et_al_2015.pdf)
+- [FAO/IIASA, GAEZ 2007](https://www.fao.org/docrep/pdf/010/a1075e/a1075e01.pdf)
+- [Seager et al. 2002: Europe's mild winters](https://ocp.ldeo.columbia.edu/res/div/ocp/gs/pubs/Seager_etal_QJ_2002.pdf)
+- [Ohmura, Kasser and Funk 1992: climate at the equilibrium line of glaciers](https://www.cambridge.org/core/services/aop-cambridge-core/content/view/8DCF1C24E32A6781CC365853535CD16F/S0022143000002276a.pdf/climate-at-the-equilibrium-line-of-glaciers.pdf)
 
 ## Provenance
 
+- 2026-11-09: §3.24 land fertility and climate (`usable-land-proposal-r4.md`, 23221a44; `map-look-design-r4.md`, 33f0615e), and §3.23's
+  load and prepared-land rules (`usable-land-proposal-r2.md`, 5b2faf29), the owner's sign-offs with the designer. Slice 9a added.
 - 2026-11-09: §3.23 buildable land, footprints and development (`land-footprint-design-r2.md`, 186187ef), the owner's
   sign-off with the designer; slice 9 added.
 - r19, 2026-11-08, for review r18's five remaining items (`economy-design-review-r18.md`, 0ab757f5).
