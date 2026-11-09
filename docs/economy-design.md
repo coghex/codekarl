@@ -732,6 +732,8 @@ For each place:
   - monasteries without peasants;
 - **its buildings, levels and land** (§3.4), with the levels authored by guess (§3.13), not derived from the pops;
 - **its employment:** owners first, then workers;
+- **its needs (Firm, owner 2026-11-09, ruling on CK-228 B1, "for now"):** every pop starts a new game with necessities 1000‰,
+  niceties 0 and luxuries 0. The starting values are data per pop type;
 - **its stores (Firm: starting stockpiles):** authored per pop and per building, by default enough food to reach the next harvest,
   since the start falls after it. The buildings' stores pay monthly wages until production does (§3.6).
 
@@ -1159,6 +1161,13 @@ Per terrain (`terrain.toml` gains these columns, hashed with the rules):
   red at 0% to green at 100% (Firm).
 - **Expected yearly yield:** each place's projected annual food production, relative across the map: red at the minimum place and
   green at the maximum (Firm). Maps that weigh consumption come later.
+  - **What counts as yield (Firm, owner 2026-11-09, rulings on CK-231 F3):** "herd is not food; herd can become food", so herds stay
+    out of the yield calculation, with one refinement: **dairy counts, meat does not.**
+    - **Counted:** each method's food output at the place's land suitability, at full staffing and coverage, plus dairy at
+      `cattle × 72 lb a year` (§3.14) × dairy's hunger value. Dairy does not scale with land suitability, and a method's own dairy
+      output is not counted a second time.
+    - **Not counted:** beef, pork and mutton, and the herds' non-food goods.
+    - **Later:** butcher shops, with constant production methods, will add meat to the yield map.
 - **Values (E5), per place, in ‰:**
   - **stockpile:** `stored × 1000 / capacity`, by volume. A place with **zero capacity is uncoloured**;
   - **yield:** `(y − min) × 1000 / (max − min)` across the coloured places. If `max = min`, every place is **500**.
@@ -1170,8 +1179,8 @@ Per terrain (`terrain.toml` gains these columns, hashed with the rules):
     uncoloured places are excluded. A cell with no counted neighbour keeps its terrain colour;
   - **colour:** linear from red (0) through yellow (500) to green (1000), in integers;
   - the reference colour function gains this rule, so readback fixtures compare byte for byte on both backends.
-- **The renderer:** the map pass reads the index grid and the value table. This lands on Metal and Vulkan together, with readback
-  tests, as M6 and M7's map work did.
+- **The renderer:** the map pass reads the index grid and the value table. This landed on Metal and Vulkan together (CK-231), with
+  readback tests, before the owner made Vulkan compile-only (§4). Later map modes land on native Metal, and Vulkan catches up in slice 11.
 - **Switching:** two map-mode buttons on the UI select the mode, or turn it off.
 
 ### 3.23 Buildable land, footprints and development (Firm, owner-signed 2026-11-09; a follow-up slice)
@@ -1359,13 +1368,20 @@ fields cut. The engine's load report is the authority.
   | 5 | eating with the intake curve, needs and satisfaction | 4 |
   | 6 | housing and crowding (§3.8), births, deaths, drift, hiring and movement (C9: before the market) | 5, 9 |
   | 7 | local prices, computed and shown (no barter) | 5 |
-  | 8 | the two map modes, on both backends | 4 |
+  | 8 | the two map modes, on both backends (landed before the Vulkan direction) | 4 |
   | 9a | the computed climate and fertility map data, and glaciation (`docs/map-design.md` §12) | 2 |
   | 9 | buildable land, footprints, development fixed at 1000 (§3.23), and fertility's farm room and yield (§3.24); before CK-229 (slice 6) | 9a |
-  | — | the map look: the fertility gradient, the hillside dither, glaciers and the elevation mode (map-design §12.3–§12.5), on both backends | 9a |
+  | 10a | the map look: the fertility gradient, the hillside dither and glaciers (map-design §12.3–§12.4, §12.6), on native Metal | 9a |
+  | 10b | the elevation map mode (map-design §12.5), on native Metal | 8, 10a |
+  | 11 | the Vulkan catch-up: slices 10a and 10b, and any other milestone 9 render work, ported to Vulkan, with the Vulkan window tests repaired; at milestone end, once a Linux GPU machine exists, or at the owner's call | 10a, 10b |
 
   Slice 2 includes the starting method choice, with its two pure primitives (`target_price` and the diet-profile projection, §3.4)
   frozen there and reused by slice 6. Slices 1 and 2 can run together, and so can 3 and 4. Each slice carries the §6 coverage for what it adds.
+
+  **Render work lands on native Metal only** (Firm, owner 2026-11-09, `owner-direction-vulkan-r1.md`). Until a native Linux machine with
+  a real GPU is in the test loop, Vulkan only has to compile: a change to a shared interface or GPU data format updates the Vulkan code
+  just enough for that. The milestone's Vulkan port is slice 11, one catch-up issue. Per-slice parity returns once the Linux machine
+  exists.
 
 ## 5. Out of scope for M9
 
@@ -1525,6 +1541,10 @@ fields cut. The engine's load report is the authority.
 
 ## Provenance
 
+- 2026-11-09: the owner's rulings, relayed by ck-manager: §3.22's yield definition (CK-231 F3, `sn2ctfm4skwzufr9ufhu8jnd9s` and
+  `puf5ybyn8vj3zyrke5xnrgtqca`) and §3.10's starting needs (CK-228 B1, `tp3pvvw3a6d9dszdvhahifek9e`).
+- 2026-11-09: the owner's Vulkan direction (`owner-direction-vulkan-r1.md`, relayed by ck-manager, `jryeeakppnwyirhsfet4ku97ia`): §4's
+  slices 10a, 10b and 11 and the Metal-only rule, and §3.22's renderer note.
 - 2026-11-09: §3.24 land fertility and climate (`usable-land-proposal-r4.md`, 23221a44; `map-look-design-r4.md`, 33f0615e), and §3.23's
   load and prepared-land rules (`usable-land-proposal-r2.md`, 5b2faf29), the owner's sign-offs with the designer. Slice 9a added.
 - 2026-11-09: §3.23 buildable land, footprints and development (`land-footprint-design-r2.md`, 186187ef), the owner's

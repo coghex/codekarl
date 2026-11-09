@@ -76,6 +76,12 @@ A group's class covers every command it starts, nested checks included.
   listed in the catalog's guard inventory, and the files it reads select its group. Static guards that need no GPU or window run in their
   own plain groups (`metal.isolation`, `vulkan.isolation`, `unittest-catalog`), so an application edit runs them without opening a Metal
   or native window. A catalog test fails when a guard reads an unregistered input.
+- **Vulkan is compile-only for now** (owner, 2026-11-09, `.pipeline/coordination/m9-design/owner-direction-vulkan-r1.md`). Until a
+  native Linux machine with a real GPU is in the test loop, Vulkan on this Mac would only test MoltenVK, so the Vulkan GPU and window
+  groups (`glfw.window`, `vulkan.gpu`, `vulkan.window`, `render2d.vulkan-window`, `vulkan.app`) are not required. Vulkan must still
+  compile: the Clippy floor builds it. CK-238 makes the catalog apply this; until it lands, don't spend window-slot runs on those groups,
+  and a failure in one does not block a submission. New render features land on native Metal, and each milestone ports them to Vulkan in
+  one catch-up issue at its end. When the Linux machine exists, the owner restores per-slice parity and the groups run there.
 - **`ck check`** (full): every group once, with `CK_REQUIRE_FULL_SPEC=1` for the all-features Rust groups so a skipped or unavailable
   Metal case fails. The manager runs this level once at milestone completion. If no eligible submission remains, keep the existing
   empty-batch refusal and run `tools/ck check` on a clean accepted copy, retaining the log as milestone evidence.

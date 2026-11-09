@@ -653,12 +653,17 @@ just snow caps, but glaciation".
   - G is fertility ÷ 4 (0–250), with 255 meaning glacier;
   - B is the signed hillside strength (−16…+16, offset by 128), precomputed per cell at load.
 - **Grid B** keeps the elevation.
-- **The reference colour function** in `ck-map` and both GPU owners implement §12.3–§12.5. Readback fixtures on Metal and Vulkan compare
+- **The reference colour function** in `ck-map` implements §12.3–§12.5, and native Metal matches it. Readback fixtures on Metal compare
   byte for byte.
-- **Slices:**
+- **Vulkan is compile-only for now** (Firm, owner 2026-11-09, `owner-direction-vulkan-r1.md`): until a native Linux machine with a real
+  GPU is in the test loop, new render features land on native Metal only. A change to grid A's packing or another shared format updates
+  the Vulkan code just enough to compile. The Vulkan port, with its own readback fixtures, is economy-design slice 11 at milestone end.
+- **Slices** (economy-design §4):
   - **9a:** the data and loading;
   - **9:** the economy's use;
-  - **the map-look slice:** the renderer, on both backends together.
+  - **10a:** the default look (§12.3–§12.4), on native Metal;
+  - **10b:** the elevation mode (§12.5), on native Metal;
+  - **11:** the Vulkan catch-up.
 
 ### 12.7 Sources
 
