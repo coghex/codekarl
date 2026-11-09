@@ -483,9 +483,9 @@ fn the_first_frame_record_names_the_drawn_generation_once() {
     );
 }
 
-/// The first-frame record takes the wait before the stop request and never after it (the teardown's late reports), and is written
-/// either way: counted by the progress helper's seam, no clock. The late case sets the pending flag by hand, as a first-frame report
-/// the loop took after `request_stop` would.
+/// The first-frame record takes a wait before the stop request and never after it (the teardown's late reports); the late record
+/// is written without a wait, so the queue may drop it. Counted by the progress helper's seam, no clock. The late case sets the
+/// pending flag by hand, as a first-frame report the loop took after `request_stop` would.
 #[test]
 fn the_first_frame_record_takes_a_wait_before_the_stop_request_and_none_after_it() {
     use crate::lifecycle::wait_seam::waits_taken;
@@ -522,10 +522,11 @@ fn the_first_frame_record_takes_a_wait_before_the_stop_request_and_none_after_it
         1,
         "{records:?}"
     );
-    assert_eq!(
-        count(&records, "render: first frame drawn, generation 8"),
-        1,
-        "the late record is written too: {records:?}"
+    // The late record is written without a wait, so under load the bounded log queue may drop it (counted, as the `try_log`
+    // controls below assert). The contract is that it takes no wait and is never written twice, not that it is delivered.
+    assert!(
+        count(&records, "render: first frame drawn, generation 8") <= 1,
+        "the late record is written at most once: {records:?}"
     );
 }
 
