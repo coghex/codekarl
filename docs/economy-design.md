@@ -1373,15 +1373,15 @@ fields cut. The engine's load report is the authority.
   | 9 | buildable land, footprints, development fixed at 1000 (§3.23), and fertility's farm room and yield (§3.24); before CK-229 (slice 6) | 9a |
   | 10a | the map look: the fertility gradient, the hillside dither and glaciers (map-design §12.3–§12.4, §12.6), on native Metal | 9a |
   | 10b | the elevation map mode (map-design §12.5), on native Metal | 8, 10a |
-  | 11 | the Vulkan catch-up: slices 10a and 10b, and any other milestone 9 render work, ported to Vulkan, with the Vulkan window tests repaired; at milestone end, once a Linux GPU machine exists, or at the owner's call | 10a, 10b |
+  | 11 | the Vulkan catch-up: slices 10a and 10b, and any other milestone 9 render work, ported to Vulkan, with the Vulkan window tests repaired. **Parked until the owner says so**; not a milestone 9 gate | 10a, 10b |
 
   Slice 2 includes the starting method choice, with its two pure primitives (`target_price` and the diet-profile projection, §3.4)
   frozen there and reused by slice 6. Slices 1 and 2 can run together, and so can 3 and 4. Each slice carries the §6 coverage for what it adds.
 
   **Render work lands on native Metal only** (Firm, owner 2026-11-09, `owner-direction-vulkan-r1.md`). Until a native Linux machine with
   a real GPU is in the test loop, Vulkan only has to compile: a change to a shared interface or GPU data format updates the Vulkan code
-  just enough for that. The milestone's Vulkan port is slice 11, one catch-up issue. Per-slice parity returns once the Linux machine
-  exists.
+  just enough for that. The milestone's Vulkan port is slice 11, one catch-up issue. The owner has parked Linux and slice 11 "until i say
+  so" (`owner-direction-linux-r1.md`).
 
 ## 5. Out of scope for M9
 
@@ -1544,7 +1544,7 @@ fields cut. The engine's load report is the authority.
 - 2026-11-09: the owner's rulings, relayed by ck-manager: §3.22's yield definition (CK-231 F3, `sn2ctfm4skwzufr9ufhu8jnd9s` and
   `puf5ybyn8vj3zyrke5xnrgtqca`) and §3.10's starting needs (CK-228 B1, `tp3pvvw3a6d9dszdvhahifek9e`).
 - 2026-11-09: the owner's Vulkan direction (`owner-direction-vulkan-r1.md`, relayed by ck-manager, `jryeeakppnwyirhsfet4ku97ia`): §4's
-  slices 10a, 10b and 11 and the Metal-only rule, and §3.22's renderer note.
+  slices 10a, 10b and 11 and the Metal-only rule, and §3.22's renderer note. Then `owner-direction-linux-r1.md`: slice 11 parked.
 - 2026-11-09: §3.24 land fertility and climate (`usable-land-proposal-r4.md`, 23221a44; `map-look-design-r4.md`, 33f0615e), and §3.23's
   load and prepared-land rules (`usable-land-proposal-r2.md`, 5b2faf29), the owner's sign-offs with the designer. Slice 9a added.
 - 2026-11-09: §3.23 buildable land, footprints and development (`land-footprint-design-r2.md`, 186187ef), the owner's
