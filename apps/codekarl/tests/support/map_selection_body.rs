@@ -5,6 +5,8 @@ local windows = require('lib.window')
 local label = require('lib.label')
 local button = require('lib.button')
 local pointer = require('lib.pointer')
+local location = require('lib.location')
+local lists = require('lib.list')
 local directory = assert(
   os.getenv('CK_WINDOWED_TEST_MAP_SELECT') or os.getenv('CK_VULKAN_TEST_MAP_SELECT'),
   'map selection marker directory is not configured'
@@ -20,25 +22,28 @@ local function exists(path)
   file:close()
   return true
 end
-local place, help = nil, nil
+local help = nil
 local selection_count = 0
 local frame_ready = false
 local scroll_frame_observed = false
 local place_closed_pending, help_closed_pending = false, false
+-- The place is the location panel (the left third from y = 60); its Location tab's first line is logged as its list is created.
+local panel = location.new{
+  view = {width = 400, height = 240},
+  top = function() return 60 end,
+  on_close = function() log.info('place window closed'); place_closed_pending = true end,
+}
+game.on_time(function(time) panel:set_revision(time.economy_revision) end)
+local real_list_new = lists.new
+lists.new = function(spec) log.info('location tab ' .. spec.items[1]); return real_list_new(spec) end
 game.on_select(function(value)
   selection_count = selection_count + 1
   log.info('game_select ' .. value.id)
-  if place == nil then
-    place = windows.new{title = value.name, content_width = 120, content_height = 48, x = 8, y = 60,
-      on_close = function() log.info('place window closed'); place_closed_pending = true end}
-    label.new{x = 0, y = 0, text = 'id: ' .. value.id, group = place.content, owner = place}
-    label.new{x = 0, y = 22, text = 'kind: town', group = place.content, owner = place}
-    label.new{x = 0, y = 44, text = 'size: 1', group = place.content, owner = place}
+  local opened = panel.window == nil
+  panel:show(value)
+  if opened then
     log.info('place window opened')
     touch(directory .. '/place-ready')
-  else
-    place:set_title(value.name)
-    place:raise()
   end
 end)
 button.new{x = 10, y = 10, text = '?', on_click = function()
@@ -76,6 +81,7 @@ frame.on_update(function(f)
   if f.pointer ~= nil and #(f.pointer.events or {}) > 0 then
     touch(directory .. '/fixture-frame-pointer-events')
   end
+  local place = panel.window
   if place ~= nil and exists(directory .. '/map-marker-drag-injected') and not exists(directory .. '/drag-verified') then
     assert(selection_count == 1 and windows.top() == place, 'dragging a marker opens no additional place window')
     log.info('map marker drag opened nothing')
@@ -87,7 +93,7 @@ frame.on_update(function(f)
   end
   if place ~= nil and exists(directory .. '/title-drag-injected') and not exists(directory .. '/title-moved') then
     local x, y = place:position()
-    assert(x == 38 and y == 80, 'title drag moves the place window by its pointer delta')
+    assert(x == 30 and y == 80, 'title drag moves the place window by its pointer delta')
     log.info('place window moved')
     touch(directory .. '/title-moved')
   end

@@ -151,6 +151,7 @@ fn a_lost_up_and_a_later_up_in_the_same_delivery_click_nothing_and_the_map_owns_
     let mut link = CodekarlUi::with_map(harness.ui.slot.clone(), Arc::clone(&map))
         .with_scene_bridge(Arc::clone(&harness.bridge))
         .with_sim(SimLink {
+            views: Arc::default(),
             controls: SimControls::new(sender),
             slot: SimSlot::new(Arc::new(|| {})),
             time_registered: Arc::new(AtomicBool::new(false)),

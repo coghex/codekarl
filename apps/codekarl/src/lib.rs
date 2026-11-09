@@ -702,6 +702,7 @@ fn supervise_with_owner_factory(
     let time_registered = Arc::new(AtomicBool::new(false));
     let hover_registered = Arc::new(AtomicBool::new(false));
     let select_registered = Arc::new(AtomicBool::new(false));
+    let view_cache = Arc::new(game_api::ViewCache::default());
     let (ui, sim_spawn, game_extension) = match connected {
         Some(connected) => (
             ui.with_sim(ui_link::SimLink {
@@ -710,6 +711,7 @@ fn supervise_with_owner_factory(
                 time_registered: Arc::clone(&time_registered),
                 hover_registered: Arc::clone(&hover_registered),
                 select_registered: Arc::clone(&select_registered),
+                views: Arc::clone(&view_cache),
             }),
             Some(connected.spawn),
             Some(
@@ -720,7 +722,8 @@ fn supervise_with_owner_factory(
                     Arc::clone(&wake),
                     connected.controls,
                 )
-                .function("places", game_api::places_function(places)),
+                .function("places", game_api::places_function(places))
+                .function("place", game_api::place_function(view_cache)),
             ),
         ),
         None => (ui, None, None),

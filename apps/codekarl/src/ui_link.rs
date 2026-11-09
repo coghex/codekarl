@@ -250,13 +250,14 @@ struct State {
     /// The calls posted and not yet answered, oldest first (results arrive in the order the calls ran).
     pending: RefCell<VecDeque<(CallId, UiEvent)>>,
     /// The `game_time` calls posted and not yet answered (their results are taken and not given to the window loop).
-    times: RefCell<Vec<CallId>>,
+    /// Each with the economy revision its snapshot carried (`0` for none).
+    times: RefCell<Vec<(CallId, u64)>>,
     /// The `game_hover` calls posted and not yet answered.
     hovers: RefCell<Vec<CallId>>,
     /// The `game_select` calls posted and not yet answered.
     selections: RefCell<Vec<CallId>>,
     /// The snapshot last delivered through `game_time`, to post the next only when something displayed differs.
-    delivered: Cell<Option<crate::game::slot::SimSnapshot>>,
+    delivered: RefCell<Option<crate::game::slot::SimSnapshot>>,
     /// Hover last posted; outer `None` means callback registration changed and needs a fresh delivery.
     delivered_hover: RefCell<DeliveredHover>,
     /// Selection sequence last posted; cleared when no callback is registered.
@@ -510,6 +511,8 @@ pub(crate) struct SimLink {
     pub(crate) hover_registered: Arc<std::sync::atomic::AtomicBool>,
     /// Whether the UI VM has registered a `game.on_select` callback.
     pub(crate) select_registered: Arc<std::sync::atomic::AtomicBool>,
+    /// The economy views `game.place` reads: each snapshot's view goes in before the `game_time` call that carries its revision.
+    pub(crate) views: Arc<crate::game_api::ViewCache>,
 }
 
 impl CodekarlUi {
@@ -662,7 +665,7 @@ impl CodekarlUi {
             .load(std::sync::atomic::Ordering::SeqCst)
         {
             // A callback registered later gets the state at that time.
-            self.state.delivered.set(None);
+            *self.state.delivered.borrow_mut() = None;
             return false;
         }
         let Some(snapshot) = sim.slot.latest() else {
@@ -671,8 +674,9 @@ impl CodekarlUi {
         if self
             .state
             .delivered
-            .get()
-            .is_some_and(|delivered| !snapshot.differs_from(&delivered))
+            .borrow()
+            .as_ref()
+            .is_some_and(|delivered| !snapshot.differs_from(delivered))
         {
             return false;
         }
@@ -682,14 +686,27 @@ impl CodekarlUi {
         let Some(vm) = self.vm() else {
             return false;
         };
+        // The call's own view is in the cache, pinned by the call, before the call is posted: the call can read it with `game.place`
+        // until a later call completes.
+        let pinned = snapshot.economy.as_ref().map(|view| {
+            sim.views.post(snapshot.economy_revision, Arc::clone(view));
+            snapshot.economy_revision
+        });
         let posted = vm.borrow_mut().post(
             crate::game_api::GAME_TIME,
             vec![crate::game_api::time_table(&snapshot)],
         );
         if let Ok(id) = posted {
-            self.state.times.borrow_mut().push(id);
-            self.state.delivered.set(Some(snapshot));
+            self.state
+                .times
+                .borrow_mut()
+                .push((id, snapshot.economy_revision));
+            *self.state.delivered.borrow_mut() = Some(snapshot);
             return true;
+        }
+        // No call exists: nothing pins the view it was to be read by.
+        if let Some(revision) = pinned {
+            sim.views.unpost(revision);
         }
         false
     }
@@ -792,10 +809,16 @@ impl CodekarlUi {
                 let mut times = self.state.times.borrow_mut();
                 times
                     .iter()
-                    .position(|id| *id == result.id)
+                    .position(|(id, _)| *id == result.id)
                     .map(|position| times.remove(position))
             };
-            if timed.is_some() {
+            if let Some((_, revision)) = timed {
+                // This call has completed: older views that no pending call pins are retired.
+                if revision != 0
+                    && let Some(sim) = &self.sim
+                {
+                    sim.views.complete(revision);
+                }
                 if let CallOutcome::Failed { message, traceback } = result.outcome {
                     return Some(Taken::TimeFailed(format!(
                         "ui callback {} failed: {message}\n{traceback}",
@@ -1065,6 +1088,8 @@ mod group_tests;
 mod input_tick_tests;
 #[cfg(test)]
 mod list_tests;
+#[cfg(test)]
+mod location_tests;
 #[cfg(test)]
 mod theme_tests;
 #[cfg(test)]
@@ -1346,6 +1371,7 @@ mod tests {
         let slot = SimSlot::new(Arc::new(|| {}));
         let (sender, _receiver) = std::sync::mpsc::channel();
         let mut link = CodekarlUi::with_map(harness.ui.slot.clone(), map).with_sim(SimLink {
+            views: Arc::default(),
             controls: crate::game::controls::SimControls::new(sender),
             slot,
             time_registered: registered,
@@ -1556,6 +1582,7 @@ mod tests {
         let map = crate::map_app::shared(controller);
         let (sender, _receiver) = std::sync::mpsc::channel();
         let mut link = CodekarlUi::with_map(harness.ui.slot.clone(), map).with_sim(SimLink {
+            views: Arc::default(),
             controls: crate::game::controls::SimControls::new(sender),
             slot: SimSlot::new(Arc::new(|| {})),
             time_registered,
@@ -1656,6 +1683,7 @@ mod tests {
         crate::map_app::tests::select_fixture(&mut controller);
         let map = crate::map_app::shared(controller);
         let mut link = CodekarlUi::with_map(harness.ui.slot.clone(), map).with_sim(SimLink {
+            views: Arc::default(),
             controls: crate::game::controls::SimControls::new(sender),
             slot: SimSlot::new(Arc::new(|| {})),
             time_registered,
@@ -2752,6 +2780,8 @@ mod tests {
             date,
             speed: ck_sim::Speed::new(speed).expect("a speed"),
             paused,
+            economy_revision: 0,
+            economy: None,
         }
     }
 
@@ -2786,18 +2816,23 @@ mod tests {
             })
         };
         let registered = Arc::new(AtomicBool::new(false));
+        let views = Arc::new(game_api::ViewCache::default());
         let mut extras = extras;
         extras.functions.push(("record", record));
-        extras.extensions.push(game_api::extension(
-            Arc::clone(&registered),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(|| {}),
-            crate::game::controls::SimControls::new(std::sync::mpsc::channel().0),
-        ));
+        extras.extensions.push(
+            game_api::extension(
+                Arc::clone(&registered),
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(|| {}),
+                crate::game::controls::SimControls::new(std::sync::mpsc::channel().0),
+            )
+            .function("place", game_api::place_function(Arc::clone(&views))),
+        );
         let harness = Harness::new(script, extras);
         let slot = SimSlot::new(Arc::new(|| {}));
         let (sender, _receiver) = std::sync::mpsc::channel();
         let link = harness.ui.clone().with_sim(SimLink {
+            views,
             controls: crate::game::controls::SimControls::new(sender),
             slot: Arc::clone(&slot),
             time_registered: registered,
@@ -2916,6 +2951,201 @@ mod tests {
             let _ = timed.link.take_answer();
         }
         assert_eq!(timed.seen().len(), 1);
+    }
+
+    /// A snapshot that carries the economy view `view` under `revision`.
+    fn snapshot_with_view(
+        hour: u8,
+        revision: u64,
+        view: Arc<crate::game::view::EconomyView>,
+    ) -> SimSnapshot {
+        let mut snapshot = snapshot_at(hour, 1, None);
+        snapshot.economy_revision = revision;
+        snapshot.economy = Some(view);
+        snapshot
+    }
+
+    /// A view of one place, `fixture`, with `workers` people working.
+    fn fixture_view(workers: u64) -> Arc<crate::game::view::EconomyView> {
+        Arc::new(crate::game::view::EconomyView {
+            places: vec![crate::game::view::PlaceView {
+                id: "fixture".to_owned(),
+                workers,
+                ..crate::game::view::PlaceView::default()
+            }],
+        })
+    }
+
+    /// The UI script of the view tests. Each `game_time` call reads the view of its own revision, and of the revision the call before
+    /// it carried (pending and pinned, or the last completed: served either way). An `Opened` event reads the newest revision the
+    /// script has seen, and then runs `probe` (Lua that may call `window.record`).
+    fn reads_views(probe: &str) -> String {
+        format!(
+            r"
+        latest = 0
+        local function refusal(revision)
+          local ok, err = pcall(game.place, 'fixture', revision)
+          if ok then return 'served' end
+          return tostring(err):match('game%.place: [^\n]*')
+        end
+        game.on_time(function(t)
+          local previous = latest
+          latest = t.economy_revision
+          window.hold()
+          local own = tostring(game.place('fixture', t.economy_revision).workers)
+          local before = 'none'
+          if previous ~= 0 then before = tostring(game.place('fixture', previous).workers) end
+          window.record('time', tostring(t.economy_revision), own, before)
+        end)
+        window.on_opened(function()
+          window.record('opened', tostring(latest), tostring(game.place('fixture', latest).workers))
+          {probe}
+        end)
+    "
+        )
+    }
+
+    /// The held-UI witness (design §6): the UI VM is held inside the first of three `game_time` calls while the link has handed it
+    /// three snapshots with three different views. Each call, when it runs, reads the view of its own revision however much newer
+    /// the link's latest is, and the one before it; a selection-like event after them (here `Opened`) reads the newest revision the
+    /// script has seen.
+    #[test]
+    fn three_pending_game_time_calls_each_read_their_own_view_and_a_later_event_reads_the_newest() {
+        let gate = Gate::new();
+        let hold: HostFunction = {
+            let gate = Arc::clone(&gate);
+            Arc::new(move |_| {
+                gate.wait();
+                Ok(Vec::new())
+            })
+        };
+        let mut timed = timed(
+            &reads_views(""),
+            Extras {
+                functions: vec![("hold", hold)],
+                ..Extras::default()
+            },
+        );
+        for revision in 1..=3_u64 {
+            let hour = u8::try_from(revision).unwrap();
+            timed.slot.publish(snapshot_with_view(
+                hour,
+                revision,
+                fixture_view(revision * 10),
+            ));
+            let _ = timed.link.take_answer();
+        }
+        assert_eq!(timed.link.outstanding(), 3, "three held calls");
+        // The lifecycle place is free: the event waits behind the three calls, as a selection would.
+        timed
+            .link
+            .post(UiEvent::Opened)
+            .expect("the reserved place");
+        gate.open();
+        timed.pump_until(4);
+        assert_eq!(
+            timed.seen(),
+            [
+                "time 1 10 none",
+                "time 2 20 10",
+                "time 3 30 20",
+                "opened 3 30"
+            ]
+        );
+    }
+
+    /// A revision is refused as retired as soon as a later `game_time` call completes, with the cache nowhere near full, and one the
+    /// link never delivered is refused as missing.
+    #[test]
+    fn a_revision_is_retired_when_a_later_game_time_call_completes_and_not_before() {
+        let gate = Gate::new();
+        gate.open();
+        let hold: HostFunction = {
+            let gate = Arc::clone(&gate);
+            Arc::new(move |_| {
+                gate.wait();
+                Ok(Vec::new())
+            })
+        };
+        let probe = "window.record('refusals', refusal(1), refusal(2), refusal(99))";
+        let mut timed = timed(
+            &reads_views(probe),
+            Extras {
+                functions: vec![("hold", hold)],
+                ..Extras::default()
+            },
+        );
+        timed
+            .slot
+            .publish(snapshot_with_view(1, 1, fixture_view(10)));
+        timed.pump_until(1);
+        // Only the first has completed: it is the last completed, and served.
+        timed.link.post(UiEvent::Opened).expect("posted");
+        timed.pump_until(3);
+        assert_eq!(
+            &timed.seen()[1..],
+            [
+                "opened 1 10",
+                "refusals served game.place: revision 2 is missing game.place: revision 99 is missing"
+            ]
+        );
+        // The second completes: the first is refused at once, though the cache holds two views at most.
+        timed
+            .slot
+            .publish(snapshot_with_view(2, 2, fixture_view(20)));
+        timed.pump_until(4);
+        timed.link.post(UiEvent::Opened).expect("posted");
+        timed.pump_until(6);
+        assert_eq!(
+            &timed.seen()[4..],
+            [
+                "opened 2 20",
+                "refusals game.place: revision 1 is retired served game.place: revision 99 is missing"
+            ]
+        );
+    }
+
+    /// The tables Lua gets are the real ones: the shipped Ireland start, as the simulation builds its view, read through `game.place`.
+    #[test]
+    fn game_place_serves_the_shipped_start_through_the_real_extension() {
+        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let directory = assets.join("scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).expect("the scenario loads");
+        let (state, _) = crate::game::economy::starting_economy(&assets, &directory, &scenario)
+            .expect("the start builds");
+        let rules = crate::game::economy::load_rules(&assets)
+            .expect("the rules load")
+            .expect("the shipped rules exist");
+        let ids: Vec<String> = scenario
+            .locations
+            .iter()
+            .map(|location| location.id.clone())
+            .collect();
+        let view = Arc::new(crate::game::view::build(Some(&rules), &state, &ids));
+        let armagh = view.place("armagh").expect("armagh is in the view");
+        let mut timed = timed(
+            "game.on_time(function(t) local p = game.place('armagh', t.economy_revision) \
+             window.record('armagh', tostring(p.workers + p.dependents), tostring(#p.pops), tostring(#p.buildings), \
+             tostring(#p.prices), tostring(p.pops[1].kind), tostring(p.buildings[1].kind)) end)",
+            Extras::default(),
+        );
+        timed
+            .slot
+            .publish(snapshot_with_view(1, 1, Arc::clone(&view)));
+        timed.pump_until(1);
+        assert_eq!(
+            timed.seen(),
+            [format!(
+                "armagh {} {} {} {} {} {}",
+                armagh.workers + armagh.dependents,
+                armagh.pops.len(),
+                armagh.buildings.len(),
+                armagh.prices.len(),
+                armagh.pops[0].kind,
+                armagh.buildings[0].kind
+            )]
+        );
+        assert!(armagh.workers > 0 && !armagh.pops.is_empty() && !armagh.buildings.is_empty());
     }
 
     #[test]
@@ -3085,6 +3315,7 @@ mod tests {
         let (sender, _receiver) = std::sync::mpsc::channel();
         let mut link =
             CodekarlUi::with_map(harness.ui.slot.clone(), Arc::clone(&map)).with_sim(SimLink {
+                views: Arc::default(),
                 controls: crate::game::controls::SimControls::new(sender),
                 slot: Arc::clone(&slot),
                 time_registered,
@@ -3244,6 +3475,7 @@ mod tests {
         let (sender, _receiver) = std::sync::mpsc::channel();
         let mut link =
             CodekarlUi::with_map(harness.ui.slot.clone(), Arc::clone(&map)).with_sim(SimLink {
+                views: Arc::default(),
                 controls: crate::game::controls::SimControls::new(sender),
                 slot: Arc::clone(&slot),
                 time_registered,

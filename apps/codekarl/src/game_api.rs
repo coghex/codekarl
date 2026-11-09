@@ -1,17 +1,22 @@
 //! The `game` extension of the UI VM: how the simulation reaches the UI.
 //!
 //! `game.on_time(fn | nil)` registers the callback `game_time` (and exists only when the configuration has `[game] scenario`).
-//! The UI link posts it with the latest [`SimSnapshot`] as a table, `{year, month, day, hour, speed, paused}`, where `paused`
-//! is `false` or the reason as the string `"player"`, `"error"` or `"load"`: see `ui_link` for when.
+//! The UI link posts it with the latest [`SimSnapshot`] as a table, `{year, month, day, hour, speed, paused, economy_revision}`,
+//! where `paused` is `false` or the reason as the string `"player"`, `"error"` or `"load"`: see `ui_link` for when.
+//!
+//! `game.place(id, revision)` returns the economy view of a place at a revision a `game_time` carried (milestone 9, design §6). It
+//! reads only the [`ViewCache`] the UI link fills when it posts a snapshot, never the live simulation.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use ck_lua::{ConfigValue, Extension, HostFunction};
 
 use crate::game::controls::{self, SimControls};
 use crate::game::slot::{PauseReason, SimSnapshot};
+use crate::game::view::{BuildingView, EconomyView, PlaceView, PopView};
+use crate::vm::UI_CALL_LIMIT;
 
 /// The callback `game.on_time` registers.
 pub(crate) const GAME_TIME: &str = "game_time";
@@ -181,6 +186,257 @@ pub(crate) fn places_function(places: Vec<Place>) -> HostFunction {
     })
 }
 
+/// How many views the cache can hold at most: the views of the `game_time` calls the UI link may have outstanding (at most
+/// [`UI_CALL_LIMIT`] less the place reserved for lifecycle calls) and the one most recently completed. It is the bound, not the rule
+/// by which views leave (see [`ViewCache`]).
+pub(crate) const VIEW_CACHE_CAPACITY: usize = UI_CALL_LIMIT + 1;
+
+#[derive(Default)]
+struct CacheInner {
+    /// The views held, by revision.
+    views: BTreeMap<u64, Arc<EconomyView>>,
+    /// For each revision, how many posted `game_time` calls that carry it have not completed. Several calls can carry one revision
+    /// (a snapshot per hour reuses the day's view), and each pins it.
+    pins: BTreeMap<u64, usize>,
+    /// The revision of the `game_time` call that completed last.
+    completed: Option<u64>,
+    /// The highest revision that has left the cache: a revision at or below it that is not held is retired.
+    retired_through: u64,
+}
+
+/// The economy views the UI link has handed to the UI VM (design r5 §3.11, kept in §6.2). The cache holds, by revision, the view of
+/// every posted `game_time` call that has not completed, plus the view of the one that completed most recently. A revision leaves it,
+/// and is then refused by name, when a later `game_time` call completes. The most views it can hold is [`VIEW_CACHE_CAPACITY`].
+///
+/// The UI link (main thread) [`post`](Self::post)s a snapshot's view before it posts the call, [`unpost`](Self::unpost)s it if the post
+/// failed and [`complete`](Self::complete)s it when it takes the call's result; `game.place` (UI VM thread) [`get`](Self::get)s.
+#[derive(Default)]
+pub(crate) struct ViewCache {
+    inner: Mutex<CacheInner>,
+}
+
+impl CacheInner {
+    /// Drops every view that is neither pinned by a pending call nor the last completed one, noting the highest that left.
+    fn retire_unpinned(&mut self) {
+        let completed = self.completed;
+        let pins = &self.pins;
+        let gone: Vec<u64> = self
+            .views
+            .keys()
+            .copied()
+            .filter(|revision| !pins.contains_key(revision) && Some(*revision) != completed)
+            .collect();
+        for revision in gone {
+            self.views.remove(&revision);
+            self.retired_through = self.retired_through.max(revision);
+        }
+    }
+}
+
+impl ViewCache {
+    fn locked(&self) -> std::sync::MutexGuard<'_, CacheInner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Keeps `view` under `revision` for a `game_time` call about to be posted, and pins it until that call completes or is
+    /// [`unpost`](Self::unpost)ed. A revision already held keeps its first view (a revision names one view).
+    pub(crate) fn post(&self, revision: u64, view: Arc<EconomyView>) {
+        let mut inner = self.locked();
+        inner.views.entry(revision).or_insert(view);
+        *inner.pins.entry(revision).or_default() += 1;
+        debug_assert!(
+            inner.views.len() <= VIEW_CACHE_CAPACITY,
+            "the UI link posts at most the call limit's worth of calls, so the cache cannot outgrow its bound"
+        );
+    }
+
+    fn unpin(inner: &mut CacheInner, revision: u64) {
+        if let Some(count) = inner.pins.get_mut(&revision) {
+            *count -= 1;
+            if *count == 0 {
+                inner.pins.remove(&revision);
+            }
+        }
+    }
+
+    /// The post that [`post`](Self::post) announced failed: the call does not exist, so it pins nothing, and a view that only it
+    /// held leaves the cache without having been served.
+    pub(crate) fn unpost(&self, revision: u64) {
+        let mut inner = self.locked();
+        Self::unpin(&mut inner, revision);
+        inner.retire_unpinned();
+    }
+
+    /// The `game_time` call that carried `revision` completed: it is now the most recently completed, and every revision no pending
+    /// call pins that is not it leaves the cache.
+    pub(crate) fn complete(&self, revision: u64) {
+        let mut inner = self.locked();
+        Self::unpin(&mut inner, revision);
+        // Calls complete in the order they were posted, and revisions rise with them.
+        inner.completed = inner.completed.max(Some(revision));
+        inner.retire_unpinned();
+    }
+
+    /// The view of `revision`, or the refusal that names it: retired (it was held and has left) or missing (it was never given to
+    /// the UI).
+    pub(crate) fn get(&self, revision: u64) -> Result<Arc<EconomyView>, String> {
+        let inner = self.locked();
+        if let Some(view) = inner.views.get(&revision) {
+            return Ok(Arc::clone(view));
+        }
+        // Revision 0 is "no view" and was never held, whatever has left since.
+        if revision != 0 && revision <= inner.retired_through {
+            Err(format!("game.place: revision {revision} is retired"))
+        } else {
+            Err(format!("game.place: revision {revision} is missing"))
+        }
+    }
+
+    /// How many views are held, for tests of the bound.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> usize {
+        self.locked().views.len()
+    }
+}
+
+fn integer(value: u64) -> ConfigValue {
+    ConfigValue::Integer(i64::try_from(value).unwrap_or(i64::MAX))
+}
+
+fn text(value: &str) -> ConfigValue {
+    ConfigValue::String(value.to_owned())
+}
+
+fn table<const N: usize>(fields: [(&str, ConfigValue); N]) -> ConfigValue {
+    ConfigValue::Table(
+        fields
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect(),
+    )
+}
+
+fn pop_table(pop: &PopView) -> ConfigValue {
+    table([
+        ("kind", text(&pop.kind)),
+        ("culture", text(&pop.culture)),
+        ("religion", text(&pop.religion)),
+        ("workers", integer(pop.workers)),
+        ("dependents", integer(pop.dependents)),
+        ("employed", integer(pop.employed)),
+        ("unemployed", integer(pop.unemployed)),
+        ("food_days", integer(pop.food_days)),
+        ("necessities", integer(pop.necessities)),
+        ("niceties", integer(pop.niceties)),
+        ("luxuries", integer(pop.luxuries)),
+        ("satisfaction", ConfigValue::Integer(pop.satisfaction)),
+        ("births", integer(pop.births)),
+        ("deaths", integer(pop.deaths)),
+    ])
+}
+
+fn building_table(building: &BuildingView) -> ConfigValue {
+    table([
+        ("kind", text(&building.kind)),
+        ("levels", integer(building.levels)),
+        (
+            "methods",
+            ConfigValue::Array(
+                building
+                    .methods
+                    .iter()
+                    .map(|(id, levels)| table([("id", text(id)), ("levels", integer(*levels))]))
+                    .collect(),
+            ),
+        ),
+        ("filled", integer(building.filled)),
+        ("open", integer(building.open)),
+        (
+            "herds",
+            ConfigValue::Array(
+                building
+                    .herds
+                    .iter()
+                    .map(|herd| {
+                        table([
+                            ("species", text(&herd.species)),
+                            ("head", integer(herd.head)),
+                            ("maximum", integer(herd.maximum)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        ("store_used_l", integer(building.store_used_ml / 1000)),
+        (
+            "store_capacity_l",
+            integer(building.store_capacity_ml / 1000),
+        ),
+        ("wage", integer(building.wage)),
+    ])
+}
+
+/// A place's view as the table `game.place` returns. Volumes are whole litres, prices are in thousandths of a value unit.
+pub(crate) fn place_table(place: &PlaceView) -> ConfigValue {
+    table([
+        ("id", text(&place.id)),
+        ("workers", integer(place.workers)),
+        ("dependents", integer(place.dependents)),
+        ("food_days", integer(place.food_days)),
+        ("storage_used_l", integer(place.storage_used_ml / 1000)),
+        (
+            "storage_capacity_l",
+            integer(place.storage_capacity_ml / 1000),
+        ),
+        ("overflow_lost", integer(place.overflow_lost)),
+        (
+            "prices",
+            ConfigValue::Array(
+                place
+                    .prices
+                    .iter()
+                    .map(|price| {
+                        table([
+                            ("good", text(&price.good)),
+                            ("price_milli", integer(price.price_milli)),
+                            ("base", integer(price.base)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "pops",
+            ConfigValue::Array(place.pops.iter().map(pop_table).collect()),
+        ),
+        (
+            "buildings",
+            ConfigValue::Array(place.buildings.iter().map(building_table).collect()),
+        ),
+    ])
+}
+
+/// `game.place(id, revision)`: the economy view of the place `id` at `revision`, from the cache and never from live state. It
+/// refuses, by name, a revision that is missing or retired, a place the view does not hold and arguments of the wrong kind.
+pub(crate) fn place_function(cache: Arc<ViewCache>) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [
+            Some(ConfigValue::String(id)),
+            Some(ConfigValue::Integer(revision)),
+        ] = arguments
+        else {
+            return Err("game.place: expected a place id and a revision".to_owned());
+        };
+        let revision = u64::try_from(*revision)
+            .map_err(|_| format!("game.place: revision {revision} is missing"))?;
+        let view = cache.get(revision)?;
+        let place = view
+            .place(id)
+            .ok_or_else(|| format!("game.place: no place `{id}` at revision {revision}"))?;
+        Ok(vec![place_table(place)])
+    })
+}
+
 /// The table a `game_time` callback gets for `snapshot`.
 pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
     let paused = match snapshot.paused {
@@ -211,6 +467,10 @@ pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
             ConfigValue::Integer(i64::from(snapshot.speed.level())),
         ),
         ("paused".to_owned(), paused),
+        (
+            "economy_revision".to_owned(),
+            integer(snapshot.economy_revision),
+        ),
     ]))
 }
 
@@ -244,6 +504,260 @@ mod tests {
             Some(&ConfigValue::String("town".to_owned()))
         );
         assert_eq!(fields.get("size"), Some(&ConfigValue::Integer(3)));
+    }
+
+    fn view_with(workers: u64) -> Arc<EconomyView> {
+        Arc::new(EconomyView {
+            places: vec![PlaceView {
+                id: "fixture".to_owned(),
+                workers,
+                ..PlaceView::default()
+            }],
+        })
+    }
+
+    fn call_place(
+        function: &HostFunction,
+        id: &str,
+        revision: i64,
+    ) -> Result<Vec<ConfigValue>, String> {
+        function(&[
+            Some(ConfigValue::String(id.to_owned())),
+            Some(ConfigValue::Integer(revision)),
+        ])
+    }
+
+    fn workers_at(cache: &ViewCache, revision: u64) -> u64 {
+        cache
+            .get(revision)
+            .unwrap_or_else(|error| panic!("{error}"))
+            .place("fixture")
+            .unwrap()
+            .workers
+    }
+
+    fn retired(revision: u64) -> String {
+        format!("game.place: revision {revision} is retired")
+    }
+
+    #[test]
+    fn the_view_cache_keeps_every_pending_calls_view_and_the_last_completed_and_retires_on_completion()
+     {
+        let cache = ViewCache::default();
+        assert_eq!(VIEW_CACHE_CAPACITY, UI_CALL_LIMIT + 1);
+        // Three calls are posted; all three views are served, none has completed.
+        for revision in 1..=3 {
+            cache.post(revision, view_with(revision * 10));
+        }
+        assert_eq!(cache.held(), 3);
+        // The first completes: it is the last completed and stays; the others are pending and stay.
+        cache.complete(1);
+        assert_eq!(
+            [1, 2, 3].map(|revision| workers_at(&cache, revision)),
+            [10, 20, 30]
+        );
+        // The second completes, and the first (older, unpinned) is refused at once, with the cache nowhere near full.
+        cache.complete(2);
+        assert_eq!(cache.get(1).unwrap_err(), retired(1));
+        assert_eq!((workers_at(&cache, 2), workers_at(&cache, 3)), (20, 30));
+        assert_eq!(cache.held(), 2);
+        // A fourth is posted; the third completes and retires the second.
+        cache.post(4, view_with(40));
+        cache.complete(3);
+        assert_eq!(cache.get(2).unwrap_err(), retired(2));
+        assert_eq!((workers_at(&cache, 3), workers_at(&cache, 4)), (30, 40));
+        // A revision that was never posted is missing, as is revision 0, which is "no view".
+        assert_eq!(
+            cache.get(99).unwrap_err(),
+            "game.place: revision 99 is missing"
+        );
+        assert_eq!(
+            cache.get(0).unwrap_err(),
+            "game.place: revision 0 is missing"
+        );
+    }
+
+    #[test]
+    fn calls_that_carry_one_revision_each_pin_it_and_the_last_completed_view_outlives_nothing_but_a_later_completion()
+     {
+        let cache = ViewCache::default();
+        // Two calls carry revision 5 (a snapshot an hour reuses the day's view); a third carries 6.
+        cache.post(5, view_with(50));
+        cache.post(5, view_with(999));
+        cache.post(6, view_with(60));
+        assert_eq!(workers_at(&cache, 5), 50, "a revision names its first view");
+        assert_eq!(cache.held(), 2);
+        cache.complete(5);
+        assert_eq!(workers_at(&cache, 5), 50, "the other call still pins it");
+        cache.complete(5);
+        assert_eq!(
+            workers_at(&cache, 5),
+            50,
+            "no pin left, but it is the last completed"
+        );
+        cache.complete(6);
+        assert_eq!(cache.get(5).unwrap_err(), retired(5));
+        assert_eq!(workers_at(&cache, 6), 60);
+    }
+
+    #[test]
+    fn a_post_that_failed_leaves_no_pin_and_the_cache_never_exceeds_its_bound() {
+        let cache = ViewCache::default();
+        cache.post(1, view_with(10));
+        cache.complete(1);
+        // A post that fails: the view it was announced with leaves, and the last completed one stays.
+        cache.post(2, view_with(20));
+        cache.unpost(2);
+        assert_eq!(cache.get(2).unwrap_err(), retired(2));
+        assert_eq!(workers_at(&cache, 1), 10);
+        // The worst case: the call limit's worth of pending calls (one place is kept for lifecycle calls) and the last completed.
+        for revision in 3..3 + u64::try_from(UI_CALL_LIMIT - 1).unwrap() {
+            cache.post(revision, view_with(revision));
+        }
+        assert_eq!(cache.held(), UI_CALL_LIMIT);
+        assert!(cache.held() <= VIEW_CACHE_CAPACITY);
+    }
+
+    #[test]
+    fn game_place_returns_the_revisions_view_and_refuses_what_it_cannot_serve() {
+        let cache = Arc::new(ViewCache::default());
+        cache.post(7, view_with(120));
+        let function = place_function(Arc::clone(&cache));
+        let Ok(returned) = call_place(&function, "fixture", 7) else {
+            panic!("a held revision of a known place is served");
+        };
+        let [ConfigValue::Table(fields)] = returned.as_slice() else {
+            panic!("one table");
+        };
+        assert_eq!(fields["id"], ConfigValue::String("fixture".to_owned()));
+        assert_eq!(fields["workers"], ConfigValue::Integer(120));
+        assert_eq!(
+            fields.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "buildings",
+                "dependents",
+                "food_days",
+                "id",
+                "overflow_lost",
+                "pops",
+                "prices",
+                "storage_capacity_l",
+                "storage_used_l",
+                "workers"
+            ]
+        );
+        assert_eq!(
+            call_place(&function, "elsewhere", 7).unwrap_err(),
+            "game.place: no place `elsewhere` at revision 7"
+        );
+        assert_eq!(
+            call_place(&function, "fixture", 8).unwrap_err(),
+            "game.place: revision 8 is missing"
+        );
+        assert_eq!(
+            call_place(&function, "fixture", -1).unwrap_err(),
+            "game.place: revision -1 is missing"
+        );
+        // A later call completes: revision 7 is retired, and the refusal names it.
+        cache.post(8, view_with(1));
+        cache.complete(7);
+        cache.complete(8);
+        assert_eq!(
+            call_place(&function, "fixture", 7).unwrap_err(),
+            "game.place: revision 7 is retired"
+        );
+        assert_eq!(
+            function(&[Some(ConfigValue::String("fixture".to_owned()))]).unwrap_err(),
+            "game.place: expected a place id and a revision"
+        );
+        assert_eq!(
+            function(&[None, None]).unwrap_err(),
+            "game.place: expected a place id and a revision"
+        );
+    }
+
+    #[test]
+    fn a_places_table_carries_every_tab_field_with_litres_for_volumes() {
+        let place = PlaceView {
+            id: "fixture".to_owned(),
+            workers: 80,
+            dependents: 40,
+            food_days: 215,
+            storage_used_ml: 5_400_999,
+            storage_capacity_ml: 86_400_000,
+            prices: vec![crate::game::view::PriceView {
+                good: "oats".to_owned(),
+                price_milli: 100_500,
+                base: 100,
+            }],
+            overflow_lost: 0,
+            pops: vec![PopView {
+                kind: "peasant".to_owned(),
+                culture: "ulaid".to_owned(),
+                religion: "christianity".to_owned(),
+                workers: 80,
+                dependents: 40,
+                employed: 70,
+                unemployed: 10,
+                food_days: 215,
+                necessities: 0,
+                niceties: 0,
+                luxuries: 0,
+                satisfaction: -5,
+                births: 2,
+                deaths: 1,
+            }],
+            buildings: vec![BuildingView {
+                kind: "farm".to_owned(),
+                levels: 3,
+                methods: vec![("mixed_farming".to_owned(), 3)],
+                filled: 25,
+                open: 5,
+                herds: vec![crate::game::view::HerdView {
+                    species: "cattle".to_owned(),
+                    head: 27,
+                    maximum: 36,
+                }],
+                store_used_ml: 1_500,
+                store_capacity_ml: 3_500_000,
+                wage: 0,
+            }],
+        };
+        let ConfigValue::Table(fields) = place_table(&place) else {
+            panic!("a table");
+        };
+        assert_eq!(fields["storage_used_l"], ConfigValue::Integer(5_400));
+        assert_eq!(fields["storage_capacity_l"], ConfigValue::Integer(86_400));
+        let ConfigValue::Array(prices) = &fields["prices"] else {
+            panic!("an array");
+        };
+        let ConfigValue::Table(price) = &prices[0] else {
+            panic!("a table");
+        };
+        assert_eq!(price["price_milli"], ConfigValue::Integer(100_500));
+        let ConfigValue::Array(pops) = &fields["pops"] else {
+            panic!("an array");
+        };
+        let ConfigValue::Table(pop) = &pops[0] else {
+            panic!("a table");
+        };
+        assert_eq!(pop["satisfaction"], ConfigValue::Integer(-5));
+        assert_eq!(pop["employed"], ConfigValue::Integer(70));
+        let ConfigValue::Array(buildings) = &fields["buildings"] else {
+            panic!("an array");
+        };
+        let ConfigValue::Table(farm) = &buildings[0] else {
+            panic!("a table");
+        };
+        assert_eq!(farm["store_used_l"], ConfigValue::Integer(1));
+        assert_eq!(farm["store_capacity_l"], ConfigValue::Integer(3_500));
+        let ConfigValue::Array(herds) = &farm["herds"] else {
+            panic!("an array");
+        };
+        let ConfigValue::Table(cattle) = &herds[0] else {
+            panic!("a table");
+        };
+        assert_eq!(cattle["maximum"], ConfigValue::Integer(36));
     }
 
     /// `game.places()` over the shipped Ireland 768 scenario: its 94 locations in file order, the first and last literal, each with the

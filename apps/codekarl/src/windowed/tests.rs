@@ -333,6 +333,7 @@ fn a_terminal_simulation_failure_ends_a_windowed_run_failed_and_is_never_reporte
     waiter.wait_for(|| slot.failure().is_some());
     let mut env = harness.env();
     env.ui = harness.ui.clone().with_sim(SimLink {
+        views: Arc::default(),
         controls: SimControls::new(sender),
         slot: Arc::clone(&slot),
         time_registered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -380,6 +381,8 @@ fn the_late_drain_returns_a_failing_game_time_call_and_posts_nothing_new() {
             date,
             speed: ck_sim::Speed::new(1).unwrap(),
             paused: None,
+            economy_revision: 0,
+            economy: None,
         }
     };
     let registered = Arc::new(AtomicBool::new(false));
@@ -398,6 +401,7 @@ fn the_late_drain_returns_a_failing_game_time_call_and_posts_nothing_new() {
     let slot = SimSlot::new(Arc::new(|| {}));
     let (sender, _receiver) = std::sync::mpsc::channel();
     let mut link = harness.ui.clone().with_sim(SimLink {
+        views: Arc::default(),
         controls: SimControls::new(sender),
         slot: Arc::clone(&slot),
         time_registered: registered,

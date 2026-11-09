@@ -1441,7 +1441,7 @@ fn the_places_dropdown_stays_open_after_selection_and_closes_on_escape_or_title_
 /// place at the click on `index`-th name.
 fn captured(scroll: u32, title: &str, expected: &str) -> String {
     format!(
-        "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places list s={scroll}\nINFO  lua.ui: place window opened {title}\nINFO  lua.ui: place window expected {expected}\nINFO  lua.ui: place window closed\nINFO  lua.ui: places title clicked\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 1 1\nbefore-list-scroll\nafter-list-scroll\n"
+        "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places list s={scroll}\nINFO  lua.ui: place window opened {title}\nINFO  lua.ui: place window expected {expected}\nINFO  lua.ui: location tab people: 1280\nINFO  lua.ui: place window closed\nINFO  lua.ui: places title clicked\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 1 1\nbefore-list-scroll\nafter-list-scroll\n"
     )
 }
 
@@ -1479,6 +1479,14 @@ fn the_judgment_accepts_a_good_run_and_refuses_each_way_a_run_can_be_wrong() {
             captured(16, "A", "A")
                 .replace("INFO  lua.ui: places list opened 94 items 12 rows\n", ""),
             "no list",
+        ),
+        (
+            captured(16, "A", "A").replace("INFO  lua.ui: location tab people: 1280\n", ""),
+            "the Location tab never logged its people line",
+        ),
+        (
+            captured(16, "A", "A").replace("people: 1280", "people: many"),
+            "the people line has no count",
         ),
     ] {
         assert!(places_list::validate(&wrong).is_err(), "{why}");

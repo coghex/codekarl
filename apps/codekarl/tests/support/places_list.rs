@@ -1,8 +1,8 @@
 //! The places list's window witness (milestone 8, slices 6 and 7c): the shipped `scripts/ui/main.lua` run unchanged over Ireland 768, with
 //! observation wrappers installed before it and markers the native driver (`native/testing.m`, `ck_app_t_schedule_places_list`) polls.
 //!
-//! The driver clicks the `places` button, scrolls over the list, clicks a row, closes the place popup with Escape and the dropdown by its
-//! title. The wrapper publishes the real dropdown geometry so input follows the production point-based anchor.
+//! The driver clicks the `places` button, scrolls over the list, clicks a row (which opens the location panel, whose Location tab logs its
+//! people line), closes the panel with Escape and the dropdown by its title. The wrapper publishes the real dropdown geometry so input follows the production point-based anchor.
 //!
 //! **Markers are written one frame after the callback that made them returns**, so that the scene the callback edited has been
 //! published (and the router holds its regions) before the driver acts on the marker.
@@ -63,6 +63,12 @@ local observed = nil
 local last_s = 0
 local real_list_new = lists_library.new
 lists_library.new = function(spec)
+  if spec.on_select == nil then
+    -- The location panel's list (it only scrolls): not the places list this witness watches. Its first row is the Location tab's
+    -- people line, for the place the click opened.
+    log.info('location tab ' .. spec.items[1])
+    return real_list_new(spec)
+  end
   observed = real_list_new(spec)
   log.info('places list opened ' .. #spec.items .. ' items ' .. spec.rows .. ' rows')
   mark_once('places-ready')
@@ -185,6 +191,17 @@ pub(crate) fn validate(output: &str) -> Result<(), String> {
     if title.is_none() || title != wanted {
         return Err(format!(
             "the click opened {title:?} but the place under it was {wanted:?}"
+        ));
+    }
+    // The panel's Location tab was built from the clicked place's view of the real start: its people line is a count.
+    let people = next("lua.ui: location tab people: ")?;
+    let count = lines[people]
+        .rsplit_once("people: ")
+        .map(|(_, rest)| rest.trim());
+    if count.is_none_or(|count| count.parse::<u64>().is_err()) {
+        return Err(format!(
+            "the Location tab's people line has no count: {:?}",
+            lines[people]
         ));
     }
     next("lua.ui: place window closed")?;

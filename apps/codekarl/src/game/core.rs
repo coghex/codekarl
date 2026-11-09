@@ -4,7 +4,7 @@
 //! thread around it (see [`super::owner`]) only waits for the next control or the next tick and reads the time; tests drive
 //! the core with a fake time and never sleep.
 
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use ck_log::Level;
 use ck_sim::{Canonical, Clock, Date, Save, Scheduler, Simulation, Speed};
@@ -13,7 +13,12 @@ use super::{
     controls::Control,
     saves::{Identity, quicksave_path, write_atomically},
     slot::{PauseReason, SimSnapshot},
+    view::EconomyView,
 };
+
+/// The hour of day at which each day's economy systems run (the `economy.daily` cadence). The economy view is built after the
+/// tick of this hour, when all of the day's systems have run.
+pub(crate) const ECONOMY_HOUR: u8 = 12;
 
 /// What reaches the simulation owner over its control channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +71,9 @@ pub(crate) struct Rebuild<S, C> {
 /// What a state may tell the core after a tick: a terminal failure of the simulation, which is not a pause.
 type FailureProbe<S> = Box<dyn FnMut(&S) -> Option<String> + Send>;
 
+/// How the core builds the immutable economy view of a state (design §6).
+pub(crate) type ViewBuilder<S> = Box<dyn Fn(&S) -> EconomyView + Send>;
+
 /// The game: a [`Simulation`], its clock, why it is paused and the means to save and load it.
 pub(crate) struct Core<S, C> {
     simulation: Simulation<S, C>,
@@ -79,6 +87,10 @@ pub(crate) struct Core<S, C> {
     failure_probe: FailureProbe<S>,
     terminal_probe: Box<dyn FnMut() -> Option<String> + Send>,
     failed: bool,
+    views: Option<ViewBuilder<S>>,
+    /// The revision of `view`; `0` while the core has no view.
+    revision: u64,
+    view: Option<Arc<EconomyView>>,
 }
 
 impl<S, C> Core<S, C>
@@ -87,12 +99,26 @@ where
     C: Canonical + Send + 'static,
 {
     /// A game over `simulation`, paused at speed 1 with the reason `load`. It publishes its first snapshot at once.
+    #[cfg(test)]
     pub(crate) fn new(
         simulation: Simulation<S, C>,
         identity: Identity,
         saves: PathBuf,
         rebuild: Rebuild<S, C>,
         outputs: Outputs,
+    ) -> Self {
+        Self::new_with_views(simulation, identity, saves, rebuild, outputs, None)
+    }
+
+    /// Like [`new`](Self::new), with `views` building the economy view that every snapshot carries: the first (revision 1) is
+    /// in the first snapshot, the next after each day's systems and after a load.
+    pub(crate) fn new_with_views(
+        simulation: Simulation<S, C>,
+        identity: Identity,
+        saves: PathBuf,
+        rebuild: Rebuild<S, C>,
+        outputs: Outputs,
+        views: Option<ViewBuilder<S>>,
     ) -> Self {
         let mut core = Self {
             simulation,
@@ -106,9 +132,21 @@ where
             failure_probe: Box::new(|_| None),
             terminal_probe: Box::new(|| None),
             failed: false,
+            views,
+            revision: 0,
+            view: None,
         };
+        core.refresh_view();
         core.publish_if_changed();
         core
+    }
+
+    /// Builds the economy view of the state as it is now, under the next revision. A core without a view builder has none.
+    fn refresh_view(&mut self) {
+        if let Some(views) = &self.views {
+            self.revision += 1;
+            self.view = Some(Arc::new(views(self.simulation.state())));
+        }
     }
 
     /// Lets a test state end the simulation with a terminal failure after a tick.
@@ -141,6 +179,8 @@ where
             date: self.simulation.date().unwrap_or(LAST_DATE),
             speed: self.clock.speed(),
             paused: self.paused,
+            economy_revision: self.revision,
+            economy: self.view.clone(),
         }
     }
 
@@ -151,7 +191,7 @@ where
             .as_ref()
             .is_none_or(|published| snapshot.differs_from(published))
         {
-            self.published = Some(snapshot);
+            self.published = Some(snapshot.clone());
             // Output only, at `debug`: what the UI will be told, for the tests that watch a real run's log.
             self.log(Level::Debug, snapshot.to_string());
             (self.outputs.publish)(snapshot);
@@ -268,6 +308,12 @@ where
                     self.publish_if_changed();
                     return;
                 }
+                // The day's systems have all run: the UI's view of the economy is built from what they left.
+                if let Ok(date) = began
+                    && date.hour == ECONOMY_HOUR
+                {
+                    self.refresh_view();
+                }
                 if let Ok(date) = began
                     && date.hour == 0
                 {
@@ -338,6 +384,7 @@ where
                 self.simulation = simulation;
                 self.clock = Clock::new();
                 self.paused = Some(PauseReason::Load);
+                self.refresh_view();
                 let date = self.snapshot().date;
                 self.log(Level::Info, format!("loaded {} at {date}", path.display()));
             }

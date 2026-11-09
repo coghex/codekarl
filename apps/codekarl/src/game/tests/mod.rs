@@ -15,7 +15,7 @@ use ck_sim::{Cadence, Canonical, CanonicalError, Date, GameTime, Reader, Schedul
 use super::{
     GameCommand,
     controls::Control,
-    core::{Core, Flow, Message, Outputs, Rebuild},
+    core::{Core, Flow, Message, Outputs, Rebuild, ViewBuilder},
     saves::Identity,
     slot::SimSnapshot,
 };
@@ -28,6 +28,7 @@ mod presses;
 mod run;
 mod setup;
 mod storage;
+mod views;
 
 /// A state the test systems write: three counters folded from the random streams, and a flag a system may raise.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -191,15 +192,27 @@ fn locked<T>(shared: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl Harness {
     /// A game at the test start under `seed`.
     pub(super) fn new(seed: u64) -> Self {
-        Self::build(seed, start(), Faults::default(), identity("aa"), None)
+        Self::build(seed, start(), Faults::default(), identity("aa"), None, None)
+    }
+
+    /// A game at the test start whose core builds the economy view with `views`.
+    pub(super) fn with_views(seed: u64, views: ViewBuilder<World>) -> Self {
+        Self::build(
+            seed,
+            start(),
+            Faults::default(),
+            identity("aa"),
+            None,
+            Some(views),
+        )
     }
 
     pub(super) fn with_faults(seed: u64, faults: Faults) -> Self {
-        Self::build(seed, start(), faults, identity("aa"), None)
+        Self::build(seed, start(), faults, identity("aa"), None, None)
     }
 
     pub(super) fn starting_at(seed: u64, time: GameTime) -> Self {
-        Self::build(seed, time, Faults::default(), identity("aa"), None)
+        Self::build(seed, time, Faults::default(), identity("aa"), None, None)
     }
 
     /// A game with another identity, sharing the saves directory of `other`.
@@ -210,6 +223,7 @@ impl Harness {
             Faults::default(),
             identity,
             Some(other.saves.clone()),
+            None,
         )
     }
 
@@ -219,6 +233,7 @@ impl Harness {
         faults: Faults,
         identity: Identity,
         saves: Option<PathBuf>,
+        views: Option<ViewBuilder<World>>,
     ) -> Self {
         let dir = Dir::new();
         let saves = saves.unwrap_or_else(|| dir.0.join("saves"));
@@ -246,7 +261,7 @@ impl Harness {
             scheduler(faults),
             apply_nothing,
         );
-        let core = Core::new(
+        let core = Core::new_with_views(
             simulation,
             identity,
             saves.clone(),
@@ -256,6 +271,7 @@ impl Harness {
                 apply: apply_nothing,
             },
             outputs,
+            views,
         )
         .with_failure_probe(|world: &World| world.ended.clone());
         Self {
@@ -308,6 +324,11 @@ impl Harness {
     /// How many times the main thread would have been woken.
     pub(super) fn wake_count(&self) -> usize {
         locked(&self.wakes).len()
+    }
+
+    /// The snapshots published so far, in order.
+    pub(super) fn published(&self) -> Vec<SimSnapshot> {
+        locked(&self.wakes).clone()
     }
 
     pub(super) fn failures(&self) -> Vec<String> {
