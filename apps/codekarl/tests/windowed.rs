@@ -100,6 +100,7 @@ const SIM_INPUT_ENV: &str = "CK_WINDOWED_TEST_SIM_INPUT";
 const KEY_FILES_ENV: &str = "CK_WINDOWED_TEST_KEY_FILES";
 const UI_POINTER_ENV: &str = "CK_WINDOWED_TEST_UI_POINTER";
 const TIME_BAR_ENV: &str = "CK_WINDOWED_TEST_TIME_BAR";
+const CHECKER_PRESENTATION_ENV: &str = "CK_WINDOWED_TEST_CHECKER_PRESENTATION";
 const MAP_CAMERA_ENV: &str = "CK_MAP_TEST_CAMERA_OBSERVATION";
 const REAL_FOCUS_GATE_CASES: [&str; 1] =
     ["synthetic_focus_loss_without_worker_opt_in_keeps_the_pause"];
@@ -497,8 +498,30 @@ impl Fixture {
     /// The `ui` script `body` after the helpers and the declining callback, with the shutdown logs. `HOLD` names the
     /// file [`release`](Self::release) writes.
     fn windowed(&self, extra_config: &str, body: &str) -> PathBuf {
+        self.windowed_inner(extra_config, body, None)
+    }
+
+    /// A windowed test with a test-support request marker available to its UI script.
+    fn windowed_with_presentation_request(
+        &self,
+        extra_config: &str,
+        body: &str,
+        request: &Path,
+    ) -> PathBuf {
+        self.windowed_inner(extra_config, body, Some(request))
+    }
+
+    fn windowed_inner(
+        &self,
+        extra_config: &str,
+        body: &str,
+        presentation_request: Option<&Path>,
+    ) -> PathBuf {
+        let presentation_request = presentation_request.map_or_else(String::new, |path| {
+            format!("local PRESENTATION_REQUEST = {}\n", lua_path(path))
+        });
         let ui = format!(
-            "{LUA_HELPERS}\nlocal HOLD = {}\n{DECLINE}\n{body}\nfunction shutdown()\n  log.info('ui shutdown')\n  touch({})\nend\n",
+            "{LUA_HELPERS}\nlocal HOLD = {}\n{presentation_request}{DECLINE}\n{body}\nfunction shutdown()\n  log.info('ui shutdown')\n  touch({})\nend\n",
             lua_path(&self.path("hold")),
             lua_path(&self.path("ui_shutdown"))
         );
@@ -551,6 +574,15 @@ impl Worker {
 
 /// Starts a worker (in the current mode) running the application with `args` under the supervisor.
 fn start(args: &[&OsStr]) -> Worker {
+    start_inner(args, None)
+}
+
+/// Starts a worker that asks the Metal test observer to write a settled checker-frame marker after the UI fixture requests it.
+fn start_with_checker_presentation(args: &[&OsStr], request: &Path) -> Worker {
+    start_inner(args, Some(request))
+}
+
+fn start_inner(args: &[&OsStr], checker_presentation: Option<&Path>) -> Worker {
     let scratch = Scratch::new();
     let report = scratch.0.join("report");
     let exe = env::current_exe().expect("this executable's path");
@@ -580,6 +612,9 @@ fn start(args: &[&OsStr]) -> Worker {
     }
     if TIME_BAR_CASE.load(Ordering::SeqCst) {
         command.env(TIME_BAR_ENV, &scratch.0);
+    }
+    if let Some(request) = checker_presentation {
+        command.env(CHECKER_PRESENTATION_ENV, request);
     }
     if SIM_INPUT_CASE.load(Ordering::SeqCst) {
         // The directory the case writes its markers in: the worker's own scratch directory.
@@ -2431,6 +2466,7 @@ end
 /// A quad of a file that does not exist keeps drawing: its status becomes `failed` with the error, and the run ends normally.
 const FAILED_INITIAL_LOAD: &str = r"
 local good, missing
+local checker_presentation_requested = false
 local seen = {}
 function startup()
   good = texture.load('demo-quad.png')
@@ -2446,6 +2482,11 @@ function startup()
     if texture.status(good).state == 'ready' and not seen.ready then
       seen.ready = true
       log.info('ready: good')
+    end
+    if seen.failed and seen.ready and not checker_presentation_requested then
+      checker_presentation_requested = true
+      log.info('checker presentation requested')
+      touch(PRESENTATION_REQUEST)
     end
     close_when(seen.failed and seen.ready)
   end)
@@ -2620,9 +2661,41 @@ fn pending_textures_become_ready_and_the_run_reconciles_to_zero() {
 }
 
 fn a_missing_file_stays_a_failed_checker_quad_and_the_run_ends_normally() {
-    let seen = lifecycle(FAILED_INITIAL_LOAD);
+    let fixture = Fixture::new();
+    let request = fixture.path("checker-presentation.request");
+    let settled = request.with_extension("settled");
+    let config = failed_initial_load_fixture(&fixture, &request);
+    let args = [OsStr::new("--config"), config.as_os_str()];
+    let mut worker = start_with_checker_presentation(&args, &request);
+    wait_for(
+        &mut worker,
+        "window: window opened",
+        Duration::from_secs(30),
+    );
+    wait_for_drops(&worker);
+    wait_for(&mut worker, "failed: ", Duration::from_secs(30));
+    wait_for(&mut worker, "ready: good", Duration::from_secs(30));
+    wait_for_marker(&settled, Duration::from_secs(30));
+    fixture.release();
+    let seen = finish(worker);
     assert!(seen.stdout.contains("failed: "), "{}", seen.stdout);
     assert!(seen.stdout.contains("no-such-tile.png"), "{}", seen.stdout);
+    assert!(
+        fs::read_to_string(&settled).is_ok_and(|text| text.starts_with("frame=")),
+        "the post-ready checker-frame presentation witness was not recorded"
+    );
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+    assert_in_order(
+        &seen.stdout,
+        &[
+            "window: window opened",
+            "failed: ",
+            "ready: good",
+            "checker presentation requested",
+            "window: window closed",
+            "runtime: shutdown complete",
+        ],
+    );
     let record = final_record(&seen.stdout);
     // One texture was created (the good one); the missing file's quad drew the checker, the application-level evidence of
     // the pending appearance.
@@ -2632,6 +2705,29 @@ fn a_missing_file_stays_a_failed_checker_quad_and_the_run_ends_normally() {
         "{record}"
     );
     assert_reconciled(&record);
+}
+
+/// Builds the same lifecycle fixture used by the window case, including the helpers its frame callback calls.
+fn failed_initial_load_fixture(fixture: &Fixture, request: &Path) -> PathBuf {
+    fixture.windowed_with_presentation_request(
+        &format!("{}render = \"debug\"\n", lifecycle_config()),
+        &format!("{LIFECYCLE_HELPERS}\n{FAILED_INITIAL_LOAD}"),
+        request,
+    )
+}
+
+fn a_missing_file_fixture_loads_windowlessly_with_its_lifecycle_helpers() {
+    let fixture = Fixture::new();
+    let request = fixture.path("checker-presentation.request");
+    let config = failed_initial_load_fixture(&fixture, &request);
+    let seen = run(&config, &["--headless"]);
+    assert_eq!(seen.code, Some(0), "{}", seen.stdout);
+    assert!(
+        seen.stdout.contains("window.open ignored: headless run"),
+        "{}",
+        seen.stdout
+    );
+    assert!(!seen.stdout.contains("lua.ui: failed:"), "{}", seen.stdout);
 }
 
 fn moving_a_quad_for_many_updates_uploads_nothing_but_a_reload_does() {
@@ -2954,6 +3050,7 @@ fn cases() -> Vec<(&'static str, fn())> {
         case!(the_shipped_configuration_runs_headless_with_the_window_call_ignored),
         case!(the_demonstration_configurations_load_and_run_headless),
         case!(pending_textures_become_ready_and_the_run_reconciles_to_zero),
+        case!(a_missing_file_fixture_loads_windowlessly_with_its_lifecycle_helpers),
         case!(a_missing_file_stays_a_failed_checker_quad_and_the_run_ends_normally),
         case!(moving_a_quad_for_many_updates_uploads_nothing_but_a_reload_does),
         case!(destroying_the_quad_and_releasing_the_texture_retires_it_before_the_run_ends),

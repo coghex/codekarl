@@ -141,6 +141,22 @@ fn codekarls_sources_never_name_the_hidden_constructor_or_the_hooks() {
 }
 
 #[test]
+fn checker_presentation_observer_is_test_support_only() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/codekarl/src/native.rs");
+    let source = fs::read_to_string(root).expect("the native app source");
+    assert!(
+        source.contains("#[cfg(feature = \"test-support\")]\n    fn observe_checker_presentation"),
+        "the app's settled-checker observer is compiled only for test-support"
+    );
+    assert!(
+        source.contains(
+            "#[cfg(feature = \"test-support\")]\n        self.observe_checker_presentation();"
+        ),
+        "the render-report call to the observer is compiled only for test-support"
+    );
+}
+
+#[test]
 fn ledger_and_presenter_never_wait_for_native_completion() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     for file in [

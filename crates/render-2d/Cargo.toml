@@ -8,6 +8,8 @@ build = "build.rs"
 
 [features]
 default = []
+# Test-only presenter observations used by the app's real-window tests.
+test-support = ["ck-gpu-metal?/test-support"]
 # The Metal backend (`MetalBackend`): macOS only, and it needs the full Xcode toolchain. Without it the crate has
 # no GPU dependency.
 metal = ["dep:ck-gpu-metal", "dep:ck-window-cocoa"]

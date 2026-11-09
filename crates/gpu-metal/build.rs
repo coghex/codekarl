@@ -199,6 +199,12 @@ fn build_archive(
     path
 }
 
+fn add_test_support_define(common: &mut Vec<&OsStr>) {
+    if env::var_os("CARGO_FEATURE_TEST_SUPPORT").is_some() {
+        common.push("-DCK_TEST_SUPPORT".as_ref());
+    }
+}
+
 fn main() {
     assert_eq!(
         env::var("CARGO_CFG_TARGET_OS").as_deref(),
@@ -245,7 +251,7 @@ fn main() {
     // One argument vector for every real compile and analysis, so they cannot drift apart: the SDK,
     // architecture, S1's deployment target, ARC, language level and warnings. `-c` and `-o` differ
     // (`-c` is rejected next to `--analyze` under `-Werror`), so they follow the source.
-    let common: Vec<&OsStr> = vec![
+    let mut common: Vec<&OsStr> = vec![
         "--sdk".as_ref(),
         "macosx".as_ref(),
         "clang".as_ref(),
@@ -260,6 +266,7 @@ fn main() {
         "-I".as_ref(),
         "native".as_ref(),
     ];
+    add_test_support_define(&mut common);
     let analyzing = analyzer_requested();
     // The library: the probe's bridge and the presenter. The test support is a separate archive that only
     // the integration tests link (see below), so the library carries none of it.

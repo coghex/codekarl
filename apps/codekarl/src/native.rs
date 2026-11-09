@@ -19,6 +19,9 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+#[cfg(feature = "test-support")]
+use std::{fs, path::PathBuf};
+
 use std::time::Duration;
 
 use ck_gpu_metal::{BindlessLimits, LedgerLimits, MetalContext, TextureLimits};
@@ -54,6 +57,11 @@ struct Reporting {
     metrics: Option<Arc<MetricsHub>>,
     /// The `metrics` record was written.
     reported: bool,
+    /// Test-only request for an observed checker frame whose drawable handlers have settled.
+    #[cfg(feature = "test-support")]
+    checker_presentation_request: Option<PathBuf>,
+    #[cfg(feature = "test-support")]
+    checker_presentation_baseline: Option<u64>,
     /// `request_stop` was called: from then on the first-frame record never waits for the logger (the teardown's late reports).
     stopping: bool,
     /// The run's resource service, whose loader counters the record reads.
@@ -119,6 +127,42 @@ impl Reporting {
             format_args!("{}", summary(&figures)),
         );
     }
+
+    #[cfg(feature = "test-support")]
+    fn observe_checker_presentation(&mut self) {
+        let Some(request) = self.checker_presentation_request.clone() else {
+            return;
+        };
+        if !request.exists() {
+            return;
+        }
+        let Some(baseline) = self.checker_presentation_baseline else {
+            // The UI fixture has observed both texture outcomes. Force a new frame from this baseline so the witness
+            // belongs to a checker frame requested after those outcomes, even if an older frame settled concurrently.
+            let baseline = self.inner.scene_stats().map_or(0, |stats| stats.frames);
+            self.checker_presentation_baseline = Some(baseline);
+            self.inner.request_redraw();
+            return;
+        };
+        let Some(frame) = self.inner.settled_checker_frame() else {
+            return;
+        };
+        if frame <= baseline {
+            return;
+        }
+        let result = fs::write(
+            request.with_extension("settled"),
+            format!("frame={frame}\n"),
+        );
+        self.checker_presentation_request = None;
+        if let Err(error) = result {
+            let _ = crate::lifecycle::progress_record(
+                self.stopping,
+                Level::Error,
+                format_args!("test-support: checker presentation marker failed: {error}"),
+            );
+        }
+    }
 }
 
 impl Gpu2d for Reporting {
@@ -168,6 +212,8 @@ impl Gpu2d for Reporting {
                 format_args!("first frame drawn, generation {generation}"),
             );
         }
+        #[cfg(feature = "test-support")]
+        self.observe_checker_presentation();
         report
     }
 
@@ -306,6 +352,13 @@ pub(crate) fn run_closure_with(
                 metrics: env.metrics.clone(),
                 reported: false,
                 stopping: false,
+                #[cfg(feature = "test-support")]
+                checker_presentation_request: std::env::var_os(
+                    "CK_WINDOWED_TEST_CHECKER_PRESENTATION",
+                )
+                .map(PathBuf::from),
+                #[cfg(feature = "test-support")]
+                checker_presentation_baseline: None,
                 resources: service_for_metrics,
             },
             Arc::clone(&env.bridge),

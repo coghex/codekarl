@@ -903,6 +903,18 @@ impl MetalBackend {
         self.presenter.as_ref().map(MetalPresenter::stats)
     }
 
+    /// The latest committed checker frame whose acquired drawables all have completed their presented-handler tokens.
+    ///
+    /// This is a bounded test observer signal; it does not replace the presenter's shutdown proof.
+    #[doc(hidden)]
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn settled_checker_frame(&self) -> Option<u64> {
+        let presenter = self.presenter.as_ref()?;
+        let stats = presenter.stats();
+        (stats.last.checker > 0 && presenter.presented_handlers_settled()).then_some(stats.frames)
+    }
+
     /// The measurement windows of the presenter (milestone 5, issue 10b-1): these pass `MetalPresenter`'s own through, so the
     /// application defines one window and sends it to the presenter and the window loop. Each returns `None` before the presenter
     /// is started (nothing is held back or retried here: the caller asks again once the window is open).

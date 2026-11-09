@@ -7,7 +7,7 @@ publish.workspace = true
 
 [features]
 default = []
-test-support = []
+test-support = ["ck-gpu-metal?/test-support", "ck-render-2d/test-support"]
 metal = ["dep:ck-gpu-metal", "dep:ck-window-cocoa", "ck-render-2d/metal"]
 # GLFW and Vulkan (`glfw-vulkan`). Independent of `metal`: both may be on.
 vulkan = ["dep:ck-gpu-vulkan", "dep:ck-window-glfw", "ck-render-2d/vulkan"]

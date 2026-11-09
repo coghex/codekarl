@@ -733,6 +733,13 @@ impl Observer {
         self.get(3)
     }
 
+    /// Drawable presented-handler tokens that have been marked done.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn presented_handlers_settled(&self) -> i64 {
+        self.get(47)
+    }
+
     /// Completion handlers that ran.
     #[must_use]
     pub fn completion_handlers_run(&self) -> i64 {
@@ -1267,6 +1274,8 @@ impl TestHooks {
 /// releases nothing the thread owns.
 pub struct MetalPresenter {
     shared: Arc<Shared>,
+    #[cfg(feature = "test-support")]
+    observer: Arc<Observer>,
     thread: Option<JoinHandle<()>>,
     ended: Option<CleanupResult>,
 }
@@ -1551,6 +1560,8 @@ impl MetalPresenter {
         match spawned {
             Ok(thread) => Ok(Self {
                 shared,
+                #[cfg(feature = "test-support")]
+                observer,
                 thread: Some(thread),
                 ended: None,
             }),
@@ -1727,6 +1738,16 @@ impl MetalPresenter {
             .drawn_any
             .load(Ordering::Acquire)
             .then(|| self.shared.drawn_generation.load(Ordering::Acquire))
+    }
+
+    /// Whether every drawable acquired so far has a presented-handler token marked done.
+    ///
+    /// This is an observation for callers that need to wait for presentation callbacks before requesting stop. It does not
+    /// replace teardown's token proof, whose bounded check remains authoritative.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn presented_handlers_settled(&self) -> bool {
+        self.observer.drawables_acquired() == self.observer.presented_handlers_settled()
     }
 
     /// The next report, if any.
@@ -3728,6 +3749,8 @@ mod tests {
         });
         MetalPresenter {
             shared,
+            #[cfg(feature = "test-support")]
+            observer: Arc::new(Observer::new()),
             thread: Some(thread),
             ended: None,
         }
