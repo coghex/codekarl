@@ -285,7 +285,7 @@ pub(crate) fn register_economy_callback(scheduler: &mut Scheduler<GameState>, ru
             "economy.daily",
             Cadence::Daily { hour: ECONOMY_HOUR },
             move |state, tick| {
-                ck_economy::run_monthly_production(&rules, &mut state.economy, tick.date())
+                ck_economy::run_daily_economy(&rules, &mut state.economy, tick.date())
                     .map(|_| ())
                     .map_err(io::Error::other)
                     .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)

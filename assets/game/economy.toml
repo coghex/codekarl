@@ -200,7 +200,7 @@ weight_g=450
 volume_ml=500
 hunger_centi=0
 necessities_centi=0
-niceties_centi=0
+niceties_centi=500
 luxuries_centi=0
 base_price=150
 pop_limit_milli=2000
@@ -276,6 +276,13 @@ dependent_deaths_pm_year=75
 necessities_expectation_pm=1000
 niceties_expectation_pm=500
 luxuries_expectation_pm=100
+
+# Initial necessities, niceties and luxuries, in that order and in per-mille.
+[starting_needs_pm]
+peasant=[1000,0,0]
+labourer=[1000,0,0]
+monk=[1000,0,0]
+
 [[buildings]]
 id="farm"
 workers_per_level=10
@@ -345,6 +352,16 @@ births_literacy=[[0,1000],[1000,1000]]
 deaths_hunger=[[0,100000],[300,5000],[500,1200],[800,1000]]
 deaths_comfort=[[0,1000],[1000,900]]
 deaths_crowding=[[0,900],[1000,1000],[1500,1300],[2000,1800]]
+intake_food_days=[[30,500],[120,800],[240,1000]]
+
+[ticking_rates_million.herbs]
+monk=6000
+labourer=2000
+peasant=1000
+[ticking_rates_million.beeswax]
+monk=4000
+labourer=500
+peasant=250
 [diet_profiles.peasant]
 oats=400
 barley=150
