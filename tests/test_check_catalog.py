@@ -2135,6 +2135,18 @@ GUARDS: tuple[Guard, ...] = (
             "apps/codekarl/src/game/",
         ),
     ),
+    # CK-225: the app's Ireland economy-start integration test reads the shared rules and scenario assets.
+    Guard(
+        "apps/codekarl/src/game/economy.rs",
+        "rust.app",
+        ("assets/game/economy.toml", "assets/scenarios/ireland-768/"),
+    ),
+    # CK-225: economy's shipped-data validation tests load both rules and Ireland's authored starts.
+    Guard(
+        "crates/economy/src/lib.rs",
+        "economy.core",
+        ("assets/game/economy.toml", "assets/scenarios/ireland-768/economy.toml"),
+    ),
     Guard(
         "apps/codekarl/src/readout_tests.rs",
         "rust.app",

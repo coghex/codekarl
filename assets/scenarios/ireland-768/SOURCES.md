@@ -281,3 +281,22 @@ Each row is a judgement that later research can correct. Each place's own note (
 | `carraig_aille` | Stone forts occupied 8th to 9th century; position checked (R 6529 4069) |
 | `lagore` | Kings of Southern Brega; lake drained in the 19th century. Position estimated from an excavation report placing the crannog about 1 km north-east of 53.5119, -6.5306; a Wikipedia-derived point (53.5081, -6.5064) disagrees by about 1.5 km |
 | `moynagh` | Crannog built in the first half of the 7th century, occupied to the end of the 8th (palisade felled 748); position from the excavation record; name is the townland's (Maigh nEach) |
+
+## Economy starting-data guesses (CK-225)
+
+The owner-signed per-place culture and peasant table is recorded in `.pipeline/coordination/m9-design/data/places-r2.md` (owner sign-off relayed in #codekarl
+msgid `cqarvdb99b8twq87h8h243ybri`; signed copy SHA-256
+`8e6683d25872305f4d275415a5c47ae08a674c8c8f57e98a48e86c7d37597e98`). The authored values live in
+`assets/scenarios/ireland-768/economy.toml`.
+
+| Guess | Authored choice | Status |
+|---|---|---|
+| `birr` regional culture | Mumu | Guessed for the Mumu–Mide frontier; owner-approved in the signed table. |
+| `killeany` regional culture | Connachta | Guessed for Aran; owner-approved in the signed table. |
+| `cahercommaun` regional culture | Connachta | Guessed for the Burren; owner-approved in the signed table. |
+| `clonmacnoise` peasant cultures | 50% Mide and Brega, 50% Connachta | The border monastery's mixed share is a guess; owner-approved in the signed table. Monks and labourers use Mide and Brega. |
+| `inisfallen` peasant population | 0, with farm level 0 | Island-house guess; owner-approved in the signed table. |
+| Pagan pockets | `cahercommaun` 20%, `killala` 15%, `cong` 15%, `tory` 10% of peasants | Design-invented remote pockets and shares; owner-approved in the signed table. |
+
+Skellig Michael's peasant-less opening is supported by the sourced community of about twelve monks and an abbot. Inishmurray keeps
+peasants. The signed table resolves the Osraige and Dál Riata culture mappings to Mumu and Ulaid respectively.

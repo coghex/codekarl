@@ -15,6 +15,7 @@ use super::{
     GameCommand, GameState, apply,
     controls::SimControls,
     core::{Core, Outputs, Rebuild},
+    economy,
     gameplay::{self, Gameplay, GameplayWiring},
     hashes,
     owner::{SimOwner, channel},
@@ -93,6 +94,12 @@ pub(crate) fn prepare(
         .iter()
         .find(|vm| vm.name == GAMEPLAY_VM)
         .map(|vm| vm.entry.as_path());
+    let asset_root = directory.parent().and_then(Path::parent).ok_or_else(|| {
+        format!(
+            "[game] scenario directory {} is not under assets/scenarios",
+            directory.display()
+        )
+    })?;
     let identity = Identity {
         build: build_id(),
         scenario: scenario.id.clone(),
@@ -102,6 +109,7 @@ pub(crate) fn prepare(
             .and_then(|map| hashes::map_hash(&map))
             .map_err(|error| format!("[game] {error}"))?,
         scripts_hash: hashes::scripts_hash(gameplay_entry)?,
+        rules_hash: hashes::rules_hash(asset_root)?,
         start,
     };
     let gameplay_runtime = request
@@ -126,7 +134,20 @@ pub(crate) fn prepare(
             None => entropy()?,
         };
         log(Level::Info, format!("new game, seed {seed:016x}"));
-        Simulation::new(start_time, seed, GameState, scheduler(), apply)
+        let (economy_state, load_report) =
+            economy::starting_economy(asset_root, directory, &scenario)?;
+        for line in load_report {
+            log(Level::Info, format!("economy start: {line}"));
+        }
+        Simulation::new(
+            start_time,
+            seed,
+            GameState {
+                economy: economy_state,
+            },
+            scheduler(),
+            apply,
+        )
     };
     if let Some(gameplay) = &gameplay_runtime {
         gameplay.set_seed(simulation.seed());

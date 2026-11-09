@@ -60,6 +60,7 @@ RUST_STEPS = (
     "input.core",
     "map.core",
     "sim.core",
+    "economy.core",
     "render2d.core",
     "resources.core",
     "glfw.core",
@@ -385,6 +386,15 @@ class Levels(CheckFixture):
                 ]
             ],
         )
+        self.assertEqual(
+            by_name["economy.core"].commands(),
+            [
+                ["cargo", "test", "-p", "ck-economy", *flags],
+                ["cargo", "test", "-p", "ck-economy", "--doc", *flags],
+            ],
+        )
+        self.assertEqual(by_name["economy.core"].paths, ("crates/economy/",))
+        self.assertEqual(by_name["economy.core"].needs, "plain")
         self.assertEqual(
             by_name["rust.app"].commands(),
             [

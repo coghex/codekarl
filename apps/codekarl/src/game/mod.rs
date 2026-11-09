@@ -18,6 +18,7 @@ use ck_sim::{Canonical, CanonicalError, Reader};
 
 pub(crate) mod controls;
 pub(crate) mod core;
+pub(crate) mod economy;
 pub(crate) mod gameplay;
 pub(crate) mod hashes;
 pub(crate) mod owner;
@@ -27,17 +28,22 @@ pub(crate) mod slot;
 #[cfg(test)]
 pub(crate) mod tests;
 
-/// The simulation's state. In milestone 7 it holds nothing: locations are static, and only their hash is saved.
+/// The simulation state. M9 slice 2 stores its deterministic starting economy.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct GameState;
+pub(crate) struct GameState {
+    /// Authored population, buildings, stores, employment and prices.
+    pub(crate) economy: ck_economy::EconomyState,
+}
 
 impl Canonical for GameState {
-    fn encode(&self, _out: &mut Vec<u8>) -> Result<(), CanonicalError> {
-        Ok(())
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
+        self.economy.encode(out)
     }
 
-    fn decode(_input: &mut Reader<'_>) -> Result<Self, CanonicalError> {
-        Ok(Self)
+    fn decode(input: &mut Reader<'_>) -> Result<Self, CanonicalError> {
+        Ok(Self {
+            economy: ck_economy::EconomyState::decode(input)?,
+        })
     }
 }
 

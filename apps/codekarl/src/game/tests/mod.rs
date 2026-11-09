@@ -166,6 +166,7 @@ pub(super) fn identity(scenario_hash: &str) -> Identity {
         scenario_hash: scenario_hash.to_owned(),
         map_hash: "bb".to_owned(),
         scripts_hash: "cc".to_owned(),
+        rules_hash: "dd".to_owned(),
         start: date(768, 1, 1, 0),
     }
 }

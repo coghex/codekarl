@@ -32,6 +32,8 @@ pub(crate) struct Identity {
     pub(crate) map_hash: String,
     /// The gameplay scripts content hash.
     pub(crate) scripts_hash: String,
+    /// Shared economy and terrain rules hash.
+    pub(crate) rules_hash: String,
     /// The scenario's start date.
     pub(crate) start: Date,
 }
@@ -45,6 +47,7 @@ impl Identity {
             scenario_hash: self.scenario_hash.clone(),
             map_hash: self.map_hash.clone(),
             scripts_hash: self.scripts_hash.clone(),
+            rules_hash: self.rules_hash.clone(),
             start: self.start,
             seed,
         }
@@ -57,6 +60,7 @@ impl Identity {
             scenario_hash: self.scenario_hash.clone(),
             map_hash: self.map_hash.clone(),
             scripts_hash: self.scripts_hash.clone(),
+            rules_hash: self.rules_hash.clone(),
         }
     }
 }
