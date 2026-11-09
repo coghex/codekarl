@@ -59,7 +59,14 @@ enum {
     CK_OBS_MAP_PALETTES_CREATED = 44,   /* admitted map generations with a non-empty resident overlay palette (test) */
     CK_OBS_MAP_PALETTES_ALIVE = 45,     /* resident and retired map palettes still held by the core (test) */
     CK_OBS_MAP_PALETTES_RELEASED = 46,  /* retired map palettes released after their completion proof (test) */
+#ifdef CK_TEST_SUPPORT
+    CK_OBS_PRESENTED_SETTLED = 47,     /* presented-handler tokens marked done (test-support only) */
+#define CK_SETTLED_ARG(value) , value
+    CK_OBS_COUNT = 48
+#else
+#define CK_SETTLED_ARG(value)
     CK_OBS_COUNT = 47
+#endif
 };
 
 /* The entry points a test may pause in (see ck_pr_set_check_pause). */
@@ -1260,8 +1267,8 @@ int ck_pr_instance_buffer_free(CKPrCore *handle) {
  * fault, lingers: a late
  * callback must still touch nothing but its token and the observer, however long after the presenter's
  * end it returns. */
-static void ck_set_token(CKPrTokenState *token, CKPrObserverState *observer, int run_counter,
-                         int32_t never, int32_t before_ms, int32_t linger_ms, NSString *error,
+static void ck_set_token(CKPrTokenState *token, CKPrObserverState *observer, int run_counter
+                         CK_SETTLED_ARG(int settled_counter), int32_t never, int32_t before_ms, int32_t linger_ms, NSString *error,
                          CKMcToken *ledger_token) {
     ck_obs_add(observer, run_counter, 1);
     if (before_ms > 0) {
@@ -1274,6 +1281,11 @@ static void ck_set_token(CKPrTokenState *token, CKPrObserverState *observer, int
         /* The ledger's token first, so it is never later than this core's own token; nothing touches it after. */
         ck_mc_command_token_complete(ledger_token, error.UTF8String);
         atomic_store(&token->done, true);
+#ifdef CK_TEST_SUPPORT
+        if (settled_counter >= 0) {
+            ck_obs_add(observer, settled_counter, 1);
+        }
+#endif
     }
     if (linger_ms > 0) {
         usleep((useconds_t)linger_ms * 1000);
@@ -1448,7 +1460,8 @@ CKPrFrame ck_pr_frame_quad(CKPrCore *handle, const float rgb[3], uint32_t width,
         const _Atomic int32_t *completion_gate = faults->completion_gate;
         [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
             atomic_store(&drawableToken->timingA, ck_seconds_ns(presented.presentedTime));
-            ck_set_token(drawableToken, observer, CK_OBS_PRESENTED_RUN, never_drawable, 0, delay, nil, NULL);
+            ck_set_token(drawableToken, observer, CK_OBS_PRESENTED_RUN CK_SETTLED_ARG(CK_OBS_PRESENTED_SETTLED),
+                         never_drawable, 0, delay, nil, NULL);
         }];
         [core.drawableTokens addObject:drawableToken];
         ck_obs_max(observer, CK_OBS_TOKENS_MAX, (int64_t)core.drawableTokens.count);
@@ -1531,7 +1544,7 @@ CKPrFrame ck_pr_frame_quad(CKPrCore *handle, const float rgb[3], uint32_t width,
                     if (!never_command) {
                         ck_obs_add(observer, CK_OBS_IN_FLIGHT_NOW, -1);
                     }
-                    ck_set_token(commandToken, observer, CK_OBS_COMPLETED_RUN, never_command,
+                    ck_set_token(commandToken, observer, CK_OBS_COMPLETED_RUN CK_SETTLED_ARG(-1), never_command,
                                  completion_delay, delay, error, ledgerToken);
                 }];
                 /* Counted before the commit so the completion handler cannot run first: command buffers
