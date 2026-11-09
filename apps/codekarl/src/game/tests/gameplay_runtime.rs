@@ -149,8 +149,8 @@ impl RuntimeHarness {
                 let mut scheduler = Scheduler::<GameState>::new();
                 if let Some(trace) = &trace {
                     for (name, cadence, label) in [
-                        ("test.monthly", Cadence::Monthly, "rust_monthly"),
-                        ("test.daily", Cadence::Daily, "rust_daily"),
+                        ("test.monthly", Cadence::Daily { hour: 12 }, "rust_monthly"),
+                        ("test.daily", Cadence::Daily { hour: 12 }, "rust_daily"),
                         ("test.hourly", Cadence::Hourly, "rust_hourly"),
                     ] {
                         let trace = Arc::clone(trace);
@@ -231,6 +231,19 @@ impl RuntimeHarness {
         );
     }
 
+    fn run_through(&mut self, target: GameTime) {
+        if self.core.snapshot().paused.is_some() {
+            self.resume();
+        }
+        while self.core.time() <= target && self.failures().is_empty() {
+            self.step();
+        }
+        assert!(
+            self.core.time() > target,
+            "the core ran through the requested tick"
+        );
+    }
+
     fn failures(&self) -> Vec<String> {
         locked(&self.failures).clone()
     }
@@ -288,25 +301,22 @@ sim.on_day(function(date) return run('day', date) end)
 }
 
 #[test]
-fn quickload_restarts_the_per_tick_stream_and_replays_the_saved_hour_zero_draws() {
+fn quickload_restarts_the_per_tick_stream_and_replays_the_saved_noon_draws() {
     let mut run = RuntimeHarness::new(
         gameplay_source(),
         BOUND,
         host_settings("metal", 640, "info"),
         None,
     );
+    let eleven = GameTime::from_hours(start().hours() + 11);
+    run.run_until(eleven);
     run.core.dispatch(
         crate::game::core::Message::Control(Control::Quicksave),
         run.now,
     );
-    run.resume();
-    run.step();
+    run.run_through(GameTime::from_hours(start().hours() + 12));
     let first = locked(&run.results).clone();
-    assert_eq!(
-        first.len(),
-        2,
-        "monthly and daily callbacks ran at hour zero"
-    );
+    assert_eq!(first.len(), 2, "monthly and daily callbacks ran at noon");
     assert!(first.iter().any(|(name, _)| name == "on_month"));
     assert!(first.iter().any(|(name, _)| name == "on_day"));
 
@@ -318,10 +328,10 @@ fn quickload_restarts_the_per_tick_stream_and_replays_the_saved_hour_zero_draws(
         crate::game::core::Message::Control(Control::Quickload),
         run.now,
     );
-    assert_eq!(run.core.time(), start());
+    assert_eq!(run.core.time(), eleven);
     locked(&run.results).clear();
     run.resume();
-    run.step();
+    run.run_through(GameTime::from_hours(start().hours() + 12));
     assert_eq!(
         *locked(&run.results),
         first,
@@ -339,18 +349,15 @@ fn quickload_uses_the_saved_seed_when_the_new_run_has_a_different_seed() {
         None,
         42,
     );
+    let noon = GameTime::from_hours(start().hours() + 12);
+    seed_a.run_until(noon);
     seed_a.core.dispatch(
         crate::game::core::Message::Control(Control::Quicksave),
         seed_a.now,
     );
-    seed_a.resume();
-    seed_a.step();
+    seed_a.run_through(GameTime::from_hours(start().hours() + 12));
     let expected_draws = locked(&seed_a.results).clone();
-    assert_eq!(
-        expected_draws.len(),
-        2,
-        "seed A ran both hour-zero callbacks"
-    );
+    assert_eq!(expected_draws.len(), 2, "seed A ran both noon callbacks");
     let save = std::fs::read(seed_a.dir.0.join("saves/quicksave.cksave"))
         .expect("the seed-A quicksave exists");
     seed_a.stop();
@@ -370,7 +377,7 @@ fn quickload_uses_the_saved_seed_when_the_new_run_has_a_different_seed() {
         seed_b.now,
     );
     seed_b.resume();
-    seed_b.step();
+    seed_b.run_through(GameTime::from_hours(start().hours() + 12));
     assert_eq!(
         *locked(&seed_b.results),
         expected_draws,
@@ -380,7 +387,7 @@ fn quickload_uses_the_saved_seed_when_the_new_run_has_a_different_seed() {
 }
 
 #[test]
-fn gameplay_callbacks_follow_all_rust_cadences_on_the_first_hour_of_a_month() {
+fn gameplay_callbacks_follow_all_rust_cadences_at_noon_on_the_first_of_a_month() {
     let trace = Arc::new(Mutex::new(Vec::new()));
     let source = r"
 sim.on_month(function() test_order.mark('lua_month') end)
@@ -393,13 +400,15 @@ sim.on_day(function() test_order.mark('lua_day') end)
         Some(&trace),
     );
     run.resume();
-    run.step();
+    run.run_through(GameTime::from_hours(start().hours() + 12));
+    let trace = locked(&trace);
+    assert_eq!(&trace[..12], ["rust_hourly"; 12]);
     assert_eq!(
-        *locked(&trace),
+        &trace[12..],
         [
             "rust_monthly",
-            "lua_month",
             "rust_daily",
+            "lua_month",
             "lua_day",
             "rust_hourly"
         ]
@@ -414,12 +423,12 @@ fn gameplay_error_pauses_at_the_same_tick_and_logs_its_traceback_in_two_runs() {
     for _ in 0..2 {
         let mut run = RuntimeHarness::new(source, BOUND, host_settings("metal", 640, "info"), None);
         run.resume();
-        run.step();
+        run.run_through(GameTime::from_hours(start().hours() + 12));
         assert_eq!(
             run.core.snapshot().paused,
             Some(crate::game::slot::PauseReason::Error)
         );
-        assert_eq!(run.core.time(), start().next());
+        assert_eq!(run.core.time(), GameTime::from_hours(start().hours() + 13));
         let errors: Vec<_> = locked(&run.logs)
             .iter()
             .filter(|(level, _)| *level == Level::Error)
@@ -444,7 +453,7 @@ fn gameplay_deadline_failure_reaches_the_core_terminal_path_instead_of_pause() {
         None,
     );
     run.resume();
-    run.step();
+    run.run_through(GameTime::from_hours(start().hours() + 12));
     assert_eq!(run.core.snapshot().paused, None);
     assert_eq!(run.failures().len(), 1, "terminal failure is reported once");
     assert!(run.failures()[0].contains("gameplay.on_day missed its 0.03 s deadline"));
@@ -468,7 +477,7 @@ fn gameplay_skeleton_emits_its_daily_line_with_a_scenario() {
     let source = format!("log.info = function(line) test.record(line) end\n{skeleton}");
     let mut run = RuntimeHarness::new(&source, BOUND, host_settings("metal", 640, "info"), None);
     run.resume();
-    run.step();
+    run.run_through(GameTime::from_hours(start().hours() + 12));
     assert!(
         locked(&run.lines)
             .iter()
