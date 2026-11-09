@@ -20,6 +20,7 @@ local function price(good, milli, base) return {good = good, price_milli = milli
 local function rowan(workers, births)
   return {
     id = "rowan", workers = workers, dependents = 40, food_days = 215,
+    footprint_m2 = 4200, prepared_m2 = 24200, max_buildable_m2 = 25000,
     storage_used_l = 5400, storage_capacity_l = 86400, overflow_lost = 0,
     prices = {price("oats", 100000, 100), price("ale", 2500, 2)},
     pops = {{kind = "peasant", culture = "ulaid", religion = "christianity", workers = workers, dependents = 40, employed = 70,
@@ -34,7 +35,7 @@ local function rowan(workers, births)
   }
 end
 local nobody = {
-  id = "nobody", workers = 0, dependents = 0, food_days = 0, storage_used_l = 0, storage_capacity_l = 0, overflow_lost = 0,
+  id = "nobody", workers = 0, dependents = 0, food_days = 0, footprint_m2 = 0, prepared_m2 = 0, max_buildable_m2 = 0, storage_used_l = 0, storage_capacity_l = 0, overflow_lost = 0,
   prices = {}, pops = {}, buildings = {},
 }
 -- A place whose pop's culture is a long word of fada-bearing letters, which wrapping must cut between characters.
@@ -219,7 +220,7 @@ fn click_tab_at(rig: &mut Rig, key: &str, (width, height): (u32, u32)) {
     rig.deliver_fixture_frame_at(width, height, 2);
 }
 
-const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|food: 215 days|storage: 5400 / 86400 L|lost to overflow last month: 0|prices (base):|  oats 100 (100)|  ale 2.5 (2)";
+const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|food: 215 days|building land: 4200 / 24200 m²|storage: 5400 / 86400 L|lost to overflow last month: 0|prices (base):|  oats 100 (100)|  ale 2.5 (2)";
 const POPS_ROWS: &str = "peasant ulaid christianity|  workers: 80|  dependents: 40|  employed: 70|  unemployed: 10|  food: 215 days|  needs: 0% 0% 0%|  satisfaction: 0|  births 2, deaths 1 ^";
 const BUILDINGS_ROWS: &str = "farm|  levels: mixed_farming 3|  positions: 25 filled, 5 open|  cattle: 27 / 36|  store: 1 / 3500 L|  wage: 0||storehouse|  levels: 1|  positions: 0 filled, 2 open|  store: 0 / 36000 L|  wage: 0";
 
@@ -258,7 +259,7 @@ fn a_place_of_nobody_has_zeroes_and_empty_pops_and_buildings() {
     assert_eq!(
         rows(&rig),
         [
-            "people: 0|  workers: 0|  dependents: 0|food: 0 days|storage: 0 / 0 L|lost to overflow last month: 0|prices (base):"
+            "people: 0|  workers: 0|  dependents: 0|food: 0 days|building land: 0 / 0 m²|storage: 0 / 0 L|lost to overflow last month: 0|prices (base):"
         ]
     );
     rig.opened();

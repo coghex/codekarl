@@ -10,7 +10,8 @@
 
 #[cfg(test)]
 use ck_economy::PopConsumption;
-use ck_economy::{BuildingState, EconomyState, PlaceState, PopState, Rules};
+use ck_economy::{BuildingState, EconomyState, LandCounts, PlaceState, PopState, Rules};
+use std::collections::BTreeMap;
 
 /// A pop's store, in millilitres per person (design §3.15: 720 L).
 const POP_STORE_ML_PER_PERSON: u64 = 720_000;
@@ -110,6 +111,12 @@ pub(crate) struct PlaceView {
     pub(crate) projected_yield: u64,
     /// Whether the place has an economy at all: pops or buildings. A place of nobody has nothing for a map mode to show.
     pub(crate) has_economy: bool,
+    pub(crate) footprint_m2: u64,
+    pub(crate) prepared_m2: u64,
+    pub(crate) max_buildable_m2: u64,
+    pub(crate) development_pm: u32,
+    pub(crate) farmland_quality_pm: u16,
+    pub(crate) field_room: u64,
     pub(crate) pops: Vec<PopView>,
     pub(crate) buildings: Vec<BuildingView>,
 }
@@ -150,17 +157,27 @@ impl EconomyView {
 /// The view of `state` for the scenario's `place_ids`, in that order. A place the state has no row for (a scenario with no
 /// economy data, or one the data leaves out) is a place of nobody, with nothing in it. `rules` is `None` for a scenario with
 /// no economy data, which has no rows either.
+#[cfg(test)]
 pub(crate) fn build(
     rules: Option<&Rules>,
     state: &EconomyState,
     place_ids: &[String],
+) -> EconomyView {
+    build_with_land(rules, state, place_ids, &BTreeMap::new())
+}
+
+pub(crate) fn build_with_land(
+    rules: Option<&Rules>,
+    state: &EconomyState,
+    place_ids: &[String],
+    land_by_place: &BTreeMap<String, LandCounts>,
 ) -> EconomyView {
     let places = place_ids
         .iter()
         .map(|id| {
             let row = state.places.iter().find(|place| &place.id == id);
             match (rules, row) {
-                (Some(rules), Some(row)) => place_view(rules, row),
+                (Some(rules), Some(row)) => place_view(rules, row, land_by_place.get(id)),
                 _ => PlaceView {
                     id: id.clone(),
                     ..PlaceView::default()
@@ -374,7 +391,11 @@ fn building_view(rules: &Rules, building: &BuildingState) -> BuildingView {
     }
 }
 
-fn place_view(rules: &Rules, place: &PlaceState) -> PlaceView {
+#[expect(
+    clippy::too_many_lines,
+    reason = "A place view keeps its immutable economy totals, derived land values and per-building projections together."
+)]
+fn place_view(rules: &Rules, place: &PlaceState, land: Option<&LandCounts>) -> PlaceView {
     let pops: Vec<PopView> = (0..place.pops.len())
         .map(|index| pop_view(rules, place, index))
         .collect();
@@ -429,6 +450,62 @@ fn place_view(rules: &Rules, place: &PlaceState) -> PlaceView {
             sum.saturating_add(projected_yield(rules, building))
         }),
         has_economy: !place.pops.is_empty() || !place.buildings.is_empty(),
+        footprint_m2: place
+            .buildings
+            .iter()
+            .map(|building| {
+                u64::try_from(
+                    rules
+                        .footprint_m2
+                        .get(&building.kind)
+                        .copied()
+                        .unwrap_or_default()
+                        .max(0),
+                )
+                .expect("validated footprints are nonnegative")
+                    * u64::from(building.levels)
+            })
+            .sum(),
+        prepared_m2: place.prepared_m2,
+        max_buildable_m2: land
+            .and_then(|land| ck_economy::max_buildable_m2(rules, place.development_pm, land).ok())
+            .unwrap_or_default(),
+        development_pm: place.development_pm,
+        farmland_quality_pm: land
+            .and_then(|land| ck_economy::mean_fertility(land).ok())
+            .unwrap_or_default(),
+        field_room: land
+            .map(|land| {
+                let available = land
+                    .fertility_pm
+                    .values()
+                    .copied()
+                    .fold(0_u64, u64::saturating_add)
+                    / 1000;
+                let occupied = place
+                    .buildings
+                    .iter()
+                    .filter(|building| matches!(building.kind.as_str(), "farm" | "holdings"))
+                    .filter_map(|building| {
+                        rules
+                            .buildings
+                            .iter()
+                            .find(|definition| definition.id == building.kind)
+                    })
+                    .fold(0_u64, |sum, definition| {
+                        sum.saturating_add(
+                            u64::from(definition.land_per_level).saturating_mul(u64::from(
+                                place
+                                    .buildings
+                                    .iter()
+                                    .find(|building| building.kind == definition.id)
+                                    .map_or(0, |building| building.levels),
+                            )),
+                        )
+                    });
+                available.saturating_sub(occupied)
+            })
+            .unwrap_or_default(),
         pops,
         buildings,
     }
@@ -537,6 +614,8 @@ mod tests {
                 .iter()
                 .map(|good| good.base_price * 1000)
                 .collect(),
+            prepared_m2: 24_200,
+            development_pm: 1000,
             price_drift_carries: vec![0; rules.goods.len()],
         }
     }
@@ -547,7 +626,16 @@ mod tests {
         let state = EconomyState {
             places: vec![fixture(&rules)],
         };
-        let view = build(Some(&rules), &state, &["fixture".to_owned()]);
+        let land = BTreeMap::from([(
+            "fixture".to_owned(),
+            LandCounts {
+                land_cells: BTreeMap::from([("pasture".to_owned(), 10)]),
+                fertility_pm: BTreeMap::from([("pasture".to_owned(), 5_500)]),
+                fertile_cells: 10,
+                sea: 0,
+            },
+        )]);
+        let view = build_with_land(Some(&rules), &state, &["fixture".to_owned()], &land);
         let place = view.place("fixture").expect("the place is in the view");
         assert_eq!((place.workers, place.dependents), (80, 40));
         // Food: 1,000 oats and 5 more in the pop's storehouse account, 1,800 hundredths each, for 120 people at 100 a day.
@@ -563,6 +651,12 @@ mod tests {
             120 * 720_000 + 35 * 100_000 + 36_000_000
         );
         assert_eq!(place.overflow_lost, 0);
+        assert_eq!(place.footprint_m2, 6_200);
+        assert_eq!(place.prepared_m2, 24_200);
+        assert_eq!(place.max_buildable_m2, 23_000);
+        assert_eq!(place.development_pm, 1000);
+        assert_eq!(place.farmland_quality_pm, 550);
+        assert_eq!(place.field_room, 0);
         assert_eq!(place.prices.len(), rules.goods.len());
         assert_eq!(place.prices[0].good, "oats");
         assert_eq!(

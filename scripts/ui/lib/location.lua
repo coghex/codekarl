@@ -50,6 +50,7 @@ local function location_lines(place)
     "  workers: " .. place.workers,
     "  dependents: " .. place.dependents,
     "food: " .. place.food_days .. " days",
+    "building land: " .. place.footprint_m2 .. " / " .. math.min(place.prepared_m2, place.max_buildable_m2) .. " m²",
     "storage: " .. place.storage_used_l .. " / " .. place.storage_capacity_l .. " L",
     "lost to overflow last month: " .. place.overflow_lost,
     "prices (base):",

@@ -5,6 +5,21 @@ price_k_pm = 500
 cultures = ["ulaid", "cruthin", "northern_ui_neill", "airgialla", "mide_brega", "laigin", "mumu", "connachta", "english"]
 religions = ["christianity", "irish_paganism", "norse_paganism", "anglo_saxon_paganism"]
 terrain_order = ["pasture", "forest", "bog", "marsh", "mountain"]
+buildable_base_m2 = 20000
+starting_development_pm = 1000
+fertility_reference_pm = 550
+
+[footprint_m2]
+farm = 2000
+holdings = 4000
+storehouse = 200
+
+[buildable_per_cell_m2]
+pasture = 300
+forest = 250
+marsh = 150
+bog = 150
+mountain = 75
 
 [[goods]]
 id="oats"

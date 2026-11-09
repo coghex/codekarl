@@ -1210,7 +1210,7 @@ game = {{
   on_hover = function(callback) callbacks.hover = callback end,
   control = function() end,
   place = function(id, revision)
-    return {{id = id, workers = 0, dependents = 0, food_days = 0, storage_used_l = 0, storage_capacity_l = 0,
+    return {{id = id, workers = 0, dependents = 0, food_days = 0, footprint_m2 = 0, prepared_m2 = 0, max_buildable_m2 = 0, storage_used_l = 0, storage_capacity_l = 0,
       overflow_lost = 0, prices = {{}}, pops = {{}}, buildings = {{}}}}
   end,
 }}
