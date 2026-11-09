@@ -171,6 +171,11 @@ The Firm rule is: cells within the radius; the nearest location takes an overlap
   cadences run first: yearly, then monthly, daily and hourly. This is the one boundary order; every other section follows it. Within a
   cadence, systems run in registration order, and the order is frozen
   in the spec. The real systems' order stays Open until the economy.
+- **Since M9 (CK-224, accepted 2026-11-08; `docs/economy-design.md` §3.9):** each coarse cadence carries an **hour of day**: `Yearly { hour }`,
+  `Monthly { hour }` and `Daily { hour }`. The default is 0, so the midnight behaviour above still holds for every system registered
+  without an hour.
+  - Systems due on a tick are those whose cadence and hour match, run coarser first and in registration order.
+  - The economy is one `Daily { 12 }` system at noon.
 
 ### 4.2 Speeds and pausing (Firm speeds; Proposal details)
 
@@ -216,10 +221,12 @@ The Firm rule is: cells within the radius; the nearest location takes an overlap
   - Wakes are coalesced to at most one per frame. When nothing changes, nothing wakes; there is no polling.
   - Rendering never waits on the simulation.
 - **The gameplay VM on the clock (Firm, question 6).**
-  - **The calls are scheduler systems.** `on_month(date)` is registered as the last monthly system, and `on_day(date)` as the last daily
-    system.
-    - On the 1st of a month they therefore run in the §4.1 order: the monthly Rust systems, `on_month`, the daily Rust systems,
+  - **The calls are scheduler systems.** In M7, `on_month(date)` was registered as the last monthly system, and `on_day(date)` as the
+    last daily system, at midnight.
+    - On the 1st of a month they therefore ran in the §4.1 order: the monthly Rust systems, `on_month`, the daily Rust systems,
       `on_day`, then the hourly systems. (r2 had `on_day` before `on_month`.)
+    - **Since M9 (CK-224):** both are `Daily { 12 }` systems registered after the noon economy system. `on_month` fires only on the
+      1st, before `on_day`, so Lua sees each day's finished economy at noon.
     - The simulation thread posts each call to the gameplay VM and waits for its reply under the existing call deadlines. `date` is a table of integers:
     `{year, month, day, hour, tick}`.
   - The M7 skeleton script only logs, for example `log.info("day " .. date.year .. "-" .. date.month .. "-" .. date.day)`.
