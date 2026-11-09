@@ -601,9 +601,53 @@ deaths_d = dependents × death_base[type] × frailty   × g_hunger(N) × g_comfo
 - N, W and L are the stored tier values;
 - S is satisfaction;
 - Lit is literacy;
-- C is crowding: the place's people against its capacity. **r17 (C4, Proposal, owner: no objection):** the capacity is usable land ×
-  8 people a cell, plus what its fishing levels can feed (their annual food ÷ 365). A place with neither is maximally crowded. r7's "no
-  usable land is maximally crowded" is withdrawn: it doomed the island houses.
+- C is **each pop's own crowding,** against the place's **housing** (below). It replaces r17's capacity (usable land × 8 people a cell,
+  plus the fishing levels' food), which is withdrawn.
+
+**Crowding as living space (Firm, owner-signed 2026-11-09).** Signed text: `crowding-design-r3.md` (sha256 e03651ac).
+- **The owner's decisions:**
+  - crowding is living space: "crowding is supposed to be living space";
+  - "housing should be a number provided by the buildings";
+  - housing is a soft cap: "excess pops over capacity could have negative effects instead of just not allowing people to live there";
+  - pops "naturally choose the best quality housing that they can afford".
+- **Housing per building level** (data, hard values, not computed):
+
+  | Building | Housing per level | Class |
+  |---|---|---|
+  | subsistence farm (any method, coastal included) | 17 | basic |
+  | monastic holdings (any method) | 14 | basic |
+  | storehouse | 3 | basic |
+
+  - A level counts whenever it exists, staffed or not.
+  - Today's values follow the owner's rule, "room for a full staff with an average amount of dependents" (workers per level ÷ (1 − the
+    base dependent share)). Future buildings need not follow it.
+- **Natural shelter** (makeshift class) = `⌊Σ over the catchment's land cells of shelter_t ÷ 1000⌋` people. It is "homeless straglers
+  that live off the land", weighted by terrain, in thousandths of a person per cell:
+
+  | Terrain | pasture | forest | mountain (caves) | marsh | bog | glacier |
+  |---|---|---|---|---|---|---|
+  | `shelter_t` | 50 | 100 | 100 | 20 | 10 | 0 |
+
+- **Housing classes,** in quality order: makeshift, then basic. Neither charges rent. Rented classes above basic come later.
+- **The monthly fill,** on the 1st, first in §3.9 step 5, before births and deaths, in whole people, per place:
+  1. rented classes (later), to the pops that can afford them;
+  2. **basic, workers first:** each building's housing goes to the pops employed there, each worker bringing their pop's average
+     dependents;
+  3. **spare basic, pooled:** what is left goes to every pop's still-unhoused people, so "a monastary will house the homeless until it is
+     full";
+  4. **makeshift:** natural shelter takes the rest;
+  5. **overflow:** once both are full, the remaining people are spread across both classes in proportion to their capacities.
+- **Class crowding:** `c_k = occupants_k × 1000 ÷ capacity_k`, overflow included.
+- **Each pop's crowding:** `C_pop = Σ_k people_pop,k × c_k ÷ size`. Births and deaths use the pop's own `C_pop` on the curves below. A
+  place with no housing at all gives every pop 2000, and beyond 2000 the curves hold their last point.
+- **The place's crowding** (the panel, a future map mode) is all its people × 1000 ÷ all its housing, shelter included.
+- **No links and no save:** the fill is recomputed from the current pops and buildings, keeps no pointers either way, and is not saved.
+  A pop that dies off gets nothing, and its space goes to the others.
+- **Development** raises capacity only indirectly: it raises the buildable maximum (§3.23), so more housing can be built. M9 builds
+  nothing, so development changes no crowding in M9.
+- **Later (recorded, not M9):** rental buildings with no production methods, owned by a landowner class; masonry for upkeep; quality
+  feeding comfort; per-building visuals; crowding driving migration.
+- **The integer rules** (claims, rounding and attribution) are frozen in CK-229's spec.
 
 **The curves:**
 - **Hunger:**
@@ -759,7 +803,9 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
 | deaths by comfort, `min(1000, W + L/2)` | 0→1000, 1000→900 |
 | deaths by crowding, C (squared for dependents) | 0→900, 1000→1000, 1500→1300, 2000→1800 |
 
-- **Crowding** `C = people × 1000 / (usable catchment cells × 8)`: about 32 people per km², consistent with the several-million estimate.
+- **Crowding** is each pop's crowding against housing (§3.8; owner-signed 2026-11-09). The old `C = people × 1000 / (usable cells × 8)`
+  is withdrawn. With these housing values, place crowding starts at a median of about 1,170‰ (prototype estimate). Most of it falls on
+  the unemployed, since the scenario has more peasants than farm jobs.
 - **Needs** move 50‰ of the gap towards today's fulfilment each day. A dry store halves necessities in about 2 weeks, and deaths start
   rising around day 10.
 - **The satisfaction baseline:**
@@ -817,8 +863,11 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
 **The levels** are authored per building, in the scenario's `economy.toml`. Kind and size give the defaults, per-place entries can set
 any building (Firm: no strict rules), and every value goes into the guesswork log.
 - **Island houses** (`skellig_michael`, `inishmurray` and any other with no usable land) have holdings levels. Their holdings use
-  fishing (§3.4). An island may also have coastal farm levels where the scenario authors them (owner, 2026-11-09). Inishmurray authors
-  none: its peasants fill the holdings' labourer positions, and the surplus is unemployed.
+  fishing (§3.4). An island may also have coastal farm levels where the scenario authors them (owner, 2026-11-09).
+  - **Starting data fixed for housing** (owner, 2026-11-09: "Fix the starting data"):
+    - Skellig Michael: monks 10 and labourers 10, fitting its 2 holdings levels (housing 28);
+    - Inishmurray: a coastal subsistence farm of 3 levels (housing 51), 50 peasants, and monks 10 and labourers 10 on its 2 holdings
+      levels. This replaces the earlier "Inishmurray authors none".
 - **Farms:** where the guesses do not fit the land, the maximum of §3.4 cuts them.
 
 | Kind | Size | Subsistence farm levels | Holdings levels |
@@ -1074,8 +1123,8 @@ Per terrain (`terrain.toml` gains these columns, hashed with the rules):
   - It is computed once from data. Ties go to the lower terrain index. Its suitability for a product is the cell-weighted mean over those counts, floored to ‰.
 - Fishing uses 1000 until fishing grounds exist.
 - **The coastal method's output per level, per year:** fish 8,000 lb and seabirds 1,500, at the season tables.
-- **Island capacity for crowding (§3.8)** uses the fishing levels' **full-staff potential**, their annual food at full staffing, not
-  current output.
+- **Island capacity for crowding** is withdrawn: crowding is housing (§3.8), and islands house people in their holdings and coastal farm
+  levels.
 - **A soak tool (C5, E5 contract):** one headless binary.
   - **Inputs:** the real scenario setup and the real economy systems, with no copy of the model, a fixed seed and N years.
   - **Output:** a CSV row per place and pop at noon on the 1st: size, workers and dependents, needs, food days, herds and prices.
@@ -1111,7 +1160,7 @@ Per terrain (`terrain.toml` gains these columns, hashed with the rules):
 - This is the design for **slice 9**, a follow-up slice. It replaces §3.4's sea-cell fishing cap (`sea cells / 4`).
 - Slices 3–8 stay as written.
 - Signed text: `land-footprint-design-r2.md` (sha256 186187ef), with the owner's answers.
-- Crowding capacity (§3.8) and how development's parts combine stay the owner's.
+- How development's parts combine stays the owner's. Crowding is now housing (§3.8, owner-signed 2026-11-09).
 - **Since signed (owner, 2026-11-09):**
   - usable land is now computed fertility, with a computed climate (§3.24, and `docs/map-design.md` §12);
   - clearing land applies to buildings only;
@@ -1215,7 +1264,7 @@ fields cut. The engine's load report is the authority.
 
 - **The value:**
   - per place, in thousandths, starting at 1000 everywhere for now;
-  - it scales the maximum buildable land (above) and enters crowding as a soft population cap (§3.8, the owner's).
+  - it scales the maximum buildable land (above), and so enters crowding only through the housing that can be built (§3.8).
 - **Its parts:** the number of building levels at the place, plus a time part that **slowly drifts up**. Events can lower it.
   - Reserved for the owner: how the parts combine, how fast it drifts, and which events lower it.
 - **Engineering placement** (ck-manager's notes):
@@ -1288,7 +1337,7 @@ fields cut. The engine's load report is the authority.
   | 3 | the location panel and its starting view: the first visible result | 2 |
   | 4 | production by season, herds, wages, the payday flow with alms and storehouses; the soak tool | 1, 2 |
   | 5 | eating with the intake curve, needs and satisfaction | 4 |
-  | 6 | births, deaths, drift, hiring and movement (C9: before the market) | 5 |
+  | 6 | housing and crowding (§3.8), births, deaths, drift, hiring and movement (C9: before the market) | 5, 9 |
   | 7 | local prices, computed and shown (no barter) | 5 |
   | 8 | the two map modes, on both backends | 4 |
   | 9a | the computed climate and fertility map data, and glaciation (`docs/map-design.md` §12) | 2 |
