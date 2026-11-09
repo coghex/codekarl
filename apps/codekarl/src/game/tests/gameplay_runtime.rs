@@ -166,7 +166,13 @@ impl RuntimeHarness {
                 scheduler
             }
         };
-        let simulation = Simulation::new(start(), seed, GameState, make_scheduler(), apply_game);
+        let simulation = Simulation::new(
+            start(),
+            seed,
+            GameState::default(),
+            make_scheduler(),
+            apply_game,
+        );
         let reset_runtime = Arc::clone(&gameplay);
         let core = Core::new(
             simulation,

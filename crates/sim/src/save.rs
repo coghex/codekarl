@@ -45,6 +45,8 @@ pub struct SaveMeta {
     pub map_hash: String,
     /// The gameplay scripts' content hash: lower-case hexadecimal, supplied by the caller.
     pub scripts_hash: String,
+    /// The shared simulation rules' content hash: lower-case hexadecimal, supplied by the caller.
+    pub rules_hash: String,
     /// The date the scenario starts on.
     pub start: Date,
     /// The master seed.
@@ -62,6 +64,8 @@ pub struct Expected {
     pub map_hash: String,
     /// The loaded gameplay scripts' content hash.
     pub scripts_hash: String,
+    /// The loaded shared simulation rules' content hash.
+    pub rules_hash: String,
 }
 
 /// Which content hash disagreed.
@@ -73,6 +77,8 @@ pub enum HashKind {
     Map,
     /// The gameplay scripts hash.
     Scripts,
+    /// The shared simulation rules hash.
+    Rules,
 }
 
 impl fmt::Display for HashKind {
@@ -81,6 +87,7 @@ impl fmt::Display for HashKind {
             Self::Scenario => "scenario",
             Self::Map => "map",
             Self::Scripts => "scripts_hash",
+            Self::Rules => "rules_hash",
         })
     }
 }
@@ -277,6 +284,7 @@ struct HeaderToml {
     scenario_hash: String,
     map_hash: String,
     scripts_hash: String,
+    rules_hash: String,
     tick: i64,
     seed: String,
     start: StartToml,
@@ -328,6 +336,7 @@ fn check_meta(meta: &SaveMeta, tick: u64) -> Result<(), SaveError> {
         ("scenario_hash", &meta.scenario_hash),
         ("map_hash", &meta.map_hash),
         ("scripts_hash", &meta.scripts_hash),
+        ("rules_hash", &meta.rules_hash),
     ] {
         if !is_lower_hex(hash) {
             return Err(malformed(format!("{name} is not lower-case hexadecimal")));
@@ -347,6 +356,7 @@ fn write_header(meta: &SaveMeta, tick: u64) -> Result<String, SaveError> {
         scenario_hash: meta.scenario_hash.clone(),
         map_hash: meta.map_hash.clone(),
         scripts_hash: meta.scripts_hash.clone(),
+        rules_hash: meta.rules_hash.clone(),
         tick: i64::try_from(tick).map_err(malformed)?,
         seed: seed_text(meta.seed),
         start: StartToml {
@@ -375,6 +385,7 @@ fn read_header(bytes: &[u8]) -> Result<(SaveMeta, u64), SaveError> {
         scenario_hash: header.scenario_hash,
         map_hash: header.map_hash,
         scripts_hash: header.scripts_hash,
+        rules_hash: header.rules_hash,
         start: Date {
             year: header.start.year,
             month: header.start.month,
@@ -523,6 +534,7 @@ impl<S: Canonical> Save<S> {
                 &expected.scripts_hash,
                 &meta.scripts_hash,
             ),
+            (HashKind::Rules, &expected.rules_hash, &meta.rules_hash),
         ] {
             if wanted != found {
                 return Err(SaveError::HashMismatch {

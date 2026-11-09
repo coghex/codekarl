@@ -15,6 +15,7 @@ vulkan = ["dep:ck-gpu-vulkan", "dep:ck-window-glfw", "ck-render-2d/vulkan"]
 [dependencies]
 ck-gpu-metal = { path = "../../crates/gpu-metal", optional = true }
 ck-gpu-vulkan = { path = "../../crates/gpu-vulkan", optional = true }
+ck-economy = { path = "../../crates/economy" }
 ck-log = { path = "../../crates/log" }
 ck-lua = { path = "../../crates/lua" }
 ck-map = { path = "../../crates/map" }

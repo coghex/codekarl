@@ -54,9 +54,26 @@ struct MapKeys {
 pub(crate) fn scenario_hash(directory: &Path) -> Result<String, String> {
     let (_, scenario) = read(directory, "scenario.toml")?;
     let keys = scenario_keys(&scenario)?;
-    Ok(content_hash(vec![
+    let mut files = vec![
         ("scenario.toml".to_owned(), scenario),
         read(directory, &keys.locations)?,
+    ];
+    if directory.join("economy.toml").exists() {
+        files.push(read(directory, "economy.toml")?);
+    }
+    Ok(content_hash(files))
+}
+
+/// Hash shared economy rules and the map's terrain suitability inputs.
+pub(crate) fn rules_hash(asset_root: &Path) -> Result<String, String> {
+    let game_rules = asset_root.join("game/economy.toml");
+    if !game_rules.exists() {
+        // Unit fixtures that exercise only the simulation shell have no M9 data.
+        return Ok(content_hash(Vec::new()));
+    }
+    Ok(content_hash(vec![
+        read(asset_root, "game/economy.toml")?,
+        read(asset_root, "map/ireland/terrain.toml")?,
     ]))
 }
 

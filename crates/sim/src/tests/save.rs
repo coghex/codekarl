@@ -301,6 +301,7 @@ fn each_hash_mismatch_names_the_hash() {
         ),
         (HashKind::Map, |e| e.map_hash = "dead".to_owned()),
         (HashKind::Scripts, |e| e.scripts_hash = "dead".to_owned()),
+        (HashKind::Rules, |e| e.rules_hash = "dead".to_owned()),
     ] {
         let mut wanted = expected();
         edit(&mut wanted);
@@ -359,6 +360,18 @@ fn a_malformed_header_is_refused() {
     let mut bytes = put_together(&parts);
     bytes[12] = 0xff;
     assert!(malformed(&bytes));
+}
+
+#[test]
+fn an_m8_save_without_rules_hash_is_refused_by_the_missing_field_name() {
+    let legacy = with_header(|header| header.replace("rules_hash = \"dd44\"\n", ""));
+    let Err(SaveError::MalformedHeader { reason }) = load(&legacy) else {
+        panic!("the M8-shaped header without rules_hash was not refused");
+    };
+    assert!(
+        reason.contains("rules_hash"),
+        "refusal should name the missing field: {reason}"
+    );
 }
 
 #[test]

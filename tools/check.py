@@ -878,6 +878,7 @@ RUST_SOURCE_DIRS = (
     "crates/resources/",
     "crates/runtime/",
     "crates/sim/",
+    "crates/economy/",
     "crates/window/",
     "crates/window-cocoa/",
     "crates/window-glfw/",
@@ -1421,6 +1422,17 @@ STEPS = [
         description="The backend-neutral simulation core: the Julian calendar, the tick scheduler, command timing and the "
         "real-time clock under a fake time (no GPU or window).",
         paths=("crates/sim/",),
+    ),
+    # CK-225: the starting economy is backend-neutral and owns only its crate's unit and doc tests.
+    Step(
+        "economy.core",
+        FAST,
+        lambda: [
+            cargo_test(["-p", "ck-economy"]),
+            cargo_test(["-p", "ck-economy", "--doc"]),
+        ],
+        description="The backend-neutral economy data, starting-state and projection primitives (no map, GPU or window).",
+        paths=("crates/economy/",),
     ),
     # CK-90: the 2D renderer's core (images, the scene bridge and the `Renderer` over a fake backend). It has no
     # GPU feature and opens no window, so every test target of the crate is one plain group, selected by the

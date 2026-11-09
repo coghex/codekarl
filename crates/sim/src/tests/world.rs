@@ -166,6 +166,7 @@ pub(super) fn meta(seed: u64) -> SaveMeta {
         scenario_hash: "aa11".to_owned(),
         map_hash: "bb22".to_owned(),
         scripts_hash: "cc33".to_owned(),
+        rules_hash: "dd44".to_owned(),
         start: start_date(),
         seed,
     }
@@ -177,6 +178,7 @@ pub(super) fn expected() -> crate::Expected {
         scenario_hash: "aa11".to_owned(),
         map_hash: "bb22".to_owned(),
         scripts_hash: "cc33".to_owned(),
+        rules_hash: "dd44".to_owned(),
     }
 }
 

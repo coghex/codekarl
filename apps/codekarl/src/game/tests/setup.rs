@@ -151,7 +151,7 @@ pub(super) fn write_save(game: &GameConfig, ticks: u64, seed: u64) -> (PathBuf, 
     let mut simulation = Simulation::<GameState, GameCommand>::new(
         game_prepared.simulation.time(),
         seed,
-        GameState,
+        GameState::default(),
         Scheduler::new(),
         apply,
     );
@@ -433,10 +433,18 @@ fn the_build_id_is_the_version_and_the_simulation_source_hash() {
         "rust-toolchain.toml",
         "crates/sim/Cargo.toml",
         "crates/lua/Cargo.toml",
+        "crates/economy/Cargo.toml",
+        "crates/map/Cargo.toml",
     ]
     .map(str::to_owned)
     .to_vec();
-    for directory in ["crates/sim/src", "crates/lua/src", "apps/codekarl/src/game"] {
+    for directory in [
+        "crates/sim/src",
+        "crates/lua/src",
+        "crates/economy/src",
+        "crates/map/src",
+        "apps/codekarl/src/game",
+    ] {
         rust_files(&root, directory, &mut files);
     }
     files.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
@@ -462,4 +470,6 @@ fn the_build_id_is_the_version_and_the_simulation_source_hash() {
             .any(|file| file == "apps/codekarl/src/game/core.rs")
     );
     assert!(files.iter().any(|file| file == "crates/sim/src/save.rs"));
+    assert!(files.iter().any(|file| file == "crates/economy/src/lib.rs"));
+    assert!(files.iter().any(|file| file == "crates/map/src/lib.rs"));
 }
