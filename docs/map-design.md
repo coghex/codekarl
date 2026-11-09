@@ -567,7 +567,7 @@ latitude ceiling. Weather, the year-to-year variation, comes later.
     - moisture walks along the wind from the sea (recovering over water);
     - each land cell rains `zonal × moisture × (1.2 + min(1.6, 0.02 × uplift in m/km) + 1.5 × height in km)`;
     - the moisture is depleted by 0.0015 × rain × km, which makes rain shadows;
-    - it is smoothed across the wind.
+    - it is smoothed with a 7 × 7 box mean (edge replicated), exactly as the signed prototype (spec `m9-s9a-r3`).
 - **The Ireland check (prototype):**
 
   | Station | Model | Approximate real |
@@ -592,10 +592,11 @@ latitude ceiling. Weather, the year-to-year variation, comes later.
     the 4×4 ordered pattern, which formed a "plaid" ("that blue noise is a huge improvement").
 - **Hillsides are a dither pattern from slope, not absolute height:** "i want hilsides to have a dither pattern, not absolute
   elevation".
-  - **The light** comes from azimuth 337.5° (north-north-west, data). The owner accepted the cartographic convention: light from below
+  - **The light** comes from azimuth 337.5° (north-north-west), stored as the integer unit vector `[-3827, -9239]` (x east, y south, ×10⁴). The owner accepted the cartographic convention: light from below
     makes relief read inverted, and 337.5° inverts least (Biland and Çöltekin 2017).
   - **Per cell,** `d` is the rise away from the light, from the elevation gradient over ground distance.
-  - **The soft curve** `shade = d ÷ (|d| + d₀)` has d₀ = 1/80 per zoom step, in data ("i like soft 80x the most"). It is half strength
+  - **The soft curve** `shade = d ÷ (|d| + d₀)` has d₀ = 1/80, one value for every zoom step, in data ("i like soft 80x the most"). Grid A holds one strength
+    per cell, so per-step d₀ is deferred until the owner asks to tune it. The strength is computed in integers (spec `m9-s10a-r2`). It is half strength
     at a 1.25% slope and never saturates, so steep ground keeps a dither gradient.
   - **The dither:** with `strength = ⌊16 × |shade|⌋`, a pixel takes the relief tone when `bayer4ᴮ[wy mod 4][wx mod 4] < strength`.
     `bayer4ᴮ` is the 4×4 ordered matrix, rotated and mirrored so it does not align with the blue noise.
