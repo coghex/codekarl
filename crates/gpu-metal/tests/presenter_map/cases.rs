@@ -69,23 +69,22 @@ fn rules_of(fixture: &fixture::Fixture) -> MetalMapRules {
         terrains: fixture
             .terrains
             .iter()
-            .map(|terrain| MetalTerrainRule {
-                kind: kind_of(terrain.kind),
-                solid: terrain.style.solid.0,
-                second: terrain.style.second.0,
-                dark: terrain.style.dark.0,
-                dark_second: terrain.style.dark_second.0,
-                cap: terrain.style.cap.0,
-                high_ground: terrain.style.high_ground.0,
-                relief: [terrain.style.relief_low, terrain.style.relief_high],
-                mix_percent: terrain.style.mix_percent,
-                cap_heights: [terrain.style.cap_low, terrain.style.cap_high],
+            .map(|terrain| {
+                let shades = ck_map::look::TerrainShades::of(&terrain.style);
+                MetalTerrainRule {
+                    kind: kind_of(terrain.kind),
+                    tone: shades.tone.map(|tone| tone.0),
+                    shadow: shades.shadow.map(|tone| tone.0),
+                    lit: shades.lit.map(|tone| tone.0),
+                }
             })
             .collect(),
         sea: fixture.data.sea.0,
         shallow_sea: fixture.data.shallow_sea.0,
         lake: fixture.data.lake.0,
         river: fixture.data.river.0,
+        ice: fixture.data.ice.0,
+        ice_second: fixture.data.ice_second.0,
         overlay_palette: Vec::new(),
         shallow_threshold: fixture.data.shallow_threshold,
         steps: STEP_SIZE,
@@ -690,20 +689,21 @@ fn metal_zoom_fixture() -> (
     let rules = MetalMapRules {
         terrains: vec![MetalTerrainRule {
             kind: MetalTerrainKind::Land,
-            solid: [0x30, 0x60, 0x20, 0xff],
-            second: [0x30, 0x60, 0x20, 0xff],
-            dark: [0x10, 0x20, 0x10, 0xff],
-            dark_second: [0x10, 0x20, 0x10, 0xff],
-            cap: [0xff; 4],
-            high_ground: [0xff; 4],
-            relief: [0, 1],
-            mix_percent: 0,
-            cap_heights: [0, 1],
+            tone: [
+                [0x10, 0x20, 0x10, 0xff],
+                [0x10, 0x20, 0x10, 0xff],
+                [0x30, 0x60, 0x20, 0xff],
+                [0x30, 0x60, 0x20, 0xff],
+            ],
+            shadow: [[0x30, 0x60, 0x20, 0xff]; 3],
+            lit: [[0x10, 0x20, 0x10, 0xff]; 3],
         }],
         sea: [0x05, 0x08, 0x0e, 0xff],
         shallow_sea: [0x0b, 0x14, 0x22, 0xff],
         lake: [0x0b, 0x14, 0x22, 0xff],
         river: river_colour,
+        ice: [0xe8, 0xe9, 0xed, 0xff],
+        ice_second: [0xb9, 0xbc, 0xc6, 0xff],
         overlay_palette: Vec::new(),
         shallow_threshold: 40,
         steps: STEP_SIZE,
@@ -711,7 +711,7 @@ fn metal_zoom_fixture() -> (
     let mut grid_a = Vec::with_capacity(CELLS * 4);
     let mut grid_b = Vec::with_capacity(CELLS * 4);
     for _ in 0..CELLS {
-        grid_a.extend_from_slice(&[0, 1, 0, 255]);
+        grid_a.extend_from_slice(&[0, 1, 128, 255]);
         grid_b.extend_from_slice(&[0x2a, 0xf8, 0, 255]); // 11,000 metres encoded as metres + 11,000.
     }
     let input = Arc::new(
@@ -803,12 +803,14 @@ fn readback_zoom_step(
 }
 
 /// Negative control: with one rule table entry deliberately wrong (pasture's second tone another colour) the readback changes in
-/// exactly the pixels that show that tone, and in no other.
+/// exactly the pixels that show a tone made from it (the three shadow-side tones), and in no other.
 pub(crate) fn readback_map_negative_control() {
     let fixture = the_fixture();
     let wrong = fixture.with_other_pasture_second_tone();
     let input = input_of(&wrong, 1);
-    let second = fixture.terrains[2].style.second.0;
+    let shadow = ck_map::look::TerrainShades::of(&fixture.terrains[2].style)
+        .shadow
+        .map(|tone| tone.0);
     let mut changed = 0;
     for scenario in fixture::Fixture::scenarios() {
         let map = map_at(&input, scenario.step, scenario.top_left, scenario.view, 1);
@@ -825,7 +827,7 @@ pub(crate) fn readback_map_negative_control() {
         for (index, (got, want)) in got.chunks_exact(4).zip(want.chunks_exact(4)).enumerate() {
             assert_eq!(
                 got != want,
-                want == second,
+                shadow.iter().any(|tone| want == tone),
                 "{}: pixel {index} (reference {want:?}, drawn {got:?})",
                 scenario.name
             );
@@ -1053,16 +1055,15 @@ pub(crate) fn readback_map_refusals() {
     assert!(rules_error(&|rules| rules.shallow_threshold = 0).contains("threshold"));
     assert!(rules_error(&|rules| rules.sea[3] = 254).contains("sea colour"));
     assert!(rules_error(&|rules| rules.river[3] = 0).contains("river colour"));
-    assert!(rules_error(&|rules| rules.terrains[2].solid[3] = 0).contains("terrain 2"));
-    assert!(rules_error(&|rules| rules.terrains[2].mix_percent = 101).contains("101 percent"));
-    assert!(rules_error(&|rules| rules.terrains[2].relief = [10, 10]).contains("must rise"));
-    assert!(rules_error(&|rules| rules.terrains[2].relief = [-11_001, 5]).contains("out of range"));
-    assert!(rules_error(&|rules| rules.terrains[6].cap_heights = [900, 500]).contains("must rise"));
-    assert!(rules_error(&|rules| rules.terrains[6].cap[3] = 0).contains("terrain 6"));
+    assert!(rules_error(&|rules| rules.terrains[2].tone[3][3] = 0).contains("terrain 2"));
+    assert!(rules_error(&|rules| rules.terrains[2].lit[0][3] = 0).contains("terrain 2"));
+    assert!(rules_error(&|rules| rules.terrains[6].shadow[2][3] = 0).contains("terrain 6"));
+    assert!(rules_error(&|rules| rules.ice[3] = 0).contains("ice colour"));
+    assert!(rules_error(&|rules| rules.ice_second[3] = 0).contains("ice second colour"));
     assert!(rules_error(&|rules| rules.steps[5] = 0).contains("step 5"));
-    // Water ignores the fields it does not read: an unusable style on the sea is not a fault.
+    // Water ignores the fields it does not read: a style with no opaque colours on the sea is not a fault.
     let mut sloppy = rules.clone();
-    sloppy.terrains[0].relief = [9, 1];
+    sloppy.terrains[0].tone[3] = [0; 4];
     assert!(make(ORIGIN, CROP, &grid, &sloppy).is_ok());
 }
 
@@ -2065,7 +2066,60 @@ pub(crate) fn map_modes_replace_the_resident_table_and_off_draws_the_plain_map()
     assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
 }
 
-pub(crate) const CASES: [(&str, fn()); 22] = [
+/// The look's patterns (the blue-noise tile and the hillside dither) are pinned to the world pixel: after a camera pan, every world pixel
+/// that both views show has the same colour, at two zoom steps (the fertility ramp, the slopes of both signs and the glacier patch all
+/// show), and each view equals the reference.
+pub(crate) fn readback_map_patterns_stay_pinned_to_the_world_after_a_pan() {
+    let fixture = the_fixture();
+    let input = input_with(1);
+    for (step, shift) in [(36_u8, [13_usize, 7_usize]), (60, [37, 21])] {
+        let corner = fixture::Fixture::crop_top_left(step);
+        let view = [96_u32, 72_u32];
+        let first_top_left = [corner.x - 2, corner.y - 2];
+        let second_top_left = [
+            first_top_left[0] + i32::try_from(shift[0]).expect("small"),
+            first_top_left[1] + i32::try_from(shift[1]).expect("small"),
+        ];
+        let draw = |top_left: [i32; 2]| {
+            let map = map_at(&input, step, top_left, view, 1);
+            readback_map(view[0] * 4, view[1] * 4, CLEAR, Some(&map), None)
+                .expect("the readback works")
+                .target
+                .expect("a map target")
+        };
+        let (first, second) = (draw(first_top_left), draw(second_top_left));
+        assert_eq!(
+            first,
+            fixture.reference_image(step, first_top_left, view),
+            "step {step}, first view"
+        );
+        assert_eq!(
+            second,
+            fixture.reference_image(step, second_top_left, view),
+            "step {step}, second view"
+        );
+        let (width, height) = (view[0] as usize, view[1] as usize);
+        let mut compared = 0;
+        for y in 0..height - shift[1] {
+            for x in 0..width - shift[0] {
+                let (fx, fy) = (x + shift[0], y + shift[1]);
+                assert_eq!(
+                    first[(fy * width + fx) * 4..(fy * width + fx) * 4 + 4],
+                    second[(y * width + x) * 4..(y * width + x) * 4 + 4],
+                    "step {step}: world pixel ({}, {}) differs between the two views",
+                    first_top_left[0] + i32::try_from(fx).expect("small"),
+                    first_top_left[1] + i32::try_from(fy).expect("small"),
+                );
+                compared += 1;
+            }
+        }
+        assert!(compared > 1000, "the views overlap widely");
+        // The two views are not one image shifted by a whole tile: the pattern is a property of the world, not of the view.
+        assert_ne!(first, second);
+    }
+}
+
+pub(crate) const CASES: [(&str, fn()); 23] = [
     ("readback_map_full_rules", readback_map_full_rules),
     ("readback_map_rivers_overlay", readback_map_rivers_overlay),
     (
@@ -2094,6 +2148,10 @@ pub(crate) const CASES: [(&str, fn()); 22] = [
     ("readback_map_refusals", readback_map_refusals),
     ("readback_map_modes", readback_map_modes),
     ("readback_map_mode_refusals", readback_map_mode_refusals),
+    (
+        "readback_map_patterns_stay_pinned_to_the_world_after_a_pan",
+        readback_map_patterns_stay_pinned_to_the_world_after_a_pan,
+    ),
     (
         "readback_map_mode_with_no_places",
         readback_map_mode_with_no_places,

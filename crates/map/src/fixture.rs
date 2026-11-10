@@ -80,27 +80,39 @@ const LAYOUT: [&str; 16] = [
     "~~~~~~~~~~pppp~~~~~~~~~~",
 ];
 
+/// A land style from its four source tones: `dark_lit` is `dark + 2 x (dark_second - dark)`, as the shipped data writes it.
 const fn style(
     solid: [u8; 3],
     second: [u8; 3],
     dark: [u8; 3],
     dark_second: [u8; 3],
-    relief: (i32, i32),
-    mix_percent: u8,
 ) -> TerrainStyle {
     TerrainStyle {
         solid: Rgba8::opaque(solid[0], solid[1], solid[2]),
         second: Rgba8::opaque(second[0], second[1], second[2]),
         dark: Rgba8::opaque(dark[0], dark[1], dark[2]),
-        dark_second: Rgba8::opaque(dark_second[0], dark_second[1], dark_second[2]),
-        cap: Rgba8::opaque(0, 0, 0),
-        high_ground: Rgba8::opaque(0, 0, 0),
-        relief_low: relief.0,
-        relief_high: relief.1,
-        mix_percent,
-        cap_low: 0,
-        cap_high: 1,
-        mountain: false,
+        dark_lit: Rgba8::opaque(
+            lit(dark[0], dark_second[0]),
+            lit(dark[1], dark_second[1]),
+            lit(dark[2], dark_second[2]),
+        ),
+    }
+}
+
+/// One channel of `dark + 2 x (dark_second - dark)`, clamped to a byte.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is clamped to 0..=255 first"
+)]
+const fn lit(dark: u8, dark_second: u8) -> u8 {
+    let value = dark as i32 + 2 * (dark_second as i32 - dark as i32);
+    if value < 0 {
+        0
+    } else if value > 255 {
+        255
+    } else {
+        value as u8
     }
 }
 
@@ -118,76 +130,77 @@ pub const RIVER: Rgba8 = Rgba8::opaque(0x3a, 0x78, 0xc2);
 pub fn terrains() -> Vec<Terrain> {
     let water = Terrain {
         kind: Kind::Sea,
-        style: style([0; 3], [0; 3], [0; 3], [0; 3], (0, 1), 0),
+        style: style([0; 3], [0; 3], [0; 3], [0; 3]),
     };
-    let mut mountain = style(
-        [0x7f, 0x81, 0x87],
-        [0x60, 0x62, 0x68],
-        [0x10, 0x11, 0x14],
-        [0x1b, 0x1c, 0x20],
-        (200, 1000),
-        70,
-    );
-    mountain.cap = Rgba8::opaque(0xe8, 0xe9, 0xed);
-    mountain.high_ground = Rgba8::opaque(0x3c, 0x3e, 0x44);
-    mountain.cap_low = 500;
-    mountain.cap_high = 900;
-    mountain.mountain = true;
+    let land = |solid, second, dark, dark_second| Terrain {
+        kind: Kind::Land,
+        style: style(solid, second, dark, dark_second),
+    };
     vec![
         water,
         Terrain {
             kind: Kind::Lake,
             ..water
         },
-        Terrain {
-            kind: Kind::Land,
-            style: style(
-                [0xa0, 0x89, 0x44],
-                [0x80, 0x6c, 0x35],
-                [0x15, 0x11, 0x0a],
-                [0x21, 0x1a, 0x0f],
-                (0, 300),
-                60,
-            ),
-        },
-        Terrain {
-            kind: Kind::Land,
-            style: style(
-                [0x36, 0x75, 0x34],
-                [0x28, 0x5a, 0x27],
-                [0x0a, 0x12, 0x0a],
-                [0x12, 0x20, 0x12],
-                (0, 400),
-                50,
-            ),
-        },
-        Terrain {
-            kind: Kind::Land,
-            style: style(
-                [0x2c, 0x4c, 0x2d],
-                [0x20, 0x3a, 0x22],
-                [0x09, 0x0f, 0x0a],
-                [0x10, 0x1a, 0x11],
-                (0, 150),
-                100,
-            ),
-        },
-        Terrain {
-            kind: Kind::Land,
-            style: style(
-                [0x5c, 0x3e, 0x25],
-                [0x46, 0x2e, 0x1b],
-                [0x11, 0x0b, 0x07],
-                [0x1c, 0x13, 0x0c],
-                (0, 100),
-                40,
-            ),
-        },
+        land(
+            [0xa0, 0x89, 0x44],
+            [0x80, 0x6c, 0x35],
+            [0x15, 0x11, 0x0a],
+            [0x21, 0x1a, 0x0f],
+        ),
+        land(
+            [0x36, 0x75, 0x34],
+            [0x28, 0x5a, 0x27],
+            [0x0a, 0x12, 0x0a],
+            [0x12, 0x20, 0x12],
+        ),
+        land(
+            [0x2c, 0x4c, 0x2d],
+            [0x20, 0x3a, 0x22],
+            [0x09, 0x0f, 0x0a],
+            [0x10, 0x1a, 0x11],
+        ),
+        land(
+            [0x5c, 0x3e, 0x25],
+            [0x46, 0x2e, 0x1b],
+            [0x11, 0x0b, 0x07],
+            [0x1c, 0x13, 0x0c],
+        ),
         Terrain {
             kind: Kind::Mountain,
-            style: mountain,
+            style: style(
+                [0x7f, 0x81, 0x87],
+                [0x60, 0x62, 0x68],
+                [0x10, 0x11, 0x14],
+                [0x1b, 0x1c, 0x20],
+            ),
         },
     ]
+}
+
+/// The glacier colour of the fixture, and its second tone.
+pub const ICE: Rgba8 = Rgba8::opaque(0xe8, 0xe9, 0xed);
+/// The glacier's second tone, on the shadow side.
+pub const ICE_SECOND: Rgba8 = Rgba8::opaque(0xb9, 0xbc, 0xc6);
+
+/// Whether the cell at crop column `x` and row `y` is a glacier: a patch of the mountains in the north-east.
+fn is_glacier(letter: char, x: i32, y: i32) -> bool {
+    letter == 'M' && x >= 18 && y <= 6
+}
+
+/// A land cell's elevation in metres, shaped for the hillside rule: a saddle `(x - cx) * (y - cy) * 6` around a centre that changes
+/// with the column band, so that slopes of every strength face both ways in every band (the strength grows away from the centre), and
+/// the mountains are bumpy and steep.
+fn land_metres(letter: char, x: i32, y: i32) -> i32 {
+    if letter == 'M' {
+        return 180 + (x * 73 + y * 41) % 17 * 55;
+    }
+    let (cx, cy) = match x {
+        ..=9 => (6, 8),
+        10..=15 => (12, 6),
+        _ => (19, 9),
+    };
+    400 + (x - cx) * (y - cy) * 6
 }
 
 /// The map: its cells, elevations (in metres, then stored as `metres + 11000`), usable bits and the packed grids.
@@ -196,34 +209,58 @@ pub fn terrains() -> Vec<Terrain> {
 ///
 /// If the layout is malformed (the fixture is a constant, so never).
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixture's cells, grids and look data are built together"
+)]
 pub fn fixture() -> Fixture {
     let terrains = terrains();
     let (width, height) = (SIZE[0] as usize, SIZE[1] as usize);
     let mut cells = Vec::with_capacity(width * height);
     let mut elevations = Vec::with_capacity(width * height);
     let mut fertility = Vec::with_capacity(width * height);
+    let mut glacier = Vec::with_capacity(width * height);
+    let mut stored_levels = Vec::with_capacity(width * height);
+    let mut terrain_indices = Vec::with_capacity(width * height);
     let mut grid_a = Vec::with_capacity(width * height * 4);
     let mut grid_b = Vec::with_capacity(width * height * 4);
     for (y, row) in LAYOUT.iter().enumerate() {
         assert_eq!(row.len(), width, "layout row {y}");
         for (x, letter) in row.chars().enumerate() {
             let (xi, yi) = (i32::try_from(x).expect("x"), i32::try_from(y).expect("y"));
-            let usable = (xi * 3 + yi * 5) % 4 != 0;
-            let fertility_pm = if usable { 500 } else { 0 };
+            let glacier_cell = is_glacier(letter, xi, yi);
+            // Fertility spread over every land type, 0 to 250 (stored fertility ÷ 4), a quarter of the cells at full fertility, so that
+            // every shade of every terrain, and every shadow-side and lit-side tone, shows in the picture; none on a glacier.
+            let stored = if glacier_cell {
+                0
+            } else if (xi + 2 * yi) % 4 == 0 {
+                250
+            } else {
+                (xi * 53 + yi * 29) % 251
+            };
+            let usable = stored > 0;
+            let fertility_pm = stored * 4;
             let (index, metres) = match letter {
                 // A shelf: the depth runs from 0 to 128 metres around the 40 metre threshold.
                 '~' => (0_u8, -((xi * 7 + yi * 13) % 17) * 8),
                 'L' => (1, 60 + (xi * 5 + yi * 3) % 9 * 4),
-                'p' => (2, 5 + (xi * 17 + yi * 29) % 23 * 14),
-                'f' => (3, 20 + (xi * 11 + yi * 7) % 19 * 25),
-                'b' => (4, (xi * 13 + yi * 3) % 11 * 15 - 20),
-                'm' => (5, (xi * 5 + yi * 19) % 9 * 12 - 10),
-                'M' => (6, 180 + (xi * 73 + yi * 41) % 17 * 55),
+                'p' => (2, land_metres(letter, xi, yi)),
+                'f' => (3, land_metres(letter, xi, yi)),
+                'b' => (4, land_metres(letter, xi, yi)),
+                'm' => (5, land_metres(letter, xi, yi)),
+                'M' => (6, land_metres(letter, xi, yi)),
                 other => panic!("layout letter {other:?}"),
             };
+            terrain_indices.push(index);
             let raw = u16::try_from(metres + 11_000).expect("elevation fits");
             elevations.push(raw);
-            fertility.push(fertility_pm);
+            fertility.push(u16::try_from(fertility_pm).expect("fertility fits"));
+            glacier.push(glacier_cell);
+            stored_levels.push(if glacier_cell {
+                255
+            } else {
+                u8::try_from(stored).expect("stored fertility fits")
+            });
             cells.push(match terrains[usize::from(index)].kind {
                 Kind::Sea => Surface::Sea {
                     depth: 11_000_u16.saturating_sub(raw),
@@ -234,29 +271,42 @@ pub fn fixture() -> Fixture {
                     usable,
                 },
             });
-            grid_a.extend_from_slice(&[index, u8::from(usable), 0, 255]);
             grid_b.extend_from_slice(&[raw.to_be_bytes()[0], raw.to_be_bytes()[1], 0, 255]);
         }
     }
-    let display_usable = fertility.iter().map(|value| *value >= 500).collect();
-    let data = MapData {
-        crop: Crop {
-            origin: Cell {
-                x: ORIGIN[0],
-                y: ORIGIN[1],
-            },
-            width: SIZE[0],
-            height: SIZE[1],
+    let crop = Crop {
+        origin: Cell {
+            x: ORIGIN[0],
+            y: ORIGIN[1],
         },
+        width: SIZE[0],
+        height: SIZE[1],
+    };
+    let hillside = crate::look::hillside_strengths(
+        crop,
+        &elevations,
+        &cells,
+        &crate::scenario::ground_scales(crop),
+        crate::look::LIGHT,
+        crate::look::D0,
+    );
+    // Grid A: the terrain index, fertility ÷ 4 (255 for a glacier) and the hillside strength + 128.
+    for ((index, stored), strength) in terrain_indices.iter().zip(&stored_levels).zip(&hillside) {
+        let packed = u8::try_from(i16::from(*strength) + 128).expect("strength fits");
+        grid_a.extend_from_slice(&[*index, *stored, packed, 255]);
+    }
+    let data = MapData {
+        crop,
         cells,
         elevations,
         fertility,
         climate_temperature_tenths: vec![100; width * height],
         climate_gdd: vec![1000; width * height],
         climate_rainfall_mm: vec![1000; width * height],
-        glacier: vec![false; width * height],
-        display_usable,
-        display_usable_pm: 500,
+        glacier,
+        hillside,
+        ice: ICE,
+        ice_second: ICE_SECOND,
         terrains: terrains[2..].iter().map(|terrain| terrain.style).collect(),
         sea: SEA,
         shallow_sea: SHALLOW_SEA,

@@ -971,7 +971,7 @@ fn compute_catchments(
     clippy::cast_sign_loss,
     reason = "the spec requires one f64 latitude cosine per bounded map row, rounded and clamped to 1..=65536"
 )]
-fn ground_scales(crop: Crop) -> Vec<u32> {
+pub(crate) fn ground_scales(crop: Crop) -> Vec<u32> {
     (0..crop.height)
         .map(|row| {
             let global_y = i64::from(crop.origin.y) + i64::from(row);

@@ -1,10 +1,6 @@
 use super::*;
 
 fn fixture(cells: Vec<Surface>) -> MapData {
-    let display_usable = cells
-        .iter()
-        .map(|cell| matches!(cell, Surface::Land { usable: true, .. }))
-        .collect();
     MapData {
         crop: Crop {
             origin: Cell { x: 10, y: 20 },
@@ -18,21 +14,14 @@ fn fixture(cells: Vec<Surface>) -> MapData {
         climate_gdd: vec![1000; 9],
         climate_rainfall_mm: vec![1000; 9],
         glacier: vec![false; 9],
-        display_usable,
-        display_usable_pm: 500,
+        hillside: vec![0; 9],
+        ice: Rgba8::opaque(200, 200, 200),
+        ice_second: Rgba8::opaque(150, 150, 150),
         terrains: vec![TerrainStyle {
             solid: Rgba8::opaque(1, 2, 3),
             second: Rgba8::opaque(4, 5, 6),
             dark: Rgba8::opaque(7, 8, 9),
-            dark_second: Rgba8::opaque(10, 11, 12),
-            cap: Rgba8::opaque(13, 14, 15),
-            high_ground: Rgba8::opaque(16, 17, 18),
-            relief_low: 0,
-            relief_high: 16,
-            mix_percent: 100,
-            cap_low: 8,
-            cap_high: 24,
-            mountain: true,
+            dark_lit: Rgba8::opaque(10, 11, 12),
         }],
         sea: Rgba8::opaque(20, 21, 22),
         shallow_sea: Rgba8::opaque(23, 24, 25),
@@ -61,6 +50,7 @@ fn encoded_elevation_map() -> MapData {
     map.climate_gdd = vec![1000; 4];
     map.climate_rainfall_mm = vec![1000; 4];
     map.glacier = vec![false; 4];
+    map.hillside = vec![0; 4];
     map
 }
 
@@ -280,8 +270,11 @@ fn validation_rejects_bad_grid_and_style_inputs() {
     map.cells.pop();
     assert!(map.validate().is_err());
     let mut map = fixture(all_land());
-    map.terrains[0].relief_high = 0;
-    assert!(map.validate().is_err());
+    map.hillside[0] = 16;
+    assert!(map.validate().is_err(), "a hillside strength beyond 15");
+    let mut map = fixture(all_land());
+    map.hillside.pop();
+    assert!(map.validate().is_err(), "a hillside strength missing");
     let mut map = fixture(all_land());
     map.cells[0] = Surface::Land {
         terrain: 3,
@@ -299,41 +292,184 @@ fn validation_rejects_bad_grid_and_style_inputs() {
     assert!(map.validate().is_err());
 }
 
-#[test]
-fn colour_rules_cover_usable_unusable_coast_and_crop_outside() {
+/// The map's centre cell (11, 21) set to `fertility_pm`, glacier flag and hillside `strength`.
+fn centre(fertility_pm: u16, glacier: bool, strength: i8) -> MapData {
     let mut map = fixture(all_land());
-    let cell = Cell { x: 11, y: 21 };
-    let interior = pixels_for_cell(cell, 50)
+    map.fertility[4] = fertility_pm;
+    map.glacier[4] = glacier;
+    map.hillside[4] = strength;
+    map
+}
+
+/// The first pixel sampling the centre cell at step 50 for which `wanted(blue16 value, bayer value)` holds.
+fn centre_pixel(wanted: impl Fn(u16, i16) -> bool) -> WorldPixel {
+    pixels_for_cell(Cell { x: 11, y: 21 }, 50)
         .into_iter()
-        .find(|pixel| bayer(*pixel) >= 4)
-        .expect("interior cell has a solid-tone sample");
-    assert!(!has_water_neighbour(&map, 50, interior));
+        .find(|pixel| {
+            let blue = u16::from(
+                look::BLUE16[pixel.y.rem_euclid(16) as usize][pixel.x.rem_euclid(16) as usize],
+            );
+            let ordered = i16::from(
+                look::BAYER4_TRANSPOSED[pixel.y.rem_euclid(4) as usize]
+                    [pixel.x.rem_euclid(4) as usize],
+            );
+            wanted(blue, ordered)
+        })
+        .expect("the cell has a pixel of the wanted pattern values")
+}
+
+fn colour_at(map: &MapData, pixel: WorldPixel) -> Rgba8 {
+    assert!(!has_water_neighbour(map, 50, pixel), "an interior pixel");
+    reference_colour(map, 50, pixel, &BTreeSet::new()).expect("a colour")
+}
+
+#[test]
+fn a_fertile_pixel_is_solid_and_a_barren_one_dark_on_level_ground() {
+    let style = fixture(all_land()).terrains[0];
+    // Full fertility (stored 250) is 256 levels: every pixel of the blue-noise tile is below it.
+    let full = centre(1000, false, 0);
+    let any = centre_pixel(|_, _| true);
+    assert_eq!(colour_at(&full, any), style.solid);
+    // No fertility is no level: none is.
+    let barren = centre(0, false, 0);
+    assert_eq!(colour_at(&barren, any), style.dark);
+    // In between, the shade is three times the level with the blue-noise value deciding the remainder: stored 100 (400 per mille)
+    // is level 25, so `v` is 75, `k` 0, and a pixel whose blue value is below 75 takes shade 1 and the others stay dark.
+    let middle = centre(400, false, 0);
+    let shades = look::TerrainShades::of(&style);
+    assert_eq!(look::FERTILITY_LEVELS[100], 25);
     assert_eq!(
-        reference_colour(&map, 50, interior, &BTreeSet::new()),
-        Some(map.terrains[0].solid)
+        colour_at(&middle, centre_pixel(|blue, _| blue < 75)),
+        shades.tone[1]
     );
-    map.cells[4] = Surface::Land {
-        terrain: 0,
-        usable: false,
-    };
-    map.display_usable[4] = false;
     assert_eq!(
-        reference_colour(&map, 50, interior, &BTreeSet::new()),
-        Some(map.terrains[0].dark)
+        colour_at(&middle, centre_pixel(|blue, _| blue >= 75)),
+        style.dark
     );
-    map.cells[4] = Surface::Land {
-        terrain: 0,
-        usable: true,
+    // The strength's sign alone changes nothing without a pattern hit: the wrong side leaves the pixel as it was.
+    assert_eq!(
+        colour_at(&centre(1000, false, 5), any),
+        style.solid,
+        "lit side, bright"
+    );
+    assert_eq!(
+        colour_at(&centre(0, false, -5), any),
+        style.dark,
+        "shadow side, dark"
+    );
+}
+
+#[test]
+fn the_hillside_dither_takes_the_second_tone_on_bright_shadow_and_the_lit_tone_on_dark_light() {
+    let style = fixture(all_land()).terrains[0];
+    // A bright pixel on the shadow side (negative strength) takes `second` where the Bayer value is below |strength|.
+    let shadow = centre(1000, false, -8);
+    assert_eq!(
+        colour_at(&shadow, centre_pixel(|_, bayer| bayer < 8)),
+        style.second
+    );
+    assert_eq!(
+        colour_at(&shadow, centre_pixel(|_, bayer| bayer >= 8)),
+        style.solid
+    );
+    // The threshold is the strength itself: at -1 only Bayer value 0 qualifies.
+    let faint = centre(1000, false, -1);
+    assert_eq!(
+        colour_at(&faint, centre_pixel(|_, bayer| bayer == 0)),
+        style.second
+    );
+    assert_eq!(
+        colour_at(&faint, centre_pixel(|_, bayer| bayer == 1)),
+        style.solid
+    );
+    // A dark pixel on the lit side (positive strength) takes `dark_lit` under the same test.
+    let lit = centre(0, false, 8);
+    assert_eq!(
+        colour_at(&lit, centre_pixel(|_, bayer| bayer < 8)),
+        style.dark_lit
+    );
+    assert_eq!(
+        colour_at(&lit, centre_pixel(|_, bayer| bayer >= 8)),
+        style.dark
+    );
+    // At +15 and -15, the strongest, all but Bayer value 15 qualify.
+    assert_eq!(
+        colour_at(&centre(0, false, 15), centre_pixel(|_, bayer| bayer == 14)),
+        style.dark_lit
+    );
+    assert_eq!(
+        colour_at(&centre(0, false, 15), centre_pixel(|_, bayer| bayer == 15)),
+        style.dark
+    );
+    assert_eq!(
+        colour_at(
+            &centre(1000, false, -15),
+            centre_pixel(|_, bayer| bayer == 14)
+        ),
+        style.second
+    );
+}
+
+#[test]
+fn a_glacier_is_ice_with_its_second_tone_on_the_shadow_side_whatever_the_fertility() {
+    let map = centre(1000, true, 0);
+    let any = centre_pixel(|_, _| true);
+    assert_eq!(
+        colour_at(&map, any),
+        map.ice,
+        "the fertility pattern is skipped"
+    );
+    let shadow = centre(0, true, -8);
+    assert_eq!(
+        colour_at(&shadow, centre_pixel(|_, bayer| bayer < 8)),
+        shadow.ice_second
+    );
+    assert_eq!(
+        colour_at(&shadow, centre_pixel(|_, bayer| bayer >= 8)),
+        shadow.ice
+    );
+    let lit = centre(0, true, 8);
+    assert_eq!(
+        colour_at(&lit, centre_pixel(|_, bayer| bayer < 8)),
+        lit.ice,
+        "no second tone on the lit side"
+    );
+}
+
+#[test]
+fn the_patterns_are_pinned_to_the_world_pixel_and_so_to_negative_pixels_too() {
+    let style = fixture(all_land()).terrains[0];
+    let map = centre(400, false, 0);
+    // The same world pixel has the same colour whatever the view, and the tile repeats every 16 pixels.
+    let pixel = centre_pixel(|blue, _| blue < 25);
+    let again = WorldPixel {
+        x: pixel.x + 16,
+        y: pixel.y + 32,
     };
-    map.display_usable[4] = true;
+    let blue = |pixel: WorldPixel| {
+        look::BLUE16[pixel.y.rem_euclid(16) as usize][pixel.x.rem_euclid(16) as usize]
+    };
+    assert_eq!(blue(pixel), blue(again));
+    assert_eq!(
+        look::land_colour(&style, (map.ice, map.ice_second), 400, false, 0, pixel),
+        look::land_colour(&style, (map.ice, map.ice_second), 400, false, 0, again)
+    );
+    // Negative world pixels wrap to the other end of the tile.
+    assert_eq!(blue(WorldPixel { x: -1, y: -1 }), look::BLUE16[15][15]);
+}
+
+#[test]
+fn the_coast_outline_water_and_the_outside_of_the_crop_are_unchanged_by_the_look() {
+    let mut map = centre(0, false, 8);
     map.cells[1] = Surface::Lake;
-    let coast = pixels_for_cell(cell, 50)
+    let coast = pixels_for_cell(Cell { x: 11, y: 21 }, 50)
         .into_iter()
         .find(|pixel| has_water_neighbour(&map, 50, *pixel))
-        .expect("land pixel touches the lake");
+        .expect("a land pixel touches the lake");
     assert_eq!(
         reference_colour(&map, 50, coast, &BTreeSet::new()),
-        Some(map.terrains[0].solid)
+        Some(map.terrains[0].solid),
+        "the outline is the terrain's solid colour, whatever the fertility and hillside"
     );
     let lake = pixels_for_cell(Cell { x: 11, y: 20 }, 50)[0];
     assert_eq!(
@@ -370,37 +506,6 @@ fn colour_rule_thresholds_and_river_overlay_are_integer_and_ordered() {
     assert_eq!(
         reference_colour(&map, 50, pixel, &BTreeSet::new()),
         Some(map.sea)
-    );
-    map.cells[4] = Surface::Land {
-        terrain: 0,
-        usable: true,
-    };
-    map.display_usable[4] = true;
-    map.elevations.fill(11_016);
-    assert_eq!(
-        reference_colour(&map, 50, pixel, &BTreeSet::new()),
-        Some(map.terrains[0].cap)
-    );
-    let below_cap = pixels_for_cell(Cell { x: 11, y: 21 }, 50)
-        .into_iter()
-        .find(|candidate| bayer(*candidate) >= 8)
-        .expect("pixel lies outside the cap dither threshold");
-    assert_eq!(
-        reference_colour(&map, 50, below_cap, &BTreeSet::new()),
-        Some(map.terrains[0].second)
-    );
-    map.cells[4] = Surface::Land {
-        terrain: 0,
-        usable: false,
-    };
-    map.display_usable[4] = false;
-    let dark_cap = pixels_for_cell(Cell { x: 11, y: 21 }, 50)
-        .into_iter()
-        .find(|candidate| bayer(*candidate) < 8)
-        .expect("unusable mountain has a cap sample");
-    assert_eq!(
-        reference_colour(&map, 50, dark_cap, &BTreeSet::new()),
-        Some(map.terrains[0].high_ground)
     );
     let river = BTreeSet::from([pixel]);
     assert_eq!(reference_colour(&map, 50, pixel, &river), Some(map.river));
@@ -465,44 +570,6 @@ fn frozen_jitter_hash_noise_and_activation_vectors_match_r4() {
         u64::from(4095_u16) * 2 * 29_491
             < u64::try_from(i32::MAX).expect("positive i32 maximum fits u64")
     );
-}
-
-#[test]
-fn bilinear_elevation_matches_r4_vectors() {
-    let map = encoded_elevation_map();
-    for (point, expected) in [
-        (
-            FixedPoint {
-                x: 16_384,
-                y: 16_384,
-            },
-            0,
-        ),
-        (
-            FixedPoint {
-                x: 32_768,
-                y: 16_384,
-            },
-            50,
-        ),
-        (
-            FixedPoint {
-                x: 24_576,
-                y: 24_576,
-            },
-            156,
-        ),
-        (FixedPoint { x: 0, y: 0 }, 0),
-        (
-            FixedPoint {
-                x: 65_535,
-                y: 65_535,
-            },
-            1000,
-        ),
-    ] {
-        assert_eq!(map.elevation_at_point(point), Some(expected));
-    }
 }
 
 #[test]

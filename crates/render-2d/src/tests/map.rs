@@ -22,15 +22,14 @@ pub(super) fn grid(width: u32, height: u32, cell: [u8; 4]) -> Vec<u8> {
 fn land() -> MapTerrainRule {
     MapTerrainRule {
         kind: MapTerrainKind::Land,
-        solid: [1, 2, 3, 255],
-        second: [4, 5, 6, 255],
-        dark: [7, 8, 9, 255],
-        dark_second: [10, 11, 12, 255],
-        cap: [13, 14, 15, 255],
-        high_ground: [16, 17, 18, 255],
-        relief: [0, 300],
-        mix_percent: 60,
-        cap_heights: [500, 900],
+        tone: [
+            [7, 8, 9, 255],
+            [4, 5, 6, 255],
+            [3, 4, 5, 255],
+            [1, 2, 3, 255],
+        ],
+        shadow: [[10, 11, 12, 255], [13, 14, 15, 255], [16, 17, 18, 255]],
+        lit: [[19, 20, 21, 255], [22, 23, 24, 255], [25, 26, 27, 255]],
     }
 }
 
@@ -42,6 +41,8 @@ pub(super) fn rules(count: usize) -> MapRules {
         shallow_sea: [11, 20, 34, 255],
         lake: [11, 20, 34, 255],
         river: [58, 120, 194, 255],
+        ice: [232, 233, 237, 255],
+        ice_second: [185, 188, 198, 255],
         overlay_palette: Vec::new(),
         shallow_threshold: 40,
         steps: std::array::from_fn(|step| 196_608 - 2_000 * i32::try_from(step).unwrap()),
@@ -55,7 +56,7 @@ pub(super) fn input(generation: u64, width: u32, height: u32) -> Arc<MapInput> {
             generation,
             [100, 200],
             [width, height],
-            grid(width, height, [1, 1, 0, 255]),
+            grid(width, height, [1, 1, 128, 255]),
             grid(width, height, [42, 24, 0, 255]),
             rules(3),
         )
@@ -94,7 +95,7 @@ pub(super) fn attached() -> (Arc<SceneBridge>, Arc<RecordingSink>) {
 fn an_input_is_checked_against_the_packed_layout_and_names_the_first_problem() {
     let ok =
         |a: Vec<u8>, b: Vec<u8>, rules: MapRules| MapInput::new(1, [0, 0], [2, 1], a, b, rules);
-    let a = grid(2, 1, [1, 1, 0, 255]);
+    let a = grid(2, 1, [1, 1, 128, 255]);
     let b = grid(2, 1, [0, 0, 0, 255]);
     assert!(ok(a.clone(), b.clone(), rules(3)).is_ok());
 
@@ -128,11 +129,30 @@ fn an_input_is_checked_against_the_packed_layout_and_names_the_first_problem() {
             actual: 9
         }
     );
-    // Grid A: alpha, the reserved bits of G, B, a terrain index the rules lack (cell (1, 0) is the second one).
+    // Grid A: alpha, G (fertility / 4 up to 250, or 255 for a glacier), B (a strength + 128: 113 to 143), a terrain index the rules lack
+    // (cell (1, 0) is the second one).
     for (cell, problem) in [
-        ([1, 1, 0, 254], "alpha is not 255"),
-        ([1, 3, 0, 255], "a bit of G other than bit 0 is set"),
-        ([1, 1, 7, 255], "B is not zero"),
+        ([1, 1, 128, 254], "alpha is not 255"),
+        (
+            [1, 251, 128, 255],
+            "G is neither fertility / 4 (0 to 250) nor the glacier marker 255",
+        ),
+        (
+            [1, 254, 128, 255],
+            "G is neither fertility / 4 (0 to 250) nor the glacier marker 255",
+        ),
+        (
+            [1, 1, 0, 255],
+            "B is not a hillside strength + 128 (113 to 143)",
+        ),
+        (
+            [1, 1, 112, 255],
+            "B is not a hillside strength + 128 (113 to 143)",
+        ),
+        (
+            [1, 1, 144, 255],
+            "B is not a hillside strength + 128 (113 to 143)",
+        ),
     ] {
         let mut bad = a.clone();
         bad[4..8].copy_from_slice(&cell);
@@ -183,7 +203,7 @@ fn an_input_is_checked_against_the_packed_layout_and_names_the_first_problem() {
 fn a_rule_table_is_checked_and_names_the_first_problem() {
     let ok =
         |a: Vec<u8>, b: Vec<u8>, rules: MapRules| MapInput::new(1, [0, 0], [2, 1], a, b, rules);
-    let a = grid(2, 1, [1, 1, 0, 255]);
+    let a = grid(2, 1, [1, 1, 128, 255]);
     let b = grid(2, 1, [0, 0, 0, 255]);
     // The rule table: its length, and each entry's own rules.
     let problem = |change: &dyn Fn(&mut MapRules)| {
@@ -238,30 +258,28 @@ fn a_rule_table_is_checked_and_names_the_first_problem() {
         assert_eq!(problem(change), table(what));
     }
     assert_eq!(
-        problem(&|rules| rules.terrains[1].second[3] = 200),
+        problem(&|rules| rules.terrains[1].shadow[2][3] = 200),
         terrain(1, "a land colour is not opaque")
     );
     assert_eq!(
-        problem(&|rules| rules.terrains[2].mix_percent = 101),
-        terrain(2, "the mix is over 100 percent")
+        problem(&|rules| rules.terrains[0].lit[0][3] = 0),
+        terrain(0, "a land colour is not opaque")
     );
-    for relief in [[10, 10], [20, 10], [-11_001, 5], [0, 54_536]] {
-        assert_eq!(
-            problem(&move |rules| rules.terrains[0].relief = relief),
-            terrain(
-                0,
-                "the relief range must rise within -11000 to 54535 metres"
-            ),
-            "{relief:?}"
-        );
-    }
+    assert_eq!(
+        problem(&|rules| rules.ice[3] = 254),
+        table("the ice colour is not opaque")
+    );
+    assert_eq!(
+        problem(&|rules| rules.ice_second[3] = 0),
+        table("the ice second tone is not opaque")
+    );
 }
 
 #[test]
 fn the_rules_a_kind_reads_and_the_crop_are_checked() {
     let ok =
         |a: Vec<u8>, b: Vec<u8>, rules: MapRules| MapInput::new(1, [0, 0], [2, 1], a, b, rules);
-    let a = grid(2, 1, [1, 1, 0, 255]);
+    let a = grid(2, 1, [1, 1, 128, 255]);
     let b = grid(2, 1, [0, 0, 0, 255]);
     let problem = |change: &dyn Fn(&mut MapRules)| {
         let mut broken = rules(3);
@@ -272,26 +290,17 @@ fn the_rules_a_kind_reads_and_the_crop_are_checked() {
         terrain: Some(terrain),
         problem,
     };
-    // A mountain's cap and high-ground colours and cap heights are read; ordinary land and water ignore them.
+    // A mountain's tones are read like ordinary land's; water ignores them.
     assert_eq!(
         problem(&|rules| {
             rules.terrains[1].kind = MapTerrainKind::Mountain;
-            rules.terrains[1].cap[3] = 0;
+            rules.terrains[1].tone[1][3] = 0;
         }),
-        terrain(1, "the cap or high-ground colour is not opaque")
-    );
-    assert_eq!(
-        problem(&|rules| {
-            rules.terrains[1].kind = MapTerrainKind::Mountain;
-            rules.terrains[1].cap_heights = [900, 500];
-        }),
-        terrain(1, "the cap heights must rise within -11000 to 54535 metres")
+        terrain(1, "a land colour is not opaque")
     );
     let mut sloppy = rules(3);
-    sloppy.terrains[0].cap_heights = [9, 1];
     sloppy.terrains[1].kind = MapTerrainKind::Sea;
-    sloppy.terrains[1].relief = [9, 1];
-    sloppy.terrains[1].solid[3] = 0;
+    sloppy.terrains[1].tone[3][3] = 0;
     assert!(ok(a.clone(), b.clone(), sloppy).is_ok());
     // The crop must lie in the non-negative world and leave room past its far edge.
     for (origin, size) in [
@@ -382,7 +391,7 @@ fn location_snapshots_are_bounded_checked_and_use_the_input_palette() {
         9,
         [100, 200],
         [2, 1],
-        grid(2, 1, [1, 1, 0, 255]),
+        grid(2, 1, [1, 1, 128, 255]),
         grid(2, 1, [0, 0, 0, 255]),
         map_rules,
     )

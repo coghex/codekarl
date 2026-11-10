@@ -110,8 +110,13 @@ fn valid_fixture_loads_climate_fertility_and_preserves_packed_bytes() {
             TerrainKind::Mountain,
         ]
     );
-    assert_eq!(loaded.grid_a.pixels[6], [2, 0, 0, 255]);
-    assert_eq!(loaded.grid_a.pixels[10], [3, 1, 0, 255]);
+    // Grid A: the terrain index, fertility ÷ 4 (255 for a glacier) and the hillside strength + 128.
+    assert_eq!(loaded.grid_a.pixels[6], [2, 124, 128, 255]);
+    // The mountain below a 1000 m neighbour to its north faces away from the light: the strongest shadow, -15.
+    assert_eq!(loaded.grid_a.pixels[10], [3, 125, 128 - 15, 255]);
+    for (pixel, strength) in loaded.grid_a.pixels.iter().zip(&loaded.data.hillside) {
+        assert_eq!(i16::from(pixel[2]), i16::from(*strength) + 128);
+    }
     assert_eq!(loaded.grid_b.pixels[0], [0x27, 0x10, 0, 255]);
     assert_eq!(loaded.grid_b.pixels[5], [0x2a, 0xf8, 0, 255]);
     assert_eq!(loaded.grid_b.pixels[6], [0x2e, 0xe0, 0, 255]);
@@ -121,7 +126,7 @@ fn valid_fixture_loads_climate_fertility_and_preserves_packed_bytes() {
 }
 
 #[test]
-fn fertility_zero_and_four_drive_land_usability_independently_of_display_cutoff() {
+fn fertility_zero_and_four_drive_land_usability_and_grid_as_green_channel() {
     let fixture = Fixture::copy();
     let mut samples = vec![0; 16];
     samples[6] = 1;
@@ -139,8 +144,8 @@ fn fertility_zero_and_four_drive_land_usability_independently_of_display_cutoff(
         Surface::Land { usable: true, .. }
     ));
     assert_eq!(
-        loaded.grid_a.pixels[6][1], 0,
-        "496/500 display threshold remains separate"
+        loaded.grid_a.pixels[6][1], 1,
+        "grid A's green channel is the stored fertility (fertility ÷ 4)"
     );
 }
 
@@ -533,25 +538,65 @@ fn terrain_table_invariants_are_validated_at_the_offending_entry() {
         "greater than zero",
     );
 
+    // The keys of the earlier look are removed, and a file that still has one is refused by name (milestone 9, slice 10a).
+    for key in [
+        "relief_low = 0",
+        "relief_high = 100",
+        "mix = 30",
+        "cap = \"abcdef\"",
+        "high_ground = \"fedcba\"",
+        "cap_low = 1000",
+        "cap_high = 2000",
+    ] {
+        let fixture = Fixture::copy();
+        fixture.replace(
+            "terrain.toml",
+            "name = \"plains\"",
+            &format!("{key}\nname = \"plains\""),
+        );
+        let name = key.split(' ').next().expect("a key");
+        assert_error(&fixture, "terrain.toml", &format!("unknown field `{name}`"));
+    }
     let fixture = Fixture::copy();
-    fixture.replace("terrain.toml", "relief_high = 100", "relief_high = 0");
+    fixture.replace(
+        "terrain.toml",
+        "shallow_threshold = 20",
+        "shallow_threshold = 20\ndisplay_usable_pm = 500",
+    );
     assert_error(
         &fixture,
-        "terrain.toml terrain[2].relief_high",
-        "greater than relief_low",
+        "terrain.toml",
+        "unknown field `display_usable_pm`",
     );
 
+    // The new keys are required and checked: dark_lit, the ice, and the light and curve constant.
     let fixture = Fixture::copy();
-    fixture.replace("terrain.toml", "cap_high = 2000", "cap_high = 999");
+    fixture.replace("terrain.toml", "dark_lit = \"556677\"\n", "");
     assert_error(
         &fixture,
-        "terrain.toml terrain[3].cap_high",
-        "greater than cap_low",
+        "terrain.toml terrain[2].dark_lit",
+        "required field is missing",
     );
-
     let fixture = Fixture::copy();
-    fixture.replace("terrain.toml", "mix = 30", "mix = 101");
-    assert_error(&fixture, "terrain.toml terrain[2].mix", "0..=100");
+    fixture.replace("terrain.toml", "light = [-3827, -9239]", "light = [0, 0]");
+    assert_error(&fixture, "terrain.toml look.light", "nonzero vector");
+    let fixture = Fixture::copy();
+    fixture.replace(
+        "terrain.toml",
+        "light = [-3827, -9239]",
+        "light = [-10001, 0]",
+    );
+    assert_error(&fixture, "terrain.toml look.light", "within -10000..=10000");
+    let fixture = Fixture::copy();
+    fixture.replace("terrain.toml", "d0 = [1, 80]", "d0 = [0, 80]");
+    assert_error(&fixture, "terrain.toml look.d0", "positive");
+    let fixture = Fixture::copy();
+    fixture.replace("terrain.toml", "colour = \"eeeeee\"", "colour = \"zz\"");
+    assert_error(
+        &fixture,
+        "terrain.toml ice.colour",
+        "six hexadecimal digits",
+    );
 
     let fixture = Fixture::copy();
     fixture.replace("terrain.toml", "kind = \"lake\"", "kind = \"sea\"");
@@ -561,7 +606,7 @@ fn terrain_table_invariants_are_validated_at_the_offending_entry() {
     fixture.replace(
         "terrain.toml",
         "name = \"lake\"\nkind = \"lake\"\nkey = \"00ffff\"",
-        "name = \"lake\"\nkind = \"land\"\nkey = \"00ffff\"\nsolid = \"112233\"\nsecond = \"223344\"\ndark = \"334455\"\ndark_second = \"445566\"\nrelief_low = 0\nrelief_high = 1\nmix = 0",
+        "name = \"lake\"\nkind = \"land\"\nkey = \"00ffff\"\nsolid = \"112233\"\nsecond = \"223344\"\ndark = \"334455\"\ndark_second = \"445566\"\ndark_lit = \"556677\"",
     );
     assert_error(&fixture, "terrain.toml terrain", "exactly one lake");
 
@@ -589,7 +634,7 @@ fn terrain_type_limit_and_river_crop_membership_are_validated() {
     for index in 4..257 {
         source.push_str("\n\n[[terrain]]\nname = \"extra");
         source.push_str(&index.to_string());
-        source.push_str("\"\nkind = \"land\"\nkey = \"aabbcc\"\nsolid = \"112233\"\nsecond = \"223344\"\ndark = \"334455\"\ndark_second = \"445566\"\nrelief_low = 0\nrelief_high = 1\nmix = 0\n");
+        source.push_str("\"\nkind = \"land\"\nkey = \"aabbcc\"\nsolid = \"112233\"\nsecond = \"223344\"\ndark = \"334455\"\ndark_second = \"445566\"\ndark_lit = \"556677\"\n");
     }
     fs::write(fixture.0.join("terrain.toml"), source).expect("write large table");
     assert_error(&fixture, "terrain.toml terrain", "maximum is 256");

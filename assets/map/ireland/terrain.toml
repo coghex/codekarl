@@ -2,11 +2,22 @@
 # and never write this file. The colours are mock-up 2's (docs/map-design.md section 8); the relief and mix values are its rules.
 #
 # `key` is the colour that stands for the type in terrain.png, so that a hand edit in an image editor is a paint stroke. The keys
-# of the land types are their solid colours; sea and lake have keys of their own. fertility is derived by apply_edits.py; display_usable_pm is the interim grid threshold.
+# of the land types are their solid colours; sea and lake have keys of their own. fertility is derived by apply_edits.py.
 
 # Under this depth, in metres, the sea dithers towards the shallow-sea tone.
 shallow_threshold = 60
-display_usable_pm = 500
+
+# The default look (milestone 9, slice 10a; docs/map-design.md section 12). Fertility sets the share of bright pixels (full colour is 100%
+# usable land, the dark colour 0%); hillsides dither against a fixed light; a glacier is ice. `dark_lit` is `dark + 2 x (dark_second - dark)`.
+[ice]
+colour = "e8e9ed"
+second = "b9bcc6"
+
+[look]
+# The unit vector towards the light at azimuth 337.5 degrees (x east, y south), as round(10^4 sin a) and round(-10^4 cos a), so that no
+# trigonometry runs at load; and the soft curve's constant d0 as a ratio n / d, one value for every zoom step.
+light = [-3827, -9239]
+d0 = [1, 80]
 
 [water]
 sea = "05080e"
@@ -33,9 +44,7 @@ solid = "a08944"
 second = "806c35"
 dark = "15110a"
 dark_second = "211a0f"
-relief_low = 20
-relief_high = 260
-mix = 70
+dark_lit = "2d2314"
 
 [[terrain]]
 name = "forest"
@@ -45,9 +54,7 @@ solid = "367534"
 second = "285a27"
 dark = "0a120a"
 dark_second = "122012"
-relief_low = 20
-relief_high = 300
-mix = 70
+dark_lit = "1a2e1a"
 
 [[terrain]]
 name = "bog"
@@ -57,9 +64,7 @@ solid = "2c4c2d"
 second = "203a22"
 dark = "090f0a"
 dark_second = "101a11"
-relief_low = 40
-relief_high = 300
-mix = 50
+dark_lit = "172518"
 
 [[terrain]]
 name = "marsh"
@@ -69,9 +74,7 @@ solid = "5c3e25"
 second = "462e1b"
 dark = "110b07"
 dark_second = "1c130c"
-relief_low = 0
-relief_high = 40
-mix = 40
+dark_lit = "271b11"
 
 [[terrain]]
 name = "mountain"
@@ -81,10 +84,4 @@ solid = "7f8187"
 second = "606268"
 dark = "101114"
 dark_second = "1b1c20"
-relief_low = 280
-relief_high = 650
-mix = 80
-cap = "e8e9ed"
-high_ground = "3c3e44"
-cap_low = 560
-cap_high = 900
+dark_lit = "26272c"

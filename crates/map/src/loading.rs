@@ -24,7 +24,7 @@ pub enum TerrainKind {
     Lake,
     /// Ordinary land cells.
     Land,
-    /// Mountain cells, which use cap and high-ground colours.
+    /// Mountain cells: land with its own palette (the look no longer sets them apart by elevation).
     Mountain,
 }
 
@@ -184,13 +184,8 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
         ));
     }
     let water = parse_water(&terrain_file.water, &map_file.layers.terrain_rules)?;
-    if terrain_file.display_usable_pm > 1000 {
-        return Err(LoadError::at(
-            &map_file.layers.terrain_rules,
-            "display_usable_pm",
-            "must be in 0..=1000",
-        ));
-    }
+    let ice = parse_ice(&terrain_file.ice, &map_file.layers.terrain_rules)?;
+    let (light, d0) = parse_look(&terrain_file.look, &map_file.layers.terrain_rules)?;
 
     let terrain_image =
         decode_key_image(directory, &map_file.layers.terrain, crop.width, crop.height)?;
@@ -273,7 +268,6 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
     let mut fertility = Vec::with_capacity(pixel_count);
     let mut climate_temperature_tenths = Vec::with_capacity(pixel_count);
     let mut glacier = Vec::with_capacity(pixel_count);
-    let mut display_usable = Vec::with_capacity(pixel_count);
     let crop_width = usize::try_from(crop.width)
         .map_err(|_| LoadError::at("map.toml", "crop.width", "does not fit address space"))?;
     for (pixel_index, &raw_elevation) in elevation_image.iter().enumerate() {
@@ -377,8 +371,6 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
             },
         )?);
         glacier.push(is_glacier);
-        let display_bit = fertility_pm >= u32::from(terrain_file.display_usable_pm);
-        display_usable.push(display_bit);
         if !is_water && (x == 0 || y == 0 || x + 1 == crop.width || y + 1 == crop.height) {
             return Err(LoadError::at(
                 &map_file.layers.terrain,
@@ -403,10 +395,16 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
             },
         };
         cells.push(surface);
+        // Grid A: the terrain index; fertility ÷ 4 (0 to 250), or 255 for a glacier; the hillside strength + 128 (filled in below, once
+        // every elevation is known).
         packed_a.push([
             u8::try_from(terrain_index).unwrap_or_default(),
-            u8::from(display_bit),
-            0,
+            if is_glacier {
+                255
+            } else {
+                u8::try_from(fertility_pm / 4).unwrap_or_default()
+            },
+            128,
             255,
         ]);
         packed_b.push([
@@ -429,6 +427,18 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
             }
         };
     }
+    // The hillside strength of every cell, packed into grid A's blue channel (+ 128).
+    let hillside = crate::look::hillside_strengths(
+        crop,
+        &elevation_image,
+        &cells,
+        &crate::scenario::ground_scales(crop),
+        light,
+        d0,
+    );
+    for (pixel, strength) in packed_a.iter_mut().zip(&hillside) {
+        pixel[2] = u8::try_from(i16::from(*strength) + 128).unwrap_or(128);
+    }
     let data = MapData {
         crop,
         cells,
@@ -438,8 +448,9 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
         climate_gdd: gdd_image,
         climate_rainfall_mm: rainfall_image,
         glacier,
-        display_usable,
-        display_usable_pm: terrain_file.display_usable_pm,
+        hillside,
+        ice: ice.0,
+        ice_second: ice.1,
         terrains: styles,
         sea: water.sea,
         shallow_sea: water.shallow_sea,
@@ -544,11 +555,6 @@ fn input_path(directory: &Path, name: &str) -> Result<PathBuf, LoadError> {
     Ok(directory.join(path))
 }
 
-// Required-field and range checks stay beside their corresponding TOML fields.
-#[expect(
-    clippy::too_many_lines,
-    reason = "required-field and range checks stay beside their TOML fields"
-)]
 fn parse_terrain_types(
     file: &TerrainFile,
     filename: &str,
@@ -601,72 +607,20 @@ fn parse_terrain_types(
                     let second =
                         colour_field(entry.second.as_deref(), filename, &location, "second")?;
                     let dark = colour_field(entry.dark.as_deref(), filename, &location, "dark")?;
-                    let dark_second = colour_field(
+                    // `dark_second` is the source of `dark_lit` (`dark + 2 x (dark_second - dark)`): both are written out.
+                    colour_field(
                         entry.dark_second.as_deref(),
                         filename,
                         &location,
                         "dark_second",
                     )?;
-                    let relief_low =
-                        number_field(entry.relief_low, filename, &location, "relief_low")?;
-                    let relief_high =
-                        number_field(entry.relief_high, filename, &location, "relief_high")?;
-                    let mix = number_field(entry.mix, filename, &location, "mix")?;
-                    if relief_high <= relief_low {
-                        return Err(LoadError::at(
-                            filename,
-                            format!("{location}.relief_high"),
-                            "must be greater than relief_low",
-                        ));
-                    }
-                    if !(0..=100).contains(&mix) {
-                        return Err(LoadError::at(
-                            filename,
-                            format!("{location}.mix"),
-                            "must be in 0..=100",
-                        ));
-                    }
-                    let (cap, high_ground, cap_low, cap_high) = if kind == TerrainKind::Mountain {
-                        let cap = colour_field(entry.cap.as_deref(), filename, &location, "cap")?;
-                        let high_ground = colour_field(
-                            entry.high_ground.as_deref(),
-                            filename,
-                            &location,
-                            "high_ground",
-                        )?;
-                        let cap_low = number_field(entry.cap_low, filename, &location, "cap_low")?;
-                        let cap_high =
-                            number_field(entry.cap_high, filename, &location, "cap_high")?;
-                        if cap_high <= cap_low {
-                            return Err(LoadError::at(
-                                filename,
-                                format!("{location}.cap_high"),
-                                "must be greater than cap_low",
-                            ));
-                        }
-                        (cap, high_ground, cap_low, cap_high)
-                    } else {
-                        (solid, dark, 0, 1)
-                    };
+                    let dark_lit =
+                        colour_field(entry.dark_lit.as_deref(), filename, &location, "dark_lit")?;
                     Some(TerrainStyle {
                         solid,
                         second,
                         dark,
-                        dark_second,
-                        cap,
-                        high_ground,
-                        relief_low,
-                        relief_high,
-                        mix_percent: u8::try_from(mix).map_err(|_| {
-                            LoadError::at(
-                                filename,
-                                format!("{location}.mix"),
-                                "does not fit in a byte",
-                            )
-                        })?,
-                        cap_low,
-                        cap_high,
-                        mountain: kind == TerrainKind::Mountain,
+                        dark_lit,
                     })
                 }
             };
@@ -711,6 +665,33 @@ fn unique_kind_index(
     Ok(first)
 }
 
+fn parse_ice(ice: &IceFile, filename: &str) -> Result<(Rgba8, Rgba8), LoadError> {
+    Ok((
+        to_rgba(parse_colour(&ice.colour, filename, "ice.colour")?),
+        to_rgba(parse_colour(&ice.second, filename, "ice.second")?),
+    ))
+}
+
+/// The hillside light (a vector of at most unit length in ten-thousandths, not zero) and the curve constant `n / d` (both positive).
+fn parse_look(look: &LookFile, filename: &str) -> Result<([i32; 2], [u32; 2]), LoadError> {
+    let [x, y] = look.light;
+    if x.unsigned_abs() > 10_000 || y.unsigned_abs() > 10_000 || (x == 0 && y == 0) {
+        return Err(LoadError::at(
+            filename,
+            "look.light",
+            "must be a nonzero vector with each part within -10000..=10000",
+        ));
+    }
+    if look.d0[0] == 0 || look.d0[1] == 0 {
+        return Err(LoadError::at(
+            filename,
+            "look.d0",
+            "must be a ratio of two positive numbers",
+        ));
+    }
+    Ok((look.light, look.d0))
+}
+
 fn parse_water(water: &WaterFile, filename: &str) -> Result<WaterColours, LoadError> {
     let sea = parse_colour(&water.sea, filename, "water.sea")?;
     Ok(WaterColours {
@@ -751,21 +732,6 @@ fn colour_field(
         filename,
         &format!("{entry}.{field}"),
     )?))
-}
-
-fn number_field(
-    value: Option<i32>,
-    filename: &str,
-    entry: &str,
-    field: &str,
-) -> Result<i32, LoadError> {
-    value.ok_or_else(|| {
-        LoadError::at(
-            filename,
-            format!("{entry}.{field}"),
-            "required field is missing",
-        )
-    })
 }
 
 fn parse_colour(value: &str, file: &str, entry: &str) -> Result<[u8; 3], LoadError> {
@@ -1123,9 +1089,24 @@ struct LayersFile {
 #[serde(deny_unknown_fields)]
 struct TerrainFile {
     shallow_threshold: u16,
-    display_usable_pm: u16,
     water: WaterFile,
+    ice: IceFile,
+    look: LookFile,
     terrain: Vec<TerrainEntry>,
+}
+/// The glacier's two tones.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IceFile {
+    colour: String,
+    second: String,
+}
+/// The hillside light and the soft curve's constant, as integers so that no trigonometry runs at load.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LookFile {
+    light: [i32; 2],
+    d0: [u32; 2],
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1145,13 +1126,7 @@ struct TerrainEntry {
     second: Option<String>,
     dark: Option<String>,
     dark_second: Option<String>,
-    relief_low: Option<i32>,
-    relief_high: Option<i32>,
-    mix: Option<i32>,
-    cap: Option<String>,
-    high_ground: Option<String>,
-    cap_low: Option<i32>,
-    cap_high: Option<i32>,
+    dark_lit: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

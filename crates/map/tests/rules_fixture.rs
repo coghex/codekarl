@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ck_map::fixture::{Fixture, Kind, fixture};
+use ck_map::look::TerrainShades;
 
 /// Every colour the reference gives over all of the fixture's scenarios, with how many pixels show it.
 fn colours() -> BTreeMap<[u8; 4], usize> {
@@ -28,18 +29,22 @@ fn the_fixture_shows_every_colour_of_the_rule_table() {
     wanted.insert(("the sea", fixture.data.sea.0));
     wanted.insert(("the shallow sea", fixture.data.shallow_sea.0));
     wanted.insert(("the lake", fixture.data.lake.0));
+    wanted.insert(("the ice", fixture.data.ice.0));
+    wanted.insert(("the ice second tone", fixture.data.ice_second.0));
     for (index, terrain) in fixture.terrains.iter().enumerate() {
         let style = terrain.style;
         match terrain.kind {
             Kind::Sea | Kind::Lake => {}
             Kind::Land | Kind::Mountain => {
-                wanted.insert(("a solid tone", style.solid.0));
-                wanted.insert(("a second tone", style.second.0));
-                wanted.insert(("a dark tone", style.dark.0));
-                wanted.insert(("a dark second tone", style.dark_second.0));
-                if terrain.kind == Kind::Mountain {
-                    wanted.insert(("a snow cap", style.cap.0));
-                    wanted.insert(("high ground", style.high_ground.0));
+                let shades = TerrainShades::of(&style);
+                for tone in shades.tone {
+                    wanted.insert(("a shade", tone.0));
+                }
+                for tone in shades.shadow {
+                    wanted.insert(("a shadow-side tone", tone.0));
+                }
+                for tone in shades.lit {
+                    wanted.insert(("a lit-side tone", tone.0));
                 }
             }
         }
@@ -78,16 +83,24 @@ fn every_scenario_has_more_than_one_colour_and_the_return_repeats_the_first_visi
 }
 
 #[test]
-fn the_negative_control_changes_exactly_the_pixels_that_show_pasture_second_tone() {
+fn the_negative_control_changes_exactly_the_pixels_that_show_a_pasture_shadow_side_tone() {
     let fixture = fixture();
     let other = fixture.with_other_pasture_second_tone();
-    let second = fixture.terrains[2].style.second.0;
+    // The pasture's second tone is the top of its shadow-side tones: all three change with it and nothing else does.
+    let shadow = TerrainShades::of(&fixture.terrains[2].style)
+        .shadow
+        .map(|tone| tone.0);
     let mut changed = 0;
     for scenario in Fixture::scenarios() {
         let before = fixture.reference_image(scenario.step, scenario.top_left, scenario.view);
         let after = other.reference_image(scenario.step, scenario.top_left, scenario.view);
         for (old, new) in before.chunks_exact(4).zip(after.chunks_exact(4)) {
-            assert_eq!(old != new, old == second, "{}", scenario.name);
+            assert_eq!(
+                old != new,
+                shadow.iter().any(|tone| old == tone),
+                "{}",
+                scenario.name
+            );
             changed += usize::from(old != new);
         }
     }
