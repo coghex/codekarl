@@ -419,7 +419,11 @@ pub(crate) fn scene_compat_a_publication_before_the_wait_is_not_lost() {
         until(&mut rig, "the published frame to be drawn", || {
             presenter.drawn_generation() == Some(2)
         });
-        rig.pump_for(Duration::from_millis(150));
+        // The capture arrives with the frame's completion, after the draw: wait for it, bounded, and no frame was captured before the
+        // publication (asserted above), so the first capture is the one this test means.
+        until(&mut rig, "the published frame to be captured", || {
+            scene.probes.observer.captures() >= 1
+        });
         let frame = scene
             .probes
             .observer
