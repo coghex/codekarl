@@ -88,7 +88,7 @@ pub(crate) struct BuildingView {
     pub(crate) herds: Vec<HerdView>,
     pub(crate) store_used_ml: u64,
     pub(crate) store_capacity_ml: u64,
-    /// The posted wage (`0` until the wage slice).
+    /// The mean of the building's last twelve monthly wages in thousandths.
     pub(crate) wage: u64,
 }
 
@@ -387,7 +387,7 @@ fn building_view(rules: &Rules, building: &BuildingState) -> BuildingView {
         herds,
         store_used_ml: volume_ml(rules, &building.stock),
         store_capacity_ml: building_capacity_ml(building, employees),
-        wage: 0,
+        wage: building.posted_wage(),
     }
 }
 
@@ -589,6 +589,7 @@ mod tests {
                     wage_carries: vec![0; goods],
                     pay_carries: vec![0; goods],
                     fee_carries: Vec::new(),
+                    wage_history: vec![1_234; 12],
                 },
                 BuildingState {
                     kind: "storehouse".to_owned(),
@@ -607,6 +608,7 @@ mod tests {
                     wage_carries: vec![0; goods],
                     pay_carries: vec![0; goods],
                     fee_carries: vec![vec![0; goods]; 2],
+                    wage_history: vec![0; 12],
                 },
             ],
             prices_milli: rules
@@ -716,7 +718,7 @@ mod tests {
         );
         assert_eq!(farm.store_used_ml, volume("barley", 20));
         assert_eq!(farm.store_capacity_ml, 35 * 100_000);
-        assert_eq!(farm.wage, 0);
+        assert_eq!(farm.wage, 1_234);
 
         let storehouse = &place.buildings[1];
         assert_eq!(storehouse.levels, 1);

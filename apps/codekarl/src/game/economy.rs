@@ -118,7 +118,8 @@ pub(crate) fn starting_economy(
             land,
         })
         .collect::<Vec<_>>();
-    ck_economy::starting_state(&rules, &data, &starts).map_err(|error| error.to_string())
+    ck_economy::starting_state(&rules, &data, &starts, scenario.start.month)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -261,6 +262,71 @@ mod tests {
             mayo.pops
                 .iter()
                 .any(|pop| pop.kind == "monk" && pop.culture == "english")
+        );
+    }
+
+    #[test]
+    fn starting_wage_handoff_uses_the_authored_scenario_month() {
+        let assets = ireland_assets();
+        let directory = assets.join("scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).unwrap();
+        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        assert_eq!(
+            scenario.start.month, 10,
+            "the shipped fixture starts in October"
+        );
+        let (october_state, _) = starting_economy(&assets, &directory, &scenario).unwrap();
+        let mut june_scenario = scenario.clone();
+        june_scenario.start.month = 6;
+        let (june_state, _) = starting_economy(&assets, &directory, &june_scenario).unwrap();
+
+        let (place_index, building_index) = october_state
+            .places
+            .iter()
+            .enumerate()
+            .find_map(|(place_index, place)| {
+                place
+                    .buildings
+                    .iter()
+                    .enumerate()
+                    .find_map(|(building_index, building)| {
+                        let paid_heads = building
+                            .employment
+                            .iter()
+                            .map(|employment| employment.workers)
+                            .sum::<u64>();
+                        let value = building
+                            .stock
+                            .iter()
+                            .zip(&rules.goods)
+                            .map(|(units, good)| {
+                                u128::from(*units) * u128::from(good.base_price) * 1000
+                            })
+                            .sum::<u128>();
+                        (paid_heads > 0 && value > 0).then_some((place_index, building_index))
+                    })
+            })
+            .expect("the fixture has an employed building with a starting stockpile");
+        let october_building = &october_state.places[place_index].buildings[building_index];
+        let june_building = &june_state.places[place_index].buildings[building_index];
+        let paid_heads = october_building
+            .employment
+            .iter()
+            .map(|employment| employment.workers)
+            .sum::<u64>();
+        let starting_value = october_building
+            .stock
+            .iter()
+            .zip(&rules.goods)
+            .map(|(units, good)| u128::from(*units) * u128::from(good.base_price) * 1000)
+            .sum::<u128>();
+        assert_eq!(
+            october_building.wage_history,
+            [u64::try_from(starting_value / (u128::from(paid_heads) * 11)).unwrap(); 12]
+        );
+        assert_eq!(
+            june_building.wage_history,
+            [u64::try_from(starting_value / (u128::from(paid_heads) * 3)).unwrap(); 12]
         );
     }
 }
