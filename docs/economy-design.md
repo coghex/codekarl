@@ -1121,7 +1121,8 @@ labourers more meat.
   A level adds storage capacity for its kind (volume, and the per-good limits of §3.15), proposed as 50 people's worth of a pop
   store.
 - **Staff:** 2 workers per level from its owner pops. They are paid a small share of what is stored, 10‰ a month (data), in those
-  goods.
+  goods. They are filled only from its owner pops, so a storehouse is never a movement destination (§3.5). **Its posted wage** (§3.6)
+  records that fee as the month's pay per worker, and starts at 0, since its stock belongs to its depositors (CK-242).
 - **The fee, one ledger (E2):** on the 1st, for each good and each account, `fee = portion(account_g, 10, 1000, fcarry)`. It is
   debited from both the account and the physical stock, then credited once to the storehouse workers' stores, through payday's overflow
   path. Physical stock always equals the sum of the accounts.
