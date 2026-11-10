@@ -84,11 +84,32 @@ BOOL ck_win_key_table_entry(NSUInteger position, uint16_t *code, uint8_t *key, c
 @property(nonatomic) BOOL terminated;
 @property(nonatomic) int32_t closeSource;
 @property(nonatomic) uint32_t closeAbsorbed;
-@property(nonatomic) BOOL pixelChanged;
+@property(nonatomic) BOOL sizeChanged;
+@property(nonatomic) uint32_t pointWidth;
+@property(nonatomic) uint32_t pointHeight;
 @property(nonatomic) uint32_t pixelWidth;
 @property(nonatomic) uint32_t pixelHeight;
+@property(nonatomic) uint32_t knownPointWidth;
+@property(nonatomic) uint32_t knownPointHeight;
 @property(nonatomic) uint32_t knownWidth;
 @property(nonatomic) uint32_t knownHeight;
+/* Resizing: whether the window can be resized, the content minimum it was asked for (points, or pixels that decide the points
+ * at each backing scale), and what the size reports wait for. */
+@property(nonatomic) BOOL resizable;
+@property(nonatomic) uint32_t minPointWidth;
+@property(nonatomic) uint32_t minPointHeight;
+@property(nonatomic) uint32_t minPixelWidth;
+@property(nonatomic) uint32_t minPixelHeight;
+@property(nonatomic) BOOL liveResizing;
+@property(nonatomic) BOOL fullScreenTransition;
+@property(nonatomic) BOOL growing;
+@property(nonatomic) BOOL minClamped;
+@property(nonatomic) uint32_t minRequestedWidth;
+@property(nonatomic) uint32_t minRequestedHeight;
+@property(nonatomic) uint32_t minUsedWidth;
+@property(nonatomic) uint32_t minUsedHeight;
+/* A key-down the window took as a shortcut (Control-Command-F): its key-up is not a game event either. */
+@property(nonatomic) BOOL swallowedShortcutKey;
 @property(nonatomic) BOOL needsDisplay;
 @property(nonatomic) BOOL minimizedPending;
 @property(nonatomic) BOOL restoredPending;
@@ -113,8 +134,17 @@ BOOL ck_win_key_table_entry(NSUInteger position, uint16_t *code, uint8_t *key, c
 - (void)nativeKeys:(CKWinNativeKeys *)out;
 /* The diagnostic count of discarded transition records so far. */
 - (uint64_t)overflowTotal;
-/* Updates the layer's contentsScale and records the pixel size if it changed. */
-- (void)applyScaleAndRecordPixelSize;
+/* Updates the layer's contentsScale and records the size (points and pixels, read together) if it changed. */
+- (void)applyScaleAndRecordSize;
+/* The window was resized (not a live resize or a full-screen transition, which report once, at their end). */
+- (void)recordResizeIfSettled;
+/* The backing scale changed: the content minimum is recomputed from the pixels requested, a window below it grows to it
+ * (keeping its top-left), and one size is recorded. */
+- (void)backingScaleChanged;
+/* Sets the content minimum for the current backing scale, lowered to the screen's visible size when it does not fit. */
+- (void)refreshMinimum;
+/* Control-Command-F: toggles full screen for a resizable window. YES when it took the event. */
+- (BOOL)handleShortcutEvent:(NSEvent *)event;
 - (double)scale;
 - (void)destroyWindow;
 @end

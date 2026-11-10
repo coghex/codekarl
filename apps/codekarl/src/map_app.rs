@@ -91,6 +91,10 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     scroll_remainder: [i32; 2],
     scroll_direction: [i8; 2],
     camera: Option<Camera>,
+    /// The scene bridge's metrics generation the camera was last published (or staged) for. A newer generation (the window's points
+    /// or pixels changed, even when the view, pan and zoom did not: a change of display scale moves only the pixels) means the
+    /// bridge refuses the camera as stale, so it is published again for the current one.
+    published_generation: u64,
     zoom_in_elapsed: Duration,
     zoom_out_elapsed: Duration,
 }
@@ -255,6 +259,7 @@ impl<R: RiverViewSelector> MapController<R> {
             scroll_remainder: [0; 2],
             scroll_direction: [0; 2],
             camera: None,
+            published_generation: 0,
             zoom_in_elapsed: Duration::ZERO,
             zoom_out_elapsed: Duration::ZERO,
         })
@@ -264,8 +269,10 @@ impl<R: RiverViewSelector> MapController<R> {
     pub(crate) fn open(&mut self, desc: &WindowDesc) -> Result<(), String> {
         let view = ViewSize::from_points(desc.width, desc.height);
         let camera = initial_camera(self.crop, view)?;
-        let snapshot = self.snapshot(camera, self.bridge.metrics_generation().saturating_add(1))?;
+        let generation = self.bridge.metrics_generation().saturating_add(1);
+        let snapshot = self.snapshot(camera, generation)?;
         self.camera = Some(camera);
+        self.published_generation = generation;
         #[cfg(feature = "test-support")]
         Self::observe_test_camera(camera)?;
         match self.bridge.stage_initial_camera(Arc::new(snapshot)) {
@@ -313,7 +320,6 @@ impl<R: RiverViewSelector> MapController<R> {
         #[cfg(feature = "test-support")]
         let camera_before_input = camera;
         let view = ViewSize::from_points(update.metrics.points.0, update.metrics.points.1);
-        let metrics_generation = self.bridge.metrics_generation();
         let mut changed = false;
         if camera.view != view {
             camera.resize(view);
@@ -469,13 +475,16 @@ impl<R: RiverViewSelector> MapController<R> {
                 })
         };
 
-        if changed || self.bridge.metrics_generation() != metrics_generation {
+        // The bridge's metrics are a newer generation than the camera's last publication: the camera is published again for it, even
+        // when nothing about the view changed.
+        let generation = self.bridge.metrics_generation();
+        if changed || generation > self.published_generation {
             #[cfg(feature = "test-support")]
             if camera != camera_before_input {
                 Self::observe_test_camera(camera)?;
             }
             self.camera = Some(camera);
-            self.publish_for_generation(camera, self.bridge.metrics_generation())?;
+            self.publish_for_generation(camera, generation)?;
             return Ok(true);
         }
         Ok(false)
@@ -556,7 +565,10 @@ impl<R: RiverViewSelector> MapController<R> {
     fn publish_for_generation(&mut self, camera: Camera, generation: u64) -> Result<(), String> {
         let snapshot = self.snapshot(camera, generation)?;
         match self.bridge.publish_camera(Arc::new(snapshot)) {
-            MapPublication::Published => Ok(()),
+            MapPublication::Published => {
+                self.published_generation = generation;
+                Ok(())
+            }
             outcome => Err(format!("map lane refused the camera snapshot: {outcome:?}")),
         }
     }
@@ -930,6 +942,7 @@ pub(crate) mod tests {
                 width: 400,
                 height: 320,
                 clear: [0.0; 3],
+                ..WindowDesc::default()
             })
             .expect("initial view is valid");
         controller
@@ -954,6 +967,7 @@ pub(crate) mod tests {
                 width,
                 height,
                 clear: [0.0; 3],
+                ..WindowDesc::default()
             })
             .expect("initial view is valid");
         controller
@@ -1029,6 +1043,7 @@ pub(crate) mod tests {
             width: 400,
             height: 320,
             clear: [0.0; 3],
+            ..WindowDesc::default()
         };
         controller.open(&desc).expect("initial view is valid");
         let center = FixedPoint {
@@ -1102,6 +1117,7 @@ pub(crate) mod tests {
                 width: 400,
                 height: 240,
                 clear: [0.0; 3],
+                ..WindowDesc::default()
             })
             .expect("window-case initial view is valid");
         controller
@@ -1261,6 +1277,7 @@ pub(crate) mod tests {
             width: 400,
             height: 320,
             clear: [0.0; 3],
+            ..WindowDesc::default()
         };
         controller.open(&desc).expect("initial view is valid");
         let sink = Arc::new(CapturingSink::default());
@@ -2480,5 +2497,88 @@ pub(crate) mod tests {
             (odd_offset.left, odd_offset.right, odd_offset.y),
             (172, 192, 174)
         );
+    }
+
+    #[test]
+    fn a_window_opened_in_pixels_gives_the_map_the_resolved_points_view() {
+        // 1600x900 pixels at 2 pixels a point resolve to 800x450 points; the map's initial camera is the one a points open of
+        // 800x450 gives (not square, so a width taken for a height would show).
+        let resolved = WindowDesc {
+            title: "pixels".to_owned(),
+            unit: ck_window::SizeUnit::Pixels,
+            width: 1600,
+            height: 900,
+            resizable: true,
+            ..WindowDesc::default()
+        }
+        .resolve(&ck_window::ScreenSnapshot {
+            backing: 2.0,
+            visible_points: (4000, 3000),
+        })
+        .expect("resolves")
+        .desc;
+        assert_eq!((resolved.width, resolved.height), (800, 450));
+        let open = |desc: &WindowDesc| {
+            let bridge = SceneBridge::new(ck_render_2d::Filter::Nearest);
+            let mut controller = MapController::new(&loaded_map(), bridge, 4, 20, 24)
+                .expect("map lane accepts fixture");
+            controller.open(desc).expect("initial view is valid");
+            controller.camera().expect("a camera")
+        };
+        let points = WindowDesc {
+            title: "points".to_owned(),
+            width: 800,
+            height: 450,
+            ..WindowDesc::default()
+        };
+        assert_eq!(open(&resolved), open(&points));
+        assert_eq!(open(&resolved).view, ViewSize::from_points(800, 450));
+    }
+
+    #[test]
+    fn a_change_of_the_metrics_generation_alone_republishes_the_camera_and_the_bridge_adopts_it() {
+        let (mut controller, bridge, sink) = river_test_controller();
+        let opened = controller.camera().expect("a camera");
+        let first = sink.latest().map.expect("the opening camera was adopted");
+        // 4 points a map pixel at 2 pixels a point: 8 drawable pixels each.
+        assert_eq!(
+            (
+                first.placement.expect("placed").destination.right,
+                first.placement.expect("placed").destination.bottom
+            ),
+            (800, 640)
+        );
+        // A move to a 1x display: the points stay 400x320 and only the pixels move. The bridge's metrics are a newer generation, so
+        // the old camera is no longer placed.
+        let generation = bridge.metrics_generation();
+        bridge.set_metrics(
+            (400, 320),
+            PixelSize {
+                width: 400,
+                height: 320,
+            },
+        );
+        assert_eq!(bridge.metrics_generation(), generation + 1);
+        assert!(sink.latest().map.is_none(), "a stale camera is not drawn");
+        // The next update, with the view, pan and zoom unchanged, publishes the camera again for the new generation.
+        let mut tick = update(&[], Duration::ZERO);
+        tick.metrics.pixels = PixelSize {
+            width: 400,
+            height: 320,
+        };
+        assert_eq!(controller.update(&tick), Ok(true), "republished");
+        assert_eq!(controller.camera(), Some(opened), "the view is unchanged");
+        let after = sink.latest().map.expect("the camera was adopted");
+        assert_eq!(after.camera.metrics_generation(), generation + 1);
+        assert_eq!(
+            (
+                after.placement.expect("placed").destination.right,
+                after.placement.expect("placed").destination.bottom
+            ),
+            (400, 320),
+            "a map pixel is four drawable pixels at 1x: still four points"
+        );
+        // Nothing changed since: nothing is published again.
+        assert_eq!(controller.update(&tick), Ok(false));
     }
 }

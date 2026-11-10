@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use ck_log::Level;
-use ck_window::{Backend, CreatedWindow, NativeEvent, NativeWake, PixelSize, Wait, WindowDesc};
+use ck_window::{
+    Backend, CreatedWindow, NativeEvent, NativeWake, PixelSize, ScreenSnapshot, Wait, WindowDesc,
+};
 
 use crate::activation;
 use crate::ffi::{self, GlfwWindow};
@@ -379,8 +381,9 @@ pub struct PumpReport {
     pub input: Vec<NativeEvent>,
     /// The close request, if any: [`NativeEvent::CloseButton`].
     pub close: Option<NativeEvent>,
-    /// The latest pixel size, when it changed. A zero size (a minimised window) is reported as such.
-    pub pixel_size: Option<PixelSize>,
+    /// The latest content size in points and drawable size in pixels, read together, when either changed. A zero size (a minimised
+    /// window) is reported as zero points and zero pixels.
+    pub size: Option<((u32, u32), PixelSize)>,
     /// Whether the window needs to be drawn again.
     pub needs_display: bool,
     /// Whether the window was minimised during this pump.
@@ -620,23 +623,77 @@ impl GlfwBackend {
             }
         }
         let taken = self.callback.pending.take();
-        let size = match (taken.query_size, self.window) {
-            (true, Some(window)) => Some(framebuffer_size(window)),
-            _ => taken
-                .size
-                .map(|(width, height)| PixelSize { width, height }),
+        let size = match (taken.query_size, taken.size, self.window) {
+            (true, _, Some(window)) => Some(size_of(window)),
+            (_, Some((width, height)), Some(window)) => {
+                // The callback's drawable size, with the points read now, together; a zero size stays zero everywhere.
+                Some(if width == 0 || height == 0 {
+                    ((0, 0), PixelSize { width, height })
+                } else {
+                    (window_size(window), PixelSize { width, height })
+                })
+            }
+            (_, Some((width, height)), None) => Some(((0, 0), PixelSize { width, height })),
+            _ => None,
         };
         note_absorbed(taken.absorbed);
         PumpReport {
             input: taken.input,
             close: taken.close.map(|_| NativeEvent::CloseButton),
-            pixel_size: size,
+            size,
             needs_display: taken.display,
             minimized: taken.minimized == Some(true),
             restored: taken.minimized == Some(false),
             absorbed_close_presses: taken.absorbed,
         }
     }
+}
+
+/// What a description asks of GLFW for resizing: the `GLFW_RESIZABLE` hint, and, for a resizable window with a minimum, the size
+/// limits (minimum width and height in points, GLFW's screen coordinates on macOS, and no maximum).
+#[derive(Debug, PartialEq, Eq)]
+struct ResizePlan {
+    resizable: c_int,
+    limits: Option<[c_int; 4]>,
+}
+
+fn resize_plan(desc: &WindowDesc) -> ResizePlan {
+    let limits = desc.min.filter(|_| desc.resizable).map(|(width, height)| {
+        [
+            c_int::try_from(width).unwrap_or(ffi::DONT_CARE),
+            c_int::try_from(height).unwrap_or(ffi::DONT_CARE),
+            ffi::DONT_CARE,
+            ffi::DONT_CARE,
+        ]
+    });
+    ResizePlan {
+        resizable: if desc.resizable {
+            ffi::TRUE
+        } else {
+            ffi::FALSE
+        },
+        limits,
+    }
+}
+
+/// The window's content size in points.
+fn window_size(window: NonNull<GlfwWindow>) -> (u32, u32) {
+    let (mut width, mut height) = (0, 0);
+    // SAFETY: the window is live and this runs on the main thread; the pointers are valid for the call.
+    unsafe { ffi::glfwGetWindowSize(window.as_ptr(), &raw mut width, &raw mut height) };
+    (
+        u32::try_from(width).unwrap_or(0),
+        u32::try_from(height).unwrap_or(0),
+    )
+}
+
+/// The window's content size in points and its framebuffer size in pixels, read together.
+fn size_of(window: NonNull<GlfwWindow>) -> ((u32, u32), PixelSize) {
+    let pixels = framebuffer_size(window);
+    if pixels.width == 0 || pixels.height == 0 {
+        return ((0, 0), pixels);
+    }
+    (window_size(window), pixels)
 }
 
 /// The window's framebuffer size in pixels.
@@ -700,7 +757,8 @@ fn deduplicated(names: &[&str]) -> Vec<String> {
 impl Backend for GlfwBackend {
     type Handles = GlfwHandles;
 
-    /// Creates the fixed-size Vulkan window. **On macOS it then asks to come to the front**: the application
+    /// Creates the Vulkan window, fixed in size unless the description is resizable (then with the minimum as its size limits and no
+    /// maximum). **On macOS it then asks to come to the front**: the application
     /// is activated and the window made key and ordered front (as `ck-window-cocoa` does), so it takes keys.
     /// The system may decline an activation request; the backend does not wait for it, retry it or fail on it.
     fn create_window(&mut self, desc: &WindowDesc) -> Result<CreatedWindow<GlfwHandles>, String> {
@@ -728,8 +786,9 @@ impl Backend for GlfwBackend {
         // SAFETY: window hints are set after `glfwInit` and before the window is created, on the main
         // thread. No OpenGL context ...
         unsafe { ffi::glfwWindowHint(ffi::CLIENT_API, ffi::NO_API) };
-        // SAFETY: as above: ... and a fixed-size window.
-        unsafe { ffi::glfwWindowHint(ffi::RESIZABLE, ffi::FALSE) };
+        let resizing = resize_plan(desc);
+        // SAFETY: as above: ... and a window the user can resize only when the description says so.
+        unsafe { ffi::glfwWindowHint(ffi::RESIZABLE, resizing.resizable) };
         if !ck_window::window_mouse_input_allowed() {
             // SAFETY: this GLFW 3.4+ hint is set on the main thread before creation and remains
             // active for later windows until defaultWindowHints is called.
@@ -794,6 +853,18 @@ impl Backend for GlfwBackend {
         unsafe { ffi::glfwSetWindowFocusCallback(window.as_ptr(), Some(on_focus)) };
         // SAFETY: as above; the iconify callback records the state and posts the sticky restore wake.
         unsafe { ffi::glfwSetWindowIconifyCallback(window.as_ptr(), Some(on_iconify)) };
+        if let Some([min_width, min_height, max_width, max_height]) = resizing.limits {
+            // SAFETY: the window is live and this is the main thread.
+            unsafe {
+                ffi::glfwSetWindowSizeLimits(
+                    window.as_ptr(),
+                    min_width,
+                    min_height,
+                    max_width,
+                    max_height,
+                );
+            }
+        }
         let pixel_size = framebuffer_size(window);
         self.window = Some(window);
         // A request the system may decline: not waited for, retried or failed on.
@@ -810,6 +881,38 @@ impl Backend for GlfwBackend {
             handles: GlfwHandles { window, extensions },
             pixel_size,
         })
+    }
+
+    fn main_screen(&mut self) -> ScreenSnapshot {
+        if !self.initialised {
+            return ScreenSnapshot::unlimited();
+        }
+        // SAFETY: GLFW is initialised and this runs on the main thread (the backend is not Send).
+        let monitor = unsafe { ffi::glfwGetPrimaryMonitor() };
+        if monitor.is_null() {
+            return ScreenSnapshot::unlimited();
+        }
+        let (mut scale_x, mut scale_y) = (1.0_f32, 1.0_f32);
+        // SAFETY: as above; the monitor was just returned and is non-null, and the out pointers are valid for the call.
+        unsafe { ffi::glfwGetMonitorContentScale(monitor, &raw mut scale_x, &raw mut scale_y) };
+        let (mut x, mut y, mut width, mut height) = (0, 0, 0, 0);
+        // SAFETY: as above.
+        unsafe {
+            ffi::glfwGetMonitorWorkarea(
+                monitor,
+                &raw mut x,
+                &raw mut y,
+                &raw mut width,
+                &raw mut height,
+            );
+        }
+        ScreenSnapshot {
+            backing: f64::from(scale_x.max(1.0)),
+            visible_points: (
+                u32::try_from(width).unwrap_or(0).max(1),
+                u32::try_from(height).unwrap_or(0).max(1),
+            ),
+        }
     }
 
     fn wake_target(&self) -> Arc<dyn NativeWake> {
@@ -831,8 +934,8 @@ impl Backend for GlfwBackend {
         if let Some(close) = report.close {
             events(close);
         }
-        if let Some(PixelSize { width, height }) = report.pixel_size {
-            events(NativeEvent::PixelSizeChanged { width, height });
+        if let Some((points, pixels)) = report.size {
+            events(NativeEvent::SizeChanged { points, pixels });
         }
         if report.needs_display {
             events(NativeEvent::NeedsDisplay);
@@ -871,8 +974,8 @@ impl Backend for GlfwBackend {
         if let Some(close) = report.close {
             events(close);
         }
-        if let Some(PixelSize { width, height }) = report.pixel_size {
-            events(NativeEvent::PixelSizeChanged { width, height });
+        if let Some((points, pixels)) = report.size {
+            events(NativeEvent::SizeChanged { points, pixels });
         }
         if report.needs_display {
             events(NativeEvent::NeedsDisplay);
@@ -1148,6 +1251,41 @@ mod tests {
             [NativeEvent::Pointer(ck_input::PointerEvent::Down(
                 next_window_position
             ))]
+        );
+    }
+
+    #[test]
+    fn a_resizable_description_sets_the_resizable_hint_and_the_size_limits() {
+        let desc = |resizable, min| WindowDesc {
+            title: "t".to_owned(),
+            width: 1280,
+            height: 800,
+            resizable,
+            min,
+            ..WindowDesc::default()
+        };
+        assert_eq!(
+            resize_plan(&desc(true, Some((1280, 800)))),
+            ResizePlan {
+                resizable: ffi::TRUE,
+                limits: Some([1280, 800, ffi::DONT_CARE, ffi::DONT_CARE]),
+            },
+            "resizable, the minimum and no maximum"
+        );
+        assert_eq!(
+            resize_plan(&desc(true, None)),
+            ResizePlan {
+                resizable: ffi::TRUE,
+                limits: None
+            }
+        );
+        assert_eq!(
+            resize_plan(&desc(false, None)),
+            ResizePlan {
+                resizable: ffi::FALSE,
+                limits: None
+            },
+            "a fixed window is as it was"
         );
     }
 

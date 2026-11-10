@@ -163,6 +163,7 @@ fn scene(points: (u32, u32)) -> (Arc<SceneBridge>, Arc<Last>, SceneWriter) {
                 width: points.0,
                 height: points.1,
                 clear: CLEAR,
+                ..WindowDesc::default()
             },
             PixelSize {
                 width: points.0 * 2,

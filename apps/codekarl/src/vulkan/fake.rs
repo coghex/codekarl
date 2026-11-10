@@ -358,7 +358,8 @@ impl Running for FakeStarted {
         self.presenter.set_clear(rgb);
     }
     fn set_pixel_size(&mut self, width: u32, height: u32) {
-        self.presenter.set_pixel_size(width, height);
+        self.presenter
+            .set_size((width, height), PixelSize { width, height });
     }
     fn request_redraw(&mut self) {
         self.presenter.request_redraw();
@@ -622,6 +623,7 @@ impl Stack for FakeStack {
             width: size.width,
             height: size.height,
             clear,
+            ..WindowDesc::default()
         };
         Presenter::start(&mut presenter, (), &desc, size)?;
         let extra = Arc::new(Mutex::new(VecDeque::new()));

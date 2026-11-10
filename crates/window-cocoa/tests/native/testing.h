@@ -30,6 +30,10 @@ typedef struct {
     int32_t has_main_menu;
     uint32_t menu_items;
     uint32_t menu_key_equivalents;
+    double content_min_width;       /* the window's contentMinSize */
+    double content_min_height;
+    int32_t gravity_top_left;       /* the content view's layer has contentsGravity top-left */
+    int32_t full_screen_primary;    /* the window's collection behaviour allows primary full screen */
 } CKWinTestInfo;
 
 typedef struct {
@@ -134,5 +138,19 @@ void ck_win_test_become_key(void);
 /* Calls a main-thread-only AppKit method from a thread that is not the main thread (the control for the
  * Main Thread Checker). */
 void ck_win_test_violate_main_thread(void);
+
+/* Resizing, through AppKit's own delegate calls. A live resize: the delegate sees the drag start, the test sets content sizes (resize)
+ * while it lasts, and then the delegate sees the drag end. */
+void ck_win_test_live_resize_begin(void);
+void ck_win_test_live_resize_end(void);
+/* A resize with no drag (a zoom, or a programmatic one): the content size is set. */
+void ck_win_test_resize(double width, double height);
+/* A full-screen transition: `begin` sets the window to (width, height) the way the animation would and tells the delegate the
+ * transition starts (enter: nonzero to enter, zero to exit); `finish` tells it the transition ended. */
+void ck_win_test_full_screen_begin(int32_t enter, double width, double height);
+void ck_win_test_full_screen_finish(int32_t enter);
+/* How many times -[NSWindow toggleFullScreen:] was called since the application was installed. The test application makes the call
+ * a count only: no test window really enters full screen on the owner's desktop. */
+uint64_t ck_win_test_toggle_full_screen_calls(void);
 
 #endif

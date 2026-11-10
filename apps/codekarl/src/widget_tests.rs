@@ -1003,6 +1003,8 @@ fn the_tooltip_flips_at_the_real_window_width() {
 #[test]
 fn a_resize_relayouts_the_readout_and_a_shown_tooltip() {
     let mut readout = Readout::new("", None);
+    // The shipped script opens at 1280 by 800 here (no screen snapshot); this case starts from a window of 800 by 600.
+    readout.update(800, 600, None);
     readout.deliver(&crate::readout_tests::snapshot(
         14,
         1,

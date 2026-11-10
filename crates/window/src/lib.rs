@@ -1,4 +1,4 @@
-//! The window core: a generic, platform-free main loop for one fixed-size window.
+//! The window core: a generic, platform-free main loop for one window, fixed in size or resizable.
 //!
 //! `ck-window` depends on `ck-log` and `ck-input` (the portable key mapper) only. It knows nothing of Lua, `ck-runtime`, `AppKit`, GLFW, Metal or
 //! Vulkan: backends implement [`Backend`] and [`Presenter`], and the executable adapts the UI VM to
@@ -136,7 +136,10 @@ pub use ck_input::{
     ActionSnapshot, Bindings, BindingsError, Edge, InputSnapshot, Key, KeyStates, PointerEvent,
     PointerPosition, ScrollUnit, TRANSITION_CAPACITY, Transition,
 };
-pub use desc::{InvalidColour, MAX_DIMENSION, OpenError, WindowDesc};
+pub use desc::{
+    InvalidColour, MAX_DIMENSION, OpenError, PixelRequest, Resolved, ScreenSnapshot, SizeUnit,
+    WindowDesc,
+};
 pub use link::{
     Answer, CleanupResult, CloseSource, InputTick, PostError, Presenter, PresenterReport, UiAnswer,
     UiEvent, UiLink, UpdateEvent, WindowMetrics,

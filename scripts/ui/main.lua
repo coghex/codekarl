@@ -1,4 +1,4 @@
--- The ui VM: the common demo. It opens an 800 by 600 window with a solid clear colour, logs when the
+-- The ui VM: the common demo. It opens a resizable window of 1280 by 800 screen pixels (its minimum) with a solid clear colour, logs when the
 -- window is open, and logs the source of a close request (Escape or the close button) and accepts it.
 -- Run headless (--headless, or no [window] backend), `window.open` is ignored with one record and the rest
 -- of the script runs unchanged.
@@ -22,8 +22,13 @@ local location = require("lib.location")
 local P = ui.P
 local MARGIN = 8 -- points from the window's edges
 
--- The window as opened, and then as the last update reported it, in points.
-local OPEN_WIDTH, OPEN_HEIGHT = 800, 600
+-- The window opens at its minimum, in screen pixels (the owner: "for now at the minimum"; the size will be a setting later) and the user
+-- can enlarge it. `window.open` returns the size in points that resolved to on this display, which the first layout starts from; then
+-- each update reports the window's size as it is.
+local OPEN_WIDTH, OPEN_HEIGHT = window.open{
+  title = "Codekarl", unit = "pixels", width = 1280, height = 800, resizable = true, min_width = 1280, min_height = 800,
+  clear = {0.10, 0.25, 0.45},
+}
 local view = {width = OPEN_WIDTH, height = OPEN_HEIGHT}
 
 -- Relayouts of the anchored elements, run when the window's size changes. Each is registered by the element.
@@ -495,7 +500,6 @@ end)
 print("ui: loaded")
 log.info("loaded")
 
-window.open{title = "Codekarl", width = OPEN_WIDTH, height = OPEN_HEIGHT, clear = {0.10, 0.25, 0.45}}
 
 window.on_opened(function()
   log.info("the window is open")

@@ -167,6 +167,9 @@ pub(crate) struct Plan {
     pub(crate) extension: Extension,
     /// The run closure, or none.
     pub(crate) run: Option<RunClosure>,
+    /// The main screen as the main thread saw it when it made the backend, before the UI VM is spawned; `None` for a run with no window
+    /// system (a headless run, or a backend that is made later), where a size in pixels resolves at one pixel per point.
+    pub(crate) screen: Option<ck_window::ScreenSnapshot>,
 }
 
 /// A wake target for a backend that was never created: it does nothing.
@@ -192,6 +195,12 @@ where
     F: FnOnce() -> Result<B, String>,
 {
     type Handles = B::Handles;
+
+    fn main_screen(&mut self) -> ck_window::ScreenSnapshot {
+        self.backend
+            .as_mut()
+            .map_or_else(ck_window::ScreenSnapshot::unlimited, B::main_screen)
+    }
 
     fn create_window(
         &mut self,

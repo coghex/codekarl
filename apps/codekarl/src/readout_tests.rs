@@ -621,6 +621,9 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
 fn hover_tooltip_flips_moves_and_hides_while_reusing_its_quads() {
     let mut readout = Readout::new("", None);
     assert!(readout.hover_registered.load(Ordering::SeqCst));
+    // The shipped script opens a window of 1280 by 800 pixels, which this rig (it has no screen snapshot) resolves one to one; the
+    // flipping below is written for a window 800 points wide, so the first update says so.
+    readout.update(800, 600, None);
 
     readout.deliver_hover(Some(("town", "Alpha", 10, 20, 40)));
     let first = readout.entries();

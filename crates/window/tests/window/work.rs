@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread;
 
-use ck_window::{Answer, LoopEnd, LoopSettings, NativeEvent, PresenterReport, UiEvent, Wait};
+use ck_window::{
+    Answer, LoopEnd, LoopSettings, NativeEvent, PixelSize, PresenterReport, UiEvent, Wait,
+};
 
 use crate::fakes::{DEADLINE, Rig, at, lock, owned, scenario};
 
@@ -392,13 +394,19 @@ fn the_pixel_size_and_a_redraw_request_reach_the_presenter_once_per_change() {
             let ran = {
                 let mut rig = Rig::new();
                 rig.backend.script.push_back(vec![
-                    NativeEvent::PixelSizeChanged {
-                        width: 1,
-                        height: 2,
+                    NativeEvent::SizeChanged {
+                        points: (1, 1),
+                        pixels: PixelSize {
+                            width: 1,
+                            height: 2,
+                        },
                     },
-                    NativeEvent::PixelSizeChanged {
-                        width: 1600,
-                        height: 1200,
+                    NativeEvent::SizeChanged {
+                        points: (800, 600),
+                        pixels: PixelSize {
+                            width: 1600,
+                            height: 1200,
+                        },
                     },
                     NativeEvent::NeedsDisplay,
                     NativeEvent::NeedsDisplay,
@@ -410,11 +418,11 @@ fn the_pixel_size_and_a_redraw_request_reach_the_presenter_once_per_change() {
             let sizes: Vec<_> = ran
                 .log
                 .iter()
-                .filter(|line| line.starts_with("presenter.set_pixel_size"))
+                .filter(|line| line.starts_with("presenter.set_size"))
                 .collect();
             assert_eq!(
                 sizes,
-                ["presenter.set_pixel_size 1600x1200"],
+                ["presenter.set_size 800x600 points 1600x1200 pixels"],
                 "coalesced to the latest"
             );
             let redraws = ran

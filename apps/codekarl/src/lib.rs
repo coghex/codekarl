@@ -233,19 +233,29 @@ const FAILED: Status = Status {
 /// The production plan of a windowed run: the run closure of the backend the mode chose. A backend this build
 /// lacks cannot have been chosen (the mode refuses it first), so such a run closure is never asked for.
 fn production_plan(setup: Setup) -> Plan {
-    let run: Option<windowed::RunClosure> = match setup.backend {
+    // The native path makes its window backend here, on the main thread before the UI VM is spawned, and reads the main screen from it.
+    // The Vulkan path makes its backend inside its run (it loads the Vulkan loader first), so it has no snapshot yet: sizes in pixels
+    // resolve at one pixel per point until its catch-up slice.
+    let (run, screen): (
+        Option<windowed::RunClosure>,
+        Option<ck_window::ScreenSnapshot>,
+    ) = match setup.backend {
         #[cfg(all(feature = "metal", target_os = "macos"))]
-        mode::Backend::NativeMetal => Some(native::run_closure(setup.env)),
+        mode::Backend::NativeMetal => {
+            let (run, screen) = native::run_closure(setup.env);
+            (Some(run), screen)
+        }
         #[cfg(feature = "vulkan")]
-        mode::Backend::GlfwVulkan => Some(vulkan::run_closure(setup.env)),
+        mode::Backend::GlfwVulkan => (Some(vulkan::run_closure(setup.env)), None),
         #[cfg(not(all(feature = "metal", target_os = "macos")))]
-        mode::Backend::NativeMetal => None,
+        mode::Backend::NativeMetal => (None, None),
         #[cfg(not(feature = "vulkan"))]
-        mode::Backend::GlfwVulkan => None,
+        mode::Backend::GlfwVulkan => (None, None),
     };
     Plan {
         extension: setup.extension,
         run,
+        screen,
     }
 }
 
@@ -621,6 +631,7 @@ fn production_headless_plan(setup: Setup) -> Plan {
     Plan {
         run: Some(windowed::headless_run(setup.env.reader)),
         extension: setup.extension,
+        screen: None,
     }
 }
 
@@ -771,13 +782,16 @@ fn supervise_with_owner_factory(
     ui_extensions.extend(game_extension);
     ui_extensions.extend(font.map(font::extension));
     ui_extensions.extend(theme.map(theme::extension));
+    // The main screen: filled below from the plan (made on this thread, before the UI VM is spawned), read by `window.open`.
+    let screen = window_api::ScreenCell::default();
     let setup = Setup {
         // Replaced by the mode's backend for a windowed run (a headless run has no backend).
         backend: mode::Backend::NativeMetal,
-        extension: window_api::extension(
+        extension: window_api::extension_with_screen(
             requests.writer(Arc::clone(&shared.notifier)),
             headless.clone(),
             map_controller.clone(),
+            Arc::clone(&screen),
         ),
         env: RunEnv {
             ui: ui.clone(),
@@ -799,6 +813,9 @@ fn supervise_with_owner_factory(
         mode::Mode::Headless => headless_plan(setup),
         mode::Mode::Windowed(backend) => windowed_plan(Setup { backend, ..setup }),
     };
+    if let Some(snapshot) = plan.screen {
+        let _ = screen.set(snapshot);
+    }
     let wiring = vm::UiWiring {
         extensions: std::iter::once(plan.extension)
             .chain(ui_extensions)
@@ -1292,6 +1309,8 @@ mod tests {
                             .detach_backend();
                         ck_runtime::RunEnd::Finished
                     })),
+
+                    screen: None,
                 }
             },
             production_headless_plan,
@@ -1371,6 +1390,8 @@ mod tests {
                         check(&bridge, control);
                         ck_runtime::RunEnd::Finished
                     })),
+
+                    screen: None,
                 }
             },
             production_headless_plan,
@@ -1619,6 +1640,8 @@ mod tests {
                 Plan {
                     extension: setup.extension,
                     run: Some(Box::new(|_| ck_runtime::RunEnd::Finished)),
+
+                    screen: None,
                 }
             },
         );
@@ -1660,6 +1683,8 @@ mod tests {
                 Plan {
                     extension: setup.extension,
                     run: Some(Box::new(|_| ck_runtime::RunEnd::Finished)),
+
+                    screen: None,
                 }
             },
         );
@@ -1695,6 +1720,8 @@ mod tests {
                 Plan {
                     extension: setup.extension,
                     run: Some(Box::new(|_| ck_runtime::RunEnd::Finished)),
+
+                    screen: None,
                 }
             },
         );

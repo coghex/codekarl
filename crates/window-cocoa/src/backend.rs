@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use ck_input::{Key, KeyStates};
 use ck_log::Level;
-use ck_window::{Backend, CreatedWindow, NativeEvent, NativeWake, PixelSize, Wait, WindowDesc};
+use ck_window::{
+    Backend, CreatedWindow, NativeEvent, NativeWake, PixelSize, ScreenSnapshot, Wait, WindowDesc,
+};
 
 use crate::ffi::{self, RawEvents};
 use crate::wake::CocoaWake;
@@ -36,7 +38,7 @@ fn message(buffer: &[u8]) -> String {
 }
 
 /// What one [`pump`](Backend::pump) handed over: the key and focus entries in recorded order (at most the pump's
-/// cap), at most one close request, one pixel-size change (the latest) and one needs-display, with the counts
+/// cap), at most one close request, one size change (the latest) and one needs-display, with the counts
 /// behind them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PumpReport {
@@ -46,8 +48,11 @@ pub struct PumpReport {
     pub input: Vec<NativeEvent>,
     /// The close request, if any: [`NativeEvent::CloseButton`].
     pub close: Option<NativeEvent>,
-    /// The latest pixel size, when it changed.
-    pub pixel_size: Option<PixelSize>,
+    /// The latest content size in points and drawable size in pixels, when it changed: one for a live resize, however long, and
+    /// one for each zoom, full-screen transition or change of backing scale that is not part of one.
+    pub size: Option<((u32, u32), PixelSize)>,
+    /// When a smaller screen lowered the content minimum: the points asked for and the points used.
+    pub min_clamped: Option<((u32, u32), (u32, u32))>,
     /// Whether the window needs to be drawn again.
     pub needs_display: bool,
     /// Whether the window was minimised during this pump.
@@ -135,16 +140,15 @@ impl CocoaBackend {
     pub fn pump_with_report(&mut self, wait: Wait, cap: usize) -> PumpReport {
         let raw = self.pump_raw(wait, cap);
         note_absorbed(raw.close_absorbed);
+        note_min_clamp(min_clamp_of_raw(&raw));
         PumpReport {
             input: input_events(&raw),
             close: match raw.close_source {
                 CLOSE_BUTTON => Some(NativeEvent::CloseButton),
                 _ => None,
             },
-            pixel_size: (raw.pixel_changed != 0).then_some(PixelSize {
-                width: raw.pixel_width,
-                height: raw.pixel_height,
-            }),
+            size: size_of_raw(&raw),
+            min_clamped: min_clamp_of_raw(&raw),
             needs_display: raw.needs_display != 0,
             minimized: raw.minimized != 0,
             restored: raw.restored != 0,
@@ -180,6 +184,42 @@ impl CocoaBackend {
             ffi::ck_win_pump_until(self.handle.as_ptr(), cap, timeout, &raw mut events);
         }
         events
+    }
+}
+
+/// The size change of one pump, if it had one: the content size in points and the drawable's size in pixels, read together.
+fn size_of_raw(raw: &RawEvents) -> Option<((u32, u32), PixelSize)> {
+    (raw.size_changed != 0).then_some((
+        (raw.point_width, raw.point_height),
+        PixelSize {
+            width: raw.pixel_width,
+            height: raw.pixel_height,
+        },
+    ))
+}
+
+/// The content minimum a smaller screen lowered during one pump: the points asked for and the points used.
+fn min_clamp_of_raw(raw: &RawEvents) -> Option<((u32, u32), (u32, u32))> {
+    (raw.min_clamped != 0).then_some((
+        (raw.min_requested_width, raw.min_requested_height),
+        (raw.min_used_width, raw.min_used_height),
+    ))
+}
+
+/// Logs the one line for a content minimum a smaller screen lowered, through `log_within`.
+fn note_min_clamp(clamp: Option<((u32, u32), (u32, u32))>) {
+    if let Some((requested, used)) = clamp {
+        let at = Instant::now() + LOG_WAIT;
+        let _ = ck_log::log_within!(
+            Level::Info,
+            at,
+            "window.cocoa",
+            "the minimum of {}x{} points does not fit the screen: using {}x{}",
+            requested.0,
+            requested.1,
+            used.0,
+            used.1
+        );
     }
 }
 
@@ -268,7 +308,14 @@ impl Backend for CocoaBackend {
         }
         let mut error = [0_u8; 512];
         let mut layer: *mut c_void = std::ptr::null_mut();
+        let (mut point_width, mut point_height) = (0_u32, 0_u32);
         let (mut pixel_width, mut pixel_height) = (0_u32, 0_u32);
+        let content_min = desc.min.unwrap_or((0, 0));
+        let pixel_min = desc
+            .pixel_request
+            .and_then(|request| request.min)
+            .unwrap_or((0, 0));
+        let clear = desc.clear;
         // SAFETY: the handle is live and this runs on the main thread. The title bytes are valid for
         // `len` bytes for this synchronous call. The out pointers and the error buffer are valid for
         // the call, and the native side writes at most `error.len()` bytes into the buffer.
@@ -281,7 +328,15 @@ impl Backend for CocoaBackend {
                 desc.height,
                 i32::from(ck_window::window_activation_allowed()),
                 i32::from(!ck_window::window_mouse_input_allowed()),
+                i32::from(desc.resizable),
+                content_min.0,
+                content_min.1,
+                pixel_min.0,
+                pixel_min.1,
+                clear.as_ptr(),
                 &raw mut layer,
+                &raw mut point_width,
+                &raw mut point_height,
                 &raw mut pixel_width,
                 &raw mut pixel_height,
                 error.as_mut_ptr().cast::<c_char>(),
@@ -306,6 +361,25 @@ impl Backend for CocoaBackend {
         })
     }
 
+    fn main_screen(&mut self) -> ScreenSnapshot {
+        let mut backing = 1.0_f64;
+        let (mut visible_width, mut visible_height) = (0_u32, 0_u32);
+        // SAFETY: the handle is live and this runs on the main thread (the backend is not Send). The out pointers are valid for
+        // this synchronous call.
+        unsafe {
+            ffi::ck_win_main_screen(
+                self.handle.as_ptr(),
+                &raw mut backing,
+                &raw mut visible_width,
+                &raw mut visible_height,
+            );
+        }
+        ScreenSnapshot {
+            backing,
+            visible_points: (visible_width, visible_height),
+        }
+    }
+
     fn wake_target(&self) -> Arc<dyn NativeWake> {
         // After `terminate` there is no target: a wake then reaches nothing, as the contract says.
         self.wake
@@ -323,8 +397,8 @@ impl Backend for CocoaBackend {
         if let Some(close) = report.close {
             events(close);
         }
-        if let Some(PixelSize { width, height }) = report.pixel_size {
-            events(NativeEvent::PixelSizeChanged { width, height });
+        if let Some((points, pixels)) = report.size {
+            events(NativeEvent::SizeChanged { points, pixels });
         }
         if report.needs_display {
             events(NativeEvent::NeedsDisplay);
@@ -344,17 +418,15 @@ impl Backend for CocoaBackend {
     fn pump_until(&mut self, events: &mut dyn FnMut(NativeEvent), deadline: Instant, cap: usize) {
         let raw = self.pump_raw_until(deadline, cap);
         note_absorbed(raw.close_absorbed);
+        note_min_clamp(min_clamp_of_raw(&raw));
         for event in input_events(&raw) {
             events(event);
         }
         if raw.close_source == CLOSE_BUTTON {
             events(NativeEvent::CloseButton);
         }
-        if raw.pixel_changed != 0 {
-            events(NativeEvent::PixelSizeChanged {
-                width: raw.pixel_width,
-                height: raw.pixel_height,
-            });
+        if let Some((points, pixels)) = size_of_raw(&raw) {
+            events(NativeEvent::SizeChanged { points, pixels });
         }
         if raw.needs_display != 0 {
             events(NativeEvent::NeedsDisplay);

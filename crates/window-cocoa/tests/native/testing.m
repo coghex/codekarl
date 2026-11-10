@@ -116,6 +116,7 @@ static NSWindow *ck_window(void);
 static IMP ck_original_scale_factor;
 static IMP ck_original_no_responder;
 static IMP ck_original_key_down;
+static _Atomic uint64_t ck_toggle_full_screens;
 
 static void ck_instrument_classes(void) {
     Method scale = class_getInstanceMethod([NSWindow class], @selector(backingScaleFactor));
@@ -132,6 +133,13 @@ static void ck_instrument_classes(void) {
         atomic_fetch_add(&ck_no_responder, 1);
         ((void (*)(id, SEL, SEL))ck_original_no_responder)(window, @selector(noResponderFor:),
                                                             selector);
+    }));
+    /* Counted and not performed: a test window must never really go full screen. */
+    Method toggle = class_getInstanceMethod([NSWindow class], @selector(toggleFullScreen:));
+    method_setImplementation(toggle, imp_implementationWithBlock(^(NSWindow *window, id sender) {
+        (void)window;
+        (void)sender;
+        atomic_fetch_add(&ck_toggle_full_screens, 1);
     }));
     Method key = class_getInstanceMethod([CKWinView class], @selector(keyDown:));
     ck_original_key_down = method_getImplementation(key);
@@ -214,6 +222,11 @@ void ck_win_test_info(CKWinTestInfo *out) {
         out->layer_is_metal = [layer isKindOfClass:[CAMetalLayer class]] ? 1 : 0;
         out->layer_is_view_backing_layer = window.contentView.wantsLayer && layer != nil ? 1 : 0;
         out->layer_scale = layer.contentsScale;
+        out->content_min_width = window.contentMinSize.width;
+        out->content_min_height = window.contentMinSize.height;
+        out->gravity_top_left = [layer.contentsGravity isEqualToString:kCAGravityTopLeft] ? 1 : 0;
+        out->full_screen_primary =
+            (window.collectionBehavior & NSWindowCollectionBehaviorFullScreenPrimary) != 0 ? 1 : 0;
         out->window_scale = window.backingScaleFactor;
         out->visible = window.visible ? 1 : 0;
         out->is_key = window.keyWindow ? 1 : 0;
@@ -661,7 +674,7 @@ void ck_win_test_burst(uint32_t button_presses, uint32_t pixel_changes, uint32_t
         for (uint32_t i = 0; i < pixel_changes; i++) {
             /* Each change is to a different scale, so each is a real change of the pixel size. */
             atomic_store(&ck_scale_override, 1.0 + (double)(i % 7 + 1) / 4.0);
-            [state applyScaleAndRecordPixelSize];
+            [state applyScaleAndRecordSize];
         }
         for (uint32_t i = 0; i < needs_display; i++) {
             [state recordNeedsDisplay];
@@ -798,4 +811,64 @@ void ck_win_test_violate_main_thread(void) {
         /* A classic Main Thread Checker report: marking a view dirty off the main thread. */
         [ck_window().contentView setNeedsDisplay:YES];
     }
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * Resizing and full screen
+ * ------------------------------------------------------------------------------------------- */
+
+void ck_win_test_live_resize_begin(void) {
+    @autoreleasepool {
+        NSWindow *window = ck_window();
+        [window.delegate windowWillStartLiveResize:[NSNotification
+                                                       notificationWithName:NSWindowWillStartLiveResizeNotification
+                                                                     object:window]];
+    }
+}
+
+void ck_win_test_live_resize_end(void) {
+    @autoreleasepool {
+        NSWindow *window = ck_window();
+        [window.delegate windowDidEndLiveResize:[NSNotification
+                                                    notificationWithName:NSWindowDidEndLiveResizeNotification
+                                                                  object:window]];
+    }
+}
+
+void ck_win_test_resize(double width, double height) {
+    @autoreleasepool {
+        [ck_window() setContentSize:NSMakeSize(width, height)];
+    }
+}
+
+void ck_win_test_full_screen_begin(int32_t enter, double width, double height) {
+    @autoreleasepool {
+        NSWindow *window = ck_window();
+        id<NSWindowDelegate> delegate = window.delegate;
+        NSString *name = enter ? NSWindowWillEnterFullScreenNotification : NSWindowWillExitFullScreenNotification;
+        if (enter) {
+            [delegate windowWillEnterFullScreen:[NSNotification notificationWithName:name object:window]];
+        } else {
+            [delegate windowWillExitFullScreen:[NSNotification notificationWithName:name object:window]];
+        }
+        [window setContentSize:NSMakeSize(width, height)];
+    }
+}
+
+void ck_win_test_full_screen_finish(int32_t enter) {
+    @autoreleasepool {
+        NSWindow *window = ck_window();
+        id<NSWindowDelegate> delegate = window.delegate;
+        if (enter) {
+            [delegate windowDidEnterFullScreen:[NSNotification notificationWithName:NSWindowDidEnterFullScreenNotification
+                                                                             object:window]];
+        } else {
+            [delegate windowDidExitFullScreen:[NSNotification notificationWithName:NSWindowDidExitFullScreenNotification
+                                                                            object:window]];
+        }
+    }
+}
+
+uint64_t ck_win_test_toggle_full_screen_calls(void) {
+    return atomic_load(&ck_toggle_full_screens);
 }

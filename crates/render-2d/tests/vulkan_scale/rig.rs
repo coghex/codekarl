@@ -961,6 +961,7 @@ where
             width: config.points.0,
             height: config.points.1,
             clear: [0.1, 0.2, 0.3],
+            ..WindowDesc::default()
         })
         .expect("a valid description");
 

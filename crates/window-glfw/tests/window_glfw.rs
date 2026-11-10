@@ -125,6 +125,7 @@ fn desc() -> WindowDesc {
         width: WIDTH,
         height: HEIGHT,
         clear: [0.1, 0.2, 0.3],
+        ..WindowDesc::default()
     }
 }
 
@@ -224,7 +225,7 @@ impl Drop for Rig {
 fn quiet(report: &PumpReport) -> bool {
     report.input.is_empty()
         && report.close.is_none()
-        && report.pixel_size.is_none()
+        && report.size.is_none()
         && !report.minimized
         && !report.restored
         && report.absorbed_close_presses == 0
@@ -238,7 +239,7 @@ fn quiet_except_pointer_moves(report: &PumpReport) -> bool {
         .iter()
         .all(|event| matches!(event, NativeEvent::Pointer(ck_input::PointerEvent::Move(_))))
         && report.close.is_none()
-        && report.pixel_size.is_none()
+        && report.size.is_none()
         && !report.minimized
         && !report.restored
         && report.absorbed_close_presses == 0
@@ -1231,15 +1232,15 @@ fn pixel_size_and_scale() {
     support::set_scale(forced);
     support::backing_changed();
     let report = rig
-        .pump_until(|report| report.pixel_size.is_some())
+        .pump_until(|report| report.size.is_some())
         .expect("a pixel size change is reported");
-    let size = report.pixel_size.expect("a pixel size");
+    let (_, size) = report.size.expect("a size");
     assert_eq!(size.width, pixels(WIDTH, forced), "{size:?}");
     assert_eq!(size.height, pixels(HEIGHT, forced), "{size:?}");
     assert!(
         rig.pump_for(Duration::from_millis(150))
             .iter()
-            .all(|r| r.pixel_size.is_none())
+            .all(|r| r.size.is_none())
     );
     support::set_scale(0.0);
 }

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::desc::WindowDesc;
+use crate::desc::{ScreenSnapshot, WindowDesc};
 use crate::notifier::NativeWake;
 
 /// A native event a backend reports from `pump`. Callbacks only record these: the loop never tears
@@ -43,12 +43,14 @@ pub enum NativeEvent {
     Minimized,
     /// The window was restored from minimisation.
     Restored,
-    /// The drawable's size in pixels changed (for example, a scale-factor change).
-    PixelSizeChanged {
-        /// The new width in pixels.
-        width: u32,
-        /// The new height in pixels.
-        height: u32,
+    /// The window's size changed: the end of a live resize, a zoom, a full-screen transition or a change of the screen's scale. It
+    /// carries the content size in points and the drawable's size in pixels, read together, so that the loop, the presenter, the map
+    /// and the UI always see one coherent size. A backend reports no size during a live resize, only at its end.
+    SizeChanged {
+        /// The content size in points: width and height.
+        points: (u32, u32),
+        /// The drawable's size in pixels.
+        pixels: PixelSize,
     },
     /// The window needs to be drawn again.
     NeedsDisplay,
@@ -87,7 +89,12 @@ pub trait Backend {
     /// The native handles of a created window, for the presenter.
     type Handles;
 
-    /// Creates the fixed-size, non-resizable window. Production backends may request application or key-window
+    /// The main screen's scale and visible size, read once on the main thread after the backend exists and before any thread
+    /// resolves a size in pixels against it ([`WindowDesc::resolve`]). Main thread only.
+    fn main_screen(&mut self) -> ScreenSnapshot;
+
+    /// Creates the window: fixed size unless the description is `resizable`, in which case it can be resized, zoomed and made full
+    /// screen, and never goes below the description's minimum. Production backends may request application or key-window
     /// activation as part of the normal open path; test workers can suppress those requests through
     /// `ck-window`'s test-support-only activation switch.
     ///

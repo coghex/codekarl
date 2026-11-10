@@ -85,7 +85,7 @@ fn a_clear_only_backend_and_a_drawing_one_see_the_same_snapshots() {
             .start((), &desc(100, 100), pixels(100, 100))
             .unwrap();
         writer.set_quad(quad_at(&picture, 4.0, 4.0, 8.0, 8.0));
-        renderer.set_pixel_size(200, 200);
+        renderer.set_size((100, 100), pixels(200, 200));
         let state = Arc::clone(&renderer.gpu().state);
         state.go.open();
         finish(&mut renderer);
@@ -175,7 +175,7 @@ fn a_pixel_size_change_republishes_before_it_is_forwarded() {
         .unwrap();
     let sink = renderer.gpu().state.sink();
     assert_eq!(sink.latest().unwrap().quad.unwrap().destination.left, 10);
-    renderer.set_pixel_size(200, 200);
+    renderer.set_size((100, 100), pixels(200, 200));
     let republished = sink.latest().unwrap();
     assert_eq!(republished.generation, 3);
     assert_eq!(republished.quad.unwrap().destination.left, 20);
@@ -265,7 +265,7 @@ fn the_fake_records_each_published_snapshot_and_its_generation() {
         .start((), &desc(100, 100), pixels(100, 100))
         .unwrap(); // 2
     writer.set_quad(quad_at(&picture, 5.0, 5.0, 10.0, 10.0)); // 3
-    renderer.set_pixel_size(200, 200); // 4
+    renderer.set_size((100, 100), pixels(200, 200)); // 4
     writer.clear_quad(); // 5
     writer.clear_quad(); // changes nothing, publishes nothing
     renderer.request_stop();

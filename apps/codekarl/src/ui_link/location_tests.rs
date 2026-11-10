@@ -794,3 +794,29 @@ fn the_places_bar_stays_at_the_top_right_beside_the_bottom_mode_bar() {
     rig.opened();
     check(&rig, 1200);
 }
+
+/// The shipped script opens the window resizable, at 1280 by 800 screen pixels, with that minimum (milestone 9, slice 12b): this
+/// rig has no screen snapshot, so the pixels resolve one to one and the description keeps the request it was made from.
+#[test]
+fn the_shipped_script_opens_a_resizable_window_of_1280_by_800_pixels_with_that_minimum() {
+    let rig = rig(&["time(1, 1)"]);
+    let desc = rig
+        .harness
+        .requests
+        .reader()
+        .take()
+        .open
+        .expect("the shipped script opened its window");
+    assert!(desc.resizable);
+    assert_eq!(desc.unit, ck_window::SizeUnit::Points, "resolved");
+    assert_eq!((desc.width, desc.height), (1280, 800));
+    assert_eq!(desc.min, Some((1280, 800)));
+    assert_eq!(
+        desc.pixel_request,
+        Some(ck_window::PixelRequest {
+            size: (1280, 800),
+            min: Some((1280, 800)),
+        }),
+        "asked for in pixels, with the minimum in pixels"
+    );
+}

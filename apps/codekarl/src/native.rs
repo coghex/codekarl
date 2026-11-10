@@ -28,7 +28,7 @@ use ck_gpu_metal::{BindlessLimits, LedgerLimits, MetalContext, TextureLimits};
 use ck_log::Level;
 use ck_render_2d::{Gpu2d, MetalBackend, QuadSink, Renderer, ResourceBackendLimits};
 use ck_runtime::{RunContext, RunEnd};
-use ck_window::{CleanupResult, PixelSize, PresenterReport, WindowDesc};
+use ck_window::{Backend, CleanupResult, PixelSize, PresenterReport, ScreenSnapshot, WindowDesc};
 use ck_window_cocoa::{CocoaBackend, CocoaHandles};
 
 use crate::lifecycle::RESOURCES;
@@ -297,18 +297,52 @@ pub(crate) fn backend_limits(
 
 /// The run closure of a windowed `native-metal` run: `ck-window`'s loop over the Cocoa backend and a
 /// [`Renderer`] of `ck-render-2d`'s Metal backend on the run's resource service, attached to the run's scene bridge.
-pub(crate) fn run_closure(env: RunEnv) -> RunClosure {
+pub(crate) fn run_closure(env: RunEnv) -> (RunClosure, Option<ScreenSnapshot>) {
     run_closure_with(env, production_context)
 }
 
+/// The window backend of a run, created on the main thread **before the UI VM is spawned** (the screen is read from it then:
+/// `window.open` resolves sizes in pixels against that snapshot and never touches the backend), and handed to the loop by the run
+/// closure. If the run closure never takes it (the run failed before the run phase), dropping it terminates the backend, which
+/// proves the native objects released, and clears the resource latch.
+struct EarlyBackend(Option<Result<CocoaBackend, String>>);
+
+impl EarlyBackend {
+    fn take(&mut self) -> Result<CocoaBackend, String> {
+        self.0
+            .take()
+            .unwrap_or_else(|| Err("the window backend was already used".to_owned()))
+    }
+}
+
+impl Drop for EarlyBackend {
+    fn drop(&mut self) {
+        if self.0.take().is_some() {
+            // Never used for a window: dropping a backend that made none releases it (it terminates first).
+            RESOURCES.clear();
+        }
+    }
+}
+
 /// [`run_closure`] with the Metal device context's factory given: the one seam the context's failure path is tested
-/// through (production passes `MetalContext::new`; it is not a setting or a switch).
+/// through (production passes `MetalContext::new`; it is not a setting or a switch). It also creates the window backend (the
+/// application and its screen, no window yet) and returns the main screen's snapshot, `None` when the backend could not be made
+/// (the run then fails with its message when it runs).
 pub(crate) fn run_closure_with(
     env: RunEnv,
     context: impl FnOnce() -> Result<Arc<MetalContext>, String> + 'static,
-) -> RunClosure {
-    Box::new(move |_: &RunContext| -> RunEnd {
-        // The device context first, before any window or native object: a failure is found here.
+) -> (RunClosure, Option<ScreenSnapshot>) {
+    // Immediately before the first native object exists.
+    RESOURCES.set();
+    let mut backend = CocoaBackend::new();
+    let screen = backend.as_mut().ok().map(Backend::main_screen);
+    if backend.is_err() {
+        // Nothing was made.
+        RESOURCES.clear();
+    }
+    let mut early = EarlyBackend(Some(backend));
+    let closure: RunClosure = Box::new(move |_: &RunContext| -> RunEnd {
+        // The device context first, before any window: a failure is found here.
         let context = match context() {
             Ok(context) => context,
             Err(error) => {
@@ -363,14 +397,16 @@ pub(crate) fn run_closure_with(
             },
             Arc::clone(&env.bridge),
         );
+        let backend = early.take();
         windowed::run_window(
             &env,
-            CocoaBackend::new,
+            move || backend,
             presenter,
             &RESOURCES,
             windowed::DRAIN,
         )
-    })
+    });
+    (closure, screen)
 }
 
 /// The `--metal-smoke` check: one tiny GPU computation, verified.
@@ -448,9 +484,10 @@ mod tests {
                     .unwrap_or_else(PoisonError::into_inner)
                     .take()
                     .expect("one run");
-                let run = native::run_closure_with(setup.env, factory);
+                let (run, screen) = native::run_closure_with(setup.env, factory);
                 Plan {
                     extension: setup.extension,
+                    screen,
                     run: Some(Box::new(move |context| {
                         let end = run(context);
                         if let RunEnd::Failed(message) = &end {
@@ -466,6 +503,106 @@ mod tests {
         );
         let message = ended.lock().unwrap_or_else(PoisonError::into_inner).clone();
         (status, message, dir)
+    }
+
+    #[test]
+    fn the_screen_is_read_once_on_the_main_thread_before_the_ui_vm_runs_and_window_open_resolves_against_it()
+     {
+        use ck_window::{Backend as _, PixelRequest, ScreenSnapshot};
+
+        use crate::fakes::{BackendScript, FakeBackend, vector_recorder};
+
+        // The UI script opens its window in pixels at the top level: its first instructions. They run only after the screen was read.
+        let dir = testing::Dir::new();
+        let ui = dir.0.join("ui.lua");
+        std::fs::write(
+            &ui,
+            "window.open{title='t', unit='pixels', width=1600, height=900, resizable=true, min_width=1280, min_height=800, \
+             clear={0, 0, 0}}\nfunction startup() end\nfunction shutdown() end\n",
+        )
+        .expect("the ui script");
+        let config = config::load_text_for_test(&format!(
+            "[window]\nbackend = \"native-metal\"\n\n[render]\nassets = {:?}\n\n[lua.ui]\nentry = {ui:?}\n",
+            dir.0
+        ));
+        let (record, events) = vector_recorder();
+        let opened = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&opened);
+        let main_thread = std::thread::current().id();
+        let read_on = Arc::new(Mutex::new(Vec::new()));
+        let reads = Arc::clone(&read_on);
+        let status = supervise_with_owner_factory(
+            &config,
+            Mode::Windowed(Backend::NativeMetal),
+            Shared {
+                quit: Arc::new(AtomicBool::new(false)),
+                notifier: Notifier::new(),
+            },
+            crate::Content::default(),
+            move |setup: Setup| {
+                // What the production plan does for the native path: on this thread, before the runtime spawns the VM, the backend
+                // gives its main screen once (backing 2 here) and the plan carries it.
+                let mut backend = FakeBackend::new(
+                    BackendScript {
+                        screen: ScreenSnapshot {
+                            backing: 2.0,
+                            visible_points: (4000, 3000),
+                        },
+                        ..BackendScript::default()
+                    },
+                    record,
+                );
+                let screen = backend.main_screen();
+                reads
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(std::thread::current().id());
+                let reader = setup.env.reader;
+                Plan {
+                    extension: setup.extension,
+                    run: Some(Box::new(move |_| {
+                        // The VM's first instructions have run: the slot holds the open it made, resolved.
+                        *seen.lock().unwrap_or_else(PoisonError::into_inner) = reader.take().open;
+                        reader.end();
+                        drop(backend);
+                        RunEnd::Finished
+                    })),
+                    screen: Some(screen),
+                }
+            },
+            crate::production_headless_plan,
+            |wiring, _, _| vm::spawns(&config.vms, &config.whole, Some(wiring)),
+        );
+        assert_eq!(status.code, 0);
+        assert_eq!(
+            *read_on.lock().unwrap_or_else(PoisonError::into_inner),
+            [main_thread],
+            "one read, on the thread that built the plan"
+        );
+        let screen_reads = events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|event| *event == "main_screen")
+            .count();
+        assert_eq!(screen_reads, 1, "the backend was asked once");
+        let desc = opened
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .expect("the UI script opened its window before the run phase");
+        assert_eq!(
+            (desc.width, desc.height, desc.min),
+            (800, 450, Some((640, 400))),
+            "1600x900 pixels at 2 pixels a point, resolved with the snapshot"
+        );
+        assert_eq!(
+            desc.pixel_request,
+            Some(PixelRequest {
+                size: (1600, 900),
+                min: Some((1280, 800)),
+            })
+        );
     }
 
     #[test]

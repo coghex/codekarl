@@ -572,6 +572,12 @@ impl<S: Stack> VulkanBackend<S> {
 impl<S: Stack> Backend for VulkanBackend<S> {
     type Handles = S::Handles;
 
+    fn main_screen(&mut self) -> ck_window::ScreenSnapshot {
+        // The Vulkan path has no screen snapshot before its backend exists (compile-only until its catch-up slice): one pixel per
+        // point, no limit.
+        ck_window::ScreenSnapshot::unlimited()
+    }
+
     fn create_window(&mut self, desc: &WindowDesc) -> Result<CreatedWindow<S::Handles>, String> {
         let Some(glfw) = self.glfw.as_mut() else {
             return Err("the Vulkan path was retained".to_owned());

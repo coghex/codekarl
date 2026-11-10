@@ -17,6 +17,7 @@ fn desc() -> WindowDesc {
         width: 800,
         height: 600,
         clear: [0.0, 0.5, 1.0],
+        ..WindowDesc::default()
     }
 }
 

@@ -24,6 +24,8 @@ pub(crate) const CLIENT_API: c_int = 0x0002_2001;
 pub(crate) const NO_API: c_int = 0;
 /// `GLFW_RESIZABLE`.
 pub(crate) const RESIZABLE: c_int = 0x0002_0003;
+/// `GLFW_DONT_CARE`: no limit (a size limit's maximum).
+pub(crate) const DONT_CARE: c_int = -1;
 /// `GLFW_COCOA_MENUBAR`: an init hint (macOS only; it is not set on other platforms).
 pub(crate) const COCOA_MENUBAR: c_int = 0x0005_1002;
 /// `GLFW_RELEASE`, `GLFW_PRESS`, `GLFW_REPEAT` (key actions).
@@ -148,6 +150,23 @@ unsafe extern "C" {
         share: *mut GlfwWindow,
     ) -> *mut GlfwWindow;
     pub(crate) fn glfwDestroyWindow(window: *mut GlfwWindow);
+    pub(crate) fn glfwGetWindowSize(window: *mut GlfwWindow, width: *mut c_int, height: *mut c_int);
+    pub(crate) fn glfwSetWindowSizeLimits(
+        window: *mut GlfwWindow,
+        min_width: c_int,
+        min_height: c_int,
+        max_width: c_int,
+        max_height: c_int,
+    );
+    pub(crate) fn glfwGetPrimaryMonitor() -> *mut c_void;
+    pub(crate) fn glfwGetMonitorWorkarea(
+        monitor: *mut c_void,
+        x: *mut c_int,
+        y: *mut c_int,
+        width: *mut c_int,
+        height: *mut c_int,
+    );
+    pub(crate) fn glfwGetMonitorContentScale(monitor: *mut c_void, x: *mut f32, y: *mut f32);
     pub(crate) fn glfwGetFramebufferSize(
         window: *mut GlfwWindow,
         width: *mut c_int,

@@ -7,7 +7,7 @@
 //! - a scene write ([`SceneWriter::set_quad`], [`SceneWriter::clear_quad`]) from the UI VM's thread;
 //! - [`SceneBridge::attach`] from the renderer's `start`, which publishes the current scene under the same
 //!   lock, so a write made between `start` and attach cannot be stranded;
-//! - [`SceneBridge::set_pixel_size`], a metrics update;
+//! - [`SceneBridge::set_metrics`], a metrics update (points and pixels together);
 //! - [`SceneBridge::detach`], which removes the sink and ends the bridge.
 //!
 //! **The map lane** (milestone 6, slice 1) sits beside the scene: [`SceneBridge::publish_map`] stores the loaded map once and
@@ -123,7 +123,7 @@ struct State {
     mode: Option<Arc<MapMode>>,
     /// What the presenter reports of refusing to make a map image (shared with every snapshot's map).
     map_refusals: Arc<MapRefusals>,
-    /// Counts the metrics the bridge has had (attach and every pixel-size change); a camera is for exactly one of them.
+    /// Counts the metrics the bridge has had (attach and every change of the window's metrics); a camera is for exactly one of them.
     metrics_generation: u64,
     metrics: Option<Metrics>,
     filter: Filter,
@@ -346,9 +346,9 @@ impl SceneBridge {
         Ok(())
     }
 
-    /// Updates the drawable's size in pixels and publishes the scene converted with it. Nothing happens
-    /// unless a sink is attached.
-    pub fn set_pixel_size(&self, pixels: PixelSize) {
+    /// Replaces the window's metrics, its size in points and the drawable's size in pixels together, counts one new metrics
+    /// generation and publishes the scene converted with them. Nothing happens unless a sink is attached.
+    pub fn set_metrics(&self, points: (u32, u32), pixels: PixelSize) {
         let mut displaced = Displaced::default();
         {
             let mut state = self.lock();
@@ -356,6 +356,8 @@ impl SceneBridge {
                 return;
             }
             if let Some(metrics) = &mut state.metrics {
+                metrics.points_width = points.0;
+                metrics.points_height = points.1;
                 metrics.pixels = pixels;
                 state.metrics_generation += 1;
             }
@@ -392,7 +394,7 @@ impl SceneBridge {
     }
 
     /// How many metrics the bridge has had: it grows by one at [`attach`](Self::attach) and at every
-    /// [`set_pixel_size`](Self::set_pixel_size). A [`MapCamera`] is computed for one of them.
+    /// [`set_metrics`](Self::set_metrics). A [`MapCamera`] is computed for one of them.
     #[must_use]
     pub fn metrics_generation(&self) -> u64 {
         self.lock().metrics_generation
