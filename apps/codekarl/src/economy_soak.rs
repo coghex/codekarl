@@ -431,6 +431,15 @@ mod tests {
         let posted_wages = row_fields[21];
         let wage_entries = posted_wages.split(';').collect::<Vec<_>>();
         assert_eq!(wage_entries.len(), 3, "one posted wage per building");
+        assert_eq!(
+            wage_entries,
+            [
+                "building0.holdings=24549",
+                "building1.farm=11267",
+                "building2.storehouse=0",
+            ],
+            "Armagh day-1 posted-wage golden values"
+        );
         assert!(wage_entries.iter().enumerate().all(|(index, entry)| {
             entry.starts_with(&format!("building{index}."))
                 && entry

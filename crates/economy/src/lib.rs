@@ -1905,11 +1905,11 @@ fn building_coverage_pm(
 
 #[expect(
     clippy::too_many_lines,
-    reason = "The fee debit and payday credit share one transactional storehouse accounting step."
+    reason = "The fee debit and credit share one transactional storehouse accounting step."
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "The current local prices and month index belong to the atomic fee payday step."
+    reason = "The local prices and month index belong to the atomic fee accounting step."
 )]
 fn pay_storehouse_fee(
     rules: &Rules,
@@ -1995,7 +1995,7 @@ fn pay_storehouse_fee(
             )
         })?;
     if paid_heads > 0 {
-        // Value this payday's fees only; old pay carries are released below but are not new fees.
+        // Value this month's fee only; old pay carries released below are not new fees.
         let wage_value = fees
             .iter()
             .enumerate()
@@ -4970,7 +4970,7 @@ pub fn run_monthly_production(
 /// on refusal, `state` is unchanged.
 #[expect(
     clippy::too_many_lines,
-    reason = "The first-of-month order keeps production, herd updates, payday and storehouse accounting in one rollback boundary."
+    reason = "The monthly production and herd updates stay together inside the daily rollback boundary."
 )]
 pub fn run_monthly_production_with_quality(
     rules: &Rules,
@@ -5003,7 +5003,6 @@ pub fn run_monthly_production_with_quality(
         place_ledger.stock_before = total_stored_goods(rules, place)?;
         place_ledger.herds_before = total_herds(place)?;
         let mut pending_overflow = Vec::<(usize, usize, Vec<(Option<usize>, u64)>)>::new();
-        let mut fee_buildings = Vec::new();
         for (building_index, building) in place.buildings.iter_mut().enumerate() {
             let Some(definition) = rules.buildings.iter().find(|item| item.id == building.kind)
             else {
@@ -5022,9 +5021,6 @@ pub fn run_monthly_production_with_quality(
                 ));
             }
             if definition.methods.is_empty() {
-                if building.storehouse_accounts.is_some() {
-                    fee_buildings.push(building_index);
-                }
                 continue;
             }
             if definition.methods.len() != building.method_levels.len()
@@ -5532,19 +5528,6 @@ pub fn run_monthly_production_with_quality(
                 &mut place_ledger,
             )?;
         }
-        for building_index in fee_buildings {
-            pay_storehouse_fee(
-                rules,
-                &place.id,
-                &place.prices_milli,
-                usize::from(date.month - 1),
-                &mut place.pops,
-                &mut place.buildings,
-                building_index,
-                &mut place.counters,
-                &mut place_ledger,
-            )?;
-        }
         place_ledger.stock_after = total_stored_goods(rules, place)?;
         place_ledger.herds_after = total_herds(place)?;
         for building in &place.buildings {
@@ -5691,8 +5674,13 @@ pub fn run_daily_economy_with_context(
     ledger.intake_pm = intake_pm;
     ledger.daily_consumption = Some(daily_consumption);
     if date.day == 1 {
-        ledger.movement_by_pop =
-            run_monthly_demography(rules, &mut next, shelter_by_place, nearby_by_place)?;
+        ledger.movement_by_pop = run_monthly_demography(
+            rules,
+            &mut next,
+            shelter_by_place,
+            nearby_by_place,
+            Some((usize::from(date.month - 1), &mut ledger)),
+        )?;
         // Intake is measured before the month's demographic pass. A recruited pop did not
         // exist during that day's consumption, so keep the ledger aligned with the new state
         // and report zero intake for that new row.
@@ -6516,8 +6504,17 @@ fn move_recruits(
     position_kind: &str,
     count: u64,
 ) -> Result<(u64, usize), DataError> {
-    let mut trial = places.to_vec();
-    let source = &trial[source_place].pops[source_pop];
+    let same_place = source_place == destination_place;
+    let mut trial = if same_place {
+        vec![places[source_place].clone()]
+    } else {
+        vec![
+            places[source_place].clone(),
+            places[destination_place].clone(),
+        ]
+    };
+    let trial_destination = usize::from(!same_place);
+    let source = &trial[0].pops[source_pop];
     let (target_kind, moved_workers, moved_dependents, removed_workers, removed_dependents) =
         if position_kind == "monk" {
             let shares = largest_remainder(count, &[source.workers, source.dependents])
@@ -6538,9 +6535,9 @@ fn move_recruits(
     let destination_pop_index = transfer_pop(
         rules,
         &mut trial,
-        source_place,
+        0,
         source_pop,
-        destination_place,
+        trial_destination,
         target_kind,
         destination_building,
         moved_workers,
@@ -6548,8 +6545,12 @@ fn move_recruits(
         removed_workers,
         removed_dependents,
     )?;
-    release_excess_employment(&mut trial[source_place])?;
-    places.clone_from_slice(&trial);
+    release_excess_employment(&mut trial[0])?;
+    let mut updated = trial.into_iter();
+    places[source_place] = updated.next().expect("the source place was cloned");
+    if !same_place {
+        places[destination_place] = updated.next().expect("the destination place was cloned");
+    }
     Ok((
         moved_workers.checked_add(moved_dependents).ok_or_else(|| {
             missing_data("movement.transfer".to_owned(), "moved population overflow")
@@ -6775,6 +6776,7 @@ fn run_monthly_demography(
     state: &mut EconomyState,
     shelter_by_place: &BTreeMap<String, u64>,
     nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
+    fee_context: Option<(usize, &mut ProductionLedger)>,
 ) -> Result<Vec<Vec<u64>>, DataError> {
     let mut movement_allowance = Vec::with_capacity(state.places.len());
     for place in &mut state.places {
@@ -6931,6 +6933,9 @@ fn run_monthly_demography(
         nearby_by_place,
         &movement_allowance,
     )?;
+    if let Some((month_index, ledger)) = fee_context {
+        charge_storehouse_fees(rules, state, month_index, ledger)?;
+    }
     for place in &mut state.places {
         for pop in &mut place.pops {
             let pop_type = rules
@@ -6961,6 +6966,112 @@ fn run_monthly_demography(
         }
     }
     Ok(movement_by_pop)
+}
+
+fn charge_storehouse_fees(
+    rules: &Rules,
+    state: &mut EconomyState,
+    month_index: usize,
+    ledger: &mut ProductionLedger,
+) -> Result<(), DataError> {
+    if ledger.places.len() != state.places.len() {
+        return Err(missing_data(
+            "ledger.places".to_owned(),
+            "place dimensions do not match the economy state",
+        ));
+    }
+    for (place_index, place) in state.places.iter_mut().enumerate() {
+        let place_ledger = ledger
+            .places
+            .get_mut(place_index)
+            .ok_or_else(|| missing_data("ledger.places".to_owned(), "place entry is missing"))?;
+        if place_ledger.place_id != place.id {
+            return Err(missing_data(
+                "ledger.places".to_owned(),
+                "place order does not match the economy state",
+            ));
+        }
+        let stock_before_fees = total_stored_goods(rules, place)?;
+        for building_index in 0..place.buildings.len() {
+            if place.buildings[building_index]
+                .storehouse_accounts
+                .is_some()
+            {
+                pay_storehouse_fee(
+                    rules,
+                    &place.id,
+                    &place.prices_milli,
+                    month_index,
+                    &mut place.pops,
+                    &mut place.buildings,
+                    building_index,
+                    &mut place.counters,
+                    place_ledger,
+                )?;
+            }
+        }
+        let stock_after_fees = total_stored_goods(rules, place)?;
+        for (ledger_stock, (before, after)) in place_ledger
+            .stock_after
+            .iter_mut()
+            .zip(stock_before_fees.iter().zip(stock_after_fees))
+        {
+            if after >= *before {
+                *ledger_stock = ledger_stock.checked_add(after - before).ok_or_else(|| {
+                    missing_data("ledger.stock".to_owned(), "closing stock total overflow")
+                })?;
+            } else {
+                *ledger_stock = ledger_stock.checked_sub(before - after).ok_or_else(|| {
+                    missing_data(
+                        "ledger.stock".to_owned(),
+                        "late fee exceeds the closing stock recorded before demography",
+                    )
+                })?;
+            }
+        }
+        place_ledger.unpaid_wages.fill(0);
+        for building in &place.buildings {
+            if building.pay_carries.len() != rules.goods.len() {
+                return Err(missing_data(
+                    format!(
+                        "places.{}.buildings.{}.pay_carries",
+                        place.id, building.kind
+                    ),
+                    "saved payday dimensions do not match goods",
+                ));
+            }
+            for (total, unpaid) in place_ledger
+                .unpaid_wages
+                .iter_mut()
+                .zip(&building.pay_carries)
+            {
+                *total = total.checked_add(*unpaid).ok_or_else(|| {
+                    missing_data("ledger.unpaid_wages".to_owned(), "unpaid total overflow")
+                })?;
+            }
+        }
+    }
+    ledger.lost.fill(0);
+    ledger.stock_after.fill(0);
+    ledger.unpaid_wages.fill(0);
+    for place in &ledger.places {
+        for (total, part) in ledger.lost.iter_mut().zip(&place.lost) {
+            *total = total
+                .checked_add(*part)
+                .ok_or_else(|| missing_data("ledger.loss".to_owned(), "loss total overflow"))?;
+        }
+        for (total, part) in ledger.stock_after.iter_mut().zip(&place.stock_after) {
+            *total = total
+                .checked_add(*part)
+                .ok_or_else(|| missing_data("ledger.stock".to_owned(), "stock total overflow"))?;
+        }
+        for (total, part) in ledger.unpaid_wages.iter_mut().zip(&place.unpaid_wages) {
+            *total = total.checked_add(*part).ok_or_else(|| {
+                missing_data("ledger.unpaid_wages".to_owned(), "unpaid total overflow")
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn reduced_ratio(value: u16, reference: u16) -> (u16, u16) {
@@ -7170,6 +7281,23 @@ fn decode_employment(input: &mut Reader<'_>) -> Result<Vec<Employment>, Canonica
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn natural_shelter_uses_literal_weighted_counts_across_three_terrains() {
+        let mut rules = tiny_rules();
+        rules.shelter_pm.insert("forest".to_owned(), 75);
+        let land = LandCounts {
+            land_cells: BTreeMap::from([
+                ("pasture".to_owned(), 18),
+                ("forest".to_owned(), 12),
+                ("bog".to_owned(), 22),
+            ]),
+            ..LandCounts::default()
+        };
+
+        // (18 × 50 + 12 × 75 + 22 × 10) / 1000 = 2.02, floored to 2.
+        assert_eq!(natural_shelter(&rules, &land).unwrap(), 2);
+    }
 
     #[test]
     fn buildable_area_uses_all_land_and_scales_with_checked_development() {
@@ -7694,6 +7822,32 @@ mod tests {
                 counters: CounterBuckets::default(),
             }],
         }
+    }
+
+    fn daily_storehouse_fee_state() -> (Rules, EconomyState) {
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let mut rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        rules.price_k_pm = 0;
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.prices_milli = rules
+            .goods
+            .iter()
+            .map(|good| good.base_price * 1000)
+            .collect();
+        place.price_drift_carries = vec![0; rules.goods.len()];
+        for pop in &mut place.pops {
+            pop.consumption.pantry_hunger_centi = vec![0; rules.goods.len()];
+            pop.consumption.ticking_carries = vec![0; rules.goods.len()];
+        }
+        place.pops[0].workers = 20;
+        place.buildings[0].employment[0].workers = 10;
+        place.pops[0].employment[0].workers = 10;
+        place.buildings[1].employment[1].workers = 4;
+        place.pops[1].employment[1].workers = 4;
+        place.buildings[1].employment[2].workers = 4;
+        place.pops[2].employment[1].workers = 4;
+        (rules, state)
     }
 
     #[test]
@@ -9595,17 +9749,15 @@ mod tests {
         storehouse.storehouse_accounts.as_mut().unwrap().pops[0][0] = 100;
         let opening_pop_food = place.pops[0].stock[0];
 
-        let ledger = run_monthly_production(
-            &rules,
-            &mut state,
-            Date {
-                year: 768,
-                month: 1,
-                day: 1,
-                hour: 12,
-            },
-        )
-        .unwrap();
+        let mut ledger = ProductionLedger {
+            lost: vec![0; rules.goods.len()],
+            unpaid_wages: vec![0; rules.goods.len()],
+            places: vec![PlaceProductionLedger::new("fort", rules.goods.len())],
+            ..ProductionLedger::default()
+        };
+        ledger.places[0].stock_after = total_stored_goods(&rules, &state.places[0]).unwrap();
+        ledger.stock_after = ledger.places[0].stock_after.clone();
+        charge_storehouse_fees(&rules, &mut state, 0, &mut ledger).unwrap();
         let place = &state.places[0];
         let storehouse = &place.buildings[storehouse_index];
         assert_eq!(storehouse.wage_history[0], 1500);
@@ -9620,6 +9772,259 @@ mod tests {
         assert_eq!(
             ledger.lost[0], 6,
             "all five released carry units and this month's one fee unit overflow"
+        );
+        assert_eq!(ledger.places[0].lost[0], 6);
+        assert_eq!(ledger.unpaid_wages[0], 0);
+        assert_eq!(place.counters.current.losses, 6);
+        assert_eq!(place.counters.last.losses, 0);
+    }
+
+    #[test]
+    fn first_of_month_storehouse_fee_uses_staff_hired_that_day() {
+        let (mut rules, mut state) = daily_storehouse_fee_state();
+        let oats = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "oats")
+            .unwrap();
+        rules.goods[oats].hunger_centi = 0;
+        let place = &mut state.places[0];
+        let storehouse_index = place
+            .buildings
+            .iter()
+            .position(|building| building.kind == "storehouse")
+            .unwrap();
+        let storehouse = &mut place.buildings[storehouse_index];
+        storehouse.employment[0].workers = 0;
+        storehouse.stock[oats] = 1_000;
+        let accounts = storehouse.storehouse_accounts.as_mut().unwrap();
+        for account in &mut accounts.pops {
+            account[oats] = 0;
+        }
+        accounts.communal[oats] = 1_000;
+        place.pops[0].employment[storehouse_index].workers = 0;
+
+        let ledger = run_daily_economy(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let place = &state.places[0];
+        let storehouse = &place.buildings[storehouse_index];
+        assert_eq!(storehouse.employment[0].workers, 1);
+        assert_eq!(
+            storehouse.storehouse_accounts.as_ref().unwrap().communal[oats],
+            990
+        );
+        assert_eq!(storehouse.wage_history[0], 1_000_000);
+        assert_eq!(ledger.lost[oats], 0);
+    }
+
+    #[test]
+    fn first_of_month_fee_with_no_staff_keeps_the_fee_and_wage_slot() {
+        let (mut rules, mut state) = daily_storehouse_fee_state();
+        let oats = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "oats")
+            .unwrap();
+        rules.goods[oats].hunger_centi = 0;
+        let place = &mut state.places[0];
+        let storehouse_index = 2;
+        let storehouse = &mut place.buildings[storehouse_index];
+        storehouse.levels = 0;
+        storehouse.employment.fill(Employment::default());
+        storehouse.wage_history[0] = 777;
+        storehouse.stock[oats] = 100;
+        storehouse.storehouse_accounts.as_mut().unwrap().communal[oats] = 100;
+        for employment in &mut place.pops {
+            employment.employment[storehouse_index] = Employment::default();
+        }
+
+        let ledger = run_daily_economy(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let storehouse = &state.places[0].buildings[storehouse_index];
+        assert_eq!(storehouse.wage_history[0], 777);
+        assert_eq!(storehouse.pay_carries[oats], 1);
+        assert_eq!(
+            storehouse.storehouse_accounts.as_ref().unwrap().communal[oats],
+            99
+        );
+        assert_eq!(ledger.unpaid_wages[oats], 1);
+        assert_eq!(ledger.places[0].unpaid_wages[oats], 1);
+    }
+
+    #[test]
+    fn first_of_month_movement_reads_the_old_storehouse_wage_before_fee_posting() {
+        let (mut rules, mut state) = daily_storehouse_fee_state();
+        rules.pop_types[0].births_pm_year = 0;
+        rules.pop_types[0].worker_deaths_pm_year = 0;
+        rules.pop_types[0].dependent_deaths_pm_year = 0;
+        let oats = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "oats")
+            .unwrap();
+        let place = &mut state.places[0];
+        place.pops.truncate(1);
+        place.pops[0].workers = 20;
+        place.pops[0].dependents = 0;
+        place.pops[0].employment = vec![Employment::default(); place.buildings.len()];
+        place.pops[0].employment[0].owners = 1;
+        place.pops[0].stock[oats] = 10_000;
+        place.buildings[0].employment.truncate(1);
+        place.buildings[0].employment[0].owners = 1;
+        place.buildings[0].employment[0].workers = 0;
+        place.buildings[1].employment.truncate(1);
+        place.buildings[1].wage_history.fill(11);
+        place.buildings[2].employment.truncate(1);
+        place.buildings[2].employment[0].workers = 2;
+        place.pops[0].employment[2].workers = 2;
+        place.buildings[2].wage_history.fill(0);
+        place.buildings[2].wage_history[0] = 1_200;
+        let storehouse = &mut place.buildings[2];
+        storehouse
+            .storehouse_accounts
+            .as_mut()
+            .unwrap()
+            .pops
+            .truncate(1);
+        storehouse.storehouse_accounts.as_mut().unwrap().pops[0][oats] = 0;
+        storehouse.storehouse_accounts.as_mut().unwrap().communal[oats] = 100;
+        storehouse.fee_carries.truncate(2);
+        storehouse.stock[oats] = 100;
+        assert_eq!(place.buildings[1].posted_wage(), 11);
+        assert_eq!(pop_wage_per_head(place, 0).unwrap(), 10);
+        assert!(source_can_fill(&place.pops[0], "labourer", 11, 10));
+        let mut local_place = place.clone();
+        let allowance = fill_monthly_hiring(&rules, &mut local_place).unwrap();
+        assert!(allowance[1][1] > 0);
+        let local_movement = move_open_positions(
+            &rules,
+            std::slice::from_mut(&mut local_place),
+            &BTreeMap::new(),
+            &[allowance],
+        )
+        .unwrap();
+        assert_eq!(local_movement[0].iter().sum::<u64>(), 1);
+
+        let ledger = run_daily_economy(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let place = &state.places[0];
+        assert_eq!(ledger.movement_by_pop[0].iter().sum::<u64>(), 1);
+        assert_eq!(place.buildings[2].wage_history[0], 50_000);
+        assert_eq!(
+            place.buildings[2]
+                .storehouse_accounts
+                .as_ref()
+                .unwrap()
+                .communal[oats],
+            99,
+            "the communal 100-oat account is unchanged by movement and pays a one-oat fee"
+        );
+    }
+
+    #[test]
+    fn storehouse_fee_uses_the_account_balance_after_a_mover_withdraws_their_share() {
+        let (mut rules, mut state) = daily_storehouse_fee_state();
+        let oats = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "oats")
+            .unwrap();
+        rules.goods[oats].pop_limit_milli = 1_000_000_000;
+        rules.goods[oats].volume_ml = 1;
+        let source = &mut state.places[0];
+        source.pops.truncate(1);
+        source.pops[0].workers = 10;
+        source.pops[0].dependents = 0;
+        source.pops[0].employment = vec![Employment::default(); source.buildings.len()];
+        source.pops[0].employment[0].owners = 1;
+        source.buildings[0].employment.truncate(1);
+        source.buildings[0].employment[0].owners = 1;
+        source.buildings[0].employment[0].workers = 0;
+        source.buildings[1].employment.truncate(1);
+        source.buildings[2].employment.truncate(1);
+        source.buildings[2].employment[0].workers = 1;
+        source.pops[0].employment[2].workers = 1;
+        let storehouse = &mut source.buildings[2];
+        storehouse
+            .storehouse_accounts
+            .as_mut()
+            .unwrap()
+            .pops
+            .truncate(1);
+        storehouse.storehouse_accounts.as_mut().unwrap().pops[0][oats] = 1_000;
+        storehouse.storehouse_accounts.as_mut().unwrap().communal[oats] = 0;
+        storehouse.fee_carries.truncate(2);
+        storehouse.stock[oats] = 1_000;
+        assert_eq!((source.pops[0].workers, source.pops[0].dependents), (10, 0));
+
+        let mut destination = state.places[0].clone();
+        destination.id = "destination".to_owned();
+        destination.pops.clear();
+        for building in &mut destination.buildings {
+            building.employment.clear();
+            if let Some(accounts) = &mut building.storehouse_accounts {
+                accounts.pops.clear();
+            }
+        }
+        let mut places = vec![state.places.remove(0), destination];
+        let (moved, _) = move_recruits(&rules, &mut places, 0, 0, 1, 1, "labourer", 1).unwrap();
+        assert_eq!(moved, 1);
+        let source = &mut places[0];
+        assert_eq!(
+            source.buildings[2]
+                .storehouse_accounts
+                .as_ref()
+                .unwrap()
+                .pops[0][oats],
+            900
+        );
+        let mut ledger = PlaceProductionLedger::new(&source.id, rules.goods.len());
+        pay_storehouse_fee(
+            &rules,
+            &source.id,
+            &source.prices_milli,
+            0,
+            &mut source.pops,
+            &mut source.buildings,
+            2,
+            &mut source.counters,
+            &mut ledger,
+        )
+        .unwrap();
+        assert_eq!(
+            source.buildings[2]
+                .storehouse_accounts
+                .as_ref()
+                .unwrap()
+                .pops[0][oats],
+            891
         );
     }
 
@@ -9636,21 +10041,25 @@ mod tests {
         storehouse.wage_history[0] = 777;
         storehouse.stock[0] = 100;
         storehouse.storehouse_accounts.as_mut().unwrap().pops[0][0] = 100;
+        storehouse.levels = 0;
         storehouse.employment[0].workers = 0;
         place.pops[0].employment[storehouse_index].workers = 0;
 
-        run_monthly_production(
+        let place = &mut state.places[0];
+        let mut ledger = PlaceProductionLedger::new(&place.id, rules.goods.len());
+        pay_storehouse_fee(
             &rules,
-            &mut state,
-            Date {
-                year: 768,
-                month: 1,
-                day: 1,
-                hour: 12,
-            },
+            &place.id,
+            &place.prices_milli,
+            0,
+            &mut place.pops,
+            &mut place.buildings,
+            storehouse_index,
+            &mut place.counters,
+            &mut ledger,
         )
         .unwrap();
-        let storehouse = &state.places[0].buildings[storehouse_index];
+        let storehouse = &place.buildings[storehouse_index];
         assert_eq!(storehouse.wage_history[0], 777);
         assert_eq!(storehouse.pay_carries[0], 1);
     }
@@ -9673,16 +10082,19 @@ mod tests {
             employment.workers = 0;
         }
         place.pops[0].employment[farm_index].workers = 0;
-        place.prices_milli[0] = u64::MAX;
+        place.prices_milli[0] = 500_000;
+        let opening_total = total_stored_goods(&rules, place).unwrap()[0];
+        let opening_storehouse = place.buildings[storehouse_index].stock[0];
+        let account_amount = u64::MAX - (opening_total - opening_storehouse);
         let storehouse = &mut place.buildings[storehouse_index];
         storehouse.wage_history[0] = 1234;
         storehouse.employment[0].workers = 1;
         place.pops[0].employment[storehouse_index].workers = 1;
-        storehouse.stock[0] = 200;
-        storehouse.storehouse_accounts.as_mut().unwrap().pops[0][0] = 200;
+        storehouse.stock[0] = account_amount;
+        storehouse.storehouse_accounts.as_mut().unwrap().pops[0][0] = account_amount;
         let before = state.clone();
 
-        let error = run_monthly_production(
+        let error = run_daily_economy(
             &rules,
             &mut state,
             Date {
@@ -9706,7 +10118,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "This integration case checks seasonal carry, storehouse fee timing, day gating and rollback together."
     )]
-    fn monthly_production_keeps_fractional_seasonal_output_and_skips_other_days() {
+    fn monthly_production_keeps_fractional_seasonal_output_and_defers_storehouse_fee() {
         let mut rules = tiny_rules();
         rules.goods[0].pop_limit_milli = 1_000_000_000;
         rules.seasons.insert(
@@ -9764,14 +10176,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(state.places[0].buildings[farm].stock[0], 2);
-        assert_eq!(state.places[0].buildings[storehouse].stock[0], 1_980);
+        assert_eq!(state.places[0].buildings[storehouse].stock[0], 2_000);
         assert_eq!(
             state.places[0].buildings[storehouse]
                 .storehouse_accounts
                 .as_ref()
                 .unwrap()
                 .pops[0][0],
-            990
+            1_000
         );
         assert_eq!(
             state.places[0].buildings[storehouse]
@@ -9779,7 +10191,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .communal[0],
-            990
+            1_000
         );
         assert_eq!(
             state.places[0].buildings[farm].production_carries[0][0],
@@ -12692,7 +13104,8 @@ mod tests {
                 counters: CounterBuckets::default(),
             }],
         };
-        run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new(), None)
+            .unwrap();
         let pop = &state.places[0].pops[0];
         assert_eq!((pop.workers, pop.dependents), (120, 80));
         assert_eq!(pop.counters.current.births, 0);
@@ -12703,14 +13116,47 @@ mod tests {
     }
 
     #[test]
-    fn fractional_rate_of_1_62_on_one_person_keeps_its_remainder() {
-        let mut carry = 0;
-        let mut whole = 0;
-        for _ in 0..12 {
-            whole += exact_monthly_rate(1, 1620, &[1000], &mut carry, "rate.test").unwrap();
-        }
-        assert_eq!(whole, 1);
-        assert_eq!(carry, 7_440_000);
+    fn monthly_death_pins_a_1_62_rate_on_a_one_person_pool() {
+        let mut rules = tiny_rules();
+        rules.pop_types[0].births_pm_year = 0;
+        // Three 1000‰ death factors make 19,440‰/year equal 1.62 deaths this month.
+        rules.pop_types[0].worker_deaths_pm_year = 19_440;
+        let pop = PopState {
+            kind: "peasant".to_owned(),
+            culture: "connachta".to_owned(),
+            religion: "christianity".to_owned(),
+            literacy_pm: 0,
+            workers: 1,
+            dependents: 0,
+            employment: Vec::new(),
+            stock: vec![0],
+            consumption: PopConsumption::default(),
+            counters: CounterBuckets::default(),
+        };
+        let mut state = EconomyState {
+            places: vec![PlaceState {
+                id: "one-person-pool".to_owned(),
+                coastal: false,
+                pops: vec![pop],
+                buildings: Vec::new(),
+                prices_milli: vec![1000],
+                prepared_m2: 0,
+                development_pm: 1000,
+                price_drift_carries: Vec::new(),
+                counters: CounterBuckets::default(),
+            }],
+        };
+
+        run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new(), None)
+            .unwrap();
+
+        let pop = &state.places[0].pops[0];
+        assert_eq!(
+            pop.counters.current.deaths, 1,
+            "the one-person pool is capped"
+        );
+        assert_eq!(pop.workers, 0);
+        assert_eq!(pop.consumption.worker_death_carry, 7_440_000_000_000);
     }
 
     #[test]
@@ -12753,7 +13199,8 @@ mod tests {
             2000
         );
 
-        run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new(), None)
+            .unwrap();
 
         let place = &state.places[0];
         assert_eq!(place.pops[0].workers, 0);
@@ -13039,6 +13486,69 @@ mod tests {
     }
 
     #[test]
+    fn movement_recruits_from_the_nearer_of_two_in_range_sources_first() {
+        let (mut rules, mut near) = holdings_movement_fixture();
+        rules.leave_pm = 1000;
+        let mut destination = near.clone();
+        destination.id = "destination".to_owned();
+        destination.pops.clear();
+        destination.buildings[0].employment.clear();
+
+        near.id = "near".to_owned();
+        let near_pop = near
+            .pops
+            .iter_mut()
+            .find(|pop| pop.kind == "peasant")
+            .unwrap();
+        near_pop.workers = 30;
+        near_pop.employment[0] = Employment::default();
+
+        let mut far = near.clone();
+        far.id = "far".to_owned();
+        let mut places = vec![destination, near, far];
+        let nearby = BTreeMap::from([(
+            "destination".to_owned(),
+            vec![
+                NearbyPlace {
+                    id: "near".to_owned(),
+                    distance_m: 74_898, // d=145 at row 15777
+                },
+                NearbyPlace {
+                    id: "far".to_owned(),
+                    distance_m: 99_692, // d=193 at row 15777
+                },
+            ],
+        )]);
+
+        let moved = move_open_positions(
+            &rules,
+            &mut places,
+            &nearby,
+            &[vec![[10, 0]], vec![], vec![]],
+        )
+        .unwrap();
+
+        assert_eq!(
+            places[1].pops[0].workers, 25,
+            "the nearer source fills first"
+        );
+        assert_eq!(
+            places[2].pops[0].workers, 30,
+            "the farther source is untouched"
+        );
+        assert_eq!(
+            places[0]
+                .pops
+                .iter()
+                .find(|pop| pop.kind == "monk")
+                .unwrap()
+                .workers,
+            5
+        );
+        assert_eq!(moved[0].iter().sum::<u64>(), 5);
+    }
+
+    #[test]
     fn movement_counts_filled_positions_by_the_original_pop_index() {
         let (rules, place) = holdings_movement_fixture();
         let mut places = vec![place];
@@ -13178,6 +13688,42 @@ mod tests {
             .find(|pop| pop.kind == "labourer")
             .unwrap();
         assert_eq!(monk.employment[0].owners, 2);
+        assert_eq!(labourer.employment[0].owners, 0);
+    }
+
+    #[test]
+    fn new_holdings_owner_comes_from_monks_when_a_labourer_is_idle() {
+        let (rules, mut place) = holdings_movement_fixture();
+        let monk = place
+            .pops
+            .iter_mut()
+            .find(|pop| pop.kind == "monk")
+            .unwrap();
+        monk.workers = 13;
+        monk.employment[0].workers = 10;
+        place.buildings[0].employment[1].workers = 10;
+        let labourer_index = place
+            .pops
+            .iter()
+            .position(|pop| pop.kind == "labourer")
+            .unwrap();
+        place.pops[labourer_index].workers = 4;
+        // The pre-fix per-kind rule would fill a labourer-owner position from this idle labourer.
+        assert_eq!(
+            unemployed_workers(&place, labourer_index).unwrap(),
+            1,
+            "the fixture has an idle labourer before hiring"
+        );
+
+        fill_monthly_hiring(&rules, &mut place).unwrap();
+
+        let monk = place.pops.iter().find(|pop| pop.kind == "monk").unwrap();
+        let labourer = place
+            .pops
+            .iter()
+            .find(|pop| pop.kind == "labourer")
+            .unwrap();
+        assert_eq!(monk.employment[0].owners, 3);
         assert_eq!(labourer.employment[0].owners, 0);
     }
 
