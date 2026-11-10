@@ -138,6 +138,20 @@ fn next_capture(rig: &mut Rig, scene: &Scene, before: i64) -> CapturedFrame {
         .expect("a captured frame")
 }
 
+/// Waits for the capture of every command buffer committed so far and returns the latest capture.
+/// `committed()` already counts the frame whose generation was seen, which `drawn()` stores only after the commit.
+fn drawn_capture(rig: &mut Rig, scene: &Scene) -> CapturedFrame {
+    let committed = scene.probes.observer.committed();
+    until(rig, "the drawn frame's capture", || {
+        scene.probes.observer.captures() >= committed
+    });
+    scene
+        .probes
+        .observer
+        .captured_frame()
+        .expect("a captured frame")
+}
+
 /// Publishes a frame (compatibility quad `compat`, scene quads `others`), waits for the presenter to have drawn exactly that
 /// generation and for its capture, and returns the latest captured frame. Only for frames that are drawn (not held back).
 fn show(
@@ -152,13 +166,7 @@ fn show(
     until(rig, "the published generation to be drawn", || {
         presenter.drawn_generation() == Some(generation)
     });
-    // The capture of a submitted frame arrives with its completion.
-    rig.pump_for(Duration::from_millis(150));
-    scene
-        .probes
-        .observer
-        .captured_frame()
-        .expect("a captured frame")
+    drawn_capture(rig, scene)
 }
 
 /// Waits until the driver has been told the revision is prepared (uploaded, not yet committed).
@@ -567,12 +575,7 @@ pub(crate) fn scene_compat_never_gates_new_asynchronous_resources() {
     until(&mut rig, "the clipped frame to be drawn", || {
         presenter.drawn_generation() == Some(2)
     });
-    rig.pump_for(Duration::from_millis(150));
-    let frame = scene
-        .probes
-        .observer
-        .captured_frame()
-        .expect("a captured frame");
+    let frame = drawn_capture(&mut rig, &scene);
     assert_eq!(px(&frame, 4, 4), CLEAR);
     assert_eq!(presenter.stats().gate_holds, 0);
     await_presented(&mut rig, &scene.probes.observer);
@@ -673,7 +676,8 @@ pub(crate) fn scene_compat_keeps_the_old_image_while_a_replacement_is_pending() 
     commit(&scene, &presenter, 2);
     // Frames are asked for until one shows the replacement (the commit makes one wanted by itself; this only bounds the wait).
     let mut generation = 13_u64;
-    let frame = loop {
+    let mut replacement = None;
+    until(&mut rig, "the replacement to be drawn", || {
         publish(
             &scene,
             generation,
@@ -681,17 +685,15 @@ pub(crate) fn scene_compat_keeps_the_old_image_while_a_replacement_is_pending() 
             vec![scene_instance(3, rect(128, 0, 160, 32))],
         );
         generation += 1;
-        rig.pump_for(Duration::from_millis(50));
-        let latest = scene
-            .probes
-            .observer
-            .captured_frame()
-            .expect("a captured frame");
-        if px(&latest, 56, 56) == BLUE {
-            break latest;
+        if let Some(frame) = scene.probes.observer.captured_frame()
+            && px(&frame, 56, 56) == BLUE
+        {
+            replacement = Some(frame);
+            return true;
         }
-        assert!(generation < 140, "the replacement was never drawn");
-    };
+        false
+    });
+    let frame = replacement.expect("the bounded wait observed the replacement");
     assert_eq!(
         px(&frame, 56, 56),
         BLUE,
@@ -731,20 +733,20 @@ pub(crate) fn scene_compat_never_goes_back_to_an_older_image() {
     assert_eq!(px(&frame, 16, 16), RED);
     commit(&scene, &presenter, 2);
     let mut generation = 20_u64;
-    loop {
+    let mut green = None;
+    until(&mut rig, "B to be drawn", || {
         publish(&scene, generation, Some((2, at)), Vec::new());
         generation += 1;
-        rig.pump_for(Duration::from_millis(50));
-        if scene
-            .probes
-            .observer
-            .captured_frame()
-            .is_some_and(|frame| px(&frame, 16, 16) == GREEN)
+        if let Some(frame) = scene.probes.observer.captured_frame()
+            && px(&frame, 16, 16) == GREEN
         {
-            break;
+            green = Some(frame);
+            return true;
         }
-        assert!(generation < 120, "B was never drawn");
-    }
+        false
+    });
+    let green = green.expect("the bounded wait observed B");
+    assert_eq!(px(&green, 16, 16), GREEN);
     // C, then D and E, published while nothing resolves: B (the newest drawn) stays, never A.
     for (generation, key) in [(200, 3), (201, 4), (202, 5)] {
         let frame = show(
@@ -834,12 +836,7 @@ pub(crate) fn scene_compat_clipped_replacement_keeps_the_hold() {
         until(rig, "the frame to be drawn", || {
             presenter.drawn_generation() == Some(generation)
         });
-        rig.pump_for(Duration::from_millis(150));
-        scene
-            .probes
-            .observer
-            .captured_frame()
-            .expect("a captured frame")
+        drawn_capture(rig, &scene)
     };
     publish_clipped(&scene, 2, 2);
     let frame = drawn_at(&mut rig, 2);
@@ -875,7 +872,13 @@ pub(crate) fn scene_compat_clipped_replacement_keeps_the_hold() {
     until(&mut rig, "the old key's retirement", || {
         scene.driver().retired.contains(&1)
     });
-    rig.pump_for(Duration::from_millis(150));
+    until(&mut rig, "the resolved clipped frame", || {
+        scene
+            .probes
+            .observer
+            .captured_frame()
+            .is_some_and(|frame| px(&frame, 16, 16) == CLEAR)
+    });
     let frame = scene
         .probes
         .observer
