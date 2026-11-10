@@ -68,6 +68,7 @@ local real_button_new = buttons_library.new
 mode_buttons = {}
 buttons_library.new = function(spec)
   local created = real_button_new(spec)
+  if spec.text == "places" then places_button_object = created end
   if spec.icon == "stockpile" or spec.icon == "yield" or spec.icon == "elevation" then mode_buttons[spec.icon] = created end
   return created
 end
@@ -78,6 +79,16 @@ function announce_modes()
     note(string.format("mode %s %d %d %s", key, button.x + width / 2, button.y + height / 2, tostring(button.selected == true)))
   end
   note("modes_called " .. table.concat(set_mode_calls, ","))
+end
+-- Each mode button's and the places button's left edge, top edge, width and height, in window points.
+function announce_bars()
+  for _, key in ipairs({"stockpile", "yield", "elevation"}) do
+    local button = mode_buttons[key]
+    local width, height = button:size()
+    note(string.format("bar %s %g %g %g %g", key, button.x, button.y, width, height))
+  end
+  local width, height = places_button_object:size()
+  note(string.format("bar places %g %g %g %g", places_button_object.x, places_button_object.y, width, height))
 end
 function note(text) window.record(text) end
 function time(hour, revision)
@@ -575,6 +586,22 @@ fn modes_called(rig: &Rig) -> Vec<String> {
         .collect()
 }
 
+/// The last announced rectangle `[x, y, width, height]`, in whole window points, of the button `key` ("stockpile", "yield",
+/// "elevation" or "places").
+fn bar_button(rig: &Rig, key: &str) -> [i64; 4] {
+    let prefix = format!("bar {key} ");
+    let line = notes(rig)
+        .into_iter()
+        .rev()
+        .find(|line| line.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("no bar button {key}: {:?}", notes(rig)));
+    let numbers: Vec<i64> = line[prefix.len()..]
+        .split_whitespace()
+        .map(|part| part.parse().unwrap())
+        .collect();
+    [numbers[0], numbers[1], numbers[2], numbers[3]]
+}
+
 /// Presses the mode button `key` and delivers a frame.
 fn press_mode(rig: &mut Rig, key: &str) {
     let (x, y, _) = mode_button(rig, key);
@@ -686,4 +713,84 @@ fn a_mode_the_lane_refuses_leaves_the_buttons_and_the_mode_as_they_were() {
     rig.opened();
     assert_eq!(modes_called(&rig), ["yield"]);
     assert!(mode_button(&rig, "yield").2);
+}
+
+/// The map-mode bar (milestone 9, slice 12a) at 2 points a pixel, where `bar` is its top-left corner: the bar is 55 UI pixels wide (5
+/// padding, three buttons of 13 with 3 between, 5 padding) and 19 tall, so 110 by 38 points. Its buttons are 13 by 15 pixels, the first
+/// at the bar's `x + 5 P`, the three a button and 3 pixels apart, all at the bar's `y + 2 P`.
+fn assert_mode_bar_at(rig: &Rig, bar: [i64; 2]) {
+    const P: i64 = 2;
+    let [stockpile, yields, elevation] =
+        ["stockpile", "yield", "elevation"].map(|key| bar_button(rig, key));
+    assert_eq!(
+        stockpile,
+        [bar[0] + 5 * P, bar[1] + 2 * P, 13 * P, 15 * P],
+        "the stockpile button"
+    );
+    assert_eq!(
+        yields,
+        [bar[0] + (5 + 13 + 3) * P, stockpile[1], 13 * P, 15 * P],
+        "the yield button, a button and a gap on"
+    );
+    assert_eq!(
+        elevation,
+        [
+            bar[0] + (5 + 2 * (13 + 3)) * P,
+            stockpile[1],
+            13 * P,
+            15 * P
+        ],
+        "the elevation button"
+    );
+}
+
+#[test]
+fn the_mode_bar_is_centred_at_the_bottom_of_the_window_and_follows_a_resize() {
+    let mut rig = rig(&["time(1, 1) announce_bars()", "announce_bars()"]);
+    rig.opened();
+    // 1800 by 900 points. The bar is 110 by 38: centred it starts at (1800 - 110) / 2 = 845, which snaps to the 2-point grid as 846, and its
+    // bottom edge is a margin of 8 above the window's: y = 900 - 38 - 8 = 854.
+    assert_mode_bar_at(&rig, [846, 854]);
+    let stockpile = bar_button(&rig, "stockpile");
+    assert_eq!(stockpile[0], 846 + 5 * 2, "the first button's left edge");
+    assert_eq!(
+        stockpile[1] + stockpile[3] / 2,
+        854 + 19,
+        "the row's vertical centre"
+    );
+    let elevation = bar_button(&rig, "elevation");
+    let left_gap = stockpile[0] - 5 * 2;
+    let right_gap = 1800 - (elevation[0] + elevation[2] + 5 * 2);
+    assert!(
+        (left_gap - right_gap).abs() <= 2,
+        "centred: {left_gap} points on the left, {right_gap} on the right"
+    );
+    // 1200 by 700: (1200 - 110) / 2 = 545, snapped 546; y = 700 - 38 - 8 = 654. The buttons moved with the bar.
+    rig.deliver_fixture_frame_at(1200, 700, 2);
+    rig.opened();
+    assert_mode_bar_at(&rig, [546, 654]);
+}
+
+#[test]
+fn the_places_bar_stays_at_the_top_right_beside_the_bottom_mode_bar() {
+    let mut rig = rig(&["time(1, 1) announce_bars()", "announce_bars()"]);
+    rig.opened();
+    // The places button sits in its bar, which is a margin of 8 from the top and the right edges: its top is 8 + 2 P, and its right edge
+    // plus the bar's padding of 5 P plus the margin reaches the window's right edge (to a snap).
+    let check = |rig: &Rig, width: i64| {
+        let places = bar_button(rig, "places");
+        assert_eq!(places[1], 8 + 2 * 2, "the top of the places button");
+        assert!(
+            (places[0] + places[2] + 5 * 2 + 8 - width).abs() <= 2,
+            "the right edge of the places bar: {places:?} in {width}"
+        );
+        assert!(
+            bar_button(rig, "stockpile")[1] > places[1] + places[3],
+            "the mode bar is below the places bar, not beside it"
+        );
+    };
+    check(&rig, 1800);
+    rig.deliver_fixture_frame_at(1200, 700, 2);
+    rig.opened();
+    check(&rig, 1200);
 }

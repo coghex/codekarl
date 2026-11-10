@@ -20,7 +20,7 @@ local date_text = require("lib.time")
 local location = require("lib.location")
 
 local P = ui.P
-local MARGIN = 8 -- points from the window's top and left edges
+local MARGIN = 8 -- points from the window's edges
 
 -- The window as opened, and then as the last update reported it, in points.
 local OPEN_WIDTH, OPEN_HEIGHT = 800, 600
@@ -146,19 +146,20 @@ if game ~= nil then
     }
   end
 
-  -- The map modes' bar (milestone 9, slices 8 and 10b): three icon buttons, left of the places bar, choose the map mode that colours each
+  -- The map modes' bar (milestone 9, slices 8, 10b and 12a): three icon buttons, centred at the bottom of the window, choose the map mode that colours each
   -- place red to green (the goods in store against the most it holds, or the year's yield against the other places') or draws the land
   -- from black to white by its height. The button of the mode that shows is selected; pressing it turns the mode off, pressing another
   -- changes the mode.
   local MODE_BUTTON_WIDTH = 13 -- UI pixels: the 9-pixel icon and the button's padding
   local MODES_WIDTH = 5 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 5
 
+  -- Centred at the bottom of the window, its bottom edge a margin above the window's: it does not depend on any other panel.
   local function modes_origin()
-    return ui.anchor("top_right", MODES_WIDTH * P, 19 * P, -(MARGIN + places_panel.width + 4 * P), MARGIN, view.width, view.height)
+    return ui.anchor("bottom", MODES_WIDTH * P, 19 * P, 0, -MARGIN, view.width, view.height)
   end
 
   local function fit_modes_bar()
-    if modes_panel == nil or places_panel == nil then return end
+    if modes_panel == nil then return end
     local x, y = modes_origin()
     modes_panel:set_rect(x, y, MODES_WIDTH * P, 19 * P)
     render.set_hit("modes_bar", {{x = x, y = y, width = MODES_WIDTH * P, height = 19 * P}}, modes_group)

@@ -5,16 +5,23 @@ Covered beyond the boundary: none
 
 ## Next
 
-Process the open findings below, then continue from the boundary.
+Review the 9 publication(s) after the boundary.
 
 ## Open findings
 
-- 20261110t162316z-3e49bd80/GUIDE-3 — Expected yield ignores the fertility factor used by farm production — unprocessed
-- 20261110t162316z-3e49bd80/GUIDE-4 — Displayed storage capacity counts owners whom goods receipt excludes — unprocessed
+- none
 
 ## Pending handoff
 
 - publication D1794327912386911000 is after the boundary
+- publication D1794329130811744000 is after the boundary
+- publication 1794329299726334000 is after the boundary
+- publication D1794329687728098000 is after the boundary
+- publication 1794330283795234000 is after the boundary
+- publication 1794330560862062000 is after the boundary
+- publication 1794331836790574000 is after the boundary
+- publication 1794333028672511000 is after the boundary
+- publication D1794333456235451000 is after the boundary
 
 ## Alignment
 
