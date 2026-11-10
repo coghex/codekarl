@@ -6,8 +6,9 @@
 designer proposals, revised after design review 1 (`.pipeline/coordination/map-design/design-review-ck-reviewer-1.md` with its owner
 addendum, and `design-review-ck-reviewer-2.md`) and the owner's decisions on it. Both reviewers approved revision 2
 (`design-review-2-ck-reviewer-2.md`, `design-review-ck-reviewer-1-r2.md`). Revision 3 records two later owner answers as Firm and fixes two
-non-blocking notes; it changes no design. The owner's decision on the milestone: file it and review its specs, without starting
-implementation.
+non-blocking notes; it changes no design. Milestone 6 (§10) was then implemented and accepted. §12 records the milestone 9 land,
+climate and look, which are accepted on native Metal (slices 9a, 10a and 10b: CK-234, CK-235 and CK-236); the Vulkan catch-up is
+parked.
 
 **Firm** marks owner decisions, with their date. **Proposal** marks designer recommendations. **Open** marks decisions that still need an
 answer. A Firm item that the owner chose by reacting to a mock-up says so. Times are UTC on 2026-11-02 unless stated.
@@ -195,6 +196,8 @@ verdict on the second: "that looks good".
   occupation are shown.
 - **Proposal.** Every map mode is a colouring rule over the same world data, with its palette in data, so a new mode needs no new renderer.
 - **Firm (2026-11-09).** An elevation map mode shows actual height from black to white (§12.5).
+- **Built in milestone 9:** the stockpile and yield modes (`docs/economy-design.md` §3.22) and the elevation mode, each chosen by a
+  button on the map-mode bar; clicking the shown mode's button again returns to the geographic map.
 
 ## 7. Open questions carried forward
 
@@ -481,10 +484,10 @@ owner's reading of the running map plus windowless tests. **Firm (owner, 15:18Z)
 - 60 frames per second is shown while zooming and panning.
 - The owner reads the running map against mock-up 2.
 
-## 11. Next steps
+## 11. Next steps (done)
 
-1. ck-designer-1 drafts one issue spec per §10 slice; ck-manager files milestone 6 and routes the specs to review.
-2. Implementation does not start until the owner says so: "File only".
+Milestone 6 was filed slice by slice, reviewed and implemented after the owner's go; it is accepted. The original steps were: one issue
+spec per §10 slice, filed by ck-manager, with implementation held until the owner said so ("File only").
 
 ## 12. Land, climate and the look since M9 (Firm: owner-signed, 2026-11-09)
 
@@ -660,7 +663,7 @@ just snow caps, but glaciation".
 - **Grid A:**
   - R is the terrain index;
   - G is fertility ÷ 4 (0–250), with 255 meaning glacier;
-  - B is the signed hillside strength (−16…+16, offset by 128), precomputed per cell at load.
+  - B is the signed hillside strength (−15…+15, offset by 128; `⌊16 × |shade|⌋` never reaches 16), precomputed per cell at load.
 - **Grid B** keeps the elevation.
 - **The reference colour function** in `ck-map` implements §12.3–§12.5, and native Metal matches it. Readback fixtures on Metal compare
   byte for byte.
@@ -669,11 +672,11 @@ just snow caps, but glaciation".
   the Vulkan code just enough to compile. The Vulkan port, with its own readback fixtures, is economy-design slice 11, parked until the
   owner says so.
 - **Slices** (economy-design §4):
-  - **9a:** the data and loading;
-  - **9:** the economy's use;
-  - **10a:** the default look (§12.3–§12.4), on native Metal;
-  - **10b:** the elevation mode (§12.5), on native Metal;
-  - **11:** the Vulkan catch-up (parked).
+  - **9a:** the data and loading (CK-234, accepted);
+  - **9:** the economy's use (CK-233, accepted);
+  - **10a:** the default look (§12.3–§12.4), on native Metal (CK-235, accepted; the owner approved it in the running game);
+  - **10b:** the elevation mode (§12.5), on native Metal (CK-236, accepted);
+  - **11:** the Vulkan catch-up (CK-239, parked).
 
 ### 12.7 Sources
 
