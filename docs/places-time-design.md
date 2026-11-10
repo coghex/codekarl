@@ -1,7 +1,8 @@
 # Places and the game clock: design (r4)
 
-**Status: draft r4, 2026-11-06, by ck-designer-1 (Class S, `claude-opus-5-5`, high).** Intended for `docs/places-time-design.md`. Under
-design review.
+**Status: milestone 7 design (r4, 2026-11-06, by ck-designer-1, Class S, `claude-opus-5-5`, high); milestone 7 is accepted.** Later
+milestones changed parts of it, noted where they apply ("Since M9"); the M8 time bar and its controls are in `docs/ui-design.md`. §2
+describes the code as it was before M7.
 - r4 answers design review 1 (`design-review-1-reviewer-1.md`, CHANGES_REQUESTED on r3) and ck-reviewer-1's CK-191 questions
   (`nzrrvmwpfkenxvkqvb43j5wsqw`). It changes no owner decision and no slice:
   - **F1**, the pointer ring (§6);
@@ -273,6 +274,9 @@ index order or `BTreeMap`), allocation addresses and uninitialised data.
 
   A binary body follows: canonical little-endian, length-prefixed sections, each with a checksum. In M7 it holds the clock, the
   random-stream state, the pending commands and the journal. Locations are static in M7, so only their hash is saved.
+- **Since M9 (CK-225):** the header also holds `rules_hash`, the content hash of the shared rules (`assets/game/economy.toml`) and the
+  map's `terrain.toml`, checked on load like the others. The body's sections are `CLCK` (the tick), `STAT` (the game state, which holds
+  the economy), `PEND` and `JRNL`, each with its checksum, then a whole-file checksum.
 - **A save is taken at a tick boundary.** The simulation finishes its tick, writes the file, then continues.
 - **Load checks:**
   - the build id must match for a guaranteed replay. An older build's save is refused in M7 with a named error; cross-version loading is

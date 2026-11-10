@@ -2,6 +2,9 @@
 
 Part of [the vision](../vision.md), moved verbatim from it on 2026-10-21. Owner decisions are marked **Firm** with their date; everything else is **Open** or a **Proposal**, as there.
 
+This is the long-term vision. What milestone 9 built, and the owner's decisions that settled some Open items here for it (pops, needs,
+births and deaths, hiring and movement, local prices), are in [the economy design](../economy-design.md).
+
 ## Economy and populations
 
 - **Firm.** Economy, populations, resources and trade lead the design. Variety and depth of pop types and resources should go well beyond

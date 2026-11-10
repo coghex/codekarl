@@ -5,6 +5,8 @@ approved its engineering (`economy-design-review-r19.md`, ee101993). A fresh via
 (`design-fun-review-r1.md`, by ck-designer-4) was worked through with the owner in r17–r19. The design was written by ck-designer-1
 (Class S, `claude-opus-5-5`, high).
 
+- **Implemented:** every slice of §4 except slice 11 is accepted (CK-224 to CK-245, 2026-11-10); slice 11, the Vulkan catch-up, is
+  parked. Later owner decisions are folded into the sections that they change, with their date and record.
 - **Source:** `.pipeline/coordination/m9-design/economy-design-r19.md` (sha256 `69772ff5…`), published unchanged below this header.
 - **Revision history:** r1–r19 and their reviews live beside it in `.pipeline/coordination/m9-design/`.
 - **Reading the section notes:** the "rN" notes inside the sections record when each rule was settled, and are kept for traceability.
@@ -391,8 +393,8 @@ monastery's holdings, both, or neither. The kind-and-size tables of §3.12–3.1
     switch, only newly built farm";
   - so the cut below applies only to authored levels at load, and the room check to newly built levels. Neither ever deletes an
     existing level.
-- **Limits:** farming levels by usable land, and fishing levels by the fish available (the sea-cell stand-in until fishing grounds
-  exist). Authored levels that fit under no method's limit are cut, and the load report lists them.
+- **Limits:** farming levels by usable land (fertility, §3.24), and fishing levels by building footprint, with at least one sea cell in
+  the catchment (§3.23, slice 9; the sea-cell stand-in above is withdrawn). Authored levels that fit under no method's limit are cut, and the load report lists them.
 - **Every monastery is productive** (Firm, for now). The load report names any place where no method can hold a level, so that the
   data is fixed.
 
@@ -908,12 +910,12 @@ any building (Firm: no strict rules), and every value goes into the guesswork lo
       levels. This replaces the earlier "Inishmurray authors none".
 - **Farms:** where the guesses do not fit the land, the maximum of §3.4 cuts them.
 
-| Kind | Size | Subsistence farm levels | Holdings levels |
-|---|---|---|---|
-| monastery | 1 / 2 / 3 / 4 | 8 / 15 / 30 / 50 (0 where there are no peasants) | 2 / 5 / 10 / 20 |
-| royal site | 1 / 2 / 3 | 15 / 30 / 50 | – |
-| ringfort | 1 / 2 | 4 / 8 | – |
-| crannog | 1 / 2 | 3 / 6 | – |
+| Kind | Size | Subsistence farm levels | Holdings levels | Storehouse levels (§3.18) |
+|---|---|---|---|---|
+| monastery | 1 / 2 / 3 / 4 | 8 / 15 / 30 / 50 (0 where there are no peasants) | 2 / 5 / 10 / 20 | 1 / 2 / 4 / 8 |
+| royal site | 1 / 2 / 3 | 15 / 30 / 50 | – | 1 / 2 / 4 |
+| ringfort | 1 / 2 | 4 / 8 | – | 1 / 1 |
+| crannog | 1 / 2 | 3 / 6 | – | 1 / 1 |
 
 - **Pops and levels do not have to agree.** A pop larger than its jobs has unemployed workers, and a building larger than its pop has
   open positions. Both are legitimate starting states.
@@ -1164,7 +1166,8 @@ open positions, not by pops.
 
 ### 3.21 Suitability and grazing (C5; Proposal values for tuning)
 
-Per terrain (`terrain.toml` gains these columns, hashed with the rules):
+Per terrain, in the shared rules (`assets/game/economy.toml`, `[suitability.*]` and `[grazing.*]`; `rules_hash` covers that file and
+the map's `terrain.toml`):
 
 | Terrain | Crops | Cattle and sheep grazing | Pig forage |
 |---|---|---|---|
@@ -1217,7 +1220,8 @@ Per terrain (`terrain.toml` gains these columns, hashed with the rules):
   - the reference colour function gains this rule, so readback fixtures compare byte for byte on both backends.
 - **The renderer:** the map pass reads the index grid and the value table. This landed on Metal and Vulkan together (CK-231), with
   readback tests, before the owner made Vulkan compile-only (§4). Later map modes land on native Metal, and Vulkan catches up in slice 11.
-- **Switching:** two map-mode buttons on the UI select the mode, or turn it off.
+- **Switching:** three map-mode buttons on the UI, stockpile, yield and elevation (`docs/map-design.md` §12.5), select a mode; clicking
+  the shown mode's button again turns it off.
 
 ### 3.23 Buildable land, footprints and development (Firm, owner-signed 2026-11-09; a follow-up slice)
 
@@ -1393,7 +1397,7 @@ fields cut. The engine's load report is the authority.
 - The literacy rule.
 - How a monastery's specialty goods are produced (methods later, Firm).
 - **Lua's role** (r5's Q1): which rules, if any, are written in Lua.
-- **The slice plan** (Proposal, dependency order, review r7 E2):
+- **The slice plan** (dependency order, review r7 E2). Every slice is accepted except 11, which is parked:
 
   | Slice | Contents | Depends on |
   |---|---|---|
@@ -1401,9 +1405,13 @@ fields cut. The engine's load report is the authority.
   | 2 | data, validation, maximum sizes and the starting state with its stockpiles; `GameState`, saves and `rules_hash` | – |
   | 3 | the location panel and its starting view: the first visible result | 2 |
   | 4 | production by season, herds, wages, the payday flow with alms and storehouses; the soak tool | 1, 2 |
+  | 4b | the posted wage: a 12-month payday history, seeded from the starting stockpile, saved and shown (§3.6) | 4 |
+  | 4c | a storehouse's posted wage is its fee (§3.18) | 4b |
   | 5 | eating with the intake curve, needs and satisfaction | 4 |
   | 6 | housing and crowding (§3.8), births, deaths, drift, hiring and movement (C9: before the market) | 5, 9 |
+  | 6b | the recruitment range per building, monastic holdings 100 km, in ground distance (§3.5) | 6 |
   | 7 | local prices, computed and shown (no barter) | 5 |
+  | 7b | market orders: one target per good, and the owner pop reserve (§3.16) | 7 |
   | 8 | the two map modes, on both backends (landed before the Vulkan direction) | 4 |
   | 9a | the computed climate and fertility map data, and glaciation (`docs/map-design.md` §12) | 2 |
   | 9 | buildable land, footprints, development fixed at 1000 (§3.23), and fertility's farm room and yield (§3.24); before CK-229 (slice 6) | 9a |
