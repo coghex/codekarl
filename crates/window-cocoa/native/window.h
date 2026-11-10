@@ -57,9 +57,17 @@ typedef struct {
 typedef struct {
     int32_t close_source;     /* CK_WIN_CLOSE_*: the first close in arrival order */
     uint32_t close_absorbed;  /* further close presses, saturating */
-    int32_t pixel_changed;    /* 1 when the pixel size changed */
-    uint32_t pixel_width;     /* the latest pixel size, when pixel_changed */
+    int32_t size_changed;     /* 1 when the content size changed: one report for a live resize, however long, and for each zoom,
+                               * full-screen transition or backing change that is not part of one */
+    uint32_t point_width;     /* the latest content size in points, when size_changed */
+    uint32_t point_height;
+    uint32_t pixel_width;     /* the latest drawable size in pixels, when size_changed */
     uint32_t pixel_height;
+    int32_t min_clamped;      /* 1 when a smaller screen lowered the content minimum (the Rust side logs it once) */
+    uint32_t min_requested_width;  /* the minimum asked for, in points, and the one used, when min_clamped */
+    uint32_t min_requested_height;
+    uint32_t min_used_width;
+    uint32_t min_used_height;
     int32_t needs_display;    /* 1 when a redraw is needed */
     int32_t minimized;        /* 1 when the window was miniaturized */
     int32_t restored;         /* 1 when the window was deminiaturized */
@@ -83,11 +91,23 @@ size_t ck_win_events_size(void);
  * application object exists. Calls finishLaunching once for the process. */
 CKWinHandle *ck_win_create(char *error, size_t error_capacity);
 
-/* Creates the fixed-size window (title is UTF-8 and may contain NUL bytes). Returns 0 and the layer
- * pointer (valid until ck_win_destroy_window) and the initial pixel size, or 1 and a message with no
- * window left behind. */
+/* The main screen as the main thread sees it: its scale factor (pixels per point) and its visible area in points.
+ * Callable before a window exists. With no screen (a session with no display) it says 1 and 4294967295 for both
+ * sizes. */
+void ck_win_main_screen(CKWinHandle *handle, double *backing, uint32_t *visible_width, uint32_t *visible_height);
+
+/* Creates the window (title is UTF-8 and may contain NUL bytes): fixed-size unless `resizable`, in which case it can be
+ * resized, zoomed and made full screen (the green button and Control-Command-F), and `content_min_*` (points; 0 for none)
+ * is its content minimum. `pixel_min_*` (pixels; 0 for none) is the minimum as requested in pixels: when given it
+ * decides the content minimum at the window's backing scale, now and at every change of it, and a window below the
+ * minimum after a change is grown to it. `clear` is the colour the window shows where the drawable does not cover it.
+ * Returns 0 and the layer pointer (valid until ck_win_destroy_window), the initial content size in points and the
+ * drawable's size in pixels, or 1 and a message with no window left behind. */
 int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_length,
-                         uint32_t width, uint32_t height, int activate, int ignore_mouse, void **layer,
+                         uint32_t width, uint32_t height, int activate, int ignore_mouse, int resizable,
+                         uint32_t content_min_width, uint32_t content_min_height,
+                         uint32_t pixel_min_width, uint32_t pixel_min_height, const float *clear,
+                         void **layer, uint32_t *point_width, uint32_t *point_height,
                          uint32_t *pixel_width, uint32_t *pixel_height,
                          char *error, size_t error_capacity);
 

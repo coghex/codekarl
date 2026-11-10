@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use ck_window::{
     Backend, CreatedWindow, LoopEnd, LoopSettings, NativeEvent, NativeWake, Notifier, PixelSize,
-    PostError, Requests, UiAnswer, UiEvent, UiLink, Wait, WindowDesc, run,
+    PostError, Requests, ScreenSnapshot, UiAnswer, UiEvent, UiLink, Wait, WindowDesc, run,
 };
 
 use super::support::{desc, lock};
@@ -54,6 +54,10 @@ struct IdleBackend {
 
 impl Backend for IdleBackend {
     type Handles = u32;
+
+    fn main_screen(&mut self) -> ScreenSnapshot {
+        ScreenSnapshot::unlimited()
+    }
 
     fn create_window(&mut self, desc: &WindowDesc) -> Result<CreatedWindow<u32>, String> {
         Ok(CreatedWindow {

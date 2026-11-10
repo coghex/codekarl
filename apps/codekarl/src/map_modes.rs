@@ -229,6 +229,7 @@ mod tests {
             width: 400,
             height: 320,
             clear: [0.0; 3],
+            ..WindowDesc::default()
         };
         controller.open(&desc).expect("the initial view is valid");
         let sink = Arc::new(Sink::default());

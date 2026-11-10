@@ -204,6 +204,7 @@ impl Rig {
                     width: 400,
                     height: 320,
                     clear: [0.0; 3],
+                    ..WindowDesc::default()
                 },
                 PixelSize {
                     width: 800,

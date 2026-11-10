@@ -234,6 +234,9 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
  * The application, window, view and delegate
  * ------------------------------------------------------------------------------------------- */
 
+/* The macOS virtual key code of F. */
+#define CK_KEY_CODE_F 3
+
 @implementation CKWinView
 
 - (BOOL)acceptsFirstResponder {
@@ -252,11 +255,28 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
 /* Every key event is recorded (a code outside the key table is dropped) and consumed here, so none reaches the
  * next responder and none beeps. Cmd-Q and every other key equivalent stay what they were: nothing (no menu). */
 - (void)keyDown:(NSEvent *)event {
+    /* The shortcut is normally taken by performKeyEquivalent: (the key window's key-equivalent pass); a window that is not key is
+     * not offered key equivalents, so the key-down that reaches here is taken the same way, and is never a game event. */
+    if ([self.state handleShortcutEvent:event]) {
+        return;
+    }
     [self.state recordKeyCode:event.keyCode down:YES repeat:event.isARepeat];
 }
 
 - (void)keyUp:(NSEvent *)event {
+    /* The key-up of a key the window took as a shortcut is not a game event either. */
+    if (self.state.swallowedShortcutKey && event.keyCode == CK_KEY_CODE_F) {
+        self.state.swallowedShortcutKey = NO;
+        return;
+    }
     [self.state recordKeyCode:event.keyCode down:NO repeat:NO];
+}
+
+/* The window's one shortcut, Control-Command-F (macOS full screen), is taken here, before the key-down reaches `keyDown:`, so
+ * the game never sees it. Every other key equivalent, Control-F and Command-F alone included, stays what it was: not handled,
+ * so it arrives as an ordinary key event. */
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    return [self.state handleShortcutEvent:event];
 }
 
 - (void)flagsChanged:(NSEvent *)event {
@@ -303,7 +323,61 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
 
 - (void)windowDidChangeBackingProperties:(NSNotification *)notification {
     (void)notification;
-    [self.state applyScaleAndRecordPixelSize];
+    [self.state backingScaleChanged];
+}
+
+/* Resizing. While the edge is dragged nothing is reported (the owner: re-layout on release); the end reports one size. A zoom
+ * or any other resize reports at once, one for each change. */
+- (void)windowWillStartLiveResize:(NSNotification *)notification {
+    (void)notification;
+    self.state.liveResizing = YES;
+}
+
+- (void)windowDidEndLiveResize:(NSNotification *)notification {
+    (void)notification;
+    self.state.liveResizing = NO;
+    [self.state applyScaleAndRecordSize];
+}
+
+- (void)windowDidResize:(NSNotification *)notification {
+    (void)notification;
+    [self.state recordResizeIfSettled];
+}
+
+/* Full screen: entering and leaving are size changes that report once, when the transition has finished, none during the
+ * animation. */
+- (void)windowWillEnterFullScreen:(NSNotification *)notification {
+    (void)notification;
+    self.state.fullScreenTransition = YES;
+}
+
+- (void)windowDidEnterFullScreen:(NSNotification *)notification {
+    (void)notification;
+    self.state.fullScreenTransition = NO;
+    [self.state applyScaleAndRecordSize];
+}
+
+- (void)windowWillExitFullScreen:(NSNotification *)notification {
+    (void)notification;
+    self.state.fullScreenTransition = YES;
+}
+
+- (void)windowDidExitFullScreen:(NSNotification *)notification {
+    (void)notification;
+    self.state.fullScreenTransition = NO;
+    [self.state applyScaleAndRecordSize];
+}
+
+- (void)windowDidFailToEnterFullScreen:(NSWindow *)window {
+    (void)window;
+    self.state.fullScreenTransition = NO;
+    [self.state applyScaleAndRecordSize];
+}
+
+- (void)windowDidFailToExitFullScreen:(NSWindow *)window {
+    (void)window;
+    self.state.fullScreenTransition = NO;
+    [self.state applyScaleAndRecordSize];
 }
 
 - (void)windowDidChangeOcclusionState:(NSNotification *)notification {
@@ -329,7 +403,7 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
 @implementation CKWinState
 
 - (BOOL)isPending {
-    return self.closeSource != CK_WIN_CLOSE_NONE || self.pixelChanged || self.needsDisplay ||
+    return self.closeSource != CK_WIN_CLOSE_NONE || self.sizeChanged || self.needsDisplay ||
            self.minimizedPending || self.restoredPending || _ringLength != 0 || _overflow || _focusLostPending ||
            _focusGainedPending || _pointerLength != 0 || _pointerOverflow;
 }
@@ -616,33 +690,141 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
     return self.window != nil ? self.window.backingScaleFactor : 1.0;
 }
 
-- (void)applyScaleAndRecordPixelSize {
+/* The visible area, in whole points, of the screen the window is on (the main screen before it has one). */
+- (NSSize)visibleSize {
+    NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
+    if (screen == nil) {
+        return NSMakeSize((CGFloat)UINT32_MAX, (CGFloat)UINT32_MAX);
+    }
+    NSRect visible = screen.visibleFrame;
+    return NSMakeSize(floor(visible.size.width), floor(visible.size.height));
+}
+
+- (void)applyScaleAndRecordSize {
     if (self.window == nil || self.view == nil) {
         return;
     }
     double scale = [self scale];
     self.view.layer.contentsScale = scale;
     NSSize points = self.view.bounds.size;
+    uint32_t point_width = (uint32_t)llround(points.width);
+    uint32_t point_height = (uint32_t)llround(points.height);
     uint32_t width = (uint32_t)llround(points.width * scale);
     uint32_t height = (uint32_t)llround(points.height * scale);
-    if (width == self.knownWidth && height == self.knownHeight) {
+    if (width == self.knownWidth && height == self.knownHeight && point_width == self.knownPointWidth &&
+        point_height == self.knownPointHeight) {
         return;
     }
     BOOL wasEmpty = ![self isPending];
     self.knownWidth = width;
     self.knownHeight = height;
-    self.pixelChanged = YES;
+    self.knownPointWidth = point_width;
+    self.knownPointHeight = point_height;
+    self.sizeChanged = YES;
+    self.pointWidth = point_width;
+    self.pointHeight = point_height;
     self.pixelWidth = width;
     self.pixelHeight = height;
     [self afterRecord:wasEmpty];
 }
 
+- (void)recordResizeIfSettled {
+    if (self.liveResizing || self.fullScreenTransition || self.growing) {
+        return;
+    }
+    [self applyScaleAndRecordSize];
+}
+
+/* The content minimum for the window's current backing scale: the pixels asked for, divided by the scale and rounded up, or the
+ * points asked for; lowered to the screen's visible size when it does not fit (a clamp never raises a size). */
+- (void)refreshMinimum {
+    if (self.window == nil || !self.resizable) {
+        return;
+    }
+    uint32_t width = self.minPointWidth;
+    uint32_t height = self.minPointHeight;
+    if (self.minPixelWidth != 0 && self.minPixelHeight != 0) {
+        double scale = [self scale];
+        width = (uint32_t)ceil((double)self.minPixelWidth / scale);
+        height = (uint32_t)ceil((double)self.minPixelHeight / scale);
+    }
+    if (width == 0 || height == 0) {
+        return;
+    }
+    NSSize visible = [self visibleSize];
+    uint32_t used_width = (uint32_t)fmin((double)width, visible.width);
+    uint32_t used_height = (uint32_t)fmin((double)height, visible.height);
+    if ((used_width != width || used_height != height) && !self.minClamped) {
+        self.minClamped = YES;
+        self.minRequestedWidth = width;
+        self.minRequestedHeight = height;
+        self.minUsedWidth = used_width;
+        self.minUsedHeight = used_height;
+    }
+    self.window.contentMinSize = NSMakeSize(used_width, used_height);
+}
+
+/* A window below its content minimum (a change of screen leaves the pixel minimum above what the points give) grows to it,
+ * keeping its top-left. The growth is not reported by itself: the caller records one size afterwards. */
+- (void)growToMinimum {
+    NSWindow *window = self.window;
+    if (window == nil || !self.resizable || (window.styleMask & NSWindowStyleMaskFullScreen) != 0) {
+        return;
+    }
+    NSSize minimum = window.contentMinSize;
+    NSRect frame = window.frame;
+    NSSize content = [window contentRectForFrameRect:frame].size;
+    NSSize wanted = NSMakeSize(fmax(content.width, minimum.width), fmax(content.height, minimum.height));
+    if (wanted.width == content.width && wanted.height == content.height) {
+        return;
+    }
+    NSRect grown = [window frameRectForContentRect:NSMakeRect(0, 0, wanted.width, wanted.height)];
+    grown.origin.x = frame.origin.x;
+    grown.origin.y = NSMaxY(frame) - grown.size.height;
+    self.growing = YES;
+    [window setFrame:grown display:YES];
+    self.growing = NO;
+}
+
+- (void)backingScaleChanged {
+    if (self.window == nil || self.view == nil) {
+        return;
+    }
+    self.view.layer.contentsScale = [self scale];
+    [self refreshMinimum];
+    [self growToMinimum];
+    /* One report for the move and any growth together; during a live resize or a transition, its end reports. */
+    if (!self.liveResizing && !self.fullScreenTransition) {
+        [self applyScaleAndRecordSize];
+    }
+}
+
+- (BOOL)handleShortcutEvent:(NSEvent *)event {
+    if (event.type != NSEventTypeKeyDown || event.keyCode != CK_KEY_CODE_F || self.window == nil || !self.resizable) {
+        return NO;
+    }
+    NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+    NSEventModifierFlags shortcut = NSEventModifierFlagControl | NSEventModifierFlagCommand;
+    if ((flags & (NSEventModifierFlagControl | NSEventModifierFlagCommand | NSEventModifierFlagOption |
+                  NSEventModifierFlagShift)) != shortcut) {
+        return NO;
+    }
+    self.swallowedShortcutKey = YES;
+    if (!event.isARepeat) {
+        [self.window toggleFullScreen:nil];
+    }
+    return YES;
+}
+
 - (void)clearPending {
     self.closeSource = CK_WIN_CLOSE_NONE;
     self.closeAbsorbed = 0;
-    self.pixelChanged = NO;
+    self.sizeChanged = NO;
+    self.pointWidth = 0;
+    self.pointHeight = 0;
     self.pixelWidth = 0;
     self.pixelHeight = 0;
+    self.minClamped = NO;
     self.needsDisplay = NO;
     self.minimizedPending = NO;
     self.restoredPending = NO;
@@ -663,6 +845,12 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
     self.delegate = nil;
     self.knownWidth = 0;
     self.knownHeight = 0;
+    self.knownPointWidth = 0;
+    self.knownPointHeight = 0;
+    self.liveResizing = NO;
+    self.fullScreenTransition = NO;
+    self.growing = NO;
+    self.swallowedShortcutKey = NO;
     [self clearPending];
     [self resetKeys];
     _focusLostPending = NO;
@@ -706,8 +894,28 @@ CKWinHandle *ck_win_create(char *error, size_t capacity) {
     }
 }
 
+void ck_win_main_screen(CKWinHandle *handle, double *backing, uint32_t *visible_width, uint32_t *visible_height) {
+    @autoreleasepool {
+        (void)handle;
+        NSScreen *screen = NSScreen.mainScreen;
+        if (screen == nil) {
+            *backing = 1.0;
+            *visible_width = UINT32_MAX;
+            *visible_height = UINT32_MAX;
+            return;
+        }
+        NSRect visible = screen.visibleFrame;
+        *backing = screen.backingScaleFactor;
+        *visible_width = (uint32_t)floor(visible.size.width);
+        *visible_height = (uint32_t)floor(visible.size.height);
+    }
+}
+
 int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_length,
-                         uint32_t width, uint32_t height, int activate, int ignore_mouse, void **layer,
+                         uint32_t width, uint32_t height, int activate, int ignore_mouse, int resizable,
+                         uint32_t content_min_width, uint32_t content_min_height,
+                         uint32_t pixel_min_width, uint32_t pixel_min_height, const float *clear,
+                         void **layer, uint32_t *point_width, uint32_t *point_height,
                          uint32_t *pixel_width, uint32_t *pixel_height, char *error,
                          size_t capacity) {
     @autoreleasepool {
@@ -728,9 +936,12 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
             return 1;
         }
         NSRect content = NSMakeRect(0, 0, width, height);
-        /* Title, close and minimise buttons; not resizable. */
+        /* Title, close and minimise buttons; resizable (and so zoomable and able to go full screen) only when asked. */
         NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                  NSWindowStyleMaskMiniaturizable;
+        if (resizable) {
+            mask |= NSWindowStyleMaskResizable;
+        }
         NSWindow *window = [[NSWindow alloc] initWithContentRect:content
                                                        styleMask:mask
                                                          backing:NSBackingStoreBuffered
@@ -740,6 +951,10 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
             return 1;
         }
         window.releasedWhenClosed = NO;
+        if (resizable) {
+            /* macOS standard full screen: the green button, and Control-Command-F through the content view. */
+            window.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
+        }
         /* Without this, the show animation keeps the window alive (and listed in [NSApp windows]) after it
          * is closed and released. */
         window.animationBehavior = NSWindowAnimationBehaviorNone;
@@ -758,13 +973,29 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
         window.delegate = delegate;
         double scale = window.backingScaleFactor;
         view.layer.contentsScale = scale;
+        /* While the edge is dragged the presenter's drawable keeps its last reported size and the window shows it anchored to the
+         * top left, unscaled; the part of the window it does not cover shows the clear colour. */
+        view.layer.contentsGravity = kCAGravityTopLeft;
+        if (clear != NULL) {
+            CGColorRef colour = CGColorCreateGenericRGB(clear[0], clear[1], clear[2], 1.0);
+            view.layer.backgroundColor = colour;
+            CGColorRelease(colour);
+        }
         uint32_t pixels_wide = (uint32_t)llround(width * scale);
         uint32_t pixels_high = (uint32_t)llround(height * scale);
         state.window = window;
         state.view = view;
         state.delegate = delegate;
+        state.resizable = resizable != 0;
+        state.minPointWidth = content_min_width;
+        state.minPointHeight = content_min_height;
+        state.minPixelWidth = pixel_min_width;
+        state.minPixelHeight = pixel_min_height;
         state.knownWidth = pixels_wide;
         state.knownHeight = pixels_high;
+        state.knownPointWidth = width;
+        state.knownPointHeight = height;
+        [state refreshMinimum];
         window.acceptsMouseMovedEvents = YES;
         [window center];
         [window makeFirstResponder:view];
@@ -782,6 +1013,8 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
             [window orderFront:nil];
         }
         *layer = (__bridge void *)view.layer;
+        *point_width = width;
+        *point_height = height;
         *pixel_width = pixels_wide;
         *pixel_height = pixels_high;
         return 0;
@@ -829,9 +1062,16 @@ static void ck_win_pump_impl(CKWinHandle *handle, int wait, size_t cap, BOOL tim
         [application updateWindows];
         out->close_source = state.closeSource;
         out->close_absorbed = state.closeAbsorbed;
-        out->pixel_changed = state.pixelChanged ? 1 : 0;
+        out->size_changed = state.sizeChanged ? 1 : 0;
+        out->point_width = state.pointWidth;
+        out->point_height = state.pointHeight;
         out->pixel_width = state.pixelWidth;
         out->pixel_height = state.pixelHeight;
+        out->min_clamped = state.minClamped ? 1 : 0;
+        out->min_requested_width = state.minRequestedWidth;
+        out->min_requested_height = state.minRequestedHeight;
+        out->min_used_width = state.minUsedWidth;
+        out->min_used_height = state.minUsedHeight;
         out->needs_display = state.needsDisplay ? 1 : 0;
         out->minimized = state.minimizedPending ? 1 : 0;
         out->restored = state.restoredPending ? 1 : 0;

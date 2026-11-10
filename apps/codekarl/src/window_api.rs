@@ -4,8 +4,10 @@
 //! functions run on the UI VM's owner thread, write the slot (`ck-window`'s [`RequestWriter`]: a latest-value
 //! slot, never waiting for the main thread) and return at once:
 //!
-//! - `window.open{title=, width=, height=, clear={r, g, b}}`: the one-shot `open`. A bad description or a
-//!   second `open` raises an ordinary Lua error with the slot's reason;
+//! - `window.open{title=, width=, height=, clear={r, g, b}, unit=, resizable=, min_width=, min_height=}`: the one-shot `open`. `unit` is
+//!   `"points"` (the default) or `"pixels"` (resolved once against the main screen); a resizable window may have a minimum. It returns the
+//!   width and height in points the window opens at. A bad description or a second `open` raises an ordinary Lua error with the slot's
+//!   reason;
 //! - `window.set_clear(r, g, b)`: the colour (finite components are clamped to 0..=1, a non-finite one
 //!   raises an error);
 //! - `window.close()`: the one-shot `close`;
@@ -20,12 +22,12 @@
 //! further accepted calls are counted in the same final record.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use ck_log::Level;
 use ck_lua::{ConfigValue, Extension, HostFunction};
-use ck_window::{MAX_DIMENSION, RequestWriter, WindowDesc};
+use ck_window::{MAX_DIMENSION, RequestWriter, ScreenSnapshot, SizeUnit, WindowDesc};
 
 /// The name of the callback `window.on_close_request` registers.
 pub(crate) const CLOSE_REQUEST: &str = "close_request";
@@ -33,6 +35,10 @@ pub(crate) const CLOSE_REQUEST: &str = "close_request";
 pub(crate) const OPENED: &str = "opened";
 /// The name of the callback a paced UI update is posted as (the Lua `frame.on_update` of milestone 5-8 registers it).
 pub(crate) const FRAME_UPDATE: &str = "frame_update";
+
+/// The main screen as the main thread saw it once, before the UI VM was spawned. Empty in a run with no window system (a headless
+/// run, or a backend that gave none), where a size in pixels resolves at one pixel per point with no limit on the screen's size.
+pub(crate) type ScreenCell = Arc<OnceLock<ScreenSnapshot>>;
 
 /// The record text of the first accepted `open` in a headless run.
 const IGNORED: &str = "window.open ignored: headless run";
@@ -200,17 +206,43 @@ fn dimension(table: &BTreeMap<String, ConfigValue>, name: &str) -> Result<u32, S
     })
 }
 
-/// The window description `window.open`'s table describes (the slot validates the values).
+/// A minimum from `window.open`'s table: both `min_width` and `min_height`, or neither.
+fn minimum(table: &BTreeMap<String, ConfigValue>) -> Result<Option<(u32, u32)>, String> {
+    match (
+        table.contains_key("min_width"),
+        table.contains_key("min_height"),
+    ) {
+        (false, false) => Ok(None),
+        (true, true) => Ok(Some((
+            dimension(table, "min_width")?,
+            dimension(table, "min_height")?,
+        ))),
+        (true, false) => Err("window.open: `min_width` needs `min_height` too".into()),
+        (false, true) => Err("window.open: `min_height` needs `min_width` too".into()),
+    }
+}
+
+/// The window description `window.open`'s table describes (the slot validates the values): sizes in `unit` ("points", the default,
+/// or "pixels"), `resizable` (default false), and `min_width` with `min_height` for a resizable window.
 fn description(arguments: &[Option<ConfigValue>]) -> Result<WindowDesc, String> {
     let [Some(ConfigValue::Table(table))] = arguments else {
         return Err(
             "window.open: expected one table {title=, width=, height=, clear={r, g, b}}".into(),
         );
     };
-    if let Some(unknown) = table
-        .keys()
-        .find(|key| !["title", "width", "height", "clear"].contains(&key.as_str()))
-    {
+    if let Some(unknown) = table.keys().find(|key| {
+        ![
+            "title",
+            "width",
+            "height",
+            "clear",
+            "unit",
+            "resizable",
+            "min_width",
+            "min_height",
+        ]
+        .contains(&key.as_str())
+    }) {
         return Err(format!("window.open: unknown field `{unknown}`"));
     }
     let title = match table.get("title") {
@@ -226,11 +258,26 @@ fn description(arguments: &[Option<ConfigValue>]) -> Result<WindowDesc, String> 
         Some(_) => return Err("window.open: `clear` must be an array {r, g, b}".into()),
         None => return Err("window.open: `clear` is missing".into()),
     };
+    let unit = match table.get("unit") {
+        None => SizeUnit::Points,
+        Some(ConfigValue::String(name)) if name == "points" => SizeUnit::Points,
+        Some(ConfigValue::String(name)) if name == "pixels" => SizeUnit::Pixels,
+        Some(_) => return Err("window.open: `unit` must be \"points\" or \"pixels\"".into()),
+    };
+    let resizable = match table.get("resizable") {
+        None => false,
+        Some(ConfigValue::Bool(value)) => *value,
+        Some(_) => return Err("window.open: `resizable` must be true or false".into()),
+    };
     Ok(WindowDesc {
         title,
         width: dimension(table, "width")?,
         height: dimension(table, "height")?,
         clear,
+        unit,
+        resizable,
+        min: minimum(table)?,
+        pixel_request: None,
     })
 }
 
@@ -240,11 +287,28 @@ struct Shared {
     writer: RequestWriter,
     headless: Option<Arc<HeadlessNotes>>,
     map: Option<crate::map_app::SharedController>,
+    /// The main screen, snapshotted on the main thread before this VM was spawned. The binding resolves sizes against it and never
+    /// calls a backend.
+    screen: ScreenCell,
 }
 
 impl Shared {
     fn open(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
-        let desc = description(arguments)?;
+        let requested = description(arguments)?;
+        let screen = self
+            .screen
+            .get()
+            .copied()
+            .unwrap_or_else(ScreenSnapshot::unlimited);
+        // One resolution, here, on the VM's thread: every consumer below receives this one description, in points.
+        let resolved = requested
+            .resolve(&screen)
+            .map_err(|error| error.to_string())?;
+        for line in &resolved.clamps {
+            ck_log::info!("window", "{line}");
+        }
+        let desc = resolved.desc;
+        let size = (desc.width, desc.height);
         if let Some(map) = &self.map {
             crate::map_app::lock(map).open(&desc)?;
         }
@@ -252,7 +316,12 @@ impl Shared {
         if let Some(notes) = &self.headless {
             notes.accepted_open();
         }
-        Ok(Vec::new())
+        // The size the window opens at, in points: a window asked for in pixels has a size in points that depends on the display, and the
+        // script's first layout starts from it.
+        Ok(vec![
+            ConfigValue::Integer(i64::from(size.0)),
+            ConfigValue::Integer(i64::from(size.1)),
+        ])
     }
 
     fn set_clear(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
@@ -278,17 +347,29 @@ impl Shared {
     }
 }
 
-/// The `window` extension over `writer`. `headless` is `Some` in a headless run: the same functions, the
-/// same validation, plus the notes of what was ignored.
+/// The `window` extension over `writer`, for a run with no screen snapshot (sizes in pixels resolve at one pixel per point with no
+/// limit). `headless` is `Some` in a headless run: the same functions, the same validation, plus the notes of what was ignored.
+#[cfg(test)]
 pub(crate) fn extension(
     writer: RequestWriter,
     headless: Option<Arc<HeadlessNotes>>,
     map: Option<crate::map_app::SharedController>,
 ) -> Extension {
+    extension_with_screen(writer, headless, map, ScreenCell::default())
+}
+
+/// [`extension`] with the main screen's cell: the main thread fills it before the UI VM is spawned, and `window.open` reads it.
+pub(crate) fn extension_with_screen(
+    writer: RequestWriter,
+    headless: Option<Arc<HeadlessNotes>>,
+    map: Option<crate::map_app::SharedController>,
+    screen: ScreenCell,
+) -> Extension {
     let shared = Shared {
         writer,
         headless,
         map,
+        screen,
     };
     let open: HostFunction = {
         let shared = shared.clone();
@@ -365,9 +446,31 @@ mod tests {
                     },
                 )))
             });
+            Self::with_extension(requests, notes, records, |writer, notes| {
+                extension(writer, notes, None)
+            })
+        }
+
+        /// A rig whose extension was given the main screen the application took on the main thread, as the production wiring does.
+        fn with_screen(screen: ScreenSnapshot) -> Self {
+            let requests = Requests::new();
+            let records = Arc::new(Mutex::new(Vec::new()));
+            let cell = ScreenCell::default();
+            cell.set(screen).expect("empty");
+            Self::with_extension(requests, None, records, |writer, notes| {
+                extension_with_screen(writer, notes, None, cell)
+            })
+        }
+
+        fn with_extension(
+            requests: Requests,
+            notes: Option<Arc<HeadlessNotes>>,
+            records: Arc<Mutex<Vec<(Level, String)>>>,
+            build: impl FnOnce(RequestWriter, Option<Arc<HeadlessNotes>>) -> Extension,
+        ) -> Self {
             let writer = requests.writer(Notifier::new());
             Self {
-                extension: extension(writer, notes.clone(), None),
+                extension: build(writer, notes.clone()),
                 requests,
                 headless: notes,
                 records,
@@ -626,5 +729,147 @@ mod tests {
         vm.wait_ready(Duration::from_secs(5)).expect("ready");
         vm.start(Duration::from_secs(5)).expect("no window global");
         let _ = vm.stop(Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_window_in_pixels_resolves_against_the_screen_the_application_took_not_a_backend() {
+        // A fake snapshot at 2 pixels a point: the binding has no backend to ask, only what the main thread left.
+        let rig = Rig::with_screen(ScreenSnapshot {
+            backing: 2.0,
+            visible_points: (4000, 3000),
+        });
+        let open = "window.open{title='t', unit='pixels', width=1281, height=801, resizable=true, \
+                    min_width=1280, min_height=800, clear={0,0,0}}";
+        assert_eq!(error_of(&rig, open), "ok");
+        let desc = rig.requests.reader().take().open.expect("the open request");
+        assert_eq!(desc.unit, SizeUnit::Points, "the slot holds points");
+        assert_eq!((desc.width, desc.height), (641, 401), "rounded up");
+        assert_eq!(desc.min, Some((640, 400)));
+        assert!(desc.resizable);
+        assert_eq!(
+            desc.pixel_request,
+            Some(ck_window::PixelRequest {
+                size: (1281, 801),
+                min: Some((1280, 800)),
+            })
+        );
+    }
+
+    #[test]
+    fn a_run_with_no_screen_resolves_pixels_at_one_to_one_and_a_points_open_has_no_pixel_request() {
+        let rig = Rig::new(false);
+        assert_eq!(
+            error_of(
+                &rig,
+                "window.open{title='t', unit='pixels', width=1280, height=800, resizable=true, \
+                 min_width=1280, min_height=800, clear={0,0,0}}"
+            ),
+            "ok"
+        );
+        let desc = rig.requests.reader().take().open.expect("the open request");
+        assert_eq!(
+            (desc.width, desc.height, desc.min),
+            (1280, 800, Some((1280, 800)))
+        );
+        let points = Rig::new(false);
+        assert_eq!(error_of(&points, OPEN), "ok");
+        let desc = points
+            .requests
+            .reader()
+            .take()
+            .open
+            .expect("the open request");
+        assert_eq!(desc.pixel_request, None);
+        assert!(!desc.resizable && desc.min.is_none());
+    }
+
+    #[test]
+    fn the_new_fields_are_refused_with_the_field_named_and_nothing_recorded() {
+        let rig = Rig::new(false);
+        let base = "title='t', clear={0,0,0}";
+        for (fields, wanted) in [
+            ("width=800, height=600, unit='furlongs'", "`unit` must be"),
+            ("width=800, height=600, unit=3", "`unit` must be"),
+            (
+                "width=800, height=600, resizable='yes'",
+                "`resizable` must be",
+            ),
+            (
+                "width=800, height=600, resizable=true, min_width=100",
+                "`min_width` needs `min_height`",
+            ),
+            (
+                "width=800, height=600, resizable=true, min_height=100",
+                "`min_height` needs `min_width`",
+            ),
+            (
+                "width=800, height=600, resizable=true, min_width=0, min_height=100",
+                "min_width 0 is not from 1 to 16384",
+            ),
+            (
+                "width=800, height=600, resizable=true, min_width=100, min_height=16385",
+                "min_height 16385 is not from 1 to 16384",
+            ),
+            (
+                "width=800, height=600, resizable=true, min_width=801, min_height=100",
+                "min_width 801 is larger than the opening size 800",
+            ),
+            (
+                "unit='pixels', width=1280, height=800, resizable=true, min_width=100, min_height=801",
+                "min_height 801 is larger than the opening size 800",
+            ),
+            (
+                "width=800, height=600, min_width=100, min_height=100",
+                "need a resizable window",
+            ),
+        ] {
+            let error = error_of(&rig, &format!("window.open{{{base}, {fields}}}"));
+            assert!(error.contains(wanted), "{fields}: {error}");
+        }
+        let changes = rig.requests.reader().take();
+        assert!(changes.open.is_none(), "nothing invalid was recorded");
+        // A valid description in pixels with a minimum is accepted.
+        assert_eq!(
+            error_of(
+                &rig,
+                "window.open{title='t', clear={0,0,0}, unit='pixels', width=1280, height=800, resizable=true, \
+                 min_width=1280, min_height=800}"
+            ),
+            "ok"
+        );
+    }
+
+    #[test]
+    fn open_returns_the_size_in_points_the_window_opens_at() {
+        // 1280x800 pixels at 2 pixels a point open at 640x400 points, which is what the script's first layout starts from.
+        let rig = Rig::with_screen(ScreenSnapshot {
+            backing: 2.0,
+            visible_points: (4000, 3000),
+        });
+        let values = lua(
+            &rig,
+            "return window.open{title='t', unit='pixels', width=1280, height=800, resizable=true, \
+             min_width=1280, min_height=800, clear={0,0,0}}",
+        );
+        assert_eq!(
+            values,
+            [
+                Some(ConfigValue::Integer(640)),
+                Some(ConfigValue::Integer(400))
+            ]
+        );
+        // A request in points returns it as it is.
+        let points = Rig::new(false);
+        let values = lua(
+            &points,
+            "return window.open{title='t', width=200, height=100, clear={0,0,0}}",
+        );
+        assert_eq!(
+            values,
+            [
+                Some(ConfigValue::Integer(200)),
+                Some(ConfigValue::Integer(100))
+            ]
+        );
     }
 }

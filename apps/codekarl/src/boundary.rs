@@ -522,6 +522,7 @@ fn child_main(name: &str, dir: &Path) -> ! {
         Plan {
             extension,
             run: Some(run),
+            screen: None,
         }
     };
     let status = execute_with(&options, shared, &[mode::Backend::NativeMetal], plan);

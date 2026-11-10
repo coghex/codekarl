@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use ck_render_2d::{Gpu2d, QuadSink, Snapshot};
 use ck_window::{
     Backend, CleanupResult, CreatedWindow, NativeEvent, NativeWake, Notifier, PixelSize, Presenter,
-    PresenterReport, Wait, WindowDesc,
+    PresenterReport, ScreenSnapshot, Wait, WindowDesc,
 };
 
 /// How the doubles tell the test what happened (a closure, so a child process can write marker files).
@@ -83,6 +83,8 @@ pub(crate) struct BackendScript {
     pub(crate) panic_in_pump: bool,
     /// The longest a `pump(UntilEvent)` waits for a wake (a bound, so a missed wake fails a test).
     pub(crate) wait_bound: Duration,
+    /// The main screen the backend reports.
+    pub(crate) screen: ScreenSnapshot,
 }
 
 impl Default for BackendScript {
@@ -91,6 +93,7 @@ impl Default for BackendScript {
             create_error: None,
             panic_in_pump: false,
             wait_bound: Duration::from_secs(5),
+            screen: ScreenSnapshot::unlimited(),
         }
     }
 }
@@ -131,6 +134,11 @@ impl Drop for FakeBackend {
 
 impl Backend for FakeBackend {
     type Handles = ();
+
+    fn main_screen(&mut self) -> ScreenSnapshot {
+        (self.record)("main_screen");
+        self.script.screen
+    }
 
     fn create_window(&mut self, desc: &WindowDesc) -> Result<CreatedWindow<()>, String> {
         (self.record)("create_window");
@@ -367,7 +375,7 @@ impl Presenter for FakePresenter {
 
     fn set_clear(&mut self, _rgb: [f32; 3]) {}
 
-    fn set_pixel_size(&mut self, _width: u32, _height: u32) {}
+    fn set_size(&mut self, _points: (u32, u32), _pixels: PixelSize) {}
 
     fn request_redraw(&mut self) {}
 

@@ -676,6 +676,7 @@ fn worker() -> ExitCode {
             width: 200,
             height: 150,
             clear: [0.1, 0.2, 0.3],
+            ..WindowDesc::default()
         })
         .expect("a valid description");
 
@@ -977,6 +978,7 @@ fn identity_worker() -> ExitCode {
             width: 200,
             height: 150,
             clear: [0.1, 0.2, 0.3],
+            ..WindowDesc::default()
         })
         .expect("a valid description");
 
@@ -1746,6 +1748,7 @@ fn resources_worker(plan: Plan) -> ExitCode {
             width: 200,
             height: 150,
             clear: [0.1, 0.2, 0.3],
+            ..WindowDesc::default()
         })
         .expect("a valid description");
 
@@ -2148,6 +2151,7 @@ fn relay_worker() -> ExitCode {
         width: 200,
         height: 150,
         clear: [0.0; 3],
+        ..WindowDesc::default()
     };
     let pixel_size = PixelSize {
         width: 200,
@@ -2679,6 +2683,7 @@ fn compat_worker() -> ExitCode {
             width: 200,
             height: 150,
             clear: [0.1, 0.2, 0.3],
+            ..WindowDesc::default()
         })
         .expect("a valid description");
 

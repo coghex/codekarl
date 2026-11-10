@@ -33,6 +33,10 @@ struct RawInfo {
     has_main_menu: i32,
     menu_items: u32,
     menu_key_equivalents: u32,
+    content_min_width: f64,
+    content_min_height: f64,
+    gravity_top_left: i32,
+    full_screen_primary: i32,
 }
 
 #[repr(C)]
@@ -121,6 +125,12 @@ unsafe extern "C" {
     fn ck_win_test_schedule_records(delay_seconds: f64, timers: u32, calls: u32, kind: i32);
     fn ck_win_test_post_recording_marker(kind: i32, pairs: u32, key_code: u16);
     fn ck_win_test_violate_main_thread();
+    fn ck_win_test_live_resize_begin();
+    fn ck_win_test_live_resize_end();
+    fn ck_win_test_resize(width: f64, height: f64);
+    fn ck_win_test_full_screen_begin(enter: i32, width: f64, height: f64);
+    fn ck_win_test_full_screen_finish(enter: i32);
+    fn ck_win_test_toggle_full_screen_calls() -> u64;
 }
 
 // Every call below is made on the worker's main thread (or says otherwise), as `AppKit` requires; the
@@ -218,6 +228,19 @@ pub(crate) struct WindowInfo {
     pub(crate) window_scale: f64,
     /// The main menu.
     pub(crate) menu: MenuInfo,
+    /// The window's content minimum size in points (`contentMinSize`).
+    pub(crate) content_min: (f64, f64),
+    /// What resizing and full screen need of the window.
+    pub(crate) resizing: Resizing,
+}
+
+/// The window's resizing and drawing during a drag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Resizing {
+    /// The content layer shows its drawable anchored to the top left, unscaled.
+    pub(crate) gravity_top_left: bool,
+    /// The window's collection behaviour allows primary full screen.
+    pub(crate) full_screen_primary: bool,
 }
 
 /// Reads the window's properties.
@@ -245,6 +268,10 @@ pub(crate) fn info() -> WindowInfo {
         has_main_menu: 0,
         menu_items: 0,
         menu_key_equivalents: 0,
+        content_min_width: 0.0,
+        content_min_height: 0.0,
+        gravity_top_left: 0,
+        full_screen_primary: 0,
     };
     // SAFETY: main thread; `raw` is valid for the call, which fills the whole structure.
     unsafe { ck_win_test_info(&raw mut raw) };
@@ -278,6 +305,11 @@ pub(crate) fn info() -> WindowInfo {
         menu: MenuInfo {
             items: raw.menu_items,
             key_equivalents: raw.menu_key_equivalents,
+        },
+        content_min: (raw.content_min_width, raw.content_min_height),
+        resizing: Resizing {
+            gravity_top_left: raw.gravity_top_left != 0,
+            full_screen_primary: raw.full_screen_primary != 0,
         },
     }
 }
@@ -688,8 +720,12 @@ pub(crate) struct Pumped {
     pub(crate) close_source: i32,
     /// Further close presses, saturating.
     pub(crate) close_absorbed: u32,
-    /// The latest pixel size, when it changed.
+    /// The latest drawable size in pixels, when the size changed.
     pub(crate) pixel_size: Option<(u32, u32)>,
+    /// The latest content size in points, when the size changed.
+    pub(crate) points: Option<(u32, u32)>,
+    /// The content minimum a smaller screen lowered: the points asked for and the points used.
+    pub(crate) min_clamped: Option<((u32, u32), (u32, u32))>,
     /// Whether a redraw is needed.
     pub(crate) needs_display: bool,
     /// The events taken off the native queue (typing included).
@@ -708,7 +744,9 @@ impl From<PumpReport> for Pumped {
                 _ => 0,
             },
             close_absorbed: report.absorbed_close_presses,
-            pixel_size: report.pixel_size.map(|size| (size.width, size.height)),
+            pixel_size: report.size.map(|(_, pixels)| (pixels.width, pixels.height)),
+            points: report.size.map(|(points, _)| points),
+            min_clamped: report.min_clamped,
             needs_display: report.needs_display,
             native_events: report.native_events,
             input: report.input,
@@ -739,7 +777,11 @@ impl Pumped {
                 .saturating_add(u32::from(later.close_source != 0));
             self.close_absorbed = self.close_absorbed.saturating_add(further);
         }
+        if later.min_clamped.is_some() {
+            self.min_clamped = later.min_clamped;
+        }
         if later.pixel_size.is_some() {
+            self.points = later.points;
             self.pixel_size = later.pixel_size;
         }
         self.needs_display |= later.needs_display;
@@ -801,4 +843,41 @@ pub(crate) fn key_downs_seen() -> u64 {
 #[must_use]
 pub(crate) fn recorded_during_wait() -> u64 {
     counters().recorded_in_pump
+}
+
+/// The delegate sees a live resize start (the user takes an edge).
+pub(crate) fn live_resize_begin() {
+    // SAFETY: main thread.
+    unsafe { ck_win_test_live_resize_begin() };
+}
+
+/// The delegate sees the live resize end (the user lets go).
+pub(crate) fn live_resize_end() {
+    // SAFETY: main thread.
+    unsafe { ck_win_test_live_resize_end() };
+}
+
+/// A resize with no drag (a zoom): sets the content size.
+pub(crate) fn resize(size: (f64, f64)) {
+    // SAFETY: main thread.
+    unsafe { ck_win_test_resize(size.0, size.1) };
+}
+
+/// The start of a full-screen transition (to full screen when `enter`, out of it otherwise): the window is set to `size` points, as
+/// the animation would, and the delegate is told.
+pub(crate) fn full_screen_begin(enter: bool, size: (f64, f64)) {
+    // SAFETY: main thread.
+    unsafe { ck_win_test_full_screen_begin(i32::from(enter), size.0, size.1) };
+}
+
+/// The end of a full-screen transition: the delegate is told.
+pub(crate) fn full_screen_finish(enter: bool) {
+    // SAFETY: main thread.
+    unsafe { ck_win_test_full_screen_finish(i32::from(enter)) };
+}
+
+/// How many times `toggleFullScreen:` was called (the test application counts it and never performs it).
+pub(crate) fn toggle_full_screen_calls() -> u64 {
+    // SAFETY: main thread.
+    unsafe { ck_win_test_toggle_full_screen_calls() }
 }

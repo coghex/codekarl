@@ -53,6 +53,7 @@ pub(super) fn desc() -> WindowDesc {
         width: 100,
         height: 80,
         clear: [0.1, 0.2, 0.3],
+        ..WindowDesc::default()
     }
 }
 
@@ -634,6 +635,7 @@ fn child_main(name: &str, dir: &Path) -> ! {
         Plan {
             extension: setup.extension,
             run: Some(run),
+            screen: None,
         }
     };
     let status = execute_with(&options, shared, &[mode::Backend::GlfwVulkan], plan);

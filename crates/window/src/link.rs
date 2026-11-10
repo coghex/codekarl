@@ -176,8 +176,9 @@ pub trait Presenter {
     /// Sets the clear colour. Never waits (a latest-value slot).
     fn set_clear(&mut self, rgb: [f32; 3]);
 
-    /// Sets the drawable's size in pixels. Never waits.
-    fn set_pixel_size(&mut self, width: u32, height: u32);
+    /// Sets the window's size: the content size in points and the drawable's size in pixels, together. Called once for each size
+    /// the loop learned, before the pass's input tick and update that carry it. Never waits.
+    fn set_size(&mut self, points: (u32, u32), pixels: PixelSize);
 
     /// Asks for a redraw. Never waits.
     fn request_redraw(&mut self);

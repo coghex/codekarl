@@ -99,8 +99,8 @@
 //! detail that was due to be handed over, and an overflow during dispatch is not folded into the pump's own hand-over.
 //!
 //! The pending state is the first close source in arrival order with a saturating count of further
-//! close-type presses, the latest pixel size, and a needs-display flag. One `pump` hands over at most one
-//! close event, one `PixelSizeChanged` and one `NeedsDisplay` (and the key and focus entries above), then clears the
+//! close-type presses, the latest size (points and pixels, read together), and a needs-display flag. One `pump` hands over at most one
+//! close event, one `SizeChanged` and one `NeedsDisplay` (and the key and focus entries above), then clears the
 //! state, so the storage is constant however many callbacks one dispatch produces. The absorbed presses are counted and logged
 //! once per pump as a `debug` record in category `window.cocoa`.
 //!
@@ -132,7 +132,10 @@
 //! `-[NSWindow sendEvent:]` track the mouse in a nested loop until the button is released, so a `pump`
 //! that dispatches it does not return until then. A quit requested meanwhile is only recorded by
 //! Codekarl's callbacks and takes effect when control returns to the outer loop. Nothing here claims a
-//! bound on that wait. A fixed-size window has no live-resize loop.
+//! bound on that wait. A resizable window's live resize runs the same kind of nested loop while an edge is held: the backend reports no size
+//! during it (the owner chose to re-lay-out on release) and one `SizeChanged` at its end, so nothing is built from a size that is still
+//! changing, and a quit waits for the drag to end. Full screen (the green button and Control-Command-F) reports one `SizeChanged` when the
+//! transition has finished, none during the animation.
 
 #[cfg(target_os = "macos")]
 mod backend;

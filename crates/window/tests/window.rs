@@ -20,6 +20,8 @@ mod late;
 mod notifier;
 #[path = "window/records.rs"]
 mod records;
+#[path = "window/resize.rs"]
+mod resize;
 #[path = "window/setup.rs"]
 mod setup;
 #[path = "window/slot.rs"]

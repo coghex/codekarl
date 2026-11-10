@@ -59,6 +59,8 @@ pub struct ClearOnly<P> {
     wake: Arc<dyn Fn() + Send + Sync>,
     seen: Arc<QuadSeen>,
     warned: bool,
+    /// The content size in points the wrapped presenter last had: the opening size, then each size set.
+    points: (u32, u32),
 }
 
 impl<P: Presenter> ClearOnly<P> {
@@ -77,6 +79,7 @@ impl<P: Presenter> ClearOnly<P> {
             wake,
             seen: Arc::new(QuadSeen::default()),
             warned: false,
+            points: (0, 0),
         }
     }
 
@@ -135,6 +138,7 @@ impl<P: Presenter> Gpu2d for ClearOnly<P> {
         _sink: Arc<dyn QuadSink>,
     ) -> Result<(), String> {
         self.announce(false);
+        self.points = (desc.width, desc.height);
         self.presenter.start(handles, desc, pixel_size)
     }
 
@@ -144,8 +148,16 @@ impl<P: Presenter> Gpu2d for ClearOnly<P> {
     }
 
     fn set_pixel_size(&mut self, width: u32, height: u32) {
+        // The pixels alone: the points stay what the presenter last had (this adapter's own callers go through `set_size`).
         self.announce(false);
-        self.presenter.set_pixel_size(width, height);
+        self.presenter
+            .set_size(self.points, PixelSize { width, height });
+    }
+
+    fn set_size(&mut self, points: (u32, u32), pixels: PixelSize) {
+        self.announce(false);
+        self.points = points;
+        self.presenter.set_size(points, pixels);
     }
 
     fn request_redraw(&mut self) {

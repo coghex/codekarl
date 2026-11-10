@@ -577,7 +577,7 @@ fn build_runs_outside_the_lock_and_a_metrics_race_keeps_snapshot_coherent() {
         (writer, published)
     });
     assert!(!entered_rx.recv_timeout(Duration::from_secs(2)).unwrap());
-    bridge.set_pixel_size(pixels(300, 240));
+    bridge.set_metrics((100, 80), pixels(300, 240));
     gate.wait();
     let (_writer, published) = publishing.join().unwrap();
     assert!(published);

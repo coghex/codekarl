@@ -554,13 +554,19 @@ fn focus_minimize_and_zero_size_pause_updates_and_clear_held_input() {
                 (NativeEvent::FocusLost, NativeEvent::FocusGained),
                 (NativeEvent::Minimized, NativeEvent::Restored),
                 (
-                    NativeEvent::PixelSizeChanged {
-                        width: 0,
-                        height: 0,
+                    NativeEvent::SizeChanged {
+                        points: (0, 0),
+                        pixels: PixelSize {
+                            width: 0,
+                            height: 0,
+                        },
                     },
-                    NativeEvent::PixelSizeChanged {
-                        width: 800,
-                        height: 600,
+                    NativeEvent::SizeChanged {
+                        points: (400, 300),
+                        pixels: PixelSize {
+                            width: 800,
+                            height: 600,
+                        },
                     },
                 ),
             ];
@@ -1213,13 +1219,13 @@ fn no_tick_runs_while_unfocused_minimised_zero_sized_or_the_control_is_off() {
                 match case {
                     0 => rig.backend.script.push_back(vec![NativeEvent::FocusLost]),
                     1 => rig.backend.script.push_back(vec![NativeEvent::Minimized]),
-                    2 => rig
-                        .backend
-                        .script
-                        .push_back(vec![NativeEvent::PixelSizeChanged {
+                    2 => rig.backend.script.push_back(vec![NativeEvent::SizeChanged {
+                        points: (0, 0),
+                        pixels: PixelSize {
                             width: 0,
                             height: 0,
-                        }]),
+                        },
+                    }]),
                     _ => control.set(false),
                 }
                 let quit = Arc::clone(&rig.quit);
@@ -1372,6 +1378,79 @@ fn a_failing_input_ends_the_loop_with_its_message_before_any_update_is_posted() 
             );
             assert!(ran.ticks.is_empty(), "the failing tick consumed nothing");
             assert!(extract_updates(&ran.posts).is_empty());
+        },
+    );
+}
+
+#[test]
+fn a_size_change_reaches_the_presenter_whole_and_once_before_the_tick_that_carries_it() {
+    owned(
+        module_path!(),
+        "a_size_change_reaches_the_presenter_whole_and_once_before_the_tick_that_carries_it",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let clock = FakeClock::new();
+            let mut rig = Rig::new();
+            let update_settings =
+                UpdateSettings::new(60, Duration::from_millis(20)).expect("valid settings");
+            update_settings.control().set(true);
+            rig.settings = LoopSettings::default().with_updates(update_settings);
+            rig.backend.deadline_supported = true;
+            let fake_time = clock.clone();
+            rig.backend.deadline_hook = Some(Box::new(move |deadline| fake_time.set(deadline)));
+            lock(&rig.presenter.reports).push_back(PresenterReport::FirstFrameQueued);
+            // 640x400 points at 2 pixels a point open; the first pass drains a resize to 900x600 points (1800x1200 pixels).
+            rig.backend.script.push_back(vec![NativeEvent::SizeChanged {
+                points: (900, 600),
+                pixels: PixelSize {
+                    width: 1800,
+                    height: 1200,
+                },
+            }]);
+            let ui = Arc::clone(&rig.ui);
+            let quit = Arc::clone(&rig.quit);
+            let notifier = Arc::clone(&rig.notifier);
+            rig.backend.hook = Some(Box::new(move |_| {
+                if ui.ticks().len() >= 2 {
+                    quit.store(true, Ordering::SeqCst);
+                    notifier.wake();
+                }
+            }));
+            let ran = rig.run_collect_with_clock(&clock);
+            assert_eq!(ran.end, LoopEnd::Quit);
+            let sizes: Vec<_> = ran
+                .log
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| line.starts_with("presenter.set_size"))
+                .collect();
+            assert_eq!(sizes.len(), 1, "once: {sizes:?}");
+            assert_eq!(
+                sizes[0].1,
+                "presenter.set_size 900x600 points 1800x1200 pixels"
+            );
+            let first_tick = ran
+                .log
+                .iter()
+                .position(|line| line.starts_with("ui.input"))
+                .expect("a tick was consumed");
+            assert!(
+                sizes[0].0 < first_tick,
+                "the presenter was told before the first tick: {:?}",
+                ran.log
+            );
+            // The tick, and every later one, carries the new size: none is built from the old.
+            assert!(
+                ran.ticks
+                    .iter()
+                    .all(|tick| tick.metrics.points == (900, 600)
+                        && tick.metrics.pixels
+                            == PixelSize {
+                                width: 1800,
+                                height: 1200,
+                            })
+            );
         },
     );
 }

@@ -43,6 +43,8 @@ use support::Pumped;
 
 #[path = "keys/mod.rs"]
 mod keys;
+#[path = "resize/mod.rs"]
+mod resize;
 
 const WORKER_FLAG: &str = "--worker";
 /// `1` makes a worker run with the owner typing without stopping (see `typing`).
@@ -94,6 +96,7 @@ fn desc(width: u32, height: u32) -> WindowDesc {
         width,
         height,
         clear: [0.0, 0.0, 0.0],
+        ..WindowDesc::default()
     }
 }
 
@@ -124,9 +127,13 @@ struct Fixture {
 
 impl Fixture {
     fn open(width: u32, height: u32) -> Self {
+        Self::open_desc(&desc(width, height))
+    }
+
+    fn open_desc(desc: &WindowDesc) -> Self {
         let mut backend = new_backend();
         let created = backend
-            .create_window(&desc(width, height))
+            .create_window(desc)
             .expect("the window is created (a desktop session is required)");
         assert!(!created.handles.layer().is_null(), "the layer pointer");
         let mut fixture = Self {
@@ -797,7 +804,7 @@ fn bounded_pending_state() {
     assert_eq!(seen.len(), 3, "{seen:?}");
     assert_eq!(seen[0], NativeEvent::CloseButton);
     assert!(
-        matches!(seen[1], NativeEvent::PixelSizeChanged { .. }),
+        matches!(seen[1], NativeEvent::SizeChanged { .. }),
         "{seen:?}"
     );
     assert_eq!(seen[2], NativeEvent::NeedsDisplay);
@@ -1053,7 +1060,7 @@ fn test_windows_let_clicks_through() {
 
 type Case = fn();
 
-const CASES: [(&str, Case); 41] = [
+const CASES: [(&str, Case); 47] = [
     ("create_and_destroy", create_and_destroy),
     (
         "production_open_still_asks_for_activation",
@@ -1093,6 +1100,30 @@ const CASES: [(&str, Case); 41] = [
         work_recorded_during_the_wait_wakes_once,
     ),
     ("pixel_size", pixel_size),
+    (
+        "a_resizable_window_has_the_mask_the_full_screen_behaviour_and_its_minimum",
+        resize::a_resizable_window_has_the_mask_the_full_screen_behaviour_and_its_minimum,
+    ),
+    (
+        "a_live_resize_reports_one_size_at_its_end",
+        resize::a_live_resize_reports_one_size_at_its_end,
+    ),
+    (
+        "a_resize_outside_a_live_resize_reports_each_change",
+        resize::a_resize_outside_a_live_resize_reports_each_change,
+    ),
+    (
+        "full_screen_reports_one_size_when_each_transition_finishes",
+        resize::full_screen_reports_one_size_when_each_transition_finishes,
+    ),
+    (
+        "control_command_f_toggles_full_screen_and_is_not_a_key_event",
+        resize::control_command_f_toggles_full_screen_and_is_not_a_key_event,
+    ),
+    (
+        "a_backing_change_recomputes_the_minimum_and_grows_a_window_below_it",
+        resize::a_backing_change_recomputes_the_minimum_and_grows_a_window_below_it,
+    ),
     ("needs_display", needs_display),
     (
         "deadline_wait_and_minimize_restore",

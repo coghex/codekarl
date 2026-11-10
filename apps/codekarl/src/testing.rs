@@ -586,6 +586,8 @@ impl HeadlessDriver {
                         env.reader.end();
                         ck_runtime::RunEnd::Finished
                     })),
+
+                    screen: None,
                 }
             },
             |wiring, _, _| crate::vm::spawns(&config.vms, &config.whole, Some(wiring)),

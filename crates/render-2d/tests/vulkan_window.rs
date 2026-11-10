@@ -1245,6 +1245,7 @@ fn worker(name: &str) -> ExitCode {
             width: 200,
             height: 150,
             clear: [0.1, 0.2, 0.3],
+            ..WindowDesc::default()
         })
         .expect("a valid description");
 

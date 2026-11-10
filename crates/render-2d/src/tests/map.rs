@@ -472,7 +472,7 @@ fn with_no_map_input_the_snapshots_carry_no_map_even_when_a_camera_was_published
         bridge.publish_camera(camera([3, 2], 1)),
         MapPublication::Published
     );
-    bridge.set_pixel_size(pixels(100, 60));
+    bridge.set_metrics((100, 60), pixels(100, 60));
     for snapshot in sink.snapshots() {
         assert!(snapshot.map.is_none(), "generation {}", snapshot.generation);
     }
@@ -548,7 +548,7 @@ fn a_camera_is_for_one_metrics_generation_and_a_resize_retires_it() {
     );
     assert!(sink.last().expect("published").map.is_some());
     // A resize: the bridge has new metrics, and the snapshot made with them cannot pair them with the old view.
-    bridge.set_pixel_size(pixels(200, 120));
+    bridge.set_metrics((100, 60), pixels(200, 120));
     assert_eq!(bridge.metrics_generation(), first + 1);
     assert!(
         sink.last().expect("published").map.is_none(),
@@ -805,4 +805,85 @@ fn the_vulkan_conversion_shares_one_input_per_generation_and_retains_nothing() {
     drop((first, second));
     assert_eq!(weak.strong_count(), 0, "the cache held nothing alive");
     drop(bridge);
+}
+
+#[test]
+fn a_resize_replaces_the_points_and_pixels_together_once_and_a_map_pixel_stays_four_points() {
+    let (bridge, sink) = attached();
+    bridge.publish_map(input(1, 40, 40));
+    // The window opens at 100x60 points on a 2x display: 200x120 pixels. A view of 25x15 map pixels (four points each) covers it.
+    bridge.set_metrics((100, 60), pixels(200, 120));
+    let generation = bridge.metrics_generation();
+    assert_eq!(generation, 2, "attach, then one change");
+    let opening = camera([25, 15], generation);
+    assert_eq!(
+        bridge.publish_camera(Arc::clone(&opening)),
+        MapPublication::Published
+    );
+    let placed = |sink: &RecordingSink| {
+        let snapshot = sink.last().expect("published");
+        (
+            snapshot.metrics,
+            snapshot.map.expect("a map").placement.expect("placed"),
+        )
+    };
+    let (metrics_before, placement_before) = placed(&sink);
+    assert_eq!(
+        (metrics_before.points_width, metrics_before.points_height),
+        (100, 60)
+    );
+    assert_eq!(
+        (
+            placement_before.destination.right,
+            placement_before.destination.bottom
+        ),
+        (200, 120),
+        "eight drawable pixels a map pixel"
+    );
+    // A resize at the same scale: 150x90 points, 300x180 pixels, in one call: the generation rises by exactly one, and both sizes
+    // are the bridge's.
+    bridge.set_metrics((150, 90), pixels(300, 180));
+    assert_eq!(bridge.metrics_generation(), generation + 1);
+    let resized = sink.last().expect("published");
+    assert_eq!(
+        (resized.metrics.points_width, resized.metrics.points_height),
+        (150, 90)
+    );
+    assert_eq!(resized.metrics.pixels, pixels(300, 180));
+    // The camera for the previous generation is refused as stale, and no map is drawn from it with the new metrics.
+    assert_eq!(
+        bridge.publish_camera(Arc::clone(&opening)),
+        MapPublication::Stale
+    );
+    assert!(
+        resized.map.is_none(),
+        "the old camera is never placed with the new metrics"
+    );
+    // The camera for the new size is adopted, and a map pixel is still eight drawable pixels (four points at 2x).
+    let fitted = camera([37, 22], bridge.metrics_generation());
+    assert_eq!(bridge.publish_camera(fitted), MapPublication::Published);
+    let (metrics_after, placement_after) = placed(&sink);
+    assert_eq!(metrics_after.pixels, pixels(300, 180));
+    assert_eq!(
+        (
+            placement_after.destination.right,
+            placement_after.destination.bottom
+        ),
+        (296, 176),
+        "37 and 22 map pixels of 8 drawable pixels each"
+    );
+    // A change of the display's scale alone (the points stay): the camera is stale again, and the map pixel is four drawable pixels.
+    bridge.set_metrics((150, 90), pixels(150, 90));
+    assert_eq!(bridge.metrics_generation(), generation + 2);
+    let at_one = camera([37, 22], bridge.metrics_generation());
+    assert_eq!(bridge.publish_camera(at_one), MapPublication::Published);
+    let (_, placement_one) = placed(&sink);
+    assert_eq!(
+        (
+            placement_one.destination.right,
+            placement_one.destination.bottom
+        ),
+        (148, 88),
+        "four drawable pixels a map pixel at 1x"
+    );
 }

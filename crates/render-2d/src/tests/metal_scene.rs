@@ -241,7 +241,7 @@ fn the_scene_and_the_legacy_quad_of_one_snapshot_agree_through_a_resize() {
     );
     assert_ne!(by_argument[0].1, destination(&before));
     // The resize's own snapshot gives both the new, equal destinations.
-    bridge.set_pixel_size(pixels(800, 640));
+    bridge.set_metrics((200, 160), pixels(800, 640));
     let after = sink.last().expect("the resize's snapshot");
     let source = SceneFrameSource::new(
         Arc::clone(after.scene.as_ref().expect("a frame")),
@@ -393,7 +393,7 @@ fn a_snapshot_becomes_a_frame_with_its_generation_filter_legacy_quad_and_the_sce
         ck_gpu_metal::MetalFilter::Nearest,
     );
     // After a resize the new snapshot's metrics decide, for the legacy quad and the scene alike.
-    bridge.set_pixel_size(pixels(800, 640));
+    bridge.set_metrics((200, 160), pixels(800, 640));
     check(
         &sink.last().expect("the resize's snapshot"),
         ck_gpu_metal::MetalFilter::Nearest,
@@ -450,7 +450,7 @@ fn a_scene_frame_is_never_dropped_while_the_bridge_lock_is_held() {
     writer.set_quad(quad_at(&picture, 5.0, 5.0, 20.0, 20.0));
     writer.destroy_quad(first).expect("destroyed");
     assert!(writer.publish());
-    bridge.set_pixel_size(pixels(800, 640));
+    bridge.set_metrics((200, 160), pixels(800, 640));
     // Detach: the sink goes after the lock does.
     bridge.detach();
     drop(writer);

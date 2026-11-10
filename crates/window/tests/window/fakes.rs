@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 use ck_window::{
     Answer, Backend, CleanupResult, Clock, CreatedWindow, InputTick, LoopEnd, LoopSettings,
     NativeEvent, NativeWake, Notifier, PixelSize, PostError, Presenter, PresenterReport,
-    RequestWriter, Requests, UiAnswer, UiEvent, UiLink, Wait, WindowDesc, run_with_clock,
+    RequestWriter, Requests, ScreenSnapshot, UiAnswer, UiEvent, UiLink, Wait, WindowDesc,
+    run_with_clock,
 };
 
 /// The longest a fake waits for something that must happen, and the longest a test runs.
@@ -391,6 +392,11 @@ impl Drop for FakeBackend {
 impl Backend for FakeBackend {
     type Handles = u32;
 
+    fn main_screen(&mut self) -> ScreenSnapshot {
+        note(&self.log, "backend.main_screen");
+        ScreenSnapshot::unlimited()
+    }
+
     fn create_window(&mut self, desc: &WindowDesc) -> Result<CreatedWindow<u32>, String> {
         note(&self.log, "backend.create_window");
         *lock(&self.created_with) = Some(desc.clone());
@@ -646,10 +652,13 @@ impl Presenter for FakePresenter {
         note(&self.log, format!("presenter.set_clear {rgb:?}"));
     }
 
-    fn set_pixel_size(&mut self, width: u32, height: u32) {
+    fn set_size(&mut self, points: (u32, u32), pixels: PixelSize) {
         note(
             &self.log,
-            format!("presenter.set_pixel_size {width}x{height}"),
+            format!(
+                "presenter.set_size {}x{} points {}x{} pixels",
+                points.0, points.1, pixels.width, pixels.height
+            ),
         );
     }
 
@@ -915,6 +924,7 @@ pub(crate) fn desc() -> WindowDesc {
         width: 400,
         height: 300,
         clear: [0.1, 0.2, 0.3],
+        ..WindowDesc::default()
     }
 }
 

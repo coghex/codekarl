@@ -74,8 +74,11 @@ impl Presenter for Fake {
         self.note(format!("set_clear {rgb:?}"));
     }
 
-    fn set_pixel_size(&mut self, width: u32, height: u32) {
-        self.note(format!("set_pixel_size {width}x{height}"));
+    fn set_size(&mut self, points: (u32, u32), pixels: PixelSize) {
+        self.note(format!(
+            "set_size {}x{} points {}x{} pixels",
+            points.0, points.1, pixels.width, pixels.height
+        ));
     }
 
     fn request_redraw(&mut self) {
@@ -181,7 +184,7 @@ fn every_presenter_call_is_forwarded_unchanged() {
         vec![
             "start 7 test 100x80 [0.0, 0.0, 0.0] 200x160".to_owned(),
             "set_clear [0.25, 0.5, 0.75]".to_owned(),
-            "set_pixel_size 300x240".to_owned(),
+            "set_size 100x80 points 300x240 pixels".to_owned(),
             "request_redraw".to_owned(),
             "take_report".to_owned(),
             "take_report".to_owned(),
@@ -229,7 +232,7 @@ fn a_run_that_sets_a_quad_logs_one_warning_naming_the_path_and_no_more() {
     assert_eq!(render_records(&scenario.records()).len(), 1, "one at start");
     writer.set_quad(quad_at(&picture, 5.0, 5.0, 10.0, 10.0));
     writer.clear_quad();
-    renderer.set_pixel_size(200, 200);
+    renderer.set_size((100, 100), pixels(200, 200));
     renderer.request_redraw();
     renderer.request_stop();
     let records = scenario.records();
@@ -254,7 +257,7 @@ fn a_run_that_never_sets_a_quad_logs_nothing() {
         .start(7, &desc(100, 100), pixels(100, 100))
         .unwrap();
     writer.clear_quad();
-    renderer.set_pixel_size(200, 200);
+    renderer.set_size((100, 100), pixels(200, 200));
     renderer.request_stop();
     assert_eq!(render_records(&scenario.records()), Vec::<&String>::new());
 }

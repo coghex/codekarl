@@ -38,8 +38,15 @@ pub trait Gpu2d {
     /// As [`Presenter::set_clear`].
     fn set_clear(&mut self, rgb: [f32; 3]);
 
-    /// As [`Presenter::set_pixel_size`].
+    /// Sets the drawable's size in pixels. Never waits.
     fn set_pixel_size(&mut self, width: u32, height: u32);
+
+    /// As [`Presenter::set_size`]: the content size in points and the drawable's size in pixels together. A backend that needs
+    /// only the pixels keeps this default, which passes them to [`set_pixel_size`](Self::set_pixel_size).
+    fn set_size(&mut self, points: (u32, u32), pixels: PixelSize) {
+        let _ = points;
+        self.set_pixel_size(pixels.width, pixels.height);
+    }
 
     /// As [`Presenter::request_redraw`].
     fn request_redraw(&mut self);
@@ -58,7 +65,7 @@ pub trait Gpu2d {
 ///
 /// - **`start`** creates the backend's sink, attaches it to the bridge (which publishes the current scene), then
 ///   starts the backend with the sink. If the backend fails to start, the bridge is detached.
-/// - **`set_pixel_size`** updates the bridge's metrics (which republishes), then forwards.
+/// - **`set_size`** replaces the bridge's metrics, points and pixels together (which republishes), then forwards the pixels.
 /// - **`request_stop`** detaches the bridge, then forwards. Detaching again is harmless.
 /// - Everything else forwards unchanged, and the backend's report, end and cleanup semantics are untouched.
 pub struct Renderer<G> {
@@ -110,9 +117,9 @@ impl<G: Gpu2d> Presenter for Renderer<G> {
         self.gpu.set_clear(rgb);
     }
 
-    fn set_pixel_size(&mut self, width: u32, height: u32) {
-        self.bridge.set_pixel_size(PixelSize { width, height });
-        self.gpu.set_pixel_size(width, height);
+    fn set_size(&mut self, points: (u32, u32), pixels: PixelSize) {
+        self.bridge.set_metrics(points, pixels);
+        self.gpu.set_size(points, pixels);
     }
 
     fn request_redraw(&mut self) {

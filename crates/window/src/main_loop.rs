@@ -142,14 +142,16 @@ struct Pass {
     exhausted: bool,
     opened: OpenedEvent,
     close: CloseEvent,
-    /// The latest pixel size reported by the backend, if it changed since it was passed on.
-    new_size: Option<PixelSize>,
+    /// The latest size (points and pixels) reported by the backend, if it changed since it was passed on.
+    new_size: Option<((u32, u32), PixelSize)>,
     redraw: bool,
 }
 
 /// The loop's input state: the mapper that turns normalised key events into actions, and the window's focus.
 struct InputState {
     mapper: Mapper,
+    /// The content size in points: the opening size, then each size the backend reports.
+    points: (u32, u32),
     /// Whether the window has key focus (the native layer reports each change). M5-7's pause rule reads it.
     focused: bool,
     minimized: bool,
@@ -367,7 +369,6 @@ struct Loop<'a, B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> {
     quit: &'a AtomicBool,
     settings: &'a LoopSettings,
     clock: &'a dyn Clock,
-    points: (u32, u32),
     updates: Option<UpdateScheduler>,
     parts: Parts,
 }
@@ -496,6 +497,7 @@ where
     let mut state = Loop {
         input: InputState {
             mapper: Mapper::new(settings.bindings().clone()),
+            points: (desc.width, desc.height),
             // A window is created active: the native layer reports a change only when there is one.
             focused: true,
             minimized: false,
@@ -512,7 +514,6 @@ where
         quit,
         settings,
         clock,
-        points: (desc.width, desc.height),
         updates: settings.updates().cloned().map(UpdateScheduler::new),
         parts: Parts::default(),
     };
@@ -612,13 +613,13 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
                 }
                 NativeEvent::Restored => input.minimized = false,
                 NativeEvent::CloseButton => button_closes += 1,
-                NativeEvent::PixelSizeChanged { width, height } => {
-                    let pixel_size = PixelSize { width, height };
-                    input.pixel_size = pixel_size;
-                    if width == 0 || height == 0 {
+                NativeEvent::SizeChanged { points, pixels } => {
+                    input.points = points;
+                    input.pixel_size = pixels;
+                    if pixels.width == 0 || pixels.height == 0 {
                         input.mapper.focus_lost();
                     }
-                    *size = Some(pixel_size);
+                    *size = Some((points, pixels));
                 }
                 NativeEvent::NeedsDisplay => *redraw = true,
             };
@@ -696,6 +697,11 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         // The close requests this pass's pump recorded, now that the UI's answers have been taken: a Decline that was waiting for
         // the outstanding request has retired it, so a fresh press is a new request and not absorbed.
         self.request_closes(pass, button_closes);
+        // A size the pump reported goes to the presenter (and so to the scene bridge's metrics) before the input tick and the update
+        // below, which carry it: nothing is built from the new size while the presenter still holds the old one.
+        if let Some((points, pixels)) = pass.new_size.take() {
+            self.presenter.set_size(points, pixels);
+        }
         // 6. Post the events that are waiting.
         if let Some(end) = self.post_waiting(pass) {
             return Some(end);
@@ -709,10 +715,7 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         if !close_blocked && let Some(end) = self.post_update(pass) {
             return Some(end);
         }
-        // 7. A changed pixel size and a redraw request, to the presenter.
-        if let Some(size) = pass.new_size.take() {
-            self.presenter.set_pixel_size(size.width, size.height);
-        }
+        // 7. A redraw request, to the presenter.
         if std::mem::take(&mut pass.redraw) {
             self.presenter.request_redraw();
         }
@@ -807,7 +810,7 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         let tick = InputTick {
             dt,
             metrics: WindowMetrics {
-                points: self.points,
+                points: self.input.points,
                 pixels: self.input.pixel_size,
             },
             input: snapshot,
@@ -839,7 +842,7 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
             elapsed,
             dt,
             metrics: WindowMetrics {
-                points: self.points,
+                points: self.input.points,
                 pixels: self.input.pixel_size,
             },
         });

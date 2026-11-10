@@ -33,6 +33,7 @@ pub(super) fn desc(width: u32, height: u32) -> WindowDesc {
         width,
         height,
         clear: [0.0; 3],
+        ..WindowDesc::default()
     }
 }
 

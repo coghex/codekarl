@@ -199,7 +199,7 @@ fn every_change_publishes_in_generation_order() {
     let (writer, picture) = (take_writer(&bridge), image(10, 10));
     attach(&bridge, &sink);
     writer.set_quad(quad_at(&picture, 0.0, 0.0, 10.0, 10.0));
-    bridge.set_pixel_size(pixels(200, 200));
+    bridge.set_metrics((100, 100), pixels(200, 200));
     writer.set_quad(quad_at(&picture, 5.0, 5.0, 10.0, 10.0));
     writer.clear_quad();
     assert_eq!(sink.generations(), vec![1, 2, 3, 4, 5]);
@@ -297,7 +297,7 @@ fn a_metrics_change_racing_a_write_publishes_last_with_the_current_metrics() {
     within(&entered);
     let resizer = {
         let bridge = Arc::clone(&bridge);
-        thread::spawn(move || bridge.set_pixel_size(pixels(200, 200)))
+        thread::spawn(move || bridge.set_metrics((100, 100), pixels(200, 200)))
     };
     gate.open();
     writing.join().unwrap();
@@ -326,7 +326,7 @@ fn a_write_racing_a_metrics_change_converts_with_the_new_metrics() {
     attach(&bridge, &sink);
     let resizer = {
         let bridge = Arc::clone(&bridge);
-        thread::spawn(move || bridge.set_pixel_size(pixels(200, 200)))
+        thread::spawn(move || bridge.set_metrics((100, 100), pixels(200, 200)))
     };
     within(&entered);
     let writing = on_thread(writer, move |writer| {
@@ -361,7 +361,7 @@ fn a_metrics_change_and_a_write_started_together_end_with_the_current_metrics() 
             let (bridge, start) = (Arc::clone(&bridge), Arc::clone(&start));
             thread::spawn(move || {
                 start.wait();
-                bridge.set_pixel_size(pixels(200, 200));
+                bridge.set_metrics((100, 100), pixels(200, 200));
             })
         };
         start.wait();
@@ -406,7 +406,7 @@ fn detach_racing_a_write_publishes_nothing_after_detach_and_the_write_is_counted
     let published = sink.count();
     writer.set_quad(quad_at(&again, 1.0, 1.0, 10.0, 10.0));
     writer.clear_quad();
-    bridge.set_pixel_size(pixels(300, 300));
+    bridge.set_metrics((100, 100), pixels(300, 300));
     assert_eq!(
         sink.count(),
         published,
@@ -604,7 +604,7 @@ fn what_a_write_displaces_is_dropped_before_the_write_returns() {
         drop(picture);
         assert_eq!(live.live(), 1, "write {step}");
     }
-    bridge.set_pixel_size(pixels(200, 200));
+    bridge.set_metrics((100, 100), pixels(200, 200));
     assert_eq!(live.live(), 1, "a metrics update displaces a snapshot too");
 }
 
@@ -721,7 +721,7 @@ fn a_poisoned_lock_does_not_stop_the_bridge() {
     assert!(bridge.is_poisoned());
     armed.store(false, Ordering::SeqCst);
     // The bridge still answers, and ends. (The writer died with its thread; the bridge does not need it.)
-    bridge.set_pixel_size(pixels(200, 200));
+    bridge.set_metrics((100, 100), pixels(200, 200));
     bridge.detach();
     assert_eq!(bridge.phase(), Phase::Ended);
 }

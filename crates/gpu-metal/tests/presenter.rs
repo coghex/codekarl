@@ -193,6 +193,7 @@ impl Rig {
                 width: 200,
                 height: 150,
                 clear: [0.0; 3],
+                ..WindowDesc::default()
             })
             .expect("the window is created (a desktop session is required)");
         let mut rig = Self {
