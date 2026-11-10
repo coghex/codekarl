@@ -5045,7 +5045,7 @@ pub fn run_monthly_production_with_quality(
                 .ok_or_else(|| {
                     missing_data("employment.workers".to_owned(), "worker count overflow")
                 })?;
-            let mut remaining_workers = workers.min(positions);
+            let staffed = workers.min(positions);
             let coverage = building_coverage_pm(definition, &place.pops, building)?;
             let coverage_efficiency = 1000_u64
                 .checked_sub(
@@ -5090,20 +5090,10 @@ pub fn run_monthly_production_with_quality(
                         "saved carry or suitability dimensions do not match goods",
                     ));
                 }
-                let levels = u64::from(building.method_levels[method_index]);
-                if levels == 0 {
+                let method_levels = building.method_levels[method_index];
+                if method_levels == 0 {
                     continue;
                 }
-                let method_positions = levels
-                    .checked_mul(u64::from(definition.workers_per_level))
-                    .ok_or_else(|| {
-                        missing_data(
-                            "employment.positions".to_owned(),
-                            "method position count overflow",
-                        )
-                    })?;
-                let method_staffed = remaining_workers.min(method_positions);
-                remaining_workers -= method_staffed;
                 for (good_id, annual) in &method.annual_output {
                     if ["beef", "pork", "mutton", "dairy", "wool", "hides"]
                         .contains(&good_id.as_str())
@@ -5150,7 +5140,7 @@ pub fn run_monthly_production_with_quality(
                     let numerator = u128::from(*annual)
                         .checked_mul(suitability)
                         .and_then(|value| value.checked_mul(month_share))
-                        .and_then(|value| value.checked_mul(u128::from(method_staffed)))
+                        .and_then(|value| value.checked_mul(u128::from(staffed)))
                         .and_then(|value| value.checked_mul(u128::from(coverage_efficiency)))
                         .and_then(|value| value.checked_mul(u128::from(quality_factor)))
                         .and_then(|value| {
@@ -5167,7 +5157,7 @@ pub fn run_monthly_production_with_quality(
                                 "monthly output numerator overflow",
                             )
                         })?;
-                    let denominator = u128::from(method_positions)
+                    let denominator = u128::from(positions)
                         .checked_mul(1_000_000_000)
                         .and_then(|value| value.checked_mul(u128::from(reference_factor)))
                         .ok_or_else(|| {
@@ -7824,6 +7814,49 @@ mod tests {
         }
     }
 
+    fn two_method_staffing_fixture(annual: u64) -> (Rules, EconomyState) {
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let mut rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        let holdings = rules
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == "holdings")
+            .unwrap();
+        holdings.methods[0].annual_output = BTreeMap::from([("oats".to_owned(), annual)]);
+        holdings.methods[0].score_share_pm = BTreeMap::from([("oats".to_owned(), 1000)]);
+        holdings.methods[1].annual_output = BTreeMap::from([("fish".to_owned(), annual)]);
+        holdings.methods[1].score_share_pm = BTreeMap::from([("fish".to_owned(), 1000)]);
+        let season = vec![100, 100, 100, 700, 0, 0, 0, 0, 0, 0, 0, 0];
+        rules.seasons.insert("grain".to_owned(), season.clone());
+        rules.seasons.insert("fish".to_owned(), season);
+
+        let mut state = shipped_production_fixture(&rules);
+        let place = &mut state.places[0];
+        place.buildings[0].levels = 0;
+        place.buildings[0].method_levels = vec![0, 0];
+        place.buildings[1].levels = 2;
+        place.buildings[1].method_levels = vec![1, 1];
+        (rules, state)
+    }
+
+    fn set_holdings_staffing(
+        state: &mut EconomyState,
+        monk_owners: u64,
+        monk_workers: u64,
+        labourer_owners: u64,
+        labourer_workers: u64,
+    ) {
+        let place = &mut state.places[0];
+        for (pop_index, owners, workers) in [
+            (1, monk_owners, monk_workers),
+            (2, labourer_owners, labourer_workers),
+        ] {
+            place.buildings[1].employment[pop_index] = Employment { owners, workers };
+            place.pops[pop_index].employment[1] = Employment { owners, workers };
+            place.pops[pop_index].workers = workers;
+        }
+    }
+
     fn daily_storehouse_fee_state() -> (Rules, EconomyState) {
         let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let mut rules = Rules::load(assets.join("game/economy.toml")).unwrap();
@@ -10241,6 +10274,158 @@ mod tests {
             state, before_refusal,
             "a later checked arithmetic refusal rolls the whole monthly step back"
         );
+    }
+
+    #[test]
+    fn partial_building_staffing_is_shared_by_each_production_method() {
+        let (rules, mut state) = two_method_staffing_fixture(1200);
+        let oats = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "oats")
+            .unwrap();
+        let fish = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "fish")
+            .unwrap();
+        let date = Date {
+            year: 768,
+            month: 1,
+            day: 1,
+            hour: 12,
+        };
+
+        let ledger = run_monthly_production(&rules, &mut state, date).unwrap();
+        assert_eq!(
+            ledger.produced[oats], 60,
+            "old ordered staffing produced 120 oats"
+        );
+        assert_eq!(
+            ledger.produced[fish], 60,
+            "old ordered staffing produced no fish"
+        );
+        assert_eq!(state.places[0].buildings[1].production_carries[0][oats], 0);
+        assert_eq!(state.places[0].buildings[1].production_carries[1][fish], 0);
+
+        state.places[0].buildings[1].levels = 1;
+        state.places[0].buildings[1].method_levels = vec![1, 0];
+        let ledger = run_monthly_production(&rules, &mut state, Date { month: 2, ..date }).unwrap();
+        assert_eq!(ledger.produced[oats], 120);
+        assert_eq!(ledger.produced[fish], 0);
+    }
+
+    #[test]
+    fn uneven_method_levels_keep_building_wide_staffing_carries() {
+        let (rules, mut state) = two_method_staffing_fixture(1000);
+        state.places[0].buildings[1].levels = 3;
+        state.places[0].buildings[1].method_levels = vec![2, 1];
+        let oats = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "oats")
+            .unwrap();
+        state.places[0].buildings[1].method_suitability[0][oats] = 2000;
+        set_holdings_staffing(&mut state, 1, 4, 1, 3);
+        let fish = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "fish")
+            .unwrap();
+        let expected = [
+            (46, 20_000_000_000, 23, 10_000_000_000),
+            (47, 10_000_000_000, 23, 20_000_000_000),
+            (47, 0, 24, 0),
+        ];
+
+        for (index, (oats_output, oats_carry, fish_output, fish_carry)) in
+            expected.into_iter().enumerate()
+        {
+            let ledger = run_monthly_production(
+                &rules,
+                &mut state,
+                Date {
+                    year: 768,
+                    month: u8::try_from(index + 1).unwrap(),
+                    day: 1,
+                    hour: 12,
+                },
+            )
+            .unwrap();
+            assert_eq!(ledger.produced[oats], oats_output);
+            assert_eq!(ledger.produced[fish], fish_output);
+            assert_eq!(
+                state.places[0].buildings[1].production_carries[0][oats],
+                oats_carry
+            );
+            assert_eq!(
+                state.places[0].buildings[1].production_carries[1][fish],
+                fish_carry
+            );
+        }
+    }
+
+    #[test]
+    fn full_building_staffing_preserves_each_method_output() {
+        let (rules, mut state) = two_method_staffing_fixture(1000);
+        state.places[0].buildings[1].levels = 3;
+        state.places[0].buildings[1].method_levels = vec![2, 1];
+        let oats = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "oats")
+            .unwrap();
+        state.places[0].buildings[1].method_suitability[0][oats] = 2000;
+        set_holdings_staffing(&mut state, 3, 15, 2, 15);
+        let fish = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "fish")
+            .unwrap();
+        let ledger = run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ledger.produced[oats], 200);
+        assert_eq!(ledger.produced[fish], 100);
+    }
+
+    #[test]
+    fn coverage_efficiency_remains_building_wide_with_shared_staffing() {
+        let (rules, mut state) = two_method_staffing_fixture(1200);
+        set_holdings_staffing(&mut state, 1, 10, 0, 0);
+        let oats = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "oats")
+            .unwrap();
+        let fish = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "fish")
+            .unwrap();
+        let ledger = run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ledger.produced[oats], 45);
+        assert_eq!(ledger.produced[fish], 45);
     }
 
     #[test]
