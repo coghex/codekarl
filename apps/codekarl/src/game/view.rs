@@ -529,27 +529,26 @@ fn place_view(rules: &Rules, place: &PlaceState, land: Option<&LandCounts>) -> P
                     .copied()
                     .fold(0_u64, u64::saturating_add)
                     / 1000;
-                let occupied = place
-                    .buildings
-                    .iter()
-                    .filter(|building| matches!(building.kind.as_str(), "farm" | "holdings"))
-                    .filter_map(|building| {
-                        rules
-                            .buildings
-                            .iter()
-                            .find(|definition| definition.id == building.kind)
-                    })
-                    .fold(0_u64, |sum, definition| {
-                        sum.saturating_add(
-                            u64::from(definition.land_per_level).saturating_mul(u64::from(
-                                place
-                                    .buildings
-                                    .iter()
-                                    .find(|building| building.kind == definition.id)
-                                    .map_or(0, |building| building.levels),
-                            )),
-                        )
-                    });
+                let occupied = place.buildings.iter().fold(0_u64, |sum, building| {
+                    let Some(definition) = rules
+                        .buildings
+                        .iter()
+                        .find(|definition| definition.id == building.kind)
+                    else {
+                        return sum;
+                    };
+                    let land_levels = definition
+                        .methods
+                        .iter()
+                        .zip(&building.method_levels)
+                        .filter(|(method, _)| method.resource != "sea")
+                        .fold(0_u64, |levels, (_, count)| {
+                            levels.saturating_add(u64::from(*count))
+                        });
+                    sum.saturating_add(
+                        u64::from(definition.land_per_level).saturating_mul(land_levels),
+                    )
+                });
                 available.saturating_sub(occupied)
             })
             .unwrap_or_default(),
@@ -678,6 +677,26 @@ mod tests {
             development_pm: 1000,
             price_drift_carries: vec![0; rules.goods.len()],
         }
+    }
+
+    fn field_room_for(rules: &Rules, mut place: PlaceState) -> u64 {
+        place.id = "fixture".to_owned();
+        let state = EconomyState {
+            places: vec![place],
+        };
+        let land = BTreeMap::from([(
+            "fixture".to_owned(),
+            LandCounts {
+                land_cells: BTreeMap::from([("pasture".to_owned(), 10)]),
+                fertility_pm: BTreeMap::from([("pasture".to_owned(), 20_000)]),
+                fertile_cells: 10,
+                sea: 0,
+            },
+        )]);
+        build_with_land(Some(rules), &state, &["fixture".to_owned()], &land)
+            .place("fixture")
+            .expect("the fixture is in the view")
+            .field_room
     }
 
     fn day_one_economy_fixture() -> (Rules, EconomyState, Vec<Vec<u64>>, Date) {
@@ -1104,6 +1123,49 @@ mod tests {
         assert_eq!(storehouse.levels, 1);
         assert!(storehouse.herds.is_empty());
         assert_eq!(storehouse.store_capacity_ml, 36_000_000);
+    }
+
+    #[test]
+    fn field_room_charges_only_land_method_levels() {
+        let rules = shipped_rules();
+        let mut mixed = fixture(&rules);
+        mixed.buildings[0].levels = 5;
+        mixed.buildings[0].method_levels = vec![3, 2];
+        assert_eq!(field_room_for(&rules, mixed), 14);
+
+        let mut farming = fixture(&rules);
+        farming.buildings[0].levels = 5;
+        farming.buildings[0].method_levels = vec![5, 0];
+        assert_eq!(field_room_for(&rules, farming), 10);
+    }
+
+    #[test]
+    fn field_room_uses_each_building_definition_land_cost() {
+        let mut rules = shipped_rules();
+        let mut custom = rules
+            .buildings
+            .iter()
+            .find(|definition| definition.id == "farm")
+            .expect("the farm definition exists")
+            .clone();
+        custom.id = "custom_farm".to_owned();
+        rules.buildings.push(custom);
+        let mut custom_farm = fixture(&rules);
+        custom_farm.buildings[0].kind = "custom_farm".to_owned();
+        assert_eq!(field_room_for(&rules, custom_farm), 14);
+
+        let mut no_land = rules
+            .buildings
+            .iter()
+            .find(|definition| definition.id == "farm")
+            .expect("the farm definition exists")
+            .clone();
+        no_land.id = "custom_no_land".to_owned();
+        no_land.land_per_level = 0;
+        rules.buildings.push(no_land);
+        let mut custom_zero = fixture(&rules);
+        custom_zero.buildings[0].kind = "custom_no_land".to_owned();
+        assert_eq!(field_room_for(&rules, custom_zero), 20);
     }
 
     #[test]
