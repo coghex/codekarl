@@ -52,6 +52,8 @@ pub(crate) struct Prepared {
     pub(super) gameplay: Option<GameplayWiring>,
     /// The shared economy rules the view is derived with; `None` for assets that predate M9.
     economy_rules: Option<Arc<Rules>>,
+    /// Map-derived makeshift shelter by place, not saved in `EconomyState`.
+    shelter_by_place: BTreeMap<String, u64>,
     saves: PathBuf,
 }
 
@@ -124,6 +126,21 @@ pub(crate) fn prepare(
     } else {
         BTreeMap::new()
     };
+    let shelter_by_place = if let Some(rules) = economy_rules.as_deref() {
+        economy::land_counts(&scenario, &rules.terrain_order)?
+            .into_iter()
+            .enumerate()
+            .map(|(index, land)| {
+                Ok((
+                    scenario.locations[index].id.clone(),
+                    ck_economy::natural_shelter(rules, &land).map_err(|error| error.to_string())?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, String>>()?
+    } else {
+        BTreeMap::new()
+    };
+    let nearby_by_place = nearby_places(&scenario);
     let identity = Identity {
         build: build_id(),
         scenario: scenario.id.clone(),
@@ -146,6 +163,8 @@ pub(crate) fn prepare(
             gameplay_runtime.as_ref(),
             economy_rules.clone(),
             quality_by_place.clone(),
+            shelter_by_place.clone(),
+            nearby_by_place.clone(),
         )
     };
     let simulation = if let Some(path) = request.load {
@@ -192,6 +211,7 @@ pub(crate) fn prepare(
         simulation,
         gameplay,
         economy_rules,
+        shelter_by_place,
         saves: request.game.saves.clone(),
     })
 }
@@ -208,12 +228,17 @@ pub(crate) struct Connected {
 }
 
 /// Wires `prepared` to the run: `wake` wakes the main thread whenever the owner publishes.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Connection wiring installs each prepared subsystem once in its dependency order."
+)]
 pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> Connected {
     let Prepared {
         identity,
         simulation,
         gameplay,
         economy_rules,
+        shelter_by_place,
         saves,
         scenario,
     } = prepared;
@@ -241,6 +266,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
             )
         })
         .collect::<BTreeMap<_, _>>();
+    let nearby_by_place = nearby_places(&scenario);
     let wiring_gameplay = gameplay.clone();
     let wiring_rules = economy_rules.clone();
     let (sender, receiver) = channel();
@@ -255,6 +281,8 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         let scheduler_runtime = runtime.clone();
         let scheduler_rules = wiring_rules.clone();
         let scheduler_quality = quality_by_place.clone();
+        let scheduler_shelter = shelter_by_place.clone();
+        let scheduler_nearby = nearby_by_place.clone();
         let reset_runtime = runtime.clone();
         let build = move || {
             Core::new_with_views(
@@ -267,6 +295,8 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                             scheduler_runtime.as_ref(),
                             scheduler_rules.clone(),
                             scheduler_quality.clone(),
+                            scheduler_shelter.clone(),
+                            scheduler_nearby.clone(),
                         )
                     }),
                     reset: Box::new(move |seed| {
@@ -311,10 +341,18 @@ fn gameplay_scheduler_with_rules(
     gameplay: Option<&Arc<Gameplay>>,
     rules: Option<Arc<Rules>>,
     quality_by_place: BTreeMap<String, u16>,
+    shelter_by_place: BTreeMap<String, u64>,
+    nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
 ) -> Scheduler<GameState> {
     let mut scheduler = Scheduler::<GameState>::new();
     if let Some(rules) = rules {
-        register_economy_callback_with_quality(&mut scheduler, rules, quality_by_place);
+        register_economy_callback_with_context(
+            &mut scheduler,
+            rules,
+            quality_by_place,
+            shelter_by_place,
+            nearby_by_place,
+        );
     } else {
         scheduler
             .register(
@@ -332,24 +370,34 @@ fn gameplay_scheduler_with_rules(
 
 #[cfg(test)]
 pub(crate) fn register_economy_callback(scheduler: &mut Scheduler<GameState>, rules: Arc<Rules>) {
-    register_economy_callback_with_quality(scheduler, rules, BTreeMap::new());
+    register_economy_callback_with_context(
+        scheduler,
+        rules,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+    );
 }
 
-fn register_economy_callback_with_quality(
+fn register_economy_callback_with_context(
     scheduler: &mut Scheduler<GameState>,
     rules: Arc<Rules>,
     quality_by_place: BTreeMap<String, u16>,
+    shelter_by_place: BTreeMap<String, u64>,
+    nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
 ) {
     scheduler
         .register(
             "economy.daily",
             Cadence::Daily { hour: ECONOMY_HOUR },
             move |state, tick| {
-                ck_economy::run_daily_economy_with_quality(
+                ck_economy::run_daily_economy_with_context(
                     &rules,
                     &mut state.economy,
                     tick.date(),
                     &quality_by_place,
+                    &shelter_by_place,
+                    &nearby_by_place,
                 )
                 .map(|_| ())
                 .map_err(io::Error::other)
@@ -357,6 +405,40 @@ fn register_economy_callback_with_quality(
             },
         )
         .expect("the economy system name is unique");
+}
+
+pub(crate) fn nearby_places(
+    scenario: &ck_map::Scenario,
+) -> BTreeMap<String, Vec<ck_economy::NearbyPlace>> {
+    let mut result = BTreeMap::new();
+    for (source_index, source) in scenario.locations.iter().enumerate() {
+        let mut destinations = scenario
+            .locations
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != source_index)
+            .filter_map(|(index, destination)| {
+                let dx = i64::from(source.cell.x) - i64::from(destination.cell.x);
+                let dy = i64::from(source.cell.y) - i64::from(destination.cell.y);
+                let squared = u64::try_from(dx * dx + dy * dy).ok()?;
+                let cell_distance = squared.isqrt();
+                let distance_m = cell_distance.checked_mul(839)?;
+                (distance_m <= 30_000).then_some((squared, index, distance_m))
+            })
+            .collect::<Vec<_>>();
+        destinations.sort_by_key(|(squared, index, _)| (*squared, *index));
+        result.insert(
+            source.id.clone(),
+            destinations
+                .into_iter()
+                .map(|(_, index, distance_m)| ck_economy::NearbyPlace {
+                    id: scenario.locations[index].id.clone(),
+                    distance_m: u32::try_from(distance_m).expect("30 km fits u32"),
+                })
+                .collect(),
+        );
+    }
+    result
 }
 
 pub(crate) fn register_gameplay_lua_callbacks(

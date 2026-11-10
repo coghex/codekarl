@@ -5,14 +5,34 @@ price_k_pm = 500
 cultures = ["ulaid", "cruthin", "northern_ui_neill", "airgialla", "mide_brega", "laigin", "mumu", "connachta", "english"]
 religions = ["christianity", "irish_paganism", "norse_paganism", "anglo_saxon_paganism"]
 terrain_order = ["pasture", "forest", "bog", "marsh", "mountain"]
+housing_classes = ["makeshift", "basic"]
 buildable_base_m2 = 20000
 starting_development_pm = 1000
 fertility_reference_pm = 550
+hire_pm = 100
+leave_pm = 50
 
 [footprint_m2]
 farm = 2000
 holdings = 4000
 storehouse = 200
+
+[housing_per_level]
+farm = 17
+holdings = 14
+storehouse = 3
+
+[housing_class]
+farm = "basic"
+holdings = "basic"
+storehouse = "basic"
+
+[shelter_pm]
+pasture = 50
+forest = 100
+mountain = 100
+marsh = 20
+bog = 10
 
 [buildable_per_cell_m2]
 pasture = 300

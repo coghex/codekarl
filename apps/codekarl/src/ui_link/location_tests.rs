@@ -220,9 +220,9 @@ fn click_tab_at(rig: &mut Rig, key: &str, (width, height): (u32, u32)) {
     rig.deliver_fixture_frame_at(width, height, 2);
 }
 
-const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|food: 215 days|building land: 4200 / 24200 m²|storage: 5400 / 86400 L|lost to overflow last month: 0|prices (base):|  oats 100 (100)|  ale 2.5 (2)";
-const POPS_ROWS: &str = "peasant ulaid christianity|  workers: 80|  dependents: 40|  employed: 70|  unemployed: 10|  food: 215 days|  needs: 0% 0% 0%|  satisfaction: 0|  births 2, deaths 1 ^";
-const BUILDINGS_ROWS: &str = "farm|  levels: mixed_farming 3|  positions: 25 filled, 5 open|  cattle: 27 / 36|  store: 1 / 3500 L|  wage: 0||storehouse|  levels: 1|  positions: 0 filled, 2 open|  store: 0 / 36000 L|  wage: 0";
+const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|housing: basic 0/0, makeshift 0/0|crowding: 0%|food: 215 days|building land: 4200 / 24200 m²|storage: 5400 / 86400 L|lost to overflow last month: 0|prices (base):|  oats 100 (100)|  ale 2.5 (2)";
+const POPS_ROWS: &str = "peasant ulaid christianity|  workers: 80|  dependents: 40|  housing: basic 0, makeshift 0|  crowding: 0%|  employed: 70|  unemployed: 10|  food: 215 days|  needs: 0% 0% 0%|  satisfaction: 0|  births 2, deaths 1 ^";
+const BUILDINGS_ROWS: &str = "farm|  levels: mixed_farming 3|  positions: 25 filled, 5 open|  housing occupants: 0|  cattle: 27 / 36|  store: 1 / 3500 L|  wage: 0||storehouse|  levels: 1|  positions: 0 filled, 2 open|  housing occupants: 0|  store: 0 / 36000 L|  wage: 0";
 
 #[test]
 fn the_three_tabs_show_a_fixture_places_lines_as_literals_and_a_click_switches_between_them() {
@@ -259,7 +259,7 @@ fn a_place_of_nobody_has_zeroes_and_empty_pops_and_buildings() {
     assert_eq!(
         rows(&rig),
         [
-            "people: 0|  workers: 0|  dependents: 0|food: 0 days|building land: 0 / 0 m²|storage: 0 / 0 L|lost to overflow last month: 0|prices (base):"
+            "people: 0|  workers: 0|  dependents: 0|housing: basic 0/0, makeshift 0/0|crowding: 0%|food: 0 days|building land: 0 / 0 m²|storage: 0 / 0 L|lost to overflow last month: 0|prices (base):"
         ]
     );
     rig.opened();

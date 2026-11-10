@@ -369,6 +369,12 @@ fn pop_table(pop: &PopView) -> ConfigValue {
         ("satisfaction", ConfigValue::Integer(pop.satisfaction)),
         ("births", integer(pop.births)),
         ("deaths", integer(pop.deaths)),
+        ("basic_housing", integer(pop.basic_housing)),
+        ("makeshift_housing", integer(pop.makeshift_housing)),
+        (
+            "crowding_pm",
+            pop.crowding_pm.map_or(ConfigValue::Bool(false), integer),
+        ),
     ])
 }
 
@@ -410,6 +416,7 @@ fn building_table(building: &BuildingView) -> ConfigValue {
             integer(building.store_capacity_ml / 1000),
         ),
         ("wage", integer(building.wage)),
+        ("housing_occupants", integer(building.housing_occupants)),
     ])
 }
 
@@ -435,6 +442,23 @@ pub(crate) fn place_table(place: &PlaceView) -> ConfigValue {
             integer(u64::from(place.farmland_quality_pm)),
         ),
         ("field_room", integer(place.field_room)),
+        (
+            "basic_housing_capacity",
+            integer(place.basic_housing_capacity),
+        ),
+        (
+            "basic_housing_occupants",
+            integer(place.basic_housing_occupants),
+        ),
+        (
+            "makeshift_housing_capacity",
+            integer(place.makeshift_housing_capacity),
+        ),
+        (
+            "makeshift_housing_occupants",
+            integer(place.makeshift_housing_occupants),
+        ),
+        ("crowding_pm", integer(place.crowding_pm)),
         (
             "prices",
             ConfigValue::Array(
@@ -680,7 +704,10 @@ mod tests {
         assert_eq!(
             fields.keys().map(String::as_str).collect::<Vec<_>>(),
             [
+                "basic_housing_capacity",
+                "basic_housing_occupants",
                 "buildings",
+                "crowding_pm",
                 "dependents",
                 "development_pm",
                 "farmland_quality_pm",
@@ -688,6 +715,8 @@ mod tests {
                 "food_days",
                 "footprint_m2",
                 "id",
+                "makeshift_housing_capacity",
+                "makeshift_housing_occupants",
                 "max_buildable_m2",
                 "overflow_lost",
                 "pops",
@@ -729,6 +758,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The table contract test checks the full exposed place and pop projection in one fixture."
+    )]
     fn a_places_table_carries_every_tab_field_with_litres_for_volumes() {
         let place = PlaceView {
             id: "fixture".to_owned(),
@@ -751,6 +784,11 @@ mod tests {
             development_pm: 1000,
             farmland_quality_pm: 550,
             field_room: 12,
+            basic_housing_capacity: 40,
+            basic_housing_occupants: 38,
+            makeshift_housing_capacity: 10,
+            makeshift_housing_occupants: 2,
+            crowding_pm: 2000,
             pops: vec![PopView {
                 kind: "peasant".to_owned(),
                 culture: "ulaid".to_owned(),
@@ -766,6 +804,9 @@ mod tests {
                 satisfaction: -5,
                 births: 2,
                 deaths: 1,
+                basic_housing: 38,
+                makeshift_housing: 2,
+                crowding_pm: Some(2000),
             }],
             buildings: vec![BuildingView {
                 kind: "farm".to_owned(),
@@ -781,6 +822,7 @@ mod tests {
                 store_used_ml: 1_500,
                 store_capacity_ml: 3_500_000,
                 wage: 0,
+                housing_occupants: 38,
             }],
         };
         let ConfigValue::Table(fields) = place_table(&place) else {
