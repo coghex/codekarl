@@ -586,7 +586,14 @@ latitude ceiling. Weather, the year-to-year variation, comes later.
 **Firm (owner choices on the mock-ups).**
 
 - **Fertility is a darkness gradient:** "full color is 100% usable land, and the dark colors i have been using are the 0%".
-  - A pixel is bright when `blue16[wy mod 16][wx mod 16] < ⌊256 × (fertility ÷ 1000)^2.5⌋`, and dark otherwise.
+  - **Four shades per terrain, two of them in between** (Firm, owner 2026-11-09, `owner-direction-map-look-r5.md`): `tone[k]`, from
+    `dark` (k = 0) to full colour (k = 3) in thirds. With `level = ⌊256 × (fertility ÷ 1000)^2.5⌋` and `v = 3 × level`, a pixel takes
+    shade `⌊v / 256⌋`, one higher when `blue16[wy mod 16][wx mod 16] < v mod 256`. So a dot steps only between neighbouring shades.
+  - **Why (true scale):** the first relief mock-ups were drawn 8 times finer than the game draws (1 screen pixel per map pixel, against
+    the game's 8 × 8, §3.5), so in the app a pasture of bright and dark dots read as "points instead of a surface". At true scale
+    (`mockups/look-r5/`) the owner kept one dot per map pixel ("A looks the best for close up and for the mountains and woods, its just
+    the pasture yellow that is too much like dots") and chose two in-between tones (F). With no in-between tones the rule is the earlier
+    bright/dark one.
   - The curve is γ 2.5 ("gamma looks best at 2.5").
   - `blue16` is a fixed 16 × 16 void-and-cluster blue-noise ranking (Ulichney), committed as data and pinned to the world. It replaced
     the 4×4 ordered pattern, which formed a "plaid" ("that blue noise is a huge improvement").
@@ -601,9 +608,11 @@ latitude ceiling. Weather, the year-to-year variation, comes later.
   - **The dither:** with `strength = ⌊16 × |shade|⌋`, a pixel takes the relief tone when `bayer4ᴮ[wy mod 4][wx mod 4] < strength`.
     `bayer4ᴮ` is the 4×4 ordered matrix, rotated and mirrored so it does not align with the blue noise.
   - **The relief tones:**
-    - on bright pixels, slopes facing away from the light take the terrain's `second` tone;
-    - on dark pixels, slopes facing the light take its `dark_lit` tone, `dark + 2 × (dark_second − dark)`, as data ("2x looks the
-      best").
+    - slopes facing away from the light take the shadow shade `shadow[k]`, from `dark` to the terrain's `second` tone in thirds (not at
+      shade 0);
+    - slopes facing the light take the lit shade `lit[k]`, from `dark_lit` to full colour in thirds (not at shade 3), with `dark_lit =
+      dark + 2 × (dark_second − dark)`, as data ("2x looks the best");
+    - so at full colour the shadow is `second`, and at `dark` the lit tone is `dark_lit`, as before.
 - **Rivers, the coast outline, places and houses** draw over the land as before.
 - **Removed:**
   - the usable/unusable split;
@@ -698,3 +707,6 @@ reviewer-1 owner addendum, `docs/vision.md`, `docs/game/diplomacy.md`, `docs/sce
 
 Revision 5, 2026-11-09, by ck-designer-1: §12 (land, climate and the look since M9), from the owner's signed records
 (`usable-land-proposal-r4.md`, `map-look-design-r4.md`), with pointers at the passages it supersedes.
+
+Revision 6, 2026-11-09, by ck-designer-1: §12.3's four shades per terrain, from the owner's choice at true scale
+(`owner-direction-map-look-r5.md`, `mockups/look-r5/`).
