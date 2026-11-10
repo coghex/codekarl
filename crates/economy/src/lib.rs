@@ -6516,8 +6516,17 @@ fn move_recruits(
     position_kind: &str,
     count: u64,
 ) -> Result<(u64, usize), DataError> {
-    let mut trial = places.to_vec();
-    let source = &trial[source_place].pops[source_pop];
+    let same_place = source_place == destination_place;
+    let mut trial = if same_place {
+        vec![places[source_place].clone()]
+    } else {
+        vec![
+            places[source_place].clone(),
+            places[destination_place].clone(),
+        ]
+    };
+    let trial_destination = usize::from(!same_place);
+    let source = &trial[0].pops[source_pop];
     let (target_kind, moved_workers, moved_dependents, removed_workers, removed_dependents) =
         if position_kind == "monk" {
             let shares = largest_remainder(count, &[source.workers, source.dependents])
@@ -6538,9 +6547,9 @@ fn move_recruits(
     let destination_pop_index = transfer_pop(
         rules,
         &mut trial,
-        source_place,
+        0,
         source_pop,
-        destination_place,
+        trial_destination,
         target_kind,
         destination_building,
         moved_workers,
@@ -6548,8 +6557,12 @@ fn move_recruits(
         removed_workers,
         removed_dependents,
     )?;
-    release_excess_employment(&mut trial[source_place])?;
-    places.clone_from_slice(&trial);
+    release_excess_employment(&mut trial[0])?;
+    let mut updated = trial.into_iter();
+    places[source_place] = updated.next().expect("the source place was cloned");
+    if !same_place {
+        places[destination_place] = updated.next().expect("the destination place was cloned");
+    }
     Ok((
         moved_workers.checked_add(moved_dependents).ok_or_else(|| {
             missing_data("movement.transfer".to_owned(), "moved population overflow")
@@ -7170,6 +7183,23 @@ fn decode_employment(input: &mut Reader<'_>) -> Result<Vec<Employment>, Canonica
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn natural_shelter_uses_literal_weighted_counts_across_three_terrains() {
+        let mut rules = tiny_rules();
+        rules.shelter_pm.insert("forest".to_owned(), 75);
+        let land = LandCounts {
+            land_cells: BTreeMap::from([
+                ("pasture".to_owned(), 18),
+                ("forest".to_owned(), 12),
+                ("bog".to_owned(), 22),
+            ]),
+            ..LandCounts::default()
+        };
+
+        // (18 × 50 + 12 × 75 + 22 × 10) / 1000 = 2.02, floored to 2.
+        assert_eq!(natural_shelter(&rules, &land).unwrap(), 2);
+    }
 
     #[test]
     fn buildable_area_uses_all_land_and_scales_with_checked_development() {
@@ -12703,14 +12733,46 @@ mod tests {
     }
 
     #[test]
-    fn fractional_rate_of_1_62_on_one_person_keeps_its_remainder() {
-        let mut carry = 0;
-        let mut whole = 0;
-        for _ in 0..12 {
-            whole += exact_monthly_rate(1, 1620, &[1000], &mut carry, "rate.test").unwrap();
-        }
-        assert_eq!(whole, 1);
-        assert_eq!(carry, 7_440_000);
+    fn monthly_death_pins_a_1_62_rate_on_a_one_person_pool() {
+        let mut rules = tiny_rules();
+        rules.pop_types[0].births_pm_year = 0;
+        // Three 1000‰ death factors make 19,440‰/year equal 1.62 deaths this month.
+        rules.pop_types[0].worker_deaths_pm_year = 19_440;
+        let pop = PopState {
+            kind: "peasant".to_owned(),
+            culture: "connachta".to_owned(),
+            religion: "christianity".to_owned(),
+            literacy_pm: 0,
+            workers: 1,
+            dependents: 0,
+            employment: Vec::new(),
+            stock: vec![0],
+            consumption: PopConsumption::default(),
+            counters: CounterBuckets::default(),
+        };
+        let mut state = EconomyState {
+            places: vec![PlaceState {
+                id: "one-person-pool".to_owned(),
+                coastal: false,
+                pops: vec![pop],
+                buildings: Vec::new(),
+                prices_milli: vec![1000],
+                prepared_m2: 0,
+                development_pm: 1000,
+                price_drift_carries: Vec::new(),
+                counters: CounterBuckets::default(),
+            }],
+        };
+
+        run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+
+        let pop = &state.places[0].pops[0];
+        assert_eq!(
+            pop.counters.current.deaths, 1,
+            "the one-person pool is capped"
+        );
+        assert_eq!(pop.workers, 0);
+        assert_eq!(pop.consumption.worker_death_carry, 7_440_000_000_000);
     }
 
     #[test]
@@ -13039,6 +13101,69 @@ mod tests {
     }
 
     #[test]
+    fn movement_recruits_from_the_nearer_of_two_in_range_sources_first() {
+        let (mut rules, mut near) = holdings_movement_fixture();
+        rules.leave_pm = 1000;
+        let mut destination = near.clone();
+        destination.id = "destination".to_owned();
+        destination.pops.clear();
+        destination.buildings[0].employment.clear();
+
+        near.id = "near".to_owned();
+        let near_pop = near
+            .pops
+            .iter_mut()
+            .find(|pop| pop.kind == "peasant")
+            .unwrap();
+        near_pop.workers = 30;
+        near_pop.employment[0] = Employment::default();
+
+        let mut far = near.clone();
+        far.id = "far".to_owned();
+        let mut places = vec![destination, near, far];
+        let nearby = BTreeMap::from([(
+            "destination".to_owned(),
+            vec![
+                NearbyPlace {
+                    id: "near".to_owned(),
+                    distance_m: 74_898, // d=145 at row 15777
+                },
+                NearbyPlace {
+                    id: "far".to_owned(),
+                    distance_m: 99_692, // d=193 at row 15777
+                },
+            ],
+        )]);
+
+        let moved = move_open_positions(
+            &rules,
+            &mut places,
+            &nearby,
+            &[vec![[10, 0]], vec![], vec![]],
+        )
+        .unwrap();
+
+        assert_eq!(
+            places[1].pops[0].workers, 25,
+            "the nearer source fills first"
+        );
+        assert_eq!(
+            places[2].pops[0].workers, 30,
+            "the farther source is untouched"
+        );
+        assert_eq!(
+            places[0]
+                .pops
+                .iter()
+                .find(|pop| pop.kind == "monk")
+                .unwrap()
+                .workers,
+            5
+        );
+        assert_eq!(moved[0].iter().sum::<u64>(), 5);
+    }
+
+    #[test]
     fn movement_counts_filled_positions_by_the_original_pop_index() {
         let (rules, place) = holdings_movement_fixture();
         let mut places = vec![place];
@@ -13178,6 +13303,42 @@ mod tests {
             .find(|pop| pop.kind == "labourer")
             .unwrap();
         assert_eq!(monk.employment[0].owners, 2);
+        assert_eq!(labourer.employment[0].owners, 0);
+    }
+
+    #[test]
+    fn new_holdings_owner_comes_from_monks_when_a_labourer_is_idle() {
+        let (rules, mut place) = holdings_movement_fixture();
+        let monk = place
+            .pops
+            .iter_mut()
+            .find(|pop| pop.kind == "monk")
+            .unwrap();
+        monk.workers = 13;
+        monk.employment[0].workers = 10;
+        place.buildings[0].employment[1].workers = 10;
+        let labourer_index = place
+            .pops
+            .iter()
+            .position(|pop| pop.kind == "labourer")
+            .unwrap();
+        place.pops[labourer_index].workers = 4;
+        // The pre-fix per-kind rule would fill a labourer-owner position from this idle labourer.
+        assert_eq!(
+            unemployed_workers(&place, labourer_index).unwrap(),
+            1,
+            "the fixture has an idle labourer before hiring"
+        );
+
+        fill_monthly_hiring(&rules, &mut place).unwrap();
+
+        let monk = place.pops.iter().find(|pop| pop.kind == "monk").unwrap();
+        let labourer = place
+            .pops
+            .iter()
+            .find(|pop| pop.kind == "labourer")
+            .unwrap();
+        assert_eq!(monk.employment[0].owners, 3);
         assert_eq!(labourer.employment[0].owners, 0);
     }
 

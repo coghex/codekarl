@@ -184,6 +184,12 @@ where
         }
     }
 
+    /// The state at the current tick boundary, for app-level save/load regression tests.
+    #[cfg(test)]
+    pub(crate) fn state(&self) -> &S {
+        self.simulation.state()
+    }
+
     fn publish_if_changed(&mut self) {
         let snapshot = self.snapshot();
         if self

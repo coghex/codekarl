@@ -566,8 +566,12 @@ fn place_view(rules: &Rules, place: &PlaceState, land: Option<&LandCounts>) -> P
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ck_economy::{CounterBuckets, Employment, StorehouseAccounts};
-    use ck_sim::Canonical;
+    use ck_economy::{
+        CounterBuckets, Employment, NearbyPlace, StorehouseAccounts, run_daily_economy_with_context,
+    };
+    use ck_log::Level;
+    use ck_sim::{Canonical, Date, GameTime, Save, Scheduler, Simulation};
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     fn shipped_rules() -> Rules {
@@ -674,6 +678,232 @@ mod tests {
             development_pm: 1000,
             price_drift_carries: vec![0; rules.goods.len()],
         }
+    }
+
+    fn day_one_economy_fixture() -> (Rules, EconomyState, Vec<Vec<u64>>, Date) {
+        let mut rules = shipped_rules();
+        rules.hire_pm = 1000;
+        rules.leave_pm = 1000;
+        let peasant = rules
+            .pop_types
+            .iter_mut()
+            .find(|kind| kind.id == "peasant")
+            .expect("the peasant rule exists");
+        peasant.births_pm_year = 0;
+        peasant.worker_deaths_pm_year = 10_000;
+        for curve_name in ["deaths_hunger", "deaths_comfort", "deaths_crowding"] {
+            for point in rules
+                .curves
+                .get_mut(curve_name)
+                .expect("the death curve exists")
+            {
+                point[1] = 1_200;
+            }
+        }
+
+        let goods = rules.goods.len();
+        let mut dying = fixture(&rules);
+        dying.id = "dying-place".to_owned();
+        dying.buildings.clear();
+        dying.pops.truncate(1);
+        dying.pops[0].workers = 1;
+        dying.pops[0].dependents = 0;
+        dying.pops[0].employment.clear();
+        dying.pops[0].stock.fill(0);
+        dying.pops[0].consumption.pantry_hunger_centi.fill(0);
+        dying.pops[0].consumption.ticking_carries.fill(0);
+
+        let mut source = fixture(&rules);
+        source.id = "source-place".to_owned();
+        source.buildings.clear();
+        source.pops.truncate(1);
+        source.pops[0].kind = "labourer".to_owned();
+        source.pops[0].workers = 20;
+        source.pops[0].dependents = 0;
+        source.pops[0].employment.clear();
+        source.pops[0].stock.fill(0);
+        source.pops[0].consumption.pantry_hunger_centi.fill(0);
+        source.pops[0].consumption.ticking_carries.fill(0);
+
+        let mut destination = fixture(&rules);
+        destination.id = "destination-place".to_owned();
+        destination.pops.clear();
+        destination.buildings.truncate(1);
+        let holdings = destination
+            .buildings
+            .first_mut()
+            .expect("the fixture has a building");
+        holdings.kind = "holdings".to_owned();
+        holdings.levels = 1;
+        holdings.method_levels = vec![1, 0];
+        holdings.herds = vec![0; 3];
+        holdings.employment.clear();
+        holdings.stock = vec![0; goods];
+        holdings.production_carries = vec![vec![0; goods]; 2];
+        holdings.method_suitability = vec![vec![0; goods]; 2];
+        holdings.herd_birth_carries = vec![0; 3];
+        holdings.herd_death_carries = vec![0; 3];
+        holdings.herd_product_carries = vec![0; goods];
+        holdings.herd_grazing_sums = vec![0; 3];
+        holdings.wage_carries = vec![0; goods];
+        holdings.pay_carries = vec![0; goods];
+        holdings.fee_carries.clear();
+        holdings.wage_history = vec![100; 12];
+
+        let mut state = EconomyState {
+            places: vec![dying, source, destination],
+        };
+        let nearby = BTreeMap::from([(
+            "destination-place".to_owned(),
+            vec![NearbyPlace {
+                id: "source-place".to_owned(),
+                distance_m: 1_000,
+            }],
+        )]);
+        let date = Date {
+            year: 768,
+            month: 1,
+            day: 1,
+            hour: 12,
+        };
+        let ledger = run_daily_economy_with_context(
+            &rules,
+            &mut state,
+            date,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &nearby,
+        )
+        .expect("the day-one economy tick completes");
+        (rules, state, ledger.movement_by_pop, date)
+    }
+
+    fn app_core_for_economy(
+        rules: Rules,
+        state: &EconomyState,
+        ids: &[String],
+        start: Date,
+    ) -> (
+        crate::game::core::Core<crate::game::GameState, crate::game::GameCommand>,
+        crate::game::saves::Identity,
+        crate::testing::Dir,
+        std::path::PathBuf,
+    ) {
+        let view_ids = ids.to_vec();
+        let views = Box::new(move |game: &crate::game::GameState| {
+            build(Some(&rules), &game.economy, &view_ids)
+        });
+        let game_state = crate::game::GameState {
+            economy: state.clone(),
+        };
+        let time = GameTime::from_date(start).expect("the save date is valid");
+        let identity = crate::game::saves::Identity {
+            build: "ck246-test".to_owned(),
+            scenario: "fixture".to_owned(),
+            scenario_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_owned(),
+            map_hash: "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+            scripts_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_owned(),
+            rules_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_owned(),
+            start,
+        };
+        let save_dir = crate::testing::Dir::new();
+        let save_path = save_dir.0.join("saves");
+        let outputs = crate::game::core::Outputs {
+            log: Box::new(|_: Level, _: String| {}),
+            publish: Box::new(|_| {}),
+            fail: Box::new(|_| {}),
+        };
+        let apply: fn(&mut crate::game::GameState, crate::game::GameCommand) = crate::game::apply;
+        let simulation = Simulation::new(
+            time,
+            42,
+            game_state,
+            Scheduler::<crate::game::GameState>::new(),
+            apply,
+        );
+        let core = crate::game::core::Core::new_with_views(
+            simulation,
+            identity.clone(),
+            save_path.clone(),
+            crate::game::core::Rebuild {
+                scheduler: Box::new(Scheduler::<crate::game::GameState>::new),
+                reset: Box::new(|_| {}),
+                apply,
+            },
+            outputs,
+            Some(views),
+        );
+        (core, identity, save_dir, save_path)
+    }
+
+    #[test]
+    fn day_one_death_and_cross_place_movement_survive_app_quicksave_and_quickload() {
+        let (rules, state, movement_by_pop, date) = day_one_economy_fixture();
+        assert_eq!(
+            state.places[0].pops[0].workers, 0,
+            "the one-worker pop dies"
+        );
+        assert_eq!(state.places[0].pops[0].counters.current.deaths, 1);
+        assert!(
+            movement_by_pop[2].iter().sum::<u64>() > 0,
+            "the day-one tick recruits across places"
+        );
+        assert!(
+            state.places[1].pops[0].workers < 20,
+            "recruits leave the source pop"
+        );
+        assert!(
+            state.places[2]
+                .pops
+                .iter()
+                .any(|pop| pop.kind == "monk" && pop.workers > 0)
+        );
+
+        let ids = state
+            .places
+            .iter()
+            .map(|place| place.id.clone())
+            .collect::<Vec<_>>();
+        let start = Date { hour: 13, ..date };
+        let (mut core, identity, _save_dir, save_path) =
+            app_core_for_economy(rules, &state, &ids, start);
+        let view_before_save = core
+            .snapshot()
+            .economy
+            .expect("the starting app snapshot has a view");
+        core.dispatch(
+            crate::game::core::Message::Control(crate::game::controls::Control::Quicksave),
+            std::time::Duration::ZERO,
+        );
+        let save_bytes = std::fs::read(crate::game::saves::quicksave_path(&save_path))
+            .expect("the app quicksave was written");
+        let saved = Save::<crate::game::GameState>::from_bytes(&save_bytes, &identity.expected())
+            .expect("the app quicksave decodes");
+        assert_eq!(
+            saved.state.economy, state,
+            "the quicksave retains the post-tick state"
+        );
+
+        core.dispatch(
+            crate::game::core::Message::Control(crate::game::controls::Control::Quickload),
+            std::time::Duration::ZERO,
+        );
+        let view_after_load = core
+            .snapshot()
+            .economy
+            .expect("quickload rebuilds and publishes the app view");
+        assert_eq!(
+            *view_before_save, *view_after_load,
+            "the complete view is field-for-field stable"
+        );
+        assert_eq!(
+            core.state().economy,
+            saved.state.economy,
+            "the loaded economy equals the saved economy"
+        );
     }
 
     #[test]
