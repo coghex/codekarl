@@ -5,9 +5,13 @@ approved its engineering (`economy-design-review-r19.md`, ee101993). A fresh via
 (`design-fun-review-r1.md`, by ck-designer-4) was worked through with the owner in r17–r19. The design was written by ck-designer-1
 (Class S, `claude-opus-5-5`, high).
 
-- **Implemented:** every slice of §4 except slice 11 is accepted (CK-224 to CK-249, 2026-11-10), including slice 4d, which moved the
-  storehouse fee into step 5 (CK-248), and the milestone 9 review notes (CK-246, CK-247 and CK-249); slice 11, the Vulkan catch-up, is
-  parked. Later owner decisions are folded into the sections that they change, with their date and record.
+- **Implemented:** every slice of §4 except slice 11 is accepted (CK-224 to CK-254, 2026-11-10); slice 11, the Vulkan catch-up, is
+  parked. That includes:
+  - the follow-up slices 4d, the storehouse fee in step 5 (CK-248); 4e, staffing shared across methods (CK-251); 3b, store capacity
+    counting workers in the view (CK-253); and 8b, farmland quality on the yield map (CK-254);
+  - the milestone 9 review notes (CK-246, CK-247 and CK-249) and ck-guide's findings: the location panel's monthly counters (CK-250)
+    and the view's field room, which charged sea-method levels as land (CK-252).
+- **Later owner decisions** are folded into the sections that they change, with their date and record.
 - **Source:** `.pipeline/coordination/m9-design/economy-design-r19.md` (sha256 `69772ff5…`), published unchanged below this header.
 - **Revision history:** r1–r19 and their reviews live beside it in `.pipeline/coordination/m9-design/`.
 - **Reading the section notes:** the "rN" notes inside the sections record when each rule was settled, and are kept for traceability.
@@ -1208,7 +1212,10 @@ the map's `terrain.toml`):
   - **What counts as yield (Firm, owner 2026-11-09, rulings on CK-231 F3):** "herd is not food; herd can become food", so herds stay
     out of the yield calculation, with one refinement: **dairy counts, meat does not.**
     - **Counted:** each method's food output at the place's land suitability, at full staffing and coverage, plus dairy at
-      `cattle × 72 lb a year` (§3.14) × dairy's hunger value. Dairy does not scale with land suitability, and a method's own dairy
+      `cattle × 72 lb a year` (§3.14) × dairy's hunger value. **Farming methods also take the place's farmland quality** (§3.24),
+      `⌊annual × suitability × quality ÷ (1000 × 550)⌋` units per good, floored once, as production does (owner, 2026-11-10,
+      `owner-direction-yield-fertility-r1.md`; CK-254). Sea methods and dairy take no quality factor, and a place with no land data
+      counts at the reference quality. Dairy does not scale with land suitability, and a method's own dairy
       output is not counted a second time.
     - **Not counted:** beef, pork and mutton, and the herds' non-food goods.
     - **Later:** butcher shops, with constant production methods, will add meat to the yield map.
@@ -1409,16 +1416,19 @@ fields cut. The engine's load report is the authority.
   | 1 | the cadence hour in `ck-sim` (§3.9) | – |
   | 2 | data, validation, maximum sizes and the starting state with its stockpiles; `GameState`, saves and `rules_hash` | – |
   | 3 | the location panel and its starting view: the first visible result | 2 |
+  | 3b | the view's farm and holdings store capacity counts workers, as the receipts do (§3.15) | 3, 4 |
   | 4 | production by season, herds, wages, the payday flow with alms and storehouses; the soak tool | 1, 2 |
   | 4b | the posted wage: a 12-month payday history, seeded from the starting stockpile, saved and shown (§3.6) | 4 |
   | 4c | a storehouse's posted wage is its fee (§3.18) | 4b |
   | 4d | the storehouse fee runs on the 1st in step 5 of §3.9, after hiring and movement, not at payday | 4c, 6 |
+  | 4e | each method takes its share of the building's staffing (§3.4), not staffed in method order | 4 |
   | 5 | eating with the intake curve, needs and satisfaction | 4 |
   | 6 | housing and crowding (§3.8), births, deaths, drift, hiring and movement (C9: before the market) | 5, 9 |
   | 6b | the recruitment range per building, monastic holdings 100 km, in ground distance (§3.5) | 6 |
   | 7 | local prices, computed and shown (no barter) | 5 |
   | 7b | market orders: one target per good, and the owner pop reserve (§3.16) | 7 |
   | 8 | the two map modes, on both backends (landed before the Vulkan direction) | 4 |
+  | 8b | the yield map takes farmland quality for farming methods (§3.22, §3.24) | 8, 9 |
   | 9a | the computed climate and fertility map data, and glaciation (`docs/map-design.md` §12) | 2 |
   | 9 | buildable land, footprints, development fixed at 1000 (§3.23), and fertility's farm room and yield (§3.24); before CK-229 (slice 6) | 9a |
   | 10a | the map look: the fertility gradient, the hillside dither and glaciers (map-design §12.3–§12.4, §12.6), on native Metal | 9a |
