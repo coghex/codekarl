@@ -293,8 +293,9 @@ fn building_capacity_ml(building: &BuildingState) -> u64 {
 
 /// A building's projected annual food, in hundredths of a person-day: for each method with levels, each food good that is not a herd's
 /// at its annual output scaled by the land's suitability (`method_suitability` is the sum over the levels, in ‰ of the output at
-/// suitability 1000), and the dairy of the building's cattle (72 pounds a cow a year). The meats do not count.
-fn projected_yield(rules: &Rules, building: &BuildingState) -> u64 {
+/// suitability 1000), with farmland fertility applied to non-sea methods, and the dairy of the building's cattle (72 pounds a cow a
+/// year). The meats do not count.
+fn projected_yield(rules: &Rules, building: &BuildingState, mean_fertility_pm: u16) -> u64 {
     let Some(definition) = rules
         .buildings
         .iter()
@@ -329,7 +330,19 @@ fn projected_yield(rules: &Rules, building: &BuildingState) -> u64 {
                 .and_then(|row| row.get(good_index))
                 .copied()
                 .unwrap_or(0);
-            let units = u128::from(*annual) * u128::from(suitability) / 1000;
+            let (fertility, fertility_reference) = if method.resource == "sea" {
+                (
+                    u128::from(rules.fertility_reference_pm),
+                    u128::from(rules.fertility_reference_pm),
+                )
+            } else {
+                (
+                    u128::from(mean_fertility_pm),
+                    u128::from(rules.fertility_reference_pm),
+                )
+            };
+            let units = u128::from(*annual) * u128::from(suitability) * fertility
+                / (1000 * fertility_reference);
             total = total.saturating_add(units * u128::from(good.hunger_centi));
         }
     }
@@ -408,6 +421,9 @@ fn building_view(rules: &Rules, building: &BuildingState, housing_occupants: u64
     reason = "A place view keeps its immutable economy totals, derived land values and per-building projections together."
 )]
 fn place_view(rules: &Rules, place: &PlaceState, land: Option<&LandCounts>) -> PlaceView {
+    let mean_fertility_pm = land
+        .and_then(|land| ck_economy::mean_fertility(land).ok())
+        .unwrap_or(rules.fertility_reference_pm);
     let shelter = land
         .and_then(|land| ck_economy::natural_shelter(rules, land).ok())
         .unwrap_or_default();
@@ -481,7 +497,7 @@ fn place_view(rules: &Rules, place: &PlaceState, land: Option<&LandCounts>) -> P
         prices,
         overflow_lost: place.counters.last.losses,
         projected_yield: place.buildings.iter().fold(0_u64, |sum, building| {
-            sum.saturating_add(projected_yield(rules, building))
+            sum.saturating_add(projected_yield(rules, building, mean_fertility_pm))
         }),
         has_economy: !place.pops.is_empty() || !place.buildings.is_empty(),
         footprint_m2: place
@@ -1365,6 +1381,28 @@ mod tests {
         build(Some(rules), &state, &["fixture".to_owned()]).places[0].projected_yield
     }
 
+    fn yield_with_fertility(rules: &Rules, place: PlaceState, fertility_pm: Option<u16>) -> u64 {
+        let state = EconomyState {
+            places: vec![place],
+        };
+        let land = fertility_pm.map(|fertility_pm| {
+            BTreeMap::from([(
+                "fixture".to_owned(),
+                LandCounts {
+                    land_cells: BTreeMap::from([("pasture".to_owned(), 1)]),
+                    fertility_pm: BTreeMap::from([("pasture".to_owned(), u64::from(fertility_pm))]),
+                    fertile_cells: u32::from(fertility_pm > 0),
+                    sea: 0,
+                },
+            )])
+        });
+        let view = match land.as_ref() {
+            Some(land) => build_with_land(Some(rules), &state, &["fixture".to_owned()], land),
+            None => build(Some(rules), &state, &["fixture".to_owned()]),
+        };
+        view.places[0].projected_yield
+    }
+
     #[test]
     fn a_places_projected_yield_is_its_crops_and_fish_a_year_at_the_lands_suitability() {
         let rules = shipped_rules();
@@ -1387,6 +1425,136 @@ mod tests {
             }),
             dairy_only
         );
+    }
+
+    #[test]
+    fn projected_farming_yield_includes_fertility_with_one_floor_per_good_and_method() {
+        let mut rules = shipped_rules();
+        rules.fertility_reference_pm = 550;
+        let oats_hunger = u64::from(rules.goods[index_of(&rules, "oats")].hunger_centi);
+        let farm_rule = rules
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == "farm")
+            .expect("the farm rule exists");
+        farm_rule.methods[0].annual_output = BTreeMap::from([("oats".to_owned(), 1_000)]);
+
+        let mut place = fixture(&rules);
+        place.buildings[0].levels = 1;
+        place.buildings[0].method_levels = vec![1, 0];
+        place.buildings[0].herds = vec![0, 0, 0];
+        place.buildings[0].method_suitability[0][index_of(&rules, "oats")] = 1_000;
+        assert_eq!(
+            yield_with_fertility(&rules, place.clone(), Some(825)),
+            1_500 * oats_hunger
+        );
+        assert_eq!(
+            yield_with_fertility(&rules, place.clone(), Some(275)),
+            500 * oats_hunger
+        );
+        assert_eq!(
+            yield_with_fertility(&rules, place.clone(), Some(551)),
+            1_001 * oats_hunger
+        );
+        assert_eq!(yield_with_fertility(&rules, place.clone(), Some(0)), 0);
+        assert_eq!(
+            yield_with_fertility(&rules, place.clone(), None),
+            1_000 * oats_hunger,
+            "missing land uses the reference fertility"
+        );
+
+        // The annual × suitability × quality expression is floored once, rather than before quality is applied.
+        rules
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == "farm")
+            .expect("the farm rule exists")
+            .methods[0]
+            .annual_output = BTreeMap::from([("oats".to_owned(), 1)]);
+        place.buildings[0].method_suitability[0][index_of(&rules, "oats")] = 999;
+        assert_eq!(
+            yield_with_fertility(&rules, place.clone(), Some(825)),
+            oats_hunger,
+            "floor once: 1 × 999 × 825 ÷ (1000 × 550) = 1"
+        );
+
+        // Sea output keeps its suitability-only rule; dairy stays tied to the herd at either quality.
+        rules
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == "farm")
+            .expect("the farm rule exists")
+            .methods[0]
+            .annual_output = BTreeMap::from([("oats".to_owned(), 1_000)]);
+        place.buildings[0].method_suitability[0][index_of(&rules, "oats")] = 1_000;
+        let farm_rule = rules
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == "farm")
+            .expect("the farm rule exists");
+        farm_rule.methods[1].resource = "sea".to_owned();
+        farm_rule.methods[1].annual_output = BTreeMap::from([("oats".to_owned(), 1_000)]);
+        place.buildings[0].method_levels = vec![1, 1];
+        place.buildings[0].method_suitability[1][index_of(&rules, "oats")] = 1_000;
+        place.buildings[0].herds[0] = 12;
+        let dairy_hunger = u64::from(rules.goods[index_of(&rules, "dairy")].hunger_centi);
+        let unchanged = 1_000 * oats_hunger + 12 * 72 * dairy_hunger;
+        assert_eq!(
+            yield_with_fertility(&rules, place.clone(), Some(825)),
+            1_500 * oats_hunger + unchanged
+        );
+        assert_eq!(
+            yield_with_fertility(&rules, place, Some(275)),
+            500 * oats_hunger + unchanged
+        );
+    }
+
+    #[test]
+    fn fertility_changes_the_relative_yield_map_colours() {
+        let mut rules = shipped_rules();
+        let farm_rule = rules
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == "farm")
+            .expect("the farm rule exists");
+        farm_rule.methods[0].annual_output = BTreeMap::from([("oats".to_owned(), 1_000)]);
+        let mut rich = fixture(&rules);
+        rich.id = "rich".to_owned();
+        rich.buildings[0].levels = 1;
+        rich.buildings[0].method_levels = vec![1, 0];
+        rich.buildings[0].herds = vec![0, 0, 0];
+        rich.buildings[0].method_suitability[0][index_of(&rules, "oats")] = 1_000;
+        let mut poor = rich.clone();
+        poor.id = "poor".to_owned();
+        let land = BTreeMap::from([
+            (
+                "rich".to_owned(),
+                LandCounts {
+                    land_cells: BTreeMap::from([("pasture".to_owned(), 1)]),
+                    fertility_pm: BTreeMap::from([("pasture".to_owned(), 825)]),
+                    fertile_cells: 1,
+                    sea: 0,
+                },
+            ),
+            (
+                "poor".to_owned(),
+                LandCounts {
+                    land_cells: BTreeMap::from([("pasture".to_owned(), 1)]),
+                    fertility_pm: BTreeMap::from([("pasture".to_owned(), 275)]),
+                    fertile_cells: 1,
+                    sea: 0,
+                },
+            ),
+        ]);
+        let view = build_with_land(
+            Some(&rules),
+            &EconomyState {
+                places: vec![rich, poor],
+            },
+            &["rich".to_owned(), "poor".to_owned()],
+            &land,
+        );
+        assert_eq!(view.yield_values(), [1000, 0]);
     }
 
     #[test]
