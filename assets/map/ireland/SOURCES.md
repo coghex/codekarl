@@ -157,15 +157,14 @@ not runtime dependencies.
   `--self-test` mode runs three ELA vectors using only Python's standard library.
 - **Fertility:** the configured climate, soil, slope, terrain, and distance-to-water factors combine into per-mille fertility. Surface
   land is usable for simulation when fertility is greater than zero. Water and glacier cells must have zero fertility. This continuous
-  value is distinct from the renderer's coarse display grid: `terrain.toml` sets `display_usable_pm = 500`, and Grid A displays a cell as
-  usable only at or above that threshold.
+  value is what the renderer draws: Grid A's green byte is fertility ÷ 4 (255 for a glacier), and the default look turns it into
+  bright and dark pixels (milestone 9, slice 10a; `docs/map-design.md` §12).
 - **Encoding and bounds:** fertility uses an 8-bit sample `min(250, floor(fertility_pm / 4))` and the loader decodes it as sample × 4;
   this deliberately distinguishes 0 from a positive value of 4. Temperature stores `round_half_away(celsius × 10) + 1000`, so the
   permitted -60..50 °C range is 400..1500. GDD is rounded to an integer in 0..12000, rainfall to an integer in 0..15000 mm, and glacier
   samples are exactly 0 or 255. Out-of-range values and inconsistent water/glacier fertility are rejected by `ck-map` with the layer and
   offending cell identified.
-- **Shipped-map checks:** `crates/map/tests/ireland.rs` checks that at least 95% of land has nonzero fertility, 30–55% reaches the
-  display threshold, Emly and Tara reach 500 per mille, Valentia and Dublin temperatures stay within their named ranges, a Mayo/Galway
+- **Shipped-map checks:** `crates/map/tests/ireland.rs` checks that at least 95% of land has nonzero fertility, 30–55% is at least half fertile, Emly and Tara reach 500 per mille, Valentia and Dublin temperatures stay within their named ranges, a Mayo/Galway
   upland cell exceeds 1,800 mm annual rainfall, Dublin stays below 900 mm, and Ireland contains no glacier cell. The two signed terrain
   corrections `glendalough-laragh-avonmore-pasture` and `rahan-clodiagh-dry-ground-pasture` are also pinned there.
 

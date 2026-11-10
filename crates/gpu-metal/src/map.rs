@@ -40,8 +40,6 @@ pub const RULES_HEIGHT: u32 = 258;
 const FIXED_PER_CELL: i64 = 32_768;
 /// What the largest crop edge may leave below `i32::MAX`: room for one map pixel and the sub-cell detail past the edge.
 const CROP_MARGIN: i64 = 1 << 20;
-/// The offset that makes an elevation in metres an unsigned 16-bit value in the files and the rules image.
-const ELEVATION_OFFSET: i32 = 11_000;
 
 /// Why a map was refused before it reached the GPU.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,33 +183,21 @@ pub enum MetalTerrainKind {
     Sea,
     /// A lake: drawn in the lake colour.
     Lake,
-    /// A mountain: land that also shows snow caps (usable) or high ground (unusable).
+    /// A mountain: land, drawn as ordinary land.
     Mountain,
 }
 
-/// One terrain type's rules (`docs/map-design.md` section 9.4). A water kind ignores every other field.
+/// One terrain type's rules (`docs/map-design.md` section 12). A water kind ignores every other field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MetalTerrainRule {
     /// Water, ordinary land or a mountain.
     pub kind: MetalTerrainKind,
-    /// The usable land's colour, and the coast outline's.
-    pub solid: [u8; 4],
-    /// The usable land's second tone.
-    pub second: [u8; 4],
-    /// The unusable land's dark colour.
-    pub dark: [u8; 4],
-    /// The unusable land's dark second tone.
-    pub dark_second: [u8; 4],
-    /// A usable mountain's snow cap.
-    pub cap: [u8; 4],
-    /// An unusable mountain's high ground.
-    pub high_ground: [u8; 4],
-    /// The elevations, in metres, between which the relief ramp rises from level 0 to 16.
-    pub relief: [i32; 2],
-    /// How much of the relief level the usable second tone shows, in percent (0 to 100).
-    pub mix_percent: u8,
-    /// The elevations, in metres, between which a mountain's cap ramp rises from level 0 to 16.
-    pub cap_heights: [i32; 2],
+    /// The four shades from the dark colour to the full colour, which is also the coast outline's.
+    pub tone: [[u8; 4]; 4],
+    /// The shadow side of a hillside, for shades 1 through 3 (`shadow[k - 1]`): from the dark colour towards the second tone.
+    pub shadow: [[u8; 4]; 3],
+    /// The lit side of a hillside, for shades 0 through 2: from the lit-dark tone up towards the full colour.
+    pub lit: [[u8; 4]; 3],
 }
 
 /// The rule table a map input carries: one rule per terrain index (grid A's red byte), the water colours, the shallow-sea threshold,
@@ -228,6 +214,10 @@ pub struct MetalMapRules {
     pub lake: [u8; 4],
     /// The rivers.
     pub river: [u8; 4],
+    /// The glaciers.
+    pub ice: [u8; 4],
+    /// A glacier's second tone, on the shadow side of a hillside.
+    pub ice_second: [u8; 4],
     /// Opaque RGBA8 colours referenced by indexed location pixels.
     pub overlay_palette: Vec<[u8; 4]>,
     /// A sea depth, in metres, under which the shallow sea dithers in; at least 1.
@@ -248,24 +238,6 @@ fn opaque(colour: [u8; 4], what: &str, row: Option<usize>) -> Result<[u8; 4], Me
         Some(row) => format!("terrain {row}: the {what} colour is not opaque"),
         None => format!("the {what} colour is not opaque"),
     }))
-}
-
-/// A height range as two encoded 16-bit values (`metres + 11000`), high byte first.
-fn height_pair(heights: [i32; 2], what: &str, row: usize) -> Result<[u8; 4], MetalMapError> {
-    let encode = |metres: i32| {
-        u16::try_from(metres.checked_add(ELEVATION_OFFSET).unwrap_or(-1))
-            .map_err(|_| rules_error(format!("terrain {row}: a {what} height is out of range")))
-    };
-    if heights[1] <= heights[0] {
-        return Err(rules_error(format!(
-            "terrain {row}: the {what} range must rise"
-        )));
-    }
-    let (low, high) = (
-        encode(heights[0])?.to_be_bytes(),
-        encode(heights[1])?.to_be_bytes(),
-    );
-    Ok([low[0], low[1], high[0], high[1]])
 }
 
 impl MetalMapRules {
@@ -303,31 +275,18 @@ impl MetalMapRules {
                 MetalTerrainKind::Mountain => 3,
             };
             if land {
-                if terrain.mix_percent > 100 {
-                    return Err(rules_error(format!(
-                        "terrain {row}: the mix is {} percent",
-                        terrain.mix_percent
-                    )));
+                // The ten tones: the shades in columns 0 to 3, the shadow tones of shades 1 to 3 in columns 4 to 6, the lit tones of
+                // shades 0 to 2 in columns 9 to 11 (column 8 is the flags).
+                for (shade, colour) in terrain.tone.into_iter().enumerate() {
+                    put(shade, row, opaque(colour, "shade", Some(row))?);
                 }
-                for (column, what, colour) in [
-                    (0, "solid", terrain.solid),
-                    (1, "second", terrain.second),
-                    (2, "dark", terrain.dark),
-                    (3, "dark second", terrain.dark_second),
-                ] {
-                    put(column, row, opaque(colour, what, Some(row))?);
+                for (index, colour) in terrain.shadow.into_iter().enumerate() {
+                    put(4 + index, row, opaque(colour, "shadow-side", Some(row))?);
                 }
-                put(6, row, height_pair(terrain.relief, "relief", row)?);
-                put(8, row, [terrain.mix_percent, kind, 0, 255]);
-                if terrain.kind == MetalTerrainKind::Mountain {
-                    put(4, row, opaque(terrain.cap, "cap", Some(row))?);
-                    put(
-                        5,
-                        row,
-                        opaque(terrain.high_ground, "high ground", Some(row))?,
-                    );
-                    put(7, row, height_pair(terrain.cap_heights, "cap", row)?);
+                for (shade, colour) in terrain.lit.into_iter().enumerate() {
+                    put(9 + shade, row, opaque(colour, "lit-side", Some(row))?);
                 }
+                put(8, row, [0, kind, 0, 255]);
             } else {
                 put(8, row, [0, kind, 0, 255]);
             }
@@ -337,6 +296,8 @@ impl MetalMapRules {
             (1, "shallow sea", self.shallow_sea),
             (2, "lake", self.lake),
             (3, "river", self.river),
+            (5, "ice", self.ice),
+            (6, "ice second", self.ice_second),
         ] {
             put(column, TERRAIN_MAX, opaque(colour, what, None)?);
         }
@@ -856,20 +817,16 @@ mod native_map_tests {
         let rules = MetalMapRules {
             terrains: vec![MetalTerrainRule {
                 kind: MetalTerrainKind::Land,
-                solid: colour,
-                second: colour,
-                dark: colour,
-                dark_second: colour,
-                cap: colour,
-                high_ground: colour,
-                relief: [0, 1],
-                mix_percent: 0,
-                cap_heights: [0, 1],
+                tone: [colour; 4],
+                shadow: [colour; 3],
+                lit: [colour; 3],
             }],
             sea: colour,
             shallow_sea: colour,
             lake: colour,
             river: [5, 90, 180, 255],
+            ice: colour,
+            ice_second: colour,
             overlay_palette: Vec::new(),
             shallow_threshold: 1,
             steps: ck_map::STEP_SIZE,
@@ -1028,5 +985,81 @@ pub fn readback_map(
         Ok(MapReadback { window, target })
     } else {
         Err(message(&error))
+    }
+}
+
+/// The default look's constants in the shader are the reference's (`ck-map`'s `look` module): the shader file is read and each table
+/// compared entry by entry, so the two cannot drift apart.
+#[cfg(test)]
+mod shader_constants {
+    use ck_map::look::{BAYER4_TRANSPOSED, BLUE16, FERTILITY_LEVELS, SHADE_STEPS};
+
+    const SHADER: &str = include_str!("../shaders/quad.metal");
+
+    /// The numbers of the shader's `constant uint <name>[<count>] = { ... };` table.
+    fn table(name: &str, count: usize) -> Vec<u32> {
+        let head = format!("constant uint {name}[{count}] = {{");
+        let start = SHADER
+            .find(&head)
+            .unwrap_or_else(|| panic!("{name} is declared"))
+            + head.len();
+        let end = start + SHADER[start..].find("};").expect("the table ends");
+        SHADER[start..end]
+            .split(',')
+            .map(|entry| {
+                entry
+                    .trim()
+                    .trim_end_matches('u')
+                    .parse()
+                    .expect("a number")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_fertility_level_table_is_the_references() {
+        let shader = table("map_levels", 256);
+        let reference: Vec<u32> = FERTILITY_LEVELS
+            .iter()
+            .map(|level| u32::from(*level))
+            .collect();
+        assert_eq!(shader, reference);
+        assert_eq!(shader[250], 256, "wider than a byte");
+    }
+
+    #[test]
+    fn the_blue_noise_tile_is_the_references() {
+        let shader = table("map_blue16", 256);
+        let reference: Vec<u32> = BLUE16
+            .iter()
+            .flatten()
+            .map(|value| u32::from(*value))
+            .collect();
+        assert_eq!(shader, reference);
+    }
+
+    #[test]
+    fn the_transposed_bayer_matrix_is_the_references() {
+        let shader = table("map_bayer_b", 16);
+        let reference: Vec<u32> = BAYER4_TRANSPOSED
+            .iter()
+            .flatten()
+            .map(|value| u32::from(*value))
+            .collect();
+        assert_eq!(shader, reference);
+    }
+
+    #[test]
+    fn the_shade_count_and_the_tone_columns_are_the_references() {
+        assert!(
+            SHADER.contains(&format!("constant uint SHADE_STEPS = {SHADE_STEPS}u;")),
+            "the shader's shade count"
+        );
+        // The ten tones' columns of the rules image: shades 0 to 3 at 0 to 3, the shadow-side tone of shade k at 3 + k, the lit-side
+        // tone of shade k at 9 + k; the flags' column 8 is between them.
+        assert!(SHADER.contains("rules.read(uint2(3u + k, row))"));
+        assert!(SHADER.contains("rules.read(uint2(9u + k, row))"));
+        assert!(SHADER.contains("rules.read(uint2(k, row))"));
+        assert!(SHADER.contains("constant uint RULES_COLUMN_FLAGS = 8u;"));
     }
 }

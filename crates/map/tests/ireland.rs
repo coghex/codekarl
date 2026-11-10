@@ -118,7 +118,7 @@ fn ireland_fertility_climate_glaciers_and_owner_pins_match_ck234() {
         .count();
     let display_fertile = land
         .iter()
-        .filter(|index| map.data.fertility[**index] >= map.data.display_usable_pm)
+        .filter(|index| map.data.fertility[**index] >= 500)
         .count();
     assert!(
         fertile * 100 >= land.len() * 95,
@@ -127,7 +127,7 @@ fn ireland_fertility_climate_glaciers_and_owner_pins_match_ck234() {
     );
     assert!(
         (30..=55).contains(&(display_fertile * 100 / land.len())),
-        "{display_fertile}/{} cells meet the display threshold",
+        "{display_fertile}/{} cells are at least half fertile",
         land.len()
     );
     assert!(

@@ -436,8 +436,14 @@ monks die").
 - **sources:** poorest first, by wage per head, with ties in pop order. A pop's wage per head is
   `⌊Σ_b workers_p,b × posted_b / workers_p⌋` over the buildings where it works, so its owners and its unemployed count as 0. A position
   draws from a source only when that is below the position's posted wage;
-- **nearby places (Firm, C4):** when a position has no eligible source at its own place, it draws from places within 30 km (Proposal),
-  nearest first, at the same rates. The pull is the posted wage: a profitable fishing house attracts people;
+- **nearby places (Firm, C4):** when a position has no eligible source at its own place, it draws from nearby places, nearest first,
+  at the same rates. The pull is the posted wage: a profitable fishing house attracts people.
+  - **The range is per building, in data** (`recruit_range_m`): **monastic holdings 100 km** (owner, 2026-11-10: "all monastaries
+    could use a recruitment range of 100 km", for all their positions; `owner-direction-monastery-range-r1.md`), and 30 km for every
+    other building (Proposal); slice 6b implements it. Only monk and labourer positions move today, so in practice the range is the holdings'.
+  - **Distances are on the ground,** not in map metres: `⌊√(dx² + dy²)⌋` cells × 839 m × the cosine of the latitude of the row midway
+    between the two places (Web Mercator cells are about 500 m on the ground in Ireland). So Skellig Michael reaches Inisfallen
+    (75 km) and Ardfert (81 km). Its food is left alone until trade (owner: "we need to leave it alone until we implement trade");
 - **The counts (E3):**
   - `J` is the people a position takes this month. It is capped by the building's hiring rate and by the source's **monthly leave
     budget**, `⌊workers × leave_pm / 1000⌋`, shared across every destination;
@@ -622,8 +628,8 @@ lookups and a few multiplications a month, and every curve can be tuned without 
 
 ```
 births   = workers    × birth_base[type] × f_food(N) × f_crowd(C) × f_satisfaction(S) × f_literacy(Lit)
-deaths_w = workers    × death_base[type] × g_hunger(N) × g_comfort(W, L) × g_crowd(C)
-deaths_d = dependents × death_base[type] × frailty   × g_hunger(N) × g_comfort(W, L) × g_crowd(C)²
+deaths_w = workers    × death_base[type]     × g_hunger(N) × g_comfort(W, L) × g_crowd(C)
+deaths_d = dependents × dep_death_base[type] × g_hunger(N) × g_comfort(W, L) × g_crowd(C)²
 ```
 
 **The inputs:**
@@ -690,8 +696,9 @@ deaths_d = dependents × death_base[type] × frailty   × g_hunger(N) × g_comfo
 - **Satisfaction and literacy** start as flat curves: inputs that are wired in, but tuned later.
 
 **The rest:**
-- **The rates and frailty, applied once:** §3.12's dependent rates (60‰ and 75‰) are the worker rate times `frailty = 3000‰`. The data
-  holds the worker base and the frailty; the dependent rate is never stored separately.
+- **The rates, applied once:** the data holds both rates for each pop type, `worker_deaths_pm_year` and `dependent_deaths_pm_year`,
+  and the dependent rate in data is authoritative for `deaths_d` (CK-229). The shipped dependent rates (60‰ and 75‰, §3.12) were set
+  as the worker rate times a frailty of 3; no separate frailty value exists in data or code.
 - **Deaths are capped at the pool** (review r7 E1). `deaths_w ≤ workers` and `deaths_d ≤ dependents`. Whole deaths beyond an empty
   pool are discarded, and each carry keeps only its own remainder. At the extremes (hunger 0, crowding 2000), the dependents' monthly
   rate exceeds 1, and a whole pool can die in a month.
@@ -819,7 +826,7 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
 
 - **These rates** are about 40 births and 36 deaths per thousand people a year: about +0.4% a year when well fed at normal crowding,
   and decline under strain.
-- **Dependents** die at 3 times the workers' rate (`frailty = 3000‰`).
+- **Dependents** die at 3 times the workers' rate, stored as `dependent_deaths_pm_year` (§3.8).
 - **The dependent share** drifts back 10‰ of its gap a month, by moving whole people between the counts (§6.1).
 
 **The response curves** (multipliers in ‰, linear between points):
@@ -1464,8 +1471,8 @@ fields cut. The engine's load report is the authority.
   - x outside the range is clamped to the end points (Proposal, owner: no objection);
   - interpolation is in `i64`, rounding towards negative infinity;
   - **rates, an exact rational with no saturation (R9-F1, r10 and r12):**
-    - The factors are each curve's value in ‰: frailty for dependents, then each curve, with crowding twice for dependents. There are at
-      most 5, and validation keeps each at or below 100,000‰.
+    - The factors are each curve's value in ‰, with crowding twice for dependents; dependents start from their own base rate, with no
+      frailty factor. There are at most 5, and validation keeps each at or below 100,000‰.
     - `num = base_pm_year × Π factors`, exact in `u128`. It is at most 1000 × 10²⁵ = 10²⁸.
     - `den = 12 × 1000^(k+1)` for `k` factors. It is at most 1.2 × 10¹⁹.
     - **The people:** `whole = ⌊(pool × num + carry) / den⌋` and `carry′ = (pool × num + carry) mod den`, with `carry < den`, computed

@@ -2323,6 +2323,8 @@ GUARDS: tuple[Guard, ...] = (
         ("assets/ui/", "scripts/ui/"),
     ),
     Guard("apps/codekarl/src/game_api.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
+    # CK-235: the map controller's rule-table test loads Ireland's shipped map and checks the lane accepts its grids.
+    Guard("apps/codekarl/src/map_app.rs", "rust.app", ("assets/map/ireland/",)),
     # The places list's window witness (CK-212) runs the shipped UI script over Ireland 768 with the shipped assets.
     Guard(
         "apps/codekarl/tests/support/places_list.rs",

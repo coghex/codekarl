@@ -1,5 +1,12 @@
 shallow_threshold = 20
-display_usable_pm = 500
+
+[ice]
+colour = "eeeeee"
+second = "cccccc"
+
+[look]
+light = [-3827, -9239]
+d0 = [1, 80]
 
 [water]
 sea = "123456"
@@ -26,9 +33,7 @@ solid = "112233"
 second = "223344"
 dark = "334455"
 dark_second = "445566"
-relief_low = 0
-relief_high = 100
-mix = 30
+dark_lit = "556677"
 
 [[terrain]]
 name = "mountain"
@@ -38,10 +43,4 @@ solid = "556677"
 second = "667788"
 dark = "778899"
 dark_second = "8899aa"
-relief_low = -10
-relief_high = 200
-mix = 50
-cap = "abcdef"
-high_ground = "fedcba"
-cap_low = 1000
-cap_high = 2000
+dark_lit = "99aabb"
