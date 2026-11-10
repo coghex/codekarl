@@ -433,7 +433,9 @@ monks die").
 **Movement between pops (Firm, r17).** An open position draws people from other pops when they are paid less than its posted wage:
 - **labourer positions** draw from **peasants** at the place (the vision's "labourers are hired from the peasant population");
 - **monk positions** draw from **Christian** pops (Firm), and labourers prefer them when there is room (Firm). Culture does not matter;
-- **sources:** poorest first, by posted wage per head (unemployed counts as 0), with ties in pop order;
+- **sources:** poorest first, by wage per head, with ties in pop order. A pop's wage per head is
+  `⌊Σ_b workers_p,b × posted_b / workers_p⌋` over the buildings where it works, so its owners and its unemployed count as 0. A position
+  draws from a source only when that is below the position's posted wage;
 - **nearby places (Firm, C4):** when a position has no eligible source at its own place, it draws from places within 30 km (Proposal),
   nearest first, at the same rates. The pull is the posted wage: a profitable fishing house attracts people;
 - **The counts (E3):**
@@ -487,12 +489,19 @@ monks die").
   - on a subsistence farm, owners and workers are the same peasant pops, so the wage reaches their stores and the overhead their
     communal stockpile. At the holdings, labourers and working monks share the wage, and the overhead fills the monastery's stockpile.
 - **The period** follows the vision's Firm timing: crop outputs at harvest, and livestock products, fish and the rest monthly.
-- **The posted wage** is each building's last wage pool per paid head, kept even when nothing is paid. It is the hiring signal (Firm,
-  for monks).
-- **Before the first payment (Firm: starting stockpiles):**
+- **The posted wage** is the hiring signal (Firm, for monks). **It is the average monthly pay per paid head over the last 12 months**
+  (Firm, owner 2026-11-09, `owner-direction-posted-wage-r1.md`), so a farm paid mostly at the September harvest compares fairly with a
+  monastery paid every month:
+  - each building saves `wage_history`, 12 values in thousandths of a value unit per paid head, one per calendar month;
+  - at each monthly payday, with `P` its paid heads (non-owner workers) and `W` the value of this payday's wage units at local prices,
+    the month's entry becomes `⌊W / P⌋`. A month with workers and no output records 0. **With no paid heads the entry is kept** (r19's
+    "kept even when nothing is paid");
+  - `posted = ⌊Σ wage_history / 12⌋`.
+- **Before any history (Firm: starting stockpiles):**
   - each building starts with an authored stockpile (§3.10);
-  - until its first production is paid, its posted wage is the value of that stockpile per paid head, spread over the months to its
-    first payment;
+  - every month's entry starts at the value of that stockpile per paid head, spread over the months to the next harvest:
+    `⌊V₀ / (P₀ × M)⌋`, with `M` the months from the start month to the first month with a grain harvest (11 for an October start).
+    Real months replace these entries as paydays happen;
   - monthly wages are paid from it.
 - **Store capacities are volumes** (Firm; §3.15). `Σ units × volume ≤ capacity`, in millilitres, shared by every stored good. A unit
   fits only whole, and a unit that does not fit is lost (Firm). Live animals live in herds (§3.14).
@@ -1004,8 +1013,13 @@ pops move, the herd stays. These are counts, not individual animals, so livestoc
       `buy_g = max(0, t_g − holding_g)`. A good also in the diet buys up to the larger of its food target and `t_g`;
     - sell orders are unchanged.
 - **Sell orders (r17, C6: one basis with buying):**
-  - **a pop:** its food above a target holding of 240 days (the full-intake threshold of §3.7), taken from each good in proportion;
-  - **a building:** its stockpile plus its communal account, above its owner pops' 60-day draw.
+  - **a pop (Firm, owner 2026-11-09, `owner-direction-market-notes-r1.md`):** **per food**, its holding above that good's target
+    `T_g = max(food target, comfort target)`, the same target its buy order uses. So a pop never buys and sells one good on the same day,
+    and a pop short of food overall still offers a food it holds more of than its diet wants. Goods with no hunger value are not sold by
+    pops. (r17's "above a 240-day total, in proportion" is replaced.);
+  - **a building:** its stockpile plus its communal account, above its owner pops' 60-day draw. **The draw covers each owner pop's whole
+    size** (Firm, owner 2026-11-09), apportioned by largest remainder across the buildings where it holds owner positions, by those
+    positions.
 - **Each good is counted once (r19):**
   - the participants are **pops**, counting their store plus their own account, and **buildings**, counting their stockpile plus
     their communal account;
@@ -1555,6 +1569,8 @@ fields cut. The engine's load report is the authority.
 
 ## Provenance
 
+- 2026-11-09: §3.6's posted wage and §3.5's wage comparison (`owner-direction-posted-wage-r1.md`), and §3.16's per-food sells, single
+  target per good and owner-pop reserve (`owner-direction-market-notes-r1.md`), the owner's choices with the designer.
 - 2026-11-09: §3.16's tier buy orders and §3.17's tier shares, the owner's choices with the designer (`owner-direction-tier-orders-r1.md`,
   for CK-230, ck-manager `2k8btgqz6cgyebcpyvhwu2hu4a`).
 - 2026-11-09: the owner's rulings, relayed by ck-manager: §3.22's yield definition (CK-231 F3, `sn2ctfm4skwzufr9ufhu8jnd9s` and
