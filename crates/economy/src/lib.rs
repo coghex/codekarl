@@ -119,6 +119,9 @@ pub struct BuildingType {
     pub penalty_pm: u16,
     /// Value retained for owners after the annual wage pool, in per-mille.
     pub overhead_pm: u16,
+    /// Maximum ground-distance in metres for recruiting into this building.
+    /// `None` is retained during deserialization so validation can name a missing key.
+    pub recruit_range_m: Option<u32>,
     /// Ordered methods; their order resolves equal estimates.
     #[serde(default)]
     pub methods: Vec<Method>,
@@ -257,6 +260,12 @@ impl Rules {
             ));
         }
         for building in &self.buildings {
+            if building.recruit_range_m.is_none() {
+                return Err(refuse(
+                    format!("buildings.{}.recruit_range_m", building.id),
+                    "entry is missing".to_owned(),
+                ));
+            }
             let Some(capacity) = self.housing_per_level.get(&building.id) else {
                 return Err(refuse(
                     format!("housing_per_level.{}", building.id),
@@ -5706,7 +5715,7 @@ pub fn run_daily_economy_with_context(
 pub struct NearbyPlace {
     /// Destination place id.
     pub id: String,
-    /// Approximate distance in projected metres.
+    /// Approximate distance in ground metres.
     pub distance_m: u32,
 }
 
@@ -6598,6 +6607,12 @@ fn move_open_positions(
                 .ok_or_else(|| {
                     missing_data(format!("buildings.{kind}"), "definition is missing")
                 })?;
+            let recruit_range_m = definition.recruit_range_m.ok_or_else(|| {
+                missing_data(
+                    format!("buildings.{kind}.recruit_range_m"),
+                    "entry is missing",
+                )
+            })?;
             // Monk positions are first so a labourer who can enter the cloth takes that opening
             // before a lower-priority labourer position is filled.
             for position_kind in ["monk", "labourer"] {
@@ -6691,6 +6706,9 @@ fn move_open_positions(
                 for neighbour in nearby {
                     if open == 0 {
                         break;
+                    }
+                    if neighbour.distance_m > recruit_range_m {
+                        continue;
                     }
                     let Some(source_place) =
                         places.iter().position(|place| place.id == neighbour.id)
@@ -7316,6 +7334,7 @@ mod tests {
                     owner_workers: BTreeMap::from([("peasant".to_owned(), 10)]),
                     penalty_pm: 500,
                     overhead_pm: 100,
+                    recruit_range_m: Some(30_000),
                     methods: vec![Method {
                         id: "mixed".to_owned(),
                         resource: "usable_land".to_owned(),
@@ -7331,6 +7350,7 @@ mod tests {
                     owner_workers: BTreeMap::new(),
                     penalty_pm: 0,
                     overhead_pm: 0,
+                    recruit_range_m: Some(0),
                     methods: Vec::new(),
                 },
             ],
@@ -8554,6 +8574,23 @@ mod tests {
     }
 
     #[test]
+    fn shipped_building_recruitment_ranges_match_slice_contract() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let rules = Rules::load(root.join("game/economy.toml")).unwrap();
+        let range = |id: &str| {
+            rules
+                .buildings
+                .iter()
+                .find(|building| building.id == id)
+                .unwrap()
+                .recruit_range_m
+        };
+        assert_eq!(range("farm"), Some(30_000));
+        assert_eq!(range("holdings"), Some(100_000));
+        assert_eq!(range("storehouse"), Some(0));
+    }
+
+    #[test]
     fn validation_names_the_file_entry_and_each_invalid_value() {
         let mut rules = tiny_rules();
         rules
@@ -8586,6 +8623,12 @@ mod tests {
             "buildings[0].methods.mixed.annual_output.missing"
         );
         assert_eq!(error.problem, "unknown good");
+
+        let mut rules = tiny_rules();
+        rules.buildings[0].recruit_range_m = None;
+        let error = rules.validate("fixture/economy.toml").unwrap_err();
+        assert_eq!(error.entry, "buildings.farm.recruit_range_m");
+        assert!(error.problem.contains("missing"));
     }
 
     #[test]
@@ -10054,6 +10097,7 @@ mod tests {
                 ]),
                 penalty_pm: 500,
                 overhead_pm: 300,
+                recruit_range_m: Some(100_000),
                 methods: vec![rules.buildings[0].methods[0].clone()],
             },
         );
@@ -10424,6 +10468,7 @@ mod tests {
                 ]),
                 penalty_pm: 500,
                 overhead_pm: 300,
+                recruit_range_m: Some(100_000),
                 methods: vec![farm_method],
             },
         );
@@ -12853,6 +12898,7 @@ mod tests {
             owner_workers: BTreeMap::from([("monk".to_owned(), 5), ("labourer".to_owned(), 10)]),
             penalty_pm: 0,
             overhead_pm: 0,
+            recruit_range_m: Some(100_000),
             methods: Vec::new(),
         });
         let pop = |kind: &str, workers: u64, job: Employment| PopState {
@@ -12930,6 +12976,66 @@ mod tests {
             counters: CounterBuckets::default(),
         };
         (rules, place)
+    }
+
+    fn remote_recruitment_result(range_m: u32, distance_m: u32, position_kind: &str) -> u64 {
+        let (mut rules, mut source) = holdings_movement_fixture();
+        rules.leave_pm = 1000;
+        rules
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == "holdings")
+            .unwrap()
+            .recruit_range_m = Some(range_m);
+        source.id = "source".to_owned();
+        let source_kind = if position_kind == "monk" {
+            "monk"
+        } else {
+            "peasant"
+        };
+        let source_pop = source
+            .pops
+            .iter_mut()
+            .find(|pop| pop.kind == source_kind)
+            .unwrap();
+        source_pop.employment[0] = Employment::default();
+        source_pop.workers = 100;
+
+        let mut destination = source.clone();
+        destination.id = "destination".to_owned();
+        destination.pops.clear();
+        destination.buildings[0].employment.clear();
+        let nearby = BTreeMap::from([(
+            "destination".to_owned(),
+            vec![NearbyPlace {
+                id: "source".to_owned(),
+                distance_m,
+            }],
+        )]);
+        let allowance = match position_kind {
+            "monk" => [10, 0],
+            "labourer" => [0, 10],
+            _ => unreachable!("test uses a supported recruitment kind"),
+        };
+        let mut places = vec![destination, source];
+        let movement =
+            move_open_positions(&rules, &mut places, &nearby, &[vec![allowance], Vec::new()])
+                .unwrap();
+        movement[0].iter().sum()
+    }
+
+    #[test]
+    fn farm_default_range_is_ground_distance_and_inclusive() {
+        assert!(remote_recruitment_result(30_000, 29_959, "labourer") > 0);
+        assert_eq!(remote_recruitment_result(30_000, 30_475, "labourer"), 0);
+    }
+
+    #[test]
+    fn monastery_recruits_both_position_kinds_through_100_ground_km_only() {
+        assert!(remote_recruitment_result(100_000, 99_692, "monk") > 0);
+        assert!(remote_recruitment_result(100_000, 99_692, "labourer") > 0);
+        assert_eq!(remote_recruitment_result(100_000, 100_208, "monk"), 0);
+        assert_eq!(remote_recruitment_result(100_000, 100_208, "labourer"), 0);
     }
 
     #[test]

@@ -965,22 +965,29 @@ fn compute_catchments(
     Ok(owners)
 }
 
+/// Ground-width scale for one global Web Mercator cell row, in 1/65536 units.
+///
+/// The latitude is measured at the row centre; the cosine is rounded and clamped
+/// to the supported fixed-point range.
+#[must_use]
 #[expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "the spec requires one f64 latitude cosine per bounded map row, rounded and clamped to 1..=65536"
+    reason = "the map contract uses one f64 latitude cosine per global row, rounded and clamped to 1..=65536"
 )]
+pub fn ground_scale_for_row(global_row: i64) -> u32 {
+    let y_metres = (global_row as f64 + 0.5) * 839.0;
+    let half_world = std::f64::consts::PI * 6_378_137.0;
+    let latitude =
+        2.0 * ((half_world - y_metres) / 6_378_137.0).exp().atan() - std::f64::consts::FRAC_PI_2;
+    (latitude.cos() * 65_536.0).round().clamp(1.0, 65_536.0) as u32
+}
+
 pub(crate) fn ground_scales(crop: Crop) -> Vec<u32> {
     (0..crop.height)
-        .map(|row| {
-            let global_y = i64::from(crop.origin.y) + i64::from(row);
-            let y_metres = (global_y as f64 + 0.5) * 839.0;
-            let half_world = std::f64::consts::PI * 6_378_137.0;
-            let latitude = 2.0 * ((half_world - y_metres) / 6_378_137.0).exp().atan()
-                - std::f64::consts::FRAC_PI_2;
-            (latitude.cos() * 65_536.0).round().clamp(1.0, 65_536.0) as u32
-        })
+        .map(|row| i64::from(crop.origin.y) + i64::from(row))
+        .map(ground_scale_for_row)
         .collect()
 }
 

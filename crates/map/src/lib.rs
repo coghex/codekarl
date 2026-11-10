@@ -23,7 +23,8 @@ pub use mode::{
 };
 pub use scenario::{
     BuildingKind, Confidence, HouseStyle, Location, LocationKind, LocationKinds, LocationPixel,
-    MarkerPixel, PreparedLocations, PreparedMarkers, Scenario, ScenarioStart, load_scenario,
+    MarkerPixel, PreparedLocations, PreparedMarkers, Scenario, ScenarioStart, ground_scale_for_row,
+    load_scenario,
 };
 
 /// The offset of the stored elevations: a cell's `elevations` entry is its height in metres plus this.
