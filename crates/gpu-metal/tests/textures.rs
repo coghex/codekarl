@@ -4536,15 +4536,17 @@ fn verify_panicking_payload_wake(context: &Arc<MetalContext>) -> bool {
         }
         thread::yield_now();
     }
+    drop(completed);
+    let cleanup = owner.shutdown(Instant::now() + Duration::from_secs(3));
+    if !matches!(cleanup, ck_gpu_metal::StoreCleanup::Proven) {
+        eprintln!("panic payload wake: shutdown was not proven: {cleanup:?}");
+        return false;
+    }
     if owner.stats().wake_panics != 1 {
         eprintln!("panic payload wake: panic was not contained and counted");
         return false;
     }
-    drop(completed);
-    matches!(
-        owner.shutdown(Instant::now() + Duration::from_secs(3)),
-        ck_gpu_metal::StoreCleanup::Proven
-    )
+    true
 }
 
 fn pixel_bytes(seed: u32, width: u32, height: u32) -> Vec<u8> {
@@ -6201,19 +6203,27 @@ fn verify_lost_ready_wake(context: &Arc<MetalContext>) -> bool {
             }
             thread::yield_now();
         }
-        if owner.stats().wake_panics != 1 || worker_drops.load(Ordering::SeqCst) != 1 {
+        if worker_drops.load(Ordering::SeqCst) != 1 {
             let _ = sender.send(Err(
-                "panic containment or pre-completion source drop failed".to_owned(),
+                "pre-completion source drop was not observed exactly once".to_owned(),
             ));
             return;
         }
         drop(completed);
-        let result = owner.shutdown(Instant::now() + Duration::from_secs(3));
-        let _ = sender.send(if matches!(result, ck_gpu_metal::StoreCleanup::Proven) {
-            Ok(())
-        } else {
-            Err("shutdown after independent polling was unproven".to_owned())
-        });
+        let cleanup = owner.shutdown(Instant::now() + Duration::from_secs(3));
+        if !matches!(cleanup, ck_gpu_metal::StoreCleanup::Proven) {
+            let _ = sender.send(Err(
+                "shutdown after independent polling was unproven".to_owned()
+            ));
+            return;
+        }
+        if owner.stats().wake_panics != 1 {
+            let _ = sender.send(Err(
+                "panic was not contained and counted after shutdown".to_owned()
+            ));
+            return;
+        }
+        let _ = sender.send(Ok(()));
     });
     let (lock, changed) = &*entered;
     let mut idle = lock
