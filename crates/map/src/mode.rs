@@ -13,6 +13,9 @@
 
 use crate::{Cell, Crop, FixedPoint, MapData, Rgba8, cell_of};
 
+/// The height, in metres, that is white in the elevation mode: Everest, the top of the map's range.
+pub const ELEVATION_TOP_METRES: u32 = 8_848;
+
 /// The largest value on the ramp: green.
 pub const MODE_VALUE_MAX: u16 = 1000;
 /// A value-table entry for a place that is not coloured.
@@ -128,4 +131,15 @@ pub(crate) fn mode_value_at_point(
         return None;
     }
     mode_value_at_cell(map.crop, inputs, local_x, local_y)
+}
+
+/// The grey of the elevation mode (milestone 9, slice 10b): `⌊255 × √(max(0, e) ÷ 8,848)⌋` for a cell `metres` above sea level,
+/// computed exactly as `isqrt(65,025 × max(0, e) ÷ 8,848)` (integer division, integer square root), clamped to 255, on every channel.
+/// A height at or below sea level is black.
+#[must_use]
+pub fn elevation_grey(metres: i32) -> Rgba8 {
+    let height = u64::try_from(metres.max(0)).unwrap_or(0);
+    let scaled = 255_u64 * 255 * height / u64::from(ELEVATION_TOP_METRES);
+    let grey = u8::try_from(scaled.isqrt().min(255)).unwrap_or(u8::MAX);
+    Rgba8::opaque(grey, grey, grey)
 }

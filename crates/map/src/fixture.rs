@@ -14,7 +14,8 @@ use crate::{
     BuildingKind, Cell, Confidence, Crop, FixedPoint, HouseStyle, LoadedMap, LoadedTerrain,
     Location, LocationKind, LocationKinds, MODE_UNCOLOURED, MODE_UNOWNED, MapData, ModeInputs,
     PackedGrid, Rgba8, RiverLine, STEP_SIZE, Scenario as LoadedScenario, ScenarioStart, Surface,
-    TerrainKind, TerrainStyle, WorldPixel, reference_colour, reference_colour_with_mode,
+    TerrainKind, TerrainStyle, WorldPixel, reference_colour, reference_colour_with_elevation,
+    reference_colour_with_mode,
 };
 
 /// The crop's global origin cell.
@@ -619,6 +620,44 @@ impl Fixture {
                         &BTreeSet::new(),
                         &BTreeMap::new(),
                         Some(mode),
+                    )
+                    .expect("the pixel's sample point fits")
+                    .0,
+                );
+            }
+        }
+        image
+    }
+}
+
+impl Fixture {
+    /// The reference image of a view in the elevation mode (milestone 9, slice 10b): row-major RGBA8, `view[0] x view[1]` map pixels
+    /// from the world pixel `top_left`, with no rivers and no locations.
+    ///
+    /// # Panics
+    ///
+    /// As [`Fixture::reference`].
+    #[must_use]
+    pub fn reference_image_with_elevation(
+        &self,
+        step: u8,
+        top_left: [i32; 2],
+        view: [u32; 2],
+    ) -> Vec<u8> {
+        let mut image = Vec::with_capacity(view[0] as usize * view[1] as usize * 4);
+        for y in 0..view[1] {
+            for x in 0..view[0] {
+                let pixel = WorldPixel {
+                    x: top_left[0] + i32::try_from(x).expect("x"),
+                    y: top_left[1] + i32::try_from(y).expect("y"),
+                };
+                image.extend_from_slice(
+                    &reference_colour_with_elevation(
+                        &self.data,
+                        step,
+                        pixel,
+                        &BTreeSet::new(),
+                        &BTreeMap::new(),
                     )
                     .expect("the pixel's sample point fits")
                     .0,

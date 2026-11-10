@@ -377,7 +377,7 @@ mod tests {
     }
 
     /// The time bar's and the map modes' icons: name, width in pixels and the seven shape rows after the two blank ones.
-    const ICONS: [(&str, usize, &[&str]); 6] = [
+    const ICONS: [(&str, usize, &[&str]); 7] = [
         (
             "rewind",
             9,
@@ -418,6 +418,13 @@ mod tests {
             9,
             &[
                 "......##", "......##", "...##.##", "...##.##", "##.##.##", "##.##.##", "##.##.##",
+            ],
+        ),
+        (
+            "elevation",
+            9,
+            &[
+                "...##...", "..####..", "..####..", ".######.", ".######.", "########", "########",
             ],
         ),
     ];

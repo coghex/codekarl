@@ -11,7 +11,7 @@ local PADDING = 2 -- UI pixels on each side of the text
 local CUT = 3
 local LEAST = 2 * CUT + 3 -- the least size of a cut-3 frame, in UI pixels
 local ICON_HEIGHT = 11
-local ICON_WIDTHS = {rewind = 9, fast_forward = 9, pause = 7, play = 7, stockpile = 9, yield = 9}
+local ICON_WIDTHS = {rewind = 9, fast_forward = 9, pause = 7, play = 7, stockpile = 9, yield = 9, elevation = 9}
 local TRANSPARENT = "#00000000"
 
 local button = {}

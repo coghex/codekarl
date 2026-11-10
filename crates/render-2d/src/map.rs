@@ -53,8 +53,9 @@
 //! cell or [`MODE_UNOWNED`] (`0xFFFF`) for none, uploaded once per loaded map with its [`MapInput`]. A **mode** ([`MapMode`]) is a table
 //! of one `u16` per place: a position on the colour ramp from 0 through [`MODE_VALUE_MAX`] (1000), or [`MODE_UNCOLOURED`] (`0xFFFF`) for a
 //! place with nothing to show; red (0) and uncoloured never collide. It is published with a revision, as an immutable value, beside the
-//! camera ([`SceneBridge::publish_mode`](crate::SceneBridge::publish_mode)); a mode with no table is **off**, and the frame is then the
-//! frame without a mode, byte for byte. `ck-map`'s reference rule (`mode` module) gives the colours: each cell shows the floored mean of
+//! camera ([`SceneBridge::publish_mode`](crate::SceneBridge::publish_mode)); a mode with no table (and not the elevation mode) is **off**, and the frame is then the
+//! frame without a mode, byte for byte. The **elevation** mode ([`MapMode::elevation`], slice 10b) has no table and needs no owner grid: the map
+//! pass reads the map's own elevations. `ck-map`'s reference rule (`mode` module) gives the colours: each cell shows the floored mean of
 //! the values of the counted cells of its 5 x 5 box, from red through yellow to green, over the terrain and under the rivers and the
 //! locations.
 //!
@@ -874,11 +875,13 @@ impl MapCamera {
 }
 
 /// A map mode as the map pass reads it: immutable, one per change of the values or of the mode, ordered by its revision (a newer one has
-/// a larger one). With no table it is **off**.
+/// a larger one). With no table it is **off**, or the **elevation** mode ([`MapMode::elevation`]).
 #[derive(Debug)]
 pub struct MapMode {
     revision: u64,
     values: Option<Arc<[u16]>>,
+    /// The elevation mode: black to white by height, with no table and no owner grid (milestone 9, slice 10b).
+    elevation: bool,
 }
 
 impl MapMode {
@@ -899,6 +902,7 @@ impl MapMode {
         Ok(Self {
             revision,
             values: Some(values.into()),
+            elevation: false,
         })
     }
 
@@ -908,7 +912,25 @@ impl MapMode {
         Self {
             revision,
             values: None,
+            elevation: false,
         }
+    }
+
+    /// The elevation mode at `revision` (milestone 9, slice 10b): every land pixel off the coast outline is the grey of its cell's
+    /// height, by `ck-map`'s `elevation_grey`. It reads the map's own elevations: no table, and it needs no owner grid.
+    #[must_use]
+    pub fn elevation(revision: u64) -> Self {
+        Self {
+            revision,
+            values: None,
+            elevation: true,
+        }
+    }
+
+    /// Whether this is the elevation mode.
+    #[must_use]
+    pub fn is_elevation(&self) -> bool {
+        self.elevation
     }
 
     /// The revision that orders modes.
@@ -917,7 +939,7 @@ impl MapMode {
         self.revision
     }
 
-    /// The value of each place, or `None` when the mode is off.
+    /// The value of each place, or `None` when the mode is off or is the elevation mode (which has no table).
     #[must_use]
     pub fn values(&self) -> Option<&Arc<[u16]>> {
         self.values.as_ref()
@@ -995,7 +1017,7 @@ pub struct MapFrame {
     pub camera: Arc<MapCamera>,
     /// Where the enlarged map lands, or `None` when nothing of it shows (a zero-size window, a view clipped away).
     pub placement: Option<MapPlacement>,
-    /// The map mode showing, or `None` for the plain map: only a mode with a table that fits the input's owner grid is carried.
+    /// The map mode showing, or `None` for the plain map: the elevation mode, or a mode with a table that fits the input's owner grid.
     pub mode: Option<Arc<MapMode>>,
     /// Where a backend's presenter says it refused to make a map image, and that it later could
     /// ([`SceneBridge::take_map_refusal`](crate::SceneBridge::take_map_refusal) reads it).

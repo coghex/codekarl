@@ -2119,7 +2119,81 @@ pub(crate) fn readback_map_patterns_stay_pinned_to_the_world_after_a_pan() {
     }
 }
 
-pub(crate) const CASES: [(&str, fn()); 23] = [
+/// The elevation mode (milestone 9, slice 10b): at two zoom steps the map target equals the reference byte for byte, on an input with
+/// the owner grid and on one without (the mode reads the map's own elevations); the mode, a value table and off follow one another on
+/// the same input, each drawing its own reference; and the elevation draws the greys of many heights, over land only.
+pub(crate) fn readback_map_elevation_mode() {
+    let with_owners = moded_input(1);
+    let without = input_with(2);
+    let stockpile = vec![stockpile_value(0, 1000), 500, 1000, 0xFFFF];
+    for scenario in &mode_scenarios() {
+        let plain = the_fixture().reference_image(scenario.step, scenario.top_left, scenario.view);
+        let want = the_fixture().reference_image_with_elevation(
+            scenario.step,
+            scenario.top_left,
+            scenario.view,
+        );
+        assert_ne!(want, plain, "{}: the mode changes the map", scenario.name);
+        let greys: BTreeSet<u8> = want
+            .chunks_exact(4)
+            .filter(|pixel| pixel[0] == pixel[1] && pixel[1] == pixel[2])
+            .map(|pixel| pixel[0])
+            .collect();
+        assert!(
+            greys.len() >= 8,
+            "{}: the fixture's heights draw many greys, saw {greys:?}",
+            scenario.name
+        );
+        for (name, input) in [("with an owner grid", &with_owners), ("without", &without)] {
+            let got = drawn_target(
+                scenario,
+                &moded_map(input, scenario, None).with_elevation(1),
+            );
+            let wrong = got
+                .chunks_exact(4)
+                .zip(want.chunks_exact(4))
+                .enumerate()
+                .filter(|(_, (got, want))| got != want)
+                .map(|(index, (got, want))| {
+                    (
+                        index % scenario.view[0] as usize,
+                        index / scenario.view[0] as usize,
+                        got,
+                        want,
+                    )
+                })
+                .take(5)
+                .collect::<Vec<_>>();
+            assert!(
+                wrong.is_empty(),
+                "{} / {name}: differs from the reference at (x, y, got, want) {wrong:?}",
+                scenario.name
+            );
+        }
+        // One input through the modes in turn: a value table, the elevation, off, the elevation again, the table again.
+        let draw = |map: MetalMap| drawn_target(scenario, &map);
+        let table = moded_reference(scenario, &stockpile);
+        assert_eq!(
+            draw(moded_map(&with_owners, scenario, Some((10, &stockpile)))),
+            table
+        );
+        assert_eq!(
+            draw(moded_map(&with_owners, scenario, None).with_elevation(11)),
+            want
+        );
+        assert_eq!(draw(moded_map(&with_owners, scenario, None)), plain);
+        assert_eq!(
+            draw(moded_map(&with_owners, scenario, None).with_elevation(12)),
+            want
+        );
+        assert_eq!(
+            draw(moded_map(&with_owners, scenario, Some((13, &stockpile)))),
+            table
+        );
+    }
+}
+
+pub(crate) const CASES: [(&str, fn()); 24] = [
     ("readback_map_full_rules", readback_map_full_rules),
     ("readback_map_rivers_overlay", readback_map_rivers_overlay),
     (
@@ -2148,6 +2222,7 @@ pub(crate) const CASES: [(&str, fn()); 23] = [
     ("readback_map_refusals", readback_map_refusals),
     ("readback_map_modes", readback_map_modes),
     ("readback_map_mode_refusals", readback_map_mode_refusals),
+    ("readback_map_elevation_mode", readback_map_elevation_mode),
     (
         "readback_map_patterns_stay_pinned_to_the_world_after_a_pan",
         readback_map_patterns_stay_pinned_to_the_world_after_a_pan,

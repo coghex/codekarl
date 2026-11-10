@@ -450,8 +450,25 @@ pub struct MetalMap {
     rivers: Arc<[[u32; 2]]>,
     locations: Arc<[[u32; 3]]>,
     refusals: Option<Arc<dyn MapRefusalSink>>,
-    /// The map mode showing (its revision and one value per place), or `None` for the plain map.
-    mode: Option<(u64, Arc<[u16]>)>,
+    /// The map mode showing, or `None` for the plain map.
+    mode: Option<MetalMapMode>,
+}
+
+/// A map mode a frame shows.
+#[derive(Clone, Debug)]
+enum MetalMapMode {
+    /// A per-place value table (stockpile, yield) at its revision: one position on the colour ramp per place.
+    Values(u64, Arc<[u16]>),
+    /// The elevation mode (milestone 9, slice 10b) at its revision: no table, the pass reads the map's own elevations.
+    Elevation(u64),
+}
+
+impl MetalMapMode {
+    fn revision(&self) -> u64 {
+        match self {
+            Self::Values(revision, _) | Self::Elevation(revision) => *revision,
+        }
+    }
 }
 
 impl std::fmt::Debug for MetalMap {
@@ -469,7 +486,7 @@ impl std::fmt::Debug for MetalMap {
             .field("refusals", &self.refusals.is_some())
             .field(
                 "mode_revision",
-                &self.mode.as_ref().map(|(revision, _)| revision),
+                &self.mode.as_ref().map(MetalMapMode::revision),
             )
             .finish()
     }
@@ -651,8 +668,17 @@ impl MetalMap {
                 actual: values.len(),
             });
         }
-        self.mode = Some((revision, values));
+        self.mode = Some(MetalMapMode::Values(revision, values));
         Ok(self)
+    }
+
+    /// This map showing the elevation mode at `revision` (milestone 9, slice 10b): every land pixel off the coast outline is the grey
+    /// of its cell's height by the rule of `ck-map`'s `elevation_grey`; sea, lake, the coast outline, rivers and locations are as
+    /// without a mode. It reads the map's own elevations, so it needs no owner grid and no table.
+    #[must_use]
+    pub fn with_elevation(mut self, revision: u64) -> Self {
+        self.mode = Some(MetalMapMode::Elevation(revision));
+        self
     }
 
     /// River pixels in view coordinates, sorted and deduplicated by `ck-map`.
@@ -795,15 +821,23 @@ impl NativeMap {
                 (Some((grid, _)), true) => grid.as_ptr(),
                 _ => std::ptr::null(),
             },
-            mode: i32::from(map.mode.is_some()),
-            mode_revision: map.mode.as_ref().map_or(0, |(revision, _)| *revision),
-            mode_values: map
-                .mode
-                .as_ref()
-                .map_or(std::ptr::null(), |(_, values)| values.as_ptr()),
-            mode_count: map.mode.as_ref().map_or(0, |(_, values)| {
-                u32::try_from(values.len()).unwrap_or(u32::MAX)
-            }),
+            // 0 none, 1 a value table, 2 the elevation mode (which has no table: the presenter binds an empty one).
+            mode: match map.mode {
+                None => 0,
+                Some(MetalMapMode::Values(..)) => 1,
+                Some(MetalMapMode::Elevation(_)) => 2,
+            },
+            mode_revision: map.mode.as_ref().map_or(0, MetalMapMode::revision),
+            mode_values: match &map.mode {
+                Some(MetalMapMode::Values(_, values)) => values.as_ptr(),
+                _ => std::ptr::null(),
+            },
+            mode_count: match &map.mode {
+                Some(MetalMapMode::Values(_, values)) => {
+                    u32::try_from(values.len()).unwrap_or(u32::MAX)
+                }
+                _ => 0,
+            },
         }
     }
 }

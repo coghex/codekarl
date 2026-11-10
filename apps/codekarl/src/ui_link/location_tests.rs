@@ -68,11 +68,11 @@ local real_button_new = buttons_library.new
 mode_buttons = {}
 buttons_library.new = function(spec)
   local created = real_button_new(spec)
-  if spec.icon == "stockpile" or spec.icon == "yield" then mode_buttons[spec.icon] = created end
+  if spec.icon == "stockpile" or spec.icon == "yield" or spec.icon == "elevation" then mode_buttons[spec.icon] = created end
   return created
 end
 function announce_modes()
-  for _, key in ipairs({"stockpile", "yield"}) do
+  for _, key in ipairs({"stockpile", "yield", "elevation"}) do
     local button = mode_buttons[key]
     local width, height = button:size()
     note(string.format("mode %s %d %d %s", key, button.x + width / 2, button.y + height / 2, tostring(button.selected == true)))
@@ -621,6 +621,47 @@ fn the_mode_buttons_publish_the_mode_and_a_second_press_turns_it_off() {
         ["stockpile", "off", "yield", "stockpile"]
     );
     assert!(mode_button(&rig, "stockpile").2 && !mode_button(&rig, "yield").2);
+}
+
+#[test]
+fn the_elevation_button_publishes_the_elevation_mode_beside_the_other_two() {
+    let mut rig = rig(&[
+        "time(1, 1)",
+        "announce_modes()",
+        "announce_modes()",
+        "announce_modes()",
+        "announce_modes()",
+    ]);
+    rig.opened();
+    rig.opened();
+    let selected =
+        |rig: &Rig| ["stockpile", "yield", "elevation"].map(|key| mode_button(rig, key).2);
+    assert_eq!(selected(&rig), [false; 3]);
+    // The three buttons are in a row, left to right, on one line.
+    let (stockpile, yields, elevation) = (
+        mode_button(&rig, "stockpile"),
+        mode_button(&rig, "yield"),
+        mode_button(&rig, "elevation"),
+    );
+    assert!(stockpile.0 < yields.0 && yields.0 < elevation.0);
+    assert!(
+        (stockpile.1 - yields.1).abs() < 0.5 && (yields.1 - elevation.1).abs() < 0.5,
+        "one line"
+    );
+    press_mode(&mut rig, "elevation");
+    rig.opened();
+    assert_eq!(modes_called(&rig), ["elevation"]);
+    assert_eq!(selected(&rig), [false, false, true], "only elevation shows");
+    // Another mode replaces it, with no off between; the elevation button again turns it off.
+    press_mode(&mut rig, "yield");
+    press_mode(&mut rig, "elevation");
+    press_mode(&mut rig, "elevation");
+    rig.opened();
+    assert_eq!(
+        modes_called(&rig),
+        ["elevation", "yield", "elevation", "off"]
+    );
+    assert_eq!(selected(&rig), [false; 3]);
 }
 
 #[test]

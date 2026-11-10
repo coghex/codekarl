@@ -294,15 +294,16 @@ pub(crate) fn metal_map_cached(
         camera.locations().as_ref().to_vec(),
     )
     .map_err(refused)?;
-    // The map mode showing: its values at its revision (a frame with no mode, or a mode that is off, draws the plain map).
-    let map = match frame
-        .mode
-        .as_ref()
-        .and_then(|mode| Some((mode.revision(), mode.values()?)))
-    {
-        Some((revision, values)) => map
-            .with_mode(revision, Arc::clone(values))
-            .map_err(refused)?,
+    // The map mode showing: the elevation mode, or its values at its revision (a frame with no mode, or a mode that is off, draws the
+    // plain map).
+    let map = match frame.mode.as_ref() {
+        Some(mode) if mode.is_elevation() => map.with_elevation(mode.revision()),
+        Some(mode) => match mode.values() {
+            Some(values) => map
+                .with_mode(mode.revision(), Arc::clone(values))
+                .map_err(refused)?,
+            None => map,
+        },
         None => map,
     };
     // Where the presenter tells the publisher it refused to make a map image (and that it later could).
