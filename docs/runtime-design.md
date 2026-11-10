@@ -1,9 +1,10 @@
-# First runtime epic: design (draft under review)
+# First runtime epic: design (milestones 1 and 2, accepted)
 
 **Status: approved in design review 3, then amended on 2026-10-18 by the owner's decision that no log line may be dropped (§4.4
 "Back-pressure"; the amendment was reviewed with CK-47), and on 2026-10-19 by the owner's decisions on control-path errors (§4.4,
 implemented by CK-52) and on milestone 2 (§5, implemented by CK-53 and CK-55 to CK-58).** It includes the owner's 2026-10-18 answers and ck-guide's Hetoimasia reference
-evidence (§5.4). This is design; implementation proceeds through the reviewed issues CK-41 onward.
+evidence (§5.4). This is design; it was implemented through the reviewed issues CK-41 onward, and milestones 1 and 2 are accepted.
+Where an issue spec settled a mechanism differently, the spec and the accepted code win over this text.
 
 Labels: **Firm** is owner direction; **Recommendation** is ck-manager's proposal for review and owner decision; **Open** is undecided.
 The broader game vision (`docs/vision.md`) is context, not the scope of this epic.

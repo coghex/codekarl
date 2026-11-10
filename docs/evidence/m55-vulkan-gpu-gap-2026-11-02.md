@@ -1,6 +1,8 @@
 # CK-168: Vulkan GPU-time investigation (review revision 2)
 
-**Status:** Matrix complete. A process-local MoltenVK heap-allocation diagnostic reduced the 32,768-texture GPU p50 from about 157.5 ms to 0.75 ms, strongly implicating MoltenVK's Metal resource-allocation path. The independent Metal trace still could not be exported, so timestamp attribution remains unverified. This is a report draft for manager/reviewer assessment, not yet published. No product code was changed.
+**Status:** Matrix complete. A process-local MoltenVK heap-allocation diagnostic reduced the 32,768-texture GPU p50 from about 157.5 ms to 0.75 ms, strongly implicating MoltenVK's Metal resource-allocation path. The independent Metal trace still could not be exported, so timestamp attribution remains unverified. No product code was changed.
+
+**Record status (updated 2026-11-10):** this is revision 2, published unchanged (SHA-256 `437a0fc8…6c3097`) after ck-reviewer-2 approved it in findings review 2 (`.pipeline/coordination/runtime-m55/ck168-findings-review-2-reviewer-2.md`). That review's two non-blocking provenance notes were not applied: N6, the measurement driver was edited at 02:09:37Z, after blocks A and B, and earlier versions were not kept, so the first trace capture did run through a driver; and N7, the export error quoted for the first capture has no retained record. Neither changes a measurement or a conclusion. Later, CK-175 made the Vulkan instance ask MoltenVK to allocate from Metal heaps, unless `MVK_CONFIG_USE_MTLHEAP` is set in the environment.
 
 ## Scope and approved measurement changes
 
