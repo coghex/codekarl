@@ -5,7 +5,8 @@ approved its engineering (`economy-design-review-r19.md`, ee101993). A fresh via
 (`design-fun-review-r1.md`, by ck-designer-4) was worked through with the owner in r17–r19. The design was written by ck-designer-1
 (Class S, `claude-opus-5-5`, high).
 
-- **Implemented:** every slice of §4 except slice 11 is accepted (CK-224 to CK-245, 2026-11-10); slice 11, the Vulkan catch-up, is
+- **Implemented:** every slice of §4 except slice 11 is accepted (CK-224 to CK-249, 2026-11-10), including slice 4d, which moved the
+  storehouse fee into step 5 (CK-248), and the milestone 9 review notes (CK-246, CK-247 and CK-249); slice 11, the Vulkan catch-up, is
   parked. Later owner decisions are folded into the sections that they change, with their date and record.
 - **Source:** `.pipeline/coordination/m9-design/economy-design-r19.md` (sha256 `69772ff5…`), published unchanged below this header.
 - **Revision history:** r1–r19 and their reviews live beside it in `.pipeline/coordination/m9-design/`.
@@ -1407,6 +1408,7 @@ fields cut. The engine's load report is the authority.
   | 4 | production by season, herds, wages, the payday flow with alms and storehouses; the soak tool | 1, 2 |
   | 4b | the posted wage: a 12-month payday history, seeded from the starting stockpile, saved and shown (§3.6) | 4 |
   | 4c | a storehouse's posted wage is its fee (§3.18) | 4b |
+  | 4d | the storehouse fee runs on the 1st in step 5 of §3.9, after hiring and movement, not at payday | 4c, 6 |
   | 5 | eating with the intake curve, needs and satisfaction | 4 |
   | 6 | housing and crowding (§3.8), births, deaths, drift, hiring and movement (C9: before the market) | 5, 9 |
   | 6b | the recruitment range per building, monastic holdings 100 km, in ground distance (§3.5) | 6 |
