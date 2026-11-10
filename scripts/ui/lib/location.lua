@@ -49,6 +49,9 @@ local function location_lines(place)
     "people: " .. (place.workers + place.dependents),
     "  workers: " .. place.workers,
     "  dependents: " .. place.dependents,
+    "housing: basic " .. (place.basic_housing_occupants or 0) .. "/" .. (place.basic_housing_capacity or 0)
+      .. ", makeshift " .. (place.makeshift_housing_occupants or 0) .. "/" .. (place.makeshift_housing_capacity or 0),
+    "crowding: " .. percent(place.crowding_pm or 0),
     "food: " .. place.food_days .. " days",
     "building land: " .. place.footprint_m2 .. " / " .. math.min(place.prepared_m2, place.max_buildable_m2) .. " m²",
     "storage: " .. place.storage_used_l .. " / " .. place.storage_capacity_l .. " L",
@@ -73,6 +76,8 @@ local function pops_lines(place)
     lines[#lines + 1] = pop.kind .. " " .. pop.culture .. " " .. pop.religion
     lines[#lines + 1] = "  workers: " .. pop.workers
     lines[#lines + 1] = "  dependents: " .. pop.dependents
+    lines[#lines + 1] = "  housing: basic " .. (pop.basic_housing or 0) .. ", makeshift " .. (pop.makeshift_housing or 0)
+    lines[#lines + 1] = "  crowding: " .. (pop.crowding_pm ~= false and percent(pop.crowding_pm or 0) or "—")
     lines[#lines + 1] = "  employed: " .. pop.employed
     lines[#lines + 1] = "  unemployed: " .. pop.unemployed
     lines[#lines + 1] = "  food: " .. pop.food_days .. " days"
@@ -103,6 +108,7 @@ local function buildings_lines(place)
       lines[#lines + 1] = "  levels: " .. table.concat(methods, ", ")
     end
     lines[#lines + 1] = "  positions: " .. building.filled .. " filled, " .. building.open .. " open"
+    lines[#lines + 1] = "  housing occupants: " .. (building.housing_occupants or 0)
     for _, herd in ipairs(building.herds) do
       lines[#lines + 1] = "  " .. herd.species .. ": " .. herd.head .. " / " .. herd.maximum
     end

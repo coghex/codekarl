@@ -65,6 +65,12 @@ pub(crate) struct PopView {
     /// Last month's births and deaths (`0` until the births slice).
     pub(crate) births: u64,
     pub(crate) deaths: u64,
+    /// People assigned to basic building housing by the pure housing fill.
+    pub(crate) basic_housing: u64,
+    /// People assigned to makeshift natural shelter by the pure housing fill.
+    pub(crate) makeshift_housing: u64,
+    /// Crowding in per-mille, absent for an empty pop.
+    pub(crate) crowding_pm: Option<u64>,
 }
 
 /// One herd: a species' head count against its maximum.
@@ -90,6 +96,8 @@ pub(crate) struct BuildingView {
     pub(crate) store_capacity_ml: u64,
     /// The mean of the building's last twelve monthly wages in thousandths.
     pub(crate) wage: u64,
+    /// Occupants assigned to this building by the pure housing fill.
+    pub(crate) housing_occupants: u64,
 }
 
 /// One place's economy.
@@ -117,6 +125,14 @@ pub(crate) struct PlaceView {
     pub(crate) development_pm: u32,
     pub(crate) farmland_quality_pm: u16,
     pub(crate) field_room: u64,
+    /// Basic housing capacity and occupants, including overflow.
+    pub(crate) basic_housing_capacity: u64,
+    pub(crate) basic_housing_occupants: u64,
+    /// Natural makeshift shelter capacity and occupants, including overflow.
+    pub(crate) makeshift_housing_capacity: u64,
+    pub(crate) makeshift_housing_occupants: u64,
+    /// Whole-place crowding in per-mille.
+    pub(crate) crowding_pm: u64,
     pub(crate) pops: Vec<PopView>,
     pub(crate) buildings: Vec<BuildingView>,
 }
@@ -234,7 +250,12 @@ fn volume_ml(rules: &Rules, stock: &[u64]) -> u64 {
         })
 }
 
-fn pop_view(rules: &Rules, place: &PlaceState, index: usize) -> PopView {
+fn pop_view(
+    rules: &Rules,
+    place: &PlaceState,
+    index: usize,
+    housing: Option<&ck_economy::PopHousing>,
+) -> PopView {
     let pop = &place.pops[index];
     let employed = place
         .buildings
@@ -259,6 +280,9 @@ fn pop_view(rules: &Rules, place: &PlaceState, index: usize) -> PopView {
         satisfaction: i64::from(pop.consumption.satisfaction),
         births: 0,
         deaths: 0,
+        basic_housing: housing.map_or(0, |housing| housing.basic),
+        makeshift_housing: housing.map_or(0, |housing| housing.makeshift),
+        crowding_pm: housing.and_then(|housing| housing.crowding_pm),
     }
 }
 
@@ -327,7 +351,7 @@ fn projected_yield(rules: &Rules, building: &BuildingState) -> u64 {
     u64::try_from(total).unwrap_or(u64::MAX)
 }
 
-fn building_view(rules: &Rules, building: &BuildingState) -> BuildingView {
+fn building_view(rules: &Rules, building: &BuildingState, housing_occupants: u64) -> BuildingView {
     let definition = rules
         .buildings
         .iter()
@@ -388,6 +412,7 @@ fn building_view(rules: &Rules, building: &BuildingState) -> BuildingView {
         store_used_ml: volume_ml(rules, &building.stock),
         store_capacity_ml: building_capacity_ml(building, employees),
         wage: building.posted_wage(),
+        housing_occupants,
     }
 }
 
@@ -396,13 +421,35 @@ fn building_view(rules: &Rules, building: &BuildingState) -> BuildingView {
     reason = "A place view keeps its immutable economy totals, derived land values and per-building projections together."
 )]
 fn place_view(rules: &Rules, place: &PlaceState, land: Option<&LandCounts>) -> PlaceView {
+    let shelter = land
+        .and_then(|land| ck_economy::natural_shelter(rules, land).ok())
+        .unwrap_or_default();
+    let housing = ck_economy::housing_fill(rules, place, shelter).ok();
     let pops: Vec<PopView> = (0..place.pops.len())
-        .map(|index| pop_view(rules, place, index))
+        .map(|index| {
+            pop_view(
+                rules,
+                place,
+                index,
+                housing.as_ref().and_then(|fill| fill.pops.get(index)),
+            )
+        })
         .collect();
     let buildings: Vec<BuildingView> = place
         .buildings
         .iter()
-        .map(|building| building_view(rules, building))
+        .enumerate()
+        .map(|(index, building)| {
+            building_view(
+                rules,
+                building,
+                housing
+                    .as_ref()
+                    .and_then(|fill| fill.building_occupants.get(index))
+                    .copied()
+                    .unwrap_or_default(),
+            )
+        })
         .collect();
     let workers = place
         .pops
@@ -506,6 +553,11 @@ fn place_view(rules: &Rules, place: &PlaceState, land: Option<&LandCounts>) -> P
                 available.saturating_sub(occupied)
             })
             .unwrap_or_default(),
+        basic_housing_capacity: housing.as_ref().map_or(0, |fill| fill.basic_capacity),
+        basic_housing_occupants: housing.as_ref().map_or(0, |fill| fill.basic_occupants),
+        makeshift_housing_capacity: housing.as_ref().map_or(0, |fill| fill.makeshift_capacity),
+        makeshift_housing_occupants: housing.as_ref().map_or(0, |fill| fill.makeshift_occupants),
+        crowding_pm: housing.as_ref().map_or(0, |fill| fill.crowding_pm),
         pops,
         buildings,
     }
@@ -515,6 +567,7 @@ fn place_view(rules: &Rules, place: &PlaceState, land: Option<&LandCounts>) -> P
 mod tests {
     use super::*;
     use ck_economy::{CounterBuckets, Employment, StorehouseAccounts};
+    use ck_sim::Canonical;
     use std::path::Path;
 
     fn shipped_rules() -> Rules {
@@ -553,6 +606,7 @@ mod tests {
                 kind: "peasant".to_owned(),
                 culture: "ulaid".to_owned(),
                 religion: "christianity".to_owned(),
+                literacy_pm: 0,
                 workers: 80,
                 dependents: 40,
                 employment: vec![Employment::default(); 2],
@@ -964,5 +1018,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn serialized_economy_rebuilds_the_same_field_for_field_housing_view() {
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let directory = assets.join("scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).expect("the scenario loads");
+        let (state, _) = super::super::economy::starting_economy(&assets, &directory, &scenario)
+            .expect("the start builds");
+        let rules = shipped_rules();
+        let ids: Vec<String> = scenario
+            .locations
+            .iter()
+            .map(|location| location.id.clone())
+            .collect();
+
+        let view_at_save = build(Some(&rules), &state, &ids);
+        let bytes = state.to_bytes().expect("the economy state serializes");
+        let loaded = EconomyState::from_bytes(&bytes).expect("the economy state loads");
+        assert_eq!(loaded, state, "saved counters and carries are unchanged");
+        assert_eq!(
+            build(Some(&rules), &loaded, &ids),
+            view_at_save,
+            "a loaded state's derived housing fields match the view at the save boundary"
+        );
     }
 }

@@ -180,16 +180,18 @@ monk_religion="christianity"
 culture="northern_ui_neill"
 religion="christianity"
 monk_religion="christianity"
-peasants=60
-monks=20
-levels=[0, 2, 1]
+peasants=50
+monks=10
+labourers=10
+levels=[3, 2, 1]
 
 [places.skellig_michael]
 culture="mumu"
 religion="christianity"
 monk_religion="christianity"
 peasants=0
-monks=20
+monks=10
+labourers=10
 levels=[0, 2, 1]
 
 [places.monasterboice]

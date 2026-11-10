@@ -12,6 +12,14 @@ use serde::Deserialize;
 
 const WAGE_HISTORY_MONTHS: usize = 12;
 
+const fn default_hire_pm() -> u16 {
+    100
+}
+
+const fn default_leave_pm() -> u16 {
+    50
+}
+
 /// A fully qualified data error: its source file, entry and problem.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataError {
@@ -135,6 +143,20 @@ pub struct Rules {
     pub terrain_order: Vec<String>,
     /// Footprint per building level, in square metres.
     pub footprint_m2: BTreeMap<String, i64>,
+    /// Housing capacity per building level.
+    pub housing_per_level: BTreeMap<String, u32>,
+    /// Housing quality class per building type.
+    pub housing_class: BTreeMap<String, String>,
+    /// Housing classes ordered from lowest to highest quality.
+    pub housing_classes: Vec<String>,
+    /// Natural makeshift shelter in thousandths of a person per land cell.
+    pub shelter_pm: BTreeMap<String, u16>,
+    /// Fraction of open positions filled each month, in per-mille.
+    #[serde(default = "default_hire_pm")]
+    pub hire_pm: u16,
+    /// Fraction of a source pop that may leave each month, in per-mille.
+    #[serde(default = "default_leave_pm")]
+    pub leave_pm: u16,
     /// Buildable allowance before terrain contributions, in square metres.
     pub buildable_base_m2: u64,
     /// Buildable allowance per land cell by terrain, in square metres.
@@ -223,6 +245,89 @@ impl Rules {
             "terrain_order",
             self.terrain_order.iter().map(String::as_str),
         )?;
+        unique_ids(
+            file,
+            "housing_classes",
+            self.housing_classes.iter().map(String::as_str),
+        )?;
+        if self.housing_classes.is_empty() {
+            return Err(refuse(
+                "housing_classes".to_owned(),
+                "at least one class is required".to_owned(),
+            ));
+        }
+        for building in &self.buildings {
+            let Some(capacity) = self.housing_per_level.get(&building.id) else {
+                return Err(refuse(
+                    format!("housing_per_level.{}", building.id),
+                    "entry is missing".to_owned(),
+                ));
+            };
+            if *capacity == 0 {
+                return Err(refuse(
+                    format!("housing_per_level.{}", building.id),
+                    "must be positive".to_owned(),
+                ));
+            }
+            let Some(class) = self.housing_class.get(&building.id) else {
+                return Err(refuse(
+                    format!("housing_class.{}", building.id),
+                    "entry is missing".to_owned(),
+                ));
+            };
+            if !self.housing_classes.contains(class) {
+                return Err(refuse(
+                    format!("housing_class.{}", building.id),
+                    "class is absent from housing_classes".to_owned(),
+                ));
+            }
+        }
+        for building in self
+            .housing_per_level
+            .keys()
+            .chain(self.housing_class.keys())
+        {
+            if !self.buildings.iter().any(|item| item.id == *building) {
+                return Err(refuse(
+                    format!("housing_per_level.{building}"),
+                    "unknown building".to_owned(),
+                ));
+            }
+        }
+        for terrain in &self.terrain_order {
+            let Some(value) = self.shelter_pm.get(terrain) else {
+                return Err(refuse(
+                    format!("shelter_pm.{terrain}"),
+                    "entry is missing".to_owned(),
+                ));
+            };
+            if *value > 1000 {
+                return Err(refuse(
+                    format!("shelter_pm.{terrain}"),
+                    "must be at most 1000".to_owned(),
+                ));
+            }
+        }
+        for terrain in self.shelter_pm.keys() {
+            if !self.terrain_order.contains(terrain) {
+                return Err(refuse(
+                    format!("shelter_pm.{terrain}"),
+                    "terrain is absent from terrain_order".to_owned(),
+                ));
+            }
+        }
+        if self.hire_pm > 1000 {
+            return Err(refuse(
+                "hire_pm".to_owned(),
+                "must be at most 1000".to_owned(),
+            ));
+        }
+        if self.leave_pm > 1000 {
+            return Err(refuse(
+                "leave_pm".to_owned(),
+                "must be at most 1000".to_owned(),
+            ));
+        }
         if self.buildable_base_m2 == 0 {
             return Err(refuse(
                 "buildable_base_m2".to_owned(),
@@ -906,6 +1011,31 @@ pub struct StartLocation {
     pub land: LandCounts,
 }
 
+/// Derive makeshift shelter from a location's owned land catchment.
+///
+/// # Errors
+/// Returns a named data error when a terrain rate is missing or checked arithmetic overflows.
+pub fn natural_shelter(rules: &Rules, land: &LandCounts) -> Result<u64, DataError> {
+    let weighted = land
+        .land_cells
+        .iter()
+        .try_fold(0_u128, |sum, (terrain, cells)| {
+            let rate = rules.shelter_pm.get(terrain).ok_or_else(|| {
+                missing_data(format!("shelter_pm.{terrain}"), "terrain rate is missing")
+            })?;
+            let part = u128::from(*cells)
+                .checked_mul(u128::from(*rate))
+                .ok_or_else(|| {
+                    missing_data("housing.shelter".to_owned(), "shelter numerator overflow")
+                })?;
+            sum.checked_add(part).ok_or_else(|| {
+                missing_data("housing.shelter".to_owned(), "shelter numerator overflow")
+            })
+        })?;
+    u64::try_from(weighted / 1000)
+        .map_err(|_| missing_data("housing.shelter".to_owned(), "shelter exceeds u64"))
+}
+
 /// Build the deterministic opening economy from authored scenario data.
 ///
 /// The report names every resource cut and any authored level for which no
@@ -1463,6 +1593,7 @@ fn make_pop(
         kind: kind.to_owned(),
         culture: culture.to_owned(),
         religion: religion.to_owned(),
+        literacy_pm: 0,
         workers,
         dependents,
         employment: Vec::new(),
@@ -2559,11 +2690,8 @@ fn fill_starting_employment(rules: &Rules, pops: &mut [PopState], buildings: &mu
             }
         } else if building.kind == "storehouse" {
             for index in 0..pops.len() {
-                let owns_a_served_building = pops[index]
-                    .employment
-                    .iter()
-                    .take(building_index)
-                    .any(|employment| employment.owners > 0);
+                let owns_a_served_building =
+                    owns_served_building(&pops[index].employment, building_index);
                 if !owns_a_served_building {
                     continue;
                 }
@@ -2651,6 +2779,8 @@ pub struct PopState {
     pub culture: String,
     /// Religion key.
     pub religion: String,
+    /// Stored literacy in per-mille; unchanged by M9 except people-weighted movement.
+    pub literacy_pm: u16,
     /// Authoritative worker count.
     pub workers: u64,
     /// Authoritative dependent count.
@@ -2688,6 +2818,14 @@ pub struct PopConsumption {
     pub satisfaction: i16,
     /// Signed remainder carries for the three tier drifts and monthly satisfaction drift.
     pub drift_carries: [i64; 4],
+    /// Exact monthly birth-rate remainder.
+    pub birth_carry: u64,
+    /// Exact monthly worker-death remainder.
+    pub worker_death_carry: u64,
+    /// Exact monthly dependent-death remainder.
+    pub dependent_death_carry: u64,
+    /// Signed fractional remainder for monthly dependent-share drift.
+    pub dependent_drift_carry: i64,
 }
 
 /// A building in the initial economy state.
@@ -3259,6 +3397,356 @@ pub struct PlaceState {
     pub counters: CounterBuckets,
 }
 
+/// One pop's derived allocation across the place's housing classes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PopHousing {
+    /// People in basic building housing, including their share of overflow.
+    pub basic: u64,
+    /// People in makeshift natural shelter, including their share of overflow.
+    pub makeshift: u64,
+    /// The pop's crowding in per-mille, or `None` when it has no people.
+    pub crowding_pm: Option<u64>,
+}
+
+/// Recomputed housing allocation; it is deliberately not part of saved state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HousingFill {
+    /// Per-pop class allocations in place pop order.
+    pub pops: Vec<PopHousing>,
+    /// Occupants by building, including attributed basic overflow.
+    pub building_occupants: Vec<u64>,
+    /// Total basic housing capacity.
+    pub basic_capacity: u64,
+    /// Natural makeshift shelter capacity.
+    pub makeshift_capacity: u64,
+    /// People occupying basic housing, including overflow.
+    pub basic_occupants: u64,
+    /// People occupying makeshift shelter, including overflow.
+    pub makeshift_occupants: u64,
+    /// Place crowding in per-mille.
+    pub crowding_pm: u64,
+}
+
+/// Recompute one place's housing without changing or retaining any saved state.
+///
+/// `shelter` is derived from the scenario catchment and is not serialized.
+///
+/// # Errors
+/// Returns a named data error for malformed housing rules, inconsistent employment, or arithmetic overflow.
+#[expect(
+    clippy::too_many_lines,
+    reason = "The numbered allocation phases mirror the approved housing-fill spec and keep its conservation invariants visible in order."
+)]
+pub fn housing_fill(
+    rules: &Rules,
+    place: &PlaceState,
+    shelter: u64,
+) -> Result<HousingFill, DataError> {
+    let pop_count = place.pops.len();
+    let building_count = place.buildings.len();
+    let mut building_capacity = Vec::with_capacity(building_count);
+    let mut capacities = [0_u64; 2]; // basic, makeshift
+    for building in &place.buildings {
+        let class = rules.housing_class.get(&building.kind).ok_or_else(|| {
+            missing_data(
+                format!("housing_class.{}", building.kind),
+                "housing class is missing",
+            )
+        })?;
+        if class != "basic" {
+            return Err(missing_data(
+                format!("housing_class.{}", building.kind),
+                "this slice supports only basic building housing",
+            ));
+        }
+        let per_level = *rules.housing_per_level.get(&building.kind).ok_or_else(|| {
+            missing_data(
+                format!("housing_per_level.{}", building.kind),
+                "housing capacity is missing",
+            )
+        })?;
+        let capacity = u64::from(building.levels)
+            .checked_mul(u64::from(per_level))
+            .ok_or_else(|| missing_data("housing.capacity".to_owned(), "capacity overflow"))?;
+        capacities[0] = capacities[0]
+            .checked_add(capacity)
+            .ok_or_else(|| missing_data("housing.basic".to_owned(), "capacity overflow"))?;
+        building_capacity.push(capacity);
+    }
+    capacities[1] = shelter;
+
+    let mut sizes = Vec::with_capacity(pop_count);
+    let mut employed_by_building = vec![vec![0_u64; pop_count]; building_count];
+    for (building_index, building) in place.buildings.iter().enumerate() {
+        if building.employment.len() != pop_count {
+            return Err(missing_data(
+                format!("places.{}.buildings.{}.employment", place.id, building.kind),
+                "employment dimensions do not match place pops",
+            ));
+        }
+        for (pop_index, employment) in building.employment.iter().enumerate() {
+            employed_by_building[building_index][pop_index] = employment
+                .owners
+                .checked_add(employment.workers)
+                .ok_or_else(|| {
+                    missing_data("housing.employment".to_owned(), "employment total overflow")
+                })?;
+        }
+    }
+    let mut claims = vec![vec![0_u64; pop_count]; building_count];
+    let mut sizes_again = Vec::with_capacity(pop_count);
+    for (pop_index, pop) in place.pops.iter().enumerate() {
+        if pop.employment.len() != building_count {
+            return Err(missing_data(
+                format!("places.{}.pops[{pop_index}].employment", place.id),
+                "employment dimensions do not match place buildings",
+            ));
+        }
+        let size = pop
+            .workers
+            .checked_add(pop.dependents)
+            .ok_or_else(|| missing_data("housing.population".to_owned(), "pop size overflow"))?;
+        sizes.push(size);
+        sizes_again.push(size);
+        let mut employed = 0_u64;
+        let mut weights = Vec::with_capacity(building_count);
+        for (building_index, building_employment) in employed_by_building.iter().enumerate() {
+            let employment = building_employment[pop_index];
+            employed = employed.checked_add(employment).ok_or_else(|| {
+                missing_data("housing.employment".to_owned(), "pop employment overflow")
+            })?;
+            let mirrored = pop.employment[building_index]
+                .owners
+                .checked_add(pop.employment[building_index].workers)
+                .ok_or_else(|| {
+                    missing_data("housing.employment".to_owned(), "employment total overflow")
+                })?;
+            if mirrored != employment {
+                return Err(missing_data(
+                    format!("places.{}.pops[{pop_index}].employment", place.id),
+                    "pop and building employment disagree",
+                ));
+            }
+            weights.push(employment);
+        }
+        if employed > pop.workers {
+            return Err(missing_data(
+                format!("places.{}.pops[{pop_index}].employment", place.id),
+                "employed heads exceed pop workers",
+            ));
+        }
+        let claim_total = if pop.workers == 0 {
+            0
+        } else {
+            let numerator = u128::from(employed)
+                .checked_mul(u128::from(size))
+                .ok_or_else(|| missing_data("housing.claim".to_owned(), "claim overflow"))?;
+            u64::try_from(numerator / u128::from(pop.workers))
+                .map_err(|_| missing_data("housing.claim".to_owned(), "claim exceeds u64"))?
+        };
+        let split = largest_remainder(claim_total, &weights)
+            .map_err(|problem| missing_data("housing.claim".to_owned(), problem))?;
+        for (building_index, claim) in split.into_iter().enumerate() {
+            claims[building_index][pop_index] = claim;
+        }
+    }
+
+    let mut pop_basic = vec![0_u64; pop_count];
+    let mut occupants = vec![0_u64; building_count];
+    let mut spare = Vec::with_capacity(building_count);
+    for building_index in 0..building_count {
+        let awards = give(building_capacity[building_index], &claims[building_index])?;
+        for (pop_index, award) in awards.into_iter().enumerate() {
+            pop_basic[pop_index] = pop_basic[pop_index]
+                .checked_add(award)
+                .ok_or_else(|| missing_data("housing.awards".to_owned(), "award overflow"))?;
+            occupants[building_index] =
+                occupants[building_index]
+                    .checked_add(award)
+                    .ok_or_else(|| {
+                        missing_data("housing.occupancy".to_owned(), "occupancy overflow")
+                    })?;
+        }
+        spare.push(building_capacity[building_index] - occupants[building_index]);
+    }
+
+    let mut unhoused = sizes
+        .iter()
+        .zip(&pop_basic)
+        .map(|(size, basic)| {
+            size.checked_sub(*basic)
+                .ok_or_else(|| missing_data("housing.awards".to_owned(), "awards exceed pop"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let basic_spare = spare.iter().try_fold(0_u64, |sum, value| {
+        sum.checked_add(*value)
+            .ok_or_else(|| missing_data("housing.basic".to_owned(), "spare capacity overflow"))
+    })?;
+    let pooled = give(basic_spare, &unhoused)?;
+    for (pop_index, amount) in pooled.iter().copied().enumerate() {
+        pop_basic[pop_index] = pop_basic[pop_index]
+            .checked_add(amount)
+            .ok_or_else(|| missing_data("housing.basic".to_owned(), "pop allocation overflow"))?;
+        unhoused[pop_index] -= amount;
+    }
+    let pooled_total = pooled.iter().try_fold(0_u64, |sum, value| {
+        sum.checked_add(*value)
+            .ok_or_else(|| missing_data("housing.basic".to_owned(), "pooled total overflow"))
+    })?;
+    let pooled_by_building = largest_remainder(pooled_total, &spare)
+        .map_err(|problem| missing_data("housing.basic".to_owned(), problem))?;
+    for (building_index, amount) in pooled_by_building.into_iter().enumerate() {
+        occupants[building_index] = occupants[building_index]
+            .checked_add(amount)
+            .ok_or_else(|| missing_data("housing.occupancy".to_owned(), "occupancy overflow"))?;
+        spare[building_index] -= amount;
+    }
+
+    let makeshift = give(shelter, &unhoused)?;
+    let mut pop_makeshift = makeshift;
+    for (pop_index, amount) in pop_makeshift.iter().copied().enumerate() {
+        unhoused[pop_index] -= amount;
+    }
+    let remaining = unhoused.iter().try_fold(0_u64, |sum, value| {
+        sum.checked_add(*value)
+            .ok_or_else(|| missing_data("housing.overflow".to_owned(), "overflow total overflow"))
+    })?;
+    let total_capacity = capacities[0]
+        .checked_add(capacities[1])
+        .ok_or_else(|| missing_data("housing.capacity".to_owned(), "total capacity overflow"))?;
+    if remaining > 0 && total_capacity > 0 {
+        let overflow_by_class = largest_remainder(remaining, &capacities)
+            .map_err(|problem| missing_data("housing.overflow".to_owned(), problem))?;
+        let basic_overflow = largest_remainder(overflow_by_class[0], &unhoused)
+            .map_err(|problem| missing_data("housing.overflow".to_owned(), problem))?;
+        for (pop_index, amount) in basic_overflow.iter().copied().enumerate() {
+            pop_basic[pop_index] = pop_basic[pop_index].checked_add(amount).ok_or_else(|| {
+                missing_data(
+                    "housing.overflow".to_owned(),
+                    "basic overflow allocation overflow",
+                )
+            })?;
+            unhoused[pop_index] -= amount;
+        }
+        let makeshift_overflow = largest_remainder(overflow_by_class[1], &unhoused)
+            .map_err(|problem| missing_data("housing.overflow".to_owned(), problem))?;
+        for (pop_index, amount) in makeshift_overflow.iter().copied().enumerate() {
+            pop_makeshift[pop_index] =
+                pop_makeshift[pop_index]
+                    .checked_add(amount)
+                    .ok_or_else(|| {
+                        missing_data(
+                            "housing.overflow".to_owned(),
+                            "makeshift overflow allocation overflow",
+                        )
+                    })?;
+            unhoused[pop_index] -= amount;
+        }
+        let building_overflow = largest_remainder(overflow_by_class[0], &building_capacity)
+            .map_err(|problem| missing_data("housing.overflow".to_owned(), problem))?;
+        for (building_index, amount) in building_overflow.into_iter().enumerate() {
+            occupants[building_index] =
+                occupants[building_index]
+                    .checked_add(amount)
+                    .ok_or_else(|| {
+                        missing_data(
+                            "housing.occupancy".to_owned(),
+                            "overflow occupancy overflow",
+                        )
+                    })?;
+        }
+    }
+
+    let basic_occupants = pop_basic.iter().try_fold(0_u64, |sum, value| {
+        sum.checked_add(*value)
+            .ok_or_else(|| missing_data("housing.basic".to_owned(), "occupant total overflow"))
+    })?;
+    let makeshift_occupants = pop_makeshift.iter().try_fold(0_u64, |sum, value| {
+        sum.checked_add(*value)
+            .ok_or_else(|| missing_data("housing.makeshift".to_owned(), "occupant total overflow"))
+    })?;
+    let class_crowding = |occupants: u64, capacity: u64| -> Result<u64, DataError> {
+        if capacity == 0 {
+            return Ok(0);
+        }
+        let value = u128::from(occupants)
+            .checked_mul(1000)
+            .ok_or_else(|| missing_data("housing.crowding".to_owned(), "crowding overflow"))?
+            / u128::from(capacity);
+        u64::try_from(value)
+            .map_err(|_| missing_data("housing.crowding".to_owned(), "crowding exceeds u64"))
+    };
+    let basic_crowding = class_crowding(basic_occupants, capacities[0])?;
+    let makeshift_crowding = class_crowding(makeshift_occupants, capacities[1])?;
+    let total_people = sizes_again.iter().try_fold(0_u64, |sum, value| {
+        sum.checked_add(*value).ok_or_else(|| {
+            missing_data("housing.population".to_owned(), "place population overflow")
+        })
+    })?;
+    let total_capacity = capacities[0]
+        .checked_add(capacities[1])
+        .ok_or_else(|| missing_data("housing.capacity".to_owned(), "total capacity overflow"))?;
+    let crowding_pm = if total_capacity == 0 {
+        if total_people == 0 { 0 } else { 2000 }
+    } else {
+        u64::try_from(u128::from(total_people) * 1000 / u128::from(total_capacity)).map_err(
+            |_| missing_data("housing.crowding".to_owned(), "place crowding exceeds u64"),
+        )?
+    };
+    let pops = sizes_again
+        .into_iter()
+        .zip(pop_basic)
+        .zip(pop_makeshift)
+        .map(|((size, basic), makeshift)| {
+            let crowding_pm = if size == 0 {
+                None
+            } else if total_capacity == 0 {
+                Some(2000)
+            } else {
+                let weighted = u128::from(basic)
+                    .checked_mul(u128::from(basic_crowding))
+                    .and_then(|basic| {
+                        u128::from(makeshift)
+                            .checked_mul(u128::from(makeshift_crowding))
+                            .and_then(|makeshift| basic.checked_add(makeshift))
+                    })
+                    .ok_or_else(|| {
+                        missing_data("housing.crowding".to_owned(), "pop crowding overflow")
+                    })?;
+                Some(u64::try_from(weighted / u128::from(size)).map_err(|_| {
+                    missing_data("housing.crowding".to_owned(), "pop crowding exceeds u64")
+                })?)
+            };
+            Ok(PopHousing {
+                basic,
+                makeshift,
+                crowding_pm,
+            })
+        })
+        .collect::<Result<Vec<_>, DataError>>()?;
+    Ok(HousingFill {
+        pops,
+        building_occupants: occupants,
+        basic_capacity: capacities[0],
+        makeshift_capacity: capacities[1],
+        basic_occupants,
+        makeshift_occupants,
+        crowding_pm,
+    })
+}
+
+fn give(capacity: u64, demands: &[u64]) -> Result<Vec<u64>, DataError> {
+    let total = demands.iter().try_fold(0_u64, |sum, value| {
+        sum.checked_add(*value)
+            .ok_or_else(|| missing_data("housing.demands".to_owned(), "demand total overflow"))
+    })?;
+    if total <= capacity {
+        return Ok(demands.to_vec());
+    }
+    largest_remainder(capacity, demands)
+        .map_err(|problem| missing_data("housing.allocation".to_owned(), problem))
+}
+
 /// Canonical saved economy state; all lookup maps are represented in stable vectors.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EconomyState {
@@ -3289,6 +3777,8 @@ pub struct ProductionLedger {
     pub intake_pm: Vec<Vec<u16>>,
     /// Goods and benefit accounting for the daily drawing/eating phase, when run.
     pub daily_consumption: Option<DailyConsumptionLedger>,
+    /// People recruited into each place and pop during this month's demography phase.
+    pub movement_by_pop: Vec<Vec<u64>>,
     /// Herd counts when the pass began, by cattle, pigs and sheep.
     pub herds_before: Vec<u64>,
     /// Herd counts after the pass, by cattle, pigs and sheep.
@@ -3378,9 +3868,47 @@ fn drift_value(
     Ok(value.saturating_add(step).clamp(minimum, maximum))
 }
 
+fn drift_dependents(
+    dependents: u64,
+    total: u64,
+    base_pm: u16,
+    carry: &mut i64,
+) -> Result<u64, DataError> {
+    let gap = i128::from(dependents) * 1000 - i128::from(total) * i128::from(base_pm);
+    if *carry != 0 && gap.signum() != i128::from(carry.signum()) {
+        *carry = 0;
+    }
+    let numerator = gap
+        .checked_mul(10)
+        .and_then(|value| value.checked_add(i128::from(*carry)))
+        .ok_or_else(|| {
+            missing_data(
+                "demography.dependent_drift".to_owned(),
+                "drift numerator overflow",
+            )
+        })?;
+    let step = numerator / 1_000_000;
+    *carry = i64::try_from(numerator % 1_000_000).map_err(|_| {
+        missing_data(
+            "demography.dependent_drift".to_owned(),
+            "drift carry exceeds i64",
+        )
+    })?;
+    u64::try_from((i128::from(dependents) - step).clamp(0, i128::from(total))).map_err(|_| {
+        missing_data(
+            "demography.dependent_drift".to_owned(),
+            "result exceeds u64",
+        )
+    })
+}
+
 fn curve_value(points: &[[i32; 2]], x: u64) -> Result<u64, DataError> {
     let x = i64::try_from(x)
         .map_err(|_| missing_data("curves.intake_food_days".to_owned(), "input exceeds i64"))?;
+    curve_value_signed(points, x)
+}
+
+fn curve_value_signed(points: &[[i32; 2]], x: i64) -> Result<u64, DataError> {
     let first = points
         .first()
         .ok_or_else(|| missing_data("curves.intake_food_days".to_owned(), "curve has no points"))?;
@@ -3451,6 +3979,7 @@ impl ProductionLedger {
             unpaid_wages: vec![0; good_count],
             intake_pm: Vec::new(),
             daily_consumption: None,
+            movement_by_pop: Vec::new(),
             herds_before: vec![0; 3],
             herds_after: vec![0; 3],
             places: Vec::new(),
@@ -4063,7 +4592,7 @@ pub fn run_daily_consumption(
 fn run_daily_consumption_with_ledger(
     rules: &Rules,
     state: &mut EconomyState,
-    date: Date,
+    _date: Date,
 ) -> Result<(Vec<Vec<u16>>, DailyConsumptionLedger), DataError> {
     rules.validate("economy rules")?;
     let mut next = state.clone();
@@ -4077,7 +4606,6 @@ fn run_daily_consumption_with_ledger(
         herd_slaughter: vec![0; 3],
         ..DailyConsumptionLedger::default()
     };
-    let pop_types = &rules.pop_types;
     let mut intake_by_place = Vec::with_capacity(next.places.len());
     for place in &mut next.places {
         let mut place_intake = Vec::with_capacity(place.pops.len());
@@ -4086,36 +4614,6 @@ fn run_daily_consumption_with_ledger(
             draw_pop(rules, place, index)?;
             let intake_pm = consume_pop_tracked(rules, place, index, &mut ledger)?;
             place_intake.push(intake_pm);
-            if date.day == 1 {
-                let pop_type = pop_types
-                    .iter()
-                    .find(|item| item.id == place.pops[index].kind)
-                    .ok_or_else(|| {
-                        missing_data(
-                            format!("pop_types.{}", place.pops[index].kind),
-                            "definition is missing",
-                        )
-                    })?;
-                let consumption = &mut place.pops[index].consumption;
-                let target = satisfaction_baseline(
-                    pop_type,
-                    [
-                        consumption.necessities_pm,
-                        consumption.niceties_pm,
-                        consumption.luxuries_pm,
-                    ],
-                );
-                consumption.satisfaction = i16::try_from(drift_value(
-                    i64::from(consumption.satisfaction),
-                    target,
-                    100,
-                    1000,
-                    &mut consumption.drift_carries[3],
-                    -100,
-                    100,
-                )?)
-                .map_err(|_| missing_data("satisfaction".to_owned(), "value exceeds i16"))?;
-            }
             index += 1;
         }
         intake_by_place.push(place_intake);
@@ -4181,16 +4679,11 @@ fn consume_pop_tracked(
         .pantry_hunger_centi
         .iter()
         .zip(&rules.goods)
-        .any(|(pantry, good)| *pantry >= u64::from(good.hunger_centi) && good.hunger_centi != 0)
-        || consumption
-            .pantry_hunger_centi
-            .iter()
-            .zip(&rules.goods)
-            .any(|(pantry, good)| *pantry != 0 && good.hunger_centi == 0)
+        .any(|(pantry, good)| *pantry != 0 && good.hunger_centi == 0)
     {
         return Err(missing_data(
             "pop.consumption.pantry_hunger_centi".to_owned(),
-            "saved hunger pantry is outside its per-good remainder range",
+            "a non-food good has a hunger pantry",
         ));
     }
     let size = place.pops[pop_index]
@@ -5160,14 +5653,1296 @@ pub fn run_daily_economy_with_quality(
     date: Date,
     quality_by_place: &BTreeMap<String, u16>,
 ) -> Result<ProductionLedger, DataError> {
+    run_daily_economy_with_context(
+        rules,
+        state,
+        date,
+        quality_by_place,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+}
+
+/// Daily economy tick with map-derived farmland quality, natural shelter and neighbour order.
+///
+/// # Errors
+/// Returns the first named production, consumption, demographic, or checked-arithmetic data error and leaves `state` unchanged.
+pub fn run_daily_economy_with_context(
+    rules: &Rules,
+    state: &mut EconomyState,
+    date: Date,
+    quality_by_place: &BTreeMap<String, u16>,
+    shelter_by_place: &BTreeMap<String, u64>,
+    nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
+) -> Result<ProductionLedger, DataError> {
     let mut next = state.clone();
     update_daily_prices(rules, &mut next)?;
     let mut ledger = run_monthly_production_with_quality(rules, &mut next, date, quality_by_place)?;
     let (intake_pm, daily_consumption) = run_daily_consumption_with_ledger(rules, &mut next, date)?;
     ledger.intake_pm = intake_pm;
     ledger.daily_consumption = Some(daily_consumption);
+    if date.day == 1 {
+        ledger.movement_by_pop =
+            run_monthly_demography(rules, &mut next, shelter_by_place, nearby_by_place)?;
+        // Intake is measured before the month's demographic pass. A recruited pop did not
+        // exist during that day's consumption, so keep the ledger aligned with the new state
+        // and report zero intake for that new row.
+        for (place_index, place) in next.places.iter().enumerate() {
+            let intake = ledger.intake_pm.get_mut(place_index).ok_or_else(|| {
+                missing_data(
+                    "ledger.intake_pm".to_owned(),
+                    "place dimensions do not match",
+                )
+            })?;
+            intake.resize(place.pops.len(), 0);
+        }
+    }
     *state = next;
     Ok(ledger)
+}
+
+/// A nearby destination in deterministic nearest-first order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NearbyPlace {
+    /// Destination place id.
+    pub id: String,
+    /// Approximate distance in projected metres.
+    pub distance_m: u32,
+}
+
+fn exact_monthly_rate(
+    pool: u64,
+    base_pm_year: u16,
+    factors: &[u64],
+    carry: &mut u64,
+    entry: &str,
+) -> Result<u64, DataError> {
+    let mut numerator = u128::from(base_pm_year);
+    for factor in factors {
+        numerator = numerator
+            .checked_mul(u128::from(*factor))
+            .ok_or_else(|| missing_data(entry.to_owned(), "monthly rate numerator overflow"))?;
+    }
+    let exponent = u32::try_from(factors.len() + 1)
+        .map_err(|_| missing_data(entry.to_owned(), "factor count exceeds u32"))?;
+    let denominator =
+        12_u128
+            .checked_mul(1000_u128.checked_pow(exponent).ok_or_else(|| {
+                missing_data(entry.to_owned(), "monthly rate denominator overflow")
+            })?)
+            .ok_or_else(|| missing_data(entry.to_owned(), "monthly rate denominator overflow"))?;
+    if u128::from(*carry) >= denominator {
+        return Err(missing_data(
+            entry.to_owned(),
+            "saved monthly rate carry is out of range",
+        ));
+    }
+    let quotient = numerator / denominator;
+    let remainder = numerator % denominator;
+    let fractional = u128::from(pool)
+        .checked_mul(remainder)
+        .and_then(|value| value.checked_add(u128::from(*carry)))
+        .ok_or_else(|| missing_data(entry.to_owned(), "monthly rate fraction overflow"))?;
+    let whole = u128::from(pool)
+        .checked_mul(quotient)
+        .and_then(|value| value.checked_add(fractional / denominator))
+        .ok_or_else(|| missing_data(entry.to_owned(), "monthly rate whole count overflow"))?;
+    *carry = u64::try_from(fractional % denominator)
+        .map_err(|_| missing_data(entry.to_owned(), "monthly rate carry exceeds u64"))?;
+    u64::try_from(whole).map_err(|_| missing_data(entry.to_owned(), "monthly rate exceeds u64"))
+}
+
+fn release_excess_employment(place: &mut PlaceState) -> Result<(), DataError> {
+    for pop_index in 0..place.pops.len() {
+        let worker_count = place.pops[pop_index].workers;
+        let owners = place
+            .buildings
+            .iter()
+            .map(|building| {
+                building
+                    .employment
+                    .get(pop_index)
+                    .map_or(0, |job| job.owners)
+            })
+            .collect::<Vec<_>>();
+        let workers = place
+            .buildings
+            .iter()
+            .map(|building| {
+                building
+                    .employment
+                    .get(pop_index)
+                    .map_or(0, |job| job.workers)
+            })
+            .collect::<Vec<_>>();
+        let total_owners = owners.iter().try_fold(0_u64, |sum, value| {
+            sum.checked_add(*value)
+                .ok_or_else(|| missing_data("employment.owners".to_owned(), "owner total overflow"))
+        })?;
+        let keep_owners = total_owners.min(worker_count);
+        let owner_awards = give(keep_owners, &owners)?;
+        let remaining_workers = worker_count - keep_owners;
+        let keep_workers = workers.iter().sum::<u64>().min(remaining_workers);
+        let worker_awards = give(keep_workers, &workers)?;
+        for building_index in 0..place.buildings.len() {
+            let job = place.buildings[building_index]
+                .employment
+                .get_mut(pop_index)
+                .ok_or_else(|| {
+                    missing_data(
+                        "employment".to_owned(),
+                        "employment dimensions do not match",
+                    )
+                })?;
+            job.owners = owner_awards[building_index];
+            job.workers = worker_awards[building_index];
+            place.pops[pop_index].employment[building_index] = job.clone();
+        }
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "The owner, storehouse-worker, and ordinary-worker passes share one explicit per-building order before movement."
+)]
+fn fill_monthly_hiring(rules: &Rules, place: &mut PlaceState) -> Result<Vec<[u64; 2]>, DataError> {
+    let mut movement_allowance = vec![[0_u64; 2]; place.buildings.len()];
+    for (building_index, movement_budget) in movement_allowance.iter_mut().enumerate() {
+        let kind = place.buildings[building_index].kind.clone();
+        let definition = rules
+            .buildings
+            .iter()
+            .find(|definition| definition.id == kind)
+            .ok_or_else(|| missing_data(format!("buildings.{kind}"), "definition is missing"))?;
+        let level_positions = u64::from(place.buildings[building_index].levels)
+            .checked_mul(u64::from(definition.workers_per_level))
+            .ok_or_else(|| {
+                missing_data(format!("buildings.{kind}.positions"), "capacity overflow")
+            })?;
+
+        let mut owner_kinds = definition.owner_workers.keys().cloned().collect::<Vec<_>>();
+        owner_kinds.sort_by_key(|pop_kind| match pop_kind.as_str() {
+            "monk" => 0,
+            "labourer" => 1,
+            "peasant" => 2,
+            _ => 3,
+        });
+        if kind == "holdings" {
+            let mut needed = 0_u64;
+            for owner_kind in &owner_kinds {
+                let ratio = u64::from(definition.owner_workers[owner_kind]);
+                if ratio == 0 {
+                    return Err(missing_data(
+                        format!("buildings.{kind}.owner_workers.{owner_kind}"),
+                        "workers per owner must be positive",
+                    ));
+                }
+                let paid = place.buildings[building_index]
+                    .employment
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| place.pops[*index].kind == *owner_kind)
+                    .try_fold(0_u64, |sum, (_, job)| sum.checked_add(job.workers))
+                    .ok_or_else(|| {
+                        missing_data("employment.workers".to_owned(), "worker total overflow")
+                    })?;
+                let kind_need = paid.checked_add(ratio - 1).ok_or_else(|| {
+                    missing_data("employment.owners".to_owned(), "owner need overflow")
+                })? / ratio;
+                needed = needed.checked_add(kind_need).ok_or_else(|| {
+                    missing_data("employment.owners".to_owned(), "owner need overflow")
+                })?;
+            }
+            let owners = place.buildings[building_index]
+                .employment
+                .iter()
+                .try_fold(0_u64, |sum, job| sum.checked_add(job.owners))
+                .ok_or_else(|| {
+                    missing_data("employment.owners".to_owned(), "owner total overflow")
+                })?;
+            let mut remaining = hiring_cap(needed.saturating_sub(owners), rules.hire_pm)?;
+            for pop_index in 0..place.pops.len() {
+                if place.pops[pop_index].kind != "monk" || remaining == 0 {
+                    continue;
+                }
+                let hire = unemployed_workers(place, pop_index)?.min(remaining);
+                assign_owner(place, building_index, pop_index, hire)?;
+                remaining -= hire;
+            }
+        } else {
+            for owner_kind in &owner_kinds {
+                let ratio = u64::from(definition.owner_workers[owner_kind]);
+                if ratio == 0 {
+                    return Err(missing_data(
+                        format!("buildings.{kind}.owner_workers.{owner_kind}"),
+                        "workers per owner must be positive",
+                    ));
+                }
+                let paid = place.buildings[building_index]
+                    .employment
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| place.pops[*index].kind == *owner_kind)
+                    .map(|(_, job)| job.workers)
+                    .try_fold(0_u64, |sum, value| {
+                        sum.checked_add(value).ok_or_else(|| {
+                            missing_data("employment.workers".to_owned(), "worker total overflow")
+                        })
+                    })?;
+                let needed = paid.checked_add(ratio - 1).ok_or_else(|| {
+                    missing_data("employment.owners".to_owned(), "owner need overflow")
+                })? / ratio;
+                let owners = place.buildings[building_index]
+                    .employment
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| place.pops[*index].kind == *owner_kind)
+                    .map(|(_, job)| job.owners)
+                    .try_fold(0_u64, |sum, value| {
+                        sum.checked_add(value).ok_or_else(|| {
+                            missing_data("employment.owners".to_owned(), "owner total overflow")
+                        })
+                    })?;
+                let open = needed.saturating_sub(owners);
+                let monthly_cap = hiring_cap(open, rules.hire_pm)?;
+                let mut remaining = monthly_cap;
+                for pop_index in 0..place.pops.len() {
+                    if place.pops[pop_index].kind != *owner_kind || remaining == 0 {
+                        continue;
+                    }
+                    let available = unemployed_workers(place, pop_index)?;
+                    let hire = available.min(remaining);
+                    assign_owner(place, building_index, pop_index, hire)?;
+                    remaining -= hire;
+                }
+            }
+        }
+
+        if kind == "storehouse" {
+            let filled =
+                place.buildings[building_index]
+                    .employment
+                    .iter()
+                    .try_fold(0_u64, |sum, job| {
+                        sum.checked_add(job.workers).ok_or_else(|| {
+                            missing_data("employment.workers".to_owned(), "worker total overflow")
+                        })
+                    })?;
+            let mut remaining = hiring_cap(level_positions.saturating_sub(filled), rules.hire_pm)?;
+            for pop_index in 0..place.pops.len() {
+                if remaining == 0
+                    || !owns_served_building(&place.pops[pop_index].employment, building_index)
+                {
+                    continue;
+                }
+                let available = unemployed_workers(place, pop_index)?;
+                let hire = available.min(remaining);
+                assign_worker(place, building_index, pop_index, hire)?;
+                remaining -= hire;
+            }
+            continue;
+        }
+
+        let mut position_kinds = owner_kinds;
+        if position_kinds.is_empty() {
+            continue;
+        }
+        let per_kind = if position_kinds.len() == 1 {
+            vec![level_positions]
+        } else {
+            let base = level_positions / position_kinds.len() as u64;
+            let remainder = level_positions % position_kinds.len() as u64;
+            (0..position_kinds.len())
+                .map(|index| base + u64::from((index as u64) < remainder))
+                .collect()
+        };
+        for (position_kind, capacity) in position_kinds.drain(..).zip(per_kind) {
+            let filled = place.buildings[building_index]
+                .employment
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| place.pops[*index].kind == position_kind)
+                .try_fold(0_u64, |sum, (_, job)| {
+                    sum.checked_add(job.workers).ok_or_else(|| {
+                        missing_data("employment.workers".to_owned(), "worker total overflow")
+                    })
+                })?;
+            let monthly_cap = hiring_cap(capacity.saturating_sub(filled), rules.hire_pm)?;
+            let mut remaining = monthly_cap;
+            for pop_index in 0..place.pops.len() {
+                if place.pops[pop_index].kind != position_kind || remaining == 0 {
+                    continue;
+                }
+                let available = unemployed_workers(place, pop_index)?;
+                let hire = available.min(remaining);
+                assign_worker(place, building_index, pop_index, hire)?;
+                remaining -= hire;
+            }
+            match position_kind.as_str() {
+                "monk" => movement_budget[0] = remaining,
+                "labourer" => movement_budget[1] = remaining,
+                _ => {}
+            }
+        }
+    }
+    Ok(movement_allowance)
+}
+
+fn hiring_cap(open: u64, hire_pm: u16) -> Result<u64, DataError> {
+    if open == 0 {
+        return Ok(0);
+    }
+    let rate = u64::from(hire_pm);
+    let scaled = open.checked_mul(rate).ok_or_else(|| {
+        missing_data(
+            "employment.hire_pm".to_owned(),
+            "monthly hire count overflow",
+        )
+    })? / 1000;
+    Ok(scaled.max(1))
+}
+
+fn unemployed_workers(place: &PlaceState, pop_index: usize) -> Result<u64, DataError> {
+    let pop = &place.pops[pop_index];
+    let employed = pop.employment.iter().try_fold(0_u64, |sum, job| {
+        sum.checked_add(job.owners)
+            .and_then(|sum| sum.checked_add(job.workers))
+            .ok_or_else(|| missing_data("employment".to_owned(), "employment total overflow"))
+    })?;
+    pop.workers
+        .checked_sub(employed)
+        .ok_or_else(|| missing_data("employment".to_owned(), "employed heads exceed pop workers"))
+}
+
+fn owns_served_building(employment: &[Employment], before_building: usize) -> bool {
+    employment
+        .iter()
+        .take(before_building)
+        .any(|job| job.owners > 0)
+}
+
+fn assign_owner(
+    place: &mut PlaceState,
+    building_index: usize,
+    pop_index: usize,
+    count: u64,
+) -> Result<(), DataError> {
+    place.buildings[building_index].employment[pop_index].owners = place.buildings[building_index]
+        .employment[pop_index]
+        .owners
+        .checked_add(count)
+        .ok_or_else(|| missing_data("employment.owners".to_owned(), "owner count overflow"))?;
+    place.pops[pop_index].employment[building_index].owners = place.pops[pop_index].employment
+        [building_index]
+        .owners
+        .checked_add(count)
+        .ok_or_else(|| missing_data("employment.owners".to_owned(), "owner count overflow"))?;
+    Ok(())
+}
+
+fn assign_worker(
+    place: &mut PlaceState,
+    building_index: usize,
+    pop_index: usize,
+    count: u64,
+) -> Result<(), DataError> {
+    place.buildings[building_index].employment[pop_index].workers = place.buildings[building_index]
+        .employment[pop_index]
+        .workers
+        .checked_add(count)
+        .ok_or_else(|| missing_data("employment.workers".to_owned(), "worker count overflow"))?;
+    place.pops[pop_index].employment[building_index].workers = place.pops[pop_index].employment
+        [building_index]
+        .workers
+        .checked_add(count)
+        .ok_or_else(|| missing_data("employment.workers".to_owned(), "worker count overflow"))?;
+    Ok(())
+}
+
+fn pop_wage_per_head(place: &PlaceState, pop_index: usize) -> Result<u64, DataError> {
+    let workers = place.pops[pop_index].workers;
+    if workers == 0 {
+        return Ok(0);
+    }
+    let mut total = 0_u128;
+    for (building, employment) in place
+        .buildings
+        .iter()
+        .zip(&place.pops[pop_index].employment)
+    {
+        total = total
+            .checked_add(
+                u128::from(employment.workers)
+                    .checked_mul(u128::from(building.posted_wage()))
+                    .ok_or_else(|| {
+                        missing_data("movement.wage".to_owned(), "wage total overflow")
+                    })?,
+            )
+            .ok_or_else(|| missing_data("movement.wage".to_owned(), "wage total overflow"))?;
+    }
+    u64::try_from(total / u128::from(workers))
+        .map_err(|_| missing_data("movement.wage".to_owned(), "wage per head exceeds u64"))
+}
+
+fn ensure_pop(place: &mut PlaceState, kind: &str, culture: &str, religion: &str) -> usize {
+    if let Some(index) = place
+        .pops
+        .iter()
+        .position(|pop| pop.kind == kind && pop.culture == culture && pop.religion == religion)
+    {
+        return index;
+    }
+    let index = place.pops.len();
+    place.pops.push(PopState {
+        kind: kind.to_owned(),
+        culture: culture.to_owned(),
+        religion: religion.to_owned(),
+        literacy_pm: 0,
+        workers: 0,
+        dependents: 0,
+        employment: vec![Employment::default(); place.buildings.len()],
+        stock: vec![0; place.prices_milli.len()],
+        consumption: PopConsumption {
+            pantry_hunger_centi: vec![0; place.prices_milli.len()],
+            ticking_carries: vec![0; place.prices_milli.len()],
+            ..PopConsumption::default()
+        },
+        counters: CounterBuckets::default(),
+    });
+    for building in &mut place.buildings {
+        building.employment.push(Employment::default());
+        if let Some(accounts) = &mut building.storehouse_accounts {
+            accounts.pops.push(vec![0; place.prices_milli.len()]);
+            // The last fee carry belongs to the communal account. Insert the new pop's
+            // carry immediately before it so the account and fee vectors stay aligned.
+            let pop_carry_index = accounts.pops.len() - 1;
+            building
+                .fee_carries
+                .insert(pop_carry_index, vec![0; place.prices_milli.len()]);
+        }
+    }
+    index
+}
+
+fn scaled_share(amount: u64, movers: u64, source_size: u64) -> Result<u64, DataError> {
+    if source_size == 0 {
+        return Err(missing_data(
+            "movement.share".to_owned(),
+            "source pop is empty",
+        ));
+    }
+    u64::try_from(u128::from(amount) * u128::from(movers) / u128::from(source_size))
+        .map_err(|_| missing_data("movement.share".to_owned(), "share exceeds u64"))
+}
+
+fn receive_pantry_share(
+    rules: &Rules,
+    destination: &mut PopState,
+    good_index: usize,
+    offered: u64,
+) -> Result<bool, DataError> {
+    if offered == 0 {
+        return Ok(true);
+    }
+    let good = rules
+        .goods
+        .get(good_index)
+        .ok_or_else(|| missing_data("movement.pantry".to_owned(), "good index is missing"))?;
+    if good.hunger_centi == 0 {
+        return Err(missing_data(
+            format!("movement.pantry.{}", good.id),
+            "a non-food good has a hunger remainder",
+        ));
+    }
+    let pantry = destination
+        .consumption
+        .pantry_hunger_centi
+        .get(good_index)
+        .copied()
+        .ok_or_else(|| missing_data("movement.pantry".to_owned(), "pantry index is missing"))?;
+    let combined = pantry
+        .checked_add(offered)
+        .ok_or_else(|| missing_data("movement.pantry".to_owned(), "pantry total overflow"))?;
+    destination.consumption.pantry_hunger_centi[good_index] = combined;
+    Ok(true)
+}
+
+fn weighted_average(
+    old: u16,
+    old_people: u64,
+    moved: u16,
+    moved_people: u64,
+) -> Result<u16, DataError> {
+    let total = old_people
+        .checked_add(moved_people)
+        .ok_or_else(|| missing_data("movement.average".to_owned(), "population overflow"))?;
+    if total == 0 {
+        return Ok(0);
+    }
+    let weighted = u128::from(old)
+        .checked_mul(u128::from(old_people))
+        .and_then(|value| value.checked_add(u128::from(moved) * u128::from(moved_people)))
+        .ok_or_else(|| missing_data("movement.average".to_owned(), "weighted average overflow"))?;
+    u16::try_from(weighted / u128::from(total))
+        .map_err(|_| missing_data("movement.average".to_owned(), "average exceeds u16"))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "These indices and counts are one atomic cross-place transfer request; grouping them would obscure the source and destination invariants."
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The transfer commits population, employment, goods, pantry, balances, and storehouse claims together so refusals cannot leave partial state."
+)]
+fn transfer_pop(
+    rules: &Rules,
+    places: &mut [PlaceState],
+    source_place_index: usize,
+    source_pop_index: usize,
+    destination_place_index: usize,
+    destination_pop_kind: &str,
+    destination_building_index: usize,
+    workers: u64,
+    dependents: u64,
+    source_workers_removed: u64,
+    source_dependents_removed: u64,
+) -> Result<usize, DataError> {
+    if source_place_index == destination_place_index
+        && destination_pop_kind == places[source_place_index].pops[source_pop_index].kind
+    {
+        let place = &mut places[source_place_index];
+        assign_worker(place, destination_building_index, source_pop_index, workers)?;
+        return Ok(source_pop_index);
+    }
+    let source_size = places[source_place_index].pops[source_pop_index]
+        .workers
+        .checked_add(places[source_place_index].pops[source_pop_index].dependents)
+        .ok_or_else(|| missing_data("movement.source".to_owned(), "source size overflow"))?;
+    let moved_people = workers
+        .checked_add(dependents)
+        .ok_or_else(|| missing_data("movement.transfer".to_owned(), "moved size overflow"))?;
+    let source_heads_removed = source_workers_removed
+        .checked_add(source_dependents_removed)
+        .ok_or_else(|| missing_data("movement.transfer".to_owned(), "source removal overflow"))?;
+    if source_size == 0 || source_heads_removed > source_size || moved_people == 0 {
+        return Err(missing_data(
+            "movement.transfer".to_owned(),
+            "invalid moved population",
+        ));
+    }
+
+    let source_snapshot = places[source_place_index].pops[source_pop_index].clone();
+    let destination_pop_index = ensure_pop(
+        &mut places[destination_place_index],
+        destination_pop_kind,
+        &source_snapshot.culture,
+        &source_snapshot.religion,
+    );
+    let old_destination_size = places[destination_place_index].pops[destination_pop_index]
+        .workers
+        .checked_add(places[destination_place_index].pops[destination_pop_index].dependents)
+        .ok_or_else(|| {
+            missing_data(
+                "movement.destination".to_owned(),
+                "destination size overflow",
+            )
+        })?;
+    {
+        let destination = &mut places[destination_place_index].pops[destination_pop_index];
+        destination.literacy_pm = weighted_average(
+            destination.literacy_pm,
+            old_destination_size,
+            source_snapshot.literacy_pm,
+            moved_people,
+        )?;
+        destination.consumption.necessities_pm = weighted_average(
+            destination.consumption.necessities_pm,
+            old_destination_size,
+            source_snapshot.consumption.necessities_pm,
+            moved_people,
+        )?;
+        destination.consumption.niceties_pm = weighted_average(
+            destination.consumption.niceties_pm,
+            old_destination_size,
+            source_snapshot.consumption.niceties_pm,
+            moved_people,
+        )?;
+        destination.consumption.luxuries_pm = weighted_average(
+            destination.consumption.luxuries_pm,
+            old_destination_size,
+            source_snapshot.consumption.luxuries_pm,
+            moved_people,
+        )?;
+        let all_people = old_destination_size
+            .checked_add(moved_people)
+            .ok_or_else(|| missing_data("movement.average".to_owned(), "population overflow"))?;
+        let satisfaction_total = i128::from(destination.consumption.satisfaction)
+            .checked_mul(i128::from(old_destination_size))
+            .and_then(|value| {
+                value.checked_add(
+                    i128::from(source_snapshot.consumption.satisfaction) * i128::from(moved_people),
+                )
+            })
+            .ok_or_else(|| {
+                missing_data(
+                    "movement.average".to_owned(),
+                    "satisfaction average overflow",
+                )
+            })?;
+        destination.consumption.satisfaction =
+            i16::try_from(satisfaction_total / i128::from(all_people)).map_err(|_| {
+                missing_data(
+                    "movement.average".to_owned(),
+                    "satisfaction average exceeds i16",
+                )
+            })?;
+        destination.workers = destination.workers.checked_add(workers).ok_or_else(|| {
+            missing_data("movement.destination".to_owned(), "worker count overflow")
+        })?;
+        destination.dependents =
+            destination
+                .dependents
+                .checked_add(dependents)
+                .ok_or_else(|| {
+                    missing_data(
+                        "movement.destination".to_owned(),
+                        "dependent count overflow",
+                    )
+                })?;
+    }
+    assign_worker(
+        &mut places[destination_place_index],
+        destination_building_index,
+        destination_pop_index,
+        workers,
+    )?;
+
+    let source_pop = &mut places[source_place_index].pops[source_pop_index];
+    source_pop.workers = source_pop
+        .workers
+        .checked_sub(source_workers_removed)
+        .ok_or_else(|| missing_data("movement.source".to_owned(), "worker count underflow"))?;
+    source_pop.dependents = source_pop
+        .dependents
+        .checked_sub(source_dependents_removed)
+        .ok_or_else(|| missing_data("movement.source".to_owned(), "dependent removal underflow"))?;
+
+    for good_index in 0..rules.goods.len() {
+        let offered = scaled_share(source_snapshot.stock[good_index], moved_people, source_size)?;
+        let unaccepted = receive_pop(
+            rules,
+            &mut places[destination_place_index].pops[destination_pop_index],
+            good_index,
+            offered,
+        )?;
+        let accepted = offered - unaccepted;
+        places[source_place_index].pops[source_pop_index].stock[good_index] -= accepted;
+        let pantry = scaled_share(
+            source_snapshot.consumption.pantry_hunger_centi[good_index],
+            moved_people,
+            source_size,
+        )?;
+        if receive_pantry_share(
+            rules,
+            &mut places[destination_place_index].pops[destination_pop_index],
+            good_index,
+            pantry,
+        )? {
+            places[source_place_index].pops[source_pop_index]
+                .consumption
+                .pantry_hunger_centi[good_index] -= pantry;
+        }
+    }
+    for (source_balance, destination_balance) in [
+        (source_snapshot.consumption.necessities_centi, 0_u8),
+        (source_snapshot.consumption.niceties_centi, 1),
+        (source_snapshot.consumption.luxuries_centi, 2),
+    ] {
+        let share = scaled_share(source_balance, moved_people, source_size)?;
+        match destination_balance {
+            0 => {
+                let balance = &mut places[destination_place_index].pops[destination_pop_index]
+                    .consumption
+                    .necessities_centi;
+                *balance = balance
+                    .checked_add(share)
+                    .ok_or_else(|| missing_data("movement.balance".to_owned(), "needs overflow"))?;
+                places[source_place_index].pops[source_pop_index]
+                    .consumption
+                    .necessities_centi -= share;
+            }
+            1 => {
+                let balance = &mut places[destination_place_index].pops[destination_pop_index]
+                    .consumption
+                    .niceties_centi;
+                *balance = balance.checked_add(share).ok_or_else(|| {
+                    missing_data("movement.balance".to_owned(), "niceties overflow")
+                })?;
+                places[source_place_index].pops[source_pop_index]
+                    .consumption
+                    .niceties_centi -= share;
+            }
+            _ => {
+                let balance = &mut places[destination_place_index].pops[destination_pop_index]
+                    .consumption
+                    .luxuries_centi;
+                *balance = balance.checked_add(share).ok_or_else(|| {
+                    missing_data("movement.balance".to_owned(), "luxuries overflow")
+                })?;
+                places[source_place_index].pops[source_pop_index]
+                    .consumption
+                    .luxuries_centi -= share;
+            }
+        }
+    }
+    for building_index in 0..places[source_place_index].buildings.len() {
+        let building = &mut places[source_place_index].buildings[building_index];
+        let Some(accounts) = building.storehouse_accounts.as_mut() else {
+            continue;
+        };
+        let Some(account) = accounts.pops.get_mut(source_pop_index) else {
+            continue;
+        };
+        let snapshot = account.clone();
+        for (good_index, amount) in snapshot.into_iter().enumerate() {
+            let offered = scaled_share(amount, moved_people, source_size)?;
+            let unaccepted = receive_pop(
+                rules,
+                &mut places[destination_place_index].pops[destination_pop_index],
+                good_index,
+                offered,
+            )?;
+            let accepted = offered - unaccepted;
+            account[good_index] -= accepted;
+            building.stock[good_index] = building.stock[good_index]
+                .checked_sub(accepted)
+                .ok_or_else(|| {
+                    missing_data(
+                        "movement.account".to_owned(),
+                        "physical storehouse stock underflow",
+                    )
+                })?;
+        }
+    }
+    Ok(destination_pop_index)
+}
+
+fn source_can_fill(source: &PopState, position_kind: &str, posted: u64, wage: u64) -> bool {
+    if wage >= posted || source.workers == 0 {
+        return false;
+    }
+    match position_kind {
+        "labourer" => source.kind == "peasant",
+        "monk" => source.religion == "christianity" && source.kind != "monk",
+        _ => false,
+    }
+}
+
+fn source_order(
+    place: &PlaceState,
+    position_kind: &str,
+    posted: u64,
+    leave: &[u64],
+) -> Result<Vec<usize>, DataError> {
+    let mut sources = Vec::new();
+    for (index, source) in place.pops.iter().enumerate() {
+        if leave.get(index).copied().unwrap_or(0) == 0 {
+            continue;
+        }
+        let wage = pop_wage_per_head(place, index)?;
+        if source_can_fill(source, position_kind, posted, wage) {
+            sources.push((wage, index));
+        }
+    }
+    sources.sort_by_key(|(wage, index)| (*wage, *index));
+    Ok(sources.into_iter().map(|(_, index)| index).collect())
+}
+
+fn position_capacity(
+    definition: &BuildingType,
+    position_kind: &str,
+    levels: u32,
+) -> Result<u64, DataError> {
+    let mut kinds = definition.owner_workers.keys().cloned().collect::<Vec<_>>();
+    kinds.sort_by_key(|kind| match kind.as_str() {
+        "monk" => 0,
+        "labourer" => 1,
+        "peasant" => 2,
+        _ => 3,
+    });
+    let Some(index) = kinds.iter().position(|kind| kind == position_kind) else {
+        return Ok(0);
+    };
+    if kinds.is_empty() {
+        return Ok(0);
+    }
+    let total = u64::from(definition.workers_per_level)
+        .checked_mul(u64::from(levels))
+        .ok_or_else(|| missing_data("employment.positions".to_owned(), "capacity overflow"))?;
+    let count = u64::try_from(kinds.len()).map_err(|_| {
+        missing_data(
+            "employment.positions".to_owned(),
+            "position-kind count overflow",
+        )
+    })?;
+    let base = total / count;
+    let remainder = total % count;
+    base.checked_add(u64::from((index as u64) < remainder))
+        .ok_or_else(|| missing_data("employment.positions".to_owned(), "capacity overflow"))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The function applies different monk and labourer transfer rules to one source and destination move."
+)]
+fn move_recruits(
+    rules: &Rules,
+    places: &mut [PlaceState],
+    source_place: usize,
+    source_pop: usize,
+    destination_place: usize,
+    destination_building: usize,
+    position_kind: &str,
+    count: u64,
+) -> Result<(u64, usize), DataError> {
+    let mut trial = places.to_vec();
+    let source = &trial[source_place].pops[source_pop];
+    let (target_kind, moved_workers, moved_dependents, removed_workers, removed_dependents) =
+        if position_kind == "monk" {
+            let shares = largest_remainder(count, &[source.workers, source.dependents])
+                .map_err(|problem| missing_data("movement.monks".to_owned(), problem))?;
+            ("monk", count, 0, shares[0], shares[1])
+        } else {
+            let moved_dependents = u64::try_from(
+                u128::from(count) * u128::from(source.dependents) / u128::from(source.workers),
+            )
+            .map_err(|_| {
+                missing_data(
+                    "movement.dependents".to_owned(),
+                    "dependent transfer exceeds u64",
+                )
+            })?;
+            ("labourer", count, moved_dependents, count, moved_dependents)
+        };
+    let destination_pop_index = transfer_pop(
+        rules,
+        &mut trial,
+        source_place,
+        source_pop,
+        destination_place,
+        target_kind,
+        destination_building,
+        moved_workers,
+        moved_dependents,
+        removed_workers,
+        removed_dependents,
+    )?;
+    release_excess_employment(&mut trial[source_place])?;
+    places.clone_from_slice(&trial);
+    Ok((
+        moved_workers.checked_add(moved_dependents).ok_or_else(|| {
+            missing_data("movement.transfer".to_owned(), "moved population overflow")
+        })?,
+        destination_pop_index,
+    ))
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "Destination, monk-first, local-first, then nearest-neighbour ordering is the recruitment rule and stays explicit here."
+)]
+fn move_open_positions(
+    rules: &Rules,
+    places: &mut [PlaceState],
+    nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
+    movement_allowance: &[Vec<[u64; 2]>],
+) -> Result<Vec<Vec<u64>>, DataError> {
+    let mut movement_by_pop = places
+        .iter()
+        .map(|place| vec![0_u64; place.pops.len()])
+        .collect::<Vec<_>>();
+    let mut leave = places
+        .iter()
+        .map(|place| {
+            place
+                .pops
+                .iter()
+                .map(|pop| {
+                    u64::try_from(u128::from(pop.workers) * u128::from(rules.leave_pm) / 1000)
+                        .map_err(|_| {
+                            missing_data(
+                                "employment.leave_pm".to_owned(),
+                                "leave budget exceeds u64",
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for destination_place in 0..places.len() {
+        let building_count = places[destination_place].buildings.len();
+        for destination_building in 0..building_count {
+            let kind = places[destination_place].buildings[destination_building]
+                .kind
+                .clone();
+            if kind == "storehouse" {
+                continue;
+            }
+            let definition = rules
+                .buildings
+                .iter()
+                .find(|item| item.id == kind)
+                .ok_or_else(|| {
+                    missing_data(format!("buildings.{kind}"), "definition is missing")
+                })?;
+            // Monk positions are first so a labourer who can enter the cloth takes that opening
+            // before a lower-priority labourer position is filled.
+            for position_kind in ["monk", "labourer"] {
+                let capacity = position_capacity(
+                    definition,
+                    position_kind,
+                    places[destination_place].buildings[destination_building].levels,
+                )?;
+                if capacity == 0 {
+                    continue;
+                }
+                let filled = places[destination_place].buildings[destination_building]
+                    .employment
+                    .iter()
+                    .enumerate()
+                    .filter(|(pop_index, job)| {
+                        job.workers > 0
+                            && places[destination_place].pops[*pop_index].kind == position_kind
+                    })
+                    .try_fold(0_u64, |sum, (_, job)| {
+                        sum.checked_add(job.workers).ok_or_else(|| {
+                            missing_data("employment.workers".to_owned(), "position total overflow")
+                        })
+                    })?;
+                let mut open = capacity.saturating_sub(filled);
+                let allowance_index = match position_kind {
+                    "monk" => 0,
+                    "labourer" => 1,
+                    _ => continue,
+                };
+                let mut remaining_monthly = movement_allowance
+                    .get(destination_place)
+                    .and_then(|place| place.get(destination_building))
+                    .map_or(0, |budget| budget[allowance_index]);
+                if open == 0 {
+                    continue;
+                }
+                let posted =
+                    places[destination_place].buildings[destination_building].posted_wage();
+                let local = source_order(
+                    &places[destination_place],
+                    position_kind,
+                    posted,
+                    &leave[destination_place],
+                )?;
+                if !local.is_empty() {
+                    for source_pop in local {
+                        if open == 0 {
+                            break;
+                        }
+                        let count = open
+                            .min(remaining_monthly)
+                            .min(leave[destination_place][source_pop]);
+                        if count == 0 {
+                            continue;
+                        }
+                        let (moved_people, destination_pop) = move_recruits(
+                            rules,
+                            places,
+                            destination_place,
+                            source_pop,
+                            destination_place,
+                            destination_building,
+                            position_kind,
+                            count,
+                        )?;
+                        while movement_by_pop[destination_place].len()
+                            < places[destination_place].pops.len()
+                        {
+                            movement_by_pop[destination_place].push(0);
+                        }
+                        movement_by_pop[destination_place][destination_pop] = movement_by_pop
+                            [destination_place][destination_pop]
+                            .checked_add(moved_people)
+                            .ok_or_else(|| {
+                                missing_data(
+                                    "movement.ledger".to_owned(),
+                                    "destination movement count overflow",
+                                )
+                            })?;
+                        leave[destination_place][source_pop] -= count;
+                        open -= count;
+                        remaining_monthly -= count;
+                    }
+                    continue;
+                }
+                let nearby = nearby_by_place
+                    .get(&places[destination_place].id)
+                    .cloned()
+                    .unwrap_or_default();
+                for neighbour in nearby {
+                    if open == 0 {
+                        break;
+                    }
+                    let Some(source_place) =
+                        places.iter().position(|place| place.id == neighbour.id)
+                    else {
+                        continue;
+                    };
+                    let sources = source_order(
+                        &places[source_place],
+                        position_kind,
+                        posted,
+                        &leave[source_place],
+                    )?;
+                    for source_pop in sources {
+                        if open == 0 {
+                            break;
+                        }
+                        let count = open
+                            .min(remaining_monthly)
+                            .min(leave[source_place][source_pop]);
+                        if count == 0 {
+                            continue;
+                        }
+                        let (moved_people, destination_pop) = move_recruits(
+                            rules,
+                            places,
+                            source_place,
+                            source_pop,
+                            destination_place,
+                            destination_building,
+                            position_kind,
+                            count,
+                        )?;
+                        while movement_by_pop[destination_place].len()
+                            < places[destination_place].pops.len()
+                        {
+                            movement_by_pop[destination_place].push(0);
+                        }
+                        movement_by_pop[destination_place][destination_pop] = movement_by_pop
+                            [destination_place][destination_pop]
+                            .checked_add(moved_people)
+                            .ok_or_else(|| {
+                                missing_data(
+                                    "movement.ledger".to_owned(),
+                                    "destination movement count overflow",
+                                )
+                            })?;
+                        leave[source_place][source_pop] -= count;
+                        open -= count;
+                        remaining_monthly -= count;
+                    }
+                }
+            }
+        }
+    }
+    Ok(movement_by_pop)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "The phase order is housing snapshot, births/deaths, dependent drift, hiring, then movement; keeping it together protects the monthly contract."
+)]
+fn run_monthly_demography(
+    rules: &Rules,
+    state: &mut EconomyState,
+    shelter_by_place: &BTreeMap<String, u64>,
+    nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
+) -> Result<Vec<Vec<u64>>, DataError> {
+    let mut movement_allowance = Vec::with_capacity(state.places.len());
+    for place in &mut state.places {
+        let shelter = shelter_by_place.get(&place.id).copied().unwrap_or(0);
+        let fill = housing_fill(rules, place, shelter)?;
+        for (pop_index, pop) in place.pops.iter_mut().enumerate() {
+            let pop_type = rules
+                .pop_types
+                .iter()
+                .find(|candidate| candidate.id == pop.kind)
+                .ok_or_else(|| {
+                    missing_data(format!("pop_types.{}", pop.kind), "definition is missing")
+                })?;
+            let crowding = fill.pops[pop_index].crowding_pm.unwrap_or(1000);
+            let comfort = (u64::from(pop.consumption.niceties_pm)
+                + u64::from(pop.consumption.luxuries_pm) / 2)
+                .min(1000);
+            let birth_factors = [
+                curve_value(
+                    rules.curves.get("births_food").ok_or_else(|| {
+                        missing_data("curves.births_food".to_owned(), "curve is missing")
+                    })?,
+                    u64::from(pop.consumption.necessities_pm),
+                )?,
+                curve_value(
+                    rules.curves.get("births_crowding").ok_or_else(|| {
+                        missing_data("curves.births_crowding".to_owned(), "curve is missing")
+                    })?,
+                    crowding,
+                )?,
+                curve_value_signed(
+                    rules.curves.get("births_satisfaction").ok_or_else(|| {
+                        missing_data("curves.births_satisfaction".to_owned(), "curve is missing")
+                    })?,
+                    i64::from(pop.consumption.satisfaction),
+                )?,
+                curve_value(
+                    rules.curves.get("births_literacy").ok_or_else(|| {
+                        missing_data("curves.births_literacy".to_owned(), "curve is missing")
+                    })?,
+                    u64::from(pop.literacy_pm),
+                )?,
+            ];
+            let births = exact_monthly_rate(
+                pop.workers,
+                pop_type.births_pm_year,
+                &birth_factors,
+                &mut pop.consumption.birth_carry,
+                "demography.births",
+            )?;
+            pop.dependents = pop.dependents.checked_add(births).ok_or_else(|| {
+                missing_data("demography.births".to_owned(), "dependent count overflow")
+            })?;
+            pop.counters.current.births = pop
+                .counters
+                .current
+                .births
+                .checked_add(births)
+                .ok_or_else(|| {
+                    missing_data("counters.births".to_owned(), "birth counter overflow")
+                })?;
+            place.counters.current.births = place
+                .counters
+                .current
+                .births
+                .checked_add(births)
+                .ok_or_else(|| {
+                    missing_data("counters.births".to_owned(), "place birth counter overflow")
+                })?;
+
+            let worker_death_factors = [
+                curve_value(
+                    rules.curves.get("deaths_hunger").ok_or_else(|| {
+                        missing_data("curves.deaths_hunger".to_owned(), "curve is missing")
+                    })?,
+                    u64::from(pop.consumption.necessities_pm),
+                )?,
+                curve_value(
+                    rules.curves.get("deaths_comfort").ok_or_else(|| {
+                        missing_data("curves.deaths_comfort".to_owned(), "curve is missing")
+                    })?,
+                    comfort,
+                )?,
+                curve_value(
+                    rules.curves.get("deaths_crowding").ok_or_else(|| {
+                        missing_data("curves.deaths_crowding".to_owned(), "curve is missing")
+                    })?,
+                    crowding,
+                )?,
+            ];
+            let worker_deaths = exact_monthly_rate(
+                pop.workers,
+                pop_type.worker_deaths_pm_year,
+                &worker_death_factors,
+                &mut pop.consumption.worker_death_carry,
+                "demography.worker_deaths",
+            )?
+            .min(pop.workers);
+            let dependent_death_factors = [
+                worker_death_factors[0],
+                worker_death_factors[1],
+                worker_death_factors[2],
+                worker_death_factors[2],
+            ];
+            let dependent_deaths = exact_monthly_rate(
+                pop.dependents,
+                pop_type.dependent_deaths_pm_year,
+                &dependent_death_factors,
+                &mut pop.consumption.dependent_death_carry,
+                "demography.dependent_deaths",
+            )?
+            .min(pop.dependents);
+            pop.workers -= worker_deaths;
+            pop.dependents -= dependent_deaths;
+            let deaths = worker_deaths.checked_add(dependent_deaths).ok_or_else(|| {
+                missing_data("demography.deaths".to_owned(), "death count overflow")
+            })?;
+            pop.counters.current.deaths = pop
+                .counters
+                .current
+                .deaths
+                .checked_add(deaths)
+                .ok_or_else(|| {
+                    missing_data("counters.deaths".to_owned(), "death counter overflow")
+                })?;
+            place.counters.current.deaths = place
+                .counters
+                .current
+                .deaths
+                .checked_add(deaths)
+                .ok_or_else(|| {
+                    missing_data("counters.deaths".to_owned(), "place death counter overflow")
+                })?;
+
+            let total = pop.workers.checked_add(pop.dependents).ok_or_else(|| {
+                missing_data("demography.population".to_owned(), "pop size overflow")
+            })?;
+            pop.dependents = drift_dependents(
+                pop.dependents,
+                total,
+                pop_type.dependent_pm,
+                &mut pop.consumption.dependent_drift_carry,
+            )?;
+            pop.workers = total.checked_sub(pop.dependents).ok_or_else(|| {
+                missing_data("demography.dependent_drift".to_owned(), "workers underflow")
+            })?;
+        }
+        release_excess_employment(place)?;
+        movement_allowance.push(fill_monthly_hiring(rules, place)?);
+    }
+    let movement_by_pop = move_open_positions(
+        rules,
+        &mut state.places,
+        nearby_by_place,
+        &movement_allowance,
+    )?;
+    for place in &mut state.places {
+        for pop in &mut place.pops {
+            let pop_type = rules
+                .pop_types
+                .iter()
+                .find(|candidate| candidate.id == pop.kind)
+                .ok_or_else(|| {
+                    missing_data(format!("pop_types.{}", pop.kind), "definition is missing")
+                })?;
+            let target = satisfaction_baseline(
+                pop_type,
+                [
+                    pop.consumption.necessities_pm,
+                    pop.consumption.niceties_pm,
+                    pop.consumption.luxuries_pm,
+                ],
+            );
+            pop.consumption.satisfaction = i16::try_from(drift_value(
+                i64::from(pop.consumption.satisfaction),
+                target,
+                100,
+                1000,
+                &mut pop.consumption.drift_carries[3],
+                -100,
+                100,
+            )?)
+            .map_err(|_| missing_data("satisfaction".to_owned(), "value exceeds i16"))?;
+        }
+    }
+    Ok(movement_by_pop)
 }
 
 fn reduced_ratio(value: u16, reference: u16) -> (u16, u16) {
@@ -5198,6 +6973,7 @@ impl Canonical for EconomyState {
                 pop.kind.encode(out)?;
                 pop.culture.encode(out)?;
                 pop.religion.encode(out)?;
+                pop.literacy_pm.encode(out)?;
                 pop.workers.encode(out)?;
                 pop.dependents.encode(out)?;
                 encode_employment(&pop.employment, out)?;
@@ -5253,6 +7029,7 @@ impl Canonical for EconomyState {
                     kind: String::decode(input)?,
                     culture: String::decode(input)?,
                     religion: String::decode(input)?,
+                    literacy_pm: u16::decode(input)?,
                     workers: u64::decode(input)?,
                     dependents: u64::decode(input)?,
                     employment: decode_employment(input)?,
@@ -5320,6 +7097,10 @@ fn encode_pop_consumption(value: &PopConsumption, out: &mut Vec<u8>) -> Result<(
     for carry in value.drift_carries {
         carry.encode(out)?;
     }
+    value.birth_carry.encode(out)?;
+    value.worker_death_carry.encode(out)?;
+    value.dependent_death_carry.encode(out)?;
+    value.dependent_drift_carry.encode(out)?;
     Ok(())
 }
 
@@ -5340,6 +7121,10 @@ fn decode_pop_consumption(input: &mut Reader<'_>) -> Result<PopConsumption, Cano
             i64::decode(input)?,
             i64::decode(input)?,
         ],
+        birth_carry: u64::decode(input)?,
+        worker_death_carry: u64::decode(input)?,
+        dependent_death_carry: u64::decode(input)?,
+        dependent_drift_carry: i64::decode(input)?,
     })
 }
 
@@ -5468,6 +7253,10 @@ mod tests {
 
     type RuleMutation = Box<dyn Fn(&mut Rules)>;
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The compact test rule fixture keeps the complete valid schema visible for every economy vector."
+    )]
     fn tiny_rules() -> Rules {
         Rules {
             goods: vec![Good {
@@ -5500,6 +7289,18 @@ mod tests {
                 ("farm".to_owned(), 2000),
                 ("storehouse".to_owned(), 200),
             ]),
+            housing_per_level: BTreeMap::from([
+                ("farm".to_owned(), 17),
+                ("storehouse".to_owned(), 3),
+            ]),
+            housing_class: BTreeMap::from([
+                ("farm".to_owned(), "basic".to_owned()),
+                ("storehouse".to_owned(), "basic".to_owned()),
+            ]),
+            housing_classes: vec!["makeshift".to_owned(), "basic".to_owned()],
+            shelter_pm: BTreeMap::from([("pasture".to_owned(), 50), ("bog".to_owned(), 10)]),
+            hire_pm: 100,
+            leave_pm: 50,
             buildable_base_m2: 20_000,
             buildable_per_cell_m2: BTreeMap::from([
                 ("pasture".to_owned(), 300),
@@ -5537,10 +7338,22 @@ mod tests {
                 "grain".to_owned(),
                 vec![0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0],
             )]),
-            curves: BTreeMap::from([(
-                "intake_food_days".to_owned(),
-                vec![[30, 500], [120, 800], [240, 1000]],
-            )]),
+            curves: BTreeMap::from([
+                (
+                    "intake_food_days".to_owned(),
+                    vec![[30, 500], [120, 800], [240, 1000]],
+                ),
+                ("births_food".to_owned(), vec![[0, 1000], [2000, 1000]]),
+                ("births_crowding".to_owned(), vec![[0, 1000], [2000, 1000]]),
+                (
+                    "births_satisfaction".to_owned(),
+                    vec![[-100, 1000], [100, 1000]],
+                ),
+                ("births_literacy".to_owned(), vec![[0, 1000], [1000, 1000]]),
+                ("deaths_hunger".to_owned(), vec![[0, 1000], [1000, 1000]]),
+                ("deaths_comfort".to_owned(), vec![[0, 1000], [1000, 1000]]),
+                ("deaths_crowding".to_owned(), vec![[0, 1000], [2000, 1000]]),
+            ]),
             ticking_rates_million: BTreeMap::new(),
             diet_profiles: BTreeMap::from([(
                 "peasant".to_owned(),
@@ -5619,6 +7432,7 @@ mod tests {
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers: 1,
             dependents: 0,
             employment: vec![Employment::default(); 2],
@@ -5724,6 +7538,7 @@ mod tests {
             kind: kind.to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers,
             dependents: 0,
             employment,
@@ -5871,6 +7686,7 @@ mod tests {
             kind: "peasant".to_owned(),
             culture: "ulaid".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers: 1,
             dependents: 0,
             employment: Vec::new(),
@@ -5954,6 +7770,7 @@ mod tests {
             kind: kind.to_owned(),
             culture: "ulaid".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers: 1,
             dependents: 0,
             employment: Vec::new(),
@@ -6046,6 +7863,7 @@ mod tests {
             kind: kind.to_owned(),
             culture: "ulaid".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers: 1,
             dependents: 0,
             employment: Vec::new(),
@@ -6221,6 +8039,7 @@ mod tests {
             kind: "monk".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers: 10,
             dependents: 0,
             employment: Vec::new(),
@@ -6291,6 +8110,7 @@ mod tests {
                     kind: "monk".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
+                    literacy_pm: 0,
                     workers: 10,
                     dependents: 0,
                     employment: Vec::new(),
@@ -6325,6 +8145,7 @@ mod tests {
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers: people,
             dependents: 0,
             employment: Vec::new(),
@@ -6476,6 +8297,7 @@ mod tests {
             kind: "monk".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers: 10,
             dependents: 0,
             employment: vec![Employment::default(); 2],
@@ -6556,11 +8378,16 @@ mod tests {
                 kind: "peasant".to_owned(),
                 culture: "connachta".to_owned(),
                 religion: "christianity".to_owned(),
+                literacy_pm: 0,
                 workers: 1,
                 dependents: 0,
                 employment: Vec::new(),
                 stock: vec![u64::try_from(target).unwrap()],
-                consumption: PopConsumption::default(),
+                consumption: PopConsumption {
+                    pantry_hunger_centi: vec![0],
+                    ticking_carries: vec![0],
+                    ..PopConsumption::default()
+                },
                 counters: CounterBuckets::default(),
             }],
             buildings: Vec::new(),
@@ -6670,9 +8497,14 @@ mod tests {
         );
         assert_eq!(starts.places["skellig_michael"].levels, Some([0, 2, 1]));
         assert_eq!(starts.places["skellig_michael"].peasants, Some(0));
+        assert_eq!(starts.places["skellig_michael"].monks, Some(10));
+        assert_eq!(starts.places["skellig_michael"].labourers, Some(10));
         assert_eq!(starts.places["inisfallen"].levels, Some([0, 2, 1]));
         assert_eq!(starts.places["inisfallen"].peasants, Some(0));
-        assert_eq!(starts.places["inishmurray"].peasants, Some(60));
+        assert_eq!(starts.places["inishmurray"].levels, Some([3, 2, 1]));
+        assert_eq!(starts.places["inishmurray"].peasants, Some(50));
+        assert_eq!(starts.places["inishmurray"].monks, Some(10));
+        assert_eq!(starts.places["inishmurray"].labourers, Some(10));
         for (id, share) in [
             ("cahercommaun", 200),
             ("killala", 150),
@@ -7266,6 +9098,7 @@ mod tests {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
+                    literacy_pm: 0,
                     workers: 12,
                     dependents: 8,
                     employment: vec![
@@ -8168,6 +10001,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This regression verifies owner coverage and hiring order across every configured position pool in one shared scenario."
+    )]
     fn holdings_owners_use_each_position_pools_ratio_from_rules() {
         let mut rules = tiny_rules();
         rules.pop_types.extend([
@@ -8221,6 +10058,10 @@ mod tests {
             },
         );
         rules.footprint_m2.insert("holdings".to_owned(), 4000);
+        rules.housing_per_level.insert("holdings".to_owned(), 14);
+        rules
+            .housing_class
+            .insert("holdings".to_owned(), "basic".to_owned());
         let mut data = tiny_start_data();
         let defaults = data
             .defaults
@@ -8348,6 +10189,7 @@ mod tests {
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers: 12,
             dependents: 8,
             employment: Vec::new(),
@@ -8586,6 +10428,10 @@ mod tests {
             },
         );
         rules.footprint_m2.insert("holdings".to_owned(), 4000);
+        rules.housing_per_level.insert("holdings".to_owned(), 14);
+        rules
+            .housing_class
+            .insert("holdings".to_owned(), "basic".to_owned());
         rules.pop_types.push(PopType {
             id: "monk".to_owned(),
             dependent_pm: 100,
@@ -8712,6 +10558,7 @@ mod tests {
                     kind: "peasant".to_owned(),
                     culture: "irish".to_owned(),
                     religion: "christianity".to_owned(),
+                    literacy_pm: 0,
                     workers: 60,
                     dependents: 40,
                     employment: vec![Employment {
@@ -8730,8 +10577,23 @@ mod tests {
                         luxuries_pm: 100,
                         satisfaction: -4,
                         drift_carries: [-100, 200, -300, 400],
+                        birth_carry: 0,
+                        worker_death_carry: 0,
+                        dependent_death_carry: 0,
+                        dependent_drift_carry: -321_654,
                     },
-                    counters: CounterBuckets::default(),
+                    counters: CounterBuckets {
+                        current: MonthlyCounters {
+                            births: 7,
+                            deaths: 3,
+                            losses: 2,
+                        },
+                        last: MonthlyCounters {
+                            births: 5,
+                            deaths: 4,
+                            losses: 1,
+                        },
+                    },
                 }],
                 buildings: vec![
                     BuildingState {
@@ -9044,11 +10906,18 @@ mod tests {
         rules.buildings = vec![farm_type.clone(), holdings_type.clone()];
         rules.footprint_m2 =
             BTreeMap::from([("farm".to_owned(), 2000), ("holdings".to_owned(), 4000)]);
+        rules.housing_per_level =
+            BTreeMap::from([("farm".to_owned(), 17), ("holdings".to_owned(), 14)]);
+        rules.housing_class = BTreeMap::from([
+            ("farm".to_owned(), "basic".to_owned()),
+            ("holdings".to_owned(), "basic".to_owned()),
+        ]);
 
         let pop = |workers, employment| PopState {
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers,
             dependents: 0,
             employment,
@@ -9176,6 +11045,7 @@ mod tests {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
+                    literacy_pm: 0,
                     workers: 0,
                     dependents: 0,
                     employment: vec![Employment::default()],
@@ -9313,6 +11183,7 @@ mod tests {
             kind: kind.to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers: 1,
             dependents: 0,
             employment: Vec::new(),
@@ -9466,6 +11337,7 @@ mod tests {
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers: 0,
             dependents: 0,
             employment: Vec::new(),
@@ -9486,11 +11358,11 @@ mod tests {
                 prices_milli: vec![1000],
                 prepared_m2: 0,
                 development_pm: 0,
-                price_drift_carries: Vec::new(),
+                price_drift_carries: vec![0],
                 counters: CounterBuckets::default(),
             }],
         };
-        run_daily_consumption(
+        run_daily_economy(
             &rules,
             &mut state,
             Date {
@@ -9502,7 +11374,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(state.places[0].pops[0].consumption.satisfaction, 6);
-        run_daily_consumption(
+        run_daily_economy(
             &rules,
             &mut state,
             Date {
@@ -9528,6 +11400,7 @@ mod tests {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
+                    literacy_pm: 0,
                     workers: 10,
                     dependents: 0,
                     employment: Vec::new(),
@@ -9594,6 +11467,7 @@ mod tests {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
+                    literacy_pm: 0,
                     workers: 1,
                     dependents: 0,
                     employment: Vec::new(),
@@ -9655,6 +11529,7 @@ mod tests {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
+                    literacy_pm: 0,
                     workers: 0,
                     dependents: 0,
                     employment: Vec::new(),
@@ -9709,6 +11584,7 @@ mod tests {
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers: 1,
             dependents: 0,
             employment: Vec::new(),
@@ -9760,6 +11636,7 @@ mod tests {
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers: 1,
             dependents: 0,
             employment: Vec::new(),
@@ -9904,6 +11781,7 @@ mod tests {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
+                    literacy_pm: 0,
                     workers: 1,
                     dependents: 0,
                     employment: Vec::new(),
@@ -9981,6 +11859,7 @@ mod tests {
                     kind: "peasant".to_owned(),
                     culture: "connachta".to_owned(),
                     religion: "christianity".to_owned(),
+                    literacy_pm: 0,
                     workers: 1,
                     dependents: 0,
                     employment: Vec::new(),
@@ -10043,6 +11922,7 @@ mod tests {
                 kind: "peasant".to_owned(),
                 culture: "connachta".to_owned(),
                 religion: "christianity".to_owned(),
+                literacy_pm: 0,
                 workers: 1,
                 dependents: 0,
                 employment: vec![Employment {
@@ -10207,6 +12087,7 @@ mod tests {
             kind: "peasant".to_owned(),
             culture: "connachta".to_owned(),
             religion: "christianity".to_owned(),
+            literacy_pm: 0,
             workers: 1,
             dependents: 0,
             employment: vec![Employment {
@@ -10265,5 +12146,1042 @@ mod tests {
         butcher_emergency(&rules, &mut place, 0, 50, &mut ledger).unwrap();
         assert!(place.buildings[0].herds.is_empty());
         assert_eq!(place.pops[0].stock, [0]);
+    }
+
+    #[test]
+    fn housing_fill_splits_non_divisible_overflow_and_preserves_totals() {
+        let rules = tiny_rules();
+        let pop = PopState {
+            kind: "peasant".to_owned(),
+            culture: "connachta".to_owned(),
+            religion: "christianity".to_owned(),
+            literacy_pm: 0,
+            workers: 27,
+            dependents: 0,
+            employment: vec![Employment::default()],
+            stock: vec![0],
+            consumption: PopConsumption::default(),
+            counters: CounterBuckets::default(),
+        };
+        let farm = BuildingState {
+            kind: "farm".to_owned(),
+            levels: 1,
+            method_levels: vec![1],
+            herds: Vec::new(),
+            employment: vec![Employment::default()],
+            stock: vec![0],
+            storehouse_accounts: None,
+            production_carries: vec![vec![0]],
+            method_suitability: vec![vec![1000]],
+            herd_birth_carries: Vec::new(),
+            herd_death_carries: Vec::new(),
+            herd_product_carries: Vec::new(),
+            herd_grazing_sums: Vec::new(),
+            wage_carries: vec![0],
+            pay_carries: vec![0],
+            fee_carries: Vec::new(),
+            wage_history: vec![0; 12],
+        };
+        let place = PlaceState {
+            id: "fort".to_owned(),
+            coastal: false,
+            pops: vec![pop],
+            buildings: vec![farm],
+            prices_milli: vec![0],
+            prepared_m2: 0,
+            development_pm: 1000,
+            price_drift_carries: Vec::new(),
+            counters: CounterBuckets::default(),
+        };
+        let fill = housing_fill(&rules, &place, 3).unwrap();
+        assert_eq!(fill.basic_capacity, 17);
+        assert_eq!(fill.makeshift_capacity, 3);
+        assert_eq!(fill.pops[0].basic, 23);
+        assert_eq!(fill.pops[0].makeshift, 4);
+        assert_eq!(fill.pops[0].crowding_pm, Some(1349));
+        assert_eq!(fill.basic_occupants, 23);
+        assert_eq!(fill.makeshift_occupants, 4);
+        assert_eq!(fill.building_occupants, [23]);
+        assert_eq!(fill.crowding_pm, 1350);
+    }
+
+    fn housing_test_place(
+        rules: &mut Rules,
+        per_level: u32,
+        levels: &[u32],
+        populations: &[(u64, u64)],
+        employment_by_pop: &[Vec<Employment>],
+    ) -> PlaceState {
+        rules.housing_per_level.insert("farm".to_owned(), per_level);
+        let buildings = levels
+            .iter()
+            .enumerate()
+            .map(|(building_index, level)| BuildingState {
+                kind: "farm".to_owned(),
+                levels: *level,
+                method_levels: vec![1],
+                herds: Vec::new(),
+                employment: employment_by_pop
+                    .iter()
+                    .map(|employment| employment[building_index].clone())
+                    .collect(),
+                stock: vec![0],
+                storehouse_accounts: None,
+                production_carries: vec![vec![0]],
+                method_suitability: vec![vec![1000]],
+                herd_birth_carries: Vec::new(),
+                herd_death_carries: Vec::new(),
+                herd_product_carries: Vec::new(),
+                herd_grazing_sums: Vec::new(),
+                wage_carries: vec![0],
+                pay_carries: vec![0],
+                fee_carries: Vec::new(),
+                wage_history: vec![0; 12],
+            })
+            .collect::<Vec<_>>();
+        let pops = populations
+            .iter()
+            .zip(employment_by_pop)
+            .map(|((workers, dependents), employment)| PopState {
+                kind: "peasant".to_owned(),
+                culture: "connachta".to_owned(),
+                religion: "christianity".to_owned(),
+                literacy_pm: 0,
+                workers: *workers,
+                dependents: *dependents,
+                employment: employment.clone(),
+                stock: vec![0],
+                consumption: PopConsumption::default(),
+                counters: CounterBuckets::default(),
+            })
+            .collect();
+        PlaceState {
+            id: "housing-fixture".to_owned(),
+            coastal: false,
+            pops,
+            buildings,
+            prices_milli: vec![1000],
+            prepared_m2: 0,
+            development_pm: 1000,
+            price_drift_carries: Vec::new(),
+            counters: CounterBuckets::default(),
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The specification requires one shared conservation assertion across all thirteen housing vectors."
+    )]
+    fn housing_fill_matches_all_spec_vectors() {
+        let check = |name: &str,
+                     per_level: u32,
+                     levels: &[u32],
+                     shelter: u64,
+                     populations: &[(u64, u64)],
+                     jobs: &[Vec<Employment>],
+                     expected_basic: &[u64],
+                     expected_makeshift: &[u64],
+                     expected_buildings: &[u64],
+                     expected_pop_crowding: &[Option<u64>],
+                     expected_place_crowding: u64| {
+            let mut rules = tiny_rules();
+            let place = housing_test_place(&mut rules, per_level, levels, populations, jobs);
+            let fill = housing_fill(&rules, &place, shelter).unwrap();
+            assert_eq!(
+                fill.pops.iter().map(|pop| pop.basic).collect::<Vec<_>>(),
+                expected_basic,
+                "{name}: basic by pop"
+            );
+            assert_eq!(
+                fill.pops
+                    .iter()
+                    .map(|pop| pop.makeshift)
+                    .collect::<Vec<_>>(),
+                expected_makeshift,
+                "{name}: makeshift by pop"
+            );
+            assert_eq!(
+                fill.building_occupants, expected_buildings,
+                "{name}: basic by building"
+            );
+            assert_eq!(
+                fill.pops
+                    .iter()
+                    .map(|pop| pop.crowding_pm)
+                    .collect::<Vec<_>>(),
+                expected_pop_crowding,
+                "{name}: per-pop crowding"
+            );
+            assert_eq!(
+                fill.crowding_pm, expected_place_crowding,
+                "{name}: place crowding"
+            );
+            assert_eq!(
+                fill.basic_occupants,
+                expected_basic.iter().sum::<u64>(),
+                "{name}: basic occupants conserve population allocation"
+            );
+            assert_eq!(
+                fill.makeshift_occupants,
+                expected_makeshift.iter().sum::<u64>(),
+                "{name}: makeshift occupants conserve population allocation"
+            );
+            assert_eq!(
+                fill.basic_occupants,
+                expected_buildings.iter().sum::<u64>(),
+                "{name}: building occupancy conserves basic allocation"
+            );
+        };
+
+        check(
+            "F1 counterexample",
+            1,
+            &[1],
+            0,
+            &[(1, 0), (9, 0)],
+            &[
+                vec![Employment {
+                    owners: 0,
+                    workers: 1,
+                }],
+                vec![Employment::default()],
+            ],
+            &[1, 9],
+            &[0, 0],
+            &[10],
+            &[Some(10_000), Some(10_000)],
+            10_000,
+        );
+        check(
+            "zero-capacity basic",
+            17,
+            &[],
+            5,
+            &[(8, 0)],
+            &[vec![]],
+            &[0],
+            &[8],
+            &[],
+            &[Some(1600)],
+            1600,
+        );
+        check(
+            "non-divisible overflow",
+            17,
+            &[1],
+            3,
+            &[(27, 0)],
+            &[vec![Employment::default()]],
+            &[23],
+            &[4],
+            &[23],
+            &[Some(1349)],
+            1350,
+        );
+        check(
+            "divisible overflow",
+            20,
+            &[1],
+            10,
+            &[(45, 0)],
+            &[vec![Employment::default()]],
+            &[30],
+            &[15],
+            &[30],
+            &[Some(1500)],
+            1500,
+        );
+        check(
+            "two unhoused pops",
+            17,
+            &[1],
+            3,
+            &[(10, 0), (17, 0)],
+            &[vec![Employment::default()], vec![Employment::default()]],
+            &[9, 14],
+            &[1, 3],
+            &[23],
+            &[Some(1350), Some(1348)],
+            1350,
+        );
+        check(
+            "underfull building",
+            28,
+            &[1],
+            10,
+            &[(10, 10), (12, 0)],
+            &[
+                vec![Employment {
+                    owners: 0,
+                    workers: 10,
+                }],
+                vec![Employment::default()],
+            ],
+            &[20, 8],
+            &[0, 4],
+            &[28],
+            &[Some(1000), Some(800)],
+            842,
+        );
+        check(
+            "split employment",
+            17,
+            &[1, 1],
+            0,
+            &[(2, 1)],
+            &[vec![
+                Employment {
+                    owners: 0,
+                    workers: 1,
+                },
+                Employment {
+                    owners: 0,
+                    workers: 1,
+                },
+            ]],
+            &[3],
+            &[0],
+            &[2, 1],
+            &[Some(88)],
+            88,
+        );
+        check(
+            "fully employed over two buildings",
+            17,
+            &[1, 2],
+            0,
+            &[(24, 16)],
+            &[vec![
+                Employment {
+                    owners: 0,
+                    workers: 12,
+                },
+                Employment {
+                    owners: 0,
+                    workers: 12,
+                },
+            ]],
+            &[40],
+            &[0],
+            &[17, 23],
+            &[Some(784)],
+            784,
+        );
+        check(
+            "partial employment",
+            17,
+            &[1],
+            0,
+            &[(4, 6)],
+            &[vec![Employment {
+                owners: 0,
+                workers: 3,
+            }]],
+            &[10],
+            &[0],
+            &[10],
+            &[Some(588)],
+            588,
+        );
+        check(
+            "zero workers",
+            17,
+            &[1],
+            0,
+            &[(0, 5)],
+            &[vec![Employment::default()]],
+            &[5],
+            &[0],
+            &[5],
+            &[Some(294)],
+            294,
+        );
+        check(
+            "two pops over one building",
+            17,
+            &[1],
+            10,
+            &[(6, 6), (4, 3)],
+            &[
+                vec![Employment {
+                    owners: 0,
+                    workers: 6,
+                }],
+                vec![Employment {
+                    owners: 0,
+                    workers: 4,
+                }],
+            ],
+            &[11, 6],
+            &[1, 1],
+            &[17],
+            &[Some(933), Some(885)],
+            703,
+        );
+        check(
+            "no housing",
+            17,
+            &[],
+            0,
+            &[(30, 0)],
+            &[vec![]],
+            &[0],
+            &[0],
+            &[],
+            &[Some(2000)],
+            2000,
+        );
+        check(
+            "a pop died off",
+            17,
+            &[1],
+            5,
+            &[(0, 0), (12, 8)],
+            &[
+                vec![Employment::default()],
+                vec![Employment {
+                    owners: 0,
+                    workers: 10,
+                }],
+            ],
+            &[0, 17],
+            &[0, 3],
+            &[17],
+            &[None, Some(940)],
+            909,
+        );
+    }
+
+    #[test]
+    fn monastery_owners_use_basic_first_and_shelter_only_after_basic_is_full() {
+        let mut rules = tiny_rules();
+        rules.housing_per_level.insert("farm".to_owned(), 14);
+        let mut place = housing_test_place(
+            &mut rules,
+            14,
+            &[1],
+            &[(5, 0), (5, 0), (6, 0)],
+            &[
+                vec![Employment {
+                    owners: 0,
+                    workers: 5,
+                }],
+                vec![Employment {
+                    owners: 0,
+                    workers: 5,
+                }],
+                vec![Employment::default()],
+            ],
+        );
+        place.pops[0].kind = "monk".to_owned();
+        place.pops[1].kind = "labourer".to_owned();
+        let fill = housing_fill(&rules, &place, 3).unwrap();
+        assert_eq!(
+            fill.pops.iter().map(|pop| pop.basic).collect::<Vec<_>>(),
+            [5, 5, 4],
+            "the monastery's own workers are housed before the homeless peasant"
+        );
+        assert_eq!(
+            fill.pops
+                .iter()
+                .map(|pop| pop.makeshift)
+                .collect::<Vec<_>>(),
+            [0, 0, 2],
+            "makeshift shelter receives people only after all 14 basic spaces are filled"
+        );
+        assert_eq!(fill.basic_occupants, 14);
+        assert_eq!(fill.makeshift_occupants, 2);
+        assert_eq!(fill.building_occupants, [14]);
+    }
+
+    #[test]
+    fn monthly_demography_keeps_exact_fractional_rate_carries() {
+        let rules = tiny_rules();
+        let pop = PopState {
+            kind: "peasant".to_owned(),
+            culture: "connachta".to_owned(),
+            religion: "christianity".to_owned(),
+            literacy_pm: 0,
+            workers: 120,
+            dependents: 80,
+            employment: vec![Employment::default()],
+            stock: vec![0],
+            consumption: PopConsumption {
+                pantry_hunger_centi: vec![0],
+                ticking_carries: vec![0],
+                necessities_pm: 1000,
+                ..PopConsumption::default()
+            },
+            counters: CounterBuckets::default(),
+        };
+        let farm = BuildingState {
+            kind: "farm".to_owned(),
+            levels: 1,
+            method_levels: vec![1],
+            herds: Vec::new(),
+            employment: vec![Employment::default()],
+            stock: vec![0],
+            storehouse_accounts: None,
+            production_carries: vec![vec![0]],
+            method_suitability: vec![vec![1000]],
+            herd_birth_carries: Vec::new(),
+            herd_death_carries: Vec::new(),
+            herd_product_carries: Vec::new(),
+            herd_grazing_sums: Vec::new(),
+            wage_carries: vec![0],
+            pay_carries: vec![0],
+            fee_carries: Vec::new(),
+            wage_history: vec![0; 12],
+        };
+        let mut state = EconomyState {
+            places: vec![PlaceState {
+                id: "fort".to_owned(),
+                coastal: false,
+                pops: vec![pop],
+                buildings: vec![farm],
+                prices_milli: vec![0],
+                prepared_m2: 0,
+                development_pm: 1000,
+                price_drift_carries: Vec::new(),
+                counters: CounterBuckets::default(),
+            }],
+        };
+        run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        let pop = &state.places[0].pops[0];
+        assert_eq!((pop.workers, pop.dependents), (120, 80));
+        assert_eq!(pop.counters.current.births, 0);
+        assert_eq!(pop.counters.current.deaths, 0);
+        assert_eq!(pop.consumption.birth_carry, 8_040_000_000_000_000);
+        assert_eq!(pop.consumption.worker_death_carry, 2_400_000_000_000);
+        assert_eq!(pop.consumption.dependent_death_carry, 4_800_000_000_000_000);
+    }
+
+    #[test]
+    fn fractional_rate_of_1_62_on_one_person_keeps_its_remainder() {
+        let mut carry = 0;
+        let mut whole = 0;
+        for _ in 0..12 {
+            whole += exact_monthly_rate(1, 1620, &[1000], &mut carry, "rate.test").unwrap();
+        }
+        assert_eq!(whole, 1);
+        assert_eq!(carry, 7_440_000);
+    }
+
+    #[test]
+    fn monthly_death_uses_before_phase_crowding_when_the_pop_dies_off() {
+        let mut rules = tiny_rules();
+        rules.pop_types[0].births_pm_year = 0;
+        rules.pop_types[0].worker_deaths_pm_year = 12_000;
+        rules
+            .curves
+            .insert("deaths_crowding".to_owned(), vec![[0, 0], [2000, 1000]]);
+        let pop = PopState {
+            kind: "peasant".to_owned(),
+            culture: "connachta".to_owned(),
+            religion: "christianity".to_owned(),
+            literacy_pm: 0,
+            workers: 1,
+            dependents: 0,
+            employment: Vec::new(),
+            stock: vec![0],
+            consumption: PopConsumption::default(),
+            counters: CounterBuckets::default(),
+        };
+        let mut state = EconomyState {
+            places: vec![PlaceState {
+                id: "emptying-pop".to_owned(),
+                coastal: false,
+                pops: vec![pop],
+                buildings: Vec::new(),
+                prices_milli: vec![1000],
+                prepared_m2: 0,
+                development_pm: 1000,
+                price_drift_carries: Vec::new(),
+                counters: CounterBuckets::default(),
+            }],
+        };
+        assert_eq!(
+            housing_fill(&rules, &state.places[0], 0)
+                .unwrap()
+                .crowding_pm,
+            2000
+        );
+
+        run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+
+        let place = &state.places[0];
+        assert_eq!(place.pops[0].workers, 0);
+        assert_eq!(place.pops[0].counters.current.deaths, 1);
+        assert_eq!(place.pops[0].consumption.worker_death_carry, 0);
+        let after_fill = housing_fill(&rules, place, 0).unwrap();
+        assert_eq!(after_fill.pops[0].crowding_pm, None);
+        assert_eq!(after_fill.crowding_pm, 0);
+    }
+
+    #[test]
+    fn labourer_movement_transfers_dependents_goods_accounts_and_averages_atomically() {
+        let (rules, mut state) = daily_accounting_fixture();
+        let mut source = state.places.remove(0);
+        source.id = "source".to_owned();
+        let source_pop = &mut source.pops[0];
+        source_pop.workers = 100;
+        source_pop.dependents = 40;
+        source_pop.stock[0] = 100;
+        source_pop.consumption.pantry_hunger_centi[0] = 140;
+        source_pop.consumption.necessities_centi = 1000;
+        source_pop.consumption.necessities_pm = 800;
+        source_pop.literacy_pm = 600;
+        source_pop.employment.fill(Employment::default());
+        source.buildings[0].stock[0] = 70;
+        source.buildings[0]
+            .storehouse_accounts
+            .as_mut()
+            .unwrap()
+            .pops[0][0] = 70;
+
+        let mut destination = source.clone();
+        destination.id = "destination".to_owned();
+        destination.pops.clear();
+        for building in &mut destination.buildings {
+            building.employment.clear();
+            if let Some(accounts) = &mut building.storehouse_accounts {
+                accounts.pops.clear();
+            }
+        }
+        let mut places = vec![source, destination];
+        let (moved, destination_pop) =
+            move_recruits(&rules, &mut places, 0, 0, 1, 1, "labourer", 10).unwrap();
+        assert_eq!(moved, 14);
+        let source = &places[0];
+        let destination = &places[1];
+        let source_pop = &source.pops[0];
+        let moved_pop = &destination.pops[destination_pop];
+        assert_eq!((source_pop.workers, source_pop.dependents), (90, 36));
+        assert_eq!(
+            (
+                moved_pop.kind.as_str(),
+                moved_pop.workers,
+                moved_pop.dependents
+            ),
+            ("labourer", 10, 4)
+        );
+        assert_eq!(source_pop.stock[0], 90);
+        assert_eq!(
+            moved_pop.stock[0], 14,
+            "the destination pop cap accepts only four account units"
+        );
+        let source_account = source.buildings[0]
+            .storehouse_accounts
+            .as_ref()
+            .unwrap()
+            .pops[0][0];
+        assert_eq!(source_account, 66);
+        assert_eq!(source.buildings[0].stock[0], 66);
+        assert_eq!(
+            source_pop.stock[0] + source.buildings[0].stock[0] + moved_pop.stock[0],
+            170
+        );
+        assert_eq!(source_pop.consumption.pantry_hunger_centi[0], 126);
+        assert_eq!(moved_pop.consumption.pantry_hunger_centi[0], 14);
+        assert_eq!(moved_pop.consumption.necessities_centi, 100);
+        assert_eq!(moved_pop.literacy_pm, 600);
+    }
+
+    #[test]
+    fn monk_recruitment_preserves_source_dependent_share_and_joins_as_workers() {
+        let (rules, mut state) = daily_accounting_fixture();
+        let mut source = state.places.remove(0);
+        source.id = "source".to_owned();
+        source.pops[0].workers = 100;
+        source.pops[0].dependents = 40;
+        source.pops[0].employment.fill(Employment::default());
+        let mut destination = source.clone();
+        destination.id = "destination".to_owned();
+        destination.pops.clear();
+        for building in &mut destination.buildings {
+            building.employment.clear();
+            if let Some(accounts) = &mut building.storehouse_accounts {
+                accounts.pops.clear();
+            }
+        }
+        let mut places = vec![source, destination];
+        let (moved, destination_pop) =
+            move_recruits(&rules, &mut places, 0, 0, 1, 1, "monk", 10).unwrap();
+        assert_eq!(moved, 10);
+        assert_eq!(
+            (places[0].pops[0].workers, places[0].pops[0].dependents),
+            (93, 37)
+        );
+        assert_eq!(
+            (
+                places[1].pops[destination_pop].kind.as_str(),
+                places[1].pops[destination_pop].workers,
+                places[1].pops[destination_pop].dependents
+            ),
+            ("monk", 10, 0),
+        );
+    }
+
+    #[test]
+    fn dependent_drift_keeps_a_small_share_gap_over_many_months() {
+        let mut dependents = 3;
+        let mut carry = 0;
+        for _ in 0..499 {
+            dependents = drift_dependents(dependents, 7, 400, &mut carry).unwrap();
+            assert_eq!(dependents, 3);
+        }
+        dependents = drift_dependents(dependents, 7, 400, &mut carry).unwrap();
+        assert_eq!(dependents, 2, "0.2 person of excess accumulates to one");
+        assert_eq!(carry, 0);
+        for _ in 0..124 {
+            dependents = drift_dependents(dependents, 7, 400, &mut carry).unwrap();
+            assert_eq!(dependents, 2);
+        }
+        dependents = drift_dependents(dependents, 7, 400, &mut carry).unwrap();
+        assert_eq!(dependents, 3, "the reversed 0.8 gap accumulates to one");
+    }
+
+    fn holdings_movement_fixture() -> (Rules, PlaceState) {
+        let mut rules = tiny_rules();
+        rules.leave_pm = 1000;
+        rules.hire_pm = 100;
+        rules.buildings.push(BuildingType {
+            id: "holdings".to_owned(),
+            workers_per_level: 10,
+            land_per_level: 1,
+            owner_workers: BTreeMap::from([("monk".to_owned(), 5), ("labourer".to_owned(), 10)]),
+            penalty_pm: 0,
+            overhead_pm: 0,
+            methods: Vec::new(),
+        });
+        let pop = |kind: &str, workers: u64, job: Employment| PopState {
+            kind: kind.to_owned(),
+            culture: "connachta".to_owned(),
+            religion: "christianity".to_owned(),
+            literacy_pm: 0,
+            workers,
+            dependents: 0,
+            employment: vec![job],
+            stock: vec![0],
+            consumption: PopConsumption {
+                pantry_hunger_centi: vec![0],
+                ticking_carries: vec![0],
+                ..PopConsumption::default()
+            },
+            counters: CounterBuckets::default(),
+        };
+        let building = BuildingState {
+            kind: "holdings".to_owned(),
+            levels: 1,
+            method_levels: Vec::new(),
+            herds: Vec::new(),
+            employment: vec![
+                Employment::default(),
+                Employment {
+                    owners: 2,
+                    workers: 2,
+                },
+                Employment {
+                    owners: 0,
+                    workers: 3,
+                },
+            ],
+            stock: vec![0],
+            storehouse_accounts: None,
+            production_carries: Vec::new(),
+            method_suitability: Vec::new(),
+            herd_birth_carries: Vec::new(),
+            herd_death_carries: Vec::new(),
+            herd_product_carries: Vec::new(),
+            herd_grazing_sums: Vec::new(),
+            wage_carries: Vec::new(),
+            pay_carries: Vec::new(),
+            fee_carries: Vec::new(),
+            wage_history: vec![100; 12],
+        };
+        let place = PlaceState {
+            id: "holdings-fixture".to_owned(),
+            coastal: false,
+            pops: vec![
+                pop("peasant", 30, Employment::default()),
+                pop(
+                    "monk",
+                    4,
+                    Employment {
+                        owners: 2,
+                        workers: 2,
+                    },
+                ),
+                pop(
+                    "labourer",
+                    3,
+                    Employment {
+                        owners: 0,
+                        workers: 3,
+                    },
+                ),
+            ],
+            buildings: vec![building],
+            prices_milli: vec![1000],
+            prepared_m2: 0,
+            development_pm: 1000,
+            price_drift_carries: Vec::new(),
+            counters: CounterBuckets::default(),
+        };
+        (rules, place)
+    }
+
+    #[test]
+    fn movement_counts_filled_positions_by_the_original_pop_index() {
+        let (rules, place) = holdings_movement_fixture();
+        let mut places = vec![place];
+        let moved =
+            move_open_positions(&rules, &mut places, &BTreeMap::new(), &[vec![[5, 5]]]).unwrap();
+        let place = &places[0];
+        let monk_workers = place
+            .pops
+            .iter()
+            .find(|pop| pop.kind == "monk")
+            .unwrap()
+            .employment[0]
+            .workers;
+        let labourer_workers = place
+            .pops
+            .iter()
+            .find(|pop| pop.kind == "labourer")
+            .unwrap()
+            .employment[0]
+            .workers;
+        assert_eq!(monk_workers, 5, "three of five monk positions were open");
+        assert_eq!(
+            labourer_workers, 5,
+            "two of five labourer positions were open"
+        );
+        assert_eq!(
+            moved[0].iter().sum::<u64>(),
+            5,
+            "movement counts workers and dependent shares"
+        );
+    }
+
+    #[test]
+    fn one_source_leave_budget_is_shared_across_two_destinations() {
+        let (mut rules, fixture) = holdings_movement_fixture();
+        rules.leave_pm = 500;
+        let empty_destination = |id: &str| {
+            let mut place = fixture.clone();
+            place.id = id.to_owned();
+            place.pops.clear();
+            place.buildings[0].employment.clear();
+            place
+        };
+        let source = PlaceState {
+            id: "source".to_owned(),
+            coastal: false,
+            pops: vec![PopState {
+                kind: "peasant".to_owned(),
+                culture: "connachta".to_owned(),
+                religion: "christianity".to_owned(),
+                literacy_pm: 0,
+                workers: 10,
+                dependents: 0,
+                employment: Vec::new(),
+                stock: vec![0],
+                consumption: PopConsumption {
+                    pantry_hunger_centi: vec![0],
+                    ticking_carries: vec![0],
+                    ..PopConsumption::default()
+                },
+                counters: CounterBuckets::default(),
+            }],
+            buildings: Vec::new(),
+            prices_milli: vec![1000],
+            prepared_m2: 0,
+            development_pm: 1000,
+            price_drift_carries: Vec::new(),
+            counters: CounterBuckets::default(),
+        };
+        let mut places = vec![
+            empty_destination("first"),
+            empty_destination("second"),
+            source,
+        ];
+        let nearby = BTreeMap::from([
+            (
+                "first".to_owned(),
+                vec![NearbyPlace {
+                    id: "source".to_owned(),
+                    distance_m: 1000,
+                }],
+            ),
+            (
+                "second".to_owned(),
+                vec![NearbyPlace {
+                    id: "source".to_owned(),
+                    distance_m: 1000,
+                }],
+            ),
+        ]);
+        let moved = move_open_positions(
+            &rules,
+            &mut places,
+            &nearby,
+            &[vec![[10, 10]], vec![[10, 10]], vec![]],
+        )
+        .unwrap();
+        assert_eq!(places[2].pops[0].workers, 5);
+        assert_eq!(moved[0].iter().sum::<u64>(), 5);
+        assert_eq!(moved[1].iter().sum::<u64>(), 0);
+    }
+
+    #[test]
+    fn monthly_worker_hiring_and_movement_share_the_position_rate_cap() {
+        let (rules, mut place) = holdings_movement_fixture();
+        let allowance = fill_monthly_hiring(&rules, &mut place).unwrap();
+        let before = place
+            .pops
+            .iter()
+            .map(|pop| pop.employment[0].workers)
+            .collect::<Vec<_>>();
+        let mut places = vec![place];
+        move_open_positions(&rules, &mut places, &BTreeMap::new(), &[allowance]).unwrap();
+        let place = &places[0];
+        for (kind, index) in [("monk", 0), ("labourer", 1)] {
+            let after = place
+                .pops
+                .iter()
+                .filter(|pop| pop.kind == kind)
+                .map(|pop| pop.employment[0].workers)
+                .sum::<u64>();
+            assert!(
+                after - before[index + 1] <= 1,
+                "{kind} intake must stay at max(1, floor(open × 100 / 1000))"
+            );
+        }
+    }
+
+    #[test]
+    fn holdings_owner_positions_share_total_coverage_and_only_monks_own_them() {
+        let (rules, mut place) = holdings_movement_fixture();
+        fill_monthly_hiring(&rules, &mut place).unwrap();
+        let monk = place.pops.iter().find(|pop| pop.kind == "monk").unwrap();
+        let labourer = place
+            .pops
+            .iter()
+            .find(|pop| pop.kind == "labourer")
+            .unwrap();
+        assert_eq!(monk.employment[0].owners, 2);
+        assert_eq!(labourer.employment[0].owners, 0);
+    }
+
+    #[test]
+    fn wage_comparison_excludes_equal_sources_and_orders_below_posted_by_wage_per_head() {
+        let pop = |workers, job| PopState {
+            kind: "peasant".to_owned(),
+            culture: "connachta".to_owned(),
+            religion: "christianity".to_owned(),
+            literacy_pm: 0,
+            workers,
+            dependents: 0,
+            employment: vec![job],
+            stock: vec![0],
+            consumption: PopConsumption::default(),
+            counters: CounterBuckets::default(),
+        };
+        let building = BuildingState {
+            kind: "farm".to_owned(),
+            levels: 1,
+            method_levels: vec![1],
+            herds: Vec::new(),
+            employment: vec![Employment::default(); 3],
+            stock: vec![0],
+            storehouse_accounts: None,
+            production_carries: vec![vec![0]],
+            method_suitability: vec![vec![1000]],
+            herd_birth_carries: Vec::new(),
+            herd_death_carries: Vec::new(),
+            herd_product_carries: Vec::new(),
+            herd_grazing_sums: Vec::new(),
+            wage_carries: vec![0],
+            pay_carries: vec![0],
+            fee_carries: Vec::new(),
+            wage_history: vec![100; 12],
+        };
+        let place = PlaceState {
+            id: "wage-fixture".to_owned(),
+            coastal: false,
+            pops: vec![
+                pop(
+                    10,
+                    Employment {
+                        owners: 0,
+                        workers: 10,
+                    },
+                ),
+                pop(
+                    10,
+                    Employment {
+                        owners: 0,
+                        workers: 9,
+                    },
+                ),
+                pop(
+                    10,
+                    Employment {
+                        owners: 2,
+                        workers: 4,
+                    },
+                ),
+            ],
+            buildings: vec![building],
+            prices_milli: vec![1000],
+            prepared_m2: 0,
+            development_pm: 1000,
+            price_drift_carries: Vec::new(),
+            counters: CounterBuckets::default(),
+        };
+        assert_eq!(pop_wage_per_head(&place, 0).unwrap(), 100);
+        assert_eq!(pop_wage_per_head(&place, 1).unwrap(), 90);
+        assert_eq!(pop_wage_per_head(&place, 2).unwrap(), 40);
+        assert!(!source_can_fill(&place.pops[0], "labourer", 100, 100));
+        assert!(source_can_fill(&place.pops[1], "labourer", 100, 90));
+        let order = source_order(&place, "labourer", 100, &[10, 10, 10]).unwrap();
+        assert_eq!(
+            order,
+            [2, 1],
+            "owners and the unemployed lower the average; poorest goes first"
+        );
+    }
+
+    #[test]
+    fn moved_pantry_hunger_is_not_reformed_as_a_second_stock_unit() {
+        let (rules, state) = daily_accounting_fixture();
+        let mut destination = state.places[0].pops[0].clone();
+        destination.stock[0] = 0;
+        destination.consumption.pantry_hunger_centi[0] = 90;
+        assert!(receive_pantry_share(&rules, &mut destination, 0, 90).unwrap());
+        assert_eq!(
+            destination.stock[0], 0,
+            "already-opened food cannot be credited again"
+        );
+        assert_eq!(destination.consumption.pantry_hunger_centi[0], 180);
+    }
+
+    #[test]
+    fn refused_cross_place_recruitment_rolls_back_both_places() {
+        let (rules, source) = holdings_movement_fixture();
+        let mut destination = source.clone();
+        destination.id = "bad-destination".to_owned();
+        destination.pops.clear();
+        destination.buildings[0].employment.clear();
+        destination.prices_milli.clear();
+        let mut places = vec![source, destination];
+        let before = places.clone();
+        assert!(move_recruits(&rules, &mut places, 0, 0, 1, 0, "labourer", 1).is_err());
+        assert_eq!(
+            places, before,
+            "a refusal cannot partially commit either place"
+        );
     }
 }

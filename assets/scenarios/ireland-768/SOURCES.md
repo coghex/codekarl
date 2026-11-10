@@ -298,5 +298,12 @@ msgid `cqarvdb99b8twq87h8h243ybri`; signed copy SHA-256
 | `inisfallen` peasant population | 0, with farm level 0 | Island-house guess; owner-approved in the signed table. |
 | Pagan pockets | `cahercommaun` 20%, `killala` 15%, `cong` 15%, `tory` 10% of peasants | Design-invented remote pockets and shares; owner-approved in the signed table. |
 
+## Housing start fixes (CK-229)
+
+| Place | Authored start | Rationale |
+|---|---|---|
+| `skellig_michael` | 10 monks, 10 labourers, no peasants; 2 holdings levels | The M9 housing design requires this population to fit the island's 31 basic spaces, including the storehouse. The counts are a gameplay fixture, not a new historical estimate. |
+| `inishmurray` | 50 peasants, 10 monks, 10 labourers; 3 farm levels and 2 holdings levels | The M9 housing design requires the coastal farm and populations to fit its 82 basic spaces, including the storehouse. The exact population split and levels are gameplay fixture choices. |
+
 Skellig Michael's peasant-less opening is supported by the sourced community of about twelve monks and an abbot. Inishmurray keeps
 peasants. The signed table resolves the Osraige and Dál Riata culture mappings to Mumu and Ulaid respectively.
