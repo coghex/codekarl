@@ -1197,6 +1197,10 @@ pub fn starting_state(
             })
             .collect::<Result<Vec<_>, _>>()?;
         for building in &mut buildings {
+            if building.storehouse_accounts.is_some() {
+                building.wage_history = vec![0; WAGE_HISTORY_MONTHS];
+                continue;
+            }
             let paid_heads = building
                 .employment
                 .iter()
@@ -1763,9 +1767,15 @@ fn building_coverage_pm(
     clippy::too_many_lines,
     reason = "The fee debit and payday credit share one transactional storehouse accounting step."
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The current local prices and month index belong to the atomic fee payday step."
+)]
 fn pay_storehouse_fee(
     rules: &Rules,
     place_id: &str,
+    prices_milli: &[u64],
+    month_index: usize,
     pops: &mut [PopState],
     buildings: &mut [BuildingState],
     building_index: usize,
@@ -1835,6 +1845,42 @@ fn pay_storehouse_fee(
             .collect::<Vec<_>>();
         (fees, worker_weights)
     };
+    let paid_heads = worker_weights
+        .iter()
+        .try_fold(0_u128, |sum, workers| sum.checked_add(u128::from(*workers)))
+        .ok_or_else(|| {
+            missing_data(
+                format!("places.{place_id}.buildings.storehouse.wage_history"),
+                "paid head count overflow",
+            )
+        })?;
+    if paid_heads > 0 {
+        // Value this payday's fees only; old pay carries are released below but are not new fees.
+        let wage_value = fees
+            .iter()
+            .enumerate()
+            .try_fold(0_u128, |total, (good_index, fee)| {
+                let entry = format!("places.{place_id}.buildings.storehouse.wage_history");
+                let price = prices_milli.get(good_index).copied().ok_or_else(|| {
+                    missing_data(
+                        format!("places.{place_id}.prices_milli"),
+                        "saved prices do not match goods",
+                    )
+                })?;
+                let value = value_at_price(u128::from(*fee), price)
+                    .map_err(|problem| missing_data(entry.clone(), problem))?;
+                total
+                    .checked_add(value)
+                    .ok_or_else(|| missing_data(entry, "payday fee value overflow"))
+            })?;
+        let posted = u64::try_from(wage_value / paid_heads).map_err(|_| {
+            missing_data(
+                format!("places.{place_id}.buildings.storehouse.wage_history"),
+                "posted payday fee exceeds u64",
+            )
+        })?;
+        buildings[building_index].wage_history[month_index] = posted;
+    }
     for (good_index, fee) in fees.into_iter().enumerate() {
         let carried = buildings[building_index].pay_carries[good_index];
         let fee = fee
@@ -4988,6 +5034,8 @@ pub fn run_monthly_production_with_quality(
             pay_storehouse_fee(
                 rules,
                 &place.id,
+                &place.prices_milli,
+                usize::from(date.month - 1),
                 &mut place.pops,
                 &mut place.buildings,
                 building_index,
@@ -6038,6 +6086,39 @@ mod tests {
                 .map(|id| (id.to_owned(), ordinary_place()))
                 .collect(),
         }
+    }
+
+    fn tiny_storehouse_payday_state() -> (Rules, EconomyState) {
+        let mut rules = tiny_rules();
+        rules.seasons.insert(
+            "food".to_owned(),
+            [0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].into(),
+        );
+        rules.seasons.insert(
+            "herd_births".to_owned(),
+            [0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].into(),
+        );
+        let mut data = tiny_start_data();
+        data.defaults
+            .get_mut("ringfort")
+            .unwrap()
+            .get_mut("1")
+            .unwrap()
+            .building_stock
+            .insert("food".to_owned(), 11);
+        let location = StartLocation {
+            id: "fort".to_owned(),
+            kind: "ringfort".to_owned(),
+            size: 1,
+            land: LandCounts {
+                land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
+                fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
+                fertile_cells: 8,
+                sea: 0,
+            },
+        };
+        let (state, _) = starting_state(&rules, &data, &[location], 10).unwrap();
+        (rules, state)
     }
 
     #[test]
@@ -7307,6 +7388,14 @@ mod tests {
         assert_eq!(farm.stock, [11]);
         assert_eq!(farm.wage_history, [10_000; 12]);
         assert_eq!(farm.posted_wage(), 10_000);
+        let storehouse = state.places[0]
+            .buildings
+            .iter()
+            .find(|building| building.kind == "storehouse")
+            .unwrap();
+        assert_eq!(storehouse.stock, [0]);
+        assert_eq!(storehouse.wage_history, [0; 12]);
+        assert_eq!(storehouse.posted_wage(), 0);
 
         data.defaults
             .get_mut("ringfort")
@@ -7600,6 +7689,140 @@ mod tests {
             .find(|building| building.kind == "farm")
             .unwrap();
         assert_eq!(farm.wage_history[2], 0, "heads with no output record zero");
+    }
+
+    #[test]
+    fn storehouse_fee_records_only_new_fee_value_per_paid_head_even_with_old_carry_and_overflow() {
+        let (mut rules, mut state) = tiny_storehouse_payday_state();
+        let place = &mut state.places[0];
+        let farm_index = place
+            .buildings
+            .iter()
+            .position(|building| building.kind == "farm")
+            .unwrap();
+        let storehouse_index = place
+            .buildings
+            .iter()
+            .position(|building| building.kind == "storehouse")
+            .unwrap();
+        rules.goods[0].pop_limit_milli = 0;
+        place.prices_milli[0] = 3001;
+        for employment in &mut place.buildings[farm_index].employment {
+            employment.workers = 0;
+        }
+        place.pops[0].employment[farm_index].workers = 0;
+        let storehouse = &mut place.buildings[storehouse_index];
+        storehouse.employment[0].workers = 2;
+        place.pops[0].employment[storehouse_index].workers = 2;
+        storehouse.pay_carries[0] = 5;
+        storehouse.stock[0] = 100;
+        storehouse.storehouse_accounts.as_mut().unwrap().pops[0][0] = 100;
+        let opening_pop_food = place.pops[0].stock[0];
+
+        let ledger = run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let place = &state.places[0];
+        let storehouse = &place.buildings[storehouse_index];
+        assert_eq!(storehouse.wage_history[0], 1500);
+        assert_eq!(
+            storehouse.pay_carries[0], 0,
+            "the five old carried units were released with this month's one fee unit"
+        );
+        assert_eq!(
+            place.pops[0].stock[0], opening_pop_food,
+            "the recipient's zero cap overflows all six units"
+        );
+        assert_eq!(
+            ledger.lost[0], 6,
+            "all five released carry units and this month's one fee unit overflow"
+        );
+    }
+
+    #[test]
+    fn a_storehouse_without_paid_heads_keeps_its_posted_wage_entry() {
+        let (rules, mut state) = tiny_storehouse_payday_state();
+        let place = &mut state.places[0];
+        let storehouse_index = place
+            .buildings
+            .iter()
+            .position(|building| building.kind == "storehouse")
+            .unwrap();
+        let storehouse = &mut place.buildings[storehouse_index];
+        storehouse.wage_history[0] = 777;
+        storehouse.stock[0] = 100;
+        storehouse.storehouse_accounts.as_mut().unwrap().pops[0][0] = 100;
+        storehouse.employment[0].workers = 0;
+        place.pops[0].employment[storehouse_index].workers = 0;
+
+        run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let storehouse = &state.places[0].buildings[storehouse_index];
+        assert_eq!(storehouse.wage_history[0], 777);
+        assert_eq!(storehouse.pay_carries[0], 1);
+    }
+
+    #[test]
+    fn a_storehouse_fee_wage_overflow_refuses_and_rolls_back_its_history() {
+        let (rules, mut state) = tiny_storehouse_payday_state();
+        let place = &mut state.places[0];
+        let farm_index = place
+            .buildings
+            .iter()
+            .position(|building| building.kind == "farm")
+            .unwrap();
+        let storehouse_index = place
+            .buildings
+            .iter()
+            .position(|building| building.kind == "storehouse")
+            .unwrap();
+        for employment in &mut place.buildings[farm_index].employment {
+            employment.workers = 0;
+        }
+        place.pops[0].employment[farm_index].workers = 0;
+        place.prices_milli[0] = u64::MAX;
+        let storehouse = &mut place.buildings[storehouse_index];
+        storehouse.wage_history[0] = 1234;
+        storehouse.employment[0].workers = 1;
+        place.pops[0].employment[storehouse_index].workers = 1;
+        storehouse.stock[0] = 200;
+        storehouse.storehouse_accounts.as_mut().unwrap().pops[0][0] = 200;
+        let before = state.clone();
+
+        let error = run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.entry, "places.fort.buildings.storehouse.wage_history");
+        assert!(error.problem.contains("exceeds u64"));
+        assert_eq!(
+            state, before,
+            "the refused fee payday commits no history or payment"
+        );
     }
 
     #[test]
