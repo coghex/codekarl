@@ -75,6 +75,8 @@ fn sample_snapshot(generation: u64, scene: Option<Arc<SceneFrame>>) -> Snapshot 
             points_width: 20,
             points_height: 20,
             pixels: pixels(40, 40),
+
+            ui_scale_k: None,
         },
     }
 }

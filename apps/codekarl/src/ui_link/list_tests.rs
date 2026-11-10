@@ -142,7 +142,7 @@ end)
 
 #[test]
 fn the_geometry_of_a_list_is_literal_at_two_points_per_pixel() {
-    let mut rig = Rig::new_fixture_body_at_scale(&geometry_script(100, 200), 2);
+    let mut rig = Rig::new_fixture_body(&geometry_script(100, 200));
     rig.opened();
     // A row is (11 + 2) * 2 = 26 points; 5 rows are 130; 20 items are 520 and scroll by at most 15 rows = 390.
     assert_eq!(note_of(&rig, "row"), "26");
@@ -167,32 +167,6 @@ fn the_geometry_of_a_list_is_literal_at_two_points_per_pixel() {
     assert_eq!(rig.key_at(205.5, 215.5).as_deref(), Some(area.as_str()));
     assert_ne!(rig.key_at(206.5, 100.0).as_deref(), Some(area.as_str()));
     assert_ne!(rig.key_at(150.0, 216.5).as_deref(), Some(area.as_str()));
-}
-
-#[test]
-fn the_geometry_of_a_list_is_literal_at_three_points_per_pixel() {
-    let mut rig = Rig::new_fixture_body_at_scale(&geometry_script(100, 200), 3);
-    rig.opened();
-    // A row is 13 * 3 = 39 points; the width 100 snaps to 99 and the content 200 to 201; 5 rows are 195, 20 items 780, max 585.
-    assert_eq!(note_of(&rig, "row"), "39");
-    assert_eq!(note_of(&rig, "view"), "195");
-    assert_eq!(note_of(&rig, "max_s"), "585");
-    // The window's (100, 50) snaps to (99, 51) on the 3-point grid; the title is 45 high and the padding 9: the content origin is
-    // (108, 105).
-    let rows = quads_clipped_to(&rig, (108.0, 105.0, 99.0, 195.0));
-    assert!(
-        !rows.is_empty(),
-        "the rows group is clipped to the visible rectangle"
-    );
-    assert!(
-        rows.iter().any(|rect| (rect.0, rect.1) == (111.0, 108.0)),
-        "{rows:?}"
-    );
-    let base = note_of(&rig, "base");
-    let area = format!("{base}_area");
-    assert_eq!(rig.key_at(108.5, 105.5).as_deref(), Some(area.as_str()));
-    assert_eq!(rig.key_at(206.5, 299.5).as_deref(), Some(area.as_str()));
-    assert_ne!(rig.key_at(207.5, 200.0).as_deref(), Some(area.as_str()));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -327,7 +301,7 @@ end)
 // The scroll value
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// A 3-row list over 100 items at 3 points per pixel, scripted in steps: each `rig.opened()` runs the next one.
+/// A 3-row list over 100 items at 2 points per pixel, scripted in steps: each `rig.opened()` runs the next one.
 fn steps_script(steps: &str) -> String {
     format!(
         r#"{HEADER}
@@ -350,14 +324,14 @@ end)
 }
 
 #[test]
-fn the_scroll_formulas_have_literal_positions_for_lines_and_points_at_three_points_per_pixel() {
-    // h = 39. A positive amount scrolls toward earlier items (pos falls), a negative one toward later items.
+fn the_scroll_formulas_have_literal_positions_for_lines_and_points_at_two_points_per_pixel() {
+    // h = 26. A positive amount scrolls toward earlier items (pos falls), a negative one toward later items.
     let steps = [
-        ("lines", -1.0, "pos=39 s=39"),
+        ("lines", -1.0, "pos=26 s=26"),
         ("lines", 1.0, "pos=0 s=0"),
-        ("lines", -0.5, "pos=19.5 s=21"),
+        ("lines", -0.5, "pos=13 s=14"),
         ("lines", 0.5, "pos=0 s=0"),
-        ("points", -7.0, "pos=7 s=6"),
+        ("points", -7.0, "pos=7 s=8"),
         ("points", 7.0, "pos=0 s=0"),
         ("points", -0.25, "pos=0.25 s=0"),
         ("points", 0.25, "pos=0 s=0"),
@@ -367,7 +341,7 @@ fn the_scroll_formulas_have_literal_positions_for_lines_and_points_at_three_poin
         .map(|(unit, amount, _)| format!("function() sc('{unit}', {amount}) end,"))
         .collect::<Vec<_>>()
         .join("\n");
-    let mut rig = Rig::new_fixture_body_at_scale(&steps_script(&body), 3);
+    let mut rig = Rig::new_fixture_body(&steps_script(&body));
     for (index, (_, _, expected)) in steps.iter().enumerate() {
         rig.opened();
         let seen = notes(&rig);
@@ -386,7 +360,7 @@ fn fractional_remainders_carry_between_events_until_the_sum_crosses_the_snap() {
         .map(|_| "function() sc('points', -0.75) end,")
         .collect::<Vec<_>>()
         .join("\n");
-    let mut rig = Rig::new_fixture_body_at_scale(&steps_script(&steps), 3);
+    let mut rig = Rig::new_fixture_body(&steps_script(&steps));
     let mut seen = Vec::new();
     for _ in 0..6 {
         rig.opened();
@@ -400,17 +374,17 @@ fn fractional_remainders_carry_between_events_until_the_sum_crosses_the_snap() {
                 .clone(),
         );
     }
-    // 0.75, 1.5, 2.25, 3.0, 3.75, 4.5 points: the displayed scroll moves by one UI pixel (3 points) when the sum first rounds to 1
-    // (at 1.5), and by the next when it reaches 4.5.
+    // 0.75, 1.5, 2.25, 3.0, 3.75, 4.5 points: the displayed scroll moves by one UI pixel (2 points) when the sum first rounds to 1
+    // (at 1.5: 0.75 is below the half), and by the next when it reaches 3.0.
     assert_eq!(
         seen,
         [
             "pos=0.75 s=0",
-            "pos=1.5 s=3",
-            "pos=2.25 s=3",
-            "pos=3 s=3",
-            "pos=3.75 s=3",
-            "pos=4.5 s=6",
+            "pos=1.5 s=2",
+            "pos=2.25 s=2",
+            "pos=3 s=4",
+            "pos=3.75 s=4",
+            "pos=4.5 s=4",
         ]
     );
 }
@@ -428,7 +402,7 @@ end
 local steps = {{
   function() sc("points", 50) end,   -- past the top: nothing to discard from, pos stays 0
   function() sc("points", -10) end,  -- and back: from 0 at once
-  function() sc("points", -200) end, -- past the end (max_s = 78): clamped
+  function() sc("points", -200) end, -- past the end (max_s = 52): clamped
   function() sc("points", 10) end,   -- and back: from the end at once
   function() sc("points", -0.25) end,
 }}
@@ -439,7 +413,7 @@ window.on_opened(function()
 end)
 "#
     );
-    let mut rig = Rig::new_fixture_body_at_scale(&script, 3);
+    let mut rig = Rig::new_fixture_body(&script);
     let step = |rig: &mut Rig| {
         let before = rig.sink.count();
         rig.opened();
@@ -461,21 +435,21 @@ end)
     );
     assert_eq!(
         step(&mut rig),
-        ("pos=10 s=9".to_owned(), 1),
+        ("pos=10 s=10".to_owned(), 1),
         "from 0 at once"
     );
     assert_eq!(
         step(&mut rig),
-        ("pos=78 s=78".to_owned(), 1),
-        "clamped to max_s = (5 - 3) * 39"
+        ("pos=52 s=52".to_owned(), 1),
+        "clamped to max_s = (5 - 3) * 26"
     );
     assert_eq!(
         step(&mut rig),
-        ("pos=68 s=69".to_owned(), 1),
+        ("pos=42 s=42".to_owned(), 1),
         "from the end at once"
     );
-    // A quarter point back toward the end: pos 68.25 snaps to the same 69, so no scene call.
-    assert_eq!(step(&mut rig), ("pos=68.25 s=69".to_owned(), 0));
+    // A quarter point back toward the end: pos 42.25 snaps to the same 42, so no scene call.
+    assert_eq!(step(&mut rig), ("pos=42.25 s=42".to_owned(), 0));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1600,11 +1574,12 @@ end)
 }
 
 #[test]
-fn the_open_dropdown_anchors_and_reanchors_in_points_at_both_scales() {
+fn the_open_dropdown_anchors_and_reanchors_in_points() {
     let main_path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua");
     let main = std::fs::read_to_string(main_path).expect("the production UI script");
-    for scale in [2_i64, 3] {
+    {
+        let scale = 2_i64;
         let script = format!(
             r#"
 callbacks = {{}}
@@ -1636,7 +1611,7 @@ end
 callbacks.time({{day=1, month=1, year=768, hour=0, paused=false, speed=1}})
 "#
         );
-        let mut rig = Rig::new_fixture_body_at_scale(&script, scale);
+        let mut rig = Rig::new_fixture_body(&script);
         rig.deliver_fixture_frame_at(800, 600, u32::try_from(scale).unwrap());
         let regions = rig.harness.bridge.hit_regions().expect("regions");
         let (x, y) = (0..2400)
@@ -1662,7 +1637,7 @@ callbacks.time({{day=1, month=1, year=768, hour=0, paused=false, speed=1}})
             .find(|line| line.starts_with("places-geometry "))
             .expect("the dropdown is positioned after opening");
         let opened = geometry(opened);
-        let margin = if scale == 2 { 8 } else { 9 };
+        let margin = 8;
         let snap = |value: i64| ((value + scale / 2) / scale) * scale;
         assert_eq!((opened[0], opened[1]), (snap(800 - opened[2] - 8), margin));
 

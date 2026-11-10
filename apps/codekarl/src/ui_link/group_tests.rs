@@ -5,7 +5,6 @@
 //! A real UI VM runs the library over the real `render` API and a real scene bridge with a recording sink; ticks come from `ck-input`'s
 //! `Mapper`. Nothing sleeps: every update, and every posted callback, is awaited.
 
-use std::collections::BTreeMap;
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -106,28 +105,25 @@ pub(super) struct Rig {
 impl Rig {
     /// A UI VM whose script is the prelude, `script` and the reporting callback. The window is 400 by 320 points at 2 pixels per point.
     pub(super) fn new(script: &str) -> Self {
-        Self::new_at_scale(script, 2)
-    }
-
-    pub(super) fn new_at_scale(script: &str, scale: i64) -> Self {
-        Self::with_script(&format!("{PRELUDE}\n{script}\n{REPORT}"), scale)
+        Self::with_script(&format!("{PRELUDE}\n{script}\n{REPORT}"), false)
     }
 
     /// Runs a fixture's full script without replacing its own frame callback with the reporting callback.
     pub(super) fn new_fixture_body(script: &str) -> Self {
-        Self::with_script(script, 2)
+        Self::with_script(script, false)
     }
 
-    /// [`new_fixture_body`](Self::new_fixture_body) at `scale` points per UI pixel.
-    pub(super) fn new_fixture_body_at_scale(script: &str, scale: i64) -> Self {
-        Self::with_script(script, scale)
+    /// [`new_fixture_body`](Self::new_fixture_body) for a window opened in screen pixels: its UI is in UI units at the scale its drawable
+    /// allows.
+    pub(super) fn new_fixture_body_in_pixels(script: &str) -> Self {
+        Self::with_script(script, true)
     }
 
     #[expect(
         clippy::too_many_lines,
         reason = "the shared real-VM harness setup stays together for all widget and fixture bodies"
     )]
-    fn with_script(script: &str, scale: i64) -> Self {
+    fn with_script(script: &str, in_pixels: bool) -> Self {
         let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../assets")
             .canonicalize()
@@ -171,13 +167,6 @@ impl Rig {
             script,
             Extras {
                 functions: vec![("record", record)],
-                config: Some(ConfigValue::Table(BTreeMap::from([(
-                    "ui".to_owned(),
-                    ConfigValue::Table(BTreeMap::from([(
-                        "points_per_pixel".to_owned(),
-                        ConfigValue::Integer(scale),
-                    )])),
-                )]))),
                 extensions: vec![
                     frame_extension(),
                     game,
@@ -204,6 +193,10 @@ impl Rig {
                     width: 400,
                     height: 320,
                     clear: [0.0; 3],
+                    pixel_request: in_pixels.then_some(ck_window::PixelRequest {
+                        size: (1280, 800),
+                        min: Some((1280, 800)),
+                    }),
                     ..WindowDesc::default()
                 },
                 PixelSize {
@@ -769,8 +762,8 @@ end)
 }
 
 #[test]
-fn a_fixed_window_has_an_exact_seventeen_pixel_minimum_at_both_scales_and_title_click_closes() {
-    for scale in [2, 3] {
+fn a_fixed_window_has_an_exact_seventeen_pixel_minimum_and_title_click_closes() {
+    {
         let script = r#"
 local windows = require("lib.window")
 local pointer = require("lib.pointer")
@@ -804,7 +797,7 @@ window.on_opened(function()
   assert(w.closed and windows.top() == nil, "a title click closes the fixed window")
 end)
 "#;
-        let mut rig = Rig::new_at_scale(script, scale);
+        let mut rig = Rig::new(script);
         rig.opened();
     }
 }
@@ -910,7 +903,7 @@ window.on_opened(function()
     "content resize updates outer size and preserves the position")
 end)
 "#;
-    let mut rig = Rig::new_at_scale(script, 2);
+    let mut rig = Rig::new(script);
     rig.opened();
     let content = rig
         .sink
@@ -951,43 +944,6 @@ end)
 }
 
 #[test]
-fn p3_window_geometry_floors_the_grid_and_uses_the_narrow_fallback_literal() {
-    let script = r#"
-local windows = require("lib.window")
-windows.update_viewport(800, 601)
-w = windows.new{title = "A", content_width = 120, content_height = 60, x = 100, y = 100}
-local tiny = windows.new{title = "A", content_width = 3, content_height = 3, x = 20, y = 20}
-window.on_opened(function()
-  local width, height = w:size()
-  assert(width == 138 and height == 129, "P3 short-title outer size is literal")
-  w:move_to(9000, 9000)
-  local x, y = w:position()
-  assert(x == 750 and y == 555, "P3 right and floored bottom bounds are literal")
-  assert(x % 3 == 0 and y % 3 == 0, "clamped coordinates remain on the P3 grid")
-
-  windows.update_viewport(1, 1)
-  tiny:move_to(9000, 9000)
-  x, y = tiny:position()
-  local tiny_width = tiny:size()
-  assert(tiny_width == 87 and x == -39 and y == 0,
-    "narrow fallback is R - outer_w, with the close-button edge at zero")
-  windows.update_viewport(800, 601)
-  x, y = tiny:position()
-  assert(x == -39 and y == 0, "restoring the viewport keeps a valid ordinary-clamp position")
-
-  w:move_to(100, 100)
-  w:set_title("Long title")
-  width, height = w:size()
-  x, y = w:position()
-  assert(width == 225 and height == 129 and x == 99 and y == 99,
-    "P3 long-title outer size and grid-floored top-left are literal")
-end)
-"#;
-    let mut rig = Rig::new_at_scale(script, 3);
-    rig.opened();
-}
-
-#[test]
 fn window_chrome_content_and_hit_rectangles_match_the_p2_literals() {
     let script = r#"
 local windows = require("lib.window")
@@ -996,7 +952,7 @@ w = windows.new{title = "A", content_width = 120, content_height = 60, x = 24, y
 label.new{x = 0, y = 0, text = "A", group = w.content}
 window.on_opened(function() end)
 "#;
-    let mut rig = Rig::new_at_scale(script, 2);
+    let mut rig = Rig::new(script);
     rig.opened();
 
     let quads = rig.sink.quads();
@@ -1109,7 +1065,7 @@ window.on_opened(function() end)
     // A place window (P = 2): the body frame (11 quads) fills near-black and outlines cyan; the title bar (8 quads) is cyan; the divider
     // (quad 19) is one amber UI pixel high on the row under the title bar, from the second to the second-to-last column; the title is
     // dark; the close button is a title-style button: cyan, with a dark glyph.
-    let mut rig = Rig::new_at_scale(&script("place"), 2);
+    let mut rig = Rig::new(&script("place"));
     rig.opened();
     let quads = rig.sink.quads();
     for (index, quad) in quads[..11].iter().enumerate() {
@@ -1135,7 +1091,7 @@ window.on_opened(function() end)
     assert_eq!(quads[32].tint, dark, "the close button's glyph");
     assert_eq!(quads.len(), 33);
     // A window of the default kind: the red outline and no divider; the title and the close glyph are the text colour on the red bar.
-    let mut rig = Rig::new_at_scale(&script("window"), 2);
+    let mut rig = Rig::new(&script("window"));
     rig.opened();
     let quads = rig.sink.quads();
     for (index, quad) in quads[..11].iter().enumerate() {
@@ -1428,6 +1384,7 @@ fn metrics() -> Metrics {
             width: 800,
             height: 640,
         },
+        ui_scale_k: None,
     }
 }
 
@@ -1569,4 +1526,91 @@ window.on_opened(function() pointer.dispatch({over = a.key, overflow = false, he
     assert!(drawn > 0 && drawn < 11, "{drawn} of 11 quads are drawn");
     assert_eq!(placed(&quads[0]), Some((220, 120, 236, 136)));
     assert_eq!(placed(&quads[1]), None);
+}
+
+/// The metrics of a window opened in pixels at the UI scale 1.5: 1920 by 1200 pixels (the least that allows it), 960 by 600 points, drawn at
+/// 1.5 pixels a UI unit (`k` = 3).
+fn metrics_at_one_and_a_half() -> Metrics {
+    Metrics {
+        points_width: 960,
+        points_height: 600,
+        pixels: PixelSize {
+            width: 1920,
+            height: 1200,
+        },
+        ui_scale_k: Some(3),
+    }
+}
+
+/// Where a quad is drawn at the UI scale 1.5: each edge is the rounded product of its unit coordinate and 1.5 (the existing `edges` rule),
+/// then cut to the window.
+fn placed_at_one_and_a_half(quad: &FrameQuad) -> Option<(i64, i64, i64, i64)> {
+    quad.place(&metrics_at_one_and_a_half()).map(|placed| {
+        let d = placed.destination;
+        (
+            i64::from(d.left),
+            i64::from(d.top),
+            i64::from(d.right),
+            i64::from(d.bottom),
+        )
+    })
+}
+
+/// The go button (32 by 30 units at (10, 20), as at 2 units a UI pixel) in a window opened in pixels at the UI scale 1.5 is drawn with its
+/// top-left at pixels (15, 30) and each of its sizes 1.5 times its unit size: 48 by 45 pixels. (The accepted 3-points-a-pixel rectangle,
+/// snapped to (9, 21), is not reproduced: that scale no longer exists.)
+#[test]
+fn a_button_at_the_ui_scale_one_and_a_half_is_drawn_at_one_and_a_half_pixels_a_unit() {
+    let quads = frame_quads((0.0, 0.0), (10.0, 20.0), "normal");
+    let drawn: Vec<_> = quads.iter().filter_map(placed_at_one_and_a_half).collect();
+    assert_eq!(drawn.len(), quads.len(), "every quad of the frame shows");
+    let left = drawn.iter().map(|rect| rect.0).min().expect("quads");
+    let top = drawn.iter().map(|rect| rect.1).min().expect("quads");
+    let right = drawn.iter().map(|rect| rect.2).max().expect("quads");
+    let bottom = drawn.iter().map(|rect| rect.3).max().expect("quads");
+    assert_eq!((left, top), (15, 30), "the top-left is 1.5 times (10, 20)");
+    assert_eq!(
+        (right - left, bottom - top),
+        (48, 45),
+        "32 by 30 units, 1.5 pixels each"
+    );
+}
+
+/// Every drawn edge of a widget on the UI-pixel grid (two units) is a multiple of 3 pixels at the UI scale 1.5: the old "multiple of the
+/// pixel scale" check, now over drawn pixels.
+#[test]
+fn every_drawn_edge_of_a_ui_pixel_aligned_widget_is_a_multiple_of_three_pixels_at_scale_one_and_a_half()
+ {
+    let script = r#"
+local button = require("lib.button")
+local label = require("lib.label")
+local panel = require("lib.panel")
+local ui = require("lib.ui")
+local b = button.new{x = 14, y = 18, text = "Hi", on_click = function() end}
+b:move(30, 30)
+b:set_text("Hello")
+panel.new{x = 6, y = 10, width = 56, height = 56}:set_rect(12, 14, 48, 50)
+local l = label.new{x = 2, y = 2, text = "ab"}
+l:move(24, 42)
+local x, y = ui.anchor("bottom_right", 48, 46, -8, -8, 800, 600)
+panel.new{x = x, y = y, width = 48, height = 46}
+"#;
+    let mut rig = Rig::new(script);
+    rig.opened();
+    let mut seen = 0;
+    for quad in rig.sink.quads() {
+        let Some((left, top, right, bottom)) = placed_at_one_and_a_half(&quad) else {
+            continue;
+        };
+        for edge in [left, top, right, bottom] {
+            assert_eq!(
+                edge % 3,
+                0,
+                "{:?} placed at ({left}, {top}, {right}, {bottom})",
+                rect_of(&quad)
+            );
+            seen += 1;
+        }
+    }
+    assert!(seen > 40, "checked {seen} edges");
 }

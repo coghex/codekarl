@@ -478,6 +478,7 @@ fn metrics(scale: u32) -> Metrics {
         points_width: 100,
         points_height: 80,
         pixels: pixels(100 * scale, 80 * scale),
+        ui_scale_k: None,
     }
 }
 

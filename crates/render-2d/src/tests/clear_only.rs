@@ -126,6 +126,8 @@ fn snapshot(generation: u64, with_quad: bool) -> Snapshot {
             points_width: 8,
             points_height: 8,
             pixels: pixels(8, 8),
+
+            ui_scale_k: None,
         },
     }
 }

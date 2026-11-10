@@ -170,14 +170,14 @@ pub(crate) struct Readout {
 
 impl Readout {
     /// The UI script (`scripts/ui/main.lua`, as shipped) followed by `tail`.
-    pub(crate) fn new(tail: &str, scale: Option<i64>) -> Self {
+    pub(crate) fn new(tail: &str) -> Self {
         let shipped =
             fs::read_to_string(ui_scripts().join("main.lua")).expect("the shipped UI script");
-        Self::script(&format!("{shipped}\n{tail}\n"), scale)
+        Self::script(&format!("{shipped}\n{tail}\n"))
     }
 
     /// `script` as the UI script.
-    pub(crate) fn script(script: &str, scale: Option<i64>) -> Self {
+    pub(crate) fn script(script: &str) -> Self {
         let dir = Dir::new();
         let entry = dir.0.join("main.lua");
         fs::write(&entry, script).expect("the script");
@@ -201,16 +201,7 @@ impl Readout {
         let (control_sender, controls) = std::sync::mpsc::channel();
         let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let shipped_font = Arc::new(font::load(&assets).expect("the shipped font"));
-        let config = ConfigValue::Table(match scale {
-            Some(scale) => BTreeMap::from([(
-                "ui".to_owned(),
-                ConfigValue::Table(BTreeMap::from([(
-                    "points_per_pixel".to_owned(),
-                    ConfigValue::Integer(scale),
-                )])),
-            )]),
-            None => BTreeMap::new(),
-        });
+        let config = ConfigValue::Table(BTreeMap::new());
         let frame = FrameRegistration::default();
         let mut settings = VmSettings::new("ui", entry, config);
         settings.modules = Modules::Rooted(ui_scripts());
@@ -427,7 +418,6 @@ pub(crate) fn snapshot(hour: u8, speed: u8, paused: Option<PauseReason>) -> SimS
 fn setting_the_next_hour_replaces_one_quad_and_moves_none() {
     let readout = Readout::new(
         "local l = text.line(10, 20)\ntext.set(l, '14:00')\nwindow.record('mark')\ntext.set(l, '15:00')\nwindow.record('mark')",
-        None,
     );
     // The first set: one quad for each of the five glyphs, at 2 points per font pixel (the colon is narrow, so the zeros come
     // at 14 and 20 font pixels).
@@ -468,7 +458,6 @@ fn setting_the_next_hour_replaces_one_quad_and_moves_none() {
 fn a_wider_glyph_moves_the_later_quads_and_replaces_nothing_else() {
     let readout = Readout::new(
         "local l = text.line(0, 0)\ntext.set(l, 'iab')\nwindow.record('mark')\ntext.set(l, 'mab')\nwindow.record('mark')",
-        None,
     );
     assert_eq!(
         readout.after_mark(1),
@@ -486,7 +475,6 @@ fn a_wider_glyph_moves_the_later_quads_and_replaces_nothing_else() {
 fn an_unchanged_string_makes_no_scene_call_and_a_shorter_one_destroys_the_tail() {
     let readout = Readout::new(
         "local l = text.line(0, 0)\ntext.set(l, 'abc')\nwindow.record('mark')\ntext.set(l, 'abc')\nwindow.record('mark')\ntext.set(l, 'a')\nwindow.record('mark')\ntext.set(l, 'a')\nwindow.record('mark')",
-        None,
     );
     assert!(
         readout.after_mark(1).is_empty(),
@@ -501,7 +489,6 @@ fn an_unchanged_string_makes_no_scene_call_and_a_shorter_one_destroys_the_tail()
 fn move_repositions_every_quad_once_and_the_same_position_makes_no_call() {
     let readout = Readout::new(
         "local l = text.line(0, 0)\ntext.set(l, 'ab')\nwindow.record('mark')\ntext.move(l, 6, 8)\nwindow.record('mark')\ntext.move(l, 6, 8)\nwindow.record('mark')\ntext.destroy(l)\nwindow.record('mark')",
-        None,
     );
     assert_eq!(
         readout.after_mark(1),
@@ -512,12 +499,12 @@ fn move_repositions_every_quad_once_and_the_same_position_makes_no_call() {
 }
 
 #[test]
-fn the_scale_comes_from_the_ui_table_of_the_configuration() {
-    let readout = Readout::new("local l = text.line(0, 0)\ntext.set(l, 'a')", Some(3));
+fn the_font_is_drawn_at_two_units_per_pixel() {
+    let readout = Readout::new("local l = text.line(0, 0)\ntext.set(l, 'a')");
     assert!(
         readout
             .entries()
-            .contains(&"create q1 ui/font/glyphs/U+0061.png 0 0 15 33".to_owned()),
+            .contains(&"create q1 ui/font/glyphs/U+0061.png 0 0 10 22".to_owned()),
         "{:?}",
         readout.entries()
     );
@@ -531,7 +518,6 @@ fn the_readout_format() {
          window.record(date({year = 768, month = 10, day = 9, hour = 14}))\n\
          window.record(date({year = 1, month = 1, day = 1, hour = 5}))\n\
          window.record(date({year = 9999, month = 12, day = 31, hour = 23}))",
-        None,
     );
     let records: Vec<String> = readout
         .entries()
@@ -551,7 +537,7 @@ fn the_readout_format() {
 
 #[test]
 fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
-    let mut readout = Readout::new("", None);
+    let mut readout = Readout::new("");
     assert!(
         readout.registered.load(Ordering::SeqCst),
         "the script registered game.on_time"
@@ -619,7 +605,7 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
 
 #[test]
 fn hover_tooltip_flips_moves_and_hides_while_reusing_its_quads() {
-    let mut readout = Readout::new("", None);
+    let mut readout = Readout::new("");
     assert!(readout.hover_registered.load(Ordering::SeqCst));
     // The shipped script opens a window of 1280 by 800 pixels, which this rig (it has no screen snapshot) resolves one to one; the
     // flipping below is written for a window 800 points wide, so the first update says so.

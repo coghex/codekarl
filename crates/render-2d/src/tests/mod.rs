@@ -23,6 +23,7 @@ mod resident;
 mod resources;
 mod scene;
 mod support;
+mod ui_scale;
 #[cfg(feature = "vulkan")]
 mod vulkan_refusal;
 #[cfg(feature = "vulkan")]

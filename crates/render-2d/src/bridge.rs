@@ -126,6 +126,11 @@ struct State {
     /// Counts the metrics the bridge has had (attach and every change of the window's metrics); a camera is for exactly one of them.
     metrics_generation: u64,
     metrics: Option<Metrics>,
+    /// The configured UI scale limit as `k` (2, 3 or 4), if there is one: the UI scale of a window opened in pixels is the cap of its drawable
+    /// or this, whichever is lower.
+    ui_scale_limit: Option<u32>,
+    /// The window was opened in screen pixels (its description carries a pixel request): its UI scene is in UI units.
+    ui_units: bool,
     filter: Filter,
     generation: u64,
     sink: Option<Arc<dyn QuadSink>>,
@@ -149,6 +154,16 @@ struct Displaced {
 }
 
 impl State {
+    /// `metrics` with the UI scale this window's drawable allows: `Some` for a window opened in pixels, `None` for one opened in points.
+    fn with_ui_scale(&self, metrics: Metrics) -> Metrics {
+        Metrics {
+            ui_scale_k: self
+                .ui_units
+                .then(|| crate::ui_scale::scale_k(metrics.pixels, self.ui_scale_limit)),
+            ..metrics
+        }
+    }
+
     /// Publishes the current snapshot, when a sink is attached, and returns the one the sink replaced. Called
     /// with the lock held.
     fn publish(&self) -> Option<Snapshot> {
@@ -259,6 +274,8 @@ impl SceneBridge {
                 map_refusals: Arc::new(MapRefusals::default()),
                 metrics_generation: 0,
                 metrics: None,
+                ui_scale_limit: None,
+                ui_units: false,
                 filter,
                 generation: 0,
                 sink: None,
@@ -335,7 +352,8 @@ impl SceneBridge {
             if state.phase != Phase::Before {
                 return Err(AttachRefused { phase: state.phase });
             }
-            state.metrics = Some(Metrics::new(desc, pixels));
+            state.ui_units = desc.pixel_request.is_some();
+            state.metrics = Some(state.with_ui_scale(Metrics::new(desc, pixels)));
             state.metrics_generation += 1;
             state.sink = Some(sink);
             state.phase = Phase::Attached;
@@ -355,16 +373,36 @@ impl SceneBridge {
             if state.phase != Phase::Attached {
                 return;
             }
-            if let Some(metrics) = &mut state.metrics {
-                metrics.points_width = points.0;
-                metrics.points_height = points.1;
-                metrics.pixels = pixels;
+            if let Some(metrics) = state.metrics {
+                let replaced = Metrics {
+                    points_width: points.0,
+                    points_height: points.1,
+                    pixels,
+                    ..metrics
+                };
+                state.metrics = Some(state.with_ui_scale(replaced));
                 state.metrics_generation += 1;
             }
             state.generation += 1;
             displaced.snapshot = state.publish();
         }
         drop(displaced);
+    }
+
+    /// The UI scale as `k` for a drawable of `pixels`, when the window was opened in screen pixels (its UI scene is in UI units); `None` for a
+    /// window opened in points, whose scene is in points.
+    #[must_use]
+    pub fn ui_scale(&self, pixels: PixelSize) -> Option<u32> {
+        let state = self.lock();
+        state
+            .ui_units
+            .then(|| crate::ui_scale::scale_k(pixels, state.ui_scale_limit))
+    }
+
+    /// Limits the UI scale of a window opened in screen pixels to `k` (2, 3 or 4: the configured scale 1, 1.5 or 2), or lifts the limit. It
+    /// is read at startup and applies to the metrics set after it.
+    pub fn set_ui_scale_limit(&self, limit_k: Option<u32>) {
+        self.lock().ui_scale_limit = limit_k;
     }
 
     /// Removes the sink and ends the bridge. Nothing is published afterwards, and it is idempotent.

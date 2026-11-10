@@ -18,7 +18,7 @@ use crate::group::{GroupError, GroupKey, PointRect, in_domain};
 use crate::hit::{
     GroupHits, HIT_RECTS_PER_KEY, HIT_RECTS_PER_SCENE, HitError, HitRect, HitRegions, valid_key,
 };
-use crate::quad::{Metrics, PixelRect, QuadError, SourceRect, edges, trimmed, validate_rect};
+use crate::quad::{Metrics, PixelRect, QuadError, SourceRect, edges_at, trimmed, validate_rect};
 
 /// A generational handle for one persistent quad in one bridge's scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -225,18 +225,9 @@ impl FrameQuad {
     /// the packet needs it, and a clone and drop of it per instance would be atomic traffic on the registry's shared count.
     #[must_use]
     pub(crate) fn placement(&self, metrics: &Metrics) -> Option<Placement> {
-        let (left, right) = edges(
-            self.x,
-            self.width,
-            metrics.points_width,
-            metrics.pixels.width,
-        );
-        let (top, bottom) = edges(
-            self.y,
-            self.height,
-            metrics.points_height,
-            metrics.pixels.height,
-        );
+        let (scale_x, scale_y) = metrics.scene_scale();
+        let (left, right) = edges_at(self.x, self.width, scale_x);
+        let (top, bottom) = edges_at(self.y, self.height, scale_y);
         if right == left || bottom == top {
             return None;
         }
@@ -246,18 +237,8 @@ impl FrameQuad {
         let (mut visible_top, mut visible_bottom) = (top.max(0), bottom.min(window_height));
         if let Some(clip) = &self.clip {
             // The clip's pixel edges are rounded by the same rule as the quad's.
-            let (clip_left, clip_right) = edges(
-                clip.x,
-                clip.width,
-                metrics.points_width,
-                metrics.pixels.width,
-            );
-            let (clip_top, clip_bottom) = edges(
-                clip.y,
-                clip.height,
-                metrics.points_height,
-                metrics.pixels.height,
-            );
+            let (clip_left, clip_right) = edges_at(clip.x, clip.width, scale_x);
+            let (clip_top, clip_bottom) = edges_at(clip.y, clip.height, scale_y);
             visible_left = visible_left.max(clip_left);
             visible_right = visible_right.min(clip_right);
             visible_top = visible_top.max(clip_top);

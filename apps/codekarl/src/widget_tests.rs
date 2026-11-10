@@ -48,7 +48,7 @@ fn the_window_witness_assertions_validate_captured_output_offline() {
 
 #[test]
 fn the_window_witness_observes_down_move_and_up_in_one_real_ui_update() {
-    let mut readout = Readout::script(&time_bar_witness::script(), None);
+    let mut readout = Readout::script(&time_bar_witness::script());
     readout.deliver(&crate::readout_tests::snapshot(
         14,
         3,
@@ -237,7 +237,6 @@ for _, size in ipairs{{800, 600}, {1280, 720}} do
   end
 end
 "#,
-        None,
     );
     assert_eq!(
         records(&readout),
@@ -272,7 +271,6 @@ local ui = require("lib.ui")
 local ok, err = pcall(ui.anchor, "middle", 1, 1, 0, 0, 10, 10)
 window.record(tostring(ok) .. " " .. tostring(err))
 "#,
-        None,
     );
     let record = &records(&readout)[0];
     assert!(
@@ -291,7 +289,6 @@ for _, v in ipairs{0, 0.9, 1, 1.5, 2.49, 2.5, 3, -1, -1.5, 389.5} do
   window.record(v .. " -> " .. ui.snap(v) .. " size " .. ui.snap_size(v))
 end
 "#,
-        None,
     );
     assert_eq!(
         records(&readout),
@@ -312,36 +309,6 @@ end
 }
 
 #[test]
-fn at_three_points_per_pixel_the_examples_of_the_spec_hold() {
-    let readout = Readout::script(
-        r#"
-local ui = require("lib.ui")
-local panel = require("lib.panel")
-window.record("P " .. ui.P)
--- x = 8 snaps to 9 at P = 3.
-panel.new{x = 8, y = 8, width = 30, height = 30}
--- A centred panel 9 UI pixels wide (27 points) in an 800-point window: (800 - 27) / 2 = 386.5, which snaps to 387.
-local x, y = ui.anchor("centre", 27, 27, 0, 0, 800, 600)
-window.record("centre " .. x .. " " .. y)
-panel.new{x = x, y = y, width = 27, height = 27}
-"#,
-        Some(3),
-    );
-    assert_eq!(records(&readout), ["P 3", "centre 387 288"]);
-    // Each panel is a frame of eleven quads; its first is the top-left tile, at the panel's snapped corner.
-    let entries = readout.entries();
-    assert_eq!(entries[0], "record P 3");
-    assert_eq!(entries[2], "create q1 ui/theme/cut3_tl_fill.png 9 9 12 12");
-    assert_eq!(
-        entries
-            .iter()
-            .filter(|entry| entry.starts_with("create q12 "))
-            .collect::<Vec<_>>(),
-        ["create q12 ui/theme/cut3_tl_fill.png 387 288 12 12"]
-    );
-}
-
-#[test]
 fn keys_are_unique_and_within_the_hosts_pattern() {
     let readout = Readout::script(
         r#"
@@ -352,7 +319,6 @@ for _, prefix in ipairs{"", "Bad", "has space", "x-y", string.rep("a", 48)} do
   window.record(tostring(ok))
 end
 "#,
-        None,
     );
     assert_eq!(
         records(&readout),
@@ -386,7 +352,6 @@ window.record("size " .. table.concat({l:size()}, " "))
 l:move(9, 9)
 l:destroy()
 "#,
-        None,
     );
     assert_eq!(
         records(&readout),
@@ -417,10 +382,9 @@ l:destroy()
 
 #[test]
 fn a_buttons_quads_are_literal_rectangles_at_two_points_per_pixel() {
-    let readout = Readout::script(
-        &format!("{GO_BUTTON}window.record('size ' .. table.concat({{b:size()}}, ' '))"),
-        None,
-    );
+    let readout = Readout::script(&format!(
+        "{GO_BUTTON}window.record('size ' .. table.concat({{b:size()}}, ' '))"
+    ));
     // 16 by 15 UI pixels: a cut-3 frame at (10, 20) under the text "Go" (12 wide, centred: its left edge is 2 pixels in).
     assert_eq!(
         readout.entries(),
@@ -460,44 +424,11 @@ fn a_buttons_quads_are_literal_rectangles_at_two_points_per_pixel() {
 }
 
 #[test]
-fn a_buttons_quads_are_literal_rectangles_at_three_points_per_pixel() {
-    let readout = Readout::script(
-        &format!("{GO_BUTTON}window.record('size ' .. table.concat({{b:size()}}, ' '))"),
-        Some(3),
-    );
-    let entries = readout.entries();
-    // 16 by 15 UI pixels at (9, 21): the same frame, every edge three times a UI pixel.
-    assert_eq!(
-        entries
-            .iter()
-            .filter(|entry| entry.starts_with("create")
-                || entry.starts_with("set_hit")
-                || entry.starts_with("record"))
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        [
-            "create q1 ui/theme/cut3_tl_fill.png 9 21 12 12",
-            "create q2 ui/theme/cut3_br_fill.png 45 54 12 12",
-            "create q3 ui/theme/white.png 21 24 33 9",
-            "create q4 ui/theme/white.png 12 33 42 21",
-            "create q5 ui/theme/white.png 12 54 33 9",
-            "create q6 ui/theme/cut3_tl_line.png 9 21 12 12",
-            "create q7 ui/theme/cut3_br_line.png 45 54 12 12",
-            "create q8 ui/theme/white.png 21 21 36 3",
-            "create q9 ui/theme/white.png 54 24 3 30",
-            "create q10 ui/theme/white.png 12 63 33 3",
-            "create q11 ui/theme/white.png 9 33 3 33",
-            "create q12 ui/font/glyphs/U+0047.png 15 27 15 33",
-            "create q13 ui/font/glyphs/U+006F.png 33 27 15 33",
-            "set_hit button_1 9 21 48 45",
-            "record size 48 45",
-        ]
-    );
-}
-
-#[test]
 fn every_quad_and_hit_edge_is_a_multiple_of_the_pixel_scale() {
-    for scale in [2, 3, 5] {
+    // A UI pixel is two units: every coordinate the library creates, moves, resizes or publishes as a hit region is a multiple of 2, off-grid
+    // inputs included.
+    let scale = 2;
+    {
         let readout = Readout::script(
             r#"
 local button = require("lib.button")
@@ -513,7 +444,6 @@ l:move(23, 41)
 local x, y = ui.anchor("bottom_right", 47, 45, -8, -8, 801, 601)
 panel.new{x = x, y = y, width = 47, height = 45}
 "#,
-            Some(scale),
         );
         let mut seen = 0;
         for entry in readout.entries() {
@@ -535,12 +465,9 @@ panel.new{x = x, y = y, width = 47, height = 45}
 
 #[test]
 fn a_buttons_frame_is_eleven_quads_below_its_glyphs_and_its_looks_are_tints_only() {
-    let readout = Readout::script(
-        &format!(
-            "{GO_BUTTON}mark()\nsend(packet(key, {{}}), true)\nmark()\nsend(packet(key, {{ev('down', 12, 22)}}, false, true), true)\nmark()\nsend(packet(false, {{ev('up', 500, 500)}}), true)\nmark()\nb:set_text('Hello')\nmark()"
-        ),
-        None,
-    );
+    let readout = Readout::script(&format!(
+        "{GO_BUTTON}mark()\nsend(packet(key, {{}}), true)\nmark()\nsend(packet(key, {{ev('down', 12, 22)}}, false, true), true)\nmark()\nsend(packet(false, {{ev('up', 500, 500)}}), true)\nmark()\nb:set_text('Hello')\nmark()"
+    ));
     let entries = readout.entries();
     let first = entries
         .iter()
@@ -596,10 +523,9 @@ fn a_buttons_frame_is_eleven_quads_below_its_glyphs_and_its_looks_are_tints_only
 
 #[test]
 fn moving_a_button_moves_its_frame_its_glyphs_and_its_region() {
-    let readout = Readout::script(
-        &format!("{GO_BUTTON}mark()\nb:move(30, 40)\nmark()\nb:move(30, 40)\nmark()"),
-        None,
-    );
+    let readout = Readout::script(&format!(
+        "{GO_BUTTON}mark()\nb:move(30, 40)\nmark()\nb:move(30, 40)\nmark()"
+    ));
     assert_eq!(
         readout.after_mark(1),
         [
@@ -625,12 +551,9 @@ fn moving_a_button_moves_its_frame_its_glyphs_and_its_region() {
 
 #[test]
 fn destroying_a_button_removes_its_quads_and_its_region_and_it_stops_receiving_events() {
-    let readout = Readout::script(
-        &format!(
-            "{GO_BUTTON}mark()\nb:destroy()\nmark()\nsend(packet(key, {{ev('down', 12, 22)}}), true)\nclicked()\nb:destroy()"
-        ),
-        None,
-    );
+    let readout = Readout::script(&format!(
+        "{GO_BUTTON}mark()\nb:destroy()\nmark()\nsend(packet(key, {{ev('down', 12, 22)}}), true)\nclicked()\nb:destroy()"
+    ));
     let after = readout.after_mark(1);
     assert_eq!(
         after,
@@ -667,17 +590,14 @@ fn destroying_a_button_removes_its_quads_and_its_region_and_it_stops_receiving_e
 #[test]
 fn a_button_is_hover_when_the_pointer_is_over_it_pressed_on_a_down_and_clicks_once_on_an_up_inside()
 {
-    let readout = Readout::script(
-        &format!(
-            "{GO_BUTTON}mark()\n\
+    let readout = Readout::script(&format!(
+        "{GO_BUTTON}mark()\n\
              send(packet(key, {{}}), true)\nmark()\n\
              send(packet(key, {{ev('down', 12, 22)}}, false, true), true)\nmark()\nclicked()\n\
              send(packet(key, {{ev('move', 14, 24)}}, false, true), true)\nmark()\n\
              send(packet(key, {{ev('up', 14, 24)}}), true)\nclicked()\nmark()\n\
              send(packet(false, {{}}), true)\nmark()"
-        ),
-        None,
-    );
+    ));
     // over: hover (the outline takes the hot colour)
     assert_eq!(readout.after_mark(1), Vec::<String>::new());
     assert_eq!(readout.tints_after_mark(1), retint(6, 11, "#a8261c"));
@@ -700,9 +620,8 @@ fn a_button_is_hover_when_the_pointer_is_over_it_pressed_on_a_down_and_clicks_on
 
 #[test]
 fn an_up_outside_the_rectangle_a_cancel_and_an_up_with_no_down_give_no_click() {
-    let readout = Readout::script(
-        &format!(
-            "{GO_BUTTON}\n\
+    let readout = Readout::script(&format!(
+        "{GO_BUTTON}\n\
              -- up outside (the button spans x 10..42, y 20..50)\n\
              send(packet(key, {{ev('down', 12, 22)}}, false, true), true)\n\
              send(packet(key, {{ev('up', 42, 22)}}), true)\nclicked()\n\
@@ -717,9 +636,7 @@ fn an_up_outside_the_rectangle_a_cancel_and_an_up_with_no_down_give_no_click() {
              send(packet(key, {{ev('up', 12, 22)}}), true)\nclicked()\n\
              -- an up with no down\n\
              send(packet(key, {{ev('up', 12, 22)}}), true)\nclicked()"
-        ),
-        None,
-    );
+    ));
     assert_eq!(
         records(&readout),
         ["clicks 0", "clicks 0", "clicks 1", "clicks 1", "clicks 1"]
@@ -749,7 +666,6 @@ step("b")
 step(false)
 step(false)
 "#,
-        None,
     );
     assert_eq!(
         records(&readout),
@@ -790,7 +706,6 @@ local changed = pointer.dispatch({over = false, overflow = false, held = false, 
 }})
 window.record("changed " .. tostring(changed))
 "#,
-        None,
     );
     assert_eq!(
         records(&readout),
@@ -800,24 +715,20 @@ window.record("changed " .. tostring(changed))
 
 #[test]
 fn a_missing_pointer_changes_nothing_and_reports_no_change() {
-    let readout = Readout::script(
-        &format!("{GO_BUTTON}mark()\nwindow.record(tostring(pointer.dispatch(nil)))\nmark()"),
-        None,
-    );
+    let readout = Readout::script(&format!(
+        "{GO_BUTTON}mark()\nwindow.record(tostring(pointer.dispatch(nil)))\nmark()"
+    ));
     assert_eq!(readout.after_mark(1), ["record false"]);
 }
 
 #[test]
 fn an_over_only_packet_changes_the_look_and_an_identical_one_makes_no_scene_call() {
-    let readout = Readout::script(
-        &format!(
-            "{GO_BUTTON}mark()\n\
+    let readout = Readout::script(&format!(
+        "{GO_BUTTON}mark()\n\
              send(packet(key, {{}}), true)\nmark()\n\
              send(packet(key, {{}}), false)\nmark()\n\
              send(packet(key, {{}}, false, true), false)\nmark()"
-        ),
-        None,
-    );
+    ));
     assert_eq!(readout.tints_after_mark(1), retint(6, 11, "#a8261c"));
     // identical: unchanged, no scene call (`held` alone is not a change)
     assert!(readout.after_mark(1).is_empty());
@@ -848,7 +759,6 @@ pointer.register("a", widget("second"))
 window.record(tostring(pointer.dispatch(over_a)))
 window.record(tostring(pointer.dispatch(over_a)))
 "#,
-        None,
     );
     assert_eq!(
         records(&readout),
@@ -865,18 +775,15 @@ window.record(tostring(pointer.dispatch(over_a)))
 #[test]
 fn an_overflow_packet_with_no_events_and_the_button_up_releases_every_pressed_widget_without_a_click()
  {
-    let readout = Readout::script(
-        &format!(
-            "{GO_BUTTON}\
+    let readout = Readout::script(&format!(
+        "{GO_BUTTON}\
              local other = button.new{{x = 100, y = 20, text = 'No', on_click = function() clicks = clicks + 100 end}}\n\
              send(packet(key, {{ev('down', 12, 22)}}, false, true), true)\n\
              send(packet(other.key, {{{{kind = 'down', x = 102, y = 22, key = other.key}}}}, false, true), true)\n\
              mark()\n\
              send(packet(false, {{}}, true, false), true)\n\
              clicked()\nmark()"
-        ),
-        None,
-    );
+    ));
     // both buttons were pressed: each frame's fill and line are hot (the first button's quads are q1 to q13, the second's q14 to q26)
     assert_eq!(
         frame_colours(&readout, 1, Some(1)),
@@ -897,13 +804,10 @@ fn an_overflow_packet_with_no_events_and_the_button_up_releases_every_pressed_wi
 
 #[test]
 fn an_overflow_packet_clicks_nothing_even_with_a_retained_down_and_up() {
-    let readout = Readout::script(
-        &format!(
-            "{GO_BUTTON}mark()\n\
+    let readout = Readout::script(&format!(
+        "{GO_BUTTON}mark()\n\
              send(packet(key, {{ev('down', 12, 22), ev('up', 12, 22)}}, true, false), true)\nclicked()\nmark()"
-        ),
-        None,
-    );
+    ));
     // pressed, then released (the replay), then hover for the pointer now over the button; no click
     assert_eq!(
         readout.tints_after_mark(1),
@@ -925,18 +829,15 @@ fn an_overflow_packet_clicks_nothing_even_with_a_retained_down_and_up() {
 #[test]
 fn an_overflow_packet_that_ends_held_releases_the_pressed_button_and_the_next_click_needs_a_fresh_down()
  {
-    let readout = Readout::script(
-        &format!(
-            "{GO_BUTTON}\
+    let readout = Readout::script(&format!(
+        "{GO_BUTTON}\
              send(packet(key, {{ev('down', 12, 22)}}, true, true), true)\nclicked()\nmark()\n\
              -- the gesture's later up, in a packet without overflow: the button is not pressed, so it does not click\n\
              send(packet(key, {{ev('up', 12, 22)}}, false, false), true)\nclicked()\n\
              -- a fresh down and up clicks once\n\
              send(packet(key, {{ev('down', 12, 22)}}, false, true), true)\n\
              send(packet(key, {{ev('up', 12, 22)}}, false, false), true)\nclicked()"
-        ),
-        None,
-    );
+    ));
     assert_eq!(records(&readout), ["clicks 0", "clicks 0", "clicks 1"]);
     // after the overflow packet the button is not pressed: it has the hover look (the pointer is over it)
     assert_eq!(
@@ -947,13 +848,10 @@ fn an_overflow_packet_that_ends_held_releases_the_pressed_button_and_the_next_cl
 
 #[test]
 fn the_cancel_of_a_gesture_clears_the_pressed_state_without_a_click() {
-    let readout = Readout::script(
-        &format!(
-            "{GO_BUTTON}send(packet(key, {{ev('down', 12, 22)}}, false, true), true)\nmark()\n\
+    let readout = Readout::script(&format!(
+        "{GO_BUTTON}send(packet(key, {{ev('down', 12, 22)}}, false, true), true)\nmark()\n\
              send(packet(false, {{ev('cancel', 12, 22)}}), true)\nclicked()\nmark()"
-        ),
-        None,
-    );
+    ));
     // pressed at the mark; the cancel clears the press, and the pointer is not over the button
     assert_eq!(
         frame_colours(&readout, 1, Some(1)),
@@ -972,14 +870,14 @@ fn the_cancel_of_a_gesture_clears_the_pressed_state_without_a_click() {
 
 #[test]
 fn main_lua_registers_its_update_callback() {
-    let readout = Readout::new("", None);
+    let readout = Readout::new("");
     assert!(readout.frame_registered());
 }
 
 #[test]
 fn the_tooltip_flips_at_the_real_window_width() {
     let flip_x = |width: i64| {
-        let mut readout = Readout::new("", None);
+        let mut readout = Readout::new("");
         readout.update(width, 600, None);
         readout.deliver_hover(Some(("town", "Alpha", 700, 760, 80)));
         readout
@@ -1002,7 +900,7 @@ fn the_tooltip_flips_at_the_real_window_width() {
 
 #[test]
 fn a_resize_relayouts_the_readout_and_a_shown_tooltip() {
-    let mut readout = Readout::new("", None);
+    let mut readout = Readout::new("");
     // The shipped script opens at 1280 by 800 here (no screen snapshot); this case starts from a window of 800 by 600.
     readout.update(800, 600, None);
     readout.deliver(&crate::readout_tests::snapshot(
@@ -1042,7 +940,7 @@ fn a_resize_relayouts_the_readout_and_a_shown_tooltip() {
 
 #[test]
 fn an_idle_update_makes_no_scene_call_and_a_change_the_dispatcher_reports_does() {
-    let mut readout = Readout::new("", None);
+    let mut readout = Readout::new("");
     let pointer = |over: Option<&str>, events: Vec<ConfigValue>| {
         ConfigValue::Table(BTreeMap::from([
             ("x".to_owned(), ConfigValue::Float(1.0)),
@@ -1085,7 +983,6 @@ for _, args in ipairs{{"bad"}, {12}, {"time_pause", "time_faster"}, {}} do
   window.record(tostring(ok) .. " " .. tostring(err))
 end
 "#,
-        None,
     );
     assert_eq!(
         readout.controls(),
@@ -1118,7 +1015,7 @@ end
 
 #[test]
 fn the_time_bar_routes_its_buttons_through_game_controls() {
-    let mut readout = Readout::new("", None);
+    let mut readout = Readout::new("");
     readout.deliver(&crate::readout_tests::snapshot(
         14,
         3,
@@ -1201,11 +1098,12 @@ fn the_time_bar_routes_its_buttons_through_game_controls() {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "the literal checks form one two-scale layout contract"
+    reason = "the literal checks form one layout contract"
 )]
-fn the_time_bar_and_places_bar_follow_the_literal_layout_at_both_scales() {
-    for scale in [2, 3] {
-        let mut readout = Readout::new("", Some(scale));
+fn the_time_bar_and_places_bar_follow_the_literal_layout() {
+    {
+        let scale = 2;
+        let mut readout = Readout::new("");
         readout.update(800, 600, None);
         readout.deliver(&crate::readout_tests::snapshot(
             14,
@@ -1364,7 +1262,6 @@ window.record("mark")
 created:destroy()
 window.record("mark")
 "#,
-        None,
     );
     // The refusal names the duplicate and makes no scene call at all: no quad, no region, no texture load.
     assert!(
@@ -1422,7 +1319,6 @@ window.record(tostring(ok) .. " " .. tostring(message))
 local ok2 = pcall(button.new, {x = 0, y = 0, kind = "time_bar", icons = {"pause", "rewind"}})
 window.record(tostring(ok2))
 "#,
-        None,
     );
     let created: Vec<_> = readout
         .entries()
@@ -1486,14 +1382,15 @@ window.record(tostring(ok2))
 
 #[test]
 fn speed_boxes_follow_simulation_state_and_only_changed_boxes_are_retinted() {
-    for scale in [2, 3] {
+    {
+        let scale = 2;
         for (speed, paused) in [
             (1, None),
             (3, None),
             (5, None),
             (3, Some(crate::game::slot::PauseReason::Player)),
         ] {
-            let mut readout = Readout::new("", Some(scale));
+            let mut readout = Readout::new("");
             readout.deliver(&crate::readout_tests::snapshot(14, speed, paused));
             let expected: Vec<String> = (1..=5)
                 .map(|index| {
@@ -1533,7 +1430,7 @@ fn speed_boxes_follow_simulation_state_and_only_changed_boxes_are_retinted() {
         }
     }
 
-    let mut readout = Readout::new("", None);
+    let mut readout = Readout::new("");
     readout.deliver(&crate::readout_tests::snapshot(14, 3, None));
     let before_pause = readout.tints().len();
     readout.deliver(&crate::readout_tests::snapshot(
@@ -1612,7 +1509,7 @@ fn speed_boxes_click_their_named_speed_and_release_without_clicking_on_cancel_or
     use crate::game::controls::Control;
 
     for index in 1..=5 {
-        let mut readout = Readout::new("", Some(2));
+        let mut readout = Readout::new("");
         readout.deliver(&crate::readout_tests::snapshot(14, 3, None));
         let key = format!("speed_{index}");
         let hit = readout
@@ -1653,7 +1550,7 @@ fn speed_boxes_click_their_named_speed_and_release_without_clicking_on_cancel_or
         assert_eq!(readout.controls(), [Control::Speed(index)]);
     }
 
-    let mut readout = Readout::new("", Some(2));
+    let mut readout = Readout::new("");
     readout.deliver(&crate::readout_tests::snapshot(14, 3, None));
     let key = "speed_4".to_owned();
     let event = |kind: &str, inside: bool| {
@@ -1710,7 +1607,7 @@ fn speed_boxes_click_their_named_speed_and_release_without_clicking_on_cancel_or
 
 #[test]
 fn speed_box_hover_recolors_its_outline_and_press_fills_its_inner_bar() {
-    let mut readout = Readout::new("", Some(2));
+    let mut readout = Readout::new("");
     readout.deliver(&crate::readout_tests::snapshot(14, 1, None));
     let key = "speed_2".to_owned();
     let outlines: Vec<_> = readout
@@ -1769,7 +1666,6 @@ fn the_time_bar_date_has_no_transport_text_and_an_hour_change_replaces_only_its_
 local date = require("lib.time")
 window.record(date.date({day = 9, month = 10, year = 768, hour = 14, speed = 3, paused = true}))
 "#,
-        None,
     );
     assert!(
         formatted
@@ -1778,7 +1674,7 @@ window.record(date.date({day = 9, month = 10, year = 768, hour = 14, speed = 3, 
             .any(|entry| entry == "record 9 Oct 768 · 14:00")
     );
 
-    let mut readout = Readout::new("", None);
+    let mut readout = Readout::new("");
     readout.deliver(&crate::readout_tests::snapshot(14, 3, None));
     let before = readout.entries().len();
     readout.deliver(&crate::readout_tests::snapshot(15, 3, None));
@@ -1807,7 +1703,6 @@ theme.kind = function() return {outline = "#000000", hot = "#ffffff", speed_box 
 local ok2, message2 = pcall(look.kind, "time_bar")
 window.record(tostring(ok2) .. " " .. tostring(message2))
 "##,
-        None,
     );
     let errors: Vec<_> = readout
         .entries()
@@ -1838,7 +1733,7 @@ fn on_screen(rect: Rect) -> bool {
 
 #[test]
 fn the_tooltip_places_no_panel_while_hidden_and_exactly_one_when_shown() {
-    let mut readout = Readout::new("", None);
+    let mut readout = Readout::new("");
     let panel_rects = |readout: &Readout| -> Vec<Rect> {
         let entries = readout.entries();
         let alive = quads(&entries);
