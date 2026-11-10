@@ -2,20 +2,33 @@
 
 A 2D pixel-art economic grand-strategy game, and a reusable collection of Rust/Metal packages, with Pijul changes accepted
 in batches. The game vision is being captured in an ongoing owner interview ([docs/vision.md](docs/vision.md), provisional).
-Today there is a runtime that starts, loads its configuration, logs, and shuts down cleanly (milestone 1). With a configuration it also
-runs two Lua VMs in parallel, `ui` and `gameplay`, each a printing skeleton (milestone 2). There is also a GPU probe.
-Its design is [docs/runtime-design.md](docs/runtime-design.md). Milestone 3's native path is accepted
-([docs/window-design.md](docs/window-design.md)): built with `--features metal`, the `ui` VM opens a native macOS window cleared
-by Metal, and Escape or the close button ask its Lua callback whether to close. Milestone 3.5's GLFW and Vulkan path is accepted
-too: built with `--features vulkan`, the same scripts open a GLFW window cleared by Vulkan (MoltenVK on this Mac). Milestone 4 is
-accepted ([docs/render-design.md](docs/render-design.md)): the `ui` VM places a textured quad from a PNG in `assets/` with
-`render.quad`, drawn by Metal through `ck-render-2d`. Milestone 4.5 is accepted too: the same quad is drawn by Vulkan on the GLFW
-path, and the two backends are interchangeable to the rest of the project. Milestone 5 is accepted too
-([docs/scene-design.md](docs/scene-design.md)): on the native Metal path the `ui` VM loads textures in the background through
-reusable handles, places and moves many quads, reads configurable key bindings every update, and draws tens of thousands of quads
-and distinct textures through a bindless texture table. Milestone 5.5 is accepted too: the live scene, its key bindings, the
-update pacing and the bindless texture table run on `glfw-vulkan` as well, and the same scale was measured there
-([docs/evidence/m55-scale-2026-11-01.md](docs/evidence/m55-scale-2026-11-01.md)).
+
+Accepted so far, each milestone with its design (the [documentation index](docs/README.md) lists them all):
+
+- **Milestones 1 and 2** ([docs/runtime-design.md](docs/runtime-design.md)): a runtime that loads its configuration, logs and shuts
+  down cleanly, and runs two Lua VMs in parallel, `ui` and `gameplay`. There is also a Metal GPU probe.
+- **Milestones 3 and 3.5** ([docs/window-design.md](docs/window-design.md)): the `ui` VM opens a native macOS window cleared by Metal
+  (`--features metal`), or a GLFW window cleared by Vulkan (`--features vulkan`), and its Lua callback decides each close request.
+- **Milestones 4 and 4.5** ([docs/render-design.md](docs/render-design.md)): a textured quad from a PNG, drawn through `ck-render-2d`
+  by either backend.
+- **Milestones 5 and 5.5** ([docs/scene-design.md](docs/scene-design.md)): textures loaded in the background through reusable
+  handles, many ordered quads, configurable key bindings, a paced update, and tens of thousands of quads and distinct textures through
+  a bindless texture table, on both backends
+  ([docs/evidence/m55-scale-2026-11-01.md](docs/evidence/m55-scale-2026-11-01.md)).
+- **Milestone 6** ([docs/map-design.md](docs/map-design.md)): the map of Ireland, written by the GPU from authored terrain data, with
+  major rivers, a camera, and a preview tool that renders the reference colours offline.
+- **Milestone 7** ([docs/places-time-design.md](docs/places-time-design.md)): the 768 scenario's places and their catchments, a game
+  clock with pause and five speeds, reproducible saves (quicksave and quickload), mouse pan and zoom, the `gameplay` VM on the game
+  clock, a pixel font, the date readout and place names on hover.
+- **Milestone 8** ([docs/ui-design.md](docs/ui-design.md)): UI windows and panels in Lua. Map input never waits on the UI; there is a
+  widget library, scene groups with clipping, a time-control bar, a places list, a place window opened by clicking a place, scroll
+  lists and a themed look.
+- **Milestone 9** ([docs/economy-design.md](docs/economy-design.md), [docs/map-design.md](docs/map-design.md) §12): the first economy.
+  Each place has pops and buildings. Buildings produce, keep herds and stores, and pay wages in goods. Pops eat at noon each day,
+  are born, die, are hired and move. Each place's prices move with its pops' and buildings' orders, though no goods change hands
+  between them yet. Land has footprints, fertility and a computed climate. A location panel shows a place's
+  economy, the map has a new look, and three map modes colour it by stockpile, expected yield or elevation. New render features
+  land on native Metal only; their Vulkan port is parked (CK-239).
 
 ## Run it
 
@@ -31,15 +44,55 @@ tools/ck cargo run --features vulkan -- --config config/demo-quad-vulkan.toml  #
 tools/ck cargo run --features metal -- --config config/demo-scene.toml  # the live-scene demo: loading tiles, a gem to move
 tools/ck cargo run --features vulkan -- --config config/demo-scene.toml --backend glfw-vulkan  # the same demo on GLFW and Vulkan
 tools/ck cargo run --features metal -- --metal-smoke
-tools/ck check --changed # the groups your change affects (and why); the usual check
+tools/ck cargo run --release --bin economy-soak -- --years 10   # the economy, headless, as CSV (below)
+tools/ck check --changed # the groups your change affects (and why); the usual check, and what a batch runs
 tools/ck check --quick   # fmt, Ruff, ShellCheck: while editing
-tools/ck check           # full: every group, Metal and native windows included (the batch runs this)
+tools/ck check           # full: every non-optional group, Metal and native windows included (once per milestone)
 tools/ck status
 ```
 
 The Metal probe compiles a shader during the Cargo build, dispatches it on the
 GPU, and checks all 64 results in Rust. Full checks require the Metal compiler and
 a working GPU; missing prerequisites fail the run rather than skip it.
+
+### The game
+
+No shipped configuration runs the game yet: the game needs a `[game]` table naming a scenario. Save this as, for example,
+`config/game.toml` (paths are relative to the file), and run it with
+`tools/ck cargo run --features metal -- --config config/game.toml`. The file and the saves directory are untracked, so keep them out of
+a copy you check and record from: `ck check --changed` counts them as changed paths.
+
+```toml
+[window]
+backend = "native-metal"
+
+[render]
+assets = "../assets"
+
+[game]
+scenario = "../assets/scenarios/ireland-768"
+saves = "../saves"            # quicksaves; the default is `saves` beside this file
+
+[lua.ui]
+entry = "../scripts/ui/main.lua"
+
+[lua.gameplay]
+entry = "../scripts/gameplay/main.lua"
+```
+
+- **A new game** starts paused at the scenario's start date, with a master seed from `--seed N` or the operating system;
+  `--load PATH` starts from a save instead.
+- **Time:** Space pauses, `1` to `5` pick a speed, `]` and `[` go faster and slower, and the time bar's buttons do the same. F5
+  quicksaves and F9 quickloads.
+- **The map:** drag to pan and scroll to zoom at the cursor, or use the arrow keys and `=` and `-`. Click a place, or pick it from
+  the places list, to show it in the location panel (tabs: location, pops and buildings). The three buttons beside the places list
+  switch the map mode (stockpile, expected yield, elevation); pressing the one showing turns it off.
+- **Run the game on native Metal.** Milestone 9's render features (the new map look and the elevation mode) exist on native Metal
+  only. Since CK-238 the Vulkan backend is only kept compiling, and its port of them (CK-239) is parked until the owner says so.
+
+`economy-soak [--scenario DIR] [--years N] [--seed N]` runs the economy without a window from the 768 scenario (the default) and
+prints one CSV row per pop per month: workers, dependents, food, births and deaths, employment, movement, crowding, prices,
+production, stores, herds, posted wages and losses. It is a tuning tool, outside the checks.
 
 ## The runtime command
 
@@ -48,8 +101,12 @@ TOML file instead (only that path; no search of the working directory or the env
 `--metal-smoke` do not start the runtime.
 
 ```
-codekarl [--config PATH] [--headless | --backend NAME] | --help | --version | --metal-smoke
+codekarl [--config PATH] [--headless | --backend NAME] [--load PATH | --seed N] | --help | --version | --metal-smoke
 ```
+
+`--load` and `--seed` need a configuration with a `[game] scenario` ([The game](#the-game)). The tables below are the core ones. The
+others (`[map]`, `[game]`, `[ui]`, `[render]`, `[resources]`, `[frame]`, `[input.bindings]`) are defined in
+`apps/codekarl/src/config.rs`, and the scene's settings are listed in [docs/scene-design.md](docs/scene-design.md) §7.1.
 
 ```toml
 [log]
@@ -198,8 +255,10 @@ bindless draw: 8.25 ms of CPU time per frame at the 95th percentile, just over t
 0.6 ms of GPU time. With textures constantly reloaded and recreated it is 7.35 ms, and loading runs at about 7,700 textures a
 second.
 On `glfw-vulkan` (MoltenVK on the same Mac) the same scene draws correctly with 15 ms of CPU time per frame at the 95th
-percentile, but takes about 155 ms of GPU time per frame, about 250 times Metal's, so it runs at about 6 frames a second; a 248-image scene matches Metal. The cause is
-being investigated (CK-168), including whether it is specific to MoltenVK or would also affect Linux.
+percentile, but at first took about 155 ms of GPU time per frame, about 250 times Metal's. CK-168 traced that to MoltenVK's Metal
+resource allocation ([docs/evidence/m55-vulkan-gpu-gap-2026-11-02.md](docs/evidence/m55-vulkan-gpu-gap-2026-11-02.md)): with
+MoltenVK allocating from Metal heaps the same scene took about 0.75 ms, and since CK-175 the Vulkan instance asks MoltenVK for heaps
+unless `MVK_CONFIG_USE_MTLHEAP` is set in the environment. Whether native Linux Vulkan behaves the same is unmeasured.
 Counter-level profiling is done with external tools (Instruments, the Metal debugger), not engine counters.
 
 `tools/ck` supplies the project tool environment. It selects Xcode using
@@ -267,14 +326,23 @@ reject changed content.
 
 | Location | Responsibility |
 | --- | --- |
-| `apps/codekarl` | Executable: arguments, configuration, logging set-up, runtime and Lua VMs, exit status |
+| `apps/codekarl` | Executable: arguments, configuration, logging set-up, runtime and Lua VMs, the window, map and game composition, the Lua APIs, exit status; also the `economy-soak` tool |
 | `crates/lua` | `ck-lua`: one Lua 5.4 state per VM owner thread, deadlines, cancellation and its instruction hook, `log` and `config` |
 | `crates/log` | `ck-log`: lossless structured logging to stdout, with bounded calls for the control path |
 | `crates/runtime` | `ck-runtime`: starts services in order and supervises thread owners with deadlines, stops in reverse, reports the outcome |
-| `config`, `scripts` | The shipped configuration and the two skeleton Lua scripts |
+| `crates/window`, `crates/window-cocoa`, `crates/window-glfw` | `ck-window`: the platform-free window loop; its native macOS (`AppKit`) and GLFW backends |
+| `crates/input` | `ck-input`: portable key names, validated action bindings and the bounded input mapper |
+| `crates/resources` | `ck-resources`: PNG decoding under budgets, the assets rule and the background resource service |
+| `crates/render-2d` | `ck-render-2d`: the only drawing API the rest of the project sees: the scene bridge, the ordered scene, the map input and map modes it hands the GPU crates' map passes, and the Metal and Vulkan backends |
 | `crates/gpu-metal` | Native Metal ownership boundary and build-time shader compilation |
 | `crates/gpu-metal/native` | C header and Objective-C/ARC implementation |
 | `crates/gpu-metal/shaders` | Metal Shading Language source |
+| `crates/gpu-vulkan` | `ck-gpu-vulkan`: the Vulkan presenter, texture store and scene drawing (compile-only since CK-238) |
+| `crates/map` | `ck-map`: map coordinates, camera math, loading and validating the map and scenario files, the reference colours, and the `map-preview` tool |
+| `crates/sim` | `ck-sim`: the calendar, the clock, the tick scheduler, commands, random streams and saves |
+| `crates/economy` | `ck-economy`: the economy's data, starting state and daily and monthly rules, independent of maps, windows, Lua and renderers |
+| `config`, `scripts` | The shipped configurations, and the Lua scripts: the `ui` VM's game UI and widget library (`scripts/ui/lib`), the demos and the `gameplay` skeleton |
+| `assets` | The map of Ireland, the 768 scenario (places and economy), the economy rules, the UI font and theme, and the demo images |
 | `specs/bootstrap.json` | Executable CLI acceptance contract |
 | `apps/codekarl/tests` | Rust CLI spec runner over `specs/bootstrap.json`, and runtime-command tests |
 | `crates/gpu-metal/tests` | Supervised native GPU test with Metal validation layers |
@@ -287,17 +355,14 @@ reject changed content.
 | `.cargo/config.toml` | Forces the macOS deployment target to 26.0 (current Mac only) |
 
 Cargo workspaces support separately compiled packages with explicit dependency
-edges. Crates such as `core`, `resources`, `render-2d` and later `render-3d` are
-options to add as actual systems appear, not an approved package roadmap. Logging and the
-runtime are the first separate packages ([docs/runtime-design.md](docs/runtime-design.md)); further
-splits, such as a resource manager, remain open (see [docs/vision.md](docs/vision.md)). Both renderers
-can depend on `gpu-metal`; the shared GPU layer does not depend on either renderer. Simulation code should remain independent of
-rendering. The executable is the composition point. No empty placeholder crates
-or renderer interfaces are needed yet.
+edges. Each crate above was added when a real system needed it; later ones, such as `render-3d`, are options to add the same way,
+not an approved package roadmap. The GPU crates do not depend on `ck-render-2d`, and the simulation and economy crates stay
+independent of rendering, windows and Lua. The executable is the composition point. No empty placeholder crates are kept.
 
 ## Documentation
 
-The [documentation index](docs/README.md) separates current guides and contracts from completed records.
+The [documentation index](docs/README.md) lists every document: the current guides and contracts, one design per milestone, and
+the completed records.
 
 | Document | Status |
 | --- | --- |
@@ -305,9 +370,9 @@ The [documentation index](docs/README.md) separates current guides and contracts
 | [docs/agent-workflow.md](docs/agent-workflow.md) | Current: roles, model classes, sessions |
 | [docs/chat-workflow.md](docs/chat-workflow.md) | Current: chat contract; dated rollout sections are historical |
 | [docs/review-gate-plan.md](docs/review-gate-plan.md) | Current specification of the installed review gate |
-| [docs/archive/setup-hardening-plan.md](docs/archive/setup-hardening-plan.md) | Completed record of the hardening slices (all accepted) |
-| [docs/archive/live-pilot-findings.md](docs/archive/live-pilot-findings.md) | Closed findings ledger of the 2026-10-15 pilot |
-| [docs/archive/chat-identity-incident.md](docs/archive/chat-identity-incident.md), [docs/archive/reviews/](docs/archive/reviews/) | Historical records (2026-10-14) |
+| [docs/vision.md](docs/vision.md), [docs/game/](docs/game/) | Provisional: the game vision and its systems |
+| Milestone designs | From [docs/runtime-design.md](docs/runtime-design.md) (milestones 1 and 2) to [docs/economy-design.md](docs/economy-design.md) (milestone 9); see the index |
+| [docs/archive/](docs/archive/) | Completed records: the setup hardening, the 2026-10-15 pilot findings, the 2026-10-14 identity incident and its reviews |
 
 The `ck-workflow-ready` setup goal is complete (2026-10-17). The owner's deliberate deferrals are listed in the hardening
 record's §14; they are known limitations, not open work.
