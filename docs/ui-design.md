@@ -12,13 +12,26 @@
 > - **Proposal:** the design, approved for slicing. Each slice spec may refine it.
 >
 > **Basis:** every "exists" claim cites the accepted tree as of CK-205 (2026-11-07). Author: ck-designer-1 (Claude, Class S).
+>
+> **Delivered.** Milestone 8 is accepted: slices 0 to 7 as CK-206 to CK-212 and CK-215 to CK-217, the owner's follow-up (clickable
+> speed boxes and the places dropdown) as CK-219, and fixes and guide findings in CK-213, CK-214 and CK-218 to CK-223. The look (owner
+> Q1) was mocked up from the owner's description (`m8-design/look-mockup-r1` to `r5`) before the theme slice, CK-216. Where a slice
+> spec refined this design, the spec and the accepted code win over this text. "Proposal" below now means "the approved design as
+> sliced".
+>
+> **Since milestone 8.** Milestone 9 added, with the same widgets and theme (`docs/economy-design.md` §3.11 and §3.22):
+> - **the location panel:** a window filling the left third of the screen with the selected place's economy, in three tabs (location,
+>   pops and buildings) shown as title-bar buttons. Its tab widget, `scripts/ui/lib/tabs.lua`, is the one new widget. A map click or a
+>   places-list row shows that place in the panel;
+> - **the map-mode bar:** three icon buttons, left of the places bar, for the stockpile, yield and elevation map modes. They call
+>   `game.set_map_mode`; the button of the mode showing is selected, and pressing it turns the mode off.
 
 ## Owner answers (2026-11-07)
 
 From `.pipeline/coordination/m8-design/owner-answers-r1.md`. **No question is open.**
 
 1. **The look:** "I'll describe it". The owner describes the look, and a mock-up follows the description. Theming (slice 7) waits for
-   both. The description is pending.
+   both. The description is pending. *(Historical: given and mocked up; see "Delivered" above.)*
 2. **Escape:** it closes the top window; with none open, it requests the close as today (§3.5).
 3. **UI scale:** one `[ui] points_per_pixel` for the font, borders and icons; the old key is refused, naming the new one (§3.3).
 4. **First real window:** a place window, opened by clicking a place marker (§3.11).

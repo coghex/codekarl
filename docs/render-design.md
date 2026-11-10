@@ -11,6 +11,13 @@ in the GPU crates, and nothing moves into `ck-render-2d`. Milestone 4.5's design
 quad presented), CK-98 (`ck-render-2d` `vulkan` feature), CK-99 (`codekarl` through the Vulkan quad, the last in batch
 `1792743628066239000`). `ClearOnly` stays in `ck-render-2d`, unused by the application; its removal is a later decision. The owner
 ran `config/demo-quad-vulkan.toml` ("yes that looks right", 2026-10-23).**
+
+**Since then.** `ck-render-2d` stays the only drawing API. Milestones 5 and 5.5 replaced the single quad with an ordered scene of
+persistent quads over live textures (`docs/scene-design.md`); `render.quad` remains as the scene's legacy lane. Milestone 6 added the
+map, drawn by its own GPU-written pass beneath the scene in each GPU crate, and milestone 9 added map modes beside it, both published
+through the scene bridge (`docs/map-design.md` §9 and §12, `docs/economy-design.md` §3.22). The owner's "interchangeable" backends
+(§1) were later narrowed on 2026-11-09: Vulkan is kept compiling only, and new render features land on native Metal first, with a
+parked catch-up for Vulkan (CK-238, CK-239; `docs/tooling.md`).
 Owner decisions are
 marked **Firm** with their date. Everything else is a **Proposal** (ck-manager's) or **Open**. A Proposal is not an owner decision until
 the owner accepts it; approved Proposals are settled in the issue specs and their reviews.
