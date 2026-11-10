@@ -87,7 +87,7 @@ fn simulate(
     quality_by_place: &BTreeMap<String, u16>,
 ) -> Result<String, String> {
     let mut csv = String::from(
-        "seed,year,month,place,pop,pop_type,size,workers,dependents,needs_pm,intake_pm,food_days_milli,prices,production,stores,herds,losses\n",
+        "seed,year,month,place,pop,pop_type,size,workers,dependents,needs_pm,intake_pm,food_days_milli,prices,production,stores,herds,posted_wages,losses\n",
     );
     for _ in 0..u32::from(years) * 12 {
         let days = days_in_month(date.year, date.month).map_err(|error| error.to_string())?;
@@ -164,6 +164,19 @@ fn append_month_rows(
         let production = quantities(&goods, &place_ledger.produced);
         let losses = quantities(&goods, &place_ledger.lost);
         let herds_field = format!("cattle={};pigs={};sheep={}", herds[0], herds[1], herds[2]);
+        let posted_wages = place
+            .buildings
+            .iter()
+            .enumerate()
+            .map(|(index, building)| {
+                format!(
+                    "building{index}.{}={}",
+                    building.kind,
+                    building.posted_wage()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(";");
         let mut stores = Vec::new();
         for (index, pop) in place.pops.iter().enumerate() {
             stores.push(format!("pop{index}:{}", quantities(&goods, &pop.stock)));
@@ -254,6 +267,7 @@ fn append_month_rows(
             let production_field = csv_field(&production);
             let stores_field = csv_field(&stores);
             let herds_field = csv_field(&herds_field);
+            let posted_wages_field = csv_field(&posted_wages);
             let losses_field = csv_field(&losses);
             let intake_pm = ledger
                 .intake_pm
@@ -261,7 +275,7 @@ fn append_month_rows(
                 .and_then(|values| values.get(pop_index))
                 .copied()
                 .ok_or("daily intake ledger dimensions do not match places and pops")?;
-            writeln!(csv, "{seed},{},{},{place_field},{pop_field},{},{},{},{},{},{},{food_days_milli},{prices_field},{production_field},{stores_field},{herds_field},{losses_field}",
+            writeln!(csv, "{seed},{},{},{place_field},{pop_field},{},{},{},{},{},{},{food_days_milli},{prices_field},{production_field},{stores_field},{herds_field},{posted_wages_field},{losses_field}",
                 date.year, date.month, pop.kind, size, pop.workers, pop.dependents, needs, intake_pm)
                 .expect("writing to a String is infallible");
         }
@@ -351,8 +365,20 @@ mod tests {
                 .unwrap()
                 .starts_with("768,768,11,armagh,0,peasant,1000,600,400,")
         );
+        let first_row = first.lines().nth(1).unwrap();
+        let mut row_fields = first_row.split(',').collect::<Vec<_>>();
+        assert_eq!(row_fields.len(), 18);
+        let posted_wages = row_fields.remove(16);
+        let wage_entries = posted_wages.split(';').collect::<Vec<_>>();
+        assert_eq!(wage_entries.len(), 3, "one posted wage per building");
+        assert!(wage_entries.iter().enumerate().all(|(index, entry)| {
+            entry.starts_with(&format!("building{index}."))
+                && entry
+                    .split_once('=')
+                    .is_some_and(|(_, wage)| wage.parse::<u64>().is_ok())
+        }));
         assert_eq!(
-            first.lines().nth(1).unwrap(),
+            row_fields.join(","),
             "768,768,11,armagh,0,peasant,1000,600,400,1000:0:0,1000,384370,oats=95000;barley=114000;peas_beans=114000;vegetables=42000;apples=157500;dairy=42000;beef=10500;pork=9450;mutton=8400;fish=30000;seabirds=20000;ale=63000;mead=315000;wine=600000;honey=126000;herbs=105000;wool=40000;beeswax=150000;hides=200000;cattle=2400000;pigs=600000;sheep=300000,apples=78;dairy=2285;ale=346;mead=34,pop0:oats=11968;barley=3989;peas_beans=997;vegetables=1994;dairy=3461;beef=997;pork=997;mutton=997|pop1:oats=2393;barley=797;peas_beans=199;vegetables=398;apples=27;dairy=637;beef=199;pork=199;mutton=199;ale=126;mead=11|pop2:oats=1795;barley=598;peas_beans=149;vegetables=299;apples=25;dairy=514;beef=149;pork=149;mutton=149;ale=114;mead=10|building0.holdings:oats=40;barley=12;apples=24;dairy=204;beef=4;pork=4;mutton=4;ale=104;mead=11|building1.farm:oats=40;barley=12;dairy=172;beef=4;pork=4;mutton=4|building2.storehouse:|building2.account.pop0:|building2.account.pop1:|building2.account.pop2:|building2.account.communal:,cattle=635;pigs=424;sheep=357,"
         );
     }
@@ -387,6 +413,7 @@ mod tests {
                     sea: 0,
                 },
             }],
+            1,
         )
         .expect("the non-starving herd fixture starts with its authored levels");
         assert!(report.is_empty(), "{report:?}");

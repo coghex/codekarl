@@ -10,6 +10,8 @@ use std::{collections::BTreeMap, error::Error, fmt, fs, path::Path};
 use ck_sim::{Canonical, CanonicalError, Date, Reader, encode_length};
 use serde::Deserialize;
 
+const WAGE_HISTORY_MONTHS: usize = 12;
+
 /// A fully qualified data error: its source file, entry and problem.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataError {
@@ -919,8 +921,17 @@ pub fn starting_state(
     rules: &Rules,
     data: &ScenarioEconomy,
     locations: &[StartLocation],
+    start_month: u8,
 ) -> Result<(EconomyState, Vec<String>), DataError> {
+    if !(1..=12).contains(&start_month) {
+        return Err(DataError {
+            file: "scenario start".to_owned(),
+            entry: "start_month".to_owned(),
+            problem: "must be in 1..=12".to_owned(),
+        });
+    }
     rules.validate("economy rules")?;
+    let months_to_harvest = months_to_grain_harvest(rules, start_month)?;
     let mut state = EconomyState::default();
     let mut report = Vec::new();
     for location in locations {
@@ -1143,6 +1154,7 @@ pub fn starting_state(
                 wage_carries: vec![0; rules.goods.len()],
                 pay_carries: vec![0; rules.goods.len()],
                 fee_carries: Vec::new(),
+                wage_history: vec![0; 12],
             });
             let _ = (assignment.used_land, assignment.used_sea);
         }
@@ -1168,6 +1180,7 @@ pub fn starting_state(
                 wage_carries: vec![0; rules.goods.len()],
                 pay_carries: vec![0; rules.goods.len()],
                 fee_carries: vec![vec![0; rules.goods.len()]; pops.len() + 1],
+                wage_history: vec![0; 12],
                 herd_grazing_sums: Vec::new(),
             });
         }
@@ -1183,6 +1196,66 @@ pub fn starting_state(
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        for building in &mut buildings {
+            let paid_heads = building
+                .employment
+                .iter()
+                .try_fold(0_u64, |total, employment| {
+                    total.checked_add(employment.workers)
+                })
+                .ok_or_else(|| {
+                    missing_data(
+                        format!(
+                            "places.{}.buildings.{}.employment",
+                            location.id, building.kind
+                        ),
+                        "paid head count overflow",
+                    )
+                })?;
+            let stock_value = building
+                .stock
+                .iter()
+                .zip(&prices_milli)
+                .try_fold(0_u128, |total, (units, price)| {
+                    value_at_price(u128::from(*units), *price)
+                        .ok()
+                        .and_then(|value| total.checked_add(value))
+                })
+                .ok_or_else(|| {
+                    missing_data(
+                        format!(
+                            "places.{}.buildings.{}.wage_history",
+                            location.id, building.kind
+                        ),
+                        "starting stockpile value overflow",
+                    )
+                })?;
+            let seed = if paid_heads == 0 {
+                0
+            } else {
+                let denominator = u128::from(paid_heads)
+                    .checked_mul(u128::from(months_to_harvest))
+                    .ok_or_else(|| {
+                        missing_data(
+                            format!(
+                                "places.{}.buildings.{}.wage_history",
+                                location.id, building.kind
+                            ),
+                            "starting wage denominator overflow",
+                        )
+                    })?;
+                u64::try_from(stock_value / denominator).map_err(|_| {
+                    missing_data(
+                        format!(
+                            "places.{}.buildings.{}.wage_history",
+                            location.id, building.kind
+                        ),
+                        "starting posted wage exceeds u64",
+                    )
+                })?
+            };
+            building.wage_history = vec![seed; WAGE_HISTORY_MONTHS];
+        }
         let footprint = building_footprint(rules, &buildings)?;
         let prepared_m2 = footprint
             .checked_add(rules.buildable_base_m2)
@@ -1212,6 +1285,30 @@ pub fn starting_state(
         });
     }
     Ok((state, report))
+}
+
+fn months_to_grain_harvest(rules: &Rules, start_month: u8) -> Result<u8, DataError> {
+    if !(1..=12).contains(&start_month) {
+        return Err(missing_data(
+            "scenario start_month".to_owned(),
+            "month is outside 1..=12",
+        ));
+    }
+    let grain = rules
+        .seasons
+        .get("grain")
+        .ok_or_else(|| missing_data("seasons.grain".to_owned(), "season table is missing"))?;
+    (1_u8..=12)
+        .find(|months| {
+            let month_index = (start_month - 1 + *months) % 12;
+            grain[usize::from(month_index)] > 0
+        })
+        .ok_or_else(|| {
+            missing_data(
+                "seasons.grain".to_owned(),
+                "no harvest month has a positive share",
+            )
+        })
 }
 
 fn missing_data(entry: String, problem: &str) -> DataError {
@@ -2583,6 +2680,24 @@ pub struct BuildingState {
     pub pay_carries: Vec<u64>,
     /// Storehouse account fee carries in pop order, then communal account.
     pub fee_carries: Vec<Vec<u64>>,
+    /// Posted wages in thousandths of a value unit per paid head, by calendar month.
+    pub wage_history: Vec<u64>,
+}
+
+impl BuildingState {
+    /// The floor of the twelve saved monthly wages, or zero for malformed state.
+    #[must_use]
+    pub fn posted_wage(&self) -> u64 {
+        if self.wage_history.len() != WAGE_HISTORY_MONTHS {
+            return 0;
+        }
+        let total = self
+            .wage_history
+            .iter()
+            .map(|wage| u128::from(*wage))
+            .sum::<u128>();
+        u64::try_from(total / WAGE_HISTORY_MONTHS as u128).unwrap_or(u64::MAX)
+    }
 }
 
 /// Per-good claims against a storehouse's physical stock.
@@ -4318,6 +4433,12 @@ pub fn run_monthly_production_with_quality(
     if date.day != 1 {
         return Ok(ProductionLedger::new(rules.goods.len()));
     }
+    if !(1..=12).contains(&date.month) {
+        return Err(missing_data(
+            "calendar.month".to_owned(),
+            "month is outside 1..=12",
+        ));
+    }
     rules.validate("economy rules")?;
     let mut next = state.clone();
     let mut ledger = ProductionLedger::new(rules.goods.len());
@@ -4343,6 +4464,15 @@ pub fn run_monthly_production_with_quality(
                     "definition is missing",
                 ));
             };
+            if building.wage_history.len() != WAGE_HISTORY_MONTHS {
+                return Err(missing_data(
+                    format!(
+                        "places.{}.buildings.{}.wage_history",
+                        place.id, building.kind
+                    ),
+                    "saved wage history must have exactly 12 calendar months",
+                ));
+            }
             if definition.methods.is_empty() {
                 if building.storehouse_accounts.is_some() {
                     fee_buildings.push(building_index);
@@ -4753,6 +4883,7 @@ pub fn run_monthly_production_with_quality(
                 .iter()
                 .map(|employment| employment.workers)
                 .collect::<Vec<_>>();
+            let mut wage_value = 0_u128;
             for (good_index, output_units) in monthly_output.iter().copied().enumerate() {
                 let split_num = u128::from(output_units)
                     .checked_mul(u128::from(wage_share_pm))
@@ -4765,6 +4896,31 @@ pub fn run_monthly_production_with_quality(
                 let wage = u64::try_from(split_num / 1_000_000).map_err(|_| {
                     missing_data("payday.split".to_owned(), "wage units exceed u64")
                 })?;
+                let price = place.prices_milli.get(good_index).copied().ok_or_else(|| {
+                    missing_data(
+                        format!("places.{}.prices_milli", place.id),
+                        "saved prices do not match goods",
+                    )
+                })?;
+                wage_value = wage_value
+                    .checked_add(value_at_price(u128::from(wage), price).map_err(|problem| {
+                        missing_data(
+                            format!(
+                                "places.{}.buildings.{}.wage_history",
+                                place.id, building.kind
+                            ),
+                            problem,
+                        )
+                    })?)
+                    .ok_or_else(|| {
+                        missing_data(
+                            format!(
+                                "places.{}.buildings.{}.wage_history",
+                                place.id, building.kind
+                            ),
+                            "payday wage value overflow",
+                        )
+                    })?;
                 building.wage_carries[good_index] =
                     u64::try_from(split_num % 1_000_000).map_err(|_| {
                         missing_data("payday.split".to_owned(), "wage carry exceeds u64")
@@ -4802,6 +4958,18 @@ pub fn run_monthly_production_with_quality(
                 if !contributions.is_empty() {
                     pending_overflow.push((building_index, good_index, contributions));
                 }
+            }
+            if workers > 0 {
+                let posted = u64::try_from(wage_value / u128::from(workers)).map_err(|_| {
+                    missing_data(
+                        format!(
+                            "places.{}.buildings.{}.wage_history",
+                            place.id, building.kind
+                        ),
+                        "posted payday wage exceeds u64",
+                    )
+                })?;
+                building.wage_history[usize::from(date.month - 1)] = posted;
             }
         }
         for (building_index, good_index, contributions) in pending_overflow {
@@ -5014,6 +5182,7 @@ impl Canonical for EconomyState {
                 building.wage_carries.encode(out)?;
                 building.pay_carries.encode(out)?;
                 building.fee_carries.encode(out)?;
+                building.wage_history.encode(out)?;
             }
             place.prices_milli.encode(out)?;
             place.prepared_m2.encode(out)?;
@@ -5071,6 +5240,7 @@ impl Canonical for EconomyState {
                     wage_carries: Vec::<u64>::decode(input)?,
                     pay_carries: Vec::<u64>::decode(input)?,
                     fee_carries: Vec::<Vec<u64>>::decode(input)?,
+                    wage_history: Vec::<u64>::decode(input)?,
                 });
             }
             places.push(PlaceState {
@@ -5219,7 +5389,7 @@ mod tests {
         };
         let rules = tiny_rules();
         let (state, report) =
-            starting_state(&rules, &data, std::slice::from_ref(&location)).unwrap();
+            starting_state(&rules, &data, std::slice::from_ref(&location), 10).unwrap();
         assert!(report.is_empty());
         let place = &state.places[0];
         assert_eq!(place.prepared_m2, 22_200);
@@ -5236,7 +5406,7 @@ mod tests {
             .footprint_m2
             .insert("farm".to_owned(), 30_000);
         let (overbuilt, report) =
-            starting_state(&overbuilt_rules, &data, std::slice::from_ref(&location)).unwrap();
+            starting_state(&overbuilt_rules, &data, std::slice::from_ref(&location), 10).unwrap();
         assert_eq!(
             report,
             [
@@ -5315,7 +5485,10 @@ mod tests {
                     methods: Vec::new(),
                 },
             ],
-            seasons: BTreeMap::new(),
+            seasons: BTreeMap::from([(
+                "grain".to_owned(),
+                vec![0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0],
+            )]),
             curves: BTreeMap::from([(
                 "intake_food_days".to_owned(),
                 vec![[30, 500], [120, 800], [240, 1000]],
@@ -5447,6 +5620,7 @@ mod tests {
             wage_carries: vec![0; 2],
             pay_carries: vec![0; 2],
             fee_carries: vec![vec![0; 2]; 3],
+            wage_history: vec![0; 12],
         };
         let farm = BuildingState {
             kind: "farm".to_owned(),
@@ -5471,6 +5645,7 @@ mod tests {
             wage_carries: vec![0; 2],
             pay_carries: vec![0; 2],
             fee_carries: Vec::new(),
+            wage_history: vec![0; 12],
         };
         drawer.employment = vec![Employment::default(); 2];
         starver.employment = vec![Employment::default(); 2];
@@ -5575,6 +5750,7 @@ mod tests {
                         wage_carries: vec![0; goods],
                         pay_carries: vec![0; goods],
                         fee_carries: Vec::new(),
+                        wage_history: vec![0; 12],
                     },
                     BuildingState {
                         kind: "holdings".to_owned(),
@@ -5603,6 +5779,7 @@ mod tests {
                         wage_carries: vec![0; goods],
                         pay_carries: vec![0; goods],
                         fee_carries: Vec::new(),
+                        wage_history: vec![0; 12],
                     },
                     BuildingState {
                         kind: "storehouse".to_owned(),
@@ -5624,6 +5801,7 @@ mod tests {
                         wage_carries: vec![0; goods],
                         pay_carries: vec![0; goods],
                         fee_carries: vec![vec![0; goods]; 4],
+                        wage_history: vec![0; 12],
                     },
                 ],
                 prices_milli: vec![0; goods],
@@ -5676,6 +5854,7 @@ mod tests {
             wage_carries: Vec::new(),
             pay_carries: Vec::new(),
             fee_carries: Vec::new(),
+            wage_history: vec![0; 12],
         };
         assert_eq!(receive_building(&rules, &mut farm, 0, 4).unwrap(), 3);
         assert_eq!(
@@ -5704,6 +5883,7 @@ mod tests {
             wage_carries: vec![0],
             pay_carries: vec![0],
             fee_carries: vec![vec![0], vec![0]],
+            wage_history: vec![0; 12],
         };
         assert_eq!(
             receive_storehouse(&rules, &mut storehouse, Some(0), 0, 8).unwrap(),
@@ -5757,6 +5937,7 @@ mod tests {
             wage_carries: Vec::new(),
             pay_carries: Vec::new(),
             fee_carries: Vec::new(),
+            wage_history: vec![0; 12],
         };
         let storehouse = BuildingState {
             kind: "storehouse".to_owned(),
@@ -5778,6 +5959,7 @@ mod tests {
             wage_carries: vec![0],
             pay_carries: vec![0],
             fee_carries: vec![vec![0]; 3],
+            wage_history: vec![0; 12],
         };
         let mut buildings = vec![farm, storehouse];
         let mut ledger = PlaceProductionLedger::new("fort", 1);
@@ -6089,6 +6271,7 @@ mod tests {
             wage_carries: Vec::new(),
             pay_carries: Vec::new(),
             fee_carries: Vec::new(),
+            wage_history: vec![0; 12],
         }
     }
 
@@ -6236,6 +6419,7 @@ mod tests {
             wage_carries: vec![0; rules.goods.len()],
             pay_carries: vec![0; rules.goods.len()],
             fee_carries: Vec::new(),
+            wage_history: vec![0; 12],
         };
         let mut farm_stock = vec![0; rules.goods.len()];
         farm_stock[index("apples")] = 20;
@@ -6259,6 +6443,7 @@ mod tests {
             wage_carries: vec![0; rules.goods.len()],
             pay_carries: vec![0; rules.goods.len()],
             fee_carries: Vec::new(),
+            wage_history: vec![0; 12],
         };
         let place = PlaceState {
             id: "market_fixture".to_owned(),
@@ -6962,13 +7147,17 @@ mod tests {
             ) {
                 data.validate("fixture/scenario.toml").unwrap_err()
             } else {
-                starting_state(&rules, &data, &[location]).unwrap_err()
+                starting_state(&rules, &data, &[location], 10).unwrap_err()
             };
             assert_eq!(error.entry, expected_entry, "case {expected_entry}");
         }
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The literal expected startup state keeps owner-first employment and the new seeded wage history together."
+    )]
     fn starting_state_is_literal_and_fills_owners_before_unlimited_starting_hires() {
         let rules = tiny_rules();
         let data = tiny_start_data();
@@ -6983,7 +7172,7 @@ mod tests {
                 sea: 0,
             },
         };
-        let (state, report) = starting_state(&rules, &data, &[location]).unwrap();
+        let (state, report) = starting_state(&rules, &data, &[location], 10).unwrap();
         assert!(report.is_empty());
         assert_eq!(
             state.places,
@@ -7038,6 +7227,7 @@ mod tests {
                         wage_carries: vec![0],
                         pay_carries: vec![0],
                         fee_carries: Vec::new(),
+                        wage_history: vec![1818; 12],
                     },
                     BuildingState {
                         kind: "storehouse".to_owned(),
@@ -7062,6 +7252,7 @@ mod tests {
                         wage_carries: vec![0],
                         pay_carries: vec![0],
                         fee_carries: vec![vec![0], vec![0]],
+                        wage_history: vec![0; 12],
                     },
                 ],
                 prices_milli: vec![100_000],
@@ -7069,6 +7260,346 @@ mod tests {
                 development_pm: 1000,
             }]
         );
+    }
+
+    #[test]
+    fn grain_harvest_distance_uses_the_smallest_positive_future_month() {
+        let mut rules = tiny_rules();
+        assert_eq!(months_to_grain_harvest(&rules, 10), Ok(11));
+        assert_eq!(months_to_grain_harvest(&rules, 9), Ok(12));
+        rules.seasons.insert(
+            "grain".to_owned(),
+            vec![0, 0, 0, 0, 1000, 0, 0, 0, 1000, 0, 0, 0],
+        );
+        assert_eq!(months_to_grain_harvest(&rules, 6), Ok(3));
+        assert_eq!(months_to_grain_harvest(&rules, 10), Ok(7));
+    }
+
+    #[test]
+    fn starting_wage_history_spreads_stockpile_value_to_the_next_grain_harvest() {
+        let rules = tiny_rules();
+        let mut data = tiny_start_data();
+        data.defaults
+            .get_mut("ringfort")
+            .unwrap()
+            .get_mut("1")
+            .unwrap()
+            .building_stock
+            .insert("food".to_owned(), 11);
+        let location = StartLocation {
+            id: "fort".to_owned(),
+            kind: "ringfort".to_owned(),
+            size: 1,
+            land: LandCounts {
+                land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
+                fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
+                fertile_cells: 8,
+                sea: 0,
+            },
+        };
+        let (state, _) =
+            starting_state(&rules, &data, std::slice::from_ref(&location), 10).unwrap();
+        let farm = state.places[0]
+            .buildings
+            .iter()
+            .find(|building| building.kind == "farm")
+            .unwrap();
+        assert_eq!(farm.stock, [11]);
+        assert_eq!(farm.wage_history, [10_000; 12]);
+        assert_eq!(farm.posted_wage(), 10_000);
+
+        data.defaults
+            .get_mut("ringfort")
+            .unwrap()
+            .get_mut("1")
+            .unwrap()
+            .peasants = 0;
+        let (unpaid, _) = starting_state(&rules, &data, &[location], 10).unwrap();
+        let farm = unpaid.places[0]
+            .buildings
+            .iter()
+            .find(|building| building.kind == "farm")
+            .unwrap();
+        assert!(
+            farm.employment
+                .iter()
+                .all(|employment| employment.workers == 0)
+        );
+        assert_eq!(farm.wage_history, [0; 12]);
+    }
+
+    #[test]
+    fn starting_state_refuses_invalid_months_before_building_any_state() {
+        let rules = tiny_rules();
+        let data = tiny_start_data();
+        for month in [0, 13] {
+            let error = starting_state(&rules, &data, &[], month).unwrap_err();
+            assert_eq!(error.entry, "start_month");
+            assert_eq!(error.problem, "must be in 1..=12");
+        }
+    }
+
+    #[test]
+    fn a_wrong_length_wage_history_is_a_named_refusal_and_rolls_back() {
+        let mut rules = tiny_rules();
+        rules.seasons.insert(
+            "herd_births".to_owned(),
+            vec![1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        );
+        let location = StartLocation {
+            id: "fort".to_owned(),
+            kind: "ringfort".to_owned(),
+            size: 1,
+            land: LandCounts {
+                land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
+                fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
+                fertile_cells: 8,
+                sea: 0,
+            },
+        };
+        let (mut state, _) = starting_state(&rules, &tiny_start_data(), &[location], 10).unwrap();
+        state.places[0]
+            .buildings
+            .iter_mut()
+            .find(|building| building.kind == "farm")
+            .unwrap()
+            .wage_history
+            .pop();
+        let before = state.clone();
+        let error = run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.entry, "places.fort.buildings.farm.wage_history");
+        assert!(error.problem.contains("exactly 12"));
+        assert_eq!(state, before, "a refused payday commits no state");
+    }
+
+    #[test]
+    fn a_posted_wage_that_exceeds_u64_is_a_named_refusal_and_rolls_back() {
+        let mut rules = tiny_rules();
+        rules.buildings[0].methods[0]
+            .annual_output
+            .insert("food".to_owned(), 48);
+        rules.buildings[0].overhead_pm = 500;
+        rules.seasons.insert(
+            "food".to_owned(),
+            vec![1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        );
+        rules.seasons.insert(
+            "herd_births".to_owned(),
+            vec![1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        );
+        let location = StartLocation {
+            id: "fort".to_owned(),
+            kind: "ringfort".to_owned(),
+            size: 1,
+            land: LandCounts {
+                land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
+                fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
+                fertile_cells: 8,
+                sea: 0,
+            },
+        };
+        let (mut state, _) = starting_state(&rules, &tiny_start_data(), &[location], 10).unwrap();
+        let place = &mut state.places[0];
+        let farm = place
+            .buildings
+            .iter_mut()
+            .find(|building| building.kind == "farm")
+            .unwrap();
+        farm.employment[0].workers = 1;
+        place.prices_milli[0] = u64::MAX;
+        let before = state.clone();
+        let error = run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.entry, "places.fort.buildings.farm.wage_history");
+        assert!(error.problem.contains("exceeds u64"));
+        assert_eq!(state, before, "a refused payday commits no state");
+    }
+
+    #[test]
+    fn a_harvest_replaces_one_month_of_the_twelve_month_average() {
+        let mut rules = tiny_rules();
+        rules.buildings[0].methods[0]
+            .annual_output
+            .insert("food".to_owned(), 2);
+        rules.buildings[0].overhead_pm = 500;
+        rules.seasons.insert(
+            "food".to_owned(),
+            vec![0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0],
+        );
+        rules.seasons.insert(
+            "herd_births".to_owned(),
+            vec![1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        );
+        let location = StartLocation {
+            id: "fort".to_owned(),
+            kind: "ringfort".to_owned(),
+            size: 1,
+            land: LandCounts {
+                land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
+                fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
+                fertile_cells: 8,
+                sea: 0,
+            },
+        };
+        let (mut state, _) = starting_state(&rules, &tiny_start_data(), &[location], 10).unwrap();
+        let place = &mut state.places[0];
+        let farm = place
+            .buildings
+            .iter_mut()
+            .find(|building| building.kind == "farm")
+            .unwrap();
+        farm.wage_history = vec![10_000; 12];
+        place.prices_milli[0] = 12_345;
+        let before = farm.posted_wage();
+        run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 9,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let farm = state.places[0]
+            .buildings
+            .iter()
+            .find(|building| building.kind == "farm")
+            .unwrap();
+        assert_eq!(farm.wage_history[8], 1234);
+        assert_eq!(farm.posted_wage(), (11 * 10_000 + 1234) / 12);
+        assert_eq!(before, 10_000);
+        assert_eq!(farm.posted_wage(), 9_269);
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One sequential payday fixture verifies paid, unpaid, and no-output history transitions."
+    )]
+    fn payday_records_value_per_paid_head_and_preserves_or_clears_months_correctly() {
+        let mut rules = tiny_rules();
+        rules.buildings[0].methods[0]
+            .annual_output
+            .insert("food".to_owned(), 2);
+        rules.buildings[0].overhead_pm = 500;
+        rules.seasons.insert(
+            "food".to_owned(),
+            vec![1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        );
+        rules.seasons.insert(
+            "herd_births".to_owned(),
+            vec![1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        );
+        let location = StartLocation {
+            id: "fort".to_owned(),
+            kind: "ringfort".to_owned(),
+            size: 1,
+            land: LandCounts {
+                land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
+                fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
+                fertile_cells: 8,
+                sea: 0,
+            },
+        };
+        let (mut state, _) = starting_state(&rules, &tiny_start_data(), &[location], 10).unwrap();
+        let place = &mut state.places[0];
+        let farm = place
+            .buildings
+            .iter_mut()
+            .find(|building| building.kind == "farm")
+            .unwrap();
+        assert_eq!(
+            farm.employment.iter().map(|item| item.workers).sum::<u64>(),
+            10
+        );
+        farm.wage_history = vec![9000; 12];
+        place.prices_milli[0] = 12_345;
+        run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let farm = state.places[0]
+            .buildings
+            .iter()
+            .find(|building| building.kind == "farm")
+            .unwrap();
+        assert_eq!(farm.wage_history[0], 1234);
+        assert_eq!(farm.posted_wage(), (11 * 9000 + 1234) / 12);
+
+        let farm = state.places[0]
+            .buildings
+            .iter_mut()
+            .find(|building| building.kind == "farm")
+            .unwrap();
+        farm.wage_history[1] = 7777;
+        for employment in &mut farm.employment {
+            employment.workers = 0;
+        }
+        run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 2,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let farm = state.places[0]
+            .buildings
+            .iter_mut()
+            .find(|building| building.kind == "farm")
+            .unwrap();
+        assert_eq!(farm.wage_history[1], 7777);
+        for employment in &mut farm.employment {
+            employment.workers = 10;
+        }
+        run_monthly_production(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 3,
+                day: 1,
+                hour: 12,
+            },
+        )
+        .unwrap();
+        let farm = state.places[0]
+            .buildings
+            .iter()
+            .find(|building| building.kind == "farm")
+            .unwrap();
+        assert_eq!(farm.wage_history[2], 0, "heads with no output record zero");
     }
 
     #[test]
@@ -7101,6 +7632,7 @@ mod tests {
                     sea: 0,
                 },
             }],
+            10,
         )
         .unwrap();
         let farm = state.places[0]
@@ -7226,6 +7758,7 @@ mod tests {
                         sea: 0,
                     },
                 }],
+                10,
             )
             .unwrap();
             let qualities = quality_pm
@@ -7326,6 +7859,7 @@ mod tests {
                     sea: 0,
                 },
             }],
+            10,
         )
         .unwrap();
         state.places[0].counters.current.births = 7;
@@ -7387,6 +7921,7 @@ mod tests {
                 size: 1,
                 land: LandCounts::default(),
             }],
+            10,
         )
         .unwrap();
         assert_eq!(
@@ -7489,6 +8024,7 @@ mod tests {
                     sea: 0,
                 },
             }],
+            10,
         )
         .unwrap();
         let holdings = &state.places[0].buildings[0];
@@ -7618,6 +8154,7 @@ mod tests {
                 size: 1,
                 land: LandCounts::default(),
             }],
+            10,
         )
         .unwrap();
         assert_eq!(
@@ -7773,6 +8310,7 @@ mod tests {
                     sea: 0,
                 },
             }],
+            10,
         )
         .unwrap();
         assert_eq!(no_sea.places[0].buildings[0].method_levels[1], 0);
@@ -7790,6 +8328,7 @@ mod tests {
                     sea: 1,
                 },
             }],
+            10,
         )
         .unwrap();
         assert!(
@@ -7885,6 +8424,7 @@ mod tests {
                     sea: 0,
                 },
             }],
+            10,
         )
         .unwrap();
         assert_eq!(
@@ -7991,6 +8531,7 @@ mod tests {
                         wage_carries: vec![999_999],
                         pay_carries: vec![2],
                         fee_carries: Vec::new(),
+                        wage_history: (1..=12).collect(),
                     },
                     BuildingState {
                         kind: "storehouse".to_owned(),
@@ -8012,6 +8553,7 @@ mod tests {
                         wage_carries: vec![0],
                         pay_carries: vec![0],
                         fee_carries: vec![vec![999], vec![998]],
+                        wage_history: vec![42; 12],
                     },
                 ],
                 prices_milli: vec![120_000],
@@ -8022,6 +8564,11 @@ mod tests {
         let bytes = state.to_bytes().unwrap();
         let decoded = EconomyState::from_bytes(&bytes).unwrap();
         assert_eq!(decoded, state);
+        assert_eq!(
+            decoded.places[0].buildings[0].wage_history,
+            (1..=12).collect::<Vec<_>>()
+        );
+        assert_eq!(decoded.places[0].buildings[0].posted_wage(), 6);
         assert_eq!(decoded.to_bytes().unwrap(), bytes);
 
         let mut rules = tiny_rules();
@@ -8128,6 +8675,7 @@ mod tests {
                     sea: 0,
                 },
             }],
+            10,
         )
         .unwrap();
         let farm = state.places[0]
@@ -8311,6 +8859,7 @@ mod tests {
             wage_carries: vec![wage_carry],
             pay_carries: vec![0],
             fee_carries: Vec::new(),
+            wage_history: vec![0; 12],
         };
         let mut state = EconomyState {
             places: vec![PlaceState {
@@ -8428,6 +8977,7 @@ mod tests {
                     wage_carries: vec![0; rules.goods.len()],
                     pay_carries: vec![0; rules.goods.len()],
                     fee_carries: Vec::new(),
+                    wage_history: vec![0; 12],
                 }],
                 prices_milli: vec![0; rules.goods.len()],
                 prepared_m2: 0,
@@ -8567,6 +9117,7 @@ mod tests {
             wage_carries: Vec::new(),
             pay_carries: Vec::new(),
             fee_carries: Vec::new(),
+            wage_history: vec![0; 12],
         };
         let storehouse = BuildingState {
             kind: "storehouse".to_owned(),
@@ -8588,6 +9139,7 @@ mod tests {
             wage_carries: vec![0],
             pay_carries: vec![0],
             fee_carries: vec![vec![0]; 3],
+            wage_history: vec![0; 12],
         };
         let mut pops = vec![pop("labourer", 1), pop("peasant", 0)];
         let mut buildings = vec![farm, storehouse];
@@ -9020,6 +9572,7 @@ mod tests {
             wage_carries: vec![0],
             pay_carries: vec![0],
             fee_carries: vec![vec![0], vec![0]],
+            wage_history: vec![0; 12],
         };
         let farm = BuildingState {
             kind: "farm".to_owned(),
@@ -9041,6 +9594,7 @@ mod tests {
             wage_carries: vec![0],
             pay_carries: vec![0],
             fee_carries: Vec::new(),
+            wage_history: vec![0; 12],
         };
         let mut place = PlaceState {
             id: "test".to_owned(),
@@ -9301,6 +9855,7 @@ mod tests {
                 wage_carries: vec![0; goods],
                 pay_carries: vec![0; goods],
                 fee_carries: Vec::new(),
+                wage_history: vec![0; 12],
             };
             PlaceState {
                 id: "test".to_owned(),
@@ -9463,6 +10018,7 @@ mod tests {
             wage_carries: vec![0],
             pay_carries: vec![0],
             fee_carries: Vec::new(),
+            wage_history: vec![0; 12],
         };
         let mut place = PlaceState {
             id: "test".to_owned(),
