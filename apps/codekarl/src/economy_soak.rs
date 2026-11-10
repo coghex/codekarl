@@ -77,7 +77,8 @@ pub(super) fn run(arguments: impl IntoIterator<Item = String>) -> Result<String,
             ))
         })
         .collect::<Result<BTreeMap<_, _>, String>>()?;
-    let nearby_by_place = crate::game::setup::nearby_places(&map);
+    let nearby_by_place =
+        crate::game::setup::nearby_places(&map, crate::game::setup::max_recruit_range_m(&rules));
     let mut date = Date {
         year: map.start.year,
         month: map.start.month,

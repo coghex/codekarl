@@ -325,6 +325,7 @@ land_per_level=2
 owner_workers={ peasant=10 }
 penalty_pm=500
 overhead_pm=100
+recruit_range_m=30000
 [[buildings.methods]]
 id="mixed_farming"
 resource="usable_land"
@@ -344,6 +345,7 @@ land_per_level=2
 owner_workers={ monk=5, labourer=10 }
 penalty_pm=500
 overhead_pm=300
+recruit_range_m=100000
 [[buildings.methods]]
 id="monastic_farming"
 resource="usable_land"
@@ -363,6 +365,7 @@ land_per_level=0
 owner_workers={}
 penalty_pm=0
 overhead_pm=0
+recruit_range_m=0
 
 [seasons]
 grain=[0,0,0,0,0,0,0,0,1000,0,0,0]

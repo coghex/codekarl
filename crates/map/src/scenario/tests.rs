@@ -866,6 +866,20 @@ fn largest_radius_is_bounded_without_overflow() {
 }
 
 #[test]
+fn public_single_row_ground_scale_matches_every_crop_row() {
+    let crop = Crop {
+        origin: Cell { x: 12, y: 15_775 },
+        width: 4,
+        height: 5,
+    };
+    for (offset, scale) in ground_scales(crop).into_iter().enumerate() {
+        let row = i64::from(crop.origin.y) + i64::try_from(offset).unwrap();
+        assert_eq!(crate::ground_scale_for_row(row), scale);
+    }
+    assert_eq!(crate::ground_scale_for_row(15_777), 40_348);
+}
+
+#[test]
 fn markers_obey_zoom_center_outline_overlap_and_view_selection() {
     let glyph = |rows: &[&str]| rows.iter().map(|row| row.chars().collect()).collect();
     let kinds = LocationKinds {

@@ -140,7 +140,10 @@ pub(crate) fn prepare(
     } else {
         BTreeMap::new()
     };
-    let nearby_by_place = nearby_places(&scenario);
+    let nearby_by_place = nearby_places(
+        &scenario,
+        economy_rules.as_deref().map_or(0, max_recruit_range_m),
+    );
     let identity = Identity {
         build: build_id(),
         scenario: scenario.id.clone(),
@@ -266,7 +269,10 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let nearby_by_place = nearby_places(&scenario);
+    let nearby_by_place = nearby_places(
+        &scenario,
+        economy_rules.as_deref().map_or(0, max_recruit_range_m),
+    );
     let wiring_gameplay = gameplay.clone();
     let wiring_rules = economy_rules.clone();
     let (sender, receiver) = channel();
@@ -409,36 +415,76 @@ fn register_economy_callback_with_context(
 
 pub(crate) fn nearby_places(
     scenario: &ck_map::Scenario,
+    max_range_m: u32,
+) -> BTreeMap<String, Vec<ck_economy::NearbyPlace>> {
+    let locations = scenario
+        .locations
+        .iter()
+        .map(|location| (location.id.clone(), location.cell))
+        .collect::<Vec<_>>();
+    nearby_places_for_locations(&locations, max_range_m)
+}
+
+pub(crate) fn max_recruit_range_m(rules: &Rules) -> u32 {
+    rules
+        .buildings
+        .iter()
+        .filter_map(|building| building.recruit_range_m)
+        .max()
+        .unwrap_or(0)
+}
+
+fn nearby_places_for_locations(
+    locations: &[(String, ck_map::Cell)],
+    max_range_m: u32,
 ) -> BTreeMap<String, Vec<ck_economy::NearbyPlace>> {
     let mut result = BTreeMap::new();
-    for (source_index, source) in scenario.locations.iter().enumerate() {
-        let mut destinations = scenario
-            .locations
+    for (source_index, (source_id, source_cell)) in locations.iter().enumerate() {
+        let mut destinations = locations
             .iter()
             .enumerate()
             .filter(|(index, _)| *index != source_index)
-            .filter_map(|(index, destination)| {
-                let dx = i64::from(source.cell.x) - i64::from(destination.cell.x);
-                let dy = i64::from(source.cell.y) - i64::from(destination.cell.y);
-                let squared = u64::try_from(dx * dx + dy * dy).ok()?;
-                let cell_distance = squared.isqrt();
-                let distance_m = cell_distance.checked_mul(839)?;
-                (distance_m <= 30_000).then_some((squared, index, distance_m))
+            .filter_map(|(index, (destination_id, destination_cell))| {
+                let distance_m = ground_distance_m(*source_cell, *destination_cell)?;
+                (distance_m <= u64::from(max_range_m)).then_some((
+                    distance_m,
+                    index,
+                    destination_id.clone(),
+                ))
             })
             .collect::<Vec<_>>();
-        destinations.sort_by_key(|(squared, index, _)| (*squared, *index));
+        destinations.sort_by_key(|(distance_m, index, _)| (*distance_m, *index));
         result.insert(
-            source.id.clone(),
+            source_id.clone(),
             destinations
                 .into_iter()
-                .map(|(_, index, distance_m)| ck_economy::NearbyPlace {
-                    id: scenario.locations[index].id.clone(),
-                    distance_m: u32::try_from(distance_m).expect("30 km fits u32"),
+                .map(|(distance_m, _, id)| ck_economy::NearbyPlace {
+                    id,
+                    distance_m: u32::try_from(distance_m)
+                        .expect("distance is bounded by the u32 maximum range"),
                 })
                 .collect(),
         );
     }
     result
+}
+
+fn ground_distance_m(first: ck_map::Cell, second: ck_map::Cell) -> Option<u64> {
+    let dx = i64::from(first.x) - i64::from(second.x);
+    let dy = i64::from(first.y) - i64::from(second.y);
+    let squared = u128::try_from(
+        i128::from(dx)
+            .checked_mul(i128::from(dx))?
+            .checked_add(i128::from(dy).checked_mul(i128::from(dy))?)?,
+    )
+    .ok()?;
+    let cell_distance = u64::try_from(squared.isqrt()).ok()?;
+    let midpoint_row = (i64::from(first.y) + i64::from(second.y)).div_euclid(2);
+    let scale = u64::from(ck_map::ground_scale_for_row(midpoint_row));
+    cell_distance
+        .checked_mul(839)?
+        .checked_mul(scale)
+        .map(|scaled| scaled / 65_536)
 }
 
 pub(crate) fn register_gameplay_lua_callbacks(
@@ -474,4 +520,110 @@ pub(crate) fn register_gameplay_lua_callbacks(
             },
         )
         .expect("the gameplay daily system name is unique");
+}
+
+#[cfg(test)]
+mod nearby_place_tests {
+    use super::{ground_distance_m, nearby_places, nearby_places_for_locations};
+    use ck_map::Cell;
+    use std::path::Path;
+
+    #[test]
+    fn ireland_island_monasteries_reach_their_ground_distance_neighbours() {
+        let directory =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).expect("Ireland scenario loads");
+        let nearby = nearby_places(&scenario, 100_000);
+
+        let skellig = &nearby["skellig_michael"];
+        assert_eq!(
+            skellig
+                .iter()
+                .take(2)
+                .map(|place| place.id.as_str())
+                .collect::<Vec<_>>(),
+            ["inisfallen", "ardfert"]
+        );
+        for id in ["inisfallen", "ardfert"] {
+            let place = skellig.iter().find(|place| place.id == id).unwrap();
+            assert!(place.distance_m <= 100_000);
+            assert!(place.distance_m > 30_000);
+        }
+
+        let inishmurray = &nearby["inishmurray"];
+        let drumcliff = inishmurray
+            .iter()
+            .find(|place| place.id == "drumcliff")
+            .expect("Drumcliff is inside the 100 km list");
+        assert!(drumcliff.distance_m <= 30_000);
+    }
+
+    #[test]
+    fn nearby_distances_use_ground_scale_and_inclusive_range() {
+        let source = Cell { x: 0, y: 15_777 };
+        let locations = vec![
+            ("source".to_owned(), source),
+            ("farm-in".to_owned(), Cell { x: 58, y: 15_777 }),
+            ("farm-out".to_owned(), Cell { x: 59, y: 15_777 }),
+            ("house-in".to_owned(), Cell { x: 193, y: 15_777 }),
+            ("house-out".to_owned(), Cell { x: 194, y: 15_777 }),
+            ("middle".to_owned(), Cell { x: 145, y: 15_777 }),
+        ];
+        assert_eq!(ground_distance_m(source, locations[1].1), Some(29_959));
+        assert_eq!(ground_distance_m(source, locations[2].1), Some(30_475));
+        assert_eq!(ground_distance_m(source, locations[3].1), Some(99_692));
+        assert_eq!(ground_distance_m(source, locations[4].1), Some(100_208));
+        assert_eq!(ground_distance_m(source, locations[5].1), Some(74_898));
+
+        let farm_range = nearby_places_for_locations(&locations, 30_000);
+        let farm_ids = farm_range["source"]
+            .iter()
+            .map(|place| place.id.as_str())
+            .collect::<Vec<_>>();
+        assert!(farm_ids.contains(&"farm-in"));
+        assert!(!farm_ids.contains(&"farm-out"));
+        assert!(!farm_ids.contains(&"house-in"));
+
+        let holdings_range = nearby_places_for_locations(&locations, 100_000);
+        let holdings_ids = holdings_range["source"]
+            .iter()
+            .map(|place| place.id.as_str())
+            .collect::<Vec<_>>();
+        assert!(holdings_ids.contains(&"house-in"));
+        assert!(!holdings_ids.contains(&"house-out"));
+        assert_eq!(holdings_ids.first(), Some(&"farm-in"));
+    }
+
+    #[test]
+    fn ground_nearest_order_wins_over_cell_distance_and_ties_use_file_order() {
+        let source = Cell { x: 0, y: 15_777 };
+        let south = Cell { x: 0, y: 15_875 };
+        let north = Cell { x: 0, y: 15_678 };
+        assert_eq!(ground_distance_m(source, north), Some(50_872));
+        assert_eq!(ground_distance_m(source, south), Some(50_878));
+        let locations = vec![
+            ("source".to_owned(), source),
+            ("south-first".to_owned(), south),
+            ("north-second".to_owned(), north),
+            ("tie-first".to_owned(), Cell { x: 2, y: 15_777 }),
+            ("tie-second".to_owned(), Cell { x: -2, y: 15_777 }),
+        ];
+        let nearby = nearby_places_for_locations(&locations, 100_000);
+        let ids = nearby["source"]
+            .iter()
+            .map(|place| place.id.as_str())
+            .collect::<Vec<_>>();
+        let north_index = ids.iter().position(|id| *id == "north-second").unwrap();
+        let south_index = ids.iter().position(|id| *id == "south-first").unwrap();
+        assert!(
+            north_index < south_index,
+            "ground distance sorts before file order"
+        );
+        let tie_first_index = ids.iter().position(|id| *id == "tie-first").unwrap();
+        let tie_second_index = ids.iter().position(|id| *id == "tie-second").unwrap();
+        assert!(
+            tie_first_index < tie_second_index,
+            "equal distances keep file order"
+        );
+    }
 }
