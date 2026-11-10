@@ -147,7 +147,7 @@ pub(crate) fn script() -> String {
 pub(crate) fn config_text(backend: &str, saves: &Path) -> String {
     let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     format!(
-        "[window]\nbackend = \"{backend}\"\n\n[game]\nscenario = '{}'\nsaves = '{}'\n\n[render]\nassets = '{}'\n\n[ui]\npoints_per_pixel = 2\n\n[frame]\nupdates_per_second = 60\n",
+        "[window]\nbackend = \"{backend}\"\n\n[game]\nscenario = '{}'\nsaves = '{}'\n\n[render]\nassets = '{}'\n\n[frame]\nupdates_per_second = 60\n",
         project.join("assets/scenarios/ireland-768").display(),
         saves.display(),
         project.join("assets").display()

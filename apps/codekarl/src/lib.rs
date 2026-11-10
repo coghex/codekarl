@@ -415,14 +415,17 @@ fn compose_resources(
 }
 
 fn scene_bridge(config: &config::Config) -> Arc<SceneBridge> {
-    SceneBridge::with_limits(
+    let bridge = SceneBridge::with_limits(
         config.render.filter,
         ck_render_2d::SceneLimits {
             max_quads: config.render.max_quads,
             max_groups: config.render.max_groups,
         },
     )
-    .expect("configuration has validated render.max_quads and render.max_groups")
+    .expect("configuration has validated render.max_quads and render.max_groups");
+    // `[ui] scale`, read at startup: the limit on the UI scale of a window opened in pixels.
+    bridge.set_ui_scale_limit(config.ui_scale_limit_k);
+    bridge
 }
 
 /// The runtime services of a run: the resource service's loader pool and its teardown, when the mode has a service.
@@ -792,6 +795,7 @@ fn supervise_with_owner_factory(
             headless.clone(),
             map_controller.clone(),
             Arc::clone(&screen),
+            config.ui_scale_limit_k,
         ),
         env: RunEnv {
             ui: ui.clone(),

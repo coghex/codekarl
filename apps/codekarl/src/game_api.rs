@@ -95,16 +95,34 @@ fn control_function(controls: SimControls) -> HostFunction {
 }
 
 /// The callback argument for a hovered marker; `None` means Lua receives no arguments (`nil`).
-pub(crate) fn hover_arguments(hover: Option<&crate::map_app::Hover>) -> Vec<ConfigValue> {
+///
+/// The positions are the map's, in window points; in a window opened in pixels `units` converts them to the UI's units at 1/256 precision.
+pub(crate) fn hover_arguments(
+    hover: Option<&crate::map_app::Hover>,
+    units: Option<ck_render_2d::ui_scale::UnitMap>,
+) -> Vec<ConfigValue> {
     let Some(hover) = hover else {
         return Vec::new();
+    };
+    // Whole points in a window opened in points; in one opened in pixels the same 1/256-unit conversion as a pointer position, which the
+    // script sees as a number (the fixed value over 256), as it does a pointer's.
+    let number = |points: i64, horizontal: bool| match units {
+        None => ConfigValue::Integer(points),
+        Some(map) => {
+            let fixed = if horizontal {
+                map.x_fixed(points)
+            } else {
+                map.y_fixed(points)
+            };
+            ConfigValue::Float(f64::from(fixed) / 256.0)
+        }
     };
     vec![ConfigValue::Table(BTreeMap::from([
         ("id".to_owned(), ConfigValue::String(hover.id.clone())),
         ("name".to_owned(), ConfigValue::String(hover.name.clone())),
-        ("left".to_owned(), ConfigValue::Integer(hover.left)),
-        ("right".to_owned(), ConfigValue::Integer(hover.right)),
-        ("y".to_owned(), ConfigValue::Integer(hover.y)),
+        ("left".to_owned(), number(hover.left, true)),
+        ("right".to_owned(), number(hover.right, true)),
+        ("y".to_owned(), number(hover.y, false)),
     ]))]
 }
 

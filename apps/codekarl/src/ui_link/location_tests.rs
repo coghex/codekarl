@@ -178,7 +178,7 @@ fn script(steps: &[&str]) -> String {
 /// A rig at 2 points per pixel, its window set to 1800 by 900 points: the left third is 600 points, wide enough for every fixture
 /// line without wrapping.
 fn rig(steps: &[&str]) -> Rig {
-    let mut rig = Rig::new_fixture_body_at_scale(&script(steps), 2);
+    let mut rig = Rig::new_fixture_body(&script(steps));
     rig.deliver_fixture_frame_at(1800, 900, 2);
     rig
 }
@@ -372,79 +372,14 @@ fn the_panel_fills_the_left_third_below_the_time_bar_and_follows_a_resize() {
     );
 }
 
-const LONG_NAME: &str = "Droim Ineasclainn";
-
-#[test]
-fn a_long_place_name_never_widens_the_panel_past_the_left_third_at_three_points_a_pixel() {
-    let select = format!(
-        "time(1, 1) select_place('rowan', '{LONG_NAME}') announce_geometry() announce_fit('{LONG_NAME}')"
-    );
-    let mut rig = Rig::new_fixture_body_at_scale(
-        &script(&[
-            &select,
-            // The same name again after a narrower resize, and another long name through the title change.
-            &format!("announce_geometry() announce_fit('{LONG_NAME}')"),
-            "select_place('rowan', 'Cluain Mhic N\u{F3}is') announce_geometry() announce_fit('Cluain Mhic N\u{F3}is')",
-        ]),
-        3,
-    );
-    rig.deliver_fixture_frame_at(800, 600, 3);
-    rig.opened();
-    // 800 points: a third is 266, snapped to the 3-point pixel grid: 267. The whole name needs far more, so it is clipped, not the panel
-    // widened.
-    let panel = |rig: &Rig| {
-        let line = notes(rig)
-            .into_iter()
-            .rev()
-            .find(|line| line.starts_with("panel "))
-            .expect("a panel line");
-        let parts: Vec<i64> = line
-            .split_whitespace()
-            .skip(1)
-            .map(|part| part.parse().unwrap())
-            .collect();
-        (parts[0], parts[2])
-    };
-    assert_eq!(panel(&rig), (0, 267));
-    let fit = |rig: &Rig| {
-        notes(rig)
-            .into_iter()
-            .rev()
-            .find(|line| line.starts_with("fit "))
-            .expect("a fit line")
-    };
-    assert_eq!(fit(&rig), "fit title=true tabs_right=true title_clear=true");
-    let shown = |rig: &Rig| {
-        notes(rig)
-            .into_iter()
-            .rev()
-            .find(|line| line.starts_with("shown "))
-            .expect("a shown line")
-    };
-    assert!(shown(&rig).ends_with(".."), "{}", shown(&rig));
-    assert!(shown(&rig).len() < "shown ".len() + LONG_NAME.len() + 2);
-    // A narrower window: the panel follows, the title clips further, the tabs stay inside.
-    rig.deliver_fixture_frame_at(600, 600, 3);
-    rig.opened();
-    assert_eq!(panel(&rig), (0, 201));
-    assert_eq!(fit(&rig), "fit title=true tabs_right=true title_clear=true");
-    // Another name, through the title change: the width is still the third, and a name with a fada is cut between characters.
-    rig.opened();
-    assert_eq!(panel(&rig), (0, 201));
-    assert_eq!(fit(&rig), "fit title=true tabs_right=true title_clear=true");
-}
-
 #[test]
 fn a_window_taller_than_the_lists_row_limit_opens_and_resizes_with_a_usable_list() {
-    let mut rig = Rig::new_fixture_body_at_scale(
-        &script(&[
-            "time(1, 1) select_place('rowan', 'Rowan') announce_fit('Rowan')",
-            "announce_fit('Rowan')",
-        ]),
-        1,
-    );
-    // At 1 point a pixel a row is 13 points: 3,600 points leave room for more than the limit of 256 rows.
-    rig.deliver_fixture_frame_at(1800, 3600, 1);
+    let mut rig = Rig::new_fixture_body(&script(&[
+        "time(1, 1) select_place('rowan', 'Rowan') announce_fit('Rowan')",
+        "announce_fit('Rowan')",
+    ]));
+    // A row is 13 UI pixels, 26 points: 7,200 points leave room for more than the limit of 256 rows.
+    rig.deliver_fixture_frame_at(1800, 7200, 1);
     rig.opened();
     assert_eq!(
         notes(&rig)
@@ -455,7 +390,7 @@ fn a_window_taller_than_the_lists_row_limit_opens_and_resizes_with_a_usable_list
         Some("list_rows 256")
     );
     // A resize that keeps it that tall rebuilds the list without failing.
-    rig.deliver_fixture_frame_at(1700, 3700, 1);
+    rig.deliver_fixture_frame_at(1700, 7300, 1);
     rig.opened();
     assert_eq!(
         notes(&rig)
@@ -469,10 +404,10 @@ fn a_window_taller_than_the_lists_row_limit_opens_and_resizes_with_a_usable_list
 
 #[test]
 fn a_long_word_of_fada_bearing_letters_wraps_between_characters() {
-    let mut rig = Rig::new_fixture_body_at_scale(
-        &script(&["time(1, 1) select_place('fada', 'Fada')", "announce_tabs()"]),
-        2,
-    );
+    let mut rig = Rig::new_fixture_body(&script(&[
+        "time(1, 1) select_place('fada', 'Fada')",
+        "announce_tabs()",
+    ]));
     // 300 points: the content is about 45 font pixels wide, so the 40 letters need many rows.
     rig.deliver_fixture_frame_at(300, 600, 2);
     rig.opened();
@@ -487,15 +422,13 @@ fn a_long_word_of_fada_bearing_letters_wraps_between_characters() {
 /// The narrow layouts: below the least width that holds the tabs, the close button and the frame the panel is that width and extends
 /// past the window; nothing raises, the title is empty when it has no room, and every control lies inside the panel, apart from the
 /// others and clear of the title.
-fn narrow_layout(scale: i64, width: u32, expect_floor: bool) {
+fn narrow_layout(width: u32, expect_floor: bool) {
     const NAME: &str = "Droim Ineasclainn";
-    let mut rig = Rig::new_fixture_body_at_scale(
-        &script(&[&format!(
-            "time(1, 1) select_place('rowan', '{NAME}') announce_floor() announce_geometry() announce_fit('{NAME}')"
-        )]),
-        scale,
-    );
-    rig.deliver_fixture_frame_at(width, 800, u32::try_from(scale).unwrap());
+    let scale = 2;
+    let mut rig = Rig::new_fixture_body(&script(&[&format!(
+        "time(1, 1) select_place('rowan', '{NAME}') announce_floor() announce_geometry() announce_fit('{NAME}')"
+    )]));
+    rig.deliver_fixture_frame_at(width, 800, 2);
     rig.opened();
     let line = |rig: &Rig, prefix: &str| {
         notes(rig)
@@ -541,18 +474,13 @@ fn narrow_layout(scale: i64, width: u32, expect_floor: bool) {
 }
 
 #[test]
-fn at_eight_points_a_pixel_in_a_300_point_window_the_panel_is_its_floor_and_passes_the_window() {
-    narrow_layout(8, 300, true);
+fn in_a_narrow_window_the_panel_is_its_floor_and_passes_the_window() {
+    narrow_layout(200, true);
 }
 
 #[test]
-fn at_eight_points_a_pixel_in_an_800_point_window_the_panel_is_its_floor() {
-    narrow_layout(8, 800, true);
-}
-
-#[test]
-fn at_three_points_a_pixel_in_a_600_point_window_the_third_holds_the_controls() {
-    narrow_layout(3, 600, false);
+fn in_a_window_wide_enough_the_third_holds_the_controls() {
+    narrow_layout(900, false);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -818,5 +746,76 @@ fn the_shipped_script_opens_a_resizable_window_of_1280_by_800_pixels_with_that_m
             min: Some((1280, 800)),
         }),
         "asked for in pixels, with the minimum in pixels"
+    );
+}
+
+/// A window opened in pixels: the UI VM is in UI units at the scale its drawable allows, so the same 1280 by 800 view comes from
+/// 1280 by 800 pixels at scale 1 and from 1920 by 1200 at 1.5, and the shipped script's relayout keeps the map-mode bar at the bottom
+/// centre of it; a window of 3456 by 2232 pixels at scale 2 has a 1728 by 1116 view.
+#[test]
+fn a_change_of_the_ui_scale_is_seen_as_a_resize_and_the_script_relays_out_in_units() {
+    let mut rig = Rig::new_fixture_body_in_pixels(&script(&[
+        "time(1, 1) announce_bars()",
+        "announce_bars()",
+        "announce_bars()",
+    ]));
+    // 640x400 points at 2 pixels a point: a drawable of 1280x800 and scale 1: a view of 1280x800 units. The bar is 110x38 units, centred
+    // (585, snapped to 586) and 8 above the bottom edge (800 - 38 - 8 = 754).
+    rig.deliver_fixture_frame_at(640, 400, 2);
+    rig.opened();
+    assert_mode_bar_at(&rig, [586, 754]);
+    // 960x600 points: 1920x1200 pixels, the scale 1.5 and the same 1280x800 view: the layout is unchanged.
+    rig.deliver_fixture_frame_at(960, 600, 2);
+    rig.opened();
+    assert_mode_bar_at(&rig, [586, 754]);
+    // 1728x1116 points: 3456x2232 pixels, the scale 2 and a 1728x1116 view: (1728 - 110) / 2 = 809 snaps to 810; 1116 - 38 - 8 = 1070.
+    rig.deliver_fixture_frame_at(1728, 1116, 2);
+    rig.opened();
+    assert_mode_bar_at(&rig, [810, 1070]);
+}
+
+/// At 3456 by 2232 pixels on a 2x display the scale is 2 and a UI unit is a point: every quad of the shipped start is where the build with
+/// a UI pixel of 2 points drew it, in the units and on the pixels.
+#[test]
+fn at_the_scale_two_the_shipped_start_lands_on_the_pixels_of_a_points_window() {
+    let steps = ["time(1, 1) select_place('rowan', 'Rowan')"];
+    let mut points = Rig::new_fixture_body(&script(&steps));
+    let mut pixels = Rig::new_fixture_body_in_pixels(&script(&steps));
+    for rig in [&mut points, &mut pixels] {
+        rig.deliver_fixture_frame_at(1728, 1116, 2);
+        rig.opened();
+    }
+    let rects = |rig: &Rig| {
+        rig.sink
+            .quads()
+            .iter()
+            .map(|quad| (quad.x, quad.y, quad.width, quad.height))
+            .collect::<Vec<_>>()
+    };
+    assert!(rects(&points).len() > 20, "the start has quads");
+    assert_eq!(rects(&points), rects(&pixels), "the same units");
+    let drawn = |rig: &Rig, scale_k: Option<u32>| {
+        let metrics = ck_render_2d::Metrics {
+            points_width: 1728,
+            points_height: 1116,
+            pixels: ck_window::PixelSize {
+                width: 3456,
+                height: 2232,
+            },
+            ui_scale_k: scale_k,
+        };
+        rig.sink
+            .quads()
+            .iter()
+            .map(|quad| {
+                quad.place(&metrics)
+                    .map(|placed| format!("{:?}", placed.destination))
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        drawn(&points, None),
+        drawn(&pixels, Some(4)),
+        "the same pixels"
     );
 }

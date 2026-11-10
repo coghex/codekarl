@@ -734,15 +734,16 @@ impl FrameConfig {
     }
 }
 
-/// The keys of the `ui` table: the UI scale, in window points per UI pixel (the font's pixel, the borders and the icons). The UI VM
-/// reads the value from its `config` table; the application only checks it.
+/// The keys of the `ui` table: `scale`, the highest UI scale to use (1, 1.5 or 2; the scale in use is the largest the window allows, or
+/// this when it is lower), read at startup only.
 ///
-/// `font_points_per_pixel` is the key this one replaced (owner Q3): it is accepted only to be refused by name, so any value of it
-/// is read here.
+/// `points_per_pixel` is retired (the UI pixel is two UI units, and the scale follows the window) and `font_points_per_pixel` is the
+/// key it replaced (owner Q3): both are accepted only to be refused by name, so any value of either is read here.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 struct UiFields {
-    points_per_pixel: Option<i64>,
+    scale: Option<toml::Value>,
+    points_per_pixel: Option<toml::Value>,
     font_points_per_pixel: Option<toml::Value>,
 }
 
@@ -755,9 +756,6 @@ impl<'de> Deserialize<'de> for UiTable {
         table_only(deserializer, "a table for `ui`").map(UiTable)
     }
 }
-
-/// The range of `[ui] points_per_pixel`.
-const UI_SCALE_RANGE: std::ops::RangeInclusive<i64> = 1..=8;
 
 /// A sampling filter named in the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1175,6 +1173,8 @@ pub(crate) struct VmConfig {
 /// Everything the file says: logging, the owner deadlines, the VMs and the whole file as a value.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Config {
+    /// `[ui] scale` as `k` (2, 3 or 4), the limit on the UI scale of a window opened in screen pixels, if the file sets one.
+    pub(crate) ui_scale_limit_k: Option<u32>,
     pub(crate) log: LogConfig,
     pub(crate) deadlines: OwnerDeadlines,
     /// The VMs in name order (they start in this order and stop in reverse).
@@ -1238,6 +1238,7 @@ impl Default for Config {
     /// The built-in defaults: the same as an empty file, so no VMs.
     fn default() -> Self {
         Self {
+            ui_scale_limit_k: None,
             log: LogConfig::default(),
             deadlines: OwnerDeadlines::default(),
             vms: Vec::new(),
@@ -1299,8 +1300,29 @@ pub(crate) fn load_text_for_test(text: &str) -> Config {
     parse(Path::new("/tmp/codekarl-test/config.toml"), text).expect("a valid configuration")
 }
 
-/// The pixel font's checks: the old `[ui] font_points_per_pixel` key is refused, naming the new one, even beside the new key;
-/// `[ui] points_per_pixel` is 1 to 8; and with a game the scene's one sampling filter is
+/// The `k` of a `[ui] scale` (TOML integer or float: 1, 1.5 or 2), or the refusal naming the accepted values.
+fn ui_scale_k(path: &Path, value: &toml::Value) -> Result<u32, String> {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "only 1 and 2 are accepted: any other integer is refused below whatever its rounding"
+    )]
+    let number = match value {
+        toml::Value::Integer(integer) => Some(*integer as f64),
+        toml::Value::Float(float) => Some(*float),
+        _ => None,
+    };
+    number
+        .and_then(ck_render_2d::ui_scale::k_of_scale)
+        .ok_or_else(|| {
+            format!(
+                "{}: [ui]: scale = {value} is not accepted: use 1, 1.5 or 2",
+                path.display()
+            )
+        })
+}
+
+/// The pixel font's and the UI scale's checks: the old `[ui] font_points_per_pixel` key is refused, naming the new one, even beside the new
+/// key; `[ui] points_per_pixel` is retired and refused, naming `[ui] scale`; `[ui] scale` is 1, 1.5 or 2; and with a game the scene's one sampling filter is
 /// `nearest` (the glyphs need it, and the scene has no per-quad filter).
 fn check_pixel_font(
     path: &Path,
@@ -1314,13 +1336,14 @@ fn check_pixel_font(
             path.display()
         ));
     }
-    if let Some(scale) = ui.points_per_pixel
-        && !UI_SCALE_RANGE.contains(&scale)
-    {
+    if ui.points_per_pixel.is_some() {
         return Err(format!(
-            "{}: [ui]: points_per_pixel={scale} is outside 1..=8",
+            "{}: [ui]: points_per_pixel is retired: the UI scale follows the window; use scale (1, 1.5 or 2) to limit it",
             path.display()
         ));
+    }
+    if let Some(scale) = &ui.scale {
+        ui_scale_k(path, scale)?;
     }
     if has_game && filter.is_some_and(|name| name.0 == ImageFilter::Linear) {
         return Err(format!(
@@ -1396,6 +1419,13 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         }
     };
     check_pixel_font(path, &file.ui.0, game.is_some(), file.render.0.filter)?;
+    let ui_scale_limit_k = file
+        .ui
+        .0
+        .scale
+        .as_ref()
+        .map(|scale| ui_scale_k(path, scale))
+        .transpose()?;
     let resources = ResourceConfig::parse(file.resources.0)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let (max_quads, max_groups) = scene_capacities(path, &file.render.0)?;
@@ -1410,6 +1440,7 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         })
         .collect();
     Ok(Config {
+        ui_scale_limit_k,
         log: file.log.into(),
         deadlines: file.runtime.into(),
         vms,
@@ -2993,28 +3024,40 @@ mod tests {
     }
 
     #[test]
-    fn ui_scale_is_one_to_eight_and_unknown_ui_keys_are_refused() {
-        for scale in [1, 2, 8] {
-            parse_config(&format!("[ui]\npoints_per_pixel = {scale}\n")).unwrap();
+    fn ui_scale_is_one_one_and_a_half_or_two_and_unknown_ui_keys_are_refused() {
+        for (text, k) in [
+            ("[ui]\nscale = 1\n", Some(2)),
+            ("[ui]\nscale = 1.5\n", Some(3)),
+            ("[ui]\nscale = 2\n", Some(4)),
+            ("[ui]\nscale = 2.0\n", Some(4)),
+            ("[ui]\nscale = 1.0\n", Some(2)),
+            ("", None),
+            ("[ui]\n", None),
+        ] {
+            let config = parse_config(text).unwrap();
+            assert_eq!(config.ui_scale_limit_k, k, "{text:?}");
         }
-        parse_config("").unwrap();
-        parse_config("[ui]\n").unwrap();
-        for bad in ["0", "9", "-1", "2.5", "\"2\""] {
+        for bad in ["0", "3", "1.25", "\"2\"", "-1", "true"] {
+            let refused = parse_config(&format!("[ui]\nscale = {bad}\n")).unwrap_err();
             assert!(
-                parse_config(&format!("[ui]\npoints_per_pixel = {bad}\n")).is_err(),
-                "{bad}"
+                refused.contains("[ui]") && refused.contains("use 1, 1.5 or 2"),
+                "{bad}: {refused}"
             );
         }
-        let outside = parse_config("[ui]\npoints_per_pixel = 9\n").unwrap_err();
-        assert!(
-            outside.contains("[ui]") && outside.contains("1..=8"),
-            "{outside}"
-        );
-        let zero = parse_config("[ui]\npoints_per_pixel = 0\n").unwrap_err();
-        assert!(zero.contains("points_per_pixel=0"), "{zero}");
         let unknown = parse_config("[ui]\ncolour = 1\n").unwrap_err();
         assert!(unknown.contains("colour"), "{unknown}");
         assert!(parse_config("ui = 3\n").is_err());
+    }
+
+    #[test]
+    fn points_per_pixel_is_retired_and_the_refusal_names_the_new_key() {
+        for value in ["2", "1", "9", "\"x\""] {
+            let refused = parse_config(&format!("[ui]\npoints_per_pixel = {value}\n")).unwrap_err();
+            assert!(
+                refused.contains("points_per_pixel is retired") && refused.contains("scale"),
+                "{value}: {refused}"
+            );
+        }
     }
 
     #[test]

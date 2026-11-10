@@ -37,6 +37,8 @@ fn snapshot(
             points_width: 8,
             points_height: 4,
             pixels: pixels(8, 4),
+
+            ui_scale_k: None,
         },
     }
 }

@@ -1,5 +1,5 @@
 //! The theme's frames and widgets (milestone 8, slice 7b) through a real UI VM over a recording scene: the quads of a cut-corner frame
-//! as literals for each cut and corner set at two scales, the tints of a button's states, the window chrome of a place window, and
+//! as literals for each cut and corner set, the tints of a button's states, the window chrome of a place window, and
 //! the text colour. The literals are the design's table (`docs/ui-design.md` §3.7, spec §4.3), computed independently of the library.
 
 use crate::readout_tests::Readout;
@@ -16,15 +16,12 @@ fn records(readout: &Readout) -> Vec<String> {
 /// A frame 20 by 18 UI pixels at (10, 20) points, filled `#112233` and outlined `#445566`: every quad with its texture, rectangle and
 /// the role its tint says (`fill` or `line`), in painter order.
 fn frame_lines(scale: i64, cut: u32, corners: &str) -> Vec<String> {
-    let readout = Readout::script(
-        &format!(
-            "local frame = require('lib.frame')\n\
+    let readout = Readout::script(&format!(
+        "local frame = require('lib.frame')\n\
              frame.new{{x = 10, y = 20, width = {}, height = {}, cut = {cut}, corners = '{corners}', fill = '#112233', line = '#445566'}}",
-            20 * scale,
-            18 * scale
-        ),
-        Some(scale),
-    );
+        20 * scale,
+        18 * scale
+    ));
     let tints = readout.tints();
     readout
         .entries()
@@ -49,9 +46,9 @@ fn frame_lines(scale: i64, cut: u32, corners: &str) -> Vec<String> {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "the design's table is written out for each cut and corner set at both scales"
+    reason = "the design's table is written out for each cut and corner set"
 )]
-fn a_frames_quads_are_the_designs_table_for_each_cut_and_corner_set_at_two_scales() {
+fn a_frames_quads_are_the_designs_table_for_each_cut_and_corner_set() {
     let cases: &[(i64, u32, &str, &[&str])] = &[
         (
             2,
@@ -152,105 +149,6 @@ fn a_frames_quads_are_the_designs_table_for_each_cut_and_corner_set_at_two_scale
                 "create q8 ui/theme/white.png 10 36 2 20 line",
             ][..],
         ),
-        (
-            3,
-            3,
-            "tl_br",
-            &[
-                "create q1 ui/theme/cut3_tl_fill.png 9 21 12 12 fill",
-                "create q2 ui/theme/cut3_br_fill.png 57 63 12 12 fill",
-                "create q3 ui/theme/white.png 21 24 45 9 fill",
-                "create q4 ui/theme/white.png 12 33 54 30 fill",
-                "create q5 ui/theme/white.png 12 63 45 9 fill",
-                "create q6 ui/theme/cut3_tl_line.png 9 21 12 12 line",
-                "create q7 ui/theme/cut3_br_line.png 57 63 12 12 line",
-                "create q8 ui/theme/white.png 21 21 48 3 line",
-                "create q9 ui/theme/white.png 66 24 3 39 line",
-                "create q10 ui/theme/white.png 12 72 45 3 line",
-                "create q11 ui/theme/white.png 9 33 3 42 line",
-            ][..],
-        ),
-        (
-            3,
-            3,
-            "tl",
-            &[
-                "create q1 ui/theme/cut3_tl_fill.png 9 21 12 12 fill",
-                "create q2 ui/theme/white.png 21 24 45 9 fill",
-                "create q3 ui/theme/white.png 12 33 54 39 fill",
-                "create q4 ui/theme/cut3_tl_line.png 9 21 12 12 line",
-                "create q5 ui/theme/white.png 21 21 48 3 line",
-                "create q6 ui/theme/white.png 66 24 3 51 line",
-                "create q7 ui/theme/white.png 12 72 54 3 line",
-                "create q8 ui/theme/white.png 9 33 3 42 line",
-            ][..],
-        ),
-        (
-            3,
-            6,
-            "tl_br",
-            &[
-                "create q1 ui/theme/cut6_tl_fill.png 9 21 21 21 fill",
-                "create q2 ui/theme/cut6_br_fill.png 48 54 21 21 fill",
-                "create q3 ui/theme/white.png 30 24 36 18 fill",
-                "create q4 ui/theme/white.png 12 42 54 12 fill",
-                "create q5 ui/theme/white.png 12 54 36 18 fill",
-                "create q6 ui/theme/cut6_tl_line.png 9 21 21 21 line",
-                "create q7 ui/theme/cut6_br_line.png 48 54 21 21 line",
-                "create q8 ui/theme/white.png 30 21 39 3 line",
-                "create q9 ui/theme/white.png 66 24 3 30 line",
-                "create q10 ui/theme/white.png 12 72 36 3 line",
-                "create q11 ui/theme/white.png 9 42 3 33 line",
-            ][..],
-        ),
-        (
-            3,
-            6,
-            "tl",
-            &[
-                "create q1 ui/theme/cut6_tl_fill.png 9 21 21 21 fill",
-                "create q2 ui/theme/white.png 30 24 36 18 fill",
-                "create q3 ui/theme/white.png 12 42 54 30 fill",
-                "create q4 ui/theme/cut6_tl_line.png 9 21 21 21 line",
-                "create q5 ui/theme/white.png 30 21 39 3 line",
-                "create q6 ui/theme/white.png 66 24 3 51 line",
-                "create q7 ui/theme/white.png 12 72 54 3 line",
-                "create q8 ui/theme/white.png 9 42 3 33 line",
-            ][..],
-        ),
-        (
-            3,
-            7,
-            "tl_br",
-            &[
-                "create q1 ui/theme/cut7_tl_fill.png 9 21 24 24 fill",
-                "create q2 ui/theme/cut7_br_fill.png 45 51 24 24 fill",
-                "create q3 ui/theme/white.png 33 24 33 21 fill",
-                "create q4 ui/theme/white.png 12 45 54 6 fill",
-                "create q5 ui/theme/white.png 12 51 33 21 fill",
-                "create q6 ui/theme/cut7_tl_line.png 9 21 24 24 line",
-                "create q7 ui/theme/cut7_br_line.png 45 51 24 24 line",
-                "create q8 ui/theme/white.png 33 21 36 3 line",
-                "create q9 ui/theme/white.png 66 24 3 27 line",
-                "create q10 ui/theme/white.png 12 72 33 3 line",
-                "create q11 ui/theme/white.png 9 45 3 30 line",
-            ][..],
-        ),
-        (
-            3,
-            7,
-            "tl",
-            &[
-                "create q1 ui/theme/cut7_tl_fill.png 9 21 24 24 fill",
-                "create q2 ui/theme/white.png 33 24 33 21 fill",
-                "create q3 ui/theme/white.png 12 45 54 27 fill",
-                "create q4 ui/theme/cut7_tl_line.png 9 21 24 24 line",
-                "create q5 ui/theme/white.png 33 21 36 3 line",
-                "create q6 ui/theme/white.png 66 24 3 51 line",
-                "create q7 ui/theme/white.png 12 72 54 3 line",
-                "create q8 ui/theme/white.png 9 45 3 30 line",
-            ][..],
-        ),
     ];
     for (scale, cut, corners, expected) in cases {
         assert_eq!(
@@ -288,7 +186,6 @@ try{x = 0, y = 0, width = 2 * 10, height = 2 * 10, cut = 7, corners = 'tl', fill
 try{x = 0, y = 0, width = 2 * 20, height = 2 * 20, cut = 5, corners = 'tl', fill = '#000000', line = '#ffffff'}
 try{x = 0, y = 0, width = 2 * 20, height = 2 * 20, cut = 3, corners = 'br', fill = '#000000', line = '#ffffff'}
 ",
-        None,
     );
     let lines = records(&readout);
     assert_eq!(lines.len(), 7);
@@ -330,7 +227,6 @@ window.record('mark')
 f:set_rect(10, 20, 60, 36)
 window.record('mark')
 ",
-        None,
     );
     // The same colours: no call.
     assert!(readout.tints_after_mark(1).is_empty());
@@ -388,7 +284,6 @@ window.record('mark')
 local explicit = text.line(0, 0, nil, '#4fb3c8')
 text.set(explicit, 'A')
 ",
-        None,
     );
     let tints = readout.tints();
     assert_eq!(tints[..2], ["create q1 #ece3cb", "create q2 #ece3cb"]);
@@ -413,7 +308,6 @@ for _, content in ipairs{'', 'i', 'Go'} do
   window.record(content .. ': ' .. table.concat({b:size()}, ' '))
 end
 ",
-        None,
     );
     let lines = records(&readout);
     // 9 by 15 UI pixels: 18 by 30 points; a 'Go' button is its text plus 2 pixels on each side.
@@ -471,7 +365,6 @@ look('b hover')
 pointer.dispatch({over = b.key, overflow = false, held = true, events = {{kind = 'down', key = b.key, x = 101, y = 1, inside = true}}})
 look('b pressed')
 ",
-        None,
     );
     let tints = readout.tints();
     // Creation: panel look (fill body, line outline, text), then the title look (fill and line outline, dark title text).
@@ -517,7 +410,7 @@ look('b pressed')
 
 #[test]
 fn nothing_loads_the_old_button_art_and_the_time_bar_and_tooltip_load_the_themes() {
-    let mut readout = Readout::new("", None);
+    let mut readout = Readout::new("");
     readout.deliver(&crate::readout_tests::snapshot(
         14,
         3,

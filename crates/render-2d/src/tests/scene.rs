@@ -678,6 +678,8 @@ fn frame_placement_matches_legacy_destination_and_normalized_source() {
                 points_width: 10,
                 points_height: 8,
                 pixels: pixels(20, 12),
+
+                ui_scale_k: None,
             },
         ),
         (
@@ -689,6 +691,8 @@ fn frame_placement_matches_legacy_destination_and_normalized_source() {
                 points_width: 10,
                 points_height: 8,
                 pixels: pixels(20, 12),
+
+                ui_scale_k: None,
             },
         ),
         (
@@ -700,6 +704,8 @@ fn frame_placement_matches_legacy_destination_and_normalized_source() {
                 points_width: 10,
                 points_height: 8,
                 pixels: pixels(20, 12),
+
+                ui_scale_k: None,
             },
         ),
         (
@@ -711,6 +717,8 @@ fn frame_placement_matches_legacy_destination_and_normalized_source() {
                 points_width: 10,
                 points_height: 8,
                 pixels: pixels(20, 12),
+
+                ui_scale_k: None,
             },
         ),
     ];
@@ -749,11 +757,15 @@ fn place_is_placement_plus_the_texture_for_every_geometry_case() {
         points_width: 10,
         points_height: 8,
         pixels: pixels(10, 8),
+
+        ui_scale_k: None,
     };
     let scale_two = Metrics {
         points_width: 10,
         points_height: 8,
         pixels: pixels(20, 16),
+
+        ui_scale_k: None,
     };
     // (x, y, width, height): on screen; clipped at the left, the top, the right and the bottom (the source trimmed); wholly off
     // screen; and without extent in pixels.

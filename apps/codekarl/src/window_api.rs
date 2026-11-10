@@ -206,6 +206,22 @@ fn dimension(table: &BTreeMap<String, ConfigValue>, name: &str) -> Result<u32, S
     })
 }
 
+/// The drawable's extent in pixels of a window `points` wide on a display of `backing` pixels per point.
+fn pixels_of(points: u32, backing: f64) -> u32 {
+    let backing = if backing.is_finite() && backing > 0.0 {
+        backing
+    } else {
+        1.0
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a finite, non-negative product rounded; the conversion saturates"
+    )]
+    let pixels = (f64::from(points) * backing).round() as u32;
+    pixels
+}
+
 /// A minimum from `window.open`'s table: both `min_width` and `min_height`, or neither.
 fn minimum(table: &BTreeMap<String, ConfigValue>) -> Result<Option<(u32, u32)>, String> {
     match (
@@ -290,6 +306,8 @@ struct Shared {
     /// The main screen, snapshotted on the main thread before this VM was spawned. The binding resolves sizes against it and never
     /// calls a backend.
     screen: ScreenCell,
+    /// `[ui] scale` as `k`: the limit on the UI scale of a window opened in pixels, which decides the initial view in UI units.
+    ui_scale_limit_k: Option<u32>,
 }
 
 impl Shared {
@@ -308,7 +326,19 @@ impl Shared {
             ck_log::info!("window", "{line}");
         }
         let desc = resolved.desc;
-        let size = (desc.width, desc.height);
+        // The size the window opens at as the script lays out in it: in points for a window opened in points, and for one opened in pixels
+        // in UI units, the drawable (points times the display's scale) over the UI scale it gets, floored: the size the first
+        // `frame.on_update` will report.
+        let size = if desc.pixel_request.is_some() {
+            let pixels = ck_window::PixelSize {
+                width: pixels_of(desc.width, screen.backing),
+                height: pixels_of(desc.height, screen.backing),
+            };
+            let k = ck_render_2d::ui_scale::scale_k(pixels, self.ui_scale_limit_k);
+            ck_render_2d::ui_scale::view_units(pixels, k)
+        } else {
+            (desc.width, desc.height)
+        };
         if let Some(map) = &self.map {
             crate::map_app::lock(map).open(&desc)?;
         }
@@ -355,7 +385,7 @@ pub(crate) fn extension(
     headless: Option<Arc<HeadlessNotes>>,
     map: Option<crate::map_app::SharedController>,
 ) -> Extension {
-    extension_with_screen(writer, headless, map, ScreenCell::default())
+    extension_with_screen(writer, headless, map, ScreenCell::default(), None)
 }
 
 /// [`extension`] with the main screen's cell: the main thread fills it before the UI VM is spawned, and `window.open` reads it.
@@ -364,12 +394,14 @@ pub(crate) fn extension_with_screen(
     headless: Option<Arc<HeadlessNotes>>,
     map: Option<crate::map_app::SharedController>,
     screen: ScreenCell,
+    ui_scale_limit_k: Option<u32>,
 ) -> Extension {
     let shared = Shared {
         writer,
         headless,
         map,
         screen,
+        ui_scale_limit_k,
     };
     let open: HostFunction = {
         let shared = shared.clone();
@@ -458,7 +490,7 @@ mod tests {
             let cell = ScreenCell::default();
             cell.set(screen).expect("empty");
             Self::with_extension(requests, None, records, |writer, notes| {
-                extension_with_screen(writer, notes, None, cell)
+                extension_with_screen(writer, notes, None, cell, None)
             })
         }
 
@@ -840,36 +872,46 @@ mod tests {
     }
 
     #[test]
-    fn open_returns_the_size_in_points_the_window_opens_at() {
-        // 1280x800 pixels at 2 pixels a point open at 640x400 points, which is what the script's first layout starts from.
-        let rig = Rig::with_screen(ScreenSnapshot {
-            backing: 2.0,
-            visible_points: (4000, 3000),
-        });
-        let values = lua(
-            &rig,
-            "return window.open{title='t', unit='pixels', width=1280, height=800, resizable=true, \
-             min_width=1280, min_height=800, clear={0,0,0}}",
+    fn open_returns_the_size_the_window_opens_at_in_the_units_the_script_lays_out_in() {
+        // The size, and then the unit it is in: for a window opened in pixels the UI units of the scale its drawable gets (the size the
+        // first update will report), for one opened in points its points.
+        let at = |backing: f64, request: &str| {
+            let rig = Rig::with_screen(ScreenSnapshot {
+                backing,
+                visible_points: (4000, 3000),
+            });
+            lua(&rig, &format!("return window.open{{{request}}}"))
+        };
+        let integers = |width: i64, height: i64| {
+            vec![
+                Some(ConfigValue::Integer(width)),
+                Some(ConfigValue::Integer(height)),
+            ]
+        };
+        let pixels = "title='t', unit='pixels', resizable=true, clear={0,0,0}";
+        // 1280x800 pixels at backing 2 are 640x400 points and the drawable 1280x800 (scale 1): 1280 by 800 units.
+        assert_eq!(
+            at(2.0, &format!("{pixels}, width=1280, height=800")),
+            integers(1280, 800)
         );
         assert_eq!(
-            values,
-            [
-                Some(ConfigValue::Integer(640)),
-                Some(ConfigValue::Integer(400))
-            ]
+            at(1.0, &format!("{pixels}, width=1280, height=800")),
+            integers(1280, 800)
         );
-        // A request in points returns it as it is.
-        let points = Rig::new(false);
-        let values = lua(
-            &points,
-            "return window.open{title='t', width=200, height=100, clear={0,0,0}}",
-        );
+        // 1281x801 at backing 2 resolve to 641x401 points and a drawable of 1282x802.
         assert_eq!(
-            values,
-            [
-                Some(ConfigValue::Integer(200)),
-                Some(ConfigValue::Integer(100))
-            ]
+            at(2.0, &format!("{pixels}, width=1281, height=801")),
+            integers(1282, 802)
+        );
+        // A drawable of 1920x1200 gets the scale 1.5: its view is 1280 by 800 units.
+        assert_eq!(
+            at(2.0, &format!("{pixels}, width=1920, height=1200")),
+            integers(1280, 800)
+        );
+        // A window opened in points returns its points.
+        assert_eq!(
+            at(2.0, "title='t', width=800, height=600, clear={0,0,0}"),
+            integers(800, 600)
         );
     }
 }

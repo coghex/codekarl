@@ -153,18 +153,10 @@ impl Quad {
     /// Where the quad lands in pixels with these metrics, or `None` if nothing of it shows.
     #[must_use]
     pub fn place(&self, metrics: &Metrics) -> Option<PlacedQuad> {
-        let (left, right) = edges(
-            self.x,
-            self.width,
-            metrics.points_width,
-            metrics.pixels.width,
-        );
-        let (top, bottom) = edges(
-            self.y,
-            self.height,
-            metrics.points_height,
-            metrics.pixels.height,
-        );
+        // Like the scene's quads, at the points-to-pixels ratio in a window opened in points and at the UI scale in a window opened in pixels.
+        let (scale_x, scale_y) = metrics.scene_scale();
+        let (left, right) = edges_at(self.x, self.width, scale_x);
+        let (top, bottom) = edges_at(self.y, self.height, scale_y);
         if right == left || bottom == top {
             return None;
         }
@@ -271,6 +263,11 @@ fn to_f32(value: f64) -> f32 {
 /// points and the axis's scale.
 pub(crate) fn edges(start: f64, extent: f64, points: u32, pixels: u32) -> (i32, i32) {
     let scale = f64::from(pixels) / f64::from(points.max(1));
+    edges_at(start, extent, scale)
+}
+
+/// [`edges`] at a given number of pixels per unit.
+pub(crate) fn edges_at(start: f64, extent: f64, scale: f64) -> (i32, i32) {
     (pixel_edge(start, scale), pixel_edge(start + extent, scale))
 }
 
@@ -299,16 +296,36 @@ pub struct Metrics {
     pub points_height: u32,
     /// The drawable's size in pixels.
     pub pixels: PixelSize,
+    /// For a window opened in screen pixels: the UI scale as `k` (2, 3 or 4: screen pixels per UI pixel, a UI unit being half of one), at
+    /// which the UI scene's coordinates, in UI units, are drawn. `None` for a window opened in points, whose scene is drawn at the
+    /// points-to-pixels ratio. The map is always placed in points.
+    pub ui_scale_k: Option<u32>,
 }
 
 impl Metrics {
-    /// The metrics of a window of this description whose drawable is `pixels`.
+    /// The metrics of a window of this description whose drawable is `pixels`, for a UI scene in points.
     #[must_use]
     pub fn new(desc: &WindowDesc, pixels: PixelSize) -> Self {
         Self {
             points_width: desc.width,
             points_height: desc.height,
             pixels,
+            ui_scale_k: None,
+        }
+    }
+
+    /// The pixels per unit of the UI scene on each axis: `k ÷ 2` in a window opened in pixels, the points-to-pixels ratio otherwise.
+    #[must_use]
+    pub(crate) fn scene_scale(&self) -> (f64, f64) {
+        match self.ui_scale_k {
+            Some(k) => {
+                let scale = f64::from(k) / 2.0;
+                (scale, scale)
+            }
+            None => (
+                f64::from(self.pixels.width) / f64::from(self.points_width.max(1)),
+                f64::from(self.pixels.height) / f64::from(self.points_height.max(1)),
+            ),
         }
     }
 }

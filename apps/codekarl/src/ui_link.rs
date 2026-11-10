@@ -45,15 +45,25 @@ pub(crate) type UiVm = Rc<RefCell<VmOwner>>;
 /// `ui` VM, or before the VM is spawned).
 pub(crate) type UiSlot = Rc<RefCell<Option<UiVm>>>;
 
-/// The callback name and arguments of an event.
+/// The callback name and arguments of an event, for a window whose UI is in points.
 ///
 /// # Errors
 ///
 /// An update whose sequence is not a Lua integer (above `i64::MAX`): the call is not built, so no callback is ever given
 /// an altered identity.
+#[cfg(test)]
 fn call_of(
     event: &UiEvent,
     stash: &InputStash,
+) -> Result<(&'static str, Vec<ConfigValue>), String> {
+    call_in(event, stash, None)
+}
+
+/// [`call_of`] for a window whose UI is in UI units: an update carries `view`, the size in units, as its width and height.
+fn call_in(
+    event: &UiEvent,
+    stash: &InputStash,
+    view: Option<(u32, u32)>,
 ) -> Result<(&'static str, Vec<ConfigValue>), String> {
     Ok(match event {
         UiEvent::Opened => (OPENED, Vec::new()),
@@ -67,7 +77,7 @@ fn call_of(
                 .to_owned(),
             )],
         ),
-        UiEvent::Update(update) => (FRAME_UPDATE, vec![update_table(update, stash)?]),
+        UiEvent::Update(update) => (FRAME_UPDATE, vec![update_table_in(update, stash, view)?]),
     })
 }
 
@@ -122,7 +132,19 @@ fn pointer_event_table(event: &crate::input_stash::PointerViewEvent) -> ConfigVa
 ///
 /// The sequence is a `u64` and a script's integer an `i64`; a sequence above `i64::MAX` is an error (never saturated or
 /// wrapped), which the link turns into a terminal failure.
+#[cfg(test)]
 fn update_table(update: &UpdateEvent, stash: &InputStash) -> Result<ConfigValue, String> {
+    update_table_in(update, stash, None)
+}
+
+/// [`update_table`] with `view`, when the window's UI is in UI units, as `width` and `height`: the size the UI lays out in. The pixel
+/// size is always the drawable's.
+fn update_table_in(
+    update: &UpdateEvent,
+    stash: &InputStash,
+    view: Option<(u32, u32)>,
+) -> Result<ConfigValue, String> {
+    let (width, height) = view.unwrap_or(update.metrics.points);
     let sequence = i64::try_from(update.sequence).map_err(|_| {
         format!(
             "frame_update sequence {} does not fit a Lua integer (at most {})",
@@ -171,8 +193,8 @@ fn update_table(update: &UpdateEvent, stash: &InputStash) -> Result<ConfigValue,
             ConfigValue::Float(update.elapsed.as_secs_f64()),
         ),
         ("sequence".to_owned(), ConfigValue::Integer(sequence)),
-        ("width".to_owned(), integer(update.metrics.points.0)),
-        ("height".to_owned(), integer(update.metrics.points.1)),
+        ("width".to_owned(), integer(width)),
+        ("height".to_owned(), integer(height)),
         (
             "pixel_width".to_owned(),
             integer(update.metrics.pixels.width),
@@ -268,6 +290,11 @@ struct State {
     failure: RefCell<Option<String>>,
     /// A post reported that the VM ended.
     disconnected: Cell<bool>,
+    /// The latest pointer position in window points, kept for the map's hover when a tick carries none (the stash holds the UI's, in UI
+    /// units in a window opened in pixels).
+    last_points: Cell<Option<PointerPosition>>,
+    /// The metrics of the latest input tick: what converts the map's hover positions to the UI's units when they are delivered.
+    last_metrics: Cell<Option<ck_window::WindowMetrics>>,
     /// The input the UI VM has not been given yet; cleared when a post carrying it was accepted.
     stash: RefCell<InputStash>,
     /// The `frame.on_update` registration generation the previous input tick saw.
@@ -306,18 +333,31 @@ fn view_event(
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "gesture ownership and per-event routing form one ordered state transition"
-)]
+/// [`route_pointer_in`] for a window whose UI is in points.
+#[cfg(test)]
 fn route_pointer(
     owner: &mut GestureOwner,
     input: &ck_window::InputSnapshot,
     regions: Option<&ck_render_2d::HitRegions>,
 ) -> RoutedPointer {
+    route_pointer_in(owner, input, regions, None)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "gesture ownership and per-event routing form one ordered state transition"
+)]
+fn route_pointer_in(
+    owner: &mut GestureOwner,
+    input: &ck_window::InputSnapshot,
+    regions: Option<&ck_render_2d::HitRegions>,
+    units: Option<ck_render_2d::ui_scale::UnitMap>,
+) -> RoutedPointer {
     use crate::map_app::RoutedMapEvent as MapEvent;
     let mut routed = RoutedPointer::default();
-    let latest = input.pointer_position.unwrap_or_default();
+    // In a window opened in pixels the UI's positions, hit tests and scroll amounts are in UI units; the map's events keep their points.
+    let ui = |position: PointerPosition| units.map_or(position, |map| map.position(position));
+    let latest = ui(input.pointer_position.unwrap_or_default());
     if matches!(owner, GestureOwner::Nobody) && !input.pointer_held {
         *owner = GestureOwner::Idle;
     }
@@ -351,15 +391,15 @@ fn route_pointer(
                     GestureOwner::Ui(key) => {
                         routed
                             .ui
-                            .push(view_event("cancel", position, Some(key.clone())));
+                            .push(view_event("cancel", ui(position), Some(key.clone())));
                     }
                     GestureOwner::Idle | GestureOwner::Nobody => {}
                 }
-                if let Some(key) = regions.and_then(|regions| regions.key_at(position)) {
+                if let Some(key) = regions.and_then(|regions| regions.key_at(ui(position))) {
                     let key = key.to_owned();
                     routed
                         .ui
-                        .push(view_event("down", position, Some(key.clone())));
+                        .push(view_event("down", ui(position), Some(key.clone())));
                     *owner = GestureOwner::Ui(key);
                 } else {
                     routed.map.push(MapEvent::Pointer(*event));
@@ -370,14 +410,16 @@ fn route_pointer(
                 GestureOwner::Ui(key) => {
                     routed
                         .ui
-                        .push(view_event("move", position, Some(key.clone())));
+                        .push(view_event("move", ui(position), Some(key.clone())));
                 }
                 GestureOwner::Map => routed.map.push(MapEvent::Pointer(*event)),
                 GestureOwner::Idle => {
                     let key = regions
-                        .and_then(|regions| regions.key_at(position))
+                        .and_then(|regions| regions.key_at(ui(position)))
                         .map(str::to_owned);
-                    routed.ui.push(view_event("move", position, key.clone()));
+                    routed
+                        .ui
+                        .push(view_event("move", ui(position), key.clone()));
                     if key.is_none() {
                         routed.map.push(MapEvent::Pointer(*event));
                     }
@@ -389,7 +431,7 @@ fn route_pointer(
                     GestureOwner::Ui(key) => {
                         routed
                             .ui
-                            .push(view_event("up", position, Some(key.clone())));
+                            .push(view_event("up", ui(position), Some(key.clone())));
                     }
                     GestureOwner::Map => routed.map.push(MapEvent::Pointer(*event)),
                     GestureOwner::Idle | GestureOwner::Nobody => {}
@@ -406,12 +448,15 @@ fn route_pointer(
                 let key = match owner {
                     GestureOwner::Ui(key) => Some(key.clone()),
                     GestureOwner::Idle | GestureOwner::Map | GestureOwner::Nobody => regions
-                        .and_then(|regions| regions.key_at(position))
+                        .and_then(|regions| regions.key_at(ui(position)))
                         .map(str::to_owned),
                 };
                 if key.is_some() {
-                    let mut view = view_event("scroll", position, key);
-                    view.amount = Some(amount);
+                    let mut view = view_event("scroll", ui(position), key);
+                    view.amount = Some(match (unit, units) {
+                        (ScrollUnit::Points, Some(map)) => map.scroll_amount(amount),
+                        _ => amount,
+                    });
                     view.unit = Some(match unit {
                         ScrollUnit::Lines => "lines",
                         ScrollUnit::Points => "points",
@@ -430,7 +475,7 @@ fn route_pointer(
                 if let Some(position) = input.pointer_position {
                     routed
                         .ui
-                        .push(view_event("move", position, Some(key.clone())));
+                        .push(view_event("move", ui(position), Some(key.clone())));
                 }
             }
             GestureOwner::Ui(key) => {
@@ -465,7 +510,29 @@ fn route_pointer(
 enum DeliveredHover {
     #[default]
     Unsent,
-    Sent(Option<crate::map_app::Hover>),
+    /// The hover and the conversion it was delivered with: a hover the UI has in units is stale when the conversion changes (a display or
+    /// scale change) though the map's own hover did not.
+    Sent(
+        Option<crate::map_app::Hover>,
+        Option<ck_render_2d::ui_scale::UnitMap>,
+    ),
+}
+
+impl DeliveredHover {
+    /// Whether what the UI last got is still what it should have: the same map hover, converted the same way. A hover in UI units is stale
+    /// when the conversion changed (a display or scale change) though the map's own hover did not; no hover has no conversion to be stale.
+    fn is_current(
+        &self,
+        hover: Option<&crate::map_app::Hover>,
+        units: Option<ck_render_2d::ui_scale::UnitMap>,
+    ) -> bool {
+        match self {
+            Self::Unsent => false,
+            Self::Sent(delivered, conversion) => {
+                delivered.as_ref() == hover && (hover.is_none() || *conversion == units)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -711,6 +778,25 @@ impl CodekarlUi {
         false
     }
 
+    /// The conversion of the map's hover positions (window points) to UI units, for a window opened in pixels, from the latest tick's metrics.
+    fn hover_units(&self) -> Option<ck_render_2d::ui_scale::UnitMap> {
+        self.unit_map(self.state.last_metrics.get()?)
+    }
+
+    /// The conversion of window points to UI units for `metrics`, when the window was opened in pixels (its UI is in UI units at the scale
+    /// the drawable allows); `None` when it was opened in points.
+    fn unit_map(
+        &self,
+        metrics: ck_window::WindowMetrics,
+    ) -> Option<ck_render_2d::ui_scale::UnitMap> {
+        let k = self.scene.as_ref()?.ui_scale(metrics.pixels)?;
+        Some(ck_render_2d::ui_scale::UnitMap {
+            pixels: metrics.pixels,
+            points: metrics.points,
+            k,
+        })
+    }
+
     /// Posts only a changed latest hover, outside the lifecycle-reserved call place.
     fn deliver_hover(&self) -> bool {
         let (Some(map), Some(sim)) = (&self.map, &self.sim) else {
@@ -724,10 +810,13 @@ impl CodekarlUi {
             return false;
         }
         let hover = crate::map_app::lock(map).hover();
-        if matches!(
-            &*self.state.delivered_hover.borrow(),
-            DeliveredHover::Sent(delivered) if delivered == &hover
-        ) || !self.state.hovers.borrow().is_empty()
+        let units = self.hover_units();
+        if self
+            .state
+            .delivered_hover
+            .borrow()
+            .is_current(hover.as_ref(), units)
+            || !self.state.hovers.borrow().is_empty()
             || self.outstanding() >= UI_CALL_LIMIT - 1
         {
             return false;
@@ -737,10 +826,10 @@ impl CodekarlUi {
         };
         if let Ok(id) = vm.borrow_mut().post(
             crate::game_api::GAME_HOVER,
-            crate::game_api::hover_arguments(hover.as_ref()),
+            crate::game_api::hover_arguments(hover.as_ref(), units),
         ) {
             self.state.hovers.borrow_mut().push(id);
-            *self.state.delivered_hover.borrow_mut() = DeliveredHover::Sent(hover);
+            *self.state.delivered_hover.borrow_mut() = DeliveredHover::Sent(hover, units);
             return true;
         }
         false
@@ -928,7 +1017,15 @@ impl UiLink for CodekarlUi {
         if matches!(event, UiEvent::Update(_)) {
             self.observe_registration(&mut self.state.stash.borrow_mut());
         }
-        let (callback, arguments) = match call_of(&event, &self.state.stash.borrow()) {
+        let view = match &event {
+            UiEvent::Update(update) => self
+                .scene
+                .as_ref()
+                .and_then(|scene| scene.ui_scale(update.metrics.pixels))
+                .map(|k| ck_render_2d::ui_scale::view_units(update.metrics.pixels, k)),
+            _ => None,
+        };
+        let (callback, arguments) = match call_in(&event, &self.state.stash.borrow(), view) {
             Ok(call) => call,
             Err(message) => {
                 // Nothing was posted: the failure is the link's terminal one, as a VM failure is, and the loop
@@ -967,15 +1064,26 @@ impl UiLink for CodekarlUi {
                 .as_ref()
                 .and_then(|map| crate::map_app::lock(map).hit_regions())
         };
-        let previous_position = self
+        // In a window opened in pixels the UI works in UI units: the scale follows the drawable, and one conversion serves the Lua events, the
+        // hit tests and the hover. The map's own input stays in points.
+        let units = self.unit_map(tick.metrics);
+        self.state.last_metrics.set(Some(tick.metrics));
+        let previous_ui = self
             .state
             .stash
             .borrow()
             .pointer()
             .map(|pointer| pointer.position);
+        let previous_points = self.state.last_points.get();
+        let latest_points = tick.input.pointer_position.or(previous_points);
+        self.state.last_points.set(latest_points);
+        let latest_position = tick
+            .input
+            .pointer_position
+            .map(|position| units.map_or(position, |map| map.position(position)))
+            .or(previous_ui);
         let mut owner = self.state.pointer_owner.borrow_mut();
-        let routed = route_pointer(&mut owner, &tick.input, regions.as_deref());
-        let latest_position = tick.input.pointer_position.or(previous_position);
+        let routed = route_pointer_in(&mut owner, &tick.input, regions.as_deref(), units);
         let latest_over = latest_position
             .and_then(|position| {
                 regions
@@ -997,7 +1105,7 @@ impl UiLink for CodekarlUi {
             map_tick.input.pointer_held = map_owns_gesture && tick.input.pointer_held;
             map_tick.input.pointer_overflow = map_owns_gesture && tick.input.pointer_overflow;
             let hover_position = if !suppress_hover && !map_owns_gesture {
-                latest_position
+                latest_points
             } else {
                 None
             };
@@ -1951,6 +2059,367 @@ mod tests {
             ))]
         ));
         assert!(crossing.ui.is_empty());
+    }
+
+    #[test]
+    fn in_a_window_opened_in_pixels_the_ui_gets_units_and_the_map_keeps_points() {
+        use ck_render_2d::ui_scale::UnitMap;
+        // The scale 1.5 on a 2x display: 1920x1200 pixels, 960x600 points.
+        let units = Some(UnitMap {
+            pixels: PixelSize {
+                width: 1920,
+                height: 1200,
+            },
+            points: (960, 600),
+            k: 3,
+        });
+        // A region at units (130, 60) sized 4 by 7.
+        let regions = hit_regions(&[("probe", 130.0, 60.0, 4.0, 7.0)]);
+        let inside = PointerPosition {
+            x: 100 * 256,
+            y: 50 * 256,
+        };
+        // 100.5 points is unit 134.0 exactly: on the half-open right edge.
+        let edge = PointerPosition {
+            x: 100 * 256 + 128,
+            y: 50 * 256,
+        };
+        let mut owner = GestureOwner::Idle;
+        let down = route_pointer_in(
+            &mut owner,
+            &pointer_input(vec![PointerEvent::Down(inside)], Some(inside), true),
+            Some(&regions),
+            units,
+        );
+        assert_eq!(down.ui.len(), 1, "inside the region in units");
+        assert_eq!(down.ui[0].key.as_deref(), Some("probe"));
+        assert_eq!(
+            down.ui[0].position,
+            PointerPosition { x: 34133, y: 17066 },
+            "133.33203125 and 66.6640625 units"
+        );
+        assert!(down.map.is_empty(), "a UI gesture is not the map's");
+        let mut owner = GestureOwner::Idle;
+        let outside = route_pointer_in(
+            &mut owner,
+            &pointer_input(vec![PointerEvent::Down(edge)], Some(edge), true),
+            Some(&regions),
+            units,
+        );
+        assert!(outside.ui.is_empty(), "the right edge is outside");
+        // The map's event keeps its position in points.
+        assert!(matches!(
+            outside.map.as_slice(),
+            [crate::map_app::RoutedMapEvent::Pointer(PointerEvent::Down(position))] if *position == edge
+        ));
+        // Point scrolls are converted toward zero, line scrolls are not.
+        let mut owner = GestureOwner::Idle;
+        let scrolled = route_pointer_in(
+            &mut owner,
+            &pointer_input(
+                vec![
+                    PointerEvent::Scroll {
+                        position: inside,
+                        amount: 15 * 256,
+                        unit: ScrollUnit::Points,
+                    },
+                    PointerEvent::Scroll {
+                        position: inside,
+                        amount: -256,
+                        unit: ScrollUnit::Points,
+                    },
+                    PointerEvent::Scroll {
+                        position: inside,
+                        amount: 256,
+                        unit: ScrollUnit::Lines,
+                    },
+                ],
+                Some(inside),
+                false,
+            ),
+            Some(&regions),
+            units,
+        );
+        assert_eq!(
+            scrolled
+                .ui
+                .iter()
+                .map(|event| event.amount)
+                .collect::<Vec<_>>(),
+            [Some(20 * 256), Some(-341), Some(256)]
+        );
+    }
+
+    #[test]
+    fn an_update_in_a_window_opened_in_pixels_carries_the_view_in_units_and_the_drawable_in_pixels()
+    {
+        let UiEvent::Update(event) = update(3) else {
+            unreachable!();
+        };
+        let stash = InputStash::default();
+        let fields = |view: Option<(u32, u32)>| {
+            let ConfigValue::Table(fields) = update_table_in(&event, &stash, view).expect("table")
+            else {
+                panic!("a table");
+            };
+            fields
+        };
+        // The window's points and pixels are the same metrics' either way; `width` and `height` are the view the UI lays out in.
+        let points = fields(None);
+        assert_eq!(points["width"], integer(event.metrics.points.0));
+        let units = fields(Some((1280, 800)));
+        assert_eq!(units["width"], ConfigValue::Integer(1280));
+        assert_eq!(units["height"], ConfigValue::Integer(800));
+        assert_eq!(units["pixel_width"], integer(event.metrics.pixels.width));
+        assert_eq!(units["pixel_height"], integer(event.metrics.pixels.height));
+    }
+
+    /// Through delivery: the same raw hover, delivered at two conversions (the display goes from 2 pixels a point to 1 with the points
+    /// unchanged), reaches `game.on_hover` twice, the second time with the new coordinates.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one end-to-end witness: a pixels window's hover, the link, two deliveries"
+    )]
+    fn the_same_hover_reaches_the_ui_again_with_new_coordinates_when_the_conversion_changes() {
+        struct Null;
+        impl ck_render_2d::QuadSink for Null {
+            fn publish(&self, snapshot: ck_render_2d::Snapshot) -> Option<ck_render_2d::Snapshot> {
+                Some(snapshot)
+            }
+        }
+        let seen: Arc<std::sync::Mutex<Vec<f64>>> = Arc::default();
+        let record: HostFunction = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |arguments| {
+                let left = match arguments.first().and_then(Option::as_ref) {
+                    Some(ConfigValue::Table(fields)) => match fields.get("left") {
+                        Some(ConfigValue::Float(left)) => *left,
+                        other => panic!("a hover left that is not a number: {other:?}"),
+                    },
+                    _ => f64::NAN,
+                };
+                seen.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(left);
+                Ok(Vec::new())
+            })
+        };
+        let time_registered = Arc::new(AtomicBool::new(false));
+        let hover_registered = Arc::new(AtomicBool::new(false));
+        let harness = Harness::new(
+            "game.on_hover(function(h) window.record(h) end)\nframe.on_update(function() end)",
+            Extras {
+                functions: vec![("record", record)],
+                extensions: vec![
+                    frame_extension(),
+                    game_api::extension(
+                        Arc::clone(&time_registered),
+                        Arc::clone(&hover_registered),
+                        Arc::new(|| {}),
+                        crate::game::controls::SimControls::new(std::sync::mpsc::channel().0),
+                    ),
+                ],
+                ..Extras::default()
+            },
+        );
+        // A window opened in pixels, 400x240 points at 2 pixels a point (800x480 pixels, the scale 1: a unit is half a point).
+        harness
+            .bridge
+            .attach(
+                &ck_window::WindowDesc {
+                    title: "t".to_owned(),
+                    width: 400,
+                    height: 240,
+                    pixel_request: Some(ck_window::PixelRequest {
+                        size: (1280, 800),
+                        min: Some((1280, 800)),
+                    }),
+                    ..ck_window::WindowDesc::default()
+                },
+                PixelSize {
+                    width: 800,
+                    height: 480,
+                },
+                Arc::new(Null),
+            )
+            .expect("attached");
+        let map = crate::map_app::shared(crate::map_app::tests::window_case_hover_controller());
+        let slot = SimSlot::new(Arc::new(|| {}));
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut link = CodekarlUi::with_map(harness.ui.slot.clone(), Arc::clone(&map))
+            .with_scene_bridge(Arc::clone(&harness.bridge))
+            .with_sim(SimLink {
+                views: Arc::default(),
+                controls: crate::game::controls::SimControls::new(sender),
+                slot,
+                time_registered,
+                hover_registered,
+                select_registered: Arc::new(AtomicBool::new(false)),
+            });
+        let pointer = PointerPosition {
+            x: 200 * 256,
+            y: 120 * 256,
+        };
+        let tick_at = |pixels: (u32, u32)| {
+            let mut tick = known_tick();
+            tick.metrics.points = (400, 240);
+            tick.metrics.pixels = PixelSize {
+                width: pixels.0,
+                height: pixels.1,
+            };
+            tick.input.pointer_position = Some(pointer);
+            tick.input.pointer_events = Vec::new();
+            tick
+        };
+        // Put the hover on the marker (as the existing hover cases do), then let the link see the pointer so that it is the map's latest.
+        let mut set_up = tick_at((800, 480));
+        set_up.input.pointer_events = vec![
+            PointerEvent::Scroll {
+                position: pointer,
+                amount: 15 * 256,
+                unit: ScrollUnit::Points,
+            },
+            PointerEvent::Move(pointer),
+        ];
+        crate::map_app::lock(&map)
+            .update(&set_up)
+            .expect("the controller replay succeeds");
+        let raw = crate::map_app::lock(&map)
+            .hover()
+            .expect("the pointer is over the fixture town");
+        let wait_for = |link: &mut CodekarlUi, count: usize| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len()
+                < count
+                || link.outstanding() > 0
+            {
+                let _ = link.take_answer();
+                assert!(Instant::now() < deadline, "delivery {count} never finished");
+                thread::yield_now();
+            }
+        };
+        // The first conversion: 800 pixels over 400 points at the scale 1 doubles a coordinate.
+        link.input(&tick_at((800, 480))).expect("a tick");
+        link.deliver_hover();
+        wait_for(&mut link, 1);
+        let first = *seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last()
+            .expect("a delivery");
+        assert!((first - f64::from(2 * i32::try_from(raw.left).expect("small"))).abs() < 0.01);
+        let delivered = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        // The display goes to 1 pixel a point: the same raw hover, a conversion of 1 to 1.
+        harness.bridge.set_metrics(
+            (400, 240),
+            PixelSize {
+                width: 400,
+                height: 240,
+            },
+        );
+        link.input(&tick_at((400, 240))).expect("a tick");
+        link.deliver_hover();
+        wait_for(&mut link, delivered + 1);
+        let values = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(values.len(), delivered + 1, "one more delivery: {values:?}");
+        let second = *values.last().expect("a delivery");
+        assert!(
+            (second - f64::from(i32::try_from(raw.left).expect("small"))).abs() < 0.01,
+            "the same raw hover (left {}) now converts to {second}, not {first}",
+            raw.left
+        );
+    }
+
+    #[test]
+    fn a_hover_is_delivered_again_when_only_the_conversion_changes() {
+        use ck_render_2d::ui_scale::UnitMap;
+        let hover = Some(crate::map_app::Hover {
+            location_index: 0,
+            id: "town".to_owned(),
+            name: "Town".to_owned(),
+            left: 100,
+            right: 160,
+            y: 50,
+        });
+        // The points stay 960x600 and the display goes from 2 pixels a point to 1: the scale falls from 1.5 (k 3) to 1 (k 2), and the
+        // same raw bounds are 133.33 units at one and 100 at the other.
+        let at = |pixels: (u32, u32), k: u32| {
+            Some(UnitMap {
+                pixels: PixelSize {
+                    width: pixels.0,
+                    height: pixels.1,
+                },
+                points: (960, 600),
+                k,
+            })
+        };
+        let (before, after) = (at((1920, 1200), 3), at((960, 600), 2));
+        let delivered = DeliveredHover::Sent(hover.clone(), before);
+        assert!(
+            delivered.is_current(hover.as_ref(), before),
+            "nothing changed"
+        );
+        assert!(
+            !delivered.is_current(hover.as_ref(), after),
+            "the converted bounds changed, so they are posted again"
+        );
+        assert!(!delivered.is_current(None, before), "a different hover");
+        // No hover has nothing converted: a change of conversion alone posts nothing.
+        let none = DeliveredHover::Sent(None, before);
+        assert!(none.is_current(None, after));
+        assert!(!DeliveredHover::Unsent.is_current(None, after));
+        // A window opened in points has no conversion at all.
+        let points = DeliveredHover::Sent(hover.clone(), None);
+        assert!(points.is_current(hover.as_ref(), None));
+    }
+
+    #[test]
+    fn the_hover_the_map_hands_the_ui_is_in_units_in_a_window_opened_in_pixels() {
+        use ck_render_2d::ui_scale::UnitMap;
+        let hover = crate::map_app::Hover {
+            location_index: 0,
+            id: "town".to_owned(),
+            name: "Town".to_owned(),
+            left: 100,
+            right: 160,
+            y: 50,
+        };
+        let value = |arguments: &[ConfigValue], key: &str| match &arguments[0] {
+            ConfigValue::Table(fields) => fields[key].clone(),
+            other => panic!("{other:?}"),
+        };
+        let points = game_api::hover_arguments(Some(&hover), None);
+        assert_eq!(value(&points, "left"), ConfigValue::Integer(100));
+        let units = Some(UnitMap {
+            pixels: PixelSize {
+                width: 1920,
+                height: 1200,
+            },
+            points: (960, 600),
+            k: 3,
+        });
+        let converted = game_api::hover_arguments(Some(&hover), units);
+        // 100 points are 34133/256 units (133.33203125), 160 are 54613/256 (213.33203125) and 50 are 17066/256 (66.6640625), as numbers: the
+        // pointer's conversion at its 1/256 precision.
+        assert_eq!(
+            value(&converted, "left"),
+            ConfigValue::Float(34133.0 / 256.0)
+        );
+        assert_eq!(
+            value(&converted, "right"),
+            ConfigValue::Float(54613.0 / 256.0)
+        );
+        assert_eq!(value(&converted, "y"), ConfigValue::Float(17066.0 / 256.0));
     }
 
     #[test]

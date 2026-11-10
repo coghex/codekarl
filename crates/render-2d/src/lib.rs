@@ -44,6 +44,7 @@ mod renderer;
 mod resident;
 mod scene;
 mod tint;
+pub mod ui_scale;
 #[cfg(feature = "vulkan")]
 mod vulkan;
 #[cfg(feature = "vulkan")]

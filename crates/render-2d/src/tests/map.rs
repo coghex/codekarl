@@ -75,6 +75,7 @@ fn metrics(points: (u32, u32), pixel_size: PixelSize) -> Metrics {
         points_width: points.0,
         points_height: points.1,
         pixels: pixel_size,
+        ui_scale_k: None,
     }
 }
 

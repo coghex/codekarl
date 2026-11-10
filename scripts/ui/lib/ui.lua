@@ -1,11 +1,12 @@
 -- The widget library's shared part (milestone 8, slice 2; docs/ui-design.md §3.3).
 --
--- Every number the library takes or returns is in window points. `P` is the UI pixel in points (`[ui] points_per_pixel`): the font is
--- drawn at P points per font pixel, and a widget snaps what it is given to the grid of whole UI pixels, once, where the value enters
--- the widget.
+-- Every number the library takes or returns is in UI units: points in a window opened in points, and in a window opened in screen pixels
+-- units that the engine draws at the UI scale (1, 1.5 or 2 pixels each, following the window). `P` is the UI pixel in units, always 2:
+-- the font is drawn at P units per font pixel, and a widget snaps what it is given to the grid of whole UI pixels, once, where the value
+-- enters the widget.
 local ui = {}
 
-local P = (config.ui and config.ui.points_per_pixel) or 2
+local P = 2
 ui.P = P
 
 -- The nearest whole UI pixel, halves up.
