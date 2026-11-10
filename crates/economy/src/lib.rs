@@ -2054,18 +2054,20 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
         buy_units: vec![0; goods],
         sell_units: vec![0; goods],
     };
+    let mut pop_sizes = Vec::with_capacity(place.pops.len());
     for (pop_index, pop) in place.pops.iter().enumerate() {
         let people = pop.workers.checked_add(pop.dependents).ok_or_else(|| {
             missing_data("market.pop.size".to_owned(), "population size overflow")
         })?;
+        pop_sizes.push(people);
         for (good_index, good) in rules.goods.iter().enumerate() {
             let holding = pop_market_holding(place, pop_index, good_index)?;
             let target =
                 food_target_units(rules, &pop.kind, people, good_index, place.coastal, 240)?;
             let comfort_target = tier_target_units(rules, &pop.kind, people, good_index, 1)?
                 .max(tier_target_units(rules, &pop.kind, people, good_index, 2)?);
-            let buy_target = target.max(comfort_target);
-            let buy = buy_target.saturating_sub(holding);
+            let target = target.max(comfort_target);
+            let buy = target.saturating_sub(holding);
             orders.buy_units[good_index] = orders.buy_units[good_index]
                 .checked_add(buy)
                 .ok_or_else(|| missing_data("market.buy".to_owned(), "buy order overflow"))?;
@@ -2077,6 +2079,7 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
             }
         }
     }
+    let mut owner_people_by_building = vec![vec![0_u64; place.pops.len()]; place.buildings.len()];
     for building in &place.buildings {
         if building.employment.len() != place.pops.len() {
             return Err(missing_data(
@@ -2084,22 +2087,34 @@ fn daily_market_orders(rules: &Rules, place: &PlaceState) -> Result<DailyMarketO
                 "employment dimensions do not match place pops",
             ));
         }
+    }
+    for (pop_index, people) in pop_sizes.iter().copied().enumerate() {
+        let owner_positions = place
+            .buildings
+            .iter()
+            .map(|building| building.employment[pop_index].owners)
+            .collect::<Vec<_>>();
+        let owner_people = largest_remainder(people, &owner_positions)
+            .map_err(|problem| missing_data("market.owner_reserve".to_owned(), problem))?;
+        for (building_index, people) in owner_people.into_iter().enumerate() {
+            owner_people_by_building[building_index][pop_index] = people;
+        }
+    }
+    for (building_index, building) in place.buildings.iter().enumerate() {
         for (good_index, good) in rules.goods.iter().enumerate() {
             let holding = building_market_holding(rules, place, building, good_index)?;
             let mut owner_reserve = 0_u128;
-            for (pop_index, employment) in building.employment.iter().enumerate() {
-                if employment.owners == 0 {
+            for (pop_index, people) in owner_people_by_building[building_index]
+                .iter()
+                .copied()
+                .enumerate()
+            {
+                if people == 0 {
                     continue;
                 }
                 let pop = &place.pops[pop_index];
-                let target = food_target_units(
-                    rules,
-                    &pop.kind,
-                    employment.owners,
-                    good_index,
-                    place.coastal,
-                    60,
-                )?;
+                let target =
+                    food_target_units(rules, &pop.kind, people, good_index, place.coastal, 60)?;
                 owner_reserve = owner_reserve.checked_add(target).ok_or_else(|| {
                     missing_data("market.owner_reserve".to_owned(), "owner reserve overflow")
                 })?;
@@ -5970,6 +5985,174 @@ mod tests {
         assert_eq!(
             daily_market_orders(&rules, &place).unwrap().buy_units[mead],
             86
+        );
+    }
+
+    #[test]
+    fn comfort_goods_use_the_same_target_for_pop_buys_and_sells() {
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let mut rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        let ale = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "ale")
+            .unwrap();
+        let oats = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "oats")
+            .unwrap();
+        rules.goods[ale].hunger_centi = 102;
+        let monk_diet = rules.diet_profiles.get_mut("monk").unwrap();
+        monk_diet.insert("oats".to_owned(), 329);
+        monk_diet.insert("ale".to_owned(), 21);
+        assert_eq!(
+            food_target_units(&rules, "monk", 10, ale, true, 240),
+            Ok(50)
+        );
+        assert_eq!(
+            tier_target_units(&rules, "monk", 10, ale, 1)
+                .unwrap()
+                .max(tier_target_units(&rules, "monk", 10, ale, 2).unwrap()),
+            213
+        );
+        let oats_target = food_target_units(&rules, "monk", 10, oats, true, 240).unwrap();
+        let place_with = |ale_holding| {
+            let mut stock = vec![0; rules.goods.len()];
+            stock[ale] = ale_holding;
+            stock[oats] = u64::try_from(oats_target + 7).unwrap();
+            PlaceState {
+                id: "comfort_order".to_owned(),
+                coastal: true,
+                pops: vec![PopState {
+                    kind: "monk".to_owned(),
+                    culture: "connachta".to_owned(),
+                    religion: "christianity".to_owned(),
+                    workers: 10,
+                    dependents: 0,
+                    employment: Vec::new(),
+                    stock,
+                    consumption: PopConsumption::default(),
+                    counters: CounterBuckets::default(),
+                }],
+                buildings: Vec::new(),
+                prices_milli: vec![0; rules.goods.len()],
+                prepared_m2: 0,
+                development_pm: 0,
+                price_drift_carries: vec![0; rules.goods.len()],
+                counters: CounterBuckets::default(),
+            }
+        };
+
+        let below_target = daily_market_orders(&rules, &place_with(100)).unwrap();
+        assert_eq!(below_target.buy_units[ale], 113);
+        assert_eq!(below_target.sell_units[ale], 0);
+        assert_eq!(
+            below_target.sell_units[oats], 7,
+            "food outside comfort still sells above its food target"
+        );
+
+        let above_target = daily_market_orders(&rules, &place_with(300)).unwrap();
+        assert_eq!(above_target.buy_units[ale], 0);
+        assert_eq!(above_target.sell_units[ale], 87);
+    }
+
+    fn reserve_test_pop(people: u64) -> PopState {
+        PopState {
+            kind: "peasant".to_owned(),
+            culture: "connachta".to_owned(),
+            religion: "christianity".to_owned(),
+            workers: people,
+            dependents: 0,
+            employment: Vec::new(),
+            stock: vec![0],
+            consumption: PopConsumption::default(),
+            counters: CounterBuckets::default(),
+        }
+    }
+
+    fn reserve_test_building(owners: u64, food_stock: u64) -> BuildingState {
+        BuildingState {
+            kind: "farm".to_owned(),
+            levels: 1,
+            method_levels: vec![0],
+            herds: Vec::new(),
+            employment: vec![Employment { owners, workers: 0 }],
+            stock: vec![food_stock],
+            storehouse_accounts: None,
+            production_carries: Vec::new(),
+            method_suitability: Vec::new(),
+            herd_birth_carries: Vec::new(),
+            herd_death_carries: Vec::new(),
+            herd_product_carries: Vec::new(),
+            herd_grazing_sums: Vec::new(),
+            wage_carries: Vec::new(),
+            pay_carries: Vec::new(),
+            fee_carries: Vec::new(),
+        }
+    }
+
+    fn reserve_test_place(pop: PopState, buildings: Vec<BuildingState>) -> PlaceState {
+        PlaceState {
+            id: "owner_reserve".to_owned(),
+            coastal: false,
+            pops: vec![pop],
+            buildings,
+            prices_milli: vec![0],
+            prepared_m2: 0,
+            development_pm: 0,
+            price_drift_carries: vec![0],
+            counters: CounterBuckets::default(),
+        }
+    }
+
+    #[test]
+    fn building_food_reserve_covers_whole_owner_pops_and_apportions_them_by_positions() {
+        let rules = tiny_rules();
+
+        let mut whole_pop = reserve_test_pop(10);
+        whole_pop.dependents = 7;
+        let whole_pop_orders = daily_market_orders(
+            &rules,
+            &reserve_test_place(whole_pop, vec![reserve_test_building(1, 1200)]),
+        )
+        .unwrap();
+        assert_eq!(
+            whole_pop_orders.sell_units[0], 180,
+            "17 people reserve 1020 food units for 60 days"
+        );
+
+        let apportioned_orders = daily_market_orders(
+            &rules,
+            &reserve_test_place(
+                reserve_test_pop(20),
+                vec![
+                    reserve_test_building(1, 500),
+                    reserve_test_building(3, 1100),
+                ],
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            apportioned_orders.sell_units[0], 400,
+            "owner shares [1, 3] apportion 20 people as [5, 15], reserving 300 and 900"
+        );
+
+        let non_divisible_and_unowned = daily_market_orders(
+            &rules,
+            &reserve_test_place(
+                reserve_test_pop(3),
+                vec![
+                    reserve_test_building(1, 100),
+                    reserve_test_building(1, 70),
+                    reserve_test_building(0, 30),
+                ],
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            non_divisible_and_unowned.sell_units[0], 40,
+            "[1, 1, 0] owner positions apportion 3 people as [2, 1, 0]; the ownerless building offers all 30"
         );
     }
 
