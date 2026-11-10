@@ -23,7 +23,8 @@
 > - **the location panel:** a window filling the left third of the screen with the selected place's economy, in three tabs (location,
 >   pops and buildings) shown as title-bar buttons. Its tab widget, `scripts/ui/lib/tabs.lua`, is the one new widget. A map click or a
 >   places-list row shows that place in the panel;
-> - **the map-mode bar:** three icon buttons, left of the places bar, for the stockpile, yield and elevation map modes. They call
+> - **the map-mode bar:** three icon buttons in one row, centred at the bottom of the screen and independent of the other panels (owner,
+>   2026-11-10, CK-255), for the stockpile, yield and elevation map modes. They call
 >   `game.set_map_mode`; the button of the mode showing is selected, and pressing it turns the mode off.
 
 ## Owner answers (2026-11-07)
