@@ -2,8 +2,8 @@
 //! simulation builds and the UI reads. The UI never reads the live state.
 //!
 //! A view is built from the state at three moments: at the start, after a load, and after each day's systems (the noon tick).
-//! Each carries a revision that rises with every new view, including a load. Numbers this slice's state does not have yet
-//! (wages, monthly births, deaths and overflow losses) are `0` until their producing slices land.
+//! Each carries a revision that rises with every new view, including a load. Monthly births, deaths and overflow losses come
+//! from the saved `last` counter buckets; the view does not advance the economy.
 //!
 //! Everything here is simulation-side code: it lives in `game/` so that the build id covers it (a change to the display rules
 //! is a change to what a save means to the UI, and the numbers it derives are checked by tests).
@@ -62,7 +62,7 @@ pub(crate) struct PopView {
     pub(crate) luxuries: u64,
     /// Satisfaction, −100 to +100.
     pub(crate) satisfaction: i64,
-    /// Last month's births and deaths (`0` until the births slice).
+    /// Births and deaths in the month completed by the last counter rollover.
     pub(crate) births: u64,
     pub(crate) deaths: u64,
     /// People assigned to basic building housing by the pure housing fill.
@@ -111,7 +111,7 @@ pub(crate) struct PlaceView {
     pub(crate) storage_used_ml: u64,
     pub(crate) storage_capacity_ml: u64,
     pub(crate) prices: Vec<PriceView>,
-    /// Last month's losses to overflow (`0` until the payday slice).
+    /// Goods lost to overflow in the month completed by the last counter rollover.
     pub(crate) overflow_lost: u64,
     /// The projected annual food of the land, the sea and the dairy herd (design §3.22, the yield map mode): every food good a method
     /// makes from the land's suitability (crops, fish, the garden) over a full year at the levels the place has, and the cattle's
@@ -278,8 +278,8 @@ fn pop_view(
         niceties: u64::from(pop.consumption.niceties_pm),
         luxuries: u64::from(pop.consumption.luxuries_pm),
         satisfaction: i64::from(pop.consumption.satisfaction),
-        births: 0,
-        deaths: 0,
+        births: pop.counters.last.births,
+        deaths: pop.counters.last.deaths,
         basic_housing: housing.map_or(0, |housing| housing.basic),
         makeshift_housing: housing.map_or(0, |housing| housing.makeshift),
         crowding_pm: housing.and_then(|housing| housing.crowding_pm),
@@ -492,7 +492,7 @@ fn place_view(rules: &Rules, place: &PlaceState, land: Option<&LandCounts>) -> P
         storage_used_ml: pops_used.saturating_add(buildings_used),
         storage_capacity_ml: capacity,
         prices,
-        overflow_lost: 0,
+        overflow_lost: place.counters.last.losses,
         projected_yield: place.buildings.iter().fold(0_u64, |sum, building| {
             sum.saturating_add(projected_yield(rules, building))
         }),
@@ -712,6 +712,12 @@ mod tests {
         dying.pops[0].stock.fill(0);
         dying.pops[0].consumption.pantry_hunger_centi.fill(0);
         dying.pops[0].consumption.ticking_carries.fill(0);
+        dying.counters.last.losses = 99;
+        dying.counters.current.losses = 6;
+        dying.pops[0].counters.last.births = 98;
+        dying.pops[0].counters.last.deaths = 97;
+        dying.pops[0].counters.current.births = 4;
+        dying.pops[0].counters.current.deaths = 2;
 
         let mut source = fixture(&rules);
         source.id = "source-place".to_owned();
@@ -874,6 +880,18 @@ mod tests {
             .snapshot()
             .economy
             .expect("the starting app snapshot has a view");
+        let dying_view = view_before_save
+            .place("dying-place")
+            .expect("the dying place is in the view");
+        assert_eq!(
+            (
+                dying_view.pops[0].births,
+                dying_view.pops[0].deaths,
+                dying_view.overflow_lost
+            ),
+            (4, 2, 6),
+            "the saved view contains nonzero completed-month counters"
+        );
         core.dispatch(
             crate::game::core::Message::Control(crate::game::controls::Control::Quicksave),
             std::time::Duration::ZERO,
@@ -899,10 +917,88 @@ mod tests {
             *view_before_save, *view_after_load,
             "the complete view is field-for-field stable"
         );
+        let loaded_dying = view_after_load
+            .place("dying-place")
+            .expect("quickload keeps the dying place in the view");
+        assert_eq!(
+            (
+                loaded_dying.pops[0].births,
+                loaded_dying.pops[0].deaths,
+                loaded_dying.overflow_lost
+            ),
+            (4, 2, 6),
+            "quickload preserves the three nonzero panel counters"
+        );
         assert_eq!(
             core.state().economy,
             saved.state.economy,
             "the loaded economy equals the saved economy"
+        );
+    }
+
+    #[test]
+    fn a_view_reads_last_month_counters_and_not_current_events() {
+        let rules = shipped_rules();
+        let mut place = fixture(&rules);
+        place.counters.last.losses = 7;
+        place.counters.current.losses = 13;
+        place.pops[0].counters.last.births = 3;
+        place.pops[0].counters.last.deaths = 1;
+        place.pops[0].counters.current.births = 17;
+        place.pops[0].counters.current.deaths = 19;
+        let view = build(
+            Some(&rules),
+            &EconomyState {
+                places: vec![place],
+            },
+            &["fixture".to_owned()],
+        );
+        let place_view = view.place("fixture").expect("the fixture is in the view");
+        assert_eq!(
+            (
+                place_view.pops[0].births,
+                place_view.pops[0].deaths,
+                place_view.overflow_lost
+            ),
+            (3, 1, 7)
+        );
+    }
+
+    #[test]
+    fn a_first_of_month_tick_rolls_the_completed_counters_into_the_view() {
+        let (rules, state, _, _) = day_one_economy_fixture();
+        let dying = &state.places[0];
+        assert_eq!(
+            (
+                dying.pops[0].counters.last.births,
+                dying.pops[0].counters.last.deaths
+            ),
+            (4, 2),
+            "the prior current bucket became last at the month boundary"
+        );
+        assert_eq!(
+            dying.pops[0].counters.current.deaths, 1,
+            "a new death occurred after rollover"
+        );
+        assert_eq!(
+            (dying.counters.last.losses, dying.counters.current.losses),
+            (6, 0)
+        );
+        let ids = state
+            .places
+            .iter()
+            .map(|place| place.id.clone())
+            .collect::<Vec<_>>();
+        let view = build(Some(&rules), &state, &ids);
+        let dying_view = view.place("dying-place").expect("the place is in the view");
+        assert_eq!(
+            (
+                dying_view.pops[0].births,
+                dying_view.pops[0].deaths,
+                dying_view.overflow_lost
+            ),
+            (4, 2, 6),
+            "the view shows the month just completed, not current-month events"
         );
     }
 
