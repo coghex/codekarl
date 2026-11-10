@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use super::map::{attached, camera, grid, input, rules};
+use super::support::RecordingSink;
 use crate::map::{
     MODE_UNCOLOURED, MODE_UNOWNED, MODE_VALUE_MAX, MapError, MapInput, MapMode, MapPublication,
 };
@@ -348,4 +349,84 @@ fn nothing_is_published_for_a_mode_to_a_detached_bridge() {
     );
     assert_eq!(sink.count(), after);
     assert_eq!(Arc::strong_count(&late), 1, "and keeps nothing");
+}
+
+#[test]
+fn the_elevation_mode_has_no_table_and_is_carried_with_or_without_an_owner_grid() {
+    let elevation = MapMode::elevation(3);
+    assert_eq!(elevation.revision(), 3);
+    assert!(elevation.is_elevation());
+    assert!(elevation.values().is_none(), "it has no table");
+    assert!(!MapMode::off(3).is_elevation());
+    assert!(!MapMode::new(3, vec![0]).expect("values").is_elevation());
+
+    let (bridge, sink) = attached();
+    // With no owner grid at all (a map with no places), the mode is accepted and carried: it reads the map's own elevations.
+    bridge.publish_map(Arc::new(plain(4, 2)));
+    bridge.publish_camera(camera([2, 2], bridge.metrics_generation()));
+    let shown = Arc::new(MapMode::elevation(1));
+    assert_eq!(
+        bridge.publish_mode(Arc::clone(&shown)),
+        Ok(MapPublication::Published)
+    );
+    let mode = sink
+        .last()
+        .expect("published")
+        .map
+        .expect("a map")
+        .mode
+        .expect("the elevation mode is carried");
+    assert!(Arc::ptr_eq(&mode, &shown));
+    // A newer map, with an owner grid and any number of places, still carries it (no table has to fit).
+    bridge.publish_map(three_places(2));
+    bridge.publish_map(owned(3, 4, 2, vec![0; 8], 1));
+    let mode = sink
+        .last()
+        .expect("published")
+        .map
+        .expect("a map")
+        .mode
+        .expect("still carried");
+    assert!(Arc::ptr_eq(&mode, &shown));
+}
+
+#[test]
+fn the_elevation_mode_is_ordered_by_its_revision_with_the_others_and_off_returns_the_plain_map() {
+    let (bridge, sink) = attached();
+    bridge.publish_map(three_places(1));
+    bridge.publish_camera(camera([2, 2], bridge.metrics_generation()));
+    let mode_of = |sink: &RecordingSink| sink.last().expect("published").map.expect("a map").mode;
+    let table = Arc::new(MapMode::new(1, vec![0, 500, 1000]).expect("values"));
+    assert_eq!(bridge.publish_mode(table), Ok(MapPublication::Published));
+    // The elevation mode replaces the table under a newer revision.
+    assert_eq!(
+        bridge.publish_mode(Arc::new(MapMode::elevation(2))),
+        Ok(MapPublication::Published)
+    );
+    assert!(mode_of(&sink).expect("a mode").is_elevation());
+    // An older or equal revision never overwrites it.
+    assert_eq!(
+        bridge.publish_mode(Arc::new(MapMode::new(2, vec![1, 1, 1]).expect("values"))),
+        Ok(MapPublication::Stale)
+    );
+    assert_eq!(
+        bridge.publish_mode(Arc::new(MapMode::elevation(1))),
+        Ok(MapPublication::Stale)
+    );
+    assert!(mode_of(&sink).expect("a mode").is_elevation());
+    // A table replaces it in turn, and off is the frame without a mode.
+    assert_eq!(
+        bridge.publish_mode(Arc::new(MapMode::new(3, vec![1, 2, 3]).expect("values"))),
+        Ok(MapPublication::Published)
+    );
+    assert!(!mode_of(&sink).expect("a mode").is_elevation());
+    assert_eq!(
+        bridge.publish_mode(Arc::new(MapMode::elevation(4))),
+        Ok(MapPublication::Published)
+    );
+    assert_eq!(
+        bridge.publish_mode(Arc::new(MapMode::off(5))),
+        Ok(MapPublication::Published)
+    );
+    assert!(mode_of(&sink).is_none());
 }

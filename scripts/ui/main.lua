@@ -146,11 +146,12 @@ if game ~= nil then
     }
   end
 
-  -- The map modes' bar (milestone 9, slice 8): two icon buttons, left of the places bar, choose the map mode that colours each place red
-  -- to green: the goods in store against the most it holds, or the year's yield against the other places'. The button of the mode
-  -- that shows is selected; pressing it turns the mode off, pressing the other changes the mode.
+  -- The map modes' bar (milestone 9, slices 8 and 10b): three icon buttons, left of the places bar, choose the map mode that colours each
+  -- place red to green (the goods in store against the most it holds, or the year's yield against the other places') or draws the land
+  -- from black to white by its height. The button of the mode that shows is selected; pressing it turns the mode off, pressing another
+  -- changes the mode.
   local MODE_BUTTON_WIDTH = 13 -- UI pixels: the 9-pixel icon and the button's padding
-  local MODES_WIDTH = 5 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 5
+  local MODES_WIDTH = 5 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 3 + MODE_BUTTON_WIDTH + 5
 
   local function modes_origin()
     return ui.anchor("top_right", MODES_WIDTH * P, 19 * P, -(MARGIN + places_panel.width + 4 * P), MARGIN, view.width, view.height)
@@ -163,6 +164,7 @@ if game ~= nil then
     render.set_hit("modes_bar", {{x = x, y = y, width = MODES_WIDTH * P, height = 19 * P}}, modes_group)
     mode_buttons.stockpile:move(x + 5 * P, y + 2 * P)
     mode_buttons.yield:move(x + (5 + MODE_BUTTON_WIDTH + 3) * P, y + 2 * P)
+    mode_buttons.elevation:move(x + (5 + 2 * (MODE_BUTTON_WIDTH + 3)) * P, y + 2 * P)
   end
 
   local function select_mode(name)
@@ -193,6 +195,11 @@ if game ~= nil then
       x = x + (5 + MODE_BUTTON_WIDTH + 3) * P, y = y + 2 * P, icons = {"yield"}, icon = "yield", kind = "places_bar",
       group = modes_group,
       on_click = function() select_mode("yield") end,
+    }
+    mode_buttons.elevation = button.new{
+      x = x + (5 + 2 * (MODE_BUTTON_WIDTH + 3)) * P, y = y + 2 * P, icons = {"elevation"}, icon = "elevation", kind = "places_bar",
+      group = modes_group,
+      on_click = function() select_mode("elevation") end,
     }
   end
 

@@ -1,7 +1,7 @@
 //! The map modes of the application (milestone 9, slice 8; `docs/economy-design.md` section 3.22): which mode shows, the table of
 //! values each place has in it, and the publication of both to the map lane.
 //!
-//! The UI VM chooses the mode (`game.set_map_mode`, its two buttons); the values come from the economy view of the newest revision the
+//! The UI VM chooses the mode (`game.set_map_mode`, its three buttons); the values come from the economy view of the newest revision the
 //! UI link has handed to the VM ([`MapModes::observe`], which the view cache calls as each view is posted). Each change of the mode, and
 //! each new revision while a mode shows, publishes one immutable [`MapMode`] with a revision of its own to the scene bridge, as the
 //! camera is published: the render thread reads the newest and never the live state. A mode that is off is published too, so the frame
@@ -22,15 +22,18 @@ pub(crate) enum Mode {
     Stockpile,
     /// Each place's projected annual yield against the other places', red (least) to green (most).
     Yield,
+    /// The land's height, black to white by its square root (milestone 9, slice 10b). It reads the map's own elevations: no values.
+    Elevation,
 }
 
 impl Mode {
-    /// The mode a UI name stands for: `"off"`, `"stockpile"` or `"yield"`.
+    /// The mode a UI name stands for: `"off"`, `"stockpile"`, `"yield"` or `"elevation"`.
     pub(crate) fn parse(name: &str) -> Option<Self> {
         match name {
             "off" => Some(Self::Off),
             "stockpile" => Some(Self::Stockpile),
             "yield" => Some(Self::Yield),
+            "elevation" => Some(Self::Elevation),
             _ => None,
         }
     }
@@ -79,7 +82,7 @@ impl MapModes {
     /// The table of the mode for the newest view: one value per place. Before any view every place is uncoloured.
     fn values(&self, state: &State) -> Vec<u16> {
         let from = |view: &EconomyView| match state.mode {
-            Mode::Off => Vec::new(),
+            Mode::Off | Mode::Elevation => Vec::new(),
             Mode::Stockpile => view.stockpile_values(),
             Mode::Yield => view.yield_values(),
         };
@@ -95,6 +98,8 @@ impl MapModes {
         let revision = state.next_revision;
         let mode = if state.mode == Mode::Off {
             MapMode::off(revision)
+        } else if state.mode == Mode::Elevation {
+            MapMode::elevation(revision)
         } else {
             MapMode::new(revision, self.values(state))
                 .map_err(|error| format!("the map mode was refused: {error}"))?
@@ -142,7 +147,8 @@ impl MapModes {
             return;
         }
         state.latest = Some((revision, Arc::clone(view)));
-        if state.mode == Mode::Off {
+        // The elevation mode has no values, so a new view changes nothing it shows.
+        if matches!(state.mode, Mode::Off | Mode::Elevation) {
             return;
         }
         if let Err(message) = self.publish(&mut state) {
@@ -192,6 +198,13 @@ mod tests {
             map.mode
                 .as_ref()
                 .and_then(|mode| Some((mode.revision(), mode.values()?.to_vec())))
+        }
+
+        /// The revision of the elevation mode, when it shows.
+        fn elevation(&self) -> Option<u64> {
+            let latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+            let mode = latest.as_ref()?.map.as_ref()?.mode.as_ref()?;
+            mode.is_elevation().then(|| mode.revision())
         }
 
         fn published(&self) -> usize {
@@ -311,6 +324,45 @@ mod tests {
         modes.set(Mode::Off).expect("accepted");
         assert_eq!(sink.mode(), None, "off is the plain map");
         assert_eq!(modes.mode(), Mode::Off);
+    }
+
+    #[test]
+    fn the_elevation_mode_needs_no_view_and_no_values_and_a_new_view_publishes_nothing() {
+        let (modes, sink, _) = rig();
+        modes
+            .set(Mode::Elevation)
+            .expect("accepted before any view");
+        let first = sink.elevation().expect("the elevation mode shows");
+        assert_eq!(sink.mode(), None, "it has no table");
+        assert_eq!(modes.mode(), Mode::Elevation);
+        // A view, even one the value modes' lane would refuse, changes nothing it shows.
+        let published = sink.published();
+        modes.observe(
+            1,
+            &Arc::new(EconomyView {
+                places: vec![PlaceView::default(); PLACES - 1],
+            }),
+        );
+        modes.observe(2, &view(0));
+        assert_eq!(sink.published(), published);
+        // Pressing it again is no change; a value mode replaces it, and it replaces that, each under a newer revision.
+        modes.set(Mode::Elevation).expect("accepted");
+        assert_eq!(sink.published(), published);
+        modes.set(Mode::Stockpile).expect("accepted");
+        assert_eq!(sink.elevation(), None);
+        assert_eq!(
+            sink.mode().expect("values show").1,
+            view(0).stockpile_values()
+        );
+        modes.set(Mode::Elevation).expect("accepted");
+        assert!(sink.elevation().expect("shows") > first);
+        modes.set(Mode::Off).expect("accepted");
+        assert_eq!((sink.elevation(), sink.mode()), (None, None));
+        // The names Lua uses.
+        assert_eq!(Mode::parse("elevation"), Some(Mode::Elevation));
+        let function = crate::game_api::set_map_mode_function(Arc::clone(&modes));
+        function(&[Some(ck_lua::ConfigValue::String("elevation".to_owned()))]).expect("accepted");
+        assert_eq!(modes.mode(), Mode::Elevation);
     }
 
     #[test]

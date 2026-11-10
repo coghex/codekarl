@@ -110,7 +110,9 @@ typedef struct {
     /* The map modes (milestone 9, slice 8): `owners` is the owner grid, an RGBA8 image of the crop's size (R, G the high and low bytes of
      * the owning place's index, 0xFFFF for none), given with the grids, or NULL for a map with no modes (a 1 x 1 "nobody" image is made).
      * `mode` 1 means a map mode shows: `mode_values` (`mode_count` uint16, one per place, 0 to 1000 or 0xFFFF for a place with nothing
-     * to show) is its table at `mode_revision`; the presenter makes a table when the revision is not the resident one's. */
+     * to show) is its table at `mode_revision`; the presenter makes a table when the revision is not the resident one's. `mode` 2 is
+     * the elevation mode (slice 10b): it has no table (`mode_values` NULL, `mode_count` 0, so the presenter binds an empty one) and the
+     * map pass reads the map's own elevations. */
     const uint8_t *owners;
     int32_t mode;
     uint64_t mode_revision;

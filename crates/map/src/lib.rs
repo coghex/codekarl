@@ -18,14 +18,16 @@ pub use loading::{
     LoadError, LoadedMap, LoadedTerrain, MAX_CROP_DIMENSION, PackedGrid, TerrainKind, load_map,
 };
 pub use mode::{
-    MODE_UNCOLOURED, MODE_UNOWNED, MODE_VALUE_MAX, ModeInputs, mode_colour, mode_value_at_cell,
-    stockpile_value, yield_values,
+    ELEVATION_TOP_METRES, MODE_UNCOLOURED, MODE_UNOWNED, MODE_VALUE_MAX, ModeInputs,
+    elevation_grey, mode_colour, mode_value_at_cell, stockpile_value, yield_values,
 };
 pub use scenario::{
     BuildingKind, Confidence, HouseStyle, Location, LocationKind, LocationKinds, LocationPixel,
     MarkerPixel, PreparedLocations, PreparedMarkers, Scenario, ScenarioStart, load_scenario,
 };
 
+/// The offset of the stored elevations: a cell's `elevations` entry is its height in metres plus this.
+const ELEVATION_OFFSET: i32 = 11_000;
 /// Projected metres in one map cell.
 pub const CELL_METRES: f64 = 839.0;
 /// Fixed-point units in one map cell.
@@ -473,6 +475,48 @@ pub fn reference_colour_with_mode(
     locations: &BTreeMap<WorldPixel, Rgba8>,
     mode: Option<&ModeInputs<'_>>,
 ) -> Option<Rgba8> {
+    reference_colour_with_look(
+        map,
+        step,
+        pixel,
+        rivers,
+        locations,
+        mode.map_or(Look::Terrain, Look::Values),
+    )
+}
+
+/// The reference colour in the elevation mode (milestone 9, slice 10b): every land pixel that is not on the coast outline is the grey
+/// of its cell's elevation ([`elevation_grey`]); sea, lake, the coast outline, rivers and locations are as without a mode.
+#[must_use]
+pub fn reference_colour_with_elevation(
+    map: &MapData,
+    step: u8,
+    pixel: WorldPixel,
+    rivers: &BTreeSet<WorldPixel>,
+    locations: &BTreeMap<WorldPixel, Rgba8>,
+) -> Option<Rgba8> {
+    reference_colour_with_look(map, step, pixel, rivers, locations, Look::Elevation)
+}
+
+/// How a land pixel is coloured.
+#[derive(Clone, Copy)]
+enum Look<'a> {
+    /// The base look of `look::land_colour`.
+    Terrain,
+    /// A per-place value mode (stockpile, yield).
+    Values(&'a ModeInputs<'a>),
+    /// The elevation mode: black to white by the square root of the height.
+    Elevation,
+}
+
+fn reference_colour_with_look(
+    map: &MapData,
+    step: u8,
+    pixel: WorldPixel,
+    rivers: &BTreeSet<WorldPixel>,
+    locations: &BTreeMap<WorldPixel, Rgba8>,
+    look: Look<'_>,
+) -> Option<Rgba8> {
     if usize::from(step) >= STEP_SIZE.len() {
         return None;
     }
@@ -494,7 +538,7 @@ pub fn reference_colour_with_mode(
     if !inside_crop(map.crop, moved) {
         return Some(map.sea);
     }
-    if let Some(mode) = mode
+    if let Look::Values(mode) = look
         && let Some(value) = mode::mode_value_at_point(map, mode, moved)
     {
         return Some(mode_colour(value));
@@ -517,14 +561,19 @@ pub fn reference_colour_with_mode(
                 return Some(map.sea);
             };
             let style = map.terrains.get(usize::from(terrain))?;
-            look::land_colour(
-                style,
-                (map.ice, map.ice_second),
-                *map.fertility.get(index)?,
-                *map.glacier.get(index)?,
-                *map.hillside.get(index)?,
-                pixel,
-            )
+            if matches!(look, Look::Elevation) {
+                let metres = i32::from(*map.elevations.get(index)?) - ELEVATION_OFFSET;
+                elevation_grey(metres)
+            } else {
+                look::land_colour(
+                    style,
+                    (map.ice, map.ice_second),
+                    *map.fertility.get(index)?,
+                    *map.glacier.get(index)?,
+                    *map.hillside.get(index)?,
+                    pixel,
+                )
+            }
         }
     };
     if matches!(surface, Surface::Land { .. })

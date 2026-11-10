@@ -330,3 +330,139 @@ fn the_mode_covers_water_cells_too() {
     }
     assert!(seen > 0, "the lake half is sampled");
 }
+
+#[test]
+fn the_elevation_grey_is_the_integer_square_root_of_the_height() {
+    let grey = |metres| elevation_grey(metres).0;
+    let level = |value: u8| [value, value, value, 255];
+    assert_eq!(grey(0), level(0));
+    assert_eq!(grey(-20), level(0), "below sea level is black");
+    assert_eq!(grey(i32::MIN), level(0));
+    assert_eq!(grey(1), level(2));
+    assert_eq!(grey(860), level(79));
+    assert_eq!(
+        grey(4_424),
+        level(180),
+        "half of the range is not half grey"
+    );
+    assert_eq!(grey(8_847), level(254));
+    assert_eq!(grey(8_848), level(255), "the top of the range is white");
+    assert_eq!(grey(9_000), level(255), "above it is clamped");
+    assert_eq!(grey(i32::MAX), level(255));
+    // The exact path: isqrt(65,025 * e / 8,848), integer division first, for every height of the range.
+    for metres in 0..=9_000_u64 {
+        let expected = (65_025 * metres / 8_848).isqrt().min(255);
+        let metres = i32::try_from(metres).unwrap();
+        assert_eq!(u64::from(grey(metres)[0]), expected, "{metres} m");
+    }
+    // It never falls as the height rises.
+    let mut last = 0;
+    for metres in 0..=9_000 {
+        let now = grey(metres)[0];
+        assert!(now >= last, "{metres} m");
+        last = now;
+    }
+}
+
+/// A map for the elevation reference: land that climbs with the column, a lake on the right and sea at the bottom, a glacier.
+fn elevation_map() -> MapData {
+    let mut map = all_land(21, 21);
+    for index in 0..441 {
+        let (x, y) = (index % 21, index / 21);
+        map.elevations[index] = u16::try_from(11_000 + x * 440).unwrap();
+        if x >= 15 {
+            map.cells[index] = Surface::Lake;
+        } else if y >= 17 {
+            map.cells[index] = Surface::Sea { depth: 40 };
+            map.elevations[index] = 11_000 - 40;
+        }
+    }
+    map.glacier[5 * 21 + 5] = true;
+    map.elevations[5 * 21 + 5] = 11_000 + 8_000;
+    map
+}
+
+#[test]
+fn the_elevation_reference_greys_inland_land_and_keeps_water_and_the_coast_outline() {
+    let map = elevation_map();
+    let (no_rivers, no_locations) = (BTreeSet::new(), BTreeMap::new());
+    let (mut grey, mut outline, mut water) = (0, 0, 0);
+    for (pixel, x, y) in sampled(&map) {
+        let plain = reference_colour_with_locations(&map, STEP, pixel, &no_rivers, &no_locations);
+        let elevation =
+            reference_colour_with_elevation(&map, STEP, pixel, &no_rivers, &no_locations);
+        let index = usize::try_from(y * 21 + x).unwrap();
+        if matches!(map.cells[index], Surface::Land { .. }) {
+            let near_water = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                .into_iter()
+                .any(|(dx, dy)| {
+                    let neighbour = WorldPixel {
+                        x: pixel.x + dx,
+                        y: pixel.y + dy,
+                    };
+                    matches!(
+                        surface_for_pixel(&map, STEP, neighbour),
+                        Some(Surface::Sea { .. } | Surface::Lake)
+                    )
+                });
+            if near_water {
+                assert_eq!(elevation, plain, "the coast outline is the base look's");
+                outline += 1;
+            } else {
+                let metres = i32::from(map.elevations[index]) - 11_000;
+                assert_eq!(elevation, Some(elevation_grey(metres)), "cell {x},{y}");
+                grey += 1;
+            }
+        } else {
+            assert_eq!(elevation, plain, "water keeps its colour at {x},{y}");
+            water += 1;
+        }
+    }
+    assert!(
+        grey > 0 && outline > 0 && water > 0,
+        "{grey} grey, {outline} outline, {water} water"
+    );
+    // The glacier cell is drawn by its height like any land cell, not as ice.
+    let glacier = sampled(&map)
+        .into_iter()
+        .find(|&(_, x, y)| (x, y) == (5, 5))
+        .expect("the glacier cell is sampled");
+    assert_eq!(
+        reference_colour_with_elevation(&map, STEP, glacier.0, &no_rivers, &no_locations),
+        Some(elevation_grey(8_000))
+    );
+}
+
+#[test]
+fn rivers_and_locations_draw_over_the_elevation_and_the_outside_stays_sea() {
+    let map = elevation_map();
+    let pixel = sampled(&map)
+        .into_iter()
+        .find(|&(_, x, y)| (x, y) == (8, 8))
+        .expect("an inland cell")
+        .0;
+    let marker = Rgba8::opaque(90, 91, 92);
+    let none = (BTreeSet::new(), BTreeMap::new());
+    assert_eq!(
+        reference_colour_with_elevation(&map, STEP, pixel, &none.0, &none.1),
+        Some(elevation_grey(8 * 440))
+    );
+    assert_eq!(
+        reference_colour_with_elevation(&map, STEP, pixel, &BTreeSet::from([pixel]), &none.1),
+        Some(map.river)
+    );
+    assert_eq!(
+        reference_colour_with_elevation(
+            &map,
+            STEP,
+            pixel,
+            &none.0,
+            &BTreeMap::from([(pixel, marker)])
+        ),
+        Some(marker)
+    );
+    assert_eq!(
+        reference_colour_with_elevation(&map, STEP, WorldPixel { x: 0, y: 0 }, &none.0, &none.1),
+        Some(map.sea)
+    );
+}

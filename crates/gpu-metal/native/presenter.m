@@ -366,7 +366,7 @@ typedef struct {
     int32_t crop[2];
     int32_t top_left[2];
     int32_t step;
-    int32_t mode; /* 1 when a map mode shows */
+    int32_t mode; /* 1 when a value-table map mode shows, 2 for the elevation mode */
 } CKPrMapUniforms;
 
 /* The map pass: one full-target triangle into the map target, in its own render pass in the frame's command buffer, before the
@@ -385,7 +385,7 @@ static BOOL ck_encode_map_pass(id<MTLCommandBuffer> command, CKPrQuadKit *kit, c
                                 {(int32_t)draw->map->crop[0], (int32_t)draw->map->crop[1]},
                                 {draw->map->top_left[0], draw->map->top_left[1]},
                                 draw->map->step,
-                                draw->map->mode != 0 ? 1 : 0};
+                                draw->map->mode == 2 ? 2 : (draw->map->mode != 0 ? 1 : 0)};
     [encoder setRenderPipelineState:kit.map];
     [encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
     [encoder setFragmentTexture:draw->grid_a atIndex:0];

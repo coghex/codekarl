@@ -189,7 +189,7 @@ struct MapUniforms {
     int2 crop;     /* the crop's size in cells */
     int2 top_left; /* the camera's top-left world pixel (I_left, J_top) */
     int step;      /* the zoom step s, 0 to 75 */
-    int mode;      /* 1 when a map mode shows (milestone 9, slice 8), else 0 */
+    int mode;      /* 1 when a value-table map mode shows (milestone 9, slice 8), 2 for the elevation mode (slice 10b), else 0 */
 };
 
 vertex float4 ck_map_vertex(uint vertex_id [[vertex_id]]) {
@@ -390,6 +390,31 @@ static bool map_mode_value(constant MapUniforms &uniforms, texture2d<float, acce
     return count != 0u;
 }
 
+/* The elevation mode (milestone 9, slice 10b): a land pixel off the coast outline is the grey of its cell's height,
+ * isqrt(65025 * max(0, e) / 8848) clamped to 255, e being grid B's stored height less 11000 (exactly ck-map's `elevation_grey`). The
+ * largest stored height, 65535, gives 3.5e9, which fits a uint. The integer square root is the largest g in 0...255 with g * g at most
+ * the argument, found by bisection. */
+constant uint ELEVATION_OFFSET = 11000u;
+constant uint ELEVATION_TOP = 8848u;
+
+static float4 map_elevation_colour(texture2d<float, access::read> grid_b, uint2 cell) {
+    uint4 b = map_bytes(grid_b.read(cell));
+    uint stored = map_u16(b.r, b.g);
+    uint height = stored > ELEVATION_OFFSET ? stored - ELEVATION_OFFSET : 0u;
+    uint scaled = 65025u * height / ELEVATION_TOP;
+    uint low = 0u;
+    uint high = 255u;
+    while (low < high) {
+        uint middle = (low + high + 1u) / 2u;
+        if (middle * middle <= scaled) {
+            low = middle;
+        } else {
+            high = middle - 1u;
+        }
+    }
+    return float4(float3(float(low) / 255.0), 1.0);
+}
+
 fragment float4 ck_map_fragment(float4 position [[position]], constant MapUniforms &uniforms [[buffer(0)]],
                                 device const uint *mode_values [[buffer(1)]],
                                 texture2d<float, access::read> grid_a [[texture(0)]],
@@ -404,7 +429,7 @@ fragment float4 ck_map_fragment(float4 position [[position]], constant MapUnifor
     if (surface.outside) {
         return rules.read(uint2(0u, RULES_ROW_GLOBALS)); /* the sea */
     }
-    if (uniforms.mode != 0) {
+    if (uniforms.mode == 1) {
         uint mode_value;
         int2 cell = (surface.moved - (uniforms.origin << FIXED_PER_CELL_SHIFT)) >> FIXED_PER_CELL_SHIFT;
         if (map_mode_value(uniforms, owners, mode_values, cell, mode_value)) {
@@ -434,6 +459,9 @@ fragment float4 ck_map_fragment(float4 position [[position]], constant MapUnifor
     }
     if (coast) {
         return solid;
+    }
+    if (uniforms.mode == 2) {
+        return map_elevation_colour(grid_b, uint2((surface.moved - (uniforms.origin << FIXED_PER_CELL_SHIFT)) >> FIXED_PER_CELL_SHIFT));
     }
     return map_land_colour(rules, row, surface.fertility, surface.strength, pixel);
 }

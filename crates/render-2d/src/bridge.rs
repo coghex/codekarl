@@ -167,9 +167,12 @@ impl State {
         })
     }
 
-    /// The stored mode, when it has a table that fits `input`'s owner grid (a newer map with other places leaves an older table unused).
+    /// The stored mode, when it is the elevation mode or has a table that fits `input`'s owner grid (a newer map with other places leaves an older table unused).
     fn mode_for(&self, input: &MapInput) -> Option<Arc<MapMode>> {
         let mode = self.mode.as_ref()?;
+        if mode.is_elevation() {
+            return Some(Arc::clone(mode));
+        }
         let values = mode.values()?;
         let owners = input.owners()?;
         (values.len() == owners.places()).then(|| Arc::clone(mode))
