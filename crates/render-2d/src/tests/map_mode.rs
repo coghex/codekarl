@@ -21,7 +21,7 @@ fn owned(
         generation,
         [100, 200],
         [width, height],
-        grid(width, height, [1, 1, 0, 255]),
+        grid(width, height, [1, 1, 128, 255]),
         grid(width, height, [42, 24, 0, 255]),
         rules(3),
     )
@@ -49,7 +49,7 @@ fn plain(width: u32, height: u32) -> MapInput {
         1,
         [0, 0],
         [width, height],
-        grid(width, height, [1, 1, 0, 255]),
+        grid(width, height, [1, 1, 128, 255]),
         grid(width, height, [0, 0, 0, 255]),
         rules(3),
     )

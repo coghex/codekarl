@@ -16,25 +16,27 @@
 //!
 //! | Grid | R | G | B |
 //! | --- | --- | --- | --- |
-//! | A | the terrain index (an index into the palette) | bit 0: the cell is usable; every other bit zero | zero |
+//! | A | the terrain index (an index into the palette) | fertility ÷ 4 (0 to 250), or 255 for a glacier | the hillside strength + 128 (113 to 143) |
 //! | B | the high byte of `elevation + 11000` | its low byte | zero |
 //!
 //! `elevation + 11000` is an unsigned 16-bit value in metres, so a sea depth down to 11 km fits. Slice 3 (the loader) produces this layout
 //! and cites this section; slice 6 reads grid B.
 //!
-//! # The rule table and the colour rules (slice 6)
+//! # The rule table and the colour rules (slices 6 and 10a)
 //!
-//! [`MapRules`] carries, **for each terrain index** (grid A's red byte): its kind ([`MapTerrainKind`]: land, sea, lake or mountain —
-//! the table's sea, lake and mountain flags), the solid, second, dark and dark-second colours, the relief range and mix percentage, the
-//! cap and high-ground colours and the cap heights. It also carries the sea, shallow-sea, lake and river colours, the shallow-sea
-//! threshold and the 76-entry step table (`ck-map`'s `STEP_SIZE`, which the GPU reads from here and not from a copy of its own).
-//! Elevations are metres, from -11000 to 54535 (so `elevation + 11000` is the 16-bit value of grid B); every colour is opaque.
+//! [`MapRules`] carries, **for each terrain index** (grid A's red byte): its kind ([`MapTerrainKind`]: land, sea, lake or mountain)
+//! and, for land, its ten tones (computed once at load by `ck-map` from the terrain's four colours): the four shades from dark to the full
+//! colour (which is also the coast outline's), the three shadow-side tones of shades 1 to 3 and the three lit-side tones of shades 0 to 2.
+//! It also carries the sea, shallow-sea, lake, river and ice colours (and the
+//! ice's second tone), the shallow-sea threshold and the 76-entry step table (`ck-map`'s `STEP_SIZE`, which the GPU reads from here and
+//! not from a copy of its own). Every colour is opaque.
 //!
 //! Map pixel `(x, y)` of the view at zoom step `s` is world pixel `(I_left + x, J_top + y)`. Its colour is the one `ck-map`'s
-//! reference colour function gives (`docs/map-design.md` section 9.4, rules 1 to 6 and 8, every one in integer arithmetic): the
-//! sample point of the pixel's centre, moved by the frozen sub-cell jitter, the cell and elevation under it, the water, usable and
-//! unusable tones with their Bayer dither, the snow caps and high ground, and the four-neighbour coast outline. A pixel outside the
-//! crop is sea. The camera's river list is carried and not drawn (rule 7 is slice 8's).
+//! reference colour function gives (`docs/map-design.md` sections 9.4 and 12, every one in integer arithmetic): the sample point of the
+//! pixel's centre, moved by the frozen sub-cell jitter, the cell under it, the water tones with their Bayer dither, and on land the
+//! fertility as the shades of a blue-noise tile, the hillside dither of the cell's strength, a glacier's ice, and the
+//! four-neighbour coast outline. The patterns are pinned to the world pixel. A pixel outside the crop is sea. The camera's river list
+//! is carried and not drawn (rule 7 is slice 8's).
 //!
 //! The crop must lie in the non-negative projected world and leave room for a map pixel and the sub-cell detail past its far edge
 //! (`(origin + size) * 32768` at most `i32::MAX - 2^20`), and the camera's sample points must fit 32 bits; both are checked.
@@ -82,9 +84,6 @@ const FIXED_PER_CELL: i64 = 32_768;
 
 /// What the far edge of the crop must leave below `i32::MAX`: room for one map pixel and the sub-cell detail past the edge.
 const CROP_MARGIN: i64 = 1 << 20;
-
-/// The lowest and highest elevation in metres a rule can name (`elevation + 11000` is a 16-bit value).
-const ELEVATION_RANGE: std::ops::RangeInclusive<i32> = -11_000..=54_535;
 
 /// The longest side of a crop or a view: a size every GPU image supports.
 pub const SIDE_MAX: u32 = 16_384;
@@ -366,40 +365,27 @@ fn side_ok(side: u32) -> bool {
 /// What a terrain index is: ordinary land, the sea, a lake or a mountain (the table's sea, lake and mountain flags).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapTerrainKind {
-    /// Ordinary land: the usable and unusable tones with their dither.
+    /// Ordinary land: fertility as shades, the hillside dither.
     Land,
     /// The sea: the sea colour, or the shallow-sea colour where the depth is under the threshold.
     Sea,
     /// A lake: the lake colour.
     Lake,
-    /// A mountain: land that also shows snow caps (usable) or high ground (unusable) by its elevation.
+    /// A mountain: land, drawn as ordinary land (the look no longer sets mountains apart by elevation).
     Mountain,
 }
 
-/// One terrain type's rules (`docs/map-design.md` section 9.4). A water kind ignores every field but its kind; ordinary land ignores
-/// the cap and high-ground colours and the cap heights.
+/// One terrain type's rules (`docs/map-design.md` section 12). A water kind ignores every field but its kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MapTerrainRule {
     /// Land, sea, lake or mountain.
     pub kind: MapTerrainKind,
-    /// The usable land's colour, and the coast outline's.
-    pub solid: [u8; 4],
-    /// The usable land's second tone.
-    pub second: [u8; 4],
-    /// The unusable land's dark colour.
-    pub dark: [u8; 4],
-    /// The unusable land's dark second tone.
-    pub dark_second: [u8; 4],
-    /// A usable mountain's snow cap.
-    pub cap: [u8; 4],
-    /// An unusable mountain's high ground.
-    pub high_ground: [u8; 4],
-    /// The elevations, in metres, between which the relief ramp rises from level 0 to 16 (the low one below the high one).
-    pub relief: [i32; 2],
-    /// How much of the relief level the usable second tone shows, in percent (0 to 100).
-    pub mix_percent: u8,
-    /// The elevations, in metres, between which a mountain's cap ramp rises from level 0 to 16.
-    pub cap_heights: [i32; 2],
+    /// The four shades from the dark colour (`tone[0]`) to the full colour (`tone[3]`, also the coast outline's).
+    pub tone: [[u8; 4]; 4],
+    /// The shadow side of a hillside, for shades 1 through 3 (`shadow[k - 1]`).
+    pub shadow: [[u8; 4]; 3],
+    /// The lit side of a hillside, for shades 0 through 2 (`lit[0]` is the lit-dark tone).
+    pub lit: [[u8; 4]; 3],
 }
 
 /// The rule table a map input carries (see the module documentation).
@@ -415,6 +401,10 @@ pub struct MapRules {
     pub lake: [u8; 4],
     /// The rivers (carried; drawn from slice 8).
     pub river: [u8; 4],
+    /// The glaciers.
+    pub ice: [u8; 4],
+    /// A glacier's second tone, on the shadow side of a hillside.
+    pub ice_second: [u8; 4],
     /// Opaque RGBA8 colours for the location overlay, indexed by camera pixels.
     pub overlay_palette: Vec<[u8; 4]>,
     /// A sea depth, in metres, under which the shallow sea dithers in; at least 1.
@@ -451,6 +441,8 @@ impl MapRules {
             ("the shallow-sea colour is not opaque", self.shallow_sea),
             ("the lake colour is not opaque", self.lake),
             ("the river colour is not opaque", self.river),
+            ("the ice colour is not opaque", self.ice),
+            ("the ice second tone is not opaque", self.ice_second),
         ] {
             if colour[3] != 255 {
                 return Err(table(name));
@@ -464,39 +456,14 @@ impl MapRules {
             if !land {
                 continue;
             }
-            if [rule.solid, rule.second, rule.dark, rule.dark_second]
+            if rule
+                .tone
                 .iter()
+                .chain(&rule.shadow)
+                .chain(&rule.lit)
                 .any(|colour| colour[3] != 255)
             {
                 return Err(terrain(index, "a land colour is not opaque"));
-            }
-            if rule.mix_percent > 100 {
-                return Err(terrain(index, "the mix is over 100 percent"));
-            }
-            let ramp_ok = |range: [i32; 2]| {
-                range[0] < range[1]
-                    && ELEVATION_RANGE.contains(&range[0])
-                    && ELEVATION_RANGE.contains(&range[1])
-            };
-            if !ramp_ok(rule.relief) {
-                return Err(terrain(
-                    index,
-                    "the relief range must rise within -11000 to 54535 metres",
-                ));
-            }
-            if rule.kind == MapTerrainKind::Mountain {
-                if rule.cap[3] != 255 || rule.high_ground[3] != 255 {
-                    return Err(terrain(
-                        index,
-                        "the cap or high-ground colour is not opaque",
-                    ));
-                }
-                if !ramp_ok(rule.cap_heights) {
-                    return Err(terrain(
-                        index,
-                        "the cap heights must rise within -11000 to 54535 metres",
-                    ));
-                }
             }
         }
         Ok(())
@@ -602,10 +569,10 @@ impl MapInput {
         for (position, pixel) in grid_a.chunks_exact(4).enumerate() {
             let problem = if pixel[3] != 255 {
                 Some("alpha is not 255")
-            } else if pixel[1] & 0xFE != 0 {
-                Some("a bit of G other than bit 0 is set")
-            } else if pixel[2] != 0 {
-                Some("B is not zero")
+            } else if pixel[1] > 250 && pixel[1] != 255 {
+                Some("G is neither fertility / 4 (0 to 250) nor the glacier marker 255")
+            } else if !(113..=143).contains(&pixel[2]) {
+                Some("B is not a hillside strength + 128 (113 to 143)")
             } else {
                 None
             };

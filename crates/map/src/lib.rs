@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "test-support")]
 pub mod fixture;
 mod loading;
+pub mod look;
 mod mode;
 mod scenario;
 
@@ -263,33 +264,18 @@ impl Rgba8 {
     }
 }
 
-/// Terrain palette and elevation thresholds used by the colour oracle.
+/// A land terrain's four tones (`docs/map-design.md` §12): full colour for fertile land, the dark colour for barren land, and the
+/// two tones the hillside dither brings in on the shadow and the lit side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerrainStyle {
-    /// Solid usable-land colour.
+    /// Fertile land: full colour, and the coast outline's.
     pub solid: Rgba8,
-    /// Second usable-land dither tone.
+    /// A bright pixel on the shadow side of a hillside.
     pub second: Rgba8,
-    /// Dark unusable-land colour.
+    /// Barren land: the dark colour.
     pub dark: Rgba8,
-    /// Second unusable-land dither tone.
-    pub dark_second: Rgba8,
-    /// Usable mountain cap colour.
-    pub cap: Rgba8,
-    /// Unusable mountain high-ground colour.
-    pub high_ground: Rgba8,
-    /// Lower elevation used for the 16-level relief ramp.
-    pub relief_low: i32,
-    /// Upper elevation used for the 16-level relief ramp; greater than `relief_low`.
-    pub relief_high: i32,
-    /// Usable-land second-tone percentage, 0 through 100.
-    pub mix_percent: u8,
-    /// Lower cap elevation threshold.
-    pub cap_low: i32,
-    /// Upper cap elevation threshold; greater than `cap_low`.
-    pub cap_high: i32,
-    /// Whether this style is the mountain terrain.
-    pub mountain: bool,
+    /// A dark pixel on the lit side of a hillside: `dark + 2 × (dark_second − dark)`, written out in the data.
+    pub dark_lit: Rgba8,
 }
 
 /// Surface classification and water depth of one crop cell.
@@ -330,10 +316,12 @@ pub struct MapData {
     pub climate_rainfall_mm: Vec<u16>,
     /// Whether each crop cell is glaciated by the climate model.
     pub glacier: Vec<bool>,
-    /// Per-cell interim display bit used by the existing CPU reference palette.
-    pub display_usable: Vec<bool>,
-    /// Fertility threshold used for the interim packed-grid usable bit.
-    pub display_usable_pm: u16,
+    /// The hillside strength of every crop cell, −15 through +15 (positive faces the light; zero for water): see [`look`].
+    pub hillside: Vec<i8>,
+    /// The glacier colour.
+    pub ice: Rgba8,
+    /// The glacier's second tone, on the shadow side.
+    pub ice_second: Rgba8,
     /// Terrain palettes indexed by each land cell's terrain id.
     pub terrains: Vec<TerrainStyle>,
     /// Sea base tone.
@@ -379,7 +367,7 @@ impl MapData {
             || self.climate_gdd.len() != expected
             || self.climate_rainfall_mm.len() != expected
             || self.glacier.len() != expected
-            || self.display_usable.len() != expected
+            || self.hillside.len() != expected
         {
             return Err("climate and fertility counts do not match crop dimensions");
         }
@@ -393,19 +381,15 @@ impl MapData {
         {
             return Err("climate or fertility value is outside supported bounds");
         }
-        if self.display_usable_pm > 1000 {
-            return Err("display usable threshold must be in 0..=1000");
+        if self
+            .hillside
+            .iter()
+            .any(|strength| !(-15..=15).contains(strength))
+        {
+            return Err("hillside strength is outside -15..=15");
         }
         if self.shallow_threshold == 0 {
             return Err("shallow threshold must be nonzero");
-        }
-        for terrain in &self.terrains {
-            if terrain.relief_high <= terrain.relief_low
-                || (terrain.mountain && terrain.cap_high <= terrain.cap_low)
-                || terrain.mix_percent > 100
-            {
-                return Err("invalid terrain thresholds");
-            }
         }
         if self.cells.iter().any(|cell| matches!(cell, Surface::Land { terrain, .. } if usize::from(*terrain) >= self.terrains.len())) {
             return Err("cell references missing terrain style");
@@ -419,45 +403,6 @@ impl MapData {
             return Some(Surface::Sea { depth: u16::MAX });
         };
         self.cells.get(index).copied()
-    }
-
-    fn elevation_at_cell(&self, x: u32, y: u32) -> Option<u16> {
-        if x >= self.crop.width || y >= self.crop.height {
-            return None;
-        }
-        let index = usize::try_from(y)
-            .ok()?
-            .checked_mul(usize::try_from(self.crop.width).ok()?)?
-            .checked_add(usize::try_from(x).ok()?)?;
-        self.elevations.get(index).copied()
-    }
-
-    fn elevation_at_point(&self, point: FixedPoint) -> Option<i32> {
-        let x = u32::try_from(i64::from(point.x) - i64::from(self.crop.origin.x) * FIXED_PER_CELL)
-            .ok()?;
-        let y = u32::try_from(i64::from(point.y) - i64::from(self.crop.origin.y) * FIXED_PER_CELL)
-            .ok()?;
-        let gx = x.saturating_sub(u32::try_from(FIXED_PER_CELL / 2).ok()?);
-        let gy = y.saturating_sub(u32::try_from(FIXED_PER_CELL / 2).ok()?);
-        let x0 = (gx >> 15).min(self.crop.width - 1);
-        let y0 = (gy >> 15).min(self.crop.height - 1);
-        let fx = (gx & 32_767) >> 3;
-        let fy = (gy & 32_767) >> 3;
-        let x1 = (x0 + 1).min(self.crop.width - 1);
-        let y1 = (y0 + 1).min(self.crop.height - 1);
-        let top = lerp12(
-            u32::from(self.elevation_at_cell(x0, y0)?),
-            u32::from(self.elevation_at_cell(x1, y0)?),
-            fx,
-        );
-        let bottom = lerp12(
-            u32::from(self.elevation_at_cell(x0, y1)?),
-            u32::from(self.elevation_at_cell(x1, y1)?),
-            fx,
-        );
-        i32::try_from(lerp12(top, bottom, fy))
-            .ok()?
-            .checked_sub(11_000)
     }
 
     fn cell_index(&self, cell: Cell) -> Option<usize> {
@@ -571,31 +516,15 @@ pub fn reference_colour_with_mode(
             let Some(index) = map.cell_index(cell) else {
                 return Some(map.sea);
             };
-            let usable = *map.display_usable.get(index)?;
-            let style = *map.terrains.get(usize::from(terrain))?;
-            if style.relief_high <= style.relief_low
-                || (style.mountain && style.cap_high <= style.cap_low)
-                || style.mix_percent > 100
-            {
-                return None;
-            }
-            let elevation = map.elevation_at_point(moved)?;
-            let level = ramp(elevation, style.relief_low, style.relief_high);
-            let mut base = if usable {
-                if b < (level * u32::from(style.mix_percent)) / 100 {
-                    style.second
-                } else {
-                    style.solid
-                }
-            } else if b < level / 2 {
-                style.dark_second
-            } else {
-                style.dark
-            };
-            if style.mountain && b < ramp(elevation, style.cap_low, style.cap_high) {
-                base = if usable { style.cap } else { style.high_ground };
-            }
-            base
+            let style = map.terrains.get(usize::from(terrain))?;
+            look::land_colour(
+                style,
+                (map.ice, map.ice_second),
+                *map.fertility.get(index)?,
+                *map.glacier.get(index)?,
+                *map.hillside.get(index)?,
+                pixel,
+            )
         }
     };
     if matches!(surface, Surface::Land { .. })
@@ -605,17 +534,6 @@ pub fn reference_colour_with_mode(
         colour = map.terrains.get(usize::from(terrain))?.solid;
     }
     Some(colour)
-}
-
-fn ramp(value: i32, low: i32, high: i32) -> u32 {
-    if value <= low {
-        0
-    } else if value >= high {
-        16
-    } else {
-        u32::try_from((i64::from(value) - i64::from(low)) * 16 / (i64::from(high) - i64::from(low)))
-            .unwrap_or_default()
-    }
 }
 
 fn has_water_neighbour(map: &MapData, step: u8, pixel: WorldPixel) -> bool {
@@ -877,6 +795,8 @@ fn bresenham(start: WorldPixel, end: WorldPixel, pixels: &mut BTreeSet<WorldPixe
     Some(())
 }
 
+#[cfg(test)]
+mod look_tests;
 #[cfg(test)]
 mod mode_tests;
 #[cfg(test)]

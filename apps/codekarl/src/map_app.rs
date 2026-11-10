@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use ck_map::look::TerrainShades;
 use ck_map::{
     Camera, Crop, FixedPoint, LoadedMap, Location, LocationKinds, PreparedLocations,
     PreparedMarkers, PreparedRivers, STEP_SIZE, Scenario, TerrainKind, ViewSize, WorldPixel,
@@ -742,42 +743,17 @@ fn rules(loaded: &LoadedMap, overlay_palette: &[ck_map::Rgba8]) -> MapRules {
             let style = terrain
                 .style_index
                 .map(|index| &loaded.data.terrains[usize::from(index)]);
-            let (
-                solid,
-                second,
-                dark,
-                dark_second,
-                cap,
-                high_ground,
-                relief,
-                mix_percent,
-                cap_heights,
-            ) = style.map_or(
-                (
-                    palette,
-                    palette,
-                    palette,
-                    palette,
-                    palette,
-                    palette,
-                    [0, 1],
-                    0,
-                    [0, 1],
-                ),
-                |style| {
+            // The ten tones of a land type's four colours (computed here, once per load, by the reference's own function); a type with no
+            // style shows its palette colour in every tone.
+            let (tone, shadow, lit) =
+                style.map_or(([palette; 4], [palette; 3], [palette; 3]), |style| {
+                    let shades = TerrainShades::of(style);
                     (
-                        rgba(style.solid),
-                        rgba(style.second),
-                        rgba(style.dark),
-                        rgba(style.dark_second),
-                        rgba(style.cap),
-                        rgba(style.high_ground),
-                        [style.relief_low, style.relief_high],
-                        style.mix_percent,
-                        [style.cap_low, style.cap_high],
+                        shades.tone.map(rgba),
+                        shades.shadow.map(rgba),
+                        shades.lit.map(rgba),
                     )
-                },
-            );
+                });
             let kind = match terrain.kind {
                 TerrainKind::Land => MapTerrainKind::Land,
                 TerrainKind::Sea => MapTerrainKind::Sea,
@@ -786,15 +762,9 @@ fn rules(loaded: &LoadedMap, overlay_palette: &[ck_map::Rgba8]) -> MapRules {
             };
             MapTerrainRule {
                 kind,
-                solid,
-                second,
-                dark,
-                dark_second,
-                cap,
-                high_ground,
-                relief,
-                mix_percent,
-                cap_heights,
+                tone,
+                shadow,
+                lit,
             }
         })
         .collect();
@@ -804,6 +774,8 @@ fn rules(loaded: &LoadedMap, overlay_palette: &[ck_map::Rgba8]) -> MapRules {
         shallow_sea: rgba(loaded.data.shallow_sea),
         lake: rgba(loaded.data.lake),
         river: rgba(loaded.data.river),
+        ice: rgba(loaded.data.ice),
+        ice_second: rgba(loaded.data.ice_second),
         overlay_palette: overlay_palette.iter().map(|colour| rgba(*colour)).collect(),
         shallow_threshold: loaded.data.shallow_threshold,
         steps: STEP_SIZE,
@@ -891,8 +863,9 @@ pub(crate) mod tests {
                 climate_gdd: vec![1000; 4],
                 climate_rainfall_mm: vec![1000; 4],
                 glacier: vec![false; 4],
-                display_usable: vec![false; 4],
-                display_usable_pm: 500,
+                hillside: vec![0; 4],
+                ice: ck_map::Rgba8::opaque(232, 233, 237),
+                ice_second: ck_map::Rgba8::opaque(185, 188, 198),
                 terrains: Vec::new(),
                 sea: water,
                 shallow_sea: water,
@@ -909,7 +882,7 @@ pub(crate) mod tests {
             grid_a: ck_map::PackedGrid {
                 width: crop.width,
                 height: crop.height,
-                pixels: vec![[0, 0, 0, 255]; 4],
+                pixels: vec![[0, 0, 128, 255]; 4],
             },
             grid_b: ck_map::PackedGrid {
                 width: crop.width,
@@ -939,7 +912,7 @@ pub(crate) mod tests {
         loaded.data.elevations = vec![11_000; length];
         loaded.grid_a.width = crop.width;
         loaded.grid_a.height = crop.height;
-        loaded.grid_a.pixels = vec![[0, 0, 0, 255]; length];
+        loaded.grid_a.pixels = vec![[0, 0, 128, 255]; length];
         loaded.grid_b.width = crop.width;
         loaded.grid_b.height = crop.height;
         loaded.grid_b.pixels = vec![[0x2a, 0xf8, 0, 255]; length];
@@ -1315,6 +1288,61 @@ pub(crate) mod tests {
             u32::try_from(i64::from(world.x) - i64::from(top_left.x)).expect("river x in view"),
             u32::try_from(i64::from(world.y) - i64::from(top_left.y)).expect("river y in view"),
         ]
+    }
+
+    #[test]
+    fn the_rule_table_carries_each_terrains_ten_tones_and_the_ice_of_the_shipped_map() {
+        let directory =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/map/ireland");
+        let loaded = ck_map::load_map(&directory).expect("Ireland's map loads");
+        let rules = rules(&loaded, &[]);
+        assert_eq!(rules.terrains.len(), loaded.terrain_types.len());
+        for (rule, terrain) in rules.terrains.iter().zip(&loaded.terrain_types) {
+            if let Some(index) = terrain.style_index {
+                let style = loaded.data.terrains[usize::from(index)];
+                // The ends of the ten tones are the data's four colours: the dark and full colours, the second tone at the top of the
+                // shadow side and the lit-dark tone at the bottom of the lit side.
+                assert_eq!(
+                    (rule.tone[0], rule.tone[3], rule.shadow[2], rule.lit[0]),
+                    (
+                        rgba(style.dark),
+                        rgba(style.solid),
+                        rgba(style.second),
+                        rgba(style.dark_lit)
+                    )
+                );
+                let shades = TerrainShades::of(&style);
+                assert_eq!(rule.tone, shades.tone.map(rgba));
+                assert_eq!(rule.shadow, shades.shadow.map(rgba));
+                assert_eq!(rule.lit, shades.lit.map(rgba));
+            }
+        }
+        // The shipped data: the ice colour is the old snow cap's, with its own second tone; the sea and rivers are as before.
+        assert_eq!(rules.ice, [0xe8, 0xe9, 0xed, 255]);
+        assert_ne!(rules.ice_second, rules.ice);
+        assert_eq!(rules.river, rgba(loaded.data.river));
+        // The lane accepts the shipped map's grid A: fertility ÷ 4 in G (255 for a glacier) and the strength + 128 in B.
+        let input = MapInput::new(
+            MAP_INPUT_GENERATION,
+            [loaded.data.crop.origin.x, loaded.data.crop.origin.y],
+            [loaded.data.crop.width, loaded.data.crop.height],
+            flatten(&loaded.grid_a.pixels),
+            flatten(&loaded.grid_b.pixels),
+            rules,
+        );
+        assert!(input.is_ok(), "{:?}", input.err());
+        assert!(
+            loaded.grid_a.pixels.iter().any(|pixel| pixel[2] != 128),
+            "the shipped map has hillsides"
+        );
+        assert!(
+            loaded
+                .grid_a
+                .pixels
+                .iter()
+                .any(|pixel| pixel[1] > 0 && pixel[1] <= 250),
+            "and fertility"
+        );
     }
 
     #[test]

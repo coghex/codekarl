@@ -118,29 +118,71 @@ fragment float4 ck_quad_bindless_fragment(BindlessVertex in [[stage_in]],
     return image.sample(image_sampler, in.texcoord) * in.tint;
 }
 
-/* The map pass (milestone 6, slices 1 and 6): one triangle that covers the whole map target, drawn with the full colour rules of
- * `docs/map-design.md` section 9.4 (rules 1 to 6 and 8; rivers are slice 8's), exactly as the reference colour function of `ck-map`
- * computes them, in integer arithmetic only: the result is the same on every GPU and on Vulkan.
+/* The map pass (milestone 6, slices 1, 6 and 10a): one triangle that covers the whole map target, drawn with the colour rules of
+ * `docs/map-design.md` sections 9.4 and 12 (rivers are slice 8's), exactly as the reference colour function of `ck-map` computes them,
+ * in integer arithmetic only: the result is the same on every GPU.
  *
  * Everything is an integer read (`read`, never `sample`). Grid A and grid B are RGBA8 images of the crop's size (A: R the terrain
- * index, G bit 0 the usable bit; B: R and G the high and low bytes of `elevation + 11000`). The rules are one RGBA8 image of
- * RULES_WIDTH x RULES_HEIGHT texels, written by the host from the rule table the map input carries:
- *   row t < 256, terrain index t: texels 0 solid, 1 second, 2 dark, 3 dark second, 4 cap, 5 high ground (the colours as given);
- *     6 = relief low, relief high; 7 = cap low, cap high (each a 16-bit `value + 11000` as high byte, low byte); 8 = mix percent,
- *     kind (0 land, 1 sea, 2 lake, 3 mountain), 0, 255;
- *   row 256: texels 0 sea, 1 shallow sea, 2 lake, 3 river, 4 = shallow threshold (high byte, low byte);
+ * index, G the fertility / 4 (0 to 250) or 255 for a glacier, B the hillside strength + 128; B: R and G the high and low bytes of
+ * `elevation + 11000`, read for the sea's depth). The rules are one RGBA8 image of RULES_WIDTH x RULES_HEIGHT texels, written by the host
+ * from the rule table the map input carries:
+ *   row t < 256, terrain index t: the ten tones as given: texels 0 to 3 the shades from dark (0) to the full colour (3), 4 to 6 the
+ *     shadow-side tones of shades 1 to 3, 9 to 11 the lit-side tones of shades 0 to 2; 8 = 0, kind (0 land, 1 sea, 2 lake,
+ *     3 mountain), 0, 255;
+ *   row 256: texels 0 sea, 1 shallow sea, 2 lake, 3 river, 4 = shallow threshold (high byte, low byte), 5 ice, 6 ice second;
  *   row 257: texel s = the map pixel size P(s) at step s, in 1/32768 cell, as three bytes (high first).
  * A unorm byte read as a float and scaled by 255 rounds back to the original integer on every GPU and on Vulkan. */
 
-constant uint RULES_COLUMN_RELIEF = 6u;
-constant uint RULES_COLUMN_CAP = 7u;
 constant uint RULES_COLUMN_FLAGS = 8u;
 constant uint RULES_ROW_GLOBALS = 256u;
 constant uint RULES_ROW_STEPS = 257u;
 constant uint KIND_SEA = 1u;
 constant uint KIND_LAKE = 2u;
-constant uint KIND_MOUNTAIN = 3u;
 constant int FIXED_PER_CELL_SHIFT = 15;
+
+/* The default look's constants (milestone 9, slice 10a; docs/map-design.md section 12). Each is pinned against `ck-map`'s `look` module by
+ * a test of `ck-gpu-metal` that reads this file, so the shader and the CPU reference cannot drift apart:
+ *   map_levels: the bright levels (of 256) for each stored fertility value 0 to 250, `isqrt(65536 i^5 / 250^5)` (256 at 250, so wider
+ *     than a byte); entries 251 to 255 are unused;
+ *   map_blue16: the 16 x 16 blue-noise tile (row = wy mod 16, column = wx mod 16), a permutation of 0 to 255;
+ *   map_bayer_b: the transposed 4 x 4 Bayer matrix (row = wy mod 4, column = wx mod 4). */
+constant uint map_levels[256] = {
+    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
+    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 1u, 1u, 1u, 1u,
+    1u, 1u, 1u, 1u, 2u, 2u, 2u, 2u, 2u, 2u, 2u, 3u, 3u, 3u, 3u, 3u,
+    4u, 4u, 4u, 4u, 5u, 5u, 5u, 5u, 6u, 6u, 6u, 6u, 7u, 7u, 7u, 8u,
+    8u, 8u, 9u, 9u, 9u, 10u, 10u, 11u, 11u, 11u, 12u, 12u, 13u, 13u, 13u, 14u,
+    14u, 15u, 15u, 16u, 16u, 17u, 17u, 18u, 18u, 19u, 19u, 20u, 21u, 21u, 22u, 22u,
+    23u, 24u, 24u, 25u, 25u, 26u, 27u, 27u, 28u, 29u, 29u, 30u, 31u, 32u, 32u, 33u,
+    34u, 35u, 35u, 36u, 37u, 38u, 39u, 40u, 40u, 41u, 42u, 43u, 44u, 45u, 46u, 47u,
+    48u, 48u, 49u, 50u, 51u, 52u, 53u, 54u, 55u, 56u, 57u, 59u, 60u, 61u, 62u, 63u,
+    64u, 65u, 66u, 67u, 69u, 70u, 71u, 72u, 73u, 75u, 76u, 77u, 78u, 80u, 81u, 82u,
+    83u, 85u, 86u, 87u, 89u, 90u, 91u, 93u, 94u, 96u, 97u, 99u, 100u, 101u, 103u, 104u,
+    106u, 107u, 109u, 111u, 112u, 114u, 115u, 117u, 118u, 120u, 122u, 123u, 125u, 127u, 128u, 130u,
+    132u, 134u, 135u, 137u, 139u, 141u, 142u, 144u, 146u, 148u, 150u, 152u, 153u, 155u, 157u, 159u,
+    161u, 163u, 165u, 167u, 169u, 171u, 173u, 175u, 177u, 179u, 181u, 183u, 185u, 188u, 190u, 192u,
+    194u, 196u, 198u, 201u, 203u, 205u, 207u, 210u, 212u, 214u, 216u, 219u, 221u, 224u, 226u, 228u,
+    231u, 233u, 236u, 238u, 240u, 243u, 245u, 248u, 250u, 253u, 256u, 0u, 0u, 0u, 0u, 0u
+};
+constant uint map_blue16[256] = {
+    222u, 146u, 208u, 158u, 58u, 88u, 171u, 32u, 213u, 132u, 11u, 145u, 210u, 80u, 248u, 173u,
+    67u, 5u, 102u, 251u, 27u, 197u, 140u, 65u, 184u, 236u, 54u, 95u, 24u, 182u, 36u, 99u,
+    156u, 189u, 134u, 76u, 176u, 116u, 220u, 2u, 111u, 79u, 167u, 201u, 225u, 151u, 123u, 233u,
+    29u, 53u, 214u, 13u, 237u, 47u, 94u, 152u, 254u, 22u, 139u, 42u, 109u, 14u, 60u, 199u,
+    115u, 229u, 96u, 124u, 155u, 70u, 226u, 35u, 172u, 198u, 90u, 240u, 72u, 159u, 252u, 86u,
+    168u, 143u, 39u, 203u, 23u, 190u, 131u, 207u, 64u, 122u, 8u, 181u, 216u, 127u, 186u, 3u,
+    66u, 239u, 81u, 163u, 250u, 87u, 7u, 108u, 45u, 235u, 149u, 55u, 26u, 92u, 48u, 211u,
+    31u, 192u, 16u, 107u, 57u, 180u, 142u, 245u, 161u, 74u, 217u, 105u, 175u, 243u, 148u, 121u,
+    103u, 174u, 137u, 215u, 125u, 44u, 219u, 21u, 98u, 185u, 34u, 135u, 205u, 10u, 73u, 224u,
+    50u, 247u, 63u, 9u, 234u, 165u, 78u, 200u, 129u, 1u, 230u, 82u, 114u, 40u, 196u, 157u,
+    25u, 84u, 195u, 153u, 91u, 28u, 113u, 56u, 241u, 166u, 62u, 154u, 253u, 170u, 89u, 128u,
+    183u, 221u, 112u, 41u, 204u, 255u, 177u, 147u, 38u, 100u, 193u, 15u, 51u, 209u, 17u, 238u,
+    61u, 0u, 136u, 169u, 71u, 130u, 6u, 228u, 83u, 212u, 118u, 223u, 133u, 68u, 110u, 144u,
+    162u, 104u, 246u, 20u, 218u, 49u, 106u, 188u, 18u, 141u, 30u, 178u, 93u, 242u, 187u, 37u,
+    232u, 194u, 77u, 179u, 97u, 150u, 202u, 69u, 164u, 249u, 75u, 43u, 160u, 4u, 206u, 85u,
+    119u, 52u, 33u, 126u, 227u, 12u, 244u, 120u, 46u, 101u, 191u, 231u, 117u, 59u, 138u, 19u
+};
+constant uint map_bayer_b[16] = {0u, 12u, 3u, 15u, 8u, 4u, 11u, 7u, 2u, 14u, 1u, 13u, 10u, 6u, 9u, 5u};
 
 struct MapUniforms {
     int2 origin;   /* the crop's global origin cell (i0, j0) */
@@ -231,13 +273,15 @@ static bool map_inside(constant MapUniforms &uniforms, int2 point) {
     return all(point >= left_top) && all(point < right_bottom);
 }
 
-/* What the cell under a world pixel's (moved) sample point is: its terrain kind and index, usable bit and, for the sea, depth. */
+/* What the cell under a world pixel's (moved) sample point is: its terrain kind and index, fertility (255: a glacier), hillside strength
+ * and, for the sea, depth. */
 struct MapSurface {
     bool outside;  /* the sample point (unmoved or moved) is outside the crop: sea */
     int2 moved;    /* the moved sample point */
     uint terrain;  /* the terrain index */
     uint kind;     /* KIND_* from the rules */
-    bool usable;
+    uint fertility; /* grid A's green byte: fertility / 4 (0 to 250), or 255 for a glacier */
+    int strength;   /* the hillside strength, -15 to +15 (positive faces the light) */
     uint depth;    /* the sea's depth: `11000 - (elevation + 11000)`, zero at or above the surface */
 };
 
@@ -249,7 +293,8 @@ static MapSurface map_surface(constant MapUniforms &uniforms, texture2d<float, a
     surface.moved = int2(0);
     surface.terrain = 0u;
     surface.kind = KIND_SEA;
-    surface.usable = false;
+    surface.fertility = 0u;
+    surface.strength = 0;
     surface.depth = 0u;
     int2 unmoved = pixel * p + p / 2;
     if (!map_inside(uniforms, unmoved)) {
@@ -264,7 +309,8 @@ static MapSurface map_surface(constant MapUniforms &uniforms, texture2d<float, a
     uint2 cell = uint2((moved - (uniforms.origin << FIXED_PER_CELL_SHIFT)) >> FIXED_PER_CELL_SHIFT);
     uint4 a = map_bytes(grid_a.read(cell));
     surface.terrain = a.r;
-    surface.usable = (a.g & 1u) != 0u;
+    surface.fertility = a.g;
+    surface.strength = int(a.b) - 128;
     surface.kind = map_bytes(rules.read(uint2(RULES_COLUMN_FLAGS, surface.terrain))).g;
     if (surface.kind == KIND_SEA) {
         uint4 b = map_bytes(grid_b.read(cell));
@@ -278,36 +324,29 @@ static bool map_is_water(MapSurface surface) {
     return surface.outside || surface.kind == KIND_SEA || surface.kind == KIND_LAKE;
 }
 
-/* The elevation in metres at the moved sample point: the four cell centres around it, interpolated in 12-bit fractions. */
-static int map_elevation(constant MapUniforms &uniforms, texture2d<float, access::read> grid_b, int2 moved) {
-    uint2 local = uint2(moved - (uniforms.origin << FIXED_PER_CELL_SHIFT));
-    uint2 shifted = uint2(max(int2(local) - 16384, int2(0)));
-    uint2 last = uint2(uniforms.crop - 1);
-    uint2 low = min(shifted >> 15u, last);
-    uint2 high = min(low + 1u, last);
-    uint2 fraction = (shifted & 32767u) >> 3u;
-    uint4 e00 = map_bytes(grid_b.read(uint2(low.x, low.y)));
-    uint4 e10 = map_bytes(grid_b.read(uint2(high.x, low.y)));
-    uint4 e01 = map_bytes(grid_b.read(uint2(low.x, high.y)));
-    uint4 e11 = map_bytes(grid_b.read(uint2(high.x, high.y)));
-    uint top = map_lerp12(map_u16(e00.r, e00.g), map_u16(e10.r, e10.g), fraction.x);
-    uint bottom = map_lerp12(map_u16(e01.r, e01.g), map_u16(e11.r, e11.g), fraction.x);
-    return int(map_lerp12(top, bottom, fraction.y)) - 11000;
-}
+/* The colour of a land pixel at world pixel `pixel` (docs/map-design.md section 12): fertility as the shade of a blue-noise tile (three
+ * times the level, the tile deciding the remainder), the hillside dither of the cell's strength stepping the shade towards the
+ * shadow-side or lit-side tone, a glacier's ice. `& (n - 1)` is the mathematical modulo for negative pixels. */
+constant uint SHADE_STEPS = 3u;
 
-/* The 16-level ramp between two elevations. */
-static uint map_ramp(int value, int low, int high) {
-    if (value <= low) {
-        return 0u;
+static float4 map_land_colour(texture2d<float, access::read> rules, uint row, uint fertility, int strength, int2 pixel) {
+    uint bayer = map_bayer_b[uint((pixel.y & 3) * 4 + (pixel.x & 3))];
+    uint steepness = uint(abs(strength));
+    bool hit = bayer < steepness;
+    if (fertility == 255u) {
+        return (strength < 0 && hit) ? rules.read(uint2(6u, RULES_ROW_GLOBALS)) : rules.read(uint2(5u, RULES_ROW_GLOBALS));
     }
-    if (value >= high) {
-        return 16u;
+    uint level = map_levels[min(fertility, 255u)];
+    uint v = SHADE_STEPS * level;
+    uint blue = map_blue16[uint((pixel.y & 15) * 16 + (pixel.x & 15))];
+    uint k = min(v / 256u + ((blue < v % 256u) ? 1u : 0u), SHADE_STEPS);
+    if (hit && strength < 0 && k > 0u) {
+        return rules.read(uint2(3u + k, row)); /* shadow-side tone of shade k, texels 4 to 6 */
     }
-    return uint((value - low) * 16 / (high - low));
-}
-
-static int map_signed_pair(uint4 texel, bool second) {
-    return int(second ? map_u16(texel.b, texel.a) : map_u16(texel.r, texel.g)) - 11000;
+    if (hit && strength > 0 && k < SHADE_STEPS) {
+        return rules.read(uint2(9u + k, row)); /* lit-side tone of shade k, texels 9 to 11 */
+    }
+    return rules.read(uint2(k, row));
 }
 
 /* The map modes (milestone 9, slice 8; docs/economy-design.md section 3.22): the owner grid is a fourth RGBA8 image of the crop's size
@@ -383,9 +422,9 @@ fragment float4 ck_map_fragment(float4 position [[position]], constant MapUnifor
         }
         return rules.read(uint2(0u, RULES_ROW_GLOBALS));
     }
-    /* Land: usable and unusable tones, the snow caps of a mountain, then the coast outline over both. */
+    /* Land: fertility and the hillside dither (or ice), with the coast outline over both. */
     uint row = surface.terrain;
-    float4 solid = rules.read(uint2(0u, row));
+    float4 solid = rules.read(uint2(3u, row)); /* the full colour: the coast outline's */
     bool coast = false;
     int2 neighbours[4] = {int2(-1, 0), int2(1, 0), int2(0, -1), int2(0, 1)};
     for (uint n = 0u; n < 4u; n++) {
@@ -396,23 +435,7 @@ fragment float4 ck_map_fragment(float4 position [[position]], constant MapUnifor
     if (coast) {
         return solid;
     }
-    int elevation = map_elevation(uniforms, grid_b, surface.moved);
-    uint4 relief = map_bytes(rules.read(uint2(RULES_COLUMN_RELIEF, row)));
-    uint level = map_ramp(elevation, map_signed_pair(relief, false), map_signed_pair(relief, true));
-    uint mix = map_bytes(rules.read(uint2(RULES_COLUMN_FLAGS, row))).r;
-    float4 colour;
-    if (surface.usable) {
-        colour = bayer < (level * mix) / 100u ? rules.read(uint2(1u, row)) : solid;
-    } else {
-        colour = bayer < level / 2u ? rules.read(uint2(3u, row)) : rules.read(uint2(2u, row));
-    }
-    if (surface.kind == KIND_MOUNTAIN) {
-        uint4 cap = map_bytes(rules.read(uint2(RULES_COLUMN_CAP, row)));
-        if (bayer < map_ramp(elevation, map_signed_pair(cap, false), map_signed_pair(cap, true))) {
-            colour = surface.usable ? rules.read(uint2(4u, row)) : rules.read(uint2(5u, row));
-        }
-    }
-    return colour;
+    return map_land_colour(rules, row, surface.fertility, surface.strength, pixel);
 }
 
 struct MapRiverUniforms {
