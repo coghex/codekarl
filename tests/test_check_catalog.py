@@ -2248,6 +2248,8 @@ GUARDS: tuple[Guard, ...] = (
     Guard("apps/codekarl/src/ui_link.rs", "rust.app", ("assets/",)),
     # CK-231 (the same gap): the map modes' tests load Ireland 768's map and places, and their window witness runs the shipped UI script.
     Guard("apps/codekarl/src/map_modes.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
+    # CK-244: setup's island recruitment test loads the shipped Ireland scenario.
+    Guard("apps/codekarl/src/game/setup.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
     # Its window witness is a support module of `windowed.rs` (and `vulkan_app.rs`), so `app.native-window` is its owner and an edit of the
     # file selects it; a change to the shipped UI script it runs deliberately selects no window group (the owner's rule).
     Guard(
