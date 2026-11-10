@@ -17,10 +17,13 @@ pub(crate) const GLYPH_HEIGHT: usize = 11;
 /// The widest a glyph may be, in font pixels.
 pub(crate) const GLYPH_WIDTH_MAX: usize = 5;
 
-/// The characters beyond printable ASCII the font draws: the fada vowels and the middle dot.
-const EXTRA: [char; 11] = ['á', 'é', 'í', 'ó', 'ú', 'Á', 'É', 'Í', 'Ó', 'Ú', '·'];
+/// The characters beyond printable ASCII the font draws: fada vowels, the middle dot, and small superscript and subscript digits and signs.
+const EXTRA: [char; 33] = [
+    'á', 'é', 'í', 'ó', 'ú', 'Á', 'É', 'Í', 'Ó', 'Ú', '·', '⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷',
+    '⁸', '⁹', '⁺', '⁻', '₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉',
+];
 
-/// Every character the font draws a glyph for: printable ASCII (U+0020 to U+007E), the fada vowels and the middle dot.
+/// Every character the font draws a glyph for: printable ASCII (U+0020 to U+007E), fada vowels, the middle dot, and small superscript and subscript digits and signs.
 pub(crate) fn font_set() -> Vec<char> {
     (0x20_u8..=0x7E).map(char::from).chain(EXTRA).collect()
 }
@@ -244,7 +247,7 @@ mod tests {
     fn every_character_of_the_set_has_a_glyph_of_the_right_shape_and_nothing_else_has() {
         let font = shipped();
         let set = font_set();
-        assert_eq!(set.len(), 95 + 10 + 1);
+        assert_eq!(set.len(), 95 + 10 + 1 + 22);
         assert_eq!(
             font.characters().collect::<BTreeSet<_>>(),
             set.iter().copied().collect()
@@ -394,25 +397,29 @@ mod tests {
     }
 
     #[test]
-    fn only_the_fadas_use_the_rows_above_and_only_the_descenders_the_rows_below() {
+    fn outer_rows_are_used_only_for_accents_superscripts_descenders_and_subscripts() {
         let font = shipped();
         let blank = |glyph: &Glyph, rows: std::ops::Range<usize>| {
             glyph.rows[rows].iter().all(|row| !row.contains('#'))
         };
         let accented: BTreeSet<char> = "áéíóúÁÉÍÓÚ".chars().collect();
         let descending: BTreeSet<char> = "gjpqy,;".chars().collect();
+        let raised: BTreeSet<char> = "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻".chars().collect();
+        let lowered: BTreeSet<char> = "₀₁₂₃₄₅₆₇₈₉".chars().collect();
         for character in font_set() {
             let glyph = font.glyph(character);
-            assert_eq!(
-                !blank(glyph, 0..2),
-                accented.contains(&character),
-                "{character:?} above"
-            );
-            assert_eq!(
-                !blank(glyph, 9..11),
-                descending.contains(&character),
-                "{character:?} below"
-            );
+            if !blank(glyph, 0..2) {
+                assert!(
+                    accented.contains(&character) || raised.contains(&character),
+                    "{character:?} above"
+                );
+            }
+            if !blank(glyph, 9..11) {
+                assert!(
+                    descending.contains(&character) || lowered.contains(&character),
+                    "{character:?} below"
+                );
+            }
             // Every glyph has something on its baseline side of the cap line, except the space.
             if character != ' ' {
                 assert!(
@@ -434,6 +441,86 @@ mod tests {
                 "{fada:?}"
             );
         }
+    }
+
+    #[test]
+    fn small_superscript_and_subscript_glyphs_match_the_approved_shapes() {
+        let font = shipped();
+        let digits = [
+            ["###", "#.#", "#.#", "#.#", "###"],
+            [".#.", "##.", ".#.", ".#.", "###"],
+            ["##.", "..#", ".#.", "#..", "###"],
+            ["##.", "..#", ".#.", "..#", "##."],
+            ["#.#", "#.#", "###", "..#", "..#"],
+            ["###", "#..", "##.", "..#", "##."],
+            [".##", "#..", "###", "#.#", "###"],
+            ["###", "..#", ".#.", ".#.", ".#."],
+            ["###", "#.#", "###", "#.#", "###"],
+            ["###", "#.#", "###", "..#", "##."],
+        ];
+        let signs = [
+            ('⁺', ["...", ".#.", "###", ".#.", "..."]),
+            ('⁻', ["...", "...", "###", "...", "..."]),
+        ];
+        for (index, character) in "⁰¹²³⁴⁵⁶⁷⁸⁹".chars().enumerate() {
+            check_small_glyph(&font, character, &digits[index], 1);
+        }
+        for (character, rows) in signs {
+            check_small_glyph(&font, character, &rows, 1);
+        }
+        for (index, character) in "₀₁₂₃₄₅₆₇₈₉".chars().enumerate() {
+            check_small_glyph(&font, character, &digits[index], 6);
+        }
+    }
+
+    fn check_small_glyph(font: &Font, character: char, shape: &[&str; 5], first_row: usize) {
+        let glyph = font.glyph(character);
+        let expected: Vec<String> = (0..GLYPH_HEIGHT)
+            .map(|row| {
+                if (first_row..first_row + shape.len()).contains(&row) {
+                    shape[row - first_row].to_owned()
+                } else {
+                    "...".to_owned()
+                }
+            })
+            .collect();
+        assert_eq!(glyph.width(), 3, "{character:?}");
+        assert_eq!(glyph.advance, 4, "{character:?}");
+        assert_eq!(glyph.rows, expected, "{character:?}");
+    }
+
+    #[test]
+    fn superscript_two_has_its_own_layout_and_the_location_line_uses_it() {
+        let font = shipped();
+        assert_eq!(
+            layout(&font, "m²"),
+            table(
+                10,
+                vec![
+                    entry("ui/font/glyphs/U+006D.png", 0, 5),
+                    entry("ui/font/glyphs/U+00B2.png", 6, 3),
+                ]
+            )
+        );
+        let ConfigValue::Table(fields) = layout(&font, "building land: 4200 / 24200 m²") else {
+            panic!("font.layout returns a table");
+        };
+        let ConfigValue::Array(glyphs) = &fields["glyphs"] else {
+            panic!("font.layout returns glyph entries");
+        };
+        let Some(ConfigValue::Table(last)) = glyphs.last() else {
+            panic!("the location line has a final glyph");
+        };
+        assert_eq!(
+            last.get("texture"),
+            Some(&ConfigValue::String("ui/font/glyphs/U+00B2.png".to_owned()))
+        );
+        assert_eq!(last.get("width"), Some(&ConfigValue::Integer(3)));
+        assert!(!glyphs.iter().any(|glyph| matches!(
+            glyph,
+            ConfigValue::Table(fields)
+                if fields.get("texture") == Some(&ConfigValue::String(REPLACEMENT_TEXTURE.to_owned()))
+        )));
     }
 
     #[test]
