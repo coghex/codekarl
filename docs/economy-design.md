@@ -518,7 +518,8 @@ monks die").
   1. the wages go into the workers' own stores, up to their volume and per-good caps;
   2. the overhead, and any wages that do not fit, go into the **building's stockpile**, up to its capacity;
   3. **alms (Firm, r17):** what still does not fit goes to the **labourers** at the place, then to any other hungry pop there, hungriest
-     (fewest days of food) first, each up to its room;
+     (fewest days of food) first, each up to its room. **Hungry** means less than 60 days of food, the drawing threshold below,
+     counting the pop's store and its storehouse account (owner, 2026-11-10, `owner-direction-ck227-notes-r1.md`);
   4. **the storehouse** (§3.18). It is credited to the account of the pop the goods came from: the worker pop for its wages, including
      labourers (Firm, r18), and the building's communal account for overhead;
   5. the rest is lost.
@@ -980,6 +981,9 @@ pops move, the herd stays. These are counts, not individual animals, so livestoc
   - the holdings' store, 1,170 L per employee.
 
   These are r7's 450, 60 and 730 days of a normal diet, at about 1.6 L per person-day, mostly oats.
+
+  **An employee here is a worker,** not an owner (owner, 2026-11-10, `owner-direction-ck227-notes-r1.md`): a building's volume and its
+  per-good limits count the workers it employs now, without the farm's owners or the holdings' priests.
 - **Per-good limits (Firm, r15):** on top of the volume, each good has a storage limit **per person** for a pop, in its unit (data).
   - **Starting values:**
     - grain: oats 20 bu, barley 8 bu;
