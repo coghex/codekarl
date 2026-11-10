@@ -1982,10 +1982,22 @@ pub(crate) fn readback_map_mode_with_no_places() {
     }
 }
 
+/// What one frame of the live presenter shows.
+#[derive(Clone, Copy)]
+enum Shown<'a> {
+    /// A value table (one value per place), of the frame's revision.
+    Values(&'a [u16]),
+    /// The elevation mode, of the frame's revision: it has no table.
+    Elevation,
+    /// No mode: the plain map.
+    Off,
+}
+
 /// Through a live presenter, which keeps its resident input across frames: a mode's table is replaced by each new revision (the old one
 /// retired under the proof of its last command buffer), turning the mode off draws the plain map, and turning it on again draws the
-/// table of its own revision. Every captured frame is compared, pixel for pixel, with the reference for the table then showing; the
-/// input is uploaded once and the target made once.
+/// table of its own revision. The elevation mode, which has no table, goes between them: values, then elevation, then off, then
+/// elevation, then values again (the resident table still usable), and each captured frame is compared, pixel for pixel, with the
+/// reference for what is then showing; the input is uploaded once and the target made once.
 pub(crate) fn map_modes_replace_the_resident_table_and_off_draws_the_plain_map() {
     let mut rig = Rig::open();
     let probes = Probes::new();
@@ -2000,30 +2012,48 @@ pub(crate) fn map_modes_replace_the_resident_table_and_off_draws_the_plain_map()
     let input = moded_input(1);
     let first = fixture::mode_values(0);
     let second = fixture::mode_values(1);
-    // The mode showing in each frame: a revision and its values, or none (the plain map).
-    let frames: [Option<(u64, &[u16])>; 4] = [
-        Some((1, &first)),
-        Some((2, &second)),
-        None,
-        Some((3, &first)),
+    // What each frame shows. Its revision is its position in the sequence, so that every frame is newer than the one before.
+    let frames = [
+        Shown::Values(&first),
+        Shown::Values(&second),
+        Shown::Elevation,
+        Shown::Off,
+        Shown::Elevation,
+        Shown::Values(&first),
+        Shown::Off,
+        Shown::Values(&second),
     ];
     let plain = the_fixture().reference_image(scenario.step, scenario.top_left, scenario.view);
-    let expected_for = |mode: Option<(u64, &[u16])>| match mode {
-        Some((_, values)) => moded_reference(&scenario, values),
-        None => plain.clone(),
+    let elevation = the_fixture().reference_image_with_elevation(
+        scenario.step,
+        scenario.top_left,
+        scenario.view,
+    );
+    let expected_for = |shown: Shown| match shown {
+        Shown::Values(values) => moded_reference(&scenario, values),
+        Shown::Elevation => elevation.clone(),
+        Shown::Off => plain.clone(),
+    };
+    let map_for = |index: usize, shown: Shown| {
+        let revision = u64::try_from(index + 1).expect("small");
+        match shown {
+            Shown::Values(values) => moded_map(&input, &scenario, Some((revision, values))),
+            Shown::Elevation => moded_map(&input, &scenario, None).with_elevation(revision),
+            Shown::Off => moded_map(&input, &scenario, None),
+        }
     };
     // The first map is published before the presenter starts, so that the first frame the presenter draws and captures is the one with
     // the map (as `map_in_the_first_frame`), never a frame before any publication.
-    publish(&slot, 1, moded_map(&input, &scenario, frames[0]));
+    publish(&slot, 1, map_for(0, frames[0]));
     let mut presenter = probes.start_ok(&rig, hooks_with(&probes, &slot));
     let observer = &probes.observer;
-    for (index, mode) in frames.iter().enumerate() {
-        let expected = expected_for(*mode);
+    for (index, shown) in frames.iter().enumerate() {
+        let expected = expected_for(*shown);
         let generation = u64::try_from(index + 1).expect("small");
         // A capture arrives once its command buffer completed: the frame of this generation is the next one after those so far.
         let captured_before = if index == 0 { 0 } else { observer.captures() };
         if index > 0 {
-            publish(&slot, generation, moded_map(&input, &scenario, *mode));
+            publish(&slot, generation, map_for(index, *shown));
         }
         assert!(
             rig.pump_until(BOUND, || presenter.drawn_generation() == Some(generation)
@@ -2047,11 +2077,19 @@ pub(crate) fn map_modes_replace_the_resident_table_and_off_draws_the_plain_map()
             }
         }
     }
-    assert_ne!(
+    // The frames differ where they should: the two tables, the elevation and the plain map are four different images, so a frame that
+    // kept showing its predecessor would fail above.
+    let images = [
         expected_for(frames[0]),
         expected_for(frames[1]),
-        "the revisions draw different images"
-    );
+        elevation.clone(),
+        plain.clone(),
+    ];
+    for (a, left) in images.iter().enumerate() {
+        for (b, right) in images.iter().enumerate().skip(a + 1) {
+            assert_ne!(left, right, "images {a} and {b} differ");
+        }
+    }
     assert_eq!(
         observer.map_grids_created(),
         1,
