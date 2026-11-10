@@ -2958,7 +2958,14 @@ fn worker_count(building: &BuildingState) -> Result<u64, DataError> {
         })
 }
 
-fn store_capacity_ml(building: &BuildingState) -> Result<u128, DataError> {
+/// Volume capacity of a farm or holdings building's store, in millilitres.
+/// Only employed workers count; owners do not occupy paid worker capacity.
+/// Other building kinds have no worker-scaled building store capacity.
+///
+/// # Errors
+///
+/// Returns a data error if the building's worker count or capacity overflows.
+pub fn store_capacity_ml(building: &BuildingState) -> Result<u128, DataError> {
     let workers = u128::from(worker_count(building)?);
     let per_worker = match building.kind.as_str() {
         "farm" => 100_000,
@@ -7964,6 +7971,44 @@ mod tests {
         assert_eq!(
             storehouse.storehouse_accounts.as_ref().unwrap().pops[0],
             [8]
+        );
+    }
+
+    #[test]
+    fn holdings_receipt_uses_worker_capacity_and_overflows_one_unit_past_it() {
+        let mut rules = tiny_rules();
+        rules.goods[0].id = "oats".to_owned();
+        rules.goods[0].volume_ml = 100_000;
+        rules.goods[0].pop_limit_milli = 1_000_000;
+        let mut holdings = BuildingState {
+            kind: "holdings".to_owned(),
+            levels: 1,
+            method_levels: vec![1],
+            herds: Vec::new(),
+            employment: vec![Employment {
+                owners: 2,
+                workers: 10,
+            }],
+            stock: vec![0],
+            storehouse_accounts: None,
+            production_carries: Vec::new(),
+            method_suitability: Vec::new(),
+            herd_birth_carries: Vec::new(),
+            herd_death_carries: Vec::new(),
+            herd_product_carries: Vec::new(),
+            herd_grazing_sums: Vec::new(),
+            wage_carries: Vec::new(),
+            pay_carries: Vec::new(),
+            fee_carries: Vec::new(),
+            wage_history: vec![0; 12],
+        };
+        assert_eq!(store_capacity_ml(&holdings).unwrap(), 11_700_000);
+        assert!(building_good_cap(&rules, &holdings, 0).unwrap() >= 118);
+        assert_eq!(receive_building(&rules, &mut holdings, 0, 118).unwrap(), 1);
+        assert_eq!(
+            holdings.stock,
+            [117],
+            "the 11,700 L worker capacity accepts 117 units and refuses the next"
         );
     }
 

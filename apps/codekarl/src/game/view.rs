@@ -15,10 +15,6 @@ use std::collections::BTreeMap;
 
 /// A pop's store, in millilitres per person (design §3.15: 720 L).
 const POP_STORE_ML_PER_PERSON: u64 = 720_000;
-/// A farm's store, in millilitres per employee (design §3.15: 100 L).
-const FARM_STORE_ML_PER_EMPLOYEE: u64 = 100_000;
-/// The monastic holdings' store, in millilitres per employee (design §3.15: 1,170 L).
-const HOLDINGS_STORE_ML_PER_EMPLOYEE: u64 = 1_170_000;
 /// A storehouse level's store, in millilitres: 50 people's worth of a pop store (design §3.18).
 const STOREHOUSE_STORE_ML_PER_LEVEL: u64 = 50 * POP_STORE_ML_PER_PERSON;
 /// The goods a herd gives (design §3.14): they follow the herd, not the land, so a method's annual output at the land's suitability
@@ -286,13 +282,13 @@ fn pop_view(
     }
 }
 
-fn building_capacity_ml(building: &BuildingState, employees: u64) -> u64 {
-    match building.kind.as_str() {
-        "farm" => employees.saturating_mul(FARM_STORE_ML_PER_EMPLOYEE),
-        "holdings" => employees.saturating_mul(HOLDINGS_STORE_ML_PER_EMPLOYEE),
-        "storehouse" => u64::from(building.levels).saturating_mul(STOREHOUSE_STORE_ML_PER_LEVEL),
-        _ => 0,
+fn building_capacity_ml(building: &BuildingState) -> u64 {
+    if building.kind == "storehouse" {
+        return u64::from(building.levels).saturating_mul(STOREHOUSE_STORE_ML_PER_LEVEL);
     }
+    ck_economy::store_capacity_ml(building)
+        .map(|capacity| u64::try_from(capacity).unwrap_or(u64::MAX))
+        .unwrap_or_default()
 }
 
 /// A building's projected annual food, in hundredths of a person-day: for each method with levels, each food good that is not a herd's
@@ -370,18 +366,9 @@ fn building_view(rules: &Rules, building: &BuildingState, housing_occupants: u64
     let positions = definition.map_or(0, |definition| {
         u64::from(building.levels).saturating_mul(u64::from(definition.workers_per_level))
     });
-    let (filled, employees) =
-        building
-            .employment
-            .iter()
-            .fold((0_u64, 0_u64), |(filled, employees), employment| {
-                (
-                    filled.saturating_add(employment.workers),
-                    employees
-                        .saturating_add(employment.owners)
-                        .saturating_add(employment.workers),
-                )
-            });
+    let filled = building.employment.iter().fold(0_u64, |sum, employment| {
+        sum.saturating_add(employment.workers)
+    });
     // A herd's maximum grows with the farming levels: every method that is not fishing (the same count that sets the start).
     let farming_levels = definition.map_or(0, |definition| {
         definition
@@ -410,7 +397,7 @@ fn building_view(rules: &Rules, building: &BuildingState, housing_occupants: u64
         open: positions.saturating_sub(filled),
         herds,
         store_used_ml: volume_ml(rules, &building.stock),
-        store_capacity_ml: building_capacity_ml(building, employees),
+        store_capacity_ml: building_capacity_ml(building),
         wage: building.posted_wage(),
         housing_occupants,
     }
@@ -697,6 +684,20 @@ mod tests {
             .place("fixture")
             .expect("the fixture is in the view")
             .field_room
+    }
+
+    fn view_for_place(rules: &Rules, mut place: PlaceState) -> PlaceView {
+        place.id = "fixture".to_owned();
+        let view = build(
+            Some(rules),
+            &EconomyState {
+                places: vec![place],
+            },
+            &["fixture".to_owned()],
+        );
+        view.place("fixture")
+            .expect("the fixture is in the view")
+            .clone()
     }
 
     fn day_one_economy_fixture() -> (Rules, EconomyState, Vec<Vec<u64>>, Date) {
@@ -1041,7 +1042,7 @@ mod tests {
         assert_eq!((place.workers, place.dependents), (80, 40));
         // Food: 1,000 oats and 5 more in the pop's storehouse account, 1,800 hundredths each, for 120 people at 100 a day.
         assert_eq!(place.food_days, (1_005 * 1_800) / (120 * 100));
-        // Storage: oats, ale and barley by volume; the pop's 720 L a head, a farm's 100 L an employee, one storehouse level.
+        // Storage: oats, ale and barley by volume; the pop's 720 L a head, a farm's 100 L per worker, one storehouse level.
         let volume = |good: &str, units: u64| rules.goods[index_of(&rules, good)].volume_ml * units;
         assert_eq!(
             place.storage_used_ml,
@@ -1049,7 +1050,7 @@ mod tests {
         );
         assert_eq!(
             place.storage_capacity_ml,
-            120 * 720_000 + 35 * 100_000 + 36_000_000
+            120 * 720_000 + 25 * 100_000 + 36_000_000
         );
         assert_eq!(place.overflow_lost, 0);
         assert_eq!(place.footprint_m2, 6_200);
@@ -1116,13 +1117,99 @@ mod tests {
             ]
         );
         assert_eq!(farm.store_used_ml, volume("barley", 20));
-        assert_eq!(farm.store_capacity_ml, 35 * 100_000);
+        assert_eq!(farm.store_capacity_ml, 25 * 100_000);
         assert_eq!(farm.wage, 1_234);
 
         let storehouse = &place.buildings[1];
         assert_eq!(storehouse.levels, 1);
         assert!(storehouse.herds.is_empty());
         assert_eq!(storehouse.store_capacity_ml, 36_000_000);
+    }
+
+    #[test]
+    fn displayed_building_and_place_capacity_uses_workers_only() {
+        let rules = shipped_rules();
+        let mut farm = fixture(&rules);
+        farm.pops.clear();
+        farm.buildings.truncate(1);
+        farm.buildings[0].employment = vec![Employment {
+            owners: 1,
+            workers: 10,
+        }];
+        farm.buildings[0].stock.fill(0);
+        farm.buildings[0].stock[index_of(&rules, "oats")] = 10;
+        let view = view_for_place(&rules, farm);
+        assert_eq!(view.buildings[0].store_capacity_ml, 1_000_000);
+        assert_eq!(view.storage_capacity_ml, 1_000_000);
+        assert_eq!(view.storage_used_ml, 350_000);
+        assert_eq!(
+            ck_map::stockpile_value(view.storage_used_ml, view.storage_capacity_ml),
+            350
+        );
+
+        let mut holdings = fixture(&rules);
+        holdings.pops.clear();
+        holdings.buildings.truncate(1);
+        holdings.buildings[0].kind = "holdings".to_owned();
+        holdings.buildings[0].employment = vec![Employment {
+            owners: 2,
+            workers: 10,
+        }];
+        holdings.buildings[0].stock.fill(0);
+        let view = view_for_place(&rules, holdings);
+        assert_eq!(view.buildings[0].store_capacity_ml, 11_700_000);
+        assert_eq!(view.storage_capacity_ml, 11_700_000);
+
+        let mut owners_only = fixture(&rules);
+        owners_only.pops.clear();
+        owners_only.buildings.truncate(1);
+        owners_only.buildings[0].employment = vec![Employment {
+            owners: 10,
+            workers: 0,
+        }];
+        assert_eq!(
+            view_for_place(&rules, owners_only).buildings[0].store_capacity_ml,
+            0
+        );
+
+        let mut no_employees = fixture(&rules);
+        no_employees.pops.clear();
+        no_employees.buildings.truncate(1);
+        no_employees.buildings[0].employment.clear();
+        assert_eq!(
+            view_for_place(&rules, no_employees).buildings[0].store_capacity_ml,
+            0
+        );
+
+        let mut saturating = fixture(&rules);
+        saturating.pops.clear();
+        saturating.buildings.truncate(1);
+        saturating.buildings[0].employment = vec![Employment {
+            owners: 0,
+            workers: u64::MAX,
+        }];
+        assert_eq!(
+            view_for_place(&rules, saturating).buildings[0].store_capacity_ml,
+            u64::MAX
+        );
+
+        let mut invalid_worker_total = fixture(&rules);
+        invalid_worker_total.pops.clear();
+        invalid_worker_total.buildings.truncate(1);
+        invalid_worker_total.buildings[0].employment = vec![
+            Employment {
+                owners: 0,
+                workers: u64::MAX,
+            },
+            Employment {
+                owners: 0,
+                workers: 1,
+            },
+        ];
+        assert_eq!(
+            view_for_place(&rules, invalid_worker_total).buildings[0].store_capacity_ml,
+            0
+        );
     }
 
     #[test]
