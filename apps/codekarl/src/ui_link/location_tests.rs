@@ -47,8 +47,43 @@ fada.pops[2] = {kind = "monk", culture = "mide", religion = "christianity", work
   food_days = 40, necessities = 0, niceties = 0, luxuries = 0, satisfaction = 0, births = 0, deaths = 0}
 local long_place = rowan(0, 0)
 long_place.id = "long"
-VIEWS = {[1] = {rowan = rowan(80, 2), nobody = nobody, fada = fada, long = long_place},
-  [2] = {rowan = rowan(90, 0), nobody = nobody}}
+local cards_place = rowan(108, 2)
+cards_place.id = "cards"
+cards_place.dependents = 72
+cards_place.pops = {
+  {kind = "peasant", culture = "ulaid", religion = "christianity", workers = 108, dependents = 72, employed = 96, unemployed = 12,
+    food_days = 74, necessities = 1000, niceties = 620, luxuries = 80, satisfaction = 12, births = 2, deaths = 1,
+    basic_housing = 380, makeshift_housing = 32, crowding_pm = 950},
+  {kind = "monk", culture = "mide", religion = "christianity", workers = 0, dependents = 5, employed = 0, unemployed = 0,
+    food_days = 300, necessities = 1200, niceties = 0, luxuries = 0, satisfaction = -3, births = 0, deaths = 2,
+    basic_housing = 0, makeshift_housing = 0, crowding_pm = false},
+}
+cards_place.buildings = {
+  {kind = "farm", levels = 8, methods = {{id = "mixed_farming", levels = 8}, {id = "coastal", levels = 0}}, filled = 80, open = 8,
+    herds = {{species = "cattle", head = 27, maximum = 36}, {species = "sheep", head = 10, maximum = 20},
+      {species = "pigs", head = 9, maximum = 9}}, store_used_l = 6400, store_capacity_l = 8000, wage = 1234,
+    housing_occupants = 3},
+  {kind = "holdings", levels = 1, methods = {{id = "strip_farming", levels = 1}}, filled = 0, open = 0,
+    herds = {}, store_used_l = 0, store_capacity_l = 0, wage = 92, housing_occupants = 0},
+  {kind = "storehouse", levels = 1, methods = {}, filled = 0, open = 0,
+    herds = {}, store_used_l = 0, store_capacity_l = 0, wage = 0, housing_occupants = 0},
+  {kind = "holdings", levels = 1, methods = {{id = "strip_farming", levels = 1}}, filled = 8, open = 0,
+    herds = {}, store_used_l = 9000, store_capacity_l = 8000, wage = 92, housing_occupants = 0},
+  {kind = "granary", levels = 1, methods = {}, filled = 0, open = 0,
+    herds = {}, store_used_l = 0, store_capacity_l = 8000, wage = 0, housing_occupants = 0},
+}
+local scrolling_place = rowan(20, 0)
+scrolling_place.id = "scrolling"
+scrolling_place.pops = {}
+for index = 1, 60 do
+  scrolling_place.pops[index] = {kind = "peasant", culture = "ulaid", religion = "christianity", workers = 20, dependents = 4,
+    employed = 18, unemployed = 2, food_days = 40, necessities = 1000, niceties = 200, luxuries = 0,
+    satisfaction = 0, births = 0, deaths = 0}
+end
+VIEWS = {
+  [1] = {rowan = rowan(80, 2), nobody = nobody, fada = fada, long = long_place, cards = cards_place, scrolling = scrolling_place},
+  [2] = {rowan = rowan(90, 0), nobody = nobody, cards = cards_place, scrolling = scrolling_place},
+}
 game = {
   on_time = function(callback) callbacks.time = callback end,
   on_select = function(callback) callbacks.select = callback end,
@@ -78,6 +113,7 @@ local buttons_library = require("lib.button")
 local real_button_new = buttons_library.new
 mode_buttons = {}
 bar_buttons = {}
+look_buttons = {}
 places_text_buttons = 0
 local bar_group = nil
 local bar_visible = true
@@ -87,6 +123,7 @@ buttons_library.new = function(spec)
   if spec.icon == "location" or spec.icon == "pops" then
     bar_buttons[spec.icon] = created
   end
+  if spec.icon == "cards" or spec.icon == "rows" then look_buttons[spec.icon] = created end
   if spec.icon == "stockpile" or spec.icon == "yield" or spec.icon == "elevation" then mode_buttons[spec.icon] = created end
   return created
 end
@@ -112,7 +149,42 @@ function announce_bars()
     note(string.format("bar %s %g %g %g %g", key, button.x, button.y, width, height))
   end
 end
+function announce_look()
+  local origin_x = panel_window.x + 6
+  local origin_y = panel_window.y + panel_window.title_height + 6
+  for _, key in ipairs({"cards", "rows"}) do
+    local control = look_buttons[key]
+    local width, height = control:size()
+    note(string.format("look %s %g %g %g %g selected=%s", key, origin_x + control.x, origin_y + control.y, width, height, tostring(control.selected == true)))
+  end
+end
+function announce_selector_liveness()
+  note("selector_live " .. tostring(look_buttons.cards ~= nil and look_buttons.cards.frame ~= nil
+    and look_buttons.rows ~= nil and look_buttons.rows.frame ~= nil))
+end
 function note(text) window.record(text) end
+local drawing_card = false
+local real_create_quad = render.create_quad
+render.create_quad = function(spec)
+  if drawing_card then
+    note(string.format("cardquad %s %g %g %g %g %s", tostring(spec.texture), spec.x, spec.y,
+      spec.width, spec.height, tostring(spec.tint or "-")))
+  end
+  return real_create_quad(spec)
+end
+local text_library = require("lib.text")
+local real_text_set = text_library.set
+text_library.set = function(line, content)
+  real_text_set(line, content)
+  if drawing_card then line.ck_test_text = content end
+end
+local real_text_move = text_library.move
+text_library.move = function(line, x, y)
+  real_text_move(line, x, y)
+  if drawing_card and line.ck_test_text ~= nil then
+    note(string.format("cardtext %g %g %d %s %s", line.x, line.y, line.width, line.colour, line.ck_test_text))
+  end
+end
 local real_group_visible = render.set_group_visible
 local real_set_hit = render.set_hit
 render.set_hit = function(key, rects, group)
@@ -154,6 +226,36 @@ lists.new = function(spec)
   end
   list_object = created
   return created
+end
+local cards_library = require("lib.cards")
+local real_cards_new = cards_library.new
+local function observe_card_items(items)
+  for _, item in ipairs(items) do
+    local draw = item.draw
+    item.draw = function(...)
+      drawing_card = true
+      local result = draw(...)
+      drawing_card = false
+      return result
+    end
+  end
+end
+local function cards_summary(object)
+  local heights = {}
+  for index, item in ipairs(object.items) do heights[index] = tostring(item.height) end
+  note("cardstack gap=" .. object.gap .. " heights=" .. table.concat(heights, ","))
+end
+cards_library.new = function(spec)
+  observe_card_items(spec.items)
+  card_object = real_cards_new(spec)
+  cards_summary(card_object)
+  local real_set_items = card_object.set_items
+  function card_object:set_items(items, gap)
+    observe_card_items(items)
+    real_set_items(self, items, gap)
+    cards_summary(self)
+  end
+  return card_object
 end
 local tabs_library = require("lib.tabs")
 local real_tabs_new = tabs_library.new
@@ -292,6 +394,43 @@ fn rows(rig: &Rig) -> Vec<String> {
         .collect()
 }
 
+fn card_stacks(rig: &Rig) -> Vec<String> {
+    notes(rig)
+        .into_iter()
+        .filter_map(|line| line.strip_prefix("cardstack ").map(str::to_owned))
+        .collect()
+}
+
+fn look_point(rig: &Rig, key: &str) -> (f64, f64) {
+    let prefix = format!("look {key} ");
+    let line = notes(rig)
+        .into_iter()
+        .rev()
+        .find(|line| line.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("no look button {key}: {:?}", notes(rig)));
+    let mut parts = line[prefix.len()..].split_whitespace();
+    let x = parts.next().unwrap().parse::<f64>().unwrap();
+    let y = parts.next().unwrap().parse::<f64>().unwrap();
+    (x + 13.0, y + 15.0)
+}
+
+fn click_look(rig: &mut Rig, key: &str) {
+    let (x, y) = look_point(rig, key);
+    rig.feed(&[
+        PointerEvent::Down(points(x, y)),
+        PointerEvent::Up(points(x, y)),
+    ]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+}
+
+fn click_panel_point(rig: &mut Rig, x: f64, y: f64) {
+    rig.feed(&[
+        PointerEvent::Down(points(x, y)),
+        PointerEvent::Up(points(x, y)),
+    ]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+}
+
 fn tab_point(rig: &Rig, key: &str) -> (f64, f64) {
     let prefix = format!("tab {key} ");
     let line = notes(rig)
@@ -321,31 +460,376 @@ fn click_tab_at(rig: &mut Rig, key: &str, (width, height): (u32, u32)) {
 }
 
 const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|housing: basic 0/0, makeshift 0/0|crowding: 0%|food: 215 days|building land: 4200 / 24200 m²|storage: 5400 / 86400 L|lost to overflow last month: 0|prices (base):|  oats 100 (100)|  ale 2.5 (2)";
-const POPS_ROWS: &str = "peasant ulaid christianity|  workers: 80|  dependents: 40|  housing: basic 0, makeshift 0|  crowding: 0%|  employed: 70|  unemployed: 10|  food: 215 days|  needs: 0% 0% 0%|  satisfaction: 0|  births 2, deaths 1 ^";
-const BUILDINGS_ROWS: &str = "farm|  levels: mixed_farming 3|  positions: 25 filled, 5 open|  housing occupants: 0|  cattle: 27 / 36|  store: 1 / 3500 L|  wage: 0||storehouse|  levels: 1|  positions: 0 filled, 2 open|  housing occupants: 0|  store: 0 / 36000 L|  wage: 0";
-
 #[test]
-fn the_three_tabs_show_a_fixture_places_lines_as_literals_and_a_click_switches_between_them() {
+fn the_location_tab_stays_text_while_pops_and_buildings_start_as_cards_and_share_the_rows_choice() {
     let mut rig = rig(&[
-        "time(1, 1) select_place('rowan', 'Rowan')",
+        "time(1, 1) select_place('scrolling', 'Scrolling')",
         "announce_tabs()",
-        "announce_tabs()",
+        "announce_look()",
+        "note('theme track ' .. require('lib.theme').colour('track')); note('theme band ' .. require('lib.theme').colour('band'))",
+        "card_object:set_pos(26); note('look_scroll_before ' .. card_object:scroll_position())",
+        "note('look_scroll_after_switch ' .. card_object:scroll_position())",
+        "select_place('nobody', 'No Economy'); announce_active_panel()",
+        "announce_selector_liveness()",
+    ]);
+    rig.opened();
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    assert_eq!(
+        card_stacks(&rig).last().unwrap(),
+        &format!("gap=3 heights={}", vec!["61"; 60].join(","))
+    );
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line.contains("look cards ") && line.ends_with("selected=true"))
+    );
+    rig.opened();
+    assert!(notes(&rig).iter().any(|line| line == "theme track #3a3326"));
+    assert!(notes(&rig).iter().any(|line| line == "theme band #221c13"));
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "look_scroll_before 26")
+    );
+    click_look(&mut rig, "rows");
+    assert_eq!(
+        card_stacks(&rig).last().unwrap(),
+        &format!("gap=1 heights={}", vec!["13"; 61].join(","))
+    );
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "look_scroll_after_switch 0"),
+        "switching looks resets scroll: {:?}",
+        notes(&rig)
+    );
+    click_tab(&mut rig, "buildings");
+    assert!(
+        card_stacks(&rig)
+            .last()
+            .unwrap()
+            .starts_with("gap=1 heights=")
+    );
+    rig.opened();
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=1 heights=13"),
+        "another place keeps rows"
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line.starts_with("active_panel ") && line.contains(" buildings "))
+    );
+    assert!(
+        notes(&rig).iter().any(|line| line.ends_with("nobody@1")),
+        "the new place was selected: {:?}",
+        notes(&rig)
+    );
+    click_tab(&mut rig, "location");
+    rig.opened();
+    assert!(
+        notes(&rig).iter().any(|line| line == "selector_live false"),
+        "location tab destroys selector buttons: {:?}",
+        notes(&rig)
+    );
+    assert_eq!(
+        rows(&rig).last().map(String::as_str),
+        Some(
+            "people: 0|  workers: 0|  dependents: 0|housing: basic 0/0, makeshift 0/0|crowding: 0%|food: 0 days|building land: 0 / 0 m²|storage: 0 / 0 L|lost to overflow last month: 0|prices (base):"
+        )
+    );
+}
+
+fn cards_rendered_fixture() -> Rig {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('cards', 'Cards')",
         "announce_tabs()",
     ]);
     rig.opened();
-    // Selecting opens the panel on the Location tab.
-    assert_eq!(rows(&rig), [LOCATION_ROWS]);
     rig.opened();
     click_tab(&mut rig, "pops");
-    assert_eq!(rows(&rig), [LOCATION_ROWS, POPS_ROWS]);
-    click_tab(&mut rig, "buildings");
-    assert_eq!(rows(&rig), [LOCATION_ROWS, POPS_ROWS, BUILDINGS_ROWS]);
-    // And back; a click on the tab already showing changes nothing.
-    click_tab(&mut rig, "location");
-    click_tab(&mut rig, "location");
     assert_eq!(
-        rows(&rig),
-        [LOCATION_ROWS, POPS_ROWS, BUILDINGS_ROWS, LOCATION_ROWS]
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=3 heights=61,61")
+    );
+    click_tab(&mut rig, "buildings");
+    rig
+}
+
+fn card_text_at(recorded: &[String], x: u32, y: u32, value: &str) -> bool {
+    recorded
+        .iter()
+        .any(|line| line.starts_with(&format!("cardtext {x} {y} ")) && line.ends_with(value))
+}
+
+fn card_quad_at(recorded: &[String], x: u32, y: u32, width: u32, colour: &str) -> bool {
+    recorded.iter().any(|line| {
+        line.starts_with("cardquad ") && line.contains(&format!(" {x} {y} {width} 6 {colour}"))
+    })
+}
+
+#[test]
+fn pop_cards_render_mockup_text_positions_and_mood() {
+    let recorded = notes(&cards_rendered_fixture());
+    for (x, y, value) in [
+        (34, 6, "peasant"),
+        (34, 28, "ulaid · christianity"),
+        (10, 50, "food"),
+        (146, 50, "74d"),
+        (210, 50, "job"),
+        (10, 74, "needs"),
+        (146, 74, "mood"),
+        (202, 74, "+12"),
+        (10, 96, "housing"),
+        (94, 96, "380 + 32"),
+        (210, 96, "crowd"),
+        (270, 96, "95%"),
+    ] {
+        assert!(
+            card_text_at(&recorded, x, y, value),
+            "{value} at ({x},{y}): {recorded:?}"
+        );
+    }
+    assert!(card_text_at(&recorded, 270, 224, "—"));
+    assert!(recorded.iter().any(|line| line.contains("#8fc06a +12")));
+    assert!(recorded.iter().any(|line| line.contains("108w 72d ^")));
+}
+
+#[test]
+fn pop_card_bars_cover_ratios_clamps_and_empty_jobs() {
+    let recorded = notes(&cards_rendered_fixture());
+    for (x, y, width) in [(58, 60, 48), (246, 60, 70), (70, 84, 20), (94, 84, 12)] {
+        assert!(
+            card_quad_at(&recorded, x, y, width, "#ece3cb"),
+            "fill at ({x},{y}) width {width}: {recorded:?}"
+        );
+    }
+    assert!(
+        card_quad_at(&recorded, 58, 188, 80, "#ece3cb"),
+        "300 days clamps to 40px"
+    );
+    assert!(
+        card_quad_at(&recorded, 70, 212, 20, "#ece3cb"),
+        "1200 needs clamps to 10px"
+    );
+    assert!(
+        card_quad_at(&recorded, 246, 188, 80, "#3a3326"),
+        "zero workers leaves only the job track"
+    );
+    assert!(
+        !card_quad_at(&recorded, 246, 188, 0, "#ece3cb"),
+        "zero job emits no fill quad"
+    );
+    assert!(card_text_at(&recorded, 146, 178, "300d"));
+}
+
+#[test]
+fn building_cards_render_mockup_values_and_empty_or_clamped_bars() {
+    let rig = cards_rendered_fixture();
+    let recorded = notes(&rig);
+    assert_eq!(
+        card_stacks(&rig).get(1).map(String::as_str),
+        Some("gap=3 heights=50,39,39,39,39")
+    );
+    for text in [
+        "mixed_farming 8, coastal 0",
+        "wage 1.234",
+        "housing 3",
+        "80/88",
+        "cattle 27/36",
+    ] {
+        assert!(
+            recorded.iter().any(|line| line.contains(text)),
+            "missing {text}: {recorded:?}"
+        );
+    }
+    assert!(
+        card_quad_at(&recorded, 66, 60, 72, "#ece3cb"),
+        "farm staff fill is 36px"
+    );
+    assert!(
+        card_quad_at(&recorded, 290, 60, 48, "#ece3cb"),
+        "6400/8000 store fill is 24px"
+    );
+    assert!(
+        card_quad_at(&recorded, 66, 166, 80, "#3a3326"),
+        "empty staff track"
+    );
+    assert!(
+        card_quad_at(&recorded, 290, 166, 60, "#3a3326"),
+        "zero-capacity store track"
+    );
+    assert!(card_text_at(&recorded, 34, 218, "storage"));
+    assert!(
+        card_quad_at(&recorded, 290, 334, 60, "#ece3cb"),
+        "over-capacity store clamps to 30px"
+    );
+    assert!(
+        card_quad_at(&recorded, 290, 418, 60, "#3a3326"),
+        "zero of 8000 draws the track"
+    );
+    assert!(
+        !card_quad_at(&recorded, 290, 418, 0, "#ece3cb"),
+        "zero fill creates no quad"
+    );
+}
+
+#[test]
+fn row_items_expand_exclusively_keep_open_rows_across_revisions_and_scroll_clamps() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('cards', 'Cards')",
+        "announce_tabs()",
+        "announce_look()",
+        "time(12, 2)",
+    ]);
+    rig.opened();
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    rig.opened();
+    click_look(&mut rig, "rows");
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=1 heights=13,13,13")
+    );
+    // The content origin is x=6, y=82 points. The first data row starts 14 UI pixels below it.
+    click_panel_point(&mut rig, 40.0, 123.0);
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=1 heights=13,100,13")
+    );
+    assert!(
+        notes(&rig).iter().any(|line| line.contains("#4fb3c8")),
+        "the open row uses the place outline band: {:?}",
+        notes(&rig)
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line.contains("#15110a peasant ulaid")),
+        "the open row uses title-text ink: {:?}",
+        notes(&rig)
+    );
+    // Once the first row expands, the second row begins at 115 UI pixels below the content origin.
+    click_panel_point(&mut rig, 40.0, 325.0);
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=1 heights=13,13,100")
+    );
+    rig.opened();
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=1 heights=13,13,100")
+    );
+    assert!(
+        rig.sink.quads().iter().any(|quad| quad.clip.is_some()),
+        "rows are clipped by their content viewport"
+    );
+}
+
+#[test]
+fn opening_and_closing_a_row_keeps_the_scroll_offset() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('scrolling', 'Scrolling')",
+        "announce_tabs()",
+        "announce_look()",
+        "card_object:set_pos(26); note('row_scroll_before ' .. card_object:scroll_position())",
+        "card_object.items[2].on_click(); note('row_scroll_after_open ' .. card_object:scroll_position())",
+        "card_object.items[2].on_click(); note('row_scroll_after_close ' .. card_object:scroll_position())",
+    ]);
+    rig.opened();
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    rig.opened();
+    click_look(&mut rig, "rows");
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "row_scroll_before 26")
+    );
+
+    // Invoke the same row callback as a hit after scrolling one line; pointer dispatch is covered above.
+    rig.opened();
+    assert!(
+        card_stacks(&rig)
+            .last()
+            .unwrap()
+            .starts_with("gap=1 heights=13,100,"),
+        "first row expanded: {:?}",
+        card_stacks(&rig)
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "row_scroll_after_open 26"),
+        "opening retains the offset: {:?}",
+        notes(&rig)
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line.starts_with("cardquad ") && line.ends_with("#4fb3c8")),
+        "open row uses place outline: {:?}",
+        notes(&rig)
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line.contains("#15110a peasant ulaid")),
+        "open row title uses title-text: {:?}",
+        notes(&rig)
+    );
+    assert!(
+        rig.sink.quads().iter().any(|quad| quad.clip.is_some()),
+        "the expanded rows remain clipped to the content viewport"
+    );
+
+    // The second click invokes the refreshed row callback and closes it again.
+    rig.opened();
+    assert!(
+        card_stacks(&rig)
+            .last()
+            .unwrap()
+            .starts_with("gap=1 heights=13,13,13,"),
+        "second click closes the row: {:?}",
+        card_stacks(&rig)
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "row_scroll_after_close 26"),
+        "closing retains the offset: {:?}",
+        notes(&rig)
+    );
+}
+
+#[test]
+fn card_scroll_uses_thirteen_pixel_lines_and_shrinking_clamps_the_offset() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('cards', 'Cards')",
+        "announce_tabs()",
+        "local many = {}; for i = 1, 40 do many[i] = card_object.items[1] end; \
+         card_object:set_items(many, 3); note('scroll0 ' .. card_object:scroll_position()); \
+         card_object:scroll({amount = -1, unit = 'lines'}); note('scroll1 ' .. card_object:scroll_position()); \
+         card_object:set_items({card_object.items[1]}, 3); note('scroll2 ' .. card_object:scroll_position())",
+    ]);
+    rig.opened();
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    rig.opened();
+    // The third UI step reuses the same fixture card to exercise scrolling and a shrinking stack.
+    let recorded = notes(&rig);
+    assert!(recorded.contains(&"scroll0 0".to_owned()));
+    assert!(recorded.contains(&"scroll1 26".to_owned()));
+    assert!(recorded.contains(&"scroll2 0".to_owned()));
+    assert!(
+        rig.sink.quads().iter().any(|quad| quad.clip.is_some()),
+        "the stack is clipped to the content viewport"
     );
 }
 
@@ -365,7 +849,10 @@ fn a_place_of_nobody_has_zeroes_and_empty_pops_and_buildings() {
     rig.opened();
     click_tab(&mut rig, "pops");
     click_tab(&mut rig, "buildings");
-    assert_eq!(&rows(&rig)[1..], ["no pops", "no buildings"]);
+    assert_eq!(
+        card_stacks(&rig),
+        ["gap=3 heights=13".to_owned(), "gap=3 heights=13".to_owned()]
+    );
 }
 
 #[test]
@@ -419,11 +906,18 @@ fn a_selection_before_any_view_says_so_and_reads_nothing() {
         "time(1, 1)",
     ]);
     rig.opened();
-    assert_eq!(rows(&rig), ["economy: not published yet"]);
+    assert!(
+        card_stacks(&rig).is_empty(),
+        "a selection without a view creates no list yet"
+    );
     rig.opened();
     assert_eq!(notes(&rig).last().map(String::as_str), Some("calls 0"));
     rig.opened();
     assert_eq!(rows(&rig).last().map(String::as_str), Some(LOCATION_ROWS));
+    assert!(
+        card_stacks(&rig).is_empty(),
+        "the location tab stays a text list"
+    );
 }
 
 #[test]
@@ -438,7 +932,10 @@ fn selecting_another_place_keeps_the_tab_showing() {
     click_tab(&mut rig, "pops");
     rig.opened();
     // The Pops tab is still showing for the other place.
-    assert_eq!(rows(&rig).last().map(String::as_str), Some("no pops"));
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=3 heights=13")
+    );
 }
 
 #[test]
@@ -492,20 +989,20 @@ fn a_window_taller_than_the_lists_row_limit_opens_and_resizes_with_a_usable_list
 }
 
 #[test]
-fn a_long_word_of_fada_bearing_letters_wraps_between_characters() {
+fn card_content_is_clipped_without_wrapping_long_place_values() {
     let mut rig = Rig::new_fixture_body(&script(&[
         "time(1, 1) select_place('fada', 'Fada')",
         "announce_tabs()",
     ]));
-    // 300 points: the content is about 45 font pixels wide, so the 40 letters need many rows.
+    // 300 points leaves a narrow card; long values are clipped by the group's viewport and do not wrap.
     rig.deliver_fixture_frame_at(300, 600, 2);
     rig.opened();
     rig.opened();
-    // A byte cut inside a letter would have failed the callback when the row crossed to the host; here every letter survives.
     click_tab_at(&mut rig, "pops", (300, 600));
-    let pops = rows(&rig).last().cloned().expect("the Pops rows");
-    assert_eq!(pops.matches('\u{D3}').count(), 40, "{pops}");
-    assert!(pops.split('|').count() > 10, "the word wrapped: {pops}");
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=3 heights=61,61")
+    );
 }
 
 /// The narrow layouts: below the least width that holds the tabs, the close button and the frame the panel is that width and extends
