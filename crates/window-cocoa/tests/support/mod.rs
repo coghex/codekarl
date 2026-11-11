@@ -90,6 +90,11 @@ unsafe extern "C" {
         modifier_flags: u64,
         marked: i32,
     ) -> i32;
+    fn ck_win_test_unmarked_pointer_window(
+        kind: i32,
+        event_window: *mut i64,
+        window_number: *mut i64,
+    ) -> i32;
     fn ck_win_test_post_pointer(
         kind: i32,
         x: f64,
@@ -466,6 +471,17 @@ pub(crate) fn post_unmarked_keyboard_event(
 pub(crate) fn post_pointer(kind: i32, x: f64, y: f64, amount: f64, points: bool) -> bool {
     // SAFETY: main thread; scalar arguments only.
     unsafe { ck_win_test_post_pointer(kind, x, y, amount, i32::from(points), 1) != 0 }
+}
+
+/// The window number an unmarked pointer event of `kind` (0 down, 1 drag, 2 up, 3 scroll) carries and the test window's own, built and
+/// not posted. `None` when there is no window.
+#[must_use]
+pub(crate) fn unmarked_pointer_window(kind: i32) -> Option<(i64, i64)> {
+    let (mut event, mut window) = (0_i64, 0_i64);
+    // SAFETY: main thread; the out pointers are valid for the call.
+    let read =
+        unsafe { ck_win_test_unmarked_pointer_window(kind, &raw mut event, &raw mut window) };
+    (read != 0).then_some((event, window))
 }
 
 /// Posts an unmarked pointer event, which the test input filter must drop.

@@ -463,6 +463,31 @@ fn real_input_is_dropped() {
     );
 }
 
+/// An unmarked pointer event is addressed to the test's own window, for every kind the helper builds: a windowless one is routed by the real
+/// cursor, which could be on the menu bar (the application menu then opens and its modal loop never ends). There is no unmarked scroll: it
+/// cannot be addressed to a window (`NSEvent` has no public scroll constructor), no test posts one, so the helper refuses it.
+fn unmarked_pointer_events_carry_the_test_windows_number() {
+    let _fixture = Fixture::open(300, 200);
+    for (kind, name) in [(0, "down"), (1, "drag"), (2, "up")] {
+        let (event, window) = support::unmarked_pointer_window(kind)
+            .expect("the window exists and the event is built");
+        assert_ne!(window, 0, "the test window has a number");
+        assert_eq!(
+            event, window,
+            "the unmarked {name} is addressed to the test window"
+        );
+    }
+    assert_eq!(
+        support::unmarked_pointer_window(3),
+        None,
+        "a windowless unmarked scroll is never built"
+    );
+    assert!(
+        !support::post_unmarked_pointer(3, 20.0, 20.0, 1.0, false),
+        "and never posted"
+    );
+}
+
 fn marked_pointer_events_reach_the_window_and_unmarked_mouse_is_filtered() {
     let mut fixture = Fixture::open(300, 200);
     assert!(support::post_unmarked_pointer(0, 20.0, 20.0, 0.0, false));
@@ -1060,7 +1085,7 @@ fn test_windows_let_clicks_through() {
 
 type Case = fn();
 
-const CASES: [(&str, Case); 47] = [
+const CASES: [(&str, Case); 48] = [
     ("create_and_destroy", create_and_destroy),
     (
         "production_open_still_asks_for_activation",
@@ -1074,6 +1099,10 @@ const CASES: [(&str, Case); 47] = [
     ("close_button", close_button),
     ("escape_through_dispatch", escape_through_dispatch),
     ("real_input_is_dropped", real_input_is_dropped),
+    (
+        "unmarked_pointer_events_carry_the_test_windows_number",
+        unmarked_pointer_events_carry_the_test_windows_number,
+    ),
     (
         "marked_pointer_events_reach_the_window_and_unmarked_mouse_is_filtered",
         marked_pointer_events_reach_the_window_and_unmarked_mouse_is_filtered,
