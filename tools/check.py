@@ -849,7 +849,7 @@ def unittest_step(group: str, modules: Sequence[str]) -> Step:
 UNITTEST_DESCRIPTIONS = {
     "batch": "Python tests of the batch gate, the gate criteria, hashing and the lock holders.",
     "catalog": "Python tests of the check catalog: group ownership of every test unit, the planner, and the "
-    "source scans of the crates (GLFW sources, the native and Vulkan test files, the manifests).",
+    "source scans of the crates (all Rust source directories, the native and Vulkan test files, the manifests).",
     "check": "Python tests of the check runner, its lint policy, the docs isolation and the process scan.",
     "lints": "The workspace lint configuration and the Rust suppression policy.",
     "bootstrap": "Python tests of the bootstrap, the pipeline, the owner sign-off, the chat and the tools.",
@@ -883,9 +883,9 @@ RUST_SOURCE_DIRS = (
     "crates/window-cocoa/",
     "crates/window-glfw/",
 )
-# The catalog tests are part of the check-tool area. Rust edits select their owning crate groups; they do
-# not select this tool test merely because its static inventory reads Rust sources.
-CATALOG_PATHS = PYTHON_PATHS
+# CK-263: the catalog tests parse these Rust test commands and their cross-file inputs, so edits to
+# scanned Rust sources select the inventory test as well as the owning crate groups.
+CATALOG_PATHS = (*PYTHON_PATHS, *RUST_SOURCE_DIRS)
 UNITTEST_PATHS = {
     "batch": PYTHON_PATHS,
     "catalog": CATALOG_PATHS,
@@ -1150,6 +1150,7 @@ STEPS = [
         "(unit and boundary tests over fakes, the CLI spec's plain cases, Lua VMs, modes, signals, runtime).",
         paths=(
             "apps/codekarl/",
+            "crates/economy/",
             "config/",
             "scripts/",
             "assets/",
@@ -1184,6 +1185,7 @@ STEPS = [
         "target with the `vulkan` feature alone (CK-162).",
         paths=(
             "apps/codekarl/",
+            "crates/economy/",
             "config/",
             "scripts/",
             "assets/",
@@ -1258,6 +1260,31 @@ STEPS = [
         needs="window",
         description="The codekarl application's native real-window test target.",
         paths=APP_NATIVE_WINDOW_FILES,
+    ),
+    Step(
+        "app.ui-witness",
+        (),
+        lambda: [
+            cargo_test(
+                ["-p", "codekarl", "--test", "windowed"],
+                [
+                    "a_places_click_opens_the_list_a_wheel_scrolls_it_and_a_row_click_opens_the_place_window",
+                    "a_fixture_scenario_time_bar_changes_speed_pause_and_captures_a_gap_drag",
+                ],
+            )
+        ],
+        full_spec=True,
+        analyze=True,
+        needs="window",
+        description="The two shipped UI window witnesses (places list and time bar), each in quiet and typing mode; "
+        "a same-plan app.native-window run covers these cases.",
+        paths=(
+            "scripts/ui/",
+            "assets/ui/",
+            "apps/codekarl/src/ui_link.rs",
+            "apps/codekarl/src/ui_link/",
+            "apps/codekarl/src/window_api.rs",
+        ),
     ),
     Step(
         "render2d.metal-window",
@@ -1776,6 +1803,10 @@ def matched(step: Step, changed: Sequence[str]) -> tuple[bool, str]:
     hits = [(path, pattern) for path in changed for pattern in step.paths if touches(pattern, path)]
     if not hits:
         return False, "no changed path matches its patterns"
+    if step.name in ("rust.app", "rust.app-default"):
+        economy_hits = [path for path, _ in hits if path.startswith("crates/economy/")]
+        if economy_hits:
+            return True, f"changed economy path {economy_hits[0]} selects application tests"
     path, pattern = hits[0]
     more = f" (and {len(hits) - 1} more)" if len(hits) > 1 else ""
     return True, f"changed path {path} matches {pattern}{more}"
@@ -1823,7 +1854,16 @@ def plan(
         if unclaimed:
             shown = abbreviate(unclaimed, 3)
             wide = f"fail wide: {shown} is claimed by no group"
-    return Plan(tuple(choose(step, changed, requested, wide) for step in steps))
+    choices = [choose(step, changed, requested, wide) for step in steps]
+    selected = {choice.step.name for choice in choices if choice.selected}
+    if "app.native-window" in selected:
+        choices = [
+            Choice(choice.step, False, "covered by app.native-window")
+            if choice.step.name == "app.ui-witness"
+            else choice
+            for choice in choices
+        ]
+    return Plan(tuple(choices))
 
 
 class ChangeSetError(RuntimeError):

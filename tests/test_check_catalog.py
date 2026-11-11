@@ -102,9 +102,11 @@ def full_units(targets: dict[str, list[tuple[str, str, bool]]]) -> set[Unit]:
 
 def parse_cargo_test(
     command: Sequence[str], targets: dict[str, list[tuple[str, str, bool]]]
-) -> tuple[list[str], list[tuple[str, str]], str, str | None]:
-    """A `cargo test` command's packages, explicit target selectors, feature variant and case set. Anything
-    it does not understand is an error, so a new kind of selection cannot slip past the ownership proof."""
+) -> tuple[list[str], list[tuple[str, str]], str, str | None, tuple[str, ...]]:
+    """A `cargo test` command's packages, targets, variant, case set and exact name filters.
+
+    Anything it does not understand is an error, so a new kind of selection cannot slip past the ownership proof.
+    """
     assert list(command[:2]) == ["cargo", "test"], command
     words = list(command[2:])
     after: list[str] = []
@@ -137,17 +139,32 @@ def parse_cargo_test(
         elif word not in ("--locked", "--release"):  # CK-130: the scale acceptance runs in release
             raise AssertionError(f"unrecognised cargo test argument {word!r} in {command}")
     chosen_set: str | None = None
+    name_filters: tuple[str, ...] = ()
     if after:
-        assert after[0] == "--set", after
-        chosen_set = after[1]
-        assert after == ["--set", chosen_set], after
-    return packages, explicit, variant, chosen_set
+        if after[0] == "--set":
+            chosen_set = after[1]
+            assert after == ["--set", chosen_set], after
+        else:
+            assert all(after), after
+            assert packages == ["codekarl"] and explicit == [("test", "windowed")], command
+            assert variant == ALL_FEATURES and chosen_set is None, command
+            name_filters = tuple(after)
+    return packages, explicit, variant, chosen_set, name_filters
 
 
 def units_of(command: Sequence[str], targets: dict[str, list[tuple[str, str, bool]]]) -> set[Unit]:
     """The test units one `cargo test` command runs."""
-    packages, explicit, variant, chosen_set = parse_cargo_test(command, targets)
+    packages, explicit, variant, chosen_set, name_filters = parse_cargo_test(command, targets)
     units: set[Unit] = set()
+    if name_filters:
+        assert name_filters == (
+            "a_places_click_opens_the_list_a_wheel_scrolls_it_and_a_row_click_opens_the_place_window",
+            "a_fixture_scenario_time_bar_changes_speed_pause_and_captures_a_gap_drag",
+        ), name_filters
+        assert ("test", "windowed", False) in targets["codekarl"], targets["codekarl"]
+        return {
+            ("codekarl", "test", "windowed", variant, f"filter:{name}") for name in name_filters
+        }
     for package in packages:
         for kind, name, doctests in targets[package]:
             selected = (
@@ -270,8 +287,8 @@ class Ownership(unittest.TestCase):
     def test_01_the_groups_run_disjoint_units_that_together_are_exactly_the_full_run(self) -> None:
         owners: dict[Unit, list[str]] = {}
         for step in check.STEPS:
-            # The focus-only group is a named selector for the same target, not a second default-run unit.
-            if step.name == "glfw.window-focus":
+            # These groups are named subsets of a target owned by another group, not additional full-run units.
+            if step.name in ("glfw.window-focus", "app.ui-witness"):
                 continue
             for unit in group_units(step, TARGETS):
                 owners.setdefault(unit, []).append(step.name)
@@ -309,6 +326,35 @@ class Ownership(unittest.TestCase):
             "a group runs something the full run does not",
         )
 
+    def test_01b_the_ui_witness_is_an_exact_named_subset_of_the_native_window_target(self) -> None:
+        expected = (
+            "a_places_click_opens_the_list_a_wheel_scrolls_it_and_a_row_click_opens_the_place_window",
+            "a_fixture_scenario_time_bar_changes_speed_pause_and_captures_a_gap_drag",
+        )
+        step = next(step for step in check.STEPS if step.name == "app.ui-witness")
+        command = step.commands()[0]
+        packages, explicit, variant, chosen_set, filters = parse_cargo_test(command, TARGETS)
+        self.assertEqual(
+            (packages, explicit, variant, chosen_set, filters),
+            (["codekarl"], [("test", "windowed")], ALL_FEATURES, None, expected),
+        )
+        self.assertEqual(
+            group_units(step, TARGETS),
+            {("codekarl", "test", "windowed", ALL_FEATURES, f"filter:{name}") for name in expected},
+        )
+        suite = next(step for step in check.STEPS if step.name == "app.native-window")
+        self.assertEqual(
+            group_units(suite, TARGETS),
+            {("codekarl", "test", "windowed", ALL_FEATURES, "*")},
+        )
+        source = (REPO / "apps/codekarl/tests/windowed.rs").read_text()
+        for name in expected:
+            self.assertEqual(source.count(f"case!({name})"), 1, name)
+        self.assertIn("Mode::Quiet", source)
+        self.assertIn("Mode::Typing", source)
+        self.assertEqual(step.needs, "window")
+        self.assertEqual(step.levels, ())
+
     def test_02_the_oracle_matches_every_groups_classification(self) -> None:
         rank = {"plain": 0, "gpu": 1, "window": 2}
         for step in check.STEPS:
@@ -333,6 +379,7 @@ class Ownership(unittest.TestCase):
             {
                 "native.window",
                 "app.native-window",
+                "app.ui-witness",
                 "render2d.metal-window",
                 "metal.window-core",
                 "metal.window-scene",
@@ -443,6 +490,11 @@ class Catalog(unittest.TestCase):
             "crates/window-cocoa/",
             "crates/gpu-metal/",
             *check.APP_NATIVE_WINDOW_FILES,
+            "scripts/ui/",
+            "assets/ui/",
+            "apps/codekarl/src/ui_link.rs",
+            "apps/codekarl/src/ui_link/",
+            "apps/codekarl/src/window_api.rs",
             *check.VULKAN_APP_FILES,
             *check.APP_METAL_GPU_FILES,
             "crates/render-2d/",
@@ -471,7 +523,6 @@ class Catalog(unittest.TestCase):
             "apps/codekarl/src/main.rs",
             "apps/codekarl/tests/modes.rs",
             "config/codekarl.toml",
-            "scripts/ui/demo.lua",
             "Cargo.toml",
             "Cargo.lock",
             "tools/check.py",
@@ -486,7 +537,16 @@ class Catalog(unittest.TestCase):
         # (A crate of the future: `crates/gpu-vulkan/` itself is registered since CK-79.)
         chosen = check.plan(check.STEPS, ["crates/gpu-future/src/lib.rs"])
         affected = [c for c in chosen.choices if c.step.category == "affected"]
-        self.assertTrue(all(c.selected and "claimed by no group" in c.why for c in affected))
+        self.assertTrue(
+            all(
+                c.selected and "claimed by no group" in c.why
+                for c in affected
+                if c.step.name != "app.ui-witness"
+            )
+        )
+        witness = next(c for c in affected if c.step.name == "app.ui-witness")
+        self.assertFalse(witness.selected)
+        self.assertEqual(witness.why, "covered by app.native-window")
         future = check.Step(
             "future.window",
             check.FAST,
@@ -696,6 +756,87 @@ class Planner(unittest.TestCase):
         self.assertTrue(names["app.native-window"] or names["app.metal-gpu"])
 
 
+class CK263Links(unittest.TestCase):
+    def choices(
+        self, paths: list[str] | None, requested: Sequence[str] = (), failure: str | None = None
+    ) -> dict[str, check.Choice]:
+        plan = check.plan(check.STEPS, paths, requested, failure)
+        return {choice.step.name: choice for choice in plan.choices}
+
+    def test_01_economy_changes_select_both_windowless_application_groups_with_a_reason(
+        self,
+    ) -> None:
+        choices = self.choices(["crates/economy/src/lib.rs"])
+        for name in ("economy.core", "rust.app", "rust.app-default"):
+            self.assertTrue(choices[name].selected, name)
+        for name in ("rust.app", "rust.app-default"):
+            self.assertIn("economy", choices[name].why)
+        self.assertFalse(
+            any(choice.selected and choice.step.needs != "plain" for choice in choices.values())
+        )
+
+    def test_02_the_ui_paths_select_only_the_witness_and_app_code_also_selects_headless_tests(
+        self,
+    ) -> None:
+        for path in (
+            "scripts/ui/main.lua",
+            "assets/ui/theme.toml",
+            "apps/codekarl/src/ui_link.rs",
+            "apps/codekarl/src/ui_link/location_tests.rs",
+            "apps/codekarl/src/window_api.rs",
+        ):
+            choices = self.choices([path])
+            self.assertTrue(choices["app.ui-witness"].selected, path)
+            self.assertNotIn(
+                "app.native-window",
+                {name for name, choice in choices.items() if choice.selected},
+                path,
+            )
+            for name in (
+                "native.window",
+                "render2d.metal-window",
+                "metal.window-core",
+                "glfw.window",
+            ):
+                self.assertFalse(choices[name].selected, f"{path}: {name}")
+            if path.startswith("apps/codekarl/src/"):
+                self.assertTrue(choices["rust.app"].selected, path)
+                self.assertTrue(choices["rust.app-default"].selected, path)
+
+    def test_03_native_window_selection_suppresses_the_subset_even_for_explicit_and_fail_wide_plans(
+        self,
+    ) -> None:
+        cases = (
+            self.choices(["apps/codekarl/tests/windowed.rs"]),
+            self.choices(["scripts/ui/main.lua"], ["app.native-window"]),
+            self.choices(["scripts/ui/main.lua", "brand-new/file"], failure=None),
+            self.choices(None, ["app.native-window", "app.ui-witness"]),
+        )
+        combined = self.choices(["scripts/ui/main.lua", "brand-new/file"])
+        cases = (*cases[:2], combined, cases[3])
+        for choices in cases:
+            self.assertTrue(choices["app.native-window"].selected)
+            self.assertFalse(choices["app.ui-witness"].selected)
+            self.assertEqual(choices["app.ui-witness"].why, "covered by app.native-window")
+
+    def test_04_script_rule_is_narrow_and_the_witness_never_enters_fast_or_full_levels(
+        self,
+    ) -> None:
+        script = self.choices(["scripts/ui/main.lua"])
+        self.assertTrue(script["app.ui-witness"].selected)
+        for name, choice in script.items():
+            if choice.selected and choice.step.needs == "window":
+                self.assertEqual(name, "app.ui-witness")
+        for level in ("quick", "fast", "full"):
+            self.assertNotIn("app.ui-witness", check.select(level))
+        self.assertIn("app.native-window", check.select("full"))
+
+    def test_05_catalog_inventory_and_owner_rule_describe_the_three_links(self) -> None:
+        catalog = next(step for step in check.STEPS if step.name == "unittest-catalog")
+        self.assertEqual(catalog.paths, check.CATALOG_PATHS)
+        self.assertIn("app.ui-witness", OWNER_RULE)
+
+
 class DirectoryEntries(unittest.TestCase):
     """An untracked directory is a changed-path entry ending in `/`: it is not walked, so it selects
     every group with a pattern inside it or a directory pattern containing it, and fails wide unless it
@@ -767,8 +908,16 @@ class DirectoryEntries(unittest.TestCase):
     def test_04_the_real_catalog_for_new_crates_and_directories(self) -> None:
         wide = check.plan(check.STEPS, ["crates/gpu-future/"])
         self.assertTrue(
-            all(c.selected for c in wide.choices if c.step.category == "affected"),
-            "an unregistered new crate fails wide",
+            all(
+                c.selected
+                for c in wide.choices
+                if c.step.category == "affected" and c.step.name != "app.ui-witness"
+            ),
+            "an unregistered new crate fails wide except for the covered UI subset",
+        )
+        self.assertEqual(
+            next(c for c in wide.choices if c.step.name == "app.ui-witness").why,
+            "covered by app.native-window",
         )
         future = check.Step(
             "future.window",
@@ -1378,8 +1527,14 @@ class CrateOwnedWindowGroups(unittest.TestCase):
 
     def test_03_window_groups_keep_their_classification(self) -> None:
         for step in check.STEPS:
-            if step.needs == "window" and step.category != "optional":
+            if (
+                step.needs == "window"
+                and step.category != "optional"
+                and step.name != "app.ui-witness"
+            ):
                 self.assertEqual(step.levels, check.FAST, step.name)
+        witness = next(step for step in check.STEPS if step.name == "app.ui-witness")
+        self.assertEqual((witness.category, witness.levels), ("affected", ()))
 
 
 class OptionalScaleGroup(unittest.TestCase):
@@ -1978,13 +2133,15 @@ class VulkanOptionalGroups(unittest.TestCase):
         chosen = {c.step.name for c in check.plan(check.STEPS, [witness]).choices if c.selected}
         self.assertIn("app.native-window", chosen)
         self.assertNotIn("vulkan.app", chosen)  # optional: only by name
-        # The shipped UI script it runs selects no window group.
+        # The shipped UI script selects only the narrow witness exception.
         script = {
             c.step.name
             for c in check.plan(check.STEPS, ["scripts/ui/main.lua"]).choices
             if c.selected
         }
+        self.assertIn("app.ui-witness", script)
         self.assertNotIn("app.native-window", script)
+        self.assertNotIn("metal.window-core", script)
 
     def test_05_the_policy_text_states_the_rule_in_both_files(self) -> None:
         agents = (REPO / "AGENTS.md").read_text()
@@ -2111,7 +2268,7 @@ class VulkanAppGroups(unittest.TestCase):
         owners: dict[str, set[str]] = {}
         for step in check.STEPS:
             for unit in group_units(step, TARGETS):
-                if unit[3] == ALL_FEATURES:  # the default-feature build compiles these files empty
+                if unit[3] == ALL_FEATURES and unit[4] == "*":
                     owners.setdefault(unit[2], set()).add(step.name)
         self.assertEqual(owners["vulkan_app"], {"vulkan.app"})
         self.assertEqual(owners["windowed"], {"app.native-window"})
@@ -2171,7 +2328,7 @@ APP_SOURCES = ("apps/codekarl/src/", "apps/codekarl/tests/")
 SUPERVISOR = "apps/codekarl/tests/supervisor/mod.rs"
 ACTIVATION_WATCH = "crates/window/tests/support/activation_watch.rs"
 TOOLCHAIN_FILES = ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml")
-OWNER_RULE = "the owner's rule: no change to the shared configuration or scripts selects a native window group"
+OWNER_RULE = "the owner's rule: scripts select only the app.ui-witness exception; shared configuration selects no native window group"
 DEMO_RULE = (
     "the demonstration's files never open a window by themselves (CK-93, CK-126): `rust.app` runs the script headless "
     "and every full run covers it on the glfw-vulkan window"
@@ -2245,13 +2402,12 @@ GUARDS: tuple[Guard, ...] = (
         ("assets/scenarios/ireland-768/", "assets/game/economy.toml"),
     ),
     Guard("apps/codekarl/src/game/view.rs", "rust.app", ("assets/",)),
-    Guard("apps/codekarl/src/ui_link.rs", "rust.app", ("assets/",)),
+    Guard("apps/codekarl/src/ui_link.rs", "rust.app", ("assets/", "scripts/ui/main.lua")),
     # CK-231 (the same gap): the map modes' tests load Ireland 768's map and places, and their window witness runs the shipped UI script.
     Guard("apps/codekarl/src/map_modes.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
     # CK-244: setup's island recruitment test loads the shipped Ireland scenario.
     Guard("apps/codekarl/src/game/setup.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
-    # Its window witness is a support module of `windowed.rs` (and `vulkan_app.rs`), so `app.native-window` is its owner and an edit of the
-    # file selects it; a change to the shipped UI script it runs deliberately selects no window group (the owner's rule).
+    # The shipped UI witness reads the shipped script, so the narrow app.ui-witness group owns that dependency.
     Guard(
         "apps/codekarl/tests/support/map_modes.rs",
         "app.native-window",
@@ -2448,7 +2604,6 @@ GUARDS: tuple[Guard, ...] = (
         ("config/codekarl.toml", "scripts/ui/main.lua", "assets/", ACTIVATION_WATCH),
         unselected=(
             ("config/codekarl.toml", OWNER_RULE),
-            ("scripts/ui/main.lua", OWNER_RULE),
             (
                 "assets/",
                 "the demonstration's image: the owner's own replaces it as a file change, which must not open a "
@@ -2845,7 +3000,7 @@ class GuardInventory(unittest.TestCase):
             )
         owners: dict[Unit, list[str]] = {}
         for step in check.STEPS:
-            if step.name == "glfw.window-focus":
+            if step.name in ("glfw.window-focus", "app.ui-witness"):
                 continue
             for unit in group_units(step, TARGETS):
                 owners.setdefault(unit, []).append(step.name)
@@ -2854,7 +3009,7 @@ class GuardInventory(unittest.TestCase):
             unit = (package, "test", "hook_isolation", ALL_FEATURES, "*")
             self.assertEqual(len(owners[unit]), 1, unit)
 
-    def test_08_a_unit_test_target_change_selects_its_crate_not_the_catalog_tool_tests(
+    def test_08_a_rust_source_or_manifest_change_selects_its_crate_and_catalog_tests(
         self,
     ) -> None:
         for path, owner in (
@@ -2865,7 +3020,7 @@ class GuardInventory(unittest.TestCase):
         ):
             chosen = self.selected(path)
             self.assertIn(owner, chosen, path)
-            self.assertNotIn("unittest-catalog", chosen, path)
+            self.assertIn("unittest-catalog", chosen, path)
         self.assertNotIn("unittest-catalog", self.selected("Cargo.toml"))
         self.assertNotIn("unittest-batch", self.selected("crates/window-glfw/src/backend.rs"))
 
@@ -2929,20 +3084,20 @@ class GuardInventory(unittest.TestCase):
 
 
 class ScannerInputs(unittest.TestCase):
-    """CK-186: catalog tests belong to the check-tool area, not every Rust crate they inspect."""
+    """CK-263: catalog tests are selected by every Rust source directory they inventory."""
 
     def selected(self, path: str) -> dict[str, str]:
         return {c.step.name: c.why for c in check.plan(check.STEPS, [path]).choices if c.selected}
 
-    def test_01_rust_files_select_their_own_group_not_catalog_tests(self) -> None:
+    def test_01_rust_files_select_their_own_group_and_the_catalog_tests(self) -> None:
         texts = repository_texts()
         self.assertGreater(len(texts), 100)
         for path in texts:
             if path.startswith(("apps/", "crates/")):
-                self.assertNotIn("unittest-catalog", self.selected(path), path)
+                self.assertIn("unittest-catalog", self.selected(path), path)
         self.assertIn("unittest-catalog", self.selected("tests/test_check_catalog.py"))
 
-    def test_02_crate_changes_select_only_their_owner(self) -> None:
+    def test_02_crate_changes_select_their_owner_and_catalog_tests(self) -> None:
         cases = (
             ("crates/log/src/a_new_reader.rs", "rust.core"),
             ("crates/runtime/src/deep/er/a_new_reader.rs", "rust.core"),
@@ -2955,12 +3110,12 @@ class ScannerInputs(unittest.TestCase):
         for path, owner in cases:
             chosen = self.selected(path)
             self.assertIn(owner, chosen, path)
-            self.assertNotIn("unittest-catalog", chosen, path)
+            self.assertIn("unittest-catalog", chosen, path)
 
     def test_03_the_scan_and_the_selection_share_one_definition_of_the_crates(self) -> None:
         by_name = {step.name: step for step in check.STEPS}
-        self.assertEqual(tuple(by_name["unittest-catalog"].paths), check.PYTHON_PATHS)
-        # The catalog tests may inspect Rust inventory, but that read is not a dependency edge.
+        self.assertEqual(tuple(by_name["unittest-catalog"].paths), check.CATALOG_PATHS)
+        self.assertEqual(check.CATALOG_PATHS, (*check.PYTHON_PATHS, *check.RUST_SOURCE_DIRS))
         manifests = {
             str(path.parent.relative_to(REPO)) + "/"
             for root in ("apps", "crates")
@@ -3469,7 +3624,17 @@ class ChangeSet(unittest.TestCase):
         self.assertEqual(found, ["new/"])
         # Never a floor-only plan: the unclaimed directory selects every affected group.
         chosen = check.plan(check.STEPS, found)
-        self.assertTrue(all(c.selected for c in chosen.choices if c.step.category == "affected"))
+        self.assertTrue(
+            all(
+                c.selected
+                for c in chosen.choices
+                if c.step.category == "affected" and c.step.name != "app.ui-witness"
+            )
+        )
+        self.assertEqual(
+            next(c for c in chosen.choices if c.step.name == "app.ui-witness").why,
+            "covered by app.native-window",
+        )
         locked.chmod(0o755)
 
     def test_11_the_rules_pijul_reads_differently_from_other_tools_cannot_hide_a_file(self) -> None:
@@ -3498,7 +3663,17 @@ class ChangeSet(unittest.TestCase):
             mock.patch("builtins.print") as printed,
         ):
             built = check.planned(self.root, self.hub, True, [])
-        self.assertTrue(all(c.selected for c in built.choices if c.step.category == "affected"))
+        self.assertTrue(
+            all(
+                c.selected
+                for c in built.choices
+                if c.step.category == "affected" and c.step.name != "app.ui-witness"
+            )
+        )
+        self.assertEqual(
+            next(c for c in built.choices if c.step.name == "app.ui-witness").why,
+            "covered by app.native-window",
+        )
         shown = "\n".join(str(call.args[0]) for call in printed.call_args_list)
         self.assertIn("boom", shown)
         self.assertEqual(shown.count("check: plan:"), len(check.STEPS))

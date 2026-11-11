@@ -87,6 +87,7 @@ FULL_SPEC_STEPS = {
     "app.metal-gpu",
     "native.window",
     "app.native-window",
+    "app.ui-witness",
     "render2d.metal-window",
     "metal.window-core",
     "metal.window-scene",
