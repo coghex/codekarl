@@ -10,7 +10,12 @@ approved its engineering (`economy-design-review-r19.md`, ee101993). A fresh via
   - the follow-up slices 4d, the storehouse fee in step 5 (CK-248); 4e, staffing shared across methods (CK-251); 3b, store capacity
     counting workers in the view (CK-253); and 8b, farmland quality on the yield map (CK-254);
   - the milestone 9 review notes (CK-246, CK-247 and CK-249) and ck-guide's findings: the location panel's monthly counters (CK-250)
-    and the view's field room, which charged sea-method levels as land (CK-252).
+    and the view's field room, which charged sea-method levels as land (CK-252);
+  - the owner's UI feedback after running the game (2026-11-10, `owner-feedback-ui-r1.md`), slices 12a to 12f: the map-mode bar at the
+    bottom centre (CK-255), the UI scale following the window (CK-256), the resizable 1280×800-pixel window (CK-257), the ledger (CK-258),
+    pops and buildings as cards or rows (CK-259) and superscript glyphs (CK-260), with their owner records in
+    `.pipeline/coordination/m9-design/owner-direction-ui-*.md`, `owner-direction-window-*.md` and `owner-direction-superscript-r1.md`; and a
+    test fix for busy machines (CK-261). The UI side is described in `docs/ui-design.md` and the window in `docs/window-design.md`.
 - **Later owner decisions** are folded into the sections that they change, with their date and record.
 - **Source:** `.pipeline/coordination/m9-design/economy-design-r19.md` (sha256 `69772ff5…`), published unchanged below this header.
 - **Revision history:** r1–r19 and their reviews live beside it in `.pipeline/coordination/m9-design/`.
@@ -781,6 +786,10 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
   - Both buckets are saved and loaded, so a load shows the same last month.
   - They are display only; no rule reads them.
 - **Widgets:** it uses the M8 theme's windows and lists, with tabs as title buttons. The tab widget is the one new UI piece.
+- **Since the owner's UI feedback (2026-11-10, CK-258, CK-259; `owner-direction-ui-ledger-lists-r1.md`):** the pops and buildings tabs
+  show their entries as **cards** (the default) or one-line **rows** that open, switched by two buttons at the bottom of the panel; the
+  places list is replaced by the **ledger**, a window docked on the right third with a locations tab and a tab of every pop. Details in
+  `docs/ui-design.md`.
 
 ### 3.12 The starting numbers (Firm: approved by the owner, 2026-11-08, as placeholders for tuning)
 
@@ -1233,7 +1242,7 @@ the map's `terrain.toml`):
 - **The renderer:** the map pass reads the index grid and the value table. This landed on Metal and Vulkan together (CK-231), with
   readback tests, before the owner made Vulkan compile-only (§4). Later map modes land on native Metal, and Vulkan catches up in slice 11.
 - **Switching:** three map-mode buttons on the UI, stockpile, yield and elevation (`docs/map-design.md` §12.5), select a mode; clicking
-  the shown mode's button again turns it off.
+  the shown mode's button again turns it off. They sit in one row at the bottom centre of the screen (owner, 2026-11-10, CK-255).
 
 ### 3.23 Buildable land, footprints and development (Firm, owner-signed 2026-11-09; a follow-up slice)
 
@@ -1434,6 +1443,7 @@ fields cut. The engine's load report is the authority.
   | 10a | the map look: the fertility gradient, the hillside dither and glaciers (map-design §12.3–§12.4, §12.6), on native Metal | 9a |
   | 10b | the elevation map mode (map-design §12.5), on native Metal | 8, 10a |
   | 11 | the Vulkan catch-up: slices 10a and 10b, and any other milestone 9 render work, ported to Vulkan, with the Vulkan window tests repaired. **Parked until the owner says so**; not a milestone 9 gate | 10a, 10b |
+  | 12a–12f | the owner's UI feedback: the map-mode bar at the bottom (12a), the window (12b) and UI scale (12c), the ledger (12d), cards and rows (12e), superscripts (12f) | 3, 8 |
 
   Slice 2 includes the starting method choice, with its two pure primitives (`target_price` and the diet-profile projection, §3.4)
   frozen there and reused by slice 6. Slices 1 and 2 can run together, and so can 3 and 4. Each slice carries the §6 coverage for what it adds.

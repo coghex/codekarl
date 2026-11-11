@@ -22,10 +22,34 @@
 > **Since milestone 8.** Milestone 9 added, with the same widgets and theme (`docs/economy-design.md` §3.11 and §3.22):
 > - **the location panel:** a window filling the left third of the screen with the selected place's economy, in three tabs (location,
 >   pops and buildings) shown as title-bar buttons. Its tab widget, `scripts/ui/lib/tabs.lua`, is the one new widget. A map click or a
->   places-list row shows that place in the panel;
+>   ledger row shows that place in the panel;
 > - **the map-mode bar:** three icon buttons in one row, centred at the bottom of the screen and independent of the other panels (owner,
 >   2026-11-10, CK-255), for the stockpile, yield and elevation map modes. They call
 >   `game.set_map_mode`; the button of the mode showing is selected, and pressing it turns the mode off.
+>
+> **The owner's UI feedback (2026-11-10, after running the accepted game; `.pipeline/coordination/m9-design/owner-feedback-ui-r1.md`).**
+> Accepted as CK-255 to CK-260; the owner's decisions are in the `owner-direction-*` files named below, in the same folder:
+> - **The ledger** (CK-258; `owner-direction-ui-ledger-lists-r1.md`) replaces the places bar and its dropdown:
+>   - closed (the start), it is a bar at the top right with two icon buttons, **locations** (a round tower) and **pops** (a figure);
+>   - either button opens the **ledger**, a window titled "ledger" docked on the right third of the screen, from the top margin to the
+>     bottom, with the two icons as tabs in its title bar and a close button that returns to the bar;
+>   - **locations** lists every place in file order in columns (name, people, food in days); **pops** lists every pop at every place
+>     (its type's colour stripe and icon, type and culture, people, place). A row shows that place in the location panel, a pops row on
+>     its pops tab. Long names are cut on whole characters with "..";
+>   - list items can have cells (`lib/list.lua`), and the pop-type colours and the dim text colour are `[colour]` keys of
+>     `assets/ui/theme.toml` (`pop_peasant`, `pop_monk`, `pop_labourer`, `dim`). Labelled hover tooltips on the icons come next milestone.
+> - **Pops and buildings as list elements** (CK-259; same record): the location panel's pops and buildings tabs show **cards** (the
+>   default) or **rows**, switched by two icon buttons at the bottom of the panel; one choice covers both tabs of every place for the
+>   session. A pop card has its type's colour stripe and icon, headcount, culture and religion, workers, dependents and trend, bars for
+>   food, employment and the three needs, mood, and its housing and crowding; a building card has its icon, methods, wage, housing,
+>   staffing and store bars, and herds. A row is one line, and clicking it opens its details beneath. Both looks use the new scroll view
+>   `lib/cards.lua` (items of their own heights, clipped like a list). The location tab keeps its text lines.
+> - **Window size and UI scale** (CK-257 and CK-256; `owner-direction-ui-size-r1.md`, `owner-direction-window-resizable-r1.md`,
+>   `owner-direction-window-resize-behaviour-r1.md`): the game window opens at its minimum, **1280×800 screen pixels**, and can be
+>   resized and made full screen (macOS standard: the green button or Control-Command-F). The UI and map lay out again when a drag ends.
+>   The **UI scale** (§3.3) follows the window. See `docs/window-design.md` for the window itself.
+> - **Superscripts** (CK-260; `owner-direction-superscript-r1.md`): the font has 3×5 superscript digits and signs (⁰–⁹, ⁺, ⁻), drawn
+>   high, and subscript digits (₀–₉), drawn low, so text such as "m²" draws without markup (§2.4).
 
 ## Owner answers (2026-11-07)
 
@@ -35,6 +59,8 @@ From `.pipeline/coordination/m8-design/owner-answers-r1.md`. **No question is op
    both. The description is pending. *(Historical: given and mocked up; see "Delivered" above.)*
 2. **Escape:** it closes the top window; with none open, it requests the close as today (§3.5).
 3. **UI scale:** one `[ui] points_per_pixel` for the font, borders and icons; the old key is refused, naming the new one (§3.3).
+   *(Superseded on 2026-11-10: one UI scale still covers the font, borders and icons, but it follows the window, and
+   `points_per_pixel` is retired in favour of `[ui] scale`; see §3.3.)*
 4. **First real window:** a place window, opened by clicking a place marker (§3.11).
 5. **Window positions:** not saved in M8.
 6. **Map input and the UI:** "keeping the map input and the ui seperate is important, i think we should require it". Decoupling is
@@ -105,7 +131,10 @@ From `.pipeline/coordination/m8-design/owner-answers-r1.md`. **No question is op
 - **The font:**
   - `assets/ui/font/font.toml` holds 5×7 glyphs in an 11-row box, with one PNG per glyph in a single colour (`#ece3cb`);
   - `font.layout(text)` returns glyph textures and offsets (`apps/codekarl/src/font.rs`);
-  - the scale is `[ui] points_per_pixel` (1–8, default 2), which owner Q3 renamed from `font_points_per_pixel` (CK-208, §3.3).
+  - the scale is the UI scale of §3.3 (since CK-256; it was `[ui] points_per_pixel`, which owner Q3 renamed from
+    `font_points_per_pixel`, CK-208);
+  - besides printable ASCII, the fada vowels and the middle dot, it has superscript digits and signs (⁰–⁹, ⁺, ⁻) and subscript digits
+    (₀–₉), 3×5 glyphs drawn high or low in the box (CK-260); every other character draws the replacement glyph.
 - **The layout helpers:** `scripts/ui/main.lua`'s `line`/`set`/`move`/`destroy` keep one quad per glyph and touch only what changed.
 - **The panel background** is `assets/ui/font/panel.png`, one pixel of `#2a2119`, stretched.
 
@@ -185,11 +214,16 @@ These are the gaps against "many windows, panels, menus":
 ### 3.3 Layout (Proposal)
 
 - **Units:**
-  - **Integer points.** Every position and size is a multiple of the UI pixel.
-  - **One UI scale (Firm, owner Q3):**
-    - The UI pixel is **`[ui] points_per_pixel`** points (1–8, default 2), for the font, panel art and icons alike.
-    - It replaces `[ui] font_points_per_pixel`. The old key is refused with a message naming the new one (`config.rs`, where the old
-      key's range is defined).
+  - **UI units.** Every position and size is a multiple of the UI pixel, which is **2 UI units** (`ui.P`, `scripts/ui/lib/ui.lua`).
+    In a window opened in points (tests and demos) a unit is a point; in a window opened in screen pixels (the game, CK-257) a unit is
+    `s` screen pixels, where `s` is the UI scale (CK-256).
+  - **One UI scale (Firm, owner Q3; follows the window since 2026-11-10, `owner-direction-ui-size-r1.md`):**
+    - `s` is 1, 1.5 or 2, so a UI pixel is 2, 3 or 4 screen pixels, for the font, panel art and icons alike. It is the largest whose
+      `1280·s × 800·s` screen pixels the window's drawable holds (1 from 1280×800, 1.5 from 1920×1200, 2 from 2560×1600), or a lower
+      `[ui] scale` (1, 1.5 or 2) when the config sets one. Scale 2 on a 2× display is the look of the old default.
+    - The UI's view is `⌊drawable pixels ÷ s⌋` units; pointer positions, hits and point-scroll amounts are converted to units at the
+      same scale; a scale change reaches the UI as a resize. In a pixels window `window.open` returns the first view in units.
+    - `[ui] points_per_pixel` is retired and refused, naming `[ui] scale`; `[ui] font_points_per_pixel` keeps its own refusal.
 - **Anchors:** a panel's rectangle is an anchor (one of 9: corners, edge midpoints, centre) plus an offset and a size.
   - When the window size changes, anchored panels are recomputed.
   - Windows keep their position, clamped so the title bar stays reachable.
