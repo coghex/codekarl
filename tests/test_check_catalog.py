@@ -2678,6 +2678,18 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("config/codekarl.toml", "scripts/ui/main.lua"),
     ),
+    # CK-264: the shipped-game configuration test loads the config and verifies its referenced inputs and default binary.
+    Guard(
+        "apps/codekarl/src/config.rs",
+        "rust.app",
+        (
+            "config/game.toml",
+            "assets/scenarios/ireland-768/",
+            "scripts/ui/main.lua",
+            "scripts/gameplay/main.lua",
+            "apps/codekarl/Cargo.toml",
+        ),
+    ),
     Guard("apps/codekarl/tests/cli_spec/support.rs", "rust.app", ("specs/bootstrap.json",)),
     # CK-93: the render API's headless tests run the shipped demonstration configuration and decode its image;
     # `rust.app` claims `config/`, `scripts/` and `assets/`.

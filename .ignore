@@ -3,6 +3,7 @@
 /.tools
 /.ck-hub
 /target
+/saves
 __pycache__
 .ruff_cache
 .DS_Store

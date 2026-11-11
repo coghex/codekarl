@@ -20,10 +20,10 @@ local date_text = require("lib.time")
 local location = require("lib.location")
 
 local P = ui.P
-local MARGIN = 8 -- points from the window's edges
+local MARGIN = 8 -- UI units from the window's edges
 
 -- The window opens at its minimum, in screen pixels (the owner: "for now at the minimum"; the size will be a setting later) and the user
--- can enlarge it. `window.open` returns the size in points that resolved to on this display, which the first layout starts from; then
+-- can enlarge it. `window.open` returns the initial view in UI units for this pixel-sized window, which the first layout starts from; then
 -- each update reports the window's size as it is.
 local OPEN_WIDTH, OPEN_HEIGHT = window.open{
   title = "Codekarl", unit = "pixels", width = 1280, height = 800, resizable = true, min_width = 1280, min_height = 800,
