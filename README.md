@@ -36,6 +36,7 @@ From this directory:
 
 ```sh
 tools/ck cargo run                                  # the runtime, built-in defaults
+tools/ck cargo run --features metal -- --config config/game.toml      # the game (below)
 tools/ck cargo run --features metal -- --config config/codekarl.toml  # the two Lua VMs and the demo window
 tools/ck cargo run -- --config config/codekarl.toml --headless       # the same, headless (any build)
 tools/ck cargo run --features vulkan -- --config config/demo-glfw-vulkan.toml  # the demo window through GLFW and Vulkan
@@ -51,34 +52,24 @@ tools/ck check           # full: every non-optional group, Metal and native wind
 tools/ck status
 ```
 
+The package has two programs, `codekarl` and `economy-soak`; `cargo run` runs `codekarl` (its `default-run`), and the other needs
+`--bin economy-soak`.
+
 The Metal probe compiles a shader during the Cargo build, dispatches it on the
 GPU, and checks all 64 results in Rust. Full checks require the Metal compiler and
 a working GPU; missing prerequisites fail the run rather than skip it.
 
 ### The game
 
-No shipped configuration runs the game yet: the game needs a `[game]` table naming a scenario. Save this as, for example,
-`config/game.toml` (paths are relative to the file), and run it with
-`tools/ck cargo run --features metal -- --config config/game.toml`. The file and the saves directory are untracked, so keep them out of
-a copy you check and record from: `ck check --changed` counts them as changed paths.
+`config/game.toml` runs the game: the native Metal window, the Ireland scenario `assets/scenarios/ireland-768`, and the UI and
+gameplay scripts (paths in the file are relative to it). Run it with
 
-```toml
-[window]
-backend = "native-metal"
-
-[render]
-assets = "../assets"
-
-[game]
-scenario = "../assets/scenarios/ireland-768"
-saves = "../saves"            # quicksaves; the default is `saves` beside this file
-
-[lua.ui]
-entry = "../scripts/ui/main.lua"
-
-[lua.gameplay]
-entry = "../scripts/gameplay/main.lua"
+```sh
+tools/ck cargo run --features metal -- --config config/game.toml
 ```
+
+Quicksaves go to `saves/` at the top of the copy (`[game] saves = "../saves"`; without the key the default is `saves` beside the
+configuration file). `/saves` is in `.ignore`, so Pijul does not see the saves and they never show as changes.
 
 - **A new game** starts paused at the scenario's start date, with a master seed from `--seed N` or the operating system;
   `--load PATH` starts from a save instead.
