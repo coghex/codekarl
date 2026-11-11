@@ -456,25 +456,41 @@ int32_t ck_win_test_post_keyboard_event(int32_t kind, uint16_t key_code, uint64_
 static id ck_input_filter = nil;
 static _Atomic uint64_t ck_filtered_mouse;
 
-static NSEvent *ck_pointer_event(int32_t kind, double x, double y, double amount, int32_t unit, int32_t marked) {
+/* An unmarked pointer event (the owner's mouse, as far as the filter can tell): addressed to the test window. An event built from a CGEvent
+ * carries window number 0, and AppKit routes a windowless mouse-down by the REAL cursor, so with the owner's cursor parked on the menu bar
+ * it opened the application menu, whose modal tracking loop never ended. Given the window's number the event goes to the window, whatever
+ * the cursor is doing, and is dropped by the local monitor below because it has no test mark (a synthetic NSEvent has no CGEvent, hence
+ * no mark). Marked events never come here: ck_win_test_post_pointer records them directly.
+ *
+ * There is no unmarked scroll: NSEvent has no public scroll-wheel constructor (mouseEventWithType: takes mouse types only) and the CGEvent
+ * window fields do not set NSEvent.windowNumber, so a scroll could only be a windowless CGEvent, which is what this change removes. No test
+ * posts one (the only unmarked event any test posts is a mouse-down), so a scroll is refused (nil). */
+static NSEvent *ck_pointer_event(int32_t kind, double x, double y) {
     NSWindow *window = ck_window();
-    NSPoint screen = [window convertPointToScreen:NSMakePoint(x, y)];
-    CGPoint quartz = CGPointMake(screen.x, NSScreen.mainScreen.frame.size.height - screen.y);
-    CGEventRef raw = NULL;
-    if (kind == 3) {
-        raw = CGEventCreateScrollWheelEvent(NULL, unit == 1 ? kCGScrollEventUnitPixel : kCGScrollEventUnitLine,
-                                            1, (int32_t)llround(amount));
-    } else {
-        CGEventType type = kind == 0 ? kCGEventLeftMouseDown : kind == 2 ? kCGEventLeftMouseUp
-                                                                        : kCGEventLeftMouseDragged;
-        raw = CGEventCreateMouseEvent(NULL, type, quartz, kCGMouseButtonLeft);
+    if (window == nil || kind == 3) return nil;
+    NSEventType type = kind == 0 ? NSEventTypeLeftMouseDown : kind == 2 ? NSEventTypeLeftMouseUp : NSEventTypeLeftMouseDragged;
+    return [NSEvent mouseEventWithType:type
+                              location:NSMakePoint(x, y)
+                         modifierFlags:0
+                             timestamp:NSProcessInfo.processInfo.systemUptime
+                          windowNumber:window.windowNumber
+                               context:nil
+                           eventNumber:0
+                            clickCount:kind == 1 ? 0 : 1
+                              pressure:kind == 2 ? 0.0f : 1.0f];
+}
+
+/* For the tests: the window number the unmarked event of `kind` carries, and the test window's own. 1 when both were read. */
+int32_t ck_win_test_unmarked_pointer_window(int32_t kind, int64_t *event_window, int64_t *window_number) {
+    @autoreleasepool {
+        NSWindow *window = ck_window();
+        if (window == nil) return 0;
+        NSEvent *event = ck_pointer_event(kind, 20.0, 20.0);
+        if (event == nil) return 0;
+        *event_window = (int64_t)event.windowNumber;
+        *window_number = (int64_t)window.windowNumber;
+        return 1;
     }
-    if (raw == NULL) return nil;
-    CGEventSetLocation(raw, quartz);
-    CGEventSetIntegerValueField(raw, kCGEventSourceUserData, marked != 0 ? CK_TEST_INPUT_MARK : 0);
-    NSEvent *event = [NSEvent eventWithCGEvent:raw];
-    CFRelease(raw);
-    return event;
 }
 
 int32_t ck_win_test_post_pointer(int32_t kind, double x, double y, double amount, int32_t unit, int32_t marked) {
@@ -489,7 +505,7 @@ int32_t ck_win_test_post_pointer(int32_t kind, double x, double y, double amount
             [ck_state() recordPointerKind:(uint8_t)kind point:point amount:amount unit:(uint8_t)unit];
             return 1;
         }
-        NSEvent *event = ck_pointer_event(kind, x, y, amount, unit, marked);
+        NSEvent *event = ck_pointer_event(kind, x, y);
         if (event == nil) return 0;
         [NSApp postEvent:event atStart:NO];
         return 1;

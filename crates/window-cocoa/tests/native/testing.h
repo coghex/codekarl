@@ -87,6 +87,9 @@ int32_t ck_win_test_post_keyboard_event(int32_t kind, uint16_t key_code, uint64_
 /* Posts a marked left-button or vertical-scroll event at a content point (kind: 0 down, 1 move/drag, 2 up, 3 scroll;
  * unit: 0 lines, 1 precise points). */
 int32_t ck_win_test_post_pointer(int32_t kind, double x, double y, double amount, int32_t unit, int32_t marked);
+/* The window number an unmarked pointer event of `kind` (0 down, 1 drag, 2 up) carries, and the test window's. Builds, never posts. Returns 0
+ * for a kind that is never built unmarked (3, a scroll: see ck_pointer_event) and when there is no window. */
+int32_t ck_win_test_unmarked_pointer_window(int32_t kind, int64_t *event_window, int64_t *window_number);
 /* Installs, once for the process, the filter that drops every unmarked keyboard event (a local event
  * monitor). Main thread. */
 void ck_win_test_install_input_filter(void);
