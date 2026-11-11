@@ -209,6 +209,7 @@ function window.new(spec)
     y = spec.y,
     kind = spec.kind or "window",
     fixed = spec.fixed == true,
+    draggable = spec.draggable ~= false,
     clip_title = spec.clip_title == true,
     on_close = spec.on_close,
     on_title_click = spec.on_title_click,
@@ -304,10 +305,10 @@ function Window:on_event(event, eligible)
   if event.kind == "down" and event.key == self.title_key then
     if self.fixed then
       self.title_pressed = true
-    else
+    elseif self.draggable then
       self.drag = {x = event.x, y = event.y, left = self.x, top = self.y}
     end
-    pointer.pressed(self.title_key, true)
+    if self.fixed or self.draggable then pointer.pressed(self.title_key, true) end
   elseif event.kind == "up" and self.fixed and event.key == self.title_key then
     local clicked = self.title_pressed and event.inside == true
     self.title_pressed = false

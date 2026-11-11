@@ -735,6 +735,43 @@ fn a_window_title_drag_moves_its_frame_and_hit_regions_together() {
 }
 
 #[test]
+fn a_non_draggable_window_keeps_its_close_button_and_other_windows_still_drag() {
+    let script = r#"
+local windows = require("lib.window")
+local pointer = require("lib.pointer")
+local w = windows.new{title = "ledger", content_width = 120, content_height = 60, x = 24, y = 30, draggable = false}
+window.on_opened(function()
+  assert(w.close_button ~= nil, "draggable=false keeps the close button")
+  local function title_event(kind, x, y)
+    return {kind = kind, key = w.title_key, x = x, y = y, inside = true}
+  end
+  pointer.dispatch({overflow = false, held = true, events = {title_event("down", 30, 35)}})
+  pointer.dispatch({overflow = false, held = true, events = {title_event("move", 90, 95)}})
+  pointer.dispatch({overflow = false, held = false, events = {title_event("up", 90, 95)}})
+  local x, y = w:position()
+  assert(x == 24 and y == 30, "a non-draggable title does not move the window")
+  local close = w.close_button
+  local cx, cy = 24 + close.x + close.width / 2, 30 + close.y + close.height / 2
+  pointer.dispatch({overflow = false, held = true, events = {{kind = "down", key = close.key, x = cx, y = cy, inside = true}}})
+  pointer.dispatch({overflow = false, held = false, events = {{kind = "up", key = close.key, x = cx, y = cy, inside = true}}})
+  assert(w.closed, "the close button still closes the non-draggable window")
+
+  local movable = windows.new{title = "Help", content_width = 120, content_height = 60, x = 24, y = 30}
+  local function movable_event(kind, x, y)
+    return {kind = kind, key = movable.title_key, x = x, y = y, inside = true}
+  end
+  pointer.dispatch({overflow = false, held = true, events = {movable_event("down", 30, 35)}})
+  pointer.dispatch({overflow = false, held = true, events = {movable_event("move", 90, 95)}})
+  pointer.dispatch({overflow = false, held = false, events = {movable_event("up", 90, 95)}})
+  x, y = movable:position()
+  assert(x == 84 and y == 90, "existing windows remain draggable by default")
+end)
+"#;
+    let mut rig = Rig::new(script);
+    rig.opened();
+}
+
+#[test]
 fn a_window_title_drag_ends_on_cancel_and_pointer_overflow() {
     let script = r#"
 local windows = require("lib.window")
@@ -1216,7 +1253,7 @@ end)
     let help_key = buttons
         .iter()
         .rev()
-        .nth(4)
+        .nth(5)
         .cloned()
         .expect("the production time bar has a Help button");
     let point = (0..400)

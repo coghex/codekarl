@@ -42,9 +42,10 @@ static _Atomic uint64_t ck_app_dropped;
 static _Atomic uint64_t ck_app_dropped_mouse;
 static NSWindow *ck_app_the_window(int32_t *error);
 static BOOL ck_app_marker(const char *dir, const char *name);
-static BOOL ck_app_map_select_point(double *x, double *y);
-static BOOL ck_app_map_select_named_point(const char *name, double *x, double *y);
-static BOOL ck_app_map_select_list_point(double *x, double *y);
+static BOOL ck_app_ui_units_to_window_points(NSWindow *window, double ui_width, double ui_height, double *x, double *y);
+static BOOL ck_app_map_select_point(NSWindow *window, double *x, double *y);
+static BOOL ck_app_map_select_named_point(NSWindow *window, const char *name, double *x, double *y);
+static BOOL ck_app_map_select_list_point(NSWindow *window, double *x, double *y);
 static void ck_app_write_marker(const char *dir, const char *name);
 static void ck_app_map_select_observe(const char *line);
 static void ck_app_map_select_transition(NSUInteger from, NSUInteger to, const char *marker);
@@ -355,10 +356,31 @@ static void ck_app_time_bar_line(const char *line) {
     ck_app_ui_pointer_line(line);
 }
 
-/* Coordinates supplied by the fixture are UI top-left points; NSEvent locations use the AppKit bottom-left origin. */
-static int32_t ck_app_t_time_bar_click(NSWindow *window, double x, double y) {
+/* Read the live UI extent published by the fixture's frame callback. Pixel-open windows can have a different UI extent from their
+ * content-view size in points, and the test driver positions are in the UI's units. */
+static BOOL ck_app_time_bar_ui_extent(double *width, double *height) {
+    char path[1200];
+    snprintf(path, sizeof path, "%s/time-bar-ui-extent", ck_app_time_bar_dir);
+    FILE *file = fopen(path, "r");
+    if (file == NULL) return NO;
+    BOOL read = fscanf(file, "%lf %lf", width, height) == 2;
+    fclose(file);
+    return read && *width > 0.0 && *height > 0.0;
+}
+
+/* Fixture positions are UI top-left units. Convert through the current view extent before changing to AppKit's bottom-left origin. */
+static BOOL ck_app_time_bar_point(NSWindow *window, double x, double y, NSPoint *point) {
+    double ui_width = 0.0, ui_height = 0.0;
+    if (!ck_app_time_bar_ui_extent(&ui_width, &ui_height) ||
+        !ck_app_ui_units_to_window_points(window, ui_width, ui_height, &x, &y)) return NO;
     NSPoint in_view = NSMakePoint(x, window.contentView.bounds.size.height - y);
-    NSPoint in_window = [window.contentView convertPoint:in_view toView:nil];
+    *point = [window.contentView convertPoint:in_view toView:nil];
+    return YES;
+}
+
+static int32_t ck_app_t_time_bar_click(NSWindow *window, double x, double y) {
+    NSPoint in_window;
+    if (!ck_app_time_bar_point(window, x, y, &in_window)) return CK_APP_T_NO_WINDOW;
     int32_t result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, in_window);
     if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDown, in_window);
     if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseUp, in_window);
@@ -387,10 +409,9 @@ static int ck_app_t_time_bar_advance(NSWindow *window, int phase) {
         ck_app_time_bar_line("time-bar-resume-injected");
         return 4;
     } else if (phase == 4 && ck_app_time_bar_marker("time-bar-speed4-running")) {
-        NSPoint box_view = NSMakePoint(147.0, window.contentView.bounds.size.height - 27.0);
-        NSPoint end_view = NSMakePoint(210.0, window.contentView.bounds.size.height - 90.0);
-        NSPoint start = [window.contentView convertPoint:box_view toView:nil];
-        NSPoint end = [window.contentView convertPoint:end_view toView:nil];
+        NSPoint start, end;
+        if (!ck_app_time_bar_point(window, 147.0, 27.0, &start) ||
+            !ck_app_time_bar_point(window, 210.0, 90.0, &end)) return phase;
         int32_t result = ck_app_t_send_ui_mouse(window, NSEventTypeMouseMoved, start);
         if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDown, start);
         if (result == 1) result = ck_app_t_send_ui_mouse(window, NSEventTypeLeftMouseDragged, end);
@@ -398,7 +419,7 @@ static int ck_app_t_time_bar_advance(NSWindow *window, int phase) {
         if (result != 1) NSLog(@"test time-bar box drag failed with result %d", result);
         ck_app_time_bar_line("time-bar-box-drag-injected");
         return 5;
-    } else if (phase == 5 && ck_app_time_bar_marker("time-bar-box-drag-observed")) {
+    } else if (phase == 5 && ck_app_time_bar_marker("time-bar-speed4-after-drag")) {
         ck_app_time_bar_write_marker("time-bar-done");
         ck_app_time_bar_line("time-bar-box-drag-observed-injected");
         ck_app_tap(0x35, "\e"); /* Escape closes the fixture window through its normal handler. */
@@ -701,10 +722,8 @@ static int32_t ck_app_t_send_ui_scroll(NSWindow *window, double x, double y, int
     return 1;
 }
 
-/* Drive the places list: click `places`, click again to raise it, scroll over the list, click a row, then close both windows and
- * the application with Escape, each step when the Lua witness has written the marker for the one before it (the markers are
- * written a frame after the callback that made them, so the scene they refer to is published). The Places button's centre is read
- * from a marker written by the real UI callback; the list's first row is under (126, 149) when the Places window is at (100, 100). */
+/* Drive the ledger locations list: click its locations icon, scroll over the list, click a location row, then close both windows and
+ * the application with Escape. Each stage waits for the witness marker written after the scene is published. */
 void ck_app_t_schedule_places_list(void) {
     __block NSUInteger stage = 0;
     const char *dir = getenv("CK_WINDOWED_TEST_MAP_SELECT");
@@ -727,20 +746,20 @@ void ck_app_t_schedule_places_list(void) {
             int32_t result = 1;
             if (stage == 0 && ck_app_marker(ck_app_map_select_dir, "places-button-ready")) {
                 double x = 0.0, y = 0.0;
-                if (!ck_app_map_select_point(&x, &y)) return;
+                if (!ck_app_map_select_point(window, &x, &y)) return;
                 result = ck_app_t_ui_click(window, x, y);
                 ck_app_map_select_transition(stage, 1, "places-button-ready");
                 stage = 1;
             } else if (stage == 1 && ck_app_marker(ck_app_map_select_dir, "places-ready")) {
                 double x = 0.0, y = 0.0;
-                if (!ck_app_map_select_list_point(&x, &y)) return;
+                if (!ck_app_map_select_list_point(window, &x, &y)) return;
                 ck_app_ui_pointer_line("before-list-scroll");
                 result = ck_app_t_send_ui_scroll(window, x, y, -15, -1);
                 ck_app_map_select_transition(stage, 2, "places-ready");
                 stage = 2;
             } else if (stage == 2 && ck_app_marker(ck_app_map_select_dir, "list-scrolled")) {
                 double x = 0.0, y = 0.0;
-                if (!ck_app_map_select_list_point(&x, &y)) return;
+                if (!ck_app_map_select_list_point(window, &x, &y)) return;
                 ck_app_ui_pointer_line("after-list-scroll");
                 result = ck_app_t_ui_click(window, x, y);
                 ck_app_map_select_transition(stage, 3, "list-scrolled");
@@ -751,7 +770,7 @@ void ck_app_t_schedule_places_list(void) {
                 stage = 4;
             } else if (stage == 4 && ck_app_marker(ck_app_map_select_dir, "place-closed")) {
                 double x = 0.0, y = 0.0;
-                if (!ck_app_map_select_named_point("places-title-center", &x, &y)) return;
+                if (!ck_app_map_select_named_point(window, "places-title-center", &x, &y)) return;
                 result = ck_app_t_ui_click(window, x, y);
                 ck_app_map_select_transition(stage, 6, "place-closed");
                 stage = 6;
@@ -846,39 +865,52 @@ static BOOL ck_app_marker(const char *dir, const char *name) {
     return access(path.fileSystemRepresentation, F_OK) == 0;
 }
 
-static BOOL ck_app_map_select_point(double *x, double *y) {
+static BOOL ck_app_ui_units_to_window_points(NSWindow *window, double ui_width, double ui_height, double *x, double *y) {
+    NSSize points = window.contentView.bounds.size;
+    if (ui_width <= 0.0 || ui_height <= 0.0 || points.width <= 0.0 || points.height <= 0.0) return NO;
+    *x *= points.width / ui_width;
+    *y *= points.height / ui_height;
+    return YES;
+}
+
+static BOOL ck_app_map_select_point(NSWindow *window, double *x, double *y) {
     char path[1200];
     snprintf(path, sizeof path, "%s/places-button-center", ck_app_map_select_dir);
     FILE *file = fopen(path, "r");
     if (file == NULL) return NO;
-    BOOL read = fscanf(file, "%lf %lf", x, y) == 2;
+    double ui_width = 0.0, ui_height = 0.0;
+    BOOL read = fscanf(file, "%lf %lf %lf %lf", x, y, &ui_width, &ui_height) == 4;
     fclose(file);
-    return read;
+    return read && ck_app_ui_units_to_window_points(window, ui_width, ui_height, x, y);
 }
 
-static BOOL ck_app_map_select_named_point(const char *name, double *x, double *y) {
+static BOOL ck_app_map_select_named_point(NSWindow *window, const char *name, double *x, double *y) {
     char path[1200];
     snprintf(path, sizeof path, "%s/%s", ck_app_map_select_dir, name);
     FILE *file = fopen(path, "r");
     if (file == NULL) return NO;
-    BOOL read = fscanf(file, "%lf %lf", x, y) == 2;
+    char key[256];
+    double ui_width = 0.0, ui_height = 0.0;
+    BOOL read = fscanf(file, "%255s %lf %lf %lf %lf", key, x, y, &ui_width, &ui_height) == 5;
     fclose(file);
-    return read;
+    return read && ck_app_ui_units_to_window_points(window, ui_width, ui_height, x, y);
 }
 
-static BOOL ck_app_map_select_list_point(double *x, double *y) {
+static BOOL ck_app_map_select_list_point(NSWindow *window, double *x, double *y) {
     char path[1200];
     snprintf(path, sizeof path, "%s/places-window-geometry", ck_app_map_select_dir);
     FILE *file = fopen(path, "r");
     if (file == NULL) return NO;
     double left = 0.0, top = 0.0, width = 0.0, height = 0.0, title_height = 0.0;
-    BOOL read = fscanf(file, "%lf %lf %lf %lf %lf", &left, &top, &width, &height, &title_height) == 5;
+    double ui_width = 0.0, ui_height = 0.0;
+    BOOL read = fscanf(file, "%lf %lf %lf %lf %lf %lf %lf", &left, &top, &width, &height,
+                       &title_height, &ui_width, &ui_height) == 7;
     fclose(file);
     if (read) {
         *x = left + 26.0;
-        *y = top + title_height + 19.0;
+        *y = top + title_height + 45.0;
     }
-    return read;
+    return read && ck_app_ui_units_to_window_points(window, ui_width, ui_height, x, y);
 }
 
 static void ck_app_write_marker(const char *dir, const char *name) {

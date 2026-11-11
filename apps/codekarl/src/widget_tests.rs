@@ -11,20 +11,23 @@ use ck_lua::ConfigValue;
 use crate::readout_tests::Readout;
 
 #[path = "../tests/support/time_bar.rs"]
-mod time_bar_witness;
+pub(crate) mod time_bar_witness;
 
 #[test]
 fn the_window_witness_assertions_validate_captured_output_offline() {
-    const CAPTURED: &str = "lua.ui: time-bar speed 1 load boxes 1\nlua.ui: time-bar icon play initial\nlua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar speed 5 load boxes 5\nlua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar speed 4 load boxes 4\nlua.ui: time-bar icon pause after\nlua.ui: time-bar box down speed_3 inside true\nlua.ui: time-bar box up speed_3 inside false\nlua.ui: time-bar speed 4 running boxes 4\nwindow: window closed\ncamera 0 782630912 782630912\ntime-bar-speed5-click-injected\ntime-bar-speed3-reset-injected\ntime-bar-fast-forward-injected\ntime-bar-resume-injected\ntime-bar-box-drag-injected\ntime-bar-box-drag-observed-injected\n";
+    const CAPTURED: &str = "lua.ui: time-bar speed 1 load boxes 1\nlua.ui: time-bar icon play initial\nlua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar UI extent 1280 800\nlua.ui: time-bar box down speed_5 inside true\nlua.ui: time-bar box up speed_5 inside true\nlua.ui: time-bar speed 5 load boxes 5\nlua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar speed 4 load boxes 4\nlua.ui: time-bar icon pause after\nlua.ui: time-bar box down speed_3 inside true\nlua.ui: time-bar box up speed_3 inside false\nlua.ui: time-bar speed 4 running boxes 4\nwindow: window closed\ncamera 0 782630912 782630912\ntime-bar-speed5-click-injected\ntime-bar-speed3-reset-injected\ntime-bar-fast-forward-injected\ntime-bar-resume-injected\ntime-bar-box-drag-injected\ntime-bar-box-drag-observed-injected\n";
     assert!(time_bar_witness::validate(CAPTURED).is_ok());
     time_bar_witness::captured_failure_and_doctored_output_are_checked_offline();
     let out_of_order = CAPTURED
         .replace("lua.ui: time-bar icon play initial\n", "")
         .replace(
-            "lua.ui: time-bar speed 3 load boxes 3\n",
-            "lua.ui: time-bar speed 3 load boxes 3\nlua.ui: time-bar icon play initial\n",
+            "lua.ui: time-bar box up speed_5 inside true\n",
+            "lua.ui: time-bar box up speed_5 inside true\nlua.ui: time-bar icon play initial\n",
         );
     assert!(time_bar_witness::validate(&out_of_order).is_err());
+    assert!(
+        time_bar_witness::validate(&format!("{CAPTURED}camera 0 782630912 782630912\n")).is_err()
+    );
     assert!(
         time_bar_witness::validate(
             &CAPTURED.replace("time-bar speed 4 running", "time-bar speed 3 running")
@@ -1044,8 +1047,8 @@ fn the_time_bar_routes_its_buttons_through_game_controls() {
             .iter()
             .filter(|entry| entry.starts_with("set_hit button_"))
             .count(),
-        8,
-        "three transports, Help, the separate Places button and the three map-mode buttons: {entries:?}"
+        9,
+        "three transports, Help, the two ledger tabs and the three map-mode buttons: {entries:?}"
     );
     assert!(
         !entries.iter().any(|entry| entry.contains("time_speed_")),

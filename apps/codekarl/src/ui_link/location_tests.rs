@@ -42,13 +42,24 @@ local nobody = {
 local fada = rowan(80, 2)
 fada.id = "fada"
 fada.pops[1].culture = string.rep("\u{D3}", 40)
-VIEWS = {[1] = {rowan = rowan(80, 2), nobody = nobody, fada = fada}, [2] = {rowan = rowan(90, 0), nobody = nobody}}
+fada.pops[1].kind = "mystery"
+fada.pops[2] = {kind = "monk", culture = "mide", religion = "christianity", workers = 2, dependents = 3, employed = 2, unemployed = 0,
+  food_days = 40, necessities = 0, niceties = 0, luxuries = 0, satisfaction = 0, births = 0, deaths = 0}
+local long_place = rowan(0, 0)
+long_place.id = "long"
+VIEWS = {[1] = {rowan = rowan(80, 2), nobody = nobody, fada = fada, long = long_place},
+  [2] = {rowan = rowan(90, 0), nobody = nobody}}
 game = {
   on_time = function(callback) callbacks.time = callback end,
   on_select = function(callback) callbacks.select = callback end,
   on_hover = function(callback) callbacks.hover = callback end,
   control = function() end,
-  places = function() return {} end,
+  places = function() return {
+    {id = "rowan", name = "Rowan", kind = "town", size = 3},
+    {id = "nobody", name = "No Economy", kind = "town", size = 1},
+    {id = "fada", name = "Cluain Mhic Nóis", kind = "monastery", size = 2},
+    {id = "long", name = string.rep("\u{D3}", 40), kind = "town", size = 1},
+  } end,
   place = function(id, revision)
     place_calls[#place_calls + 1] = id .. "@" .. revision
     local view = VIEWS[revision]
@@ -66,9 +77,16 @@ end
 local buttons_library = require("lib.button")
 local real_button_new = buttons_library.new
 mode_buttons = {}
+bar_buttons = {}
+places_text_buttons = 0
+local bar_group = nil
+local bar_visible = true
 buttons_library.new = function(spec)
   local created = real_button_new(spec)
-  if spec.text == "places" then places_button_object = created end
+  if spec.text == "places" then places_text_buttons = places_text_buttons + 1 end
+  if spec.icon == "location" or spec.icon == "pops" then
+    bar_buttons[spec.icon] = created
+  end
   if spec.icon == "stockpile" or spec.icon == "yield" or spec.icon == "elevation" then mode_buttons[spec.icon] = created end
   return created
 end
@@ -80,17 +98,31 @@ function announce_modes()
   end
   note("modes_called " .. table.concat(set_mode_calls, ","))
 end
--- Each mode button's and the places button's left edge, top edge, width and height, in window points.
+-- Each mode button's and ledger icon's left edge, top edge, width and height, in window points.
 function announce_bars()
+  note("places_text_buttons " .. places_text_buttons)
   for _, key in ipairs({"stockpile", "yield", "elevation"}) do
     local button = mode_buttons[key]
     local width, height = button:size()
     note(string.format("bar %s %g %g %g %g", key, button.x, button.y, width, height))
   end
-  local width, height = places_button_object:size()
-  note(string.format("bar places %g %g %g %g", places_button_object.x, places_button_object.y, width, height))
+  for _, key in ipairs({"location", "pops"}) do
+    local button = bar_buttons[key]
+    local width, height = button:size()
+    note(string.format("bar %s %g %g %g %g", key, button.x, button.y, width, height))
+  end
 end
 function note(text) window.record(text) end
+local real_group_visible = render.set_group_visible
+local real_set_hit = render.set_hit
+render.set_hit = function(key, rects, group)
+  if key == "places_bar" then bar_group = group end
+  return real_set_hit(key, rects, group)
+end
+render.set_group_visible = function(group, visible)
+  if group == bar_group then bar_visible = visible end
+  return real_group_visible(group, visible)
+end
 function time(hour, revision)
   callbacks.time({year = 768, month = 1, day = 1, hour = hour, paused = false, speed = 1, economy_revision = revision})
 end
@@ -99,12 +131,25 @@ function select_place(id, name) callbacks.select({id = id, name = name, kind = "
 -- Every list's rows, as created and as replaced.
 local lists = require("lib.list")
 local real_list_new = lists.new
+local function row_text(item)
+  if type(item) == "string" then return item end
+  local cells = {}
+  for _, cell in ipairs(item.cells) do
+    cells[#cells + 1] = string.format("%s@%g:%s:%s", cell.text, cell.x, cell.align, cell.colour or "-")
+  end
+  return table.concat(cells, ",") .. ";stripe=" .. (item.stripe or "-") .. ";icon=" .. (item.icon and item.icon.name or "-")
+end
+function rows_text(items)
+  local rows = {}
+  for index, item in ipairs(items) do rows[index] = row_text(item) end
+  return table.concat(rows, "|")
+end
 lists.new = function(spec)
   local created = real_list_new(spec)
-  note("rows " .. table.concat(created.items, "|"))
+  note("rows " .. rows_text(created.items))
   local real_set_items = created.set_items
   function created:set_items(items)
-    note("rows " .. table.concat(items, "|"))
+    note("rows " .. rows_text(items))
     real_set_items(self, items)
   end
   list_object = created
@@ -112,14 +157,18 @@ lists.new = function(spec)
 end
 local tabs_library = require("lib.tabs")
 local real_tabs_new = tabs_library.new
+tabs_by_title = {}
 tabs_library.new = function(spec)
   tabs_object = real_tabs_new(spec)
+  tabs_by_title[spec.window.title] = tabs_object
   return tabs_object
 end
 local windows = require("lib.window")
 local real_windows_new = windows.new
+window_objects = {}
 windows.new = function(spec)
   panel_window = real_windows_new(spec)
+  window_objects[spec.title] = panel_window
   return panel_window
 end
 -- The centre of each tab button, in window points, for the driver to click.
@@ -130,6 +179,46 @@ function announce_tabs()
     note(string.format("tab %s %d %d %s", item.key, x + tabs_object.buttons[index].x + width / 2,
       y + tabs_object.buttons[index].y + height / 2, tabs_object.buttons[index].text or ""))
   end
+end
+function announce_ledger()
+  local ledger = window_objects.ledger
+  if ledger == nil or ledger.closed then
+    note("ledger closed bar_visible=" .. tostring(bar_visible))
+    return
+  end
+  local x, y = ledger:position()
+  local width, height = ledger:size()
+  local content_x, content_y = ledger:content_origin()
+  note(string.format("ledger %g %g %g %g content=%g %g draggable=%s bar_visible=%s tab=%s",
+    x, y, width, height, ledger.content_width, ledger.content_height, tostring(ledger.draggable), tostring(bar_visible),
+    tabs_object:current()))
+  note(string.format("ledger_origin %g %g", content_x, content_y))
+  local close = ledger.close_button
+  if close ~= nil then
+    note(string.format("ledger_close %g %g", x + close.x + close.width / 2, y + close.y + close.height / 2))
+  end
+end
+function announce_ledger_tabs()
+  panel_window = window_objects.ledger
+  tabs_object = tabs_by_title.ledger
+  announce_tabs()
+end
+function announce_active_panel()
+  note(string.format("active_panel %s %s ledger_closed=%s", panel_window.title, tabs_object:current(),
+    tostring(window_objects.ledger == nil or window_objects.ledger.closed)))
+  note("place_calls " .. table.concat(place_calls, ","))
+end
+function announce_pop_clip()
+  for _, item in ipairs(list_object.items) do
+    if item.icon ~= nil and item.icon.name == "pops" then
+      local cell = item.cells[1]
+      if cell.text:sub(-2) == ".." then
+        note(string.format("pop_clip x=%d right=%d", cell.x, cell.x + font.layout(cell.text).width))
+        return
+      end
+    end
+  end
+  error("no clipped pop label")
 end
 -- Whether the title and the tabs sit inside the panel without touching: the shown title ends before the first tab, the last tab
 -- ends inside the window, and the whole title is kept.
@@ -514,8 +603,7 @@ fn modes_called(rig: &Rig) -> Vec<String> {
         .collect()
 }
 
-/// The last announced rectangle `[x, y, width, height]`, in whole window points, of the button `key` ("stockpile", "yield",
-/// "elevation" or "places").
+/// The last announced rectangle `[x, y, width, height]`, in whole window points, of the button `key`.
 fn bar_button(rig: &Rig, key: &str) -> [i64; 4] {
     let prefix = format!("bar {key} ");
     let line = notes(rig)
@@ -528,6 +616,10 @@ fn bar_button(rig: &Rig, key: &str) -> [i64; 4] {
         .map(|part| part.parse().unwrap())
         .collect();
     [numbers[0], numbers[1], numbers[2], numbers[3]]
+}
+
+fn point_value(value: i64) -> f64 {
+    f64::from(i32::try_from(value).expect("fixture window coordinates fit in i32"))
 }
 
 /// Presses the mode button `key` and delivers a frame.
@@ -700,24 +792,33 @@ fn the_mode_bar_is_centred_at_the_bottom_of_the_window_and_follows_a_resize() {
 }
 
 #[test]
-fn the_places_bar_stays_at_the_top_right_beside_the_bottom_mode_bar() {
+fn the_closed_ledger_bar_has_two_icons_at_top_right_and_follows_a_resize() {
     let mut rig = rig(&["time(1, 1) announce_bars()", "announce_bars()"]);
     rig.opened();
-    // The places button sits in its bar, which is a margin of 8 from the top and the right edges: its top is 8 + 2 P, and its right edge
-    // plus the bar's padding of 5 P plus the margin reaches the window's right edge (to a snap).
+    // The two 13 by 15 buttons sit 3 pixels apart inside the 39 by 19 bar, which is 8 points from the top and right edges.
     let check = |rig: &Rig, width: i64| {
-        let places = bar_button(rig, "places");
-        assert_eq!(places[1], 8 + 2 * 2, "the top of the places button");
+        let locations = bar_button(rig, "location");
+        let pops = bar_button(rig, "pops");
+        assert_eq!(locations[1], 8 + 2 * 2, "the top of the locations button");
+        assert_eq!([locations[2], locations[3]], [13 * 2, 15 * 2]);
+        assert_eq!(pops[0], locations[0] + (13 + 3) * 2, "the 3-pixel gap");
+        assert_eq!([pops[2], pops[3]], [13 * 2, 15 * 2]);
         assert!(
-            (places[0] + places[2] + 5 * 2 + 8 - width).abs() <= 2,
-            "the right edge of the places bar: {places:?} in {width}"
+            (pops[0] + pops[2] + 5 * 2 + 8 - width).abs() <= 2,
+            "the right edge of the ledger bar: {pops:?} in {width}"
         );
         assert!(
-            bar_button(rig, "stockpile")[1] > places[1] + places[3],
-            "the mode bar is below the places bar, not beside it"
+            bar_button(rig, "stockpile")[1] > locations[1] + locations[3],
+            "the mode bar is below the ledger bar, not beside it"
         );
     };
     check(&rig, 1800);
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "places_text_buttons 0"),
+        "the old text button is retired"
+    );
     rig.deliver_fixture_frame_at(1200, 700, 2);
     rig.opened();
     check(&rig, 1200);
@@ -746,6 +847,264 @@ fn the_shipped_script_opens_a_resizable_window_of_1280_by_800_pixels_with_that_m
             min: Some((1280, 800)),
         }),
         "asked for in pixels, with the minimum in pixels"
+    );
+}
+
+fn press_bar(rig: &mut Rig, key: &str) {
+    let rect = bar_button(rig, key);
+    let point = (
+        point_value(rect[0]) + point_value(rect[2]) / 2.0,
+        point_value(rect[1]) + point_value(rect[3]) / 2.0,
+    );
+    rig.feed(&[
+        PointerEvent::Down(points(point.0, point.1)),
+        PointerEvent::Up(points(point.0, point.1)),
+    ]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+}
+
+fn ledger_origin(rig: &Rig) -> (f64, f64) {
+    let line = notes(rig)
+        .into_iter()
+        .rev()
+        .find(|line| line.starts_with("ledger_origin "))
+        .expect("the ledger content origin");
+    let mut values = line["ledger_origin ".len()..].split_whitespace();
+    (
+        values.next().unwrap().parse().unwrap(),
+        values.next().unwrap().parse().unwrap(),
+    )
+}
+
+fn click_ledger_row(rig: &mut Rig, row: usize, width: u32, height: u32) {
+    const P: f64 = 2.0;
+    let (x, y) = ledger_origin(rig);
+    let row = f64::from(u32::try_from(row).expect("fixture rows fit in u32"));
+    let point = (x + 20.0, y + (row - 0.5) * 13.0 * P);
+    let key = rig
+        .key_at(point.0, point.1)
+        .expect("a published ledger row hit");
+    assert!(key.contains("_row_"), "{key}");
+    rig.feed(&[
+        PointerEvent::Down(points(point.0, point.1)),
+        PointerEvent::Up(points(point.0, point.1)),
+    ]);
+    rig.deliver_fixture_frame_at(width, height, 2);
+}
+
+fn ledger_close_point(rig: &Rig) -> (f64, f64) {
+    let line = notes(rig)
+        .into_iter()
+        .rev()
+        .find(|line| line.starts_with("ledger_close "))
+        .expect("the ledger close button");
+    let mut values = line["ledger_close ".len()..].split_whitespace();
+    (
+        values.next().unwrap().parse().unwrap(),
+        values.next().unwrap().parse().unwrap(),
+    )
+}
+
+#[test]
+fn the_ledger_opens_on_each_icon_docks_right_and_close_or_escape_restores_the_bar() {
+    let mut rig = rig(&[
+        "time(1, 1) announce_bars()",
+        "announce_ledger()",
+        "announce_tabs(); announce_ledger()",
+        "announce_ledger()",
+        "announce_ledger()",
+    ]);
+    rig.opened();
+    press_bar(&mut rig, "pops");
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line.contains("ledger 1200 8 600 892")
+                && line.contains("draggable=false bar_visible=false tab=pops")),
+        "{:?}",
+        notes(&rig)
+    );
+    let pops = rows(&rig).last().unwrap().clone();
+    assert!(pops.contains("Rowan@228:left:-"), "{pops}");
+    let (x, y) = ledger_close_point(&rig);
+    rig.feed(&[
+        PointerEvent::Down(points(x, y)),
+        PointerEvent::Up(points(x, y)),
+    ]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "ledger closed bar_visible=true"),
+        "{:?}",
+        notes(&rig)
+    );
+
+    press_bar(&mut rig, "location");
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line.contains("tab=locations")),
+        "{:?}",
+        notes(&rig)
+    );
+    assert!(rig.escape(), "Escape closes the topmost ledger");
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "ledger closed bar_visible=true"),
+        "{:?}",
+        notes(&rig)
+    );
+}
+
+#[test]
+fn ledger_rows_use_revision_order_colours_columns_unicode_clipping_and_select_the_place_tab() {
+    let mut rig = rig(&[
+        "time(1, 1) announce_bars()",
+        "announce_ledger()",
+        "announce_ledger()",
+        "announce_active_panel()",
+    ]);
+    rig.opened();
+    press_bar(&mut rig, "location");
+    rig.opened();
+    let initial = rows(&rig).last().unwrap().clone();
+    assert!(
+        initial.contains("name@1:left:#9a927e,people@257:right:#9a927e,food@291:right:#9a927e"),
+        "{initial}"
+    );
+    assert!(
+        initial.contains("Rowan@1:left:-,120@257:right:-,215d@291:right:-"),
+        "{initial}"
+    );
+    assert!(
+        initial.contains("No Economy@1:left:-;stripe=-;icon=-"),
+        "{initial}"
+    );
+    assert!(initial.contains("Cluain Mhic Nóis@1:left:-"), "{initial}");
+    // At 1278 points wide, the right-third outer width is 426 points and its content is 207 UI pixels.
+    rig.deliver_fixture_frame_at(1278, 900, 2);
+    rig.opened();
+    let narrow = rows(&rig).last().unwrap().clone();
+    assert!(
+        narrow.contains("people@170:right:#9a927e,food@204:right:#9a927e"),
+        "{narrow}"
+    );
+    assert!(
+        narrow.contains("\u{D3}\u{D3}\u{D3}..@1:left:-"),
+        "the long name clips after whole code points: {narrow}"
+    );
+    assert!(
+        narrow.contains("Cluain Mhic Nóis@1:left:-"),
+        "the full Irish place name fits at the 207-unit content width: {narrow}"
+    );
+
+    // Select the visible Rowan row. Its immutable view is revision 1, and the ledger remains open beside the place panel.
+    click_ledger_row(&mut rig, 2, 1278, 900);
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "active_panel Rowan location ledger_closed=false"),
+        "{:?}",
+        notes(&rig)
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line.starts_with("place_calls ") && line.contains("rowan@1")),
+        "{:?}",
+        notes(&rig)
+    );
+}
+
+#[test]
+fn pop_rows_have_type_tints_and_route_to_the_place_pops_tab() {
+    let mut rig = rig(&[
+        "time(1, 1) announce_bars()",
+        "announce_ledger()",
+        "announce_tabs()",
+        "announce_active_panel()",
+    ]);
+    rig.opened();
+    press_bar(&mut rig, "pops");
+    rig.opened();
+    let items = rows(&rig).last().unwrap().clone();
+    assert!(items.contains("peasant ulaid@16:left:#c9932e,120@224:right:-,Rowan@228:left:-;stripe=#c9932e;icon=pops"), "{items}");
+    assert!(
+        items.contains("#ece3cb"),
+        "unknown pop type falls back to text: {items}"
+    );
+    assert!(items.contains("monk mide@16:left:#4fb3c8"), "{items}");
+    // The first pop belongs to Rowan; selecting it opens the location panel on its Pops tab.
+    click_ledger_row(&mut rig, 1, 1800, 900);
+    rig.opened();
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "active_panel Rowan pops ledger_closed=false"),
+        "{:?}",
+        notes(&rig)
+    );
+}
+
+#[test]
+fn the_pops_ledger_clips_inside_its_column_and_tracks_the_1200_by_700_resize() {
+    let mut rig = rig(&[
+        "time(1, 1) announce_bars()",
+        "announce_pop_clip(); announce_ledger()",
+        "announce_pop_clip(); announce_ledger()",
+    ]);
+    rig.opened();
+    press_bar(&mut rig, "pops");
+
+    // A 1278-point view makes the right-third ledger 426 points wide and its clipped row column 87 UI pixels wide.
+    rig.deliver_fixture_frame_at(1278, 900, 2);
+    rig.opened();
+    let clip = notes(&rig)
+        .into_iter()
+        .find(|line| line.starts_with("pop_clip "))
+        .expect("the long pop label's rendered extent");
+    let field = |name: &str| -> u32 {
+        clip.split_whitespace()
+            .find_map(|part| part.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("missing {name}: {clip}"))
+            .parse()
+            .unwrap_or_else(|_| panic!("bad {name}: {clip}"))
+    };
+    assert_eq!(
+        field("x"),
+        16,
+        "the label starts at its specified column: {clip}"
+    );
+    assert!(
+        field("right") < 103,
+        "the clipped glyphs end before x=103: {clip}"
+    );
+
+    // At 1200x700 points the ledger remains the right third: 400 points wide after the resize.
+    rig.deliver_fixture_frame_at(1200, 700, 2);
+    rig.opened();
+    let ledger = notes(&rig)
+        .into_iter()
+        .rev()
+        .find(|line| line.starts_with("ledger "))
+        .expect("the resized ledger geometry");
+    let width = ledger
+        .split_whitespace()
+        .nth(3)
+        .expect("ledger width")
+        .parse::<u32>()
+        .expect("numeric ledger width");
+    assert_eq!(
+        width, 400,
+        "the ledger follows the resized right third: {ledger}"
     );
 }
 

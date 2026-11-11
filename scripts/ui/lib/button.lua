@@ -11,7 +11,7 @@ local PADDING = 2 -- UI pixels on each side of the text
 local CUT = 3
 local LEAST = 2 * CUT + 3 -- the least size of a cut-3 frame, in UI pixels
 local ICON_HEIGHT = 11
-local ICON_WIDTHS = {rewind = 9, fast_forward = 9, pause = 7, play = 7, stockpile = 9, yield = 9, elevation = 9}
+local ICON_WIDTHS = {rewind = 9, fast_forward = 9, pause = 7, play = 7, stockpile = 9, yield = 9, elevation = 9, location = 9, pops = 9}
 local TRANSPARENT = "#00000000"
 
 local button = {}
@@ -27,6 +27,13 @@ function button.measure(content)
   local laid = font.layout(content or "")
   local width, height = size_of(laid.width, laid.height)
   return width * P, height * P
+end
+
+-- The size of an icon button without creating it.
+function button.measure_icon(name)
+  local width = ICON_WIDTHS[name]
+  if width == nil then error("button.measure_icon: unknown icon `" .. tostring(name) .. "`", 2) end
+  return (width + 2 * PADDING) * P, (ICON_HEIGHT + 4) * P
 end
 
 -- A text narrower than the button is centred: its left edge, in UI pixels from the button's.

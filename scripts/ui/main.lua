@@ -43,7 +43,7 @@ if game ~= nil then
   local time_panel = nil
   local readout_x = nil
   local places_panel = nil
-  local places_button = nil
+  local places_buttons = {}
   local places_group = nil
   local places_bar_visible = true
   local modes_panel = nil
@@ -54,6 +54,8 @@ if game ~= nil then
   local time_controls = {}
   local shown_speed = nil
   local shown_paused = nil
+  local fill_ledger
+  local ledger_revision = nil
 
   -- The panel follows only the date width. The control positions and readout origin stay fixed.
   local function fit_bar()
@@ -66,7 +68,7 @@ if game ~= nil then
   end
 
   -- Defined below, with the Places window.
-  local open_places
+  local open_ledger
 
   local function help_button(x, y)
     local help_width, help_height = button.measure("?")
@@ -121,7 +123,8 @@ if game ~= nil then
     local x, y = ui.anchor("top_right", places_panel.width, places_panel.height, -MARGIN, MARGIN, view.width, view.height)
     places_panel:set_rect(x, y, places_panel.width, places_panel.height)
     render.set_hit("places_bar", {{x = x, y = y, width = places_panel.width, height = places_panel.height}}, places_group)
-    places_button:move(x + 5 * P, y + 2 * P)
+    places_buttons.locations:move(x + 5 * P, y + 2 * P)
+    places_buttons.pops:move(x + 5 * P + 16 * P, y + 2 * P)
   end
 
   local function set_places_bar_visible(visible)
@@ -132,8 +135,7 @@ if game ~= nil then
   end
 
   local function create_places_bar()
-    local places_width, places_height = button.measure("places")
-    local width, height = 5 * P + places_width + 5 * P, 19 * P
+    local width, height = 39 * P, 19 * P
     local x, y = ui.anchor("top_right", width, height, -MARGIN, MARGIN, view.width, view.height)
     places_group = render.create_group()
     places_panel = panel.new{
@@ -141,13 +143,17 @@ if game ~= nil then
     }
     -- Publish the bar capture before the button's narrower region.
     render.set_hit("places_bar", {{x = x, y = y, width = width, height = height}}, places_group)
-    places_button = button.new{
-      x = x + 5 * P,
-      y = y + 2 * P,
-      text = "places",
+    places_buttons.locations = button.new{
+      x = x + 5 * P, y = y + 2 * P, icons = {"location"}, icon = "location",
       kind = "places_bar",
       group = places_group,
-      on_click = function() open_places() end,
+      on_click = function() open_ledger("locations") end,
+    }
+    places_buttons.pops = button.new{
+      x = x + 21 * P, y = y + 2 * P, icons = {"pops"}, icon = "pops",
+      kind = "places_bar",
+      group = places_group,
+      on_click = function() open_ledger("pops") end,
     }
   end
 
@@ -333,6 +339,10 @@ if game ~= nil then
 
   game.on_time(function(time)
     location_panel:set_revision(time.economy_revision)
+    if fill_ledger ~= nil and places_window ~= nil and not places_window.closed
+      and ledger_revision ~= location_panel:current_revision() then
+      fill_ledger()
+    end
     local content = date_text.date(time)
     if time_panel == nil then
       create_bar(time, content)
@@ -372,62 +382,168 @@ if game ~= nil then
 
   game.on_select(show_place)
 
-  -- The places dropdown: every location in file order. A row opens the place popup and leaves this list open.
-  open_places = function()
+  local ledger_list = nil
+  local ledger_tabs = nil
+  local ledger_key = "locations"
+  local LEDGER_TABS = {
+    {key = "locations", icon = "location"},
+    {key = "pops", icon = "pops"},
+  }
+
+  -- Long labels end before a following numeric column; use whole UTF-8 code points and the title's two-dot ellipsis rule.
+  local function clip_column(value, width)
+    if width <= 0 then return "" end
+    if font.layout(value).width <= width then return value end
+    if font.layout("..").width > width then return "" end
+    local count = utf8.len(value) or 0
+    while count > 0 do
+      local boundary = utf8.offset(value, count + 1)
+      local prefix = boundary ~= nil and value:sub(1, boundary - 1) or value
+      local candidate = prefix .. ".."
+      if font.layout(candidate).width <= width then return candidate end
+      count = count - 1
+    end
+    return ".."
+  end
+
+  local function pop_colour(kind)
+    local ok, colour = pcall(theme.colour, "pop_" .. tostring(kind))
+    if ok and colour ~= nil then return colour end
+    return theme.colour("text")
+  end
+
+  local function ledger_items(key)
+    local places = game.places()
+    local revision = location_panel:current_revision()
+    local width = places_window.content_width // P
+    local rows, selections = {}, {}
+    if key == "locations" then
+      rows[1] = {cells = {
+        {text = "name", x = 1, align = "left", colour = theme.colour("dim")},
+        {text = "people", x = width - 37, align = "right", colour = theme.colour("dim")},
+        {text = "food", x = width - 3, align = "right", colour = theme.colour("dim")},
+      }}
+      for _, place in ipairs(places) do
+        local place_view = revision ~= nil and game.place(place.id, revision) or nil
+        local row = {cells = {{text = clip_column(place.name, width - 72), x = 1, align = "left"}}}
+        if place_view ~= nil and #place_view.pops > 0 then
+          row.cells[2] = {text = tostring(place_view.workers + place_view.dependents), x = width - 37, align = "right"}
+          row.cells[3] = {text = tostring(place_view.food_days) .. "d", x = width - 3, align = "right"}
+        end
+        rows[#rows + 1] = row
+        selections[#rows] = place
+      end
+    else
+      for _, place in ipairs(places) do
+        local place_view = revision ~= nil and game.place(place.id, revision) or nil
+        if place_view ~= nil then
+          for _, pop in ipairs(place_view.pops) do
+            local kind_culture = pop.kind .. " " .. pop.culture
+            rows[#rows + 1] = {
+              stripe = pop_colour(pop.kind),
+              icon = {name = "pops", colour = pop_colour(pop.kind)},
+              cells = {
+                {text = clip_column(kind_culture, width - 120), x = 16, align = "left", colour = pop_colour(pop.kind)},
+                {text = tostring(pop.workers + pop.dependents), x = width - 70, align = "right"},
+                {text = clip_column(place.name, 63), x = width - 66, align = "left"},
+              },
+            }
+            selections[#rows] = place
+          end
+        end
+      end
+    end
+    return rows, selections, revision
+  end
+
+  fill_ledger = function()
+    if places_window == nil or places_window.closed then return end
+    local rows, selections, revision = ledger_items(ledger_key)
+    if ledger_list ~= nil and not ledger_list.closed then
+      ledger_list:set_items(rows)
+    else
+      local visible_rows = math.max(1, math.min(lists.MAX_ROWS, places_window.content_height // lists.ROW))
+      ledger_list = lists.new{
+        window = places_window,
+        x = 0,
+        y = 0,
+        width = places_window.content_width,
+        rows = visible_rows,
+        items = rows,
+        on_select = function(index)
+          local selection = selections[index]
+          if selection ~= nil then
+            location_panel:show(selection, ledger_key == "pops" and "pops" or nil)
+          end
+        end,
+      }
+    end
+    ledger_revision = revision
+  end
+
+  local function fit_ledger()
+    if places_window == nil or places_window.closed then return end
+    local width = math.max(ui.snap_size(view.width // 3), ui.snap_size(location.min_width()))
+    local height = math.max(ui.snap_size(view.height - MARGIN), ui.snap_size(24 * P))
+    places_window:set_outer_size(width, height)
+    places_window:move_to(view.width - places_window.outer_width, MARGIN)
+    if ledger_list ~= nil and not ledger_list.closed then
+      ledger_list:destroy()
+      ledger_list = nil
+    end
+    fill_ledger()
+  end
+
+  local function select_ledger_tab(key)
+    ledger_key = key
+    if ledger_list ~= nil and not ledger_list.closed then
+      ledger_list:destroy()
+      ledger_list = nil
+    end
+    fill_ledger()
+  end
+
+  -- The ledger replaces the former places dropdown; rows open the location panel without closing this window.
+  open_ledger = function(key)
     if places_window ~= nil and not places_window.closed then
+      ledger_tabs:select(key)
       places_window:raise()
       return
     end
-    local places = game.places()
-    local names = {}
-    local widest = 0
-    for index, place in ipairs(places) do
-      names[index] = place.name
-      widest = math.max(widest, font.layout(place.name).width)
-    end
-    local list_width = (widest + 2) * P
-    local title_width = font.layout("places").width * P
-    local outer_width = math.max(list_width + 6 * P, 12 * P + title_width, 17 * P)
     local created
     created = windows.new{
-      title = "places",
-      fixed = true,
-      content_width = list_width,
-      content_height = 12 * lists.ROW,
+      title = "ledger",
+      clip_title = true,
+      draggable = false,
+      outer_width = math.max(ui.snap_size(view.width // 3), ui.snap_size(location.min_width())),
+      outer_height = math.max(ui.snap_size(view.height - MARGIN), ui.snap_size(24 * P)),
       kind = "places_bar",
       x = 0,
-      y = 0,
-      on_title_click = function() created:close() end,
+      y = MARGIN,
       on_close = function()
         if places_window == created then
           places_window = nil
+          ledger_list = nil
+          ledger_tabs = nil
+          ledger_revision = nil
           set_places_bar_visible(true)
         end
       end,
     }
-    local width, height = created:size()
-    local x, y = ui.anchor("top_right", width, height, -MARGIN, MARGIN, view.width, view.height)
-    created:move_to(x, y)
-    lists.new{
-      window = created,
-      x = 0,
-      y = 0,
-      width = list_width,
-      rows = 12,
-      items = names,
-      on_select = function(index) show_place(places[index]) end,
-    }
     places_window = created
+    ledger_key = key
+    ledger_tabs = require("lib.tabs").new{
+      window = created,
+      items = LEDGER_TABS,
+      selected = key,
+      on_select = select_ledger_tab,
+    }
+    created:move_to(view.width - created.outer_width, MARGIN)
     set_places_bar_visible(false)
+    fill_ledger()
   end
 
-  relayouts[#relayouts + 1] = function()
-    if places_window ~= nil and not places_window.closed then
-      local width, height = places_window:size()
-      local x, y = ui.anchor("top_right", width, height, -MARGIN, MARGIN, view.width, view.height)
-      places_window:move_to(x, y)
-    end
-  end
+  relayouts[#relayouts + 1] = fit_ledger
 
   -- The tooltip: a panel and a text line beside the hovered place, on the side that fits the window's current width.
   local tooltip_colours = theme.kind("tooltip")

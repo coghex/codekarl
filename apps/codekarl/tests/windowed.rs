@@ -1148,9 +1148,13 @@ fn places_list_fixture(fixture: &Fixture) -> PathBuf {
 
 /// The judgment accepts the output a good run leaves (what the log and the driver's sidecar print, in that order).
 fn places_list_output_assertion_accepts_a_captured_run_offline() {
-    let output = "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places list s=16\nINFO  lua.ui: place window opened Cluain Mhic Nóis\nINFO  lua.ui: place window expected Cluain Mhic Nóis\nINFO  lua.ui: location tab people: 1280\nINFO  lua.ui: place window closed\nINFO  lua.ui: places title clicked\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 782598144 782598144\nbefore-list-scroll\nafter-list-scroll\n";
+    let output = "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 95 items 13 rows\nINFO  lua.ui: places list geometry y=0 row_height=26 click_y=45\nINFO  lua.ui: places list s=16\nINFO  lua.ui: places list click row 3 visible 2\nINFO  lua.ui: place window expected Cluain Mhic Nóis\nINFO  lua.ui: place window opened Cluain Mhic Nóis\nINFO  lua.ui: location tab people: 1280\nINFO  lua.ui: place window closed\nINFO  lua.ui: places title clicked\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 782598144 782598144\nbefore-list-scroll\nafter-list-scroll\n";
     places_list_witness::validate(output).unwrap_or_else(|error| panic!("{error}"));
     assert!(places_list_witness::validate("").is_err());
+    let stale_row = output.replace("click row 3 visible 2", "click row 2 visible 2");
+    assert!(places_list_witness::validate(&stale_row).is_err());
+    let hidden_click = output.replace("13 rows", "1 rows");
+    assert!(places_list_witness::validate(&hidden_click).is_err());
 }
 
 /// The map modes on a real window over Ireland 768: the shipped UI's two mode buttons' handlers are pressed in turn (stockpile, yield,

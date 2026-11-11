@@ -343,13 +343,16 @@ mod tests {
         pixels
     }
 
-    /// The pixel rows of one time-bar icon: the seven listed rows start at row 2 and column 1.
+    /// Pixel rows of an icon: full 11-row shapes are drawn directly; seven-row icons start at row 2 and column 1.
     fn expected_icon(width: usize, shape: &[&str]) -> Vec<u8> {
         let mut pixels = vec![0; width * 11 * 4];
+        let full_shape = shape.len() == 11;
         for (row, pattern) in shape.iter().enumerate() {
             for (column, byte) in pattern.bytes().enumerate() {
                 if byte == b'#' {
-                    let offset = ((row + 2) * width + column + 1) * 4;
+                    let y = if full_shape { row } else { row + 2 };
+                    let x = if full_shape { column } else { column + 1 };
+                    let offset = (y * width + x) * 4;
                     pixels[offset..offset + 4].copy_from_slice(&[255; 4]);
                 }
             }
@@ -376,8 +379,8 @@ mod tests {
         }
     }
 
-    /// The time bar's and the map modes' icons: name, width in pixels and the seven shape rows after the two blank ones.
-    const ICONS: [(&str, usize, &[&str]); 7] = [
+    /// The application's icons: name, width in pixels and the seven shape rows after the two blank ones.
+    const ICONS: [(&str, usize, &[&str]); 9] = [
         (
             "rewind",
             9,
@@ -425,6 +428,40 @@ mod tests {
             9,
             &[
                 "...##...", "..####..", "..####..", ".######.", ".######.", "########", "########",
+            ],
+        ),
+        (
+            "location",
+            9,
+            &[
+                "....#....",
+                "...###...",
+                "..#####..",
+                "..##.##..",
+                "..#####..",
+                "..#####..",
+                "..##.##..",
+                "..#####..",
+                "..#####..",
+                "..##.##..",
+                ".#######.",
+            ],
+        ),
+        (
+            "pops",
+            9,
+            &[
+                "...###...",
+                "...###...",
+                "...###...",
+                "....#....",
+                ".#######.",
+                "#.#####.#",
+                "#.#####.#",
+                "..#####..",
+                "..##.##..",
+                "..##.##..",
+                "..##.##..",
             ],
         ),
     ];

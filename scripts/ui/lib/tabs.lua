@@ -12,7 +12,7 @@ local tabs = {}
 tabs.__index = tabs
 
 -- Creates the tabs of `spec.window` (an open window):
---   items     a sequence of `{key = "location", label = "location", short = "loc", tiny = "l"}`, in order from left to right;
+--   items     a sequence of `{key = "location", label = "location", short = "loc", tiny = "l"}` or `{key, icon}`;
 --   selected  the key of the tab showing first (the first item's by default);
 --   on_select called as `on_select(key)` when a tab other than the selected one is clicked.
 function tabs.new(spec)
@@ -34,31 +34,41 @@ function tabs.new(spec)
   self.tier = 1
   local seen = {}
   for index, item in ipairs(spec.items) do
-    if type(item.key) ~= "string" or type(item.label) ~= "string" then
-      error("tabs.new: item " .. index .. " needs a key and a label", 2)
+    if type(item.key) ~= "string" or (item.icon == nil and type(item.label) ~= "string")
+      or (item.icon ~= nil and type(item.icon) ~= "string") then
+      error("tabs.new: item " .. index .. " needs a key and a label or icon", 2)
     end
     if seen[item.key] then
       error("tabs.new: key `" .. item.key .. "` is used twice", 2)
     end
     seen[item.key] = true
     local short = item.short or item.label
-    self.items[index] = {key = item.key, labels = {item.label, short, item.tiny or short}}
+    self.items[index] = {
+      key = item.key,
+      icon = item.icon,
+      labels = item.label ~= nil and {item.label, short, item.tiny or short} or nil,
+    }
   end
   self.selected = spec.selected or self.items[1].key
   if not seen[self.selected] then
     error("tabs.new: selected must be the key of an item", 2)
   end
   for index, item in ipairs(self.items) do
-    self.buttons[index] = button.new{
+    local button_spec = {
       x = 0, -- placed by `place_in_title` as soon as the tabs are added
       y = 0,
-      text = item.labels[1],
       kind = window.kind,
       style = "title",
       group = window.chrome,
       owner = window,
       on_click = function() self:select(item.key, true) end,
     }
+    if item.icon ~= nil then
+      button_spec.icons, button_spec.icon = {item.icon}, item.icon
+    else
+      button_spec.text = item.labels[1]
+    end
+    self.buttons[index] = button.new(button_spec)
     self.buttons[index]:set_selected(item.key == self.selected)
   end
   window:add_title_item(self)
@@ -69,7 +79,8 @@ end
 local function fits(self, room, tier)
   local total = -GAP
   for _, item in ipairs(self.items) do
-    total = total + (button.measure(item.labels[tier])) + GAP
+    local width = item.icon ~= nil and button.measure_icon(item.icon) or button.measure(item.labels[tier])
+    total = total + width + GAP
   end
   return total <= room
 end
@@ -87,7 +98,7 @@ function tabs:place_in_title(window)
   if tier ~= self.tier then
     self.tier = tier
     for index, item in ipairs(self.items) do
-      self.buttons[index]:set_text(item.labels[tier])
+      if item.labels ~= nil then self.buttons[index]:set_text(item.labels[tier]) end
     end
   end
   -- The buttons end at the right edge of the room and never start before the title bar's own start: a window narrower than
@@ -109,7 +120,8 @@ end
 function tabs.reserved(items)
   local total = GAP
   for _, item in ipairs(items) do
-    total = total + (button.measure(item.tiny or item.short or item.label)) + GAP
+    local width = item.icon ~= nil and button.measure_icon(item.icon) or button.measure(item.tiny or item.short or item.label)
+    total = total + width + GAP
   end
   return total
 end
@@ -118,7 +130,8 @@ end
 function tabs:reserved_width()
   local total = GAP
   for _, item in ipairs(self.items) do
-    total = total + (button.measure(item.labels[3])) + GAP
+    local width = item.icon ~= nil and button.measure_icon(item.icon) or button.measure(item.labels[3])
+    total = total + width + GAP
   end
   return total
 end
