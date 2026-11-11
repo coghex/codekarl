@@ -274,7 +274,11 @@ end
 
 -- Opens the panel for `selection` (a `game_select` table or a places-list entry: `id`, `name`, ...) or, when it is open, shows that
 -- place in it, on the tab that is showing.
-function location:show(selection)
+function location:show(selection, tab)
+  if tab ~= nil then
+    if FORMATTERS[tab] == nil then error("location:show: `" .. tostring(tab) .. "` is not a tab", 2) end
+    self.key = tab
+  end
   self.id = selection.id
   if not open(self) then
     local top, width, height = geometry(self)
@@ -338,6 +342,11 @@ end
 -- The tab showing (`"location"`, `"pops"` or `"buildings"`).
 function location:tab()
   return self.key
+end
+
+-- The immutable economy revision the panel reads, shared with callers that render other views of the same places.
+function location:current_revision()
+  return self.revision
 end
 
 location.TABS = TABS

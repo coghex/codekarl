@@ -1,8 +1,8 @@
-//! The places list's window witness (milestone 8, slices 6 and 7c): the shipped `scripts/ui/main.lua` run unchanged over Ireland 768, with
+//! The ledger's locations-tab witness: the shipped `scripts/ui/main.lua` run unchanged over Ireland 768, with
 //! observation wrappers installed before it and markers the native driver (`native/testing.m`, `ck_app_t_schedule_places_list`) polls.
 //!
-//! The driver clicks the `places` button, scrolls over the list, clicks a row (which opens the location panel, whose Location tab logs its
-//! people line), closes the panel with Escape and the dropdown by its title. The wrapper publishes the real dropdown geometry so input follows the production point-based anchor.
+//! The driver clicks the locations icon, scrolls over the ledger, clicks a row (which opens the location panel, whose Location tab logs
+//! its people line), closes the panel with Escape and the ledger with its close button. The wrapper publishes the real ledger geometry.
 //!
 //! **Markers are written one frame after the callback that made them returns**, so that the scene the callback edited has been
 //! published (and the router holds its regions) before the driver acts on the marker.
@@ -21,6 +21,9 @@ local function touch(name)
   file:write('x')
   file:close()
 end
+local function witness_log(message)
+  if window.record ~= nil then window.record(message) else log.info(message) end
+end
 -- Markers wait one frame: the scene a callback edited is published when the callback returns, and the driver acts on a marker.
 local queued = {}
 local function mark(name, contents) queued[#queued + 1] = {name, contents} end
@@ -29,6 +32,11 @@ local function mark_once(name, contents)
   if emitted[name] then return end
   emitted[name] = true
   mark(name, contents)
+end
+local function mark_now_once(name)
+  if emitted[name] then return end
+  emitted[name] = true
+  touch(name)
 end
 local function flush()
   local ready = queued
@@ -47,14 +55,31 @@ end
 local windows_library = require('lib.window')
 local lists_library = require('lib.list')
 local button_library = require('lib.button')
+local places_button = nil
+local view_width, view_height = nil, nil
+-- Keep this in step with ck_app_map_select_list_point in native/testing.m.
+local list_click_y = 45
 
 local real_button_new = button_library.new
 button_library.new = function(spec)
+  if spec.text == 'x' and spec.owner ~= nil and spec.owner.title == 'ledger' then
+    local real_click = spec.on_click
+    spec.on_click = function(...)
+      log.info('places title clicked')
+      mark_once('places-title-clicked')
+      if real_click ~= nil then return real_click(...) end
+    end
+  end
   local created = real_button_new(spec)
-  if spec.text == 'places' then
+  if spec.icon == 'location' then
+    places_button = created
+    local function mark_center(button)
+      local width, height = button:size()
+      mark('places-button-center', string.format('%.0f %.0f %.0f %.0f',
+        button.x + width / 2, button.y + height / 2, view_width, view_height))
+    end
     local width, height = created:size()
-    mark('places-button-center', string.format('%.0f %.0f', spec.x + width / 2, spec.y + height / 2))
-    mark_once('places-button-ready')
+    mark('places-button-created-center', string.format('%.0f %.0f', created.x + width / 2, created.y + height / 2))
   end
   return created
 end
@@ -63,37 +88,39 @@ local observed = nil
 local last_s = 0
 local real_list_new = lists_library.new
 lists_library.new = function(spec)
-  if spec.on_select == nil then
-    -- The location panel's list (it only scrolls): not the places list this witness watches. Its first row is the Location tab's
+  if spec.window.title ~= 'ledger' then
+    -- The location panel's list (it only scrolls): not the ledger list this witness watches. Its first row is the Location tab's
     -- people line, for the place the click opened.
     log.info('location tab ' .. spec.items[1])
     return real_list_new(spec)
   end
+  local real_on_select = spec.on_select
+  spec.on_select = function(index)
+    local visible_row = math.floor((list_click_y - observed.y) / lists_library.ROW) + 1
+    local place = game.places()[index - 1]
+    assert(place ~= nil, 'the clicked list row has no place')
+    witness_log('places list click row ' .. index .. ' visible ' .. visible_row)
+    witness_log('place window expected ' .. place.name)
+    if real_on_select ~= nil then return real_on_select(index) end
+  end
   observed = real_list_new(spec)
-  log.info('places list opened ' .. #spec.items .. ' items ' .. spec.rows .. ' rows')
+  witness_log('places list opened ' .. #spec.items .. ' items ' .. spec.rows .. ' rows')
+  witness_log('places list geometry y=' .. observed.y .. ' row_height=' .. lists_library.ROW .. ' click_y=' .. list_click_y)
   mark_once('places-ready')
   return observed
 end
 
 local real_windows_new = windows_library.new
 windows_library.new = function(spec)
-  local places = spec.title == 'places'
+  local places = spec.title == 'ledger'
   local real_close = spec.on_close
-  local real_title_click = spec.on_title_click
-  if places then
-    spec.on_title_click = function(clicked)
-      log.info('places title clicked')
-      mark_once('places-title-clicked')
-      if real_title_click ~= nil then real_title_click(clicked) end
-    end
-  end
   spec.on_close = function(closing)
     if places then
       log.info('places window closed')
-      mark_once('places-closed')
+      mark_now_once('places-closed')
     else
       log.info('place window closed')
-      mark_once('place-closed')
+      mark_now_once('place-closed')
     end
     if real_close ~= nil then real_close(closing) end
   end
@@ -104,16 +131,16 @@ windows_library.new = function(spec)
       real_move_to(self, x, y)
       local left, top = self:position()
       local width, height = self:size()
-      mark('places-window-geometry', string.format('%d %d %d %d %d', left, top, width, height, self.title_height))
-      mark('places-title-center', string.format('%.0f %.0f', left + width / 2, top + self.title_height / 2))
+      assert(view_width ~= nil and view_height ~= nil, 'places geometry needs a published view size')
+      mark('places-window-geometry', string.format('%d %d %d %d %d %.0f %.0f',
+        left, top, width, height, self.title_height, view_width, view_height))
+      local close = self.close_button
+      mark('places-title-center', string.format('%s %.0f %.0f %.0f %.0f', close.key,
+        left + close.x + close.width / 2, top + close.y + close.height / 2, view_width, view_height))
     end
-    log.info('places window opened')
+    witness_log('places window opened')
   else
-    log.info('place window opened ' .. spec.title)
-    -- What the click should have opened: the place under the driver's click point (LIST_POINT, 13 points below the list's top at
-    -- no scroll) at the list's current scroll, whatever the backend's wheel delta made that.
-    local index = math.floor((13 + observed.s) / lists_library.ROW) + 1
-    log.info('place window expected ' .. game.places()[index].name)
+    witness_log('place window opened ' .. spec.title)
     mark_once('place-ready')
   end
   return created
@@ -123,9 +150,18 @@ local real_on_update = frame.on_update
 frame.on_update = function(callback)
   if callback == nil then return real_on_update(nil) end
   real_on_update(function(update)
+    view_width, view_height = update.width, update.height
     -- Markers queued by an earlier frame's callbacks go out first: their scenes are published by now.
     flush()
     callback(update)
+    -- Read the button only after the app's resize relayout has run. The native driver must click the
+    -- center that corresponds to the published first-frame hit region, not its creation-time layout.
+    if places_button ~= nil then
+      local width, height = places_button:size()
+      mark('places-button-center', string.format('%.0f %.0f %.0f %.0f',
+        places_button.x + width / 2, places_button.y + height / 2, view_width, view_height))
+      mark_once('places-button-ready')
+    end
     if observed ~= nil and not observed.closed and observed.s ~= last_s then
       last_s = observed.s
       log.info('places list s=' .. observed.s)
@@ -161,27 +197,10 @@ pub(crate) fn config_text(backend: &str, saves: &Path) -> String {
 pub(crate) fn validate(output: &str) -> Result<(), String> {
     let lines: Vec<&str> = output.lines().collect();
     let mut start = 0;
-    let mut next = |needle: &str| -> Result<usize, String> {
-        let Some(offset) = lines[start..].iter().position(|seen| seen.contains(needle)) else {
-            return Err(format!("{needle:?} is missing or out of order"));
-        };
-        start += offset + 1;
-        Ok(start - 1)
-    };
-    next("lua.ui: places window opened")?;
-    next("lua.ui: places list opened 94 items 12 rows")?;
-    let scrolled = next("lua.ui: places list s=")?;
-    let scroll: u32 = lines[scrolled]
-        .rsplit_once("places list s=")
-        .and_then(|(_, rest)| rest.trim().parse().ok())
-        .ok_or("the scroll is not a number")?;
-    if scroll == 0 || !scroll.is_multiple_of(2) {
-        return Err(format!(
-            "the list scrolled by {scroll}, not a positive whole number of UI pixels"
-        ));
-    }
-    let opened = next("lua.ui: place window opened ")?;
-    let expected = next("lua.ui: place window expected ")?;
+    next_line(&lines, &mut start, "lua.ui: places window opened")?;
+    validate_list_layout(&lines, &mut start)?;
+    let expected = next_line(&lines, &mut start, "lua.ui: place window expected ")?;
+    let opened = next_line(&lines, &mut start, "lua.ui: place window opened ")?;
     let title = lines[opened]
         .rsplit_once("place window opened ")
         .map(|(_, rest)| rest);
@@ -194,7 +213,7 @@ pub(crate) fn validate(output: &str) -> Result<(), String> {
         ));
     }
     // The panel's Location tab was built from the clicked place's view of the real start: its people line is a count.
-    let people = next("lua.ui: location tab people: ")?;
+    let people = next_line(&lines, &mut start, "lua.ui: location tab people: ")?;
     let count = lines[people]
         .rsplit_once("people: ")
         .map(|(_, rest)| rest.trim());
@@ -204,11 +223,11 @@ pub(crate) fn validate(output: &str) -> Result<(), String> {
             lines[people]
         ));
     }
-    next("lua.ui: place window closed")?;
-    next("lua.ui: places title clicked")?;
-    next("lua.ui: places window closed")?;
-    next("lua.ui: close requested by key")?;
-    next("window: window closed")?;
+    next_line(&lines, &mut start, "lua.ui: place window closed")?;
+    next_line(&lines, &mut start, "lua.ui: places title clicked")?;
+    next_line(&lines, &mut start, "lua.ui: places window closed")?;
+    next_line(&lines, &mut start, "lua.ui: close requested by key")?;
+    next_line(&lines, &mut start, "window: window closed")?;
     if lines
         .iter()
         .filter(|line| line.contains("lua.ui: places window opened"))
@@ -240,6 +259,102 @@ pub(crate) fn validate(output: &str) -> Result<(), String> {
         return Err(format!(
             "a wheel over the list changed the map camera: {:?}",
             &lines[before..=after]
+        ));
+    }
+    Ok(())
+}
+
+fn next_line(lines: &[&str], start: &mut usize, needle: &str) -> Result<usize, String> {
+    let Some(offset) = lines[*start..]
+        .iter()
+        .position(|seen| seen.contains(needle))
+    else {
+        return Err(format!("{needle:?} is missing or out of order"));
+    };
+    *start += offset + 1;
+    Ok(*start - 1)
+}
+
+fn validate_list_layout(lines: &[&str], start: &mut usize) -> Result<(), String> {
+    let opened = next_line(lines, start, "lua.ui: places list opened ")?;
+    let summary = lines[opened]
+        .rsplit_once("places list opened ")
+        .map(|(_, rest)| rest)
+        .ok_or("the list summary is missing")?;
+    let summary: Vec<&str> = summary.split_whitespace().collect();
+    if summary.len() != 4 || summary[1] != "items" || summary[3] != "rows" {
+        return Err(format!("the list summary is malformed: {summary:?}"));
+    }
+    let item_count: usize = summary[0]
+        .parse()
+        .map_err(|_| format!("the list item count is malformed: {summary:?}"))?;
+    let visible_rows: usize = summary[2]
+        .parse()
+        .map_err(|_| format!("the visible row count is malformed: {summary:?}"))?;
+    if item_count < 2 || visible_rows == 0 {
+        return Err(format!(
+            "the list has no place rows or visible rows: {summary:?}"
+        ));
+    }
+    let geometry_line = next_line(lines, start, "lua.ui: places list geometry ")?;
+    let geometry = lines[geometry_line]
+        .rsplit_once("places list geometry ")
+        .map(|(_, rest)| rest)
+        .ok_or("the list geometry is missing")?;
+    let field = |name: &str| -> Result<usize, String> {
+        geometry
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(&format!("{name}=")))
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| format!("the list geometry has no integer {name}: {geometry:?}"))
+    };
+    let list_y = field("y")?;
+    let row_height = field("row_height")?;
+    let click_y = field("click_y")?;
+    if row_height == 0 {
+        return Err(format!("the list row height is invalid: {geometry:?}"));
+    }
+    let scroll_line = next_line(lines, start, "lua.ui: places list s=")?;
+    let scroll: usize = lines[scroll_line]
+        .rsplit_once("places list s=")
+        .and_then(|(_, rest)| rest.trim().parse().ok())
+        .ok_or("the scroll is not an integer")?;
+    if scroll == 0 || !scroll.is_multiple_of(2) {
+        return Err(format!(
+            "the list scrolled by {scroll}, not a positive even whole number of UI pixels"
+        ));
+    }
+    let click_line = next_line(lines, start, "lua.ui: places list click row ")?;
+    let click = lines[click_line]
+        .rsplit_once("places list click row ")
+        .map(|(_, rest)| rest)
+        .ok_or("the selected list row is missing")?;
+    let click: Vec<&str> = click.split_whitespace().collect();
+    if click.len() != 3 || click[1] != "visible" {
+        return Err(format!("the selected list row is malformed: {click:?}"));
+    }
+    let list_row: usize = click[0]
+        .parse()
+        .map_err(|_| format!("the selected list row is malformed: {click:?}"))?;
+    let visible_row: usize = click[2]
+        .parse()
+        .map_err(|_| format!("the visible list row is malformed: {click:?}"))?;
+    let Some(click_offset) = click_y.checked_sub(list_y) else {
+        return Err(format!("the click is above the list: {geometry:?}"));
+    };
+    let expected_visible = click_offset / row_height + 1;
+    let Some(scrolled_offset) = click_offset.checked_add(scroll) else {
+        return Err("the scrolled click coordinate overflowed".to_owned());
+    };
+    let expected_list = scrolled_offset / row_height + 1;
+    if expected_visible > visible_rows
+        || visible_row != expected_visible
+        || expected_list < 2
+        || expected_list > item_count
+        || list_row != expected_list
+    {
+        return Err(format!(
+            "the selected row {list_row} (visible {visible_row}) does not match the observed layout: click_y={click_y}, list_y={list_y}, row_height={row_height}, scroll={scroll}, rows={visible_rows}, items={item_count}"
         ));
     }
     Ok(())

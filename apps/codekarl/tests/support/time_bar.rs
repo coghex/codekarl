@@ -49,6 +49,7 @@ local function time_bar_log(message)
   if window.record then window.record(message) else log.info(message) end
 end
 local time_bar_directory = os.getenv("CK_WINDOWED_TEST_TIME_BAR") or os.getenv("CK_VULKAN_TEST_TIME_BAR")
+local time_bar_view_width, time_bar_view_height = nil, nil
 local time_bar_markers = {}
 local time_bar_emitted_markers = {}
 local function time_bar_mark(name)
@@ -86,6 +87,9 @@ end
     let time = r#"game.on_time(function(time)
     local state = time.paused and tostring(time.paused) or "running"
     time_bar_log(string.format("time-bar speed %d %s boxes %d", time.speed, state, time.speed))
+    if time_bar_directory and time_bar_speed_box_dragged and time.speed == 4 and state == "running" then
+      time_bar_mark("time-bar-speed4-after-drag")
+    end
     if time_bar_directory and time.speed == 1 and state == "load" and not time_bar_initialized then
       time_bar_initialized = true
       game.control("time_faster")
@@ -103,6 +107,18 @@ end
 "#;
     script = script.replace("game.on_time(function(time)\n", time);
     let frame = r#"frame.on_update(function(update)
+  if update.width ~= time_bar_view_width or update.height ~= time_bar_view_height then
+    time_bar_view_width, time_bar_view_height = update.width, update.height
+    time_bar_log(string.format("time-bar UI extent %.17g %.17g", time_bar_view_width, time_bar_view_height))
+    if time_bar_directory ~= nil then
+      local path = time_bar_directory .. "/time-bar-ui-extent"
+      local temporary = path .. ".tmp"
+      local file = assert(io.open(temporary, "w"))
+      file:write(string.format("%.17g %.17g\n", time_bar_view_width, time_bar_view_height))
+      file:close()
+      assert(os.rename(temporary, path))
+    end
+  end
   time_bar_flush_markers()
   for _, event in ipairs((update.pointer and update.pointer.events) or {}) do
     if event.kind == "down" and event.key and string.match(event.key, "^speed_[1-5]$") then
@@ -129,11 +145,12 @@ end
 /// Validates the sidecar and Lua log order from a time-bar window witness.
 pub(crate) fn validate(output: &str) -> Result<(), String> {
     let first_input = output
-        .find("lua.ui: time-bar speed 3 load boxes 3")
-        .ok_or("the first injected input (speed 3) is missing")?;
+        .find("lua.ui: time-bar box down speed_5 inside true")
+        .ok_or("the first injected input (speed 5 click) is missing")?;
     for independent_startup_event in [
         "lua.ui: time-bar speed 1 load boxes 1",
         "lua.ui: time-bar icon play initial",
+        "lua.ui: time-bar UI extent ",
     ] {
         let at = output
             .find(independent_startup_event)
@@ -204,9 +221,11 @@ pub(crate) fn validate(output: &str) -> Result<(), String> {
 
 /// Exercises the revised assertion against the captured failure shape and its corrected output.
 pub(crate) fn captured_failure_and_doctored_output_are_checked_offline() {
-    // When set, this points to the retained full failed run. The short fallback is the relevant
-    // excerpt so this offline contract also runs in clean copies without pipeline evidence.
-    let captured = std::env::var_os("CK219_FAILURE_CAPTURE")
+    // When set, this points to a retained run whose complete output is being checked offline. The
+    // short fallback keeps the contract runnable in clean copies without pipeline evidence.
+    let capture_path = std::env::var_os("CK_TIME_BAR_CAPTURE");
+    let captured = capture_path
+        .as_deref()
         .and_then(|path| fs::read_to_string(path).ok())
         .unwrap_or_else(|| {
             r"
@@ -220,6 +239,10 @@ INFO lua.ui: time-bar speed 4 running boxes 4
 "
             .to_owned()
         });
+    if capture_path.is_some() {
+        validate(&captured).unwrap_or_else(|error| panic!("retained time-bar output: {error}"));
+        return;
+    }
     assert!(
         validate(&captured).is_err(),
         "the original failed capture must stay failing"
@@ -228,8 +251,13 @@ INFO lua.ui: time-bar speed 4 running boxes 4
     // Add the expected speed-box key and outside release to that same capture. Speed remains 4
     // after the up, and the camera line is unchanged by the captured drag.
     let mut doctored = captured;
+    let first_input = doctored
+        .find("lua.ui: time-bar speed 4 running boxes 4")
+        .expect("the capture has the running time-bar state");
+    doctored.insert_str(first_input, "INFO lua.ui: time-bar UI extent 1280 800\n");
     doctored.push_str(
-        "\ntime-bar-speed5-click-injected\nINFO lua.ui: time-bar speed 5 load boxes 5\
+        "\nINFO lua.ui: time-bar box down speed_5 inside true\nINFO lua.ui: time-bar box up speed_5 inside true\
+         \ntime-bar-speed5-click-injected\nINFO lua.ui: time-bar speed 5 load boxes 5\
          \nINFO lua.ui: time-bar speed 3 load boxes 3\ntime-bar-speed3-reset-injected\
          \ntime-bar-fast-forward-injected\nINFO lua.ui: time-bar speed 4 load boxes 4\
          \ntime-bar-resume-injected\ntime-bar-box-drag-injected\

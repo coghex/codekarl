@@ -33,10 +33,10 @@ local function clamp(value, low, high)
   return math.max(low, math.min(value, high))
 end
 
--- Checks `items` (a sequence of at most MAX_ITEMS strings), raising an error naming `who`, and returns a copy.
+-- Checks `items` (a sequence of strings or column rows), raising an error naming `who`, and returns a copy.
 local function checked_items(who, items)
   if type(items) ~= "table" then
-    error(who .. ": items must be an array of strings", 3)
+    error(who .. ": items must be an array of strings or rows", 3)
   end
   local count = #items
   if count > MAX_ITEMS then
@@ -47,14 +47,45 @@ local function checked_items(who, items)
     seen = seen + 1
   end
   if seen ~= count then
-    error(who .. ": items must be an array of strings", 3)
+    error(who .. ": items must be an array of strings or rows", 3)
   end
   local copy = {}
   for index = 1, count do
-    if type(items[index]) ~= "string" then
-      error(who .. ": item " .. index .. " is not a string", 3)
+    local item = items[index]
+    if type(item) == "string" then
+      copy[index] = item
+    elseif type(item) == "table" and type(item.cells) == "table" then
+      local cells = item.cells
+      local cell_count = #cells
+      local cell_entries = 0
+      for _ in pairs(cells) do cell_entries = cell_entries + 1 end
+      if cell_entries ~= cell_count then
+        error(who .. ": item " .. index .. " cells must be an array", 3)
+      end
+      local checked = {cells = {}}
+      if item.stripe ~= nil and type(item.stripe) ~= "string" then
+        error(who .. ": item " .. index .. " stripe must be a colour string", 3)
+      end
+      checked.stripe = item.stripe
+      if item.icon ~= nil then
+        if type(item.icon) ~= "table" or type(item.icon.name) ~= "string" or type(item.icon.colour) ~= "string" then
+          error(who .. ": item " .. index .. " icon needs a name and colour", 3)
+        end
+        checked.icon = {name = item.icon.name, colour = item.icon.colour}
+      end
+      for cell_index = 1, cell_count do
+        local cell = cells[cell_index]
+        if type(cell) ~= "table" or type(cell.text) ~= "string" or not finite(cell.x)
+          or (cell.align ~= "left" and cell.align ~= "right")
+          or (cell.colour ~= nil and type(cell.colour) ~= "string") then
+          error(who .. ": item " .. index .. " cell " .. cell_index .. " needs text, finite x, left/right align, and optional colour", 3)
+        end
+        checked.cells[cell_index] = {text = cell.text, x = cell.x, align = cell.align, colour = cell.colour}
+      end
+      copy[index] = checked
+    else
+      error(who .. ": item " .. index .. " is not a string or row table", 3)
     end
-    copy[index] = items[index]
   end
   return copy
 end
@@ -152,9 +183,11 @@ local function row_widget(self, index, key)
 end
 
 local function remove_row(self, index)
-  local line = self.lines[index]
-  if line ~= nil then
-    text.destroy(line)
+  local row_view = self.lines[index]
+  if row_view ~= nil then
+    for _, line in ipairs(row_view.lines) do text.destroy(line) end
+    if row_view.stripe ~= nil then render.destroy_quad(row_view.stripe) end
+    if row_view.icon ~= nil then render.destroy_quad(row_view.icon) end
     self.lines[index] = nil
   end
   local key = self.row_keys[index]
@@ -186,10 +219,64 @@ local function remove_row(self, index)
   end
 end
 
+local function set_cell(row_view, index, cell)
+  local line = row_view.lines[index]
+  if line == nil then
+    line = text.line(0, 0, row_view.group, cell.colour)
+    row_view.lines[index] = line
+  end
+  text.set(line, cell.text)
+  text.set_colour(line, cell.colour or theme.colour("text"))
+  local x = cell.x * P
+  if cell.align == "right" then x = x - line.width * P end
+  text.move(line, x, row_view.y + P)
+end
+
+local function update_visual(self, index)
+  local item = self.items[index]
+  local row_view = self.lines[index]
+  local is_cells = type(item) == "table"
+  local wanted_count = is_cells and #item.cells or 1
+  if row_view.is_cells ~= is_cells or #row_view.lines ~= wanted_count then
+    for _, line in ipairs(row_view.lines) do text.destroy(line) end
+    row_view.lines = {}
+    if row_view.stripe ~= nil then render.destroy_quad(row_view.stripe); row_view.stripe = nil end
+    if row_view.icon ~= nil then render.destroy_quad(row_view.icon); row_view.icon = nil end
+    row_view.is_cells = is_cells
+  end
+  row_view.group, row_view.y = self.rows_group, row_top(index)
+  if not is_cells then
+    set_cell(row_view, 1, {text = item, x = 1, align = "left", colour = self.colours.text})
+    return
+  end
+  for cell_index, cell in ipairs(item.cells) do set_cell(row_view, cell_index, cell) end
+  if item.stripe ~= nil then
+    if row_view.stripe == nil then
+      row_view.stripe = render.create_quad{texture = ui.texture("ui/theme/white.png"), x = 0, y = row_top(index), width = 2 * P,
+        height = ROW, group = self.rows_group, tint = item.stripe}
+    else
+      render.set_tint(row_view.stripe, item.stripe)
+    end
+  elseif row_view.stripe ~= nil then
+    render.destroy_quad(row_view.stripe)
+    row_view.stripe = nil
+  end
+  if item.icon ~= nil then
+    if row_view.icon == nil then
+      row_view.icon = render.create_quad{texture = ui.texture("ui/theme/icon_" .. item.icon.name .. ".png"), x = 4 * P,
+        y = row_top(index) + P, width = 9 * P, height = 11 * P, group = self.rows_group, tint = item.icon.colour}
+    else
+      render.set_tint(row_view.icon, item.icon.colour)
+    end
+  elseif row_view.icon ~= nil then
+    render.destroy_quad(row_view.icon)
+    row_view.icon = nil
+  end
+end
+
 local function add_row(self, index)
-  local line = text.line(P, row_top(index) + P, self.rows_group, self.colours.text)
-  text.set(line, self.items[index])
-  self.lines[index] = line
+  self.lines[index] = {lines = {}, group = self.rows_group, y = row_top(index)}
+  update_visual(self, index)
   if self.on_select ~= nil then
     local key = self.base .. "_row_" .. index
     self.row_keys[index] = key
@@ -212,11 +299,10 @@ local function sync(self)
     remove_row(self, index)
   end
   for index = first, last do
-    local line = self.lines[index]
-    if line == nil then
+    if self.lines[index] == nil then
       add_row(self, index)
     else
-      text.set(line, self.items[index])
+      update_visual(self, index)
     end
   end
 end

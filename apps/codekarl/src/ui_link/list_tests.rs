@@ -13,6 +13,7 @@ mod places_list;
 
 use super::group_tests::Rig;
 use super::widget_witness_tests::points;
+use crate::widget_tests::time_bar_witness as time_bar;
 
 /// The header of every script: the libraries, helpers, and one `frame_update` that dispatches the pointer and records the list's
 /// state. `lst` is the list under test (a global, so later callbacks reach it).
@@ -169,6 +170,41 @@ fn the_geometry_of_a_list_is_literal_at_two_points_per_pixel() {
     assert_ne!(rig.key_at(150.0, 216.5).as_deref(), Some(area.as_str()));
 }
 
+#[test]
+fn column_rows_align_right_cells_and_keep_string_rows_unchanged() {
+    let script = format!(
+        r#"{HEADER}
+w = windows.new{{title = "Columns", x = 100, y = 50, content_width = 100, content_height = 130}}
+lst = lists.new{{window = w, x = 0, y = 0, width = 100, rows = 5, items = {{
+  {{cells = {{{{text = "left", x = 5, align = "left"}}, {{text = "42", x = 30, align = "right"}}}}}},
+  "plain",
+}}}}
+local right = lst.lines[1].lines[2]
+note(string.format("right-end %g", right.x + right.width * P))
+window.on_opened(function() end)
+"#
+    );
+    let rig = Rig::new(&script);
+    let text_quads = quads_clipped_to(&rig, (106.0, 86.0, 100.0, 130.0));
+    assert!(
+        text_quads
+            .iter()
+            .any(|quad| (quad.0 - 116.0).abs() < 0.001 && (quad.1 - 88.0).abs() < 0.001),
+        "left text starts at the requested five UI pixels: {text_quads:?}"
+    );
+    assert!(
+        notes(&rig).contains(&"right-end 60".to_owned()),
+        "right cell ends at x=30 UI pixels in the window-local coordinate space: {:?}",
+        notes(&rig)
+    );
+    assert!(
+        text_quads
+            .iter()
+            .any(|quad| (quad.0 - 108.0).abs() < 0.001 && (quad.1 - 114.0).abs() < 0.001),
+        "string rows keep the existing one-pixel inset on row 2: {text_quads:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------------------------------------------------
@@ -266,10 +302,10 @@ end)
             "width nan -> false list.new: width must be a finite number greater than 0",
             "x nan -> false list.new: x and y must be finite numbers",
             "y inf -> false list.new: x and y must be finite numbers",
-            "items number -> false list.new: items must be an array of strings",
-            "items object -> false list.new: items must be an array of strings",
-            "items mixed -> false list.new: item 2 is not a string",
-            "items sparse -> false list.new: items must be an array of strings",
+            "items number -> false list.new: items must be an array of strings or rows",
+            "items object -> false list.new: items must be an array of strings or rows",
+            "items mixed -> false list.new: item 2 is not a string or row table",
+            "items sparse -> false list.new: items must be an array of strings or rows",
             "on_select number -> false list.new: on_select must be nil or a function",
             "window closed -> false list.new: window must be an open window",
             "window missing -> false list.new: window must be an open window",
@@ -1207,205 +1243,7 @@ window.on_opened(function() n = n + 1; steps[n]() end)
     assert_eq!(note_of(&rig, "empty"), "pos=0 s=0 max=0 keys=0");
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
-// The places window of `main.lua`
-// ---------------------------------------------------------------------------------------------------------------------
-
-/// The production `main.lua` over a mock `game` (30 places), with the list header's pointer dispatch after it.
-fn places_script() -> String {
-    format!(
-        r#"callbacks = {{}}
-places_data = {{}}
-for i = 1, 30 do
-  places_data[i] = {{id = "p" .. i, name = "Place " .. i, kind = "town", size = i}}
-end
-game = {{
-  on_time = function(callback) callbacks.time = callback end,
-  on_select = function(callback) callbacks.select = callback end,
-  on_hover = function(callback) callbacks.hover = callback end,
-  control = function() end,
-  places = function() return places_data end,
-}}
-local real_frame_on_update = frame.on_update
-local frame_callbacks = {{}}
-frame.on_update = function(callback)
-  if callback == nil then
-    frame_callbacks = {{}}
-    return real_frame_on_update(nil)
-  end
-  frame_callbacks[#frame_callbacks + 1] = callback
-  real_frame_on_update(function(update)
-    for _, registered in ipairs(frame_callbacks) do registered(update) end
-  end)
-end
-{main}
-{HEADER}
-callbacks.time({{day = 1, month = 1, year = 768, hour = 0, paused = false, speed = 1}})
-local steps = {{
-  function()
-    local top = windows.top()
-    lst = top.attached[1]
-    note("title=" .. top.title)
-    note("fixed=" .. tostring(top.fixed))
-    note("close_button=" .. tostring(top.close_button ~= nil))
-    note("width=" .. select(1, top:size()))
-    note("title_key=" .. top.title_key)
-    note("items=" .. #lst.items)
-    note("rows=" .. lst.rows)
-    local n = 0
-    for _ in pairs(lst.row_keys) do n = n + 1 end
-    note("keys=" .. n)
-    note("base=" .. lst.base)
-  end,
-  function()
-    local top = windows.top()
-    note("top=" .. top.title)
-  end,
-}}
-local n = 0
-window.on_opened(function()
-  n = n + 1
-  if steps[n] ~= nil then
-    steps[n]()
-  else
-    note("top=" .. windows.top().title)
-  end
-end)
-"#,
-        main = include_str!("../../../../scripts/ui/main.lua"),
-    )
-}
-
-/// Some point of the viewport (400 by 400 points, half-point steps) whose topmost key is `key`.
-fn point_of(rig: &Rig, key: &str) -> (f64, f64) {
-    let regions = rig.harness.bridge.hit_regions().expect("regions");
-    (0..800)
-        .flat_map(|y| (0..800).map(move |x| (f64::from(x) / 2.0 + 0.25, f64::from(y) / 2.0 + 0.25)))
-        .find(|(x, y)| regions.key_at(points(*x, *y)) == Some(key))
-        .unwrap_or_else(|| panic!("no point has the key {key}"))
-}
-
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one dropdown lifecycle exercises selection, Escape and title close in order"
-)]
-fn the_places_dropdown_stays_open_after_selection_and_closes_on_escape_or_title_click() {
-    let mut rig = Rig::new_fixture_body(&places_script());
-    // Apply the initial viewport size so the separate top-right Places bar is anchored to the test window.
-    rig.deliver_fixture_frame();
-    // The Places button is the fourth from last (Help remains on the top-left time bar, and the map modes' three buttons follow it).
-    let regions = rig.harness.bridge.hit_regions().expect("regions");
-    let buttons: Vec<String> = regions
-        .regions()
-        .iter()
-        .map(|region| region.key().to_owned())
-        .filter(|key| key.starts_with("button_"))
-        .collect();
-    let places_button = buttons.iter().rev().nth(3).expect("buttons").clone();
-    let (x, y) = point_of(&rig, &places_button);
-    rig.feed(&[
-        PointerEvent::Down(points(x, y)),
-        PointerEvent::Up(points(x, y)),
-    ]);
-    rig.deliver_fixture_frame();
-    rig.opened();
-    assert_eq!(note_of(&rig, "title"), "places");
-    assert_eq!(note_of(&rig, "fixed"), "true");
-    assert_eq!(note_of(&rig, "close_button"), "false");
-    assert!(note_of(&rig, "width").parse::<f64>().unwrap() >= 17.0);
-    assert_eq!(note_of(&rig, "items"), "30");
-    assert_eq!(note_of(&rig, "rows"), "12");
-    // 12 rows in view of 30 items: at most 13 keys.
-    let keys: usize = note_of(&rig, "keys").parse().expect("a count");
-    assert!(keys == 12 || keys == 13, "{keys}");
-    let base = note_of(&rig, "base");
-    assert_ne!(
-        rig.key_at(x, y).as_deref(),
-        Some(places_button.as_str()),
-        "the bar is hidden while its dropdown is open"
-    );
-    // Row 3: a click opens (or updates) the place window with that location.
-    let (row_x, row_y) = point_of(&rig, &format!("{base}_row_3"));
-    rig.feed(&[
-        PointerEvent::Down(points(row_x, row_y)),
-        PointerEvent::Up(points(row_x, row_y)),
-    ]);
-    rig.deliver_fixture_frame();
-    rig.opened();
-    assert_eq!(note_of(&rig, "top"), "Place 3");
-    assert!(
-        rig.key_at(row_x, row_y).is_some(),
-        "the dropdown remains open behind the place window"
-    );
-
-    assert!(rig.escape(), "Escape closes the top place window");
-    rig.opened();
-    assert_eq!(
-        note_of(&rig, "top"),
-        "places",
-        "the dropdown remains after its place popup closes"
-    );
-    assert!(rig.escape(), "Escape closes the places dropdown");
-    assert_eq!(
-        rig.key_at(x, y).as_deref(),
-        Some(places_button.as_str()),
-        "closing restores the Places button"
-    );
-
-    rig.feed(&[
-        PointerEvent::Down(points(x, y)),
-        PointerEvent::Up(points(x, y)),
-    ]);
-    rig.deliver_fixture_frame();
-    let row_one = "_row_1";
-    assert!(
-        rig.harness
-            .bridge
-            .hit_regions()
-            .unwrap()
-            .regions()
-            .iter()
-            .any(|region| region.key().ends_with(row_one)),
-        "reopening resets the list to its first row"
-    );
-    assert!(
-        !rig.harness
-            .bridge
-            .hit_regions()
-            .unwrap()
-            .regions()
-            .iter()
-            .any(|region| region.key().ends_with("_row_13"))
-    );
-    let title_key = rig
-        .harness
-        .bridge
-        .hit_regions()
-        .unwrap()
-        .regions()
-        .iter()
-        .find(|region| region.key().starts_with("window_title_"))
-        .expect("the reopened dropdown title")
-        .key()
-        .to_owned();
-    let (title_x, title_y) = point_of(&rig, &title_key);
-    rig.feed(&[
-        PointerEvent::Down(points(title_x, title_y)),
-        PointerEvent::Up(points(title_x, title_y)),
-    ]);
-    rig.deliver_fixture_frame();
-    assert!(
-        rig.key_at(title_x, title_y)
-            .is_none_or(|key| !key.starts_with("window_")),
-        "a title click closes the fixed dropdown"
-    );
-    assert_eq!(
-        rig.key_at(x, y).as_deref(),
-        Some(places_button.as_str()),
-        "the bar returns after title close"
-    );
-}
+// The ledger lifecycle and rows are covered by `location_tests`; this module keeps the windowed places-list witness.
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The places-list window witness, offline
@@ -1414,8 +1252,9 @@ fn the_places_dropdown_stays_open_after_selection_and_closes_on_escape_or_title_
 /// The log a successful run leaves (the driver's sidecar after the app's lines), with a scroll of `scroll` points that put the
 /// place at the click on `index`-th name.
 fn captured(scroll: u32, title: &str, expected: &str) -> String {
+    let list_row = (45 + scroll) / 26 + 1;
     format!(
-        "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 94 items 12 rows\nINFO  lua.ui: places list s={scroll}\nINFO  lua.ui: place window opened {title}\nINFO  lua.ui: place window expected {expected}\nINFO  lua.ui: location tab people: 1280\nINFO  lua.ui: place window closed\nINFO  lua.ui: places title clicked\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 1 1\nbefore-list-scroll\nafter-list-scroll\n"
+        "INFO  lua.ui: places window opened\nINFO  lua.ui: places list opened 95 items 12 rows\nINFO  lua.ui: places list geometry y=0 row_height=26 click_y=45\nINFO  lua.ui: places list s={scroll}\nINFO  lua.ui: places list click row {list_row} visible 2\nINFO  lua.ui: place window expected {expected}\nINFO  lua.ui: place window opened {title}\nINFO  lua.ui: location tab people: 1280\nINFO  lua.ui: place window closed\nINFO  lua.ui: places title clicked\nINFO  lua.ui: places window closed\nINFO  lua.ui: close requested by key\nINFO  window: window closed\ncamera 0 1 1\nbefore-list-scroll\nafter-list-scroll\n"
     )
 }
 
@@ -1431,7 +1270,10 @@ fn the_judgment_accepts_a_good_run_and_refuses_each_way_a_run_can_be_wrong() {
     );
     for (wrong, why) in [
         (captured(0, "A", "A"), "scrolled by 0"),
-        (captured(15, "A", "A"), "not a whole number of UI pixels"),
+        (
+            captured(15, "A", "A"),
+            "positive even whole number of UI pixels",
+        ),
         (captured(16, "A", "B"), "the click opened another place"),
         (
             captured(16, "A", "A").replace(
@@ -1443,20 +1285,20 @@ fn the_judgment_accepts_a_good_run_and_refuses_each_way_a_run_can_be_wrong() {
         (
             captured(16, "A", "A")
                 .replace("before-list-scroll\n", "before-list-scroll\ncamera 0 2 2\n"),
-            "the camera moved in the bracket",
+            "wheel over the list changed the map camera",
         ),
         (
             captured(16, "A", "A").replace("INFO  lua.ui: places window closed\n", ""),
-            "a window never closed",
+            "is missing or out of order",
         ),
         (
             captured(16, "A", "A")
-                .replace("INFO  lua.ui: places list opened 94 items 12 rows\n", ""),
-            "no list",
+                .replace("INFO  lua.ui: places list opened 95 items 12 rows\n", ""),
+            "places list opened",
         ),
         (
             captured(16, "A", "A").replace("INFO  lua.ui: location tab people: 1280\n", ""),
-            "the Location tab never logged its people line",
+            "Location tab's people line has no count",
         ),
         (
             captured(16, "A", "A").replace("people: 1280", "people: many"),
@@ -1467,9 +1309,13 @@ fn the_judgment_accepts_a_good_run_and_refuses_each_way_a_run_can_be_wrong() {
     }
 }
 
-/// The fixture's geometry, through the real code path: production `main.lua` over 94 places publishes its point-anchored dropdown, and
-/// the fixture follows the resulting row and title coordinates through the real pointer router.
+/// The fixture's geometry, through the real code path: production `main.lua` over 94 places publishes its docked ledger, and the fixture
+/// follows the resulting row and close-button coordinates through the real pointer router.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the window witness exercises the published marker protocol as one ordered interaction"
+)]
 fn the_witness_fixture_reaches_each_marker_at_the_drivers_coordinates() {
     let markers = crate::testing::Dir::new();
     let script = format!(
@@ -1501,10 +1347,42 @@ end)
     let marker = |name: &str| markers.0.join(name).exists();
     // The markers wait one frame after the callback that made them.
     assert!(!marker("places-button-ready"));
+    rig.deliver_fixture_frame_at(400, 320, 2);
+    assert!(!marker("places-button-ready"));
     rig.deliver_fixture_frame();
     assert!(marker("places-button-ready"));
-    // The separate bar is re-anchored to the fixture's initial viewport before the center is chosen.
-    let (x, y) = point_of(&rig, "button_5");
+    // The icon is first created against the requested 800x600 view, then the first frame re-anchors it to 400x320.
+    // The native driver must not use that creation-time point.
+    let created = std::fs::read_to_string(markers.0.join("places-button-created-center"))
+        .expect("the locations icon's creation center");
+    let mut created = created
+        .split_whitespace()
+        .map(|value| value.parse::<f64>().unwrap());
+    let (created_x, created_y) = (created.next().unwrap(), created.next().unwrap());
+    assert!(
+        rig.key_at(created_x, created_y).is_none(),
+        "creation-time point ({created_x}, {created_y}) unexpectedly hits the resized view"
+    );
+    // The final center is captured after the app's first-frame relayout and scene publication.
+    let center = std::fs::read_to_string(markers.0.join("places-button-center"))
+        .expect("the locations icon center marker");
+    let mut center = center
+        .split_whitespace()
+        .map(|value| value.parse::<f64>().unwrap());
+    let (x, y) = (center.next().unwrap(), center.next().unwrap());
+    let bar_key = rig.key_at(x, y).unwrap_or_else(|| {
+        panic!(
+            "the locations button center ({x}, {y}) misses all published regions: {:?}",
+            rig.harness
+                .bridge
+                .hit_regions()
+                .unwrap()
+                .regions()
+                .iter()
+                .map(ck_render_2d::HitRegion::key)
+                .collect::<Vec<_>>()
+        )
+    });
     rig.feed(&[
         PointerEvent::Down(points(x, y)),
         PointerEvent::Up(points(x, y)),
@@ -1518,8 +1396,10 @@ end)
             .bridge
             .hit_regions()
             .unwrap()
-            .contains_key("button_5"),
-        "the Places bar is hidden while its dropdown is open"
+            .regions()
+            .iter()
+            .any(|region| region.key() == bar_key),
+        "the locations icon is hidden while the ledger is open"
     );
     let geometry = std::fs::read_to_string(markers.0.join("places-window-geometry"))
         .expect("the dropdown geometry marker");
@@ -1528,13 +1408,13 @@ end)
         .map(|value| value.parse().unwrap())
         .collect();
     let row_x = geometry[0] + 26.0;
-    let row_y = geometry[1] + geometry[4] + 19.0;
+    let row_y = geometry[1] + geometry[4] + 45.0;
     let key = rig.key_at(row_x, row_y).unwrap_or_else(|| {
         panic!("no row at derived point ({row_x}, {row_y}) from geometry {geometry:?}")
     });
-    assert!(key.contains("_row_1"), "{key}");
+    assert!(key.contains("_row_2"), "{key}");
     assert!(
-        rig.key_at(row_x, row_y - 14.0)
+        rig.key_at(row_x, row_y - 45.0)
             .is_none_or(|key| !key.contains("_row_"))
     );
     // The driver's wheel (the Cocoa delta, 15 points toward later items) scrolls the list by 16 points.
@@ -1553,19 +1433,15 @@ end)
     rig.opened();
     assert_eq!(note_of(&rig, "top"), "Place 2");
     let title = std::fs::read_to_string(markers.0.join("places-title-center"))
-        .expect("the dropdown title center marker");
-    let title: Vec<f64> = title
-        .split_whitespace()
-        .map(|value| value.parse().unwrap())
-        .collect();
-    assert!(
-        rig.key_at(title[0], title[1])
-            .is_some_and(|key| key.starts_with("window_title_")),
-        "the marker point lands on a window title"
-    );
+        .expect("the ledger close-button center marker");
+    let mut title = title.split_whitespace();
+    let close_key = title.next().unwrap();
+    let x: f64 = title.next().unwrap().parse().unwrap();
+    let y: f64 = title.next().unwrap().parse().unwrap();
+    assert_eq!(rig.key_at(x, y).as_deref(), Some(close_key));
     rig.feed(&[
-        PointerEvent::Down(points(title[0], title[1])),
-        PointerEvent::Up(points(title[0], title[1])),
+        PointerEvent::Down(points(x, y)),
+        PointerEvent::Up(points(x, y)),
     ]);
     rig.deliver_fixture_frame();
     rig.deliver_fixture_frame();
@@ -1573,8 +1449,194 @@ end)
     assert!(marker("places-closed"));
 }
 
+/// A pixel-open UI publishes marker coordinates in UI units, while the native window driver injects window points. The witness carries
+/// the frame's UI extent so the driver can scale each target by the live content-view extent instead of assuming a backing scale.
+fn places_witness_fixture_script(markers: &crate::testing::Dir) -> String {
+    format!(
+        r#"MARKER_DIR = [==[{markers}]==]
+callbacks = {{}}
+places_data = {{}}
+for i = 1, 94 do
+  places_data[i] = {{id = "p" .. i, name = "Place " .. i, kind = "town", size = 2}}
+end
+game = {{
+  on_time = function(callback) callbacks.time = callback end,
+  on_select = function(callback) callbacks.select = callback end,
+  on_hover = function(callback) callbacks.hover = callback end,
+  control = function() end,
+  places = function() return places_data end,
+}}
+{witness}
+callbacks.time({{day = 1, month = 1, year = 768, hour = 0, paused = false, speed = 1}})
+"#,
+        markers = markers.0.display(),
+        witness = places_list::script(),
+    )
+}
+
+/// The time-bar driver's coordinates against the shipped pixel-open app, with the real UI VM's current extent.
+fn time_bar_witness_fixture_script() -> String {
+    format!(
+        r#"callbacks = {{}}
+places_data = {{}}
+for i = 1, 94 do
+  places_data[i] = {{id = "p" .. i, name = "Place " .. i, kind = "town", size = 2}}
+end
+game = {{
+  on_time = function(callback) callbacks.time = callback end,
+  on_select = function(callback) callbacks.select = callback end,
+  on_hover = function(callback) callbacks.hover = callback end,
+  control = function() end,
+  places = function() return places_data end,
+}}
+{}
+callbacks.time({{day = 1, month = 1, year = 768, hour = 0, paused = false, speed = 3}})
+"#,
+        time_bar::script()
+    )
+}
+
 #[test]
-fn the_open_dropdown_anchors_and_reanchors_in_points() {
+fn pixel_open_time_bar_driver_units_convert_to_live_window_points() {
+    let script = time_bar_witness_fixture_script();
+    let mut rig = Rig::new_fixture_body_in_pixels(&script);
+    rig.deliver_fixture_frame_at(400, 320, 2);
+    rig.deliver_fixture_frame();
+
+    let extent = notes(&rig)
+        .into_iter()
+        .find_map(|line| line.strip_prefix("time-bar UI extent ").map(str::to_owned))
+        .expect("the real frame callback publishes its live UI extent");
+    let dimensions: Vec<f64> = extent
+        .split_whitespace()
+        .map(|value| value.parse().expect("numeric UI extent"))
+        .collect();
+    assert_eq!(dimensions, [800.0, 640.0]);
+
+    // The native fixture coordinates name UI units: the fast-forward button, speed box 5, and speed box 3 drag start.
+    let fast_forward = rig.key_at(83.0, 27.0).expect("fast-forward hit region");
+    assert!(fast_forward.starts_with("button_"), "{fast_forward}");
+    assert_eq!(rig.key_at(174.0, 27.0).as_deref(), Some("speed_5"));
+    assert_eq!(rig.key_at(142.0, 27.0).as_deref(), Some("speed_3"));
+    assert_eq!(rig.key_at(147.0, 27.0).as_deref(), Some("speed_3"));
+
+    // The 400x320-point content view is 800x640 UI units at this scale. The same conversion as the native driver maps the target
+    // to window points; mapping those points back through the live extents lands on the same published hit region.
+    let point = (83.0 * 400.0 / dimensions[0], 27.0 * 320.0 / dimensions[1]);
+    assert_eq!(point, (41.5, 13.5));
+    assert_eq!(
+        rig.key_at(
+            point.0 * dimensions[0] / 400.0,
+            point.1 * dimensions[1] / 320.0,
+        )
+        .as_deref(),
+        Some(fast_forward.as_str())
+    );
+    // Feeding the same numeric pair as points (the old bug) addresses UI y=54, below the time bar, and misses the control.
+    assert_ne!(
+        rig.key_at(83.0 * dimensions[0] / 400.0, 27.0 * dimensions[1] / 320.0)
+            .as_deref(),
+        Some(fast_forward.as_str())
+    );
+}
+
+#[test]
+fn the_witness_pixel_coordinates_convert_to_window_points_for_each_places_target() {
+    let markers = crate::testing::Dir::new();
+    let script = places_witness_fixture_script(&markers);
+    let mut rig = Rig::new_fixture_body_in_pixels(&script);
+    let marker = |name: &str| markers.0.join(name).exists();
+    rig.deliver_fixture_frame_at(400, 320, 2);
+    rig.deliver_fixture_frame();
+
+    // The harness attaches a 400x320 point window to an 800x640 drawable. At scale 1, the UI sees 800x640 units.
+    let to_window_points = |x: f64, y: f64, ui_width: f64, ui_height: f64| {
+        (x * 400.0 / ui_width, y * 320.0 / ui_height)
+    };
+    let click = |rig: &mut Rig, x: f64, y: f64, ui_width: f64, ui_height: f64| {
+        let (x, y) = to_window_points(x, y, ui_width, ui_height);
+        rig.feed(&[
+            PointerEvent::Down(points(x, y)),
+            PointerEvent::Up(points(x, y)),
+        ]);
+    };
+
+    let center = std::fs::read_to_string(markers.0.join("places-button-center"))
+        .expect("the published locations icon center");
+    let center: Vec<f64> = center
+        .split_whitespace()
+        .map(|value| value.parse().unwrap())
+        .collect();
+    assert_eq!(&center[2..], &[800.0, 640.0]);
+    let (button_x, button_y) = to_window_points(center[0], center[1], center[2], center[3]);
+    let button_key = rig
+        .key_at(center[0], center[1])
+        .expect("the published icon hit");
+    assert_eq!(
+        rig.key_at(button_x * center[2] / 400.0, button_y * center[3] / 320.0)
+            .as_deref(),
+        Some(button_key.as_str()),
+        "the converted window point maps back to the published UI hit"
+    );
+    click(&mut rig, center[0], center[1], center[2], center[3]);
+    rig.deliver_fixture_frame();
+    rig.deliver_fixture_frame();
+    assert!(marker("places-ready"));
+
+    let geometry = std::fs::read_to_string(markers.0.join("places-window-geometry"))
+        .expect("the ledger geometry and its UI extent");
+    let geometry: Vec<f64> = geometry
+        .split_whitespace()
+        .map(|value| value.parse().unwrap())
+        .collect();
+    let row_x = geometry[0] + 26.0;
+    let row_y = geometry[1] + geometry[4] + 45.0;
+    let (scroll_x, scroll_y) = to_window_points(row_x, row_y, geometry[5], geometry[6]);
+    rig.feed(&[scroll_points(scroll_x, scroll_y, -15)]);
+    rig.deliver_fixture_frame();
+    rig.deliver_fixture_frame();
+    assert!(marker("list-scrolled"));
+    click(&mut rig, row_x, row_y, geometry[5], geometry[6]);
+    rig.deliver_fixture_frame();
+    rig.deliver_fixture_frame();
+    assert!(marker("place-ready"));
+    let records = notes(&rig);
+    let clicked = records
+        .iter()
+        .position(|line| line.starts_with("places list click row "))
+        .expect("the click callback records its row");
+    let expected = records
+        .iter()
+        .position(|line| line.starts_with("place window expected "))
+        .expect("the click callback records its expected place");
+    let opened = records
+        .iter()
+        .position(|line| line.starts_with("place window opened "))
+        .expect("the witness records the opened place panel");
+    assert!(clicked < expected && expected < opened, "{records:?}");
+    assert_eq!(
+        records[expected].strip_prefix("place window expected "),
+        records[opened].strip_prefix("place window opened ")
+    );
+
+    assert!(rig.escape());
+    rig.deliver_fixture_frame();
+    assert!(marker("place-closed"));
+    let title = std::fs::read_to_string(markers.0.join("places-title-center"))
+        .expect("the title close-button center and its UI extent");
+    let mut title = title.split_whitespace();
+    let _close_key = title.next().unwrap();
+    let x: f64 = title.next().unwrap().parse().unwrap();
+    let y: f64 = title.next().unwrap().parse().unwrap();
+    let ui_width: f64 = title.next().unwrap().parse().unwrap();
+    let ui_height: f64 = title.next().unwrap().parse().unwrap();
+    click(&mut rig, x, y, ui_width, ui_height);
+    rig.deliver_fixture_frame();
+    assert!(marker("places-closed"));
+}
+
+#[test]
+fn the_open_ledger_docks_and_reanchors_at_both_scales() {
     let main_path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua");
     let main = std::fs::read_to_string(main_path).expect("the production UI script");
@@ -1592,20 +1654,40 @@ game = {{
   places = function() return places_data end,
 }}
 function note(text) window.record(text) end
+local button_library = require("lib.button")
+local real_button_new = button_library.new
+local location_button
+button_library.new = function(spec)
+  local created = real_button_new(spec)
+  if spec.icon == "location" then location_button = created end
+  return created
+end
 local windows = require("lib.window")
 local real_new = windows.new
 windows.new = function(spec)
   local created = real_new(spec)
-  if spec.title == "places" then
+  if spec.title == "ledger" then
     local real_move_to = created.move_to
     function created:move_to(x, y)
       real_move_to(self, x, y)
       local left, top = self:position()
       local width, height = self:size()
-      note(string.format("places-geometry %d %d %d %d", left, top, width, height))
+      note(string.format("places-geometry %g %g %g %g", left, top, width, height))
     end
   end
   return created
+end
+local real_on_update = frame.on_update
+frame.on_update = function(callback)
+  real_on_update(function(update)
+    callback(update)
+    -- The production layout first uses window.open's resolved size, then this frame's viewport. Observe after its relayout.
+    if location_button ~= nil then
+      local width, height = location_button:size()
+      note(string.format("location-button %s %g %g", location_button.key,
+        location_button.x + width / 2, location_button.y + height / 2))
+    end
+  end)
 end
 {main}
 callbacks.time({{day=1, month=1, year=768, hour=0, paused=false, speed=1}})
@@ -1613,13 +1695,16 @@ callbacks.time({{day=1, month=1, year=768, hour=0, paused=false, speed=1}})
         );
         let mut rig = Rig::new_fixture_body(&script);
         rig.deliver_fixture_frame_at(800, 600, u32::try_from(scale).unwrap());
-        let regions = rig.harness.bridge.hit_regions().expect("regions");
-        let (x, y) = (0..2400)
-            .flat_map(|y| {
-                (0..2400).map(move |x| (f64::from(x) / 2.0 + 0.25, f64::from(y) / 2.0 + 0.25))
-            })
-            .find(|(x, y)| regions.key_at(points(*x, *y)) == Some("button_5"))
-            .expect("the Places button hit region at 800 points wide");
+        let line = notes(&rig)
+            .into_iter()
+            .find(|line| line.starts_with("location-button "))
+            .expect("the locations icon coordinates");
+        let mut fields = line.split_whitespace();
+        let _ = fields.next();
+        let key = fields.next().unwrap();
+        let x: f64 = fields.next().unwrap().parse().unwrap();
+        let y: f64 = fields.next().unwrap().parse().unwrap();
+        assert_eq!(rig.key_at(x, y).as_deref(), Some(key));
         rig.feed(&[
             PointerEvent::Down(points(x, y)),
             PointerEvent::Up(points(x, y)),
@@ -1635,20 +1720,20 @@ callbacks.time({{day=1, month=1, year=768, hour=0, paused=false, speed=1}})
         let opened = records
             .iter()
             .find(|line| line.starts_with("places-geometry "))
-            .expect("the dropdown is positioned after opening");
+            .expect("the ledger is positioned after opening");
         let opened = geometry(opened);
         let margin = 8;
         let snap = |value: i64| ((value + scale / 2) / scale) * scale;
-        assert_eq!((opened[0], opened[1]), (snap(800 - opened[2] - 8), margin));
+        assert_eq!((opened[0] + opened[2], opened[1]), (snap(800), margin));
 
         rig.deliver_fixture_frame_at(1200, 700, u32::try_from(scale).unwrap());
         let moved = notes(&rig)
             .into_iter()
             .rev()
             .find(|line| line.starts_with("places-geometry "))
-            .expect("the dropdown is repositioned after resize");
+            .expect("the ledger is repositioned after resize");
         let moved = geometry(&moved);
-        assert_eq!((moved[0], moved[1]), (snap(1200 - moved[2] - 8), margin));
+        assert_eq!((moved[0] + moved[2], moved[1]), (snap(1200), margin));
     }
 }
 

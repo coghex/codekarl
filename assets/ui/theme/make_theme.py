@@ -26,6 +26,7 @@ Pixel = tuple[int, int, int, int]
 WHITE: Pixel = (255, 255, 255, 255)
 CLEAR: Pixel = (0, 0, 0, 0)
 CUTS = (3, 6, 7)
+ICON_HEIGHT = 11
 ICONS = {
     "rewind": (
         9,
@@ -50,6 +51,39 @@ ICONS = {
     "elevation": (
         9,
         ("...##...", "..####..", "..####..", ".######.", ".######.", "########", "########"),
+    ),
+    # The owner-approved ledger tab icons are the exact 9x11 mock-up rows.
+    "location": (
+        9,
+        (
+            "....#....",
+            "...###...",
+            "..#####..",
+            "..##.##..",
+            "..#####..",
+            "..#####..",
+            "..##.##..",
+            "..#####..",
+            "..#####..",
+            "..##.##..",
+            ".#######.",
+        ),
+    ),
+    "pops": (
+        9,
+        (
+            "...###...",
+            "...###...",
+            "...###...",
+            "....#....",
+            ".#######.",
+            "#.#####.#",
+            "#.#####.#",
+            "..#####..",
+            "..##.##..",
+            "..##.##..",
+            "..##.##..",
+        ),
     ),
 }
 
@@ -80,12 +114,13 @@ def tile(cut: int, corner: str, part: str) -> list[list[Pixel]]:
 
 
 def icon(width: int, shape: tuple[str, ...]) -> list[list[Pixel]]:
-    """An 11-row glyph, with its seven shape rows starting at row 2 and one blank column at left."""
-    rows = [[CLEAR for _ in range(width)] for _ in range(11)]
-    for y, pattern in enumerate(shape, start=2):
-        for x, pixel in enumerate(pattern, start=1):
+    """An 11-row glyph; ledger glyphs are full shapes, the other icons have seven padded rows."""
+    rows = [[CLEAR for _ in range(width)] for _ in range(ICON_HEIGHT)]
+    full_shape = len(shape) == ICON_HEIGHT
+    for y, pattern in enumerate(shape):
+        for x, pixel in enumerate(pattern):
             if pixel == "#":
-                rows[y][x] = WHITE
+                rows[y if full_shape else y + 2][x if full_shape else x + 1] = WHITE
     return rows
 
 
