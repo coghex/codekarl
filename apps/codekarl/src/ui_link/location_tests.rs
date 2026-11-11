@@ -162,6 +162,23 @@ function announce_selector_liveness()
   note("selector_live " .. tostring(look_buttons.cards ~= nil and look_buttons.cards.frame ~= nil
     and look_buttons.rows ~= nil and look_buttons.rows.frame ~= nil))
 end
+selector_objects = {}
+local function attached_selector_count(window_object)
+  local selectors = selector_objects[window_object] or {}
+  local count = 0
+  for _, attached in ipairs(window_object.attached) do
+    for _, selector in ipairs(selectors) do
+      if attached == selector then
+        count = count + 1
+        break
+      end
+    end
+  end
+  return count
+end
+function announce_selector_count()
+  note("selector_count " .. attached_selector_count(panel_window))
+end
 function note(text) window.record(text) end
 local drawing_card = false
 local real_create_quad = render.create_quad
@@ -271,6 +288,14 @@ window_objects = {}
 windows.new = function(spec)
   panel_window = real_windows_new(spec)
   window_objects[spec.title] = panel_window
+  selector_objects[panel_window] = {}
+  local real_attach = panel_window.attach
+  function panel_window:attach(item)
+    if type(item.buttons) == "table" and item.buttons.cards ~= nil and item.buttons.rows ~= nil then
+      table.insert(selector_objects[self], item)
+    end
+    return real_attach(self, item)
+  end
   return panel_window
 end
 -- The centre of each tab button, in window points, for the driver to click.
@@ -457,6 +482,125 @@ fn click_tab_at(rig: &mut Rig, key: &str, (width, height): (u32, u32)) {
     ]);
     // A frame at the rig's own size, so that the pointer is dispatched without the window being resized.
     rig.deliver_fixture_frame_at(width, height, 2);
+}
+
+#[test]
+fn a_pops_selector_is_detached_before_a_resize_refit_and_keeps_look_and_scroll() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('scrolling', 'Scrolling') announce_tabs()",
+        "announce_look()",
+        "card_object:set_pos(26); note('before_scroll ' .. card_object:scroll_position()); announce_look(); announce_selector_count()",
+        "note('after_scroll ' .. card_object:scroll_position()); announce_look(); announce_selector_count()",
+        "select_place('scrolling', 'Scrolling'); announce_tabs(); announce_selector_count()",
+    ]);
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    rig.opened();
+    click_look(&mut rig, "rows");
+    rig.opened();
+    rig.deliver_fixture_frame_at(1700, 800, 2);
+    rig.opened();
+
+    let recorded = notes(&rig);
+    assert!(recorded.iter().any(|line| line == "before_scroll 26"));
+    assert!(recorded.iter().any(|line| line == "after_scroll 26"));
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.starts_with("look rows ") && line.ends_with("selected=true"))
+    );
+    assert!(
+        recorded
+            .iter()
+            .filter(|line| *line == "selector_count 1")
+            .count()
+            >= 2
+    );
+
+    assert!(rig.escape(), "Escape closes the refitted location panel");
+    rig.opened();
+    assert!(notes(&rig).iter().any(|line| line == "selector_count 1"));
+}
+
+#[test]
+fn a_location_tab_detaches_its_selector_before_resize_and_selection_change() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('scrolling', 'Scrolling') announce_tabs()",
+        "note('before_resize_selector_count ' .. attached_selector_count(panel_window))",
+        "select_place('cards', 'Cards'); note('after_selection_selector_count ' .. attached_selector_count(panel_window))",
+        "select_place('cards', 'Cards'); note('reopened_selector_count ' .. attached_selector_count(panel_window))",
+    ]);
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    click_tab(&mut rig, "location");
+    rig.opened();
+    rig.deliver_fixture_frame_at(1700, 800, 2);
+    rig.opened();
+
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "before_resize_selector_count 0")
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "after_selection_selector_count 0")
+    );
+    assert!(rig.escape(), "Escape closes the location-only panel");
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "reopened_selector_count 0")
+    );
+}
+
+#[test]
+fn switching_location_tabs_keeps_one_selector_and_close_reopen_starts_clean() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('scrolling', 'Scrolling') announce_tabs(); note('selector_count ' .. attached_selector_count(panel_window))",
+        "announce_selector_count()",
+        "announce_selector_count()",
+        "announce_selector_count()",
+        "announce_selector_count()",
+        "announce_selector_count()",
+        "announce_selector_count()",
+        "select_place('scrolling', 'Scrolling'); announce_selector_count()",
+    ]);
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    rig.opened();
+    click_tab(&mut rig, "location");
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    rig.opened();
+    click_tab(&mut rig, "buildings");
+    rig.opened();
+    click_tab(&mut rig, "location");
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    rig.opened();
+
+    let counts = notes(&rig)
+        .iter()
+        .filter_map(|line| line.strip_prefix("selector_count "))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(counts, ["0", "1", "0", "1", "1", "0", "1"]);
+
+    assert!(
+        rig.escape(),
+        "Escape closes the tab-switched location panel"
+    );
+    rig.opened();
+    assert_eq!(
+        notes(&rig)
+            .iter()
+            .filter_map(|line| line.strip_prefix("selector_count "))
+            .next_back(),
+        Some("1")
+    );
 }
 
 const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|housing: basic 0/0, makeshift 0/0|crowding: 0%|food: 215 days|building land: 4200 / 24200 m²|storage: 5400 / 86400 L|lost to overflow last month: 0|prices (base):|  oats 100 (100)|  ale 2.5 (2)";
