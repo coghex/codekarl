@@ -156,7 +156,7 @@ end
 
 local function place(self)
   if self.closed or self.origin_x == nil then return end
-  local x, y = self.origin_x + self.x, self.origin_y + self.y - self.scroll_offset
+  local x, y = self.origin_x + self.x, self.origin_y + self.y - ui.snap(self.scroll_offset)
   if x ~= self.shown_x or y ~= self.shown_y then
     render.set_group_offset(self.group, x, y)
     self.shown_x, self.shown_y = x, y
@@ -223,7 +223,7 @@ end
 
 function cards:set_pos(position)
   if not finite(position) then error("cards:set_pos: position must be finite", 2) end
-  local next_scroll = ui.snap(math.max(0, math.min(position, max_scroll(self))))
+  local next_scroll = math.max(0, math.min(position, max_scroll(self)))
   if next_scroll ~= self.scroll_offset then
     self.scroll_offset = next_scroll
     place(self)
@@ -243,7 +243,7 @@ function cards:set_items(items, gap)
   end
   self.items = checked_items(items)
   measure(self)
-  self.scroll_offset = ui.snap(math.max(0, math.min(self.scroll_offset, max_scroll(self))))
+  self.scroll_offset = math.max(0, math.min(self.scroll_offset, max_scroll(self)))
   place(self)
   sync(self, true)
 end

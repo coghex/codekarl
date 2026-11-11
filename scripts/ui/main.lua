@@ -30,6 +30,7 @@ local OPEN_WIDTH, OPEN_HEIGHT = window.open{
   clear = {0.10, 0.25, 0.45},
 }
 local view = {width = OPEN_WIDTH, height = OPEN_HEIGHT}
+windows.update_viewport(view.width, view.height)
 
 -- Relayouts of the anchored elements, run when the window's size changes. Each is registered by the element.
 local relayouts = {}
@@ -384,6 +385,7 @@ if game ~= nil then
 
   local ledger_list = nil
   local ledger_tabs = nil
+  local ledger_selections = {}
   local ledger_key = "locations"
   local LEDGER_TABS = {
     {key = "locations", icon = "location"},
@@ -459,6 +461,8 @@ if game ~= nil then
   fill_ledger = function()
     if places_window == nil or places_window.closed then return end
     local rows, selections, revision = ledger_items(ledger_key)
+    -- Keep the click mapping in lockstep with the rows across refreshes.
+    ledger_selections = selections
     if ledger_list ~= nil and not ledger_list.closed then
       ledger_list:set_items(rows)
     else
@@ -471,7 +475,7 @@ if game ~= nil then
         rows = visible_rows,
         items = rows,
         on_select = function(index)
-          local selection = selections[index]
+          local selection = ledger_selections[index]
           if selection ~= nil then
             location_panel:show(selection, ledger_key == "pops" and "pops" or nil)
           end

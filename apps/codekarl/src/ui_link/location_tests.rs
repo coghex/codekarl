@@ -81,20 +81,21 @@ for index = 1, 60 do
     satisfaction = 0, births = 0, deaths = 0}
 end
 VIEWS = {
-  [1] = {rowan = rowan(80, 2), nobody = nobody, fada = fada, long = long_place, cards = cards_place, scrolling = scrolling_place},
-  [2] = {rowan = rowan(90, 0), nobody = nobody, cards = cards_place, scrolling = scrolling_place},
+  [1] = {rowan = rowan(80, 2), nobody = nobody, fada = fada, long = long_place, cards = cards_place, scrolling = scrolling_place, before = nobody},
+  [2] = {rowan = rowan(90, 0), nobody = nobody, cards = cards_place, scrolling = scrolling_place, fada = fada, long = long_place, before = nobody},
+}
+place_data = {
+  {id = "rowan", name = "Rowan", kind = "town", size = 3},
+  {id = "nobody", name = "No Economy", kind = "town", size = 1},
+  {id = "fada", name = "Cluain Mhic Nóis", kind = "monastery", size = 2},
+  {id = "long", name = string.rep("\u{D3}", 40), kind = "town", size = 1},
 }
 game = {
   on_time = function(callback) callbacks.time = callback end,
   on_select = function(callback) callbacks.select = callback end,
   on_hover = function(callback) callbacks.hover = callback end,
   control = function() end,
-  places = function() return {
-    {id = "rowan", name = "Rowan", kind = "town", size = 3},
-    {id = "nobody", name = "No Economy", kind = "town", size = 1},
-    {id = "fada", name = "Cluain Mhic Nóis", kind = "monastery", size = 2},
-    {id = "long", name = string.rep("\u{D3}", 40), kind = "town", size = 1},
-  } end,
+  places = function() return place_data end,
   place = function(id, revision)
     place_calls[#place_calls + 1] = id .. "@" .. revision
     local view = VIEWS[revision]
@@ -304,7 +305,8 @@ function announce_tabs()
   for index, item in ipairs(tabs_object.items) do
     local width, height = tabs_object.buttons[index]:size()
     note(string.format("tab %s %d %d %s", item.key, x + tabs_object.buttons[index].x + width / 2,
-      y + tabs_object.buttons[index].y + height / 2, tabs_object.buttons[index].text or ""))
+      y + tabs_object.buttons[index].y + height / 2,
+      (tabs_object.buttons[index].text or "") .. " selected=" .. tostring(tabs_object.buttons[index].selected == true)))
   end
 end
 function announce_ledger()
@@ -330,11 +332,19 @@ function announce_ledger_tabs()
   tabs_object = tabs_by_title.ledger
   announce_tabs()
 end
+function announce_place_tabs()
+  panel_window = window_objects.Rowan
+  tabs_object = tabs_by_title.Rowan
+  announce_tabs()
+  note("place_selected " .. tabs_object:current())
+  note("place_cards_open " .. tostring(card_object ~= nil and not card_object.closed))
+end
 function announce_active_panel()
   note(string.format("active_panel %s %s ledger_closed=%s", panel_window.title, tabs_object:current(),
     tostring(window_objects.ledger == nil or window_objects.ledger.closed)))
   note("place_calls " .. table.concat(place_calls, ","))
 end
+function announce_last_place_call() note("last_place_call " .. tostring(place_calls[#place_calls])) end
 function announce_pop_clip()
   for _, item in ipairs(list_object.items) do
     if item.icon ~= nil and item.icon.name == "pops" then
@@ -1662,6 +1672,329 @@ fn ledger_rows_use_revision_order_colours_columns_unicode_clipping_and_select_th
         "{:?}",
         notes(&rig)
     );
+}
+
+#[test]
+fn refreshed_ledger_rows_keep_their_place_mapping_after_inserts_shifts_and_removals() {
+    let mut rig = rig(&[
+        "time(0, 1) announce_bars()",
+        "place_data = {{id='before', name='Aardvark', kind='town', size=1}, \
+         {id='rowan', name='Rowan', kind='town', size=3}, \
+         {id='fada', name='Cluain Mhic Nóis', kind='monastery', size=2}, \
+         {id='long', name=string.rep('Ó', 40), kind='town', size=1}}; time(1, 2); announce_ledger()",
+        "place_calls = {}",
+        "announce_last_place_call()",
+        "place_calls = {}",
+        "announce_last_place_call()",
+        "place_calls = {}",
+        "announce_last_place_call()",
+        "place_data = {{id='rowan', name='Rowan', kind='town', size=3}, \
+         {id='long', name='Ó', kind='town', size=1}}; time(2, 1); announce_ledger()",
+        "place_calls = {}",
+        "announce_last_place_call()",
+    ]);
+    rig.opened();
+    press_bar(&mut rig, "location");
+    rig.opened();
+    assert!(rows(&rig).last().unwrap().contains("Aardvark@1:left"));
+
+    // The inserted first place, the shifted second place, and the last place must use this revision's row map.
+    rig.opened();
+    click_ledger_row(&mut rig, 2, 1800, 900);
+    rig.opened();
+    assert_eq!(
+        notes(&rig).last().map(String::as_str),
+        Some("last_place_call before@2")
+    );
+    rig.opened();
+    click_ledger_row(&mut rig, 3, 1800, 900);
+    rig.opened();
+    assert_eq!(
+        notes(&rig).last().map(String::as_str),
+        Some("last_place_call rowan@2")
+    );
+    rig.opened();
+    click_ledger_row(&mut rig, 5, 1800, 900);
+    rig.opened();
+    assert_eq!(
+        notes(&rig).last().map(String::as_str),
+        Some("last_place_call long@2")
+    );
+
+    // Removing rows also replaces their mapping; the new last row is long, not the stale fada entry.
+    rig.opened();
+    rig.opened();
+    click_ledger_row(&mut rig, 3, 1800, 900);
+    rig.opened();
+    assert_eq!(
+        notes(&rig).last().map(String::as_str),
+        Some("last_place_call long@1")
+    );
+}
+
+#[test]
+fn a_ledger_filled_after_an_empty_first_revision_gets_a_current_row_mapping() {
+    let mut rig = rig(&[
+        "place_data = {}; time(0, 1) announce_bars()",
+        "place_data = {{id='before', name='Aardvark', kind='town', size=1}}; time(1, 2); announce_ledger()",
+        "place_calls = {}",
+        "announce_last_place_call()",
+    ]);
+    rig.opened();
+    press_bar(&mut rig, "location");
+    assert_eq!(
+        rows(&rig).last().unwrap().split('|').count(),
+        1,
+        "only the header is present initially"
+    );
+    assert!(rows(&rig).last().unwrap().starts_with("name@"));
+
+    rig.opened();
+    rig.opened();
+    click_ledger_row(&mut rig, 2, 1800, 900);
+    rig.opened();
+    assert_eq!(
+        notes(&rig).last().map(String::as_str),
+        Some("last_place_call before@2")
+    );
+}
+
+#[test]
+fn a_pops_ledger_row_selects_pops_and_updates_the_open_location_tab() {
+    for previous_tab in ["location", "buildings"] {
+        let mut rig = rig(&[
+            "time(1, 1) select_place('rowan', 'Rowan') announce_bars(); announce_place_tabs()",
+            "announce_place_tabs()",
+            "announce_ledger_tabs(); announce_ledger()",
+            "announce_place_tabs()",
+            "announce_place_tabs()",
+            "select_place('fada', 'Fada'); announce_place_tabs()",
+        ]);
+        rig.opened();
+        if previous_tab == "buildings" {
+            click_tab(&mut rig, "buildings");
+        }
+        rig.opened();
+
+        press_bar(&mut rig, "location");
+        press_bar(&mut rig, "pops");
+        rig.opened();
+        click_ledger_row(&mut rig, 1, 1800, 900);
+        rig.opened();
+        let current = notes(&rig);
+        assert!(
+            current.iter().any(|line| line == "place_selected pops"),
+            "{current:?}"
+        );
+        assert!(
+            current.iter().any(|line| line == "place_cards_open true"),
+            "{current:?}"
+        );
+        assert!(
+            current.iter().any(|line| line.contains(" peasant")),
+            "Pops content was not drawn: {current:?}"
+        );
+        assert!(
+            current
+                .iter()
+                .any(|line| line.starts_with("tab pops ") && line.ends_with("selected=true")),
+            "Pops tab is not selected: {current:?}"
+        );
+
+        click_tab(&mut rig, previous_tab);
+        rig.opened();
+        let current = notes(&rig);
+        assert!(
+            current
+                .iter()
+                .any(|line| line == &format!("place_selected {previous_tab}")),
+            "{current:?}"
+        );
+        if previous_tab == "location" {
+            assert!(
+                current.iter().any(|line| line == "place_cards_open false"),
+                "{current:?}"
+            );
+        } else {
+            assert!(
+                current.iter().any(|line| line == "place_cards_open true"),
+                "{current:?}"
+            );
+        }
+
+        rig.opened();
+        let current = notes(&rig);
+        assert!(
+            current
+                .iter()
+                .any(|line| line == &format!("place_selected {previous_tab}")),
+            "show without tab changed it: {current:?}"
+        );
+    }
+}
+
+#[test]
+fn startup_viewport_uses_the_window_open_size_before_first_layout_and_resize() {
+    let main_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua");
+    let main = std::fs::read_to_string(main_path).expect("the production UI script");
+    let body = format!(
+        r#"
+{PREFIX}
+local real_open = window.open
+window.open = function(spec)
+  local width, height = real_open(spec)
+  opened_width, opened_height = width, height
+  return width, height
+end
+{main}
+time(0, 1)
+note(string.format("open_size %d %d", opened_width, opened_height))
+local windows = require("lib.window")
+local probe = windows.new{{title="viewport probe", content_width=100 * P, content_height=50 * P}}
+local x, y = probe:position()
+local width, height = probe:size()
+local expected_x = require("lib.ui").snap((opened_width - width) / 2)
+local expected_y = require("lib.ui").snap((opened_height - height) / 2)
+note(string.format("viewport_center %g %g %g %g", x, y, expected_x, expected_y))
+local visible = math.min(16 * P, width)
+local max_x = math.max(visible - width, math.floor((opened_width - visible) / P) * P)
+local max_y = math.max(0, math.floor((opened_height - probe.title_height) / P) * P)
+probe:move_to(1000000, 1000000)
+x, y = probe:position()
+note(string.format("viewport_drag %g %g %g %g", x, y, max_x, max_y))
+window.on_opened(function()
+  if window_objects.ledger ~= nil and not window_objects.ledger.closed then announce_ledger()
+  else announce_bars() end
+end)
+"#
+    );
+    let mut rig = Rig::new_fixture_body(&body);
+    let open = notes(&rig)
+        .into_iter()
+        .find(|line| line.starts_with("open_size "))
+        .expect("window.open's resolved size");
+    let mut fields = open.split_whitespace().skip(1);
+    let width: u32 = fields.next().unwrap().parse().unwrap();
+    let height: u32 = fields.next().unwrap().parse().unwrap();
+
+    // This is the first frame, exactly the size returned from window.open: no resize callback can repair a stale viewport.
+    rig.deliver_fixture_frame_at(width, height, 1);
+    rig.opened();
+    for prefix in ["viewport_center ", "viewport_drag "] {
+        let line = notes(&rig)
+            .into_iter()
+            .find(|line| line.starts_with(prefix))
+            .unwrap();
+        let values: Vec<f64> = line[prefix.len()..]
+            .split_whitespace()
+            .map(|value| value.parse().unwrap())
+            .collect();
+        assert_eq!(&values[..2], &values[2..], "{line}");
+    }
+
+    let button = bar_button(&rig, "location");
+    let point = (
+        point_value(button[0] + button[2] / 2),
+        point_value(button[1] + button[3] / 2),
+    );
+    rig.feed(&[
+        PointerEvent::Down(points(point.0, point.1)),
+        PointerEvent::Up(points(point.0, point.1)),
+    ]);
+    rig.deliver_fixture_frame_at(width, height, 1);
+    rig.opened();
+    let opened = notes(&rig)
+        .into_iter()
+        .rev()
+        .find(|line| line.starts_with("ledger "))
+        .expect("the ledger geometry at the opened size");
+    let mut geometry = opened.split_whitespace();
+    assert_eq!(geometry.next(), Some("ledger"));
+    let x: f64 = geometry.next().unwrap().parse().unwrap();
+    let _y: f64 = geometry.next().unwrap().parse().unwrap();
+    let panel_width: f64 = geometry.next().unwrap().parse().unwrap();
+    assert!(
+        (x + panel_width - f64::from(width)).abs() < f64::EPSILON,
+        "{opened}"
+    );
+
+    rig.deliver_fixture_frame_at(width + 200, height + 100, 1);
+    rig.opened();
+    let resized = notes(&rig)
+        .into_iter()
+        .rev()
+        .find(|line| line.starts_with("ledger "))
+        .expect("the ledger geometry after resize");
+    let mut geometry = resized.split_whitespace();
+    let _ = geometry.next();
+    let x: f64 = geometry.next().unwrap().parse().unwrap();
+    let _y: f64 = geometry.next().unwrap().parse().unwrap();
+    let panel_width: f64 = geometry.next().unwrap().parse().unwrap();
+    assert!(
+        (x + panel_width - f64::from(width + 200)).abs() < f64::EPSILON,
+        "{resized}"
+    );
+}
+
+#[test]
+fn card_scrolling_keeps_fractional_points_and_snaps_only_the_drawn_offset() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('scrolling', 'Scrolling')",
+        "announce_tabs()",
+        "card_object:set_pos(26); local start_y = card_object.shown_y; \
+         card_object:scroll({amount=1, unit='points'}); card_object:scroll({amount=1, unit='points'}); \
+         note('scroll_down ' .. card_object:scroll_position() .. ' ' .. card_object.shown_y - start_y); \
+         card_object:scroll({amount=-1, unit='points'}); card_object:scroll({amount=-1, unit='points'}); \
+         note('scroll_up ' .. card_object:scroll_position() .. ' ' .. card_object.shown_y - start_y); \
+         card_object:scroll({amount=-0.5, unit='points'}); note('fractional ' .. card_object:scroll_position()); \
+         card_object:scroll({amount=0.25, unit='points'}); note('fractional_2 ' .. card_object:scroll_position()); \
+         card_object:set_pos(26); card_object:scroll({amount=-1, unit='lines'}); note('line_scroll ' .. card_object:scroll_position()); \
+         card_object:set_items({card_object.items[1]}, 3); note('shrink_scroll ' .. card_object:scroll_position()); \
+         local key = next(card_object.item_keys); note('card_grid ' .. key .. ' ' .. card_object.shown_x .. ' ' .. card_object.shown_y)",
+    ]);
+    rig.opened();
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        recorded.iter().any(|line| line == "scroll_down 24 2"),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line == "scroll_up 26 0"),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line == "fractional 26.5"),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line == "fractional_2 26.25"),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line == "line_scroll 52"),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line == "shrink_scroll 0"),
+        "{recorded:?}"
+    );
+
+    let grid = recorded
+        .iter()
+        .find(|line| line.starts_with("card_grid "))
+        .expect("card hit geometry");
+    let mut fields = grid.split_whitespace();
+    let _ = fields.next();
+    let key = fields.next().unwrap();
+    let x: f64 = fields.next().unwrap().parse().unwrap();
+    let y: f64 = fields.next().unwrap().parse().unwrap();
+    assert!(x.rem_euclid(2.0).abs() < f64::EPSILON, "{grid}");
+    assert!(y.rem_euclid(2.0).abs() < f64::EPSILON, "{grid}");
+    assert_eq!(rig.key_at(x + 2.0, y + 2.0).as_deref(), Some(key));
 }
 
 #[test]
