@@ -662,6 +662,9 @@ function location:show(selection, tab)
   end
   self.window:set_title(selection.name)
   self.window:raise()
+  if tab ~= nil then
+    self.tabs:select(tab)
+  end
   render(self, false)
 end
 
