@@ -74,8 +74,9 @@ affect it. **Floor** groups always run (fmt, ruff, ShellCheck, the doctor, Clipp
 opens a window). **Affected** groups run when a changed path matches their patterns: the Rust tests of
 the backend-neutral crates (`rust.core`) and of the application without a real window (`rust.app`,
 `rust.app-default`), the Metal tests that need the GPU but no window (`metal.gpu`, `app.metal-gpu`), the native tests
-that open real windows with keyboard and mouse input ignored (`native.window` for Cocoa, `app.native-window` and the presenter's `metal.window-*` groups), each Python test group and the
-chat CI. **Optional** groups run only when named: the scale runs, the GLFW focus cases (`glfw.window-focus`) and the Vulkan GPU and
+that open real windows with keyboard and mouse input ignored (`native.window` for Cocoa, `app.native-window` and the presenter's `metal.window-*` groups), the two shipped UI cases (`app.ui-witness`: places list and time bar; skipped as covered when `app.native-window` is selected), each Python test group and the
+chat CI. Economy changes also run `rust.app` and `rust.app-default`. Changes to Rust sources run `unittest-catalog` because it inventories those files.
+**Optional** groups run only when named: the scale runs, the GLFW focus cases (`glfw.window-focus`) and the Vulkan GPU and
 window groups (`glfw.window`, `vulkan.gpu`, `vulkan.window`, `render2d.vulkan-window` and `vulkan.app`). Docs and editor files are
 claimed by the doctor group.
 
