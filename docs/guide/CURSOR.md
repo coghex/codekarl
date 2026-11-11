@@ -1,11 +1,11 @@
 # Guide cursor
 
-Resume after: `1794327578207109000` · patch `HMDAUV5NJGXTNGNAEKVFSZCSJ3X5C7HBIJS7NGOW3557J7FBOWOAC` · pointer `3e49bd80a382243a5707c756e5c707999f9cf0c52679a49302f188a1ed360438` · [20261110t162316z-3e49bd80](20261110t162316z-3e49bd80.md) · 2026-11-10T16:45:23Z
+Resume after: `1794385223670878000` · patch `VGIUJFJSC3W5AOCNMTRI6AEE2BG4ZJVPXLDGPZDDF4AFNBLYQ6HAC` · pointer `fe39086687d2a2a1f821c3c40d609e5bfabfe76dede3336ecc0885b282c253c8` · [20261111t083753z-fe390866](20261111t083753z-fe390866.md) · 2026-11-11T08:54:48Z
 Covered beyond the boundary: none
 
 ## Next
 
-Review the 9 publication(s) after the boundary.
+Review the 2 publication(s) after the boundary.
 
 ## Open findings
 
@@ -13,31 +13,24 @@ Review the 9 publication(s) after the boundary.
 
 ## Pending handoff
 
-- publication D1794327912386911000 is after the boundary
-- publication D1794329130811744000 is after the boundary
-- publication 1794329299726334000 is after the boundary
-- publication D1794329687728098000 is after the boundary
-- publication 1794330283795234000 is after the boundary
-- publication 1794330560862062000 is after the boundary
-- publication 1794331836790574000 is after the boundary
-- publication 1794333028672511000 is after the boundary
-- publication D1794333456235451000 is after the boundary
+- publication D1794386235210474000 is after the boundary
+- publication D1794387301163354000 is after the boundary
 
 ## Alignment
 
 | Principle | Reading | Since | Note |
 |---|---|---|---|
-| vision.defer-engine-systems | aligned | 20261110t162316z-3e49bd80 | M9 follows signed economy/map slices and later owner decisions. Vulkan/Linux catch-up is parked, not an inferred next assignment. |
-| vision.early-lua | aligned | 20261110t162316z-3e49bd80 | Lua owns UI composition while the native economy publishes read-only views; tabs and location panels reuse rooted modules. |
-| vision.economy-first | aligned | 20261110t162316z-3e49bd80 | New mapping: M9 delivers physical production, consumption, demographic and price mechanisms. GUIDE-1 is a bounded but consequential staffing error; no change of economic direction inferred. |
+| vision.defer-engine-systems | aligned | 20261111t083753z-fe390866 | Owner-approved UI changes stay within existing modules; the unchanged Vulkan/Linux catch-up remains parked. No new architecture or backlog inferred. |
+| vision.early-lua | aligned | 20261111t083753z-fe390866 | The owner UI remains Lua composition over native read-only views; repairs concern widget state and lifecycle, not a change of responsibility. |
+| vision.economy-first | aligned | 20261111t083753z-fe390866 | CK-250..254 correct staffing, counters, field room, storage and yield to the agreed economic contracts. Source and literal-test review only. |
 | vision.hourly-time | aligned | 20261110t162316z-3e49bd80 | Ordered coarse cadence runs daily economy at noon without changing hourly clock progression; simulation phases remain ordered. |
 | vision.ireland-first | aligned | 20261110t162316z-3e49bd80 | Scenario, land adapter and climate/look work implement the Ireland pilot with islands; historical/geographic model is not independently qualified here. |
 | vision.logging | aligned | 20261030t192312z-8f447d70 | CK-104 retains the writer-thread failure boundary and bounded exit. No new logging architecture assessed. |
-| vision.modding | aligned | 20261110t162316z-3e49bd80 | Economy definitions, terrain/climate rules and UI remain data/module driven. Fixed first-slice choices are explicit; no new mod distribution or trust promises. |
-| vision.player-information | drifting | 20261110t162316z-3e49bd80 | New mapping: GUIDE-2, GUIDE-4 and GUIDE-5 show independent projections diverging from simulation; GUIDE-3 needs a yield meaning decision after fertility. Connect future panel/map projections to the same rules and add nonzero integrated witnesses. |
-| vision.reproducible-saves | aligned | 20261110t162316z-3e49bd80 | Economy carries, consumption, history and counters are serialized; clone-before-commit and deterministic ordering preserve the chosen direction. Selected continuation tests read, not executed; not complete determinism proof. |
-| vision.responsiveness | aligned | 20261110t162316z-3e49bd80 | Immutable revisioned view cache and independent map-mode publication preserve separation, including held-VM/latest-view tests. No new timing or scalability measurement. |
+| vision.modding | aligned | 20261111t083753z-fe390866 | UI modules, icons and font tables remain data-driven; no new mod loading or trust promise is assessed. |
+| vision.player-information | drifting | 20261111t083753z-fe390866 | Previous projection findings are repaired at this pin, but GUIDE-2 and GUIDE-3 make current ledger rows and displayed tab state disagree with their actions/content. GUIDE-1 can interrupt access to the panel. |
+| vision.reproducible-saves | aligned | 20261111t083753z-fe390866 | Staffing-share carries retain serialized continuation coverage; yield/view repairs do not create a second simulation state. No independent determinism run. |
+| vision.responsiveness | aligned | 20261111t083753z-fe390866 | UI/world ownership separation and coherent metrics remain intact. GUIDE-1 and GUIDE-5 are bounded widget lifecycle/input defects; no latency or scalability claim is made. |
 | vision.runtime-first | aligned | 20261108t190620z-7c390c25 | Aligned: close-answer sequencing, capture cancellation and group retirement have explicit ownership. No fresh shutdown execution; GUIDE-2 identifies one widget-level ownership hole. |
 | vision.single-player-time | aligned | 20261108t190620z-7c390c25 | M8 exposes existing pause/speed controls through the same channel as keys; controls do not become journalled simulation commands. This does not review future order-while-paused gameplay. |
-| vision.small-libraries | aligned | 20261110t162316z-3e49bd80 | Economy remains a separate crate and render interfaces retain backend ownership; no new engine dependency. Duplicated view rules cause the bounded player-information drift. |
-| vision.ui-heavy | aligned | 20261110t162316z-3e49bd80 | Location tabs and map-mode buttons extend the owner-approved widget design. Information accuracy is separately drifting, not a reversal of UI architecture. |
+| vision.small-libraries | aligned | 20261111t083753z-fe390866 | Native window/renderer boundaries remain reusable and no new windowing dependency is introduced; shared store capacity removes duplicate arithmetic. |
+| vision.ui-heavy | aligned | 20261111t083753z-fe390866 | Ledger, card/row views, window resizing and scale follow the owner-approved interface direction. GUIDE-1..5 need repair for ordinary interactions; this is not an architectural reversal. |

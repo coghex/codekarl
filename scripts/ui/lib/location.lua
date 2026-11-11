@@ -463,6 +463,9 @@ local function ensure_selector(self)
     self.buttons.rows:move(16 * P, y)
   end
   function selector:destroy()
+    if self.closed then return end
+    self.closed = true
+    if self_owner.window ~= nil then self_owner.window:detach(self) end
     for _, control in pairs(self.buttons) do control:destroy() end
     self.buttons = {}
   end
