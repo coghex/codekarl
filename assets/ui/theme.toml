@@ -7,6 +7,9 @@
 body = "#15110a"   # every panel and window body: the map's near-black
 text = "#ece3cb"   # text and icons on a body
 dim = "#9a927e"    # subdued ledger column headings
+good = "#8fc06a"
+track = "#3a3326"
+band = "#221c13"
 pop_peasant = "#c9932e"
 pop_monk = "#4fb3c8"
 pop_labourer = "#a8261c"
