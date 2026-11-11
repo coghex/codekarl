@@ -5,6 +5,9 @@ decisions are marked **Firm**, with the relay that carried them. Everything else
 **Open**. A Proposal is not an owner decision until the owner accepts it; the approved Proposals are settled in the issue specs and
 their reviews.
 
+**Since milestone 9:** the owner reversed the fixed-size window on 2026-11-10, and CK-257 made the game window resizable, with
+macOS full screen and a 1280×800 screen-pixel minimum. §1 records the change; §6, §8 and §10 note where it alters this design.
+
 **Milestone split (owner, 2026-10-19):** "yes, you can hold off on glfw and vulkan, we can do a milestone 3.5 after 3, we need to run
 the guide when 3 is done too". **Milestone 3 is the native path** (a native window with Metal); **milestone 3.5 is the GLFW and Vulkan
 path**, designed here but not yet filed. ck-guide reviews milestone 3 when it is accepted. Where this document describes two paths or
@@ -24,7 +27,8 @@ The owner gave this direction in the ck-guide conversation on 2026-10-19, and ck
   - the close callback.
 - **Input in milestone 3 (owner, relayed by ck-guide as `vku4eet4xgjkwucthvuw8wmmci`):** "fullscreen is much later, input is now. it
   doesnt need a full input setup yet, just hardcode escape as the exit, the rest of input will be defered". So:
-  - **windowed only.** Fullscreen is much later;
+  - **windowed only.** Fullscreen is much later. *(It came in milestone 9 with CK-257, as macOS's own full screen: see "Window size"
+    below.)*
   - **Escape is hardcoded** as the exit key on both backends;
   - **all other input is deferred:** no Lua key-binding API, no key, mouse or scroll events, and no input queue.
 
@@ -60,7 +64,18 @@ trade-offs; recorded in `.pipeline/coordination/runtime-m3/handoff.md`):
   shuold probably be, implement a --headless mode then when there is no window/backend configured, automatically run in headless". Asked
   to confirm, the owner chose **"Yes, replace it"**, and for `window.open` in a headless run, **"Ignored, logged"**. §1.1 gives the
   rules.
-- **Window size: "Fixed size".** The window is not resizable by the user; its size comes from Lua.
+- **Window size: "Fixed size" (milestone 3), reversed on 2026-11-10: "Make it resizable now".** Until then the window was not
+  resizable by the user, and its size came from Lua. Since CK-257 the game's window:
+  - opens at 1280×800 screen pixels and cannot be made smaller. The owner chose "1280x800 is a fine minimum", in screen pixels ("Yes,
+    screen pixels"), and to open "for now at the minimum". The size is not remembered between runs: that waits for a settings screen;
+  - can be resized, zoomed and made full screen. While its edge is dragged, the last frame stays where it was, anchored to the top left
+    and unscaled, and the game lays itself out again once, on release ("Re-layout on release"). Full screen is macOS's own, entered
+    and left with the green title-bar button or Control-Command-F ("macOS standard").
+
+  Resizing is chosen per window: `window.open` without `resizable = true` still opens a fixed-size window, as before. The owner's
+  records, in `.pipeline/coordination/m9-design/`, are `owner-direction-window-resizable-r1.md` (the reversal),
+  `owner-direction-window-resize-behaviour-r1.md` (the drag and full screen) and `owner-direction-ui-size-r1.md` (the minimum, in
+  screen pixels, and opening at it).
 - **Teardown timing: "Window closes first".** The window and GPU are torn down before the VMs' `shutdown()` run.
 - **No close callback: "Close".** A close request with no callback registered is accepted.
 - **Signals:** a clean signal-requested shutdown exits **130** (SIGINT) or **143** (SIGTERM). A **second** signal during that shutdown
@@ -341,7 +356,9 @@ backends; that the callback may decline it is ck-guide's reading, kept explicit 
 
 **Proposal (ck-manager):**
 - **Lua surface (UI VM only):**
-  - `window.open{title=, width=, height=, clear={r, g, b}}`, a fixed-size window (owner, §1);
+  - `window.open{title=, width=, height=, clear={r, g, b}}`, a fixed-size window (owner, §1). *(Since CK-257 it also takes `unit`
+    (`"points"` or `"pixels"`), `resizable` and, for a resizable window, `min_width` and `min_height`. It returns the size the script
+    lays out in: points, or UI units for a window opened in pixels.)*
   - `window.set_clear(r, g, b)`;
   - `window.on_close_request(fn)`, where `fn(source)` receives `"button"` or `"key"` and returns `true` to accept;
   - `window.on_opened(fn)`;
@@ -518,14 +535,24 @@ All drawing runs on the render thread (§4).
 - **Redraw on demand:**
   - when the window first appears;
   - when it needs display, or its pixel size changes (moving between displays with different scale factors changes the pixel size of
-    a fixed-size window);
+    a fixed-size window). Since CK-257 a resize, zoom or full-screen change is reported too, once, as `NativeEvent::SizeChanged` with the
+    points and the pixels together;
   - when the clear colour changes.
 
   A continuous frame loop is deferred until there is something that animates (the textured quad, or later). This keeps an idle window from
   using the CPU and GPU.
 - **High-resolution displays:** the drawable or swap chain uses the window's pixel size, not its point size.
-- **Fixed size (owner, §1):** the window is created without the native resizable style (`NSWindowStyleMaskResizable` off, and
-  `GLFW_RESIZABLE` false). There is no user resize, and no live-resize loop.
+- **Window size (owner, §1):** in milestone 3 the window was created without the native resizable style (`NSWindowStyleMaskResizable`
+  off, and `GLFW_RESIZABLE` false), so there was no user resize and no live-resize loop. That is still so for a window opened without
+  `resizable = true`. Since CK-257 (the owner reversed the fixed size on 2026-11-10), a resizable window, which the game's is:
+  - Cocoa: has the resizable style, macOS's primary full-screen behaviour and a content minimum (`contentMinSize`). The minimum is
+    worked out again from the requested pixels when the backing scale changes, and the window grows if it is left below it;
+  - GLFW (compile-only): `GLFW_RESIZABLE` true and `glfwSetWindowSizeLimits` with the minimum;
+  - reports nothing while its edge is dragged, and one size change when the drag ends. Meanwhile the presenter's drawable keeps the
+    last reported size, the layer's contents gravity keeps it at the top left, unscaled, and the rest of the window shows the clear
+    colour the window was created with. **Known limit, not a decision:** a later `window.set_clear` does not reach that margin (the
+    shipped game never changes the colour after opening); a follow-up is to carry `set_clear` to it;
+  - reports entering and leaving full screen once each, when the transition has finished.
 
 ### Present lifetime (Vulkan)
 
@@ -621,10 +648,11 @@ from a non-main thread worked, and the Main Thread Checker reported nothing. The
   - the render thread applies it on its next frame. Vulkan rebuilds the swap chain as above; Metal sets the layer's `drawableSize`. The
     question of whether `drawableSize` may be set from the render thread is a technical question to verify, like the presented handler;
   - a rebuild never waits without a timeout. On a timeout the old swap chain stays, and the rebuild is retried.
-- **Native modal interactions, the same on both paths:** with a fixed-size window there is no live-resize loop. Some native interaction
-  may still keep control inside the window system for a while, for example a title-bar window move if macOS tracks it in the process,
-  or GLFW's event pump draining a backlog. Which interactions do this is a technical question to verify for each backend. During any of
-  them, on either path:
+- **Native modal interactions, the same on both paths:** milestone 3's fixed-size window had no live-resize loop. Since CK-257,
+  dragging the game window's edge is one of these interactions: macOS keeps control until the edge is released, and the game lays
+  itself out again then (owner: "Re-layout on release"). Other native interactions may also keep control inside the window system for
+  a while, for example a title-bar window move if macOS tracks it in the process, or GLFW's event pump draining a backlog. Which
+  interactions do this is a technical question to verify for each backend. During any of them, on either path:
   - Codekarl's callbacks and any run-loop timer only **record** the quit request. They never start teardown (§4.2);
   - the quit is **kept**, and takes effect as soon as control returns to the outer loop;
   - the render thread keeps drawing.
@@ -748,7 +776,8 @@ today, and fail rather than skip when no desktop session is available.
    same for Escape.
 4. Ctrl-C in the terminal quits cleanly, with exit status 130.
 5. An error in the callback logs its traceback, shuts down cleanly and exits 1.
-6. Cmd-Q does nothing on either backend, and the window cannot be resized.
+6. Cmd-Q does nothing on either backend, and the window cannot be resized. *(Since CK-257 the game window can be resized and made
+   full screen; Cmd-Q still does nothing.)*
 
 **Later:** the Linux portability check in UTM, and testing on real Linux hardware (ck-guide's Proposals, §1).
 

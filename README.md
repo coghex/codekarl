@@ -84,9 +84,14 @@ entry = "../scripts/gameplay/main.lua"
   `--load PATH` starts from a save instead.
 - **Time:** Space pauses, `1` to `5` pick a speed, `]` and `[` go faster and slower, and the time bar's buttons do the same. F5
   quicksaves and F9 quickloads.
-- **The map:** drag to pan and scroll to zoom at the cursor, or use the arrow keys and `=` and `-`. Click a place, or pick it from
-  the places list, to show it in the location panel (tabs: location, pops and buildings). The three buttons beside the places list
-  switch the map mode (stockpile, expected yield, elevation); pressing the one showing turns it off.
+- **The map:** drag to pan and scroll to zoom at the cursor, or use the arrow keys and `=` and `-`. Click a place to show it in the
+  location panel (tabs: location, pops and buildings). The two icons at the top right open the ledger, a list on the right of the
+  screen with a locations tab and a pops tab; clicking a row shows that place in the panel. The three buttons centred at the bottom of
+  the screen switch the map mode (stockpile, expected yield, elevation); pressing the one showing turns it off.
+- **The window** opens at 1280×800 screen pixels, its minimum. Drag an edge to enlarge it (the game lays itself out again when you
+  let go), or use macOS full screen: the green title-bar button or Control-Command-F. The UI scale follows the window: 1 from
+  1280×800 screen pixels, 1.5 from 1920×1200 and 2 from 2560×1600, so a UI pixel is 2, 3 or 4 screen pixels. `[ui] scale = 1`,
+  `1.5` or `2` caps it (the lower of the two is used; read at startup), and the old `[ui] points_per_pixel` is refused, naming `scale`.
 - **Run the game on native Metal.** Milestone 9's render features (the new map look and the elevation mode) exist on native Metal
   only. Since CK-238 the Vulkan backend is only kept compiling, and its port of them (CK-239) is parked until the owner says so.
 
@@ -183,13 +188,18 @@ entry = "../scripts/gameplay/main.lua"
 The VM named `ui` gets a `window` table; no other VM does:
 
 - `window.open{title=, width=, height=, clear={r, g, b}}` opens the one window (a second `open`, or an invalid size or colour, is a
-  Lua error); `window.set_clear(r, g, b)` changes the colour; `window.close()` closes it.
+  Lua error); `window.set_clear(r, g, b)` changes the colour; `window.close()` closes it. Since milestone 9, `window.open` also takes
+  `unit` (`"points"`, the default, or `"pixels"`), `resizable` and, for a resizable window, `min_width` with `min_height`. It returns
+  the size the script lays out in: points for a window opened in points, UI units at the window's UI scale for one opened in pixels.
 - `window.on_opened(fn)` runs once the first frame has been queued for presentation; this does not prove it is visible.
   `window.on_close_request(fn)` gets `"key"` (Escape) or `"button"` (the close button) and closes the window when it returns `true`.
   With no callback registered, a close request closes the window.
 - **Closing:** the window closes first, then both VMs run `shutdown()`. An error in a window callback is logged with its traceback,
   the window closes, the VMs shut down, and the exit status is 1.
-- **Fixed behaviour:** the window has a fixed size and no menu, so Cmd-Q does nothing; Ctrl-C and SIGTERM quit as above.
+- **Size and menu:** a window has a fixed size unless it is opened with `resizable = true`, as the game's is (see "The game" above).
+  While its edge is dragged, the newly uncovered margin shows the clear colour the window was created with: a later
+  `window.set_clear` does not reach it (a known limit with a follow-up; the shipped game never changes the colour).
+  There is no menu, so Cmd-Q does nothing; Ctrl-C and SIGTERM quit as above.
 - **Headless:** the same calls are checked the same way, but a valid `window.open` opens nothing and logs one
   `window.open ignored: headless run` record, so a script runs unchanged either way.
 
