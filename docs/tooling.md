@@ -71,6 +71,21 @@ A group's class covers every command it starts, nested checks included.
   selected only by that backend's own paths, so work on one backend never opens another's windows. A manual planned run calls itself
   `recipe planned`; batch validation uses the same planned recipe with `--batch`, binds the changed paths and selection to the CI receipt,
   and verifies them against the validated candidate before publication.
+- **Three links beyond a group's own paths** (CK-263; owner, 2026-11-10: "ok fine, add the three links"). They amend the owner's "tests
+  by crate" rule (CK-186) and the rule that a change to the shared configuration or scripts selects no native window group, only as far
+  as stated here:
+  - a change under `crates/economy/` also selects `rust.app` and `rust.app-default`, with the reason "changed economy path ... selects
+    application tests": the application's soak and save tests depend on economy behaviour;
+  - a change under any Rust source directory the catalog test inventories (`RUST_SOURCE_DIRS`: the application and every crate) also
+    selects `unittest-catalog`, whose guard inventory must list what such code reads;
+  - a change to the shipped UI (`scripts/ui/`, `assets/ui/`, `apps/codekarl/src/ui_link.rs`, `apps/codekarl/src/ui_link/` or
+    `apps/codekarl/src/window_api.rs`) selects `app.ui-witness`, an affected window group that runs only the two cases of the
+    application's `windowed` target that drive the shipped UI script: the places list and the time bar, each in its quiet and typing
+    variants. When `app.native-window` is in the same plan, `app.ui-witness` is skipped as "covered by app.native-window".
+
+  Otherwise the owner's script rule stands: a change to the shared configuration or scripts selects no other window group
+  (`native.window`, `app.native-window`, the `metal.window-*` groups or `render2d.metal-window`), and `config/` or `scripts/gameplay/`
+  selects none.
 - **Guards that read other files** (CK-84, from the milestone 3.5 guide): a test or build step that reads files outside its own group's
   paths, such as source scans, `unsafe` and symbol guards, hook-isolation scans, or native test support compiled by another crate, is
   listed in the catalog's guard inventory, and the files it reads select its group. Static guards that need no GPU or window run in their
@@ -83,10 +98,12 @@ A group's class covers every command it starts, nested checks included.
   builds it, and `glfw.core` and `vulkan.isolation`, which open no window or GPU, stay affected. New render features land on native
   Metal. Their Vulkan port is one catch-up issue per milestone (CK-239 for milestone 9), and the owner has parked it and all Linux work
   until they say so.
-- **`ck check`** (full): every floor and affected group once (the optional groups, which are the scale runs, the GLFW focus cases and the
-  Vulkan GPU and window groups, still run only when named), with `CK_REQUIRE_FULL_SPEC=1` for the all-features Rust groups so a skipped or unavailable
-  Metal case fails. The manager runs this level once at milestone completion. If no eligible submission remains, keep the existing
-  empty-batch refusal and run `tools/ck check` on a clean accepted copy, retaining the log as milestone evidence.
+- **`ck check`** (full): every floor and affected group once, except `app.ui-witness`, which is in no level: the full and fast levels
+  run `app.native-window`, which holds its two cases, so they never run twice. The optional groups (the scale runs, the GLFW focus cases
+  and the Vulkan GPU and window groups) still run only when named. The full level sets `CK_REQUIRE_FULL_SPEC=1` for the all-features
+  Rust groups, so a skipped or unavailable Metal case fails. The manager runs this level once at milestone completion. If no eligible
+  submission remains, keep the existing empty-batch refusal and run `tools/ck check` on a clean accepted copy, retaining the log as
+  milestone evidence.
 - `--quick` runs formatting, Ruff and ShellCheck; `--fast` runs the full level's groups without the build slot and without
   `CK_REQUIRE_FULL_SPEC`.
 
