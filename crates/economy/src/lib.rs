@@ -1,4 +1,4 @@
-//! Validated economy data and deterministic M9 starting-state primitives.
+//! Validated economy data and deterministic milestone 9 economy systems and saved state.
 //!
 //! This crate is independent of maps, windows, Lua and renderers. The application
 //! supplies authored scenario data and derived land counts through plain integers.

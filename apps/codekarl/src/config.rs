@@ -737,8 +737,7 @@ impl FrameConfig {
 /// The keys of the `ui` table: `scale`, the highest UI scale to use (1, 1.5 or 2; the scale in use is the largest the window allows, or
 /// this when it is lower), read at startup only.
 ///
-/// `points_per_pixel` is retired (the UI pixel is two UI units, and the scale follows the window) and `font_points_per_pixel` is the
-/// key it replaced (owner Q3): both are accepted only to be refused by name, so any value of either is read here.
+/// `points_per_pixel` and `font_points_per_pixel` are accepted only to be refused by name, so any value of either is read here.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 struct UiFields {
@@ -1321,8 +1320,8 @@ fn ui_scale_k(path: &Path, value: &toml::Value) -> Result<u32, String> {
         })
 }
 
-/// The pixel font's and the UI scale's checks: the old `[ui] font_points_per_pixel` key is refused, naming the new one, even beside the new
-/// key; `[ui] points_per_pixel` is retired and refused, naming `[ui] scale`; `[ui] scale` is 1, 1.5 or 2; and with a game the scene's one sampling filter is
+/// The pixel font's and the UI scale's checks: the old `[ui] font_points_per_pixel` key is refused, naming `[ui] scale`, even beside the refused
+/// `[ui] points_per_pixel`; `[ui] points_per_pixel` is retired and refused, naming `[ui] scale`; `[ui] scale` is 1, 1.5 or 2; and with a game the scene's one sampling filter is
 /// `nearest` (the glyphs need it, and the scene has no per-quad filter).
 fn check_pixel_font(
     path: &Path,
@@ -1332,7 +1331,7 @@ fn check_pixel_font(
 ) -> Result<(), String> {
     if ui.font_points_per_pixel.is_some() {
         return Err(format!(
-            "{}: [ui]: font_points_per_pixel was renamed: use points_per_pixel",
+            "{}: [ui]: font_points_per_pixel was renamed: use scale (1, 1.5 or 2)",
             path.display()
         ));
     }
@@ -1575,6 +1574,49 @@ mod tests {
         assert_eq!(parse_text(""), Ok(LogConfig::default()));
         assert_eq!(parse_text("[log]\n"), Ok(LogConfig::default()));
         assert_eq!(parse_text("# only a comment\n"), Ok(LogConfig::default()));
+    }
+
+    #[test]
+    fn shipped_game_config_loads_existing_game_inputs_and_selects_the_default_binary() {
+        let app = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = app.join("../..");
+        let config_path = root.join("config/game.toml");
+        let config = load(&config_path).expect("the shipped game configuration loads");
+
+        let assets = config.render.assets.expect("render assets are configured");
+        assert!(
+            assets.is_dir(),
+            "missing assets directory: {}",
+            assets.display()
+        );
+        let game = config.game.expect("the game is configured");
+        assert!(
+            game.scenario.is_dir(),
+            "missing scenario: {}",
+            game.scenario.display()
+        );
+        assert_eq!(game.saves, config_path.parent().unwrap().join("../saves"));
+        for name in ["ui", "gameplay"] {
+            let vm = config
+                .vms
+                .iter()
+                .find(|vm| vm.name == name)
+                .expect("configured VM");
+            assert!(
+                vm.entry.is_file(),
+                "missing {} entry: {}",
+                name,
+                vm.entry.display()
+            );
+        }
+
+        let manifest: toml::Value =
+            toml::from_str(&fs::read_to_string(app.join("Cargo.toml")).expect("read app manifest"))
+                .expect("the app manifest is valid TOML");
+        assert_eq!(
+            manifest["package"]["default-run"].as_str(),
+            Some("codekarl")
+        );
     }
 
     #[test]
@@ -3062,7 +3104,7 @@ mod tests {
 
     #[test]
     fn the_old_font_scale_key_is_refused_naming_the_new_one_alone_and_beside_it() {
-        let expected = "[ui]: font_points_per_pixel was renamed: use points_per_pixel";
+        let expected = "[ui]: font_points_per_pixel was renamed: use scale (1, 1.5 or 2)";
         for text in [
             "[ui]\nfont_points_per_pixel = 2\n",
             "[ui]\nfont_points_per_pixel = 2\npoints_per_pixel = 2\n",

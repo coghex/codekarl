@@ -47,6 +47,7 @@ mod keys;
 mod resize;
 
 const WORKER_FLAG: &str = "--worker";
+const FILTER_SELF_TEST_FLAG: &str = "--test-filter-selection";
 /// `1` makes a worker run with the owner typing without stopping (see `typing`).
 const TYPING_VARIABLE: &str = "CK_WINDOW_COCOA_TYPING";
 /// The cap of a draining pump, and the number of events that means the queue may hold more.
@@ -1237,6 +1238,14 @@ const CASES: [(&str, Case); 48] = [
         keys::a_focus_gain_and_a_resync_keep_the_order_of_their_first_records,
     ),
 ];
+
+fn select_cases(filter: Option<&str>) -> Vec<(&'static str, Case)> {
+    CASES
+        .iter()
+        .copied()
+        .filter(|(name, _)| filter.is_none_or(|filter| name.contains(filter)))
+        .collect()
+}
 
 const EXPECTED_REQUEST_CASE: &str = "production_open_still_asks_for_activation";
 const FORWARDING_FIXTURE: &str = "external_forwarding_fixture";
@@ -2453,13 +2462,29 @@ fn check_test_support_is_not_in_the_library() -> Result<(), String> {
 /// A check of the supervisor's own machinery.
 type SupervisorCheck = fn() -> Result<(), String>;
 
-fn supervisor() -> ExitCode {
-    if let Err(message) = checker_library(&Tools::system()) {
-        eprintln!("window_cocoa: {message}");
-        return ExitCode::FAILURE;
+fn check_case_filter_selection() -> Result<(), String> {
+    let all = select_cases(None);
+    if all.len() != CASES.len()
+        || all
+            .iter()
+            .map(|(name, _)| name)
+            .ne(CASES.iter().map(|(name, _)| name))
+    {
+        return Err("no filter did not preserve the complete case list".to_owned());
     }
-    let mut failures = BTreeMap::new();
-    let checks: [(&str, SupervisorCheck); 12] = [
+    let matching = select_cases(Some("escape_through"));
+    if matching.len() != 1 || matching[0].0 != "escape_through_dispatch" {
+        return Err(format!("a matching filter selected {matching:?}"));
+    }
+    let none = select_cases(Some("not_a_window_case"));
+    if !none.is_empty() {
+        return Err(format!("a nonmatching filter selected {none:?}"));
+    }
+    Ok(())
+}
+
+fn run_supervisor_checks(filter: Option<&str>, failures: &mut BTreeMap<String, String>) -> usize {
+    let checks: [(&str, SupervisorCheck); 13] = [
         (
             "a hung worker is killed and reaped",
             check_a_hung_worker_is_killed,
@@ -2505,11 +2530,22 @@ fn supervisor() -> ExitCode {
             check_test_support_is_not_in_the_library,
         ),
         (
+            "case filters select the requested windows",
+            check_case_filter_selection,
+        ),
+        (
             "a passing fixture's external summary reaches supervisor output",
             || run_case(FORWARDING_FIXTURE, false),
         ),
     ];
+    let mut ran = 0;
     for (name, check) in checks {
+        if filter.is_some()
+            && name == "a passing fixture's external summary reaches supervisor output"
+        {
+            continue;
+        }
+        ran += 1;
         let result = check();
         println!(
             "test supervisor: {name} ... {}",
@@ -2519,9 +2555,32 @@ fn supervisor() -> ExitCode {
             failures.insert(name.to_owned(), message);
         }
     }
+    ran
+}
+
+fn supervisor(filter: Option<&str>) -> ExitCode {
+    let selected = select_cases(filter);
+    let filtered_out = CASES.len() - selected.len();
+    if let Some(filter) = filter {
+        println!(
+            "window_cocoa: filter {filter:?} selected {} of {} cases; filtered out {filtered_out}",
+            selected.len(),
+            CASES.len()
+        );
+    }
+    if selected.is_empty() {
+        eprintln!("window_cocoa: filter {filter:?} matched no cases");
+        return ExitCode::FAILURE;
+    }
+    if let Err(message) = checker_library(&Tools::system()) {
+        eprintln!("window_cocoa: {message}");
+        return ExitCode::FAILURE;
+    }
+    let mut failures = BTreeMap::new();
+    let check_count = run_supervisor_checks(filter, &mut failures);
     // Every case runs on a quiet keyboard, and again while the owner types without stopping.
     for typing in [false, true] {
-        for (name, _) in CASES {
+        for &(name, _) in &selected {
             let label = if typing {
                 format!("{name} (owner typing)")
             } else {
@@ -2542,12 +2601,13 @@ fn supervisor() -> ExitCode {
     for (name, message) in &failures {
         println!("---- {name} ----\n{message}");
     }
-    let total = checks.len() + 2 * CASES.len();
+    let total = check_count + 2 * selected.len();
     println!(
-        "test result: {}. {} passed; {} failed",
+        "test result: {}. {} passed; {} failed; {} window cases filtered out",
         if failures.is_empty() { "ok" } else { "FAILED" },
         total - failures.len(),
-        failures.len()
+        failures.len(),
+        filtered_out
     );
     if failures.is_empty() {
         ExitCode::SUCCESS
@@ -2560,7 +2620,21 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.as_slice() {
         [flag, case] if flag == WORKER_FLAG => worker(case),
-        // Cargo may pass its own arguments (a filter, `--nocapture`); the cases always all run.
-        _ => supervisor(),
+        [flag] if flag == FILTER_SELF_TEST_FLAG => match check_case_filter_selection() {
+            Ok(()) => {
+                println!("test filter selection ... ok");
+                ExitCode::SUCCESS
+            }
+            Err(message) => {
+                eprintln!("test filter selection ... FAILED: {message}");
+                ExitCode::FAILURE
+            }
+        },
+        // Cargo's positional test filter is a substring of the case name; options do not filter cases.
+        _ => supervisor(
+            args.iter()
+                .find(|argument| !argument.starts_with('-'))
+                .map(String::as_str),
+        ),
     }
 }

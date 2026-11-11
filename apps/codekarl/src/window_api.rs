@@ -6,7 +6,7 @@
 //!
 //! - `window.open{title=, width=, height=, clear={r, g, b}, unit=, resizable=, min_width=, min_height=}`: the one-shot `open`. `unit` is
 //!   `"points"` (the default) or `"pixels"` (resolved once against the main screen); a resizable window may have a minimum. It returns the
-//!   width and height in points the window opens at. A bad description or a second `open` raises an ordinary Lua error with the slot's
+//!   width and height in UI units for a pixel-sized request, or points otherwise. A bad description or a second `open` raises an ordinary Lua error with the slot's
 //!   reason;
 //! - `window.set_clear(r, g, b)`: the colour (finite components are clamped to 0..=1, a non-finite one
 //!   raises an error);
