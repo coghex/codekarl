@@ -493,7 +493,7 @@ int32_t ck_win_test_unmarked_pointer_window(int32_t kind, int64_t *event_window,
     }
 }
 
-int32_t ck_win_test_post_pointer(int32_t kind, double x, double y, double amount, int32_t unit, int32_t marked) {
+int32_t ck_win_test_post_pointer(int32_t kind, int32_t button, double x, double y, double amount, int32_t unit, int32_t marked) {
     @autoreleasepool {
         NSWindow *window = ck_window();
         if (window == nil) return 0;
@@ -502,7 +502,7 @@ int32_t ck_win_test_post_pointer(int32_t kind, double x, double y, double amount
          * recorder called by CKWinView's mouse selectors directly for marked events. */
         if (marked != 0) {
             NSPoint point = NSMakePoint(x, window.contentView.bounds.size.height - y);
-            [ck_state() recordPointerKind:(uint8_t)kind point:point amount:amount unit:(uint8_t)unit];
+            [ck_state() recordPointerKind:(uint8_t)kind point:point amount:amount unit:(uint8_t)unit button:(uint8_t)button];
             return 1;
         }
         NSEvent *event = ck_pointer_event(kind, x, y);

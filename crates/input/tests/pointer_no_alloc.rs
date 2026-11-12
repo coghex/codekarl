@@ -3,7 +3,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use ck_input::{Bindings, Mapper, PointerEvent, PointerPosition, ScrollUnit};
+use ck_input::{Bindings, Mapper, PointerButton, PointerEvent, PointerPosition, ScrollUnit};
 
 thread_local! {
     static COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
@@ -66,6 +66,14 @@ fn pointer_event_methods_allocate_nothing_after_mapper_construction() {
         position: PointerPosition { x: 3, y: 4 },
         amount: 128,
         unit: ScrollUnit::Lines,
+    });
+    mapper.pointer(PointerEvent::ButtonDown {
+        button: PointerButton::Middle,
+        position: PointerPosition { x: 5, y: 6 },
+    });
+    mapper.pointer(PointerEvent::ButtonUp {
+        button: PointerButton::Right,
+        position: PointerPosition { x: 7, y: 8 },
     });
     mapper.pointer_overflow(PointerPosition { x: 5, y: 6 }, true);
     COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));

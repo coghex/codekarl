@@ -259,6 +259,28 @@ fn input_events(raw: &RawEvents) -> Vec<NativeEvent> {
             ffi::POINTER_DOWN => Some(ck_input::PointerEvent::Down(position)),
             ffi::POINTER_MOVE => Some(ck_input::PointerEvent::Move(position)),
             ffi::POINTER_UP => Some(ck_input::PointerEvent::Up(position)),
+            ffi::POINTER_BUTTON_DOWN => match pointer.button {
+                ffi::POINTER_BUTTON_RIGHT => Some(ck_input::PointerEvent::ButtonDown {
+                    button: ck_input::PointerButton::Right,
+                    position,
+                }),
+                ffi::POINTER_BUTTON_MIDDLE => Some(ck_input::PointerEvent::ButtonDown {
+                    button: ck_input::PointerButton::Middle,
+                    position,
+                }),
+                _ => None,
+            },
+            ffi::POINTER_BUTTON_UP => match pointer.button {
+                ffi::POINTER_BUTTON_RIGHT => Some(ck_input::PointerEvent::ButtonUp {
+                    button: ck_input::PointerButton::Right,
+                    position,
+                }),
+                ffi::POINTER_BUTTON_MIDDLE => Some(ck_input::PointerEvent::ButtonUp {
+                    button: ck_input::PointerButton::Middle,
+                    position,
+                }),
+                _ => None,
+            },
             ffi::POINTER_SCROLL => Some(ck_input::PointerEvent::Scroll {
                 position,
                 amount: pointer.amount,
@@ -467,4 +489,105 @@ struct NoWake;
 
 impl NativeWake for NoWake {
     fn wake(&self) {}
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::*;
+
+    #[test]
+    fn raw_pointer_kinds_and_button_numbers_map_to_only_supported_events() {
+        let mut raw = RawEvents::default();
+        let position = ck_input::PointerPosition { x: 12, y: 34 };
+        raw.pointer_count = 8;
+        raw.pointers[..8].copy_from_slice(&[
+            ffi::RawPointer {
+                kind: ffi::POINTER_DOWN,
+                x: 12,
+                y: 34,
+                ..ffi::RawPointer::default()
+            },
+            ffi::RawPointer {
+                kind: ffi::POINTER_BUTTON_DOWN,
+                button: ffi::POINTER_BUTTON_MIDDLE,
+                x: 12,
+                y: 34,
+                ..ffi::RawPointer::default()
+            },
+            ffi::RawPointer {
+                kind: ffi::POINTER_BUTTON_UP,
+                button: ffi::POINTER_BUTTON_MIDDLE,
+                x: 12,
+                y: 34,
+                ..ffi::RawPointer::default()
+            },
+            ffi::RawPointer {
+                kind: ffi::POINTER_BUTTON_DOWN,
+                button: ffi::POINTER_BUTTON_RIGHT,
+                x: 12,
+                y: 34,
+                ..ffi::RawPointer::default()
+            },
+            ffi::RawPointer {
+                kind: ffi::POINTER_UP,
+                x: 12,
+                y: 34,
+                ..ffi::RawPointer::default()
+            },
+            ffi::RawPointer {
+                kind: ffi::POINTER_BUTTON_DOWN,
+                button: 0,
+                x: 12,
+                y: 34,
+                ..ffi::RawPointer::default()
+            },
+            ffi::RawPointer {
+                kind: ffi::POINTER_BUTTON_UP,
+                button: 3,
+                x: 12,
+                y: 34,
+                ..ffi::RawPointer::default()
+            },
+            ffi::RawPointer {
+                kind: 6,
+                button: ffi::POINTER_BUTTON_RIGHT,
+                x: 12,
+                y: 34,
+                ..ffi::RawPointer::default()
+            },
+        ]);
+
+        let pointers: Vec<_> = input_events(&raw)
+            .into_iter()
+            .filter_map(|event| match event {
+                NativeEvent::Pointer(pointer) => Some(pointer),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            pointers,
+            [
+                ck_input::PointerEvent::Down(position),
+                ck_input::PointerEvent::ButtonDown {
+                    button: ck_input::PointerButton::Middle,
+                    position
+                },
+                ck_input::PointerEvent::ButtonUp {
+                    button: ck_input::PointerButton::Middle,
+                    position
+                },
+                ck_input::PointerEvent::ButtonDown {
+                    button: ck_input::PointerButton::Right,
+                    position
+                },
+                ck_input::PointerEvent::Up(position),
+            ]
+        );
+    }
+
+    #[test]
+    fn native_events_size_matches_the_rust_abi() {
+        // SAFETY: this returns the native compile-time size of the same header-defined struct.
+        assert_eq!(unsafe { ffi::ck_win_events_size() }, size_of::<RawEvents>());
+    }
 }

@@ -56,6 +56,8 @@ impl Glyph {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
+    #[serde(default)]
+    height: Option<usize>,
     replacement: Glyph,
     glyph: BTreeMap<String, Glyph>,
 }
@@ -65,6 +67,8 @@ struct File {
 pub(crate) struct Font {
     glyphs: BTreeMap<char, Glyph>,
     replacement: Glyph,
+    height: usize,
+    directory: &'static str,
 }
 
 impl Font {
@@ -84,6 +88,25 @@ impl Font {
     }
 }
 
+/// The standard, small and tiny fonts available to `font.layout`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FontSet {
+    standard: Font,
+    small: Font,
+    tiny: Font,
+}
+
+impl FontSet {
+    fn get(&self, name: &str) -> Option<&Font> {
+        match name {
+            "standard" => Some(&self.standard),
+            "small" => Some(&self.small),
+            "tiny" => Some(&self.tiny),
+            _ => None,
+        }
+    }
+}
+
 /// Reads and checks `<assets>/ui/font/font.toml`.
 ///
 /// # Errors
@@ -95,18 +118,58 @@ pub(crate) fn load(assets: &std::path::Path) -> Result<Font, String> {
     parse(&text).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// Reads all three shipped font files from `<assets>/ui/font`.
+pub(crate) fn load_all(assets: &std::path::Path) -> Result<FontSet, String> {
+    let standard = load(assets)?;
+    let small = load_named(assets, "small.toml", 9, "small")?;
+    let tiny = load_named(assets, "tiny.toml", 8, "tiny")?;
+    Ok(FontSet {
+        standard,
+        small,
+        tiny,
+    })
+}
+
+fn load_named(
+    assets: &std::path::Path,
+    file_name: &str,
+    expected_height: usize,
+    directory: &'static str,
+) -> Result<Font, String> {
+    let path = assets.join("ui/font").join(file_name);
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    parse_named(&text, file_name, expected_height, directory)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
 /// The `font` extension of the UI VM: `font.layout(string)`.
 ///
 /// It decodes the string and returns `{width = W, height = 11, glyphs = {...}}` in font pixels. `W` is the sum of the advances and
 /// `height` the glyph box's height. Each non-space character contributes one entry, in order: `{texture = <name>, x = <the running
 /// advance before it>, width = <the glyph's width>}`; a character without a glyph uses the replacement. It never fails for a
 /// string, and an argument that is not a string is a Lua error.
-pub(crate) fn extension(font: Arc<Font>) -> Extension {
+pub(crate) fn extension(fonts: Arc<FontSet>) -> Extension {
     Extension::new("font").function(
         "layout",
         Arc::new(move |arguments: &[Option<ConfigValue>]| match arguments {
-            [Some(ConfigValue::String(text))] => Ok(vec![layout(&font, text)]),
-            _ => Err("font.layout: expected one string".to_owned()),
+            [Some(ConfigValue::String(text))] => Ok(vec![layout(&fonts.standard, text)]),
+            [
+                Some(ConfigValue::String(text)),
+                Some(ConfigValue::String(name)),
+            ] => fonts
+                .get(name)
+                .map(|font| vec![layout(font, text)])
+                .ok_or_else(|| {
+                    format!("font.layout: unknown font {name:?}; expected standard, small, tiny")
+                }),
+            [Some(ConfigValue::String(_)), Some(_)] => {
+                Err("font.layout: font name must be a string: standard, small, tiny".to_owned())
+            }
+            _ => Err(
+                "font.layout: expected a string and optional font name: standard, small, tiny"
+                    .to_owned(),
+            ),
         }),
     )
 }
@@ -124,9 +187,13 @@ pub(crate) fn layout(font: &Font, text: &str) -> ConfigValue {
         let glyph = font.glyph(character);
         if character != ' ' {
             let texture = if known {
-                glyph_texture(character)
+                format!(
+                    "ui/font/{}/U+{:04X}.png",
+                    font.directory,
+                    u32::from(character)
+                )
             } else {
-                REPLACEMENT_TEXTURE.to_owned()
+                format!("ui/font/{}/replacement.png", font.directory)
             };
             glyphs.push(ConfigValue::Table(BTreeMap::from([
                 ("texture".to_owned(), ConfigValue::String(texture)),
@@ -138,15 +205,15 @@ pub(crate) fn layout(font: &Font, text: &str) -> ConfigValue {
     }
     ConfigValue::Table(BTreeMap::from([
         ("width".to_owned(), integer(pen)),
-        ("height".to_owned(), integer(GLYPH_HEIGHT)),
+        ("height".to_owned(), integer(font.height)),
         ("glyphs".to_owned(), ConfigValue::Array(glyphs)),
     ]))
 }
 
-fn check_glyph(name: &str, glyph: &Glyph) -> Result<(), String> {
-    if glyph.rows.len() != GLYPH_HEIGHT {
+fn check_glyph(name: &str, glyph: &Glyph, height: usize) -> Result<(), String> {
+    if glyph.rows.len() != height {
         return Err(format!(
-            "glyph {name}: {} rows, not {GLYPH_HEIGHT}",
+            "glyph {name}: {} rows, not {height}",
             glyph.rows.len()
         ));
     }
@@ -182,8 +249,46 @@ fn check_glyph(name: &str, glyph: &Glyph) -> Result<(), String> {
 /// [`font_set`], a missing glyph, a glyph that is not 11 rows of equal width of at most 5 cells of `#` and `.`, an advance below
 /// 1, or digits whose advances differ.
 pub(crate) fn parse(text: &str) -> Result<Font, String> {
+    parse_font(text, "font.toml", None, "glyphs")
+}
+
+fn parse_named(
+    text: &str,
+    file_name: &str,
+    expected_height: usize,
+    directory: &'static str,
+) -> Result<Font, String> {
+    parse_font(text, file_name, Some(expected_height), directory).map_err(|error| {
+        if error.starts_with(file_name) {
+            error
+        } else {
+            format!("{file_name}: {error}")
+        }
+    })
+}
+
+fn parse_font(
+    text: &str,
+    file_name: &str,
+    expected_height: Option<usize>,
+    directory: &'static str,
+) -> Result<Font, String> {
     let file: File =
-        toml::from_str(text).map_err(|error| format!("font.toml: {}", error.message()))?;
+        toml::from_str(text).map_err(|error| format!("{file_name}: {}", error.message()))?;
+    let height = match (file.height, expected_height) {
+        (None, None) => GLYPH_HEIGHT,
+        (Some(_), None) => return Err("font.toml: standard font must omit height".to_owned()),
+        (None, Some(_)) => return Err(format!("{file_name}: height is missing")),
+        (Some(height), Some(_)) if !(5..=GLYPH_HEIGHT).contains(&height) => {
+            return Err(format!(
+                "{file_name}: height {height} is outside 5 to {GLYPH_HEIGHT}"
+            ));
+        }
+        (Some(height), Some(expected)) if height != expected => {
+            return Err(format!("{file_name}: height {height}, expected {expected}"));
+        }
+        (Some(height), Some(_)) => height,
+    };
     let set = font_set();
     let mut glyphs = BTreeMap::new();
     for (key, glyph) in file.glyph {
@@ -194,13 +299,13 @@ pub(crate) fn parse(text: &str) -> Result<Font, String> {
         if !set.contains(&character) {
             return Err(format!("glyph {key:?} is outside the font's set"));
         }
-        check_glyph(&key, &glyph)?;
+        check_glyph(&key, &glyph, height)?;
         glyphs.insert(character, glyph);
     }
     if let Some(missing) = set.iter().find(|character| !glyphs.contains_key(character)) {
         return Err(format!("glyph {missing:?} is missing"));
     }
-    check_glyph("[replacement]", &file.replacement)?;
+    check_glyph("[replacement]", &file.replacement, height)?;
     let digit_advance = glyphs[&'0'].advance;
     if let Some(digit) = ('1'..='9').find(|digit| glyphs[digit].advance != digit_advance) {
         return Err(format!(
@@ -211,6 +316,8 @@ pub(crate) fn parse(text: &str) -> Result<Font, String> {
     Ok(Font {
         glyphs,
         replacement: file.replacement,
+        height,
+        directory,
     })
 }
 
@@ -232,6 +339,10 @@ mod tests {
 
     fn shipped() -> Font {
         parse(&shipped_text()).expect("the shipped font is valid")
+    }
+
+    fn shipped_set() -> FontSet {
+        load_all(&directory().join("../..")).expect("the shipped font set")
     }
 
     /// The text with the block that starts at the line `header` removed (up to the next blank line).
@@ -365,7 +476,7 @@ mod tests {
             script,
             Extras {
                 functions: vec![("record", record)],
-                extensions: vec![extension(Arc::new(shipped()))],
+                extensions: vec![extension(Arc::new(shipped_set()))],
                 ..Extras::default()
             },
         );
@@ -382,11 +493,299 @@ mod tests {
         assert_eq!(seen[5], ConfigValue::Integer(5));
         assert_eq!(seen[6], ConfigValue::Bool(false));
         assert!(
-            text(&seen[7]).contains("font.layout: expected one string"),
+            text(&seen[7]).contains("font.layout: expected a string"),
             "{seen:?}"
         );
         assert_eq!(seen[8], ConfigValue::Bool(false));
         assert!(text(&seen[9]).contains("font.layout"), "{seen:?}");
+    }
+
+    #[test]
+    fn the_lua_layout_selects_a_named_font_and_reports_its_texture_namespace() {
+        use std::sync::{Mutex, PoisonError};
+
+        use ck_lua::HostFunction;
+
+        use crate::testing::{Extras, Harness};
+
+        let seen: Arc<Mutex<Vec<ConfigValue>>> = Arc::default();
+        let record: HostFunction = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |arguments| {
+                seen.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .extend(arguments.iter().flatten().cloned());
+                Ok(Vec::new())
+            })
+        };
+        let script = "local r = font.layout('Nóis', 'small')\n\
+            window.record(r.width, r.height, #r.glyphs, r.glyphs[2].texture)\n\
+            local ok, bad = pcall(font.layout, 'x', 'big')\n\
+            window.record(ok, tostring(bad))\n\
+            local typed, type_error = pcall(font.layout, 'x', 7)\n\
+            window.record(typed, tostring(type_error))";
+        let _harness = Harness::new(
+            script,
+            Extras {
+                functions: vec![("record", record)],
+                extensions: vec![extension(Arc::new(shipped_set()))],
+                ..Extras::default()
+            },
+        );
+        let seen = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert_eq!(seen[0], ConfigValue::Integer(19));
+        assert_eq!(seen[1], ConfigValue::Integer(9));
+        assert_eq!(seen[2], ConfigValue::Integer(4));
+        assert_eq!(
+            seen[3],
+            ConfigValue::String("ui/font/small/U+00F3.png".to_owned())
+        );
+        let error = |index| match &seen[index] {
+            ConfigValue::String(error) => error,
+            other => panic!("error string: {other:?}"),
+        };
+        assert_eq!(seen[4], ConfigValue::Bool(false));
+        assert!(error(5).contains("standard, small, tiny"));
+        assert_eq!(seen[6], ConfigValue::Bool(false));
+        assert!(error(7).contains("standard, small, tiny"));
+    }
+
+    #[test]
+    fn the_shipped_small_and_tiny_fonts_are_complete_and_keep_their_box_heights() {
+        let small_text = fs::read_to_string(directory().join("small.toml")).unwrap();
+        let tiny_text = fs::read_to_string(directory().join("tiny.toml")).unwrap();
+        for (name, text, height, folder) in [
+            ("small.toml", small_text.as_str(), 9, "small"),
+            ("tiny.toml", tiny_text.as_str(), 8, "tiny"),
+        ] {
+            let font = parse_named(text, name, height, folder).expect("the named font parses");
+            assert_eq!(font.height, height);
+            assert_eq!(
+                font.characters().collect::<BTreeSet<_>>(),
+                font_set().into_iter().collect()
+            );
+            assert_eq!(font.glyph(' ').width(), 1);
+            assert_eq!(font.glyph(' ').rows, vec!["."; height]);
+            assert_eq!(
+                font.glyph(' ').advance,
+                if folder == "small" { 3 } else { 2 }
+            );
+            assert!(
+                font_set()
+                    .into_iter()
+                    .all(|character| font.glyph(character).rows.len() == height)
+            );
+            assert_eq!(font.glyph('0').advance, font.glyph('9').advance);
+        }
+
+        let small = parse_named(&small_text, "small.toml", 9, "small").unwrap();
+        assert_eq!(small.glyph('a').advance, 5);
+        assert_eq!(
+            small.glyph('a').rows,
+            [
+                "....", "....", "....", ".###", "#..#", "#..#", ".###", "....", "...."
+            ]
+        );
+        assert_eq!(small.glyph('M').width(), 5);
+
+        let tiny = parse_named(&tiny_text, "tiny.toml", 8, "tiny").unwrap();
+        assert_eq!(tiny.glyph('e').advance, 4);
+        assert_eq!(&tiny.glyph('e').rows[3..6], [".##", "###", "##."]);
+    }
+
+    #[test]
+    fn every_small_and_tiny_glyph_matches_the_frozen_art_after_box_padding() {
+        let art_path = directory().join("tooltip-fonts-art.txt");
+        let art = fs::read_to_string(&art_path).expect("the copied frozen art");
+        for (marker, name, height, folder) in [
+            ('B', "small.toml", 9, "small"),
+            ('C', "tiny.toml", 8, "tiny"),
+        ] {
+            let text = fs::read_to_string(directory().join(name)).expect("font TOML");
+            let font = parse_named(&text, name, height, folder).expect("valid named font");
+            let expected = art_fonts(&art, marker, height);
+            assert_eq!(
+                font.replacement(),
+                expected.get(&None).expect("replacement")
+            );
+            for character in font_set() {
+                assert_eq!(
+                    font.glyph(character),
+                    expected.get(&Some(character)).expect("every art glyph"),
+                    "{name} {character:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn named_font_refusals_name_the_file_and_the_bad_height_or_glyph() {
+        let text = fs::read_to_string(directory().join("small.toml")).expect("small font");
+        let missing_height = text.replacen("height = 9\n", "", 1);
+        assert!(
+            parse_named(&missing_height, "small.toml", 9, "small")
+                .unwrap_err()
+                .contains("small.toml: height is missing")
+        );
+        let high = text.replacen("height = 9", "height = 12", 1);
+        assert!(
+            parse_named(&high, "small.toml", 9, "small")
+                .unwrap_err()
+                .contains("small.toml: height 12 is outside 5 to 11")
+        );
+        let missing = without(&text, "[glyph.\"ó\"]");
+        let error = parse_named(&missing, "small.toml", 9, "small").unwrap_err();
+        assert!(
+            error.contains("small.toml") && error.contains("'ó'") && error.contains("missing"),
+            "{error}"
+        );
+
+        let mut too_tall = text.clone();
+        let replacement = too_tall.find("[replacement]").expect("replacement");
+        let rows = too_tall[replacement..]
+            .find("\nrows = [")
+            .expect("replacement rows")
+            + replacement;
+        let start = rows + "\nrows = [".len();
+        let end = too_tall[start..].find(']').expect("rows end") + start;
+        too_tall.insert_str(end, ", \".\"");
+        let error = parse_named(&too_tall, "small.toml", 9, "small").unwrap_err();
+        assert!(
+            error.contains("small.toml")
+                && error.contains("replacement")
+                && error.contains("10 rows, not 9"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn every_small_and_tiny_png_is_their_font_data_and_no_extra_image_exists() {
+        let assets = directory().join("../..");
+        for (name, height, folder) in [("small.toml", 9, "small"), ("tiny.toml", 8, "tiny")] {
+            let text = fs::read_to_string(directory().join(name)).expect("font TOML");
+            let font = parse_named(&text, name, height, folder).expect("valid named font");
+            let image_dir = directory().join(folder);
+            let mut expected = BTreeSet::new();
+            let check = |path: PathBuf, glyph: &Glyph| {
+                let image = Image::decode(fs::File::open(&path).expect("glyph PNG"))
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+                assert_eq!(image.width() as usize, glyph.width(), "{}", path.display());
+                assert_eq!(image.height() as usize, height, "{}", path.display());
+                let pixels: Vec<u8> = glyph
+                    .rows
+                    .iter()
+                    .flat_map(|row| row.chars())
+                    .flat_map(|cell| {
+                        if cell == '#' {
+                            [0xFF, 0xFF, 0xFF, 0xFF]
+                        } else {
+                            [0, 0, 0, 0]
+                        }
+                    })
+                    .collect();
+                assert_eq!(image.pixels(), pixels, "{}", path.display());
+            };
+            for character in font_set() {
+                let file = format!("U+{:04X}.png", u32::from(character));
+                check(
+                    assets.join(format!("ui/font/{folder}/{file}")),
+                    font.glyph(character),
+                );
+                expected.insert(file);
+            }
+            check(
+                assets.join(format!("ui/font/{folder}/replacement.png")),
+                font.replacement(),
+            );
+            if folder == "small" {
+                let image =
+                    Image::decode(fs::File::open(assets.join("ui/font/small/U+0061.png")).unwrap())
+                        .unwrap();
+                assert_eq!((image.width(), image.height()), (4, 9));
+                let pixel = |x: usize, y: usize| {
+                    let offset = (y * image.width() as usize + x) * 4;
+                    &image.pixels()[offset..offset + 4]
+                };
+                assert_eq!(pixel(1, 3), [255, 255, 255, 255]);
+                assert_eq!(pixel(0, 3), [0, 0, 0, 0]);
+            }
+            expected.insert("replacement.png".to_owned());
+            let actual: BTreeSet<String> = fs::read_dir(image_dir)
+                .expect("font image directory")
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(actual, expected, "{folder}");
+        }
+    }
+
+    fn art_fonts(art: &str, marker: char, height: usize) -> BTreeMap<Option<char>, Glyph> {
+        let lines: Vec<_> = art.lines().collect();
+        let mut result = BTreeMap::new();
+        let mut index = 0;
+        while index < lines.len() {
+            let parts: Vec<_> = lines[index].split_whitespace().collect();
+            if parts.first().copied() != Some(if marker == 'B' { "B" } else { "C" }) {
+                index += 1;
+                continue;
+            }
+            let label = parts[1];
+            let character = if label == "replacement" {
+                None
+            } else {
+                let code = parts[2].strip_prefix("U+").expect("art code point");
+                Some(
+                    char::from_u32(u32::from_str_radix(code, 16).expect("hex code"))
+                        .expect("scalar"),
+                )
+            };
+            let advance = parts
+                .iter()
+                .find_map(|part| part.strip_prefix("advance="))
+                .expect("advance")
+                .parse()
+                .expect("integer advance");
+            let top: usize = parts
+                .iter()
+                .find_map(|part| part.strip_prefix("top="))
+                .expect("top row")
+                .parse()
+                .expect("integer top");
+            index += 1;
+            let mut rows = Vec::new();
+            while index < lines.len() {
+                let Some(row) = lines[index].strip_prefix("  ") else {
+                    break;
+                };
+                rows.push(row.to_owned());
+                index += 1;
+            }
+            let width = rows.first().expect("art rows").len();
+            assert!(rows.iter().all(|row| row.len() == width));
+            assert!(top + rows.len() <= height);
+            let mut padded = vec![".".repeat(width); top];
+            padded.extend(rows);
+            padded.extend(std::iter::repeat_n(
+                ".".repeat(width),
+                height - padded.len(),
+            ));
+            assert!(
+                result
+                    .insert(
+                        character,
+                        Glyph {
+                            rows: padded,
+                            advance
+                        }
+                    )
+                    .is_none()
+            );
+        }
+        let space = Glyph {
+            rows: vec![".".to_owned(); height],
+            advance: if marker == 'B' { 3 } else { 2 },
+        };
+        assert!(result.insert(Some(' '), space).is_none());
+        result
     }
 
     #[test]
@@ -754,6 +1153,13 @@ mod tests {
         if let Some(text) = font {
             fs::create_dir_all(root.0.join("assets/ui/font")).unwrap();
             fs::write(root.0.join("assets/ui/font/font.toml"), text).unwrap();
+            for name in ["small.toml", "tiny.toml"] {
+                fs::copy(
+                    directory().join(name),
+                    root.0.join("assets/ui/font").join(name),
+                )
+                .unwrap();
+            }
         }
         let config = root.0.join("config.toml");
         fs::write(&config, "[game]\nscenario = \"assets/scenarios/fixture\"\n").unwrap();

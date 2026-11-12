@@ -500,13 +500,17 @@ fn marked_pointer_events_reach_the_window_and_unmarked_mouse_is_filtered() {
             .all(|event| !matches!(event, NativeEvent::Pointer(_)))
     );
 
-    for (kind, x, y, amount, points) in [
-        (0, 20.0, 20.0, 0.0, false),
-        (1, 30.0, 40.0, 0.0, false),
-        (2, 30.0, 40.0, 0.0, false),
-        (3, 40.0, 50.0, 1.0, false),
+    for (kind, button, x, y, amount, points) in [
+        (0, 0, 20.0, 20.0, 0.0, false),
+        (1, 0, 30.0, 40.0, 0.0, false),
+        (2, 0, 30.0, 40.0, 0.0, false),
+        (3, 0, 40.0, 50.0, 1.0, false),
+        (4, 2, 50.0, 60.0, 0.0, false),
+        (5, 2, 50.0, 60.0, 0.0, false),
+        (4, 1, 60.0, 70.0, 0.0, false),
+        (5, 1, 60.0, 70.0, 0.0, false),
     ] {
-        assert!(support::post_pointer(kind, x, y, amount, points));
+        assert!(support::post_pointer(kind, button, x, y, amount, points));
     }
     let pointers: Vec<_> = fixture
         .drain()
@@ -522,8 +526,8 @@ fn marked_pointer_events_reach_the_window_and_unmarked_mouse_is_filtered() {
         .collect();
     assert_eq!(
         pointers.len(),
-        4,
-        "marked down, drag, up, and scroll are delivered"
+        8,
+        "marked left, scroll, middle, and right pointer events are delivered"
     );
     assert!(matches!(pointers[0], ck_input::PointerEvent::Down(_)));
     assert!(matches!(pointers[1], ck_input::PointerEvent::Move(_)));
@@ -535,6 +539,46 @@ fn marked_pointer_events_reach_the_window_and_unmarked_mouse_is_filtered() {
             ..
         }
     ));
+    assert_eq!(
+        pointers[4],
+        ck_input::PointerEvent::ButtonDown {
+            button: ck_input::PointerButton::Middle,
+            position: ck_input::PointerPosition {
+                x: 50 * 256,
+                y: 60 * 256
+            },
+        }
+    );
+    assert_eq!(
+        pointers[5],
+        ck_input::PointerEvent::ButtonUp {
+            button: ck_input::PointerButton::Middle,
+            position: ck_input::PointerPosition {
+                x: 50 * 256,
+                y: 60 * 256
+            },
+        }
+    );
+    assert_eq!(
+        pointers[6],
+        ck_input::PointerEvent::ButtonDown {
+            button: ck_input::PointerButton::Right,
+            position: ck_input::PointerPosition {
+                x: 60 * 256,
+                y: 70 * 256
+            },
+        }
+    );
+    assert_eq!(
+        pointers[7],
+        ck_input::PointerEvent::ButtonUp {
+            button: ck_input::PointerButton::Right,
+            position: ck_input::PointerPosition {
+                x: 60 * 256,
+                y: 70 * 256
+            },
+        }
+    );
 }
 
 /// 5. Cmd-Q, through the same dispatch.

@@ -156,6 +156,121 @@ fn pointer_scroll_reversal_and_anchor_changes_start_new_records() {
 }
 
 #[test]
+fn button_events_keep_order_update_position_and_never_change_left_held_state() {
+    let mut mapper = Mapper::new(bindings(&[]));
+    mapper.pointer(PointerEvent::Down(point(1, 1)));
+    mapper.pointer(PointerEvent::ButtonDown {
+        button: PointerButton::Middle,
+        position: point(2, 2),
+    });
+    mapper.pointer(PointerEvent::Move(point(3, 3)));
+    mapper.pointer(PointerEvent::ButtonUp {
+        button: PointerButton::Middle,
+        position: point(4, 4),
+    });
+    mapper.pointer(PointerEvent::ButtonDown {
+        button: PointerButton::Right,
+        position: point(5, 5),
+    });
+    mapper.pointer(PointerEvent::Up(point(6, 6)));
+
+    let snapshot = mapper.snapshot();
+    assert_eq!(
+        snapshot.pointer_events,
+        [
+            PointerEvent::Down(point(1, 1)),
+            PointerEvent::ButtonDown {
+                button: PointerButton::Middle,
+                position: point(2, 2),
+            },
+            PointerEvent::Move(point(3, 3)),
+            PointerEvent::ButtonUp {
+                button: PointerButton::Middle,
+                position: point(4, 4),
+            },
+            PointerEvent::ButtonDown {
+                button: PointerButton::Right,
+                position: point(5, 5),
+            },
+            PointerEvent::Up(point(6, 6)),
+        ]
+    );
+    assert!(!snapshot.pointer_held);
+    assert_eq!(snapshot.pointer_position, Some(point(6, 6)));
+
+    let mut buttons_without_left = Mapper::new(bindings(&[]));
+    buttons_without_left.pointer(PointerEvent::ButtonDown {
+        button: PointerButton::Right,
+        position: point(7, 8),
+    });
+    assert!(!buttons_without_left.snapshot().pointer_held);
+}
+
+#[test]
+fn button_events_are_coalescing_barriers_and_focus_loss_does_not_release_them() {
+    let mut mapper = Mapper::new(bindings(&[]));
+    mapper.pointer(PointerEvent::Move(point(1, 1)));
+    mapper.pointer(PointerEvent::ButtonDown {
+        button: PointerButton::Middle,
+        position: point(2, 2),
+    });
+    mapper.pointer(PointerEvent::Move(point(3, 3)));
+    mapper.pointer(PointerEvent::Scroll {
+        position: point(3, 3),
+        amount: 128,
+        unit: ScrollUnit::Lines,
+    });
+    mapper.pointer(PointerEvent::ButtonUp {
+        button: PointerButton::Right,
+        position: point(4, 4),
+    });
+    mapper.pointer(PointerEvent::Scroll {
+        position: point(4, 4),
+        amount: 64,
+        unit: ScrollUnit::Lines,
+    });
+    assert_eq!(
+        mapper.snapshot().pointer_events,
+        [
+            PointerEvent::Move(point(1, 1)),
+            PointerEvent::ButtonDown {
+                button: PointerButton::Middle,
+                position: point(2, 2),
+            },
+            PointerEvent::Move(point(3, 3)),
+            PointerEvent::Scroll {
+                position: point(3, 3),
+                amount: 128,
+                unit: ScrollUnit::Lines,
+            },
+            PointerEvent::ButtonUp {
+                button: PointerButton::Right,
+                position: point(4, 4),
+            },
+            PointerEvent::Scroll {
+                position: point(4, 4),
+                amount: 64,
+                unit: ScrollUnit::Lines,
+            },
+        ]
+    );
+    assert_eq!(mapper.snapshot().pointer_position, Some(point(4, 4)));
+
+    mapper.pointer(PointerEvent::Down(point(8, 8)));
+    mapper.pointer(PointerEvent::ButtonDown {
+        button: PointerButton::Middle,
+        position: point(9, 9),
+    });
+    let before_focus_loss = mapper.snapshot().pointer_events.len();
+    mapper.focus_lost();
+    let reset = mapper.snapshot();
+    assert_eq!(
+        &reset.pointer_events[before_focus_loss..],
+        &[PointerEvent::Up(point(9, 9))]
+    );
+}
+
+#[test]
 fn pointer_overflow_keeps_exact_current_state_and_focus_loss_appends_release() {
     let mut mapper = Mapper::new(bindings(&[]));
     mapper.pointer(PointerEvent::Down(point(0, 0)));
@@ -205,6 +320,39 @@ fn pointer_overflow_keeps_exact_current_state_and_focus_loss_appends_release() {
         )))
     );
     assert!(released.reset);
+}
+
+#[test]
+fn button_events_participate_in_ring_overflow_without_changing_held_state() {
+    let mut mapper = Mapper::new(bindings(&[]));
+    mapper.pointer(PointerEvent::ButtonDown {
+        button: PointerButton::Right,
+        position: point(0, 0),
+    });
+    for index in 1..=POINTER_CAPACITY {
+        mapper.pointer(PointerEvent::ButtonUp {
+            button: PointerButton::Middle,
+            position: point(i32::try_from(index).expect("small event index fits"), 0),
+        });
+    }
+    let snapshot = mapper.snapshot();
+    assert!(snapshot.pointer_overflow);
+    assert!(!snapshot.pointer_held);
+    assert_eq!(snapshot.pointer_events.len(), POINTER_CAPACITY);
+    assert_eq!(
+        snapshot.pointer_events.first(),
+        Some(&PointerEvent::ButtonUp {
+            button: PointerButton::Middle,
+            position: point(1, 0),
+        })
+    );
+    assert_eq!(
+        snapshot.pointer_position,
+        Some(point(
+            i32::try_from(POINTER_CAPACITY).expect("capacity fits"),
+            0
+        ))
+    );
 }
 
 #[test]

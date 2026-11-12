@@ -26,7 +26,7 @@ end
 -- An empty line whose top-left corner is the point (x, y), in points, snapped to the UI-pixel grid. Its glyph quads go into `group`
 -- (a group token) when one is given, and the position is then local to the group. The glyphs are white art tinted `colour` (a
 -- colour string; the theme's text colour when not given).
-function text.line(x, y, group, colour)
+function text.line(x, y, group, colour, font_name)
   return {
     x = ui.snap(x),
     y = ui.snap(y),
@@ -35,6 +35,7 @@ function text.line(x, y, group, colour)
     height = 0,
     group = group,
     colour = colour or theme.colour("text"),
+    font_name = font_name or "standard",
   }
 end
 
@@ -52,7 +53,7 @@ end
 -- Lays `content` out and updates the line's quads to match, glyph by glyph in order. `width` and `height` are then the text's size
 -- in font pixels (UI pixels).
 function text.set(l, content)
-  local laid = font.layout(content)
+  local laid = font.layout(content, l.font_name)
   local old = l.glyphs
   local new = {}
   for index, glyph in ipairs(laid.glyphs) do

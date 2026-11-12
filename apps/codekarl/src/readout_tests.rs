@@ -42,6 +42,36 @@ pub(crate) fn push(log: &Log, line: String) {
         .push(line);
 }
 
+#[test]
+fn a_text_line_keeps_its_font_choice_and_four_argument_lines_stay_standard() {
+    let readout = Readout::script(
+        r"
+local text = require('lib.text')
+local small = text.line(0, 0, nil, nil, 'small')
+text.set(small, 'oats')
+local standard = text.line(0, 20)
+text.set(standard, 'a')
+        ",
+    );
+    let creates: Vec<_> = readout
+        .entries()
+        .into_iter()
+        .filter(|line| line.starts_with("create "))
+        .collect();
+    assert!(
+        creates
+            .iter()
+            .any(|line| line == "create q1 ui/font/small/U+006F.png 0 0 8 18"),
+        "small font's first glyph and 9 * P height: {creates:?}"
+    );
+    assert!(
+        creates
+            .iter()
+            .any(|line| line == "create q5 ui/font/glyphs/U+0061.png 0 20 10 22"),
+        "four-argument line remains standard at 11 * P height: {creates:?}"
+    );
+}
+
 /// A function that records `<name> <arguments>` and returns nothing.
 pub(crate) fn recording(log: &Log, name: &'static str) -> HostFunction {
     let log = Arc::clone(log);
@@ -200,7 +230,7 @@ impl Readout {
         let hover_registered = Arc::new(AtomicBool::new(false));
         let (control_sender, controls) = std::sync::mpsc::channel();
         let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
-        let shipped_font = Arc::new(font::load(&assets).expect("the shipped font"));
+        let shipped_font = Arc::new(font::load_all(&assets).expect("the shipped fonts"));
         let config = ConfigValue::Table(BTreeMap::new());
         let frame = FrameRegistration::default();
         let mut settings = VmSettings::new("ui", entry, config);

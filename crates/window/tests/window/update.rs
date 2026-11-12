@@ -257,7 +257,15 @@ fn pointer_events_reach_one_scheduled_update_and_idle_state_does_not_repeat_them
                 configure_updates(&mut rig, &clock, 60, Duration::from_millis(20));
                 rig.backend.script.push_back(vec![
                     NativeEvent::Pointer(PointerEvent::Down(PointerPosition { x: 256, y: 512 })),
+                    NativeEvent::Pointer(PointerEvent::ButtonDown {
+                        button: ck_window::PointerButton::Middle,
+                        position: PointerPosition { x: 300, y: 600 },
+                    }),
                     NativeEvent::Pointer(PointerEvent::Move(PointerPosition { x: 768, y: 1024 })),
+                    NativeEvent::Pointer(PointerEvent::ButtonUp {
+                        button: ck_window::PointerButton::Right,
+                        position: PointerPosition { x: 700, y: 900 },
+                    }),
                     NativeEvent::Pointer(PointerEvent::Up(PointerPosition { x: 768, y: 1024 })),
                 ]);
                 lock(&rig.ui.update_answers).extend([Answer::Returned, Answer::Returned]);
@@ -275,7 +283,15 @@ fn pointer_events_reach_one_scheduled_update_and_idle_state_does_not_repeat_them
                 ran.ticks[0].input.pointer_events,
                 [
                     PointerEvent::Down(PointerPosition { x: 256, y: 512 }),
+                    PointerEvent::ButtonDown {
+                        button: ck_window::PointerButton::Middle,
+                        position: PointerPosition { x: 300, y: 600 },
+                    },
                     PointerEvent::Move(PointerPosition { x: 768, y: 1024 }),
+                    PointerEvent::ButtonUp {
+                        button: ck_window::PointerButton::Right,
+                        position: PointerPosition { x: 700, y: 900 },
+                    },
                     PointerEvent::Up(PointerPosition { x: 768, y: 1024 }),
                 ]
             );

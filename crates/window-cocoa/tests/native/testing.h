@@ -84,9 +84,9 @@ int32_t ck_win_test_post_key(uint16_t key_code, uint64_t modifier_flags, int32_t
 /* The other keyboard events: kind 1 is a key-up, kind 2 a modifier change. */
 int32_t ck_win_test_post_keyboard_event(int32_t kind, uint16_t key_code, uint64_t modifier_flags,
                                         int32_t marked);
-/* Posts a marked left-button or vertical-scroll event at a content point (kind: 0 down, 1 move/drag, 2 up, 3 scroll;
- * unit: 0 lines, 1 precise points). */
-int32_t ck_win_test_post_pointer(int32_t kind, double x, double y, double amount, int32_t unit, int32_t marked);
+/* Posts a marked pointer event at a content point (kind: 0 down, 1 move/drag, 2 up, 3 scroll, 4 non-left down,
+ * 5 non-left up; button: 0 none, 1 right, 2 middle; unit: 0 lines, 1 precise points). */
+int32_t ck_win_test_post_pointer(int32_t kind, int32_t button, double x, double y, double amount, int32_t unit, int32_t marked);
 /* The window number an unmarked pointer event of `kind` (0 down, 1 drag, 2 up) carries, and the test window's. Builds, never posts. Returns 0
  * for a kind that is never built unmarked (3, a scroll: see ck_pointer_event) and when there is no window. */
 int32_t ck_win_test_unmarked_pointer_window(int32_t kind, int64_t *event_window, int64_t *window_number);

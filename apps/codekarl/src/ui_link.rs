@@ -120,6 +120,9 @@ fn pointer_event_table(event: &crate::input_stash::PointerViewEvent) -> ConfigVa
     if let Some(unit) = event.unit {
         table.insert("unit".to_owned(), ConfigValue::String(unit.to_owned()));
     }
+    if let Some(button) = event.button {
+        table.insert("button".to_owned(), ConfigValue::String(button.to_owned()));
+    }
     ConfigValue::Table(table)
 }
 
@@ -328,6 +331,7 @@ fn view_event(
         position,
         key,
         inside: false,
+        button: None,
         amount: None,
         unit: None,
     }
@@ -405,6 +409,28 @@ fn route_pointer_in(
                     routed.map.push(MapEvent::Pointer(*event));
                     *owner = GestureOwner::Map;
                 }
+            }
+            PointerEvent::ButtonDown { button, position } => {
+                let key = regions
+                    .and_then(|regions| regions.key_at(ui(position)))
+                    .map(str::to_owned);
+                let mut event = view_event("button_down", ui(position), key);
+                event.button = Some(match button {
+                    ck_window::PointerButton::Middle => "middle",
+                    ck_window::PointerButton::Right => "right",
+                });
+                routed.ui.push(event);
+            }
+            PointerEvent::ButtonUp { button, position } => {
+                let key = regions
+                    .and_then(|regions| regions.key_at(ui(position)))
+                    .map(str::to_owned);
+                let mut event = view_event("button_up", ui(position), key);
+                event.button = Some(match button {
+                    ck_window::PointerButton::Middle => "middle",
+                    ck_window::PointerButton::Right => "right",
+                });
+                routed.ui.push(event);
             }
             PointerEvent::Move(position) => match owner {
                 GestureOwner::Ui(key) => {
@@ -1476,16 +1502,28 @@ mod tests {
             y: 120 * 256,
         };
         let map = crate::map_app::shared(map);
+        let scene = ck_render_2d::SceneBridge::new(ck_render_2d::Filter::Nearest);
+        let mut writer = scene.take_writer().expect("a scene writer");
+        writer
+            .set_hit(
+                "panel",
+                Some(vec![ck_render_2d::PointRect::new(300.0, 10.0, 40.0, 40.0)]),
+                None,
+            )
+            .expect("a valid UI hit region");
+        assert!(writer.publish());
         let slot = SimSlot::new(Arc::new(|| {}));
         let (sender, _receiver) = std::sync::mpsc::channel();
-        let mut link = CodekarlUi::with_map(harness.ui.slot.clone(), map).with_sim(SimLink {
-            views: Arc::default(),
-            controls: crate::game::controls::SimControls::new(sender),
-            slot,
-            time_registered: registered,
-            hover_registered,
-            select_registered: Arc::new(AtomicBool::new(false)),
-        });
+        let mut link = CodekarlUi::with_map(harness.ui.slot.clone(), Arc::clone(&map))
+            .with_scene_bridge(Arc::clone(&scene))
+            .with_sim(SimLink {
+                views: Arc::default(),
+                controls: crate::game::controls::SimControls::new(sender),
+                slot,
+                time_registered: registered,
+                hover_registered,
+                select_registered: Arc::new(AtomicBool::new(false)),
+            });
         let wait_for_count = |link: &mut CodekarlUi, wanted: usize| {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
@@ -1571,6 +1609,95 @@ mod tests {
 
         let _ = answer(&mut link);
         wait_for_count(&mut link, 1);
+        assert_eq!(seen.lock().unwrap().as_slice(), ["Fixture Town"]);
+
+        // A middle press and release at the already-hovered position are ordinary position updates: they neither suppress the map
+        // hover nor post another game.on_hover change.
+        for event in [
+            PointerEvent::ButtonDown {
+                button: ck_window::PointerButton::Middle,
+                position: pointer,
+            },
+            PointerEvent::ButtonUp {
+                button: ck_window::PointerButton::Middle,
+                position: pointer,
+            },
+        ] {
+            let mut input = known_input();
+            input.pointer_position = Some(pointer);
+            input.pointer_events = vec![event];
+            let mut tick = known_tick();
+            tick.metrics.points = (400, 240);
+            tick.metrics.pixels = PixelSize {
+                width: 800,
+                height: 480,
+            };
+            tick.input = input;
+            link.input(&tick)
+                .expect("the same-place button event is consumed");
+            link.deliver_hover();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while link.outstanding() > 0 {
+                let _ = link.take_answer();
+                assert!(
+                    Instant::now() < deadline,
+                    "button hover intake did not settle"
+                );
+                thread::yield_now();
+            }
+            assert_eq!(
+                crate::map_app::lock(&map)
+                    .hover()
+                    .as_ref()
+                    .map(|hover| hover.name.as_str()),
+                Some("Fixture Town"),
+                "button events keep the map's existing hover"
+            );
+        }
+        assert_eq!(seen.lock().unwrap().as_slice(), ["Fixture Town"]);
+
+        // At a new position over UI, right-down and Move produce the same `over` and map-hover suppression result.
+        let ui_position = PointerPosition {
+            x: 310 * 256,
+            y: 20 * 256,
+        };
+        let mut observed = None;
+        for event in [
+            PointerEvent::ButtonDown {
+                button: ck_window::PointerButton::Right,
+                position: ui_position,
+            },
+            PointerEvent::Move(ui_position),
+        ] {
+            let mut input = known_input();
+            input.pointer_position = Some(ui_position);
+            input.pointer_events = vec![event];
+            let mut tick = known_tick();
+            tick.metrics.points = (400, 240);
+            tick.metrics.pixels = PixelSize {
+                width: 800,
+                height: 480,
+            };
+            tick.input = input;
+            link.input(&tick)
+                .expect("the UI-position event is consumed");
+            let pointer_over = link
+                .state
+                .stash
+                .borrow()
+                .pointer()
+                .and_then(|pointer| pointer.over.clone());
+            let map_hover = crate::map_app::lock(&map).hover();
+            assert_eq!(pointer_over.as_deref(), Some("panel"));
+            let current = (pointer_over, map_hover);
+            if let Some(previous) = observed {
+                assert_eq!(
+                    current, previous,
+                    "a button edge is an ordinary pointer-position update"
+                );
+            }
+            observed = Some(current);
+        }
         assert_eq!(seen.lock().unwrap().as_slice(), ["Fixture Town"]);
 
         let mut still = update(3);
@@ -2059,6 +2186,223 @@ mod tests {
             ))]
         ));
         assert!(crossing.ui.is_empty());
+    }
+
+    #[test]
+    fn middle_and_right_buttons_are_ui_events_without_claiming_a_gesture_or_reaching_the_map() {
+        use ck_window::PointerButton;
+
+        let regions = hit_regions(&[("panel", 0.0, 0.0, 20.0, 20.0)]);
+        let inside = PointerPosition {
+            x: 5 * 256,
+            y: 5 * 256,
+        };
+        let outside = PointerPosition {
+            x: 40 * 256,
+            y: 40 * 256,
+        };
+        let mut owner = GestureOwner::Idle;
+        let routed = route_pointer(
+            &mut owner,
+            &pointer_input(
+                vec![
+                    PointerEvent::ButtonDown {
+                        button: PointerButton::Middle,
+                        position: inside,
+                    },
+                    PointerEvent::ButtonUp {
+                        button: PointerButton::Middle,
+                        position: inside,
+                    },
+                    PointerEvent::ButtonDown {
+                        button: PointerButton::Right,
+                        position: outside,
+                    },
+                    PointerEvent::ButtonUp {
+                        button: PointerButton::Right,
+                        position: outside,
+                    },
+                ],
+                Some(outside),
+                false,
+            ),
+            Some(&regions),
+        );
+
+        assert!(
+            routed.map.is_empty(),
+            "non-left buttons never reach map routing"
+        );
+        assert_eq!(
+            owner,
+            GestureOwner::Idle,
+            "button edges do not claim a gesture"
+        );
+        assert_eq!(
+            routed.ui,
+            [
+                crate::input_stash::PointerViewEvent {
+                    kind: "button_down",
+                    position: inside,
+                    key: Some("panel".to_owned()),
+                    inside: true,
+                    button: Some("middle"),
+                    amount: None,
+                    unit: None,
+                },
+                crate::input_stash::PointerViewEvent {
+                    kind: "button_up",
+                    position: inside,
+                    key: Some("panel".to_owned()),
+                    inside: true,
+                    button: Some("middle"),
+                    amount: None,
+                    unit: None,
+                },
+                crate::input_stash::PointerViewEvent {
+                    kind: "button_down",
+                    position: outside,
+                    key: None,
+                    inside: false,
+                    button: Some("right"),
+                    amount: None,
+                    unit: None,
+                },
+                crate::input_stash::PointerViewEvent {
+                    kind: "button_up",
+                    position: outside,
+                    key: None,
+                    inside: false,
+                    button: Some("right"),
+                    amount: None,
+                    unit: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn non_left_buttons_leave_ui_capture_and_map_drag_ownership_untouched() {
+        use ck_window::PointerButton;
+
+        let regions = hit_regions(&[("panel", 0.0, 0.0, 20.0, 20.0)]);
+        let inside = PointerPosition {
+            x: 5 * 256,
+            y: 5 * 256,
+        };
+        let outside = PointerPosition {
+            x: 40 * 256,
+            y: 40 * 256,
+        };
+        let mut owner = GestureOwner::Ui("panel".to_owned());
+        let ui_capture = route_pointer(
+            &mut owner,
+            &pointer_input(
+                vec![
+                    PointerEvent::ButtonDown {
+                        button: PointerButton::Middle,
+                        position: inside,
+                    },
+                    PointerEvent::Up(inside),
+                ],
+                Some(inside),
+                false,
+            ),
+            Some(&regions),
+        );
+        assert!(ui_capture.map.is_empty());
+        assert_eq!(
+            ui_capture
+                .ui
+                .iter()
+                .map(|event| (event.kind, event.key.as_deref()))
+                .collect::<Vec<_>>(),
+            [("button_down", Some("panel")), ("up", Some("panel"))]
+        );
+        assert_eq!(owner, GestureOwner::Idle);
+
+        let mut owner = GestureOwner::Map;
+        let map_drag = route_pointer(
+            &mut owner,
+            &pointer_input(
+                vec![
+                    PointerEvent::ButtonDown {
+                        button: PointerButton::Right,
+                        position: inside,
+                    },
+                    PointerEvent::ButtonUp {
+                        button: PointerButton::Right,
+                        position: inside,
+                    },
+                ],
+                Some(inside),
+                true,
+            ),
+            Some(&regions),
+        );
+        assert!(map_drag.map.is_empty());
+        assert_eq!(
+            owner,
+            GestureOwner::Map,
+            "middle/right edges neither end nor replace map ownership"
+        );
+
+        let left_release = route_pointer(
+            &mut owner,
+            &pointer_input(vec![PointerEvent::Up(outside)], Some(outside), false),
+            Some(&regions),
+        );
+        assert!(matches!(
+            left_release.map.as_slice(),
+            [crate::map_app::RoutedMapEvent::Pointer(PointerEvent::Up(position))] if *position == outside
+        ));
+        assert_eq!(owner, GestureOwner::Idle);
+    }
+
+    #[test]
+    fn non_left_button_positions_are_converted_to_ui_units_in_pixel_windows() {
+        use ck_render_2d::ui_scale::UnitMap;
+        use ck_window::PointerButton;
+
+        let units = Some(UnitMap {
+            pixels: PixelSize {
+                width: 1280,
+                height: 800,
+            },
+            points: (640, 400),
+            k: 2,
+        });
+        let point_position = PointerPosition {
+            x: 10 * 256,
+            y: 7 * 256,
+        };
+        let regions = hit_regions(&[("panel", 19.0, 13.0, 2.0, 2.0)]);
+        let mut owner = GestureOwner::Idle;
+        let routed = route_pointer_in(
+            &mut owner,
+            &pointer_input(
+                vec![PointerEvent::ButtonDown {
+                    button: PointerButton::Middle,
+                    position: point_position,
+                }],
+                Some(point_position),
+                false,
+            ),
+            Some(&regions),
+            units,
+        );
+        assert!(routed.map.is_empty());
+        assert_eq!(routed.ui.len(), 1);
+        assert_eq!(
+            routed.ui[0].position,
+            PointerPosition {
+                x: 20 * 256,
+                y: 14 * 256
+            }
+        );
+        assert_eq!(routed.ui[0].key.as_deref(), Some("panel"));
+        assert_eq!(routed.ui[0].button, Some("middle"));
+        assert!(routed.ui[0].inside);
     }
 
     #[test]
@@ -2866,6 +3210,7 @@ mod tests {
                     position,
                     key: Some("readout".to_owned()),
                     inside: true,
+                    button: None,
                     amount: None,
                     unit: None,
                 },
@@ -2874,8 +3219,18 @@ mod tests {
                     position,
                     key: Some("readout".to_owned()),
                     inside: false,
+                    button: None,
                     amount: Some(-128),
                     unit: Some("lines"),
+                },
+                crate::input_stash::PointerViewEvent {
+                    kind: "button_up",
+                    position,
+                    key: Some("readout".to_owned()),
+                    inside: true,
+                    button: Some("right"),
+                    amount: None,
+                    unit: None,
                 },
             ],
             true,
@@ -2897,7 +3252,13 @@ mod tests {
         let ConfigValue::Array(events) = &pointer["events"] else {
             panic!("pointer events are an array");
         };
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3);
+        let ConfigValue::Table(button) = &events[2] else {
+            panic!("button event is a table");
+        };
+        assert_eq!(button["kind"], ConfigValue::String("button_up".to_owned()));
+        assert_eq!(button["button"], ConfigValue::String("right".to_owned()));
+        assert!(!button.contains_key("amount") && !button.contains_key("unit"));
         let ConfigValue::Table(scroll) = &events[1] else {
             panic!("scroll event is a table");
         };

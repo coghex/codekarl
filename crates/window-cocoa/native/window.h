@@ -46,8 +46,9 @@ typedef struct {
 } CKWinResync;
 
 typedef struct {
-    uint8_t kind; /* 0 down, 1 move, 2 up, 3 scroll */
+    uint8_t kind; /* 0 down, 1 move, 2 up, 3 scroll, 4 non-left down, 5 non-left up */
     uint8_t unit; /* 0 lines, 1 points */
+    uint8_t button; /* 0 none, 1 right, 2 middle */
     int32_t x;    /* 1/256 point, origin top-left */
     int32_t y;
     int32_t amount; /* 1/256 selected scroll unit */
