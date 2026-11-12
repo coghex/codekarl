@@ -16,6 +16,7 @@ local ui = require("lib.ui")
 local text = require("lib.text")
 local theme = require("lib.theme")
 local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
 
 local P = ui.P
 local ROW = 13 * P
@@ -67,6 +68,17 @@ local function checked_items(who, items)
         error(who .. ": item " .. index .. " stripe must be a colour string", 3)
       end
       checked.stripe = item.stripe
+      if item.tooltip ~= nil then
+        local source = item.tooltip
+        if type(source) == "function" then
+          checked.tooltip = source
+        elseif type(source) == "table" and type(source.class) == "string" and source.class ~= ""
+          and (source.args == nil or type(source.args) == "table") then
+          checked.tooltip = {class = source.class, args = source.args}
+        else
+          error(who .. ": item " .. index .. " tooltip must be a function or {class, args}", 3)
+        end
+      end
       if item.icon ~= nil then
         if type(item.icon) ~= "table" then
           error(who .. ": item " .. index .. " icon must use exactly one of name and colour or image", 3)
@@ -149,6 +161,15 @@ end
 
 -- The pointer widget of row `index`, registered under `key`.
 local function row_widget(self, index, key)
+  if self.on_select == nil then
+    return {
+      on_event = function(_, event)
+        if not self.closed and event.kind == "scroll" then self:scroll(event) end
+      end,
+      on_hover = function() end,
+      on_overflow = function() end,
+    }
+  end
   local row = {}
   function row.on_event(_, event, eligible)
     if self.closed then
@@ -211,6 +232,7 @@ local function remove_row(self, index)
     -- has not been given yet for the key (routed against the frame the player pointed at) still select the item they meant; a press
     -- and a hover on it end then.
     render.set_hit(key, nil, self.rows_group)
+    tooltip.detach(key)
     self.row_keys[index] = nil
     local retired = pointer.widget(key)
     self.retired[key] = true
@@ -305,11 +327,22 @@ end
 local function add_row(self, index)
   self.lines[index] = {lines = {}, group = self.rows_group, y = row_top(index)}
   update_visual(self, index)
-  if self.on_select ~= nil then
+  if self.on_select ~= nil or self.tooltips then
     local key = self.base .. "_row_" .. index
     self.row_keys[index] = key
     render.set_hit(key, {{x = 0, y = row_top(index), width = self.width, height = ROW}}, self.rows_group)
     pointer.register(key, row_widget(self, index, key), self.window)
+    if self.tooltips then
+      tooltip.attach(key, function(x, y)
+        if self.closed then return nil end
+        local item = self.items[index]
+        if type(item) ~= "table" then return nil end
+        local source = item.tooltip
+        if type(source) == "function" then return source(x, y) end
+        if type(source) == "table" then return tooltip.content(source.class, source.args) end
+        return nil
+      end)
+    end
   end
 end
 
@@ -393,6 +426,9 @@ function list.new(spec)
   if spec.on_select ~= nil and type(spec.on_select) ~= "function" then
     error("list.new: on_select must be nil or a function", 2)
   end
+  if spec.tooltips ~= nil and type(spec.tooltips) ~= "boolean" then
+    error("list.new: tooltips must be a boolean", 2)
+  end
 
   local self = setmetatable({}, list)
   self.window = window
@@ -402,6 +438,7 @@ function list.new(spec)
   self.rows = math.tointeger(rows)
   self.items = items
   self.on_select = spec.on_select
+  self.tooltips = spec.tooltips == true
   self.base = ui.key("list")
   self.area_key = self.base .. "_area"
   self.view_height = self.rows * ROW
@@ -536,6 +573,7 @@ function list:destroy()
   for _, index in ipairs(indices) do
     local key = self.row_keys[index]
     render.set_hit(key, nil, self.rows_group)
+    tooltip.detach(key)
     pointer.unregister(key)
   end
   -- Rows retired by an edit since the last dispatch are still registered: they go with the list.
@@ -545,6 +583,7 @@ function list:destroy()
   end
   table.sort(retired)
   for _, key in ipairs(retired) do
+    tooltip.detach(key)
     pointer.unregister(key)
   end
   self.retired = {}

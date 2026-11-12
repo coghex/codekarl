@@ -205,6 +205,310 @@ window.on_opened(function() end)
     );
 }
 
+#[test]
+fn tooltip_only_lists_register_passive_row_keys_without_selection_look() {
+    let script = format!(
+        r#"{HEADER}
+w = windows.new{{title = "Tooltips", x = 100, y = 50, content_width = 100, content_height = 240}}
+local tooltip = require("lib.tooltip")
+local text = require("lib.text")
+local real_set = text.set
+text.set = function(line, value) real_set(line, value); note("tip=" .. value) end
+lst = lists.new{{window = w, x = 0, y = 0, width = 100, rows = 2, tooltips = true, items = {{
+  {{cells = {{{{text = "one", x = 1, align = "left"}}}}, tooltip = function() return {{"first tip"}} end}},
+  {{cells = {{{{text = "two", x = 1, align = "left"}}}}, tooltip = function() return {{"second tip"}} end}},
+  "third", "fourth",
+}}}}
+plain = lists.new{{window = w, x = 0, y = 40, width = 100, rows = 2, items = names(2)}}
+string_list = lists.new{{window = w, x = 0, y = 80, width = 100, rows = 1, tooltips = true, items = {{"plain"}}}}
+local bad, bad_error = pcall(function()
+  lists.new{{window = w, x = 0, y = 120, width = 100, rows = 1, tooltips = true,
+    items = {{{{cells = {{{{text = "bad", x = 1, align = "left"}}}}, tooltip = 12}}}}}}
+end)
+window.on_opened(function()
+  note("key1=" .. tostring(lst.row_keys[1]))
+  note("key2=" .. tostring(lst.row_keys[2]))
+  note("key3=" .. tostring(lst.row_keys[3]))
+  note("key4=" .. tostring(lst.row_keys[4]))
+  note("functional=" .. tostring(pointer.functional(lst.row_keys[1])))
+  note("functional_member_missing=" .. tostring(pointer.widget(lst.row_keys[1]).functional == nil))
+  note("passive_noop_methods=" .. tostring(type(pointer.widget(lst.row_keys[1]).on_hover) == "function"
+    and type(pointer.widget(lst.row_keys[1]).on_overflow) == "function"))
+  note("plain_key=" .. tostring(plain.row_keys[1]))
+  note("string_key=" .. tostring(string_list.row_keys[1]))
+  note("bad_error=" .. tostring(not bad and bad_error:find("item 1", 1, true) ~= nil))
+end)
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  tooltip.update(update)
+  note("row_state=" .. tostring(lst.hover_row) .. "/" .. tostring(lst.pressed_row))
+  note("position=" .. tostring(lst.pos))
+end)
+"#
+    );
+    let mut rig = Rig::new_fixture_body(&script);
+    rig.opened();
+
+    let first = note_of(&rig, "key1");
+    assert!(first.ends_with("_row_1"), "{first}");
+    assert!(note_of(&rig, "key2").ends_with("_row_2"));
+    assert!(note_of(&rig, "key3") == "nil" || note_of(&rig, "key3").ends_with("_row_3"));
+    assert_eq!(note_of(&rig, "key4"), "nil");
+    assert_eq!(note_of(&rig, "functional"), "false");
+    assert_eq!(note_of(&rig, "functional_member_missing"), "true");
+    assert_eq!(note_of(&rig, "passive_noop_methods"), "true");
+    assert_eq!(note_of(&rig, "plain_key"), "nil");
+    let string_key = note_of(&rig, "string_key");
+    assert!(string_key.ends_with("_row_1"));
+    assert_eq!(note_of(&rig, "bad_error"), "true");
+    assert_eq!(rig.key_at(107.0, 89.0).as_deref(), Some(first.as_str()));
+    rig.feed(&[PointerEvent::Move(points(107.0, 89.0))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame();
+    }
+    assert!(notes(&rig).iter().any(|line| line == "tip=first tip"));
+    assert_eq!(note_of(&rig, "row_state"), "nil/nil");
+    rig.feed(&[
+        PointerEvent::Down(points(107.0, 89.0)),
+        PointerEvent::Up(points(107.0, 89.0)),
+    ]);
+    rig.deliver_fixture_frame();
+    assert_eq!(note_of(&rig, "row_state"), "nil/nil");
+    assert!(!notes(&rig).iter().any(|line| line == "selected"));
+    rig.feed(&[scroll_lines(107.0, 89.0, -1)]);
+    rig.deliver_fixture_frame();
+    assert_ne!(note_of(&rig, "position"), "0");
+    let string_point = (50..350)
+        .find_map(|y| {
+            (rig.key_at(107.0, f64::from(y)).as_deref() == Some(string_key.as_str()))
+                .then_some((107.0, f64::from(y)))
+        })
+        .expect("the string row has a hit rectangle");
+    let before_string = notes(&rig).len();
+    rig.feed(&[PointerEvent::Move(points(string_point.0, string_point.1))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame();
+    }
+    assert!(
+        !notes(&rig)[before_string..]
+            .iter()
+            .any(|line| line.starts_with("tip=")),
+        "a string item has no tooltip"
+    );
+}
+
+#[test]
+fn tooltip_sources_follow_changed_items_and_removed_rows_retire_their_keys() {
+    let script = format!(
+        r#"{HEADER}
+local tooltip = require("lib.tooltip")
+local text = require("lib.text")
+local real_set = text.set
+text.set = function(line, value) real_set(line, value); note("text=" .. value) end
+local attached, attach_count, detach_count = {{}}, 0, 0
+local real_attach, real_detach = tooltip.attach, tooltip.detach
+tooltip.attach = function(key, source) attached[key] = source; attach_count = attach_count + 1; return real_attach(key, source) end
+tooltip.detach = function(key) attached[key] = nil; detach_count = detach_count + 1; return real_detach(key) end
+w = windows.new{{title = "Tips", x = 100, y = 50, content_width = 140, content_height = 240}}
+local function item(label)
+  return {{cells = {{{{text = label, x = 1, align = "left"}}}}, tooltip = function() return {{label}} end}}
+end
+lst = lists.new{{window = w, x = 0, y = 0, width = 140, rows = 3, tooltips = true,
+  items = {{item("first"), item("second"), item("old"), item("fourth"), item("fifth"), item("sixth")}}}}
+local selectable = lists.new{{window = w, x = 0, y = 80, width = 140, rows = 1, tooltips = true, items = {{item("selected")}}, on_select = function() note("selected") end}}
+local third_key, frames, replaced = lst.row_keys[3], 0, false
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  frames = frames + 1
+  tooltip.update(update)
+  if frames == 70 and not replaced then
+    lst:set_items({{item("first"), item("second"), item("new"), item("fourth"), item("fifth"), item("sixth")}})
+    tooltip.refresh()
+    replaced = true
+    note("same_key=" .. tostring(third_key == lst.row_keys[3]))
+    note("attachment_counts=" .. attach_count .. "/" .. detach_count)
+  end
+  if frames == 71 then
+    pointer.widget(third_key):on_event({{kind = "scroll", amount = -3, unit = "lines"}})
+    pointer.dispatch({{x = 0, y = 0, held = false, over = false, overflow = false, events = {{}}}})
+  end
+  note("old_widget=" .. tostring(pointer.widget(third_key) ~= nil))
+  note("row_state=" .. tostring(lst.hover_row) .. "/" .. tostring(lst.pressed_row))
+  note("position=" .. tostring(lst.pos))
+end)
+window.on_opened(function() note("key3=" .. lst.row_keys[3]); note("selectable_key=" .. selectable.row_keys[1]) end)
+"#
+    );
+    let mut rig = Rig::new_fixture_body(&script);
+    rig.opened();
+    let third = note_of(&rig, "key3");
+    assert!(
+        (50..250).any(|y| rig.key_at(107.0, f64::from(y)).as_deref() == Some(third.as_str())),
+        "the third row is a hit target"
+    );
+    let third_point = (50..250)
+        .find_map(|y| {
+            (rig.key_at(107.0, f64::from(y)).as_deref() == Some(third.as_str()))
+                .then_some((107.0, f64::from(y)))
+        })
+        .unwrap();
+    rig.feed(&[PointerEvent::Move(points(third_point.0, third_point.1))]);
+    for _ in 0..69 {
+        rig.deliver_fixture_frame();
+    }
+    rig.feed(&[PointerEvent::ButtonDown {
+        position: points(third_point.0, third_point.1),
+        button: ck_window::PointerButton::Middle,
+    }]);
+    rig.deliver_fixture_frame();
+    let updated = notes(&rig);
+    assert!(updated.iter().any(|line| line == "text=old"));
+    assert!(updated.iter().any(|line| line == "text=new"));
+    assert!(updated.iter().any(|line| line == "same_key=true"));
+    assert!(
+        updated.iter().any(|line| line == "attachment_counts=4/0"),
+        "{updated:?}"
+    );
+    assert!(updated.iter().any(|line| line == "row_state=nil/nil"));
+    rig.deliver_fixture_frame();
+    let retired = notes(&rig);
+    assert!(
+        retired.iter().any(|line| line == "position=78"),
+        "{retired:?}"
+    );
+    assert!(retired.iter().any(|line| line == "old_widget=false"));
+    assert_ne!(
+        rig.key_at(third_point.0, third_point.1).as_deref(),
+        Some(third.as_str())
+    );
+    let next_row = rig
+        .key_at(107.0, 89.0)
+        .expect("the next item occupies the old row position");
+    assert!(next_row.ends_with("_row_4"));
+    let before_next = notes(&rig).len();
+    rig.feed(&[PointerEvent::Move(points(107.0, 89.0))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame();
+    }
+    assert!(
+        notes(&rig)[before_next..]
+            .iter()
+            .any(|line| line == "text=fourth"),
+        "the row now under the pointer owns its tooltip"
+    );
+}
+
+#[test]
+fn selectable_tooltip_rows_keep_their_hover_press_and_click_behavior() {
+    let script = format!(
+        r#"{HEADER}
+local tooltip = require("lib.tooltip")
+local text = require("lib.text")
+local real_set = text.set
+text.set = function(line, value) real_set(line, value); note("tip=" .. value) end
+w = windows.new{{title = "Selectable", x = 100, y = 50, content_width = 140, content_height = 80}}
+local item = {{cells = {{{{text = "chosen", x = 1, align = "left"}}}}, tooltip = function() return {{"selected tip"}} end}}
+lst = lists.new{{window = w, x = 0, y = 0, width = 140, rows = 1, tooltips = true, items = {{item}}, on_select = function() note("selected") end}}
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  tooltip.update(update)
+  note("selectable_state=" .. tostring(lst.hover_row) .. "/" .. tostring(lst.pressed_row))
+end)
+window.on_opened(function() note("selectable_key=" .. lst.row_keys[1]); note("selectable_functional=" .. tostring(pointer.functional(lst.row_keys[1]))) end)
+"#
+    );
+    let mut rig = Rig::new_fixture_body(&script);
+    rig.opened();
+    let key = note_of(&rig, "selectable_key");
+    assert_eq!(note_of(&rig, "selectable_functional"), "true");
+    let point = (50..250)
+        .find_map(|y| {
+            (rig.key_at(107.0, f64::from(y)).as_deref() == Some(key.as_str()))
+                .then_some((107.0, f64::from(y)))
+        })
+        .expect("the selectable row has a hit rectangle");
+    rig.feed(&[PointerEvent::Move(points(point.0, point.1))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame();
+    }
+    assert!(notes(&rig).iter().any(|line| line == "tip=selected tip"));
+    assert_eq!(note_of(&rig, "selectable_state"), "1/nil");
+    rig.feed(&[PointerEvent::Down(points(point.0, point.1))]);
+    rig.deliver_fixture_frame();
+    assert_eq!(note_of(&rig, "selectable_state"), "1/1");
+    rig.feed(&[PointerEvent::Up(points(point.0, point.1))]);
+    rig.deliver_fixture_frame();
+    assert!(notes(&rig).iter().any(|line| line == "selected"));
+    assert_eq!(note_of(&rig, "selectable_state"), "1/nil");
+}
+
+#[test]
+fn destroying_a_tooltip_list_detaches_live_and_retired_row_keys() {
+    let script = format!(
+        r#"{HEADER}
+local tooltip = require("lib.tooltip")
+local attached, detaches = {{}}, 0
+local real_attach, real_detach = tooltip.attach, tooltip.detach
+tooltip.attach = function(key, source) attached[key] = source; return real_attach(key, source) end
+tooltip.detach = function(key) attached[key] = nil; detaches = detaches + 1; return real_detach(key) end
+w = windows.new{{title = "Destroy", x = 100, y = 50, content_width = 140, content_height = 100}}
+local function item(label)
+  return {{cells = {{{{text = label, x = 1, align = "left"}}}}, tooltip = function() return {{label}} end}}
+end
+lst = lists.new{{window = w, x = 0, y = 0, width = 140, rows = 2, tooltips = true,
+  items = {{item("one"), item("two"), item("three"), item("four")}}}}
+local keys = {{lst.base .. "_row_1", lst.base .. "_row_2", lst.base .. "_row_3", lst.base .. "_row_4"}}
+local destroyed = false
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  tooltip.update(update)
+  local middle = false
+  for _, event in ipairs(update.pointer and update.pointer.events or {{}}) do
+    if event.kind == "button_down" and event.button == "middle" then middle = true end
+  end
+  if middle and not destroyed then
+    lst:set_pos(26)
+    note("retired_before_destroy=" .. tostring(pointer.widget(keys[1]) ~= nil))
+    note("detached_on_scroll=" .. tostring(attached[keys[1]] == nil))
+    lst:destroy()
+    tooltip.refresh()
+    destroyed = true
+  local registered = 0
+    for _, key in ipairs(keys) do
+    if pointer.widget(key) ~= nil then registered = registered + 1 end
+  end
+  local sources = 0
+  for _ in pairs(attached) do sources = sources + 1 end
+  note("registered_after_destroy=" .. registered)
+  note("sources_after_destroy=" .. sources)
+  note("detach_count=" .. detaches)
+    note("panel_after_refresh=" .. tostring(pointer.widget("tooltip_panel_1") ~= nil))
+  end
+end)
+window.on_opened(function() note("key=" .. lst.row_keys[1]) end)
+"#
+    );
+    let mut rig = Rig::new_fixture_body(&script);
+    rig.opened();
+    let key = note_of(&rig, "key");
+    rig.feed(&[PointerEvent::Move(points(107.0, 89.0))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame();
+    }
+    rig.feed(&[PointerEvent::ButtonDown {
+        button: ck_window::PointerButton::Middle,
+        position: points(107.0, 89.0),
+    }]);
+    rig.deliver_fixture_frame();
+    assert!(key.ends_with("_row_1"));
+    assert_eq!(note_of(&rig, "retired_before_destroy"), "true");
+    assert_eq!(note_of(&rig, "detached_on_scroll"), "true");
+    assert_eq!(note_of(&rig, "registered_after_destroy"), "0");
+    assert_eq!(note_of(&rig, "sources_after_destroy"), "0");
+    assert_eq!(note_of(&rig, "detach_count"), "4");
+    assert_eq!(note_of(&rig, "panel_after_refresh"), "false");
+}
+
 fn icon_reuse_script() -> String {
     format!(
         r##"{HEADER}

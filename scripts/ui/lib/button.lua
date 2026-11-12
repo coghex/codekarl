@@ -192,6 +192,9 @@ function button.new(spec)
     line = line,
     group = self.group,
   }
+  if spec.tooltip ~= nil then
+    self:set_tooltip(spec.tooltip)
+  end
   if self.icons ~= nil then
     self.icon_quads = {}
     for _, name in ipairs(self.icons) do
@@ -218,6 +221,21 @@ function button.new(spec)
   publish_region(self)
   pointer.register(self.key, self, self.owner)
   return self
+end
+
+-- Sets or clears this button's one-line hover label.
+function button:set_tooltip(content)
+  if self.frame == nil then return end
+  if content == nil then
+    if self.tooltip_attached then require("lib.tooltip").detach(self.key) end
+    self.tooltip_attached = false
+    return
+  end
+  if type(content) ~= "string" then
+    error("button.set_tooltip: expected a string or nil", 2)
+  end
+  require("lib.tooltip").attach(self.key, function() return {content} end)
+  self.tooltip_attached = true
 end
 
 function button:on_event(event, eligible)
@@ -318,6 +336,7 @@ function button:destroy()
     return
   end
   pointer.unregister(self.key)
+  if self.tooltip_attached then require("lib.tooltip").detach(self.key) end
   render.set_hit(self.key, nil, self.group)
   self.frame:destroy()
   if self.line ~= nil then
