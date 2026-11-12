@@ -515,6 +515,18 @@ monks die").
     the month's entry becomes `⌊W / P⌋`. A month with workers and no output records 0. **With no paid heads the entry is kept** (r19's
     "kept even when nothing is paid");
   - `posted = ⌊Σ wage_history / 12⌋`.
+  - **The paid heads and the year of each payday are kept beside it** (CK-276; the owner's wage tooltip: **"The 12 months"**, shown
+    to them as "One line per month, newest first: 'Oct 768: 3.2 per head (18 paid)'; then 'average 2.9'",
+    `.pipeline/coordination/ui-polish-design/owner-direction-tooltips-designer-r8.md`). Each building also saves `paid_history` and
+    `paid_years`, 12 values each, by calendar month like `wage_history`:
+    - wherever a payday writes a month's wage entry it writes that payday's paid heads (`P`, the divisor) and its year into the same
+      month of the other two. Two places write: the production payday, and the storehouse's fee (§3.18), which is posted later the
+      same day, after hiring and movement;
+    - a payday with no paid heads writes none of the three, so the month keeps what it had: the same month's payday a year earlier
+      (with that year), or the starting entry;
+    - both start at 0 in every month. A year of 0 means no payday has written that month since the start: its wage is still the
+      starting entry below;
+    - they are saved with `wage_history` and are display only: no rule reads them, and `posted` is unchanged.
 - **Before any history (Firm: starting stockpiles):**
   - each building starts with an authored stockpile (§3.10);
   - every month's entry starts at the value of that stockpile per paid head, spread over the months to the next harvest:
@@ -820,6 +832,22 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
     above zero, in the goods' order (`lost` has no value). While `closed` is false the lists are empty. Integers too large for Lua
     are given as its largest integer;
   - nothing in the UI shows these yet: the location tooltip and its breakdowns are later slices.
+- **A pop's food by good and a building's twelve paydays, in the view** (CK-276; the owner, `-designer-r8.md`: a pop's food "its
+  total goes on the card, with the per good breakdown in the tooltip", and the wage's twelve months, §3.6):
+  - each pop's entry has `food`: one `{good, units, unit, share_pm}` for each good the pop holds that feeds (stock above zero and a
+    hunger value above zero), in the goods' order. `unit` is the good's unit as the data writes it, and `share_pm` is
+    `⌊stock × hunger × 1000 / Σ stock × hunger⌋` over those goods: the proportion eating takes them in (§3.7). A pop with no food
+    has an empty list. It is worked out from the state when the view is built; nothing is kept for it;
+  - each building's entry has `wages`: the twelve calendar months, newest first, each `{month, year, wage_milli, paid}`. `year` and
+    `paid` are that month's `paid_years` and `paid_history`, and both are absent for a month no payday has written (§3.6);
+  - **the newest month is by the calendar, the same for every building.** It is the month of the most recent payday at the view's
+    date: the date's own month once that month's payday has run, the month before otherwise. A month whose payday a building
+    skipped still has its line in its calendar place, showing the older payday it kept, with that payday's year. The twelve wages
+    are always the twelve that `posted` averages;
+  - **the view is built with the date** (§6.1), which is how it knows whether the month's payday has run: the payday runs in the
+    tick that begins on the 1st at 12:00, and the date is that of the next hour to run, so it has run when the day is past the 1st
+    or the hour is past 12. On the 1st at 12:00 itself it has not;
+  - nothing in the UI shows these yet either: the card and row tooltips are later slices.
 - **Widgets:** it uses the M8 theme's windows and lists, with tabs as title buttons. The tab widget is the one new UI piece.
 - **Since the owner's UI feedback (2026-11-10, CK-258, CK-259; `owner-direction-ui-ledger-lists-r1.md`):** the pops and buildings tabs
   show their entries as **cards** (the default) or one-line **rows** that open, switched by two buttons at the bottom of the panel; the
@@ -1588,6 +1616,9 @@ fields cut. The engine's load report is the authority.
   scenario hash (`economy.toml`, cultures, religions and starting entries).
 - **Views:**
   - the UI view is built after **all** of that tick's systems, so at 12:00 it reflects that day's economy;
+  - since CK-276 the builder is given the simulation's date with the state: the date of the next hour to run, which is the date the
+    snapshot shows (the calendar's last date once it has ended). A view is built in three places, each with that date: when the
+    game starts, after a quickload, and after the 12:00 tick (§3.11 uses it for the wage months);
   - the callback views are built at their scheduler point;
   - the starting view comes from the starting state, before any tick, so slice 3 needs no live rules.
 - **Save-load proofs** now include non-empty building stores, partly opened goods (non-zero balances), a kept posted wage, multiple pops
