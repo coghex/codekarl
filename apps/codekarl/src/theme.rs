@@ -196,6 +196,9 @@ mod tests {
         let theme = shipped();
         assert_eq!(theme.colour("body"), Some("#15110a"));
         assert_eq!(theme.colour("text"), Some("#ece3cb"));
+        assert_eq!(theme.colour("lock"), Some("#f0a830"));
+        assert_eq!(theme.colour("term"), Some("#92ddea"));
+        assert_eq!(theme.colour("number"), Some("#5fb35a"));
         let place = theme.kind("place").expect("the place kind");
         assert_eq!(place.get("divider").map(String::as_str), Some("#c9932e"));
         assert_eq!(place.get("outline").map(String::as_str), Some("#4fb3c8"));
@@ -211,6 +214,10 @@ mod tests {
         assert_eq!(window.get("hot").map(String::as_str), Some("#a8261c"));
         let tooltip = theme.kind("tooltip").expect("the tooltip kind");
         assert_eq!(tooltip.get("outline").map(String::as_str), Some("#ece3cb"));
+        assert_eq!(
+            tooltip.get("title_text").map(String::as_str),
+            Some("#c9932e")
+        );
         assert!(theme.kind("time_bar").is_some());
     }
 

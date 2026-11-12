@@ -87,6 +87,7 @@ mod font;
 mod frame_api;
 mod game;
 mod game_api;
+mod glossary;
 mod input_stash;
 mod lifecycle;
 mod map_app;
@@ -554,6 +555,13 @@ fn supervise(
             return FAILED;
         }
     };
+    let glossary = match ui_glossary(config, font.as_deref()) {
+        Ok(glossary) => glossary,
+        Err(message) => {
+            emit(Level::Error, "config", format_args!("{message}"));
+            return FAILED;
+        }
+    };
     supervise_with_owner_factory(
         config,
         mode,
@@ -563,6 +571,7 @@ fn supervise(
             game,
             font,
             theme,
+            glossary,
         },
         windowed_plan,
         production_headless_plan,
@@ -617,6 +626,35 @@ fn ui_theme(config: &config::Config) -> Result<Option<Arc<theme::Theme>>, String
         .map_err(|message| format!("[ui] theme: {message}"))
 }
 
+/// The optional UI glossary, validated against the loaded small font when an asset file is present.
+fn ui_glossary(
+    config: &config::Config,
+    fonts: Option<&font::FontSet>,
+) -> Result<Option<Arc<glossary::Glossary>>, String> {
+    let has_ui = config.vms.iter().any(|vm| vm.name == vm::UI_VM);
+    let Some(assets) = config
+        .render
+        .assets
+        .as_ref()
+        .filter(|_| config.game.is_some() || has_ui)
+    else {
+        return Ok(None);
+    };
+    let path = assets.join("ui/glossary.toml");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let fonts = fonts.ok_or_else(|| {
+        format!(
+            "[ui] glossary requires the small UI font: {}",
+            path.display()
+        )
+    })?;
+    glossary::load(assets, fonts)
+        .map(|glossary| Some(Arc::new(glossary)))
+        .map_err(|message| format!("[ui] glossary: {message}"))
+}
+
 /// What a run loads before it starts: the map, and the game when the configuration has one (its map is the scenario's).
 #[derive(Default)]
 struct Content {
@@ -626,6 +664,8 @@ struct Content {
     font: Option<Arc<font::FontSet>>,
     /// The theme, loaded under the same rule from `ui/theme.toml`.
     theme: Option<Arc<theme::Theme>>,
+    /// The optional glossary, checked against the small font and given to the UI VM.
+    glossary: Option<Arc<glossary::Glossary>>,
 }
 
 /// What a headless run does between start-up and the stop phase: nothing. The request slot is ended where the run phase
@@ -660,6 +700,7 @@ fn supervise_with_owner_factory(
         game,
         font,
         theme,
+        glossary,
     } = content;
     let requests = Requests::new();
     let headless = matches!(mode, mode::Mode::Headless).then(|| Arc::new(HeadlessNotes::logging()));
@@ -785,6 +826,8 @@ fn supervise_with_owner_factory(
     ui_extensions.extend(game_extension);
     ui_extensions.extend(font.map(font::extension));
     ui_extensions.extend(theme.map(theme::extension));
+    ui_extensions.extend(glossary.map(glossary::extension));
+    ui_extensions.push(config.tooltips.extension());
     // The main screen: filled below from the plan (made on this thread, before the UI VM is spawned), read by `window.open`.
     let screen = window_api::ScreenCell::default();
     let setup = Setup {

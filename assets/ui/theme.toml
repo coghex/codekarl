@@ -6,6 +6,9 @@
 [colour]
 body = "#15110a"   # every panel and window body: the map's near-black
 text = "#ece3cb"   # text and icons on a body
+lock = "#f0a830"
+term = "#92ddea"
+number = "#5fb35a"
 dim = "#9a927e"    # subdued ledger column headings
 good = "#8fc06a"
 track = "#3a3326"
@@ -38,3 +41,4 @@ divider = "#c9932e"
 [kind.tooltip]     # the hover tooltip: all white on black
 outline = "#ece3cb"
 hot = "#ece3cb"    # required by the rule; a tooltip has no states
+title_text = "#c9932e"

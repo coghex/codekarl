@@ -2720,6 +2720,12 @@ GUARDS: tuple[Guard, ...] = (
     ),
     # CK-93: the source guard reads the application's own sources and tests (no outside path).
     Guard("apps/codekarl/tests/source_guard.rs", "rust.app", APP_SOURCES),
+    # CK-270: the application's glossary loader validates the shipped UI glossary against its font.
+    Guard(
+        "apps/codekarl/src/glossary.rs",
+        "rust.app",
+        ("assets/ui/glossary.toml",),
+    ),
     # Guards that read only files their own group already claims (listed so the inventory is complete).
     Guard("apps/codekarl/src/vulkan/tests.rs", "rust.app", ("apps/codekarl/src/vulkan/real.rs",)),
     Guard(

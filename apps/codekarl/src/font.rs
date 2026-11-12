@@ -105,6 +105,11 @@ impl FontSet {
             _ => None,
         }
     }
+
+    /// Whether the small font has a real glyph for `character` (not merely a replacement glyph).
+    pub(crate) fn has_small_glyph(&self, character: char) -> bool {
+        self.small.glyphs.contains_key(&character)
+    }
 }
 
 /// Reads and checks `<assets>/ui/font/font.toml`.

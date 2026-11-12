@@ -18,6 +18,7 @@ local lists = require("lib.list")
 local theme = require("lib.theme")
 local date_text = require("lib.time")
 local location = require("lib.location")
+local tooltip = require("lib.tooltip")
 
 local P = ui.P
 local MARGIN = 8 -- UI units from the window's edges
@@ -255,6 +256,9 @@ if game ~= nil then
         update_speed_box(self)
       end
     end
+    function box:functional()
+      return true
+    end
     function box:on_hover(hovered)
       self.hovered = hovered
       update_speed_box(self)
@@ -362,6 +366,7 @@ if game ~= nil then
       time_controls.pause:set_icon(paused and "play" or "pause")
       shown_paused = paused
     end
+    tooltip.refresh()
   end)
   relayouts[#relayouts + 1] = function()
     if time_panel ~= nil then
@@ -549,58 +554,10 @@ if game ~= nil then
 
   relayouts[#relayouts + 1] = fit_ledger
 
-  -- The tooltip: a panel and a text line beside the hovered place, on the side that fits the window's current width.
-  local tooltip_colours = theme.kind("tooltip")
-  local tooltip = text.line(0, 0, nil, tooltip_colours.text)
-  local tooltip_panel = nil
-  local tooltip_id = nil
-  local tooltip_visible = false
-  local last_hover = nil
-
-  local function show_tooltip(hover)
-    local text_changed = tooltip_id ~= hover.id
-    local measured = text_changed and font.layout(hover.name) or nil
-    local width = measured and measured.width or tooltip.width
-    local height = measured and measured.height or tooltip.height
-    local panel_width = math.max(width + 4, 9) * P
-    local panel_height = (height + 4) * P
-    local panel_x = hover.right + 4
-    if panel_x + panel_width > view.width and hover.left - 4 - panel_width >= 0 then
-      panel_x = hover.left - 4 - panel_width
-    end
-    local panel_y = hover.y - panel_height / 2
-    if tooltip_panel == nil then
-      tooltip_panel = panel.new{x = panel_x, y = panel_y, width = panel_width, height = panel_height, kind = "tooltip", cut = 3}
-    else
-      tooltip_panel:set_rect(panel_x, panel_y, panel_width, panel_height)
-    end
-    if text_changed then
-      text.set(tooltip, hover.name)
-    end
-    tooltip_id = hover.id
-    text.move(tooltip, tooltip_panel.x + 2 * P, tooltip_panel.y + 2 * P)
-    tooltip_visible = true
-  end
-
+  -- The map's place name uses the shared delayed tooltip system. T6 supplies richer location content.
   game.on_hover(function(hover)
-    last_hover = hover
-    if hover == nil then
-      if tooltip_visible then
-        text.move(tooltip, ui.HIDDEN, ui.HIDDEN)
-        if tooltip_panel ~= nil then
-          tooltip_panel:set_rect(ui.HIDDEN, ui.HIDDEN, math.max(tooltip.width + 4, 9) * P, (tooltip.height + 4) * P)
-        end
-        tooltip_visible = false
-      end
-      return
-    end
-    show_tooltip(hover)
+    tooltip.map_hover(hover, hover and function() return {hover.name} end or nil)
   end)
-  relayouts[#relayouts + 1] = function()
-    if tooltip_visible and last_hover ~= nil then
-      show_tooltip(last_hover)
-    end
-  end
 end
 
 -- Every update gives the pointer to the dispatcher (which makes scene calls only for a change a widget shows) and, when the window's
@@ -615,6 +572,7 @@ frame.on_update(function(update)
       relayout()
     end
   end
+  tooltip.update(update)
 end)
 
 print("ui: loaded")

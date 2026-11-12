@@ -110,6 +110,10 @@ local function item_widget(self, index, key)
       pointer.pressed(key, false)
     end
   end
+  function widget:functional()
+    local item = self.cards.items[index]
+    return item ~= nil and item.on_click ~= nil
+  end
   function widget:on_overflow()
     if self.pressed then
       self.pressed = false

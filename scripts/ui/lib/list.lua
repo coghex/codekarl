@@ -185,6 +185,9 @@ local function row_widget(self, index, key)
     end
     highlight(self)
   end
+  function row.functional()
+    return self.on_select ~= nil and self.items[index] ~= nil
+  end
   function row.on_overflow()
     if self.closed then
       return

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use ck_lua::{CallOutcome, ConfigValue, Extension, HostFunction, Modules, VmOwner, VmSettings};
 use ck_window::{Notifier, Requests};
 
+use crate::config::TooltipsConfig;
 use crate::frame_api::{self, FrameBackend, FrameRegistration};
 use crate::game::core::Message;
 use crate::game::slot::{PauseReason, SimSnapshot};
@@ -165,15 +166,20 @@ fn scene(log: &Log, tints: &Log) -> Vec<Extension> {
             Ok(vec![ConfigValue::String(format!("g{number}"))])
         })
     };
+    let raise_groups: HostFunction = Arc::new(|_| Ok(Vec::new()));
     vec![
         Extension::new("render")
             .function("create_group", create_group)
+            .function("raise_groups", raise_groups)
             .function("create_quad", create)
             .function("set_hit", hit_recording(log))
             .function("set_position", recording(log, "set_position"))
             .function("set_rect", recording(log, "set_rect"))
             .function("set_tint", recording(tints, "set_tint"))
+            .function("set_group_clip", recording(log, "set_group_clip"))
+            .function("set_group_offset", recording(log, "set_group_offset"))
             .function("set_group_visible", recording(log, "set_group_visible"))
+            .function("destroy_group", recording(log, "destroy_group"))
             .function("destroy_quad", recording(log, "destroy")),
         Extension::new("texture").function("load", load),
     ]
@@ -208,6 +214,26 @@ impl Readout {
 
     /// `script` as the UI script.
     pub(crate) fn script(script: &str) -> Self {
+        Self::with_options(script, TooltipsConfig::default(), None)
+    }
+
+    pub(crate) fn script_with_tooltips(script: &str, tooltips: TooltipsConfig) -> Self {
+        Self::with_options(script, tooltips, None)
+    }
+
+    pub(crate) fn script_with_glossary(script: &str, glossary: &str) -> Self {
+        Self::with_options(script, TooltipsConfig::default(), Some(glossary))
+    }
+
+    pub(crate) fn script_with_glossary_and_tooltips(
+        script: &str,
+        glossary: &str,
+        tooltips: TooltipsConfig,
+    ) -> Self {
+        Self::with_options(script, tooltips, Some(glossary))
+    }
+
+    fn with_options(script: &str, tooltips: TooltipsConfig, glossary_text: Option<&str>) -> Self {
         let dir = Dir::new();
         let entry = dir.0.join("main.lua");
         fs::write(&entry, script).expect("the script");
@@ -237,7 +263,9 @@ impl Readout {
         settings.modules = Modules::Rooted(ui_scripts());
         settings.extensions = vec![window];
         settings.extensions.extend(scene(&log, &tints));
-        settings.extensions.push(font::extension(shipped_font));
+        settings
+            .extensions
+            .push(font::extension(Arc::clone(&shipped_font)));
         settings.extensions.push(crate::theme::extension(Arc::new(
             crate::theme::load(&assets).expect("the shipped theme"),
         )));
@@ -252,6 +280,14 @@ impl Readout {
             Arc::new(|| {}),
             crate::game::controls::SimControls::new(control_sender),
         ));
+        settings.extensions.push(tooltips.extension());
+        let glossary = match glossary_text {
+            Some(text) => crate::glossary::parse(text, &shipped_font).expect("fixture glossary"),
+            None => crate::glossary::load(&assets, &shipped_font).expect("the shipped glossary"),
+        };
+        settings
+            .extensions
+            .push(crate::glossary::extension(Arc::new(glossary)));
         settings.call_limit = 4;
         let mut owner = VmOwner::spawn(settings).expect("the UI VM spawns");
         owner.wait_ready(Duration::from_secs(5)).expect("ready");
@@ -634,7 +670,7 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
 }
 
 #[test]
-fn hover_tooltip_flips_moves_and_hides_while_reusing_its_quads() {
+fn place_tooltip_waits_for_its_delay_then_closes_when_the_place_is_left() {
     let mut readout = Readout::new("");
     assert!(readout.hover_registered.load(Ordering::SeqCst));
     // The shipped script opens a window of 1280 by 800 pixels, which this rig (it has no screen snapshot) resolves one to one; the
@@ -642,97 +678,29 @@ fn hover_tooltip_flips_moves_and_hides_while_reusing_its_quads() {
     readout.update(800, 600, None);
 
     readout.deliver_hover(Some(("town", "Alpha", 10, 20, 40)));
-    let first = readout.entries();
     assert!(
-        first[0].starts_with("load ui/theme/cut3_tl_fill.png"),
-        "{first:?}"
+        !readout.entries().iter().any(|line| {
+            line.starts_with("create ") && line.contains("ui/theme/cut3_tl_fill.png")
+        }),
+        "the place tooltip waits for its delay"
     );
-    // The tooltip is a frame (q1 to q11): 64 by 30 points beside the place (10..20, y 40): x 20 + 4, y 40 - 15 = 25 snapped to 26.
+    for _ in 0..40 {
+        readout.update(800, 600, None);
+    }
+    let shown = readout.entries();
     assert!(
-        first[1].starts_with("create q1 ui/theme/cut3_tl_fill.png 24 26 8 8"),
-        "{first:?}"
+        shown.iter().any(|line| {
+            line.starts_with("create ") && line.contains("ui/theme/cut3_tl_fill.png")
+        }),
+        "the place tooltip appears after the delay: {shown:?}"
     );
-    // All white on near-black: the near-black fill, the white outline and the white glyphs (the tooltip kind's colours).
-    let tints = readout.tints();
-    assert_eq!(
-        tints[..12],
-        [
-            "create q1 #15110a",
-            "create q2 #15110a",
-            "create q3 #15110a",
-            "create q4 #15110a",
-            "create q5 #15110a",
-            "create q6 #ece3cb",
-            "create q7 #ece3cb",
-            "create q8 #ece3cb",
-            "create q9 #ece3cb",
-            "create q10 #ece3cb",
-            "create q11 #ece3cb",
-            "create q12 #ece3cb",
-        ]
-    );
-    assert!(
-        first
-            .iter()
-            .any(|line| line.contains("ui/font/glyphs/U+0041.png")),
-        "{first:?}"
-    );
-    let created = first
-        .iter()
-        .filter(|line| line.starts_with("create"))
-        .count();
+    assert!(readout.tints().iter().any(|line| line.contains("#f0a830")));
 
-    let before_move = first.len();
-    readout.deliver_hover(Some(("town", "Alpha", 700, 760, 80)));
-    let moved = readout.entries()[before_move..].to_vec();
-    // Alpha is 28 font pixels wide; the 2-point scale plus 2-pixel padding on each side makes a 64-point frame. At left=700, its
-    // flipped x is exactly 700 - 4 - 64 = 632. The frame's y, 80 - 15 = 65, snaps to the 2-point grid: 66. The text is 2 pixels in.
-    assert!(
-        moved.iter().any(|line| line == "set_rect q1 632 66 8 8"),
-        "{moved:?}"
-    );
-    assert!(
-        moved.iter().any(|line| line == "set_position q12 636 70"),
-        "{moved:?}"
-    );
-    assert_eq!(
-        moved
-            .iter()
-            .filter(|line| line.starts_with("create"))
-            .count(),
-        0,
-        "{moved:?}"
-    );
-
-    let before_hide = readout.entries().len();
     readout.deliver_hover(None);
-    let hidden = readout.entries()[before_hide..].to_vec();
+    readout.update(800, 600, None);
+    let hidden = readout.entries();
     assert!(
-        hidden
-            .iter()
-            .any(|line| line.starts_with("set_rect q1 -1000000000000 -1000000000000 8 8")),
+        hidden.iter().any(|line| line.starts_with("destroy q")),
         "{hidden:?}"
-    );
-    assert!(
-        hidden
-            .iter()
-            .any(|line| line.contains("set_position q12 -1000000000000 -1000000000000")),
-        "{hidden:?}"
-    );
-    assert_eq!(
-        hidden
-            .iter()
-            .filter(|line| line.starts_with("destroy"))
-            .count(),
-        0,
-        "{hidden:?}"
-    );
-    assert_eq!(
-        readout
-            .entries()
-            .iter()
-            .filter(|line| line.starts_with("create"))
-            .count(),
-        created
     );
 }
