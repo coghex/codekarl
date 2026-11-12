@@ -70,11 +70,28 @@
 > - **Two smaller fonts** (CK-268; `owner-direction-tooltips-r1.md` to `-r4.md`): the owner asked for "small and compact text" in
 >   tooltips, chose font B and wanted font C supported "for certain circumstances", and approved both as drawn ("Both approved"). They
 >   are the fonts **small** (a 9-row box) and **tiny** (an 8-row box), beside the standard 11-row font. A text line names its font
->   (§2.4). Nothing draws with them yet: tooltips, the next slices, use small. How the glyphs were made is in
+>   (§2.4). Tooltips draw with small, and with tiny where a span asks for it (CK-270, §3.13). How the glyphs were made is in
 >   `docs/ui-art-provenance.md`.
 > - **Middle and right mouse buttons** (CK-269; `owner-direction-tooltips-r1.md`, and `-r3.md` answer 7: "In this topic"): the
 >   window now passes presses and releases of the middle and right buttons to the UI, as `button_down` and `button_up` events (§2.6,
->   §3.5). Nothing acts on them yet: the tooltip lock, a later slice, uses the middle button. The map never gets them.
+>   §3.5). A middle press locks a tooltip when `[ui.tooltips] lock = "middle_mouse"` (CK-270, §3.13); nothing else acts on them.
+>   The map never gets them.
+> - **The tooltip system** (CK-270; `owner-direction-tooltips-r1.md` to `-r5.md`, `-manager-r3.md` to `-r5.md`, `-designer-r9.md` and
+>   `-r10.md`; §3.13): one module, `scripts/ui/lib/tooltip.lua`, now shows every tooltip.
+>   - **Delay and lock:** a tooltip opens when the pointer has rested on its target for 0.3 s. After a further 1.0 s there it **locks**,
+>     shown by a yellow-orange bar filling along its bottom edge. The owner asked for three lock types, "disabled, middle mouse, and timer".
+>     They and the two times are settings, `[ui.tooltips]` in the configuration file.
+>   - **Nesting and closing:** a locked tooltip stays when the pointer leaves, and its linked words and numbers open tooltips of
+>     their own. The owner: "escape should clear one nested tooltip at a time but clicking away should clear them all". A click on a
+>     working control closes none.
+>   - **Shared definitions and the glossary:** content comes from one definition per class of information (the owner: "one
+>     definition called in two different ways"). Words with an entry in the new glossary, `assets/ui/glossary.toml`, are light blue
+>     and open an explanation.
+>   - **The look:** every number is green and a title is dark gold. Content of more than 12 lines scrolls inside the tooltip.
+>   - **The map's press:** the UI now also hears a left press on the map, as a `map_down` event (§3.5).
+>
+>   So far only the place-name tooltip uses it, and the glossary ships with no entries. Labels, prices, the location tooltip and the
+>   glossary's text are later slices.
 
 ## Owner answers (2026-11-07)
 
@@ -352,7 +369,8 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
   - **Down:** a `Down` inside a visible hit region goes to the UI.
     - The topmost group with a region there is the **owner group**, and the pointer is **captured by that group** until the matching
       `Up`.
-    - Otherwise the gesture belongs to the map, as today (drag to pan).
+    - Otherwise the gesture belongs to the map, as today (drag to pan). Since CK-270 the UI is also told of that press, as a
+      `map_down` event (below).
   - **Move and Up** go to whoever holds the capture. With no capture, the pointer position goes to both: the UI gets it to show hover, and
     the map gets it only when it is outside every hit region.
   - **Scroll** goes to the topmost hit region under the cursor if there is one, otherwise to the map (zoom). A scroll during a capture goes
@@ -386,6 +404,14 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
       hover come out as they would for a move to the same spot.
     - The dispatcher (`lib/pointer.lua`) gives a keyed one to that key's widget like any event, and every widget ignores a kind it
       does not know, so a middle or right click presses, selects and raises nothing.
+  - **`map_down`** (CK-270) is in the same list, in order: a left press over no hit region, the press that gives the gesture to the
+    map. It is `{kind = "map_down", x, y, key = false, inside = false}`, at the press's position in UI units.
+    - Nothing else changed: the map still gets the press and owns the gesture, and its moves and release go only to the map. A press
+      over a hit region makes no `map_down`: the UI gets that one as a keyed `down`.
+    - It has no key, so the dispatcher gives it to no widget. The tooltips read it: a press on the map closes them (§3.13).
+    - The stash keeps it like any event that is not a move. One dropped by an overflow is never delivered.
+  - **`functional`** (CK-270): the dispatcher sets `event.functional` on each keyed `down` before any widget hears it: whether that
+    key's widget would act on the press (`pointer.functional`, §3.13).
   - `over` names the topmost group under the cursor.
   - `overflow` repeats `pointer_overflow`, so the library can drop its own pressed state.
   - **Delivery** (r8; replaces r4's, which acknowledged at the accepted post):
@@ -444,6 +470,8 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
       that does not return `true` declines (`ui_link.rs`, module docs: a `Returned` that is not `true` is `Answer::Decline`).
     - The library's handler closes the top window and declines when a window is open, and accepts otherwise.
     - The close button (source `"button"`) still always quits.
+    - **Since CK-270 an open tooltip comes first:** the handler closes the newest tooltip and declines, so one press closes one
+      tooltip, and only with none open does it go on to the top window (§3.13).
 
 ### 3.6 From the UI to the game (Proposal)
 
@@ -571,6 +599,155 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
 - **The result:** with the UI callback stuck, the camera keeps panning and zooming at the tick rate, and time presses act. With the UI
   free, behaviour is as today plus routing.
 - **Headless runs** have no loop and are unchanged.
+
+### 3.13 Tooltips and the glossary (accepted, CK-270)
+
+One module, `scripts/ui/lib/tooltip.lua`, shows every tooltip (spec:
+`.pipeline/coordination/ui-polish-design/specs/tooltips-t3-core-designer4-r8.md`, sha256 `09832bdf…`). CK-270 is the mechanism. The
+only tooltip on it so far is the place name on map hover, and the glossary has no entries: labels, prices, the location tooltip and
+the glossary's text are later slices. Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
+
+- **Settings:** `[ui.tooltips]` in the configuration file, every key optional, read at startup only (the owner chose **"Config file now"**).
+
+  | Key | Values | Default |
+  |---|---|---|
+  | `delay` | seconds before a tooltip opens: 0 to 2, in steps of 0.1 | 0.3 |
+  | `lock` | `"timer"`, `"middle_mouse"` or `"disabled"` | `"timer"` |
+  | `lock_timer` | seconds from opening to a timer lock: 0.3 to 3, in steps of 0.1 | 1.0 |
+
+  - A value out of range, off the step or of the wrong type, and an unknown key, are refused at startup. The message names the file,
+    `[ui.tooltips]`, the key and what is accepted (`apps/codekarl/src/config.rs`, `parse_tooltips`).
+  - The UI VM reads them with `settings.tooltips()`, which returns `{delay, lock, lock_timer}`. The module reads it once, when loaded.
+- **Theme** (`assets/ui/theme.toml`): `[colour]` has `lock = "#f0a830"` (the lock bar), `term = "#92ddea"` (glossary words) and
+  `number = "#5fb35a"` (numbers); `[kind.tooltip]` has `title_text = "#c9932e"`. The panel is theme kind `tooltip` with a cut corner
+  of 3.
+- **Content** is a table: an optional `title` string, then a list of lines.
+  - A line is a string, or a list of spans. A span is one of:
+    - a string: plain text;
+    - `{text = …, term = <glossary key>}`: a **term**, which opens that entry's explanation;
+    - `{text = …, class = <name>, args = <table>}`: a **link** to a shared definition;
+    - `{text = …, tooltip = <function>}`: a link to one-off content, which the function returns.
+  - A table span may add `font = "tiny"`. Everything else is in font `small` (§2.4). A line is as tall as its tallest span's font (9
+    or 8).
+  - **Colour follows what the text is, not whether it opens anything:**
+    - the title is in the kind's `title_text` (dark gold) and is plain: it is never a term, a link or a target;
+    - a term is in `term` (light blue);
+    - in every other span, plain or link, each **number** is in `number` (green) and the rest in the kind's `text`.
+    - A number is a run of digits, with single `.` or `,` between digits and a `%` directly after: `412`, `96.5`, `4,210` and `73%`
+      whole, and only the `12.5` of `12.5 km²`. So a link is found by hovering it, not by its colour.
+  - A span naming more than one of `term`, `class` and `tooltip`, a font other than `small` or `tiny`, and a line or span of the wrong
+    type are Lua errors starting `tooltip:`.
+  - **No content:** nil, an empty table without a title, and content whose lines all have no spans (a line with no spans has no height
+    and is left out). Nothing opens for it.
+- **Shared definitions** (the owner: "one definition called in two different ways"):
+  - `tooltip.define(class, function(args) return content end)` defines one class of information. Defining a class twice is an error
+    naming it.
+  - `tooltip.content(class, args)` returns that content, so a window or a list can show the lines a tooltip shows. An undefined class
+    is an error naming it.
+- **Targets:**
+  - `tooltip.attach(key, source)` gives the widget under hit key `key` a tooltip, and `tooltip.detach(key)` takes it away. A key has
+    one source: attaching again replaces it.
+  - `source` is `{class = …, args = …}`, or a `function(x, y)`. The function is given the pointer position in UI units and returns
+    the content (nil for none here) and optionally a `part`, a string naming the part of the widget under the pointer. The **target**
+    is the key with its part.
+  - `tooltip.map_hover(hover, source)` sets the map's hovered place (`main.lua` passes `game.on_hover`'s value, nil for none). It is
+    the target only while the pointer is over no UI key.
+  - Every term and link of a **locked** tooltip is a target (below).
+- **Each update:** `main.lua` calls `tooltip.update(update)` from `frame.on_update`, after `pointer.dispatch`. It reads `dt`, the view
+  size and `update.pointer` (`over`, `x`, `y`, `events`). Positions are in UI units throughout, and it converts nothing. The events of
+  an overflow packet are ignored, so a lost press closes nothing.
+- **Showing:**
+  - A tooltip opens **unlocked** when the pointer has rested on one target for `delay`. Another key or another part restarts the
+    count. A function source is asked again as the pointer moves, to learn the part.
+  - An unlocked tooltip closes as soon as the pointer leaves its target. It has no hit region, so the pointer acts on what is under it.
+  - **Size:** the widest line + 6 wide, at least 9; the line heights + 4 tall; text from (3, 2).
+  - **Placement,** fixed at opening:
+    - for a UI key, its top-left is 6 right of and 12 below the pointer;
+    - for the map's place, it is 4 units right of the place (`hover.right`), or 4 units left of it (`hover.left`) when the right side
+      does not fit and the left does, centred on `hover.y`;
+    - for a term or link, it is at the span's bottom-left, 2 lower.
+
+    It is then moved inside the view and snapped to whole UI pixels.
+- **Locking** (the owner's three types: "disabled, middle mouse, and timer"):
+  - `timer`: from opening, the lock bar fills evenly over `lock_timer` while the pointer stays on the target. Full is **locked**.
+  - `middle_mouse`: no bar while unlocked. A middle `button_down` (§3.5), whatever its key, locks the unlocked tooltip at once.
+  - `disabled`: nothing locks and no bar is drawn, so nested tooltips cannot be reached.
+  - **The lock bar** is one row, 1 inside the bottom outline (row `height − 2`), from x 1, `round((width − 2) × fill)` long and at
+    most `width − 4`, so the cut corner stays outline. It is in theme `lock`, and full on a locked tooltip.
+  - **A locked tooltip** stays when the pointer leaves its target. It gets a hit region: one key for its panel, and one for each term
+    and link in it. Several tooltips from unrelated targets can be locked at once.
+- **Nesting:** resting on a term or link of a locked tooltip for `delay` opens its tooltip, which can lock in turn and has targets of
+  its own. The code sets no depth limit; three levels are tested.
+- **Closing.** Open tooltips form a stack, newest on top. They are drawn in one group, which is raised above every other group on
+  each update while a tooltip is open (`render.raise_groups`).
+  - **Escape** closes one: `close_request` in `lib/window.lua` first calls `tooltip.close_top()`, which closes the newest tooltip and
+    says whether it closed one. When it did, nothing else happens (§3.5).
+  - **A left press** (the owner: "escape should clear one nested tooltip at a time but clicking away should clear them all"):
+    - on a tooltip, its panel or one of its terms or links: closes the tooltips opened from it and keeps it and the rest;
+    - on a **functional widget**: closes nothing;
+    - anywhere else: closes **all** tooltips. That is a `map_down` (§3.5), a window's frame or empty body, a bar's background and any
+      widget that is not functional.
+
+    The press then does what it always did: a map press still selects.
+  - **A functional widget** is one that would act on that press. `pointer.functional(key)` (`lib/pointer.lua`) is true when the key's
+    registered widget has a `functional` method that returns true:
+
+    | Widget | Functional when |
+    |---|---|
+    | a button (`lib/button.lua`: also tabs, close buttons, the map-mode and ledger buttons) | it has `on_click` |
+    | a list row (`lib/list.lua`) | its list has `on_select` |
+    | a card item (`lib/cards.lua`) | the item at that index has `on_click` now |
+    | a window's title (`lib/window.lua`) | the window is draggable and not `fixed`, or is `fixed` with `on_title_click` |
+    | a time bar speed box (`main.lua`) | always |
+
+    A window's frame key, scroll areas, keys with no widget and widgets with no `functional` method are not functional. No widget's
+    own behaviour changed.
+  - **Decided at the dispatch boundary.** A control's own press can remove it: a close button closes its window, and a row can
+    rebuild its list, within one packet. So `pointer.dispatch` sets `event.functional` on each keyed `down` **before** it calls the
+    owner's `on_child_down` or the widget's `on_event`, and `tooltip.update` reads that field and never asks again.
+  - Closing a tooltip closes the tooltips opened from it.
+- **Long content scrolls** (the owner chose a scroll bar and 12 lines). Content of more than 12 lines, the title counted, shows 12 at
+  a time from line `first` (1 at opening).
+  - **Fixed rows:** every line then takes a row of 9, whatever its fonts. Shown line `k` is at y `2 + (k − first) × 9`, a `tiny` line
+    at the top of its row. Lines outside the 12 have no quads and no keys.
+  - **The panel** is 12 × 9 + 4 = **112** tall, and the widest line of all the content + 10 wide. It does not change size as it
+    scrolls.
+  - **The scroll bar** is inside the right edge: a track 1 wide at x `width − 4`, from row 3, 105 long, in theme `dim`; and a thumb
+    3 wide from x `width − 5`, `max(3, round(105 × 12 / lines))` tall, in the kind's `text`. The thumb's top is at
+    `3 + round((105 − thumb) × (first − 1) / (lines − 12))`.
+  - **Scrolling** needs a lock: a `scroll` event on a locked tooltip's panel or one of its span keys moves `first`, in
+    `lib/list.lua`'s direction (a positive `amount` moves back toward line 1).
+    - The tooltip keeps a fractional line count, `carry`. An event adds `−amount` for `unit = "lines"`, or `−amount ÷ (9 × P)` for
+      `unit = "points"`.
+    - `first` moves by the whole part of `carry` and the fraction is kept. `first` is held to `1 … lines − 11`, and a move stopped
+      by either end drops the fraction.
+  - An unlocked tooltip shows its scroll bar but cannot scroll.
+- **Live** (the owner chose **"Live"**): `tooltip.refresh()` runs the source of every open tooltip again and redraws it in place, its
+  top-left kept and its panel resized. `main.lua` calls it from `game.on_time`.
+  - A tooltip whose content is now none closes, with those opened from it.
+  - A long tooltip keeps `first`, held to the new length, and its `carry` returns to 0.
+- **The glossary** is `assets/ui/glossary.toml`, loaded and checked at startup by `apps/codekarl/src/glossary.rs`.
+  - **An entry** is `[term.<key>]` with `title` (a short name) and `text` (the explanation). The key matches `[a-z][a-z0-9_]*`.
+  - **In `text`,** `{key}` is a term showing that entry's `title`, and `{key|words}` a term showing `words`, such as `{pop|pops}`.
+    `{{` writes a literal `{`.
+  - **Refused at startup,** naming the file and the entry: a top-level table other than `term`, a key of the wrong form, an unknown
+    key in an entry, a missing `title` or `text`, a `{…}` naming no entry, an unclosed `{`, a `}` with no `{`, empty `words`, and a
+    character with no glyph in font `small`.
+  - **The extension:** `glossary.entry(key)` returns `{key, title, text}` or nil, and `glossary.keys()` the keys in sorted order.
+    - The file is read when the run has assets and a game or a UI VM, and the UI VM gets the extension only when the file exists.
+    - A glossary file without the small font is refused at startup.
+  - **The shipped file has no entries,** only a comment giving the format. The owner approves the entries' text in a later slice,
+    and the reader screen for the whole glossary comes with the game menu.
+  - **An explanation** is a term's tooltip: the entry's `title` as its title, then its `text` in font `small`, wrapped at 160 and
+    broken at spaces, with its `{…}` terms as terms. It is a tooltip like any other, so a term inside it opens its own explanation. A
+    term whose key has no entry opens nothing.
+  - **A mismatch (2026-11-12, reported to ck-manager):** the file's comment and the loader accept `}}` for a literal `}`, but an
+    explanation draws both braces, because `wraps` in `tooltip.lua` looks only for `{`. No entry uses braces yet.
+- **The place-name tooltip** is on this system: `main.lua` gives `game.on_hover`'s place to `tooltip.map_hover` with a function
+  returning the name. It now waits `delay` and can lock like any other.
+- **Tests:** the UI rig in `apps/codekarl/src/widget_tests.rs` drives `tooltip.update` with made-up updates;
+  `ui_link/widget_witness_tests.rs` drives a locked tooltip through real pointer ticks; `config.rs` and `glossary.rs` test the
+  settings and the loader; `ui_link.rs` tests the routing of `map_down`.
 
 ## 4. Packages and ownership
 
@@ -700,7 +877,7 @@ Slices 4–7 give general windows.
   presses and releases reach the UI, §3.5; nothing uses the right button, and there are still no context menus.)*
 - Drag and drop between windows; docking; resizable windows.
 - Rich text, several fonts or sizes, kerning, wrapping beyond single lines (labels are single lines; lists are many labels).
-  *(Two smaller fonts came later, with CK-268: §2.4.)*
+  *(Two smaller fonts came later, with CK-268: §2.4. A glossary explanation in a tooltip wraps at spaces, CK-270: §3.13.)*
 - Animation and transitions.
 - Localisation.
 - Mod discovery and loading.
