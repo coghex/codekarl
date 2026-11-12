@@ -67,6 +67,14 @@
 >
 >   With the names gone from the prices list a good is known by its icon alone until labelled hover tooltips arrive, which the owner
 >   put in this round ("Yes, this round"). More goods come later, with merchants ("Later, with merchants").
+> - **Two smaller fonts** (CK-268; `owner-direction-tooltips-r1.md` to `-r4.md`): the owner asked for "small and compact text" in
+>   tooltips, chose font B and wanted font C supported "for certain circumstances", and approved both as drawn ("Both approved"). They
+>   are the fonts **small** (a 9-row box) and **tiny** (an 8-row box), beside the standard 11-row font. A text line names its font
+>   (§2.4). Nothing draws with them yet: tooltips, the next slices, use small. How the glyphs were made is in
+>   `docs/ui-art-provenance.md`.
+> - **Middle and right mouse buttons** (CK-269; `owner-direction-tooltips-r1.md`, and `-r3.md` answer 7: "In this topic"): the
+>   window now passes presses and releases of the middle and right buttons to the UI, as `button_down` and `button_up` events (§2.6,
+>   §3.5). Nothing acts on them yet: the tooltip lock, a later slice, uses the middle button. The map never gets them.
 
 ## Owner answers (2026-11-07)
 
@@ -148,6 +156,24 @@ From `.pipeline/coordination/m8-design/owner-answers-r1.md`. **No question is op
 - **The font:**
   - `assets/ui/font/font.toml` holds 5×7 glyphs in an 11-row box, with one PNG per glyph in a single colour (`#ece3cb`);
   - `font.layout(text)` returns glyph textures and offsets (`apps/codekarl/src/font.rs`);
+  - **since CK-268 there are three fonts,** each with the same characters and a replacement glyph:
+
+    | Name | File in `assets/ui/font/` | Box height | Glyph images |
+    |---|---|---|---|
+    | `standard` | `font.toml` | 11 rows | `glyphs/` |
+    | `small` | `small.toml` | 9 rows | `small/` |
+    | `tiny` | `tiny.toml` | 8 rows | `tiny/` |
+
+    - `small.toml` and `tiny.toml` are in `font.toml`'s format with one more key, `height`. The loader refuses, naming the file, a
+      missing `height`, one outside 5 to 11 or other than the 9 and 8 it expects, a glyph without exactly that many rows, and a
+      missing character; the width (1 to 5) and equal-digit-advance rules are the standard font's. `font.toml` itself has no `height`.
+    - `font.layout(text, name)` takes the font's name as an optional second argument and returns that font's `height` and textures.
+      With no name it is the standard font, as before. Any other name is a Lua error naming the three.
+    - `text.line(x, y, group, colour, font_name)` (`scripts/ui/lib/text.lua`) keeps an optional font name on the line, and `text.set`
+      lays out with it; a line without one is in the standard font.
+    - `assets/ui/font/make_font.py` writes the images of all three, and its `--check` covers all three folders.
+    - The small and tiny glyphs are the owner-approved art, kept as `assets/ui/font/tooltip-fonts-art.txt`; a test checks every
+      glyph of both files against it. Their provenance is in `docs/ui-art-provenance.md`;
   - the scale is the UI scale of §3.3 (since CK-256; it was `[ui] points_per_pixel`, which owner Q3 renamed from
     `font_points_per_pixel`, CK-208);
   - besides printable ASCII, the fada vowels and the middle dot, it has superscript digits and signs (⁰–⁹, ⁺, ⁻) and subscript digits
@@ -172,6 +198,12 @@ From `.pipeline/coordination/m8-design/owner-answers-r1.md`. **No question is op
   - The six map actions pan and zoom (`map_app.rs`).
 - **The pointer** is the left button, moves and vertical scroll only (`crates/input/src/lib.rs`, `PointerEvent`). There is no right
   button and no text input.
+  - **Since CK-269** `PointerEvent` also has `ButtonDown` and `ButtonUp`, each with a `PointerButton` (`Middle` or `Right`) and its
+    position: a press and a release of those buttons. `Down` and `Up` are still the left button, and the one held flag
+    (`pointer_held`) is still the left button's: the other buttons have no held state. Other mouse buttons are not reported, and
+    there is still no text input. Both window backends report them: Cocoa (`rightMouseDown:`, `otherMouseDown:` for button 2 and
+    their releases; a drag with either held still moves the pointer; a right click opens no context menu) and GLFW (buttons 1 and 2).
+    §3.5 says where they go.
 - **One snapshot goes to three consumers** (`ui_link.rs`, `CodekarlUi::post`):
   1. the UI VM gets `frame_update` (asynchronously, on its thread);
   2. once the post is accepted, the **map controller** is updated synchronously on the main thread with the same snapshot;
@@ -344,6 +376,16 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
   `{x, y, held, overflow, events = {...}, over = group_token | false}`.
   - `events` lists the UI's routed events in order: `down`, `move`, `up`, `scroll` and `cancel`. Each event has its position in points
     and the **`group`** it was routed to: the owner group for a captured gesture, the hit group otherwise.
+  - **`button_down` and `button_up`** (CK-269) are in the same list, in order: a press or release of the middle or right button,
+    with `button = "middle"` or `"right"`, its position, the hit key under it (`false` over none, such as the map) and `inside`.
+    - They always go to the UI and never to the map, wherever the pointer is.
+    - They are apart from the left button's gesture: they start, end and cancel no capture and no map drag, and `held` stays the
+      left button's. There is no held flag and no `cancel` for them, so a consumer must accept a press with no release (focus lost,
+      or the release dropped by an overflow) and a release with no press.
+    - They have no effect of their own on hover: the event's position is an ordinary latest position, so the UI's `over` and the map's
+      hover come out as they would for a move to the same spot.
+    - The dispatcher (`lib/pointer.lua`) gives a keyed one to that key's widget like any event, and every widget ignores a kind it
+      does not know, so a middle or right click presses, selects and raises nothing.
   - `over` names the topmost group under the cursor.
   - `overflow` repeats `pointer_overflow`, so the library can drop its own pressed state.
   - **Delivery** (r8; replaces r4's, which acknowledged at the accepted post):
@@ -654,9 +696,11 @@ Slices 4–7 give general windows.
 ## 6. Out of scope for M8
 
 - Text entry, IME, clipboard and keyboard focus traversal.
-- The right mouse button and context menus (the input layer has only the left button).
+- The right mouse button and context menus (the input layer has only the left button). *(Since CK-269 the middle and right buttons'
+  presses and releases reach the UI, §3.5; nothing uses the right button, and there are still no context menus.)*
 - Drag and drop between windows; docking; resizable windows.
 - Rich text, several fonts or sizes, kerning, wrapping beyond single lines (labels are single lines; lists are many labels).
+  *(Two smaller fonts came later, with CK-268: §2.4.)*
 - Animation and transitions.
 - Localisation.
 - Mod discovery and loading.
