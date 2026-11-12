@@ -364,7 +364,11 @@ mod tests {
     fn the_art_scripts_report_their_images_up_to_date() {
         // `make_theme.py --check` and `make_font.py --check` fail when a committed image differs from what the script writes, or is
         // missing or extra.
-        for script in ["ui/theme/make_theme.py", "ui/font/make_font.py"] {
+        for script in [
+            "ui/theme/make_theme.py",
+            "ui/font/make_font.py",
+            "ui/goods/make_goods.py",
+        ] {
             let output = std::process::Command::new("python3")
                 .arg("-I")
                 .arg(assets().join(script))
@@ -377,6 +381,72 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+    }
+
+    #[test]
+    fn goods_icons_match_the_generator_and_the_fixed_ui_list() {
+        let generator = assets().join("ui/goods/make_goods.py");
+        let output = std::process::Command::new("python3")
+            .arg("-I")
+            .arg("-c")
+            .arg("import runpy,sys; print('\\n'.join(sorted(runpy.run_path(sys.argv[1])['ART'])))")
+            .arg(&generator)
+            .output()
+            .expect("python3 reads the goods generator ids");
+        assert!(
+            output.status.success(),
+            "reading goods ids: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let art_ids: BTreeSet<String> = String::from_utf8(output.stdout)
+            .expect("generator ids are UTF-8")
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let economy_text = fs::read_to_string(assets().join("game/economy.toml"))
+            .expect("the shipped economy data");
+        let economy: toml::Value = toml::from_str(&economy_text).expect("valid economy data");
+        let good_ids: BTreeSet<String> = economy["goods"]
+            .as_array()
+            .expect("goods array")
+            .iter()
+            .map(|good| good["id"].as_str().expect("good id").to_owned())
+            .collect();
+        assert_eq!(
+            art_ids, good_ids,
+            "frozen art covers each shipped good once"
+        );
+
+        let scripts = assets()
+            .parent()
+            .expect("the project root")
+            .join("scripts/ui/lib/location.lua");
+        let location = fs::read_to_string(scripts).expect("the location UI script");
+        let fixed_list = location
+            .split("local GOODS_WITH_ICONS = {")
+            .nth(1)
+            .expect("the fixed goods icon list")
+            .split('}')
+            .next()
+            .expect("the end of the fixed goods icon list");
+        let listed_ids: BTreeSet<String> = fixed_list
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            listed_ids, art_ids,
+            "the UI fallback list matches the generator ids"
+        );
+
+        let oats = Image::decode(
+            fs::File::open(assets().join("ui/goods/oats.png")).expect("the oats icon"),
+        )
+        .expect("valid oats PNG");
+        assert_eq!((oats.width(), oats.height()), (9, 9));
+        assert_eq!(&oats.pixels()[2 * 4..3 * 4], &[0xee, 0xd8, 0x8a, 0xff]);
+        assert_eq!(&oats.pixels()[..4], &[0, 0, 0, 0]);
     }
 
     /// The application's icons: name, width in pixels and the seven shape rows after the two blank ones.

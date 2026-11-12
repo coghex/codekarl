@@ -205,6 +205,145 @@ window.on_opened(function() end)
     );
 }
 
+fn icon_reuse_script() -> String {
+    format!(
+        r##"{HEADER}
+local ui = require("lib.ui")
+local real_texture = ui.texture
+local texture_names = {{}}
+local active_icons = {{}}
+local function icon_state()
+  local count, name = 0, "-"
+  for _, active_name in pairs(active_icons) do count = count + 1; name = active_name end
+  return count, name
+end
+ui.texture = function(name)
+  local token = real_texture(name)
+  texture_names[token] = name
+  return token
+end
+local real_create_quad = render.create_quad
+render.create_quad = function(spec)
+  local name = texture_names[spec.texture]
+  local quad = real_create_quad(spec)
+  if name ~= nil and (name:match("^ui/goods/") or name:match("^ui/theme/icon_")) then
+    note(string.format("iconquad %s %g %g %g %g %s", name, spec.x, spec.y, spec.width, spec.height, tostring(spec.tint or "-")))
+    active_icons[quad] = name
+  end
+  return quad
+end
+local real_destroy_quad = render.destroy_quad
+render.destroy_quad = function(quad)
+  local name = active_icons[quad]
+  if name ~= nil then
+    active_icons[quad] = nil
+    local count = icon_state()
+    note(string.format("icon destroy %s remaining %d", name, count))
+  end
+  return real_destroy_quad(quad)
+end
+w = windows.new{{title = "Goods", x = 100, y = 50, content_width = 100, content_height = 130}}
+lst = lists.new{{window = w, x = 0, y = 0, width = 100, rows = 5, items = {{{{cells = {{{{text = "96.5 (100)", x = 16, align = "left"}}}}, icon = {{name = "location", colour = "#112233"}}}}}}}}
+window.on_opened(function()
+  local function replace(label, icon)
+    lst:set_items({{{{cells = {{{{text = "value", x = 16, align = "left"}}}}, icon = icon}}}})
+    local count, name = icon_state()
+    note(string.format("icon state %s %d %s", label, count, name))
+  end
+  replace("oats", {{image = "goods/oats"}})
+  replace("barley", {{image = "goods/barley"}})
+  replace("theme", {{name = "location", colour = "#112233"}})
+  replace("none", nil)
+  note("no icon after removal " .. tostring(lst.lines[1].icon == nil))
+  local function attempt(icon)
+    local ok, err = pcall(lists.new, {{window = w, x = 0, y = 0, width = 100, rows = 1,
+      items = {{{{cells = {{{{text = "x", x = 16, align = "left"}}}}, icon = icon}}}}}})
+    note("invalid icon " .. tostring(ok) .. " " .. tostring(err):match("list%.new: [^\n]*"))
+  end
+  attempt({{name = "location", colour = "#ffffff", image = "goods/oats"}})
+  attempt({{}})
+end)
+"##
+    )
+}
+
+#[test]
+fn image_icons_are_full_colour_centered_and_refresh_when_a_reused_row_changes_form() {
+    let mut rig = Rig::new(&icon_reuse_script());
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "iconquad ui/goods/oats.png 8 4 18 18 -"),
+        "image icon is 9x9 UI pixels at (4,2), untinted: {recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "iconquad ui/goods/barley.png 8 4 18 18 -"),
+        "reused image rows load the replacement image: {recorded:?}"
+    );
+    assert_eq!(
+        recorded
+            .iter()
+            .filter(|line| line.starts_with("iconquad ui/goods/"))
+            .count(),
+        2,
+        "the replacement image quad is created without a stale third image: {recorded:?}"
+    );
+    assert_eq!(
+        recorded
+            .iter()
+            .filter(|line| *line == "iconquad ui/theme/icon_location.png 8 2 18 22 #112233")
+            .count(),
+        2,
+        "the existing theme icon and tint survive theme-to-image-to-theme reuse: {recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "icon state oats 1 ui/goods/oats.png"),
+        "image replacement leaves exactly its one current quad: {recorded:?}"
+    );
+    for state in [
+        "icon state barley 1 ui/goods/barley.png",
+        "icon state theme 1 ui/theme/icon_location.png",
+        "icon state none 0 -",
+    ] {
+        assert!(recorded.iter().any(|line| line == state), "{recorded:?}");
+    }
+    let destroyed = recorded
+        .iter()
+        .filter(|line| line.starts_with("icon destroy "))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        destroyed,
+        [
+            "icon destroy ui/theme/icon_location.png remaining 0",
+            "icon destroy ui/goods/oats.png remaining 0",
+            "icon destroy ui/goods/barley.png remaining 0",
+            "icon destroy ui/theme/icon_location.png remaining 0",
+        ],
+        "each replacement removes the previous quad before leaving the row with its one next icon"
+    );
+    let refusals = recorded
+        .iter()
+        .filter(|line| line.contains("invalid icon false"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        refusals.len(),
+        2,
+        "both malformed forms are refused: {recorded:?}"
+    );
+    assert!(
+        refusals
+            .iter()
+            .all(|line| line.contains("name and colour") && line.contains("image"))
+    );
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------------------------------------------------
