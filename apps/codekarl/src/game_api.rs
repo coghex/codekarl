@@ -358,6 +358,10 @@ fn integer(value: u64) -> ConfigValue {
     ConfigValue::Integer(i64::try_from(value).unwrap_or(i64::MAX))
 }
 
+fn integer_u128(value: u128) -> ConfigValue {
+    ConfigValue::Integer(i64::try_from(value).unwrap_or(i64::MAX))
+}
+
 fn text(value: &str) -> ConfigValue {
     ConfigValue::String(value.to_owned())
 }
@@ -367,6 +371,32 @@ fn table<const N: usize>(fields: [(&str, ConfigValue); N]) -> ConfigValue {
         fields
             .into_iter()
             .map(|(name, value)| (name.to_owned(), value))
+            .collect(),
+    )
+}
+
+fn terrain_table(values: &BTreeMap<String, u32>) -> ConfigValue {
+    ConfigValue::Table(
+        values
+            .iter()
+            .map(|(terrain, count)| (terrain.clone(), integer(u64::from(*count))))
+            .collect(),
+    )
+}
+
+fn counter_rows(rows: &[crate::game::view::GoodCounterView]) -> ConfigValue {
+    ConfigValue::Array(
+        rows.iter()
+            .map(|row| {
+                let mut fields = BTreeMap::from([
+                    ("good".to_owned(), text(&row.good)),
+                    ("units".to_owned(), integer(row.units)),
+                ]);
+                if let Some(value) = row.value_milli {
+                    fields.insert("value_milli".to_owned(), integer_u128(value));
+                }
+                ConfigValue::Table(fields)
+            })
             .collect(),
     )
 }
@@ -451,6 +481,23 @@ pub(crate) fn place_table(place: &PlaceView) -> ConfigValue {
             integer(place.storage_capacity_ml / 1000),
         ),
         ("overflow_lost", integer(place.overflow_lost)),
+        (
+            "land",
+            table([
+                ("usable", terrain_table(&place.land.usable)),
+                ("land", terrain_table(&place.land.land)),
+                ("sea", integer(u64::from(place.land.sea))),
+            ]),
+        ),
+        (
+            "last_month",
+            table([
+                ("closed", ConfigValue::Bool(place.last_month.closed)),
+                ("produced", counter_rows(&place.last_month.produced)),
+                ("used_by_pops", counter_rows(&place.last_month.used_by_pops)),
+                ("lost", counter_rows(&place.last_month.lost)),
+            ]),
+        ),
         ("footprint_m2", integer(place.footprint_m2)),
         ("prepared_m2", integer(place.prepared_m2)),
         ("max_buildable_m2", integer(place.max_buildable_m2)),
@@ -733,6 +780,8 @@ mod tests {
                 "food_days",
                 "footprint_m2",
                 "id",
+                "land",
+                "last_month",
                 "makeshift_housing_capacity",
                 "makeshift_housing_occupants",
                 "max_buildable_m2",
@@ -793,6 +842,36 @@ mod tests {
                 price_milli: 100_500,
                 base: 100,
             }],
+            land: crate::game::view::LandView {
+                usable: BTreeMap::from([("pasture".to_owned(), 7)]),
+                land: BTreeMap::from([("pasture".to_owned(), 9)]),
+                sea: 2,
+            },
+            last_month: crate::game::view::LastMonthView {
+                closed: true,
+                produced: vec![
+                    crate::game::view::GoodCounterView {
+                        good: "oats".to_owned(),
+                        units: 12,
+                        value_milli: Some(1_158_000),
+                    },
+                    crate::game::view::GoodCounterView {
+                        good: "barley".to_owned(),
+                        units: 1,
+                        value_milli: Some(u128::MAX),
+                    },
+                ],
+                used_by_pops: vec![crate::game::view::GoodCounterView {
+                    good: "oats".to_owned(),
+                    units: 2,
+                    value_milli: Some(193_000),
+                }],
+                lost: vec![crate::game::view::GoodCounterView {
+                    good: "ale".to_owned(),
+                    units: 3,
+                    value_milli: None,
+                }],
+            },
             overflow_lost: 0,
             projected_yield: 0,
             has_economy: true,
@@ -854,6 +933,38 @@ mod tests {
         assert_eq!(fields["development_pm"], ConfigValue::Integer(1000));
         assert_eq!(fields["farmland_quality_pm"], ConfigValue::Integer(550));
         assert_eq!(fields["field_room"], ConfigValue::Integer(12));
+        let ConfigValue::Table(land) = &fields["land"] else {
+            panic!("a land table");
+        };
+        assert_eq!(land["sea"], ConfigValue::Integer(2));
+        let ConfigValue::Table(usable) = &land["usable"] else {
+            panic!("a terrain table");
+        };
+        assert_eq!(usable["pasture"], ConfigValue::Integer(7));
+        let ConfigValue::Table(last_month) = &fields["last_month"] else {
+            panic!("a last month table");
+        };
+        assert_eq!(last_month["closed"], ConfigValue::Bool(true));
+        assert!(!last_month.contains_key("used_as_inputs"));
+        let ConfigValue::Array(produced) = &last_month["produced"] else {
+            panic!("an array");
+        };
+        let ConfigValue::Table(oats) = &produced[0] else {
+            panic!("a good counter table");
+        };
+        assert_eq!(oats["units"], ConfigValue::Integer(12));
+        assert_eq!(oats["value_milli"], ConfigValue::Integer(1_158_000));
+        let ConfigValue::Table(barley) = &produced[1] else {
+            panic!("a good counter table");
+        };
+        assert_eq!(barley["value_milli"], ConfigValue::Integer(i64::MAX));
+        let ConfigValue::Array(lost) = &last_month["lost"] else {
+            panic!("an array");
+        };
+        let ConfigValue::Table(ale) = &lost[0] else {
+            panic!("a good counter table");
+        };
+        assert!(!ale.contains_key("value_milli"));
         let ConfigValue::Array(prices) = &fields["prices"] else {
             panic!("an array");
         };

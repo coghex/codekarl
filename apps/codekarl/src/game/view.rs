@@ -107,6 +107,8 @@ pub(crate) struct PlaceView {
     pub(crate) storage_used_ml: u64,
     pub(crate) storage_capacity_ml: u64,
     pub(crate) prices: Vec<PriceView>,
+    pub(crate) land: LandView,
+    pub(crate) last_month: LastMonthView,
     /// Goods lost to overflow in the month completed by the last counter rollover.
     pub(crate) overflow_lost: u64,
     /// The projected annual food of the land, the sea and the dairy herd (design §3.22, the yield map mode): every food good a method
@@ -131,6 +133,28 @@ pub(crate) struct PlaceView {
     pub(crate) crowding_pm: u64,
     pub(crate) pops: Vec<PopView>,
     pub(crate) buildings: Vec<BuildingView>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LandView {
+    pub(crate) usable: BTreeMap<String, u32>,
+    pub(crate) land: BTreeMap<String, u32>,
+    pub(crate) sea: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GoodCounterView {
+    pub(crate) good: String,
+    pub(crate) units: u64,
+    pub(crate) value_milli: Option<u128>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LastMonthView {
+    pub(crate) closed: bool,
+    pub(crate) produced: Vec<GoodCounterView>,
+    pub(crate) used_by_pops: Vec<GoodCounterView>,
+    pub(crate) lost: Vec<GoodCounterView>,
 }
 
 /// Every place's view, in scenario-file order.
@@ -487,6 +511,42 @@ fn place_view(rules: &Rules, place: &PlaceState, land: Option<&LandCounts>) -> P
             base: good.base_price,
         })
         .collect();
+    let land_view = land.map_or_else(LandView::default, |counts| LandView {
+        usable: counts.fertile_cells_by_terrain.clone(),
+        land: counts.land_cells.clone(),
+        sea: counts.sea,
+    });
+    let last_month = if place.counters.closed {
+        let entries = |units: &[u64], values: Option<&[u128]>| {
+            rules
+                .goods
+                .iter()
+                .enumerate()
+                .filter_map(|(index, good)| {
+                    let units = units.get(index).copied().unwrap_or_default();
+                    (units > 0).then(|| GoodCounterView {
+                        good: good.id.clone(),
+                        units,
+                        value_milli: values.and_then(|values| values.get(index).copied()),
+                    })
+                })
+                .collect()
+        };
+        LastMonthView {
+            closed: true,
+            produced: entries(
+                &place.counters.last.produced,
+                Some(&place.counters.last.produced_value_milli),
+            ),
+            used_by_pops: entries(
+                &place.counters.last.used_by_pops,
+                Some(&place.counters.last.used_by_pops_value_milli),
+            ),
+            lost: entries(&place.counters.last.lost, None),
+        }
+    } else {
+        LastMonthView::default()
+    };
     PlaceView {
         id: place.id.clone(),
         workers,
@@ -495,6 +555,8 @@ fn place_view(rules: &Rules, place: &PlaceState, land: Option<&LandCounts>) -> P
         storage_used_ml: pops_used.saturating_add(buildings_used),
         storage_capacity_ml: capacity,
         prices,
+        land: land_view,
+        last_month,
         overflow_lost: place.counters.last.losses,
         projected_yield: place.buildings.iter().fold(0_u64, |sum, building| {
             sum.saturating_add(projected_yield(rules, building, mean_fertility_pm))
@@ -693,6 +755,7 @@ mod tests {
                 land_cells: BTreeMap::from([("pasture".to_owned(), 10)]),
                 fertility_pm: BTreeMap::from([("pasture".to_owned(), 20_000)]),
                 fertile_cells: 10,
+                fertile_cells_by_terrain: BTreeMap::new(),
                 sea: 0,
             },
         )]);
@@ -1039,6 +1102,86 @@ mod tests {
     }
 
     #[test]
+    fn place_view_shows_closed_month_good_rows_in_rules_order_and_hides_open_months() {
+        let rules = shipped_rules();
+        let mut place = fixture(&rules);
+        place.counters = CounterBuckets::default();
+        place.counters.last.produced = vec![0; rules.goods.len()];
+        place.counters.last.produced_value_milli = vec![0; rules.goods.len()];
+        place.counters.last.used_by_pops = vec![0; rules.goods.len()];
+        place.counters.last.used_by_pops_value_milli = vec![0; rules.goods.len()];
+        place.counters.last.lost = vec![0; rules.goods.len()];
+        let oats = index_of(&rules, "oats");
+        let barley = index_of(&rules, "barley");
+        let ale = index_of(&rules, "ale");
+        place.counters.last.produced[oats] = 2;
+        place.counters.last.produced_value_milli[oats] = 210_000;
+        place.counters.last.used_by_pops[barley] = 3;
+        place.counters.last.used_by_pops_value_milli[barley] = 315_000;
+        place.counters.last.lost[ale] = 1;
+
+        let build_place = |place: &PlaceState| {
+            build(
+                Some(&rules),
+                &EconomyState {
+                    places: vec![place.clone()],
+                },
+                &["fixture".to_owned()],
+            )
+            .places
+            .remove(0)
+        };
+        let open = build_place(&place);
+        assert!(!open.last_month.closed);
+        assert!(open.last_month.produced.is_empty());
+        assert!(open.last_month.used_by_pops.is_empty());
+        assert!(open.last_month.lost.is_empty());
+
+        place.counters.closed = true;
+        place.counters.last.produced.fill(0);
+        place.counters.last.produced_value_milli.fill(0);
+        place.counters.last.used_by_pops.fill(0);
+        place.counters.last.used_by_pops_value_milli.fill(0);
+        place.counters.last.lost.fill(0);
+        let empty_closed = build_place(&place);
+        assert!(empty_closed.last_month.closed);
+        assert!(empty_closed.last_month.produced.is_empty());
+        assert!(empty_closed.last_month.used_by_pops.is_empty());
+        assert!(empty_closed.last_month.lost.is_empty());
+
+        place.counters.last.produced[oats] = 2;
+        place.counters.last.produced_value_milli[oats] = 210_000;
+        place.counters.last.used_by_pops[barley] = 3;
+        place.counters.last.used_by_pops_value_milli[barley] = 315_000;
+        place.counters.last.lost[ale] = 1;
+        let closed = build_place(&place);
+        assert_eq!(
+            closed.last_month.produced,
+            [GoodCounterView {
+                good: "oats".to_owned(),
+                units: 2,
+                value_milli: Some(210_000),
+            }]
+        );
+        assert_eq!(
+            closed.last_month.used_by_pops,
+            [GoodCounterView {
+                good: "barley".to_owned(),
+                units: 3,
+                value_milli: Some(315_000),
+            }]
+        );
+        assert_eq!(
+            closed.last_month.lost,
+            [GoodCounterView {
+                good: "ale".to_owned(),
+                units: 1,
+                value_milli: None,
+            }]
+        );
+    }
+
+    #[test]
     fn a_fixture_place_derives_every_number_the_panel_shows() {
         let rules = shipped_rules();
         let state = EconomyState {
@@ -1050,6 +1193,7 @@ mod tests {
                 land_cells: BTreeMap::from([("pasture".to_owned(), 10)]),
                 fertility_pm: BTreeMap::from([("pasture".to_owned(), 5_500)]),
                 fertile_cells: 10,
+                fertile_cells_by_terrain: BTreeMap::new(),
                 sea: 0,
             },
         )]);
@@ -1392,6 +1536,7 @@ mod tests {
                     land_cells: BTreeMap::from([("pasture".to_owned(), 1)]),
                     fertility_pm: BTreeMap::from([("pasture".to_owned(), u64::from(fertility_pm))]),
                     fertile_cells: u32::from(fertility_pm > 0),
+                    fertile_cells_by_terrain: BTreeMap::new(),
                     sea: 0,
                 },
             )])
@@ -1533,6 +1678,7 @@ mod tests {
                     land_cells: BTreeMap::from([("pasture".to_owned(), 1)]),
                     fertility_pm: BTreeMap::from([("pasture".to_owned(), 825)]),
                     fertile_cells: 1,
+                    fertile_cells_by_terrain: BTreeMap::new(),
                     sea: 0,
                 },
             ),
@@ -1542,6 +1688,7 @@ mod tests {
                     land_cells: BTreeMap::from([("pasture".to_owned(), 1)]),
                     fertility_pm: BTreeMap::from([("pasture".to_owned(), 275)]),
                     fertile_cells: 1,
+                    fertile_cells_by_terrain: BTreeMap::new(),
                     sea: 0,
                 },
             ),

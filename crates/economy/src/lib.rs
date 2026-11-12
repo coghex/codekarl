@@ -1003,6 +1003,8 @@ pub struct LandCounts {
     pub fertility_pm: BTreeMap<String, u64>,
     /// Owned land cells whose fertility is above zero, excluding glaciers.
     pub fertile_cells: u32,
+    /// Owned land cells whose fertility is above zero, by terrain.
+    pub fertile_cells_by_terrain: BTreeMap<String, u32>,
     /// Sea cells in the catchment.
     pub sea: u32,
 }
@@ -1424,7 +1426,7 @@ pub fn starting_state(
             prepared_m2,
             development_pm: rules.starting_development_pm,
             price_drift_carries: vec![0; rules.goods.len()],
-            counters: CounterBuckets::default(),
+            counters: CounterBuckets::for_place(rules.goods.len()),
         });
     }
     Ok((state, report))
@@ -2731,7 +2733,7 @@ pub struct Employment {
     pub workers: u64,
 }
 
-/// Monthly births, deaths and overflow losses.
+/// Monthly births, deaths and per-good production, use and overflow losses.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MonthlyCounters {
     /// People born.
@@ -2740,6 +2742,16 @@ pub struct MonthlyCounters {
     pub deaths: u64,
     /// Whole goods units lost after payday overflow.
     pub losses: u64,
+    /// Whole units produced, indexed by `Rules::goods` order.
+    pub produced: Vec<u64>,
+    /// Whole units opened or ticked by pops, indexed by `Rules::goods` order.
+    pub used_by_pops: Vec<u64>,
+    /// Whole units lost to overflow, indexed by `Rules::goods` order.
+    pub lost: Vec<u64>,
+    /// Produced units valued at the rollover's local prices, in thousandths.
+    pub produced_value_milli: Vec<u128>,
+    /// Pop-used units valued at the rollover's local prices, in thousandths.
+    pub used_by_pops_value_milli: Vec<u128>,
 }
 
 /// Display-only counters saved across a quicksave.
@@ -2749,11 +2761,119 @@ pub struct CounterBuckets {
     pub current: MonthlyCounters,
     /// Events from the month completed by the most recent rollover.
     pub last: MonthlyCounters,
+    /// Whether `last` contains a completed month rather than an unclosed start state.
+    pub closed: bool,
 }
 
-fn roll_counter_month(counters: &mut CounterBuckets) {
-    counters.last.clone_from(&counters.current);
-    counters.current = MonthlyCounters::default();
+fn roll_counter_month(
+    counters: &mut CounterBuckets,
+    rollover_prices: Option<&[u64]>,
+) -> Result<(), DataError> {
+    let mut last = counters.current.clone();
+    if let Some(prices) = rollover_prices {
+        if last.produced.len() != prices.len()
+            || last.used_by_pops.len() != prices.len()
+            || last.lost.len() != prices.len()
+        {
+            return Err(missing_data(
+                "counters.goods".to_owned(),
+                "place counter dimensions do not match goods",
+            ));
+        }
+        last.produced_value_milli = last
+            .produced
+            .iter()
+            .zip(prices)
+            .map(|(units, price)| u128::from(*units) * u128::from(*price))
+            .collect();
+        last.used_by_pops_value_milli = last
+            .used_by_pops
+            .iter()
+            .zip(prices)
+            .map(|(units, price)| u128::from(*units) * u128::from(*price))
+            .collect();
+    }
+    counters.last = last;
+    counters.current = rollover_prices.map_or_else(MonthlyCounters::default, |prices| {
+        MonthlyCounters::for_goods(prices.len())
+    });
+    counters.closed = true;
+    Ok(())
+}
+
+impl MonthlyCounters {
+    fn for_goods(goods: usize) -> Self {
+        Self {
+            produced: vec![0; goods],
+            used_by_pops: vec![0; goods],
+            lost: vec![0; goods],
+            produced_value_milli: vec![0; goods],
+            used_by_pops_value_milli: vec![0; goods],
+            ..Self::default()
+        }
+    }
+}
+
+impl CounterBuckets {
+    fn for_place(goods: usize) -> Self {
+        Self {
+            current: MonthlyCounters::for_goods(goods),
+            last: MonthlyCounters::for_goods(goods),
+            closed: false,
+        }
+    }
+}
+
+fn prepare_place_counters(counters: &mut CounterBuckets, goods: usize) -> Result<(), DataError> {
+    for bucket in [&mut counters.current, &mut counters.last] {
+        for values in [
+            &mut bucket.produced,
+            &mut bucket.used_by_pops,
+            &mut bucket.lost,
+        ] {
+            if values.is_empty() {
+                values.resize(goods, 0);
+            } else if values.len() != goods {
+                return Err(missing_data(
+                    "counters.goods".to_owned(),
+                    "place counter dimensions do not match goods",
+                ));
+            }
+        }
+        for values in [
+            &mut bucket.produced_value_milli,
+            &mut bucket.used_by_pops_value_milli,
+        ] {
+            if values.is_empty() {
+                values.resize(goods, 0);
+            } else if values.len() != goods {
+                return Err(missing_data(
+                    "counters.goods".to_owned(),
+                    "place value counter dimensions do not match goods",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn add_counter_units(
+    values: &mut Vec<u64>,
+    goods: usize,
+    index: usize,
+    amount: u64,
+    path: &str,
+) -> Result<(), DataError> {
+    if values.is_empty() {
+        values.resize(goods, 0);
+    }
+    let value = values
+        .get_mut(index)
+        .ok_or_else(|| missing_data(path.to_owned(), "good index is outside counters"))?;
+    *value = value
+        .checked_add(amount)
+        .ok_or_else(|| missing_data(path.to_owned(), "whole unit counter overflow"))?;
+    Ok(())
 }
 
 fn encode_counters(counters: &CounterBuckets, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
@@ -2762,7 +2882,47 @@ fn encode_counters(counters: &CounterBuckets, out: &mut Vec<u8>) -> Result<(), C
         bucket.deaths.encode(out)?;
         bucket.losses.encode(out)?;
     }
+    counters.closed.encode(out)?;
     Ok(())
+}
+
+fn encode_place_counters(
+    counters: &CounterBuckets,
+    out: &mut Vec<u8>,
+) -> Result<(), CanonicalError> {
+    encode_counters(counters, out)?;
+    for bucket in [&counters.current, &counters.last] {
+        bucket.produced.encode(out)?;
+        bucket.used_by_pops.encode(out)?;
+        bucket.lost.encode(out)?;
+        encode_u128_values(&bucket.produced_value_milli, out)?;
+        encode_u128_values(&bucket.used_by_pops_value_milli, out)?;
+    }
+    Ok(())
+}
+
+fn encode_u128_values(values: &[u128], out: &mut Vec<u8>) -> Result<(), CanonicalError> {
+    encode_length(values.len(), out)?;
+    for value in values {
+        u64::try_from(*value & u128::from(u64::MAX))
+            .unwrap_or_default()
+            .encode(out)?;
+        u64::try_from(*value >> 64)
+            .unwrap_or_default()
+            .encode(out)?;
+    }
+    Ok(())
+}
+
+fn decode_u128_values(input: &mut Reader<'_>) -> Result<Vec<u128>, CanonicalError> {
+    let length = input.length()?;
+    let mut values = Vec::with_capacity(length);
+    for _ in 0..length {
+        let low = u64::decode(input)?;
+        let high = u64::decode(input)?;
+        values.push(u128::from(low) | (u128::from(high) << 64));
+    }
+    Ok(values)
 }
 
 fn decode_counters(input: &mut Reader<'_>) -> Result<CounterBuckets, CanonicalError> {
@@ -2770,13 +2930,32 @@ fn decode_counters(input: &mut Reader<'_>) -> Result<CounterBuckets, CanonicalEr
         births: u64::decode(input)?,
         deaths: u64::decode(input)?,
         losses: u64::decode(input)?,
+        ..MonthlyCounters::default()
     };
     let last = MonthlyCounters {
         births: u64::decode(input)?,
         deaths: u64::decode(input)?,
         losses: u64::decode(input)?,
+        ..MonthlyCounters::default()
     };
-    Ok(CounterBuckets { current, last })
+    let closed = bool::decode(input)?;
+    Ok(CounterBuckets {
+        current,
+        last,
+        closed,
+    })
+}
+
+fn decode_place_counters(input: &mut Reader<'_>) -> Result<CounterBuckets, CanonicalError> {
+    let mut counters = decode_counters(input)?;
+    for bucket in [&mut counters.current, &mut counters.last] {
+        bucket.produced = Vec::<u64>::decode(input)?;
+        bucket.used_by_pops = Vec::<u64>::decode(input)?;
+        bucket.lost = Vec::<u64>::decode(input)?;
+        bucket.produced_value_milli = decode_u128_values(input)?;
+        bucket.used_by_pops_value_milli = decode_u128_values(input)?;
+    }
+    Ok(counters)
 }
 
 /// One population in the deterministic initial state.
@@ -3369,6 +3548,13 @@ fn settle_overflow(
                 .ok_or_else(|| {
                     missing_data("counters.losses".to_owned(), "place loss counter overflow")
                 })?;
+            add_counter_units(
+                &mut place_counters.current.lost,
+                rules.goods.len(),
+                good_index,
+                remaining,
+                "counters.lost",
+            )?;
             if let Some(pop_index) = account_pop {
                 let pop = pops.get_mut(*pop_index).ok_or_else(|| {
                     missing_data("payday.source".to_owned(), "source pop index is missing")
@@ -4452,6 +4638,13 @@ fn butcher_emergency(
                 let lost = left;
                 if lost != 0 {
                     add_daily_good(&mut ledger.lost, meat_index, lost, "ledger.daily.lost")?;
+                    add_counter_units(
+                        &mut place.counters.current.lost,
+                        rules.goods.len(),
+                        meat_index,
+                        lost,
+                        "counters.lost",
+                    )?;
                     place.pops[pop_index].counters.current.losses = place.pops[pop_index]
                         .counters
                         .current
@@ -4484,6 +4677,13 @@ fn butcher_emergency(
                             hides_index,
                             hide_left,
                             "ledger.daily.lost",
+                        )?;
+                        add_counter_units(
+                            &mut place.counters.current.lost,
+                            rules.goods.len(),
+                            hides_index,
+                            hide_left,
+                            "counters.lost",
                         )?;
                         place.pops[pop_index].counters.current.losses = place.pops[pop_index]
                             .counters
@@ -4624,13 +4824,38 @@ fn run_daily_consumption_with_ledger(
     };
     let mut intake_by_place = Vec::with_capacity(next.places.len());
     for place in &mut next.places {
+        prepare_place_counters(&mut place.counters, rules.goods.len())?;
         let mut place_intake = Vec::with_capacity(place.pops.len());
+        let opened_before = ledger.opened.clone();
+        let ticked_before = ledger.ticked.clone();
+        let butchered_before = ledger.butchered.clone();
         let mut index = 0;
         while index < place.pops.len() {
             draw_pop(rules, place, index)?;
             let intake_pm = consume_pop_tracked(rules, place, index, &mut ledger)?;
             place_intake.push(intake_pm);
             index += 1;
+        }
+        for good_index in 0..rules.goods.len() {
+            let opened = ledger.opened[good_index] - opened_before[good_index];
+            let ticked = ledger.ticked[good_index] - ticked_before[good_index];
+            let butchered = ledger.butchered[good_index] - butchered_before[good_index];
+            add_counter_units(
+                &mut place.counters.current.used_by_pops,
+                rules.goods.len(),
+                good_index,
+                opened.checked_add(ticked).ok_or_else(|| {
+                    missing_data("counters.used_by_pops".to_owned(), "daily use overflow")
+                })?,
+                "counters.used_by_pops",
+            )?;
+            add_counter_units(
+                &mut place.counters.current.produced,
+                rules.goods.len(),
+                good_index,
+                butchered,
+                "counters.produced",
+            )?;
         }
         intake_by_place.push(place_intake);
     }
@@ -5002,9 +5227,10 @@ pub fn run_monthly_production_with_quality(
             .get(&place.id)
             .copied()
             .unwrap_or(rules.fertility_reference_pm);
-        roll_counter_month(&mut place.counters);
+        prepare_place_counters(&mut place.counters, rules.goods.len())?;
+        roll_counter_month(&mut place.counters, Some(&place.prices_milli))?;
         for pop in &mut place.pops {
-            roll_counter_month(&mut pop.counters);
+            roll_counter_month(&mut pop.counters, None)?;
         }
         let mut place_ledger = PlaceProductionLedger::new(&place.id, rules.goods.len());
         place_ledger.stock_before = total_stored_goods(rules, place)?;
@@ -5412,6 +5638,13 @@ pub fn run_monthly_production_with_quality(
                 }
             }
             for (good_index, output_units) in monthly_output.iter().copied().enumerate() {
+                add_counter_units(
+                    &mut place.counters.current.produced,
+                    rules.goods.len(),
+                    good_index,
+                    output_units,
+                    "counters.produced",
+                )?;
                 place_ledger.produced[good_index] = place_ledger.produced[good_index]
                     .checked_add(output_units)
                     .ok_or_else(|| {
@@ -7138,7 +7371,7 @@ impl Canonical for EconomyState {
             place.prepared_m2.encode(out)?;
             place.development_pm.encode(out)?;
             place.price_drift_carries.encode(out)?;
-            encode_counters(&place.counters, out)?;
+            encode_place_counters(&place.counters, out)?;
         }
         Ok(())
     }
@@ -7203,7 +7436,7 @@ impl Canonical for EconomyState {
                 prepared_m2: u64::decode(input)?,
                 development_pm: u32::decode(input)?,
                 price_drift_carries: Vec::<i64>::decode(input)?,
-                counters: decode_counters(input)?,
+                counters: decode_place_counters(input)?,
             });
         }
         Ok(Self { places })
@@ -7303,6 +7536,7 @@ mod tests {
             land_cells: BTreeMap::from([("pasture".to_owned(), 1)]),
             fertility_pm: BTreeMap::new(),
             fertile_cells: 0,
+            fertile_cells_by_terrain: BTreeMap::new(),
             sea: 0,
         };
         assert_eq!(max_buildable_m2(&rules, 1000, &land).unwrap(), 20_300);
@@ -7331,6 +7565,7 @@ mod tests {
             mean_fertility(&LandCounts {
                 fertility_pm: BTreeMap::from([("pasture".to_owned(), 4)]),
                 fertile_cells: 1,
+                fertile_cells_by_terrain: BTreeMap::new(),
                 ..LandCounts::default()
             })
             .unwrap(),
@@ -7342,6 +7577,7 @@ mod tests {
                     [("pasture".to_owned(), 8), ("forest".to_owned(), 5),]
                 ),
                 fertile_cells: 3,
+                fertile_cells_by_terrain: BTreeMap::new(),
                 ..LandCounts::default()
             })
             .unwrap(),
@@ -7360,6 +7596,7 @@ mod tests {
                 land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
                 fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
                 fertile_cells: 8,
+                fertile_cells_by_terrain: BTreeMap::new(),
                 sea: 0,
             },
         };
@@ -7666,7 +7903,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: vec![0; goods],
-                counters: CounterBuckets::default(),
+                counters: CounterBuckets::for_place(rules.goods.len()),
             }],
         };
         (rules, state)
@@ -8184,6 +8421,7 @@ mod tests {
                 land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
                 fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
                 fertile_cells: 8,
+                fertile_cells_by_terrain: BTreeMap::new(),
                 sea: 0,
             },
         };
@@ -8907,6 +9145,35 @@ mod tests {
         );
         assert_eq!(state.places[0].counters.current.losses, 87);
         assert_eq!(state.places[0].pops[1].counters.current.losses, 87);
+        let pork = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "pork")
+            .unwrap();
+        let herbs = rules
+            .goods
+            .iter()
+            .position(|good| good.id == "herbs")
+            .unwrap();
+        let counters = &state.places[0].counters.current;
+        assert_eq!(counters.produced[pork], 88, "slaughter output is produced");
+        assert_eq!(
+            counters.used_by_pops[herbs], 1,
+            "zero-hunger ticking is use"
+        );
+        assert_eq!(
+            counters.lost[pork], 87,
+            "overflow loss is attributed by good"
+        );
+        assert_eq!(counters.lost.iter().sum::<u64>(), counters.losses);
+        for good in 0..rules.goods.len() {
+            assert_eq!(
+                counters.used_by_pops[good],
+                ledger.opened[good] + ledger.ticked[good],
+                "{} counts both opened and ticked units",
+                rules.goods[good].id
+            );
+        }
         for index in 0..rules.goods.len() {
             assert_eq!(
                 ledger.stock_before[index] + ledger.butchered[index],
@@ -9357,6 +9624,7 @@ mod tests {
                 land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
                 fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
                 fertile_cells: 8,
+                fertile_cells_by_terrain: BTreeMap::new(),
                 sea: 0,
             },
         };
@@ -9367,7 +9635,7 @@ mod tests {
             vec![PlaceState {
                 id: "fort".to_owned(),
                 price_drift_carries: vec![0],
-                counters: CounterBuckets::default(),
+                counters: CounterBuckets::for_place(rules.goods.len()),
                 coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
@@ -9483,6 +9751,7 @@ mod tests {
                 land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
                 fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
                 fertile_cells: 8,
+                fertile_cells_by_terrain: BTreeMap::new(),
                 sea: 0,
             },
         };
@@ -9551,6 +9820,7 @@ mod tests {
                 land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
                 fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
                 fertile_cells: 8,
+                fertile_cells_by_terrain: BTreeMap::new(),
                 sea: 0,
             },
         };
@@ -9602,6 +9872,7 @@ mod tests {
                 land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
                 fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
                 fertile_cells: 8,
+                fertile_cells_by_terrain: BTreeMap::new(),
                 sea: 0,
             },
         };
@@ -9654,6 +9925,7 @@ mod tests {
                 land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
                 fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
                 fertile_cells: 8,
+                fertile_cells_by_terrain: BTreeMap::new(),
                 sea: 0,
             },
         };
@@ -9716,6 +9988,7 @@ mod tests {
                 land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
                 fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
                 fertile_cells: 8,
+                fertile_cells_by_terrain: BTreeMap::new(),
                 sea: 0,
             },
         };
@@ -10218,6 +10491,7 @@ mod tests {
                     land_cells: BTreeMap::from([("pasture".to_owned(), 4)]),
                     fertility_pm: BTreeMap::from([("pasture".to_owned(), 4000)]),
                     fertile_cells: 4,
+                    fertile_cells_by_terrain: BTreeMap::new(),
                     sea: 0,
                 },
             }],
@@ -10496,6 +10770,7 @@ mod tests {
                         land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
                         fertility_pm: BTreeMap::from([("pasture".to_owned(), 2_000)]),
                         fertile_cells: 2,
+                        fertile_cells_by_terrain: BTreeMap::new(),
                         sea: 0,
                     },
                 }],
@@ -10597,6 +10872,7 @@ mod tests {
                     land_cells: BTreeMap::from([("pasture".to_owned(), 4)]),
                     fertility_pm: BTreeMap::from([("pasture".to_owned(), 4000)]),
                     fertile_cells: 4,
+                    fertile_cells_by_terrain: BTreeMap::new(),
                     sea: 0,
                 },
             }],
@@ -10614,7 +10890,16 @@ mod tests {
         let ledger = run_monthly_production(&rules, &mut state, date).unwrap();
         let place = &ledger.places[0];
         assert_eq!(state.places[0].counters.last.births, 7);
-        assert_eq!(state.places[0].counters.current, MonthlyCounters::default());
+        assert_eq!(
+            state.places[0].counters.current,
+            MonthlyCounters {
+                losses: place.lost.iter().sum(),
+                produced: place.produced.clone(),
+                lost: place.lost.clone(),
+                ..MonthlyCounters::for_goods(rules.goods.len())
+            }
+        );
+        assert!(state.places[0].counters.closed);
         assert_eq!(state.places[0].pops[0].counters.last.losses, 3);
         for good in 0..rules.goods.len() {
             assert_eq!(
@@ -10633,6 +10918,80 @@ mod tests {
                 "herd index {species} must balance"
             );
         }
+    }
+
+    #[test]
+    fn place_counter_rollover_values_goods_at_the_updated_local_price() {
+        let mut counters = CounterBuckets::for_place(1);
+        counters.current.produced[0] = 12;
+        counters.current.used_by_pops[0] = 2;
+        counters.current.lost[0] = 3;
+
+        roll_counter_month(&mut counters, Some(&[96_500])).unwrap();
+
+        assert!(counters.closed);
+        assert_eq!(counters.last.produced, [12]);
+        assert_eq!(counters.last.produced_value_milli, [1_158_000]);
+        assert_eq!(counters.last.used_by_pops, [2]);
+        assert_eq!(counters.last.used_by_pops_value_milli, [193_000]);
+        assert_eq!(counters.last.lost, [3]);
+        assert_eq!(counters.current, MonthlyCounters::for_goods(1));
+    }
+
+    #[test]
+    fn first_of_month_rollover_uses_the_price_updated_by_that_days_market() {
+        let rules = tiny_rules();
+        let mut place = PlaceState {
+            id: "fixture".to_owned(),
+            coastal: false,
+            pops: vec![PopState {
+                kind: "peasant".to_owned(),
+                culture: "connachta".to_owned(),
+                religion: "christianity".to_owned(),
+                literacy_pm: 0,
+                workers: 1,
+                dependents: 0,
+                employment: Vec::new(),
+                stock: vec![0],
+                consumption: PopConsumption {
+                    pantry_hunger_centi: vec![0],
+                    ticking_carries: vec![0],
+                    ..PopConsumption::default()
+                },
+                counters: CounterBuckets::default(),
+            }],
+            buildings: Vec::new(),
+            prices_milli: vec![100_001],
+            prepared_m2: 0,
+            development_pm: 0,
+            price_drift_carries: vec![0],
+            counters: CounterBuckets::for_place(1),
+        };
+        place.counters.current.produced[0] = 12;
+        let mut state = EconomyState {
+            places: vec![place],
+        };
+
+        run_daily_economy(
+            &rules,
+            &mut state,
+            Date {
+                year: 768,
+                month: 3,
+                day: 1,
+                hour: 0,
+            },
+        )
+        .unwrap();
+
+        let place = &state.places[0];
+        assert_eq!(
+            place.prices_milli,
+            [105_000],
+            "the market moves price first"
+        );
+        assert_eq!(place.counters.last.produced, [12]);
+        assert_eq!(place.counters.last.produced_value_milli, [1_260_000]);
     }
 
     #[test]
@@ -10771,6 +11130,7 @@ mod tests {
                     land_cells: BTreeMap::from([("pasture".to_owned(), 6)]),
                     fertility_pm: BTreeMap::from([("pasture".to_owned(), 6000)]),
                     fertile_cells: 6,
+                    fertile_cells_by_terrain: BTreeMap::new(),
                     sea: 0,
                 },
             }],
@@ -10942,6 +11302,7 @@ mod tests {
                 ("forest".to_owned(), 2000),
             ]),
             fertile_cells: 4,
+            fertile_cells_by_terrain: BTreeMap::new(),
             sea: 0,
         };
         assert_eq!(
@@ -10974,6 +11335,7 @@ mod tests {
             land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
             fertility_pm: BTreeMap::from([("pasture".to_owned(), 1999)]),
             fertile_cells: 2,
+            fertile_cells_by_terrain: BTreeMap::new(),
             sea: 0,
         };
         let refused = assign_building_levels(
@@ -10995,6 +11357,7 @@ mod tests {
             land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
             fertility_pm: BTreeMap::from([("pasture".to_owned(), 2000)]),
             fertile_cells: 2,
+            fertile_cells_by_terrain: BTreeMap::new(),
             sea: 0,
         };
         let accepted = assign_building_levels(
@@ -11058,6 +11421,7 @@ mod tests {
                     land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
                     fertility_pm: BTreeMap::from([("pasture".to_owned(), 2000)]),
                     fertile_cells: 2,
+                    fertile_cells_by_terrain: BTreeMap::new(),
                     sea: 0,
                 },
             }],
@@ -11076,6 +11440,7 @@ mod tests {
                     land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
                     fertility_pm: BTreeMap::from([("pasture".to_owned(), 2000)]),
                     fertile_cells: 2,
+                    fertile_cells_by_terrain: BTreeMap::new(),
                     sea: 1,
                 },
             }],
@@ -11177,6 +11542,7 @@ mod tests {
                     land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
                     fertility_pm: BTreeMap::from([("pasture".to_owned(), 2000)]),
                     fertile_cells: 2,
+                    fertile_cells_by_terrain: BTreeMap::new(),
                     sea: 0,
                 },
             }],
@@ -11239,7 +11605,25 @@ mod tests {
             places: vec![PlaceState {
                 id: "a".to_owned(),
                 price_drift_carries: vec![-321],
-                counters: CounterBuckets::default(),
+                counters: CounterBuckets {
+                    current: MonthlyCounters {
+                        produced: vec![4],
+                        used_by_pops: vec![3],
+                        lost: vec![2],
+                        produced_value_milli: vec![u128::from(u64::MAX) + 9],
+                        used_by_pops_value_milli: vec![u128::from(u64::MAX) + 10],
+                        ..MonthlyCounters::default()
+                    },
+                    last: MonthlyCounters {
+                        produced: vec![11],
+                        used_by_pops: vec![7],
+                        lost: vec![5],
+                        produced_value_milli: vec![u128::from(u64::MAX) + 17],
+                        used_by_pops_value_milli: vec![u128::from(u64::MAX) + 19],
+                        ..MonthlyCounters::default()
+                    },
+                    closed: true,
+                },
                 coastal: false,
                 pops: vec![PopState {
                     kind: "peasant".to_owned(),
@@ -11274,12 +11658,15 @@ mod tests {
                             births: 7,
                             deaths: 3,
                             losses: 2,
+                            ..MonthlyCounters::default()
                         },
                         last: MonthlyCounters {
                             births: 5,
                             deaths: 4,
                             losses: 1,
+                            ..MonthlyCounters::default()
                         },
+                        closed: true,
                     },
                 }],
                 buildings: vec![
@@ -11342,6 +11729,45 @@ mod tests {
         );
         assert_eq!(decoded.places[0].buildings[0].posted_wage(), 6);
         assert_eq!(decoded.to_bytes().unwrap(), bytes);
+        let decoded_counters = &decoded.places[0].counters;
+        assert!(decoded_counters.closed);
+        assert_eq!(decoded_counters.last.produced, [11]);
+        assert_eq!(decoded_counters.last.used_by_pops, [7]);
+        assert_eq!(decoded_counters.last.lost, [5]);
+        assert_eq!(
+            decoded_counters.last.produced_value_milli,
+            [u128::from(u64::MAX) + 17]
+        );
+        assert_eq!(
+            decoded_counters.last.used_by_pops_value_milli,
+            [u128::from(u64::MAX) + 19]
+        );
+
+        let mut before_rollover = state.clone();
+        before_rollover.places[0].counters.closed = false;
+        let before_bytes = before_rollover.to_bytes().unwrap();
+        let before_loaded = EconomyState::from_bytes(&before_bytes).unwrap();
+        assert!(!before_loaded.places[0].counters.closed);
+        assert_eq!(
+            before_loaded.places[0].counters,
+            before_rollover.places[0].counters
+        );
+
+        let mut after_rollover = state.clone();
+        let rollover_prices = after_rollover.places[0].prices_milli.clone();
+        roll_counter_month(
+            &mut after_rollover.places[0].counters,
+            Some(&rollover_prices),
+        )
+        .unwrap();
+        let after_bytes = after_rollover.to_bytes().unwrap();
+        let after_loaded = EconomyState::from_bytes(&after_bytes).unwrap();
+        assert!(after_loaded.places[0].counters.closed);
+        assert_eq!(after_loaded.places[0].counters.last.produced, [4]);
+        assert_eq!(
+            after_loaded.places[0].counters.last.produced_value_milli,
+            [480_000]
+        );
 
         let mut rules = tiny_rules();
         rules.goods[0].id = "oats".to_owned();
@@ -11444,6 +11870,7 @@ mod tests {
                     land_cells: BTreeMap::from([("pasture".to_owned(), 2)]),
                     fertility_pm: BTreeMap::from([("pasture".to_owned(), 2000)]),
                     fertile_cells: 2,
+                    fertile_cells_by_terrain: BTreeMap::new(),
                     sea: 0,
                 },
             }],
