@@ -229,7 +229,11 @@ fn assert_tooltip_text_tint(readout: &Readout, text: &str, colour: &str) {
                 .is_some_and(|(_, _, tint)| tint == colour)
         })
     });
-    assert!(found, "{text:?} is not rendered in {colour}");
+    assert!(
+        found,
+        "{text:?} is not rendered in {colour}; entries: {:?}",
+        readout.entries()
+    );
 }
 
 fn tooltip_text_rects(readout: &Readout, text: &str) -> Vec<Vec<Rect>> {
@@ -1133,6 +1137,24 @@ fn main_lua_registers_its_update_callback() {
 }
 
 #[test]
+fn map_hover_uses_the_shared_location_tooltip_and_the_game_place_name() {
+    let mut readout = Readout::new(crate::readout_tests::PLACE_TOOLTIP_TEST_FIXTURE);
+    readout.deliver(&crate::readout_tests::snapshot(14, 1, None));
+    readout.deliver_hover(Some(("town", "map hover name", 100, 120, 80)));
+    for _ in 0..24 {
+        readout.update(800, 600, None);
+    }
+    assert_tooltip_text_tint(&readout, "Alpha", "#c9932e");
+    let title = tooltip_text_rects(&readout, "Alpha").remove(0);
+    let population = tooltip_text_rects(&readout, "population").remove(0);
+    assert!(
+        population[0].1 > title[0].1,
+        "the population is the second tooltip line"
+    );
+    assert!(tooltip_text_rects(&readout, "map hover name").is_empty());
+}
+
+#[test]
 fn the_tooltip_flips_at_the_real_window_width() {
     let flip_x = |width: i64| {
         let mut readout = Readout::script(
@@ -1207,7 +1229,7 @@ frame.on_update(function(update) tooltip.update(update) end)
 
 #[test]
 fn a_resize_relayouts_the_readout_and_a_shown_tooltip() {
-    let mut readout = Readout::new("");
+    let mut readout = Readout::new(crate::readout_tests::PLACE_TOOLTIP_TEST_FIXTURE);
     // The shipped script opens at 1280 by 800 here (no screen snapshot); this case starts from a window of 800 by 600.
     readout.update(800, 600, None);
     readout.deliver(&crate::readout_tests::snapshot(
@@ -2038,7 +2060,7 @@ fn on_screen(rect: Rect) -> bool {
 
 #[test]
 fn the_tooltip_places_no_panel_while_hidden_and_exactly_one_when_shown() {
-    let mut readout = Readout::new("");
+    let mut readout = Readout::new(crate::readout_tests::PLACE_TOOLTIP_TEST_FIXTURE);
     let panel_rects = |readout: &Readout| -> Vec<Rect> {
         let entries = readout.entries();
         let alive = quads(&entries);
@@ -2051,20 +2073,18 @@ fn the_tooltip_places_no_panel_while_hidden_and_exactly_one_when_shown() {
             .filter_map(|name| alive.get(&name).copied())
             .collect()
     };
-    assert!(
-        panel_rects(&readout).is_empty(),
-        "no tooltip panel exists before the first hover"
-    );
+    let before = panel_rects(&readout);
     readout.deliver_hover(Some(("town", "Alpha", 100, 160, 80)));
     assert!(
-        panel_rects(&readout).is_empty(),
-        "the tooltip waits through its delay"
+        panel_rects(&readout) == before,
+        "the tooltip waits through its delay: before={before:?} after={:?}",
+        panel_rects(&readout)
     );
     for _ in 0..20 {
         readout.update(800, 600, None);
     }
     let shown = panel_rects(&readout);
-    assert_eq!(shown.len(), 1);
+    assert_eq!(shown.len(), before.len() + 1, "{shown:?} vs {before:?}");
     assert!(
         on_screen(shown[0]),
         "the shown tooltip's panel is placed: {shown:?}"
@@ -2072,8 +2092,9 @@ fn the_tooltip_places_no_panel_while_hidden_and_exactly_one_when_shown() {
     readout.deliver_hover(None);
     readout.update(800, 600, None);
     let hidden = panel_rects(&readout);
-    assert!(
-        hidden.is_empty(),
+    assert_eq!(
+        hidden.len(),
+        before.len(),
         "an unlocked tooltip is destroyed when its target leaves"
     );
     readout.deliver_hover(Some(("town", "Alpha", 100, 160, 80)));
@@ -2522,6 +2543,134 @@ frame.on_update(function() end)
     assert!(
         readout.entries().is_empty(),
         "the Lua contract assertions ran without drawing UI"
+    );
+}
+
+const LOCATION_TOOLTIP_CLASSES: &str = r#"
+local classes = require("lib.classes")
+local function pop(kind, culture, religion, workers, dependents)
+  return {kind = kind, culture = culture, religion = religion, workers = workers, dependents = dependents}
+end
+local goods = {"oats", "barley", "peas_beans", "vegetables", "apples", "dairy", "beef", "pork", "mutton", "fish", "seabirds", "ale", "mead"}
+local produced, used = {}, {}
+for index, good in ipairs(goods) do
+  produced[index] = {good = good, units = index,
+    value_milli = index == 1 and 1500000 or index == 2 and 1500000 or index == 3 and 1209500 or 0}
+  used[index] = {good = good, units = index, value_milli = index == 1 and 2000000 or index == 2 and 1980000 or 0}
+end
+local fixture = {
+  id = "clonmacnoise", workers = 272, dependents = 140,
+  pops = {pop("peasant", "mumu", "christianity", 200, 100), pop("labourer", "laigin", "christianity", 72, 40)},
+  land = {usable = {pasture = 32, forest = 12, scrub = 6},
+    land = {pasture = 32, forest = 12, scrub = 6, bog = 16, mountain = 10}, sea = 8},
+  last_month = {closed = true, produced = produced, used_by_pops = used, lost = {}},
+}
+local population = {
+  id = "kinds", workers = 188, dependents = 224,
+  pops = {pop("monk", "mumu", "christianity", 20, 20), pop("labourer", "mumu", "christianity", 60, 0),
+    pop("peasant", "mumu", "christianity", 200, 112)},
+  land = fixture.land, last_month = fixture.last_month,
+}
+local ties = {
+  id = "ties", workers = 206, dependents = 206,
+  pops = {pop("peasant", "mumu", "christianity", 103, 103), pop("labourer", "laigin", "christianity", 103, 103)},
+  land = fixture.land, last_month = fixture.last_month,
+}
+local equal_kinds = {
+  id = "equal_kinds", workers = 20, dependents = 0,
+  pops = {pop("monk", "mumu", "christianity", 10, 0), pop("labourer", "mumu", "christianity", 10, 0)},
+  land = fixture.land, last_month = fixture.last_month,
+}
+local empty = {id = "empty", workers = 0, dependents = 0, pops = {}, land = {usable = {}, land = {}, sea = 0},
+  last_month = {closed = false, produced = {}, used_by_pops = {}, lost = {}}}
+local closed_empty = {id = "closed_empty", workers = 0, dependents = 0, pops = {}, land = empty.land,
+  last_month = {closed = true, produced = {}, used_by_pops = {}, lost = {}}}
+game.places = function() return {
+  {id = "clonmacnoise", name = "Cluain Mhic Nóis"}, {id = "kinds", name = "Kinds"},
+  {id = "ties", name = "Ties"}, {id = "equal_kinds", name = "Equal Kinds"},
+  {id = "empty", name = "Empty"}, {id = "closed_empty", name = "Closed Empty"},
+} end
+game.place = function(id, revision)
+  assert(revision == 7)
+  return ({clonmacnoise = fixture, kinds = population, ties = ties, equal_kinds = equal_kinds,
+    empty = empty, closed_empty = closed_empty})[id]
+end
+classes.set_revision(7)
+local tooltip = require("lib.tooltip")
+local function line_text(line)
+  local chunks = {}
+  for _, span in ipairs(line) do chunks[#chunks + 1] = type(span) == "string" and span or span.text end
+  return table.concat(chunks)
+end
+local function texts(content)
+  local out = {}
+  for index, line in ipairs(content) do out[index] = line_text(line) end
+  return out
+end
+local function has_span(line, wanted, field, value)
+  for _, span in ipairs(line) do
+    if type(span) == "table" and span.text == wanted and span[field] == value then return true end
+  end
+  return false
+end
+local place = tooltip.content("location", {place = "clonmacnoise"})
+assert(place.title == "Cluain Mhic Nóis")
+local place_lines = texts(place)
+assert(table.concat(place_lines, "\n") == table.concat({
+  "population 412", "culture Mumu 72%", "religion Christianity 100%", "usable land 12.5 km²",
+  "produced last month 4210", "consumed last month 3980",
+}, "\n"), table.concat(place_lines, "\n"))
+assert(has_span(place[1], "412", "class", "population"))
+assert(place[1][3].args.place == "clonmacnoise")
+assert(has_span(place[2], "Mumu", "term", "mumu"))
+assert(has_span(place[2], "72%", "class", "cultures"))
+assert(has_span(place[3], "100%", "class", "religions"))
+assert(has_span(place[4], "12.5", "class", "land"))
+assert(has_span(place[5], "4210", "class", "produced"))
+assert(has_span(place[6], "3980", "class", "consumed"))
+assert(not table.concat(place_lines, " "):find("county", 1, true))
+assert(not table.concat(place_lines, " "):find("region", 1, true))
+
+local populations = texts(tooltip.content("population", {place = "kinds"}))
+assert(table.concat(populations, "\n") == "peasants 312\nlabourers 60\nmonks 40\nworkers 188, dependents 224")
+assert(table.concat(texts(tooltip.content("population", {place = "equal_kinds"})), "\n") ==
+  "labourers 10\nmonks 10\nworkers 20, dependents 0")
+local tied_place = tooltip.content("location", {place = "ties"})
+assert(tied_place.title == "Ties" and line_text(tied_place[2]) == "culture Laigin 50%")
+assert(has_span(tied_place[2], "Laigin", "term", "laigin"))
+assert(table.concat(texts(tooltip.content("cultures", {place = "ties"})), "\n") ==
+  "Laigin 206 (50%)\nMumu 206 (50%)")
+local culture_lines = texts(tooltip.content("cultures", {place = "clonmacnoise"}))
+assert(table.concat(culture_lines, "\n") == "Mumu 300 (72%)\nLaigin 112 (27%)")
+local religion_lines = texts(tooltip.content("religions", {place = "clonmacnoise"}))
+assert(table.concat(religion_lines, "\n") == "Christianity 412 (100%)")
+local land_lines = texts(tooltip.content("land", {place = "clonmacnoise"}))
+assert(table.concat(land_lines, "\n") == "pasture 8\nforest 3\nscrub 1.5\nnot usable 6.5\nsea 2")
+local made = tooltip.content("produced", {place = "clonmacnoise"})
+assert(#made == 14 and line_text(made[1]) == "value at local prices:")
+assert(line_text(made[2]) == "oats 1500" and line_text(made[3]) == "barley 1500")
+assert(line_text(made[4]) == "peas and beans 1210")
+assert(line_text(made[14]) == "mead 0")
+local eaten = texts(tooltip.content("consumed", {place = "clonmacnoise"}))
+assert(eaten[1] == "value at local prices:" and eaten[2] == "oats 2000" and eaten[3] == "barley 1980" and eaten[14] == "mead 0")
+local empty_lines = texts(tooltip.content("location", {place = "empty"}))
+assert(table.concat(empty_lines, "\n") == "population 0\nusable land 0 km²\nproduced last month -\nconsumed last month -")
+local open_place = tooltip.content("location", {place = "empty"})
+assert(not has_span(open_place[3], "-", "class", "produced") and not has_span(open_place[4], "-", "class", "consumed"))
+local closed_lines = tooltip.content("location", {place = "closed_empty"})
+assert(has_span(closed_lines[3], "0", "class", "produced"))
+assert(has_span(closed_lines[4], "0", "class", "consumed"))
+assert(tooltip.content("location", {place = "not-yet-in-view"}) == nil)
+frame.on_update(function() end)
+"#;
+
+#[test]
+fn location_tooltip_classes_cover_the_economy_breakdowns_and_ordering_contract() {
+    let mut readout = Readout::script(LOCATION_TOOLTIP_CLASSES);
+    readout.update(800, 600, None);
+    assert!(
+        readout.entries().is_empty(),
+        "the class assertions execute without drawing UI"
     );
 }
 

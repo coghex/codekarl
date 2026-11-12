@@ -414,6 +414,63 @@ fn run_map_selection_fixture_vm(markers: &std::path::Path) {
     close_fixture_windows(&mut rig, markers);
 }
 
+#[test]
+fn real_map_hover_in_main_lua_resolves_the_shared_location_class() {
+    let text_field = |table: &ConfigValue, name: &str| match field(table, name) {
+        ConfigValue::String(value) => value.clone(),
+        other => panic!("{name}: expected a string, got {other:?}"),
+    };
+    let main = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua"),
+    )
+    .expect("the shipped UI entry point");
+    let fixture = r#"
+local classes = require("lib.classes")
+classes.set_revision(0)
+game.places = function()
+  return {{id = "fixture-town", name = "Fixture Town", kind = "town", size = 1}}
+end
+game.place = function(id, revision)
+  if id ~= "fixture-town" or revision ~= 0 then return nil end
+  return {id = id, workers = 412, dependents = 0, pops = {},
+    land = {usable = {}, land = {}, sea = 0},
+    last_month = {closed = true, produced = {}, used_by_pops = {}, lost = {}}}
+end
+local tooltip = require("lib.tooltip")
+local map_hover = tooltip.map_hover
+tooltip.map_hover = function(hover, source)
+  if hover ~= nil then
+    local content = tooltip.content(source.class, source.args)
+    local spans = {}
+    for _, span in ipairs(content[1]) do
+      spans[#spans + 1] = type(span) == "table" and span.text or span
+    end
+    window.record({id = hover.id, class = source.class, title = content.title,
+      population = table.concat(spans)})
+  end
+  map_hover(hover, source)
+end
+"#;
+    let mut rig = Rig::new_fixture_body(&format!("{main}\n{fixture}"));
+    rig.opened();
+    rig.feed(&[PointerEvent::Move(rig.map_pointer)]);
+    for _ in 0..24 {
+        rig.deliver_fixture_frame();
+    }
+
+    let observed = rig
+        .tables
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .find(|table| text_field(table, "id") == "fixture-town")
+        .cloned()
+        .expect("the real map controller delivered its marker hover to main.lua");
+    assert_eq!(text_field(&observed, "class"), "location");
+    assert_eq!(text_field(&observed, "title"), "Fixture Town");
+    assert_eq!(text_field(&observed, "population"), "population 412");
+}
+
 fn open_map_selection_fixture(rig: &mut Rig, markers: &std::path::Path) {
     rig.opened();
     assert!(

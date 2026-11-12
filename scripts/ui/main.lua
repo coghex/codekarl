@@ -19,6 +19,7 @@ local theme = require("lib.theme")
 local date_text = require("lib.time")
 local location = require("lib.location")
 local tooltip = require("lib.tooltip")
+local classes = require("lib.classes")
 
 local P = ui.P
 local MARGIN = 8 -- UI units from the window's edges
@@ -344,6 +345,7 @@ if game ~= nil then
 
   game.on_time(function(time)
     location_panel:set_revision(time.economy_revision)
+    classes.set_revision(time.economy_revision)
     if fill_ledger ~= nil and places_window ~= nil and not places_window.closed
       and ledger_revision ~= location_panel:current_revision() then
       fill_ledger()
@@ -556,7 +558,7 @@ if game ~= nil then
 
   -- The map's place name uses the shared delayed tooltip system. T6 supplies richer location content.
   game.on_hover(function(hover)
-    tooltip.map_hover(hover, hover and function() return {hover.name} end or nil)
+    tooltip.map_hover(hover, hover and {class = "location", args = {place = hover.id}} or nil)
   end)
 end
 

@@ -7,6 +7,17 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+pub(crate) const PLACE_TOOLTIP_TEST_FIXTURE: &str = r#"
+require("lib.classes").set_revision(0)
+game.places = function() return {{id = "town", name = "Alpha", kind = "town", size = 1}} end
+game.place = function(id, revision)
+  if id ~= "town" or revision ~= 0 then return nil end
+  return {id = id, workers = 0, dependents = 0, pops = {},
+    land = {usable = {}, land = {}, sea = 0},
+    last_month = {closed = true, produced = {}, used_by_pops = {}, lost = {}}}
+end
+"#;
+
 use ck_lua::{CallOutcome, ConfigValue, Extension, HostFunction, Modules, VmOwner, VmSettings};
 use ck_window::{Notifier, Requests};
 
@@ -671,36 +682,43 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
 
 #[test]
 fn place_tooltip_waits_for_its_delay_then_closes_when_the_place_is_left() {
-    let mut readout = Readout::new("");
+    let mut readout = Readout::new(PLACE_TOOLTIP_TEST_FIXTURE);
     assert!(readout.hover_registered.load(Ordering::SeqCst));
+    let panel_count = |readout: &Readout| {
+        let mut panels = std::collections::BTreeSet::new();
+        for line in readout.entries() {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            match fields.as_slice() {
+                ["create", name, "ui/theme/cut3_tl_fill.png", ..] => {
+                    panels.insert((*name).to_owned());
+                }
+                ["destroy", name] => {
+                    panels.remove(*name);
+                }
+                _ => {}
+            }
+        }
+        panels.len()
+    };
     // The shipped script opens a window of 1280 by 800 pixels, which this rig (it has no screen snapshot) resolves one to one; the
     // flipping below is written for a window 800 points wide, so the first update says so.
     readout.update(800, 600, None);
 
+    let initial_panels = panel_count(&readout);
     readout.deliver_hover(Some(("town", "Alpha", 10, 20, 40)));
     assert!(
-        !readout.entries().iter().any(|line| {
-            line.starts_with("create ") && line.contains("ui/theme/cut3_tl_fill.png")
-        }),
+        panel_count(&readout) == initial_panels,
         "the place tooltip waits for its delay"
     );
     for _ in 0..40 {
         readout.update(800, 600, None);
     }
     let shown = readout.entries();
-    assert!(
-        shown.iter().any(|line| {
-            line.starts_with("create ") && line.contains("ui/theme/cut3_tl_fill.png")
-        }),
-        "the place tooltip appears after the delay: {shown:?}"
-    );
-    assert!(readout.tints().iter().any(|line| line.contains("#f0a830")));
+    assert_eq!(panel_count(&readout), initial_panels + 1, "{shown:?}");
+    assert!(readout.tints().iter().any(|line| line.contains("#c9932e")));
 
     readout.deliver_hover(None);
     readout.update(800, 600, None);
     let hidden = readout.entries();
-    assert!(
-        hidden.iter().any(|line| line.starts_with("destroy q")),
-        "{hidden:?}"
-    );
+    assert_eq!(panel_count(&readout), initial_panels, "{hidden:?}");
 }
