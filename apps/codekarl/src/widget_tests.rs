@@ -8,7 +8,38 @@ use std::collections::BTreeMap;
 
 use ck_lua::ConfigValue;
 
+use crate::config::TooltipsConfig;
 use crate::readout_tests::Readout;
+
+fn pointer_packet(over: &str, x: f64, events: Vec<ConfigValue>) -> ConfigValue {
+    ConfigValue::Table(BTreeMap::from([
+        ("x".to_owned(), ConfigValue::Float(x)),
+        ("y".to_owned(), ConfigValue::Float(28.0)),
+        ("held".to_owned(), ConfigValue::Bool(false)),
+        ("overflow".to_owned(), ConfigValue::Bool(false)),
+        ("over".to_owned(), ConfigValue::String(over.to_owned())),
+        ("events".to_owned(), ConfigValue::Array(events)),
+    ]))
+}
+
+fn pointer_event(kind: &str, key: Option<&str>, functional: Option<bool>) -> ConfigValue {
+    let mut fields = BTreeMap::from([
+        ("kind".to_owned(), ConfigValue::String(kind.to_owned())),
+        ("x".to_owned(), ConfigValue::Float(32.0)),
+        ("y".to_owned(), ConfigValue::Float(28.0)),
+        ("inside".to_owned(), ConfigValue::Bool(true)),
+    ]);
+    fields.insert(
+        "key".to_owned(),
+        key.map_or(ConfigValue::Bool(false), |key| {
+            ConfigValue::String(key.to_owned())
+        }),
+    );
+    if let Some(functional) = functional {
+        fields.insert("functional".to_owned(), ConfigValue::Bool(functional));
+    }
+    ConfigValue::Table(fields)
+}
 
 #[path = "../tests/support/time_bar.rs"]
 pub(crate) mod time_bar_witness;
@@ -144,6 +175,230 @@ fn quads(entries: &[String]) -> BTreeMap<String, Rect> {
         }
     }
     alive
+}
+
+/// The shipped font fixture identifies each glyph by code point; pair those glyphs with their latest scene tint.
+fn tooltip_glyphs(readout: &Readout) -> Vec<(char, Rect, String)> {
+    let entries = readout.entries();
+    let alive = quads(&entries);
+    let tints: BTreeMap<String, String> = readout
+        .tints()
+        .iter()
+        .filter_map(|entry| {
+            let mut fields = entry.split_whitespace();
+            let operation = fields.next()?;
+            if !matches!(operation, "create" | "set_tint") {
+                return None;
+            }
+            Some((fields.next()?.to_owned(), fields.next()?.to_owned()))
+        })
+        .collect();
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let mut fields = entry.split_whitespace();
+            if fields.next()? != "create" {
+                return None;
+            }
+            let quad = fields.next()?.to_owned();
+            let texture = fields.next()?;
+            let code = texture
+                .strip_prefix("ui/font/")?
+                .split_once("/U+")?
+                .1
+                .strip_suffix(".png")?;
+            let character = char::from_u32(u32::from_str_radix(code, 16).ok()?)?;
+            let rect = alive.get(&quad).copied()?;
+            Some((
+                character,
+                rect,
+                tints.get(&quad).cloned().unwrap_or_default(),
+            ))
+        })
+        .collect()
+}
+
+fn assert_tooltip_text_tint(readout: &Readout, text: &str, colour: &str) {
+    let rectangles = tooltip_text_rects(readout, text);
+    let glyphs = tooltip_glyphs(readout);
+    let found = rectangles.iter().any(|rectangles| {
+        rectangles.iter().all(|rect| {
+            glyphs
+                .iter()
+                .find(|(_, glyph_rect, _)| glyph_rect == rect)
+                .is_some_and(|(_, _, tint)| tint == colour)
+        })
+    });
+    assert!(found, "{text:?} is not rendered in {colour}");
+}
+
+fn tooltip_text_rects(readout: &Readout, text: &str) -> Vec<Vec<Rect>> {
+    let wanted: Vec<char> = text.chars().collect();
+    let mut glyphs = tooltip_glyphs(readout);
+    glyphs.sort_by_key(|(character, rect, _)| (rect.1, rect.0, *character));
+    glyphs
+        .windows(wanted.len())
+        .filter_map(|window| {
+            let row_y = window[0].1.1;
+            (window
+                .iter()
+                .map(|(character, _, _)| *character)
+                .eq(wanted.iter().copied())
+                && window.iter().all(|(_, rect, _)| rect.1 == row_y))
+            .then(|| window.iter().map(|(_, rect, _)| *rect).collect())
+        })
+        .collect()
+}
+
+fn tooltip_scroll_readout(lock: &'static str, mixed_fonts: bool) -> Readout {
+    let font_choice = if mixed_fonts {
+        "index % 2 == 0 and 'tiny' or 'small'"
+    } else {
+        "'small'"
+    };
+    Readout::script_with_tooltips(
+        &format!(
+            r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+pointer.register("long_target", {{on_event = function() end, on_hover = function() end, on_overflow = function() end}})
+render.set_hit("long_target", {{{{x = 20, y = 20, width = 80, height = 24}}}})
+local lines = {{}}
+for index = 1, 20 do
+  lines[index] = {{{{text = string.format("row%02d", index), font = {font_choice}, tooltip = function() return {{"child"}} end}}}}
+end
+tooltip.attach("long_target", function() return lines end)
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  if update.pointer.over == "refresh_short" then
+    for index = 20, 16, -1 do lines[index] = nil end
+    tooltip.refresh()
+  end
+  tooltip.update(update)
+end)
+"#
+        ),
+        TooltipsConfig {
+            delay: 0.0,
+            lock,
+            lock_timer: 1.0,
+        },
+    )
+}
+
+fn long_tooltip_pointer_event(
+    kind: &str,
+    key: &str,
+    amount: Option<f64>,
+    unit: Option<&str>,
+) -> ConfigValue {
+    let mut fields = BTreeMap::from([
+        ("kind".to_owned(), ConfigValue::String(kind.to_owned())),
+        ("key".to_owned(), ConfigValue::String(key.to_owned())),
+        ("x".to_owned(), ConfigValue::Float(32.0)),
+        ("y".to_owned(), ConfigValue::Float(28.0)),
+        ("inside".to_owned(), ConfigValue::Bool(true)),
+    ]);
+    if let Some(amount) = amount {
+        fields.insert("amount".to_owned(), ConfigValue::Float(amount));
+    }
+    if let Some(unit) = unit {
+        fields.insert("unit".to_owned(), ConfigValue::String(unit.to_owned()));
+    }
+    ConfigValue::Table(fields)
+}
+
+fn tooltip_scroll_thumb(readout: &Readout) -> Rect {
+    let tints: BTreeMap<String, String> = readout
+        .tints()
+        .iter()
+        .filter_map(|entry| {
+            let mut fields = entry.split_whitespace();
+            let operation = fields.next()?;
+            if !matches!(operation, "create" | "set_tint") {
+                return None;
+            }
+            Some((fields.next()?.to_owned(), fields.next()?.to_owned()))
+        })
+        .collect();
+    let alive = quads(&readout.entries());
+    alive
+        .into_iter()
+        .find_map(|(quad, rect)| {
+            (rect.2 == 6 && rect.3 == 126 && tints.get(&quad).is_some_and(|tint| tint == "#ece3cb"))
+                .then_some(rect)
+        })
+        .expect("the 63-unit scroll thumb")
+}
+
+fn tooltip_panel_rect(readout: &Readout) -> Option<Rect> {
+    let entries = readout.entries();
+    let alive = quads(&entries);
+    let panel_quads: Vec<Rect> = entries
+        .iter()
+        .filter(|entry| entry.starts_with("create ") && entry.contains("ui/theme/cut3_"))
+        .filter_map(|entry| entry.split_whitespace().nth(1))
+        .filter_map(|name| alive.get(name).copied())
+        .collect();
+    let left = panel_quads.iter().map(|rect| rect.0).min()?;
+    let top = panel_quads.iter().map(|rect| rect.1).min()?;
+    let right = panel_quads.iter().map(|rect| rect.0 + rect.2).max()?;
+    let bottom = panel_quads.iter().map(|rect| rect.1 + rect.3).max()?;
+    Some((left, top, right - left, bottom - top))
+}
+
+fn tooltip_panel_count(readout: &Readout) -> usize {
+    let entries = readout.entries();
+    let alive = quads(&entries);
+    entries
+        .iter()
+        .filter(|entry| entry.starts_with("create ") && entry.contains("ui/theme/cut3_tl_fill.png"))
+        .filter_map(|entry| entry.split_whitespace().nth(1))
+        .filter(|name| alive.contains_key(*name))
+        .count()
+}
+
+fn assert_mixed_tooltip_rows(readout: &Readout, first: usize, panel_y: i64) {
+    for index in first..first + 12 {
+        let label = format!("row{index:02}");
+        let rects = tooltip_text_rects(readout, &label)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("visible row {label} has glyphs"));
+        let expected_y = panel_y + 4 + i64::try_from(index - first).unwrap() * 18;
+        let expected_height = if index % 2 == 0 { 16 } else { 18 };
+        assert!(
+            rects
+                .iter()
+                .all(|rect| rect.1 == expected_y && rect.3 == expected_height),
+            "{label} uses its fixed mixed-font row: {rects:?}"
+        );
+        assert!(
+            rects.iter().all(|rect| rect.1 + rect.3 <= panel_y + 220),
+            "{label} stays inside the 112-pixel panel"
+        );
+    }
+}
+
+fn current_hits(entries: &[String], prefix: &str) -> BTreeMap<String, String> {
+    let mut hits = BTreeMap::new();
+    for entry in entries
+        .iter()
+        .filter_map(|entry| entry.strip_prefix("set_hit "))
+    {
+        let mut fields = entry.split_whitespace();
+        let Some(key) = fields.next() else { continue };
+        if !key.starts_with(prefix) {
+            continue;
+        }
+        let rect = fields.collect::<Vec<_>>().join(" ");
+        if rect == "nil" {
+            hits.remove(key);
+        } else {
+            hits.insert(key.to_owned(), rect);
+        }
+    }
+    hits
 }
 
 /// The tints of the frame whose first quad is `first` (11 quads for a frame cut at both corners, in painter order: five fill quads, then
@@ -880,24 +1135,73 @@ fn main_lua_registers_its_update_callback() {
 #[test]
 fn the_tooltip_flips_at_the_real_window_width() {
     let flip_x = |width: i64| {
-        let mut readout = Readout::new("");
+        let mut readout = Readout::script(
+            r#"
+local tooltip = require("lib.tooltip")
+local hover = {id = "town", name = "Alpha", left = 700, right = 760, y = 80}
+tooltip.map_hover(hover, function() return {hover.name} end)
+frame.on_update(function(update) tooltip.update(update) end)
+"#,
+        );
         readout.update(width, 600, None);
-        readout.deliver_hover(Some(("town", "Alpha", 700, 760, 80)));
-        readout
-            .entries()
+        for _ in 0..20 {
+            readout.update(width, 600, None);
+        }
+        let entries = readout.entries();
+        entries
             .into_iter()
-            .find(|e| e.starts_with("create q1 ui/theme/cut3_tl_fill.png"))
+            .rev()
+            .find(|e| e.starts_with("set_rect q1 "))
             .expect("the tooltip panel")
     };
-    // The tooltip's frame is 64 points wide (the name's 28 UI pixels plus 2 on each side): at 800 it would end at 828, so it flips to
-    // the left of the place (700 - 4 - 64 = 632); at 1200 it fits on the right (760 + 4 = 764).
-    assert_eq!(
-        flip_x(800),
-        "create q1 ui/theme/cut3_tl_fill.png 632 66 8 8"
+    let left = flip_x(800);
+    let right = flip_x(1200);
+    let x = |entry: &str| {
+        entry
+            .split_whitespace()
+            .nth(2)
+            .unwrap()
+            .parse::<i64>()
+            .unwrap()
+    };
+    assert!(
+        x(&left) < 700,
+        "tooltip flips left when the right side does not fit: {left}"
     );
-    assert_eq!(
-        flip_x(1200),
-        "create q1 ui/theme/cut3_tl_fill.png 764 66 8 8"
+    assert!(
+        x(&right) >= 760,
+        "tooltip stays to the right when it fits: {right}"
+    );
+}
+
+#[test]
+fn a_map_tooltip_clamps_up_from_the_bottom_edge() {
+    let mut readout = Readout::script(
+        r#"
+local tooltip = require("lib.tooltip")
+local hover = {id = "town", name = "Alpha", left = 40, right = 80, y = 590}
+tooltip.map_hover(hover, function() return {hover.name} end)
+frame.on_update(function(update) tooltip.update(update) end)
+"#,
+    );
+    for _ in 0..20 {
+        readout.update(800, 600, None);
+    }
+    let entries = readout.entries();
+    let rect = entries
+        .iter()
+        .rev()
+        .find(|entry| entry.starts_with("set_rect q1 "))
+        .expect("tooltip panel rect");
+    let values: Vec<i64> = rect
+        .split_whitespace()
+        .skip(2)
+        .map(|value| value.parse().unwrap())
+        .collect();
+    assert_eq!(values.len(), 4);
+    assert!(
+        values[1] + values[3] <= 600,
+        "bottom placement fits the view: {rect}"
     );
 }
 
@@ -912,16 +1216,20 @@ fn a_resize_relayouts_the_readout_and_a_shown_tooltip() {
         Some(crate::game::slot::PauseReason::Load),
     ));
     readout.deliver_hover(Some(("town", "Alpha", 700, 760, 80)));
+    for _ in 0..20 {
+        readout.update(800, 600, None);
+    }
     let before = readout.entries().len();
     // The same size again: idle.
     readout.update(800, 600, None);
-    assert_eq!(
-        readout.entries().len(),
-        before,
-        "{:?}",
+    assert!(
+        readout.entries()[before..]
+            .iter()
+            .all(|entry| !entry.starts_with("set_rect q1 ") && entry != "destroy q1"),
+        "resize keeps the tooltip at its opening rectangle: {:?}",
         &readout.entries()[before..]
     );
-    // A wider window: the tooltip no longer needs to flip, and the time bar remains at the same top-left anchor.
+    // The tooltip stays where it opened even when a wider window would fit it on the other side.
     readout.update(1200, 700, None);
     let after = readout.entries()[before..].to_vec();
     // (The bar's frame is where it was: none of its quads is rewritten.)
@@ -931,12 +1239,6 @@ fn a_resize_relayouts_the_readout_and_a_shown_tooltip() {
     );
     assert!(
         after.iter().any(|e| e.starts_with("set_hit time_bar 8 8 ")),
-        "{after:?}"
-    );
-    assert!(
-        after
-            .iter()
-            .any(|e| e.starts_with("set_rect q") && e.ends_with(" 764 66 8 8")),
         "{after:?}"
     );
 }
@@ -1705,7 +2007,7 @@ window.record(tostring(ok) .. " " .. tostring(message))
 theme.kind = function() return {outline = "#000000", hot = "#ffffff", speed_box = "#ece3cb"} end
 local ok2, message2 = pcall(look.kind, "time_bar")
 window.record(tostring(ok2) .. " " .. tostring(message2))
-"##,
+        "##,
     );
     let errors: Vec<_> = readout
         .entries()
@@ -1754,6 +2056,13 @@ fn the_tooltip_places_no_panel_while_hidden_and_exactly_one_when_shown() {
         "no tooltip panel exists before the first hover"
     );
     readout.deliver_hover(Some(("town", "Alpha", 100, 160, 80)));
+    assert!(
+        panel_rects(&readout).is_empty(),
+        "the tooltip waits through its delay"
+    );
+    for _ in 0..20 {
+        readout.update(800, 600, None);
+    }
     let shown = panel_rects(&readout);
     assert_eq!(shown.len(), 1);
     assert!(
@@ -1761,17 +2070,1818 @@ fn the_tooltip_places_no_panel_while_hidden_and_exactly_one_when_shown() {
         "the shown tooltip's panel is placed: {shown:?}"
     );
     readout.deliver_hover(None);
+    readout.update(800, 600, None);
     let hidden = panel_rects(&readout);
-    assert_eq!(hidden.len(), 1, "the panel is parked, not destroyed");
     assert!(
-        !on_screen(hidden[0]),
-        "the hidden tooltip's panel is not placed: {hidden:?}"
+        hidden.is_empty(),
+        "an unlocked tooltip is destroyed when its target leaves"
     );
-    assert_eq!(hidden[0].0, -1_000_000_000_000, "parked at ui.HIDDEN");
     readout.deliver_hover(Some(("town", "Alpha", 100, 160, 80)));
+    for _ in 0..20 {
+        readout.update(800, 600, None);
+    }
     let again = panel_rects(&readout);
     assert!(
         on_screen(again[0]),
         "and placed again when shown: {again:?}"
+    );
+}
+
+#[test]
+fn attached_tooltip_waits_locks_colours_and_survives_leaving_its_target() {
+    let mut readout = Readout::script_with_tooltips(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+local key = "tooltip_target"
+local widget = {on_event = function() end, on_hover = function() end, on_overflow = function() end}
+pointer.register(key, widget)
+render.set_hit(key, {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.define("population", function()
+  return {title = "Population", {"value ", {text = "96.5", class = "population", args = {}}}}
+end)
+tooltip.attach(key, {class = "population", args = {}})
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  tooltip.update(update)
+end)
+"#,
+        TooltipsConfig::default(),
+    );
+    let pointer = |over: Option<&str>| {
+        ConfigValue::Table(BTreeMap::from([
+            ("x".to_owned(), ConfigValue::Float(32.0)),
+            ("y".to_owned(), ConfigValue::Float(28.0)),
+            ("held".to_owned(), ConfigValue::Bool(false)),
+            ("overflow".to_owned(), ConfigValue::Bool(false)),
+            (
+                "over".to_owned(),
+                over.map_or(ConfigValue::Bool(false), |key| {
+                    ConfigValue::String(key.to_owned())
+                }),
+            ),
+            ("events".to_owned(), ConfigValue::Array(Vec::new())),
+        ]))
+    };
+    readout.update(800, 600, Some(pointer(Some("tooltip_target"))));
+    assert!(
+        !readout.entries().iter().any(|entry| {
+            entry.starts_with("create ") && entry.contains("ui/theme/cut3_tl_fill.png")
+        }),
+        "the configured 0.3 second delay has not elapsed"
+    );
+    for _ in 0..17 {
+        readout.update(800, 600, Some(pointer(Some("tooltip_target"))));
+    }
+    assert!(
+        !readout.entries().iter().any(|entry| {
+            entry.starts_with("create ") && entry.contains("ui/theme/cut3_tl_fill.png")
+        }),
+        "0.288 seconds including the first frame's 0.016 seconds is still below the delay"
+    );
+    readout.update(800, 600, Some(pointer(Some("tooltip_target"))));
+    let shown = readout.entries();
+    assert!(
+        shown.iter().any(|entry| {
+            entry.starts_with("create ") && entry.contains("ui/theme/cut3_tl_fill.png")
+        }),
+        "tooltip opens after the delay: {shown:?}"
+    );
+    let tints = readout.tints();
+    assert!(
+        tints.iter().any(|entry| entry.ends_with("#c9932e")),
+        "{tints:?}"
+    );
+    assert!(
+        tints.iter().any(|entry| entry.ends_with("#5fb35a")),
+        "{tints:?}"
+    );
+    for _ in 0..64 {
+        readout.update(800, 600, Some(pointer(Some("tooltip_target"))));
+    }
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|entry| entry.starts_with("set_hit tooltip_panel_")),
+        "timer lock publishes a hit region"
+    );
+    let before_leave = readout.entries().len();
+    readout.update(800, 600, Some(pointer(None)));
+    assert!(
+        !readout.entries()[before_leave..]
+            .iter()
+            .any(|entry| entry.starts_with("destroy q")),
+        "a locked tooltip remains after the pointer leaves"
+    );
+}
+
+#[test]
+fn a_locked_link_survives_live_refresh_until_its_child_opens_and_locks() {
+    let mut readout = Readout::script(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+local active = true
+pointer.register("live_target", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("live_target", {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.define("A", function() return active and {{{text = "B", class = "B", args = {}}}} or nil end)
+tooltip.define("B", function() return {title = "B", "child body"} end)
+tooltip.attach("live_target", {class = "A", args = {}})
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  tooltip.refresh()
+  tooltip.update(update)
+  if update.pointer.over == "nil_refresh" then active = false; tooltip.refresh() end
+end)
+"#,
+    );
+    let pointer = |over: &str| {
+        ConfigValue::Table(BTreeMap::from([
+            ("x".to_owned(), ConfigValue::Float(32.0)),
+            ("y".to_owned(), ConfigValue::Float(28.0)),
+            ("held".to_owned(), ConfigValue::Bool(false)),
+            ("overflow".to_owned(), ConfigValue::Bool(false)),
+            ("over".to_owned(), ConfigValue::String(over.to_owned())),
+            ("events".to_owned(), ConfigValue::Array(Vec::new())),
+        ]))
+    };
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer("live_target")));
+    }
+    let span_key = readout
+        .entries()
+        .iter()
+        .rev()
+        .find_map(|entry| {
+            entry
+                .strip_prefix("set_hit ")
+                .and_then(|rest| rest.split_once(' '))
+                .map(|(key, _)| key.to_owned())
+                .filter(|key| key.starts_with("tooltip_span_"))
+        })
+        .expect("the locked parent exposes its link");
+    for _ in 0..20 {
+        readout.update(800, 600, Some(pointer(&span_key)));
+    }
+    let opened = readout.entries();
+    assert!(
+        opened
+            .iter()
+            .filter(
+                |entry| entry.starts_with("create ") && entry.contains("ui/theme/cut3_tl_fill.png")
+            )
+            .count()
+            >= 2,
+        "live refresh must not restart the child's delay: {opened:?}"
+    );
+    for _ in 0..64 {
+        readout.update(800, 600, Some(pointer(&span_key)));
+    }
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|entry| entry.starts_with("set_hit tooltip_panel_2 ")),
+        "the child must reach its timer lock while live refresh continues"
+    );
+    readout.update(800, 600, Some(pointer("nil_refresh")));
+    assert!(
+        current_hits(&readout.entries(), "tooltip_panel_").is_empty(),
+        "nil live content closes the parent and its child"
+    );
+}
+
+#[test]
+fn an_explanation_wraps_at_160_font_pixels() {
+    let mut readout = Readout::script_with_glossary(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+pointer.register("term_target", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("term_target", {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.attach("term_target", function() return {{{text = "term", term = "sample"}}} end)
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  tooltip.update(update)
+end)
+"#,
+        "[term.sample]\ntitle = \"Sample\"\ntext = \"12345678 12345678 12345678 12345678\"\n",
+    );
+    let pointer = |over: &str| {
+        ConfigValue::Table(BTreeMap::from([
+            ("x".to_owned(), ConfigValue::Float(32.0)),
+            ("y".to_owned(), ConfigValue::Float(28.0)),
+            ("held".to_owned(), ConfigValue::Bool(false)),
+            ("overflow".to_owned(), ConfigValue::Bool(false)),
+            ("over".to_owned(), ConfigValue::String(over.to_owned())),
+            ("events".to_owned(), ConfigValue::Array(Vec::new())),
+        ]))
+    };
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer("term_target")));
+    }
+    let span_key = readout
+        .entries()
+        .iter()
+        .rev()
+        .find_map(|entry| {
+            entry
+                .strip_prefix("set_hit ")
+                .and_then(|rest| rest.split_once(' '))
+                .map(|(key, _)| key.to_owned())
+                .filter(|key| key.starts_with("tooltip_span_"))
+        })
+        .expect("the locked term is a link");
+    let start = readout.entries().len();
+    for _ in 0..20 {
+        readout.update(800, 600, Some(pointer(&span_key)));
+    }
+    let child_glyph_rows: std::collections::BTreeSet<_> = readout.entries()[start..]
+        .iter()
+        .filter(|entry| entry.starts_with("create ") && entry.contains("ui/font/small/"))
+        .filter_map(|entry| entry.split_whitespace().nth(4)?.parse::<i64>().ok())
+        .collect();
+    let mut glyph_counts: Vec<usize> = readout.entries()[start..]
+        .iter()
+        .filter(|entry| entry.starts_with("create ") && entry.contains("ui/font/small/"))
+        .fold(BTreeMap::<i64, usize>::new(), |mut rows, entry| {
+            let y = entry.split_whitespace().nth(4).unwrap().parse().unwrap();
+            *rows.entry(y).or_default() += 1;
+            rows
+        })
+        .into_values()
+        .collect();
+    glyph_counts.sort_unstable();
+    assert_eq!(
+        child_glyph_rows.len(),
+        3,
+        "the tooltip title and two wrapped explanation rows: {child_glyph_rows:?}"
+    );
+    assert_eq!(
+        glyph_counts,
+        [6, 8, 24],
+        "three 40-pixel words fit on the first row; the next word exceeds 160 pixels"
+    );
+}
+
+#[test]
+fn a_full_lock_bar_reaches_the_last_inside_pixel_of_the_cut_corner() {
+    let mut readout = Readout::script(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+pointer.register("bar_target", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("bar_target", {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.attach("bar_target", function() return {"bar"} end)
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  tooltip.update(update)
+end)
+"#,
+    );
+    let pointer = ConfigValue::Table(BTreeMap::from([
+        ("x".to_owned(), ConfigValue::Float(32.0)),
+        ("y".to_owned(), ConfigValue::Float(28.0)),
+        ("held".to_owned(), ConfigValue::Bool(false)),
+        ("overflow".to_owned(), ConfigValue::Bool(false)),
+        (
+            "over".to_owned(),
+            ConfigValue::String("bar_target".to_owned()),
+        ),
+        ("events".to_owned(), ConfigValue::Array(Vec::new())),
+    ]));
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer.clone()));
+    }
+    let tints = readout.tints();
+    let bar = tints
+        .iter()
+        .find_map(|entry| {
+            entry
+                .strip_prefix("create ")
+                .and_then(|rest| rest.split_once(' '))
+                .filter(|(_, tint)| *tint == "#f0a830")
+                .map(|(quad, _)| quad.to_owned())
+        })
+        .expect("the full timer bar uses the lock colour");
+    let rect = quads(&readout.entries())[&bar].to_owned();
+    let entries = readout.entries();
+    let panel = entries
+        .iter()
+        .find(|entry| entry.starts_with("set_hit tooltip_panel_1 "))
+        .expect("the locked panel rectangle");
+    let panel_values: Vec<i64> = panel
+        .split_whitespace()
+        .skip(2)
+        .map(|value| value.parse().expect("panel coordinate"))
+        .collect();
+    let p = 2;
+    assert_eq!(rect.0, panel_values[0] + p);
+    assert_eq!(rect.1, panel_values[1] + panel_values[3] - 2 * p);
+    assert_eq!(rect.2, panel_values[2] - 4 * p);
+    assert_eq!(rect.3, p);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one delay scenario checks target switching, part switching and nil sources against the same frame driver"
+)]
+fn tooltip_delay_restarts_on_key_and_part_changes_and_nil_content_stays_hidden() {
+    let mut readout = Readout::script_with_tooltips(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+local widget = {on_event = function() end, on_hover = function() end, on_overflow = function() end}
+for _, key in ipairs({"a", "b", "nil_source", "part_source"}) do
+  pointer.register(key, widget)
+  render.set_hit(key, {{x = 20, y = 20, width = 80, height = 24}})
+end
+tooltip.attach("a", function() return {"A"} end)
+tooltip.attach("b", function() return {"B"} end)
+tooltip.attach("nil_source", function() return nil end)
+tooltip.attach("part_source", function(x) return {"part"}, x < 100 and "left" or "right" end)
+frame.on_update(function(update) tooltip.update(update) end)
+"#,
+        TooltipsConfig {
+            delay: 0.3,
+            lock: "disabled",
+            lock_timer: 1.0,
+        },
+    );
+    for _ in 0..12 {
+        readout.update(800, 600, Some(pointer_packet("a", 32.0, Vec::new())));
+    }
+    for _ in 0..12 {
+        readout.update(800, 600, Some(pointer_packet("b", 32.0, Vec::new())));
+    }
+    assert_eq!(
+        readout
+            .entries()
+            .iter()
+            .filter(|entry| entry.contains("ui/theme/cut3_tl_fill.png"))
+            .count(),
+        0,
+        "switching at 0.2 seconds restarts the delay"
+    );
+    for _ in 0..7 {
+        readout.update(800, 600, Some(pointer_packet("b", 32.0, Vec::new())));
+    }
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|entry| entry.contains("ui/theme/cut3_tl_fill.png"))
+    );
+    let before_nil = readout.entries().len();
+    for _ in 0..24 {
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("nil_source", 32.0, Vec::new())),
+        );
+    }
+    assert!(
+        !readout.entries()[before_nil..].iter().any(
+            |entry| entry.starts_with("create ") && entry.contains("ui/theme/cut3_tl_fill.png")
+        ),
+        "a nil source opens nothing"
+    );
+
+    let mut part = Readout::script_with_tooltips(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+pointer.register("part_source", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("part_source", {{x = 20, y = 20, width = 180, height = 24}})
+tooltip.attach("part_source", function(x) return {"part"}, x < 100 and "left" or "right" end)
+frame.on_update(function(update) tooltip.update(update) end)
+"#,
+        TooltipsConfig {
+            delay: 0.3,
+            lock: "disabled",
+            lock_timer: 1.0,
+        },
+    );
+    for _ in 0..12 {
+        part.update(
+            800,
+            600,
+            Some(pointer_packet("part_source", 32.0, Vec::new())),
+        );
+    }
+    for _ in 0..12 {
+        part.update(
+            800,
+            600,
+            Some(pointer_packet("part_source", 120.0, Vec::new())),
+        );
+    }
+    assert!(
+        !part
+            .entries()
+            .iter()
+            .any(|entry| entry.contains("ui/theme/cut3_tl_fill.png")),
+        "changing part restarts the delay"
+    );
+    for _ in 0..7 {
+        part.update(
+            800,
+            600,
+            Some(pointer_packet("part_source", 120.0, Vec::new())),
+        );
+    }
+    assert!(
+        part.entries()
+            .iter()
+            .any(|entry| entry.contains("ui/theme/cut3_tl_fill.png"))
+    );
+}
+
+#[test]
+fn shared_tooltip_definitions_and_glossary_lua_extensions_return_their_contract_values() {
+    let mut readout = Readout::script_with_glossary(
+        r#"
+local tooltip = require("lib.tooltip")
+local definition = function(args) return {"population " .. args.place} end
+tooltip.define("population", definition)
+assert(tooltip.content("population", {place = "p1"})[1] == "population p1")
+local duplicate, duplicate_error = pcall(tooltip.define, "population", definition)
+assert(not duplicate and duplicate_error:find("population", 1, true))
+local missing, missing_error = pcall(tooltip.content, "missing", {})
+assert(not missing and missing_error:find("missing", 1, true))
+local entry = glossary.entry("population")
+assert(entry.key == "population" and entry.title == "Population" and entry.text == "See {pop|pops}")
+assert(table.concat(glossary.keys(), ",") == "pop,population")
+frame.on_update(function() end)
+"#,
+        "[term.pop]\ntitle = \"Pop\"\ntext = \"People\"\n[term.population]\ntitle = \"Population\"\ntext = \"See {pop|pops}\"\n",
+    );
+    readout.update(800, 600, None);
+    assert!(
+        readout.entries().is_empty(),
+        "the Lua contract assertions ran without drawing UI"
+    );
+}
+
+#[test]
+fn empty_tooltip_content_is_nil_on_open_and_live_refresh() {
+    let mut readout = Readout::script(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+local empty = false
+pointer.register("empty_target", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("empty_target", {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.attach("empty_target", function() return empty and {} or {"visible"} end)
+frame.on_update(function(update)
+  tooltip.update(update)
+  if update.pointer.over == "refresh_empty" then empty = true; tooltip.refresh() end
+end)
+"#,
+    );
+    for _ in 0..20 {
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("empty_target", 32.0, Vec::new())),
+        );
+    }
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|entry| entry.contains("ui/theme/cut3_tl_fill.png"))
+    );
+    let before = readout.entries().len();
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet("refresh_empty", 32.0, Vec::new())),
+    );
+    assert!(
+        readout.entries()[before..]
+            .iter()
+            .any(|entry| entry.starts_with("destroy q")),
+        "an empty refresh closes the old panel"
+    );
+    let before_empty = readout.entries().len();
+    for _ in 0..20 {
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("empty_target", 32.0, Vec::new())),
+        );
+    }
+    assert!(
+        !readout.entries()[before_empty..].iter().any(
+            |entry| entry.starts_with("create ") && entry.contains("ui/theme/cut3_tl_fill.png")
+        ),
+        "empty content behaves like nil"
+    );
+}
+
+#[test]
+fn tooltip_content_without_a_measurable_line_is_nil_on_open_and_refresh() {
+    let mut readout = Readout::script(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+local empty_line = false
+pointer.register("empty_line_target", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("empty_line_target", {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.attach("empty_line_target", function() return empty_line and {{}} or {"visible"} end)
+frame.on_update(function(update)
+  tooltip.update(update)
+  if update.pointer.over == "refresh_empty_line" then empty_line = true; tooltip.refresh() end
+end)
+"#,
+    );
+    for _ in 0..20 {
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("empty_line_target", 32.0, Vec::new())),
+        );
+    }
+    assert_eq!(tooltip_panel_count(&readout), 1);
+    let before_refresh = readout.entries().len();
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet("refresh_empty_line", 32.0, Vec::new())),
+    );
+    assert!(
+        readout.entries()[before_refresh..]
+            .iter()
+            .any(|entry| entry.starts_with("destroy q")),
+        "refreshing to a line with no glyphs closes the former panel"
+    );
+    let before_open = readout.entries().len();
+    for _ in 0..20 {
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("empty_line_target", 32.0, Vec::new())),
+        );
+    }
+    assert!(
+        !readout.entries()[before_open..].iter().any(|entry| {
+            entry.starts_with("create ") && entry.contains("ui/theme/cut3_tl_fill.png")
+        }),
+        "{{}} has no measurable line and creates no 9-by-9 frame"
+    );
+}
+
+#[test]
+fn tooltip_look_rows_pin_oats_height_width_and_both_numeric_tints() {
+    let mut readout = Readout::script_with_tooltips(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+local content = {"oats", {"price ", {text = "96.5", tooltip = function() return {"price detail"} end}, ", base 100"}}
+pointer.register("oats_target", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("oats_target", {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.attach("oats_target", function() return content end)
+local width = 6 + math.max(font.layout("oats", "small").width,
+  font.layout("price ", "small").width + font.layout("96.5", "small").width + font.layout(", base 100", "small").width)
+window.record("oats expected " .. width)
+frame.on_update(function(update) tooltip.update(update) end)
+"#,
+        TooltipsConfig {
+            delay: 0.0,
+            lock: "disabled",
+            lock_timer: 1.0,
+        },
+    );
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet("oats_target", 32.0, Vec::new())),
+    );
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet("oats_target", 32.0, Vec::new())),
+    );
+    let rect = tooltip_panel_rect(&readout).expect("the oats panel");
+    let expected_width = records(&readout)
+        .iter()
+        .find_map(|record| record.strip_prefix("oats expected "))
+        .expect("fixture width")
+        .parse::<i64>()
+        .expect("integer width");
+    assert_eq!(
+        rect.2,
+        expected_width * 2,
+        "panel is six pixels wider than its longest line"
+    );
+    assert_eq!(rect.3, 44, "two small-font rows are 22 pixels high");
+    assert_tooltip_text_tint(&readout, "oats", "#ece3cb");
+    assert_tooltip_text_tint(&readout, "price", "#ece3cb");
+    assert_tooltip_text_tint(&readout, "96.5", "#5fb35a");
+    assert_tooltip_text_tint(&readout, "base", "#ece3cb");
+    assert_tooltip_text_tint(&readout, "100", "#5fb35a");
+}
+
+#[test]
+fn tooltip_colour_cases_pin_plain_numbers_link_colours_and_locked_titles() {
+    let mut readout = Readout::script_with_glossary_and_tooltips(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+local function detail() return {"detail"} end
+pointer.register("colour_target", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("colour_target", {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.attach("colour_target", function() return {
+  title = "Cluain Mhic Nóis",
+  {{text = "population", term = "population"}, " ", {text = "412", class = "population", args = {place = "p1"}}},
+  "4,210 73% 12.5 km²",
+  {{text = "more", tooltip = detail}}
+} end)
+tooltip.define("population", function(args) return {"population " .. args.place} end)
+frame.on_update(function(update) pointer.dispatch(update.pointer); tooltip.update(update) end)
+"#,
+        "[term.population]\ntitle = \"Population\"\ntext = \"People\"\n",
+        TooltipsConfig {
+            delay: 0.3,
+            lock: "middle_mouse",
+            lock_timer: 1.0,
+        },
+    );
+    for _ in 0..20 {
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("colour_target", 32.0, Vec::new())),
+        );
+    }
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet(
+            "colour_target",
+            32.0,
+            vec![ConfigValue::Table(BTreeMap::from([
+                (
+                    "kind".to_owned(),
+                    ConfigValue::String("button_down".to_owned()),
+                ),
+                (
+                    "button".to_owned(),
+                    ConfigValue::String("middle".to_owned()),
+                ),
+                ("key".to_owned(), ConfigValue::Bool(false)),
+                ("x".to_owned(), ConfigValue::Float(32.0)),
+                ("y".to_owned(), ConfigValue::Float(28.0)),
+                ("inside".to_owned(), ConfigValue::Bool(false)),
+            ]))],
+        )),
+    );
+    assert_tooltip_text_tint(&readout, "Cluain", "#c9932e");
+    assert_tooltip_text_tint(&readout, "population", "#92ddea");
+    assert_tooltip_text_tint(&readout, "412", "#5fb35a");
+    assert_tooltip_text_tint(&readout, "4,210", "#5fb35a");
+    assert_tooltip_text_tint(&readout, "73%", "#5fb35a");
+    assert_tooltip_text_tint(&readout, "12.5", "#5fb35a");
+    assert_tooltip_text_tint(&readout, "km", "#ece3cb");
+    assert_tooltip_text_tint(&readout, "more", "#ece3cb");
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet("tooltip_panel_1", 38.0, Vec::new())),
+    );
+    assert_eq!(
+        tooltip_panel_count(&readout),
+        1,
+        "hovering a locked title opens no child"
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one literal scroll contract follows the same 20-line tooltip through every required row and refresh case"
+)]
+fn long_tooltip_scroll_coverage_pins_thumb_steps_clamps_mixed_rows_and_refresh() {
+    let mut readout = tooltip_scroll_readout("middle_mouse", true);
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet("long_target", 32.0, Vec::new())),
+    );
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet(
+            "long_target",
+            32.0,
+            vec![ConfigValue::Table(BTreeMap::from([
+                (
+                    "kind".to_owned(),
+                    ConfigValue::String("button_down".to_owned()),
+                ),
+                (
+                    "button".to_owned(),
+                    ConfigValue::String("middle".to_owned()),
+                ),
+                ("key".to_owned(), ConfigValue::Bool(false)),
+                ("x".to_owned(), ConfigValue::Float(32.0)),
+                ("y".to_owned(), ConfigValue::Float(28.0)),
+                ("inside".to_owned(), ConfigValue::Bool(false)),
+            ]))],
+        )),
+    );
+    let panel_y = current_hits(&readout.entries(), "tooltip_panel_")["tooltip_panel_1"]
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    let initial_thumb = tooltip_scroll_thumb(&readout);
+    assert_eq!(
+        initial_thumb.1,
+        panel_y + 6,
+        "105×12/20 gives a 63-unit thumb at the top"
+    );
+    assert_eq!(initial_thumb.3, 126);
+    assert_eq!(
+        tooltip_text_rects(&readout, "row13").len(),
+        0,
+        "line 13 is initially hidden"
+    );
+    assert_mixed_tooltip_rows(&readout, 1, panel_y);
+
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet(
+            "long_target",
+            32.0,
+            vec![long_tooltip_pointer_event(
+                "scroll",
+                "tooltip_panel_1",
+                Some(-3.0),
+                Some("lines"),
+            )],
+        )),
+    );
+    let scrolled_thumb = tooltip_scroll_thumb(&readout);
+    assert_eq!(
+        scrolled_thumb.1,
+        panel_y + 38,
+        "scrolling to first=4 moves the thumb to the rounded 38-unit offset"
+    );
+    let first_four = current_hits(&readout.entries(), "tooltip_span_");
+    assert!(
+        first_four.keys().any(|key| key.contains("_4:1"))
+            && !first_four.keys().any(|key| key.contains("_1:1"))
+    );
+    assert_mixed_tooltip_rows(&readout, 4, panel_y);
+    assert_eq!(
+        tooltip_text_rects(&readout, "row16").len(),
+        0,
+        "line 16 remains below the viewport"
+    );
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet(
+            "tooltip_panel_1",
+            32.0,
+            vec![long_tooltip_pointer_event(
+                "scroll",
+                "tooltip_panel_1",
+                Some(3.0),
+                Some("lines"),
+            )],
+        )),
+    );
+    assert_eq!(
+        tooltip_scroll_thumb(&readout).1,
+        panel_y + 6,
+        "+3 returns the thumb and rows to the top"
+    );
+    assert_mixed_tooltip_rows(&readout, 1, panel_y);
+    let at_top = current_hits(&readout.entries(), "tooltip_span_");
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet(
+            "tooltip_panel_1",
+            32.0,
+            vec![long_tooltip_pointer_event(
+                "scroll",
+                "tooltip_panel_1",
+                Some(1.0),
+                Some("lines"),
+            )],
+        )),
+    );
+    assert_eq!(
+        current_hits(&readout.entries(), "tooltip_span_"),
+        at_top,
+        "+1 at first=1 is clamped"
+    );
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet(
+            "tooltip_panel_1",
+            32.0,
+            vec![long_tooltip_pointer_event(
+                "scroll",
+                "tooltip_panel_1",
+                Some(-1.5),
+                Some("lines"),
+            )],
+        )),
+    );
+    assert_mixed_tooltip_rows(&readout, 2, panel_y);
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet(
+            "tooltip_panel_1",
+            32.0,
+            vec![long_tooltip_pointer_event(
+                "scroll",
+                "tooltip_panel_1",
+                Some(-1.5),
+                Some("lines"),
+            )],
+        )),
+    );
+    assert_mixed_tooltip_rows(&readout, 4, panel_y);
+    let first_four = current_hits(&readout.entries(), "tooltip_span_");
+    assert!(
+        first_four.keys().any(|key| key.contains("_4:1"))
+            && !first_four.keys().any(|key| key.contains("_3:1")),
+        "two -1.5-line scrolls advance from first=1 to first=4"
+    );
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet(
+            "tooltip_panel_1",
+            32.0,
+            vec![long_tooltip_pointer_event(
+                "scroll",
+                "tooltip_panel_1",
+                Some(-30.0),
+                Some("lines"),
+            )],
+        )),
+    );
+    assert!(
+        current_hits(&readout.entries(), "tooltip_span_")
+            .keys()
+            .any(|key| key.contains("_9:1")),
+        "scroll clamps at first=9"
+    );
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet("refresh_short", 32.0, Vec::new())),
+    );
+    let refreshed = current_hits(&readout.entries(), "tooltip_span_");
+    assert!(
+        refreshed.keys().any(|key| key.contains("_4:1"))
+            && !refreshed.keys().any(|key| key.contains("_3:1")),
+        "refreshing to 15 lines clamps first=9 to 4"
+    );
+
+    let mut unlocked = tooltip_scroll_readout("disabled", false);
+    unlocked.update(
+        800,
+        600,
+        Some(pointer_packet("long_target", 32.0, Vec::new())),
+    );
+    unlocked.update(
+        800,
+        600,
+        Some(pointer_packet("long_target", 32.0, Vec::new())),
+    );
+    let row_one_before = tooltip_text_rects(&unlocked, "row01");
+    let row_four_before = tooltip_text_rects(&unlocked, "row04");
+    unlocked.update(
+        800,
+        600,
+        Some(pointer_packet(
+            "long_target",
+            32.0,
+            vec![long_tooltip_pointer_event(
+                "scroll",
+                "tooltip_panel_1",
+                Some(-3.0),
+                Some("lines"),
+            )],
+        )),
+    );
+    assert!(
+        tooltip_text_rects(&unlocked, "row01") == row_one_before
+            && tooltip_text_rects(&unlocked, "row04") == row_four_before,
+        "an unlocked tooltip ignores scroll: row01={:?}, row04={:?}, panels={}",
+        tooltip_text_rects(&unlocked, "row01"),
+        tooltip_text_rects(&unlocked, "row04"),
+        tooltip_panel_count(&unlocked)
+    );
+}
+
+#[test]
+fn live_refresh_redraws_a_changed_value_in_place() {
+    let mut readout = Readout::script(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+local value = "96.5"
+pointer.register("live_value", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("live_value", {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.define("price", function() window.record("rendered price " .. value); return {{"price ", {text = value, tooltip = function() return {"detail"} end}}} end)
+tooltip.attach("live_value", {class = "price", args = {}})
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  if update.pointer.over == "refresh_value" then value = "97"; tooltip.refresh() end
+  tooltip.update(update)
+end)
+"#,
+    );
+    for _ in 0..82 {
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("live_value", 32.0, Vec::new())),
+        );
+    }
+    let before_hits = current_hits(&readout.entries(), "tooltip_span_");
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet("refresh_value", 32.0, Vec::new())),
+    );
+    let after_hits = current_hits(&readout.entries(), "tooltip_span_");
+    assert_eq!(
+        before_hits.keys().collect::<Vec<_>>(),
+        after_hits.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        records(&readout)
+            .iter()
+            .any(|record| record == "rendered price 97")
+    );
+}
+
+#[test]
+fn a_glossary_term_inside_an_explanation_is_blue_and_opens_its_own_explanation() {
+    let mut readout = Readout::script_with_glossary(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+pointer.register("term_root", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("term_root", {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.attach("term_root", function() return {{{text = "pops", term = "pop"}}} end)
+frame.on_update(function(update) pointer.dispatch(update.pointer); tooltip.update(update) end)
+"#,
+        "[term.pop]\ntitle = \"Population\"\ntext = \"See {county}\"\n[term.county]\ntitle = \"County\"\ntext = \"Land\"\n",
+    );
+    for _ in 0..82 {
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("term_root", 32.0, Vec::new())),
+        );
+    }
+    let pop = current_hits(&readout.entries(), "tooltip_span_")
+        .keys()
+        .find(|key| key.contains("tooltip_panel_1"))
+        .unwrap()
+        .clone();
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet(&pop, 52.0, Vec::new())));
+    }
+    assert!(
+        readout
+            .tints()
+            .iter()
+            .any(|entry| entry.ends_with("#92ddea")),
+        "term spans use the theme's blue"
+    );
+    let county = current_hits(&readout.entries(), "tooltip_span_")
+        .keys()
+        .find(|key| key.contains("tooltip_panel_2"))
+        .expect("the explanation contains a linked county term")
+        .clone();
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet(&county, 72.0, Vec::new())));
+    }
+    assert!(current_hits(&readout.entries(), "tooltip_panel_").contains_key("tooltip_panel_3"));
+}
+
+#[test]
+fn unrelated_timer_locks_can_coexist_and_the_newest_closes_first() {
+    let mut readout = Readout::script_with_tooltips(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+for _, key in ipairs({"first", "second"}) do
+  pointer.register(key, {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+  render.set_hit(key, {{x = 20, y = 20, width = 80, height = 24}})
+  tooltip.attach(key, function() return {key} end)
+end
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  tooltip.update(update)
+  if update.pointer.over == "close_top" then window.record("closed " .. tostring(tooltip.close_top())) end
+end)
+"#,
+        TooltipsConfig {
+            delay: 0.3,
+            lock: "timer",
+            lock_timer: 1.0,
+        },
+    );
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet("first", 32.0, Vec::new())));
+    }
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet("second", 32.0, Vec::new())));
+    }
+    assert_eq!(current_hits(&readout.entries(), "tooltip_panel_").len(), 2);
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet("close_top", 400.0, Vec::new())),
+    );
+    assert_eq!(current_hits(&readout.entries(), "tooltip_panel_").len(), 1);
+    assert!(current_hits(&readout.entries(), "tooltip_panel_").contains_key("tooltip_panel_1"));
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|entry| entry == "record closed true")
+    );
+}
+
+#[test]
+fn twelve_rows_have_no_scrollbar_and_mixed_fonts_keep_the_tallest_line_height() {
+    let mut readout = Readout::script(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+pointer.register("mixed", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("mixed", {{x = 20, y = 20, width = 80, height = 24}})
+local lines = {{"small", {text = "tiny", font = "tiny"}}}
+for index = 2, 12 do lines[index] = "row " .. index end
+tooltip.attach("mixed", function() return lines end)
+frame.on_update(function(update) tooltip.update(update) end)
+"#,
+    );
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet("mixed", 32.0, Vec::new())));
+    }
+    let entries = readout.entries();
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.starts_with("set_hit tooltip_panel_1 ") && entry.ends_with(" 224")),
+        "twelve 9-pixel rows plus four pixels produce a 112-pixel panel"
+    );
+    assert!(
+        !readout
+            .tints()
+            .iter()
+            .any(|entry| entry.ends_with("#9a927e")),
+        "exactly twelve rows have no scrollbar"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.contains("ui/font/tiny/") && entry.ends_with(" 16"))
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.contains("ui/font/small/") && entry.ends_with(" 18"))
+    );
+}
+
+#[test]
+fn timer_lock_progress_and_leaving_before_lock_are_exact_and_locked_spans_have_hits() {
+    let mut readout = Readout::script_with_tooltips(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+pointer.register("timer_target", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("timer_target", {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.attach("timer_target", function() return {{ {text = "link", tooltip = function() return {"child"} end} }} end)
+frame.on_update(function(update) tooltip.update(update) end)
+"#,
+        TooltipsConfig {
+            delay: 0.3,
+            lock: "timer",
+            lock_timer: 1.0,
+        },
+    );
+    for _ in 0..19 {
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("timer_target", 32.0, Vec::new())),
+        );
+    }
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|entry| entry.contains("ui/theme/cut3_tl_fill.png"))
+    );
+    assert!(
+        !readout
+            .tints()
+            .iter()
+            .any(|entry| entry.ends_with("#f0a830")),
+        "the bar is empty when the panel opens"
+    );
+    for _ in 0..31 {
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("timer_target", 32.0, Vec::new())),
+        );
+    }
+    let tints = readout.tints();
+    let half_bar = tints
+        .iter()
+        .rev()
+        .find(|entry| entry.ends_with("#f0a830"))
+        .expect("the half-filled bar");
+    let bar_id = half_bar.split_whitespace().nth(1).unwrap();
+    let entries = readout.entries();
+    let geometry = entries
+        .iter()
+        .rev()
+        .find(|entry| {
+            entry.starts_with(&format!("create {bar_id} "))
+                || entry.starts_with(&format!("set_rect {bar_id} "))
+        })
+        .expect("bar geometry");
+    let half_width = geometry
+        .split_whitespace()
+        .nth(if geometry.starts_with("create ") {
+            5
+        } else {
+            4
+        })
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    let panel = tooltip_panel_rect(&readout).expect("the unlocked tooltip panel");
+    let panel_width = panel.2 / 2;
+    assert_eq!(
+        half_width,
+        ((panel_width - 1) / 2) * 2,
+        "at 0.5 s the fill is exactly half the inner width: {half_bar}, {geometry}, panel={panel:?}"
+    );
+    for _ in 0..25 {
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("timer_target", 32.0, Vec::new())),
+        );
+    }
+    let before_leave = readout.entries().len();
+    readout.update(800, 600, Some(pointer_packet("outside", 32.0, Vec::new())));
+    assert!(
+        readout.entries()[before_leave..]
+            .iter()
+            .any(|entry| entry.starts_with("destroy q")),
+        "leaving at 0.9 s closes"
+    );
+}
+
+#[test]
+fn a_timer_locked_tooltip_keeps_panel_and_span_hits() {
+    let mut locked = Readout::script_with_tooltips(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+pointer.register("timer_target", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("timer_target", {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.attach("timer_target", function() return {{{text = "link", tooltip = function() return {"child"} end}}} end)
+frame.on_update(function(update) tooltip.update(update) end)
+"#,
+        TooltipsConfig {
+            delay: 0.3,
+            lock: "timer",
+            lock_timer: 1.0,
+        },
+    );
+    for _ in 0..82 {
+        locked.update(
+            800,
+            600,
+            Some(pointer_packet("timer_target", 32.0, Vec::new())),
+        );
+    }
+    assert_eq!(current_hits(&locked.entries(), "tooltip_panel_").len(), 1);
+    assert_eq!(
+        current_hits(&locked.entries(), "tooltip_span_").len(),
+        1,
+        "locked link publishes its own key"
+    );
+}
+
+#[test]
+fn middle_mouse_locks_with_a_false_key_but_disabled_and_timer_ignore_middle() {
+    let script = r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+pointer.register("middle_target", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("middle_target", {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.attach("middle_target", function() return {"middle"} end)
+frame.on_update(function(update) tooltip.update(update) end)
+"#;
+    let middle = ConfigValue::Table(BTreeMap::from([
+        (
+            "kind".to_owned(),
+            ConfigValue::String("button_down".to_owned()),
+        ),
+        (
+            "button".to_owned(),
+            ConfigValue::String("middle".to_owned()),
+        ),
+        ("key".to_owned(), ConfigValue::Bool(false)),
+        ("x".to_owned(), ConfigValue::Float(32.0)),
+        ("y".to_owned(), ConfigValue::Float(28.0)),
+        ("inside".to_owned(), ConfigValue::Bool(false)),
+    ]));
+    let mut manual = Readout::script_with_tooltips(
+        script,
+        TooltipsConfig {
+            delay: 0.3,
+            lock: "middle_mouse",
+            lock_timer: 1.0,
+        },
+    );
+    for _ in 0..19 {
+        manual.update(
+            800,
+            600,
+            Some(pointer_packet("middle_target", 32.0, Vec::new())),
+        );
+    }
+    assert!(
+        !manual
+            .tints()
+            .iter()
+            .any(|entry| entry.ends_with("#f0a830")),
+        "middle_mouse has no unlocked bar"
+    );
+    manual.update(
+        800,
+        600,
+        Some(pointer_packet("middle_target", 32.0, vec![middle.clone()])),
+    );
+    assert!(current_hits(&manual.entries(), "tooltip_panel_").len() == 1);
+    assert!(
+        manual
+            .tints()
+            .iter()
+            .any(|entry| entry.ends_with("#f0a830")),
+        "false-key middle press locks immediately"
+    );
+
+    for lock in ["timer", "disabled"] {
+        let mut readout = Readout::script_with_tooltips(
+            script,
+            TooltipsConfig {
+                delay: 0.3,
+                lock,
+                lock_timer: 1.0,
+            },
+        );
+        for _ in 0..19 {
+            readout.update(
+                800,
+                600,
+                Some(pointer_packet("middle_target", 32.0, Vec::new())),
+            );
+        }
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("middle_target", 32.0, vec![middle.clone()])),
+        );
+        assert!(
+            current_hits(&readout.entries(), "tooltip_panel_").is_empty(),
+            "{lock} does not middle-lock"
+        );
+        if lock == "disabled" {
+            for _ in 0..70 {
+                readout.update(
+                    800,
+                    600,
+                    Some(pointer_packet("middle_target", 32.0, Vec::new())),
+                );
+            }
+            assert!(
+                !readout
+                    .tints()
+                    .iter()
+                    .any(|entry| entry.ends_with("#f0a830")),
+                "disabled draws no bar"
+            );
+        }
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one nested scenario opens A/B/C then checks functional, descendant, map and Escape closing against that stack"
+)]
+fn nested_tooltips_reach_three_levels_and_click_rules_close_the_requested_depth() {
+    let mut readout = Readout::script_with_tooltips(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+local windows = require("lib.window")
+local key_window = windows.new{title = "Keep open", content_width = 100, content_height = 60}
+window.record("frame_key " .. key_window.frame_key)
+local button = require("lib.button")
+local action_button = button.new{x = 200, y = 20, text = "OK", on_click = function() end}
+window.record("action_button " .. action_button.key)
+pointer.register("root", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("root", {{x = 20, y = 20, width = 80, height = 24}})
+tooltip.define("A", function() return {{{text = "to B", class = "B", args = {}}}} end)
+tooltip.define("B", function() return {{{text = "to C", class = "C", args = {}}}} end)
+tooltip.define("C", function() return {"C body"} end)
+tooltip.attach("root", {class = "A", args = {}})
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  tooltip.update(update)
+  if update.pointer.over == "close_key" then
+    window.record("key_close " .. tostring(windows.close_request("key")) .. " " .. tostring(key_window.closed))
+  elseif update.pointer.over == "escape_top" then
+    window.record("top " .. tostring(tooltip.close_top()))
+  end
+end)
+"#,
+        TooltipsConfig {
+            delay: 0.3,
+            lock: "timer",
+            lock_timer: 1.0,
+        },
+    );
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet("root", 32.0, Vec::new())));
+    }
+    let a_span = current_hits(&readout.entries(), "tooltip_span_")
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet(&a_span, 52.0, Vec::new())));
+    }
+    let b_span = current_hits(&readout.entries(), "tooltip_span_")
+        .keys()
+        .find(|key| key.contains("tooltip_panel_2"))
+        .unwrap()
+        .clone();
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet(&b_span, 72.0, Vec::new())));
+    }
+    assert_eq!(
+        current_hits(&readout.entries(), "tooltip_panel_").len(),
+        3,
+        "A, B, C are all locked"
+    );
+
+    let functional_key = records(&readout)
+        .iter()
+        .find_map(|record| record.strip_prefix("action_button "))
+        .expect("the functional button key")
+        .to_owned();
+    let functional_down = pointer_event("down", Some(&functional_key), None);
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet(
+            &functional_key,
+            202.0,
+            vec![functional_down],
+        )),
+    );
+    assert_eq!(
+        current_hits(&readout.entries(), "tooltip_panel_").len(),
+        3,
+        "a functional press closes nothing"
+    );
+
+    let panel_down = pointer_event("down", Some("tooltip_panel_2"), None);
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet("tooltip_panel_2", 45.0, vec![panel_down])),
+    );
+    let retained = current_hits(&readout.entries(), "tooltip_panel_");
+    assert!(retained.contains_key("tooltip_panel_1") && retained.contains_key("tooltip_panel_2"));
+    assert!(
+        !retained.contains_key("tooltip_panel_3"),
+        "a press on B closes only its child C"
+    );
+
+    let map_down = pointer_event("map_down", None, None);
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet("outside", 400.0, vec![map_down])),
+    );
+    assert!(
+        current_hits(&readout.entries(), "tooltip_panel_").is_empty(),
+        "a map press closes all"
+    );
+
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet("root", 32.0, Vec::new())));
+    }
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet("close_key", 400.0, Vec::new())),
+    );
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|entry| entry == "record key_close false false")
+    );
+
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet("root", 32.0, Vec::new())));
+    }
+    let a_span = current_hits(&readout.entries(), "tooltip_span_")
+        .keys()
+        .find(|key| key.contains("tooltip_panel_5"))
+        .unwrap()
+        .clone();
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet(&a_span, 52.0, Vec::new())));
+    }
+    let b_span = current_hits(&readout.entries(), "tooltip_span_")
+        .keys()
+        .find(|key| key.contains("tooltip_panel_6"))
+        .unwrap()
+        .clone();
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet(&b_span, 72.0, Vec::new())));
+    }
+    assert_eq!(current_hits(&readout.entries(), "tooltip_panel_").len(), 3);
+    for _ in 0..4 {
+        readout.update(
+            800,
+            600,
+            Some(pointer_packet("escape_top", 400.0, Vec::new())),
+        );
+    }
+    let entries = readout.entries();
+    let closes: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.starts_with("record top "))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        &closes[closes.len() - 4..],
+        [
+            "record top true",
+            "record top true",
+            "record top true",
+            "record top false"
+        ]
+    );
+
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet("root", 32.0, Vec::new())));
+    }
+    let a_span = current_hits(&readout.entries(), "tooltip_span_")
+        .keys()
+        .find(|key| key.contains("tooltip_panel_8"))
+        .expect("the eighth opened A link")
+        .clone();
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet(&a_span, 52.0, Vec::new())));
+    }
+    let b_span = current_hits(&readout.entries(), "tooltip_span_")
+        .keys()
+        .find(|key| key.contains("tooltip_panel_9"))
+        .expect("the nested B link")
+        .clone();
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer_packet(&b_span, 72.0, Vec::new())));
+    }
+    assert_eq!(current_hits(&readout.entries(), "tooltip_panel_").len(), 3);
+    let all_records = records(&readout);
+    let frame_key = all_records
+        .iter()
+        .find_map(|record| record.strip_prefix("frame_key "))
+        .expect("the window frame key")
+        .to_owned();
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet(
+            &frame_key,
+            400.0,
+            vec![pointer_event("down", Some(&frame_key), None)],
+        )),
+    );
+    assert!(
+        current_hits(&readout.entries(), "tooltip_panel_").is_empty(),
+        "a keyed non-functional frame press closes every open tooltip"
+    );
+}
+
+#[test]
+fn pointer_functional_matches_each_actionable_widget_and_rejects_passive_regions() {
+    let readout = Readout::script(
+        r#"
+local pointer = require("lib.pointer")
+local window_api = require("lib.window")
+local button = require("lib.button")
+local list = require("lib.list")
+local cards = require("lib.cards")
+local tabs = require("lib.tabs")
+local down = {kind = "down", inside = true}
+local w = window_api.new{title = "Test", content_width = 160, content_height = 120}
+local fixed = window_api.new{title = "Fixed", fixed = true, draggable = false, content_width = 100, content_height = 60}
+local fixed_action = window_api.new{title = "Action", fixed = true, draggable = false, on_title_click = function() end, content_width = 100, content_height = 60}
+local b_yes = button.new{x = 300, y = 20, text = "yes", on_click = function() end}
+local b_no = button.new{x = 300, y = 50, text = "no"}
+local rows = list.new{window = w, x = 0, y = 0, width = 100, rows = 1, items = {"row"}, on_select = function() end}
+local passive_rows = list.new{window = w, x = 0, y = 30, width = 100, rows = 1, items = {"row"}}
+local cards_widget = cards.new{window = w, x = 0, y = 60, width = 100, height = 20, gap = 1, items = {
+  {height = 10, draw = function() return {} end, on_click = function() end},
+  {height = 10, draw = function() return {} end},
+}}
+local tabs_widget = tabs.new{window = w, items = {{key = "one", label = "One"}, {key = "two", label = "Two"}}}
+assert(pointer.functional(b_yes.key, down))
+assert(not pointer.functional(b_no.key, down))
+assert(pointer.functional(rows.row_keys[1], down))
+assert(not pointer.functional(passive_rows.area_key, down))
+local card_click, card_passive = false, false
+for key in pairs(cards_widget.item_keys) do
+  if key:match("_1_1$") then card_click = pointer.functional(key, down) end
+  if key:match("_1_2$") then card_passive = pointer.functional(key, down) end
+end
+assert(card_click and not card_passive)
+assert(pointer.functional(tabs_widget.buttons[1].key, down))
+assert(pointer.functional(w.title_key, down) and not pointer.functional(w.frame_key, down))
+assert(not pointer.functional(fixed.title_key, down) and pointer.functional(fixed_action.title_key, down))
+assert(pointer.functional(w.close_button.key, down))
+window.record("functional contract passed")
+"#,
+    );
+    assert!(
+        readout
+            .entries()
+            .iter()
+            .any(|entry| entry == "record functional contract passed")
+    );
+}
+
+#[test]
+fn pointer_dispatch_classifies_a_press_before_its_widget_retires() {
+    let readout = Readout::script(
+        r#"
+local pointer = require("lib.pointer")
+local function register(key, can_act)
+  local widget = {
+    on_event = function(self, event)
+      if event.kind == "down" then
+        window.record(key .. " " .. tostring(event.functional))
+        pointer.unregister(key)
+      end
+    end,
+    on_hover = function() end,
+    on_overflow = function() end,
+  }
+  if can_act then widget.functional = function() return true end end
+  pointer.register(key, widget)
+end
+register("active", true)
+register("passive", false)
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  window.record("missing " .. tostring(update.pointer.events[3].functional))
+end)
+"#,
+    );
+    let event = |key: &str| {
+        ConfigValue::Table(BTreeMap::from([
+            ("kind".to_owned(), ConfigValue::String("down".to_owned())),
+            ("key".to_owned(), ConfigValue::String(key.to_owned())),
+            ("x".to_owned(), ConfigValue::Float(10.0)),
+            ("y".to_owned(), ConfigValue::Float(10.0)),
+            ("inside".to_owned(), ConfigValue::Bool(true)),
+        ]))
+    };
+    let pointer = ConfigValue::Table(BTreeMap::from([
+        ("x".to_owned(), ConfigValue::Float(10.0)),
+        ("y".to_owned(), ConfigValue::Float(10.0)),
+        ("held".to_owned(), ConfigValue::Bool(true)),
+        ("overflow".to_owned(), ConfigValue::Bool(false)),
+        ("over".to_owned(), ConfigValue::String("active".to_owned())),
+        (
+            "events".to_owned(),
+            ConfigValue::Array(vec![event("active"), event("passive"), event("missing")]),
+        ),
+    ]));
+    let mut readout = readout;
+    readout.update(800, 600, Some(pointer));
+    let entries = readout.entries();
+    assert!(
+        entries.iter().any(|entry| entry == "record active true"),
+        "{entries:?}"
+    );
+    assert!(
+        entries.iter().any(|entry| entry == "record passive false"),
+        "{entries:?}"
+    );
+    assert!(
+        entries.iter().any(|entry| entry == "record missing false"),
+        "{entries:?}"
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one long-tooltip scroll scenario checks retained span keys across overlapping viewport rows"
+)]
+fn a_locked_long_tooltip_keeps_visible_line_targets_when_scrolled() {
+    let mut readout = Readout::script(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+local key = "scroll_target"
+pointer.register(key, {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit(key, {{x = 20, y = 20, width = 80, height = 24}})
+local lines = {}
+for index = 1, 20 do
+  lines[index] = {{text = "line " .. index, class = "line", args = {index = index}}}
+end
+tooltip.define("long", function() return lines end)
+tooltip.define("line", function(args) return {tostring(args.index)} end)
+tooltip.attach(key, {class = "long", args = {}})
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  tooltip.update(update)
+end)
+"#,
+    );
+    let pointer = |over: &str, events: Vec<ConfigValue>| {
+        ConfigValue::Table(BTreeMap::from([
+            ("x".to_owned(), ConfigValue::Float(32.0)),
+            ("y".to_owned(), ConfigValue::Float(28.0)),
+            ("held".to_owned(), ConfigValue::Bool(false)),
+            ("overflow".to_owned(), ConfigValue::Bool(false)),
+            ("over".to_owned(), ConfigValue::String(over.to_owned())),
+            ("events".to_owned(), ConfigValue::Array(events)),
+        ]))
+    };
+    for _ in 0..82 {
+        readout.update(800, 600, Some(pointer("scroll_target", Vec::new())));
+    }
+    let first_hits = current_hits(&readout.entries(), "tooltip_span_");
+    assert_eq!(
+        first_hits.len(),
+        12,
+        "one key per visible line: {first_hits:?}"
+    );
+    let scroll = ConfigValue::Table(BTreeMap::from([
+        ("kind".to_owned(), ConfigValue::String("scroll".to_owned())),
+        (
+            "key".to_owned(),
+            ConfigValue::String("tooltip_panel_1".to_owned()),
+        ),
+        ("x".to_owned(), ConfigValue::Float(32.0)),
+        ("y".to_owned(), ConfigValue::Float(28.0)),
+        ("inside".to_owned(), ConfigValue::Bool(true)),
+        ("amount".to_owned(), ConfigValue::Integer(-3)),
+        ("unit".to_owned(), ConfigValue::String("lines".to_owned())),
+    ]));
+    readout.update(800, 600, Some(pointer("tooltip_panel_1", vec![scroll])));
+    let scrolled = current_hits(&readout.entries(), "tooltip_span_");
+    let overlap: Vec<_> = first_hits
+        .keys()
+        .filter(|key| scrolled.contains_key(*key))
+        .collect();
+    assert_eq!(
+        overlap.len(),
+        9,
+        "the nine still-visible lines keep their keys: {scrolled:?}"
+    );
+    assert_eq!(scrolled.len(), 12);
+    let line_fourteen = scrolled
+        .iter()
+        .find(|(key, _)| key.contains("_14:1"))
+        .expect("line 14 now has a visible span key")
+        .0
+        .clone();
+    let before_y = scrolled[&line_fourteen]
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .to_owned();
+    let second_scroll = ConfigValue::Table(BTreeMap::from([
+        ("kind".to_owned(), ConfigValue::String("scroll".to_owned())),
+        (
+            "key".to_owned(),
+            ConfigValue::String("tooltip_panel_1".to_owned()),
+        ),
+        ("x".to_owned(), ConfigValue::Float(32.0)),
+        ("y".to_owned(), ConfigValue::Float(28.0)),
+        ("inside".to_owned(), ConfigValue::Bool(true)),
+        ("amount".to_owned(), ConfigValue::Integer(-3)),
+        ("unit".to_owned(), ConfigValue::String("lines".to_owned())),
+    ]));
+    readout.update(
+        800,
+        600,
+        Some(pointer("tooltip_panel_1", vec![second_scroll])),
+    );
+    let scrolled_again = current_hits(&readout.entries(), "tooltip_span_");
+    assert!(
+        scrolled_again.contains_key(&line_fourteen),
+        "line 14 retains its key: {scrolled_again:?}"
+    );
+    let after_y = scrolled_again[&line_fourteen]
+        .split_whitespace()
+        .nth(1)
+        .unwrap();
+    assert_ne!(before_y, after_y, "the retained key moves with its line");
+
+    let point_scroll = |amount: f64| {
+        ConfigValue::Table(BTreeMap::from([
+            ("kind".to_owned(), ConfigValue::String("scroll".to_owned())),
+            (
+                "key".to_owned(),
+                ConfigValue::String("tooltip_panel_1".to_owned()),
+            ),
+            ("x".to_owned(), ConfigValue::Float(32.0)),
+            ("y".to_owned(), ConfigValue::Float(28.0)),
+            ("inside".to_owned(), ConfigValue::Bool(true)),
+            ("amount".to_owned(), ConfigValue::Float(amount)),
+            ("unit".to_owned(), ConfigValue::String("points".to_owned())),
+        ]))
+    };
+    let before_fraction = current_hits(&readout.entries(), "tooltip_span_");
+    for _ in 0..2 {
+        readout.update(
+            800,
+            600,
+            Some(pointer("tooltip_panel_1", vec![point_scroll(-1.5)])),
+        );
+    }
+    assert_eq!(
+        current_hits(&readout.entries(), "tooltip_span_"),
+        before_fraction,
+        "two -1.5 point scrolls carry a fraction without moving a row"
+    );
+    for _ in 0..10 {
+        readout.update(
+            800,
+            600,
+            Some(pointer("tooltip_panel_1", vec![point_scroll(-1.5)])),
+        );
+    }
+    let one_row = current_hits(&readout.entries(), "tooltip_span_");
+    assert!(one_row.keys().any(|key| key.contains("_8:1")));
+    assert!(!one_row.keys().any(|key| key.contains("_7:1")));
+    readout.update(
+        800,
+        600,
+        Some(pointer(
+            "tooltip_panel_1",
+            vec![ConfigValue::Table(BTreeMap::from([
+                ("kind".to_owned(), ConfigValue::String("scroll".to_owned())),
+                (
+                    "key".to_owned(),
+                    ConfigValue::String("tooltip_panel_1".to_owned()),
+                ),
+                ("x".to_owned(), ConfigValue::Float(32.0)),
+                ("y".to_owned(), ConfigValue::Float(28.0)),
+                ("inside".to_owned(), ConfigValue::Bool(true)),
+                ("amount".to_owned(), ConfigValue::Integer(-500)),
+                ("unit".to_owned(), ConfigValue::String("lines".to_owned())),
+            ]))],
+        )),
+    );
+    assert!(
+        current_hits(&readout.entries(), "tooltip_span_")
+            .keys()
+            .any(|key| key.contains("_9:1"))
     );
 }

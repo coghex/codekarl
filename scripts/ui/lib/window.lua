@@ -329,6 +329,13 @@ function Window:on_event(event, eligible)
   end
 end
 
+function Window:functional(key)
+  if key == self.frame_key then return false end
+  if key ~= self.title_key then return false end
+  if self.fixed then return self.on_title_click ~= nil end
+  return self.draggable == true
+end
+
 function Window:on_hover() end
 function Window:on_overflow()
   self.drag = nil
@@ -478,6 +485,10 @@ function window.top()
 end
 
 function window.close_request(source)
+  if source == "key" then
+    local ok, tooltip = pcall(require, "lib.tooltip")
+    if ok and tooltip.close_top() then return false end
+  end
   if source == "key" and window.top() ~= nil then
     window.top():close()
     return false

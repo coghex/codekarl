@@ -176,6 +176,14 @@ impl Rig {
                     crate::theme::extension(Arc::new(
                         crate::theme::load(&assets).expect("the shipped theme"),
                     )),
+                    crate::config::TooltipsConfig::default().extension(),
+                    crate::glossary::extension(Arc::new(
+                        crate::glossary::load(
+                            &assets,
+                            &font::load_all(&assets).expect("the shipped fonts"),
+                        )
+                        .expect("the shipped glossary"),
+                    )),
                 ],
                 assets: Some(assets),
                 service: Some(service),
@@ -616,7 +624,11 @@ fn a_press_at_the_untranslated_position_goes_to_the_map() {
     rig.feed(&[down(15.0, 15.0)]);
     rig.feed(&[up(15.0, 15.0)]);
     let summary = rig.deliver();
-    assert_eq!(text(&summary, "events"), "", "the UI was given nothing");
+    assert_eq!(
+        text(&summary, "events"),
+        "map_down:false:false",
+        "the map press is reported for tooltip dismissal"
+    );
     assert_eq!(clicks(&summary), 0);
 }
 
@@ -665,7 +677,7 @@ fn a_press_on_the_clipped_half_is_not_a_hit() {
     rig.feed(&[down(135.0, 65.0)]);
     rig.feed(&[up(135.0, 65.0)]);
     let summary = rig.deliver();
-    assert_eq!(text(&summary, "events"), "");
+    assert_eq!(text(&summary, "events"), "map_down:false:false");
     assert_eq!(clicks(&summary), 0);
 }
 
@@ -696,7 +708,7 @@ window.on_opened(function() render.set_group_offset(g, 200, 0) end)
     rig.feed(&[down(315.0, 65.0)]);
     rig.feed(&[up(315.0, 65.0)]);
     let summary = rig.deliver();
-    assert_eq!(text(&summary, "events"), "");
+    assert_eq!(text(&summary, "events"), "map_down:false:false");
     assert_eq!(clicks(&summary), 0);
 }
 

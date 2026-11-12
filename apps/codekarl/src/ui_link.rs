@@ -407,6 +407,8 @@ fn route_pointer_in(
                     *owner = GestureOwner::Ui(key);
                 } else {
                     routed.map.push(MapEvent::Pointer(*event));
+                    // The UI does not own the map gesture, but tooltips need the actual left press to close unlocked panels.
+                    routed.ui.push(view_event("map_down", ui(position), None));
                     *owner = GestureOwner::Map;
                 }
             }
@@ -2174,6 +2176,11 @@ mod tests {
                 _
             ))]
         ));
+        assert_eq!(map_drag.ui.len(), 1);
+        assert_eq!(map_drag.ui[0].kind, "map_down");
+        assert_eq!(map_drag.ui[0].key, None);
+        assert_eq!(map_drag.ui[0].position, outside);
+        assert!(!map_drag.ui[0].inside);
         let crossing = route_pointer(
             &mut owner,
             &pointer_input(vec![PointerEvent::Move(inside)], Some(inside), true),
@@ -2450,7 +2457,15 @@ mod tests {
             Some(&regions),
             units,
         );
-        assert!(outside.ui.is_empty(), "the right edge is outside");
+        assert_eq!(outside.ui.len(), 1, "the map press is reported to the UI");
+        assert_eq!(outside.ui[0].kind, "map_down");
+        assert_eq!(
+            outside.ui[0].position,
+            PointerPosition {
+                x: 134 * 256,
+                y: 17_066
+            }
+        );
         // The map's event keeps its position in points.
         assert!(matches!(
             outside.map.as_slice(),
@@ -3120,7 +3135,9 @@ mod tests {
                 crate::map_app::RoutedMapEvent::Pointer(PointerEvent::Move(_))
             ]
         ));
-        assert!(moved.ui.is_empty());
+        assert_eq!(moved.ui.len(), 1);
+        assert_eq!(moved.ui[0].kind, "map_down");
+        assert_eq!(moved.ui[0].position, outside);
     }
 
     /// The stash after one tick of `input`.

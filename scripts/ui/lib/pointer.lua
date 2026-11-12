@@ -55,6 +55,13 @@ function pointer.widget(key)
   return widgets[key]
 end
 
+-- Whether a press on `key` performs a user action. Widgets without an explicit capability are passive.
+function pointer.functional(key, event)
+  local widget = widgets[key]
+  if widget == nil or widget.functional == nil then return false end
+  return widget:functional(key, event) == true
+end
+
 -- Runs `fn` when the running dispatch ends, or, when none is running, when the next one ends. A widget that retires a key (its row
 -- scrolled out of view) unregisters it this way: the events the UI has not been given yet were routed against the frame the player was
 -- pointing at, and the next packet may still name the key, so it still reaches the widget it was meant for. Nothing routed after the
@@ -98,6 +105,10 @@ function pointer.dispatch(p)
   local eligible = not overflow
   for _, event in ipairs(events) do
     local key = event.key
+    if key and event.kind == "down" then
+      -- A keyed press is classified against the widgets registered at this boundary, even if no widget owns its key.
+      event.functional = pointer.functional(key, event)
+    end
     if key then
       local widget = widgets[key]
       if widget ~= nil then

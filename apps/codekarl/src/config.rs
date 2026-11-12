@@ -36,6 +36,11 @@
 //! updates_per_second = 60 # an integer, 1 to 240 (default 60)
 //! max_delta_seconds = 0.1 # a number from 0.000000001 (one nanosecond, the timer resolution) to 1.0 (default 0.1)
 //!
+//! [ui.tooltips]          # optional tooltip behavior, read at startup
+//! delay = 0.3            # 0..=2 seconds in 0.1-second steps
+//! lock = "timer"         # timer | middle_mouse | disabled
+//! lock_timer = 1.0       # 0.3..=3 seconds in 0.1-second steps
+//!
 //! [lua.ui]                # one table per Lua VM; the name is lowercase letters, digits and `_`
 //! entry = "../scripts/ui/main.lua"   # relative to the directory of this file
 //! ```
@@ -744,6 +749,7 @@ struct UiFields {
     scale: Option<toml::Value>,
     points_per_pixel: Option<toml::Value>,
     font_points_per_pixel: Option<toml::Value>,
+    tooltips: Option<toml::Value>,
 }
 
 /// The `ui` table.
@@ -1174,6 +1180,8 @@ pub(crate) struct VmConfig {
 pub(crate) struct Config {
     /// `[ui] scale` as `k` (2, 3 or 4), the limit on the UI scale of a window opened in screen pixels, if the file sets one.
     pub(crate) ui_scale_limit_k: Option<u32>,
+    /// Startup-only tooltip settings.
+    pub(crate) tooltips: TooltipsConfig,
     pub(crate) log: LogConfig,
     pub(crate) deadlines: OwnerDeadlines,
     /// The VMs in name order (they start in this order and stop in reverse).
@@ -1196,6 +1204,48 @@ pub(crate) struct Config {
     pub(crate) bindings: Bindings,
     /// The whole file, which every VM sees as its `config`.
     pub(crate) whole: ConfigValue,
+}
+
+/// Startup-only tooltip delay and lock policy.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TooltipsConfig {
+    pub(crate) delay: f64,
+    pub(crate) lock: &'static str,
+    pub(crate) lock_timer: f64,
+}
+
+impl Default for TooltipsConfig {
+    fn default() -> Self {
+        Self {
+            delay: 0.3,
+            lock: "timer",
+            lock_timer: 1.0,
+        }
+    }
+}
+
+impl TooltipsConfig {
+    fn value(self) -> ConfigValue {
+        ConfigValue::Table(BTreeMap::from([
+            ("delay".to_owned(), ConfigValue::Float(self.delay)),
+            ("lock".to_owned(), ConfigValue::String(self.lock.to_owned())),
+            ("lock_timer".to_owned(), ConfigValue::Float(self.lock_timer)),
+        ]))
+    }
+
+    /// The read-only `settings.tooltips()` extension.
+    pub(crate) fn extension(self) -> ck_lua::Extension {
+        use std::sync::Arc;
+        ck_lua::Extension::new("settings").function(
+            "tooltips",
+            Arc::new(move |arguments| {
+                if !arguments.is_empty() {
+                    return Err("settings.tooltips: expected no arguments".to_owned());
+                }
+                Ok(vec![self.value()])
+            }),
+        )
+    }
 }
 
 /// Validated map configuration.
@@ -1238,6 +1288,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             ui_scale_limit_k: None,
+            tooltips: TooltipsConfig::default(),
             log: LogConfig::default(),
             deadlines: OwnerDeadlines::default(),
             vms: Vec::new(),
@@ -1418,6 +1469,7 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         }
     };
     check_pixel_font(path, &file.ui.0, game.is_some(), file.render.0.filter)?;
+    let tooltips = parse_tooltips(path, file.ui.0.tooltips.as_ref())?;
     let ui_scale_limit_k = file
         .ui
         .0
@@ -1440,6 +1492,7 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         .collect();
     Ok(Config {
         ui_scale_limit_k,
+        tooltips,
         log: file.log.into(),
         deadlines: file.runtime.into(),
         vms,
@@ -1473,6 +1526,72 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         bindings,
         whole: to_config_value(&toml::Value::Table(whole)),
     })
+}
+
+/// Validates `[ui.tooltips]`; integer tenths avoid binary-float step errors in the TOML values.
+fn parse_tooltips(path: &Path, raw: Option<&toml::Value>) -> Result<TooltipsConfig, String> {
+    let mut result = TooltipsConfig::default();
+    let Some(raw) = raw else { return Ok(result) };
+    let Some(table) = raw.as_table() else {
+        return Err(format!("{}: [ui.tooltips] must be a table", path.display()));
+    };
+    for (key, value) in table {
+        match key.as_str() {
+            "delay" => result.delay = tooltip_seconds(path, key, value, 0, 20)?,
+            "lock_timer" => result.lock_timer = tooltip_seconds(path, key, value, 3, 30)?,
+            "lock" => match value.as_str() {
+                Some("timer") => result.lock = "timer",
+                Some("middle_mouse") => result.lock = "middle_mouse",
+                Some("disabled") => result.lock = "disabled",
+                _ => {
+                    return Err(format!(
+                        "{}: [ui.tooltips] lock = {value} is not accepted: use \"timer\", \"middle_mouse\" or \"disabled\"",
+                        path.display()
+                    ));
+                }
+            },
+            _ => {
+                return Err(format!(
+                    "{}: [ui.tooltips] unknown key `{key}`; accepted keys are delay, lock and lock_timer",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn tooltip_seconds(
+    path: &Path,
+    key: &str,
+    value: &toml::Value,
+    min_tenths: u32,
+    max_tenths: u32,
+) -> Result<f64, String> {
+    let number = match value {
+        toml::Value::Integer(value) => u32::try_from(*value)
+            .ok()
+            .filter(|value| *value <= 3)
+            .map_or(f64::NAN, f64::from),
+        toml::Value::Float(value) => *value,
+        _ => f64::NAN,
+    };
+    let tenths = (number * 10.0).round();
+    let valid = number.is_finite()
+        && (number * 10.0 - tenths).abs() < 1.0e-9
+        && (f64::from(min_tenths)..=f64::from(max_tenths)).contains(&tenths);
+    if !valid {
+        let accepted = if key == "delay" {
+            "0..=2 in 0.1-second steps"
+        } else {
+            "0.3..=3 in 0.1-second steps"
+        };
+        return Err(format!(
+            "{}: [ui.tooltips] {key} = {value} is not accepted: use {accepted}",
+            path.display()
+        ));
+    }
+    Ok(tenths / 10.0)
 }
 
 /// `[game]`: the scenario directory and the quicksave directory, both joined to the configuration file's directory.
@@ -2236,6 +2355,46 @@ mod tests {
         let delta = parse_config("[frame]\nmax_delta_seconds = 0.25\n").expect("a delta");
         assert_eq!(delta.frame.updates_per_second, 60);
         assert_eq!(delta.frame.max_delta, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn tooltip_settings_default_and_accept_endpoints_and_export_to_lua() {
+        let defaults = parse_config("").expect("empty config").tooltips;
+        assert_eq!(defaults, TooltipsConfig::default());
+        let configured =
+            parse_config("[ui.tooltips]\ndelay = 0\nlock = \"middle_mouse\"\nlock_timer = 3\n")
+                .expect("valid tooltip settings")
+                .tooltips;
+        assert!((configured.delay - 0.0).abs() < f64::EPSILON);
+        assert_eq!(configured.lock, "middle_mouse");
+        assert!((configured.lock_timer - 3.0).abs() < f64::EPSILON);
+        let ConfigValue::Table(table) = configured.value() else {
+            panic!("tooltip settings table")
+        };
+        assert_eq!(table.get("delay"), Some(&ConfigValue::Float(0.0)));
+        assert_eq!(
+            table.get("lock"),
+            Some(&ConfigValue::String("middle_mouse".to_owned()))
+        );
+        assert_eq!(table.get("lock_timer"), Some(&ConfigValue::Float(3.0)));
+    }
+
+    #[test]
+    fn invalid_tooltip_settings_name_the_table_key_and_accepted_values() {
+        for (text, key) in [
+            ("[ui.tooltips]\ndelay = 2.1\n", "delay"),
+            ("[ui.tooltips]\ndelay = 0.25\n", "delay"),
+            ("[ui.tooltips]\nlock = \"always\"\n", "lock"),
+            ("[ui.tooltips]\nlock_timer = 0.2\n", "lock_timer"),
+            ("[ui.tooltips]\nother = 1\n", "other"),
+            ("[ui.tooltips]\ndelay = \"0.3\"\n", "delay"),
+        ] {
+            let error = parse_config(text).expect_err(text);
+            assert!(
+                error.contains("[ui.tooltips]") && error.contains(key),
+                "{text:?}: {error}"
+            );
+        }
     }
 
     #[test]

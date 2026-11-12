@@ -242,6 +242,10 @@ function button:on_event(event, eligible)
   end
 end
 
+function button:functional()
+  return self.on_click ~= nil
+end
+
 function button:on_hover(is_hovered)
   self.hovered = is_hovered
   show(self)
