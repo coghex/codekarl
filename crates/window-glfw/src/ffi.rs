@@ -33,6 +33,8 @@ pub(crate) const RELEASE: c_int = 0;
 pub(crate) const PRESS: c_int = 1;
 pub(crate) const REPEAT: c_int = 2;
 pub(crate) const MOUSE_BUTTON_LEFT: c_int = 0;
+pub(crate) const MOUSE_BUTTON_RIGHT: c_int = 1;
+pub(crate) const MOUSE_BUTTON_MIDDLE: c_int = 2;
 /// Keyboard token values from GLFW 3.4's `glfw3.h`.
 pub(crate) const KEY_UNKNOWN: c_int = -1;
 pub(crate) const KEY_SPACE: c_int = 32;

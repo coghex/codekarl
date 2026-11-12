@@ -235,20 +235,11 @@ extern "C" fn on_cursor(window: *mut GlfwWindow, x: f64, y: f64) {
 }
 
 extern "C" fn on_mouse_button(window: *mut GlfwWindow, button: c_int, action: c_int, _mods: c_int) {
-    if button != ffi::MOUSE_BUTTON_LEFT {
-        return;
-    }
     // SAFETY: callbacks run on the main thread for a live window.
     let Some(state) = (unsafe { callback_state_of(window) }) else {
         return;
     };
-    record_mouse_button(
-        &state.cursor_position,
-        &state.pending,
-        button,
-        action,
-        || cursor_position(window),
-    );
+    mouse_button_callback(state, button, action, || cursor_position(window));
 }
 
 fn cursor_position(window: *mut GlfwWindow) -> Option<ck_input::PointerPosition> {
@@ -270,30 +261,53 @@ extern "C" fn on_scroll(window: *mut GlfwWindow, _x: f64, y: f64) {
     }
 }
 
-fn record_mouse_button(
-    cursor: &Cell<CursorPositionCache>,
-    pending: &Pending,
+fn mouse_button_callback(
+    state: &CallbackState,
     button: c_int,
     action: c_int,
     physical_cursor: impl FnOnce() -> Option<ck_input::PointerPosition>,
 ) {
-    if button != ffi::MOUSE_BUTTON_LEFT {
-        return;
-    }
-    let Some(event) = (match action {
-        ffi::PRESS => cursor
+    let event = match (button, action) {
+        (ffi::MOUSE_BUTTON_LEFT, ffi::PRESS) => state
+            .cursor_position
             .get()
             .position_or(physical_cursor)
             .map(ck_input::PointerEvent::Down),
-        ffi::RELEASE => cursor
+        (ffi::MOUSE_BUTTON_LEFT, ffi::RELEASE) => state
+            .cursor_position
             .get()
             .position_or(physical_cursor)
             .map(ck_input::PointerEvent::Up),
+        (ffi::MOUSE_BUTTON_MIDDLE | ffi::MOUSE_BUTTON_RIGHT, ffi::PRESS) => {
+            let button = if button == ffi::MOUSE_BUTTON_MIDDLE {
+                ck_input::PointerButton::Middle
+            } else {
+                ck_input::PointerButton::Right
+            };
+            state
+                .cursor_position
+                .get()
+                .position_or(physical_cursor)
+                .map(|position| ck_input::PointerEvent::ButtonDown { button, position })
+        }
+        (ffi::MOUSE_BUTTON_MIDDLE | ffi::MOUSE_BUTTON_RIGHT, ffi::RELEASE) => {
+            let button = if button == ffi::MOUSE_BUTTON_MIDDLE {
+                ck_input::PointerButton::Middle
+            } else {
+                ck_input::PointerButton::Right
+            };
+            state
+                .cursor_position
+                .get()
+                .position_or(physical_cursor)
+                .map(|position| ck_input::PointerEvent::ButtonUp { button, position })
+        }
         _ => None,
-    }) else {
+    };
+    let Some(event) = event else {
         return;
     };
-    pending.record_pointer(event);
+    state.pending.record_pointer(event);
 }
 
 fn record_scroll(
@@ -1039,8 +1053,13 @@ mod tests {
 
     #[test]
     fn button_and_scroll_use_the_latest_event_position_across_pump_drains() {
-        let cursor = Cell::new(CursorPositionCache::default());
-        let pending = Pending::default();
+        let state = CallbackState {
+            pending: Pending::default(),
+            cursor_position: Cell::new(CursorPositionCache::default()),
+            wake: Arc::new(GlfwWake::default()),
+        };
+        let cursor = &state.cursor_position;
+        let pending = &state.pending;
         let physical_reads = Rc::new(TestCell::new(0));
         let event_position = pointer_position(31.0, 47.0).unwrap();
         let physical_position = pointer_position(181.0, 217.0).unwrap();
@@ -1059,16 +1078,10 @@ mod tests {
 
         for action in [ffi::PRESS, ffi::RELEASE] {
             let reads = Rc::clone(&physical_reads);
-            record_mouse_button(
-                &cursor,
-                &pending,
-                ffi::MOUSE_BUTTON_LEFT,
-                action,
-                move || {
-                    reads.set(reads.get() + 1);
-                    Some(physical_position)
-                },
-            );
+            mouse_button_callback(&state, ffi::MOUSE_BUTTON_LEFT, action, move || {
+                reads.set(reads.get() + 1);
+                Some(physical_position)
+            });
         }
         assert_eq!(
             pending.take().input,
@@ -1079,7 +1092,7 @@ mod tests {
         );
 
         let reads = Rc::clone(&physical_reads);
-        record_scroll(&cursor, &pending, 1.5, move || {
+        record_scroll(cursor, pending, 1.5, move || {
             reads.set(reads.get() + 1);
             Some(physical_position)
         });
@@ -1099,24 +1112,124 @@ mod tests {
     }
 
     #[test]
-    fn physical_cursor_fallback_is_used_only_before_the_window_receives_a_cursor_callback() {
-        let cursor = Cell::new(CursorPositionCache::default());
-        let pending = Pending::default();
-        let fallback_position = pointer_position(9.0, 13.0).unwrap();
-        record_mouse_button(
-            &cursor,
-            &pending,
+    fn mouse_button_callback_maps_only_supported_press_and_release_edges() {
+        let state = CallbackState {
+            pending: Pending::default(),
+            cursor_position: Cell::new(CursorPositionCache::default()),
+            wake: Arc::new(GlfwWake::default()),
+        };
+        let position = pointer_position(23.0, 41.0).unwrap();
+        let mut cache = state.cursor_position.get();
+        cache.record_callback(23.0, 41.0);
+        state.cursor_position.set(cache);
+
+        for (button, down, up) in [
+            (ffi::MOUSE_BUTTON_LEFT, None, None),
+            (
+                ffi::MOUSE_BUTTON_MIDDLE,
+                Some(ck_input::PointerButton::Middle),
+                Some(ck_input::PointerButton::Middle),
+            ),
+            (
+                ffi::MOUSE_BUTTON_RIGHT,
+                Some(ck_input::PointerButton::Right),
+                Some(ck_input::PointerButton::Right),
+            ),
+        ] {
+            mouse_button_callback(&state, button, ffi::PRESS, || unreachable!());
+            mouse_button_callback(&state, button, ffi::RELEASE, || unreachable!());
+            let events = state.pending.take().input;
+            match (button, down, up) {
+                (ffi::MOUSE_BUTTON_LEFT, None, None) => assert_eq!(
+                    events,
+                    [
+                        NativeEvent::Pointer(ck_input::PointerEvent::Down(position)),
+                        NativeEvent::Pointer(ck_input::PointerEvent::Up(position)),
+                    ]
+                ),
+                (_, Some(down), Some(up)) => assert_eq!(
+                    events,
+                    [
+                        NativeEvent::Pointer(ck_input::PointerEvent::ButtonDown {
+                            button: down,
+                            position,
+                        }),
+                        NativeEvent::Pointer(ck_input::PointerEvent::ButtonUp {
+                            button: up,
+                            position,
+                        }),
+                    ]
+                ),
+                _ => unreachable!(),
+            }
+        }
+
+        for (button, action) in [
+            (3, ffi::PRESS),
+            (ffi::MOUSE_BUTTON_RIGHT, ffi::REPEAT),
+            (ffi::MOUSE_BUTTON_MIDDLE, 99),
+        ] {
+            mouse_button_callback(&state, button, action, || unreachable!());
+        }
+        assert!(state.pending.take().input.is_empty());
+
+        let held_state = CallbackState {
+            pending: Pending::default(),
+            cursor_position: Cell::new(CursorPositionCache {
+                callback_received: true,
+                position: Some(position),
+            }),
+            wake: Arc::new(GlfwWake::default()),
+        };
+        mouse_button_callback(
+            &held_state,
             ffi::MOUSE_BUTTON_LEFT,
             ffi::PRESS,
-            || Some(fallback_position),
+            || unreachable!(),
         );
+        for _ in 0..33 {
+            mouse_button_callback(
+                &held_state,
+                ffi::MOUSE_BUTTON_MIDDLE,
+                ffi::PRESS,
+                || unreachable!(),
+            );
+            mouse_button_callback(
+                &held_state,
+                ffi::MOUSE_BUTTON_MIDDLE,
+                ffi::RELEASE,
+                || unreachable!(),
+            );
+        }
+        assert!(
+            matches!(
+                held_state.pending.take().input.last(),
+                Some(NativeEvent::PointerOverflow { held: true, .. })
+            ),
+            "non-left edges preserve the left held flag during overflow resync"
+        );
+    }
+
+    #[test]
+    fn physical_cursor_fallback_is_used_only_before_the_window_receives_a_cursor_callback() {
+        let state = CallbackState {
+            pending: Pending::default(),
+            cursor_position: Cell::new(CursorPositionCache::default()),
+            wake: Arc::new(GlfwWake::default()),
+        };
+        let cursor = &state.cursor_position;
+        let pending = &state.pending;
+        let fallback_position = pointer_position(9.0, 13.0).unwrap();
+        mouse_button_callback(&state, ffi::MOUSE_BUTTON_LEFT, ffi::PRESS, || {
+            Some(fallback_position)
+        });
         assert_eq!(
             pending.take().input,
             [NativeEvent::Pointer(ck_input::PointerEvent::Down(
                 fallback_position
             ))]
         );
-        record_scroll(&cursor, &pending, 2.0, || Some(fallback_position));
+        record_scroll(cursor, pending, 2.0, || Some(fallback_position));
         assert_eq!(
             pending.take().input,
             [NativeEvent::Pointer(ck_input::PointerEvent::Scroll {
@@ -1129,13 +1242,9 @@ mod tests {
         let mut cache = cursor.get();
         cache.record_callback(31.0, 47.0);
         cursor.set(cache);
-        record_mouse_button(
-            &cursor,
-            &pending,
-            ffi::MOUSE_BUTTON_LEFT,
-            ffi::RELEASE,
-            || panic!("a callback position must supersede the physical cursor"),
-        );
+        mouse_button_callback(&state, ffi::MOUSE_BUTTON_LEFT, ffi::RELEASE, || {
+            panic!("a callback position must supersede the physical cursor")
+        });
         assert_eq!(
             pending.take().input,
             [NativeEvent::Pointer(ck_input::PointerEvent::Up(
@@ -1146,24 +1255,25 @@ mod tests {
 
     #[test]
     fn focus_loss_invalidates_cached_position_until_the_next_cursor_callback() {
-        let cursor = Cell::new(CursorPositionCache::default());
-        let pending = Pending::default();
+        let state = CallbackState {
+            pending: Pending::default(),
+            cursor_position: Cell::new(CursorPositionCache::default()),
+            wake: Arc::new(GlfwWake::default()),
+        };
+        let cursor = &state.cursor_position;
+        let pending = &state.pending;
         let cached_position = pointer_position(31.0, 47.0).unwrap();
         let fallback_position = pointer_position(9.0, 13.0).unwrap();
 
         let mut cache = cursor.get();
         cache.record_callback(31.0, 47.0);
         cursor.set(cache);
-        record_focus_change(&cursor, &pending, false);
+        record_focus_change(cursor, pending, false);
         // Regaining focus does not make the pre-loss callback position valid again.
-        record_focus_change(&cursor, &pending, true);
-        record_mouse_button(
-            &cursor,
-            &pending,
-            ffi::MOUSE_BUTTON_LEFT,
-            ffi::PRESS,
-            || Some(fallback_position),
-        );
+        record_focus_change(cursor, pending, true);
+        mouse_button_callback(&state, ffi::MOUSE_BUTTON_LEFT, ffi::PRESS, || {
+            Some(fallback_position)
+        });
         assert_eq!(
             pending.take().input,
             [
@@ -1176,13 +1286,9 @@ mod tests {
         let mut cache = cursor.get();
         cache.record_callback(31.0, 47.0);
         cursor.set(cache);
-        record_mouse_button(
-            &cursor,
-            &pending,
-            ffi::MOUSE_BUTTON_LEFT,
-            ffi::RELEASE,
-            || panic!("the next cursor callback revalidates the cached position"),
-        );
+        mouse_button_callback(&state, ffi::MOUSE_BUTTON_LEFT, ffi::RELEASE, || {
+            panic!("the next cursor callback revalidates the cached position")
+        });
         assert_eq!(
             pending.take().input,
             [NativeEvent::Pointer(ck_input::PointerEvent::Up(
@@ -1193,18 +1299,18 @@ mod tests {
 
     #[test]
     fn cursor_leave_invalidates_cached_position_until_the_next_cursor_callback() {
-        let cursor = Cell::new(CursorPositionCache::default());
-        let pending = Pending::default();
+        let cursor = &Cell::new(CursorPositionCache::default());
+        let pending = &Pending::default();
         let cached_position = pointer_position(31.0, 47.0).unwrap();
         let fallback_position = pointer_position(9.0, 13.0).unwrap();
 
         let mut cache = cursor.get();
         cache.record_callback(31.0, 47.0);
         cursor.set(cache);
-        record_cursor_enter(&cursor, false);
+        record_cursor_enter(cursor, false);
         // Re-entering without a cursor callback must keep using the physical fallback.
-        record_cursor_enter(&cursor, true);
-        record_scroll(&cursor, &pending, 1.0, || Some(fallback_position));
+        record_cursor_enter(cursor, true);
+        record_scroll(cursor, pending, 1.0, || Some(fallback_position));
         assert_eq!(
             pending.take().input,
             [NativeEvent::Pointer(ck_input::PointerEvent::Scroll {
@@ -1217,7 +1323,7 @@ mod tests {
         let mut cache = cursor.get();
         cache.record_callback(31.0, 47.0);
         cursor.set(cache);
-        record_scroll(&cursor, &pending, 1.0, || {
+        record_scroll(cursor, pending, 1.0, || {
             panic!("the next cursor callback revalidates the cached position")
         });
         assert_eq!(
@@ -1232,20 +1338,21 @@ mod tests {
 
     #[test]
     fn a_reused_backend_starts_the_next_window_without_a_cached_cursor_callback() {
-        let cursor = Cell::new(CursorPositionCache {
-            callback_received: true,
-            position: pointer_position(31.0, 47.0),
-        });
-        invalidate_cursor_position(&cursor);
-        let pending = Pending::default();
+        let state = CallbackState {
+            pending: Pending::default(),
+            cursor_position: Cell::new(CursorPositionCache {
+                callback_received: true,
+                position: pointer_position(31.0, 47.0),
+            }),
+            wake: Arc::new(GlfwWake::default()),
+        };
+        let cursor = &state.cursor_position;
+        invalidate_cursor_position(cursor);
+        let pending = &state.pending;
         let next_window_position = pointer_position(9.0, 13.0).unwrap();
-        record_mouse_button(
-            &cursor,
-            &pending,
-            ffi::MOUSE_BUTTON_LEFT,
-            ffi::PRESS,
-            || Some(next_window_position),
-        );
+        mouse_button_callback(&state, ffi::MOUSE_BUTTON_LEFT, ffi::PRESS, || {
+            Some(next_window_position)
+        });
         assert_eq!(
             pending.take().input,
             [NativeEvent::Pointer(ck_input::PointerEvent::Down(

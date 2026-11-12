@@ -97,6 +97,7 @@ unsafe extern "C" {
     ) -> i32;
     fn ck_win_test_post_pointer(
         kind: i32,
+        button: i32,
         x: f64,
         y: f64,
         amount: f64,
@@ -468,9 +469,16 @@ pub(crate) fn post_unmarked_keyboard_event(
 
 /// Posts a marked synthetic mouse or scroll event at a content point.
 #[must_use]
-pub(crate) fn post_pointer(kind: i32, x: f64, y: f64, amount: f64, points: bool) -> bool {
+pub(crate) fn post_pointer(
+    kind: i32,
+    button: i32,
+    x: f64,
+    y: f64,
+    amount: f64,
+    points: bool,
+) -> bool {
     // SAFETY: main thread; scalar arguments only.
-    unsafe { ck_win_test_post_pointer(kind, x, y, amount, i32::from(points), 1) != 0 }
+    unsafe { ck_win_test_post_pointer(kind, button, x, y, amount, i32::from(points), 1) != 0 }
 }
 
 /// The window number an unmarked pointer event of `kind` (0 down, 1 drag, 2 up, 3 scroll) carries and the test window's own, built and
@@ -488,7 +496,7 @@ pub(crate) fn unmarked_pointer_window(kind: i32) -> Option<(i64, i64)> {
 #[must_use]
 pub(crate) fn post_unmarked_pointer(kind: i32, x: f64, y: f64, amount: f64, points: bool) -> bool {
     // SAFETY: main thread; scalar arguments only.
-    unsafe { ck_win_test_post_pointer(kind, x, y, amount, i32::from(points), 0) != 0 }
+    unsafe { ck_win_test_post_pointer(kind, 0, x, y, amount, i32::from(points), 0) != 0 }
 }
 
 /// Installs, once for the process, the filter that drops every keyboard event without the tests' mark (a

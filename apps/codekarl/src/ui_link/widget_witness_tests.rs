@@ -31,7 +31,7 @@ frame.on_update(function(f)
   local kinds = {}
   if p then
     for _, e in ipairs(p.events) do
-      kinds[#kinds + 1] = e.kind .. ":" .. tostring(e.key)
+      kinds[#kinds + 1] = e.kind .. ":" .. tostring(e.button or e.key)
     end
   end
   pointer.dispatch(p)
@@ -131,7 +131,9 @@ fn a_lost_up_and_a_later_up_in_the_same_delivery_click_nothing_and_the_map_owns_
             functions: vec![("hold", hold), ("record", record)],
             extensions: vec![
                 frame_extension(),
-                font::extension(Arc::new(font::load(&assets).expect("the shipped font"))),
+                font::extension(Arc::new(
+                    font::load_all(&assets).expect("the shipped fonts"),
+                )),
                 crate::theme::extension(Arc::new(
                     crate::theme::load(&assets).expect("the shipped theme"),
                 )),
@@ -228,12 +230,12 @@ fn a_lost_up_and_a_later_up_in_the_same_delivery_click_nothing_and_the_map_owns_
     link.post(update(2)).expect("the second update");
     assert_eq!(answer(&mut link).answer, Answer::Returned);
 
-    let tables = tables
+    let recorded = tables
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
-    assert_eq!(tables.len(), 2);
-    let delivered = &tables[1];
+    assert_eq!(recorded.len(), 2);
+    let delivered = &recorded[1];
     assert!(
         flag_of(delivered, "overflow"),
         "the delivered packet carries the overflow"
@@ -251,6 +253,45 @@ fn a_lost_up_and_a_later_up_in_the_same_delivery_click_nothing_and_the_map_owns_
     assert!(
         !flag_of(delivered, "pressed"),
         "A ends not pressed, whatever the order of the events"
+    );
+
+    // Non-left buttons travel through the same real tick, stash and Lua dispatcher, but are not left-click widget activation.
+    for event in [
+        PointerEvent::ButtonDown {
+            button: ck_window::PointerButton::Middle,
+            position: inside,
+        },
+        PointerEvent::ButtonUp {
+            button: ck_window::PointerButton::Middle,
+            position: inside,
+        },
+        PointerEvent::ButtonDown {
+            button: ck_window::PointerButton::Right,
+            position: inside,
+        },
+        PointerEvent::ButtonUp {
+            button: ck_window::PointerButton::Right,
+            position: inside,
+        },
+    ] {
+        mapper.pointer(event);
+    }
+    run_tick(&mut mapper, &mut link);
+    link.post(update(3)).expect("the non-left button update");
+    assert_eq!(answer(&mut link).answer, Answer::Returned);
+    let recorded = tables
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let buttons = &recorded[2];
+    assert_eq!(
+        text_of(buttons, "events"),
+        "button_down:middle,button_up:middle,button_down:right,button_up:right"
+    );
+    assert_eq!(clicks_of(buttons), 0, "non-left buttons do not click");
+    assert!(
+        !flag_of(buttons, "pressed"),
+        "non-left buttons do not press A"
     );
 
     // The map owns the final gesture: the button is still held, and moving it drags the map.

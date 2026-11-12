@@ -16,6 +16,10 @@ pub(crate) const POINTER_DOWN: u8 = 0;
 pub(crate) const POINTER_MOVE: u8 = 1;
 pub(crate) const POINTER_UP: u8 = 2;
 pub(crate) const POINTER_SCROLL: u8 = 3;
+pub(crate) const POINTER_BUTTON_DOWN: u8 = 4;
+pub(crate) const POINTER_BUTTON_UP: u8 = 5;
+pub(crate) const POINTER_BUTTON_RIGHT: u8 = 1;
+pub(crate) const POINTER_BUTTON_MIDDLE: u8 = 2;
 
 /// One key or focus entry of a pump (`CKWinOut`).
 #[repr(C)]
@@ -41,6 +45,7 @@ pub(crate) struct RawResync {
 pub(crate) struct RawPointer {
     pub(crate) kind: u8,
     pub(crate) unit: u8,
+    pub(crate) button: u8,
     pub(crate) x: i32,
     pub(crate) y: i32,
     pub(crate) amount: i32,

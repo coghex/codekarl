@@ -64,6 +64,15 @@ pub enum ScrollUnit {
     Points,
 }
 
+/// A mouse button other than the left button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PointerButton {
+    /// The middle mouse button.
+    Middle,
+    /// The right mouse button.
+    Right,
+}
+
 /// One ordered mouse event, with its own position so a later move cannot change a scroll anchor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PointerEvent {
@@ -73,6 +82,20 @@ pub enum PointerEvent {
     Move(PointerPosition),
     /// The left button went up.
     Up(PointerPosition),
+    /// A non-left button went down. It does not affect the left-button held state.
+    ButtonDown {
+        /// The non-left button.
+        button: PointerButton,
+        /// Position of this button event.
+        position: PointerPosition,
+    },
+    /// A non-left button went up. It does not affect the left-button held state.
+    ButtonUp {
+        /// The non-left button.
+        button: PointerButton,
+        /// Position of this button event.
+        position: PointerPosition,
+    },
     /// A vertical scroll amount in 1/256 of the selected unit.
     Scroll {
         /// Cursor position at this scroll event.
@@ -90,6 +113,8 @@ impl PointerEvent {
             Self::Down(position)
             | Self::Move(position)
             | Self::Up(position)
+            | Self::ButtonDown { position, .. }
+            | Self::ButtonUp { position, .. }
             | Self::Scroll { position, .. } => position,
         }
     }
@@ -965,7 +990,10 @@ impl Mapper {
         match event {
             PointerEvent::Down(_) => self.pointer_held = true,
             PointerEvent::Up(_) => self.pointer_held = false,
-            PointerEvent::Move(_) | PointerEvent::Scroll { .. } => {}
+            PointerEvent::Move(_)
+            | PointerEvent::ButtonDown { .. }
+            | PointerEvent::ButtonUp { .. }
+            | PointerEvent::Scroll { .. } => {}
         }
 
         let tail_index = (self.pointer_head + self.pointer_len).wrapping_sub(1) % POINTER_CAPACITY;

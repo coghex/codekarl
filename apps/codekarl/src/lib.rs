@@ -570,14 +570,14 @@ fn supervise(
     )
 }
 
-/// The pixel font a run loads at start-up (see the call): required with a game, optional for a `ui` VM with an assets directory.
+/// The three pixel fonts a run loads at start-up: required with a game, optional for a `ui` VM with an assets directory.
 ///
 /// # Errors
 /// The message of a refusal: with a game, a missing or invalid font; without one, an invalid font.
-fn pixel_font(config: &config::Config) -> Result<Option<Arc<font::Font>>, String> {
+fn pixel_font(config: &config::Config) -> Result<Option<Arc<font::FontSet>>, String> {
     if config.game.is_some() {
         let assets = config.render.assets.clone().unwrap_or_default();
-        return font::load(&assets)
+        return font::load_all(&assets)
             .map(|font| Some(Arc::new(font)))
             .map_err(|message| format!("[game] font: {message}"));
     }
@@ -588,7 +588,7 @@ fn pixel_font(config: &config::Config) -> Result<Option<Arc<font::Font>>, String
     if !assets.join("ui/font/font.toml").is_file() {
         return Ok(None);
     }
-    font::load(assets)
+    font::load_all(assets)
         .map(|font| Some(Arc::new(font)))
         .map_err(|message| format!("[ui] font: {message}"))
 }
@@ -622,8 +622,8 @@ fn ui_theme(config: &config::Config) -> Result<Option<Arc<theme::Theme>>, String
 struct Content {
     map: Option<ck_map::LoadedMap>,
     game: Option<game::setup::Prepared>,
-    /// The pixel font, loaded with a game or when a `ui` VM's assets hold `ui/font/font.toml`.
-    font: Option<Arc<font::Font>>,
+    /// The standard, small and tiny pixel fonts, loaded with a game or when a `ui` VM's assets hold `ui/font/font.toml`.
+    font: Option<Arc<font::FontSet>>,
     /// The theme, loaded under the same rule from `ui/theme.toml`.
     theme: Option<Arc<theme::Theme>>,
 }
@@ -1056,6 +1056,12 @@ mod tests {
         std::fs::create_dir_all(assets.join("ui/font")).expect("the assets directory");
         if let Some(font) = font {
             std::fs::write(assets.join("ui/font/font.toml"), font).expect("the font file");
+            let shipped =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/ui/font");
+            for name in ["small.toml", "tiny.toml"] {
+                std::fs::copy(shipped.join(name), assets.join("ui/font").join(name))
+                    .expect("the named font file");
+            }
         }
         let entry = dir.0.join("ui.lua");
         std::fs::write(&entry, script).expect("the ui script");

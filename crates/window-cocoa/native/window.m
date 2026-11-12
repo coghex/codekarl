@@ -284,20 +284,42 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
 }
 
 - (void)mouseDown:(NSEvent *)event {
-    [self.state recordPointerKind:0 point:event.locationInWindow amount:0 unit:0];
+    [self.state recordPointerKind:0 point:event.locationInWindow amount:0 unit:0 button:0];
 }
 - (void)mouseDragged:(NSEvent *)event {
-    [self.state recordPointerKind:1 point:event.locationInWindow amount:0 unit:0];
+    [self.state recordPointerKind:1 point:event.locationInWindow amount:0 unit:0 button:0];
 }
 - (void)mouseUp:(NSEvent *)event {
-    [self.state recordPointerKind:2 point:event.locationInWindow amount:0 unit:0];
+    [self.state recordPointerKind:2 point:event.locationInWindow amount:0 unit:0 button:0];
 }
 - (void)mouseMoved:(NSEvent *)event {
-    [self.state recordPointerKind:1 point:event.locationInWindow amount:0 unit:0];
+    [self.state recordPointerKind:1 point:event.locationInWindow amount:0 unit:0 button:0];
 }
 - (void)scrollWheel:(NSEvent *)event {
     [self.state recordPointerKind:3 point:event.locationInWindow amount:event.scrollingDeltaY
-                             unit:event.hasPreciseScrollingDeltas ? 1 : 0];
+                             unit:event.hasPreciseScrollingDeltas ? 1 : 0 button:0];
+}
+- (void)rightMouseDown:(NSEvent *)event {
+    [self.state recordPointerKind:4 point:event.locationInWindow amount:0 unit:0 button:1];
+}
+- (void)rightMouseUp:(NSEvent *)event {
+    [self.state recordPointerKind:5 point:event.locationInWindow amount:0 unit:0 button:1];
+}
+- (void)rightMouseDragged:(NSEvent *)event {
+    [self.state recordPointerKind:1 point:event.locationInWindow amount:0 unit:0 button:0];
+}
+- (void)otherMouseDown:(NSEvent *)event {
+    if (event.buttonNumber == 2) {
+        [self.state recordPointerKind:4 point:event.locationInWindow amount:0 unit:0 button:2];
+    }
+}
+- (void)otherMouseUp:(NSEvent *)event {
+    if (event.buttonNumber == 2) {
+        [self.state recordPointerKind:5 point:event.locationInWindow amount:0 unit:0 button:2];
+    }
+}
+- (void)otherMouseDragged:(NSEvent *)event {
+    [self.state recordPointerKind:1 point:event.locationInWindow amount:0 unit:0 button:0];
 }
 
 @end
@@ -408,7 +430,7 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
            _focusGainedPending || _pointerLength != 0 || _pointerOverflow;
 }
 
-- (void)recordPointerKind:(uint8_t)kind point:(NSPoint)point amount:(double)amount unit:(uint8_t)unit {
+- (void)recordPointerKind:(uint8_t)kind point:(NSPoint)point amount:(double)amount unit:(uint8_t)unit button:(uint8_t)button {
     if (self.view == nil) return;
     NSPoint local = [self.view convertPoint:point fromView:nil];
     double x = nearbyint(local.x * 256.0);
@@ -427,7 +449,7 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
         _pointerOverflow = YES;
     }
     uint32_t tail = (_pointerHead + _pointerLength) % CK_WIN_POINTER_CAPACITY;
-    _pointerRing[tail] = (CKWinPointer){.kind = kind, .unit = unit, .x = px, .y = py, .amount = delta};
+    _pointerRing[tail] = (CKWinPointer){.kind = kind, .unit = unit, .button = button, .x = px, .y = py, .amount = delta};
     _pointerLength += 1;
     [self afterRecord:wasEmpty];
 }

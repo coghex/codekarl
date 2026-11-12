@@ -170,7 +170,9 @@ impl Rig {
                 extensions: vec![
                     frame_extension(),
                     game,
-                    font::extension(Arc::new(font::load(&assets).expect("the shipped font"))),
+                    font::extension(Arc::new(
+                        font::load_all(&assets).expect("the shipped fonts"),
+                    )),
                     crate::theme::extension(Arc::new(
                         crate::theme::load(&assets).expect("the shipped theme"),
                     )),

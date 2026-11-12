@@ -451,13 +451,16 @@ impl Fixture {
         let font = root.join("ui/font");
         fs::create_dir_all(font.join("glyphs")).expect("the font directory");
         let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/ui/font");
-        for name in ["font.toml", "panel.png"] {
+        for name in ["font.toml", "small.toml", "tiny.toml", "panel.png"] {
             fs::copy(shipped.join(name), font.join(name)).expect("copy the shipped font");
         }
-        for entry in fs::read_dir(shipped.join("glyphs")).expect("the shipped glyphs") {
-            let entry = entry.expect("a glyph file");
-            fs::copy(entry.path(), font.join("glyphs").join(entry.file_name()))
-                .expect("copy a glyph");
+        for folder in ["glyphs", "small", "tiny"] {
+            let destination = font.join(folder);
+            fs::create_dir_all(&destination).expect("the font glyph directory");
+            for entry in fs::read_dir(shipped.join(folder)).expect("the shipped glyphs") {
+                let entry = entry.expect("a glyph file");
+                fs::copy(entry.path(), destination.join(entry.file_name())).expect("copy a glyph");
+            }
         }
         time_bar_witness::install_theme(&root);
         scenario

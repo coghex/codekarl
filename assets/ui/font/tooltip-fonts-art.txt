@@ -1,0 +1,1476 @@
+# Tooltip fonts B and C, frozen 2026-11-12 (owner-direction-tooltips-r4.md: "Both approved").
+# Source: mockups/tooltip_fonts_r1.py. Per glyph: font, character (U+code), advance, top row, then the rows ('#' set, '.' clear).
+# B: box 9 rows, space advance 3. C: box 8 rows, space advance 2. Provenance: ../tooltips-provenance-r2.md.
+
+B replacement advance=5 top=1
+  ####
+  #..#
+  #..#
+  #..#
+  #..#
+  ####
+B ! U+0021 advance=2 top=1
+  #
+  #
+  #
+  #
+  .
+  #
+B " U+0022 advance=4 top=1
+  #.#
+  #.#
+B # U+0023 advance=6 top=1
+  .#.#.
+  #####
+  .#.#.
+  #####
+  .#.#.
+B $ U+0024 advance=5 top=0
+  ..#.
+  .###
+  #.#.
+  .##.
+  ..##
+  ###.
+  ..#.
+B % U+0025 advance=5 top=1
+  #..#
+  ...#
+  ..#.
+  .#..
+  #...
+  #..#
+B & U+0026 advance=5 top=1
+  .#..
+  #.#.
+  .#..
+  #.##
+  #..#
+  .##.
+B ' U+0027 advance=2 top=1
+  #
+  #
+B ( U+0028 advance=3 top=1
+  .#
+  #.
+  #.
+  #.
+  #.
+  .#
+B ) U+0029 advance=3 top=1
+  #.
+  .#
+  .#
+  .#
+  .#
+  #.
+B * U+002A advance=4 top=2
+  #.#
+  .#.
+  #.#
+B + U+002B advance=4 top=3
+  .#.
+  ###
+  .#.
+B , U+002C advance=3 top=6
+  .#
+  #.
+B - U+002D advance=4 top=4
+  ###
+B . U+002E advance=2 top=6
+  #
+B / U+002F advance=5 top=1
+  ...#
+  ..#.
+  ..#.
+  .#..
+  .#..
+  #...
+B 0 U+0030 advance=5 top=1
+  .##.
+  #..#
+  #.##
+  ##.#
+  #..#
+  .##.
+B 1 U+0031 advance=5 top=1
+  .#..
+  ##..
+  .#..
+  .#..
+  .#..
+  ###.
+B 2 U+0032 advance=5 top=1
+  .##.
+  #..#
+  ..#.
+  .#..
+  #...
+  ####
+B 3 U+0033 advance=5 top=1
+  ###.
+  ...#
+  .##.
+  ...#
+  ...#
+  ###.
+B 4 U+0034 advance=5 top=1
+  #..#
+  #..#
+  ####
+  ...#
+  ...#
+  ...#
+B 5 U+0035 advance=5 top=1
+  ####
+  #...
+  ###.
+  ...#
+  ...#
+  ###.
+B 6 U+0036 advance=5 top=1
+  .##.
+  #...
+  ###.
+  #..#
+  #..#
+  .##.
+B 7 U+0037 advance=5 top=1
+  ####
+  ...#
+  ..#.
+  .#..
+  .#..
+  .#..
+B 8 U+0038 advance=5 top=1
+  .##.
+  #..#
+  .##.
+  #..#
+  #..#
+  .##.
+B 9 U+0039 advance=5 top=1
+  .##.
+  #..#
+  #..#
+  .###
+  ...#
+  .##.
+B : U+003A advance=2 top=3
+  #
+  .
+  .
+  #
+B ; U+003B advance=3 top=3
+  .#
+  ..
+  ..
+  .#
+  #.
+B < U+003C advance=4 top=2
+  ..#
+  .#.
+  #..
+  .#.
+  ..#
+B = U+003D advance=4 top=3
+  ###
+  ...
+  ###
+B > U+003E advance=4 top=2
+  #..
+  .#.
+  ..#
+  .#.
+  #..
+B ? U+003F advance=5 top=1
+  .##.
+  #..#
+  ..#.
+  .#..
+  ....
+  .#..
+B @ U+0040 advance=5 top=1
+  .##.
+  #..#
+  #.##
+  #.##
+  #...
+  .###
+B A U+0041 advance=5 top=1
+  .##.
+  #..#
+  #..#
+  ####
+  #..#
+  #..#
+B B U+0042 advance=5 top=1
+  ###.
+  #..#
+  ###.
+  #..#
+  #..#
+  ###.
+B C U+0043 advance=5 top=1
+  .###
+  #...
+  #...
+  #...
+  #...
+  .###
+B D U+0044 advance=5 top=1
+  ###.
+  #..#
+  #..#
+  #..#
+  #..#
+  ###.
+B E U+0045 advance=5 top=1
+  ####
+  #...
+  ###.
+  #...
+  #...
+  ####
+B F U+0046 advance=5 top=1
+  ####
+  #...
+  ###.
+  #...
+  #...
+  #...
+B G U+0047 advance=5 top=1
+  .###
+  #...
+  #...
+  #.##
+  #..#
+  .###
+B H U+0048 advance=5 top=1
+  #..#
+  #..#
+  ####
+  #..#
+  #..#
+  #..#
+B I U+0049 advance=4 top=1
+  ###
+  .#.
+  .#.
+  .#.
+  .#.
+  ###
+B J U+004A advance=5 top=1
+  ...#
+  ...#
+  ...#
+  ...#
+  #..#
+  .##.
+B K U+004B advance=5 top=1
+  #..#
+  #.#.
+  ##..
+  #.#.
+  #..#
+  #..#
+B L U+004C advance=5 top=1
+  #...
+  #...
+  #...
+  #...
+  #...
+  ####
+B M U+004D advance=6 top=1
+  #...#
+  ##.##
+  #.#.#
+  #...#
+  #...#
+  #...#
+B N U+004E advance=5 top=1
+  #..#
+  ##.#
+  #.##
+  #..#
+  #..#
+  #..#
+B O U+004F advance=5 top=1
+  .##.
+  #..#
+  #..#
+  #..#
+  #..#
+  .##.
+B P U+0050 advance=5 top=1
+  ###.
+  #..#
+  #..#
+  ###.
+  #...
+  #...
+B Q U+0051 advance=5 top=1
+  .##.
+  #..#
+  #..#
+  #..#
+  #.#.
+  .#.#
+B R U+0052 advance=5 top=1
+  ###.
+  #..#
+  #..#
+  ###.
+  #.#.
+  #..#
+B S U+0053 advance=5 top=1
+  .###
+  #...
+  .##.
+  ...#
+  ...#
+  ###.
+B T U+0054 advance=6 top=1
+  #####
+  ..#..
+  ..#..
+  ..#..
+  ..#..
+  ..#..
+B U U+0055 advance=5 top=1
+  #..#
+  #..#
+  #..#
+  #..#
+  #..#
+  .##.
+B V U+0056 advance=6 top=1
+  #...#
+  #...#
+  #...#
+  .#.#.
+  .#.#.
+  ..#..
+B W U+0057 advance=6 top=1
+  #...#
+  #...#
+  #...#
+  #.#.#
+  ##.##
+  #...#
+B X U+0058 advance=5 top=1
+  #..#
+  #..#
+  .##.
+  .##.
+  #..#
+  #..#
+B Y U+0059 advance=6 top=1
+  #...#
+  #...#
+  .#.#.
+  ..#..
+  ..#..
+  ..#..
+B Z U+005A advance=5 top=1
+  ####
+  ...#
+  ..#.
+  .#..
+  #...
+  ####
+B [ U+005B advance=3 top=1
+  ##
+  #.
+  #.
+  #.
+  #.
+  ##
+B \ U+005C advance=5 top=1
+  #...
+  .#..
+  .#..
+  ..#.
+  ..#.
+  ...#
+B ] U+005D advance=3 top=1
+  ##
+  .#
+  .#
+  .#
+  .#
+  ##
+B ^ U+005E advance=4 top=1
+  .#.
+  #.#
+B _ U+005F advance=5 top=7
+  ####
+B ` U+0060 advance=3 top=1
+  #.
+  .#
+B a U+0061 advance=5 top=3
+  .###
+  #..#
+  #..#
+  .###
+B b U+0062 advance=5 top=1
+  #...
+  #...
+  ###.
+  #..#
+  #..#
+  ###.
+B c U+0063 advance=5 top=3
+  .###
+  #...
+  #...
+  .###
+B d U+0064 advance=5 top=1
+  ...#
+  ...#
+  .###
+  #..#
+  #..#
+  .###
+B e U+0065 advance=5 top=3
+  .##.
+  ####
+  #...
+  .###
+B f U+0066 advance=4 top=1
+  ..#
+  .#.
+  ###
+  .#.
+  .#.
+  .#.
+B g U+0067 advance=5 top=3
+  .###
+  #..#
+  #..#
+  .###
+  ...#
+  .##.
+B h U+0068 advance=5 top=1
+  #...
+  #...
+  ###.
+  #..#
+  #..#
+  #..#
+B i U+0069 advance=4 top=1
+  .#.
+  ...
+  ##.
+  .#.
+  .#.
+  ###
+B j U+006A advance=4 top=1
+  ..#
+  ...
+  .##
+  ..#
+  ..#
+  ..#
+  ..#
+  ##.
+B k U+006B advance=5 top=1
+  #...
+  #...
+  #..#
+  #.#.
+  ###.
+  #..#
+B l U+006C advance=4 top=1
+  ##.
+  .#.
+  .#.
+  .#.
+  .#.
+  ..#
+B m U+006D advance=6 top=3
+  ##.#.
+  #.#.#
+  #.#.#
+  #.#.#
+B n U+006E advance=5 top=3
+  ###.
+  #..#
+  #..#
+  #..#
+B o U+006F advance=5 top=3
+  .##.
+  #..#
+  #..#
+  .##.
+B p U+0070 advance=5 top=3
+  ###.
+  #..#
+  #..#
+  ###.
+  #...
+  #...
+B q U+0071 advance=5 top=3
+  .###
+  #..#
+  #..#
+  .###
+  ...#
+  ...#
+B r U+0072 advance=5 top=3
+  #.##
+  ##..
+  #...
+  #...
+B s U+0073 advance=5 top=3
+  .###
+  ##..
+  ..##
+  ###.
+B t U+0074 advance=5 top=2
+  .#..
+  ###.
+  .#..
+  .#..
+  ..##
+B u U+0075 advance=5 top=3
+  #..#
+  #..#
+  #..#
+  .###
+B v U+0076 advance=6 top=3
+  #...#
+  #...#
+  .#.#.
+  ..#..
+B w U+0077 advance=6 top=3
+  #...#
+  #.#.#
+  #.#.#
+  .#.#.
+B x U+0078 advance=5 top=3
+  #..#
+  .##.
+  .##.
+  #..#
+B y U+0079 advance=5 top=3
+  #..#
+  #..#
+  #..#
+  .###
+  ...#
+  .##.
+B z U+007A advance=5 top=3
+  ####
+  ..#.
+  .#..
+  ####
+B { U+007B advance=4 top=1
+  .##
+  .#.
+  #..
+  .#.
+  .#.
+  .##
+B | U+007C advance=2 top=1
+  #
+  #
+  #
+  #
+  #
+  #
+  #
+B } U+007D advance=4 top=1
+  ##.
+  .#.
+  ..#
+  .#.
+  .#.
+  ##.
+B ~ U+007E advance=5 top=3
+  .#.#
+  #.#.
+B ² U+00B2 advance=4 top=0
+  ##.
+  ..#
+  .#.
+  #..
+  ###
+B ³ U+00B3 advance=4 top=0
+  ##.
+  ..#
+  .#.
+  ..#
+  ##.
+B · U+00B7 advance=2 top=4
+  #
+B ¹ U+00B9 advance=4 top=0
+  .#.
+  ##.
+  .#.
+  .#.
+  ###
+B Á U+00C1 advance=5 top=0
+  ..#.
+  .#..
+  .##.
+  #..#
+  ####
+  #..#
+  #..#
+B É U+00C9 advance=5 top=0
+  ..#.
+  .#..
+  ####
+  #...
+  ###.
+  #...
+  ####
+B Í U+00CD advance=4 top=0
+  ..#
+  .#.
+  ###
+  .#.
+  .#.
+  .#.
+  ###
+B Ó U+00D3 advance=5 top=0
+  ..#.
+  .#..
+  .##.
+  #..#
+  #..#
+  #..#
+  .##.
+B Ú U+00DA advance=5 top=0
+  ..#.
+  .#..
+  #..#
+  #..#
+  #..#
+  #..#
+  .##.
+B á U+00E1 advance=5 top=1
+  ..#.
+  .#..
+  .###
+  #..#
+  #..#
+  .###
+B é U+00E9 advance=5 top=1
+  ..#.
+  .#..
+  .##.
+  ####
+  #...
+  .###
+B í U+00ED advance=4 top=1
+  ..#
+  .#.
+  ##.
+  .#.
+  .#.
+  ###
+B ó U+00F3 advance=5 top=1
+  ..#.
+  .#..
+  .##.
+  #..#
+  #..#
+  .##.
+B ú U+00FA advance=5 top=1
+  ..#.
+  .#..
+  #..#
+  #..#
+  #..#
+  .###
+B ⁰ U+2070 advance=4 top=0
+  ###
+  #.#
+  #.#
+  #.#
+  ###
+B ⁴ U+2074 advance=4 top=0
+  #.#
+  #.#
+  ###
+  ..#
+  ..#
+B ⁵ U+2075 advance=4 top=0
+  ###
+  #..
+  ##.
+  ..#
+  ##.
+B ⁶ U+2076 advance=4 top=0
+  .##
+  #..
+  ###
+  #.#
+  ###
+B ⁷ U+2077 advance=4 top=0
+  ###
+  ..#
+  .#.
+  .#.
+  .#.
+B ⁸ U+2078 advance=4 top=0
+  ###
+  #.#
+  ###
+  #.#
+  ###
+B ⁹ U+2079 advance=4 top=0
+  ###
+  #.#
+  ###
+  ..#
+  ##.
+B ⁺ U+207A advance=4 top=1
+  .#.
+  ###
+  .#.
+B ⁻ U+207B advance=4 top=2
+  ###
+B ₀ U+2080 advance=4 top=4
+  ###
+  #.#
+  #.#
+  #.#
+  ###
+B ₁ U+2081 advance=4 top=4
+  .#.
+  ##.
+  .#.
+  .#.
+  ###
+B ₂ U+2082 advance=4 top=4
+  ##.
+  ..#
+  .#.
+  #..
+  ###
+B ₃ U+2083 advance=4 top=4
+  ##.
+  ..#
+  .#.
+  ..#
+  ##.
+B ₄ U+2084 advance=4 top=4
+  #.#
+  #.#
+  ###
+  ..#
+  ..#
+B ₅ U+2085 advance=4 top=4
+  ###
+  #..
+  ##.
+  ..#
+  ##.
+B ₆ U+2086 advance=4 top=4
+  .##
+  #..
+  ###
+  #.#
+  ###
+B ₇ U+2087 advance=4 top=4
+  ###
+  ..#
+  .#.
+  .#.
+  .#.
+B ₈ U+2088 advance=4 top=4
+  ###
+  #.#
+  ###
+  #.#
+  ###
+B ₉ U+2089 advance=4 top=4
+  ###
+  #.#
+  ###
+  ..#
+  ##.
+
+C replacement advance=4 top=1
+  ###
+  #.#
+  #.#
+  #.#
+  ###
+C ! U+0021 advance=2 top=1
+  #
+  #
+  #
+  .
+  #
+C " U+0022 advance=4 top=1
+  #.#
+  #.#
+C # U+0023 advance=4 top=1
+  #.#
+  ###
+  #.#
+  ###
+  #.#
+C $ U+0024 advance=4 top=1
+  .##
+  ##.
+  .#.
+  .##
+  ##.
+C % U+0025 advance=4 top=1
+  #.#
+  ..#
+  .#.
+  #..
+  #.#
+C & U+0026 advance=4 top=1
+  .#.
+  #.#
+  .#.
+  #.#
+  .##
+C ' U+0027 advance=2 top=1
+  #
+  #
+C ( U+0028 advance=3 top=1
+  .#
+  #.
+  #.
+  #.
+  .#
+C ) U+0029 advance=3 top=1
+  #.
+  .#
+  .#
+  .#
+  #.
+C * U+002A advance=4 top=1
+  #.#
+  .#.
+  #.#
+C + U+002B advance=4 top=2
+  .#.
+  ###
+  .#.
+C , U+002C advance=3 top=5
+  .#
+  #.
+C - U+002D advance=3 top=3
+  ##
+C . U+002E advance=2 top=5
+  #
+C / U+002F advance=4 top=1
+  ..#
+  ..#
+  .#.
+  #..
+  #..
+C 0 U+0030 advance=4 top=1
+  ###
+  #.#
+  #.#
+  #.#
+  ###
+C 1 U+0031 advance=4 top=1
+  .#.
+  ##.
+  .#.
+  .#.
+  ###
+C 2 U+0032 advance=4 top=1
+  ##.
+  ..#
+  .#.
+  #..
+  ###
+C 3 U+0033 advance=4 top=1
+  ##.
+  ..#
+  .#.
+  ..#
+  ##.
+C 4 U+0034 advance=4 top=1
+  #.#
+  #.#
+  ###
+  ..#
+  ..#
+C 5 U+0035 advance=4 top=1
+  ###
+  #..
+  ##.
+  ..#
+  ##.
+C 6 U+0036 advance=4 top=1
+  .##
+  #..
+  ###
+  #.#
+  ###
+C 7 U+0037 advance=4 top=1
+  ###
+  ..#
+  .#.
+  .#.
+  .#.
+C 8 U+0038 advance=4 top=1
+  ###
+  #.#
+  ###
+  #.#
+  ###
+C 9 U+0039 advance=4 top=1
+  ###
+  #.#
+  ###
+  ..#
+  ##.
+C : U+003A advance=2 top=3
+  #
+  .
+  #
+C ; U+003B advance=3 top=3
+  .#
+  ..
+  .#
+  #.
+C < U+003C advance=4 top=1
+  ..#
+  .#.
+  #..
+  .#.
+  ..#
+C = U+003D advance=4 top=2
+  ###
+  ...
+  ###
+C > U+003E advance=4 top=1
+  #..
+  .#.
+  ..#
+  .#.
+  #..
+C ? U+003F advance=4 top=1
+  ##.
+  ..#
+  .#.
+  ...
+  .#.
+C @ U+0040 advance=4 top=1
+  .#.
+  #.#
+  ###
+  #..
+  .##
+C A U+0041 advance=4 top=1
+  .#.
+  #.#
+  ###
+  #.#
+  #.#
+C B U+0042 advance=4 top=1
+  ##.
+  #.#
+  ##.
+  #.#
+  ##.
+C C U+0043 advance=4 top=1
+  .##
+  #..
+  #..
+  #..
+  .##
+C D U+0044 advance=4 top=1
+  ##.
+  #.#
+  #.#
+  #.#
+  ##.
+C E U+0045 advance=4 top=1
+  ###
+  #..
+  ##.
+  #..
+  ###
+C F U+0046 advance=4 top=1
+  ###
+  #..
+  ##.
+  #..
+  #..
+C G U+0047 advance=4 top=1
+  .##
+  #..
+  #.#
+  #.#
+  .##
+C H U+0048 advance=4 top=1
+  #.#
+  #.#
+  ###
+  #.#
+  #.#
+C I U+0049 advance=4 top=1
+  ###
+  .#.
+  .#.
+  .#.
+  ###
+C J U+004A advance=4 top=1
+  ..#
+  ..#
+  ..#
+  #.#
+  .#.
+C K U+004B advance=4 top=1
+  #.#
+  #.#
+  ##.
+  #.#
+  #.#
+C L U+004C advance=4 top=1
+  #..
+  #..
+  #..
+  #..
+  ###
+C M U+004D advance=6 top=1
+  #...#
+  ##.##
+  #.#.#
+  #...#
+  #...#
+C N U+004E advance=5 top=1
+  #..#
+  ##.#
+  #.##
+  #..#
+  #..#
+C O U+004F advance=4 top=1
+  .#.
+  #.#
+  #.#
+  #.#
+  .#.
+C P U+0050 advance=4 top=1
+  ##.
+  #.#
+  ##.
+  #..
+  #..
+C Q U+0051 advance=4 top=1
+  .#.
+  #.#
+  #.#
+  ##.
+  .##
+C R U+0052 advance=4 top=1
+  ##.
+  #.#
+  ##.
+  #.#
+  #.#
+C S U+0053 advance=4 top=1
+  .##
+  #..
+  .#.
+  ..#
+  ##.
+C T U+0054 advance=4 top=1
+  ###
+  .#.
+  .#.
+  .#.
+  .#.
+C U U+0055 advance=4 top=1
+  #.#
+  #.#
+  #.#
+  #.#
+  ###
+C V U+0056 advance=4 top=1
+  #.#
+  #.#
+  #.#
+  .#.
+  .#.
+C W U+0057 advance=6 top=1
+  #...#
+  #...#
+  #.#.#
+  ##.##
+  #...#
+C X U+0058 advance=4 top=1
+  #.#
+  #.#
+  .#.
+  #.#
+  #.#
+C Y U+0059 advance=4 top=1
+  #.#
+  #.#
+  .#.
+  .#.
+  .#.
+C Z U+005A advance=4 top=1
+  ###
+  ..#
+  .#.
+  #..
+  ###
+C [ U+005B advance=3 top=1
+  ##
+  #.
+  #.
+  #.
+  ##
+C \ U+005C advance=4 top=1
+  #..
+  #..
+  .#.
+  ..#
+  ..#
+C ] U+005D advance=3 top=1
+  ##
+  .#
+  .#
+  .#
+  ##
+C ^ U+005E advance=4 top=1
+  .#.
+  #.#
+C _ U+005F advance=4 top=6
+  ###
+C ` U+0060 advance=3 top=1
+  #.
+  .#
+C a U+0061 advance=4 top=3
+  .##
+  #.#
+  .##
+C b U+0062 advance=4 top=1
+  #..
+  #..
+  ##.
+  #.#
+  ##.
+C c U+0063 advance=4 top=3
+  .##
+  #..
+  .##
+C d U+0064 advance=4 top=1
+  ..#
+  ..#
+  .##
+  #.#
+  .##
+C e U+0065 advance=4 top=3
+  .##
+  ###
+  ##.
+C f U+0066 advance=4 top=1
+  .##
+  #..
+  ##.
+  #..
+  #..
+C g U+0067 advance=4 top=3
+  .##
+  #.#
+  .##
+  ..#
+  ##.
+C h U+0068 advance=4 top=1
+  #..
+  #..
+  ##.
+  #.#
+  #.#
+C i U+0069 advance=2 top=1
+  #
+  .
+  #
+  #
+  #
+C j U+006A advance=3 top=1
+  .#
+  ..
+  .#
+  .#
+  .#
+  .#
+  #.
+C k U+006B advance=4 top=1
+  #..
+  #..
+  #.#
+  ##.
+  #.#
+C l U+006C advance=2 top=1
+  #
+  #
+  #
+  #
+  #
+C m U+006D advance=6 top=3
+  ####.
+  #.#.#
+  #.#.#
+C n U+006E advance=4 top=3
+  ##.
+  #.#
+  #.#
+C o U+006F advance=4 top=3
+  .#.
+  #.#
+  .#.
+C p U+0070 advance=4 top=3
+  ##.
+  #.#
+  ##.
+  #..
+  #..
+C q U+0071 advance=4 top=3
+  .##
+  #.#
+  .##
+  ..#
+  ..#
+C r U+0072 advance=4 top=3
+  #.#
+  ##.
+  #..
+C s U+0073 advance=4 top=3
+  .##
+  .#.
+  ##.
+C t U+0074 advance=4 top=2
+  .#.
+  ###
+  .#.
+  .##
+C u U+0075 advance=4 top=3
+  #.#
+  #.#
+  .##
+C v U+0076 advance=4 top=3
+  #.#
+  #.#
+  .#.
+C w U+0077 advance=6 top=3
+  #.#.#
+  #.#.#
+  .#.#.
+C x U+0078 advance=4 top=3
+  #.#
+  .#.
+  #.#
+C y U+0079 advance=4 top=3
+  #.#
+  #.#
+  .##
+  ..#
+  ##.
+C z U+007A advance=4 top=3
+  ##.
+  .#.
+  .##
+C { U+007B advance=4 top=1
+  .##
+  .#.
+  #..
+  .#.
+  .##
+C | U+007C advance=2 top=1
+  #
+  #
+  #
+  #
+  #
+  #
+C } U+007D advance=4 top=1
+  ##.
+  .#.
+  ..#
+  .#.
+  ##.
+C ~ U+007E advance=5 top=2
+  .#.#
+  #.#.
+C ² U+00B2 advance=4 top=0
+  ##.
+  ..#
+  .#.
+  ###
+C ³ U+00B3 advance=4 top=0
+  ##.
+  .##
+  ..#
+  ##.
+C · U+00B7 advance=2 top=3
+  #
+C ¹ U+00B9 advance=4 top=0
+  .#.
+  ##.
+  .#.
+  ###
+C Á U+00C1 advance=4 top=0
+  ..#
+  .#.
+  .#.
+  #.#
+  ###
+  #.#
+C É U+00C9 advance=4 top=0
+  ..#
+  .#.
+  ###
+  ##.
+  #..
+  ###
+C Í U+00CD advance=4 top=0
+  ..#
+  .#.
+  ###
+  .#.
+  .#.
+  ###
+C Ó U+00D3 advance=4 top=0
+  ..#
+  .#.
+  .#.
+  #.#
+  #.#
+  .#.
+C Ú U+00DA advance=4 top=0
+  ..#
+  .#.
+  #.#
+  #.#
+  #.#
+  ###
+C á U+00E1 advance=4 top=1
+  ..#
+  .#.
+  .##
+  #.#
+  .##
+C é U+00E9 advance=4 top=1
+  ..#
+  .#.
+  .##
+  ###
+  ##.
+C í U+00ED advance=3 top=1
+  .#
+  #.
+  #.
+  #.
+  #.
+C ó U+00F3 advance=4 top=1
+  ..#
+  .#.
+  .#.
+  #.#
+  .#.
+C ú U+00FA advance=4 top=1
+  ..#
+  .#.
+  #.#
+  #.#
+  .##
+C ⁰ U+2070 advance=4 top=0
+  ###
+  #.#
+  #.#
+  ###
+C ⁴ U+2074 advance=4 top=0
+  #.#
+  #.#
+  ###
+  ..#
+C ⁵ U+2075 advance=4 top=0
+  ###
+  ##.
+  ..#
+  ##.
+C ⁶ U+2076 advance=4 top=0
+  #..
+  ###
+  #.#
+  ###
+C ⁷ U+2077 advance=4 top=0
+  ###
+  ..#
+  .#.
+  .#.
+C ⁸ U+2078 advance=4 top=0
+  ###
+  .#.
+  #.#
+  ###
+C ⁹ U+2079 advance=4 top=0
+  ###
+  #.#
+  ###
+  ..#
+C ⁺ U+207A advance=4 top=0
+  .#.
+  ###
+  .#.
+C ⁻ U+207B advance=4 top=1
+  ###
+C ₀ U+2080 advance=4 top=4
+  ###
+  #.#
+  #.#
+  ###
+C ₁ U+2081 advance=4 top=4
+  .#.
+  ##.
+  .#.
+  ###
+C ₂ U+2082 advance=4 top=4
+  ##.
+  ..#
+  .#.
+  ###
+C ₃ U+2083 advance=4 top=4
+  ##.
+  .##
+  ..#
+  ##.
+C ₄ U+2084 advance=4 top=4
+  #.#
+  #.#
+  ###
+  ..#
+C ₅ U+2085 advance=4 top=4
+  ###
+  ##.
+  ..#
+  ##.
+C ₆ U+2086 advance=4 top=4
+  #..
+  ###
+  #.#
+  ###
+C ₇ U+2087 advance=4 top=4
+  ###
+  ..#
+  .#.
+  .#.
+C ₈ U+2088 advance=4 top=4
+  ###
+  .#.
+  #.#
+  ###
+C ₉ U+2089 advance=4 top=4
+  ###
+  #.#
+  ###
+  ..#

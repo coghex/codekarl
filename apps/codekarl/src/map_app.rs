@@ -346,6 +346,7 @@ impl<R: RiverViewSelector> MapController<R> {
                         eligible: !raw_overflow,
                     });
                 }
+                PointerEvent::ButtonDown { .. } | PointerEvent::ButtonUp { .. } => {}
                 PointerEvent::Move(position) | PointerEvent::Up(position) => {
                     if let Some(drag) = &mut self.drag {
                         let total = drag_delta(drag.anchor, position);
@@ -509,6 +510,22 @@ impl<R: RiverViewSelector> MapController<R> {
             PointerEvent::Down(_) => "down",
             PointerEvent::Move(_) => "move",
             PointerEvent::Up(_) => "up",
+            PointerEvent::ButtonDown {
+                button: ck_window::PointerButton::Middle,
+                ..
+            } => "button-down-middle",
+            PointerEvent::ButtonDown {
+                button: ck_window::PointerButton::Right,
+                ..
+            } => "button-down-right",
+            PointerEvent::ButtonUp {
+                button: ck_window::PointerButton::Middle,
+                ..
+            } => "button-up-middle",
+            PointerEvent::ButtonUp {
+                button: ck_window::PointerButton::Right,
+                ..
+            } => "button-up-right",
             PointerEvent::Scroll {
                 unit: ScrollUnit::Lines,
                 ..
@@ -1601,6 +1618,28 @@ pub(crate) mod tests {
             x: 46 * 256,
             y: 31 * 256,
         };
+        assert!(
+            !controller
+                .update(&pointer_update(
+                    vec![
+                        PointerEvent::ButtonDown {
+                            button: ck_window::PointerButton::Middle,
+                            position: anchor,
+                        },
+                        PointerEvent::ButtonUp {
+                            button: ck_window::PointerButton::Right,
+                            position: end,
+                        },
+                    ],
+                    Some(end),
+                    false,
+                    false,
+                ))
+                .expect("non-left buttons are ignored by the map"),
+            "non-left button edges do not begin, move, end or select a map gesture"
+        );
+        assert_eq!(controller.camera(), Some(before));
+        assert_eq!(controller.selection(), None);
         assert!(
             controller
                 .update(&pointer_update(

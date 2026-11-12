@@ -126,7 +126,7 @@ BOOL ck_win_key_table_entry(NSUInteger position, uint16_t *code, uint8_t *key, c
 /* The window resigned / became key: a loss clears all key state and is delivered before anything recorded after. */
 - (void)recordFocusLost;
 - (void)recordFocusGained;
-- (void)recordPointerKind:(uint8_t)kind point:(NSPoint)point amount:(double)amount unit:(uint8_t)unit;
+- (void)recordPointerKind:(uint8_t)kind point:(NSPoint)point amount:(double)amount unit:(uint8_t)unit button:(uint8_t)button;
 - (void)takePointersInto:(CKWinEvents *)out;
 /* Fills `out` with at most `cap` key and focus entries (and the resync after an overflow), in recorded order; the
  * pump calls it before dispatch, so input recorded while it runs waits for the next pump. */

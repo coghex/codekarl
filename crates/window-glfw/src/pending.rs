@@ -312,7 +312,9 @@ impl InputPending {
     fn pointer(&mut self, event: PointerEvent) {
         let position = match event {
             PointerEvent::Down(p) | PointerEvent::Move(p) | PointerEvent::Up(p) => p,
-            PointerEvent::Scroll { position, .. } => position,
+            PointerEvent::ButtonDown { position, .. }
+            | PointerEvent::ButtonUp { position, .. }
+            | PointerEvent::Scroll { position, .. } => position,
         };
         self.pointer_position = Some(position);
         match event {

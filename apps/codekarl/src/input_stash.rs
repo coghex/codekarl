@@ -5,10 +5,12 @@
 //!
 //! - **per action:** the latest `held`, with `pressed` and `released` OR-ed since the last accepted delivery;
 //! - **transitions:** ordered, at most [`TRANSITION_CAPACITY`]; when full the oldest is dropped and `overflow` is set;
+//! - **pointer:** the latest position, left-button held state and hit key, plus ordered events; only adjacent moves with the same key
+//!   coalesce, and the oldest event is dropped past the bound with `pointer_overflow` set;
 //! - **`overflow`** and **`reset`:** OR-ed (a snapshot's own `overflow` is OR-ed in).
 //!
-//! There is no pointer part yet (slice 1 adds one). The stash is cleared only when the UI VM accepted the post that carried it, and
-//! a clear keeps each action's latest `held`: that is the current state, not an event.
+//! The stash is cleared only when the UI VM accepted the post that carried it, and a clear keeps each action's latest `held`: that is
+//! the current state, not an event.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -31,6 +33,7 @@ pub(crate) struct PointerViewEvent {
     /// Whether the position lay inside one of `key`'s published rectangles (translated and clipped), in the regions the router used at
     /// the tick that routed the event. Always false without a key.
     pub(crate) inside: bool,
+    pub(crate) button: Option<&'static str>,
     pub(crate) amount: Option<i32>,
     pub(crate) unit: Option<&'static str>,
 }
@@ -312,18 +315,37 @@ mod tests {
             position: PointerPosition { x, y: 0 },
             key: Some("panel".to_owned()),
             inside: false,
+            button: None,
             amount: None,
             unit: None,
         };
-        stash.absorb_pointer(None, (0..4).map(move_event), false);
-        assert_eq!(stash.pointer_events.len(), 1);
-        assert_eq!(stash.pointer_events.back().unwrap().position.x, 3);
+        let mut moves = (0..2).map(move_event);
+        stash.absorb_pointer(None, moves.by_ref(), false);
+        stash.absorb_pointer(
+            None,
+            [PointerViewEvent {
+                kind: "button_down",
+                position: PointerPosition { x: 2, y: 0 },
+                key: Some("panel".to_owned()),
+                inside: true,
+                button: Some("middle"),
+                amount: None,
+                unit: None,
+            }],
+            false,
+        );
+        stash.absorb_pointer(None, (2..4).map(move_event), false);
+        assert_eq!(stash.pointer_events.len(), 3);
+        assert_eq!(stash.pointer_events[0].position.x, 1);
+        assert_eq!(stash.pointer_events[1].kind, "button_down");
+        assert_eq!(stash.pointer_events[2].position.x, 3);
 
         let event = |x| PointerViewEvent {
             kind: "down",
             position: PointerPosition { x, y: 0 },
             key: None,
             inside: false,
+            button: None,
             amount: None,
             unit: None,
         };
@@ -349,6 +371,7 @@ mod tests {
                 position: latest.position,
                 key: Some("readout".to_owned()),
                 inside: false,
+                button: None,
                 amount: None,
                 unit: None,
             }],
