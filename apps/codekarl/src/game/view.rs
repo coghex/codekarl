@@ -37,6 +37,10 @@ pub(crate) struct PriceView {
     pub(crate) price_milli: u64,
     /// The base price in whole value units.
     pub(crate) base: u64,
+    /// Units bought in the latest daily price step, absent before the first step.
+    pub(crate) bought: Option<u128>,
+    /// Units offered in the latest daily price step, absent before the first step.
+    pub(crate) offered: Option<u128>,
 }
 
 /// One pop, as the Pops tab shows it.
@@ -599,10 +603,19 @@ fn place_view(
         .goods
         .iter()
         .zip(&place.prices_milli)
-        .map(|(good, price)| PriceView {
+        .enumerate()
+        .map(|(index, (good, price))| PriceView {
             good: good.id.clone(),
             price_milli: *price,
             base: good.base_price,
+            bought: place
+                .last_market_orders
+                .as_ref()
+                .and_then(|orders| orders.buy_units.get(index).copied()),
+            offered: place
+                .last_market_orders
+                .as_ref()
+                .and_then(|orders| orders.sell_units.get(index).copied()),
         })
         .collect();
     let land_view = land.map_or_else(LandView::default, |counts| LandView {
@@ -848,6 +861,7 @@ mod tests {
             prepared_m2: 24_200,
             development_pm: 1000,
             price_drift_carries: vec![0; rules.goods.len()],
+            last_market_orders: None,
         }
     }
 
@@ -1233,9 +1247,13 @@ mod tests {
             .expect("the app quicksave was written");
         let saved = Save::<crate::game::GameState>::from_bytes(&save_bytes, &identity.expected())
             .expect("the app quicksave decodes");
+        let mut saved_economy = state.clone();
+        for place in &mut saved_economy.places {
+            place.last_market_orders = None;
+        }
         assert_eq!(
-            saved.state.economy, state,
-            "the quicksave retains the post-tick state"
+            saved.state.economy, saved_economy,
+            "the quicksave retains canonical state and drops derived market orders"
         );
 
         core.dispatch(
@@ -1246,9 +1264,16 @@ mod tests {
             .snapshot()
             .economy
             .expect("quickload rebuilds and publishes the app view");
+        let mut expected_view = (*view_before_save).clone();
+        for place in &mut expected_view.places {
+            for price in &mut place.prices {
+                price.bought = None;
+                price.offered = None;
+            }
+        }
         assert_eq!(
-            *view_before_save, *view_after_load,
-            "the complete view is field-for-field stable"
+            expected_view, *view_after_load,
+            "load keeps canonical view fields and clears derived daily market orders"
         );
         let loaded_dying = view_after_load
             .place("dying-place")
@@ -1415,6 +1440,36 @@ mod tests {
                 value_milli: None,
             }]
         );
+    }
+
+    #[test]
+    fn place_view_keeps_exact_u128_order_units_and_none_before_a_price_step() {
+        let rules = shipped_rules();
+        let mut place = fixture(&rules);
+        let view = view_for_place(&rules, place.clone());
+        assert!(
+            view.prices
+                .iter()
+                .all(|price| price.bought.is_none() && price.offered.is_none())
+        );
+
+        let oats = index_of(&rules, "oats");
+        let mut buy_units = vec![0; rules.goods.len()];
+        let mut sell_units = vec![0; rules.goods.len()];
+        buy_units[oats] = u128::from(u64::MAX) + 5;
+        sell_units[oats] = 1240;
+        place.last_market_orders = Some(ck_economy::DailyMarketOrders {
+            buy_units,
+            sell_units,
+        });
+        let view = view_for_place(&rules, place);
+        let oats = view
+            .prices
+            .iter()
+            .find(|price| price.good == "oats")
+            .unwrap();
+        assert_eq!(oats.bought, Some(u128::from(u64::MAX) + 5));
+        assert_eq!(oats.offered, Some(1240));
     }
 
     #[test]

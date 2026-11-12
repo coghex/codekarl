@@ -568,11 +568,18 @@ pub(crate) fn place_table(place: &PlaceView) -> ConfigValue {
                     .prices
                     .iter()
                     .map(|price| {
-                        table([
-                            ("good", text(&price.good)),
-                            ("price_milli", integer(price.price_milli)),
-                            ("base", integer(price.base)),
-                        ])
+                        let mut fields = BTreeMap::from([
+                            ("good".to_owned(), text(&price.good)),
+                            ("price_milli".to_owned(), integer(price.price_milli)),
+                            ("base".to_owned(), integer(price.base)),
+                        ]);
+                        if let Some(bought) = price.bought {
+                            fields.insert("bought".to_owned(), integer_u128(bought));
+                        }
+                        if let Some(offered) = price.offered {
+                            fields.insert("offered".to_owned(), integer_u128(offered));
+                        }
+                        ConfigValue::Table(fields)
                     })
                     .collect(),
             ),
@@ -862,6 +869,48 @@ mod tests {
     }
 
     #[test]
+    fn game_place_exposes_order_values_and_omits_them_before_the_price_step() {
+        let cache = Arc::new(ViewCache::default());
+        let make_price = |good: &str, bought, offered| crate::game::view::PriceView {
+            good: good.to_owned(),
+            price_milli: 96_500,
+            base: 100,
+            bought,
+            offered,
+        };
+        cache.post(
+            1,
+            Arc::new(EconomyView {
+                places: vec![PlaceView {
+                    id: "fixture".to_owned(),
+                    prices: vec![
+                        make_price("oats", Some(1240), Some(1410)),
+                        make_price("barley", None, None),
+                    ],
+                    ..PlaceView::default()
+                }],
+            }),
+        );
+        let returned = call_place(&place_function(cache), "fixture", 1).unwrap();
+        let [ConfigValue::Table(place)] = returned.as_slice() else {
+            panic!("one place table");
+        };
+        let ConfigValue::Array(prices) = &place["prices"] else {
+            panic!("price array");
+        };
+        let ConfigValue::Table(oats) = &prices[0] else {
+            panic!("oats price table");
+        };
+        assert_eq!(oats["bought"], ConfigValue::Integer(1240));
+        assert_eq!(oats["offered"], ConfigValue::Integer(1410));
+        let ConfigValue::Table(barley) = &prices[1] else {
+            panic!("barley price table");
+        };
+        assert!(!barley.contains_key("bought"));
+        assert!(!barley.contains_key("offered"));
+    }
+
+    #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "The table contract test checks the full exposed place and pop projection in one fixture."
@@ -874,11 +923,29 @@ mod tests {
             food_days: 215,
             storage_used_ml: 5_400_999,
             storage_capacity_ml: 86_400_000,
-            prices: vec![crate::game::view::PriceView {
-                good: "oats".to_owned(),
-                price_milli: 100_500,
-                base: 100,
-            }],
+            prices: vec![
+                crate::game::view::PriceView {
+                    good: "oats".to_owned(),
+                    price_milli: 100_500,
+                    base: 100,
+                    bought: Some(u128::from(u64::MAX) + 5),
+                    offered: Some(1410),
+                },
+                crate::game::view::PriceView {
+                    good: "barley".to_owned(),
+                    price_milli: 2000,
+                    base: 2,
+                    bought: Some(1240),
+                    offered: Some(0),
+                },
+                crate::game::view::PriceView {
+                    good: "ale".to_owned(),
+                    price_milli: 2500,
+                    base: 2,
+                    bought: None,
+                    offered: None,
+                },
+            ],
             land: crate::game::view::LandView {
                 usable: BTreeMap::from([("pasture".to_owned(), 7)]),
                 land: BTreeMap::from([("pasture".to_owned(), 9)]),
@@ -1014,13 +1081,24 @@ mod tests {
             panic!("a good counter table");
         };
         assert!(!ale.contains_key("value_milli"));
-        let ConfigValue::Array(prices) = &fields["prices"] else {
+        let ConfigValue::Array(price_rows) = &fields["prices"] else {
             panic!("an array");
         };
-        let ConfigValue::Table(price) = &prices[0] else {
+        let ConfigValue::Table(price) = &price_rows[0] else {
             panic!("a table");
         };
         assert_eq!(price["price_milli"], ConfigValue::Integer(100_500));
+        assert_eq!(price["bought"], ConfigValue::Integer(i64::MAX));
+        assert_eq!(price["offered"], ConfigValue::Integer(1410));
+        let ConfigValue::Table(second_price) = &price_rows[1] else {
+            panic!("a price table");
+        };
+        assert_eq!(second_price["bought"], ConfigValue::Integer(1240));
+        let ConfigValue::Table(unavailable) = &price_rows[2] else {
+            panic!("a price table");
+        };
+        assert!(!unavailable.contains_key("bought"));
+        assert!(!unavailable.contains_key("offered"));
         let ConfigValue::Array(pops) = &fields["pops"] else {
             panic!("an array");
         };

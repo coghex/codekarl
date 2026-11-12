@@ -1434,6 +1434,7 @@ pub fn starting_state(
             prepared_m2,
             development_pm: rules.starting_development_pm,
             price_drift_carries: vec![0; rules.goods.len()],
+            last_market_orders: None,
             counters: CounterBuckets::for_place(rules.goods.len()),
         });
     }
@@ -2154,9 +2155,12 @@ fn projected_buy_units(
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct DailyMarketOrders {
-    buy_units: Vec<u128>,
-    sell_units: Vec<u128>,
+/// Orders used by a place's latest daily price step; cached for display, never canonicalized.
+pub struct DailyMarketOrders {
+    /// Units bought by local pops and buildings, in rules good order.
+    pub buy_units: Vec<u128>,
+    /// Units offered by local pops and buildings, in rules good order.
+    pub sell_units: Vec<u128>,
 }
 
 fn food_target_units(
@@ -2501,6 +2505,7 @@ fn update_daily_prices(rules: &Rules, state: &mut EconomyState) -> Result<(), Da
             )?)
             .map_err(|_| missing_data("market.price".to_owned(), "drifted price is negative"))?;
         }
+        place.last_market_orders = Some(orders);
     }
     Ok(())
 }
@@ -3614,6 +3619,8 @@ pub struct PlaceState {
     pub development_pm: u32,
     /// Signed daily price-drift carries in good order, with denominator 1000.
     pub price_drift_carries: Vec<i64>,
+    /// Orders from the latest daily price step; derived for display and excluded from saved state.
+    pub last_market_orders: Option<DailyMarketOrders>,
     /// Display-only monthly event counters.
     pub counters: CounterBuckets,
 }
@@ -7466,6 +7473,7 @@ impl Canonical for EconomyState {
                 prepared_m2: u64::decode(input)?,
                 development_pm: u32::decode(input)?,
                 price_drift_carries: Vec::<i64>::decode(input)?,
+                last_market_orders: None,
                 counters: decode_place_counters(input)?,
             });
         }
@@ -7937,6 +7945,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: vec![0; goods],
+                last_market_orders: None,
                 counters: CounterBuckets::for_place(rules.goods.len()),
             }],
         };
@@ -8093,6 +8102,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: Vec::new(),
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }],
         }
@@ -8600,6 +8610,7 @@ mod tests {
             prepared_m2: 0,
             development_pm: 0,
             price_drift_carries: vec![0; rules.goods.len()],
+            last_market_orders: None,
             counters: CounterBuckets::default(),
         };
         assert_eq!(tier_target_units(&rules, "monk", 10, mead, 1), Ok(22));
@@ -8663,6 +8674,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: vec![0; rules.goods.len()],
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }
         };
@@ -8729,6 +8741,7 @@ mod tests {
             prepared_m2: 0,
             development_pm: 0,
             price_drift_carries: vec![0],
+            last_market_orders: None,
             counters: CounterBuckets::default(),
         }
     }
@@ -8907,6 +8920,7 @@ mod tests {
             prepared_m2: 0,
             development_pm: 0,
             price_drift_carries: vec![0; rules.goods.len()],
+            last_market_orders: None,
             counters: CounterBuckets::default(),
         };
         assert_account_order_targets(&rules, &place);
@@ -8941,6 +8955,7 @@ mod tests {
             prepared_m2: 0,
             development_pm: 0,
             price_drift_carries: vec![0],
+            last_market_orders: None,
             counters: CounterBuckets::default(),
         };
         let mut state = EconomyState {
@@ -8955,11 +8970,21 @@ mod tests {
         );
         update_daily_prices(&rules, &mut state).unwrap();
         assert_eq!(state.places[0].prices_milli, [100_000]);
+        assert_eq!(
+            state.places[0].last_market_orders,
+            Some(DailyMarketOrders {
+                buy_units: vec![0],
+                sell_units: vec![0],
+            }),
+            "the cache keeps the exact orders used by the price step"
+        );
 
         state.places[0].pops[0].stock[0] = 0;
         state.places[0].prices_milli[0] = 100_001;
+        let orders_used = daily_market_orders(&rules, &state.places[0]).unwrap();
         update_daily_prices(&rules, &mut state).unwrap();
         assert_eq!(state.places[0].prices_milli, [105_000]);
+        assert_eq!(state.places[0].last_market_orders, Some(orders_used));
         assert_eq!(state.places[0].price_drift_carries, [900]);
         update_daily_prices(&rules, &mut state).unwrap();
         assert_eq!(state.places[0].prices_milli, [109_500]);
@@ -9691,6 +9716,7 @@ mod tests {
             vec![PlaceState {
                 id: "fort".to_owned(),
                 price_drift_carries: vec![0],
+                last_market_orders: None,
                 counters: CounterBuckets::for_place(rules.goods.len()),
                 coastal: false,
                 pops: vec![PopState {
@@ -11088,6 +11114,7 @@ mod tests {
             prepared_m2: 0,
             development_pm: 0,
             price_drift_carries: vec![0],
+            last_market_orders: None,
             counters: CounterBuckets::for_place(1),
         };
         place.counters.current.produced[0] = 12;
@@ -11728,6 +11755,7 @@ mod tests {
             places: vec![PlaceState {
                 id: "a".to_owned(),
                 price_drift_carries: vec![-321],
+                last_market_orders: None,
                 counters: CounterBuckets {
                     current: MonthlyCounters {
                         produced: vec![4],
@@ -11848,8 +11876,21 @@ mod tests {
             }],
         };
         let bytes = state.to_bytes().unwrap();
+        let mut with_cached_orders = state.clone();
+        with_cached_orders.places[0].last_market_orders = Some(DailyMarketOrders {
+            buy_units: vec![u128::from(u64::MAX) + 5],
+            sell_units: vec![9],
+        });
+        assert_eq!(
+            with_cached_orders.to_bytes().unwrap(),
+            bytes,
+            "derived daily orders do not change canonical economy bytes"
+        );
         let decoded = EconomyState::from_bytes(&bytes).unwrap();
         assert_eq!(decoded, state);
+        let decoded_with_orders =
+            EconomyState::from_bytes(&with_cached_orders.to_bytes().unwrap()).unwrap();
+        assert!(decoded_with_orders.places[0].last_market_orders.is_none());
         assert_eq!(
             decoded.places[0].buildings[0].wage_history,
             (1..=12).collect::<Vec<_>>()
@@ -12233,6 +12274,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: Vec::new(),
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }],
         };
@@ -12321,6 +12363,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: Vec::new(),
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }],
         };
@@ -12608,6 +12651,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: vec![0],
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }],
         };
@@ -12666,6 +12710,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: Vec::new(),
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }],
         };
@@ -12733,6 +12778,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: Vec::new(),
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }],
         };
@@ -12795,6 +12841,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: vec![0; goods],
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }],
         };
@@ -12855,6 +12902,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: Vec::new(),
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }],
         };
@@ -12958,6 +13006,7 @@ mod tests {
             prepared_m2: 0,
             development_pm: 0,
             price_drift_carries: Vec::new(),
+            last_market_orders: None,
             counters: CounterBuckets::default(),
         };
         draw_pop(&rules, &mut place, 0).unwrap();
@@ -13051,6 +13100,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: Vec::new(),
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }],
         };
@@ -13129,6 +13179,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: Vec::new(),
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }],
         };
@@ -13224,6 +13275,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 0,
                 price_drift_carries: vec![0; goods],
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }
         };
@@ -13390,6 +13442,7 @@ mod tests {
             prepared_m2: 0,
             development_pm: 0,
             price_drift_carries: Vec::new(),
+            last_market_orders: None,
             counters: CounterBuckets::default(),
         };
         let mut ledger = DailyConsumptionLedger {
@@ -13450,6 +13503,7 @@ mod tests {
             prepared_m2: 0,
             development_pm: 1000,
             price_drift_carries: Vec::new(),
+            last_market_orders: None,
             counters: CounterBuckets::default(),
         };
         let fill = housing_fill(&rules, &place, 3).unwrap();
@@ -13525,6 +13579,7 @@ mod tests {
             prepared_m2: 0,
             development_pm: 1000,
             price_drift_carries: Vec::new(),
+            last_market_orders: None,
             counters: CounterBuckets::default(),
         }
     }
@@ -13907,6 +13962,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 1000,
                 price_drift_carries: Vec::new(),
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }],
         };
@@ -13949,6 +14005,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 1000,
                 price_drift_carries: Vec::new(),
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }],
         };
@@ -13995,6 +14052,7 @@ mod tests {
                 prepared_m2: 0,
                 development_pm: 1000,
                 price_drift_carries: Vec::new(),
+                last_market_orders: None,
                 counters: CounterBuckets::default(),
             }],
         };
@@ -14228,6 +14286,7 @@ mod tests {
             prepared_m2: 0,
             development_pm: 1000,
             price_drift_carries: Vec::new(),
+            last_market_orders: None,
             counters: CounterBuckets::default(),
         };
         (rules, place)
@@ -14424,6 +14483,7 @@ mod tests {
             prepared_m2: 0,
             development_pm: 1000,
             price_drift_carries: Vec::new(),
+            last_market_orders: None,
             counters: CounterBuckets::default(),
         };
         let mut places = vec![
@@ -14601,6 +14661,7 @@ mod tests {
             prepared_m2: 0,
             development_pm: 1000,
             price_drift_carries: Vec::new(),
+            last_market_orders: None,
             counters: CounterBuckets::default(),
         };
         assert_eq!(pop_wage_per_head(&place, 0).unwrap(), 100);
