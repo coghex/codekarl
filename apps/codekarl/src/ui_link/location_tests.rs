@@ -16,7 +16,9 @@ use super::widget_witness_tests::points;
 const PREFIX: &str = r#"
 callbacks = {}
 place_calls = {}
-local function price(good, milli, base) return {good = good, price_milli = milli, base = base} end
+local function price(good, milli, base, bought, offered)
+  return {good = good, price_milli = milli, base = base, bought = bought, offered = offered}
+end
 local function rowan(workers, births)
   return {
     id = "rowan", workers = workers, dependents = 40, food_days = 215,
@@ -209,9 +211,39 @@ function note_tooltip(name, key, x, y)
   local content, part
   if type(source) == "function" then content, part = source(x or 0, y or 0)
   else content = tooltip.content(source.class, source.args) end
+  local function line_text(line)
+    if type(line) ~= "table" then return tostring(line) end
+    if type(line.text) == "string" then return line.text end
+    local parts = {}
+    for _, span in ipairs(line) do parts[#parts + 1] = line_text(span) end
+    return table.concat(parts)
+  end
   local lines = {}
-  for _, line in ipairs(content or {}) do lines[#lines + 1] = type(line) == "table" and tostring(line.text or "") or tostring(line) end
+  for _, line in ipairs(content or {}) do lines[#lines + 1] = line_text(line) end
   note("tooltip " .. name .. " " .. table.concat(lines, "|") .. " part=" .. tostring(part or "-"))
+end
+function note_tooltip_links(name, key)
+  local source = tooltip_sources[key]
+  if type(source) ~= "function" then note("tooltip_link " .. name .. " <none>"); return end
+  local content = source(0, 0)
+  for _, line in ipairs(content or {}) do
+    if type(line) == "table" then
+      for _, span in ipairs(line) do
+        if type(span) == "table" and span.class ~= nil then
+          note("tooltip_link " .. name .. " " .. span.class .. " " .. span.args.place .. " " .. span.args.good .. " " .. span.text)
+          return
+        end
+      end
+    end
+  end
+  note("tooltip_link " .. name .. " <none>")
+end
+function note_price_content(name, place, good)
+  tooltip.refresh()
+  local lines = tooltip.content("price", {place = place, good = good})
+  local text = {}
+  for _, line in ipairs(lines or {}) do text[#text + 1] = type(line) == "string" and line or table.concat(line) end
+  note("price_content " .. name .. " " .. table.concat(text, "|"))
 end
 local drawing_card = false
 local ui_library = require("lib.ui")
@@ -702,6 +734,33 @@ fn prices_use_fixed_goods_icons_and_unlisted_goods_keep_their_name() {
             "missing tooltip {name}: {recorded:?}"
         );
     }
+}
+
+#[test]
+fn price_tooltip_links_to_a_refreshing_four_line_breakdown() {
+    let mut rig = rig(&[
+        r#"VIEWS[1].rowan.prices = {price("oats", 96500, 100)}; time(1, 1); select_place("rowan", "Rowan")
+note_tooltip("oats", list_object.row_keys[11]); note_tooltip_links("oats", list_object.row_keys[11])
+note_price_content("empty", "rowan", "oats")
+VIEWS[2] = VIEWS[1]; VIEWS[2].rowan.prices = {price("oats", 97250, 100, 1240, 1410)}; time(2, 2)
+note_price_content("updated", "rowan", "oats")"#,
+    ]);
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "tooltip oats oats|price 96.5, base 100 part=-"),
+        "row tooltip: {recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "tooltip_link oats price rowan oats 96.5"),
+        "price span link: {recorded:?}"
+    );
+    assert!(recorded.iter().any(|line| line == "price_content empty oats: price 96.5|base price 100|bought (buy orders) -|offered (sell orders) -"), "empty breakdown: {recorded:?}");
+    assert!(recorded.iter().any(|line| line == "price_content updated oats: price 97.25|base price 100|bought (buy orders) 1240|offered (sell orders) 1410"), "refreshed breakdown: {recorded:?}");
 }
 
 #[test]

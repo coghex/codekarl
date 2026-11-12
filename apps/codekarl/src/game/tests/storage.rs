@@ -1,6 +1,7 @@
 use std::{fs, time::Duration};
 
 use ck_log::Level;
+use ck_sim::{Scheduler, Simulation};
 
 use super::{Harness, after, identity, start};
 use crate::game::{controls::Control, saves::QUICKSAVE, slot::PauseReason};
@@ -49,6 +50,59 @@ fn quicksave_then_quickload_continues_to_the_uninterrupted_digest() {
     // It stops at the first wake that reached the target, which may be a few ticks later than before.
     let again = harness.core.time();
     assert_eq!(harness.digest(), Harness::reference_digest(42, again));
+}
+
+#[test]
+fn same_build_saves_and_digests_ignore_derived_daily_market_orders() {
+    let economy = ck_economy::EconomyState {
+        places: vec![ck_economy::PlaceState {
+            id: "fixture".to_owned(),
+            coastal: false,
+            pops: Vec::new(),
+            buildings: Vec::new(),
+            prices_milli: vec![96_500],
+            prepared_m2: 0,
+            development_pm: 0,
+            price_drift_carries: vec![0],
+            last_market_orders: Some(ck_economy::DailyMarketOrders {
+                buy_units: vec![1240],
+                sell_units: vec![1410],
+            }),
+            counters: ck_economy::CounterBuckets::default(),
+        }],
+    };
+    let mut cleared = economy.clone();
+    cleared.places[0].last_market_orders = None;
+    let make = |economy| {
+        Simulation::<crate::game::GameState, crate::game::GameCommand>::new(
+            start(),
+            42,
+            crate::game::GameState { economy },
+            Scheduler::new(),
+            crate::game::apply,
+        )
+    };
+    let with_orders = make(economy);
+    let without_orders = make(cleared);
+    assert_eq!(
+        with_orders.digest().unwrap(),
+        without_orders.digest().unwrap()
+    );
+    let scenario_hash = "ab".repeat(32);
+    let meta = identity(&scenario_hash).meta(42);
+    let bytes = with_orders.save(meta.clone()).to_bytes().unwrap();
+    assert_eq!(bytes, without_orders.save(meta.clone()).to_bytes().unwrap());
+    let loaded = ck_sim::Save::<crate::game::GameState>::from_bytes(
+        &bytes,
+        &identity(&scenario_hash).expected(),
+    )
+    .unwrap();
+    assert!(loaded.state.economy.places[0].last_market_orders.is_none());
+    assert_eq!(
+        loaded.to_bytes().unwrap(),
+        bytes,
+        "loading and saving again keeps the same-build bytes"
+    );
 }
 
 #[test]

@@ -14,11 +14,13 @@ local button = require("lib.button")
 local frame = require("lib.frame")
 local text = require("lib.text")
 local theme = require("lib.theme")
+local tooltip = require("lib.tooltip")
 
 local P = ui.P
 
 local location = {}
 location.__index = location
+local price_revision
 
 local TABS = {
   {key = "location", label = "location", short = "loc", tiny = "l"},
@@ -115,6 +117,22 @@ local GOOD_NAMES = {peas_beans = "peas and beans"}
 local function good_name(id)
   return GOOD_NAMES[id] or id:gsub("_", " ")
 end
+
+tooltip.define("price", function(args)
+  if price_revision == nil or game.place == nil then return nil end
+  local place = game.place(args.place, price_revision)
+  for _, price in ipairs(place.prices) do
+    if price.good == args.good then
+      return {
+        good_name(price.good) .. ": price " .. milli(price.price_milli),
+        "base price " .. price.base,
+        "bought (buy orders) " .. (price.bought == nil and "-" or tostring(price.bought)),
+        "offered (sell orders) " .. (price.offered == nil and "-" or tostring(price.offered)),
+      }
+    end
+  end
+  return nil
+end)
 
 local function draw_bar(result, group, x, y, width, numerator, denominator)
   put_quad(result, group, x, y, width, 3, theme.colour("track"))
@@ -304,7 +322,11 @@ local function location_lines(place)
         cells = {{text = milli(price.price_milli) .. " (" .. price.base .. ")", x = 16, align = "left"}},
         icon = {image = "goods/" .. price.good},
         tooltip = function()
-          return {good_name(price.good), "price " .. milli(price.price_milli) .. ", base " .. price.base}
+          return {
+            good_name(price.good),
+            {"price ", {text = milli(price.price_milli), class = "price", args = {place = place.id, good = price.good}},
+              ", base " .. price.base},
+          }
         end,
       }
     else
@@ -740,6 +762,7 @@ end
 -- Tells the panel the newest revision `game_time` carried. A new revision refreshes an open panel, keeping its scroll; the same one
 -- (a date alone, a speed, a pause) does nothing.
 function location:set_revision(revision)
+  price_revision = revision
   if revision == self.revision then
     return
   end
