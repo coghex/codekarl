@@ -182,8 +182,20 @@ function announce_selector_count()
 end
 function note(text) window.record(text) end
 local drawing_card = false
+local ui_library = require("lib.ui")
+local real_ui_texture = ui_library.texture
+local texture_names = {}
+ui_library.texture = function(name)
+  local token = real_ui_texture(name)
+  texture_names[token] = name
+  return token
+end
 local real_create_quad = render.create_quad
 render.create_quad = function(spec)
+  local name = texture_names[spec.texture]
+  if name ~= nil and name:match("^ui/goods/") then
+    note(string.format("goodsquad %s %g %g %g %g %s", name, spec.x, spec.y, spec.width, spec.height, tostring(spec.tint or "-")))
+  end
   if drawing_card then
     note(string.format("cardquad %s %g %g %g %g %s", tostring(spec.texture), spec.x, spec.y,
       spec.width, spec.height, tostring(spec.tint or "-")))
@@ -227,7 +239,8 @@ local function row_text(item)
   for _, cell in ipairs(item.cells) do
     cells[#cells + 1] = string.format("%s@%g:%s:%s", cell.text, cell.x, cell.align, cell.colour or "-")
   end
-  return table.concat(cells, ",") .. ";stripe=" .. (item.stripe or "-") .. ";icon=" .. (item.icon and item.icon.name or "-")
+  local icon = item.icon and (item.icon.image or item.icon.name) or "-"
+  return table.concat(cells, ",") .. ";stripe=" .. (item.stripe or "-") .. ";icon=" .. icon
 end
 function rows_text(items)
   local rows = {}
@@ -613,7 +626,86 @@ fn switching_location_tabs_keeps_one_selector_and_close_reopen_starts_clean() {
     );
 }
 
-const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|housing: basic 0/0, makeshift 0/0|crowding: 0%|food: 215 days|building land: 4200 / 24200 m²|storage: 5400 / 86400 L|lost to overflow last month: 0|prices (base):|  oats 100 (100)|  ale 2.5 (2)";
+const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|housing: basic 0/0, makeshift 0/0|crowding: 0%|food: 215 days|building land: 4200 / 24200 m²|storage: 5400 / 86400 L|lost to overflow last month: 0|prices (base):|100 (100)@16:left:-;stripe=-;icon=goods/oats|2.5 (2)@16:left:-;stripe=-;icon=goods/ale";
+
+#[test]
+fn prices_use_fixed_goods_icons_and_unlisted_goods_keep_their_name() {
+    let mut rig = rig(&[
+        "VIEWS[1].rowan.prices = {price('oats', 96500, 100), price('moonstone', 4500, 4)}; time(1, 1) select_place('rowan', 'Rowan')",
+    ]);
+    rig.opened();
+    let recorded = notes(&rig);
+    let all_rows = rows(&rig);
+    let price_rows = all_rows.last().expect("location rows");
+    assert!(
+        price_rows.contains("96.5 (100)@16:left:-;stripe=-;icon=goods/oats"),
+        "a listed good replaces its name with the 9x9 icon and x=16 price cell: {price_rows}"
+    );
+    assert!(
+        price_rows.contains("  moonstone 4.5 (4)"),
+        "an unlisted good keeps the prior name line: {price_rows}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.starts_with("goodsquad ui/goods/oats.png 8 ")
+                && line.ends_with(" 18 18 -")),
+        "the price icon uses the full-colour image at its row position: {recorded:?}"
+    );
+    assert!(
+        !recorded
+            .iter()
+            .any(|line| line.contains("ui/goods/moonstone.png")),
+        "an unlisted good does not attempt a texture load: {recorded:?}"
+    );
+}
+
+#[test]
+fn herd_counts_use_full_colour_icons_on_cards_and_open_rows() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('cards', 'Cards'); tabs_by_title.Cards:select('buildings', true)",
+        "look_buttons.rows.on_click(); card_object.items[2].on_click()",
+    ]);
+    rig.opened();
+    let card_icons = notes(&rig);
+    for (name, icon_x, count_x, colour, count) in [
+        ("cattle", 10, 32, "#9a927e", "27/36"),
+        ("sheep", 112, 134, "#9a927e", "10/20"),
+        ("pigs", 214, 236, "#ece3cb", "9/9"),
+    ] {
+        assert!(
+            card_icons.iter().any(|line| {
+                line == &format!("goodsquad ui/goods/{name}.png {icon_x} 76 18 18 -")
+            }),
+            "card herd {name} icon is at ({},38) UI pixels, untinted 9x9: {card_icons:?}",
+            icon_x / 2
+        );
+        assert!(
+            card_text_with_colour_at(&card_icons, count_x, 74, colour, count),
+            "card herd {name} count is at ({},37) UI pixels with {colour}: {card_icons:?}",
+            count_x / 2
+        );
+    }
+    rig.opened();
+    let row_icons = notes(&rig);
+    for (name, icon_y, count_y, count) in [
+        ("cattle", 104, 102, "27 / 36"),
+        ("sheep", 128, 126, "10 / 20"),
+        ("pigs", 152, 150, "9 / 9"),
+    ] {
+        assert!(
+            row_icons.iter().any(|line| {
+                line == &format!("goodsquad ui/goods/{name}.png 32 {icon_y} 18 18 -")
+            }),
+            "open row herd {name} icon is at x=16 and one pixel below its text: {row_icons:?}"
+        );
+        assert!(
+            card_text_with_colour_at(&row_icons, 56, count_y, "#ece3cb", count),
+            "open row herd {name} count is at x=28: {row_icons:?}"
+        );
+    }
+}
+
 #[test]
 fn the_location_tab_stays_text_while_pops_and_buildings_start_as_cards_and_share_the_rows_choice() {
     let mut rig = rig(&[
@@ -721,6 +813,19 @@ fn card_text_at(recorded: &[String], x: u32, y: u32, value: &str) -> bool {
         .any(|line| line.starts_with(&format!("cardtext {x} {y} ")) && line.ends_with(value))
 }
 
+fn card_text_with_colour_at(
+    recorded: &[String],
+    x: u32,
+    y: u32,
+    colour: &str,
+    value: &str,
+) -> bool {
+    let suffix = format!(" {colour} {value}");
+    recorded
+        .iter()
+        .any(|line| line.starts_with(&format!("cardtext {x} {y} ")) && line.ends_with(&suffix))
+}
+
 fn card_quad_at(recorded: &[String], x: u32, y: u32, width: u32, colour: &str) -> bool {
     recorded.iter().any(|line| {
         line.starts_with("cardquad ") && line.contains(&format!(" {x} {y} {width} 6 {colour}"))
@@ -795,13 +900,16 @@ fn building_cards_render_mockup_values_and_empty_or_clamped_bars() {
         "wage 1.234",
         "housing 3",
         "80/88",
-        "cattle 27/36",
     ] {
         assert!(
             recorded.iter().any(|line| line.contains(text)),
             "missing {text}: {recorded:?}"
         );
     }
+    assert!(card_text_at(&recorded, 32, 74, "27/36"));
+    assert!(recorded.iter().any(|line| {
+        line.starts_with("goodsquad ui/goods/cattle.png ") && line.ends_with(" 18 18 -")
+    }));
     assert!(
         card_quad_at(&recorded, 66, 60, 72, "#ece3cb"),
         "farm staff fill is 36px"

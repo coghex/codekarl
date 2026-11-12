@@ -26,6 +26,14 @@ local TABS = {
   {key = "buildings", label = "buildings", short = "bld", tiny = "b"},
 }
 
+-- This list is deliberately fixed: an unlisted future good keeps its readable name without an asynchronous file lookup.
+local GOODS_WITH_ICONS = {
+  "oats", "barley", "peas_beans", "vegetables", "apples", "dairy", "beef", "pork", "mutton", "fish", "seabirds",
+  "ale", "mead", "wine", "honey", "herbs", "wool", "beeswax", "hides", "cattle", "pigs", "sheep",
+}
+local HAS_GOODS_ICON = {}
+for _, good in ipairs(GOODS_WITH_ICONS) do HAS_GOODS_ICON[good] = true end
+
 -- A price given in thousandths: whole units, then the fraction without trailing zeros ("100", "100.5").
 local function milli(value)
   local whole, part = value // 1000, value % 1000
@@ -90,6 +98,14 @@ local function draw_icon(result, group, name, x, y, colour)
   local quad = render.create_quad{
     texture = ui.texture("ui/theme/icon_" .. name .. ".png"), x = x * P, y = y * P,
     width = 9 * P, height = 11 * P, group = group, tint = colour,
+  }
+  result:add({destroy = function() render.destroy_quad(quad) end})
+end
+
+local function draw_goods_icon(result, group, good, x, y)
+  local quad = render.create_quad{
+    texture = ui.texture("ui/goods/" .. good .. ".png"), x = x * P, y = y * P,
+    width = 9 * P, height = 9 * P, group = group,
   }
   result:add({destroy = function() render.destroy_quad(quad) end})
 end
@@ -176,9 +192,10 @@ local function building_card(building)
       draw_bar(result, group, dx + 145, dy + 30, 30, building.store_used_l, building.store_capacity_l)
       local hx = dx + 5
       for _, herd in ipairs(building.herds) do
-        local label = herd.species .. " " .. herd.head .. "/" .. herd.maximum
-        put_text(result, group, hx, dy + 37, label, herd.head < herd.maximum and theme.colour("dim") or theme.colour("text"))
-        hx = hx + font.layout(label).width + 8
+        local count = herd.head .. "/" .. herd.maximum
+        draw_goods_icon(result, group, herd.species, hx, dy + 38)
+        put_text(result, group, hx + 11, dy + 37, count, herd.head < herd.maximum and theme.colour("dim") or theme.colour("text"))
+        hx = hx + 11 + font.layout(count).width + 10
       end
       return result
     end,
@@ -218,7 +235,7 @@ end
 
 local function building_row(building, open)
   local lines = {methods_text(building), "store " .. building.store_used_l .. " / " .. building.store_capacity_l .. " L"}
-  for _, herd in ipairs(building.herds) do lines[#lines + 1] = herd.species .. " " .. herd.head .. " / " .. herd.maximum end
+  for _, herd in ipairs(building.herds) do lines[#lines + 1] = {herd = herd} end
   lines[#lines + 1] = "positions " .. building.filled .. " filled, " .. building.open .. " open"
   lines[#lines + 1] = "housing occupants " .. (building.housing_occupants or 0)
   return {
@@ -234,7 +251,16 @@ local function building_row(building, open)
       put_text(result, group, dx + width // P - 44, dy + 1, building.filled .. "/" .. (building.filled + building.open), ink, "right")
       put_text(result, group, dx + width // P - 3, dy + 1, milli(building.wage), ink, "right")
       if open then
-        for index, line in ipairs(lines) do put_text(result, group, dx + 16, dy + 13 + (index - 1) * 12, line, theme.colour("text")) end
+        for index, line in ipairs(lines) do
+          local y = dy + 13 + (index - 1) * 12
+          if type(line) == "table" then
+            local herd = line.herd
+            draw_goods_icon(result, group, herd.species, dx + 16, y + 1)
+            put_text(result, group, dx + 28, y, herd.head .. " / " .. herd.maximum, theme.colour("text"))
+          else
+            put_text(result, group, dx + 16, y, line, theme.colour("text"))
+          end
+        end
       end
       return result
     end,
@@ -256,7 +282,14 @@ local function location_lines(place)
     "prices (base):",
   }
   for _, price in ipairs(place.prices) do
-    lines[#lines + 1] = "  " .. price.good .. " " .. milli(price.price_milli) .. " (" .. price.base .. ")"
+    if HAS_GOODS_ICON[price.good] then
+      lines[#lines + 1] = {
+        cells = {{text = milli(price.price_milli) .. " (" .. price.base .. ")", x = 16, align = "left"}},
+        icon = {image = "goods/" .. price.good},
+      }
+    else
+      lines[#lines + 1] = "  " .. price.good .. " " .. milli(price.price_milli) .. " (" .. price.base .. ")"
+    end
   end
   return lines
 end
@@ -376,8 +409,12 @@ function location.rows(lines, width)
   local limit = width // P - 2
   local rows = {}
   for _, line in ipairs(lines) do
-    for _, row in ipairs(wrap(line, limit)) do
-      rows[#rows + 1] = row
+    if type(line) == "table" then
+      rows[#rows + 1] = line
+    else
+      for _, row in ipairs(wrap(line, limit)) do
+        rows[#rows + 1] = row
+      end
     end
   end
   return rows

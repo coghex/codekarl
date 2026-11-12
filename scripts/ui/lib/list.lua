@@ -68,10 +68,22 @@ local function checked_items(who, items)
       end
       checked.stripe = item.stripe
       if item.icon ~= nil then
-        if type(item.icon) ~= "table" or type(item.icon.name) ~= "string" or type(item.icon.colour) ~= "string" then
-          error(who .. ": item " .. index .. " icon needs a name and colour", 3)
+        if type(item.icon) ~= "table" then
+          error(who .. ": item " .. index .. " icon must use exactly one of name and colour or image", 3)
         end
-        checked.icon = {name = item.icon.name, colour = item.icon.colour}
+        local has_image = item.icon.image ~= nil
+        local has_name = item.icon.name ~= nil
+        local has_colour = item.icon.colour ~= nil
+        if has_image then
+          if has_name or has_colour or type(item.icon.image) ~= "string" or item.icon.image == "" then
+            error(who .. ": item " .. index .. " icon must use exactly one of name and colour or image", 3)
+          end
+          checked.icon = {image = item.icon.image}
+        elseif not has_name or not has_colour or type(item.icon.name) ~= "string" or type(item.icon.colour) ~= "string" then
+          error(who .. ": item " .. index .. " icon must use exactly one of name and colour or image", 3)
+        else
+          checked.icon = {name = item.icon.name, colour = item.icon.colour}
+        end
       end
       for cell_index = 1, cell_count do
         local cell = cells[cell_index]
@@ -242,6 +254,7 @@ local function update_visual(self, index)
     row_view.lines = {}
     if row_view.stripe ~= nil then render.destroy_quad(row_view.stripe); row_view.stripe = nil end
     if row_view.icon ~= nil then render.destroy_quad(row_view.icon); row_view.icon = nil end
+    row_view.icon_source = nil
     row_view.is_cells = is_cells
   end
   row_view.group, row_view.y = self.rows_group, row_top(index)
@@ -262,15 +275,27 @@ local function update_visual(self, index)
     row_view.stripe = nil
   end
   if item.icon ~= nil then
+    local source = item.icon.image ~= nil and ("image:" .. item.icon.image) or ("theme:" .. item.icon.name)
+    if row_view.icon ~= nil and row_view.icon_source ~= source then
+      render.destroy_quad(row_view.icon)
+      row_view.icon = nil
+    end
     if row_view.icon == nil then
-      row_view.icon = render.create_quad{texture = ui.texture("ui/theme/icon_" .. item.icon.name .. ".png"), x = 4 * P,
-        y = row_top(index) + P, width = 9 * P, height = 11 * P, group = self.rows_group, tint = item.icon.colour}
+      if item.icon.image ~= nil then
+        row_view.icon = render.create_quad{texture = ui.texture("ui/" .. item.icon.image .. ".png"), x = 4 * P,
+          y = row_top(index) + 2 * P, width = 9 * P, height = 9 * P, group = self.rows_group}
+      else
+        row_view.icon = render.create_quad{texture = ui.texture("ui/theme/icon_" .. item.icon.name .. ".png"), x = 4 * P,
+          y = row_top(index) + P, width = 9 * P, height = 11 * P, group = self.rows_group, tint = item.icon.colour}
+      end
+      row_view.icon_source = source
     else
-      render.set_tint(row_view.icon, item.icon.colour)
+      if item.icon.image == nil then render.set_tint(row_view.icon, item.icon.colour) end
     end
   elseif row_view.icon ~= nil then
     render.destroy_quad(row_view.icon)
     row_view.icon = nil
+    row_view.icon_source = nil
   end
 end
 
