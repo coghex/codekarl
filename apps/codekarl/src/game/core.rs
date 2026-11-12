@@ -72,7 +72,7 @@ pub(crate) struct Rebuild<S, C> {
 type FailureProbe<S> = Box<dyn FnMut(&S) -> Option<String> + Send>;
 
 /// How the core builds the immutable economy view of a state (design §6).
-pub(crate) type ViewBuilder<S> = Box<dyn Fn(&S) -> EconomyView + Send>;
+pub(crate) type ViewBuilder<S> = Box<dyn Fn(&S, Date) -> EconomyView + Send>;
 
 /// The game: a [`Simulation`], its clock, why it is paused and the means to save and load it.
 pub(crate) struct Core<S, C> {
@@ -145,7 +145,8 @@ where
     fn refresh_view(&mut self) {
         if let Some(views) = &self.views {
             self.revision += 1;
-            self.view = Some(Arc::new(views(self.simulation.state())));
+            let date = self.simulation.date().unwrap_or(LAST_DATE);
+            self.view = Some(Arc::new(views(self.simulation.state(), date)));
         }
     }
 

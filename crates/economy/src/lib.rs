@@ -1296,6 +1296,8 @@ pub fn starting_state(
                 pay_carries: vec![0; rules.goods.len()],
                 fee_carries: Vec::new(),
                 wage_history: vec![0; 12],
+                paid_history: vec![0; WAGE_HISTORY_MONTHS],
+                paid_years: vec![0; WAGE_HISTORY_MONTHS],
             });
             let _ = (assignment.used_land, assignment.used_sea);
         }
@@ -1322,6 +1324,8 @@ pub fn starting_state(
                 pay_carries: vec![0; rules.goods.len()],
                 fee_carries: vec![vec![0; rules.goods.len()]; pops.len() + 1],
                 wage_history: vec![0; 12],
+                paid_history: vec![0; WAGE_HISTORY_MONTHS],
+                paid_years: vec![0; WAGE_HISTORY_MONTHS],
                 herd_grazing_sums: Vec::new(),
             });
         }
@@ -1340,6 +1344,8 @@ pub fn starting_state(
         for building in &mut buildings {
             if building.storehouse_accounts.is_some() {
                 building.wage_history = vec![0; WAGE_HISTORY_MONTHS];
+                building.paid_history = vec![0; WAGE_HISTORY_MONTHS];
+                building.paid_years = vec![0; WAGE_HISTORY_MONTHS];
                 continue;
             }
             let paid_heads = building
@@ -1400,6 +1406,8 @@ pub fn starting_state(
                 })?
             };
             building.wage_history = vec![seed; WAGE_HISTORY_MONTHS];
+            building.paid_history = vec![0; WAGE_HISTORY_MONTHS];
+            building.paid_years = vec![0; WAGE_HISTORY_MONTHS];
         }
         let footprint = building_footprint(rules, &buildings)?;
         let prepared_m2 = footprint
@@ -1918,6 +1926,7 @@ fn pay_storehouse_fee(
     place_id: &str,
     prices_milli: &[u64],
     month_index: usize,
+    year: u16,
     pops: &mut [PopState],
     buildings: &mut [BuildingState],
     building_index: usize,
@@ -1937,6 +1946,9 @@ fn pay_storehouse_fee(
             || building.stock.len() != rules.goods.len()
             || building.employment.len() != pops.len()
             || building.pay_carries.len() != rules.goods.len()
+            || building.wage_history.len() != WAGE_HISTORY_MONTHS
+            || building.paid_history.len() != WAGE_HISTORY_MONTHS
+            || building.paid_years.len() != WAGE_HISTORY_MONTHS
         {
             return Err(missing_data(
                 format!("places.{place_id}.buildings.{}.storehouse", building.kind),
@@ -2022,6 +2034,9 @@ fn pay_storehouse_fee(
             )
         })?;
         buildings[building_index].wage_history[month_index] = posted;
+        buildings[building_index].paid_history[month_index] =
+            u64::try_from(paid_heads).unwrap_or(u64::MAX);
+        buildings[building_index].paid_years[month_index] = year;
     }
     for (good_index, fee) in fees.into_iter().enumerate() {
         let carried = buildings[building_index].pay_carries[good_index];
@@ -3054,6 +3069,10 @@ pub struct BuildingState {
     pub fee_carries: Vec<Vec<u64>>,
     /// Posted wages in thousandths of a value unit per paid head, by calendar month.
     pub wage_history: Vec<u64>,
+    /// Paid heads at each calendar month's payday, zero until the slot is written.
+    pub paid_history: Vec<u64>,
+    /// Year of the payday that last wrote each calendar-month slot, zero while seeded.
+    pub paid_years: Vec<u16>,
 }
 
 impl BuildingState {
@@ -5244,7 +5263,10 @@ pub fn run_monthly_production_with_quality(
                     "definition is missing",
                 ));
             };
-            if building.wage_history.len() != WAGE_HISTORY_MONTHS {
+            if building.wage_history.len() != WAGE_HISTORY_MONTHS
+                || building.paid_history.len() != WAGE_HISTORY_MONTHS
+                || building.paid_years.len() != WAGE_HISTORY_MONTHS
+            {
                 return Err(missing_data(
                     format!(
                         "places.{}.buildings.{}.wage_history",
@@ -5744,6 +5766,8 @@ pub fn run_monthly_production_with_quality(
                     )
                 })?;
                 building.wage_history[usize::from(date.month - 1)] = posted;
+                building.paid_history[usize::from(date.month - 1)] = workers;
+                building.paid_years[usize::from(date.month - 1)] = date.year;
             }
         }
         for (building_index, good_index, contributions) in pending_overflow {
@@ -5909,7 +5933,7 @@ pub fn run_daily_economy_with_context(
             &mut next,
             shelter_by_place,
             nearby_by_place,
-            Some((usize::from(date.month - 1), &mut ledger)),
+            Some((usize::from(date.month - 1), date.year, &mut ledger)),
         )?;
         // Intake is measured before the month's demographic pass. A recruited pop did not
         // exist during that day's consumption, so keep the ledger aligned with the new state
@@ -7006,7 +7030,7 @@ fn run_monthly_demography(
     state: &mut EconomyState,
     shelter_by_place: &BTreeMap<String, u64>,
     nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
-    fee_context: Option<(usize, &mut ProductionLedger)>,
+    fee_context: Option<(usize, u16, &mut ProductionLedger)>,
 ) -> Result<Vec<Vec<u64>>, DataError> {
     let mut movement_allowance = Vec::with_capacity(state.places.len());
     for place in &mut state.places {
@@ -7163,8 +7187,8 @@ fn run_monthly_demography(
         nearby_by_place,
         &movement_allowance,
     )?;
-    if let Some((month_index, ledger)) = fee_context {
-        charge_storehouse_fees(rules, state, month_index, ledger)?;
+    if let Some((month_index, year, ledger)) = fee_context {
+        charge_storehouse_fees(rules, state, month_index, year, ledger)?;
     }
     for place in &mut state.places {
         for pop in &mut place.pops {
@@ -7202,6 +7226,7 @@ fn charge_storehouse_fees(
     rules: &Rules,
     state: &mut EconomyState,
     month_index: usize,
+    year: u16,
     ledger: &mut ProductionLedger,
 ) -> Result<(), DataError> {
     if ledger.places.len() != state.places.len() {
@@ -7232,6 +7257,7 @@ fn charge_storehouse_fees(
                     &place.id,
                     &place.prices_milli,
                     month_index,
+                    year,
                     &mut place.pops,
                     &mut place.buildings,
                     building_index,
@@ -7366,6 +7392,8 @@ impl Canonical for EconomyState {
                 building.pay_carries.encode(out)?;
                 building.fee_carries.encode(out)?;
                 building.wage_history.encode(out)?;
+                building.paid_history.encode(out)?;
+                building.paid_years.encode(out)?;
             }
             place.prices_milli.encode(out)?;
             place.prepared_m2.encode(out)?;
@@ -7425,6 +7453,8 @@ impl Canonical for EconomyState {
                     pay_carries: Vec::<u64>::decode(input)?,
                     fee_carries: Vec::<Vec<u64>>::decode(input)?,
                     wage_history: Vec::<u64>::decode(input)?,
+                    paid_history: Vec::<u64>::decode(input)?,
+                    paid_years: Vec::<u16>::decode(input)?,
                 });
             }
             places.push(PlaceState {
@@ -7865,6 +7895,8 @@ mod tests {
             pay_carries: vec![0; 2],
             fee_carries: vec![vec![0; 2]; 3],
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let farm = BuildingState {
             kind: "farm".to_owned(),
@@ -7890,6 +7922,8 @@ mod tests {
             pay_carries: vec![0; 2],
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         drawer.employment = vec![Employment::default(); 2];
         starver.employment = vec![Employment::default(); 2];
@@ -7996,6 +8030,8 @@ mod tests {
                         pay_carries: vec![0; goods],
                         fee_carries: Vec::new(),
                         wage_history: vec![0; 12],
+                        paid_history: vec![0; WAGE_HISTORY_MONTHS],
+                        paid_years: vec![0; WAGE_HISTORY_MONTHS],
                     },
                     BuildingState {
                         kind: "holdings".to_owned(),
@@ -8025,6 +8061,8 @@ mod tests {
                         pay_carries: vec![0; goods],
                         fee_carries: Vec::new(),
                         wage_history: vec![0; 12],
+                        paid_history: vec![0; WAGE_HISTORY_MONTHS],
+                        paid_years: vec![0; WAGE_HISTORY_MONTHS],
                     },
                     BuildingState {
                         kind: "storehouse".to_owned(),
@@ -8047,6 +8085,8 @@ mod tests {
                         pay_carries: vec![0; goods],
                         fee_carries: vec![vec![0; goods]; 4],
                         wage_history: vec![0; 12],
+                        paid_history: vec![0; WAGE_HISTORY_MONTHS],
+                        paid_years: vec![0; WAGE_HISTORY_MONTHS],
                     },
                 ],
                 prices_milli: vec![0; goods],
@@ -8170,6 +8210,8 @@ mod tests {
             pay_carries: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         assert_eq!(receive_building(&rules, &mut farm, 0, 4).unwrap(), 3);
         assert_eq!(
@@ -8199,6 +8241,8 @@ mod tests {
             pay_carries: vec![0],
             fee_carries: vec![vec![0], vec![0]],
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         assert_eq!(
             receive_storehouse(&rules, &mut storehouse, Some(0), 0, 8).unwrap(),
@@ -8238,6 +8282,8 @@ mod tests {
             pay_carries: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         assert_eq!(store_capacity_ml(&holdings).unwrap(), 11_700_000);
         assert!(building_good_cap(&rules, &holdings, 0).unwrap() >= 118);
@@ -8292,6 +8338,8 @@ mod tests {
             pay_carries: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let storehouse = BuildingState {
             kind: "storehouse".to_owned(),
@@ -8314,6 +8362,8 @@ mod tests {
             pay_carries: vec![0],
             fee_carries: vec![vec![0]; 3],
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let mut buildings = vec![farm, storehouse];
         let mut ledger = PlaceProductionLedger::new("fort", 1);
@@ -8664,6 +8714,8 @@ mod tests {
             pay_carries: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         }
     }
 
@@ -8813,6 +8865,8 @@ mod tests {
             pay_carries: vec![0; rules.goods.len()],
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let mut farm_stock = vec![0; rules.goods.len()];
         farm_stock[index("apples")] = 20;
@@ -8837,6 +8891,8 @@ mod tests {
             pay_carries: vec![0; rules.goods.len()],
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let place = PlaceState {
             id: "market_fixture".to_owned(),
@@ -9685,6 +9741,8 @@ mod tests {
                         pay_carries: vec![0],
                         fee_carries: Vec::new(),
                         wage_history: vec![1818; 12],
+                        paid_history: vec![0; WAGE_HISTORY_MONTHS],
+                        paid_years: vec![0; WAGE_HISTORY_MONTHS],
                     },
                     BuildingState {
                         kind: "storehouse".to_owned(),
@@ -9710,6 +9768,8 @@ mod tests {
                         pay_carries: vec![0],
                         fee_carries: vec![vec![0], vec![0]],
                         wage_history: vec![0; 12],
+                        paid_history: vec![0; WAGE_HISTORY_MONTHS],
+                        paid_years: vec![0; WAGE_HISTORY_MONTHS],
                     },
                 ],
                 prices_milli: vec![100_000],
@@ -9847,6 +9907,51 @@ mod tests {
         assert_eq!(error.entry, "places.fort.buildings.farm.wage_history");
         assert!(error.problem.contains("exactly 12"));
         assert_eq!(state, before, "a refused payday commits no state");
+    }
+
+    #[test]
+    fn paid_head_history_arrays_must_match_the_calendar_ring_length() {
+        let rules = tiny_rules();
+        let location = StartLocation {
+            id: "fort".to_owned(),
+            kind: "ringfort".to_owned(),
+            size: 1,
+            land: LandCounts {
+                land_cells: BTreeMap::from([("pasture".to_owned(), 8)]),
+                fertility_pm: BTreeMap::from([("pasture".to_owned(), 8000)]),
+                fertile_cells: 8,
+                fertile_cells_by_terrain: BTreeMap::new(),
+                sea: 0,
+            },
+        };
+        let (starting, _) = starting_state(&rules, &tiny_start_data(), &[location], 10).unwrap();
+        for short_paid_years in [false, true] {
+            let mut state = starting.clone();
+            let farm = state.places[0]
+                .buildings
+                .iter_mut()
+                .find(|building| building.kind == "farm")
+                .unwrap();
+            if short_paid_years {
+                farm.paid_years.pop();
+            } else {
+                farm.paid_history.pop();
+            }
+            let before = state.clone();
+            let error = run_monthly_production(
+                &rules,
+                &mut state,
+                Date {
+                    year: 768,
+                    month: 1,
+                    day: 1,
+                    hour: 12,
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.entry, "places.fort.buildings.farm.wage_history");
+            assert_eq!(state, before, "a refused payday commits no state");
+        }
     }
 
     #[test]
@@ -10022,6 +10127,8 @@ mod tests {
             .find(|building| building.kind == "farm")
             .unwrap();
         assert_eq!(farm.wage_history[0], 1234);
+        assert_eq!(farm.paid_history[0], 10);
+        assert_eq!(farm.paid_years[0], 768);
         assert_eq!(farm.posted_wage(), (11 * 9000 + 1234) / 12);
 
         let farm = state.places[0]
@@ -10030,6 +10137,8 @@ mod tests {
             .find(|building| building.kind == "farm")
             .unwrap();
         farm.wage_history[1] = 7777;
+        farm.paid_history[1] = 31;
+        farm.paid_years[1] = 767;
         for employment in &mut farm.employment {
             employment.workers = 0;
         }
@@ -10050,6 +10159,8 @@ mod tests {
             .find(|building| building.kind == "farm")
             .unwrap();
         assert_eq!(farm.wage_history[1], 7777);
+        assert_eq!(farm.paid_history[1], 31);
+        assert_eq!(farm.paid_years[1], 767);
         for employment in &mut farm.employment {
             employment.workers = 10;
         }
@@ -10108,10 +10219,12 @@ mod tests {
         };
         ledger.places[0].stock_after = total_stored_goods(&rules, &state.places[0]).unwrap();
         ledger.stock_after = ledger.places[0].stock_after.clone();
-        charge_storehouse_fees(&rules, &mut state, 0, &mut ledger).unwrap();
+        charge_storehouse_fees(&rules, &mut state, 0, 768, &mut ledger).unwrap();
         let place = &state.places[0];
         let storehouse = &place.buildings[storehouse_index];
         assert_eq!(storehouse.wage_history[0], 1500);
+        assert_eq!(storehouse.paid_history[0], 2);
+        assert_eq!(storehouse.paid_years[0], 768);
         assert_eq!(
             storehouse.pay_carries[0], 0,
             "the five old carried units were released with this month's one fee unit"
@@ -10174,6 +10287,10 @@ mod tests {
             990
         );
         assert_eq!(storehouse.wage_history[0], 1_000_000);
+        assert_eq!(storehouse.paid_history[0], 1);
+        assert_eq!(storehouse.paid_years[0], 768);
+        assert_eq!(place.buildings[0].paid_history[0], 10);
+        assert_eq!(place.buildings[0].paid_years[0], 768);
         assert_eq!(ledger.lost[oats], 0);
     }
 
@@ -10192,6 +10309,8 @@ mod tests {
         storehouse.levels = 0;
         storehouse.employment.fill(Employment::default());
         storehouse.wage_history[0] = 777;
+        storehouse.paid_history[0] = 9;
+        storehouse.paid_years[0] = 767;
         storehouse.stock[oats] = 100;
         storehouse.storehouse_accounts.as_mut().unwrap().communal[oats] = 100;
         for employment in &mut place.pops {
@@ -10211,6 +10330,8 @@ mod tests {
         .unwrap();
         let storehouse = &state.places[0].buildings[storehouse_index];
         assert_eq!(storehouse.wage_history[0], 777);
+        assert_eq!(storehouse.paid_history[0], 9);
+        assert_eq!(storehouse.paid_years[0], 767);
         assert_eq!(storehouse.pay_carries[oats], 1);
         assert_eq!(
             storehouse.storehouse_accounts.as_ref().unwrap().communal[oats],
@@ -10362,6 +10483,7 @@ mod tests {
             &source.id,
             &source.prices_milli,
             0,
+            768,
             &mut source.pops,
             &mut source.buildings,
             2,
@@ -10403,6 +10525,7 @@ mod tests {
             &place.id,
             &place.prices_milli,
             0,
+            768,
             &mut place.pops,
             &mut place.buildings,
             storehouse_index,
@@ -11691,6 +11814,8 @@ mod tests {
                         pay_carries: vec![2],
                         fee_carries: Vec::new(),
                         wage_history: (1..=12).collect(),
+                        paid_history: (101..=112).collect(),
+                        paid_years: vec![768; WAGE_HISTORY_MONTHS],
                     },
                     BuildingState {
                         kind: "storehouse".to_owned(),
@@ -11713,6 +11838,8 @@ mod tests {
                         pay_carries: vec![0],
                         fee_carries: vec![vec![999], vec![998]],
                         wage_history: vec![42; 12],
+                        paid_history: vec![7; WAGE_HISTORY_MONTHS],
+                        paid_years: vec![769; WAGE_HISTORY_MONTHS],
                     },
                 ],
                 prices_milli: vec![120_000],
@@ -12066,6 +12193,8 @@ mod tests {
             pay_carries: vec![0],
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let mut state = EconomyState {
             places: vec![PlaceState {
@@ -12185,6 +12314,8 @@ mod tests {
                     pay_carries: vec![0; rules.goods.len()],
                     fee_carries: Vec::new(),
                     wage_history: vec![0; 12],
+                    paid_history: vec![0; WAGE_HISTORY_MONTHS],
+                    paid_years: vec![0; WAGE_HISTORY_MONTHS],
                 }],
                 prices_milli: vec![0; rules.goods.len()],
                 prepared_m2: 0,
@@ -12326,6 +12457,8 @@ mod tests {
             pay_carries: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let storehouse = BuildingState {
             kind: "storehouse".to_owned(),
@@ -12348,6 +12481,8 @@ mod tests {
             pay_carries: vec![0],
             fee_carries: vec![vec![0]; 3],
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let mut pops = vec![pop("labourer", 1), pop("peasant", 0)];
         let mut buildings = vec![farm, storehouse];
@@ -12787,6 +12922,8 @@ mod tests {
             pay_carries: vec![0],
             fee_carries: vec![vec![0], vec![0]],
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let farm = BuildingState {
             kind: "farm".to_owned(),
@@ -12809,6 +12946,8 @@ mod tests {
             pay_carries: vec![0],
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let mut place = PlaceState {
             id: "test".to_owned(),
@@ -13073,6 +13212,8 @@ mod tests {
                 pay_carries: vec![0; goods],
                 fee_carries: Vec::new(),
                 wage_history: vec![0; 12],
+                paid_history: vec![0; WAGE_HISTORY_MONTHS],
+                paid_years: vec![0; WAGE_HISTORY_MONTHS],
             };
             PlaceState {
                 id: "test".to_owned(),
@@ -13237,6 +13378,8 @@ mod tests {
             pay_carries: vec![0],
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let mut place = PlaceState {
             id: "test".to_owned(),
@@ -13295,6 +13438,8 @@ mod tests {
             pay_carries: vec![0],
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let place = PlaceState {
             id: "fort".to_owned(),
@@ -13351,6 +13496,8 @@ mod tests {
                 pay_carries: vec![0],
                 fee_carries: Vec::new(),
                 wage_history: vec![0; 12],
+                paid_history: vec![0; WAGE_HISTORY_MONTHS],
+                paid_years: vec![0; WAGE_HISTORY_MONTHS],
             })
             .collect::<Vec<_>>();
         let pops = populations
@@ -13747,6 +13894,8 @@ mod tests {
             pay_carries: vec![0],
             fee_carries: Vec::new(),
             wage_history: vec![0; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let mut state = EconomyState {
             places: vec![PlaceState {
@@ -14049,6 +14198,8 @@ mod tests {
             pay_carries: Vec::new(),
             fee_carries: Vec::new(),
             wage_history: vec![100; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let place = PlaceState {
             id: "holdings-fixture".to_owned(),
@@ -14416,6 +14567,8 @@ mod tests {
             pay_carries: vec![0],
             fee_carries: Vec::new(),
             wage_history: vec![100; 12],
+            paid_history: vec![0; WAGE_HISTORY_MONTHS],
+            paid_years: vec![0; WAGE_HISTORY_MONTHS],
         };
         let place = PlaceState {
             id: "wage-fixture".to_owned(),

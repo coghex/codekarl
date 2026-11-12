@@ -6,22 +6,23 @@ use std::time::Duration;
 use super::{Harness, World};
 use crate::game::controls::Control;
 use crate::game::view::{EconomyView, PlaceView};
+use ck_sim::{Date, GameTime};
 
 /// The builder, and the folds it was asked to build from.
 type Recording = (
-    Box<dyn Fn(&World) -> EconomyView + Send>,
-    Arc<Mutex<Vec<u64>>>,
+    Box<dyn Fn(&World, Date) -> EconomyView + Send>,
+    Arc<Mutex<Vec<(u64, Date)>>>,
 );
 
 /// A view builder that puts the state's hourly fold in a place's `workers`, and notes each fold it was asked to build from.
 fn recording_views() -> Recording {
     let built = Arc::new(Mutex::new(Vec::new()));
     let noting = Arc::clone(&built);
-    let views = Box::new(move |world: &World| {
+    let views = Box::new(move |world: &World, date: Date| {
         noting
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(world.hourly);
+            .push((world.hourly, date));
         EconomyView {
             places: vec![PlaceView {
                 id: "fixture".to_owned(),
@@ -33,8 +34,22 @@ fn recording_views() -> Recording {
     (views, built)
 }
 
-fn folds(built: &Mutex<Vec<u64>>) -> Vec<u64> {
-    built.lock().unwrap_or_else(PoisonError::into_inner).clone()
+fn folds(built: &Mutex<Vec<(u64, Date)>>) -> Vec<u64> {
+    built
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .map(|(hourly, _)| *hourly)
+        .collect()
+}
+
+fn dates(built: &Mutex<Vec<(u64, Date)>>) -> Vec<Date> {
+    built
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .map(|(_, date)| *date)
+        .collect()
 }
 
 fn workers_of(snapshot: &crate::game::slot::SimSnapshot) -> u64 {
@@ -50,7 +65,14 @@ fn workers_of(snapshot: &crate::game::slot::SimSnapshot) -> u64 {
 #[test]
 fn the_first_snapshot_carries_the_starting_view_as_revision_one() {
     let (views, built) = recording_views();
-    let harness = Harness::with_views(42, views);
+    let start = Date {
+        year: 768,
+        month: 5,
+        day: 1,
+        hour: 0,
+    };
+    let time = GameTime::from_date(start).expect("the fixture date is valid");
+    let harness = Harness::with_views_starting_at(42, time, views);
     let published = harness.published();
     assert_eq!(published.len(), 1, "one snapshot at the start");
     assert_eq!(published[0].economy_revision, 1);
@@ -60,6 +82,8 @@ fn the_first_snapshot_carries_the_starting_view_as_revision_one() {
         "built from the starting state"
     );
     assert_eq!(folds(&built), [0]);
+    assert_eq!(dates(&built), [published[0].date]);
+    assert_eq!(published[0].date, start);
 }
 
 #[test]
@@ -72,7 +96,14 @@ fn a_core_without_a_view_builder_publishes_revision_zero_and_no_view() {
 #[test]
 fn the_view_is_rebuilt_after_each_noon_tick_and_at_no_other_hour() {
     let (views, built) = recording_views();
-    let mut harness = Harness::with_views(42, views);
+    let start = Date {
+        year: 768,
+        month: 5,
+        day: 1,
+        hour: 0,
+    };
+    let time = GameTime::from_date(start).expect("the fixture date is valid");
+    let mut harness = Harness::with_views_starting_at(42, time, views);
     harness.run_at(1);
     // Hours 0 to 11 of the first day run: no noon yet, so still the starting view.
     for _ in 0..12 {
@@ -84,8 +115,18 @@ fn the_view_is_rebuilt_after_each_noon_tick_and_at_no_other_hour() {
     harness.wake(Duration::from_secs(1));
     let noon = harness.core.snapshot();
     assert_eq!(noon.date.hour, 13, "the hour that runs next");
+    assert_eq!(
+        noon.date,
+        Date {
+            year: 768,
+            month: 5,
+            day: 1,
+            hour: 13
+        }
+    );
     assert_eq!(noon.economy_revision, 2);
     assert_eq!(folds(&built).len(), 2);
+    assert_eq!(dates(&built)[1], noon.date);
     assert_ne!(
         workers_of(&noon),
         0,
@@ -155,4 +196,21 @@ fn a_load_builds_a_new_revision_from_the_loaded_state_and_revisions_never_go_bac
         Some(loaded.economy_revision),
         "the load's view is published"
     );
+    assert_eq!(dates(&built).last(), Some(&loaded.date));
+}
+
+#[test]
+fn a_quickload_before_noon_rebuilds_the_view_with_the_unrun_payday_date() {
+    let (views, built) = recording_views();
+    let date = Date {
+        year: 768,
+        month: 5,
+        day: 1,
+        hour: 12,
+    };
+    let time = GameTime::from_date(date).expect("the fixture date is valid");
+    let mut harness = Harness::with_views_starting_at(42, time, views);
+    harness.control(Control::Quicksave);
+    harness.control(Control::Quickload);
+    assert_eq!(dates(&built).last(), Some(&date));
 }
