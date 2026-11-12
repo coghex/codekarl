@@ -2,3 +2,376 @@
 # Add each entry as [term.<key>] with a short `title` and explanatory `text`.
 # In text, {key} shows a linked term's title and {key|words} shows custom linked words.
 # Use {{ and }} for literal braces. Keys match [a-z][a-z0-9_]*.
+
+# --- from glossary-group1-r3.toml
+[term.location]
+title = "location"
+text = "A single place on the map, consisting of {pop|pops} and {building|buildings}. It draws on the land around it in its {resource_radius|resource radius}."
+
+[term.resource_radius]
+title = "resource radius"
+text = "The land around a {location} that it draws on. Its {usable_land|usable land} limits how large the location's farms can grow."
+
+[term.county]
+title = "county"
+text = "A unit of land on the map. A county sits in a {province}. Counties have no ruler and no effect on play: they let you pick their land in one click."
+
+[term.province]
+title = "province"
+text = "A province holds {county|counties} and sits in an {area}."
+
+[term.area]
+title = "area"
+text = "An area holds {province|provinces} and sits in a {region}."
+
+[term.region]
+title = "region"
+text = "The largest unit of the map. A region holds {area|areas}."
+
+[term.population]
+title = "population"
+text = "The number of people living in a {location}: the {worker|workers} and {dependent|dependents} of all its {pop|pops}."
+
+[term.pop]
+title = "pop"
+text = "A group of people in one {location} who share a type, a {culture} and a {religion}. A pop works, eats, is housed and grows as one."
+
+[term.peasant]
+title = "peasant"
+text = "A {pop} type: the farming families of the subsistence farms, who own and work them."
+
+[term.labourer]
+title = "labourer"
+text = "A {pop} type: people hired from the {peasant|peasants} to work {holdings} for a wage. They earn more than subsistence farmers, and so live better."
+
+[term.monk]
+title = "monk"
+text = "A {pop} type: the members of a monastery. Monks have no children; as they die, the monastery hires new ones from other pops of its {religion}."
+
+[term.worker]
+title = "worker"
+text = "The part of a {pop} who can hold a job. The rest are its {dependent|dependents}."
+
+[term.dependent]
+title = "dependent"
+text = "The children, the elderly and the sick of a {pop}. They do not work, but they eat, and they are more likely to die."
+
+[term.culture]
+title = "culture"
+text = "The people a {pop} belongs to: its language, customs and kin."
+
+[term.religion]
+title = "religion"
+text = "The faith of a {pop}. Only pops of a monastery's religion can become its {monk|monks}."
+
+# --- from glossary-group2-r2.toml
+[term.housing]
+title = "housing"
+text = "Where a {pop|pop's} people live. Housing comes in standards, from rough shelter upwards, and better housing makes for better lives. People beyond the room there is are {crowding|crowded} in."
+
+[term.basic_housing]
+title = "basic housing"
+text = "A {housing} standard: a plain dwelling with a roof and walls."
+
+[term.makeshift_housing]
+title = "makeshift housing"
+text = "The lowest {housing} standard: rough shelter for people with nowhere better to live."
+
+[term.crowding]
+title = "crowding"
+text = "How full the {housing} is: people against room. Above 100% people are packed in, which is bad for their health."
+
+[term.food_days]
+title = "food days"
+text = "How many days a {pop|pop's} stored food would last at the rate it eats now."
+
+[term.needs]
+title = "needs"
+text = "What a {pop} consumes, in three tiers: {necessities}, {niceties} and {luxuries}. Each good meets some of each tier. Each tier runs from 0% to 100% and changes slowly."
+
+[term.necessities]
+title = "necessities"
+text = "The first tier of {needs}: what a {pop} must have to live. When necessities fall low, births collapse and deaths rise."
+
+[term.niceties]
+title = "niceties"
+text = "The second tier of {needs}: comforts beyond what a {pop} must have. They make life better and raise {satisfaction}."
+
+[term.luxuries]
+title = "luxuries"
+text = "The third tier of {needs}: fine things. They make life better and raise {satisfaction}."
+
+[term.satisfaction]
+title = "satisfaction"
+text = "How content a {pop} is, set by how its {needs} compare with what its type expects. It changes slowly."
+
+[term.building_land]
+title = "building land"
+text = "The land a {location} has for {building|buildings}. Every building level takes some. When it is full, nothing more can be built until a building is torn down."
+
+[term.usable_land]
+title = "usable land"
+text = "The land in a {resource_radius|resource radius} that can be farmed. It limits how large a {location|location's} farms can grow."
+
+[term.storage]
+title = "storage"
+text = "Room to keep goods, measured by volume. {pop|Pops} and {building|buildings} each have their own stores; a {location|location's} storage is all of them together."
+
+[term.overflow]
+title = "overflow"
+text = "{good|Goods} that arrive when there is no room left to store them. They are lost."
+
+[term.good]
+title = "goods"
+text = "Things that are made, kept, traded and used up. Each good has a {price} where it is traded, and meets some of a {pop|pop's} {needs}."
+
+# --- from glossary-group3-r1.toml
+[term.price]
+title = "price"
+text = "What a {good} is worth at a {location} now. It rises when more is wanted than offered, and falls when more is offered than wanted."
+
+[term.base_price]
+title = "base price"
+text = "The usual worth of a {good}, around which its {price} moves."
+
+[term.buy_orders]
+title = "buy orders"
+text = "How much of a {good} the {pop|pops} and {building|buildings} of a {location} want to buy."
+
+[term.sell_orders]
+title = "sell orders"
+text = "How much of a {good} the {pop|pops} and {building|buildings} of a {location} want to sell."
+
+[term.value]
+title = "value"
+text = "Worth at local {price|prices}, so that different {good|goods} can be added up and compared."
+
+[term.produced]
+title = "produced"
+text = "The {good|goods} made at a {location} last month, as {value} at local prices."
+
+[term.consumed]
+title = "consumed"
+text = "The {good|goods} used up at a {location} last month, by its {pop|pops} and as the inputs of its {building|buildings}, as {value} at local prices."
+
+[term.building]
+title = "building"
+text = "A place of work in a {location}, owned by {pop|pops}. It has {level|levels}, {position|positions} for workers and a store."
+
+[term.farm]
+title = "farm"
+text = "A {building} where families work the land for themselves, growing crops and keeping animals."
+
+[term.holdings]
+title = "holdings"
+text = "A {building}: land worked for its owners by hired {worker|workers}."
+
+[term.storehouse]
+title = "storehouse"
+text = "A {building} that keeps goods for its owners in a common store."
+
+[term.method]
+title = "method"
+text = "How a {building} works: what it uses and what it makes. Each {level} of a building works by one method."
+
+[term.level]
+title = "level"
+text = "A step in a {building|building's} size. Each level adds {position|positions}, output and room."
+
+[term.wage]
+title = "wage"
+text = "What a {building} pays each of its workers, in {good|goods}. Higher wages draw workers from lower-paid work."
+
+[term.position]
+title = "position"
+text = "A job in a {building}. Filled positions are worked; open ones wait for workers."
+
+[term.jobs]
+title = "jobs"
+text = "How many of a {pop|pop's} {worker|workers} hold a {position}. The rest are unemployed."
+
+[term.herd]
+title = "herd"
+text = "The animals of one kind that a {building} keeps. A herd grows towards the most its land can feed."
+
+# --- from glossary-group4-r1.toml
+[term.map_mode]
+title = "map mode"
+text = "A way of colouring the map to show one kind of information. With no map mode on, the map shows the land itself."
+
+[term.stockpile_map]
+title = "stockpile map"
+text = "A {map_mode|map mode}: each {location} is coloured from red to green by how full its {storage} is."
+
+[term.yield_map]
+title = "yield map"
+text = "A {map_mode|map mode}: each {location} is coloured from red to green by its yearly yield, against the other locations."
+
+[term.elevation_map]
+title = "elevation map"
+text = "A {map_mode|map mode}: the land is shaded from black to white by its height."
+
+[term.date]
+title = "date"
+text = "The day and hour in the game. Time runs while the game is not paused, as fast as its {speed} sets."
+
+[term.speed]
+title = "speed"
+text = "How fast game time runs, from 1, the slowest, to 5, the fastest. Pausing stops time."
+
+# --- from glossary-group5-r1.toml
+[term.oats]
+title = "oats"
+text = "A grain, eaten as porridge and bread."
+
+[term.barley]
+title = "barley"
+text = "A grain, eaten as bread and brewed into {ale}."
+
+[term.peas_beans]
+title = "peas and beans"
+text = "Pulses, dried and eaten in pottage."
+
+[term.vegetables]
+title = "vegetables"
+text = "Garden produce, eaten fresh or in pottage."
+
+[term.apples]
+title = "apples"
+text = "A fruit, eaten fresh or kept through the winter."
+
+[term.dairy]
+title = "dairy"
+text = "Milk and what is made from it: butter, curds and cheese."
+
+[term.beef]
+title = "beef"
+text = "The meat of {cattle}."
+
+[term.pork]
+title = "pork"
+text = "The meat of {pigs}."
+
+[term.mutton]
+title = "mutton"
+text = "The meat of {sheep}."
+
+[term.fish]
+title = "fish"
+text = "Fish caught at sea or in rivers and lakes."
+
+[term.seabirds]
+title = "seabirds"
+text = "Wild seabirds and their eggs, taken from cliffs and islands."
+
+[term.ale]
+title = "ale"
+text = "A drink brewed from {barley}."
+
+[term.mead]
+title = "mead"
+text = "A drink brewed from {honey}."
+
+[term.wine]
+title = "wine"
+text = "A drink made from grapes."
+
+[term.honey]
+title = "honey"
+text = "Made by bees; eaten, and brewed into {mead}."
+
+[term.herbs]
+title = "herbs"
+text = "Plants grown for flavour and for healing."
+
+[term.wool]
+title = "wool"
+text = "The fleece of {sheep}, spun and woven into cloth."
+
+[term.beeswax]
+title = "beeswax"
+text = "Wax from the hive, made into candles."
+
+[term.hides]
+title = "hides"
+text = "The skins of animals, tanned into leather."
+
+[term.cattle]
+title = "cattle"
+text = "Live cattle, kept for milk, meat and hides."
+
+[term.pigs]
+title = "pigs"
+text = "Live pigs, kept for meat."
+
+[term.sheep]
+title = "sheep"
+text = "Live sheep, kept for wool, milk and meat."
+
+[term.mixed_farming]
+title = "mixed farming"
+text = "A farming {method}: crops and animals together on the same land."
+
+[term.monastic_farming]
+title = "monastic farming"
+text = "A farming {method} for a monastery's {holdings}, worked by hired {worker|workers}."
+
+[term.monastic_fishing]
+title = "monastic fishing"
+text = "A fishing {method} for a monastery's {holdings}."
+
+[term.coastal_subsistence]
+title = "coastal subsistence"
+text = "A farming {method} for land by the sea: crops and animals, with fishing."
+
+[term.ulaid]
+title = "Ulaid"
+text = "A {culture} of the Irish culture group."
+
+[term.cruthin]
+title = "Cruthin"
+text = "A {culture} of the Irish culture group."
+
+[term.northern_ui_neill]
+title = "Northern Uí Néill"
+text = "A {culture} of the Irish culture group."
+
+[term.airgialla]
+title = "Airgíalla"
+text = "A {culture} of the Irish culture group."
+
+[term.mide_brega]
+title = "Mide and Brega"
+text = "A {culture} of the Irish culture group."
+
+[term.laigin]
+title = "Laigin"
+text = "A {culture} of the Irish culture group."
+
+[term.mumu]
+title = "Mumu"
+text = "A {culture} of the Irish culture group."
+
+[term.connachta]
+title = "Connachta"
+text = "A {culture} of the Irish culture group."
+
+[term.english]
+title = "English"
+text = "An Anglo-Saxon {culture}."
+
+[term.christianity]
+title = "Christianity"
+text = "The Christian faith, a {religion}."
+
+[term.irish_paganism]
+title = "Irish paganism"
+text = "The old {religion} of the Irish."
+
+[term.norse_paganism]
+title = "Norse paganism"
+text = "The old {religion} of the Norse."
+
+[term.anglo_saxon_paganism]
+title = "Anglo-Saxon paganism"
+text = "The old {religion} of the Anglo-Saxons."
