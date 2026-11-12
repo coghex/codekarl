@@ -747,6 +747,8 @@ deaths_d = dependents × dep_death_base[type] × g_hunger(N) × g_comfort(W, L) 
      - the monthly satisfaction drift.
 
   **Step 0, on the 1st, before step 1:** the counter rollover of §3.11.
+  *(In the accepted code the rollover runs on the 1st **after** step 1's price update and before the month's production: it is the
+  first act of step 2. Nothing showed the difference until CK-274, whose values use the prices of that moment, §3.11.)*
 
   r14's barter step is removed (barter is deferred).
 - **The gameplay callbacks** register as daily systems at 12:00 **after** the economy: `on_month` (it fires only on the 1st), then
@@ -785,6 +787,39 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
     the new month.
   - Both buckets are saved and loaded, so a load shows the same last month.
   - They are display only; no rule reads them.
+  - **Per good, for the place** (CK-274; for the owner's location tooltip, `.pipeline/coordination/ui-polish-design/`
+    `owner-direction-tooltips-manager-r4.md` and `-designer-r8.md`: the owner chose the value of what was produced and consumed
+    **"Last month"**, shown to them as "counted through the month, shown for the last complete month … each number breaks down by
+    good", and overflow **"Per good, units"**). A place's two buckets also count whole units per good, in the goods' order; a pop's
+    buckets do not:
+    - **`produced`:** every unit made at the place: what building methods and herds yield on the 1st (slaughter and dairy included)
+      and what pops' butchering yields, counted when made, whether it is then stored or lost;
+    - **`used_by_pops`:** the units pops use up in the day's consumption: those opened into their balances and the zero-hunger goods
+      used up by ticking (§3.7);
+    - **`lost`:** the units lost to overflow, by good. Their sum is the existing overflow total, which stays.
+    - **There is no count of building inputs.** Buildings take no goods as inputs today, so what a place consumed is what its pops
+      used; an input count comes with inputs, a later game-model change (the owner's answer was "Yes, both": `-designer-r9.md`).
+  - **Valued at the rollover.** When the month closes, `last` also keeps each good's value of `produced` and `used_by_pops`:
+    units × the place's price of that good, in thousandths. The price is the one in force when the rollover runs, the 1st's after
+    that day's price update (§3.9). So a shown value does not drift as prices move during the next month. Twelve oats at 96.5 are
+    1,158.
+  - **`closed`:** each pair of buckets has a saved flag, false in a new game and set by every rollover. It tells a completed month
+    in which nothing happened (the panel can show 0) from a game that has not closed a month yet (nothing to show).
+  - The 1st's own production and consumption count in the new month, as its births and deaths do.
+  - All of this is saved with the buckets and loads back the same. As with any change to the economy's code, a save from an earlier
+    build does not load (`docs/places-time-design.md`, the build id).
+- **Land in the view** (CK-274; the owner chose **"Usable land"**, shown to them as "usable-land cells × 0.25", broken down by
+  terrain, with "the total incl. bog, mountain and sea": `-designer-r8.md`). The land counts a place gets from the map at load
+  (§3.24; not saved) now also say how many of its cells have fertility above zero **by terrain**; their sum is the place's count
+  of fertile cells. Nothing that already read the land counts changes.
+- **What the view gives the UI** (`game.place`, CK-274), beside the fields above:
+  - `land = {usable = {<terrain> = cells}, land = {<terrain> = cells}, sea = cells}`: usable cells, all land cells (glaciers left
+    out) and the catchment's sea cells. They are counts of map cells; a cell is 0.25 km² (`docs/map-design.md` §5.2), and the UI
+    does the multiplying;
+  - `last_month = {closed, produced, used_by_pops, lost}`: each a list of `{good, units, value_milli}` for the goods with units
+    above zero, in the goods' order (`lost` has no value). While `closed` is false the lists are empty. Integers too large for Lua
+    are given as its largest integer;
+  - nothing in the UI shows these yet: the location tooltip and its breakdowns are later slices.
 - **Widgets:** it uses the M8 theme's windows and lists, with tabs as title buttons. The tab widget is the one new UI piece.
 - **Since the owner's UI feedback (2026-11-10, CK-258, CK-259; `owner-direction-ui-ledger-lists-r1.md`):** the pops and buildings tabs
   show their entries as **cards** (the default) or one-line **rows** that open, switched by two buttons at the bottom of the panel; the
