@@ -411,6 +411,22 @@ fn pop_table(pop: &PopView) -> ConfigValue {
         ("employed", integer(pop.employed)),
         ("unemployed", integer(pop.unemployed)),
         ("food_days", integer(pop.food_days)),
+        (
+            "food",
+            ConfigValue::Array(
+                pop.food
+                    .iter()
+                    .map(|food| {
+                        table([
+                            ("good", text(&food.good)),
+                            ("units", integer(food.units)),
+                            ("unit", text(&food.unit)),
+                            ("share_pm", integer(food.share_pm)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
         ("necessities", integer(pop.necessities)),
         ("niceties", integer(pop.niceties)),
         ("luxuries", integer(pop.luxuries)),
@@ -464,6 +480,27 @@ fn building_table(building: &BuildingView) -> ConfigValue {
             integer(building.store_capacity_ml / 1000),
         ),
         ("wage", integer(building.wage)),
+        (
+            "wages",
+            ConfigValue::Array(
+                building
+                    .wages
+                    .iter()
+                    .map(|wage| {
+                        let mut fields = BTreeMap::from([
+                            ("month".to_owned(), integer(u64::from(wage.month))),
+                            ("wage_milli".to_owned(), integer(wage.wage_milli)),
+                        ]);
+                        if let Some(year) = wage.year {
+                            fields.insert("year".to_owned(), integer(u64::from(year)));
+                            fields
+                                .insert("paid".to_owned(), integer(wage.paid.unwrap_or_default()));
+                        }
+                        ConfigValue::Table(fields)
+                    })
+                    .collect(),
+            ),
+        ),
         ("housing_occupants", integer(building.housing_occupants)),
     ])
 }
@@ -895,6 +932,12 @@ mod tests {
                 employed: 70,
                 unemployed: 10,
                 food_days: 215,
+                food: vec![crate::game::view::FoodView {
+                    good: "oats".to_owned(),
+                    units: 300,
+                    unit: "bushel".to_owned(),
+                    share_pm: 658,
+                }],
                 necessities: 0,
                 niceties: 0,
                 luxuries: 0,
@@ -919,6 +962,12 @@ mod tests {
                 store_used_ml: 1_500,
                 store_capacity_ml: 3_500_000,
                 wage: 0,
+                wages: vec![crate::game::view::WageView {
+                    month: 5,
+                    year: None,
+                    wage_milli: 1_234,
+                    paid: None,
+                }],
                 housing_occupants: 38,
             }],
         };
@@ -980,6 +1029,13 @@ mod tests {
         };
         assert_eq!(pop["satisfaction"], ConfigValue::Integer(-5));
         assert_eq!(pop["employed"], ConfigValue::Integer(70));
+        let ConfigValue::Array(food) = &pop["food"] else {
+            panic!("a food array");
+        };
+        let ConfigValue::Table(oats) = &food[0] else {
+            panic!("a food row");
+        };
+        assert_eq!(oats["share_pm"], ConfigValue::Integer(658));
         let ConfigValue::Array(buildings) = &fields["buildings"] else {
             panic!("an array");
         };
@@ -987,6 +1043,15 @@ mod tests {
             panic!("a table");
         };
         assert_eq!(farm["store_used_l"], ConfigValue::Integer(1));
+        let ConfigValue::Array(wages) = &farm["wages"] else {
+            panic!("a wage array");
+        };
+        let ConfigValue::Table(may) = &wages[0] else {
+            panic!("a wage row");
+        };
+        assert_eq!(may["wage_milli"], ConfigValue::Integer(1_234));
+        assert!(!may.contains_key("year"));
+        assert!(!may.contains_key("paid"));
         assert_eq!(farm["store_capacity_l"], ConfigValue::Integer(3_500));
         let ConfigValue::Array(herds) = &farm["herds"] else {
             panic!("an array");

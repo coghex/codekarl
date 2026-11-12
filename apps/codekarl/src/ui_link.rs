@@ -3951,7 +3951,17 @@ mod tests {
             .iter()
             .map(|location| location.id.clone())
             .collect();
-        let view = Arc::new(crate::game::view::build(Some(&rules), &state, &ids));
+        let view = Arc::new(crate::game::view::build(
+            Some(&rules),
+            &state,
+            &ids,
+            ck_sim::Date {
+                year: 768,
+                month: 5,
+                day: 1,
+                hour: 0,
+            },
+        ));
         let armagh = view.place("armagh").expect("armagh is in the view");
         let mut timed = timed(
             "game.on_time(function(t) local p = game.place('armagh', t.economy_revision) \

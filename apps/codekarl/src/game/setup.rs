@@ -317,12 +317,13 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                     publish: Box::new(move |snapshot| publishing.publish(snapshot)),
                     fail: Box::new(move |message| failing.fail(message)),
                 },
-                Some(Box::new(move |state: &GameState| {
+                Some(Box::new(move |state: &GameState, date| {
                     view::build_with_land(
                         economy_rules.as_deref(),
                         &state.economy,
                         &place_ids,
                         &land_by_place,
+                        date,
                     )
                 })),
             )

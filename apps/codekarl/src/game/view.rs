@@ -11,6 +11,7 @@
 #[cfg(test)]
 use ck_economy::PopConsumption;
 use ck_economy::{BuildingState, EconomyState, LandCounts, PlaceState, PopState, Rules};
+use ck_sim::Date;
 use std::collections::BTreeMap;
 
 /// A pop's store, in millilitres per person (design §3.15: 720 L).
@@ -52,6 +53,8 @@ pub(crate) struct PopView {
     pub(crate) unemployed: u64,
     /// Whole days of food held (the store and the storehouse accounts) at a full daily need.
     pub(crate) food_days: u64,
+    /// Foods held by this pop, apportioned by their share of daily hunger.
+    pub(crate) food: Vec<FoodView>,
     /// The three needs, in ‰.
     pub(crate) necessities: u64,
     pub(crate) niceties: u64,
@@ -67,6 +70,22 @@ pub(crate) struct PopView {
     pub(crate) makeshift_housing: u64,
     /// Crowding in per-mille, absent for an empty pop.
     pub(crate) crowding_pm: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FoodView {
+    pub(crate) good: String,
+    pub(crate) units: u64,
+    pub(crate) unit: String,
+    pub(crate) share_pm: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WageView {
+    pub(crate) month: u8,
+    pub(crate) year: Option<u16>,
+    pub(crate) wage_milli: u64,
+    pub(crate) paid: Option<u64>,
 }
 
 /// One herd: a species' head count against its maximum.
@@ -92,6 +111,8 @@ pub(crate) struct BuildingView {
     pub(crate) store_capacity_ml: u64,
     /// The mean of the building's last twelve monthly wages in thousandths.
     pub(crate) wage: u64,
+    /// Twelve calendar-month payday records, newest first.
+    pub(crate) wages: Vec<WageView>,
     /// Occupants assigned to this building by the pure housing fill.
     pub(crate) housing_occupants: u64,
 }
@@ -198,8 +219,9 @@ pub(crate) fn build(
     rules: Option<&Rules>,
     state: &EconomyState,
     place_ids: &[String],
+    date: Date,
 ) -> EconomyView {
-    build_with_land(rules, state, place_ids, &BTreeMap::new())
+    build_with_land(rules, state, place_ids, &BTreeMap::new(), date)
 }
 
 pub(crate) fn build_with_land(
@@ -207,13 +229,14 @@ pub(crate) fn build_with_land(
     state: &EconomyState,
     place_ids: &[String],
     land_by_place: &BTreeMap<String, LandCounts>,
+    date: Date,
 ) -> EconomyView {
     let places = place_ids
         .iter()
         .map(|id| {
             let row = state.places.iter().find(|place| &place.id == id);
             match (rules, row) {
-                (Some(rules), Some(row)) => place_view(rules, row, land_by_place.get(id)),
+                (Some(rules), Some(row)) => place_view(rules, row, land_by_place.get(id), date),
                 _ => PlaceView {
                     id: id.clone(),
                     ..PlaceView::default()
@@ -294,6 +317,7 @@ fn pop_view(
         employed,
         unemployed: pop.workers.saturating_sub(employed),
         food_days: days_of(food_centi(rules, place, index), size_of(pop)),
+        food: food_view(rules, pop),
         necessities: u64::from(pop.consumption.necessities_pm),
         niceties: u64::from(pop.consumption.niceties_pm),
         luxuries: u64::from(pop.consumption.luxuries_pm),
@@ -304,6 +328,36 @@ fn pop_view(
         makeshift_housing: housing.map_or(0, |housing| housing.makeshift),
         crowding_pm: housing.and_then(|housing| housing.crowding_pm),
     }
+}
+
+fn food_view(rules: &Rules, pop: &PopState) -> Vec<FoodView> {
+    let eligible = rules
+        .goods
+        .iter()
+        .zip(&pop.stock)
+        .filter_map(|(good, units)| {
+            (*units > 0 && good.hunger_centi > 0).then_some((
+                good,
+                *units,
+                u128::from(good.hunger_centi) * u128::from(*units),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let total = eligible
+        .iter()
+        .fold(0_u128, |sum, (_, _, hunger)| sum.saturating_add(*hunger));
+    if total == 0 {
+        return Vec::new();
+    }
+    eligible
+        .into_iter()
+        .map(|(good, units, hunger)| FoodView {
+            good: good.id.clone(),
+            units,
+            unit: good.unit.clone(),
+            share_pm: u64::try_from(hunger * 1000 / total).unwrap_or(u64::MAX),
+        })
+        .collect()
 }
 
 fn building_capacity_ml(building: &BuildingState) -> u64 {
@@ -384,7 +438,12 @@ fn projected_yield(rules: &Rules, building: &BuildingState, mean_fertility_pm: u
     u64::try_from(total).unwrap_or(u64::MAX)
 }
 
-fn building_view(rules: &Rules, building: &BuildingState, housing_occupants: u64) -> BuildingView {
+fn building_view(
+    rules: &Rules,
+    building: &BuildingState,
+    housing_occupants: u64,
+    date: Date,
+) -> BuildingView {
     let definition = rules
         .buildings
         .iter()
@@ -436,15 +495,49 @@ fn building_view(rules: &Rules, building: &BuildingState, housing_occupants: u64
         store_used_ml: volume_ml(rules, &building.stock),
         store_capacity_ml: building_capacity_ml(building),
         wage: building.posted_wage(),
+        wages: wage_views(building, date),
         housing_occupants,
     }
+}
+
+fn wage_views(building: &BuildingState, date: Date) -> Vec<WageView> {
+    let newest = if date.day > 1 || date.hour > super::core::ECONOMY_HOUR {
+        date.month
+    } else if date.month == 1 {
+        12
+    } else {
+        date.month - 1
+    };
+    (0_u16..12)
+        .map(|offset| {
+            let month = u8::try_from((u16::from(newest) + 11 - offset) % 12 + 1)
+                .expect("the month is in 1..=12");
+            let index = usize::from(month - 1);
+            let year = building
+                .paid_years
+                .get(index)
+                .copied()
+                .filter(|year| *year != 0);
+            WageView {
+                month,
+                year,
+                wage_milli: building.wage_history.get(index).copied().unwrap_or(0),
+                paid: year.and_then(|_| building.paid_history.get(index).copied()),
+            }
+        })
+        .collect()
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "A place view keeps its immutable economy totals, derived land values and per-building projections together."
 )]
-fn place_view(rules: &Rules, place: &PlaceState, land: Option<&LandCounts>) -> PlaceView {
+fn place_view(
+    rules: &Rules,
+    place: &PlaceState,
+    land: Option<&LandCounts>,
+    date: Date,
+) -> PlaceView {
     let mean_fertility_pm = land
         .and_then(|land| ck_economy::mean_fertility(land).ok())
         .unwrap_or(rules.fertility_reference_pm);
@@ -475,6 +568,7 @@ fn place_view(rules: &Rules, place: &PlaceState, land: Option<&LandCounts>) -> P
                     .and_then(|fill| fill.building_occupants.get(index))
                     .copied()
                     .unwrap_or_default(),
+                date,
             )
         })
         .collect();
@@ -638,6 +732,15 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
 
+    const fn test_date() -> Date {
+        Date {
+            year: 768,
+            month: 5,
+            day: 2,
+            hour: 0,
+        }
+    }
+
     fn shipped_rules() -> Rules {
         Rules::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"))
             .expect("the shipped rules load")
@@ -712,6 +815,8 @@ mod tests {
                     pay_carries: vec![0; goods],
                     fee_carries: Vec::new(),
                     wage_history: vec![1_234; 12],
+                    paid_history: vec![0; 12],
+                    paid_years: vec![0; 12],
                 },
                 BuildingState {
                     kind: "storehouse".to_owned(),
@@ -731,6 +836,8 @@ mod tests {
                     pay_carries: vec![0; goods],
                     fee_carries: vec![vec![0; goods]; 2],
                     wage_history: vec![0; 12],
+                    paid_history: vec![0; 12],
+                    paid_years: vec![0; 12],
                 },
             ],
             prices_milli: rules
@@ -759,10 +866,16 @@ mod tests {
                 sea: 0,
             },
         )]);
-        build_with_land(Some(rules), &state, &["fixture".to_owned()], &land)
-            .place("fixture")
-            .expect("the fixture is in the view")
-            .field_room
+        build_with_land(
+            Some(rules),
+            &state,
+            &["fixture".to_owned()],
+            &land,
+            test_date(),
+        )
+        .place("fixture")
+        .expect("the fixture is in the view")
+        .field_room
     }
 
     fn view_for_place(rules: &Rules, mut place: PlaceState) -> PlaceView {
@@ -773,10 +886,131 @@ mod tests {
                 places: vec![place],
             },
             &["fixture".to_owned()],
+            test_date(),
         );
         view.place("fixture")
             .expect("the fixture is in the view")
             .clone()
+    }
+
+    #[test]
+    fn pop_food_lists_only_hunger_goods_with_their_floor_share() {
+        let rules = shipped_rules();
+        let mut place = fixture(&rules);
+        let oats = index_of(&rules, "oats");
+        let barley = index_of(&rules, "barley");
+        let wool = index_of(&rules, "wool");
+        place.pops[0].stock.fill(0);
+        place.pops[0].stock[oats] = 300;
+        place.pops[0].stock[barley] = 100;
+        place.pops[0].stock[wool] = 5;
+        let view = view_for_place(&rules, place.clone());
+        assert_eq!(
+            view.pops[0].food,
+            [
+                FoodView {
+                    good: "oats".to_owned(),
+                    units: 300,
+                    unit: "bushel".to_owned(),
+                    share_pm: 658
+                },
+                FoodView {
+                    good: "barley".to_owned(),
+                    units: 100,
+                    unit: "bushel".to_owned(),
+                    share_pm: 341
+                },
+            ]
+        );
+        place.pops[0].stock.fill(0);
+        place.pops[0].stock[wool] = 5;
+        assert!(view_for_place(&rules, place).pops[0].food.is_empty());
+    }
+
+    #[test]
+    fn payday_view_orders_calendar_slots_by_date_and_keeps_the_written_year() {
+        let rules = shipped_rules();
+        let mut place = fixture(&rules);
+        let farm = &mut place.buildings[0];
+        farm.wage_history = (1..=12).map(|month| 2_000 + month).collect();
+        farm.paid_history = vec![15; 12];
+        farm.paid_years = vec![768; 12];
+        farm.paid_years[1] = 769;
+        let make = |date| {
+            let state = EconomyState {
+                places: vec![place.clone()],
+            };
+            build(Some(&rules), &state, &["fixture".to_owned()], date)
+                .place("fixture")
+                .unwrap()
+                .buildings[0]
+                .wages
+                .clone()
+        };
+        let before = make(Date {
+            year: 768,
+            month: 5,
+            day: 1,
+            hour: 0,
+        });
+        assert_eq!(before[0].month, 4);
+        let before_noon = make(Date {
+            year: 768,
+            month: 5,
+            day: 1,
+            hour: 12,
+        });
+        assert_eq!(before_noon[0].month, 4);
+        let after = make(Date {
+            year: 768,
+            month: 5,
+            day: 1,
+            hour: 13,
+        });
+        assert_eq!(after[0].month, 5);
+        let next_day = make(Date {
+            year: 768,
+            month: 5,
+            day: 2,
+            hour: 0,
+        });
+        assert_eq!(next_day[0].month, 5);
+        let january = make(Date {
+            year: 768,
+            month: 1,
+            day: 1,
+            hour: 12,
+        });
+        assert_eq!(january[0].month, 12);
+        let skipped = make(Date {
+            year: 769,
+            month: 2,
+            day: 10,
+            hour: 0,
+        });
+        assert_eq!(skipped.len(), 12);
+        assert_eq!((skipped[0].month, skipped[0].year), (2, Some(769)));
+        assert_eq!(
+            (
+                skipped[1].month,
+                skipped[1].year,
+                skipped[1].paid,
+                skipped[1].wage_milli
+            ),
+            (1, Some(768), Some(15), 2_001)
+        );
+        assert_eq!(
+            skipped.iter().map(|row| row.wage_milli).sum::<u64>() / 12,
+            place.buildings[0].posted_wage()
+        );
+        let seeded = fixture(&rules);
+        let seeded_view = view_for_place(&rules, seeded);
+        assert!(
+            seeded_view.buildings[0]
+                .wages
+                .iter()
+                .all(|row| row.year.is_none() && row.paid.is_none())
+        );
     }
 
     fn day_one_economy_fixture() -> (Rules, EconomyState, Vec<Vec<u64>>, Date) {
@@ -895,8 +1129,8 @@ mod tests {
         std::path::PathBuf,
     ) {
         let view_ids = ids.to_vec();
-        let views = Box::new(move |game: &crate::game::GameState| {
-            build(Some(&rules), &game.economy, &view_ids)
+        let views = Box::new(move |game: &crate::game::GameState, date| {
+            build(Some(&rules), &game.economy, &view_ids, date)
         });
         let game_state = crate::game::GameState {
             economy: state.clone(),
@@ -1051,6 +1285,7 @@ mod tests {
                 places: vec![place],
             },
             &["fixture".to_owned()],
+            test_date(),
         );
         let place_view = view.place("fixture").expect("the fixture is in the view");
         assert_eq!(
@@ -1088,7 +1323,7 @@ mod tests {
             .iter()
             .map(|place| place.id.clone())
             .collect::<Vec<_>>();
-        let view = build(Some(&rules), &state, &ids);
+        let view = build(Some(&rules), &state, &ids, test_date());
         let dying_view = view.place("dying-place").expect("the place is in the view");
         assert_eq!(
             (
@@ -1127,6 +1362,7 @@ mod tests {
                     places: vec![place.clone()],
                 },
                 &["fixture".to_owned()],
+                test_date(),
             )
             .places
             .remove(0)
@@ -1197,7 +1433,13 @@ mod tests {
                 sea: 0,
             },
         )]);
-        let view = build_with_land(Some(&rules), &state, &["fixture".to_owned()], &land);
+        let view = build_with_land(
+            Some(&rules),
+            &state,
+            &["fixture".to_owned()],
+            &land,
+            test_date(),
+        );
         let place = view.place("fixture").expect("the place is in the view");
         assert_eq!((place.workers, place.dependents), (80, 40));
         // Food: 1,000 oats and 5 more in the pop's storehouse account, 1,800 hundredths each, for 120 people at 100 a day.
@@ -1425,7 +1667,7 @@ mod tests {
             places: vec![empty],
         };
         let ids = ["fixture".to_owned(), "absent".to_owned()];
-        let view = build(Some(&rules), &state, &ids);
+        let view = build(Some(&rules), &state, &ids, test_date());
         assert_eq!(view.places.len(), 2);
         let fixture = view.place("fixture").unwrap();
         assert_eq!(
@@ -1444,7 +1686,7 @@ mod tests {
         );
         assert_eq!(view.place("nowhere"), None);
         // No economy data at all (a scenario that predates M9): every place is nobody's.
-        let none = build(None, &EconomyState::default(), &ids);
+        let none = build(None, &EconomyState::default(), &ids, test_date());
         assert_eq!(none.places.len(), 2);
         assert!(
             none.places
@@ -1522,7 +1764,7 @@ mod tests {
         let state = EconomyState {
             places: vec![place],
         };
-        build(Some(rules), &state, &["fixture".to_owned()]).places[0].projected_yield
+        build(Some(rules), &state, &["fixture".to_owned()], test_date()).places[0].projected_yield
     }
 
     fn yield_with_fertility(rules: &Rules, place: PlaceState, fertility_pm: Option<u16>) -> u64 {
@@ -1542,8 +1784,14 @@ mod tests {
             )])
         });
         let view = match land.as_ref() {
-            Some(land) => build_with_land(Some(rules), &state, &["fixture".to_owned()], land),
-            None => build(Some(rules), &state, &["fixture".to_owned()]),
+            Some(land) => build_with_land(
+                Some(rules),
+                &state,
+                &["fixture".to_owned()],
+                land,
+                test_date(),
+            ),
+            None => build(Some(rules), &state, &["fixture".to_owned()], test_date()),
         };
         view.places[0].projected_yield
     }
@@ -1700,6 +1948,7 @@ mod tests {
             },
             &["rich".to_owned(), "poor".to_owned()],
             &land,
+            test_date(),
         );
         assert_eq!(view.yield_values(), [1000, 0]);
     }
@@ -1771,7 +2020,7 @@ mod tests {
             .iter()
             .map(|location| location.id.clone())
             .collect();
-        let view = build(Some(&rules), &state, &ids);
+        let view = build(Some(&rules), &state, &ids, test_date());
         assert_eq!(view.places.len(), 94);
         assert!(view.places.iter().any(|place| place.workers > 0));
         // The map modes: a value for every place, the stockpile ones on the ramp, and a spread of yields across the map.
@@ -1824,12 +2073,12 @@ mod tests {
             .map(|location| location.id.clone())
             .collect();
 
-        let view_at_save = build(Some(&rules), &state, &ids);
+        let view_at_save = build(Some(&rules), &state, &ids, test_date());
         let bytes = state.to_bytes().expect("the economy state serializes");
         let loaded = EconomyState::from_bytes(&bytes).expect("the economy state loads");
         assert_eq!(loaded, state, "saved counters and carries are unchanged");
         assert_eq!(
-            build(Some(&rules), &loaded, &ids),
+            build(Some(&rules), &loaded, &ids, test_date()),
             view_at_save,
             "a loaded state's derived housing fields match the view at the save boundary"
         );

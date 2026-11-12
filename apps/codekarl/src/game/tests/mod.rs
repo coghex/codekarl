@@ -207,6 +207,21 @@ impl Harness {
         )
     }
 
+    pub(super) fn with_views_starting_at(
+        seed: u64,
+        time: GameTime,
+        views: ViewBuilder<World>,
+    ) -> Self {
+        Self::build(
+            seed,
+            time,
+            Faults::default(),
+            identity("aa"),
+            None,
+            Some(views),
+        )
+    }
+
     pub(super) fn with_faults(seed: u64, faults: Faults) -> Self {
         Self::build(seed, start(), faults, identity("aa"), None, None)
     }
