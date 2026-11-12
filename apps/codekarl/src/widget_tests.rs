@@ -2109,6 +2109,81 @@ fn the_tooltip_places_no_panel_while_hidden_and_exactly_one_when_shown() {
 }
 
 #[test]
+fn button_tooltips_open_change_on_the_next_hover_and_absent_labels_stay_hidden() {
+    let mut readout = Readout::new(
+        r#"
+local button = require("lib.button")
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+local text = require("lib.text")
+local real_set = text.set
+local capture = false
+text.set = function(line, value)
+  real_set(line, value)
+  if capture then window.record("tooltip_text " .. value) end
+end
+local labelled = button.new{x = 10, y = 20, text = "Go", tooltip = "yield map"}
+local plain = button.new{x = 100, y = 20, text = "No"}
+local updates = 0
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  tooltip.update(update)
+  updates = updates + 1
+  if updates == 24 then labelled:set_tooltip("play") end
+end)
+window.record("labelled " .. labelled.key)
+window.record("plain " .. plain.key)
+capture = true
+"#,
+    );
+    let key = |name: &str| {
+        records(&readout)
+            .iter()
+            .find_map(|entry| entry.strip_prefix(&format!("{name} ")).map(str::to_owned))
+            .expect("the button key")
+    };
+    let labelled = key("labelled");
+    let plain = key("plain");
+    let hover = |key: &str, x| pointer_packet(key, x, vec![pointer_event("move", Some(key), None)]);
+    readout.update(800, 600, Some(hover(&labelled, 20.0)));
+    for _ in 0..24 {
+        readout.update(800, 600, Some(hover(&labelled, 20.0)));
+    }
+    let after_first = records(&readout);
+    assert!(
+        after_first
+            .iter()
+            .any(|entry| entry == "tooltip_text yield map")
+    );
+
+    readout.update(800, 600, Some(pointer_packet("", 0.0, Vec::new())));
+    let before_changed = records(&readout).len();
+    for _ in 0..22 {
+        readout.update(800, 600, Some(hover(&labelled, 20.0)));
+    }
+    let changed = records(&readout);
+    assert!(
+        changed[before_changed..]
+            .iter()
+            .any(|entry| entry == "tooltip_text play"),
+        "set_tooltip did not change the next tooltip: {changed:?}"
+    );
+
+    readout.update(800, 600, Some(pointer_packet("", 0.0, Vec::new())));
+    let before_plain = records(&readout).len();
+    for _ in 0..22 {
+        readout.update(800, 600, Some(hover(&plain, 110.0)));
+    }
+    let final_records = records(&readout);
+    assert!(
+        !final_records[before_plain..]
+            .iter()
+            .any(|entry| entry.starts_with("tooltip_text ")),
+        "a button without a tooltip opened one: {final_records:?}"
+    );
+}
+
+#[test]
 fn attached_tooltip_waits_locks_colours_and_survives_leaving_its_target() {
     let mut readout = Readout::script_with_tooltips(
         r#"

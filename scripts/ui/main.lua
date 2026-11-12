@@ -148,12 +148,14 @@ if game ~= nil then
     render.set_hit("places_bar", {{x = x, y = y, width = width, height = height}}, places_group)
     places_buttons.locations = button.new{
       x = x + 5 * P, y = y + 2 * P, icons = {"location"}, icon = "location",
+      tooltip = "places",
       kind = "places_bar",
       group = places_group,
       on_click = function() open_ledger("locations") end,
     }
     places_buttons.pops = button.new{
       x = x + 21 * P, y = y + 2 * P, icons = {"pops"}, icon = "pops",
+      tooltip = "pops",
       kind = "places_bar",
       group = places_group,
       on_click = function() open_ledger("pops") end,
@@ -203,16 +205,16 @@ if game ~= nil then
     -- Publish the bar capture before the buttons' narrower regions.
     render.set_hit("modes_bar", {{x = x, y = y, width = MODES_WIDTH * P, height = 19 * P}}, modes_group)
     mode_buttons.stockpile = button.new{
-      x = x + 5 * P, y = y + 2 * P, icons = {"stockpile"}, icon = "stockpile", kind = "places_bar", group = modes_group,
+      x = x + 5 * P, y = y + 2 * P, icons = {"stockpile"}, icon = "stockpile", tooltip = "stockpile map", kind = "places_bar", group = modes_group,
       on_click = function() select_mode("stockpile") end,
     }
     mode_buttons.yield = button.new{
-      x = x + (5 + MODE_BUTTON_WIDTH + 3) * P, y = y + 2 * P, icons = {"yield"}, icon = "yield", kind = "places_bar",
+      x = x + (5 + MODE_BUTTON_WIDTH + 3) * P, y = y + 2 * P, icons = {"yield"}, icon = "yield", tooltip = "yield map", kind = "places_bar",
       group = modes_group,
       on_click = function() select_mode("yield") end,
     }
     mode_buttons.elevation = button.new{
-      x = x + (5 + 2 * (MODE_BUTTON_WIDTH + 3)) * P, y = y + 2 * P, icons = {"elevation"}, icon = "elevation", kind = "places_bar",
+      x = x + (5 + 2 * (MODE_BUTTON_WIDTH + 3)) * P, y = y + 2 * P, icons = {"elevation"}, icon = "elevation", tooltip = "elevation map", kind = "places_bar",
       group = modes_group,
       on_click = function() select_mode("elevation") end,
     }
@@ -304,6 +306,7 @@ if game ~= nil then
       }
       local key = "speed_" .. index
       local widget = speed_box_widget(index, key)
+      tooltip.attach(key, function() return {"speed " .. index} end)
       widget.outline, widget.outline_tint = outline, time_colours.speed_box
       widget.inner, widget.inner_tint = inner, inner_tint
       speed_boxes[index] = widget
@@ -312,12 +315,12 @@ if game ~= nil then
     end
 
     local row_y = y + 2 * P
-    button.new{x = x + 5 * P, y = row_y, icons = {"rewind"}, icon = "rewind", kind = "time_bar",
+    button.new{x = x + 5 * P, y = row_y, icons = {"rewind"}, icon = "rewind", tooltip = "slower", kind = "time_bar",
       on_click = function() game.control("time_slower") end}
     time_controls.pause = button.new{x = x + 19 * P, y = row_y, icons = {"pause", "play"},
-      icon = time.paused and "play" or "pause", kind = "time_bar",
+      icon = time.paused and "play" or "pause", tooltip = time.paused and "play" or "pause", kind = "time_bar",
       on_click = function() game.control("time_pause") end}
-    button.new{x = x + 31 * P, y = row_y, icons = {"fast_forward"}, icon = "fast_forward", kind = "time_bar",
+    button.new{x = x + 31 * P, y = row_y, icons = {"fast_forward"}, icon = "fast_forward", tooltip = "faster", kind = "time_bar",
       on_click = function() game.control("time_faster") end}
 
     shown_speed = time.speed
@@ -366,6 +369,7 @@ if game ~= nil then
       -- The second button key is stable: rewind is first and the pause/play control is second.
       -- Keep the button object rather than routing state changes through a scene-wide rebuild.
       time_controls.pause:set_icon(paused and "play" or "pause")
+      time_controls.pause:set_tooltip(paused and "play" or "pause")
       shown_paused = paused
     end
     tooltip.refresh()
@@ -395,8 +399,8 @@ if game ~= nil then
   local ledger_selections = {}
   local ledger_key = "locations"
   local LEDGER_TABS = {
-    {key = "locations", icon = "location"},
-    {key = "pops", icon = "pops"},
+    {key = "locations", icon = "location", tooltip = "places"},
+    {key = "pops", icon = "pops", tooltip = "pops"},
   }
 
   -- Long labels end before a following numeric column; use whole UTF-8 code points and the title's two-dot ellipsis rule.

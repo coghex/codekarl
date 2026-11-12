@@ -110,11 +110,20 @@ game.set_map_mode = function(name)
   if fail_mode then error("game.set_map_mode: refused") end
   set_mode_calls[#set_mode_calls + 1] = name
 end
+local set_frame_update = frame.on_update
+frame.on_update = function(callback)
+  if callback == nil then return set_frame_update(nil) end
+  return set_frame_update(function(update)
+    callback(update)
+    if frame_test_observer then frame_test_observer(update) end
+  end)
+end
 local buttons_library = require("lib.button")
 local real_button_new = buttons_library.new
 mode_buttons = {}
 bar_buttons = {}
 look_buttons = {}
+time_buttons = {}
 places_text_buttons = 0
 local bar_group = nil
 local bar_visible = true
@@ -125,6 +134,7 @@ buttons_library.new = function(spec)
     bar_buttons[spec.icon] = created
   end
   if spec.icon == "cards" or spec.icon == "rows" then look_buttons[spec.icon] = created end
+  if spec.icon == "rewind" or spec.icon == "pause" or spec.icon == "fast_forward" then time_buttons[spec.icon] = created end
   if spec.icon == "stockpile" or spec.icon == "yield" or spec.icon == "elevation" then mode_buttons[spec.icon] = created end
   return created
 end
@@ -181,6 +191,28 @@ function announce_selector_count()
   note("selector_count " .. attached_selector_count(panel_window))
 end
 function note(text) window.record(text) end
+tooltip_sources = {}
+local tooltip = require("lib.tooltip")
+local real_tooltip_attach = tooltip.attach
+tooltip.attach = function(key, source)
+  tooltip_sources[key] = source
+  return real_tooltip_attach(key, source)
+end
+local real_tooltip_detach = tooltip.detach
+tooltip.detach = function(key)
+  tooltip_sources[key] = nil
+  return real_tooltip_detach(key)
+end
+function note_tooltip(name, key, x, y)
+  local source = tooltip_sources[key]
+  if source == nil then note("tooltip " .. name .. " <none>"); return end
+  local content, part
+  if type(source) == "function" then content, part = source(x or 0, y or 0)
+  else content = tooltip.content(source.class, source.args) end
+  local lines = {}
+  for _, line in ipairs(content or {}) do lines[#lines + 1] = type(line) == "table" and tostring(line.text or "") or tostring(line) end
+  note("tooltip " .. name .. " " .. table.concat(lines, "|") .. " part=" .. tostring(part or "-"))
+end
 local drawing_card = false
 local ui_library = require("lib.ui")
 local real_ui_texture = ui_library.texture
@@ -225,8 +257,8 @@ render.set_group_visible = function(group, visible)
   if group == bar_group then bar_visible = visible end
   return real_group_visible(group, visible)
 end
-function time(hour, revision)
-  callbacks.time({year = 768, month = 1, day = 1, hour = hour, paused = false, speed = 1, economy_revision = revision})
+function time(hour, revision, paused)
+  callbacks.time({year = 768, month = 1, day = 1, hour = hour, paused = paused == true, speed = 1, economy_revision = revision})
 end
 function select_place(id, name) callbacks.select({id = id, name = name, kind = "town", size = 3}) end
 
@@ -631,7 +663,7 @@ const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|housing:
 #[test]
 fn prices_use_fixed_goods_icons_and_unlisted_goods_keep_their_name() {
     let mut rig = rig(&[
-        "VIEWS[1].rowan.prices = {price('oats', 96500, 100), price('moonstone', 4500, 4)}; time(1, 1) select_place('rowan', 'Rowan')",
+        "VIEWS[1].rowan.prices = {price('oats', 96500, 100), price('peas_beans', 1200, 2), price('seabirds', 750, 1), price('moonstone', 4500, 4)}; time(1, 1) select_place('rowan', 'Rowan'); note_tooltip('oats', list_object.row_keys[11]); note_tooltip('peas_beans', list_object.row_keys[12]); note_tooltip('seabirds', list_object.row_keys[13])",
     ]);
     rig.opened();
     let recorded = notes(&rig);
@@ -657,6 +689,210 @@ fn prices_use_fixed_goods_icons_and_unlisted_goods_keep_their_name() {
             .iter()
             .any(|line| line.contains("ui/goods/moonstone.png")),
         "an unlisted good does not attempt a texture load: {recorded:?}"
+    );
+    for (name, expected) in [
+        ("oats", "oats|price 96.5, base 100"),
+        ("peas_beans", "peas and beans|price 1.2, base 2"),
+        ("seabirds", "seabirds|price 0.75, base 1"),
+    ] {
+        assert!(
+            recorded
+                .iter()
+                .any(|line| line == &format!("tooltip {name} {expected} part=-")),
+            "missing tooltip {name}: {recorded:?}"
+        );
+    }
+}
+
+#[test]
+fn built_icon_buttons_and_tabs_have_their_spec_tooltip_labels() {
+    let mut rig = rig(&[
+        r#"time(1, 1); select_place('rowan', 'Rowan'); tabs_by_title.Rowan:select('pops', true)
+for _, key in ipairs({"location", "pops"}) do note_tooltip("places_" .. key, bar_buttons[key].key) end
+for _, key in ipairs({"stockpile", "yield", "elevation"}) do note_tooltip("mode_" .. key, mode_buttons[key].key) end
+for _, key in ipairs({"rewind", "fast_forward"}) do note_tooltip("time_" .. key, time_buttons[key].key) end
+for index = 1, 5 do note_tooltip("speed_" .. index, "speed_" .. index) end
+for _, key in ipairs({"cards", "rows"}) do note_tooltip("look_" .. key, look_buttons[key].key) end
+note_tooltip("location_full", tabs_by_title.Rowan.buttons[1].key)
+bar_buttons.location.on_click()
+for index, tab in ipairs(tabs_by_title.ledger.items) do note_tooltip("ledger_" .. tab.key, tabs_by_title.ledger.buttons[index].key) end"#,
+        r#"time(1, 1, true); note_tooltip("time_pause", time_buttons.pause.key)"#,
+        r#"note("location_tier " .. tabs_by_title.Rowan.tier); note_tooltip("location_short", tabs_by_title.Rowan.buttons[1].key)"#,
+    ]);
+    rig.opened();
+    let recorded = notes(&rig);
+    for (name, expected) in [
+        ("places_location", "places"),
+        ("places_pops", "pops"),
+        ("mode_stockpile", "stockpile map"),
+        ("mode_yield", "yield map"),
+        ("mode_elevation", "elevation map"),
+        ("time_rewind", "slower"),
+        ("time_fast_forward", "faster"),
+        ("speed_1", "speed 1"),
+        ("speed_2", "speed 2"),
+        ("speed_3", "speed 3"),
+        ("speed_4", "speed 4"),
+        ("speed_5", "speed 5"),
+        ("look_cards", "cards"),
+        ("look_rows", "list"),
+        ("ledger_locations", "places"),
+        ("ledger_pops", "pops"),
+    ] {
+        assert!(
+            recorded
+                .iter()
+                .any(|line| line == &format!("tooltip {name} {expected} part=-")),
+            "missing {name}={expected}: {recorded:?}"
+        );
+    }
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "tooltip location_full <none>")
+    );
+
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "tooltip time_pause play part=-")
+    );
+
+    rig.deliver_fixture_frame_at(640, 900, 2);
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "location_tier 2" || line == "location_tier 3")
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "tooltip location_short location part=-")
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the real price-row witness verifies tooltip delay, passive input, row removal and relayout in one UI lifetime"
+)]
+fn real_price_row_hover_is_passive_survives_resize_and_leaves_no_old_keys() {
+    let mut rig = rig(&[
+        r"VIEWS[1].rowan.prices = {price('oats', 96500, 100), price('moonstone', 4500, 4)}
+time(1, 1); select_place('rowan', 'Rowan')
+local text = require('lib.text'); local real_set = text.set
+text.set = function(line, value) real_set(line, value); if capture_tips then note('tooltip_text ' .. value) end end
+capture_tips = true
+frame_test_observer = function()
+  note('list_hover ' .. tostring(list_object.hover_row) .. ' pressed ' .. tostring(list_object.pressed_row))
+end
+old_price_key = list_object.row_keys[11]
+local x = list_object.origin_x + list_object.x + 10
+local y = list_object.origin_y + list_object.y + 10 * lists.ROW + 10
+note(string.format('oats_point %g %g', x, y)); note('old_price_key ' .. old_price_key)",
+        r"local x = list_object.origin_x + list_object.x + 10
+local y = list_object.origin_y + list_object.y + 10 * lists.ROW + 10
+note('old_key_live ' .. tostring(require('lib.pointer').widget(old_price_key) ~= nil))
+note(string.format('resized_oats_point %g %g', x, y)); note('resized_price_key ' .. list_object.row_keys[11])",
+    ]);
+    rig.deliver_fixture_frame_at(1800, 900, 1);
+    rig.opened();
+
+    let recorded = notes(&rig);
+    let point = recorded
+        .iter()
+        .find(|line| line.starts_with("oats_point "))
+        .unwrap();
+    let mut coords = point
+        .split_whitespace()
+        .skip(1)
+        .map(|value| value.parse::<f64>().unwrap());
+    let price_point = (coords.next().unwrap(), coords.next().unwrap());
+    let old_price_key = recorded
+        .iter()
+        .find_map(|line| line.strip_prefix("old_price_key "))
+        .unwrap();
+    assert_eq!(
+        rig.key_at(price_point.0, price_point.1).as_deref(),
+        Some(old_price_key)
+    );
+    rig.feed(&[PointerEvent::Move(points(price_point.0, price_point.1))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame_at(1800, 900, 1);
+    }
+    let opened = notes(&rig);
+    assert!(
+        opened.iter().any(|line| line == "tooltip_text oats"),
+        "tooltip did not open: {opened:?}"
+    );
+    let spans = [
+        "tooltip_text oats",
+        "tooltip_text price ",
+        "tooltip_text 96.5",
+        "tooltip_text , base ",
+        "tooltip_text 100",
+    ];
+    assert!(
+        opened.windows(spans.len()).any(|window| window == spans),
+        "price tooltip did not open the expected two lines: {opened:?}"
+    );
+
+    rig.feed(&[
+        PointerEvent::Down(points(price_point.0, price_point.1)),
+        PointerEvent::Up(points(price_point.0, price_point.1)),
+    ]);
+    rig.deliver_fixture_frame_at(1800, 900, 1);
+    let recorded = notes(&rig);
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "list_hover nil pressed nil")
+    );
+
+    // The text-only moonstone line has a passive key in this tooltip-enabled list but no tooltip source.
+    let moonstone_y = price_point.1 + 3.0 * 26.0;
+    let before = notes(&rig).len();
+    rig.feed(&[PointerEvent::Move(points(price_point.0, moonstone_y))]);
+    rig.deliver_fixture_frame_at(1800, 900, 1);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame_at(1800, 900, 1);
+    }
+    let after = notes(&rig);
+    assert!(
+        !after[before..]
+            .iter()
+            .any(|line| line.starts_with("tooltip_text ")),
+        "the unlisted good line has no tooltip: {:?}",
+        &after[before..]
+    );
+
+    rig.deliver_fixture_frame_at(1600, 900, 1);
+    rig.opened();
+    let resized = notes(&rig);
+    assert!(resized.iter().any(|line| line == "old_key_live false"));
+    let point = resized
+        .iter()
+        .find(|line| line.starts_with("resized_oats_point "))
+        .unwrap();
+    let mut coords = point
+        .split_whitespace()
+        .skip(1)
+        .map(|value| value.parse::<f64>().unwrap());
+    let resized_point = (coords.next().unwrap(), coords.next().unwrap());
+    rig.feed(&[PointerEvent::Move(points(resized_point.0, resized_point.1))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame_at(1600, 900, 1);
+    }
+    let final_notes = notes(&rig);
+    assert!(final_notes.iter().any(|line| line == "tooltip_text oats"));
+    assert!(
+        final_notes
+            .windows(spans.len())
+            .any(|window| window == spans),
+        "resized price tooltip did not preserve its two lines: {final_notes:?}"
     );
 }
 
@@ -704,6 +940,178 @@ fn herd_counts_use_full_colour_icons_on_cards_and_open_rows() {
             "open row herd {name} count is at x=28: {row_icons:?}"
         );
     }
+}
+
+fn point_note(rig: &Rig, prefix: &str) -> (f64, f64) {
+    let line = notes(rig)
+        .into_iter()
+        .find(|line| line.starts_with(prefix))
+        .unwrap_or_else(|| panic!("no point note {prefix}: {:?}", notes(rig)));
+    let mut values = line[prefix.len()..]
+        .split_whitespace()
+        .map(|value| value.parse::<f64>().unwrap());
+    (values.next().unwrap(), values.next().unwrap())
+}
+
+#[test]
+fn card_tooltip_dispatch_returns_herds_and_plain_pop_cards_stay_silent() {
+    let mut rig = rig(&[r#"VIEWS[1].cards.buildings[1].herds = {
+  {species = "cattle", head = 27, maximum = 36},
+  {species = "pigs", head = 9, maximum = 12},
+  {species = "sheep", head = 10, maximum = 20},
+}
+time(1, 1); select_place("cards", "Cards"); tabs_by_title.Cards:select("buildings", true)
+local text = require("lib.text"); local real_set = text.set
+text.set = function(line, value) real_set(line, value); if capture_tooltips then note("tooltip_text " .. value) end end
+capture_tooltips = true
+local P = require("lib.ui").P
+local building = card_object.items[1]
+local cattle_x = 5 + 4
+local pigs_x = 5 + 11 + font.layout("27/36").width + 10
+local left, top = card_object.origin_x + card_object.x, card_object.origin_y + card_object.y + card_object.tops[1]
+note(string.format("cattle_point %g %g", left + cattle_x * P, top + 42 * P))
+note(string.format("pigs_point %g %g", left + (pigs_x + 4) * P, top + 42 * P))
+note(string.format("gap_point %g %g", left + 30 * P, top + 42 * P))
+local content, part = building.tooltip(cattle_x + 4, 42)
+note("card_cattle_source " .. table.concat(content, "|") .. " part=" .. tostring(part))
+content, part = building.tooltip(pigs_x + 4, 42)
+note("card_pigs_source " .. table.concat(content, "|") .. " part=" .. tostring(part))"#]);
+    rig.opened();
+
+    let cattle = point_note(&rig, "cattle_point ");
+    let pigs = point_note(&rig, "pigs_point ");
+    assert!(
+        rig.key_at(cattle.0, cattle.1).is_some(),
+        "the cattle icon is inside its card hit key"
+    );
+    assert!(
+        rig.key_at(pigs.0, pigs.1).is_some(),
+        "the pig icon is inside its card hit key"
+    );
+    rig.feed(&[PointerEvent::Move(points(cattle.0, cattle.1))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame_at(1800, 900, 2);
+    }
+    assert!(
+        notes(&rig).iter().any(|line| line == "tooltip_text cattle"),
+        "real card pointer dispatch should open the cattle tooltip without a Lua error: {:?}",
+        notes(&rig)
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "card_cattle_source cattle part=cattle"),
+        "the card provider returns cattle with the cattle part"
+    );
+
+    let before_pigs = notes(&rig).len();
+    rig.feed(&[PointerEvent::Move(points(pigs.0, pigs.1))]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    assert!(
+        !notes(&rig)[before_pigs..]
+            .iter()
+            .any(|line| line == "tooltip_text pigs"),
+        "changing species on one card restarts the delay"
+    );
+    for _ in 0..22 {
+        rig.deliver_fixture_frame_at(1800, 900, 2);
+    }
+    assert!(
+        notes(&rig)[before_pigs..]
+            .iter()
+            .any(|line| line == "tooltip_text pigs"),
+        "the delayed card tooltip then changes to pigs"
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "card_pigs_source pigs part=pigs"),
+        "the card provider returns pigs with the pigs part"
+    );
+
+    let before_gap = notes(&rig).len();
+    let gap = point_note(&rig, "gap_point ");
+    rig.feed(&[PointerEvent::Move(points(gap.0, gap.1))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame_at(1800, 900, 2);
+    }
+    assert!(
+        !notes(&rig)[before_gap..]
+            .iter()
+            .any(|line| line.starts_with("tooltip_text ")),
+        "space between herd icons has no tooltip"
+    );
+}
+
+#[test]
+fn plain_pop_card_tooltip_dispatch_stays_silent() {
+    let mut rig = rig(&[
+        r#"time(1, 1); select_place("cards", "Cards"); tabs_by_title.Cards:select("pops", true)
+local text = require("lib.text"); local real_set = text.set
+text.set = function(line, value) real_set(line, value); if capture_tooltips then note("tooltip_text " .. value) end end
+capture_tooltips = true
+local P = require("lib.ui").P
+local left, top = card_object.origin_x + card_object.x, card_object.origin_y + card_object.y + card_object.tops[1]
+note(string.format("plain_pop_point %g %g", left + 40 * P, top + 30 * P))"#,
+    ]);
+    rig.opened();
+    let pop = point_note(&rig, "plain_pop_point ");
+    assert!(
+        rig.key_at(pop.0, pop.1).is_some(),
+        "the pop card has a passive hit key"
+    );
+    let before_pop = notes(&rig).len();
+    rig.feed(&[PointerEvent::Move(points(pop.0, pop.1))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame_at(1800, 900, 2);
+    }
+    assert!(
+        !notes(&rig)[before_pop..]
+            .iter()
+            .any(|line| line.starts_with("tooltip_text ")),
+        "a pop card without a tooltip remains silent and does not error"
+    );
+}
+
+#[test]
+fn open_building_row_tooltip_dispatch_tracks_the_herd_icon() {
+    let mut rig = rig(&[r#"VIEWS[1].cards.buildings[1].herds = {
+  {species = "cattle", head = 27, maximum = 36},
+  {species = "pigs", head = 9, maximum = 12},
+  {species = "sheep", head = 10, maximum = 20},
+}
+time(1, 1); select_place("cards", "Cards"); tabs_by_title.Cards:select("buildings", true)
+local text = require("lib.text"); local real_set = text.set
+text.set = function(line, value) real_set(line, value); if capture_tooltips then note("tooltip_text " .. value) end end
+capture_tooltips = true
+look_buttons.rows.on_click(); card_object.items[2].on_click()
+local content, part = card_object.items[2].tooltip(20, 54)
+note("row_pigs_source " .. table.concat(content, "|") .. " part=" .. tostring(part))
+local P = require("lib.ui").P
+local left = card_object.origin_x + card_object.x
+local top = card_object.origin_y + card_object.y + card_object.tops[2]
+note(string.format("row_pigs_point %g %g", left + 20 * P, top + 54 * P))"#]);
+    rig.opened();
+    let pigs = point_note(&rig, "row_pigs_point ");
+    assert!(
+        rig.key_at(pigs.0, pigs.1).is_some(),
+        "the open herd icon is inside its row hit key"
+    );
+    rig.feed(&[PointerEvent::Move(points(pigs.0, pigs.1))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame_at(1800, 900, 2);
+    }
+    assert!(
+        notes(&rig).iter().any(|line| line == "tooltip_text pigs"),
+        "real row pointer dispatch should open the pigs tooltip at the herd line: {:?}",
+        notes(&rig)
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "row_pigs_source pigs part=pigs"),
+        "the open-row provider returns pigs with the pigs part"
+    );
 }
 
 #[test]

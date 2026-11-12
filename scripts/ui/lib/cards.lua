@@ -2,6 +2,7 @@
 -- Items use UI-pixel heights and draw(group, x, y, width) in window points. `draw` returns a view with `destroy()`.
 local ui = require("lib.ui")
 local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
 
 local P = ui.P
 local MAX_ITEMS = 65536
@@ -66,6 +67,7 @@ local function clear_hits(self)
   table.sort(keys)
   for _, key in ipairs(keys) do
     render.set_hit(key, nil, self.group)
+    tooltip.detach(key)
     local retired = pointer.widget(key)
     pointer.defer(function()
       if pointer.widget(key) == retired then pointer.unregister(key) end
@@ -121,6 +123,14 @@ local function item_widget(self, index, key)
     end
   end
   function widget:on_hover() end
+  tooltip.attach(key, function(x, y)
+    if self.closed then return nil end
+    local item = self.items[index]
+    if item == nil or type(item.tooltip) ~= "function" then return nil end
+    local left = self.origin_x + self.x
+    local top = self.origin_y + self.y - ui.snap(self.scroll_offset) + top_of(self, index)
+    return item.tooltip((x - left) / P, (y - top) / P)
+  end)
   widget.cards = self
   return widget
 end

@@ -110,6 +110,12 @@ local function draw_goods_icon(result, group, good, x, y)
   result:add({destroy = function() render.destroy_quad(quad) end})
 end
 
+local GOOD_NAMES = {peas_beans = "peas and beans"}
+
+local function good_name(id)
+  return GOOD_NAMES[id] or id:gsub("_", " ")
+end
+
 local function draw_bar(result, group, x, y, width, numerator, denominator)
   put_quad(result, group, x, y, width, 3, theme.colour("track"))
   if denominator <= 0 then return end
@@ -173,6 +179,17 @@ local function building_card(building)
   local icon = building_icon(building.kind)
   return {
     height = #building.herds > 0 and 50 or 39,
+    tooltip = function(x, y)
+      local hx = 5
+      for _, herd in ipairs(building.herds) do
+        local count = herd.head .. "/" .. herd.maximum
+        if x >= hx and x < hx + 9 and y >= 38 and y < 47 then
+          return {good_name(herd.species)}, herd.species
+        end
+        hx = hx + 11 + font.layout(count).width + 10
+      end
+      return nil
+    end,
     draw = function(group, x, y, width)
       local result = view()
       local dx, dy = x // P, y // P
@@ -286,6 +303,9 @@ local function location_lines(place)
       lines[#lines + 1] = {
         cells = {{text = milli(price.price_milli) .. " (" .. price.base .. ")", x = 16, align = "left"}},
         icon = {image = "goods/" .. price.good},
+        tooltip = function()
+          return {good_name(price.good), "price " .. milli(price.price_milli) .. ", base " .. price.base}
+        end,
       }
     else
       lines[#lines + 1] = "  " .. price.good .. " " .. milli(price.price_milli) .. " (" .. price.base .. ")"
@@ -490,6 +510,7 @@ local function ensure_selector(self)
   for _, key in ipairs({"cards", "rows"}) do
     selector.buttons[key] = button.new{
       x = 0, y = 0, icons = {key}, icon = key, kind = "place", style = "panel", group = self.window.content,
+      tooltip = key == "cards" and "cards" or "list",
       owner = self.window, on_click = function() choose(key) end,
     }
     selector.buttons[key]:set_selected(key == self.list_look)
@@ -556,6 +577,16 @@ local function row_items(self, key, place)
     for index, building in ipairs(place.buildings) do
       local id = row_identity("b", building, index)
       local item = building_row(building, id == self.open_buildings)
+      item.tooltip = function(x, y)
+        if id ~= self.open_buildings then return nil end
+        for herd_index, herd in ipairs(building.herds) do
+          local herd_y = 13 + (herd_index + 1) * 12 + 1
+          if x >= 16 and x < 25 and y >= herd_y and y < herd_y + 9 then
+            return {good_name(herd.species)}, herd.species
+          end
+        end
+        return nil
+      end
       item.on_click = function()
         if self.open_buildings == id then
           self.open_buildings = nil
@@ -626,6 +657,7 @@ render = function(self, keep_scroll)
       width = self.window.content_width,
       rows = count,
       items = rows,
+      tooltips = true,
     }
   end
 end

@@ -46,6 +46,7 @@ function tabs.new(spec)
     self.items[index] = {
       key = item.key,
       icon = item.icon,
+      tooltip = item.tooltip,
       labels = item.label ~= nil and {item.label, short, item.tiny or short} or nil,
     }
   end
@@ -62,6 +63,7 @@ function tabs.new(spec)
       group = window.chrome,
       owner = window,
       on_click = function() self:select(item.key, true) end,
+      tooltip = item.tooltip,
     }
     if item.icon ~= nil then
       button_spec.icons, button_spec.icon = {item.icon}, item.icon
@@ -99,6 +101,9 @@ function tabs:place_in_title(window)
     self.tier = tier
     for index, item in ipairs(self.items) do
       if item.labels ~= nil then self.buttons[index]:set_text(item.labels[tier]) end
+      if item.labels ~= nil then
+        self.buttons[index]:set_tooltip(item.labels[tier] == item.labels[1] and nil or item.labels[1])
+      end
     end
   end
   -- The buttons end at the right edge of the room and never start before the title bar's own start: a window narrower than
