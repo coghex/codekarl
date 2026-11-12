@@ -90,8 +90,21 @@
 >   - **The look:** every number is green and a title is dark gold. Content of more than 12 lines scrolls inside the tooltip.
 >   - **The map's press:** the UI now also hears a left press on the map, as a `map_down` event (§3.5).
 >
->   So far only the place-name tooltip uses it, and the glossary ships with no entries. Labels, prices, the location tooltip and the
->   glossary's text are later slices.
+>   The price breakdown and the tooltips of the pop and building cards are later slices.
+> - **The glossary's entries** (CK-273; `owner-direction-tooltips-designer-r12.md` to `-r16.md`): `assets/ui/glossary.toml` now holds
+>   its **92 entries**, the text the owner approved in five groups (`glossary/glossary-r1.toml`, sha256 `75ae9a2f…`). They explain the
+>   game's concepts and name every good, production method, culture and religion of the game data. A change to an entry's text
+>   is a data change that needs the owner's approval (§3.13).
+> - **The location tooltip** (CK-275; `owner-direction-tooltips-manager-r3.md` and `-r4.md`, `-designer-r6.md` to `-r10.md`; §3.13):
+>   hovering a place on the map now shows its name, population, majority culture and religion, usable land, and the value produced
+>   and consumed last month. The owner: "mousing over a location should give basing info on a location". Each number opens its
+>   breakdown and each word its glossary explanation. The content is seven shared definitions in the new
+>   `scripts/ui/lib/classes.lua`: `location`, `population`, `cultures`, `religions`, `land`, `produced` and `consumed`. Only the map
+>   hover uses them so far.
+> - **Label tooltips** (CK-271; `owner-direction-goods-icons-r3.md`: "Yes, this round"; §3.13): every icon button and the speed boxes
+>   have a one-line label, and a shortened tab shows its full label. In the location tab a price row shows the good's name with its
+>   price and base, so a good is no longer known by its icon alone, and a herd's icon shows its species. List rows can now have a
+>   tooltip without being selectable (`lib/list.lua`, `tooltips = true`).
 
 ## Owner answers (2026-11-07)
 
@@ -604,8 +617,8 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
 
 One module, `scripts/ui/lib/tooltip.lua`, shows every tooltip (spec:
 `.pipeline/coordination/ui-polish-design/specs/tooltips-t3-core-designer4-r8.md`, sha256 `09832bdf…`). CK-270 is the mechanism. The
-only tooltip on it so far is the place name on map hover, and the glossary has no entries: labels, prices, the location tooltip and
-the glossary's text are later slices. Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
+glossary's entries came with CK-273, the labels with CK-271 and the location tooltip with CK-275. The price breakdown and the
+card tooltips are later slices. Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
 
 - **Settings:** `[ui.tooltips]` in the configuration file, every key optional, read at startup only (the owner chose **"Config file now"**).
 
@@ -644,6 +657,7 @@ the glossary's text are later slices. Lengths below are in UI pixels (`ui.P` uni
     naming it.
   - `tooltip.content(class, args)` returns that content, so a window or a list can show the lines a tooltip shows. An undefined class
     is an error naming it.
+  - The game's classes are defined in `scripts/ui/lib/classes.lua` (the location tooltip, below).
 - **Targets:**
   - `tooltip.attach(key, source)` gives the widget under hit key `key` a tooltip, and `tooltip.detach(key)` takes it away. A key has
     one source: attaching again replaces it.
@@ -736,18 +750,93 @@ the glossary's text are later slices. Lengths below are in UI pixels (`ui.P` uni
   - **The extension:** `glossary.entry(key)` returns `{key, title, text}` or nil, and `glossary.keys()` the keys in sorted order.
     - The file is read when the run has assets and a game or a UI VM, and the UI VM gets the extension only when the file exists.
     - A glossary file without the small font is refused at startup.
-  - **The shipped file has no entries,** only a comment giving the format. The owner approves the entries' text in a later slice,
-    and the reader screen for the whole glossary comes with the game menu.
+  - **The shipped file has 92 entries** (CK-273), after a comment giving the format.
+    - **The text is the owner's approved text,** byte for byte and in its order: `glossary/glossary-r1.toml` (sha256 `75ae9a2f…`) in
+      `.pipeline/coordination/ui-polish-design/`, assembled from the five groups the owner approved
+      (`owner-direction-tooltips-designer-r12.md` to `-r16.md`). That file is not shipped.
+    - **A change to an entry's `title` or `text` is a data change that needs the owner's approval.** It needs no code change.
+    - **The owner's rules for an entry** (the same records): no "for example", no examples drawn from the work done so far and no
+      local specifics; it describes the game's aims, not how today's code works; a name's entry is one plain line.
+    - **The names' keys are the game data's ids:** every good, production method, culture and religion in
+      `assets/game/economy.toml` has an entry under its id. A test reads the data file and fails when one is missing, so a good or
+      a culture added later needs its entry.
+    - **The location tooltip and its breakdowns are the first to show terms** (below). The reader screen for the whole glossary
+      comes with the game menu.
   - **An explanation** is a term's tooltip: the entry's `title` as its title, then its `text` in font `small`, wrapped at 160 and
     broken at spaces, with its `{…}` terms as terms. It is a tooltip like any other, so a term inside it opens its own explanation. A
     term whose key has no entry opens nothing.
   - **A mismatch (2026-11-12, reported to ck-manager):** the file's comment and the loader accept `}}` for a literal `}`, but an
     explanation draws both braces, because `wraps` in `tooltip.lua` looks only for `{`. No entry uses braces yet.
-- **The place-name tooltip** is on this system: `main.lua` gives `game.on_hover`'s place to `tooltip.map_hover` with a function
-  returning the name. It now waits `delay` and can lock like any other.
+- **Labels** (CK-271; spec `specs/tooltips-t4-labels-designer4-r4.md`, sha256 `fffd8dc0…`). The owner put labelled hover tooltips
+  in this round ("Yes, this round") when the goods icons replaced the names in the prices list.
+  - **Buttons:** `button.new{…, tooltip = "text"}` gives a button a one-line tooltip on its key, and `button:set_tooltip(text)`
+    changes it (nil removes it; anything but a string or nil is an error). Destroying the button detaches it. The labels:
+
+    | Control | Label |
+    |---|---|
+    | the ledger bar's two buttons, and the ledger's two tabs | `places`, `pops` |
+    | the map-mode buttons | `stockpile map`, `yield map`, `elevation map` |
+    | the time bar's rewind and fast-forward buttons | `slower`, `faster` |
+    | the time bar's pause button | `pause` while running, `play` while paused |
+    | speed box *n* (not a button: `main.lua` attaches it with `tooltip.attach`) | `speed n` |
+    | the location panel's look buttons | `cards`, `list` |
+
+  - **Tabs:** `lib/tabs.lua` passes an item's `tooltip` to its button. A text tab shows its full label as a tooltip while it shows
+    its short or tiny label, and has none while it shows the full one.
+  - **Goods names:** `lib/location.lua` names a good by its id with `_` as a space, except `peas_beans`, which is `peas and beans`.
+  - **Price rows:** in the location tab, each price row with an icon has a two-line tooltip: the good's name, then
+    `price <price>, base <base>`. A good without an icon keeps its text line, which has no tooltip.
+  - **Tooltip-only rows** (`lib/list.lua`):
+    - a cell item may carry `tooltip`: a function returning content (or nil), or `{class = <name>, args = <table>}`. Any other type
+      is refused, naming the item;
+    - `list.new{…, tooltips = true}` gives every row in view a hit key, as `on_select` does. The row's source reads the item now at
+      that row each time it is asked, so `set_items` changes what a row's tooltip shows without attaching again;
+    - with `tooltips` and no `on_select` a row is **passive**: it passes a scroll to the list and ignores everything else, so it
+      shows no hover or pressed look, selects nothing and is not functional (a press on it is a click away);
+    - a row's key is detached when the row leaves the view and when the list is destroyed.
+  - **Card items** (`lib/cards.lua`): every card's key has a source that calls the item's `tooltip(x, y)`, when it has one, with
+    the pointer's position in UI pixels from the card's top-left. It returns the content and a part.
+  - **Herds:** on a building card the species' name shows over a herd's 9×9 icon, with the species as the part, and nothing
+    elsewhere on the card. In the rows look an open building row does the same for each herd line's icon.
+- **The location tooltip** (CK-275) is what the map's hovered place shows: `main.lua` gives `tooltip.map_hover` the source
+  `{class = "location", args = {place = hover.id}}`. It waits `delay` and can lock like any other.
+  - **Its classes** are in `scripts/ui/lib/classes.lua`. Each takes `args = {place = <id>}` and reads the place's view,
+    `game.place(id, revision)` (`docs/economy-design.md` §3.11), at the newest economy revision `main.lua` has received
+    (`classes.set_revision`, called from `game.on_time`). A place with no view yet gives no tooltip.
+
+    | Class | Its lines |
+    |---|---|
+    | `location` | the title, the place's name; then the six lines below |
+    | `population` | one line per pop type present, with its people; then the workers and the dependents |
+    | `cultures`, `religions` | one line per culture (religion) present: its people and its share |
+    | `land` | one line per terrain with usable land, in km²; then `not usable` and `sea` |
+    | `produced`, `consumed` | `value at local prices:`, then one line per good with units: its value |
+
+  - **The `location` lines,** each a word and a number: **population** and the people (workers and dependents), opening
+    `population`; **culture,** the majority culture and its share, opening `cultures`; **religion** likewise, opening `religions`;
+    **usable land** in km², opening `land`; **produced** last month and **consumed** last month, each a value opening its class.
+  - **A number opens its breakdown and a word its explanation** (the owner chose this, `owner-direction-tooltips-designer-r6.md`).
+    The words are glossary terms: population, culture, religion, usable land, produced, consumed, worker, dependent, and the names
+    of pop types, cultures, religions and goods, shown by their entries' titles. Terrain names are plain text: terrains have no
+    entries.
+  - **Order:** every list is largest first. Equal people go in alphabetical order of the id, because the Lua UI cannot see the game
+    data's order of pop types, cultures and religions. Equal values keep the goods' order of the view.
+  - **Numbers:** a share is `floor(part × 100 / whole)` with `%`, so shares can sum below 100. An area is cells ÷ 4 in km², with at
+    most two decimals and no trailing zeros. A value is `value_milli ÷ 1000` rounded to the nearest whole; the two totals sum the
+    goods before rounding.
+  - **Lines left out or empty:** with no pops there is no culture or religion line. Until a month has closed
+    (`last_month.closed`), the produced and consumed lines show `-` and open nothing; a closed month with no activity shows `0`.
+    `land` leaves out `not usable` and `sea` when they are 0.
+  - **Consumed is the pops' use** (`used_by_pops`): buildings take no inputs yet.
+  - **No county or region line** until the map data has those units (`owner-direction-tooltips-designer-r7.md`).
+  - **Elsewhere:** only the map hover uses these classes so far. The ledger, the location tab and the window title come to them in
+    a later slice. `produced` can pass 12 lines, and then scrolls.
 - **Tests:** the UI rig in `apps/codekarl/src/widget_tests.rs` drives `tooltip.update` with made-up updates;
   `ui_link/widget_witness_tests.rs` drives a locked tooltip through real pointer ticks; `config.rs` and `glossary.rs` test the
-  settings and the loader; `ui_link.rs` tests the routing of `map_down`.
+  settings, the loader and the shipped entries (92 keys, three exact literals, an entry for every id of the game data);
+  `ui_link.rs` tests the routing of `map_down`. The location classes are tested in `widget_tests.rs` with a fixture place view, and
+  `ui_link/group_tests.rs` hovers a place through the real `main.lua`. The labels, the tooltip-only rows and the herd tooltips are
+  tested in `widget_tests.rs`, `ui_link/list_tests.rs` and `ui_link/location_tests.rs`.
 
 ## 4. Packages and ownership
 

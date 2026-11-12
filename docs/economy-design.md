@@ -831,7 +831,8 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
   - `last_month = {closed, produced, used_by_pops, lost}`: each a list of `{good, units, value_milli}` for the goods with units
     above zero, in the goods' order (`lost` has no value). While `closed` is false the lists are empty. Integers too large for Lua
     are given as its largest integer;
-  - nothing in the UI shows these yet: the location tooltip and its breakdowns are later slices.
+  - the location tooltip and its breakdowns show the land counts and the `produced` and `used_by_pops` lists (CK-275;
+    `docs/ui-design.md` §3.13). Nothing in the UI shows `lost` yet.
 - **A pop's food by good and a building's twelve paydays, in the view** (CK-276; the owner, `-designer-r8.md`: a pop's food "its
   total goes on the card, with the per good breakdown in the tooltip", and the wage's twelve months, §3.6):
   - each pop's entry has `food`: one `{good, units, unit, share_pm}` for each good the pop holds that feeds (stock above zero and a
