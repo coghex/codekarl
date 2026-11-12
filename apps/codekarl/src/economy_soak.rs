@@ -480,6 +480,7 @@ mod tests {
                     land_cells: BTreeMap::from([("pasture".to_owned(), 100)]),
                     fertility_pm: BTreeMap::from([("pasture".to_owned(), 100_000)]),
                     fertile_cells: 100,
+                    fertile_cells_by_terrain: BTreeMap::new(),
                     sea: 0,
                 },
             }],

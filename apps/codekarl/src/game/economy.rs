@@ -70,6 +70,13 @@ fn land_counts_from_cells(
                         .fertile_cells
                         .checked_add(1)
                         .ok_or_else(|| "fertile cell count overflow".to_owned())?;
+                    let usable = count
+                        .fertile_cells_by_terrain
+                        .entry(name.clone())
+                        .or_default();
+                    *usable = usable
+                        .checked_add(1)
+                        .ok_or_else(|| format!("{name} fertile cell count overflow"))?;
                 }
             }
             Surface::Lake => {}
@@ -165,12 +172,14 @@ mod tests {
                     land_cells: BTreeMap::from([("pasture".to_owned(), 1)]),
                     fertility_pm: BTreeMap::from([("pasture".to_owned(), 600)]),
                     fertile_cells: 1,
+                    fertile_cells_by_terrain: BTreeMap::from([("pasture".to_owned(), 1)]),
                     sea: 1
                 },
                 LandCounts {
                     land_cells: BTreeMap::from([("forest".to_owned(), 1)]),
                     fertility_pm: BTreeMap::from([("forest".to_owned(), 400)]),
                     fertile_cells: 1,
+                    fertile_cells_by_terrain: BTreeMap::from([("forest".to_owned(), 1)]),
                     sea: 0,
                 },
             ]
@@ -210,6 +219,10 @@ mod tests {
                         .or_default() += u64::from(scenario.map.data.fertility[index]);
                     if scenario.map.data.fertility[index] > 0 {
                         expected[*owner].fertile_cells += 1;
+                        *expected[*owner]
+                            .fertile_cells_by_terrain
+                            .entry(name.clone())
+                            .or_default() += 1;
                     }
                 }
                 Surface::Lake => {}
