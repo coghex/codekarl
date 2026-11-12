@@ -50,6 +50,23 @@
 >   The **UI scale** (§3.3) follows the window. See `docs/window-design.md` for the window itself.
 > - **Superscripts** (CK-260; `owner-direction-superscript-r1.md`): the font has 3×5 superscript digits and signs (⁰–⁹, ⁺, ⁻), drawn
 >   high, and subscript digits (₀–₉), drawn low, so text such as "m²" draws without markup (§2.4).
+>
+> **The UI polish round (2026-11-11; records in `.pipeline/coordination/ui-polish-design/`).**
+> - **Goods icons** (CK-267; `owner-direction-goods-icons-r1.md` to `-r3.md`): each of the 22 goods has a full-colour 9×9 icon with no
+>   outline and no tile (the owner: "A: no outline", "9×9 inline is right", then "Good, all 22 approved"):
+>   - **the art** is drawn as letter grids in `assets/ui/goods/make_goods.py`, which writes the PNGs beside it; `--check` fails when an
+>     image differs from the art or is missing. A test checks that its goods are exactly those of `assets/game/economy.toml`;
+>   - **in the prices list** of the location tab the icon replaces the good's name: a line is the icon, then the price and its base in
+>     brackets;
+>   - **on herd lines** (cattle, pigs, sheep): on a building card each herd's head count and maximum follows its icon; in a building
+>     row's details each herd has a line with its icon;
+>   - **the fixed list:** `scripts/ui/lib/location.lua` names the goods that have icons (`GOODS_WITH_ICONS`), and a good not on it keeps
+>     its name line, so a good added later still reads without an icon file. The same test checks that this list equals the generator's;
+>   - **a list item's icon** (`lib/list.lua`) is either a theme icon tinted with a colour (`{name = ..., colour = ...}`, 9×11) or an image
+>     drawn untinted (`{image = "goods/oats"}`, 9×9, from `assets/ui/`). Giving both, or neither, is an error.
+>
+>   With the names gone from the prices list a good is known by its icon alone until labelled hover tooltips arrive, which the owner
+>   put in this round ("Yes, this round"). More goods come later, with merchants ("Later, with merchants").
 
 ## Owner answers (2026-11-07)
 
