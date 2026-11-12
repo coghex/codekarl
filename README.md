@@ -79,9 +79,12 @@ configuration file). `/saves` is in `.ignore`, so Pijul does not see the saves a
   location panel (tabs: location, pops and buildings). The two icons at the top right open the ledger, a list on the right of the
   screen with a locations tab and a pops tab; clicking a row shows that place in the panel. The three buttons centred at the bottom of
   the screen switch the map mode (stockpile, expected yield, elevation); pressing the one showing turns it off.
-- **Tooltips:** rest the pointer on a place for 0.3 seconds to see its name. Keep it there for another second and the tooltip
-  locks (an orange bar fills along its bottom edge): it then stays until you press Escape or click away from it, and a click on a
-  button or other control leaves it open. `[ui.tooltips]` in the configuration sets `delay` (0 to 2 seconds), `lock` (`"timer"`,
+- **Tooltips:** rest the pointer on a place for 0.3 seconds to see its tooltip: its name, population, majority culture and
+  religion, usable land, and the value produced and consumed last month. Icon buttons, shortened tabs, the prices in the location
+  tab and herd icons have label tooltips too. Keep it there for another second and the tooltip locks
+  (an orange bar fills along its bottom edge): it then stays until you press Escape or click away from it, and a click on a button
+  or other control leaves it open. In the locked tooltip, rest on a number for its breakdown or on a light-blue word for its
+  explanation. `[ui.tooltips]` in the configuration sets `delay` (0 to 2 seconds), `lock` (`"timer"`,
   `"middle_mouse"` or `"disabled"`) and `lock_timer` (0.3 to 3 seconds), read at startup
   ([docs/ui-design.md](docs/ui-design.md) §3.13).
 - **The window** opens at 1280×800 screen pixels, its minimum. Drag an edge to enlarge it (the game lays itself out again when you
