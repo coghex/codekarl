@@ -920,15 +920,15 @@ fn the_time_bar_and_location_tab_split_terms_numbers_and_ordinary_punctuation() 
         "{recorded:?}"
     );
     assert!(
-        tint_line(&recorded, "basic", "#92ddea", "basic"),
+        tint_line(&recorded, "basic ", "#92ddea", "basic "),
         "{recorded:?}"
     );
     assert!(
-        tint_line(&recorded, " 80/100", "#5fb35a", "80"),
+        tint_line(&recorded, "80/100", "#5fb35a", "80"),
         "{recorded:?}"
     );
     assert!(
-        tint_line(&recorded, " 80/100", "#ece3cb", "/"),
+        tint_line(&recorded, "80/100", "#ece3cb", "/"),
         "{recorded:?}"
     );
     assert!(
@@ -1555,7 +1555,10 @@ tip("building_pigs_count", building, pigs_x + 12, 42)"#]);
 #[test]
 fn pop_and_building_rows_route_summary_and_open_details_to_the_same_tooltips() {
     let mut rig = rig(&[
-        r#"time(1, 1); select_place("cards", "Cards"); tabs_by_title.Cards:select("pops", true)
+        r#"VIEWS[1].cards.crowding_pm = 1120
+VIEWS[1].cards.pops[1].crowding_pm = 1120
+VIEWS[1].cards.buildings[1].store_used_l, VIEWS[1].cards.buildings[1].store_capacity_l = 60010, 60000
+colour_watch = true; time(1, 1); select_place("cards", "Cards"); tabs_by_title.Cards:select("pops", true)
 "#,
         r#"look_buttons.rows.on_click()
 local function text(content)
@@ -1622,13 +1625,13 @@ tip("building_row_housing_detail", building, 40, 87)"#,
         "pop_row_detail_size workers 108|dependents 72|births 2, deaths 1 part=size",
         "pop_row_detail_jobs employed 96|unemployed 12 part=jobs",
         "pop_row_detail_housing basic 380|makeshift 32 part=pop_housing",
-        "pop_row_detail_crowding crowding 95%|housing 412 part=pop_crowding",
+        "pop_row_detail_crowding crowding 112%|housing 412 part=pop_crowding",
         "building_row_kind title=farm part=kind",
         "building_row_staff filled 80|open 8 part=staff",
         "building_row_wage May 769: 3.2 per head (18 paid)|... 13 lines part=wage",
         "building_row_method_origin title=mixed farming part=mixed_farming",
         "building_row_method title=mixed farming part=mixed_farming",
-        "building_row_store used 6400 L of 8000 L part=store",
+        "building_row_store used 60010 L of 60000 L part=store",
         "building_row_herd_icon title=cattle part=cattle",
         "building_row_herd_count cattle 27 of 36 part=cattle",
         "building_row_staff_detail filled 80|open 8 part=staff",
@@ -1643,6 +1646,22 @@ tip("building_row_housing_detail", building, 40, 87)"#,
                 .collect::<Vec<_>>()
         );
     }
+    assert_pop_and_store_limit_tints(&captured);
+}
+
+fn assert_pop_and_store_limit_tints(captured: &[String]) {
+    assert!(
+        tint_line(captured, "112%", "#f66155", "112%"),
+        "the over-limit crowding number is red in the pop card or open row: {captured:?}"
+    );
+    assert!(
+        tint_line(captured, "store 60010 / 60000 L", "#f66155", "60010"),
+        "the over-limit store amount is red in the open building row: {captured:?}"
+    );
+    assert!(
+        tint_line(captured, "store 60010 / 60000 L", "#5fb35a", "60000"),
+        "the store capacity remains green: {captured:?}"
+    );
 }
 
 #[test]
@@ -2884,19 +2903,19 @@ fn a_wrapped_housing_continuation_keeps_the_place_class_source() {
     );
     let recorded = notes(&rig);
     assert!(
-        tint_line(&recorded, "makeshift", "#92ddea", "makeshift"),
+        tint_line(&recorded, "makeshift ", "#92ddea", "makeshift "),
         "wrapped term retains term tint: {recorded:?}"
     );
     assert!(
-        tint_line(&recorded, " 10/20", "#5fb35a", "10"),
+        tint_line(&recorded, "10/20", "#5fb35a", "10"),
         "wrapped first number retains number tint: {recorded:?}"
     );
     assert!(
-        tint_line(&recorded, " 10/20", "#ece3cb", "/"),
+        tint_line(&recorded, "10/20", "#ece3cb", "/"),
         "wrapped slash retains text tint: {recorded:?}"
     );
     assert!(
-        tint_line(&recorded, " 10/20", "#5fb35a", "20"),
+        tint_line(&recorded, "10/20", "#5fb35a", "20"),
         "wrapped second number retains number tint: {recorded:?}"
     );
 }
@@ -3914,5 +3933,143 @@ fn at_the_scale_two_the_shipped_start_lands_on_the_pixels_of_a_points_window() {
         drawn(&points, None),
         drawn(&pixels, Some(4)),
         "the same pixels"
+    );
+}
+
+#[test]
+fn strict_limit_markers_reach_place_rows_classes_and_wrapping() {
+    let mut rig = rig(&[r#"local place = VIEWS[1].rowan
+place.crowding_pm = 1120
+place.basic_housing_occupants, place.basic_housing_capacity = 310, 300
+place.makeshift_housing_occupants, place.makeshift_housing_capacity = 40, 60
+place.footprint_m2, place.prepared_m2, place.max_buildable_m2 = 9100, 9000, 9500
+place.storage_used_l, place.storage_capacity_l, place.overflow_lost = 60010, 60000, 52
+place.last_month.lost = {{good = "oats", units = 52}}
+place.pops[1].crowding_pm = 1120
+place.buildings[1].store_used_l, place.buildings[1].store_capacity_l = 60010, 60000
+colour_watch = true
+time(1, 1); select_place("rowan", "Rowan")
+local location = require("lib.location")
+local wrapped = location.rows(location.lines("location", game.place("rowan", 1)), 204)
+for _, row in ipairs(wrapped) do for _, cell in ipairs(row.cells or {}) do
+  if cell.over_limit then note("wrapped_limit " .. cell.text) end
+  if cell.text:find("310", 1, true) then note("wrapped_numerator " .. tostring(cell.over_limit) .. " " .. cell.text) end
+  if cell.text:find("300", 1, true) then note("wrapped_capacity " .. tostring(cell.over_limit) .. " " .. cell.text) end
+end end
+local tip = require("lib.tooltip")
+local function marked(name, content)
+  for _, line in ipairs(content or {}) do if type(line) == "table" then
+    for _, span in ipairs(line) do
+      if type(span) == "table" and span.over_limit then note("class_limit " .. name .. " " .. span.text) end
+    end
+  end end
+end
+for _, name in ipairs({"crowding", "pop_crowding", "housing", "storage", "store", "building_land", "overflow"}) do
+  marked(name, tip.content(name, {place = "rowan", building = 1, pop = 1}))
+end"#]);
+    rig.opened();
+    let recorded = notes(&rig);
+    for (value, ink) in [
+        ("112%", "#f66155"),
+        ("310", "#f66155"),
+        ("300", "#5fb35a"),
+        ("40", "#5fb35a"),
+        ("9100", "#f66155"),
+        ("9000", "#5fb35a"),
+        ("60010", "#f66155"),
+        ("60000", "#5fb35a"),
+        ("52", "#f66155"),
+    ] {
+        assert!(
+            recorded
+                .iter()
+                .any(|line| line.contains(&format!("{ink}={value}"))),
+            "{value} should use {ink}: {recorded:?}"
+        );
+    }
+    for expected in [
+        "class_limit crowding 112%",
+        "class_limit pop_crowding 112%",
+        "class_limit housing 310",
+        "class_limit storage 60010",
+        "class_limit store 60010",
+        "class_limit building_land 9100",
+        "class_limit overflow 52",
+    ] {
+        assert!(
+            recorded.iter().any(|line| line == expected),
+            "missing {expected}: {recorded:?}"
+        );
+    }
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "wrapped_numerator true 310"),
+        "the wrapped numerator keeps the over-limit marker: {recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "wrapped_capacity false /300"),
+        "the wrapped denominator does not inherit the numerator marker: {recorded:?}"
+    );
+}
+
+#[test]
+fn values_at_their_limits_and_zero_overflow_keep_number_colour() {
+    let mut rig = rig(&[r#"local place = VIEWS[1].rowan
+place.crowding_pm = 1000
+place.basic_housing_occupants, place.basic_housing_capacity = 300, 300
+place.makeshift_housing_occupants, place.makeshift_housing_capacity = 40, 60
+place.footprint_m2, place.prepared_m2, place.max_buildable_m2 = 9000, 9000, 9500
+place.storage_used_l, place.storage_capacity_l, place.overflow_lost = 60000, 60000, 0
+place.last_month.lost = {}
+colour_watch = true; time(1, 1); select_place("rowan", "Rowan")"#]);
+    rig.opened();
+    let recorded = notes(&rig);
+    for value in ["100%", "300", "60000", "9000", "0"] {
+        assert!(
+            recorded
+                .iter()
+                .any(|line| line.contains(&format!("#5fb35a={value}"))),
+            "at-limit or zero value {value} stays in number colour: {recorded:?}"
+        );
+    }
+}
+
+#[test]
+fn normalized_tooltip_spans_colour_only_numbers_marked_past_the_limit() {
+    let mut rig = rig(&[r#"colour_watch = true
+local text = require("lib.text")
+local real_set = text.set
+text.set = function(line, value)
+  real_set(line, value)
+  if line.font_name ~= nil then note("tooltip_span " .. line.colour .. "=" .. value) end
+end
+local tip = require("lib.tooltip")
+tip.attach("ck283_limit_span", function()
+  return {{{text = "112%", over_limit = true}, " / ", "100%"}}
+end)
+tip.update({width = 1800, height = 900, dt = 1,
+  pointer = {over = "ck283_limit_span", x = 500, y = 200, events = {}}})"#]);
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "tooltip_span #f66155=112%"),
+        "the normalized over-limit span colours its numeric run: {recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "tooltip_span #ece3cb= / "),
+        "ordinary tooltip text keeps its normal ink: {recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "tooltip_span #5fb35a=100%"),
+        "unmarked tooltip numbers remain green: {recorded:?}"
     );
 }

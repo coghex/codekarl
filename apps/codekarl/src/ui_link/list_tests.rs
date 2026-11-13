@@ -1398,6 +1398,86 @@ window.on_opened(function() n = n + 1; steps[n]() end)
 }
 
 #[test]
+fn over_limit_cells_keep_their_colour_through_highlight_release_scroll_and_replacement() {
+    let script = format!(
+        r#"{HEADER}
+local text = require("lib.text")
+local real_set_segments = text.set_segments
+text.set_segments = function(line, segments)
+  real_set_segments(line, segments)
+  local parts, content = {{}}, {{}}
+  for _, segment in ipairs(segments) do
+    parts[#parts + 1] = tostring(segment.colour or line.colour) .. "=" .. segment.text
+    content[#content + 1] = segment.text
+  end
+  line.ck_test_runs = table.concat(parts, "|")
+  line.ck_test_text = table.concat(content)
+end
+local real_move = text.move
+text.move = function(line, x, y)
+  real_move(line, x, y)
+  if line.ck_test_text ~= nil then note(string.format("line %g %g %s", line.x, line.y, line.ck_test_runs)) end
+end
+w = windows.new{{title = "Limits", kind = "place", x = 100, y = 50, content_width = 200, content_height = 200}}
+local function item(value, limit)
+  return {{cells = {{
+    {{text = value .. "%", x = 1, align = "left", over_limit = value > limit}},
+    {{text = " / ", x = 45, align = "left"}},
+    {{text = tostring(limit), x = 66, align = "left"}},
+  }}}}
+end
+local items = {{item(112, 100), item(100, 100), item(113, 100), item(90, 100), item(80, 100), item(70, 100)}}
+lst = lists.new{{window = w, x = 0, y = 0, width = 100, rows = 3, numbers = true, items = items,
+  on_select = function() end}}
+local function row(i) return lst.row_keys[i] end
+local steps = {{
+  function() dispatch({{}}, row(1)) end,
+  function() dispatch({{ev("down", row(1), 150, 75)}}, row(1)) end,
+  function() dispatch({{ev("up", row(1), 150, 75)}}, row(1)) end,
+  function() dispatch({{}}, false) end,
+  function() lst:set_pos(26); dispatch({{}}, row(3)) end,
+  function() lst:set_items(items); dispatch({{}}, row(3)) end,
+}}
+local n = 0
+window.on_opened(function() n = n + 1; steps[n]() end)
+"#
+    );
+    let mut rig = Rig::new_fixture_body(&script);
+    for _ in 0..6 {
+        rig.opened();
+    }
+    let recorded = notes(&rig);
+    assert!(
+        recorded.iter().any(|line| line.ends_with("#f66155=112%"))
+            && recorded.iter().any(|line| line.ends_with("#5fb35a=100")),
+        "the limit numerator is red and its denominator remains green: {recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line.ends_with("#4b0b06=112%"))
+            && recorded.iter().any(|line| line.ends_with("#5fb35a=100")),
+        "hovered and pressed place rows use the dark over-limit highlight: {recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line.ends_with("#5fb35a=100%"))
+            && recorded.iter().any(|line| line.ends_with("#5fb35a=100")),
+        "at-limit numbers stay green: {recorded:?}"
+    );
+    // Scroll and set_items both redraw the still-highlighted over-limit item in the place highlight colour.
+    assert!(
+        recorded
+            .iter()
+            .filter(|line| line.ends_with("#4b0b06=113%"))
+            .count()
+            >= 2,
+        "the over-limit marker survives scroll and checked_items copying: {recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line.ends_with("#663069=100")),
+        "the highlighted denominator keeps its ordinary highlighted number colour: {recorded:?}"
+    );
+}
+
+#[test]
 fn a_click_selects_once_and_overflow_cancel_a_stray_up_or_an_up_outside_select_nothing() {
     let script = format!(
         r#"{HEADER}

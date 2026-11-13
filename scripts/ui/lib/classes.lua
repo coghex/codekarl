@@ -34,6 +34,12 @@ local function number(value)
   return tostring(math.floor(value or 0))
 end
 
+local function limited_number(value, over_limit, suffix)
+  local text = number(value) .. (suffix or "")
+  if over_limit then return {text = text, over_limit = true} end
+  return text
+end
+
 local function share(part, whole)
   if whole == 0 then return "0%" end
   return tostring(math.floor(part * 100 / whole)) .. "%"
@@ -249,7 +255,8 @@ tooltip.define("pop_crowding", function(args)
   local pop = pop_view(args)
   if pop == nil then return nil end
   local crowding = pop.crowding_pm
-  local crowding_text = (crowding == nil or crowding == false) and "—" or number(crowding // 10) .. "%"
+  local crowding_text = (crowding == nil or crowding == false) and "—"
+    or limited_number(crowding // 10, crowding > 1000, "%")
   return {
     {term("crowding"), " ", crowding_text},
     {term("housing"), " ", number((pop.basic_housing or 0) + (pop.makeshift_housing or 0))},
@@ -270,7 +277,8 @@ end)
 tooltip.define("store", function(args)
   local building = building_view(args)
   if building == nil then return nil end
-  return {{"used ", number(building.store_used_l), " L of ", number(building.store_capacity_l), " L"}}
+  return {{"used ", limited_number(building.store_used_l, building.store_used_l > building.store_capacity_l),
+    " L of ", number(building.store_capacity_l), " L"}}
 end)
 
 local MONTHS = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
@@ -329,8 +337,10 @@ tooltip.define("housing", function(args)
   local place = place_view(args.place)
   if place == nil then return nil end
   return {
-    {term("basic_housing", "basic"), " ", number(place.basic_housing_occupants), " of ", number(place.basic_housing_capacity)},
-    {term("makeshift_housing", "makeshift"), " ", number(place.makeshift_housing_occupants), " of ", number(place.makeshift_housing_capacity)},
+    {term("basic_housing", "basic"), " ", limited_number(place.basic_housing_occupants,
+      place.basic_housing_occupants > place.basic_housing_capacity), " of ", number(place.basic_housing_capacity)},
+    {term("makeshift_housing", "makeshift"), " ", limited_number(place.makeshift_housing_occupants,
+      place.makeshift_housing_occupants > place.makeshift_housing_capacity), " of ", number(place.makeshift_housing_capacity)},
   }
 end)
 
@@ -342,7 +352,7 @@ tooltip.define("crowding", function(args)
   return {
     {"people ", number(people_count)},
     {"room ", number(room)},
-    {term("crowding"), " ", number((place.crowding_pm or 0) // 10), "%"},
+    {term("crowding"), " ", limited_number((place.crowding_pm or 0) // 10, (place.crowding_pm or 0) > 1000, "%")},
   }
 end)
 
@@ -350,7 +360,8 @@ tooltip.define("building_land", function(args)
   local place = place_view(args.place)
   if place == nil then return nil end
   return {
-    {"in use ", number(place.footprint_m2), " m²"},
+    {"in use ", limited_number(place.footprint_m2,
+      place.footprint_m2 > math.min(place.prepared_m2, place.max_buildable_m2)), " m²"},
     {"prepared ", number(place.prepared_m2), " m²"},
     {"buildable ", number(place.max_buildable_m2), " m²"},
   }
@@ -360,11 +371,13 @@ tooltip.define("storage", function(args)
   local place = place_view(args.place)
   if place == nil then return nil end
   local lines = {
-    {term("pop", "pops"), " ", number(place.storage_used_l), " / ", number(place.storage_capacity_l), " L"},
+    {term("pop", "pops"), " ", limited_number(place.storage_used_l,
+      place.storage_used_l > place.storage_capacity_l), " / ", number(place.storage_capacity_l), " L"},
   }
   for _, building in ipairs(place.buildings) do
     if (building.store_capacity_l or 0) > 0 then
-      lines[#lines + 1] = {term(building.kind), " ", number(building.store_used_l), " / ", number(building.store_capacity_l), " L"}
+      lines[#lines + 1] = {term(building.kind), " ", limited_number(building.store_used_l,
+        building.store_used_l > building.store_capacity_l), " / ", number(building.store_capacity_l), " L"}
     end
   end
   return lines
@@ -384,7 +397,7 @@ tooltip.define("overflow", function(args)
   if #ordered == 0 then return {{"nothing lost"}} end
   local lines = {}
   for _, item in ipairs(ordered) do
-    lines[#lines + 1] = {term(item.row.good), " ", number(item.row.units)}
+    lines[#lines + 1] = {term(item.row.good), " ", limited_number(item.row.units, item.row.units > 0)}
   end
   return lines
 end)

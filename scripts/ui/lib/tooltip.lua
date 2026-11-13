@@ -101,13 +101,15 @@ local function normalize_line(line, title)
       local term = value.term
       local class = value.class
       local fn = value.tooltip
+      local over_limit = value.over_limit
+      if over_limit ~= nil and type(over_limit) ~= "boolean" then fail("span over_limit must be a boolean", 3) end
       local links = (term ~= nil and 1 or 0) + (class ~= nil and 1 or 0) + (fn ~= nil and 1 or 0)
       if links > 1 then fail("a span may name only one of term, class or tooltip", 3) end
       if class ~= nil and type(class) ~= "string" then fail("span class must be a string", 3) end
       if fn ~= nil and type(fn) ~= "function" then fail("span tooltip must be a function", 3) end
       if term ~= nil and type(term) ~= "string" then fail("span term must be a string", 3) end
       spans[#spans + 1] = {text = value.text, font = font_name, term = term, class = class,
-        args = value.args, tooltip = fn, linked = links > 0}
+        args = value.args, tooltip = fn, linked = links > 0, over_limit = over_limit == true}
     else
       fail("span must be a string or a table with string text", 3)
     end
@@ -300,7 +302,8 @@ local function draw_span(record, span, x, y, title)
   local pieces = title and {{text = span.text, number = false}} or span.term ~= nil and {{text = span.text, number = false}} or (span.runs or {})
   local width = 0
   for _, piece in ipairs(pieces) do
-    local ink = color or (piece.number and theme.colour("number") or theme.kind("tooltip").text)
+    local ink = color or (piece.number and (span.over_limit and theme.colour("over_limit") or theme.colour("number"))
+      or theme.kind("tooltip").text)
     record.render_cursor = record.render_cursor + 1
     local line = record.rendered[record.render_cursor]
     if line == nil or line.font_name ~= span.font then

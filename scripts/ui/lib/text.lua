@@ -66,7 +66,7 @@ function text.colour_segments(segments, number_colour, term_colour)
   for _, segment in ipairs(segments) do
     local base = segment.term and term_colour or segment.colour
     for _, run in ipairs(text.number_runs(segment.text)) do
-      out[#out + 1] = {text = run.text, colour = run.number and number_colour or base}
+      out[#out + 1] = {text = run.text, colour = run.number and (segment.number_colour or number_colour) or base}
     end
   end
   return out

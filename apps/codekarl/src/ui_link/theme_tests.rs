@@ -51,6 +51,38 @@ window.record(theme.kind('places_bar').highlight_number)
     );
 }
 
+#[test]
+fn a_segment_can_override_number_ink_and_kinds_default_the_over_limit_highlight() {
+    let readout = Readout::script(
+        r##"
+local text = require('lib.text')
+local theme = require('lib.theme')
+local runs = text.colour_segments({
+  {text = "112%", number_colour = "#f66155"},
+  {text = " / 100", colour = "#ece3cb"},
+  {text = " word 12", term = true},
+}, "#5fb35a", "#92ddea")
+for _, run in ipairs(runs) do window.record(run.colour .. "=" .. run.text) end
+window.record(theme.colour("over_limit"))
+window.record(theme.kind("place").highlight_over_limit)
+window.record(theme.kind("window").highlight_over_limit)
+"##,
+    );
+    assert_eq!(
+        records(&readout),
+        [
+            "#f66155=112%",
+            "#ece3cb= /",
+            "#5fb35a=100",
+            "#92ddea= word",
+            "#5fb35a=12",
+            "#f66155",
+            "#4b0b06",
+            "#f66155",
+        ]
+    );
+}
+
 /// A frame 20 by 18 UI pixels at (10, 20) points, filled `#112233` and outlined `#445566`: every quad with its texture, rectangle and
 /// the role its tint says (`fill` or `line`), in painter order.
 fn frame_lines(scale: i64, cut: u32, corners: &str) -> Vec<String> {
