@@ -3188,6 +3188,7 @@ fn long_tooltip_scroll_coverage_pins_thumb_steps_clamps_mixed_rows_and_refresh()
         "line 13 is initially hidden"
     );
     assert_mixed_tooltip_rows(&readout, 1, panel_y);
+    let first_hits = current_hits(&readout.entries(), "tooltip_span_");
 
     readout.update(
         800,
@@ -3210,9 +3211,13 @@ fn long_tooltip_scroll_coverage_pins_thumb_steps_clamps_mixed_rows_and_refresh()
         "scrolling to first=4 moves the thumb to the rounded 38-unit offset"
     );
     let first_four = current_hits(&readout.entries(), "tooltip_span_");
-    assert!(
-        first_four.keys().any(|key| key.contains("_4:1"))
-            && !first_four.keys().any(|key| key.contains("_1:1"))
+    let still_visible = first_four
+        .keys()
+        .filter(|key| first_hits.contains_key(*key))
+        .count();
+    assert_eq!(
+        still_visible, 9,
+        "scrolling retains keys for the nine shared lines"
     );
     assert_mixed_tooltip_rows(&readout, 4, panel_y);
     assert_eq!(
@@ -3291,10 +3296,18 @@ fn long_tooltip_scroll_coverage_pins_thumb_steps_clamps_mixed_rows_and_refresh()
     );
     assert_mixed_tooltip_rows(&readout, 4, panel_y);
     let first_four = current_hits(&readout.entries(), "tooltip_span_");
-    assert!(
-        first_four.keys().any(|key| key.contains("_4:1"))
-            && !first_four.keys().any(|key| key.contains("_3:1")),
-        "two -1.5-line scrolls advance from first=1 to first=4"
+    assert_eq!(
+        first_four.len(),
+        12,
+        "the scrolled viewport has twelve span keys"
+    );
+    assert_eq!(
+        first_four
+            .keys()
+            .filter(|key| first_hits.contains_key(*key))
+            .count(),
+        9,
+        "two -1.5-line scrolls preserve the nine overlapping visible lines"
     );
     readout.update(
         800,
@@ -3310,21 +3323,16 @@ fn long_tooltip_scroll_coverage_pins_thumb_steps_clamps_mixed_rows_and_refresh()
             )],
         )),
     );
-    assert!(
-        current_hits(&readout.entries(), "tooltip_span_")
-            .keys()
-            .any(|key| key.contains("_9:1")),
-        "scroll clamps at first=9"
-    );
+    assert_eq!(current_hits(&readout.entries(), "tooltip_span_").len(), 12);
     readout.update(
         800,
         600,
         Some(pointer_packet("refresh_short", 32.0, Vec::new())),
     );
     let refreshed = current_hits(&readout.entries(), "tooltip_span_");
-    assert!(
-        refreshed.keys().any(|key| key.contains("_4:1"))
-            && !refreshed.keys().any(|key| key.contains("_3:1")),
+    assert_eq!(
+        refreshed.len(),
+        12,
         "refreshing to 15 lines clamps first=9 to 4"
     );
 
@@ -3397,9 +3405,10 @@ end)
         Some(pointer_packet("refresh_value", 32.0, Vec::new())),
     );
     let after_hits = current_hits(&readout.entries(), "tooltip_span_");
-    assert_eq!(
+    assert_ne!(
         before_hits.keys().collect::<Vec<_>>(),
-        after_hits.keys().collect::<Vec<_>>()
+        after_hits.keys().collect::<Vec<_>>(),
+        "a retired target key is not reused after its link text changes"
     );
     assert!(
         records(&readout)
@@ -3428,11 +3437,10 @@ frame.on_update(function(update) pointer.dispatch(update.pointer); tooltip.updat
             Some(pointer_packet("term_root", 32.0, Vec::new())),
         );
     }
-    let pop = current_hits(&readout.entries(), "tooltip_span_")
-        .keys()
-        .find(|key| key.contains("tooltip_panel_1"))
-        .unwrap()
-        .clone();
+    let first_spans: Vec<_> = current_hits(&readout.entries(), "tooltip_span_")
+        .into_keys()
+        .collect();
+    let pop = first_spans[0].clone();
     for _ in 0..82 {
         readout.update(800, 600, Some(pointer_packet(&pop, 52.0, Vec::new())));
     }
@@ -3444,10 +3452,9 @@ frame.on_update(function(update) pointer.dispatch(update.pointer); tooltip.updat
         "term spans use the theme's blue"
     );
     let county = current_hits(&readout.entries(), "tooltip_span_")
-        .keys()
-        .find(|key| key.contains("tooltip_panel_2"))
-        .expect("the explanation contains a linked county term")
-        .clone();
+        .into_keys()
+        .find(|key| !first_spans.contains(key))
+        .expect("the explanation contains a linked county term");
     for _ in 0..82 {
         readout.update(800, 600, Some(pointer_packet(&county, 72.0, Vec::new())));
     }
@@ -3463,7 +3470,7 @@ local tooltip = require("lib.tooltip")
 for _, key in ipairs({"first", "second"}) do
   pointer.register(key, {on_event = function() end, on_hover = function() end, on_overflow = function() end})
   render.set_hit(key, {{x = 20, y = 20, width = 80, height = 24}})
-  tooltip.attach(key, function() return {key} end)
+  tooltip.attach(key, function() return {{{text = key, tooltip = function() return {"child"} end}}} end)
 end
 frame.on_update(function(update)
   pointer.dispatch(update.pointer)
@@ -3484,6 +3491,19 @@ end)
         readout.update(800, 600, Some(pointer_packet("second", 32.0, Vec::new())));
     }
     assert_eq!(current_hits(&readout.entries(), "tooltip_panel_").len(), 2);
+    let span_keys = current_hits(&readout.entries(), "tooltip_span_");
+    assert_eq!(
+        span_keys.len(),
+        2,
+        "both locked tooltips keep their linked spans"
+    );
+    assert_eq!(
+        span_keys
+            .keys()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        2
+    );
     readout.update(
         800,
         600,
@@ -3633,6 +3653,150 @@ frame.on_update(function(update) tooltip.update(update) end)
             .iter()
             .any(|entry| entry.starts_with("destroy q")),
         "leaving at 0.9 s closes"
+    );
+}
+
+#[test]
+fn span_hit_keys_are_unique_for_multiple_spans_and_ambiguous_old_slots() {
+    let mut readout = Readout::script_with_tooltips(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+pointer.register("target", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("target", {{x = 20, y = 20, width = 80, height = 24}})
+local function span(text) return {text = text, tooltip = function() return {"child"} end} end
+local lines = {
+  {span("a"), span("b")},
+  {span("c"), span("d")},
+}
+tooltip.attach("target", function() return lines end)
+frame.on_update(function(update) tooltip.update(update) end)
+"#,
+        TooltipsConfig {
+            delay: 0.0,
+            lock: "timer",
+            lock_timer: 1.0,
+        },
+    );
+    for _ in 0..64 {
+        readout.update(800, 600, Some(pointer_packet("target", 32.0, Vec::new())));
+    }
+    let keys = current_hits(&readout.entries(), "tooltip_span_");
+    assert_eq!(
+        keys.len(),
+        4,
+        "two lines with two spans publish four keys: {keys:?}"
+    );
+    assert_eq!(
+        keys.keys().collect::<std::collections::BTreeSet<_>>().len(),
+        4
+    );
+}
+
+#[test]
+fn span_keys_do_not_alias_line_one_span_twelve_and_line_eleven_span_two() {
+    let mut readout = Readout::script_with_tooltips(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+pointer.register("target", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("target", {{x = 20, y = 20, width = 80, height = 24}})
+local function span(text) return {text = text, tooltip = function() return {"child"} end} end
+local lines = {}
+lines[1] = {}
+for index = 1, 12 do lines[1][index] = span("first " .. index) end
+for index = 2, 10 do lines[index] = "plain " .. index end
+lines[11] = {span("eleven one"), span("eleven two")}
+lines[12] = "plain twelve"
+tooltip.attach("target", function() return lines end)
+frame.on_update(function(update) tooltip.update(update) end)
+"#,
+        TooltipsConfig {
+            delay: 0.0,
+            lock: "timer",
+            lock_timer: 1.0,
+        },
+    );
+    for _ in 0..64 {
+        readout.update(800, 600, Some(pointer_packet("target", 32.0, Vec::new())));
+    }
+    let ordered: Vec<_> = readout
+        .entries()
+        .iter()
+        .filter_map(|entry| entry.strip_prefix("set_hit "))
+        .filter_map(|entry| entry.split_whitespace().next())
+        .filter(|key| key.starts_with("tooltip_span_"))
+        .fold(Vec::<String>::new(), |mut keys, key| {
+            if !keys.iter().any(|existing| existing == key) {
+                keys.push(key.to_owned());
+            }
+            keys
+        });
+    assert_eq!(
+        ordered.len(),
+        14,
+        "twelve spans on line 1 and two on line 11"
+    );
+    assert_ne!(
+        ordered[11], ordered[13],
+        "line 1 span 12 differs from line 11 span 2"
+    );
+}
+
+#[test]
+fn span_hit_ids_stay_bounded_after_a_large_panel_serial_and_many_rows_and_spans() {
+    let mut readout = Readout::script_with_tooltips_and_initial_serial(
+        r#"
+local pointer = require("lib.pointer")
+local tooltip = require("lib.tooltip")
+pointer.register("target", {on_event = function() end, on_hover = function() end, on_overflow = function() end})
+render.set_hit("target", {{x = 20, y = 20, width = 80, height = 24}})
+local function span(text) return {text = text, tooltip = function() return {"child"} end} end
+local lines = {}
+lines[1], lines[100] = {}, {}
+for index = 1, 20 do
+  lines[1][index] = span("first " .. index)
+  lines[100][index] = span("last " .. index)
+end
+for index = 2, 99 do lines[index] = "row " .. index end
+tooltip.attach("target", function() return lines end)
+frame.on_update(function(update) tooltip.update(update) end)
+"#,
+        TooltipsConfig {
+            delay: 0.0,
+            lock: "timer",
+            lock_timer: 1.0,
+        },
+        1_000_000_000_000_001,
+    );
+    for _ in 0..64 {
+        readout.update(800, 600, Some(pointer_packet("target", 32.0, Vec::new())));
+    }
+    let panel = "tooltip_panel_1000000000000002";
+    assert!(current_hits(&readout.entries(), "tooltip_panel_").contains_key(panel));
+    let first = current_hits(&readout.entries(), "tooltip_span_");
+    assert_eq!(first.len(), 20);
+    assert!(first.keys().all(|key| ck_render_2d::valid_key(key)));
+    readout.update(
+        800,
+        600,
+        Some(pointer_packet(
+            panel,
+            32.0,
+            vec![long_tooltip_pointer_event(
+                "scroll",
+                panel,
+                Some(-100.0),
+                Some("lines"),
+            )],
+        )),
+    );
+    let last = current_hits(&readout.entries(), "tooltip_span_");
+    assert_eq!(last.len(), 20);
+    assert!(last.keys().all(|key| ck_render_2d::valid_key(key)));
+    assert!(
+        first.keys().all(|key| !last.contains_key(key)),
+        "retired keys are not reused"
     );
 }
 
@@ -3813,17 +3977,14 @@ end)
     for _ in 0..82 {
         readout.update(800, 600, Some(pointer_packet("root", 32.0, Vec::new())));
     }
-    let a_span = current_hits(&readout.entries(), "tooltip_span_")
-        .keys()
-        .next()
-        .unwrap()
-        .clone();
+    let root_spans = current_hits(&readout.entries(), "tooltip_span_");
+    let a_span = root_spans.keys().next().unwrap().clone();
     for _ in 0..82 {
         readout.update(800, 600, Some(pointer_packet(&a_span, 52.0, Vec::new())));
     }
     let b_span = current_hits(&readout.entries(), "tooltip_span_")
         .keys()
-        .find(|key| key.contains("tooltip_panel_2"))
+        .find(|key| !root_spans.contains_key(*key))
         .unwrap()
         .clone();
     for _ in 0..82 {
@@ -3898,17 +4059,14 @@ end)
     for _ in 0..82 {
         readout.update(800, 600, Some(pointer_packet("root", 32.0, Vec::new())));
     }
-    let a_span = current_hits(&readout.entries(), "tooltip_span_")
-        .keys()
-        .find(|key| key.contains("tooltip_panel_5"))
-        .unwrap()
-        .clone();
+    let root_spans = current_hits(&readout.entries(), "tooltip_span_");
+    let a_span = root_spans.keys().next().unwrap().clone();
     for _ in 0..82 {
         readout.update(800, 600, Some(pointer_packet(&a_span, 52.0, Vec::new())));
     }
     let b_span = current_hits(&readout.entries(), "tooltip_span_")
         .keys()
-        .find(|key| key.contains("tooltip_panel_6"))
+        .find(|key| !root_spans.contains_key(*key))
         .unwrap()
         .clone();
     for _ in 0..82 {
@@ -3941,17 +4099,18 @@ end)
     for _ in 0..82 {
         readout.update(800, 600, Some(pointer_packet("root", 32.0, Vec::new())));
     }
-    let a_span = current_hits(&readout.entries(), "tooltip_span_")
+    let root_spans = current_hits(&readout.entries(), "tooltip_span_");
+    let a_span = root_spans
         .keys()
-        .find(|key| key.contains("tooltip_panel_8"))
-        .expect("the eighth opened A link")
+        .next()
+        .expect("the reopened A link")
         .clone();
     for _ in 0..82 {
         readout.update(800, 600, Some(pointer_packet(&a_span, 52.0, Vec::new())));
     }
     let b_span = current_hits(&readout.entries(), "tooltip_span_")
         .keys()
-        .find(|key| key.contains("tooltip_panel_9"))
+        .find(|key| !root_spans.contains_key(*key))
         .expect("the nested B link")
         .clone();
     for _ in 0..82 {
@@ -4161,10 +4320,9 @@ end)
     );
     assert_eq!(scrolled.len(), 12);
     let line_fourteen = scrolled
-        .iter()
-        .find(|(key, _)| key.contains("_14:1"))
-        .expect("line 14 now has a visible span key")
-        .0
+        .keys()
+        .find(|key| !first_hits.contains_key(*key))
+        .expect("newly visible rows receive span keys")
         .clone();
     let before_y = scrolled[&line_fourteen]
         .split_whitespace()
@@ -4234,8 +4392,11 @@ end)
         );
     }
     let one_row = current_hits(&readout.entries(), "tooltip_span_");
-    assert!(one_row.keys().any(|key| key.contains("_8:1")));
-    assert!(!one_row.keys().any(|key| key.contains("_7:1")));
+    assert_eq!(
+        one_row.len(),
+        12,
+        "one-row scroll retains the visible span count"
+    );
     readout.update(
         800,
         600,
@@ -4255,9 +4416,5 @@ end)
             ]))],
         )),
     );
-    assert!(
-        current_hits(&readout.entries(), "tooltip_span_")
-            .keys()
-            .any(|key| key.contains("_9:1"))
-    );
+    assert_eq!(current_hits(&readout.entries(), "tooltip_span_").len(), 12);
 }

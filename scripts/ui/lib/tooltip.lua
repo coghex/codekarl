@@ -11,12 +11,39 @@ local tooltip = {}
 local overlay
 local definitions, attached, open = {}, {}, {}
 local serial = 0
+local next_span_id, span_ids_exhausted = "0", false
 local last_hover
 local view = {width = 0, height = 0}
 local render_record, record_scroll
 
 local function fail(message, level)
   error("tooltip: " .. message, (level or 1) + 1)
+end
+
+-- Span keys have a fixed prefix and a decimal suffix whose length is explicitly capped at 35 digits (13 + 35 = 48).
+-- The counter is a string so it remains exact beyond Lua's integer/number precision; exhaustion refuses before reuse.
+local function increment_decimal(value)
+  local digits, carry = {}, 1
+  for index = #value, 1, -1 do
+    local digit = value:byte(index) - 48 + carry
+    if digit == 10 then
+      digits[index] = "0"
+    else
+      digits[index] = string.char(48 + digit)
+      carry = 0
+    end
+  end
+  local result = table.concat(digits)
+  return carry == 1 and ("1" .. result) or result
+end
+
+local function allocate_span_key()
+  if span_ids_exhausted then fail("span hit key space exhausted", 2) end
+  local id = next_span_id
+  if #id > 35 then fail("span hit key space exhausted", 2) end
+  next_span_id = increment_decimal(id)
+  span_ids_exhausted = #next_span_id > 35
+  return "tooltip_span_" .. id
 end
 
 function tooltip.define(class, fn)
@@ -413,7 +440,7 @@ local function publish_span_hits(record)
       slot = nil
     end
     if slot == nil then
-      slot = {key = "tooltip_span_" .. record.panel_key .. "_" .. hit.slot, signature = hit.signature}
+      slot = {key = allocate_span_key(), signature = hit.signature}
       record.span_slots[hit.slot] = slot
       hit.key = slot.key
       register_hit_widget(record, hit)
@@ -536,6 +563,7 @@ local function open_tooltip(candidate, content)
     lines = lines, locked = false, lock_elapsed = 0, first = 1, carry = 0,
     hit_keys = {}, span_slots = {}, spans = {}, rendered = {},
     x = candidate.x + 6 * P, y = candidate.y + 12 * P}
+  if serial >= 9007199254740991 then fail("tooltip panel key space exhausted", 2) end
   serial = serial + 1
   record.panel_key = "tooltip_panel_" .. serial
   local width, height = measure(record.lines)

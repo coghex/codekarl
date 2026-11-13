@@ -106,6 +106,9 @@ fn hit_recording(log: &Log) -> HostFunction {
         let Some(Some(ConfigValue::String(key))) = arguments.first() else {
             return Err("render.set_hit: a key".to_owned());
         };
+        if !ck_render_2d::valid_key(key) {
+            return Err("render.set_hit: key must match [a-z0-9_]{1,48}".to_owned());
+        }
         match arguments.get(1).and_then(Option::as_ref) {
             Some(ConfigValue::Array(rects)) => {
                 for rect in rects {
@@ -125,6 +128,23 @@ fn hit_recording(log: &Log) -> HostFunction {
         }
         Ok(Vec::new())
     })
+}
+
+#[test]
+fn the_readout_hit_double_matches_the_render_key_contract() {
+    const ERROR: &str = "render.set_hit: key must match [a-z0-9_]{1,48}";
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let set_hit = hit_recording(&log);
+    let invalid = ["a:b".to_owned(), String::new(), "x".repeat(49)];
+    for key in invalid {
+        assert_eq!(
+            set_hit(&[Some(ConfigValue::String(key)), None]).expect_err("invalid keys are refused"),
+            ERROR
+        );
+    }
+    let accepted = "x".repeat(48);
+    set_hit(&[Some(ConfigValue::String(accepted.clone())), None])
+        .expect("a key of the maximum length is accepted");
 }
 
 /// The scene calls the UI script makes, recorded: textures load to a token naming the file, quads get tokens `q1`, `q2`, ....
@@ -232,6 +252,14 @@ impl Readout {
         Self::with_options(script, tooltips, None)
     }
 
+    pub(crate) fn script_with_tooltips_and_initial_serial(
+        script: &str,
+        tooltips: TooltipsConfig,
+        initial_serial: u64,
+    ) -> Self {
+        Self::with_initial_serial(script, tooltips, initial_serial)
+    }
+
     pub(crate) fn script_with_glossary(script: &str, glossary: &str) -> Self {
         Self::with_options(script, TooltipsConfig::default(), Some(glossary))
     }
@@ -245,9 +273,37 @@ impl Readout {
     }
 
     fn with_options(script: &str, tooltips: TooltipsConfig, glossary_text: Option<&str>) -> Self {
+        Self::with_optional_serial(script, tooltips, glossary_text, None)
+    }
+
+    fn with_initial_serial(script: &str, tooltips: TooltipsConfig, initial_serial: u64) -> Self {
+        Self::with_optional_serial(script, tooltips, None, Some(initial_serial))
+    }
+
+    fn with_optional_serial(
+        script: &str,
+        tooltips: TooltipsConfig,
+        glossary_text: Option<&str>,
+        initial_serial: Option<u64>,
+    ) -> Self {
         let dir = Dir::new();
         let entry = dir.0.join("main.lua");
         fs::write(&entry, script).expect("the script");
+        let modules_root = if let Some(initial_serial) = initial_serial {
+            let root = dir.0.join("modules");
+            Self::copy_directory(&ui_scripts(), &root);
+            let tooltip = root.join("lib/tooltip.lua");
+            let source = fs::read_to_string(&tooltip).expect("the tooltip library");
+            let source = source.replacen(
+                "local serial = 0",
+                &format!("local serial = {initial_serial}"),
+                1,
+            );
+            fs::write(tooltip, source).expect("the test tooltip library");
+            root
+        } else {
+            ui_scripts()
+        };
         let log = Log::default();
         let tints = Log::default();
         let notifier = Notifier::new();
@@ -271,7 +327,7 @@ impl Readout {
         let config = ConfigValue::Table(BTreeMap::new());
         let frame = FrameRegistration::default();
         let mut settings = VmSettings::new("ui", entry, config);
-        settings.modules = Modules::Rooted(ui_scripts());
+        settings.modules = Modules::Rooted(modules_root);
         settings.extensions = vec![window];
         settings.extensions.extend(scene(&log, &tints));
         settings
@@ -313,6 +369,19 @@ impl Readout {
             controls,
             sequence: 0,
             _dir: dir,
+        }
+    }
+
+    fn copy_directory(source: &std::path::Path, destination: &std::path::Path) {
+        fs::create_dir_all(destination).expect("the test module directory");
+        for entry in fs::read_dir(source).expect("the shipped UI scripts") {
+            let entry = entry.expect("a UI script entry");
+            let target = destination.join(entry.file_name());
+            if entry.file_type().expect("the UI script type").is_dir() {
+                Self::copy_directory(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).expect("the UI script copy");
+            }
         }
     }
 

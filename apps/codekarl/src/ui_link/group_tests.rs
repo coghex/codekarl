@@ -484,6 +484,115 @@ end
     assert_eq!(text_field(&observed, "population"), "population 412");
 }
 
+#[test]
+fn the_real_map_population_tooltip_locks_and_opens_its_nested_tooltip() {
+    let main = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua"),
+    )
+    .expect("the shipped UI entry point");
+    let fixture = r#"
+local classes = require("lib.classes")
+classes.set_revision(0)
+game.places = function()
+  return {{id = "fixture-town", name = "Fixture Town", kind = "town", size = 1}}
+end
+game.place = function(id, revision)
+  if id ~= "fixture-town" or revision ~= 0 then return nil end
+  return {id = id, workers = 412, dependents = 0, pops = {},
+    land = {usable = {}, land = {}, sea = 0},
+    last_month = {closed = true, produced = {}, used_by_pops = {}, lost = {}}}
+end
+local tooltip = require("lib.tooltip")
+local content = tooltip.content
+tooltip.content = function(class, args)
+  window.record({tooltip_class = class})
+  return content(class, args)
+end
+"#;
+    let mut rig = Rig::new_fixture_body(&format!("{main}\n{fixture}"));
+    rig.opened();
+    rig.feed(&[PointerEvent::Move(rig.map_pointer)]);
+
+    // Timer locking takes the open delay plus the configured one-second lock. This also drives the real render extension,
+    // rather than a test double, through the span hit keys that crashed in the owner's run.
+    for _ in 0..100 {
+        rig.deliver_fixture_frame();
+    }
+    let hits = rig
+        .harness
+        .bridge
+        .hit_regions()
+        .expect("published hit regions");
+    let span_keys: Vec<_> = hits
+        .regions()
+        .iter()
+        .filter(|region| region.key().starts_with("tooltip_span_"))
+        .map(|region| region.key().to_owned())
+        .collect();
+    assert!(
+        span_keys.len() >= 2,
+        "the locked location tooltip publishes its glossary and population spans: {span_keys:?}"
+    );
+
+    // The first visible line is `population` plus its linked number. The second span is the number's population link.
+    let population_number = span_keys[1].clone();
+    let target = pointer_inside_hit_key(&rig, &population_number);
+    rig.feed(&[PointerEvent::Move(target)]);
+    for _ in 0..100 {
+        rig.deliver_fixture_frame();
+    }
+
+    let classes: Vec<_> = rig
+        .tables
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .filter_map(|table| match field(table, "tooltip_class") {
+            ConfigValue::String(class) => Some(class.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        classes.contains(&"population".to_owned()),
+        "the real population span opens its nested tooltip: {classes:?}"
+    );
+    let panel_keys: Vec<_> = rig
+        .harness
+        .bridge
+        .hit_regions()
+        .expect("published hit regions")
+        .regions()
+        .iter()
+        .filter(|region| region.key().starts_with("tooltip_panel_"))
+        .map(|region| region.key().to_owned())
+        .collect();
+    assert!(
+        panel_keys.len() >= 2,
+        "the root and nested tooltip panels coexist: {panel_keys:?}"
+    );
+}
+
+fn pointer_inside_hit_key(rig: &Rig, key: &str) -> PointerPosition {
+    let hits = rig
+        .harness
+        .bridge
+        .hit_regions()
+        .expect("published hit regions");
+    for y in (0..320 * 256).step_by(256) {
+        for x in (0..400 * 256).step_by(256) {
+            let point = PointerPosition { x, y };
+            if hits
+                .regions()
+                .iter()
+                .any(|region| region.key() == key && region.rect().contains(point))
+            {
+                return point;
+            }
+        }
+    }
+    panic!("hit key {key} has no point in the fixture window");
+}
+
 fn open_map_selection_fixture(rig: &mut Rig, markers: &std::path::Path) {
     rig.opened();
     assert!(
