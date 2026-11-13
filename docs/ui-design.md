@@ -120,6 +120,11 @@
 >   term ended the run, about 1.3 s after the pointer rested on a map place with the default settings. The hit key of a link or
 >   term held a `:`, which `render.set_hit` refuses, and the UI-rig tests did not catch it because their stand-in for `set_hit`
 >   accepted any key. Those keys are now short, valid and bounded, and the stand-in applies the real key rule (§3.13).
+> - **Term and number colours in the panels** (CK-280; `owner-direction-colours-manager-r1.md` to `-designer-r7.md`; §3.7): the
+>   ledger, the location tab, the cards, the rows and the time bar's date now use the tooltip's colours. A word that opens a glossary
+>   explanation is light blue and every number is green. On a highlight fill a number is purple instead: dark `#663069` on the
+>   location panel's cyan, light `#d4a8d7` on the red of a hovered or pressed ledger row. There is no good or bad colour: the
+>   theme's `good` is removed. Lists opt in with `numbers = true`.
 
 ## Owner answers (2026-11-07)
 
@@ -528,6 +533,56 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
   - the Lua widget library reads the theme;
   - a mod changes the look by changing data.
 - **Before the theming slice,** the mock-up of the owner's description is approved by the owner, as the M7 previews were.
+- **Term and number colours in the panels** (CK-280; spec sha256 `3940599b…`; the owner's records are
+  `owner-direction-colours-manager-r1.md` to `-designer-r7.md` in `.pipeline/coordination/ui-polish-design/`). The tooltip's two
+  colours (§3.13) now hold in the panels too. The owner: "i still want consistent colors for glossary terms and numbers in the game
+  menus, not jsut the tooltips" and "all numbers should be green, that's the numerical color, not just the tooltip ones".
+  - **Number runs are shared:** `text.number_runs(s)` (`scripts/ui/lib/text.lua`) splits a string into pieces `{text, number}`.
+    - A number starts at a digit, takes further digits, a `.` or `,` with a digit after it, and one following `%`.
+    - Nothing else is a number: not a sign, `²`, `·` or `—`. `+3` gives only `3`, and `1,200` is one run.
+    - `lib/tooltip.lua` uses it too, in place of its own copy, so tooltips draw as before.
+    - `text.colour_numbers` and `text.colour_segments` turn a string, or pieces with their own colours and terms, into tinted
+      pieces, and `text.set_segments(line, pieces)` draws a line whose pieces each have a tint.
+  - **The rule:**
+    - **a number** is drawn in a number colour, whatever colour the rest of its text has;
+    - **a term,** a word whose tooltip is a glossary explanation, is drawn in `[colour] term` (`#92ddea`);
+    - **everything else** keeps its colour: units (`d`, `days`, `L`, `m²`), punctuation, signs, `·` and other words.
+
+    Only colours changed: layout, positions, hit areas and tooltip sources are as they were.
+  - **The number colours, and no others.** A numerical value is drawn in exactly one of:
+    - `[colour] number` (`#5fb35a`), normally;
+    - its kind's `highlight_number`, when it is drawn on that kind's highlight fill: its `outline` or `hot` colour behind text,
+      which includes a list's hovered and pressed rows.
+
+    | Kind | `highlight_number` | Its highlight fills |
+    |---|---|---|
+    | `place` | `#663069`, dark purple | cyan, with dark text on them |
+    | `window`, `time_bar`, `places_bar` | `#d4a8d7`, light purple of the same hue | red, with light text on them |
+
+    `theme.kind(name).highlight_number` gives it, and falls back to `number` for a kind without one (`tooltip`).
+  - **No good or bad colour** (the owner: "i didnt realize there was a good/bad color, make sure that is not a thing"): no value is
+    coloured by being high, low, positive or negative. The theme's `good` colour is removed. A pop's mood has its digits in
+    `number` and its sign in `text`.
+  - **Where it applies** (the owner chose **"All panels shown"**):
+    - **the time bar's date:** the digits are `number`; the month, `·` and `:` stay `text`;
+    - **the ledger:** the headings `name`, `people` and `food` are terms; people, food days and a pop's size are numbers. A place's
+      name stays `text` (it opens the location tooltip), and a pop's type and culture keep the pop type's colour;
+    - **the location tab:** each line's word is a term and its numbers are numbers, on every row of a wrapped line; the price rows
+      and plain lines have their numbers coloured too;
+    - **pop cards:** the type, culture, religion and the labels `food`, `job`, `needs`, `mood`, `housing` and `crowd` are terms.
+      The size, the trend's numbers, the food days, the mood, the housing and the crowd are numbers;
+    - **building cards:** the kind, `wage`, each method's name and the `housing` label are terms. The wage, the method levels, the
+      housing count, the staff count and the herd counts are numbers. `staff` and `store` stay `dim`: they open classes, not
+      explanations, and the owner said to leave them for now;
+    - **rows:** a closed row's header and an open row's detail lines follow the same rule. An **open row's header** keeps its cyan
+      band and dark words, and its numbers are the `place` kind's `highlight_number`.
+  - **Lists** (`lib/list.lua`): `list.new{…, numbers = true}` draws the number runs of each cell and string item in `number` and
+    the rest in the cell's colour. On the hovered and the pressed row the numbers use the list's kind's `highlight_number`; when
+    the highlight moves, only the rows it leaves and reaches are retinted. Without the option a list draws as before. The ledger
+    and the location tab's list set it.
+  - **No gold in panels** (the owner's choice): window titles, buttons, tabs, the Help window, the speed boxes and the bars keep
+    their colours. Title bars and pressed or selected buttons draw no numbers today; one drawn there later takes its kind's
+    `highlight_number`.
 
 ### 3.8 Moddability (Proposal)
 
@@ -663,7 +718,8 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     - a term is in `term` (light blue);
     - in every other span, plain or link, each **number** is in `number` (green) and the rest in the kind's `text`.
     - A number is a run of digits, with single `.` or `,` between digits and a `%` directly after: `412`, `96.5`, `4,210` and `73%`
-      whole, and only the `12.5` of `12.5 km²`. So a link is found by hovering it, not by its colour.
+      whole, and only the `12.5` of `12.5 km²`. So a link is found by hovering it, not by its colour. Since CK-280 the runs come
+      from `text.number_runs`, which the panels share (§3.7).
   - A span naming more than one of `term`, `class` and `tooltip`, a font other than `small` or `tiny`, and a line or span of the wrong
     type are Lua errors starting `tooltip:`.
   - **No content:** nil, an empty table without a title, and content whose lines all have no spans (a line with no spans has no height
