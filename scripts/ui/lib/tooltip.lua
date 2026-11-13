@@ -530,7 +530,10 @@ local function open_tooltip(candidate, content)
   if type(content) == "table" and #content == 0 and content.title == nil then return nil end
   local lines = measurable_content(content)
   if lines == nil then return nil end
-  if overlay == nil then overlay = render.create_group() end
+  if overlay == nil then
+    overlay = ui.create_group()
+    ui.set_top_group(overlay)
+  end
   local record = {target = candidate.target, parent = candidate.parent, source = candidate.source,
     map = candidate.map, hover = candidate.hover, anchor_x = candidate.anchor_x, anchor_y = candidate.anchor_y,
     source_x = candidate.x, source_y = candidate.y,
@@ -661,7 +664,6 @@ function tooltip.update(update)
       active = record
     end
   end
-  if #open > 0 then render.raise_groups({overlay}) end
   if candidate == nil then tooltip.pending = nil; return end
   for _, record in ipairs(open) do if record.target == candidate.target then tooltip.pending = nil; return end end
   if active ~= nil and active.target == candidate.target then return end
@@ -677,7 +679,6 @@ function tooltip.update(update)
     local content = tooltip.pending.candidate.content
     if content ~= nil then open_tooltip(tooltip.pending.candidate, content) end
     tooltip.pending = nil
-    if #open > 0 then render.raise_groups({overlay}) end
   end
 end
 

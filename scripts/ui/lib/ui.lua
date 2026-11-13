@@ -19,6 +19,36 @@ end
 -- -1e12 + 16,384 + 8,388,607, which is below 0: wholly left of, or above, the window, so it is never placed. -1e12 is exact in f64.
 ui.HIDDEN = ui.snap(-1e12)
 
+-- The tooltip overlay is registered once and restored to the top in the same callback as every later group order change.
+local top_group
+
+function ui.set_top_group(group)
+  top_group = group
+end
+
+function ui.create_group()
+  local group = render.create_group()
+  if top_group ~= nil then
+    render.raise_groups({top_group})
+  end
+  return group
+end
+
+function ui.raise_groups(groups)
+  if top_group == nil then
+    render.raise_groups(groups)
+    return
+  end
+  local ordered = {}
+  for _, group in ipairs(groups) do
+    if group ~= top_group then
+      ordered[#ordered + 1] = group
+    end
+  end
+  ordered[#ordered + 1] = top_group
+  render.raise_groups(ordered)
+end
+
 -- A size snapped to the grid, at least one UI pixel.
 function ui.snap_size(value)
   local snapped = ui.snap(value)

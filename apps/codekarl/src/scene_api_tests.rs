@@ -1035,6 +1035,95 @@ fn after_the_end_texture_and_scene_calls_raise_ended_and_retain_nothing() {
 
 /// The writer's lock is taken only on the UI thread during the run and once by `end()` after it; after `end()` the slot is
 /// empty and every scene call raises `Ended`.
+/// Group and hit edits share the quad calls' actual run end: detaching the bridge only discards their publication, while a
+/// closed service or an emptied writer slot refuses them. Cheap argument refusals keep their precedence in every state.
+#[test]
+fn group_and_hit_calls_share_the_scene_lifetime_across_detach_service_close_and_end() {
+    let rig = Rig::new(Kind::Native);
+    let group = rig.token("return render.create_group()");
+    let detached_group = rig.token("return render.create_group()");
+    let closed_group = rig.token("return render.create_group()");
+    let ended_group = rig.token("return render.create_group()");
+    let accepted_calls = |group: &str, key: &str| {
+        [
+            "render.create_group()".to_owned(),
+            format!("render.raise_group('{group}')"),
+            format!("render.lower_group('{group}')"),
+            format!("render.raise_groups{{'{group}'}}"),
+            format!("render.set_group_visible('{group}', false)"),
+            format!("render.set_group_offset('{group}', 1, 2)"),
+            format!("render.set_group_clip('{group}', {{x=0,y=0,width=3,height=4}})"),
+            format!("render.set_hit('{key}', {{{{x=0,y=0,width=1,height=1}}}}, '{group}')"),
+            format!("render.destroy_group('{group}')"),
+        ]
+    };
+    let malformed_calls = |group: &str| {
+        [
+            "render.create_group(1)".to_owned(),
+            "render.raise_group()".to_owned(),
+            "render.lower_group()".to_owned(),
+            "render.raise_groups()".to_owned(),
+            "render.set_group_visible()".to_owned(),
+            "render.set_group_offset()".to_owned(),
+            "render.set_group_clip()".to_owned(),
+            "render.destroy_group()".to_owned(),
+            format!("render.set_hit('bad:key', {{{{x=0,y=0,width=1,height=1}}}}, '{group}')"),
+        ]
+    };
+    let malformed = malformed_calls(&group);
+    let baseline_errors: Vec<_> = malformed.iter().map(|call| rig.error(call)).collect();
+    assert!(baseline_errors.iter().all(|error| error != "ok"));
+
+    let published = rig.seen.count();
+    rig.bridge.detach();
+    let accepted_after_detach = accepted_calls(&detached_group, "late");
+    for call in &accepted_after_detach {
+        assert_eq!(rig.error(call), "ok", "detached bridge: {call}");
+    }
+    assert_eq!(
+        rig.seen.count(),
+        published,
+        "detached writes publish nothing"
+    );
+    for (call, expected) in malformed_calls(&detached_group)
+        .iter()
+        .zip(&baseline_errors)
+    {
+        assert_eq!(rig.error(call), *expected, "detached bridge: {call}");
+    }
+
+    rig.service().close();
+    for call in &accepted_calls(&closed_group, "closed") {
+        assert!(
+            rig.error(call).contains("the resource service has ended"),
+            "closed service: {call}"
+        );
+    }
+    for (call, expected) in malformed_calls(&closed_group).iter().zip(&baseline_errors) {
+        assert_eq!(rig.error(call), *expected, "closed service: {call}");
+    }
+
+    rig.end.end();
+    for call in &accepted_calls(&ended_group, "ended") {
+        assert!(
+            rig.error(call).contains("the resource service has ended"),
+            "empty writer: {call}"
+        );
+    }
+    for (call, expected) in malformed_calls(&ended_group).iter().zip(&baseline_errors) {
+        assert_eq!(rig.error(call), *expected, "empty writer: {call}");
+    }
+
+    // Test-only runs without a resource service have no service-close boundary.
+    let no_service = Rig::new(Kind::NoService);
+    let group = no_service.token("return render.create_group()");
+    no_service.bridge.detach();
+    assert_eq!(
+        no_service.error(&format!("render.set_group_visible('{group}', false)")),
+        "ok"
+    );
+}
+
 #[test]
 fn the_writer_lock_is_taken_only_by_the_ui_thread_during_the_run_and_once_by_end() {
     let rig = Rig::new(Kind::Native);

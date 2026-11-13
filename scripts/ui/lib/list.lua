@@ -496,7 +496,7 @@ function list.new(spec)
   self.colours = theme.kind(window.kind)
   recompute(self)
 
-  self.rows_group = render.create_group()
+  self.rows_group = ui.create_group()
   self.groups = {self.rows_group}
   -- The highlights are created before any text, so that the glyphs are drawn over them.
   self.hover_quad = render.create_quad{

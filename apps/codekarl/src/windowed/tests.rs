@@ -609,6 +609,143 @@ fn a_callback_that_fails_within_the_drain_after_the_close_still_fails_the_run() 
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the composed close, queued update, detach, drain and negative control are one boundary regression"
+)]
+fn a_scene_write_from_an_update_queued_behind_close_runs_after_detach_but_late_errors_still_fail() {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the isolated scenario must keep both run controls and their teardown evidence together"
+    )]
+    fn run_case(late_error: bool) -> (RunEnd, Vec<String>) {
+        let close_gate = Gate::new();
+        let frame_gate = Gate::new();
+        let close_started = Arc::new(AtomicBool::new(false));
+        let late = Arc::new(AtomicBool::new(false));
+        let close_wait: HostFunction = {
+            let gate = Arc::clone(&close_gate);
+            let started = Arc::clone(&close_started);
+            Arc::new(move |_| {
+                started.store(true, Ordering::SeqCst);
+                gate.wait();
+                Ok(Vec::new())
+            })
+        };
+        let frame_wait: HostFunction = {
+            let gate = Arc::clone(&frame_gate);
+            Arc::new(move |_| {
+                gate.wait();
+                Ok(Vec::new())
+            })
+        };
+        let late_check: HostFunction = {
+            let late = Arc::clone(&late);
+            Arc::new(move |_| Ok(vec![ck_lua::ConfigValue::Bool(late.load(Ordering::SeqCst))]))
+        };
+        let finish = if late_error {
+            "error('late callback control')".to_owned()
+        } else {
+            "render.raise_groups({group})".to_owned()
+        };
+        let script = format!(
+            "local group = render.create_group()\n\
+             window.on_close_request(function() window.hold_close(); return true end)\n\
+             frame.on_update(function()\n\
+               if window.is_late() then window.hold_frame(); {finish} end\n\
+             end)\n\
+             {WINDOW}"
+        );
+        let service = ck_resources::ResourceService::new(
+            ck_resources::ResourceLimits::DEFAULT,
+            ck_resources::Mode::Headless,
+        )
+        .expect("a resource service");
+        let harness = Harness::new(
+            &script,
+            Extras {
+                functions: vec![
+                    ("hold_close", close_wait),
+                    ("hold_frame", frame_wait),
+                    ("is_late", late_check),
+                ],
+                extensions: vec![crate::testing::frame_extension()],
+                service: Some(service.clone()),
+                ..Extras::default()
+            },
+        );
+        let (env, control) = updating_env(&harness, "[frame]\nupdates_per_second = 60\n");
+        control.set(true);
+        let latch = ResourceLatch::new();
+        let (record, events) = vector_recorder();
+        let presenter = FakePresenter::new(
+            Arc::clone(&harness.notifier),
+            PresenterScript::default(),
+            Arc::clone(&record),
+        );
+        let detached_frame_gate = Arc::clone(&frame_gate);
+        let after_detach = move || {
+            detached_frame_gate.open();
+            false
+        };
+        let end = run_window_keeping::<FakeBackend, FakePresenter, _>(
+            &env,
+            {
+                let late = Arc::clone(&late);
+                let close_started = Arc::clone(&close_started);
+                let close_gate = Arc::clone(&close_gate);
+                let record = Arc::clone(&record);
+                move || {
+                    let mut backend = FakeBackend::new(
+                        BackendScript {
+                            wait_bound: Duration::from_millis(5),
+                            ..BackendScript::default()
+                        },
+                        record,
+                    );
+                    let pending = Arc::clone(&backend.pending);
+                    backend.on_pump = Some(Box::new(move |pass| {
+                        if pass == 1 {
+                            late.store(true, Ordering::SeqCst);
+                            pending
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .push_back(NativeEvent::CloseButton);
+                        }
+                        if close_started.load(Ordering::SeqCst) {
+                            close_gate.open();
+                        }
+                    }));
+                    Ok(backend)
+                }
+            },
+            presenter,
+            &latch,
+            DRAIN,
+            &after_detach,
+        );
+        service.close();
+        let events = events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        (end, events)
+    }
+
+    let (end, events) = run_case(false);
+    assert_eq!(
+        end,
+        RunEnd::Finished,
+        "a post-detach scene edit is accepted: {events:?}"
+    );
+    let (control, events) = run_case(true);
+    assert!(
+        failed(&control).contains("late callback control"),
+        "{control:?}; {events:?}"
+    );
+}
+
+#[test]
 fn a_callback_still_running_at_the_drain_bound_is_left_for_the_post_stop_fold() {
     let gate = Gate::new();
     let harness = Harness::new(
