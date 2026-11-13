@@ -132,6 +132,10 @@
 >   100%, housing occupants over capacity, storage and a building's store over capacity, building land over its limit, and any
 >   overflow loss are drawn in `#f66155`, in the panels and in their tooltips. On the location panel's light fills the colour is
 >   `#4b0b06`. A number exactly at its limit stays green.
+> - **The building card's words** (CK-284; `owner-direction-ui-tweaks-manager-r1.md` and `-designer-r2.md`; §3.13): the card's
+>   `staff` and `store` are now `positions` and `storage`, light blue words that open their glossary explanations. Their bars get
+>   shorter to make room, and on a card too narrow for everything the line drops its bars, then `storage`, then the count, never
+>   cutting a word. The open building row and the rows header use the same words.
 
 ## Owner answers (2026-11-07)
 
@@ -580,8 +584,9 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
     - **pop cards:** the type, culture, religion and the labels `food`, `job`, `needs`, `mood`, `housing` and `crowd` are terms.
       The size, the trend's numbers, the food days, the mood, the housing and the crowd are numbers;
     - **building cards:** the kind, `wage`, each method's name and the `housing` label are terms. The wage, the method levels, the
-      housing count, the staff count and the herd counts are numbers. `staff` and `store` stay `dim`: they open classes, not
-      explanations, and the owner said to leave them for now;
+      housing count, the staff count and the herd counts are numbers. `staff` and `store` stayed `dim` in CK-280: they opened
+      classes, not explanations, and the owner said to leave them for now. Since CK-284 the card says `positions` and
+      `storage`, which open explanations and are terms (§3.13);
     - **rows:** a closed row's header and an open row's detail lines follow the same rule. An **open row's header** keeps its cyan
       band and dark words, and its numbers are the `place` kind's `highlight_number`.
   - **Lists** (`lib/list.lua`): `list.new{…, numbers = true}` draws the number runs of each cell and string item in `number` and
@@ -1084,13 +1089,43 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     | `wage N` | the word: the explanation `wage`; the number: class `wage` |
     | the methods text | the explanation of the method under the pointer |
     | `housing N` | the explanation `housing` |
-    | `staff`, its bar and its count | `staff` |
-    | `store` and its bar | `store` |
+    | `positions` (CK-284; it was `staff`) | the explanation `position` |
+    | the positions bar and the count | `staff` |
+    | `storage` (CK-284; it was `store`) | the explanation `storage` |
+    | the storage bar | `store` |
     | a herd's icon | the species' explanation, whose title is its name; this replaces CK-271's name label |
     | a herd's count | `herd` for that species |
 
   - **Rows and open rows** (the list look of the pops and buildings tabs, and an open row's detail lines): the same fields give
     the same explanations and classes, by the cell or the detail line under the pointer.
+  - **The building card's words** (CK-284; spec sha256 `3cd204b0…`). The owner: "staff should be positions or employees i would
+    think, storage you could make an entry for", then chose **"1: positions, storage"** on the mock-up. The glossary already had
+    the entries `position` and `storage`; the classes `staff` and `store` keep their names.
+    - **The card's third line** reads `positions`, a bar, the count `filled/(filled + open)`, `storage`, a bar. Both words are
+      terms and open their explanations; the bars and the count open the classes, as in the table above.
+    - **It is laid out from real widths.** One function (`building_line_layout`, `lib/location.lua`) takes the card's width `W`
+      and the font's widths of `positions`, of `storage` and of the count, and both the drawing and the tooltip source use its
+      result. From x 5 each drawn element is followed by its gap: `positions`, 4, the positions bar, 4, the count, 12,
+      `storage`, 4, the storage bar, and a right margin of 6. The room left for the two bars is `R`.
+    - **The first step that fits is used:**
+
+      | Step | When | What is drawn |
+      |---|---|---|
+      | 1, full | `R ≥ 34` | everything; the positions bar is 24 wide and the storage bar `R − 24` |
+      | 2, shared | `12 ≤ R < 34` | everything; the positions bar is `floor(R / 2)` wide and the storage bar the rest |
+      | 3, no bars | the words and the count fit | `positions`, the count, `storage` |
+      | 4, no storage | `positions` and the count fit | `positions`, the count |
+      | 5, positions only | `positions` fits | `positions` |
+      | 6, empty | otherwise | nothing on the line |
+
+      The usual card, with an ordinary count, is step 1: the look the owner approved. Only a narrow card or a very long count
+      gives another step.
+    - **Nothing is cut or squeezed:** text is never clipped, and a bar is at least 10 wide in step 1 and 6 in step 2. An element
+      that does not fit is left out whole, no element ends past `W − 6`, and an element not drawn has no tooltip.
+    - **An open building row:** its second line is `storage a / b L`, and its positions line `positions N filled, N open`. On
+      each, the first word is a term and opens its explanation (`storage`, `position`); the rest of the line opens the class
+      (`store`, `staff`).
+    - **The rows look's header** reads `building`, `positions`, `wage`; it is `dim` and has no tooltip.
 - **Tests:** the UI rig in `apps/codekarl/src/widget_tests.rs` drives `tooltip.update` with made-up updates;
   `ui_link/widget_witness_tests.rs` drives a locked tooltip through real pointer ticks; `config.rs` and `glossary.rs` test the
   settings, the loader and the shipped entries (92 keys, three exact literals, an entry for every id of the game data);
