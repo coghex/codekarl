@@ -136,6 +136,10 @@
 >   `staff` and `store` are now `positions` and `storage`, light blue words that open their glossary explanations. Their bars get
 >   shorter to make room, and on a card too narrow for everything the line drops its bars, then `storage`, then the count, never
 >   cutting a word. The open building row and the rows header use the same words.
+> - **Closing the window with a tooltip open** (CK-285, from the owner's report; §3.4 and §3.13): it no longer ends the run as
+>   failed. The group calls and `render.set_hit` now end with the quad calls, when the resource service closes, not when the
+>   scene is detached at the end of the window loop. The tooltip's overlay is kept on top through `lib/ui.lua` where groups are
+>   created or raised, so an idle update with a tooltip open makes no scene call.
 
 ## Owner answers (2026-11-07)
 
@@ -389,6 +393,32 @@ The one engine change for windows: **ordered groups of quads**, added to `ck-ren
   - `[render] max_groups` (default 4,096, range 1 to 65,536) caps the groups.
   - `max_quads` still caps the quads.
   - A refusal is a catchable Lua error, as for quads.
+- **Scene calls after the window loop has ended** (CK-285, 2026-11-13, from the owner's report: closing the window with a
+  tooltip open logged `run failed: ui callback frame_update failed: … render.raise_groups: the resource service has ended`).
+  - **A UI callback can still be running or queued when the loop ends.** The loop keeps posting updates while a close request is
+    outstanding, and a quit ends it at once. After the loop returns, the run waits up to 1 s for the calls still outstanding (the
+    late-callback drain, `apps/codekarl/src/windowed.rs`), and only then closes the resource service.
+  - **The scene bridge is detached as the loop ends,** before that wait. A scene edit made afterwards is accepted by the writer and
+    its publication is discarded and counted (`crates/render-2d/src/bridge.rs`).
+  - **One end for every scene call** (`apps/codekarl/src/render_api.rs`). The group calls and `render.set_hit` refuse with "the
+    resource service has ended" at the same moment as the quad calls: when the resource service is closed, or when the scene
+    writer has been ended. A detached bridge alone is not that end.
+    - Before CK-285 the group calls and `set_hit` refused as soon as the bridge was detached, although the service was still
+      open. A late update that raised a group, set a hit region or moved a window then failed, and the drain reported it as the
+      run's failure.
+    - A run without a resource service (only tests build one) has no end from the service.
+  - **A limitation that remains, disclosed and not changed:** a callback still running or queued when the service itself closes.
+    - That can happen after a quit, which skips the drain, or when a callback outlasts the drain. Nothing guarantees an
+      outstanding callback has finished by then.
+    - Its scene and texture calls then raise the same error, and its failure is reported once, as the late-callback rules
+      require (`apps/codekarl/src/windowed.rs`, module documentation). The run was already ending and no state is lost.
+    - Changing it means either not delivering queued calls after the end, or not counting that refusal as a failure. Neither
+      is scheduled.
+  - **Tests:** `group_and_hit_calls_share_the_scene_lifetime_across_detach_service_close_and_end` (`scene_api_tests.rs`) checks
+    the nine calls in the three states. The owner's case is in the real chain (`ui_link/group_tests.rs`,
+    `the_real_map_population_tooltip_locks_and_opens_its_nested_tooltip`: a locked tooltip, the bridge detached, one more
+    update) and in the run closure with fakes (`windowed/tests.rs`,
+    `a_scene_write_from_an_update_queued_behind_close_runs_after_detach_but_late_errors_still_fail`).
 
 ### 3.5 Input routing between the UI and the map (Proposal)
 
@@ -840,8 +870,31 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
       view, or the span goes or changes what it opens.
 - **Nesting:** resting on a term or link of a locked tooltip for `delay` opens its tooltip, which can lock in turn and has targets of
   its own. The code sets no depth limit; three levels are tested.
-- **Closing.** Open tooltips form a stack, newest on top. They are drawn in one group, which is raised above every other group on
-  each update while a tooltip is open (`render.raise_groups`).
+- **Closing.** Open tooltips form a stack, newest on top. They are drawn in one group, the **overlay**, which is kept above
+  every other group (below).
+- **The overlay stays on top without a call per update** (CK-285; spec `specs/close-error-manager-r3.md`, sha256 `6b43d08f…`).
+  Until CK-285 `tooltip.update` raised the overlay on every update while a tooltip was open. That broke the idle rule (§3.9),
+  made every such update publish a frame, and was the call that failed when the window closed (§3.4).
+  - **The seam** is three functions in `scripts/ui/lib/ui.lua`:
+    - `ui.set_top_group(group)` registers the group that is kept on top;
+    - `ui.create_group()` calls `render.create_group()` and then, when a top group is registered, `render.raise_groups({top})`.
+      It returns the new group;
+    - `ui.raise_groups(groups)` makes one `render.raise_groups` call: the groups in the order given, with any occurrence of the
+      top group taken out, then the top group once. With none registered it is exactly `render.raise_groups(groups)`.
+  - **Every place that creates or raises a group uses it:** `main.lua` (the ledger bar and the map-mode bar), `lib/window.lua` (a
+    window's two groups, and its three raises), `lib/list.lua` and `lib/cards.lua`. No file under `scripts/ui/` but `lib/ui.lua`
+    calls `render.create_group` or `render.raise_groups`, and none calls `render.raise_group` or `render.lower_group`.
+  - **The tooltip** creates its overlay with `ui.create_group()` at the first tooltip of a run and registers it at once. It stays
+    registered for the rest of the run, and `tooltip.update` raises nothing.
+  - **So the overlay is the topmost group at the end of every UI callback,** and a frame is published only when a callback has
+    returned (§3.4). No frame shows a window above a tooltip, also when the window is opened or raised by a `game_select` or
+    `game_time` callback and not by an update.
+  - **An update with an open tooltip and nothing to change makes no scene call** and publishes no frame.
+  - **The cost:** once a tooltip has been shown in a run, creating a group makes one more `raise_groups` call.
+  - **Tests** (`apps/codekarl/src/readout_tests.rs`): the UI rig has a test-only observer of the host calls it makes, which
+    sees `raise_groups` (the rig's log does not record it). `ui_group_seam_keeps_the_registered_group_last_and_observes_exact_host_calls`
+    and `tooltip_open_is_quiet_and_game_callbacks_restore_the_overlay_in_the_same_call` use it; the real chain checks that ten
+    idle updates with a locked tooltip publish no frame.
   - **Escape** closes one: `close_request` in `lib/window.lua` first calls `tooltip.close_top()`, which closes the newest tooltip and
     says whether it closed one. When it did, nothing else happens (§3.5).
   - **A left press** (the owner: "escape should clear one nested tooltip at a time but clicking away should clear them all"):
