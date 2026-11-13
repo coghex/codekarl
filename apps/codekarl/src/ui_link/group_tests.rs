@@ -105,25 +105,37 @@ pub(super) struct Rig {
 impl Rig {
     /// A UI VM whose script is the prelude, `script` and the reporting callback. The window is 400 by 320 points at 2 pixels per point.
     pub(super) fn new(script: &str) -> Self {
-        Self::with_script(&format!("{PRELUDE}\n{script}\n{REPORT}"), false)
+        Self::with_script(&format!("{PRELUDE}\n{script}\n{REPORT}"), false, Vec::new())
     }
 
     /// Runs a fixture's full script without replacing its own frame callback with the reporting callback.
     pub(super) fn new_fixture_body(script: &str) -> Self {
-        Self::with_script(script, false)
+        Self::with_script(script, false, Vec::new())
+    }
+
+    /// Runs a fixture body with additional host functions, for tests that need the same serialized data as a production API.
+    pub(super) fn new_fixture_body_with_functions(
+        script: &str,
+        functions: Vec<(&'static str, HostFunction)>,
+    ) -> Self {
+        Self::with_script(script, false, functions)
     }
 
     /// [`new_fixture_body`](Self::new_fixture_body) for a window opened in screen pixels: its UI is in UI units at the scale its drawable
     /// allows.
     pub(super) fn new_fixture_body_in_pixels(script: &str) -> Self {
-        Self::with_script(script, true)
+        Self::with_script(script, true, Vec::new())
     }
 
     #[expect(
         clippy::too_many_lines,
         reason = "the shared real-VM harness setup stays together for all widget and fixture bodies"
     )]
-    fn with_script(script: &str, in_pixels: bool) -> Self {
+    fn with_script(
+        script: &str,
+        in_pixels: bool,
+        mut extra_functions: Vec<(&'static str, HostFunction)>,
+    ) -> Self {
         let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../assets")
             .canonicalize()
@@ -163,10 +175,11 @@ impl Rig {
                 Ok(Vec::new())
             })
         };
+        extra_functions.insert(0, ("record", record));
         let harness = Harness::new(
             script,
             Extras {
-                functions: vec![("record", record)],
+                functions: extra_functions,
                 extensions: vec![
                     frame_extension(),
                     game,

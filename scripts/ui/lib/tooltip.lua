@@ -286,6 +286,10 @@ local function term_content(key)
   return {title = entry.title, table.unpack(lines)}
 end
 
+function tooltip.explanation(key)
+  return term_content(key)
+end
+
 local function span_source(span)
   if span.term ~= nil then return function() return term_content(span.term) end end
   if span.class ~= nil then return {class = span.class, args = span.args} end

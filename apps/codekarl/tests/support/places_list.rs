@@ -91,7 +91,13 @@ lists_library.new = function(spec)
   if spec.window.title ~= 'ledger' then
     -- The location panel's list (it only scrolls): not the ledger list this witness watches. Its first row is the Location tab's
     -- people line, for the place the click opened.
-    log.info('location tab ' .. spec.items[1])
+    local first = spec.items[1]
+    if type(first) == 'table' then
+      local cells = {}
+      for _, cell in ipairs(first.cells) do cells[#cells + 1] = cell.text end
+      first = table.concat(cells)
+    end
+    log.info('location tab ' .. first)
     return real_list_new(spec)
   end
   local real_on_select = spec.on_select
