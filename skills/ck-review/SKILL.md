@@ -23,6 +23,10 @@ recorded state, without abandoning or restarting it. Use only your own bound ide
 (`pchat agent who --json`); never inherit another session's identity or claims, or register a new
 identity to work around a retired registry row: report that instead.
 
+After a clear, read the master policy and this skill, confirm your identity with
+`pchat agent who --json`, and take your task from the assignment message, which
+names the spec.
+
 Chat commands always use the root `~/work/codekarl/tools/ck-chat` (the accepted,
 installed version), never a worker copy's `tools/ck-chat`, which may predate accepted chat changes;
 project commands (`tools/ck check`, `record`, `submit`) use the copy's own `tools/ck`.

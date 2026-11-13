@@ -131,7 +131,8 @@ Use the existing Codekarl cmux group and owner-provided terminals, preserving th
 two-pane layouts. Read `cmux-supervisor` before terminal operations. Resolve live
 workspace/surface UUIDs; use explicit targets and preserve focus, drafts,
 permission dialogs and histories. Do not create, move, clear or replace sessions
-to compensate for an unavailable slot. Ask for the destination when ambiguous.
+to compensate for an unavailable slot. Clearing at a task boundary under
+"Session contexts" is not that. Ask for the destination when ambiguous.
 
 Launch through `modelclass run` with explicit Codekarl identity roles. These
 commands illustrate role/class selection, not authority to type into a terminal:
@@ -161,3 +162,40 @@ durable inbox and claim protocol in that skill. The owner can work directly with
 any agent; the manager reconciles that work rather than sending competing tasks.
 Use stable task IDs and durable handoffs. A terminal is a location, not a task
 identity. Do not register Codekarl in the old GitHub manager's state directory.
+
+## Session contexts
+
+Every turn re-reads the session's whole context, so sessions are cleared at task
+boundaries. A cleared session keeps its chat name, and its old conversation stays
+resumable.
+
+| Role | Clear when | Never while |
+| --- | --- | --- |
+| Worker | its issue is accepted and nothing else is assigned | a submission of its is in review, or a build is in flight |
+| Reviewer | what it reviewed is accepted or approved and no rereview is owed | a changes-requested round is open |
+| Designer | its spec is approved or its docs note is published, and its start-up brief is current | it is in conversation with the owner on a design |
+| Manager | nothing is in flight (no batch, no slot held, nothing in review) and its brief is current | any of those is open |
+
+- **Who:** the manager clears workers, reviewers and designers, following
+  `~/.codex/skills/cmux-survey/references/recovery.md` each time. The owner clears
+  the manager, after the manager says it is ready. No session clears itself, and a
+  worker, reviewer or designer clears no one. The owner may clear any session at
+  any time.
+- **Before:** the session is idle with an empty prompt and holds nothing
+  unrecorded. A designer and the manager keep a start-up brief at
+  `.pipeline/coordination/session-clears/briefs/<chat name>.md`; a designer is
+  asked to confirm it is ready.
+- **After:** the first message to a cleared session names what to read (this
+  policy, its role skill, or its brief). The manager types a one-line pointer into
+  its empty prompt, because a cleared session is not waiting on chat until it has
+  taken a turn.
+- **Record:** one private action record per clear in
+  `.pipeline/coordination/session-clears/` (the old session id and how to resume
+  it), and a line in the manager's handoff.
+- **Codex:** a Codex session's chat name is tied to its thread, which a clear
+  replaces, so no Codex session is cleared under this table yet. The only
+  exception is a first test: one Codex worker, named by the owner for that test,
+  at its boundary. Every other Codex session, the reviewer included, stays
+  uncleared until that test has shown that the chat name and the resume of the old
+  conversation both hold, and the owner has then said the practice extends to
+  Codex.

@@ -72,4 +72,8 @@ Launch and live-check rules:
 
 Owner intervention takes precedence within its stated scope. If interrupted,
 inspect actual repository state, inboxes and processes before retrying an effect.
+
+Clear workers, reviewers and designers at their task boundaries under "Session contexts"
+in the master policy. Keep your own brief current, tell the owner once when you are
+ready to be cleared, and after a clear read your brief and the handoff before acting.
 Do not clear history or allocate a duplicate session identity.
