@@ -13,6 +13,44 @@ fn records(readout: &Readout) -> Vec<String> {
         .collect()
 }
 
+#[test]
+fn number_runs_split_only_the_documented_ascii_numeric_pieces() {
+    let readout = Readout::script(
+        r#"
+local text = require('lib.text')
+local theme = require('lib.theme')
+for _, value in ipairs({"12 Mar 768 · 06:00", "96.5 (100)", "87%", "5200 / 9000 m²", "+3", "1,200"}) do
+  local numbers = {}
+  for _, run in ipairs(text.number_runs(value)) do
+    if run.number then numbers[#numbers + 1] = run.text end
+  end
+  window.record(table.concat(numbers, ","))
+end
+window.record(theme.kind('tooltip').highlight_number)
+window.record(theme.kind('place').highlight_number)
+window.record(theme.kind('window').highlight_number)
+window.record(theme.kind('time_bar').highlight_number)
+window.record(theme.kind('places_bar').highlight_number)
+"#,
+    );
+    assert_eq!(
+        records(&readout),
+        [
+            "12,768,06,00",
+            "96.5,100",
+            "87%",
+            "5200,9000",
+            "3",
+            "1,200",
+            "#5fb35a",
+            "#663069",
+            "#d4a8d7",
+            "#d4a8d7",
+            "#d4a8d7",
+        ]
+    );
+}
+
 /// A frame 20 by 18 UI pixels at (10, 20) points, filled `#112233` and outlined `#445566`: every quad with its texture, rectangle and
 /// the role its tint says (`fill` or `line`), in painter order.
 fn frame_lines(scale: i64, cut: u32, corners: &str) -> Vec<String> {

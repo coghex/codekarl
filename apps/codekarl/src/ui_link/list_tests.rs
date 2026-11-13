@@ -1289,6 +1289,114 @@ fn highlights(rig: &Rig) -> Vec<Rect> {
         .collect()
 }
 
+fn list_runs_at(rig: &Rig, y: u32) -> Vec<String> {
+    notes(rig)
+        .into_iter()
+        .filter(|line| line.starts_with(&format!("line 2 {y} ")))
+        .collect()
+}
+
+#[test]
+fn number_lists_use_number_and_highlight_tints_and_plain_lists_stay_plain() {
+    let script = format!(
+        r#"{HEADER}
+local text = require("lib.text")
+local real_set = text.set
+text.set = function(line, content) real_set(line, content); line.ck_test_text = content end
+local real_segments = text.set_segments
+text.set_segments = function(line, segments)
+  real_segments(line, segments)
+  local parts, content = {{}}, {{}}
+  for _, segment in ipairs(segments) do
+    parts[#parts + 1] = tostring(segment.colour or line.colour) .. "=" .. segment.text
+    content[#content + 1] = segment.text
+  end
+  line.ck_test_runs = table.concat(parts, "|")
+  line.ck_test_text = table.concat(content)
+end
+local real_move = text.move
+text.move = function(line, x, y)
+  real_move(line, x, y)
+  if line.ck_test_text ~= nil then
+    note(string.format("line %g %g %s", line.x, line.y, line.ck_test_runs or (line.colour .. "=" .. line.ck_test_text)))
+  end
+end
+w = windows.new{{title = "Numbers", x = 100, y = 50, content_width = 200, content_height = 200}}
+local cells = {{{{text = "412", x = 1, align = "left"}}}}
+lst = lists.new{{window = w, x = 0, y = 0, width = 100, rows = 4, numbers = true, items = {{{{cells = cells}}, {{cells = cells}}, {{cells = cells}}, {{cells = cells}}, {{cells = cells}}, {{cells = cells}}}}, on_select = function() end}}
+plain = lists.new{{window = w, x = 0, y = 60, width = 100, rows = 1, items = {{{{cells = cells}}}}, on_select = function() end}}
+local function row(i) return lst.row_keys[i] end
+local steps = {{
+  function() dispatch({{}}, row(2)) end,
+  function() dispatch({{ev("down", row(3), 150, 125)}}, row(3)) end,
+  function() dispatch({{ev("up", row(3), 150, 125)}}, row(3)) end,
+  function() dispatch({{}}, false) end,
+  function() lst:set_pos(26); dispatch({{}}, row(3)) end,
+  function() lst:set_items({{{{cells = cells}}, {{cells = cells}}, {{cells = cells}}, {{cells = cells}}, {{cells = cells}}, {{cells = cells}}}}) end,
+}}
+local n = 0
+window.on_opened(function() n = n + 1; steps[n]() end)
+"#
+    );
+    let mut rig = Rig::new_fixture_body(&script);
+    rig.opened();
+    let first = list_runs_at(&rig, 2);
+    let hovered = list_runs_at(&rig, 28);
+    assert!(
+        first.iter().any(|line| line.ends_with("#5fb35a=412")),
+        "{first:?}"
+    );
+    assert!(
+        hovered.iter().any(|line| line.ends_with("#d4a8d7=412")),
+        "{hovered:?}"
+    );
+    assert!(
+        notes(&rig).iter().any(|line| line.ends_with("#ece3cb=412")),
+        "a list without numbers keeps its text colour: {:?}",
+        notes(&rig)
+    );
+
+    rig.opened();
+    let previous_hover = list_runs_at(&rig, 28);
+    let pressed = list_runs_at(&rig, 54);
+    assert!(
+        previous_hover
+            .iter()
+            .any(|line| line.ends_with("#5fb35a=412")),
+        "{previous_hover:?}"
+    );
+    assert!(
+        pressed.iter().any(|line| line.ends_with("#d4a8d7=412")),
+        "{pressed:?}"
+    );
+    rig.opened();
+    assert!(
+        list_runs_at(&rig, 54)
+            .iter()
+            .any(|line| line.ends_with("#d4a8d7=412"))
+    );
+    rig.opened();
+    assert!(
+        list_runs_at(&rig, 54)
+            .iter()
+            .any(|line| line.ends_with("#5fb35a=412"))
+    );
+    rig.opened();
+    assert!(
+        list_runs_at(&rig, 54)
+            .iter()
+            .any(|line| line.ends_with("#d4a8d7=412")),
+        "scroll keeps hovered colour"
+    );
+    rig.opened();
+    assert!(
+        list_runs_at(&rig, 54)
+            .iter()
+            .any(|line| line.ends_with("#d4a8d7=412")),
+        "set_items keeps hovered colour"
+    );
+}
+
 #[test]
 fn a_click_selects_once_and_overflow_cancel_a_stray_up_or_an_up_outside_select_nothing() {
     let script = format!(

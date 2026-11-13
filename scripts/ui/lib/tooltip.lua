@@ -82,35 +82,6 @@ function tooltip.map_hover(hover, source)
   last_hover = hover and {hover = hover, source = source} or nil
 end
 
-local function is_digit(c)
-  return c ~= nil and c >= "0" and c <= "9"
-end
-
--- Break a plain span into maximal numeric and ordinary runs. The run pattern accepts grouped or decimal punctuation.
-local function colour_runs(value)
-  local out, index = {}, 1
-  while index <= #value do
-    if is_digit(value:sub(index, index)) then
-      local finish = index
-      while is_digit(value:sub(finish + 1, finish + 1)) do finish = finish + 1 end
-      while (value:sub(finish + 1, finish + 1) == "." or value:sub(finish + 1, finish + 1) == ",")
-          and is_digit(value:sub(finish + 2, finish + 2)) do
-        finish = finish + 2
-        while is_digit(value:sub(finish + 1, finish + 1)) do finish = finish + 1 end
-      end
-      if value:sub(finish + 1, finish + 1) == "%" then finish = finish + 1 end
-      out[#out + 1] = {text = value:sub(index, finish), number = true}
-      index = finish + 1
-    else
-      local finish = index
-      while finish <= #value and not is_digit(value:sub(finish, finish)) do finish = finish + 1 end
-      out[#out + 1] = {text = value:sub(index, finish - 1), number = false}
-      index = finish
-    end
-  end
-  return out
-end
-
 local function plain_span(value, font_name, colour)
   return {text = value, font = font_name or "small", colour = colour, plain = true}
 end
@@ -162,7 +133,7 @@ local function line_measure(line)
     span.layout = laid
     if line.title then span.colour = theme.kind("tooltip").title_text
     elseif span.term ~= nil then span.colour = theme.colour("term")
-    else span.runs = colour_runs(span.text) end
+    else span.runs = text.number_runs(span.text) end
     width = width + laid.width
     height = math.max(height, laid.height)
   end

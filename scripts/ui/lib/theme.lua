@@ -1,7 +1,7 @@
 -- The theme data the host loaded from `assets/ui/theme.toml` (milestone 8, slice 7b; docs/ui-design.md §3.7), with the defaults applied.
 --
--- `theme.colour(name)` is a `[colour]` value and `theme.kind(name)` a kind's colours: `outline`, `hot`, `fill`, `text`, `title_text`,
--- `pressed_text`, `divider` (nil when the kind has none), `row_hover` and `row_pressed`. Every colour is the string as written
+-- `theme.colour(name)` is a `[colour]` value and `theme.kind(name)` a kind's colours: `outline`, `hot`, `highlight_number`, `fill`,
+-- `text`, `title_text`, `pressed_text`, `divider` (nil when the kind has none), `row_hover` and `row_pressed`. Every colour is the string as written
 -- (`#rrggbb` or `#rrggbbaa`), the form `render.set_tint` and `tint =` take. `time_bar` also requires `speed_box` and `speed_fill`.
 local host = theme -- the host's table; this module's own `theme` shadows it below
 
@@ -42,6 +42,7 @@ function theme.kind(name)
     text = raw.text or text,
     title_text = raw.title_text or text,
     pressed_text = raw.pressed_text or text,
+    highlight_number = raw.highlight_number or loaded().colour("number"),
     divider = raw.divider,
     row_hover = raw.row_hover or raw.outline,
     row_pressed = raw.row_pressed or raw.hot,

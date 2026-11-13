@@ -10,7 +10,6 @@ lock = "#f0a830"
 term = "#92ddea"
 number = "#5fb35a"
 dim = "#9a927e"    # subdued ledger column headings
-good = "#8fc06a"
 track = "#3a3326"
 band = "#221c13"
 pop_peasant = "#c9932e"
@@ -20,16 +19,19 @@ pop_labourer = "#a8261c"
 [kind.window]      # a window with no kind of its own (Help, Places)
 outline = "#6e130f"
 hot = "#a8261c"    # hover outline, and the pressed fill
+highlight_number = "#d4a8d7"
 
 [kind.time_bar]
 outline = "#6e130f"
 hot = "#a8261c"
+highlight_number = "#d4a8d7"
 speed_box = "#ece3cb"
 speed_fill = "#a8261c"
 
 [kind.places_bar]
 outline = "#6e130f"
 hot = "#a8261c"
+highlight_number = "#d4a8d7"
 
 [kind.place]       # the location popup (the place window)
 outline = "#4fb3c8"
@@ -37,6 +39,7 @@ hot = "#92ddea"
 title_text = "#15110a"
 pressed_text = "#15110a"
 divider = "#c9932e"
+highlight_number = "#663069"
 
 [kind.tooltip]     # the hover tooltip: all white on black
 outline = "#ece3cb"

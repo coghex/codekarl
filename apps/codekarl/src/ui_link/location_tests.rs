@@ -79,7 +79,7 @@ cards_place.pops = {
 cards_place.buildings = {
     {kind = "farm", levels = 8, methods = {{id = "mixed_farming", levels = 8}, {id = "coastal_subsistence", levels = 1}}, filled = 80, open = 8,
     herds = {{species = "cattle", head = 27, maximum = 36}, {species = "sheep", head = 10, maximum = 20},
-      {species = "pigs", head = 9, maximum = 9}}, store_used_l = 6400, store_capacity_l = 8000, wage = 3200,
+      {species = "pigs", head = 64, maximum = 64}}, store_used_l = 6400, store_capacity_l = 8000, wage = 3200,
     wages = {{month = 5, year = 769, wage_milli = 3200, paid = 18}, {month = 4, wage_milli = 2900},
       {month = 3, year = 769, wage_milli = 2900, paid = 10}, {month = 2, year = 769, wage_milli = 2900, paid = 10},
       {month = 1, year = 769, wage_milli = 2900, paid = 10}, {month = 12, year = 768, wage_milli = 2900, paid = 10},
@@ -303,6 +303,7 @@ function note_price_content(name, place, good)
   note("price_content " .. name .. " " .. table.concat(text, "|"))
 end
 local drawing_card = false
+colour_watch = false
 local ui_library = require("lib.ui")
 local real_ui_texture = ui_library.texture
 local texture_names = {}
@@ -328,13 +329,38 @@ local text_library = require("lib.text")
 local real_text_set = text_library.set
 text_library.set = function(line, content)
   real_text_set(line, content)
-  if drawing_card then line.ck_test_text = content end
+  line.ck_test_text = content
+  line.ck_test_runs = {{colour = line.colour, text = content}}
+end
+local real_text_set_segments = text_library.set_segments
+text_library.set_segments = function(line, segments)
+  real_text_set_segments(line, segments)
+  local words, runs = {}, {}
+  for _, segment in ipairs(segments) do
+    words[#words + 1] = segment.text
+    runs[#runs + 1] = {colour = segment.colour or line.colour, text = segment.text}
+  end
+  line.ck_test_text = table.concat(words)
+  line.ck_test_runs = runs
+end
+local real_text_set_colour = text_library.set_colour
+text_library.set_colour = function(line, colour)
+  real_text_set_colour(line, colour)
+  if line.ck_test_text ~= nil then line.ck_test_runs = {{colour = colour, text = line.ck_test_text}} end
 end
 local real_text_move = text_library.move
 text_library.move = function(line, x, y)
   real_text_move(line, x, y)
   if drawing_card and line.ck_test_text ~= nil then
     note(string.format("cardtext %g %g %d %s %s", line.x, line.y, line.width, line.colour, line.ck_test_text))
+    for _, run in ipairs(line.ck_test_runs or {}) do
+      note(string.format("cardrun %g %g %s=%s", line.x, line.y, run.colour, run.text))
+    end
+  end
+  if colour_watch and line.ck_test_text ~= nil then
+    for _, run in ipairs(line.ck_test_runs or {}) do
+      note(string.format("tintline %s|%s=%s", line.ck_test_text, run.colour, run.text))
+    end
   end
 end
 local real_group_visible = render.set_group_visible
@@ -665,6 +691,11 @@ fn notes(rig: &Rig) -> Vec<String> {
         .collect()
 }
 
+fn tint_line(recorded: &[String], content: &str, colour: &str, fragment: &str) -> bool {
+    let wanted = format!("tintline {content}|{colour}={fragment}");
+    recorded.iter().any(|line| line == &wanted)
+}
+
 /// The lists' rows, in the order they were created or replaced, as text.
 fn rows(rig: &Rig) -> Vec<String> {
     notes(rig)
@@ -858,6 +889,61 @@ fn switching_location_tabs_keeps_one_selector_and_close_reopen_starts_clean() {
 }
 
 const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|housing: basic 80/100, makeshift 10/20|crowding: 50%|food: 215 days|building land: 4200 / 24200 m²|storage: 5400 / 86400 L|lost to overflow last month: 0|prices (base):|100 (100)@16:left:-;stripe=-;icon=goods/oats|2.5 (2)@16:left:-;stripe=-;icon=goods/ale";
+
+#[test]
+fn the_time_bar_and_location_tab_split_terms_numbers_and_ordinary_punctuation() {
+    let mut rig = Rig::new_fixture_body(&script_with_prelude(
+        "colour_watch = true",
+        &["time(1, 1) select_place('rowan', 'Rowan')"],
+    ));
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        tint_line(&recorded, "1 Jan 768 · 01:00", "#5fb35a", "1"),
+        "{recorded:?}"
+    );
+    assert!(
+        tint_line(&recorded, "1 Jan 768 · 01:00", "#ece3cb", " Jan "),
+        "{recorded:?}"
+    );
+    assert!(
+        tint_line(&recorded, "1 Jan 768 · 01:00", "#ece3cb", " · "),
+        "{recorded:?}"
+    );
+    assert!(
+        tint_line(&recorded, "people: ", "#92ddea", "people: "),
+        "{recorded:?}"
+    );
+    assert!(
+        tint_line(&recorded, "120", "#5fb35a", "120"),
+        "{recorded:?}"
+    );
+    assert!(
+        tint_line(&recorded, "basic", "#92ddea", "basic"),
+        "{recorded:?}"
+    );
+    assert!(
+        tint_line(&recorded, " 80/100", "#5fb35a", "80"),
+        "{recorded:?}"
+    );
+    assert!(
+        tint_line(&recorded, " 80/100", "#ece3cb", "/"),
+        "{recorded:?}"
+    );
+    assert!(
+        tint_line(&recorded, "215 days", "#5fb35a", "215"),
+        "{recorded:?}"
+    );
+    assert!(
+        tint_line(&recorded, "215 days", "#ece3cb", " days"),
+        "{recorded:?}"
+    );
+    assert!(
+        tint_line(&recorded, "4200 / 24200 m²", "#ece3cb", " m²"),
+        "{recorded:?}"
+    );
+}
 
 #[test]
 fn prices_use_fixed_goods_icons_and_unlisted_goods_keep_their_name() {
@@ -1142,7 +1228,7 @@ fn herd_counts_use_full_colour_icons_on_cards_and_open_rows() {
     for (name, icon_x, count_x, colour, count) in [
         ("cattle", 10, 32, "#9a927e", "27/36"),
         ("sheep", 112, 134, "#9a927e", "10/20"),
-        ("pigs", 214, 236, "#ece3cb", "9/9"),
+        ("pigs", 214, 236, "#ece3cb", "64/64"),
     ] {
         assert!(
             card_icons.iter().any(|line| {
@@ -1157,12 +1243,21 @@ fn herd_counts_use_full_colour_icons_on_cards_and_open_rows() {
             count_x / 2
         );
     }
+    assert_eq!(
+        card_run_count_at(&card_icons, 236, 74, "#5fb35a", "64"),
+        2,
+        "both maximum herd digits are green: {card_icons:?}"
+    );
+    assert!(
+        card_run_at(&card_icons, 236, 74, "#ece3cb", "/"),
+        "maximum herd separator keeps text colour: {card_icons:?}"
+    );
     rig.opened();
     let row_icons = notes(&rig);
     for (name, icon_y, count_y, count) in [
         ("cattle", 104, 102, "27 / 36"),
         ("sheep", 128, 126, "10 / 20"),
-        ("pigs", 152, 150, "9 / 9"),
+        ("pigs", 152, 150, "64 / 64"),
     ] {
         assert!(
             row_icons.iter().any(|line| {
@@ -1739,6 +1834,25 @@ fn card_text_with_colour_at(
         .any(|line| line.starts_with(&format!("cardtext {x} {y} ")) && line.ends_with(&suffix))
 }
 
+fn card_run(recorded: &[String], colour: &str, value: &str) -> bool {
+    let wanted = format!("{colour}={value}");
+    recorded.iter().any(|line| {
+        line.strip_prefix("cardrun ")
+            .is_some_and(|run| run.splitn(3, ' ').nth(2) == Some(wanted.as_str()))
+    })
+}
+
+fn card_run_at(recorded: &[String], x: u32, y: u32, colour: &str, value: &str) -> bool {
+    recorded
+        .iter()
+        .any(|line| line == &format!("cardrun {x} {y} {colour}={value}"))
+}
+
+fn card_run_count_at(recorded: &[String], x: u32, y: u32, colour: &str, value: &str) -> usize {
+    let wanted = format!("cardrun {x} {y} {colour}={value}");
+    recorded.iter().filter(|line| *line == &wanted).count()
+}
+
 fn card_quad_at(recorded: &[String], x: u32, y: u32, width: u32, colour: &str) -> bool {
     recorded.iter().any(|line| {
         line.starts_with("cardquad ") && line.contains(&format!(" {x} {y} {width} 6 {colour}"))
@@ -1768,7 +1882,23 @@ fn pop_cards_render_mockup_text_positions_and_mood() {
         );
     }
     assert!(card_text_at(&recorded, 270, 224, "—"));
-    assert!(recorded.iter().any(|line| line.contains("#8fc06a +12")));
+    for (colour, value) in [
+        ("#92ddea", "peasant"),
+        ("#92ddea", "ulaid"),
+        ("#92ddea", "christianity"),
+        ("#92ddea", "food"),
+        ("#5fb35a", "12"),
+        ("#5fb35a", "3"),
+        ("#ece3cb", "+"),
+        ("#ece3cb", "-"),
+        ("#9a927e", " · "),
+        ("#9a927e", "w "),
+    ] {
+        assert!(
+            card_run(&recorded, colour, value),
+            "{value:?} in {colour}: {recorded:?}"
+        );
+    }
     assert!(recorded.iter().any(|line| line.contains("108w 72d ^")));
 }
 
@@ -1819,6 +1949,23 @@ fn building_cards_render_mockup_values_and_empty_or_clamped_bars() {
             "missing {text}: {recorded:?}"
         );
     }
+    for (colour, value) in [
+        ("#92ddea", "farm"),
+        ("#92ddea", "wage "),
+        ("#92ddea", "mixed_farming"),
+        ("#5fb35a", "3.2"),
+        ("#5fb35a", "8"),
+        ("#5fb35a", "27"),
+        ("#5fb35a", "36"),
+        ("#9a927e", "/"),
+        ("#9a927e", "staff"),
+        ("#9a927e", "store"),
+    ] {
+        assert!(
+            card_run(&recorded, colour, value),
+            "{value:?} in {colour}: {recorded:?}"
+        );
+    }
     assert!(card_text_at(&recorded, 32, 74, "27/36"));
     assert!(recorded.iter().any(|line| {
         line.starts_with("goodsquad ui/goods/cattle.png ") && line.ends_with(" 18 18 -")
@@ -1840,6 +1987,14 @@ fn building_cards_render_mockup_values_and_empty_or_clamped_bars() {
         "zero-capacity store track"
     );
     assert!(card_text_at(&recorded, 34, 218, "storage"));
+    assert!(
+        card_run(&recorded, "#9a927e", "storage"),
+        "a storehouse card storage fallback stays dim: {recorded:?}"
+    );
+    assert!(
+        !card_run(&recorded, "#92ddea", "storage"),
+        "storage has no glossary explanation: {recorded:?}"
+    );
     assert!(
         card_quad_at(&recorded, 290, 334, 60, "#ece3cb"),
         "over-capacity store clamps to 30px"
@@ -1889,6 +2044,27 @@ fn row_items_expand_exclusively_keep_open_rows_across_revisions_and_scroll_clamp
         "the open row uses title-text ink: {:?}",
         notes(&rig)
     );
+    let recorded = notes(&rig);
+    assert!(
+        card_run(&recorded, "#663069", "180"),
+        "open pop header digits: {recorded:?}"
+    );
+    assert!(
+        card_run(&recorded, "#15110a", "+"),
+        "open pop header sign: {recorded:?}"
+    );
+    assert!(
+        card_run(&recorded, "#92ddea", "ulaid"),
+        "open pop culture: {recorded:?}"
+    );
+    assert!(
+        card_run(&recorded, "#5fb35a", "108"),
+        "open pop detail numbers: {recorded:?}"
+    );
+    assert!(
+        card_run(&recorded, "#ece3cb", " · "),
+        "open pop row separator keeps text colour: {recorded:?}"
+    );
     // Once the first row expands, the second row begins at 115 UI pixels below the content origin.
     click_panel_point(&mut rig, 40.0, 325.0);
     assert_eq!(
@@ -1903,6 +2079,61 @@ fn row_items_expand_exclusively_keep_open_rows_across_revisions_and_scroll_clamp
     assert!(
         rig.sink.quads().iter().any(|quad| quad.clip.is_some()),
         "rows are clipped by their content viewport"
+    );
+}
+
+#[test]
+fn an_open_storehouse_row_keeps_its_plain_storage_fallback() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('cards', 'Cards')",
+        "announce_tabs()",
+        "tabs_by_title.Cards:select('buildings', true); look_buttons.rows.on_click(); card_object.items[4].on_click()",
+    ]);
+    rig.opened();
+    rig.opened();
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        card_run(&recorded, "#ece3cb", "storage"),
+        "the opened storehouse row retains its plain storage fallback: {recorded:?}"
+    );
+    assert!(
+        !card_run(&recorded, "#92ddea", "storage"),
+        "storage has no glossary explanation: {recorded:?}"
+    );
+}
+
+#[test]
+fn an_open_building_row_keeps_the_inverted_header_number_tints() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('cards', 'Cards')",
+        "announce_tabs()",
+        "announce_look()",
+        "time(12, 2)",
+    ]);
+    rig.opened();
+    rig.opened();
+    click_tab(&mut rig, "buildings");
+    rig.opened();
+    click_look(&mut rig, "rows");
+    click_panel_point(&mut rig, 40.0, 123.0);
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        recorded.iter().any(|line| line.contains("#4fb3c8")),
+        "the open row keeps its cyan band: {recorded:?}"
+    );
+    assert!(
+        card_run(&recorded, "#15110a", "farm"),
+        "open header words stay dark: {recorded:?}"
+    );
+    assert!(
+        card_run(&recorded, "#663069", "80"),
+        "open header digits use highlight_number: {recorded:?}"
+    );
+    assert!(
+        card_run(&recorded, "#15110a", "/"),
+        "open header punctuation stays dark: {recorded:?}"
     );
 }
 
@@ -2621,7 +2852,12 @@ fn location_tab_words_numbers_and_window_title_open_their_sources() {
 
 #[test]
 fn a_wrapped_housing_continuation_keeps_the_place_class_source() {
-    let mut rig = rig(&["time(1, 1) announce_wrapped_housing_source()"]);
+    let mut rig = rig(&[
+        "colour_watch = true; time(1, 1); select_place('rowan', 'Rowan'); announce_wrapped_housing_source()",
+        "time(1, 1)",
+    ]);
+    rig.opened();
+    rig.deliver_fixture_frame_at(1278, 900, 2);
     rig.opened();
     let housing_rows = notes(&rig)
         .iter()
@@ -2645,6 +2881,23 @@ fn a_wrapped_housing_continuation_keeps_the_place_class_source() {
             .any(|line| line == "housing_continuation_found true"),
         "the actual place line wraps at this test width: {:?}",
         notes(&rig)
+    );
+    let recorded = notes(&rig);
+    assert!(
+        tint_line(&recorded, "makeshift", "#92ddea", "makeshift"),
+        "wrapped term retains term tint: {recorded:?}"
+    );
+    assert!(
+        tint_line(&recorded, " 10/20", "#5fb35a", "10"),
+        "wrapped first number retains number tint: {recorded:?}"
+    );
+    assert!(
+        tint_line(&recorded, " 10/20", "#ece3cb", "/"),
+        "wrapped slash retains text tint: {recorded:?}"
+    );
+    assert!(
+        tint_line(&recorded, " 10/20", "#5fb35a", "20"),
+        "wrapped second number retains number tint: {recorded:?}"
     );
 }
 
@@ -2843,7 +3096,7 @@ fn ledger_rows_use_revision_order_colours_columns_unicode_clipping_and_select_th
     rig.opened();
     let initial = rows(&rig).last().unwrap().clone();
     assert!(
-        initial.contains("name@1:left:#9a927e,people@257:right:#9a927e,food@291:right:#9a927e"),
+        initial.contains("name@1:left:#92ddea,people@257:right:#92ddea,food@291:right:#92ddea"),
         "{initial}"
     );
     assert!(
@@ -2860,7 +3113,7 @@ fn ledger_rows_use_revision_order_colours_columns_unicode_clipping_and_select_th
     rig.opened();
     let narrow = rows(&rig).last().unwrap().clone();
     assert!(
-        narrow.contains("people@170:right:#9a927e,food@204:right:#9a927e"),
+        narrow.contains("people@170:right:#92ddea,food@204:right:#92ddea"),
         "{narrow}"
     );
     assert!(

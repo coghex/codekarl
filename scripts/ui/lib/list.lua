@@ -151,11 +151,14 @@ local function highlight(self)
   end
 end
 
+local refresh_visible
+
 local function release(self, index, key)
   if self.pressed_row == index then
     self.pressed_row = nil
     pointer.pressed(key, false)
     highlight(self)
+    if refresh_visible ~= nil then refresh_visible(self) end
   end
 end
 
@@ -183,6 +186,7 @@ local function row_widget(self, index, key)
         self.pressed_row = index
         pointer.pressed(key, true)
         highlight(self)
+        if refresh_visible ~= nil then refresh_visible(self) end
       end
     elseif kind == "up" then
       if self.pressed_row == index then
@@ -205,6 +209,7 @@ local function row_widget(self, index, key)
       self.hover_row = nil
     end
     highlight(self)
+    if refresh_visible ~= nil then refresh_visible(self) end
   end
   function row.functional()
     return self.on_select ~= nil and self.items[index] ~= nil
@@ -250,20 +255,28 @@ local function remove_row(self, index)
         end
         if not self.closed then
           highlight(self)
+          if refresh_visible ~= nil then refresh_visible(self) end
         end
       end
     end)
   end
 end
 
-local function set_cell(row_view, index, cell)
+local function set_cell(self, row_view, row_index, index, cell)
   local line = row_view.lines[index]
   if line == nil then
     line = text.line(0, 0, row_view.group, cell.colour)
     row_view.lines[index] = line
   end
-  text.set(line, cell.text)
-  text.set_colour(line, cell.colour or theme.colour("text"))
+  local colour = cell.colour or self.colours.text
+  if self.numbers then
+    local highlighted = self.hover_row == row_index or self.pressed_row == row_index
+    local number_colour = highlighted and self.colours.highlight_number or theme.colour("number")
+    text.set_segments(line, text.colour_numbers(cell.text, colour, number_colour))
+  else
+    text.set(line, cell.text)
+    text.set_colour(line, colour)
+  end
   local x = cell.x * P
   if cell.align == "right" then x = x - line.width * P end
   text.move(line, x, row_view.y + P)
@@ -284,10 +297,10 @@ local function update_visual(self, index)
   end
   row_view.group, row_view.y = self.rows_group, row_top(index)
   if not is_cells then
-    set_cell(row_view, 1, {text = item, x = 1, align = "left", colour = self.colours.text})
+    set_cell(self, row_view, index, 1, {text = item, x = 1, align = "left", colour = self.colours.text})
     return
   end
-  for cell_index, cell in ipairs(item.cells) do set_cell(row_view, cell_index, cell) end
+  for cell_index, cell in ipairs(item.cells) do set_cell(self, row_view, index, cell_index, cell) end
   if item.stripe ~= nil then
     if row_view.stripe == nil then
       row_view.stripe = render.create_quad{texture = ui.texture("ui/theme/white.png"), x = 0, y = row_top(index), width = 2 * P,
@@ -322,6 +335,10 @@ local function update_visual(self, index)
     row_view.icon = nil
     row_view.icon_source = nil
   end
+end
+
+refresh_visible = function(self)
+  for index in pairs(self.lines) do update_visual(self, index) end
 end
 
 local function add_row(self, index)
@@ -450,6 +467,9 @@ function list.new(spec)
   if spec.tooltips ~= nil and type(spec.tooltips) ~= "boolean" then
     error("list.new: tooltips must be a boolean", 2)
   end
+  if spec.numbers ~= nil and type(spec.numbers) ~= "boolean" then
+    error("list.new: numbers must be a boolean", 2)
+  end
 
   local self = setmetatable({}, list)
   self.window = window
@@ -460,6 +480,7 @@ function list.new(spec)
   self.items = items
   self.on_select = spec.on_select
   self.tooltips = spec.tooltips == true
+  self.numbers = spec.numbers == true
   self.base = ui.key("list")
   self.area_key = self.base .. "_area"
   self.view_height = self.rows * ROW

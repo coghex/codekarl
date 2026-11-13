@@ -339,7 +339,7 @@ if game ~= nil then
 
     help_button(x + 90 * P, row_y)
     readout_x = x + date_left * P
-    text.set(readout, content)
+    text.set_segments(readout, text.colour_numbers(content, theme.colour("text"), theme.colour("number")))
     text.move(readout, readout_x, y + 4 * P)
     render.set_hit(readout_key, {{x = readout_x, y = y + 4 * P, width = readout.width * P, height = readout.height * P}})
     create_places_bar()
@@ -371,7 +371,7 @@ if game ~= nil then
       return
     end
     local before = readout.width
-    text.set(readout, content)
+    text.set_segments(readout, text.colour_numbers(content, theme.colour("text"), theme.colour("number")))
     if readout.width ~= before then
       fit_bar()
     end
@@ -444,9 +444,9 @@ if game ~= nil then
     local rows, selections = {}, {}
     if key == "locations" then
       rows[1] = {cells = {
-        {text = "name", x = 1, align = "left", colour = theme.colour("dim")},
-        {text = "people", x = width - 37, align = "right", colour = theme.colour("dim")},
-        {text = "food", x = width - 3, align = "right", colour = theme.colour("dim")},
+        {text = "name", x = 1, align = "left", colour = theme.colour("term")},
+        {text = "people", x = width - 37, align = "right", colour = theme.colour("term")},
+        {text = "food", x = width - 3, align = "right", colour = theme.colour("term")},
       }}
       rows[1].tooltip = function(_, _, cell)
         local explanations = {[1] = "location", [2] = "population", [3] = "food_days"}
@@ -525,6 +525,7 @@ if game ~= nil then
         rows = visible_rows,
         items = rows,
         tooltips = true,
+        numbers = true,
         on_select = function(index)
           local selection = ledger_selections[index]
           if selection ~= nil then
