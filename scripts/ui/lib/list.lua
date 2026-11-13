@@ -338,7 +338,28 @@ local function add_row(self, index)
         local item = self.items[index]
         if type(item) ~= "table" then return nil end
         local source = item.tooltip
-        if type(source) == "function" then return source(x, y) end
+        if type(source) == "function" then
+          if self.origin_x == nil or self.origin_y == nil then return nil end
+          local lx = x - (self.origin_x + self.x)
+          local ly = y - (self.origin_y + self.y - self.s + row_top(index))
+          local cell_index
+          if item.icon ~= nil and lx >= 4 * P and lx < 13 * P then
+            cell_index = "icon"
+          else
+            for cell, spec in ipairs(item.cells) do
+              local line = self.lines[index].lines[cell]
+              if line ~= nil then
+                local right = spec.x * P
+                local width = line.width * P
+                local inside = spec.align == "right"
+                  and lx >= right - width and lx < right
+                  or spec.align ~= "right" and lx >= right and lx < right + width
+                if inside then cell_index = cell; break end
+              end
+            end
+          end
+          return source(lx, ly, cell_index)
+        end
         if type(source) == "table" then return tooltip.content(source.class, source.args) end
         return nil
       end)

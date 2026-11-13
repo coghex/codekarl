@@ -2407,6 +2407,8 @@ GUARDS: tuple[Guard, ...] = (
     Guard("apps/codekarl/src/map_modes.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
     # CK-244: setup's island recruitment test loads the shipped Ireland scenario.
     Guard("apps/codekarl/src/game/setup.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
+    # CK-277: tooltip widget tests read the shipped glossary for the date explanation contract.
+    Guard("apps/codekarl/src/widget_tests.rs", "rust.app", ("assets/ui/glossary.toml",)),
     # The shipped UI witness reads the shipped script, so the narrow app.ui-witness group owns that dependency.
     Guard(
         "apps/codekarl/tests/support/map_modes.rs",
@@ -2414,7 +2416,11 @@ GUARDS: tuple[Guard, ...] = (
         ("scripts/ui/main.lua",),
         unselected=(("scripts/ui/main.lua", OWNER_RULE),),
     ),
-    Guard("apps/codekarl/src/ui_link/location_tests.rs", "rust.app", ("scripts/ui/main.lua",)),
+    Guard(
+        "apps/codekarl/src/ui_link/location_tests.rs",
+        "rust.app",
+        ("assets/scenarios/ireland-768/", "assets/game/economy.toml", "scripts/ui/main.lua"),
+    ),
     Guard(
         "apps/codekarl/src/game/tests/mod.rs",
         "rust.app",

@@ -45,6 +45,13 @@ if game ~= nil then
   local readout = text.line(0, 0, nil, time_colours.text)
   local time_panel = nil
   local readout_x = nil
+  local readout_key = "date_readout"
+  tooltip.attach(readout_key, function() return tooltip.explanation("date") end)
+  pointer.register(readout_key, {
+    on_event = function() end,
+    on_hover = function() end,
+    on_overflow = function() end,
+  })
   local places_panel = nil
   local places_buttons = {}
   local places_group = nil
@@ -68,6 +75,7 @@ if game ~= nil then
     time_panel:set_rect(x, y, width, height)
     render.set_hit("time_bar", {{x = time_panel.x, y = time_panel.y, width = time_panel.width, height = time_panel.height}})
     text.move(readout, readout_x, y + 4 * P)
+    render.set_hit(readout_key, {{x = readout_x, y = y + 4 * P, width = readout.width * P, height = readout.height * P}})
   end
 
   -- Defined below, with the Places window.
@@ -218,6 +226,9 @@ if game ~= nil then
       group = modes_group,
       on_click = function() select_mode("elevation") end,
     }
+    tooltip.attach(mode_buttons.stockpile.key, function() return tooltip.explanation("stockpile_map") end)
+    tooltip.attach(mode_buttons.yield.key, function() return tooltip.explanation("yield_map") end)
+    tooltip.attach(mode_buttons.elevation.key, function() return tooltip.explanation("elevation_map") end)
   end
 
   local function update_speed_box(box)
@@ -330,6 +341,7 @@ if game ~= nil then
     readout_x = x + date_left * P
     text.set(readout, content)
     text.move(readout, readout_x, y + 4 * P)
+    render.set_hit(readout_key, {{x = readout_x, y = y + 4 * P, width = readout.width * P, height = readout.height * P}})
     create_places_bar()
     create_modes_bar()
   end
@@ -436,12 +448,27 @@ if game ~= nil then
         {text = "people", x = width - 37, align = "right", colour = theme.colour("dim")},
         {text = "food", x = width - 3, align = "right", colour = theme.colour("dim")},
       }}
+      rows[1].tooltip = function(_, _, cell)
+        local explanations = {[1] = "location", [2] = "population", [3] = "food_days"}
+        local explanation = explanations[cell]
+        if explanation == nil then return nil end
+        return tooltip.explanation(explanation), tostring(cell)
+      end
       for _, place in ipairs(places) do
         local place_view = revision ~= nil and game.place(place.id, revision) or nil
         local row = {cells = {{text = clip_column(place.name, width - 72), x = 1, align = "left"}}}
         if place_view ~= nil and #place_view.pops > 0 then
           row.cells[2] = {text = tostring(place_view.workers + place_view.dependents), x = width - 37, align = "right"}
           row.cells[3] = {text = tostring(place_view.food_days) .. "d", x = width - 3, align = "right"}
+        end
+        local place_id = place.id
+        row.tooltip = function(_, _, cell)
+          local class, args
+          if cell == 1 then class, args = "location", {place = place_id}
+          elseif cell == 2 and place_view ~= nil then class, args = "population", {place = place_id}
+          elseif cell == 3 and place_view ~= nil then class, args = "place_food", {place = place_id}
+          else return nil end
+          return tooltip.content(class, args), tostring(cell)
         end
         rows[#rows + 1] = row
         selections[#rows] = place
@@ -450,9 +477,9 @@ if game ~= nil then
       for _, place in ipairs(places) do
         local place_view = revision ~= nil and game.place(place.id, revision) or nil
         if place_view ~= nil then
-          for _, pop in ipairs(place_view.pops) do
+          for pop_index, pop in ipairs(place_view.pops) do
             local kind_culture = pop.kind .. " " .. pop.culture
-            rows[#rows + 1] = {
+            local row = {
               stripe = pop_colour(pop.kind),
               icon = {name = "pops", colour = pop_colour(pop.kind)},
               cells = {
@@ -461,6 +488,18 @@ if game ~= nil then
                 {text = clip_column(place.name, 63), x = width - 66, align = "left"},
               },
             }
+            local place_id, kind, selected_pop_index = place.id, pop.kind, pop_index
+            row.tooltip = function(_, _, cell)
+              if cell == "icon" or cell == 1 then
+                return tooltip.explanation(kind), tostring(cell)
+              elseif cell == 2 then
+                return tooltip.content("pop_size", {place = place_id, pop = selected_pop_index}), tostring(cell)
+              elseif cell == 3 then
+                return tooltip.content("location", {place = place_id}), tostring(cell)
+              end
+              return nil
+            end
+            rows[#rows + 1] = row
             selections[#rows] = place
           end
         end
@@ -485,6 +524,7 @@ if game ~= nil then
         width = places_window.content_width,
         rows = visible_rows,
         items = rows,
+        tooltips = true,
         on_select = function(index)
           local selection = ledger_selections[index]
           if selection ~= nil then

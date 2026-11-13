@@ -2567,6 +2567,35 @@ frame.on_update(function(update) tooltip.update(update) end)
             Some(pointer_packet("part_source", 32.0, Vec::new())),
         );
     }
+    for _ in 0..6 {
+        part.update(
+            800,
+            600,
+            Some(pointer_packet("part_source", 50.0, Vec::new())),
+        );
+    }
+    assert!(
+        !part
+            .entries()
+            .iter()
+            .any(|entry| entry.contains("ui/theme/cut3_tl_fill.png")),
+        "moving within cell 1 does not skip the remaining delay"
+    );
+    part.update(
+        800,
+        600,
+        Some(pointer_packet("part_source", 50.0, Vec::new())),
+    );
+    let first_part_tip_count = part
+        .entries()
+        .iter()
+        .filter(|entry| entry.starts_with("create ") && entry.contains("ui/theme/cut3_tl_fill.png"))
+        .count();
+    assert!(
+        first_part_tip_count > 0,
+        "same-cell movement does not restart the delay"
+    );
+
     for _ in 0..12 {
         part.update(
             800,
@@ -2578,7 +2607,20 @@ frame.on_update(function(update) tooltip.update(update) end)
         !part
             .entries()
             .iter()
-            .any(|entry| entry.contains("ui/theme/cut3_tl_fill.png")),
+            .filter(
+                |entry| entry.starts_with("create ") && entry.contains("ui/theme/cut3_tl_fill.png")
+            )
+            .count()
+            > 0,
+        "cell 1 opens after the original delay"
+    );
+    let before_second_part_tip = part
+        .entries()
+        .iter()
+        .filter(|entry| entry.starts_with("create ") && entry.contains("ui/theme/cut3_tl_fill.png"))
+        .count();
+    assert!(
+        before_second_part_tip == first_part_tip_count,
         "changing part restarts the delay"
     );
     for _ in 0..7 {
@@ -2591,7 +2633,12 @@ frame.on_update(function(update) tooltip.update(update) end)
     assert!(
         part.entries()
             .iter()
-            .any(|entry| entry.contains("ui/theme/cut3_tl_fill.png"))
+            .filter(
+                |entry| entry.starts_with("create ") && entry.contains("ui/theme/cut3_tl_fill.png")
+            )
+            .count()
+            > first_part_tip_count,
+        "cell 2 opens only after its restarted delay"
     );
 }
 
@@ -2660,15 +2707,40 @@ local empty = {id = "empty", workers = 0, dependents = 0, pops = {}, land = {usa
   last_month = {closed = false, produced = {}, used_by_pops = {}, lost = {}}}
 local closed_empty = {id = "closed_empty", workers = 0, dependents = 0, pops = {}, land = empty.land,
   last_month = {closed = true, produced = {}, used_by_pops = {}, lost = {}}}
+local breakdown = {
+  id = "breakdown", workers = 120, dependents = 80, food_days = 6,
+  storage_used_l = 200, storage_capacity_l = 500, overflow_lost = 52,
+  land = {usable = {pasture = 4}, land = {pasture = 4, bog = 2}, sea = 1},
+  last_month = {closed = true, produced = {}, used_by_pops = {}, lost = {
+    {good = "dairy", units = 12}, {good = "oats", units = 40},
+  }},
+  footprint_m2 = 100, prepared_m2 = 400, max_buildable_m2 = 300,
+  development_pm = 1000, farmland_quality_pm = 500, field_room = 8,
+  basic_housing_capacity = 300, basic_housing_occupants = 260,
+  makeshift_housing_capacity = 60, makeshift_housing_occupants = 40, crowding_pm = 750,
+  prices = {},
+  pops = {
+    {kind = "peasant", culture = "mumu", religion = "christianity", workers = 60, dependents = 40,
+      employed = 60, unemployed = 0, food_days = 2, food = {}, necessities = 0, niceties = 0, luxuries = 0,
+      satisfaction = 0, births = 0, deaths = 0, basic_housing = 0, makeshift_housing = 0, crowding_pm = 750},
+    {kind = "labourer", culture = "laigin", religion = "christianity", workers = 60, dependents = 40,
+      employed = 60, unemployed = 0, food_days = 5, food = {}, necessities = 0, niceties = 0, luxuries = 0,
+      satisfaction = 0, births = 3, deaths = 1, basic_housing = 0, makeshift_housing = 0, crowding_pm = 750},
+  },
+  buildings = {
+    {kind = "farm", store_used_l = 20, store_capacity_l = 100},
+    {kind = "brewery", store_used_l = 10, store_capacity_l = 50},
+  },
+}
 game.places = function() return {
   {id = "clonmacnoise", name = "Cluain Mhic Nóis"}, {id = "kinds", name = "Kinds"},
   {id = "ties", name = "Ties"}, {id = "equal_kinds", name = "Equal Kinds"},
-  {id = "empty", name = "Empty"}, {id = "closed_empty", name = "Closed Empty"},
+  {id = "empty", name = "Empty"}, {id = "closed_empty", name = "Closed Empty"}, {id = "breakdown", name = "Breakdown"},
 } end
 game.place = function(id, revision)
   assert(revision == 7)
   return ({clonmacnoise = fixture, kinds = population, ties = ties, equal_kinds = equal_kinds,
-    empty = empty, closed_empty = closed_empty})[id]
+    empty = empty, closed_empty = closed_empty, breakdown = breakdown})[id]
 end
 classes.set_revision(7)
 local tooltip = require("lib.tooltip")
@@ -2736,6 +2808,23 @@ local closed_lines = tooltip.content("location", {place = "closed_empty"})
 assert(has_span(closed_lines[3], "0", "class", "produced"))
 assert(has_span(closed_lines[4], "0", "class", "consumed"))
 assert(tooltip.content("location", {place = "not-yet-in-view"}) == nil)
+
+local function joined(class, args)
+  return table.concat(texts(tooltip.content(class, args)), "\n")
+end
+local function expect(label, actual, wanted)
+  if actual ~= wanted then error(label .. ": [" .. tostring(actual) .. "]") end
+end
+expect("pop_size", joined("pop_size", {place = "breakdown", pop = 2}), "workers 60\ndependents 40\nbirths 3, deaths 1")
+assert(tooltip.content("pop_size", {place = "breakdown", pop = 9}) == nil, "invalid pop index")
+assert(tooltip.content("pop_size", {place = "not_in_view", pop = 1}) == nil, "missing place")
+expect("place_food", joined("place_food", {place = "breakdown"}), "peasant Mumu 2 days\nlabourer Laigin 5 days")
+expect("housing", joined("housing", {place = "breakdown"}), "basic 260 of 300\nmakeshift 40 of 60")
+expect("crowding", joined("crowding", {place = "breakdown"}), "people 200\nroom 360\ncrowding 75%")
+expect("building_land", joined("building_land", {place = "breakdown"}), "in use 100 m²\nprepared 400 m²\nbuildable 300 m²")
+expect("storage", joined("storage", {place = "breakdown"}), "pops 200 / 500 L\nfarm 20 / 100 L\nbrewery 10 / 50 L")
+expect("overflow", joined("overflow", {place = "breakdown"}), "oats 40\ndairy 12")
+assert(joined("overflow", {place = "closed_empty"}) == "nothing lost")
 frame.on_update(function() end)
 "#;
 
@@ -2747,6 +2836,36 @@ fn location_tooltip_classes_cover_the_economy_breakdowns_and_ordering_contract()
         readout.entries().is_empty(),
         "the class assertions execute without drawing UI"
     );
+}
+
+#[test]
+fn tooltip_explanation_returns_glossary_title_and_wrapped_linked_text_or_nil() {
+    let glossary = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/ui/glossary.toml"),
+    )
+    .expect("the shipped glossary");
+    let mut readout = Readout::script_with_glossary(
+        r#"
+local tooltip = require("lib.tooltip")
+local date = tooltip.explanation("date")
+assert(date.title == "date")
+local chunks = {}
+local linked = false
+for _, line in ipairs(date) do
+  for _, span in ipairs(line) do
+    chunks[#chunks + 1] = type(span) == "table" and span.text or span
+    if type(span) == "table" and span.text == "speed" and span.term == "speed" then linked = true end
+  end
+end
+assert(table.concat(chunks):find("The day and hour in the game.", 1, true))
+assert(linked)
+assert(tooltip.explanation("nothing") == nil)
+frame.on_update(function() end)
+"#,
+        &glossary,
+    );
+    readout.update(800, 600, None);
+    assert!(readout.entries().is_empty());
 }
 
 #[test]

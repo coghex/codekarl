@@ -197,4 +197,98 @@ tooltip.define("consumed", function(args)
   return goods_lines(place.last_month.used_by_pops, args.place)
 end)
 
+tooltip.define("pop_size", function(args)
+  local place = place_view(args.place)
+  local pop = place ~= nil and place.pops[args.pop] or nil
+  if pop == nil then return nil end
+  return {
+    {term("worker", "workers"), " ", number(pop.workers)},
+    {term("dependent", "dependents"), " ", number(pop.dependents)},
+    {"births ", number(pop.births), ", deaths ", number(pop.deaths)},
+  }
+end)
+
+tooltip.define("place_food", function(args)
+  local place = place_view(args.place)
+  if place == nil then return nil end
+  local ordered = {}
+  for index, pop in ipairs(place.pops) do
+    ordered[#ordered + 1] = {pop = pop, index = index}
+  end
+  table.sort(ordered, function(a, b)
+    if a.pop.food_days ~= b.pop.food_days then return a.pop.food_days < b.pop.food_days end
+    return a.index < b.index
+  end)
+  local lines = {}
+  for _, item in ipairs(ordered) do
+    local pop = item.pop
+    lines[#lines + 1] = {term(pop.kind), " ", term(pop.culture), " ", number(pop.food_days), " days"}
+  end
+  return lines
+end)
+
+tooltip.define("housing", function(args)
+  local place = place_view(args.place)
+  if place == nil then return nil end
+  return {
+    {term("basic_housing", "basic"), " ", number(place.basic_housing_occupants), " of ", number(place.basic_housing_capacity)},
+    {term("makeshift_housing", "makeshift"), " ", number(place.makeshift_housing_occupants), " of ", number(place.makeshift_housing_capacity)},
+  }
+end)
+
+tooltip.define("crowding", function(args)
+  local place = place_view(args.place)
+  if place == nil then return nil end
+  local people_count = (place.workers or 0) + (place.dependents or 0)
+  local room = (place.basic_housing_capacity or 0) + (place.makeshift_housing_capacity or 0)
+  return {
+    {"people ", number(people_count)},
+    {"room ", number(room)},
+    {term("crowding"), " ", number((place.crowding_pm or 0) // 10), "%"},
+  }
+end)
+
+tooltip.define("building_land", function(args)
+  local place = place_view(args.place)
+  if place == nil then return nil end
+  return {
+    {"in use ", number(place.footprint_m2), " m²"},
+    {"prepared ", number(place.prepared_m2), " m²"},
+    {"buildable ", number(place.max_buildable_m2), " m²"},
+  }
+end)
+
+tooltip.define("storage", function(args)
+  local place = place_view(args.place)
+  if place == nil then return nil end
+  local lines = {
+    {term("pop", "pops"), " ", number(place.storage_used_l), " / ", number(place.storage_capacity_l), " L"},
+  }
+  for _, building in ipairs(place.buildings) do
+    if (building.store_capacity_l or 0) > 0 then
+      lines[#lines + 1] = {term(building.kind), " ", number(building.store_used_l), " / ", number(building.store_capacity_l), " L"}
+    end
+  end
+  return lines
+end)
+
+tooltip.define("overflow", function(args)
+  local place = place_view(args.place)
+  if place == nil then return nil end
+  local ordered = {}
+  for index, row in ipairs(place.last_month.lost) do
+    ordered[#ordered + 1] = {row = row, index = index}
+  end
+  table.sort(ordered, function(a, b)
+    if a.row.units ~= b.row.units then return a.row.units > b.row.units end
+    return a.index < b.index
+  end)
+  if #ordered == 0 then return {{"nothing lost"}} end
+  local lines = {}
+  for _, item in ipairs(ordered) do
+    lines[#lines + 1] = {term(item.row.good), " ", number(item.row.units)}
+  end
+  return lines
+end)
+
 return classes

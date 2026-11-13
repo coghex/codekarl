@@ -304,16 +304,38 @@ end
 
 local function location_lines(place)
   local lines = {
-    "people: " .. (place.workers + place.dependents),
-    "  workers: " .. place.workers,
-    "  dependents: " .. place.dependents,
-    "housing: basic " .. (place.basic_housing_occupants or 0) .. "/" .. (place.basic_housing_capacity or 0)
-      .. ", makeshift " .. (place.makeshift_housing_occupants or 0) .. "/" .. (place.makeshift_housing_capacity or 0),
-    "crowding: " .. percent(place.crowding_pm or 0),
-    "food: " .. place.food_days .. " days",
-    "building land: " .. place.footprint_m2 .. " / " .. math.min(place.prepared_m2, place.max_buildable_m2) .. " m²",
-    "storage: " .. place.storage_used_l .. " / " .. place.storage_capacity_l .. " L",
-    "lost to overflow last month: " .. place.overflow_lost,
+    {tooltip_parts = {
+      {text = "people: ", term = "population"}, {text = tostring(place.workers + place.dependents), class = "population"},
+    }, place = place.id},
+    {tooltip_parts = {
+      {text = "  workers: ", term = "worker"}, {text = tostring(place.workers), class = "population"},
+    }, place = place.id},
+    {tooltip_parts = {
+      {text = "  dependents: ", term = "dependent"}, {text = tostring(place.dependents), class = "population"},
+    }, place = place.id},
+    {tooltip_parts = {
+      {text = "housing: ", term = "housing"}, {text = "basic", term = "basic_housing"},
+      {text = " " .. (place.basic_housing_occupants or 0) .. "/" .. (place.basic_housing_capacity or 0), class = "housing"},
+      {text = ", "}, {text = "makeshift", term = "makeshift_housing"},
+      {text = " " .. (place.makeshift_housing_occupants or 0) .. "/" .. (place.makeshift_housing_capacity or 0), class = "housing"},
+    }, place = place.id},
+    {tooltip_parts = {
+      {text = "crowding: ", term = "crowding"}, {text = percent(place.crowding_pm or 0), class = "crowding"},
+    }, place = place.id},
+    {tooltip_parts = {
+      {text = "food: ", term = "food_days"}, {text = place.food_days .. " days", class = "place_food"},
+    }, place = place.id},
+    {tooltip_parts = {
+      {text = "building land: ", term = "building_land"},
+      {text = place.footprint_m2 .. " / " .. math.min(place.prepared_m2, place.max_buildable_m2) .. " m²", class = "building_land"},
+    }, place = place.id},
+    {tooltip_parts = {
+      {text = "storage: ", term = "storage"},
+      {text = place.storage_used_l .. " / " .. place.storage_capacity_l .. " L", class = "storage"},
+    }, place = place.id},
+    {tooltip_parts = {
+      {text = "lost to overflow last month: ", term = "overflow"}, {text = tostring(place.overflow_lost), class = "overflow"},
+    }, place = place.id},
     "prices (base):",
   }
   for _, price in ipairs(place.prices) do
@@ -451,7 +473,109 @@ function location.rows(lines, width)
   local limit = width // P - 2
   local rows = {}
   for _, line in ipairs(lines) do
-    if type(line) == "table" then
+    if type(line) == "table" and line.tooltip_parts ~= nil then
+      local place_id = line.place
+      local current = {cells = {}, tooltip_place = line.place}
+      local current_width = 0
+      local function add_cell(text_value, source)
+        if #current.cells > 0 and current.cells[#current.cells].source == source then
+          current.cells[#current.cells].text = current.cells[#current.cells].text .. text_value
+        else
+          current.cells[#current.cells + 1] = {text = text_value, x = current_width + 1, align = "left", source = source}
+        end
+        current_width = current_width + font.layout(text_value).width
+      end
+      local function finish()
+        if #current.cells == 0 then return end
+        local sources = {}
+        for index, cell in ipairs(current.cells) do sources[index] = cell.source end
+        current.tooltip = function(_, _, cell)
+          local source = sources[cell]
+          if source == nil then return nil end
+          if source.term ~= nil then return tooltip.explanation(source.term), tostring(cell) end
+          return tooltip.content(source.class, {place = place_id}), tostring(cell)
+        end
+        for _, cell in ipairs(current.cells) do cell.source = nil end
+        rows[#rows + 1] = current
+        current = {cells = {}, tooltip_place = line.place}
+        current_width = 0
+      end
+      local full_text = ""
+      for _, part in ipairs(line.tooltip_parts) do
+        full_text = full_text .. part.text
+      end
+      if font.layout(full_text).width <= limit then
+        for _, part in ipairs(line.tooltip_parts) do
+          local source = part.term ~= nil and {term = part.term} or part.class ~= nil and {class = part.class} or nil
+          add_cell(part.text, source)
+        end
+      else
+        local indent = full_text:match("^ *")
+        local continued = indent .. "  "
+        local words = {}
+        local ranges = {}
+        local offset = 1
+        for _, part in ipairs(line.tooltip_parts) do
+          local source = part.term ~= nil and {term = part.term} or part.class ~= nil and {class = part.class} or nil
+          if #part.text > 0 then
+            ranges[#ranges + 1] = {first = offset, last = offset + #part.text - 1, source = source}
+            offset = offset + #part.text
+          end
+        end
+        local at = 1
+        while true do
+          local first, last = full_text:find("%S+", at)
+          if first == nil then break end
+          local source
+          for _, range in ipairs(ranges) do
+            if first >= range.first and first <= range.last then source = range.source; break end
+          end
+          words[#words + 1] = {text = full_text:sub(first, last), source = source}
+          at = last + 1
+        end
+        local row_text = ""
+        local first_wrapped_row = true
+        for _, item in ipairs(words) do
+          local word = item.text
+          local lead = #row_text == 0 and (first_wrapped_row and indent or continued) or ""
+          local separator = #row_text == 0 and "" or " "
+          local candidate = row_text == "" and (lead .. word) or (row_text .. separator .. word)
+          if font.layout(candidate).width > limit and row_text ~= "" then
+            finish()
+            first_wrapped_row = false
+            row_text = ""
+            lead = continued
+            separator = ""
+            candidate = lead .. word
+          end
+          if lead ~= "" then add_cell(lead, nil) end
+          row_text = lead .. row_text
+          -- Preserve wrap's UTF-8-safe cut for a token wider than the available row.
+          while font.layout(candidate).width > limit and utf8.len(word) > 1 do
+            local cut = utf8.len(word) - 1
+            while cut > 1 and font.layout(lead .. word:sub(1, utf8.offset(word, cut + 1) - 1)).width > limit do
+              cut = cut - 1
+            end
+            local at = utf8.offset(word, cut + 1)
+            local piece = word:sub(1, at - 1)
+            add_cell(separator .. piece, item.source)
+            row_text = row_text .. separator .. piece
+            finish()
+            first_wrapped_row = false
+            row_text = ""
+            word = word:sub(at)
+            lead = continued
+            add_cell(lead, nil)
+            row_text = lead
+            separator = ""
+            candidate = lead .. word
+          end
+          add_cell(separator .. word, item.source)
+          row_text = row_text .. separator .. word
+        end
+      end
+      finish()
+    elseif type(line) == "table" then
       rows[#rows + 1] = line
     else
       for _, row in ipairs(wrap(line, limit)) do
@@ -739,6 +863,7 @@ function location:show(selection, tab)
       end,
     }
     self.window = created
+    tooltip.attach(created.title_key, {class = "location", args = {place = selection.id}})
     self.tabs = tabs.new{
       window = created,
       items = TABS,
@@ -752,6 +877,7 @@ function location:show(selection, tab)
     return
   end
   self.window:set_title(selection.name)
+  tooltip.attach(self.window.title_key, {class = "location", args = {place = selection.id}})
   self.window:raise()
   if tab ~= nil then
     self.tabs:select(tab)

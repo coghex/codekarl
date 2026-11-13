@@ -399,6 +399,170 @@ window.on_opened(function() note("key3=" .. lst.row_keys[3]); note("selectable_k
 }
 
 #[test]
+fn tooltip_row_sources_receive_row_local_position_and_the_drawn_cell() {
+    let script = format!(
+        r##"{HEADER}
+local tooltip = require("lib.tooltip")
+w = windows.new{{title = "Cell tips", x = 100, y = 50, content_width = 280, content_height = 240}}
+local last
+local function source(lx, ly, cell)
+  local value = string.format("%g,%g,%s", lx, ly, tostring(cell))
+  if value ~= last then note("tip=" .. value); last = value end
+  return {{"row"}}, tostring(cell)
+end
+lst = lists.new{{window = w, x = 0, y = 0, width = 280, rows = 5, tooltips = true, items = {{
+  {{cells = {{{{text = "first", x = 16, align = "left"}}, {{text = "right", x = 120, align = "right"}}}},
+    icon = {{name = "pops", colour = "#ffffff"}}, tooltip = source}},
+  "second plain", "third plain",
+  {{cells = {{{{text = "fourth", x = 16, align = "left"}}}}, tooltip = function(lx, ly, cell)
+    note("row4=" .. string.format("%g,%g,%s", lx, ly, tostring(cell))); return {{"fourth"}}, tostring(cell)
+  end}},
+  "fifth plain", "sixth plain",
+}}}}
+frame.on_update(function(update)
+  pointer.dispatch(update.pointer)
+  tooltip.update(update)
+end)
+local opened = 0
+window.on_opened(function()
+  opened = opened + 1
+  note("row=" .. H); note("key=" .. tostring(lst.row_keys[1]))
+  if opened == 2 then w:move_to(130, 60) end
+end)
+"##
+    );
+    let mut rig = Rig::new_fixture_body(&script);
+    rig.opened();
+    let row = note_of(&rig, "key");
+    let point = (139.0, 90.0); // row 1, 33 points from its left edge and 4 from its top
+    assert_eq!(rig.key_at(point.0, point.1).as_deref(), Some(row.as_str()));
+    rig.feed(&[PointerEvent::Move(points(point.0, point.1))]);
+    for _ in 0..100 {
+        rig.deliver_fixture_frame();
+    }
+    let first = notes(&rig);
+    assert!(first.iter().any(|line| line == "tip=33,4,1"), "{first:?}");
+
+    // The icon occupies x=8..26 UI points; moving inside it changes the part without changing the row.
+    let icon_point = (126.0, 90.0);
+    rig.feed(&[PointerEvent::Move(points(icon_point.0, icon_point.1))]);
+    for _ in 0..100 {
+        rig.deliver_fixture_frame();
+    }
+    let icon = notes(&rig);
+    assert!(icon.iter().any(|line| line == "tip=20,4,icon"), "{icon:?}");
+
+    for (x, expected) in [
+        (316.0, "tip=210,4,2"),
+        (347.0, "tip=241,4,nil"), // one point beyond the right-aligned text's end at local x=240
+        (206.0, "tip=100,4,nil"),
+    ] {
+        rig.feed(&[PointerEvent::Move(points(x, 90.0))]);
+        rig.deliver_fixture_frame();
+        let captured = notes(&rig);
+        assert!(captured.iter().any(|line| line == expected), "{captured:?}");
+    }
+
+    // A scroll by one row changes which item is asked at this fixed pointer position, while its row-local offset is unchanged.
+    let scroll_point = (139.0, 142.0);
+    rig.feed(&[scroll_lines(scroll_point.0, scroll_point.1, -1)]);
+    rig.deliver_fixture_frame();
+    rig.deliver_fixture_frame();
+    rig.feed(&[PointerEvent::Move(points(scroll_point.0, scroll_point.1))]);
+    rig.deliver_fixture_frame();
+    let scrolled = notes(&rig);
+    assert!(
+        scrolled.iter().any(|line| line == "row4=33,4,1"),
+        "{scrolled:?}"
+    );
+
+    // The row's callback uses its live window origin. Carry the pointer with the moved window and keep the same local cell.
+    let before_move = notes(&rig).len();
+    rig.opened();
+    rig.deliver_fixture_frame();
+    let moved_point = (scroll_point.0 + 30.0, scroll_point.1 + 10.0);
+    assert!(rig.key_at(moved_point.0, moved_point.1).is_some());
+    if let Some(key) = rig.key_at(scroll_point.0, scroll_point.1) {
+        assert!(
+            key.contains("_row_"),
+            "the old point resolves to the row now beneath it: {key}"
+        );
+    }
+    rig.feed(&[PointerEvent::Move(points(moved_point.0, moved_point.1))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame();
+    }
+    let moved = notes(&rig);
+    assert!(
+        moved[before_move..]
+            .iter()
+            .any(|line| line == "row4=33,4,1"),
+        "{moved:?}"
+    );
+}
+
+#[test]
+fn tooltip_delay_tracks_the_drawn_list_cell() {
+    let script = format!(
+        r#"{HEADER}
+local tooltip = require("lib.tooltip")
+w = windows.new{{title = "Cell delay", x = 100, y = 50, content_width = 280, content_height = 240}}
+lst = lists.new{{window = w, x = 0, y = 0, width = 280, rows = 5, tooltips = true, items = {{
+  {{cells = {{{{text = "first", x = 16, align = "left"}}, {{text = "right", x = 120, align = "right"}}}},
+    tooltip = function(_, _, cell) return {{"cell " .. tostring(cell)}}, tostring(cell) end}},
+}}}}
+frame.on_update(function(update)
+  tooltip.update(update)
+  note("pending=" .. (tooltip.pending and string.format("%.3f", tooltip.pending.elapsed) or "none"))
+end)
+"#
+    );
+    let mut rig = Rig::new_fixture_body(&script);
+    rig.opened();
+
+    rig.feed(&[PointerEvent::Move(points(139.0, 90.0))]);
+    for _ in 0..12 {
+        rig.deliver_fixture_frame();
+    }
+    assert_ne!(note_of(&rig, "pending"), "none");
+    rig.feed(&[PointerEvent::Move(points(150.0, 90.0))]);
+    for _ in 0..6 {
+        rig.deliver_fixture_frame();
+    }
+    assert_ne!(
+        note_of(&rig, "pending"),
+        "none",
+        "the original delay is still running"
+    );
+    rig.deliver_fixture_frame();
+    assert_eq!(
+        note_of(&rig, "pending"),
+        "none",
+        "movement within cell 1 does not restart the delay"
+    );
+
+    rig.feed(&[PointerEvent::Move(points(316.0, 90.0))]);
+    for _ in 0..12 {
+        rig.deliver_fixture_frame();
+    }
+    let elapsed = note_of(&rig, "pending")
+        .parse::<f32>()
+        .expect("changing to cell 2 starts a new pending delay");
+    assert!(
+        elapsed > 0.0 && elapsed < 0.3,
+        "cell 2 restarted the delay: {elapsed}"
+    );
+    for _ in 0..7 {
+        rig.deliver_fixture_frame();
+    }
+    assert_eq!(
+        note_of(&rig, "pending"),
+        "none",
+        "cell 2 opens after its restarted delay"
+    );
+}
+
+#[test]
 fn selectable_tooltip_rows_keep_their_hover_press_and_click_behavior() {
     let script = format!(
         r#"{HEADER}
