@@ -833,6 +833,12 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
     are given as its largest integer;
   - the location tooltip and its breakdowns show the land counts and the `produced` and `used_by_pops` lists (CK-275;
     `docs/ui-design.md` §3.13). Nothing in the UI shows `lost` yet.
+- **A price's orders, in the view** (CK-272): each entry of `prices` is `{good, price_milli, base}`, and it gains `bought` and
+  `offered` once the place has kept orders (§3.16): the units of that good in the latest daily step's buy orders and sell orders.
+  - Both are absent before the first step and after a load.
+  - The engine keeps them as 128-bit counts. They become Lua integers only at the Lua boundary, where one too large is given as
+    Lua's largest integer.
+  - The price tooltip shows them (`docs/ui-design.md` §3.13).
 - **A pop's food by good and a building's twelve paydays, in the view** (CK-276; the owner, `-designer-r8.md`: a pop's food "its
   total goes on the card, with the per good breakdown in the tooltip", and the wage's twelve months, §3.6):
   - each pop's entry has `food`: one `{good, units, unit, share_pm}` for each good the pop holds that feeds (stock above zero and a
@@ -848,7 +854,8 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
   - **the view is built with the date** (§6.1), which is how it knows whether the month's payday has run: the payday runs in the
     tick that begins on the 1st at 12:00, and the date is that of the next hour to run, so it has run when the day is past the 1st
     or the hour is past 12. On the 1st at 12:00 itself it has not;
-  - nothing in the UI shows these yet either: the card and row tooltips are later slices.
+  - the pop and building cards and rows show them in tooltips: a pop's `food` in the class `pop_food` and a building's `wages`
+    in the class `wage` (CK-278; `docs/ui-design.md` §3.13).
 - **Widgets:** it uses the M8 theme's windows and lists, with tabs as title buttons. The tab widget is the one new UI piece.
 - **Since the owner's UI feedback (2026-11-10, CK-258, CK-259; `owner-direction-ui-ledger-lists-r1.md`):** the pops and buildings tabs
   show their entries as **cards** (the default) or one-line **rows** that open, switched by two buttons at the bottom of the panel; the
@@ -1119,6 +1126,16 @@ pops move, the herd stays. These are counts, not individual animals, so livestoc
 - **One basis (r17):** buy orders are the shortfall below the same 240-day target, by diet profile. A place in balance sits near base,
   and the seasonal swing is real but bounded.
 - **`k` starts at 500‰** (data, C5), so a fully one-sided market moves the target to 50% or 150% of base, well inside the clamps.
+- **The day's orders are kept for display, and not saved** (CK-272, for the price tooltip; the owner chose its **"Shorter"** form,
+  shown to them as "Only price, base, bought and offered; drop the target and daily move.",
+  `.pipeline/coordination/ui-polish-design/owner-direction-tooltips-r4.md`):
+  - after a place's daily price step, the buy and sell orders that step used stay on the place: the units per good, in the goods'
+    order (`last_market_orders`, a `DailyMarketOrders`; `crates/economy/src/lib.rs`, `update_daily_prices`);
+  - **the price step is unchanged:** it works the orders out once, moves the prices with them, then keeps them;
+  - **they are derived, not state:** the canonical encoding leaves them out, so a save has the same bytes whatever orders are kept,
+    and a place has none after a start or a load until its next daily price step;
+  - **no promise across builds:** like any change in `crates/economy/src`, CK-272 changed the build id, so a save written before it
+    is refused (`SaveError::BuildMismatch`).
 
 **Prices (saved, per place and good; r14 representation):**
 - **Representation:** a price is a `u64` in **thousandths of a value unit** (`price_m`), always at least 1.

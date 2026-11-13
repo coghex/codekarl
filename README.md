@@ -81,7 +81,8 @@ configuration file). `/saves` is in `.ignore`, so Pijul does not see the saves a
   the screen switch the map mode (stockpile, expected yield, elevation); pressing the one showing turns it off.
 - **Tooltips:** rest the pointer on a place for 0.3 seconds to see its tooltip: its name, population, majority culture and
   religion, usable land, and the value produced and consumed last month. Icon buttons, shortened tabs, the prices in the location
-  tab and herd icons have label tooltips too. Keep it there for another second and the tooltip locks
+  tab and herd icons have label tooltips too, and in the ledger, the location tab and the pop and building cards a word shows its
+  explanation and a number its breakdown. Keep it there for another second and the tooltip locks
   (an orange bar fills along its bottom edge): it then stays until you press Escape or click away from it, and a click on a button
   or other control leaves it open. In the locked tooltip, rest on a number for its breakdown or on a light-blue word for its
   explanation. `[ui.tooltips]` in the configuration sets `delay` (0 to 2 seconds), `lock` (`"timer"`,
