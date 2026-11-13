@@ -60,8 +60,9 @@
 >     brackets;
 >   - **on herd lines** (cattle, pigs, sheep): on a building card each herd's head count and maximum follows its icon; in a building
 >     row's details each herd has a line with its icon;
->   - **the fixed list:** `scripts/ui/lib/location.lua` names the goods that have icons (`GOODS_WITH_ICONS`), and a good not on it keeps
->     its name line, so a good added later still reads without an icon file. The same test checks that this list equals the generator's;
+>   - **the fixed list:** `scripts/ui/lib/location.lua` names the goods that have icons (`GOODS_WITH_ICONS`), and a good not on it kept
+>     its name line, so a good added later still read without an icon file (since CK-287 it gets the unknown good icon, below). The
+>     same test checks that this list equals the generator's;
 >   - **a list item's icon** (`lib/list.lua`) is either a theme icon tinted with a colour (`{name = ..., colour = ...}`, 9×11) or an image
 >     drawn untinted (`{image = "goods/oats"}`, 9×9, from `assets/ui/`). Giving both, or neither, is an error.
 >
@@ -144,6 +145,15 @@
 >   location tab are a table with a header: each good's icon and name, its price, its base price and a **balance bar**. The bar
 >   fills left in blue (`#4a7fd6`) when more is bought than offered and right in orange (`#d9702b`) when more is offered, from the
 >   place's latest daily orders. The goods' names are back beside their icons. List rows can now carry a bar (`lib/list.lua`).
+> - **The unknown good icon** (CK-287; `owner-direction-ui-tweaks-manager-r3.md` and `-designer-r5.md`; §3.13): a good or a herd's
+>   species without its own icon is drawn with a 9×9 sack carrying a question mark, `assets/ui/goods/fallback/unknown.png`. The
+>   owner: "goods without icons would get this icon (a questionmark over a ambiguous looking good)", then "i approve the sack".
+>   - Such a good is now an ordinary row of the market table, and its name is a glossary term only when the glossary has an entry
+>     for it.
+>   - One function chooses the image, for the market rows and for herds, and the fixed list still decides which goods have their
+>     own icon.
+>   - All 22 goods and the three herd species have their own icon and a glossary entry today, so nothing the player sees changed.
+>   - The art's record is in `docs/ui-art-provenance.md`.
 
 ## Owner answers (2026-11-07)
 
@@ -991,8 +1001,8 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
   - **Goods names:** `lib/location.lua` names a good by its id with `_` as a space, except `peas_beans`, which is `peas and beans`.
   - **Price rows:** in the location tab, each price row with an icon had a two-line tooltip: the good's name, then
     `price <price>, base <base>`. With CK-272 the price became a link (the price breakdown, below). CK-282 replaced that tooltip:
-    the row is now a table row whose cells have their own sources (the market view, below). A good without an icon keeps its
-    text line, which has no tooltip.
+    the row is now a table row whose cells have their own sources (the market view, below). A good without an icon kept its
+    text line, which had no tooltip, until CK-287 made it a table row too (the unknown good icon, below).
   - **Tooltip-only rows** (`lib/list.lua`):
     - a cell item may carry `tooltip`: a function returning content (or nil), or `{class = <name>, args = <table>}`. Any other type
       is refused, naming the item;
@@ -1028,11 +1038,13 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
 
     | Column | Where | What |
     |---|---|---|
-    | the icon | x 4 | the good's icon |
-    | the name | x 16, left-aligned | the good's name, a term; cut on whole characters with `..` to end 4 before the widest price |
+    | the icon | x 4 | the good's own icon, or the unknown good icon (CK-287, below) |
+    | the name | x 16, left-aligned | the good's name, a term when it has a glossary entry (CK-287, below) |
     | the price | right-aligned at `w − 82` | the price, a number |
     | the base | right-aligned at `w − 56` | the base price, a number |
     | the balance bar | from `w − 48`, 46 wide | below |
+
+    A name is cut on whole characters with `..` to end 4 before the widest price.
 
   - **The balance bar** is 3 high, 5 below the row's top, drawn in `[colour] track`, with a 1-wide centre tick in `dim` from 1
     above the bar to 1 below it.
@@ -1043,11 +1055,11 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     - **No fill** when `n` is 0, when both are 0, and when either is unknown: before the place's first daily price step and after
       a load (`docs/economy-design.md` §3.11).
     - A hovered or pressed row keeps its bar's colours.
-  - **What a row shows on hover,** by the cell under the pointer: the icon and the name, the good's explanation; the price and the
-    bar, the class `price` (the breakdown, above); the base, the explanation `base_price`. This replaces CK-271's two-line price
-    tooltip.
-  - **A good without an icon** is still a plain line, `<good> <price> (<base>)`, with no bar and no tooltip. All 22 goods have
-    icons today.
+  - **What a row shows on hover,** by the cell under the pointer: the icon and the name, the good's explanation (nothing when the
+    good has no glossary entry, CK-287); the price and the bar, the class `price` (the breakdown, above); the base, the explanation
+    `base_price`. This replaces CK-271's two-line price tooltip.
+  - **A good without its own icon** is an ordinary row with the unknown good icon (CK-287, below). CK-282 drew it as a plain line,
+    `<good> <price> (<base>)`, with no bar and no tooltip. All 22 goods have icons today.
   - **Bars in lists** (`lib/list.lua`): a row item with `cells` may carry `bar = {x, width, value}`.
     - `x` and `width` are in UI pixels from the row's left, like a cell's `x`; `value` is nil or a number from −1 to 1.
     - It is checked before anything is drawn. `x` must be a whole number of at least 0, `width` a whole number of at least 3, and
@@ -1056,6 +1068,41 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     - A fill of 0 pixels makes no quad. A bar follows its row through scrolling and `set_items`.
     - The row's tooltip function gets `cell = "bar"` when the pointer is over the bar and over no text cell (the row seam of
       CK-277, in the same units).
+- **The unknown good icon** (CK-287; spec sha256 `248f0dc2…`; `owner-direction-ui-tweaks-manager-r3.md` and `-designer-r5.md`) is
+  what a good, or a herd's species, without its own icon is drawn with. The owner: "we can use a unknown good icon, this can be
+  helpful for out development, and any future modder usage, goods without icons would get this icon (a questionmark over a
+  ambiguous looking good)"; then, after trying the variants on a mock-up, "the sack looks best, against my expectations, i approve
+  the sack".
+  - **The art** is a 9×9 tan sack tied at the neck, with a dark question mark, in the goods icons' own palette.
+    - It is the grid `UNKNOWN` in `assets/ui/goods/make_goods.py`, kept apart from `ART` so that no good's id names it.
+    - The script writes it to `assets/ui/goods/fallback/unknown.png`. A good's own image is always `goods/<id>.png`, so the
+      subfolder keeps the two apart.
+    - `--check` also fails when that image differs or is missing, or when `fallback/` holds any other PNG.
+    - How it was made is recorded in `docs/ui-art-provenance.md`.
+  - **One function chooses the image:** `good_icon(id)` in `lib/location.lua` gives `goods/<id>` for an id in `GOODS_WITH_ICONS`
+    and `goods/fallback/unknown` for any other. The market rows and both herd places (below) use it.
+    - No texture is loaded for an unlisted id's own file.
+    - The unknown image is loaded once, however many rows and herds show it (`ui.texture` keeps each texture for the run).
+  - **The fixed list decides** which goods have their own icon. The owner: "i think the default is fine, the modder friendly
+    alternative is something that can be implemented another time".
+    - A good added later gets the sack until its id is added to the list beside its image.
+    - The alternative, deciding by whether the image file exists, is not built. `texture.load` returns at once and reports a
+      missing file only later, after the magenta checkerboard has shown (`docs/scene-design.md`), and Lua has no call that says
+      whether a file exists. Because one function decides, a later change touches one place.
+  - **In the market table** a good without its own icon is an ordinary row: the unknown icon in the icon cell, then its name,
+    price, base and bar as for any good. CK-282's plain line is no longer drawn.
+  - **A name is a glossary term only when it has an entry,** so a word in `term` always opens an explanation (CK-280, §3.7):
+    - with an entry (`glossary.entry(id)` is not nil), the name is the entry's title in `term`, and the name and the icon open
+      the good's explanation;
+    - without one, the name is the good's shown name (its id with `_` as spaces) in `text`, and the name and the icon open
+      nothing;
+    - the icon and the entry are independent: a good may have either, both or neither. The price, the base and the bar are the
+      same for every good.
+  - **Herds:** on a building card and on an open building row, a species not in the list is drawn with the unknown icon at the
+    same place and size. Its icon opens the species' explanation when it has an entry and nothing otherwise; its count opens the
+    class `herd`, as before.
+  - **Today** all 22 goods and the three herd species (cattle, pigs, sheep) are in the list, and each has a glossary entry whose
+    title equals its shown name, so nothing the player sees changed. The icon appears when a good is added without its own.
 - **The location tooltip** (CK-275) is what the map's hovered place shows: `main.lua` gives `tooltip.map_hover` the source
   `{class = "location", args = {place = hover.id}}`. It waits `delay` and can lock like any other.
   - **Its classes** are in `scripts/ui/lib/classes.lua`. Each takes `args = {place = <id>}` and reads the place's view,
@@ -1190,7 +1237,7 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     | the positions bar and the count | `staff` |
     | `storage` (CK-284; it was `store`) | the explanation `storage` |
     | the storage bar | `store` |
-    | a herd's icon | the species' explanation, whose title is its name; this replaces CK-271's name label |
+    | a herd's icon | the species' explanation, whose title is its name (nothing without a glossary entry); it replaced CK-271's label |
     | a herd's count | `herd` for that species |
 
   - **Rows and open rows** (the list look of the pops and buildings tabs, and an open row's detail lines): the same fields give

@@ -31,6 +31,49 @@ author's record, moved here from the design round's notes; the files, hashes and
 - **The round's record:** `.pipeline/coordination/ui-polish-design/tooltips-provenance-r2.md` (sha256 `ab477469…`), which this
   section carries. The grids were first written in `mockups/tooltip_fonts_r1.py` in that folder.
 
+## The unknown good icon (CK-287)
+
+- **What it is:** the 9×9 image `assets/ui/goods/fallback/unknown.png`, a tan sack tied at the neck with a dark question mark. It
+  is drawn for a good, or a herd's species, without its own icon (`docs/ui-design.md` §3.13).
+- **Who drew it:** ck-designer-1 (Claude), for Codekarl, on 2026-11-13, in the UI polish round.
+- **How:** it is a 9×9 grid of characters, one character a pixel and one letter a palette colour, composed from the plain shape of
+  an everyday container: a sack tied at the neck. Two more grids were made the same way and not chosen: a square crate with a
+  darker edge, and a rounded lump with a shaded corner.
+  - The question mark is five pixels placed by hand on that grid: a two-pixel top, one pixel stepping right and down, one pixel
+    back to the centre, and a dot below a one-pixel gap.
+  - The colours are letters of the shipped goods icons' own palette (`assets/ui/goods/make_goods.py`).
+- **What was not used:** no reference image, no image search, no image generator, no icon from any other game, and no glyph from
+  any font, the project's own included.
+- **Limit:** a question mark on a container is a common way to mark "unknown", and at 9×9 there are few ways to draw either, so the
+  icon may resemble others by convergence. None was copied.
+- **Approval:** the owner asked for "a questionmark over a ambiguous looking good"
+  (`.pipeline/coordination/ui-polish-design/owner-direction-ui-tweaks-manager-r3.md`). After trying the variants on a mock-up the
+  owner approved the sack: "the sack looks best, against my expectations, i approve the sack"
+  (`owner-direction-ui-tweaks-designer-r5.md` in that folder). That replaced an earlier choice, the crate (`-designer-r4.md`).
+- **The art** (`.` transparent; `T` `#c49a6c`, `t` `#8a6440`, `b` `#6b4522`, `k` `#2a221a`):
+
+  ```
+  ...TTT...
+  ....b....
+  ..TTTTT..
+  .TTkkTTT.
+  .TTTTkTT.
+  .TTTkTTT.
+  .TTTTTTT.
+  .TTTkTTt.
+  ..TTTtt..
+  ```
+
+  The three `T` at the top are the sack's gathered neck, the `b` under them its tie, and the `t` pixels at the lower right its
+  shade.
+- **In the tree:** the grid is `UNKNOWN` in `assets/ui/goods/make_goods.py`, which writes the image.
+  - `make_goods.py --check` fails when the image differs or is missing, or when `fallback/` holds any other PNG.
+  - A test (`apps/codekarl/src/theme.rs`, `unknown_good_art_check_requires_the_exact_single_fallback_image`) makes each of those
+    three failures happen on a temporary copy of the goods folder.
+- **The round's record:** `.pipeline/coordination/ui-polish-design/unknown-good-provenance-r2.md` (sha256 `7149a226…`), which this
+  section carries. The three grids are in `mockups/unknown-good-art-r1.txt` (sha256 `c40ddbe2…`) in that folder, first typed into
+  `mockups/make_unknown_good_r1.py`.
+
 ## Elsewhere
 
 - **The goods icons** (CK-267): `.pipeline/coordination/ui-polish-design/goods-icons-provenance-r1.md`; `docs/ui-design.md` describes
