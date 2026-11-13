@@ -68,7 +68,7 @@ CI receipt. Chat completion is not repository acceptance: inspect `tools/ck stat
    merely because the bridge redelivered its instruction. A claim is not proof the action
    finished. An acknowledged but unfinished task is resumed once, from its recorded state; it
    is neither abandoned nor re-executed from the start.
-5. For a task, post a concise start with the task reference. Resolve a question with a
+5. For a task, post a concise start with the task reference and no `@ck-manager` mention. Resolve a question with a
    linked answer: `ck-chat post --reply-to <message-id> --type answer '...'`. Finish a task
    with `ck-chat done <message-id> "result and durable evidence"`, or `ck-chat decline
    <message-id> "specific reason"`. These publish replies; the bridge records their outcome.
@@ -77,6 +77,10 @@ For status, result, answer and decision notifications, claiming is sufficient;
 do not send another completion merely to confirm receipt. These informational
 entries leave the outstanding inbox after acknowledgement. An `[answer]` reply
 completes a `[question]`; a task requires an explicit done or declined reply.
+
+A worker, reviewer or designer mentions `@ck-manager` only for a slot request, a
+release, a result (done or a verdict), a question, or a blocker. Progress notes
+carry no mention.
 
 Useful commands:
 

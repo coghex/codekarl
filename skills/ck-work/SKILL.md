@@ -22,6 +22,10 @@ Chat commands always use the root `~/work/codekarl/tools/ck-chat` (the accepted,
 installed version), never a worker copy's `tools/ck-chat`, which may predate accepted chat changes;
 project commands (`tools/ck check`, `record`, `submit`) use the copy's own `tools/ck`.
 
+After a clear, read the master policy and this skill, confirm your identity with
+`pchat agent who --json`, and take your task from the assignment message, which
+names the spec.
+
 Read the task handoff, specification, dependencies and local AGENTS.md. Confirm
 the worker path is isolated under the Codekarl hub. Do not restart your session
 to change directories; use explicit workdirs. Reconcile unexpected worker state
