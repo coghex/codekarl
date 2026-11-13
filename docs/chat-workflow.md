@@ -91,7 +91,8 @@ Every routed message has the server message ID and a separate record for each
 recipient. The inbox is `~/.local/state/chat/codekarl/inbox.sqlite3`. IRC history
 and the shared JSONL record remain the human-readable development history.
 
-States are `queued`, `delivered`, `acknowledged`, and `completed` or `declined`.
+States are `queued`, `delivered`, `acknowledged`, and `completed`, `declined` or `flushed` (CK-292; see `flush` under
+"Inspection and recovery").
 A failed notification is visible alongside the still-outstanding message.
 Delivery observations are recorded independently of task progress (CK-4, PF-01, installed and verified live on
 the Claude and Codex paths): `waiting`, `delivered`, `accepted`, `attempt-failed` and `failed`, with `notice` derived
@@ -151,6 +152,35 @@ pchat read '#codekarl' --last 30 --json
 an IRC record and keeps queued work; `delivery status` reports the configured value, not proof that the bridge has
 applied it.
 
+`tools/ck-chat flush RECIPIENT --reason "..." [--dry-run]` (CK-292, 2026-11-13) retires a recipient's old informational
+notices without delivering them.
+
+- **Why:** a stray draft in ck-guide's prompt stopped delivery to it for a day. 53 `[status]` and `[decision]` notices about
+  finished work waited; the bridge alerted the owner about each one that had waited 24 hours (10 alerts, with 43 more to
+  come), and the only way to stop that was to free the prompt and let all 53 into the guide's context. The owner: "we should
+  have the ability to flush without this".
+- **Who may run it:** the bound `ck-manager`, or an owner shell (`CHAT_AS` set to an owner account), as for `delivery on|off`.
+  Anyone else is refused with exit 2 and nothing changes.
+- **The reason** is required: one line, not empty, at most 200 characters, with no `@`. A recipient that is not a Codekarl
+  identity is refused. Both refusals exit 2.
+- **What it flushes:** the recipient's rows in `queued` or `delivered` whose message is informational: `[status]`, `[ack]`,
+  `[done]`, `[declined]`, `[answer]` and `[decision]`.
+- **The `flushed` state** is terminal. A flushed row is never offered to the bridge again and is absent from `inbox`.
+  `inbox --history` shows it as `flushed` with its events, one of which reads `flushed by <who>: <reason>`.
+  - No reaction, no `[ack]` line and no acknowledgement effect is made, and nothing is posted to the room: the recipient did
+    not read the message, and the record does not say it did.
+  - It stays flushed. A later `claim` of it by its recipient exits 4 with `fresh` false and posts nothing, and a copy of the
+    same message that arrives again does not reopen it.
+- **What it never touches:** a request, a question, a blocker or an interrupt (a `!!` message included), and a message with
+  no bracket kind or an unknown one, which is treated as a request. These stay as they are and are listed as kept. A row that
+  is already acknowledged, completed or declined is not touched either, and is not listed.
+- **`[done]`, `[declined]` and `[answer]` are informational,** so an unread result can be flushed. Run `--dry-run` first on an
+  inbox that may hold one, and read the ids (the review's note to the manager).
+- **Output:** one JSON object with `recipient`, `by`, `reason`, `flushed` (message ids), `kept` (each a message id and its
+  kind) and `dry_run`. With `--dry-run` it prints the same object and changes nothing. It exits 0 also when nothing matched.
+- **All or none:** the rows are flushed in one transaction.
+- **The bridge is unchanged,** and so is when it alerts.
+
 `status` is the authoritative Codekarl delivery view. `pchat status` remains
 useful for shared service health, but its legacy manager-only unaccepted summary
 is not Codekarl's per-recipient lifecycle.
@@ -164,8 +194,12 @@ rewrite accepted state to clear a warning.
 ## Installation and workspace checkpoint (historical, 2026-10-14)
 
 (The original installation procedure, kept for reference; steps 4–6 were completed during the 2026-10-14/15 rollout
-and pilot. Adapter updates now go through `install.py stage` and `apply` after an accepted batch, as for CK-5; the
-latest install was on 2026-10-17, after S7d, giving aggregate `f133dc42…`.)
+and pilot. Adapter updates now go through `install.py stage` and `apply` after an accepted batch, as for CK-5. The
+latest install was on 2026-11-13, for CK-292 (`ck-chat flush`): the staged chat inputs `46961504…` equalled the accepted
+batch receipt's, and the files replaced are kept in `~/.local/state/chat/codekarl-install/1794596804825040000/`. The bridge
+was not restarted for it: the bridge process, running since 2026-11-05, still holds the earlier adapter. `ck-chat` runs the
+accepted code, and the earlier adapter already stops delivering a row that is neither `queued` nor `delivered`, so a flushed
+row is not delivered. The install before that was on 2026-10-17, after S7d, giving aggregate `f133dc42…`.)
 
 1. `python3 tools/chat/install.py stage` copies the current shared chat code,
    applies the narrow adapter and runs its isolated regression suite. It cannot

@@ -160,6 +160,9 @@
 >   - The buttons' and tabs' labels and the speed boxes' are labels: they open after the same delay, never lock, show no lock bar
 >     and let a press through to the control under them.
 >   - A tooltip that explains a word or breaks down a number locks as before, the map-mode buttons' and the date's among them.
+>   - **No coloured number in a label** (CK-289, 2026-11-13; `owner-direction-round-end-manager-r1.md`): a label's line is drawn
+>     wholly in the tooltip text colour, so the 3 of `speed 3` is no longer green. The owner: "numbers in labels are green, but i
+>     would think we shouldnt have this".
 
 ## Owner answers (2026-11-07)
 
@@ -842,7 +845,8 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
   - **Colour follows what the text is, not whether it opens anything:**
     - the title is in the kind's `title_text` (dark gold) and is plain: it is never a term, a link or a target;
     - a term is in `term` (light blue);
-    - in every other span, plain or link, each **number** is in `number` (green) and the rest in the kind's `text`.
+    - in every other span, plain or link, each **number** is in `number` (green) and the rest in the kind's `text`. A label is
+      the exception: its line has no number colour (CK-289, the label kind, below).
     - A number is a run of digits, with single `.` or `,` between digits and a `%` directly after: `412`, `96.5`, `4,210` and `73%`
       whole, and only the `12.5` of `12.5 km²`. So a link is found by hovering it, not by its colour. Since CK-280 the runs come
       from `text.number_runs`, which the panels share (§3.7).
@@ -974,7 +978,7 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
 - **The glossary** is `assets/ui/glossary.toml`, loaded and checked at startup by `apps/codekarl/src/glossary.rs`.
   - **An entry** is `[term.<key>]` with `title` (a short name) and `text` (the explanation). The key matches `[a-z][a-z0-9_]*`.
   - **In `text`,** `{key}` is a term showing that entry's `title`, and `{key|words}` a term showing `words`, such as `{pop|pops}`.
-    `{{` writes a literal `{`.
+    `{{` writes a literal `{` and `}}` a literal `}`.
   - **Refused at startup,** naming the file and the entry: a top-level table other than `term`, a key of the wrong form, an unknown
     key in an entry, a missing `title` or `text`, a `{…}` naming no entry, an unclosed `{`, a `}` with no `{`, empty `words`, and a
     character with no glyph in font `small`.
@@ -996,8 +1000,12 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
   - **An explanation** is a term's tooltip: the entry's `title` as its title, then its `text` in font `small`, wrapped at 160 and
     broken at spaces, with its `{…}` terms as terms. It is a tooltip like any other, so a term inside it opens its own explanation. A
     term whose key has no entry opens nothing.
-  - **A mismatch (2026-11-12, reported to ck-manager):** the file's comment and the loader accept `}}` for a literal `}`, but an
-    explanation draws both braces, because `wraps` in `tooltip.lua` looks only for `{`. No entry uses braces yet.
+  - **Doubled braces in an explanation** (CK-289, 2026-11-13): outside markup, `wraps` in `tooltip.lua` draws `{{` as one `{`
+    and `}}` as one `}`, as the file's comment says and the loader accepts.
+    - Before CK-289 it drew `}}` as two braces, because it looked only for `{` (a mismatch reported on 2026-11-12).
+    - A test (`widget_tests.rs`, `an_explanation_draws_doubled_braces_outside_markup_as_single_braces`) lays out `a {{b}} c` as
+      `a {b} c`, and `{{{braces}}} {{x}}` as the term's title in braces, then `{x}`.
+    - No entry uses braces yet.
 - **Labels** (CK-271; spec `specs/tooltips-t4-labels-designer4-r4.md`, sha256 `fffd8dc0…`). The owner put labelled hover tooltips
   in this round ("Yes, this round") when the goods icons replaced the names in the prices list.
   - **Buttons:** `button.new{…, tooltip = "text"}` gives a button a one-line tooltip on its key, and `button:set_tooltip(text)`
@@ -1063,8 +1071,12 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
 
   - **What a label is:**
     - it opens after `delay`, where any tooltip of a UI key opens;
-    - it is one line: the words in the kind's `text`, in font `small`, with numbers in `number` (the 3 of `speed 3`). The words
-      are plain, never a term or a link;
+    - it is one line in font `small`, drawn whole in the kind's `text` colour. The words are plain, never a term or a link;
+    - **no number in it is coloured** (CK-289, 2026-11-13; spec sha256 `e5f580df…`): the 3 of `speed 3` is not green, and
+      nothing in a label is red past a limit. Until CK-289 a label's numbers were in `number`, as a lockable tooltip's still
+      are. The owner (`owner-direction-round-end-manager-r1.md`, sha256 `a2599f61…`): "numbers in labels are green, but i would
+      think we shouldnt have this, any label with numbers is likely to require the tooltip treatment". `speed 1` to `speed 5`
+      stay labels: making a label that carries a number a lockable tooltip is left to the owner and is not built;
     - **it never locks:** the timer does not run for it, a middle press does not lock it, and in every `lock` setting no lock
       bar is drawn on it;
     - **it takes no input:** it has no panel hit and no span hits, so a press at a point it covers reaches the control under it;
@@ -1088,14 +1100,24 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
       has a lockable source is as before: an open tooltip keeps the source it opened with until it closes.
     - **Removal:** `tooltip.detach` (and `button:set_tooltip(nil)`) on a key with a label closes its open label and clears its
       pending one in that call. So a shortened tab's open label closes when the tab comes to show its full name.
-  - **Not settled by the owner** (the spec listed them as open points and built its defaults; no owner record answers them):
-    Escape skipping labels; every label waiting the full `delay`, also when the pointer moves straight from one labelled control
-    to the next; and no separate delay setting for labels.
+  - **The owner on the spec's open points** (2026-11-13, `owner-direction-round-end-manager-r1.md`). The spec listed them as
+    open and built its defaults. The owner: "for the label-tooltip defaults, i agree, labels are different than tooltips and
+    should not behave the same such as ignoring escape, with a label open escape should just bypass it, while with a tooltip
+    the escape applies to that."
+    - **Escape skipping labels** is confirmed, as built.
+    - **Numbers in a label** were changed by CK-289 (above).
+    - **Not settled:** every label waiting the full `delay`, also when the pointer moves straight from one labelled control to
+      the next. The owner: "label wait full delay i dont understand, labels should dissapear with the mouse hover leaving". A
+      label does close when the pointer leaves its target; the wait before the next label opens is still the spec's default.
+    - **No separate delay setting for labels** is also the spec's default. The owner's record does not name it.
   - **Tests:** the UI rig (`apps/codekarl/src/readout_tests.rs`) has the call's refusals, a label under each `lock` setting, the
     changes of kind, live words, and a label beside a locked tooltip with Escape. The real chain (`ui_link/group_tests.rs`) has:
     - `a_speed_label_has_no_hit_and_the_real_hit_route_delivers_the_underlying_press`: with the label `speed 1` open, a press at
       a point that the label and speed box 2 both cover is handled by speed box 2;
-    - `the_open_pause_label_reads_play_after_a_game_time_update`.
+    - `the_open_pause_label_reads_play_after_a_game_time_update`;
+    - `a_speed_label_draws_its_one_line_in_the_tooltip_text_colour_with_no_number_colour` (CK-289): every run drawn for the
+      open label `speed 3` has the tooltip text colour, and none the number or the over-limit colour. The test reads the three
+      colours from the theme in the same VM.
 - **The price breakdown** (CK-272) is the shared class `price`, with `args = {place = <id>, good = <id>}`, defined in
   `lib/location.lua`.
   - **Reaching it:** in a price row's tooltip the price was a link to it, so it opened from the locked tooltip. The owner asked
@@ -1355,7 +1377,13 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
   settings, the loader and the shipped entries (92 keys, three exact literals, an entry for every id of the game data);
   `ui_link.rs` tests the routing of `map_down`. The location classes are tested in `widget_tests.rs` with a fixture place view, and
   `ui_link/group_tests.rs` hovers a place through the real `main.lua`. The labels, the tooltip-only rows and the herd tooltips are
-  tested in `widget_tests.rs`, `ui_link/list_tests.rs` and `ui_link/location_tests.rs`.
+  tested in `widget_tests.rs`, `ui_link/list_tests.rs` and `ui_link/location_tests/` (`tooltips.rs`).
+  - **`ui_link/location_tests/` is a directory** (CK-291, 2026-11-13). Until then it was one file, `ui_link/location_tests.rs`,
+    of 4762 lines, and two slices adding tests to it conflicted when their patches were replayed, three times on 2026-11-13.
+    - `mod.rs` holds the shared fixture and helpers, and no test.
+    - Nine files hold the 67 tests by subject: `selectors_tabs.rs`, `market_table.rs`, `tooltips.rs`, `cards.rs`, `rows.rs`,
+      `panel_layout_refresh.rs`, `mode_bar.rs`, `ledger.rs` and `scale_limits.rs`.
+    - The split moved the tests and changed none: each kept its name and its body.
   - **The UI rig's `render.set_hit`** (the recording stand-in in `apps/codekarl/src/readout_tests.rs`) refuses a key the real
     call refuses, with the same message (CK-279). Before that it accepted any string, which is how a span key holding `:` passed
     the tests and crashed the game. Since CK-281 every `render` and `texture` stand-in of the rig calls the real function
