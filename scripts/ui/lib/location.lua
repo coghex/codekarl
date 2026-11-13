@@ -75,12 +75,25 @@ local function view()
   return self
 end
 
-local function put_text(result, group, x, y, content, colour, align)
-  local line = text.line(0, 0, group, colour or theme.colour("text"))
-  text.set(line, content)
+local function put_text(result, group, x, y, content, colour, align, number_colour)
+  local base = colour or theme.colour("text")
+  local line = text.line(0, 0, group, base)
+  text.set_segments(line, text.colour_numbers(content, base, number_colour or theme.colour("number")))
   if align == "right" then x = x - line.width end
   text.move(line, x * P, y * P)
   return result:add({destroy = function() text.destroy(line) end})
+end
+
+local function put_term_text(result, group, x, y, segments, align, number_colour)
+  local line = text.line(0, 0, group, theme.colour("text"))
+  text.set_segments(line, text.colour_segments(segments, number_colour or theme.colour("number"), theme.colour("term")))
+  if align == "right" then x = x - line.width end
+  text.move(line, x * P, y * P)
+  return result:add({destroy = function() text.destroy(line) end})
+end
+
+local function term(text_value)
+  return {text = text_value, term = true}
 end
 
 local function put_quad(result, group, x, y, width, height, colour)
@@ -261,26 +274,27 @@ local function pop_card(pop, place_id, pop_index)
       result:add(frame.new{x = x, y = y, width = width, height = 61 * P, cut = 3, corners = "tl_br", fill = colours.fill, line = colours.outline, group = group})
       put_quad(result, group, dx + 1, dy + 4, 2, 57, colour)
       draw_icon(result, group, "pops", dx + 5, dy + 3, colour)
-      put_text(result, group, dx + 17, dy + 3, pop.kind, theme.colour("text"))
+      put_term_text(result, group, dx + 17, dy + 3, {term(pop.kind)})
       put_text(result, group, dx + width // P - 5, dy + 3, tostring(pop.workers + pop.dependents), theme.colour("text"), "right")
-      put_text(result, group, dx + 17, dy + 14, pop.culture .. " · " .. pop.religion, theme.colour("dim"))
+      put_term_text(result, group, dx + 17, dy + 14,
+        {term(pop.culture), {text = " · ", colour = theme.colour("dim")}, term(pop.religion)})
       put_text(result, group, dx + width // P - 5, dy + 14,
         string.format("%dw %dd %s", pop.workers, pop.dependents, trend(pop.births, pop.deaths)), theme.colour("dim"), "right")
-      put_text(result, group, dx + 5, dy + 25, "food", theme.colour("dim"))
+      put_term_text(result, group, dx + 5, dy + 25, {term("food")})
       draw_bar(result, group, dx + 29, dy + 30, 40, math.min(pop.food_days, 120), 120)
       put_text(result, group, dx + 73, dy + 25, pop.food_days .. "d", theme.colour("text"))
-      put_text(result, group, dx + 105, dy + 25, "job", theme.colour("dim"))
+      put_term_text(result, group, dx + 105, dy + 25, {term("job")})
       draw_bar(result, group, dx + 123, dy + 30, 40, pop.employed, pop.workers)
-      put_text(result, group, dx + 5, dy + 37, "needs", theme.colour("dim"))
+      put_term_text(result, group, dx + 5, dy + 37, {term("needs")})
       for index, need in ipairs({pop.necessities, pop.niceties, pop.luxuries}) do
         draw_bar(result, group, dx + 35 + (index - 1) * 12, dy + 42, 10, math.max(0, math.min(need, 1000)), 1000)
       end
-      put_text(result, group, dx + 73, dy + 37, "mood", theme.colour("dim"))
+      put_term_text(result, group, dx + 73, dy + 37, {term("mood")})
       local mood = (pop.satisfaction >= 0 and "+" or "") .. pop.satisfaction
-      put_text(result, group, dx + 101, dy + 37, mood, pop.satisfaction > 0 and theme.colour("good") or theme.colour("text"))
-      put_text(result, group, dx + 5, dy + 48, "housing", theme.colour("dim"))
+      put_text(result, group, dx + 101, dy + 37, mood, theme.colour("text"))
+      put_term_text(result, group, dx + 5, dy + 48, {term("housing")})
       put_text(result, group, dx + 47, dy + 48, (pop.basic_housing or 0) .. " + " .. (pop.makeshift_housing or 0), theme.colour("text"))
-      put_text(result, group, dx + 105, dy + 48, "crowd", theme.colour("dim"))
+      put_term_text(result, group, dx + 105, dy + 48, {term("crowd")})
       put_text(result, group, dx + 135, dy + 48,
         pop.crowding_pm ~= false and pop.crowding_pm ~= nil and percent(pop.crowding_pm) or "—", theme.colour("text"))
       return result
@@ -350,10 +364,21 @@ local function building_card(building, place_id, building_index)
       local height = (#building.herds > 0 and 50 or 39)
       result:add(frame.new{x = x, y = y, width = width, height = height * P, cut = 3, corners = "tl_br", fill = colours.fill, line = colours.outline, group = group})
       if icon ~= nil then draw_icon(result, group, icon, dx + 5, dy + 3, theme.colour("text")) end
-      put_text(result, group, dx + 17, dy + 3, building.kind, theme.colour("text"))
-      put_text(result, group, dx + w - 5, dy + 3, "wage " .. milli(building.wage), theme.colour("dim"), "right")
-      put_text(result, group, dx + 17, dy + 14, methods_text(building), theme.colour("dim"))
-      put_text(result, group, dx + w - 5, dy + 14, "housing " .. (building.housing_occupants or 0), theme.colour("dim"), "right")
+      put_term_text(result, group, dx + 17, dy + 3, {term(building.kind)})
+      put_term_text(result, group, dx + w - 5, dy + 3,
+        {term("wage "), {text = milli(building.wage), colour = theme.colour("dim")}}, "right")
+      local method_segments = {}
+      for index, method in ipairs(building.methods) do
+        if index > 1 then method_segments[#method_segments + 1] = {text = ", ", colour = theme.colour("dim")} end
+        method_segments[#method_segments + 1] = term(method.id)
+        method_segments[#method_segments + 1] = {text = " " .. method.levels, colour = theme.colour("dim")}
+      end
+      if #method_segments == 0 then
+        method_segments[1] = {text = "storage", colour = theme.colour("dim")}
+      end
+      put_term_text(result, group, dx + 17, dy + 14, method_segments)
+      put_term_text(result, group, dx + w - 5, dy + 14,
+        {term("housing "), {text = tostring(building.housing_occupants or 0), colour = theme.colour("dim")}}, "right")
       put_text(result, group, dx + 5, dy + 25, "staff", theme.colour("dim"))
       draw_bar(result, group, dx + 33, dy + 30, 40, building.filled, building.filled + building.open)
       put_text(result, group, dx + 77, dy + 25, building.filled .. "/" .. (building.filled + building.open), theme.colour("text"))
@@ -451,12 +476,28 @@ local function pop_row(pop, open, place_id, pop_index)
       put_quad(result, group, dx, dy, width // P, 13, open and theme.kind("place").outline or theme.colour("band"))
       put_quad(result, group, dx, dy, 2, 13, type_colour(pop.kind))
       draw_icon(result, group, "pops", dx + 4, dy + 1, open and ink or type_colour(pop.kind))
-      put_text(result, group, dx + 16, dy + 1, pop.kind .. " " .. pop.culture, ink)
-      put_text(result, group, dx + width // P - 64, dy + 1, tostring(pop.workers + pop.dependents), ink, "right")
-      put_text(result, group, dx + width // P - 32, dy + 1, pop.food_days .. "d", ink, "right")
-      put_text(result, group, dx + width // P - 3, dy + 1, (pop.satisfaction >= 0 and "+" or "") .. pop.satisfaction, ink, "right")
+      local number_colour = open and theme.kind("place").highlight_number or theme.colour("number")
       if open then
-        for index, line in ipairs(lines) do put_text(result, group, dx + 16, dy + 13 + (index - 1) * 12, line, theme.colour("text")) end
+        put_text(result, group, dx + 16, dy + 1, pop.kind .. " " .. pop.culture, ink, nil, number_colour)
+      else
+        put_term_text(result, group, dx + 16, dy + 1, {term(pop.kind .. " " .. pop.culture)})
+      end
+      put_text(result, group, dx + width // P - 64, dy + 1, tostring(pop.workers + pop.dependents), ink, "right", number_colour)
+      put_text(result, group, dx + width // P - 32, dy + 1, pop.food_days .. "d", ink, "right", number_colour)
+      put_text(result, group, dx + width // P - 3, dy + 1, (pop.satisfaction >= 0 and "+" or "") .. pop.satisfaction, ink, "right", number_colour)
+      if open then
+        for index, line in ipairs(lines) do
+          local y = dy + 13 + (index - 1) * 12
+          if index == 1 then
+            put_term_text(result, group, dx + 16, y,
+              {term(pop.culture), {text = " · ", colour = theme.colour("text")}, term(pop.religion)})
+          elseif index == 4 then
+            put_term_text(result, group, dx + 16, y,
+              {term("needs "), {text = percent(pop.necessities) .. " " .. percent(pop.niceties) .. " " .. percent(pop.luxuries)}})
+          else
+            put_text(result, group, dx + 16, y, line, theme.colour("text"))
+          end
+        end
       end
       return result
     end,
@@ -538,9 +579,14 @@ local function building_row(building, open, place_id, building_index)
       put_quad(result, group, dx, dy, width // P, 13, open and theme.kind("place").outline or theme.colour("band"))
       local icon = building_icon(building.kind)
       if icon ~= nil then draw_icon(result, group, icon, dx + 3, dy + 1, ink) end
-      put_text(result, group, dx + 16, dy + 1, building.kind, ink)
-      put_text(result, group, dx + width // P - 44, dy + 1, building.filled .. "/" .. (building.filled + building.open), ink, "right")
-      put_text(result, group, dx + width // P - 3, dy + 1, milli(building.wage), ink, "right")
+      local number_colour = open and theme.kind("place").highlight_number or theme.colour("number")
+      if open then
+        put_text(result, group, dx + 16, dy + 1, building.kind, ink, nil, number_colour)
+      else
+        put_term_text(result, group, dx + 16, dy + 1, {term(building.kind)})
+      end
+      put_text(result, group, dx + width // P - 44, dy + 1, building.filled .. "/" .. (building.filled + building.open), ink, "right", number_colour)
+      put_text(result, group, dx + width // P - 3, dy + 1, milli(building.wage), ink, "right", number_colour)
       if open then
         for index, line in ipairs(lines) do
           local y = dy + 13 + (index - 1) * 12
@@ -549,7 +595,21 @@ local function building_row(building, open, place_id, building_index)
             draw_goods_icon(result, group, herd.species, dx + 16, y + 1)
             put_text(result, group, dx + 28, y, herd.head .. " / " .. herd.maximum, theme.colour("text"))
           else
-            put_text(result, group, dx + 16, y, line, theme.colour("text"))
+            if index == 1 then
+              local segments = {}
+              for method_index, method in ipairs(building.methods) do
+                if method_index > 1 then segments[#segments + 1] = {text = ", ", colour = theme.colour("text")} end
+                segments[#segments + 1] = term(method.id)
+                segments[#segments + 1] = {text = " " .. method.levels, colour = theme.colour("text")}
+              end
+              if #segments == 0 then segments[1] = {text = "storage", colour = theme.colour("text")} end
+              put_term_text(result, group, dx + 16, y, segments)
+            elseif index == #lines then
+              put_term_text(result, group, dx + 16, y,
+                {term("housing "), {text = "occupants " .. tostring(building.housing_occupants or 0)}})
+            else
+              put_text(result, group, dx + 16, y, line, theme.colour("text"))
+            end
           end
         end
       end
@@ -751,7 +811,10 @@ function location.rows(lines, width)
           if source.term ~= nil then return tooltip.explanation(source.term), tostring(cell) end
           return tooltip.content(source.class, {place = place_id}), tostring(cell)
         end
-        for _, cell in ipairs(current.cells) do cell.source = nil end
+        for _, cell in ipairs(current.cells) do
+          cell.colour = cell.source ~= nil and cell.source.term ~= nil and theme.colour("term") or theme.colour("text")
+          cell.source = nil
+        end
         rows[#rows + 1] = current
         current = {cells = {}, tooltip_place = line.place}
         current_width = 0
@@ -1052,6 +1115,7 @@ render = function(self, keep_scroll)
       rows = count,
       items = rows,
       tooltips = true,
+      numbers = true,
     }
   end
 end

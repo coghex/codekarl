@@ -199,6 +199,7 @@ mod tests {
         assert_eq!(theme.colour("lock"), Some("#f0a830"));
         assert_eq!(theme.colour("term"), Some("#92ddea"));
         assert_eq!(theme.colour("number"), Some("#5fb35a"));
+        assert_eq!(theme.colour("good"), None);
         let place = theme.kind("place").expect("the place kind");
         assert_eq!(place.get("divider").map(String::as_str), Some("#c9932e"));
         assert_eq!(place.get("outline").map(String::as_str), Some("#4fb3c8"));
@@ -208,10 +209,28 @@ mod tests {
             place.get("pressed_text").map(String::as_str),
             Some("#15110a")
         );
-        assert_eq!(place.len(), 5);
+        assert_eq!(
+            place.get("highlight_number").map(String::as_str),
+            Some("#663069")
+        );
+        assert_eq!(place.len(), 6);
         let window = theme.kind("window").expect("the window kind");
         assert_eq!(window.get("outline").map(String::as_str), Some("#6e130f"));
         assert_eq!(window.get("hot").map(String::as_str), Some("#a8261c"));
+        assert_eq!(
+            window.get("highlight_number").map(String::as_str),
+            Some("#d4a8d7")
+        );
+        for name in ["time_bar", "places_bar"] {
+            assert_eq!(
+                theme
+                    .kind(name)
+                    .and_then(|kind| kind.get("highlight_number"))
+                    .map(String::as_str),
+                Some("#d4a8d7"),
+                "{name} highlight number"
+            );
+        }
         let tooltip = theme.kind("tooltip").expect("the tooltip kind");
         assert_eq!(tooltip.get("outline").map(String::as_str), Some("#ece3cb"));
         assert_eq!(
@@ -286,20 +305,36 @@ mod tests {
             call("colour", &text("body")).unwrap(),
             vec![ConfigValue::String("#15110a".into())]
         );
+        assert!(call("colour", &text("good")).is_err());
         let first = call("kind", &text("place")).unwrap();
         let ConfigValue::Table(keys) = &first[0] else {
             panic!("a table")
         };
         assert_eq!(
             keys.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["divider", "hot", "outline", "pressed_text", "title_text"]
+            [
+                "divider",
+                "highlight_number",
+                "hot",
+                "outline",
+                "pressed_text",
+                "title_text"
+            ]
         );
         assert_eq!(keys["divider"], ConfigValue::String("#c9932e".into()));
-        // No defaults are applied: `window` has just its two keys.
+        assert_eq!(
+            keys["highlight_number"],
+            ConfigValue::String("#663069".into())
+        );
+        // No defaults are applied: `window` has only its specified keys.
         let ConfigValue::Table(window) = &call("kind", &text("window")).unwrap()[0] else {
             panic!("a table")
         };
-        assert_eq!(window.len(), 2);
+        assert_eq!(window.len(), 3);
+        assert_eq!(
+            window["highlight_number"],
+            ConfigValue::String("#d4a8d7".into())
+        );
         // Each call builds the result anew.
         assert_eq!(call("kind", &text("place")).unwrap(), first);
         for (function, bad) in [
