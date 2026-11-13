@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
 POLICY = "codekarl-v1"
-TERMINAL = {"completed", "declined"}
+TERMINAL = {"completed", "declined", "flushed"}
 QUIET = {"status", "ack"}
 KNOWN_INFORMATIONAL = {"status", "ack", "done", "declined", "answer", "decision"}
 KNOWN_ACTIONABLE = {"request", "question", "blocked", "interrupt"}
@@ -108,6 +108,12 @@ class Observation(TypedDict):
     at: float
 
 
+class InboxEvent(TypedDict):
+    state: str
+    at: float
+    detail: str
+
+
 class InboxItem(TypedDict):
     """One inbox row with its message and routing; `observations` only when history is asked for."""
 
@@ -119,6 +125,7 @@ class InboxItem(TypedDict):
     payload: Entry
     routing: Routing
     observations: NotRequired[list[Observation]]
+    events: NotRequired[list[InboxEvent]]
 
 
 class Diagnostic(TypedDict):
@@ -348,6 +355,7 @@ OBSERVATION_COLUMNS = {
     "detail": STR,
     "at": NUMBER,
 }
+EVENT_COLUMNS = {"state": STR, "at": NUMBER, "detail": STR}
 UNCONFIGURED = "Codekarl chat is not configured; run the accepted chat installer"
 
 
@@ -789,6 +797,48 @@ class Inbox:
             ).fetchone()
             return bool(row) and _cell_text(row, "state", f"inbox {mid}") in {"queued", "delivered"}
 
+    def flush(
+        self, recipient: str, by: str, reason: str, dry_run: bool = False
+    ) -> tuple[list[str], list[dict[str, str]]]:
+        """Retire only queued/delivered informational rows, atomically and without ack effects."""
+        flushed: list[str] = []
+        kept: list[dict[str, str]] = []
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(
+                "SELECT inbox.message, inbox.state, messages.payload, messages.routing "
+                "FROM inbox JOIN messages ON inbox.message=messages.id "
+                "WHERE inbox.recipient=? AND inbox.state IN ('queued','delivered') "
+                "ORDER BY inbox.updated, inbox.message",
+                (recipient,),
+            ).fetchall()
+            for row in rows:
+                mid = _cell_text(row, "message", "flush candidate")
+                payload = load_entry(_stored(row["payload"], f"message {mid} payload"))
+                routing = load_routing(_stored(row["routing"], f"message {mid} routing"))
+                kind = message_kind(payload["text"])
+                interrupt = (
+                    routing.get("interrupt", False)
+                    or payload["text"].lstrip().startswith("!!")
+                    or kind == "interrupt"
+                )
+                if routing["actionable"] or interrupt or kind in KNOWN_ACTIONABLE:
+                    kept.append({"message": mid, "kind": "interrupt" if interrupt else kind})
+                    continue
+                flushed.append(mid)
+                if not dry_run:
+                    at = time.time()
+                    db.execute(
+                        "UPDATE inbox SET state='flushed', updated=? "
+                        "WHERE message=? AND recipient=? AND state IN ('queued','delivered')",
+                        (at, mid, recipient),
+                    )
+                    db.execute(
+                        "INSERT INTO events(message,recipient,state,at,detail) VALUES (?,?,?,?,?)",
+                        (mid, recipient, "flushed", at, f"flushed by {by}: {reason}"),
+                    )
+        return flushed, kept
+
     def outcome(self, item: Mapping[str, object], ok: bool | None, detail: object) -> None:
         """Record one delivery observation; task state only ever advances, never reopens."""
         if not item.get("ck_policy"):
@@ -869,6 +919,7 @@ class Inbox:
                 FROM inbox JOIN messages ON inbox.message = messages.id
                 ORDER BY inbox.updated, inbox.message, inbox.recipient""").fetchall()
             observed: dict[tuple[str, str], list[Observation]] = {}
+            events: dict[tuple[str, str], list[InboxEvent]] = {}
             if history:
                 for item in db.execute(
                     "SELECT message, recipient, kind, ok, detail, at FROM observations ORDER BY id"
@@ -887,10 +938,25 @@ class Inbox:
                             "at": cast(float, seen["at"]),  # checked as a number above
                         }
                     )
+                for event in db.execute(
+                    "SELECT message, recipient, state, at, detail FROM events ORDER BY id"
+                ):
+                    seen = _columns(event, "inbox event", EVENT_COLUMNS)
+                    key = (
+                        _cell_text(event, "message", "inbox event"),
+                        _cell_text(event, "recipient", "inbox event"),
+                    )
+                    events.setdefault(key, []).append(
+                        {
+                            "state": _cell_text(event, "state", "inbox event"),
+                            "at": cast(float, seen["at"]),
+                            "detail": _cell_text(event, "detail", "inbox event"),
+                        }
+                    )
         result: list[InboxItem] = []
         for row in rows:
             record = _columns(row, "inbox row", INBOX_COLUMNS, trailing=2)
-            for computed in ("payload", "routing", "observations"):
+            for computed in ("payload", "routing", "observations", "events"):
                 if computed in record:  # these are built here; a column must not stand in for one
                     raise _fail(
                         "inbox row",
@@ -920,6 +986,11 @@ class Inbox:
                     item["observations"] = observed.get(
                         (str(record["message"]), str(record["recipient"])), []
                     )
+                    event_history = events.get(
+                        (str(record["message"]), str(record["recipient"])), []
+                    )
+                    if any(event["state"] == "flushed" for event in event_history):
+                        item["events"] = event_history
                 result.append(item)
         return result
 
