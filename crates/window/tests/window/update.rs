@@ -87,15 +87,15 @@ fn quit_after_updates(rig: &mut Rig, count: usize) {
     }));
 }
 
-/// The fake clock follows the loop's deadlines, except while an update is outstanding (posted, not yet answered): then it waits for
-/// the test to move it, as the real clock would not run ahead of a test that is holding the UI.
-fn hold_the_clock_while_an_update_is_outstanding(rig: &mut Rig, clock: &FakeClock) {
+/// The fake clock follows deadlines while no update is outstanding, but stops once `freeze_after_updates` have been posted.
+/// Before that, it waits for the test to move it while an update is outstanding, as a held UI would hold the real clock's progress.
+fn hold_the_clock_for_updates(rig: &mut Rig, clock: &FakeClock, freeze_after_updates: usize) {
     let ui = Arc::clone(&rig.ui);
     let clock = clock.clone();
     rig.backend.deadline_hook = Some(Box::new(move |deadline| {
         let updates = extract_updates(&ui.posted()).len();
         let answered = ui.answered_updates.load(Ordering::SeqCst);
-        if updates <= answered {
+        if updates < freeze_after_updates && updates <= answered {
             clock.set(deadline);
         }
     }));
@@ -321,7 +321,7 @@ fn a_delayed_answer_coalesces_missed_ticks_into_one_update_with_elapsed_delta() 
                 updates_cfg.control().set(true);
                 rig.settings = LoopSettings::default().with_updates(updates_cfg);
                 rig.backend.deadline_supported = true;
-                hold_the_clock_while_an_update_is_outstanding(&mut rig, &clock);
+                hold_the_clock_for_updates(&mut rig, &clock, 2);
                 lock(&rig.presenter.reports).push_back(PresenterReport::FirstFrameQueued);
                 let ui = Arc::clone(&rig.ui);
                 let quit = Arc::clone(&rig.quit);
@@ -383,7 +383,8 @@ fn a_delayed_answer_counts_the_coalesced_opportunities_and_the_delivered_updates
             updates_cfg.control().set(true);
             rig.settings = LoopSettings::default().with_updates(updates_cfg);
             rig.backend.deadline_supported = true;
-            hold_the_clock_while_an_update_is_outstanding(&mut rig, &clock);
+            // The clock stops at update 2's post, so answering it cannot make a third deadline due before quit.
+            hold_the_clock_for_updates(&mut rig, &clock, 2);
             lock(&rig.presenter.reports).push_back(PresenterReport::FirstFrameQueued);
             let ui = Arc::clone(&rig.ui);
             let quit = Arc::clone(&rig.quit);
