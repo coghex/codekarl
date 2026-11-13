@@ -279,22 +279,6 @@ function announce_main_tooltips()
       date_readout_rect.width, date_readout_rect.height))
   end
 end
-function note_tooltip_links(name, key)
-  local source = tooltip_sources[key]
-  if type(source) ~= "function" then note("tooltip_link " .. name .. " <none>"); return end
-  local content = source(0, 0)
-  for _, line in ipairs(content or {}) do
-    if type(line) == "table" then
-      for _, span in ipairs(line) do
-        if type(span) == "table" and span.class ~= nil then
-          note("tooltip_link " .. name .. " " .. span.class .. " " .. span.args.place .. " " .. span.args.good .. " " .. span.text)
-          return
-        end
-      end
-    end
-  end
-  note("tooltip_link " .. name .. " <none>")
-end
 function note_price_content(name, place, good)
   tooltip.refresh()
   local lines = tooltip.content("price", {place = place, good = good})
@@ -409,7 +393,8 @@ local function row_text(item)
     cells[#cells + 1] = string.format("%s@%g:%s:%s", cell.text, cell.x, cell.align, cell.colour or "-")
   end
   local icon = item.icon and (item.icon.image or item.icon.name) or "-"
-  return table.concat(cells, ",") .. ";stripe=" .. (item.stripe or "-") .. ";icon=" .. icon
+  local bar = item.bar ~= nil and string.format(";bar=%g,%g,%s", item.bar.x, item.bar.width, tostring(item.bar.value)) or ""
+  return table.concat(cells, ",") .. ";stripe=" .. (item.stripe or "-") .. ";icon=" .. icon .. bar
 end
 function rows_text(items)
   local rows = {}
@@ -894,7 +879,7 @@ fn switching_location_tabs_keeps_one_selector_and_close_reopen_starts_clean() {
     );
 }
 
-const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|housing: basic 80/100, makeshift 10/20|crowding: 50%|food: 215 days|building land: 4200 / 24200 m²|storage: 5400 / 86400 L|lost to overflow last month: 0|prices (base):|100 (100)@16:left:-;stripe=-;icon=goods/oats|2.5 (2)@16:left:-;stripe=-;icon=goods/ale";
+const LOCATION_ROWS: &str = "people: 120|  workers: 80|  dependents: 40|housing: basic 80/100, makeshift 10/20|crowding: 50%|food: 215 days|building land: 4200 / 24200 m²|storage: 5400 / 86400 L|lost to overflow last month: 0|good@16:left:#92ddea,price@212:right:#92ddea,base@238:right:#92ddea,buy/sell@246:left:#9a927e;stripe=-;icon=-|oats@16:left:#92ddea,100@212:right:-,100@238:right:-;stripe=-;icon=goods/oats;bar=246,46,nil|ale@16:left:#92ddea,2.5@212:right:-,2@238:right:-;stripe=-;icon=goods/ale;bar=246,46,nil";
 
 #[test]
 fn the_time_bar_and_location_tab_split_terms_numbers_and_ordinary_punctuation() {
@@ -952,54 +937,105 @@ fn the_time_bar_and_location_tab_split_terms_numbers_and_ordinary_punctuation() 
 }
 
 #[test]
-fn prices_use_fixed_goods_icons_and_unlisted_goods_keep_their_name() {
-    let mut rig = rig(&[
-        "VIEWS[1].rowan.prices = {price('oats', 96500, 100), price('peas_beans', 1200, 2), price('seabirds', 750, 1), price('moonstone', 4500, 4)}; time(1, 1) select_place('rowan', 'Rowan'); note_tooltip('oats', list_object.row_keys[11]); note_tooltip('peas_beans', list_object.row_keys[12]); note_tooltip('seabirds', list_object.row_keys[13])",
-    ]);
+fn market_table_uses_the_spec_columns_colours_and_cell_specific_sources() {
+    let mut rig = rig_at(
+        &[r"VIEWS[1].rowan.prices = {
+  price('oats', 96500, 100, 820, 610), price('peas_beans', 1200, 2, 0, 140),
+  price('seabirds', 750, 1, 510, 505), price('moonstone', 4500, 4),
+  price('peas_beans', 123456789000, 8)
+}; time(1, 1); select_place('rowan', 'Rowan')
+local line = list_object
+for _, item in ipairs(line.items) do
+  if item.cells and item.cells[2] and item.cells[2].text == '123456789' then
+    note('clipped_name=' .. item.cells[1].text)
+    note('clipped_name_fits=' .. tostring(font.layout(item.cells[1].text).width <= 124 - font.layout(item.cells[2].text).width - 4 - 16))
+  end
+end
+local function x_for(value) return line.origin_x + line.x + value end
+local function row_index(label)
+  for index, item in ipairs(line.items) do
+    if item.cells ~= nil and item.cells[1] ~= nil and item.cells[1].text == label then return index end
+  end
+end
+local function y_for(row) return line.origin_y + line.y - line.s + row * 26 - 13 end
+local header, oats = row_index('good'), row_index('oats')
+note_tooltip('header_good', line.row_keys[header], x_for(16 * P + 1), y_for(header))
+note_tooltip('header_price', line.row_keys[header], x_for(124 * P - 1), y_for(header))
+note_tooltip('header_buy', line.row_keys[header], x_for(158 * P), y_for(header))
+note_tooltip('oats_icon', line.row_keys[oats], x_for(8), y_for(oats))
+note_tooltip('oats_name', line.row_keys[oats], x_for(16 * P + 1), y_for(oats))
+note_tooltip('oats_price', line.row_keys[oats], x_for(124 * P - 1), y_for(oats))
+note_tooltip('oats_base', line.row_keys[oats], x_for(150 * P - 1), y_for(oats))
+note_tooltip('oats_bar', line.row_keys[oats], x_for(158 * P), y_for(oats))
+note_tooltip('oats_gap', line.row_keys[oats], x_for(158 * P - 1), y_for(oats))"],
+        1274,
+        800,
+        2,
+    );
     rig.opened();
     let recorded = notes(&rig);
-    let all_rows = rows(&rig);
-    let price_rows = all_rows.last().expect("location rows");
-    assert!(
-        price_rows.contains("96.5 (100)@16:left:-;stripe=-;icon=goods/oats"),
-        "a listed good replaces its name with the 9x9 icon and x=16 price cell: {price_rows}"
-    );
+    let price_rows = rows(&rig).last().expect("location rows").clone();
+    assert!(price_rows.contains("good@16:left:#92ddea,price@124:right:#92ddea,base@150:right:#92ddea,buy/sell@158:left:#9a927e"), "header columns and term/dim colours: {price_rows}");
+    assert!(price_rows.contains("oats@16:left:#92ddea,96.5@124:right:-,100@150:right:-;stripe=-;icon=goods/oats;bar=158,46,"), "icon, text and numeric columns: {price_rows}");
+    assert!(price_rows.contains("peas and..@16:left:#92ddea,1.2@124:right:-,2@150:right:-;stripe=-;icon=goods/peas_beans;bar=158,46,"), "good titles are used in the table and clipped when the widest price needs room: {price_rows}");
     assert!(
         price_rows.contains("  moonstone 4.5 (4)"),
-        "an unlisted good keeps the prior name line: {price_rows}"
+        "a good without an icon keeps its plain line: {price_rows}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.starts_with("clipped_name=") && line.ends_with("..")),
+        "the name is clipped with an ellipsis: {recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line == "clipped_name_fits=true"),
+        "the clipped name ends at least four pixels before the widest price: {recorded:?}"
+    );
+    assert!(
+        !recorded
+            .iter()
+            .any(|line| line.contains("ui/goods/moonstone.png")),
+        "a good without an icon does not attempt a texture load: {recorded:?}"
     );
     assert!(
         recorded
             .iter()
             .any(|line| line.starts_with("goodsquad ui/goods/oats.png 8 ")
                 && line.ends_with(" 18 18 -")),
-        "the price icon uses the full-colour image at its row position: {recorded:?}"
+        "the existing good icon is retained: {recorded:?}"
     );
-    assert!(
-        !recorded
-            .iter()
-            .any(|line| line.contains("ui/goods/moonstone.png")),
-        "an unlisted good does not attempt a texture load: {recorded:?}"
-    );
-    for (name, expected) in [
-        ("oats", "oats|price 96.5, base 100"),
-        ("peas_beans", "peas and beans|price 1.2, base 2"),
-        ("seabirds", "seabirds|price 0.75, base 1"),
+    for expected in [
+        "tooltip header_good title=goods|Things that are made, kept, traded |and used up. Each good has a price |where it is traded, and meets some |of a pop's needs. part=1",
+        "tooltip header_price title=price|What a goods is worth at a location |now. It rises when more is wanted |than offered, and falls when more |is offered than wanted. part=2",
+        "tooltip header_buy  part=-",
+        "tooltip oats_icon title=oats|A grain, eaten as porridge and |bread. part=icon",
+        "tooltip oats_name title=oats|A grain, eaten as porridge and |bread. part=1",
+        "tooltip oats_price oats: price 96.5|base price 100|bought (buy orders) 820|offered (sell orders) 610 part=2",
+        "tooltip oats_base title=base price|The usual worth of a goods, around |which its price moves. part=3",
+        "tooltip oats_bar oats: price 96.5|base price 100|bought (buy orders) 820|offered (sell orders) 610 part=bar",
+        "tooltip oats_gap  part=-",
     ] {
         assert!(
-            recorded
-                .iter()
-                .any(|line| line == &format!("tooltip {name} {expected} part=-")),
-            "missing tooltip {name}: {recorded:?}"
+            recorded.iter().any(|line| line == expected),
+            "{expected}: {recorded:?}"
         );
     }
 }
 
 #[test]
-fn price_tooltip_links_to_a_refreshing_four_line_breakdown() {
+fn price_cell_tooltip_uses_the_price_class_and_its_breakdown_refreshes() {
     let mut rig = rig(&[
         r#"VIEWS[1].rowan.prices = {price("oats", 96500, 100)}; time(1, 1); select_place("rowan", "Rowan")
-note_tooltip("oats", list_object.row_keys[11]); note_tooltip_links("oats", list_object.row_keys[11])
+local function oats_row_key()
+  for index, item in ipairs(list_object.items) do
+    if item.cells and item.cells[1] and item.cells[1].text == 'oats' then return list_object.row_keys[index], index end
+  end
+end
+local oats_key, oats_index = oats_row_key()
+local oats_x = list_object.origin_x + list_object.x + 200 * P
+local oats_y = list_object.origin_y + list_object.y - list_object.s + (oats_index - 1) * lists.ROW + 10
+note_tooltip("oats", oats_key, oats_x, oats_y)
 note_price_content("empty", "rowan", "oats")
 VIEWS[2] = VIEWS[1]; VIEWS[2].rowan.prices = {price("oats", 97250, 100, 1240, 1410)}; time(2, 2)
 note_price_content("updated", "rowan", "oats")"#,
@@ -1009,14 +1045,8 @@ note_price_content("updated", "rowan", "oats")"#,
     assert!(
         recorded
             .iter()
-            .any(|line| line == "tooltip oats oats|price 96.5, base 100 part=-"),
+            .any(|line| line == "tooltip oats oats: price 96.5|base price 100|bought (buy orders) -|offered (sell orders) - part=2"),
         "row tooltip: {recorded:?}"
-    );
-    assert!(
-        recorded
-            .iter()
-            .any(|line| line == "tooltip_link oats price rowan oats 96.5"),
-        "price span link: {recorded:?}"
     );
     assert!(recorded.iter().any(|line| line == "price_content empty oats: price 96.5|base price 100|bought (buy orders) -|offered (sell orders) -"), "empty breakdown: {recorded:?}");
     assert!(recorded.iter().any(|line| line == "price_content updated oats: price 97.25|base price 100|bought (buy orders) 1240|offered (sell orders) 1410"), "refreshed breakdown: {recorded:?}");
@@ -1116,14 +1146,24 @@ capture_tips = true
 frame_test_observer = function()
   note('list_hover ' .. tostring(list_object.hover_row) .. ' pressed ' .. tostring(list_object.pressed_row))
 end
-old_price_key = list_object.row_keys[11]
-local x = list_object.origin_x + list_object.x + 10
-local y = list_object.origin_y + list_object.y + 10 * lists.ROW + 10
+local function oats_row_index()
+  for index, item in ipairs(list_object.items) do
+    if item.cells and item.cells[1] and item.cells[1].text == 'oats' then return index end
+  end
+end
+old_price_key = list_object.row_keys[oats_row_index()]
+local x = list_object.origin_x + list_object.x + 212 * P - 1
+local y = list_object.origin_y + list_object.y + (oats_row_index() - 1) * lists.ROW + 10
 note(string.format('oats_point %g %g', x, y)); note('old_price_key ' .. old_price_key)",
-        r"local x = list_object.origin_x + list_object.x + 10
-local y = list_object.origin_y + list_object.y + 10 * lists.ROW + 10
+        r"local function resized_oats_row_index()
+  for index, item in ipairs(list_object.items) do
+    if item.cells and item.cells[1] and item.cells[1].text == 'oats' then return index end
+  end
+end
+local x = list_object.origin_x + list_object.x + 212 * P - 1
+local y = list_object.origin_y + list_object.y + (resized_oats_row_index() - 1) * lists.ROW + 10
 note('old_key_live ' .. tostring(require('lib.pointer').widget(old_price_key) ~= nil))
-note(string.format('resized_oats_point %g %g', x, y)); note('resized_price_key ' .. list_object.row_keys[11])",
+note(string.format('resized_oats_point %g %g', x, y)); note('resized_price_key ' .. list_object.row_keys[resized_oats_row_index()])",
     ]);
     rig.deliver_fixture_frame_at(1800, 900, 1);
     rig.opened();
@@ -1151,20 +1191,15 @@ note(string.format('resized_oats_point %g %g', x, y)); note('resized_price_key '
         rig.deliver_fixture_frame_at(1800, 900, 1);
     }
     let opened = notes(&rig);
-    assert!(
-        opened.iter().any(|line| line == "tooltip_text oats"),
-        "tooltip did not open: {opened:?}"
-    );
     let spans = [
-        "tooltip_text oats",
-        "tooltip_text price ",
+        "tooltip_text oats: price ",
         "tooltip_text 96.5",
-        "tooltip_text , base ",
+        "tooltip_text base price ",
         "tooltip_text 100",
     ];
     assert!(
         opened.windows(spans.len()).any(|window| window == spans),
-        "price tooltip did not open the expected two lines: {opened:?}"
+        "price tooltip did not open the class breakdown: {opened:?}"
     );
 
     rig.feed(&[
@@ -1214,12 +1249,11 @@ note(string.format('resized_oats_point %g %g', x, y)); note('resized_price_key '
         rig.deliver_fixture_frame_at(1600, 900, 1);
     }
     let final_notes = notes(&rig);
-    assert!(final_notes.iter().any(|line| line == "tooltip_text oats"));
     assert!(
         final_notes
             .windows(spans.len())
             .any(|window| window == spans),
-        "resized price tooltip did not preserve its two lines: {final_notes:?}"
+        "resized price tooltip did not preserve the class breakdown: {final_notes:?}"
     );
 }
 
@@ -2099,7 +2133,7 @@ fn the_location_tab_stays_text_while_pops_and_buildings_start_as_cards_and_share
     assert_eq!(
         rows(&rig).last().map(String::as_str),
         Some(
-            "people: 0|  workers: 0|  dependents: 0|housing: basic 0/0, makeshift 0/0|crowding: 0%|food: 0 days|building land: 0 / 0 m²|storage: 0 / 0 L|lost to overflow last month: 0|prices (base):"
+            "people: 0|  workers: 0|  dependents: 0|housing: basic 0/0, makeshift 0/0|crowding: 0%|food: 0 days|building land: 0 / 0 m²|storage: 0 / 0 L|lost to overflow last month: 0|good@16:left:#92ddea,price@212:right:#92ddea,base@238:right:#92ddea,buy/sell@246:left:#9a927e;stripe=-;icon=-"
         )
     );
 }
@@ -2567,7 +2601,7 @@ fn a_place_of_nobody_has_zeroes_and_empty_pops_and_buildings() {
     assert_eq!(
         rows(&rig),
         [
-            "people: 0|  workers: 0|  dependents: 0|housing: basic 0/0, makeshift 0/0|crowding: 0%|food: 0 days|building land: 0 / 0 m²|storage: 0 / 0 L|lost to overflow last month: 0|prices (base):"
+            "people: 0|  workers: 0|  dependents: 0|housing: basic 0/0, makeshift 0/0|crowding: 0%|food: 0 days|building land: 0 / 0 m²|storage: 0 / 0 L|lost to overflow last month: 0|good@16:left:#92ddea,price@212:right:#92ddea,base@238:right:#92ddea,buy/sell@246:left:#9a927e;stripe=-;icon=-"
         ]
     );
     rig.opened();

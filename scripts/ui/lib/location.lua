@@ -714,7 +714,24 @@ local function building_row(building, open, place_id, building_index)
   }
 end
 
-local function location_lines(place)
+-- Fits a market name before its price column, retaining whole UTF-8 characters.
+local function clip_column(value, width)
+  if width <= 0 then return "" end
+  if font.layout(value).width <= width then return value end
+  if font.layout("..").width > width then return "" end
+  local count = utf8.len(value) or 0
+  while count > 0 do
+    local boundary = utf8.offset(value, count + 1)
+    local prefix = boundary ~= nil and value:sub(1, boundary - 1) or value
+    local candidate = prefix .. ".."
+    if font.layout(candidate).width <= width then return candidate end
+    count = count - 1
+  end
+  return ".."
+end
+
+local function location_lines(place, width)
+  local content_width = math.max(1, (width or 412) // P)
   local lines = {
     {tooltip_parts = {
       {text = "people: ", term = "population"}, {text = tostring(place.workers + place.dependents), class = "population"},
@@ -758,23 +775,56 @@ local function location_lines(place)
       {text = "lost to overflow last month: ", term = "overflow"},
       {text = tostring(place.overflow_lost), class = "overflow", over_limit = place.overflow_lost > 0},
     }, place = place.id},
-    "prices (base):",
   }
+  local price_right = content_width - 82
+  local base_right = content_width - 56
+  local bar_x = content_width - 48
+  local widest_price = 0
   for _, price in ipairs(place.prices) do
-    if HAS_GOODS_ICON[price.good] then
-      lines[#lines + 1] = {
-        cells = {{text = milli(price.price_milli) .. " (" .. price.base .. ")", x = 16, align = "left"}},
-        icon = {image = "goods/" .. price.good},
-        tooltip = function()
-          return {
-            good_name(price.good),
-            {"price ", {text = milli(price.price_milli), class = "price", args = {place = place.id, good = price.good}},
-              ", base " .. price.base},
-          }
+    widest_price = math.max(widest_price, font.layout(milli(price.price_milli)).width)
+  end
+  local name_width = math.max(0, price_right - widest_price - 4 - 16)
+  local header = {cells = {
+    {text = "good", x = 16, align = "left", colour = theme.colour("term")},
+    {text = "price", x = price_right, align = "right", colour = theme.colour("term")},
+    {text = "base", x = base_right, align = "right", colour = theme.colour("term")},
+    {text = "buy/sell", x = bar_x, align = "left", colour = theme.colour("dim")},
+  }}
+  header.tooltip = function(_, _, cell)
+    local explanation = ({[1] = "good", [2] = "price", [3] = "base_price"})[cell]
+    if explanation == nil then return nil end
+    return tooltip.explanation(explanation), tostring(cell)
+  end
+  lines[#lines + 1] = header
+  for _, price in ipairs(place.prices) do
+    if not HAS_GOODS_ICON[price.good] then
+      lines[#lines + 1] = "  " .. price.good .. " " .. milli(price.price_milli) .. " (" .. price.base .. ")"
+    else
+      local value
+      if price.bought ~= nil and price.offered ~= nil then
+        local largest = math.max(price.bought, price.offered)
+        value = largest > 0 and (price.offered - price.bought) / largest or 0
+      end
+      local row = {
+        cells = {
+          {text = clip_column(good_name(price.good), name_width), x = 16, align = "left", colour = theme.colour("term")},
+          {text = milli(price.price_milli), x = price_right, align = "right"},
+          {text = tostring(price.base), x = base_right, align = "right"},
+        },
+        bar = {x = bar_x, width = 46, value = value},
+        tooltip = function(_, _, cell)
+          if cell == "icon" or cell == 1 then
+            return tooltip.explanation(price.good), tostring(cell)
+          elseif cell == 2 or cell == "bar" then
+            return tooltip.content("price", {place = place.id, good = price.good}), tostring(cell)
+          elseif cell == 3 then
+            return tooltip.explanation("base_price"), tostring(cell)
+          end
+          return nil
         end,
       }
-    else
-      lines[#lines + 1] = "  " .. price.good .. " " .. milli(price.price_milli) .. " (" .. price.base .. ")"
+      row.icon = {image = "goods/" .. price.good}
+      lines[#lines + 1] = row
     end
   end
   return lines
@@ -841,11 +891,12 @@ local FORMATTERS = {
 }
 
 -- The lines of tab `key` (`"location"`, `"pops"` or `"buildings"`) for `place`, a table `game.place` returned.
-function location.lines(key, place)
+function location.lines(key, place, width)
   local format = FORMATTERS[key]
   if format == nil then
     error("location.lines: `" .. tostring(key) .. "` is not a tab", 2)
   end
+  if key == "location" then return format(place, width) end
   return format(place)
 end
 
@@ -1234,7 +1285,7 @@ render = function(self, keep_scroll)
     return
   end
   destroy_cards(self)
-  local lines = place ~= nil and location.lines(self.key, place) or {reason}
+  local lines = place ~= nil and location.lines(self.key, place, self.window.content_width) or {reason}
   local rows = location.rows(lines, self.window.content_width)
   if self.list ~= nil and not self.list.closed then
     self.list:set_items(rows)

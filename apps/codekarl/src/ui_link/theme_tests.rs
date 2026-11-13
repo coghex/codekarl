@@ -64,6 +64,8 @@ local runs = text.colour_segments({
 }, "#5fb35a", "#92ddea")
 for _, run in ipairs(runs) do window.record(run.colour .. "=" .. run.text) end
 window.record(theme.colour("over_limit"))
+window.record(theme.colour("deficit"))
+window.record(theme.colour("surplus"))
 window.record(theme.kind("place").highlight_over_limit)
 window.record(theme.kind("window").highlight_over_limit)
 "##,
@@ -77,6 +79,8 @@ window.record(theme.kind("window").highlight_over_limit)
             "#92ddea= word",
             "#5fb35a=12",
             "#f66155",
+            "#4a7fd6",
+            "#d9702b",
             "#4b0b06",
             "#f66155",
         ]

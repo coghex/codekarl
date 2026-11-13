@@ -64,6 +64,15 @@ local function checked_items(who, items)
         error(who .. ": item " .. index .. " cells must be an array", 3)
       end
       local checked = {cells = {}}
+      if item.bar ~= nil then
+        local bar = item.bar
+        if type(bar) ~= "table" or not finite(bar.x) or bar.x < 0 or bar.x ~= math.floor(bar.x)
+          or not finite(bar.width) or bar.width < 3 or bar.width ~= math.floor(bar.width)
+          or (bar.value ~= nil and (not finite(bar.value) or bar.value < -1 or bar.value > 1)) then
+          error(who .. ": item " .. index .. " bar needs whole x >= 0, whole width >= 3 and a value from -1 to 1 or nil", 3)
+        end
+        checked.bar = {x = bar.x, width = bar.width, value = bar.value}
+      end
       if item.stripe ~= nil and type(item.stripe) ~= "string" then
         error(who .. ": item " .. index .. " stripe must be a colour string", 3)
       end
@@ -225,12 +234,63 @@ local function row_widget(self, index, key)
   return row
 end
 
+local function destroy_bar(row_view)
+  local bar = row_view.bar
+  if bar == nil then return end
+  render.destroy_quad(bar.track)
+  render.destroy_quad(bar.tick)
+  if bar.fill ~= nil then render.destroy_quad(bar.fill) end
+  row_view.bar = nil
+end
+
+local function set_bar(self, row_view, row_index, spec)
+  if spec == nil then
+    destroy_bar(row_view)
+    return
+  end
+  local left = spec.x * P
+  local top = row_top(row_index)
+  local center = left + math.floor(spec.width / 2) * P
+  local bar = row_view.bar
+  if bar == nil then
+    bar = {}
+    bar.track = render.create_quad{texture = ui.texture("ui/theme/white.png"), x = left, y = top + 5 * P,
+      width = spec.width * P, height = 3 * P, group = self.rows_group, tint = theme.colour("track")}
+    bar.tick = render.create_quad{texture = ui.texture("ui/theme/white.png"), x = center, y = top + 4 * P,
+      width = P, height = 5 * P, group = self.rows_group, tint = theme.colour("dim")}
+    row_view.bar = bar
+  end
+
+  render.set_rect(bar.track, left, top + 5 * P, spec.width * P, 3 * P)
+  render.set_rect(bar.tick, center, top + 4 * P, P, 5 * P)
+
+  local n = 0
+  if spec.value ~= nil and spec.value ~= 0 then
+    local half = math.floor(spec.width / 2)
+    n = math.min(half - 1, math.floor(math.abs(spec.value) * half + 0.5))
+  end
+  if n == 0 then
+    if bar.fill ~= nil then render.destroy_quad(bar.fill); bar.fill = nil end
+    return
+  end
+  local x = spec.value < 0 and center - n * P or center + P
+  local colour = theme.colour(spec.value < 0 and "deficit" or "surplus")
+  if bar.fill == nil then
+    bar.fill = render.create_quad{texture = ui.texture("ui/theme/white.png"), x = x, y = top + 5 * P,
+      width = n * P, height = 3 * P, group = self.rows_group, tint = colour}
+  else
+    render.set_rect(bar.fill, x, top + 5 * P, n * P, 3 * P)
+    render.set_tint(bar.fill, colour)
+  end
+end
+
 local function remove_row(self, index)
   local row_view = self.lines[index]
   if row_view ~= nil then
     for _, line in ipairs(row_view.lines) do text.destroy(line) end
     if row_view.stripe ~= nil then render.destroy_quad(row_view.stripe) end
     if row_view.icon ~= nil then render.destroy_quad(row_view.icon) end
+    destroy_bar(row_view)
     self.lines[index] = nil
   end
   local key = self.row_keys[index]
@@ -295,6 +355,7 @@ local function update_visual(self, index)
     row_view.lines = {}
     if row_view.stripe ~= nil then render.destroy_quad(row_view.stripe); row_view.stripe = nil end
     if row_view.icon ~= nil then render.destroy_quad(row_view.icon); row_view.icon = nil end
+    if not is_cells then destroy_bar(row_view) end
     row_view.icon_source = nil
     row_view.is_cells = is_cells
   end
@@ -303,6 +364,7 @@ local function update_visual(self, index)
     set_cell(self, row_view, index, 1, {text = item, x = 1, align = "left", colour = self.colours.text})
     return
   end
+  set_bar(self, row_view, index, item.bar)
   for cell_index, cell in ipairs(item.cells) do set_cell(self, row_view, index, cell_index, cell) end
   if item.stripe ~= nil then
     if row_view.stripe == nil then
@@ -376,6 +438,10 @@ local function add_row(self, index)
                   or spec.align ~= "right" and lx >= right and lx < right + width
                 if inside then cell_index = cell; break end
               end
+            end
+            if cell_index == nil and item.bar ~= nil then
+              local left = item.bar.x * P
+              if lx >= left and lx < left + item.bar.width * P then cell_index = "bar" end
             end
           end
           return source(lx, ly, cell_index)
