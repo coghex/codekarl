@@ -804,10 +804,21 @@ pub(crate) fn extension_with_end(
     service: Option<ResourceService>,
     upgraded: bool,
 ) -> (Extension, RenderEnd) {
+    let shared = shared(assets, writer, headless, service, upgraded);
+    (build(&shared), RenderEnd(shared))
+}
+
+fn shared(
+    assets: Option<PathBuf>,
+    writer: SceneWriter,
+    headless: Option<Arc<HeadlessNotes>>,
+    service: Option<ResourceService>,
+    upgraded: bool,
+) -> Arc<Shared> {
     let lane = service
         .clone()
         .map(|service| LegacyLane::new(service, assets.clone().map(Assets::new)));
-    let shared = Arc::new(Shared {
+    Arc::new(Shared {
         assets: assets.map(Assets::new),
         writer: Mutex::new(Some(writer)),
         headless,
@@ -820,8 +831,7 @@ pub(crate) fn extension_with_end(
         lock_threads: Mutex::new(Vec::new()),
         #[cfg(test)]
         lane_seam: Mutex::new(None),
-    });
-    (build(&shared), RenderEnd(shared))
+    })
 }
 
 /// [`extension`], with `hold` run between the decode and the write of every `render.quad`.
@@ -847,29 +857,51 @@ pub(crate) fn extension_holding(
 /// A host function of this module: a method of [`Shared`].
 type HostCall = fn(&Shared, &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String>;
 
-fn build(shared: &Arc<Shared>) -> Extension {
+fn host_calls(shared: &Arc<Shared>) -> Vec<(&'static str, HostFunction)> {
     let function = |call: HostCall| {
         let shared = Arc::clone(shared);
         let function: HostFunction = Arc::new(move |arguments| call(&shared, arguments));
         function
     };
-    Extension::new("render")
-        .function("quad", function(Shared::quad))
-        .function("clear_quad", function(Shared::clear_quad))
-        .function("create_quad", function(Shared::create_quad))
-        .function("set_position", function(Shared::set_position))
-        .function("set_tint", function(Shared::set_tint))
-        .function("set_rect", function(Shared::set_rect))
-        .function("destroy_quad", function(Shared::destroy_quad))
-        .function("set_hit", function(Shared::set_hit))
-        .function("create_group", function(Shared::create_group))
-        .function("raise_group", function(Shared::raise_group))
-        .function("lower_group", function(Shared::lower_group))
-        .function("raise_groups", function(Shared::raise_groups))
-        .function("set_group_visible", function(Shared::set_group_visible))
-        .function("set_group_offset", function(Shared::set_group_offset))
-        .function("set_group_clip", function(Shared::set_group_clip))
-        .function("destroy_group", function(Shared::destroy_group))
+    vec![
+        ("quad", function(Shared::quad)),
+        ("clear_quad", function(Shared::clear_quad)),
+        ("create_quad", function(Shared::create_quad)),
+        ("set_position", function(Shared::set_position)),
+        ("set_tint", function(Shared::set_tint)),
+        ("set_rect", function(Shared::set_rect)),
+        ("destroy_quad", function(Shared::destroy_quad)),
+        ("set_hit", function(Shared::set_hit)),
+        ("create_group", function(Shared::create_group)),
+        ("raise_group", function(Shared::raise_group)),
+        ("lower_group", function(Shared::lower_group)),
+        ("raise_groups", function(Shared::raise_groups)),
+        ("set_group_visible", function(Shared::set_group_visible)),
+        ("set_group_offset", function(Shared::set_group_offset)),
+        ("set_group_clip", function(Shared::set_group_clip)),
+        ("destroy_group", function(Shared::destroy_group)),
+    ]
+}
+
+fn build(shared: &Arc<Shared>) -> Extension {
+    host_calls(shared)
+        .into_iter()
+        .fold(Extension::new("render"), |extension, (name, call)| {
+            extension.function(name, call)
+        })
+}
+
+/// The real render host calls for a recording test rig. The rig wraps these calls to preserve its aliases and observations;
+/// validation and scene edits remain those of the production handlers.
+#[cfg(test)]
+pub(crate) fn test_calls(
+    assets: Option<PathBuf>,
+    writer: SceneWriter,
+    headless: Option<Arc<HeadlessNotes>>,
+    service: ResourceService,
+) -> (Vec<(&'static str, HostFunction)>, RenderEnd) {
+    let shared = shared(assets, writer, headless, Some(service), false);
+    (host_calls(&shared), RenderEnd(shared))
 }
 
 #[cfg(test)]
