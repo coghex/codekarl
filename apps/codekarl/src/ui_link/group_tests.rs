@@ -716,6 +716,81 @@ end
 }
 
 #[test]
+fn a_speed_label_draws_its_one_line_in_the_tooltip_text_colour_with_no_number_colour() {
+    let main = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua"),
+    )
+    .expect("the shipped UI entry point");
+    let fixture = r#"
+local text = require("lib.text")
+local theme = require("lib.theme")
+local set = text.set
+text.set = function(line, value)
+  set(line, value)
+  if line.font_name == "small" then
+    window.record({run = value, colour = line.colour, tooltip_text = theme.kind("tooltip").text,
+      number = theme.colour("number"), over_limit = theme.colour("over_limit")})
+  end
+end
+"#;
+    let mut rig = Rig::new_fixture_body(&format!("{fixture}\n{main}"));
+    rig.opened();
+    rig.deliver_game_time(&crate::readout_tests::snapshot(0, 1, None));
+    for _ in 0..4 {
+        rig.deliver_fixture_frame();
+    }
+    let speed_three = (0..400)
+        .flat_map(|y| (0..400).map(move |x| (x, y)))
+        .find(|(x, y)| rig.key_at(f64::from(*x), f64::from(*y)).as_deref() == Some("speed_3"))
+        .expect("the real time bar publishes speed 3's control region");
+    let before = rig
+        .tables
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .len();
+    rig.feed(&[PointerEvent::Move(points(
+        f64::from(speed_three.0) + 0.25,
+        f64::from(speed_three.1) + 0.25,
+    ))]);
+    for _ in 0..40 {
+        rig.deliver_fixture_frame();
+    }
+    let tables = rig.tables.lock().unwrap_or_else(PoisonError::into_inner);
+    let text_of = |table: &ConfigValue, name: &str| match field(table, name) {
+        ConfigValue::String(value) => value.clone(),
+        other => panic!("{name} is a string: {other:?}"),
+    };
+    let drawn: Vec<&ConfigValue> = tables[before..]
+        .iter()
+        .filter(|table| matches!(table, ConfigValue::Table(fields) if fields.contains_key("run")))
+        .collect();
+    assert!(
+        drawn
+            .iter()
+            .any(|table| text_of(table, "run").contains("speed 3")),
+        "the label's one line is drawn whole: {drawn:?}"
+    );
+    for table in drawn {
+        // The colours are read from the theme in the same VM, not copied here.
+        assert_ne!(
+            text_of(table, "colour"),
+            text_of(table, "number"),
+            "no label run is in the number colour: {table:?}"
+        );
+        assert_ne!(
+            text_of(table, "colour"),
+            text_of(table, "over_limit"),
+            "no label run is in the over-limit colour: {table:?}"
+        );
+        assert_eq!(
+            text_of(table, "colour"),
+            text_of(table, "tooltip_text"),
+            "every label run is in the tooltip text colour: {table:?}"
+        );
+    }
+}
+
+#[test]
 fn the_open_pause_label_reads_play_after_a_game_time_update() {
     let main = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua"),
