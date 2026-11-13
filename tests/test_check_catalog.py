@@ -782,7 +782,7 @@ class CK263Links(unittest.TestCase):
             "scripts/ui/main.lua",
             "assets/ui/theme.toml",
             "apps/codekarl/src/ui_link.rs",
-            "apps/codekarl/src/ui_link/location_tests.rs",
+            "apps/codekarl/src/ui_link/location_tests/market_table.rs",
             "apps/codekarl/src/window_api.rs",
         ):
             choices = self.choices([path])
@@ -2417,9 +2417,19 @@ GUARDS: tuple[Guard, ...] = (
         unselected=(("scripts/ui/main.lua", OWNER_RULE),),
     ),
     Guard(
-        "apps/codekarl/src/ui_link/location_tests.rs",
+        "apps/codekarl/src/ui_link/location_tests/mod.rs",
         "rust.app",
         ("assets/scenarios/ireland-768/", "assets/game/economy.toml", "scripts/ui/main.lua"),
+    ),
+    Guard(
+        "apps/codekarl/src/ui_link/location_tests/ledger.rs",
+        "rust.app",
+        ("assets/scenarios/ireland-768/", "assets/game/economy.toml"),
+    ),
+    Guard(
+        "apps/codekarl/src/ui_link/location_tests/panel_layout_refresh.rs",
+        "rust.app",
+        ("scripts/ui/main.lua",),
     ),
     Guard(
         "apps/codekarl/src/game/tests/mod.rs",
