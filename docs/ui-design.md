@@ -116,6 +116,10 @@
 >   `jobs`, `pop_housing`, `pop_crowding`, `staff`, `store`, `wage`, `herd`).
 >
 >   That completes the tooltip topic: CK-268 to CK-278 are accepted.
+> - **A crash fixed** (CK-279, 2026-11-13, reported by the owner running the accepted game): locking a tooltip that had a link or a
+>   term ended the run, about 1.3 s after the pointer rested on a map place with the default settings. The hit key of a link or
+>   term held a `:`, which `render.set_hit` refuses, and the UI-rig tests did not catch it because their stand-in for `set_hit`
+>   accepted any key. Those keys are now short, valid and bounded, and the stand-in applies the real key rule (§3.13).
 
 ## Owner answers (2026-11-07)
 
@@ -703,6 +707,14 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     most `width − 4`, so the cut corner stays outline. It is in theme `lock`, and full on a locked tooltip.
   - **A locked tooltip** stays when the pointer leaves its target. It gets a hit region: one key for its panel, and one for each term
     and link in it. Several tooltips from unrelated targets can be locked at once.
+  - **Its hit keys** (CK-279) all satisfy `render.set_hit`'s rule, `[a-z0-9_]{1,48}`, however long the game runs:
+    - a panel's key is `tooltip_panel_<n>`, counted up from 1. The module refuses to make another once `n` reaches 2⁵³ − 1, with the
+      error `tooltip panel key space exhausted`;
+    - a term's or link's key is `tooltip_span_<id>`: one module-wide decimal counter from 0, kept as a string so it stays exact,
+      and at most 35 digits, which makes 48 characters. Past that the module refuses with `span hit key space exhausted`. It never
+      reuses an id, so two spans never share a key, in one tooltip or across tooltips;
+    - a span keeps its key for as long as it is shown, through scrolls and refreshes. The key is retired when its line leaves the
+      view, or the span goes or changes what it opens.
 - **Nesting:** resting on a term or link of a locked tooltip for `delay` opens its tooltip, which can lock in turn and has targets of
   its own. The code sets no depth limit; three levels are tested.
 - **Closing.** Open tooltips form a stack, newest on top. They are drawn in one group, which is raised above every other group on
@@ -967,6 +979,11 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
   `ui_link.rs` tests the routing of `map_down`. The location classes are tested in `widget_tests.rs` with a fixture place view, and
   `ui_link/group_tests.rs` hovers a place through the real `main.lua`. The labels, the tooltip-only rows and the herd tooltips are
   tested in `widget_tests.rs`, `ui_link/list_tests.rs` and `ui_link/location_tests.rs`.
+  - **The UI rig's `render.set_hit`** (the recording stand-in in `apps/codekarl/src/readout_tests.rs`) refuses a key the real
+    call refuses, with the same message, by calling the real check, `ck_render_2d::valid_key` (CK-279). Before that it accepted
+    any string, which is how a span key holding `:` passed the tests and crashed the game.
+  - **Through the real render extension:** `ui_link/group_tests.rs` rests the pointer on a map place until the location tooltip
+    locks, then opens its nested population tooltip (CK-279).
 
 ## 4. Packages and ownership
 
