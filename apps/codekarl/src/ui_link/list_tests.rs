@@ -1398,6 +1398,193 @@ window.on_opened(function() n = n + 1; steps[n]() end)
 }
 
 #[test]
+fn bars_validate_draw_the_centered_balance_and_refresh_or_disappear_with_items() {
+    let script = format!(
+        r#"{HEADER}
+w = windows.new{{title = "Bars", x = 100, y = 50, content_width = 200, content_height = 200}}
+local function item(value)
+  return {{cells = {{{{text = "good", x = 1, align = "left"}}}}, bar = {{x = 10, width = 46, value = value}}}}
+end
+lst = lists.new{{window = w, x = 0, y = 0, width = 100, rows = 5, items = {{item(0), item(0), item(0), item(nil), item(0)}}}}
+local n = 0
+window.on_opened(function()
+  n = n + 1
+  if n == 1 then
+    lst:set_items({{item(-210 / 820), item(1), item(-5 / 510), item(nil), item(0)}})
+  elseif n == 2 then
+    lst:set_items({{item(1)}})
+  elseif n == 3 then
+    lst:set_items({{{{cells = {{{{text = "gone", x = 1, align = "left"}}}}}}}})
+  end
+end)
+"#
+    );
+    let tint =
+        |red: u8, green: u8, blue: u8| ck_render_2d::Tint::from_straight(red, green, blue, 255);
+    let rects = |rig: &Rig, wanted| {
+        rig.sink
+            .quads()
+            .into_iter()
+            .filter(|quad| quad.tint == wanted)
+            .map(|quad| (quad.x, quad.y, quad.width, quad.height))
+            .collect::<Vec<_>>()
+    };
+    let mut rig = Rig::new_fixture_body(&script);
+    rig.opened();
+    let track = tint(0x3a, 0x33, 0x26);
+    let dim = tint(0x9a, 0x92, 0x7e);
+    let deficit = tint(0x4a, 0x7f, 0xd6);
+    let surplus = tint(0xd9, 0x70, 0x2b);
+    assert_eq!(
+        rects(&rig, track),
+        [
+            (126.0, 96.0, 92.0, 6.0),
+            (126.0, 122.0, 92.0, 6.0),
+            (126.0, 148.0, 92.0, 6.0),
+            (126.0, 174.0, 92.0, 6.0),
+            (126.0, 200.0, 92.0, 6.0),
+        ],
+        "each row carries a full-width track"
+    );
+    assert_eq!(
+        rects(&rig, dim),
+        [
+            (172.0, 94.0, 2.0, 10.0),
+            (172.0, 120.0, 2.0, 10.0),
+            (172.0, 146.0, 2.0, 10.0),
+            (172.0, 172.0, 2.0, 10.0),
+            (172.0, 198.0, 2.0, 10.0),
+        ],
+        "the tick is centred and extends one pixel beyond the track"
+    );
+    assert_eq!(rects(&rig, deficit), [(160.0, 96.0, 12.0, 6.0)]);
+    assert_eq!(rects(&rig, surplus), [(174.0, 122.0, 44.0, 6.0)]);
+    rig.opened();
+    assert_eq!(rects(&rig, deficit), []);
+    assert_eq!(rects(&rig, surplus), [(174.0, 96.0, 44.0, 6.0)]);
+    rig.opened();
+    assert_eq!(rects(&rig, track), [], "removing a bar removes its quads");
+    assert_eq!(rects(&rig, dim), []);
+}
+
+#[test]
+fn bar_hits_use_provider_units_after_scroll_and_window_movement() {
+    let script = format!(
+        r#"{HEADER}
+local tooltip = require("lib.tooltip")
+local providers = {{}}
+local attach = tooltip.attach
+tooltip.attach = function(key, source) providers[key] = source; return attach(key, source) end
+w = windows.new{{title = "Bars", x = 100, y = 50, content_width = 200, content_height = 104}}
+local function item(label)
+  return {{cells = {{{{text = "g", x = 1, align = "left"}}}}, bar = {{x = 10, width = 46, value = -1}},
+    tooltip = function(_, _, cell) return {{"price"}}, tostring(cell) end}}
+end
+lst = lists.new{{window = w, x = 0, y = 0, width = 100, rows = 4, tooltips = true,
+  items = {{item("first"), item("second"), item("third"), item("fourth"), item("fifth")}}}}
+local function report(name, key, dx)
+  local x = lst.origin_x + lst.x + dx
+  local y = lst.origin_y + lst.y - lst.s + 3
+  local _, part = providers[key](x, y)
+  note(name .. "=" .. tostring(part))
+end
+window.on_opened(function()
+  report("before", lst.row_keys[1], 10 * P - 1)
+  report("edge", lst.row_keys[1], 10 * P)
+  lst:scroll({{amount = -1, unit = "lines"}})
+  report("scrolled", lst.row_keys[2], 10 * P)
+  w:move_to(130, 60)
+  report("moved", lst.row_keys[2], 10 * P)
+end)
+"#
+    );
+    let mut rig = Rig::new_fixture_body(&script);
+    rig.opened();
+    let lines = notes(&rig);
+    for expected in ["before=nil", "edge=bar", "scrolled=bar", "moved=bar"] {
+        assert!(
+            lines.iter().any(|line| line == expected),
+            "{expected}: {lines:?}"
+        );
+    }
+}
+
+#[test]
+fn bar_admission_rejects_invalid_values_before_drawing_and_keeps_the_old_items() {
+    let script = format!(
+        r#"{HEADER}
+w = windows.new{{title = "Bars", x = 100, y = 50, content_width = 200, content_height = 200}}
+local function attempt(name, bar)
+  local ok, err = pcall(function()
+    return lists.new{{window = w, x = 0, y = 0, width = 100, rows = 1,
+      items = {{{{cells = {{{{text = "x", x = 1, align = "left"}}}}, bar = bar}}}}}}
+  end)
+  note(name .. " " .. tostring(ok) .. " " .. tostring(err))
+end
+attempt("not_table", 5)
+attempt("missing_x", {{width = 3}})
+attempt("negative_x", {{x = -1, width = 3}})
+attempt("fraction_x", {{x = 1.5, width = 3}})
+attempt("nan_x", {{x = 0/0, width = 3}})
+attempt("missing_width", {{x = 0}})
+attempt("zero_width", {{x = 0, width = 0}})
+attempt("small_width", {{x = 0, width = 2}})
+attempt("fraction_width", {{x = 0, width = 3.5}})
+attempt("infinite_width", {{x = 0, width = math.huge}})
+attempt("high", {{x = 0, width = 3, value = 1.5}})
+attempt("low", {{x = 0, width = 3, value = -2}})
+attempt("nan_value", {{x = 0, width = 3, value = 0/0}})
+attempt("text_value", {{x = 0, width = 3, value = "half"}})
+lst = lists.new{{window = w, x = 0, y = 0, width = 100, rows = 1,
+  items = {{{{cells = {{{{text = "kept", x = 1, align = "left"}}}}, bar = {{x = 1, width = 3}}}}}}}}
+local ok, err = pcall(function()
+  lst:set_items({{{{cells = {{{{text = "bad", x = 1, align = "left"}}}}, bar = {{x = -1, width = 3}}}}}})
+end)
+note("set_items " .. tostring(ok) .. " " .. tostring(err) .. " text=" .. lst.items[1].cells[1].text)
+for _, value in ipairs({{-1, 0, 1}}) do
+  local kept = lists.new{{window = w, x = 0, y = 30, width = 100, rows = 1,
+    items = {{{{cells = {{{{text = "valid", x = 1, align = "left"}}}}, bar = {{x = 0, width = 3, value = value}}}}}}}}
+  kept:destroy()
+end
+local no_value = lists.new{{window = w, x = 0, y = 60, width = 100, rows = 1,
+  items = {{{{cells = {{{{text = "valid", x = 1, align = "left"}}}}, bar = {{x = 0, width = 3}}}}}}}}
+no_value:destroy()
+"#
+    );
+    let mut rig = Rig::new_fixture_body(&script);
+    rig.opened();
+    let lines = notes(&rig);
+    for name in [
+        "not_table",
+        "missing_x",
+        "negative_x",
+        "fraction_x",
+        "nan_x",
+        "missing_width",
+        "zero_width",
+        "small_width",
+        "fraction_width",
+        "infinite_width",
+        "high",
+        "low",
+        "nan_value",
+        "text_value",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.contains(&format!("{name} false "))
+                && line.contains("list.new: item 1 bar needs whole x >= 0, whole width >= 3 and a value from -1 to 1 or nil")),
+            "{name}: {lines:?}"
+        );
+    }
+    assert!(
+        lines.iter().any(|line| line.contains("set_items false ")
+            && line.contains("list:set_items: item 1 bar needs whole x >= 0, whole width >= 3 and a value from -1 to 1 or nil")
+            && line.ends_with("text=kept")),
+        "invalid replacement leaves the old checked row in place: {lines:?}"
+    );
+}
+
+#[test]
 fn over_limit_cells_keep_their_colour_through_highlight_release_scroll_and_replacement() {
     let script = format!(
         r#"{HEADER}
