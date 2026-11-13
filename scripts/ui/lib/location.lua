@@ -196,6 +196,48 @@ local function building_icon(kind)
   return nil
 end
 
+-- Keep the card's third-line drawing and tooltip hit areas on one width-aware layout.
+local function building_line_layout(building, width)
+  local positions_width = font.layout("positions").width
+  local storage_width = font.layout("storage").width
+  local count = building.filled .. "/" .. (building.filled + building.open)
+  local count_width = font.layout(count).width
+  local fixed = 5 + positions_width + 4 + 4 + count_width + 12 + storage_width + 4 + 6
+  local room = width - fixed
+  local layout = {}
+  if room >= 34 then
+    layout.step = 1
+    layout.positions = {x = 5, width = positions_width}
+    layout.positions_bar = {x = 5 + positions_width + 4, width = 24}
+    layout.count = {x = layout.positions_bar.x + 24 + 4, width = count_width, text = count}
+    layout.storage = {x = layout.count.x + count_width + 12, width = storage_width}
+    layout.storage_bar = {x = layout.storage.x + storage_width + 4, width = room - 24}
+  elseif room >= 12 then
+    layout.step = 2
+    layout.positions = {x = 5, width = positions_width}
+    local positions_bar_width = math.floor(room / 2)
+    layout.positions_bar = {x = 5 + positions_width + 4, width = positions_bar_width}
+    layout.count = {x = layout.positions_bar.x + positions_bar_width + 4, width = count_width, text = count}
+    layout.storage = {x = layout.count.x + count_width + 12, width = storage_width}
+    layout.storage_bar = {x = layout.storage.x + storage_width + 4, width = room - positions_bar_width}
+  elseif width >= 5 + positions_width + 4 + count_width + 12 + storage_width + 6 then
+    layout.step = 3
+    layout.positions = {x = 5, width = positions_width}
+    layout.count = {x = 5 + positions_width + 4, width = count_width, text = count}
+    layout.storage = {x = layout.count.x + count_width + 12, width = storage_width}
+  elseif width >= 5 + positions_width + 4 + count_width + 6 then
+    layout.step = 4
+    layout.positions = {x = 5, width = positions_width}
+    layout.count = {x = 5 + positions_width + 4, width = count_width, text = count}
+  elseif width >= 5 + positions_width + 6 then
+    layout.step = 5
+    layout.positions = {x = 5, width = positions_width}
+  else
+    layout.step = 6
+  end
+  return layout
+end
+
 local function pop_card(pop, place_id, pop_index)
   local colour = type_colour(pop.kind)
   local card_width
@@ -331,17 +373,26 @@ local function building_card(building, place_id, building_index)
         if x < housing_left + label_width then return explanation_tip("housing", "housing") end
         return explanation_tip("housing", "housing_value")
       end
-      if within(x, y, 5, 25, 5 + font.layout("staff").width, 25 + font.layout("staff").height)
-          or within(x, y, 33, 30, 73, 33) then
-        return class_tip("staff", place_id, "building", building_index, x < 33 and "staff" or "staff_bar")
+      local line = building_line_layout(building, card_width)
+      if line.positions ~= nil and within(x, y, line.positions.x, 25,
+          line.positions.x + line.positions.width, 25 + font.layout("positions").height) then
+        return explanation_tip("position", "positions")
       end
-      local staff_text = building.filled .. "/" .. (building.filled + building.open)
-      if within(x, y, 77, 25, 77 + font.layout(staff_text).width, 25 + font.layout(staff_text).height) then
+      if line.positions_bar ~= nil and within(x, y, line.positions_bar.x, 30,
+          line.positions_bar.x + line.positions_bar.width, 33) then
+        return class_tip("staff", place_id, "building", building_index, "staff_bar")
+      end
+      if line.count ~= nil and within(x, y, line.count.x, 25, line.count.x + line.count.width,
+          25 + font.layout(line.count.text).height) then
         return class_tip("staff", place_id, "building", building_index, "staff_count")
       end
-      if within(x, y, 115, 25, 115 + font.layout("store").width, 25 + font.layout("store").height)
-          or within(x, y, 145, 30, 175, 33) then
-        return class_tip("store", place_id, "building", building_index, x < 145 and "store" or "store_bar")
+      if line.storage ~= nil and within(x, y, line.storage.x, 25,
+          line.storage.x + line.storage.width, 25 + font.layout("storage").height) then
+        return explanation_tip("storage", "storage")
+      end
+      if line.storage_bar ~= nil and within(x, y, line.storage_bar.x, 30,
+          line.storage_bar.x + line.storage_bar.width, 33) then
+        return class_tip("store", place_id, "building", building_index, "store_bar")
       end
       local hx = 5
       for _, herd in ipairs(building.herds) do
@@ -381,11 +432,24 @@ local function building_card(building, place_id, building_index)
       put_term_text(result, group, dx + 17, dy + 14, method_segments)
       put_term_text(result, group, dx + w - 5, dy + 14,
         {term("housing "), {text = tostring(building.housing_occupants or 0), colour = theme.colour("dim")}}, "right")
-      put_text(result, group, dx + 5, dy + 25, "staff", theme.colour("dim"))
-      draw_bar(result, group, dx + 33, dy + 30, 40, building.filled, building.filled + building.open)
-      put_text(result, group, dx + 77, dy + 25, building.filled .. "/" .. (building.filled + building.open), theme.colour("text"))
-      put_text(result, group, dx + 115, dy + 25, "store", theme.colour("dim"))
-      draw_bar(result, group, dx + 145, dy + 30, 30, building.store_used_l, building.store_capacity_l)
+      local line = building_line_layout(building, w)
+      if line.positions ~= nil then
+        put_term_text(result, group, dx + line.positions.x, dy + 25, {term("positions")})
+      end
+      if line.positions_bar ~= nil then
+        draw_bar(result, group, dx + line.positions_bar.x, dy + 30, line.positions_bar.width,
+          building.filled, building.filled + building.open)
+      end
+      if line.count ~= nil then
+        put_text(result, group, dx + line.count.x, dy + 25, line.count.text, theme.colour("text"))
+      end
+      if line.storage ~= nil then
+        put_term_text(result, group, dx + line.storage.x, dy + 25, {term("storage")})
+      end
+      if line.storage_bar ~= nil then
+        draw_bar(result, group, dx + line.storage_bar.x, dy + 30, line.storage_bar.width,
+          building.store_used_l, building.store_capacity_l)
+      end
       local hx = dx + 5
       for _, herd in ipairs(building.herds) do
         local count = herd.head .. "/" .. herd.maximum
@@ -560,7 +624,13 @@ local function building_row(building, open, place_id, building_index)
       if line_index < 1 or line_index > #lines then return nil end
       local line = lines[line_index]
       if line_index == 1 then return method_tip(building, x, y, 16, 13)
-      elseif line_index == 2 then return class_tip("store", place_id, "building", building_index, "store")
+      elseif line_index == 2 then
+        local label_right = 16 + font.layout("storage").width
+        if within(x, y, 16, 13 + (line_index - 1) * 12, label_right,
+            13 + (line_index - 1) * 12 + font.layout("storage").height) then
+          return explanation_tip("storage", "storage")
+        end
+        return class_tip("store", place_id, "building", building_index, "store")
       elseif type(line) == "table" then
         local herd = line.herd
         local herd_y = 13 + (line_index - 1) * 12
@@ -572,6 +642,11 @@ local function building_row(building, open, place_id, building_index)
         end
         return nil
       elseif line_index == #lines - 1 then
+        local top = 13 + (line_index - 1) * 12
+        local label_right = 16 + font.layout("positions").width
+        if within(x, y, 16, top, label_right, top + font.layout("positions").height) then
+          return explanation_tip("position", "positions")
+        end
         return class_tip("staff", place_id, "building", building_index, "staff")
       else
         return explanation_tip("housing", "housing")
@@ -616,13 +691,19 @@ local function building_row(building, open, place_id, building_index)
             else
               if index == 2 then
                 put_term_text(result, group, dx + 16, y, {
-                  {text = "store "},
+                  term("storage"), {text = " "},
                   {text = tostring(building.store_used_l), number_colour = building.store_used_l > building.store_capacity_l
                     and theme.colour("over_limit") or nil},
                   {text = " / "}, {text = tostring(building.store_capacity_l)}, {text = " L"},
                 })
               else
-                put_text(result, group, dx + 16, y, line, theme.colour("text"))
+                if index == #lines - 1 then
+                  put_term_text(result, group, dx + 16, y, {
+                    term("positions"), {text = " " .. building.filled .. " filled, " .. building.open .. " open"},
+                  })
+                else
+                  put_text(result, group, dx + 16, y, line, theme.colour("text"))
+                end
               end
             end
           end
@@ -1094,7 +1175,7 @@ local function row_items(self, key, place)
       items[#items + 1] = item
     end
   else
-    header({{text = "building", x = 16}, {text = "staff", right = 44}, {text = "wage", right = 3}})
+    header({{text = "building", x = 16}, {text = "positions", right = 44}, {text = "wage", right = 3}})
     for index, building in ipairs(place.buildings) do
       local id = row_identity("b", building, index)
       local item = building_row(building, id == self.open_buildings, place.id, index)

@@ -679,6 +679,12 @@ fn rig(steps: &[&str]) -> Rig {
     rig
 }
 
+fn rig_at(steps: &[&str], width: u32, height: u32, scale: u32) -> Rig {
+    let mut rig = Rig::new_fixture_body(&script(steps));
+    rig.deliver_fixture_frame_at(width, height, scale);
+    rig
+}
+
 fn notes(rig: &Rig) -> Vec<String> {
     rig.tables
         .lock()
@@ -1485,6 +1491,7 @@ fn building_card_fields_route_to_their_shared_tooltips() {
   {species = "pigs", head = 9, maximum = 12},
   {species = "sheep", head = 10, maximum = 20},
 }
+
 time(1, 1); select_place("cards", "Cards"); tabs_by_title.Cards:select("buildings", true)
 local function text(content)
   if content == nil then return "nil" end
@@ -1508,6 +1515,16 @@ end
 local P = require("lib.ui").P
 local building = card_object.items[1]
 local width = card_object.width // P
+local positions_width, storage_width = font.layout("positions").width, font.layout("storage").width
+local count = "80/88"
+local count_width = font.layout(count).width
+local fixed = 5 + positions_width + 4 + 4 + count_width + 12 + storage_width + 4 + 6
+local room = width - fixed
+local positions_bar_width = room >= 34 and 24 or math.floor(room / 2)
+local positions_bar_x = 5 + positions_width + 4
+local count_x = positions_bar_x + positions_bar_width + 4
+local storage_x = count_x + count_width + 12
+local storage_bar_x = storage_x + storage_width + 4
 tip("building_kind", building, 20, 4)
 local wage_text = "wage 3.2"
 local wage_left = width - 5 - font.layout(wage_text).width
@@ -1516,11 +1533,11 @@ tip("building_wage_value", building, wage_left + font.layout("wage ").width + 1,
 tip("building_method_one", building, 22, 15)
 tip("building_method_two", building, 110, 15)
 tip("building_housing", building, width - 28, 15)
-tip("building_staff_word", building, 10, 26)
-tip("building_staff_bar", building, 50, 31)
-tip("building_staff_count", building, 83, 26)
-tip("building_store_word", building, 122, 26)
-tip("building_store_bar", building, 155, 31)
+tip("building_positions_word", building, 10, 26)
+tip("building_positions_bar", building, positions_bar_x + positions_bar_width // 2, 31)
+tip("building_positions_count", building, count_x + 1, 26)
+tip("building_storage_word", building, storage_x + 1, 26)
+tip("building_storage_bar", building, storage_bar_x + 1, 31)
 tip("building_herd_icon", building, 9, 42)
 tip("building_herd_count", building, 20, 42)
 local pigs_x = 5 + 11 + font.layout("27/36").width + 10
@@ -1535,11 +1552,11 @@ tip("building_pigs_count", building, pigs_x + 12, 42)"#]);
         "building_method_one title=mixed farming part=mixed_farming",
         "building_method_two title=coastal subsistence part=coastal_subsistence",
         "building_housing title=housing part=housing",
-        "building_staff_word filled 80|open 8 part=staff",
-        "building_staff_bar filled 80|open 8 part=staff_bar",
-        "building_staff_count filled 80|open 8 part=staff_count",
-        "building_store_word used 6400 L of 8000 L part=store",
-        "building_store_bar used 6400 L of 8000 L part=store_bar",
+        "building_positions_word title=position part=positions",
+        "building_positions_bar filled 80|open 8 part=staff_bar",
+        "building_positions_count filled 80|open 8 part=staff_count",
+        "building_storage_word title=storage part=storage",
+        "building_storage_bar used 6400 L of 8000 L part=store_bar",
         "building_herd_icon title=cattle part=cattle",
         "building_herd_count cattle 27 of 36 part=cattle",
         "building_pigs_icon title=pigs part=pigs",
@@ -1550,6 +1567,271 @@ tip("building_pigs_count", building, pigs_x + 12, 42)"#]);
             "missing {expected}: {captured:?}"
         );
     }
+}
+
+#[test]
+fn building_card_hover_restarts_when_moving_from_term_to_its_bar() {
+    let mut rig = rig(&[
+        r#"time(1, 1); select_place("cards", "Cards"); tabs_by_title.Cards:select("buildings", true)
+local text = require("lib.text"); local real_set = text.set
+text.set = function(line, value) real_set(line, value); if capture_tooltips then note("tooltip_text " .. value) end end
+capture_tooltips = true
+local P = require("lib.ui").P
+local item = card_object.items[1]
+local positions_width, storage_width = font.layout("positions").width, font.layout("storage").width
+local building = VIEWS[1].cards.buildings[1]
+local count_width = font.layout(building.filled .. "/" .. (building.filled + building.open)).width
+local W = card_object.width // P
+local R = W - (5 + positions_width + 4 + 4 + count_width + 12 + storage_width + 4 + 6)
+local positions_bar_width = R >= 34 and 24 or math.floor(R / 2)
+local left, top = card_object.origin_x + card_object.x, card_object.origin_y + card_object.y + card_object.tops[1]
+note(string.format("positions_point %g %g", left + (5 + positions_width // 2) * P, top + 26 * P))
+note(string.format("positions_bar_point %g %g", left + (5 + positions_width + 4 + positions_bar_width // 2) * P, top + 31 * P))"#,
+    ]);
+    rig.opened();
+
+    let positions = point_note(&rig, "positions_point ");
+    let positions_bar = point_note(&rig, "positions_bar_point ");
+    assert!(rig.key_at(positions.0, positions.1).is_some());
+    assert!(rig.key_at(positions_bar.0, positions_bar.1).is_some());
+    rig.feed(&[PointerEvent::Move(points(positions.0, positions.1))]);
+    for _ in 0..22 {
+        rig.deliver_fixture_frame_at(1800, 900, 2);
+    }
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "tooltip_text position"),
+        "the positions explanation appears after its hover delay: {:?}",
+        notes(&rig)
+    );
+
+    let before_bar = notes(&rig).len();
+    rig.feed(&[PointerEvent::Move(points(positions_bar.0, positions_bar.1))]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    assert!(
+        !notes(&rig)[before_bar..]
+            .iter()
+            .any(|line| line == "tooltip_text 80"),
+        "moving from the term to its class bar restarts the tooltip delay"
+    );
+    for _ in 0..22 {
+        rig.deliver_fixture_frame_at(1800, 900, 2);
+    }
+    assert!(
+        notes(&rig)[before_bar..]
+            .iter()
+            .any(|line| line == "tooltip_text 80"),
+        "the staff class appears after the restarted delay: {:?}",
+        notes(&rig)
+    );
+}
+
+const BUILDING_CARD_LAYOUT_PROBE: &str = r##"
+local P = require("lib.ui").P
+local building = VIEWS[1].cards.buildings[1]
+local item = card_object.items[1]
+local captured, record = {}, note
+note = function(value) captured[#captured + 1] = value; record(value) end
+local p, s = font.layout("positions").width, font.layout("storage").width
+local function layout(width)
+  local count = building.filled .. "/" .. (building.filled + building.open)
+  local c = font.layout(count).width
+  local fixed = 5 + p + 4 + 4 + c + 12 + s + 4 + 6
+  local room = width - fixed
+  local out = {step = 6, count = count, count_width = c}
+  if room >= 34 then
+    out.step, out.positions_x, out.positions_width = 1, 5, p
+    out.positions_bar_x, out.positions_bar_width = 5 + p + 4, 24
+    out.count_x = out.positions_bar_x + out.positions_bar_width + 4
+    out.storage_x = out.count_x + c + 12
+    out.storage_bar_x, out.storage_bar_width = out.storage_x + s + 4, room - 24
+  elseif room >= 12 then
+    out.step, out.positions_x, out.positions_width = 2, 5, p
+    out.positions_bar_width = math.floor(room / 2)
+    out.positions_bar_x = 5 + p + 4
+    out.count_x = out.positions_bar_x + out.positions_bar_width + 4
+    out.storage_x = out.count_x + c + 12
+    out.storage_bar_x, out.storage_bar_width = out.storage_x + s + 4, room - out.positions_bar_width
+  elseif width >= 5 + p + 4 + c + 12 + s + 6 then
+    out.step, out.positions_x, out.positions_width = 3, 5, p
+    out.count_x, out.storage_x = 5 + p + 4, 5 + p + 4 + c + 12
+  elseif width >= 5 + p + 4 + c + 6 then
+    out.step, out.positions_x, out.positions_width = 4, 5, p
+    out.count_x = 5 + p + 4
+  elseif width >= 5 + p + 6 then
+    out.step, out.positions_x, out.positions_width = 5, 5, p
+  end
+  return out
+end
+local function tip(x, y)
+  local content, part = item.tooltip(x, y)
+  return content, part
+end
+local function expect_tip(x, y, expected_title, expected_part)
+  local content, part = tip(x, y)
+  assert(part == expected_part, "tooltip part at " .. x .. "," .. y .. ": " .. tostring(part))
+  if expected_title ~= nil then
+    assert(content ~= nil and content.title == expected_title,
+      "tooltip title at " .. x .. "," .. y .. ": " .. tostring(content and content.title))
+  elseif expected_part == nil then
+    assert(content == nil, "unexpected tooltip at " .. x .. "," .. y .. " part=" .. tostring(part)
+      .. " title=" .. tostring(content and content.title))
+  end
+end
+local function draw_case(name, width, expected_step, filled, open)
+  building.filled, building.open = filled or 80, open or 8
+  local expected = layout(width)
+  assert(expected.step == expected_step, name .. " expected step " .. expected_step .. " got " .. expected.step)
+  local start = #captured + 1
+  local draw_ok, drawn = pcall(item.draw, card_object.group, 0, 0, width * P)
+  assert(draw_ok, name .. " draw failed: " .. tostring(drawn))
+  local actual_text, actual_tracks = {}, {}
+  for index = start, #captured do
+    local line = captured[index]
+    local x, y, line_width, colour, content = line:match("^cardtext ([%d%.]+) ([%d%.]+) (%d+) ([^ ]+) (.*)$")
+    if x ~= nil and tonumber(y) == 50 then
+      actual_text[#actual_text + 1] = {x = tonumber(x), width = tonumber(line_width), text = content}
+      assert(tonumber(x) + tonumber(line_width) <= (width - 6) * P,
+        name .. " text exceeds the right margin: " .. line)
+    end
+    local _, quad_x, quad_y, quad_width, quad_height, tint =
+      line:match("^cardquad (%S+) ([%d%.]+) ([%d%.]+) ([%d%.]+) ([%d%.]+) (%S+)$")
+    if quad_x ~= nil and tonumber(quad_y) == 60 and tonumber(quad_height) == 6 and tint == "#3a3326" then
+      actual_tracks[#actual_tracks + 1] = {x = tonumber(quad_x), width = tonumber(quad_width)}
+      assert(tonumber(quad_x) + tonumber(quad_width) <= (width - 6) * P,
+        name .. " bar exceeds the right margin: " .. line)
+      assert(tonumber(quad_width) >= 6 * P, name .. " bar is narrower than six UI pixels: " .. line)
+    end
+  end
+  local expected_text = {}
+  if expected.positions_x ~= nil then expected_text[#expected_text + 1] = {x = expected.positions_x, text = "positions"} end
+  if expected.count_x ~= nil then expected_text[#expected_text + 1] = {x = expected.count_x, text = expected.count} end
+  if expected.storage_x ~= nil then expected_text[#expected_text + 1] = {x = expected.storage_x, text = "storage"} end
+  assert(#actual_text == #expected_text, name .. " third-line text count: " .. #actual_text .. " vs " .. #expected_text)
+  for index, wanted in ipairs(expected_text) do
+    local got = actual_text[index]
+    assert(got.text == wanted.text and got.x == wanted.x * P,
+      name .. " third-line text " .. index .. " expected " .. wanted.text .. " at " .. wanted.x * P
+        .. ", got " .. got.text .. " at " .. got.x)
+    assert(got.width == font.layout(wanted.text).width,
+      name .. " uses the measured font width for " .. wanted.text .. ": got " .. got.width
+        .. " expected " .. font.layout(wanted.text).width)
+  end
+  local expected_tracks = {}
+  if expected.positions_bar_x ~= nil then
+    expected_tracks[#expected_tracks + 1] = {x = expected.positions_bar_x, width = expected.positions_bar_width}
+    expected_tracks[#expected_tracks + 1] = {x = expected.storage_bar_x, width = expected.storage_bar_width}
+  end
+  assert(#actual_tracks == #expected_tracks, name .. " track count: " .. #actual_tracks .. " vs " .. #expected_tracks)
+  for index, wanted in ipairs(expected_tracks) do
+    local got = actual_tracks[index]
+    assert(got.x == wanted.x * P and got.width == wanted.width * P,
+      name .. " track " .. index .. " geometry mismatch")
+  end
+
+  if expected.positions_x ~= nil then
+    expect_tip(expected.positions_x + p // 2, 26, "position", "positions")
+  else
+    expect_tip(5, 26, nil, nil)
+  end
+  if expected.positions_bar_x ~= nil then
+    expect_tip(expected.positions_bar_x + expected.positions_bar_width // 2, 31, nil, "staff_bar")
+  else
+    expect_tip(5 + p + 1, 31, nil, nil)
+  end
+  if expected.count_x ~= nil then
+    expect_tip(expected.count_x + 1, 26, nil, "staff_count")
+  else
+    expect_tip(5 + p + 5, 26, nil, nil)
+  end
+  if expected.storage_x ~= nil then
+    expect_tip(expected.storage_x + 1, 26, "storage", "storage")
+  else
+    if expected.count_x ~= nil then
+      expect_tip(expected.count_x + expected.count_width + 1, 26, nil, nil)
+    else
+      expect_tip(5 + p + 2, 26, nil, nil)
+    end
+  end
+  if expected.storage_bar_x ~= nil then
+    expect_tip(expected.storage_bar_x + 1, 31, nil, "store_bar")
+  else
+    local after_label
+    if expected.storage_x ~= nil then after_label = expected.storage_x + s + 1
+    elseif expected.count_x ~= nil then after_label = expected.count_x + expected.count_width + 13
+    else after_label = 5 + p + 2 end
+    expect_tip(after_label, 31, nil, nil)
+  end
+  if drawn ~= nil and drawn.destroy ~= nil then drawn:destroy() end
+end
+
+local W = card_object.width // P
+local ordinary = layout(W)
+assert(ordinary.step == 1, "the normal 1280x800 card uses the approved full layout")
+draw_case("approved-usual-12-16", W, 1, 12, 4)
+draw_case("usual", W, 1)
+local F = 5 + p + 4 + 4 + font.layout("80/88").width + 12 + s + 4 + 6
+draw_case("full-minimum", F + 34, 1)
+draw_case("shared-below-full", F + 33, 2)
+draw_case("shared-minimum", F + 12, 2)
+draw_case("no-bars", F + 11, 3)
+local T4 = 5 + p + 4 + font.layout("80/88").width + 6
+draw_case("no-storage", T4, 4)
+draw_case("below-no-storage", T4 - 1, 5)
+local T5 = 5 + p + 6
+draw_case("positions-only", T5, 5)
+draw_case("empty", T5 - 1, 6)
+draw_case("minimum-empty", 5 + p + 5, 6)
+draw_case("long-count", W, 2, 1000, 0)
+building.filled, building.open = 80, 8
+local min_width = require("lib.location").min_width()
+local _, outer_height = panel_window:size()
+panel_window:set_outer_size(min_width, outer_height)
+local narrow_width = card_object.width // P
+local narrow = layout(narrow_width)
+draw_case("minimum-window", narrow_width, narrow.step)
+note("ck284 width measurements " .. p .. " " .. s .. " " .. font.layout("80/88").width .. " " .. W
+  .. " " .. narrow_width .. " " .. min_width)
+"##;
+
+#[test]
+fn building_card_third_line_uses_real_widths_for_each_fallback_step() {
+    let rig = rig_at(
+        &[
+            "time(1, 1) select_place('cards', 'Cards')",
+            "announce_tabs(); tabs_by_title.Cards:select('buildings', true)",
+            BUILDING_CARD_LAYOUT_PROBE,
+        ],
+        1280,
+        800,
+        2,
+    );
+    let mut rig = rig;
+    rig.opened();
+    rig.opened();
+    rig.opened();
+    let captured = notes(&rig);
+    assert!(
+        captured
+            .iter()
+            .any(|line| line.starts_with("ck284 width measurements ")),
+        "measured font and card widths were recorded: {captured:?}"
+    );
+}
+#[test]
+fn building_rows_header_uses_positions() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('cards', 'Cards')",
+        "announce_tabs(); tabs_by_title.Cards:select('buildings', true)",
+        "look_buttons.rows.on_click()",
+    ]);
+    rig.opened();
+    rig.opened();
+    rig.opened();
+    let captured = notes(&rig);
+    assert!(card_run(&captured, "#9a927e", "positions"), "{captured:?}");
+    assert!(!card_run(&captured, "#9a927e", "staff"), "{captured:?}");
 }
 
 #[test]
@@ -1603,10 +1885,12 @@ building.on_click()
 building = card_object.items[2]
 tip("building_row_method_origin", building, 16, 13)
 tip("building_row_method", building, 45, 15)
-tip("building_row_store", building, 40, 27)
+tip("building_row_store_label", building, 20, 27)
+tip("building_row_store_value", building, 90, 27)
 tip("building_row_herd_icon", building, 20, 39)
 tip("building_row_herd_count", building, 45, 39)
-tip("building_row_staff_detail", building, 40, 75)
+tip("building_row_positions_label", building, 20, 75)
+tip("building_row_positions_value", building, 90, 75)
 tip("building_row_housing_detail", building, 40, 87)"#,
     ]);
     rig.opened();
@@ -1631,10 +1915,12 @@ tip("building_row_housing_detail", building, 40, 87)"#,
         "building_row_wage May 769: 3.2 per head (18 paid)|... 13 lines part=wage",
         "building_row_method_origin title=mixed farming part=mixed_farming",
         "building_row_method title=mixed farming part=mixed_farming",
-        "building_row_store used 60010 L of 60000 L part=store",
+        "building_row_store_label title=storage part=storage",
+        "building_row_store_value used 60010 L of 60000 L part=store",
         "building_row_herd_icon title=cattle part=cattle",
         "building_row_herd_count cattle 27 of 36 part=cattle",
-        "building_row_staff_detail filled 80|open 8 part=staff",
+        "building_row_positions_label title=position part=positions",
+        "building_row_positions_value filled 80|open 8 part=staff",
         "building_row_housing_detail title=housing part=housing",
     ] {
         assert!(
@@ -1655,11 +1941,11 @@ fn assert_pop_and_store_limit_tints(captured: &[String]) {
         "the over-limit crowding number is red in the pop card or open row: {captured:?}"
     );
     assert!(
-        tint_line(captured, "store 60010 / 60000 L", "#f66155", "60010"),
+        tint_line(captured, "storage 60010 / 60000 L", "#f66155", "60010"),
         "the over-limit store amount is red in the open building row: {captured:?}"
     );
     assert!(
-        tint_line(captured, "store 60010 / 60000 L", "#5fb35a", "60000"),
+        tint_line(captured, "storage 60010 / 60000 L", "#5fb35a", "60000"),
         "the store capacity remains green: {captured:?}"
     );
 }
@@ -1834,6 +2120,23 @@ fn cards_rendered_fixture() -> Rig {
     rig
 }
 
+fn cards_rendered_fixture_at(width: u32, height: u32, scale: u32) -> Rig {
+    let mut rig = rig_at(
+        &[
+            "time(1, 1) select_place('cards', 'Cards')",
+            "announce_tabs()",
+        ],
+        width,
+        height,
+        scale,
+    );
+    rig.opened();
+    rig.opened();
+    click_tab_at(&mut rig, "pops", (width, height));
+    click_tab_at(&mut rig, "buildings", (width, height));
+    rig
+}
+
 fn card_text_at(recorded: &[String], x: u32, y: u32, value: &str) -> bool {
     recorded
         .iter()
@@ -1951,7 +2254,7 @@ fn pop_card_bars_cover_ratios_clamps_and_empty_jobs() {
 
 #[test]
 fn building_cards_render_mockup_values_and_empty_or_clamped_bars() {
-    let rig = cards_rendered_fixture();
+    let rig = cards_rendered_fixture_at(1280, 800, 2);
     let recorded = notes(&rig);
     assert_eq!(
         card_stacks(&rig).get(1).map(String::as_str),
@@ -1977,8 +2280,8 @@ fn building_cards_render_mockup_values_and_empty_or_clamped_bars() {
         ("#5fb35a", "27"),
         ("#5fb35a", "36"),
         ("#9a927e", "/"),
-        ("#9a927e", "staff"),
-        ("#9a927e", "store"),
+        ("#92ddea", "positions"),
+        ("#92ddea", "storage"),
     ] {
         assert!(
             card_run(&recorded, colour, value),
@@ -1990,36 +2293,28 @@ fn building_cards_render_mockup_values_and_empty_or_clamped_bars() {
         line.starts_with("goodsquad ui/goods/cattle.png ") && line.ends_with(" 18 18 -")
     }));
     assert!(
-        card_quad_at(&recorded, 66, 60, 72, "#ece3cb"),
-        "farm staff fill is 36px"
+        card_quad_at(&recorded, 116, 60, 42, "#ece3cb"),
+        "the positions bar uses the approved 24px width and fills 21px"
     );
     assert!(
-        card_quad_at(&recorded, 290, 60, 48, "#ece3cb"),
-        "6400/8000 store fill is 24px"
+        card_quad_at(&recorded, 346, 60, 44, "#ece3cb"),
+        "the storage bar fills proportionally within the remaining width: {recorded:?}"
     );
     assert!(
-        card_quad_at(&recorded, 66, 166, 80, "#3a3326"),
-        "empty staff track"
+        card_quad_at(&recorded, 116, 166, 48, "#3a3326"),
+        "empty positions track"
     );
     assert!(
-        card_quad_at(&recorded, 290, 166, 60, "#3a3326"),
-        "zero-capacity store track"
+        card_quad_at(&recorded, 322, 166, 80, "#3a3326"),
+        "zero-capacity storage track: {recorded:?}"
     );
-    assert!(card_text_at(&recorded, 34, 218, "storage"));
+    assert!(card_run(&recorded, "#92ddea", "storage"));
     assert!(
-        card_run(&recorded, "#9a927e", "storage"),
-        "a storehouse card storage fallback stays dim: {recorded:?}"
-    );
-    assert!(
-        !card_run(&recorded, "#92ddea", "storage"),
-        "storage has no glossary explanation: {recorded:?}"
+        card_quad_at(&recorded, 322, 334, 80, "#ece3cb"),
+        "over-capacity storage fill clamps to its track"
     );
     assert!(
-        card_quad_at(&recorded, 290, 334, 60, "#ece3cb"),
-        "over-capacity store clamps to 30px"
-    );
-    assert!(
-        card_quad_at(&recorded, 290, 418, 60, "#3a3326"),
+        card_quad_at(&recorded, 322, 418, 80, "#3a3326"),
         "zero of 8000 draws the track"
     );
     assert!(
@@ -2117,8 +2412,12 @@ fn an_open_storehouse_row_keeps_its_plain_storage_fallback() {
         "the opened storehouse row retains its plain storage fallback: {recorded:?}"
     );
     assert!(
-        !card_run(&recorded, "#92ddea", "storage"),
-        "storage has no glossary explanation: {recorded:?}"
+        card_run_at(&recorded, 32, 110, "#ece3cb", "storage"),
+        "the storehouse method fallback stays plain text: {recorded:?}"
+    );
+    assert!(
+        card_run_at(&recorded, 32, 134, "#92ddea", "storage"),
+        "the open-row storage label is the glossary term: {recorded:?}"
     );
 }
 
