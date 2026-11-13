@@ -231,7 +231,8 @@ pub(crate) struct GroupHits {
 }
 
 /// Whether `key` follows `[a-z0-9_]{1,48}`.
-pub(crate) fn valid_key(key: &str) -> bool {
+#[must_use]
+pub fn valid_key(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= 48
         && key
