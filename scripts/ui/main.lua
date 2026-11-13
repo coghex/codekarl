@@ -317,7 +317,7 @@ if game ~= nil then
       }
       local key = "speed_" .. index
       local widget = speed_box_widget(index, key)
-      tooltip.attach(key, function() return {"speed " .. index} end)
+      tooltip.label(key, "speed " .. index)
       widget.outline, widget.outline_tint = outline, time_colours.speed_box
       widget.inner, widget.inner_tint = inner, inner_tint
       speed_boxes[index] = widget

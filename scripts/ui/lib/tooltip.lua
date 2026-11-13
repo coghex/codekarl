@@ -15,6 +15,7 @@ local next_span_id, span_ids_exhausted = "0", false
 local last_hover
 local view = {width = 0, height = 0}
 local render_record, record_scroll
+local close_key
 
 local function fail(message, level)
   error("tooltip: " .. message, (level or 1) + 1)
@@ -71,10 +72,23 @@ function tooltip.attach(key, source)
   if type(key) ~= "string" or type(source) ~= "table" and type(source) ~= "function" then
     fail("attach: expected a key and a source", 2)
   end
-  attached[key] = {source = source}
+  local previous = attached[key]
+  if previous ~= nil and previous.kind == "label" then close_key(key) end
+  attached[key] = {source = source, kind = "lockable"}
+end
+
+function tooltip.label(key, words)
+  if type(key) ~= "string" or type(words) ~= "string" or words == "" then
+    fail("label: expected a key and non-empty words", 2)
+  end
+  local previous = attached[key]
+  if previous ~= nil and previous.kind ~= "label" then close_key(key) end
+  attached[key] = {kind = "label", words = words}
 end
 
 function tooltip.detach(key)
+  local previous = attached[key]
+  if previous ~= nil and previous.kind == "label" then close_key(key) end
   attached[key] = nil
 end
 
@@ -222,10 +236,23 @@ local function close_all()
   while #open > 0 do close_record(open[#open]) end
 end
 
+close_key = function(key)
+  if tooltip.pending ~= nil and tooltip.pending.candidate.key == key then tooltip.pending = nil end
+  local snapshot = {}
+  for _, record in ipairs(open) do
+    if record.key == key then snapshot[#snapshot + 1] = record end
+  end
+  for index = #snapshot, 1, -1 do close_record(snapshot[index]) end
+end
+
 function tooltip.close_top()
-  if #open == 0 then return false end
-  close_record(open[#open])
-  return true
+  for index = #open, 1, -1 do
+    if open[index].kind ~= "label" then
+      close_record(open[index])
+      return true
+    end
+  end
+  return false
 end
 
 local function wraps(text_value, key, entries)
@@ -321,6 +348,7 @@ local function draw_span(record, span, x, y, title)
 end
 
 local function update_lock_bar(record)
+  if record.kind == "label" then return end
   local fill = settings.lock == "timer" and math.min(1, record.lock_elapsed / settings.lock_timer) or 0
   if record.locked then fill = 1 end
   local width_px, height_px = record.width_px, record.height_px
@@ -534,12 +562,14 @@ local function open_tooltip(candidate, content)
     overlay = ui.create_group()
     ui.set_top_group(overlay)
   end
-  local record = {target = candidate.target, parent = candidate.parent, source = candidate.source,
+  local record = {target = candidate.target, key = candidate.key, kind = candidate.kind or "lockable",
+    words = candidate.words, parent = candidate.parent, source = candidate.source,
     map = candidate.map, hover = candidate.hover, anchor_x = candidate.anchor_x, anchor_y = candidate.anchor_y,
     source_x = candidate.x, source_y = candidate.y,
-    lines = lines, locked = false, lock_elapsed = 0, first = 1, carry = 0,
+    lines = lines, locked = false, first = 1, carry = 0,
     hit_keys = {}, span_slots = {}, spans = {}, rendered = {},
     x = candidate.x + 6 * P, y = candidate.y + 12 * P}
+  if record.kind ~= "label" then record.lock_elapsed = 0 end
   if serial >= 9007199254740991 then fail("tooltip panel key space exhausted", 2) end
   serial = serial + 1
   record.panel_key = "tooltip_panel_" .. serial
@@ -557,6 +587,19 @@ end
 
 local function refresh_record(record)
   if record.closed then return true end
+  if record.kind == "label" then
+    local target = attached[record.key]
+    if target == nil or target.kind ~= "label" then
+      close_record(record)
+      return false
+    end
+    if record.words ~= target.words then
+      record.words = target.words
+      record.lines = measurable_content({target.words})
+      render_record(record, true)
+    end
+    return true
+  end
   local content = resolve(record.source, record.source_x or 0, record.source_y or 0)
   if content == nil or type(content) == "table" and #content == 0 and content.title == nil then
     close_record(record)
@@ -587,11 +630,13 @@ local function candidate_of(update)
   if key and attached[key] ~= nil then
     local target = attached[key]
     local content, part
-    if type(target.source) == "function" then content, part = target.source(x, y)
+    if target.kind == "label" then content = {target.words}
+    elseif type(target.source) == "function" then content, part = target.source(x, y)
     else content = resolve(target.source, x, y) end
     if content == nil or type(content) == "table" and #content == 0 and content.title == nil then return nil end
     return {target = key .. "\0" .. tostring(part or ""), source = target.source, content = content,
-      key = key, part = part, parent = target.parent, x = x, y = y, anchor_x = target.anchor_x, anchor_y = target.anchor_y}
+      key = key, kind = target.kind or "lockable", words = target.words, part = part,
+      parent = target.parent, x = x, y = y, anchor_x = target.anchor_x, anchor_y = target.anchor_y}
   end
   if not key and last_hover ~= nil and last_hover.source ~= nil then
     local hover = last_hover.hover
@@ -608,7 +653,7 @@ local function process_events(events)
       close_all()
     elseif event.kind == "button_down" and event.button == "middle" and settings.lock == "middle_mouse" then
       for index = #open, 1, -1 do
-        if not open[index].locked then
+        if not open[index].locked and open[index].kind ~= "label" then
           open[index].locked = true
           open[index].lock_elapsed = settings.lock_timer
           render_record(open[index], true)
@@ -654,12 +699,20 @@ function tooltip.update(update)
   for _, record in ipairs(open) do
     if not record.locked and candidate ~= nil and record.target == candidate.target then
       record.source_x, record.source_y = candidate.x, candidate.y
-      record.lock_elapsed = record.lock_elapsed + (update.dt or 0)
-      if settings.lock == "timer" and record.lock_elapsed >= settings.lock_timer then
-        record.locked = true
-        render_record(record, true)
+      if record.kind == "label" then
+        if record.words ~= candidate.words then
+          record.words = candidate.words
+          record.lines = measurable_content({candidate.words})
+          render_record(record, true)
+        end
       else
-        update_lock_bar(record)
+        record.lock_elapsed = record.lock_elapsed + (update.dt or 0)
+        if settings.lock == "timer" and record.lock_elapsed >= settings.lock_timer then
+          record.locked = true
+          render_record(record, true)
+        else
+          update_lock_bar(record)
+        end
       end
       active = record
     end
