@@ -570,6 +570,22 @@ end
         panel_keys.len() >= 2,
         "the root and nested tooltip panels coexist: {panel_keys:?}"
     );
+
+    let published = rig.sink.count();
+    for _ in 0..10 {
+        rig.deliver_fixture_frame();
+    }
+    assert_eq!(
+        rig.sink.count(),
+        published,
+        "ten unchanged updates with the locked nested tooltip open publish no snapshots"
+    );
+
+    // Match the loop's teardown boundary: the bridge is detached while the resource service and
+    // writer slot still exist, then an already-posted update runs with the locked tooltip open.
+    // The accepted tree refuses tooltip.update's raise_groups here and reports the close as failed.
+    rig.harness.bridge.detach();
+    rig.deliver_fixture_frame();
 }
 
 fn pointer_inside_hit_key(rig: &Rig, key: &str) -> PointerPosition {

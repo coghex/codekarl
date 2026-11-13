@@ -208,7 +208,7 @@ function cards.new(spec)
   }, cards)
   measure(self)
   self.area_key = self.base .. "_area"
-  self.group = render.create_group()
+  self.group = ui.create_group()
   self.groups = {self.group}
   self.area_widget = {}
   function self.area_widget:on_event(event)

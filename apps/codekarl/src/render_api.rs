@@ -31,9 +31,11 @@
 //!
 //! **After the run's end.** The new scene calls validate their cheap arguments and then raise the service's `Ended` error,
 //! and retain nothing (no edit, no `TextureRef`, no publication): once the resource service was closed (admission closes
-//! before the VMs' `shutdown()`), and once the writer's `end()` emptied the slot. The check reads the service's closed state
-//! first; a close that lands just after it is caught by the writer's slot at the latest (the next call, or `end`, reports
-//! `Ended`). Only the legacy calls keep M4's semantics after the end: discarded and counted.
+//! before the VMs' `shutdown()`), and once the writer's `end()` emptied the slot. Detaching the scene bridge alone is not
+//! the end of a scene call: while the service remains open and the writer slot remains present, group and hit edits are
+//! accepted into the writer and their publication is discarded by the detached bridge, as for quad edits. The check reads
+//! the service's closed state first; a close that lands just after it is caught by the writer's slot at the latest (the next
+//! call, or `end`, reports `Ended`). Only the legacy calls keep M4's semantics after the end: discarded and counted.
 //!
 //! **A run without a resource service** (only a test builds one; every real run has a service) raises "`<function>`: this run
 //! has no resource service" from each new call, after the same argument validation.
@@ -220,6 +222,19 @@ impl Shared {
             return Err(format!("{function}: {}", AdmitError::Ended));
         }
         Ok(service)
+    }
+
+    /// Group and hit edits do not require a resource service in test-only runs, but when a run has one its closed state
+    /// is the same scene-call end used by the quad calls. Bridge detachment is deliberately not an end.
+    fn check_service_open(&self, function: &str) -> Result<(), String> {
+        if self
+            .service
+            .as_ref()
+            .is_some_and(ResourceService::is_closed)
+        {
+            return Err(format!("{function}: {}", AdmitError::Ended));
+        }
+        Ok(())
     }
 
     fn quad(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
@@ -526,13 +541,14 @@ impl Shared {
             Some(Some(ConfigValue::String(text))) => Some(group_from(F, text)?),
             Some(Some(_)) => return Err(format!("{F}: `group` must be a group token string")),
         };
+        if !ck_render_2d::valid_key(key) {
+            return Err(format!("{F}: key must match [a-z0-9_]{{1,48}}"));
+        }
         let mut writer = self.writer();
         let Some(writer) = writer.as_mut() else {
             return Err(format!("{F}: {}", AdmitError::Ended));
         };
-        if writer.is_ended() {
-            return Err(format!("{F}: {}", AdmitError::Ended));
-        }
+        self.check_service_open(F)?;
         writer
             .set_hit(key, rects, group)
             .map_err(|error| format!("{F}: {error}"))?;
@@ -550,9 +566,7 @@ impl Shared {
         let Some(writer) = writer.as_mut() else {
             return Err(format!("{function}: {}", AdmitError::Ended));
         };
-        if writer.is_ended() {
-            return Err(format!("{function}: {}", AdmitError::Ended));
-        }
+        self.check_service_open(function)?;
         edit(writer)?;
         self.note_accepted();
         Ok(Vec::new())

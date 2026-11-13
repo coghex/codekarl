@@ -148,7 +148,7 @@ if game ~= nil then
   local function create_places_bar()
     local width, height = 39 * P, 19 * P
     local x, y = ui.anchor("top_right", width, height, -MARGIN, MARGIN, view.width, view.height)
-    places_group = render.create_group()
+    places_group = ui.create_group()
     places_panel = panel.new{
       x = x, y = y, width = width, height = height, kind = "places_bar", cut = 6, group = places_group,
     }
@@ -206,7 +206,7 @@ if game ~= nil then
 
   local function create_modes_bar()
     local x, y = modes_origin()
-    modes_group = render.create_group()
+    modes_group = ui.create_group()
     modes_panel = panel.new{
       x = x, y = y, width = MODES_WIDTH * P, height = 19 * P, kind = "places_bar", cut = 6, group = modes_group,
     }

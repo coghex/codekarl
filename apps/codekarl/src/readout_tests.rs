@@ -18,6 +18,22 @@ game.place = function(id, revision)
 end
 "#;
 
+const TWO_PLACE_TOOLTIP_TEST_FIXTURE: &str = r#"
+require("lib.classes").set_revision(0)
+game.places = function()
+  return {
+    {id = "town", name = "Alpha", kind = "town", size = 1},
+    {id = "beta", name = "Beta", kind = "town", size = 1},
+  }
+end
+game.place = function(id, revision)
+  if (id ~= "town" and id ~= "beta") or revision ~= 0 then return nil end
+  return {id = id, workers = 0, dependents = 0, pops = {},
+    land = {usable = {}, land = {}, sea = 0},
+    last_month = {closed = true, produced = {}, used_by_pops = {}, lost = {}}}
+end
+"#;
+
 use ck_lua::{CallOutcome, ConfigValue, Extension, HostFunction, Modules, VmOwner, VmSettings};
 use ck_render_2d::{Filter, QuadSink, SceneBridge, Snapshot};
 use ck_resources::{Assets, Mode, ResourceLimits, ResourceService, ServiceWakes};
@@ -33,6 +49,14 @@ use crate::window_api::FRAME_UPDATE;
 use crate::{font, game_api, window_api};
 
 type Log = Arc<Mutex<Vec<String>>>;
+type SceneCalls = Arc<Mutex<Vec<ObservedHostCall>>>;
+
+#[derive(Clone, Debug, PartialEq)]
+struct ObservedHostCall {
+    name: String,
+    arguments: Vec<Option<ConfigValue>>,
+    result: Vec<ConfigValue>,
+}
 
 fn show(value: &ConfigValue) -> String {
     match value {
@@ -147,10 +171,11 @@ struct StrictScene {
     names: Arc<Mutex<Names>>,
     log: Log,
     tints: Log,
+    observer: SceneCalls,
 }
 
 impl StrictScene {
-    fn new(log: &Log, tints: &Log, assets: &std::path::Path) -> Self {
+    fn new(log: &Log, tints: &Log, assets: &std::path::Path, observer: SceneCalls) -> Self {
         let service = ResourceService::with_assets(
             ResourceLimits::DEFAULT,
             Mode::Headless,
@@ -209,6 +234,7 @@ impl StrictScene {
             names,
             log: Arc::clone(log),
             tints: Arc::clone(tints),
+            observer,
         }
     }
 
@@ -219,7 +245,16 @@ impl StrictScene {
     ) -> Result<Vec<ConfigValue>, String> {
         if name == "texture.load" {
             let result = (self.texture_load)(arguments)?;
-            return Ok(record_load(arguments, &result, &self.names, &self.log));
+            let result = record_load(arguments, &result, &self.names, &self.log);
+            self.observer
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(ObservedHostCall {
+                    name: name.to_owned(),
+                    arguments: arguments.to_vec(),
+                    result: result.clone(),
+                });
+            return Ok(result);
         }
         let real = self
             .calls
@@ -227,14 +262,23 @@ impl StrictScene {
             .ok_or_else(|| format!("unknown test call {name}"))?;
         let translated = translate(name, arguments, &self.names);
         let result = real(&translated)?;
-        record_success(
+        let result = record_success(
             name,
             arguments,
             &result,
             &self.names,
             &self.log,
             &self.tints,
-        )
+        )?;
+        self.observer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(ObservedHostCall {
+                name: format!("render.{name}"),
+                arguments: arguments.to_vec(),
+                result: result.clone(),
+            });
+        Ok(result)
     }
 
     fn call_real(
@@ -280,10 +324,6 @@ impl StrictScene {
     }
 }
 
-fn strict_scene(log: &Log, tints: &Log, assets: &std::path::Path) -> Vec<Extension> {
-    Arc::new(StrictScene::new(log, tints, assets)).extensions()
-}
-
 #[expect(
     clippy::unnecessary_wraps,
     reason = "HostFunction arguments use Option to represent Lua nil"
@@ -321,7 +361,11 @@ fn test_strict_scene() -> (StrictScene, Log, Log) {
     let log = Arc::new(Mutex::new(Vec::new()));
     let tints = Arc::new(Mutex::new(Vec::new()));
     let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
-    (StrictScene::new(&log, &tints, &assets), log, tints)
+    (
+        StrictScene::new(&log, &tints, &assets, Arc::default()),
+        log,
+        tints,
+    )
 }
 
 fn assert_refusal_matches_real(
@@ -968,8 +1012,13 @@ fn record_load(
     vec![ConfigValue::String(alias)]
 }
 
-fn scene(log: &Log, tints: &Log, assets: &std::path::Path) -> Vec<Extension> {
-    strict_scene(log, tints, assets)
+fn observed_scene(
+    log: &Log,
+    tints: &Log,
+    assets: &std::path::Path,
+    observer: SceneCalls,
+) -> Vec<Extension> {
+    Arc::new(StrictScene::new(log, tints, assets, observer)).extensions()
 }
 
 /// The shipped UI scripts' directory: the root of the UI VM's `require`.
@@ -983,6 +1032,7 @@ pub(crate) struct Readout {
     owner: VmOwner,
     log: Log,
     tints: Log,
+    scene_calls: SceneCalls,
     registered: Arc<AtomicBool>,
     hover_registered: Arc<AtomicBool>,
     frame: FrameRegistration,
@@ -1062,6 +1112,7 @@ impl Readout {
         };
         let log = Log::default();
         let tints = Log::default();
+        let scene_calls = SceneCalls::default();
         let notifier = Notifier::new();
         let requests = Requests::new();
         let mut window = window_api::extension(requests.writer(Arc::clone(&notifier)), None, None);
@@ -1085,7 +1136,12 @@ impl Readout {
         let mut settings = VmSettings::new("ui", entry, config);
         settings.modules = Modules::Rooted(modules_root);
         settings.extensions = vec![window];
-        settings.extensions.extend(scene(&log, &tints, &assets));
+        settings.extensions.extend(observed_scene(
+            &log,
+            &tints,
+            &assets,
+            Arc::clone(&scene_calls),
+        ));
         settings
             .extensions
             .push(font::extension(Arc::clone(&shipped_font)));
@@ -1119,6 +1175,7 @@ impl Readout {
             owner,
             log,
             tints,
+            scene_calls,
             registered,
             hover_registered,
             frame,
@@ -1159,6 +1216,20 @@ impl Readout {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    fn observed_calls(&self) -> Vec<ObservedHostCall> {
+        self.scene_calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn clear_observed_calls(&self) {
+        self.scene_calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
     }
 
     pub(crate) fn controls(&self) -> Vec<crate::game::controls::Control> {
@@ -1204,6 +1275,34 @@ impl Readout {
         let id = self
             .owner
             .post(game_api::GAME_TIME, vec![game_api::time_table(snapshot)])
+            .expect("posted");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(result) = self.owner.take_result() {
+                assert_eq!(result.id, id);
+                assert!(
+                    matches!(result.outcome, CallOutcome::Returned(_)),
+                    "{:?}",
+                    result.outcome
+                );
+                return;
+            }
+            assert!(Instant::now() < deadline, "the callback did not return");
+            std::thread::yield_now();
+        }
+    }
+
+    fn deliver_select(&mut self, id: &str, name: &str, kind: &str, size: u8) {
+        let arguments = game_api::select_arguments(&crate::map_app::Selection {
+            seq: 1,
+            id: id.to_owned(),
+            name: name.to_owned(),
+            kind: kind.to_owned(),
+            size,
+        });
+        let id = self
+            .owner
+            .post(game_api::GAME_SELECT, arguments)
             .expect("posted");
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -1413,6 +1512,72 @@ fn the_font_is_drawn_at_two_units_per_pixel() {
 }
 
 #[test]
+fn ui_group_seam_keeps_the_registered_group_last_and_observes_exact_host_calls() {
+    let readout = Readout::script(
+        r#"
+local ui = require("lib.ui")
+local a = render.create_group()
+local top = render.create_group()
+local b = render.create_group()
+ui.set_top_group(top)
+ui.raise_groups({a, b})
+ui.raise_groups({a, top, b})
+ui.raise_groups({top, a})
+ui.set_top_group(nil)
+ui.raise_groups({a, b})
+ui.set_top_group(top)
+ui.create_group()
+"#,
+    );
+    let calls = readout.observed_calls();
+    let raises: Vec<Vec<String>> = calls
+        .iter()
+        .filter(|call| call.name == "render.raise_groups")
+        .map(|call| {
+            let [Some(ConfigValue::Array(groups))] = call.arguments.as_slice() else {
+                panic!("raise_groups receives one group array: {call:?}");
+            };
+            groups
+                .iter()
+                .map(|group| match group {
+                    ConfigValue::String(group) => group.clone(),
+                    other => panic!("group alias: {other:?}"),
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        raises,
+        vec![
+            vec!["g1".to_owned(), "g3".to_owned(), "g2".to_owned()],
+            vec!["g1".to_owned(), "g3".to_owned(), "g2".to_owned()],
+            vec!["g1".to_owned(), "g2".to_owned()],
+            vec!["g1".to_owned(), "g3".to_owned()],
+            vec!["g2".to_owned()],
+        ]
+    );
+    let create_positions: Vec<_> = calls
+        .iter()
+        .enumerate()
+        .filter(|(_, call)| call.name == "render.create_group")
+        .map(|(index, _)| index)
+        .collect();
+    let last_raise = calls
+        .iter()
+        .rposition(|call| call.name == "render.raise_groups")
+        .expect("ui.create_group raises the registered overlay");
+    assert_eq!(
+        calls[last_raise].arguments,
+        [Some(ConfigValue::Array(vec![ConfigValue::String(
+            "g2".to_owned()
+        ),]))]
+    );
+    assert_eq!(create_positions.len(), 4);
+    assert!(create_positions[3] < last_raise);
+    assert_eq!(calls[last_raise].name, "render.raise_groups");
+}
+
+#[test]
 fn the_readout_format() {
     let readout = Readout::new(
         "local date = require('lib.time').date\n\
@@ -1535,7 +1700,7 @@ fn place_tooltip_waits_for_its_delay_then_closes_when_the_place_is_left() {
         panel_count(&readout) == initial_panels,
         "the place tooltip waits for its delay"
     );
-    for _ in 0..40 {
+    for _ in 0..80 {
         readout.update(800, 600, None);
     }
     let shown = readout.entries();
@@ -1546,4 +1711,142 @@ fn place_tooltip_waits_for_its_delay_then_closes_when_the_place_is_left() {
     readout.update(800, 600, None);
     let hidden = readout.entries();
     assert_eq!(panel_count(&readout), initial_panels, "{hidden:?}");
+}
+
+#[test]
+fn tooltip_open_is_quiet_and_game_callbacks_restore_the_overlay_in_the_same_call() {
+    let mut readout = Readout::new(TWO_PLACE_TOOLTIP_TEST_FIXTURE);
+    readout.update(800, 600, None);
+    readout.clear_observed_calls();
+    readout.deliver_hover(Some(("town", "Alpha", 10, 20, 40)));
+    for _ in 0..40 {
+        readout.update(800, 600, None);
+    }
+    let opening = readout.observed_calls();
+    assert!(
+        !opening
+            .iter()
+            .any(|call| call.name == "render.raise_groups"),
+        "opening the first tooltip does not raise it: {opening:?}"
+    );
+    let overlay = opening
+        .iter()
+        .filter(|call| call.name == "render.create_group")
+        .filter_map(|call| match call.result.as_slice() {
+            [ConfigValue::String(group)] => Some(group.clone()),
+            _ => None,
+        })
+        .next_back()
+        .expect("the first tooltip creates its overlay");
+
+    // The configured delay has passed; let the timer lock finish, then unchanged callbacks must be idle.
+    for _ in 0..80 {
+        readout.update(800, 600, None);
+    }
+    readout.clear_observed_calls();
+    for _ in 0..10 {
+        readout.update(800, 600, None);
+    }
+    assert!(
+        readout.observed_calls().is_empty(),
+        "ten updates with the locked tooltip and pointer unchanged are idle: {:?}",
+        readout.observed_calls()
+    );
+
+    // A later map target opens a second tooltip on the persistent overlay without a raise either.
+    readout.clear_observed_calls();
+    readout.deliver_hover(Some(("beta", "Beta", 40, 50, 60)));
+    for _ in 0..40 {
+        readout.update(800, 600, None);
+    }
+    let later_open = readout.observed_calls();
+    assert!(
+        !later_open
+            .iter()
+            .any(|call| call.name == "render.raise_groups"),
+        "opening a later tooltip does not raise it: {later_open:?}"
+    );
+
+    // The initial game_time callback creates the time-bar groups after the tooltip has registered its overlay.
+    readout.clear_observed_calls();
+    readout.deliver(&snapshot(0, 1, None));
+    assert_overlay_is_last_group_order(&readout.observed_calls(), &overlay);
+
+    // Help opens a new window from frame_update, then raises that same window from a later frame_update.
+    readout.clear_observed_calls();
+    readout.update(800, 600, Some(readout_button_click("button_4")));
+    assert_overlay_is_last_group_order(&readout.observed_calls(), &overlay);
+    readout.clear_observed_calls();
+    readout.update(800, 600, Some(readout_button_click("button_4")));
+    assert_overlay_is_last_group_order(&readout.observed_calls(), &overlay);
+
+    // The places-bar button opens the ledger; its second row is the fixture's one location.
+    readout.clear_observed_calls();
+    readout.update(800, 600, Some(readout_button_click("button_5")));
+    assert_overlay_is_last_group_order(&readout.observed_calls(), &overlay);
+    let row = readout
+        .observed_calls()
+        .iter()
+        .filter(|call| call.name == "render.set_hit")
+        .filter_map(|call| match call.arguments.first() {
+            Some(Some(ConfigValue::String(key))) if key.ends_with("_row_2") => Some(key.clone()),
+            _ => None,
+        })
+        .next_back()
+        .expect("the ledger publishes its location row key");
+    readout.clear_observed_calls();
+    readout.update(800, 600, Some(readout_button_click(&row)));
+    assert_overlay_is_last_group_order(&readout.observed_calls(), &overlay);
+
+    // A real game_select callback shows the same place after the ledger-row selection.
+    readout.clear_observed_calls();
+    readout.deliver_select("town", "Alpha", "town", 1);
+    assert_overlay_is_last_group_order(&readout.observed_calls(), &overlay);
+}
+
+fn readout_button_click(key: &str) -> ConfigValue {
+    let event = |kind: &str| {
+        ConfigValue::Table(BTreeMap::from([
+            ("kind".to_owned(), ConfigValue::String(kind.to_owned())),
+            ("key".to_owned(), ConfigValue::String(key.to_owned())),
+            ("x".to_owned(), ConfigValue::Integer(300)),
+            ("y".to_owned(), ConfigValue::Integer(100)),
+            ("inside".to_owned(), ConfigValue::Bool(true)),
+        ]))
+    };
+    ConfigValue::Table(BTreeMap::from([
+        ("x".to_owned(), ConfigValue::Integer(300)),
+        ("y".to_owned(), ConfigValue::Integer(100)),
+        ("held".to_owned(), ConfigValue::Bool(false)),
+        ("overflow".to_owned(), ConfigValue::Bool(false)),
+        ("over".to_owned(), ConfigValue::String(key.to_owned())),
+        (
+            "events".to_owned(),
+            ConfigValue::Array(vec![event("down"), event("up")]),
+        ),
+    ]))
+}
+
+fn assert_overlay_is_last_group_order(calls: &[ObservedHostCall], overlay: &str) {
+    let group_ops: Vec<_> = calls
+        .iter()
+        .filter(|call| {
+            matches!(
+                call.name.as_str(),
+                "render.create_group" | "render.raise_groups"
+            )
+        })
+        .collect();
+    let Some(last) = group_ops.last() else {
+        panic!("the callback changes group order: {calls:?}");
+    };
+    assert_eq!(last.name, "render.raise_groups", "{calls:?}");
+    let [Some(ConfigValue::Array(groups))] = last.arguments.as_slice() else {
+        panic!("the final group order is recorded: {last:?}");
+    };
+    assert_eq!(
+        groups.last(),
+        Some(&ConfigValue::String(overlay.to_owned())),
+        "{calls:?}"
+    );
 }

@@ -183,7 +183,7 @@ local function raise(self)
   if self.closed then
     return
   end
-  render.raise_groups(stack(self))
+  ui.raise_groups(stack(self))
   for index, candidate in ipairs(windows) do
     if candidate == self then
       table.remove(windows, index)
@@ -226,8 +226,8 @@ function window.new(spec)
     self.y = (viewport.height - self.outer_height) / 2
   end
   self.x, self.y = clamp_position(self, self.x, self.y)
-  self.chrome = render.create_group()
-  self.content = render.create_group()
+  self.chrome = ui.create_group()
+  self.content = ui.create_group()
   local colours = theme.kind(self.kind)
   self.colours = colours
   self.frame = frame.new{
@@ -286,7 +286,7 @@ function window.new(spec)
   publish_chrome(self)
   render.set_group_offset(self.chrome, self.x, self.y)
   render.set_group_offset(self.content, self.x + PAD, self.y + self.title_height + PAD)
-  render.raise_groups{self.chrome, self.content}
+  ui.raise_groups{self.chrome, self.content}
   windows[#windows + 1] = self
   return self
 end
@@ -362,7 +362,7 @@ function Window:attach(item)
       groups[#groups + 1] = group
     end
   end
-  render.raise_groups(groups)
+  ui.raise_groups(groups)
 end
 
 -- Removes an item that destroyed itself.
