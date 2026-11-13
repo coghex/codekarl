@@ -1,4 +1,4 @@
-# UI glossary (tooltip system, slice T3). T7 will add owner-approved entries.
+# UI glossary (tooltip system, slice T3).
 # Add each entry as [term.<key>] with a short `title` and explanatory `text`.
 # In text, {key} shows a linked term's title and {key|words} shows custom linked words.
 # Use {{ and }} for literal braces. Keys match [a-z][a-z0-9_]*.

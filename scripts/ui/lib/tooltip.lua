@@ -258,13 +258,16 @@ end
 local function wraps(text_value, key, entries)
   local chunks, index = {}, 1
   while index <= #text_value do
-    local open_at = text_value:find("{", index, true)
+    local open_at = text_value:find("[{}]", index)
     if open_at == nil then chunks[#chunks + 1] = {text = text_value:sub(index)}; break end
     if open_at > index then chunks[#chunks + 1] = {text = text_value:sub(index, open_at - 1)} end
-    if text_value:sub(open_at, open_at + 1) == "{{" then
+    local pair = text_value:sub(open_at, open_at + 1)
+    if pair == "{{" then
       chunks[#chunks + 1] = {text = "{"}; index = open_at + 2
-    elseif text_value:sub(open_at, open_at + 1) == "}}" then
+    elseif pair == "}}" then
       chunks[#chunks + 1] = {text = "}"}; index = open_at + 2
+    elseif text_value:sub(open_at, open_at) == "}" then
+      chunks[#chunks + 1] = {text = "}"}; index = open_at + 1
     else
       local close_at = text_value:find("}", open_at + 1, true)
       if close_at == nil then fail("glossary entry `" .. key .. "` has unclosed markup", 3) end
@@ -326,7 +329,9 @@ end
 
 local function draw_span(record, span, x, y, title)
   local color = title and theme.kind("tooltip").title_text or span.colour
-  local pieces = title and {{text = span.text, number = false}} or span.term ~= nil and {{text = span.text, number = false}} or (span.runs or {})
+  -- A label, a title and a term are drawn whole, in one colour: only a lockable tooltip marks numbers.
+  local whole = title or span.term ~= nil or record.kind == "label"
+  local pieces = whole and {{text = span.text, number = false}} or (span.runs or {})
   local width = 0
   for _, piece in ipairs(pieces) do
     local ink = color or (piece.number and (span.over_limit and theme.colour("over_limit") or theme.colour("number"))

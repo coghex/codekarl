@@ -2160,8 +2160,8 @@ window.record("mark")
             "labels never draw a lock bar"
         );
         assert!(
-            readout.tints().iter().any(|line| line.contains("#5fb35a")),
-            "numbers in label text keep the green number colour"
+            readout.tints().iter().all(|line| !line.contains("#5fb35a")),
+            "numbers in label text are not drawn in the green number colour"
         );
         assert!(
             !readout.after_mark(3).is_empty(),

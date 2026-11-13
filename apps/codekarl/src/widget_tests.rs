@@ -2902,6 +2902,30 @@ frame.on_update(function() end)
 }
 
 #[test]
+fn an_explanation_draws_doubled_braces_outside_markup_as_single_braces() {
+    let mut readout = Readout::script_with_glossary(
+        r#"
+local tooltip = require("lib.tooltip")
+local function flat(key)
+  local chunks = {}
+  for _, line in ipairs(tooltip.explanation(key)) do
+    for _, span in ipairs(line) do chunks[#chunks + 1] = type(span) == "table" and span.text or span end
+  end
+  return table.concat(chunks)
+end
+assert(flat("braces") == "a {b} c", flat("braces"))
+-- Markup keeps working beside both kinds of doubled brace.
+assert(flat("mixed") == "{Braces} {x}", flat("mixed"))
+frame.on_update(function() end)
+"#,
+        "[term.braces]\ntitle = \"Braces\"\ntext = \"a {{b}} c\"\n\
+         [term.mixed]\ntitle = \"Mixed\"\ntext = \"{{{braces}}} {{x}}\"\n",
+    );
+    readout.update(800, 600, None);
+    assert!(readout.entries().is_empty());
+}
+
+#[test]
 fn empty_tooltip_content_is_nil_on_open_and_live_refresh() {
     let mut readout = Readout::script(
         r#"

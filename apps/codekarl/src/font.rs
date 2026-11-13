@@ -148,7 +148,7 @@ fn load_named(
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
-/// The `font` extension of the UI VM: `font.layout(string)`.
+/// The `font` extension of the UI VM: `font.layout(string [, font name])`.
 ///
 /// It decodes the string and returns `{width = W, height = 11, glyphs = {...}}` in font pixels. `W` is the sum of the advances and
 /// `height` the glyph box's height. Each non-space character contributes one entry, in order: `{texture = <name>, x = <the running
