@@ -140,6 +140,10 @@
 >   failed. The group calls and `render.set_hit` now end with the quad calls, when the resource service closes, not when the
 >   scene is detached at the end of the window loop. The tooltip's overlay is kept on top through `lib/ui.lua` where groups are
 >   created or raised, so an idle update with a tooltip open makes no scene call.
+> - **The market view** (CK-282; `owner-direction-ui-tweaks-manager-r1.md` and `-designer-r2.md`; §3.13): the prices on the
+>   location tab are a table with a header: each good's icon and name, its price, its base price and a **balance bar**. The bar
+>   fills left in blue (`#4a7fd6`) when more is bought than offered and right in orange (`#d9702b`) when more is offered, from the
+>   place's latest daily orders. The goods' names are back beside their icons. List rows can now carry a bar (`lib/list.lua`).
 
 ## Owner answers (2026-11-07)
 
@@ -985,8 +989,9 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
   - **Tabs:** `lib/tabs.lua` passes an item's `tooltip` to its button. A text tab shows its full label as a tooltip while it shows
     its short or tiny label, and has none while it shows the full one.
   - **Goods names:** `lib/location.lua` names a good by its id with `_` as a space, except `peas_beans`, which is `peas and beans`.
-  - **Price rows:** in the location tab, each price row with an icon has a two-line tooltip: the good's name, then
-    `price <price>, base <base>`. Since CK-272 the price is a link (the price breakdown, below). A good without an icon keeps its
+  - **Price rows:** in the location tab, each price row with an icon had a two-line tooltip: the good's name, then
+    `price <price>, base <base>`. With CK-272 the price became a link (the price breakdown, below). CK-282 replaced that tooltip:
+    the row is now a table row whose cells have their own sources (the market view, below). A good without an icon keeps its
     text line, which has no tooltip.
   - **Tooltip-only rows** (`lib/list.lua`):
     - a cell item may carry `tooltip`: a function returning content (or nil), or `{class = <name>, args = <table>}`. Any other type
@@ -1003,8 +1008,9 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     gave the rest of the card its tooltips (below).
 - **The price breakdown** (CK-272) is the shared class `price`, with `args = {place = <id>, good = <id>}`, defined in
   `lib/location.lua`.
-  - **Reaching it:** in a price row's tooltip the price is a link to it, so it opens from the locked tooltip. The owner asked to
-    "hover over those numeirical values in the tooltip and get another tooltip showing the component values of that number".
+  - **Reaching it:** in a price row's tooltip the price was a link to it, so it opened from the locked tooltip. The owner asked
+    to "hover over those numeirical values in the tooltip and get another tooltip showing the component values of that number".
+    Since CK-282 it opens directly from a row's price and its balance bar (the market view, below).
   - **Its four lines** (the owner chose the **"Shorter"** form, `owner-direction-tooltips-r4.md`): `<good name>: price <price>`,
     `base price <base>`, `bought (buy orders) <units>` and `offered (sell orders) <units>`. The price is written as the row writes
     it.
@@ -1012,6 +1018,44 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     sell orders (`docs/economy-design.md` §3.11 and §3.16). A place with none yet, before its first step or after a load, shows `-`.
   - **Live:** it reads `game.place` at the newest economy revision the location panel was told (`location:set_revision`), so a
     refresh after a day shows the new price and orders.
+- **The market view** (CK-282; spec sha256 `fb521a91…`; `owner-direction-ui-tweaks-manager-r1.md` and `-designer-r2.md`) is the
+  prices part of the location tab, now a table. The owner: "it needs to be more readable than that … i want not only the numbers,
+  but a bar that shows the deficit or surplus from buy/sell orders", going "left and blue when there is a deficit" and "to the
+  right and color itself orange when there is a surplus"; on the mock-up the owner chose **"A: table with bar"**.
+  - **A header row** replaces the line `prices (base):`. `good`, `price` and `base` are terms and open the explanations `good`,
+    `price` and `base_price`; `buy/sell` is `dim` and opens nothing.
+  - **One row a good,** in the view's order. For a content width `w`, in UI pixels from the content's left:
+
+    | Column | Where | What |
+    |---|---|---|
+    | the icon | x 4 | the good's icon |
+    | the name | x 16, left-aligned | the good's name, a term; cut on whole characters with `..` to end 4 before the widest price |
+    | the price | right-aligned at `w − 82` | the price, a number |
+    | the base | right-aligned at `w − 56` | the base price, a number |
+    | the balance bar | from `w − 48`, 46 wide | below |
+
+  - **The balance bar** is 3 high, 5 below the row's top, drawn in `[colour] track`, with a 1-wide centre tick in `dim` from 1
+    above the bar to 1 below it.
+    - With `bought` and `offered` both known and not both 0, `f = (offered − bought) / max(bought, offered)`, from −1 to 1, and
+      the fill is `n = min(half − 1, round(|f| × half))` pixels, where `half` is half the bar's width, rounded down.
+    - **A deficit** (more bought than offered) fills the `n` pixels left of the tick in `[colour] deficit`, `#4a7fd6`.
+    - **A surplus** fills the `n` pixels right of the tick in `[colour] surplus`, `#d9702b`.
+    - **No fill** when `n` is 0, when both are 0, and when either is unknown: before the place's first daily price step and after
+      a load (`docs/economy-design.md` §3.11).
+    - A hovered or pressed row keeps its bar's colours.
+  - **What a row shows on hover,** by the cell under the pointer: the icon and the name, the good's explanation; the price and the
+    bar, the class `price` (the breakdown, above); the base, the explanation `base_price`. This replaces CK-271's two-line price
+    tooltip.
+  - **A good without an icon** is still a plain line, `<good> <price> (<base>)`, with no bar and no tooltip. All 22 goods have
+    icons today.
+  - **Bars in lists** (`lib/list.lua`): a row item with `cells` may carry `bar = {x, width, value}`.
+    - `x` and `width` are in UI pixels from the row's left, like a cell's `x`; `value` is nil or a number from −1 to 1.
+    - It is checked before anything is drawn. `x` must be a whole number of at least 0, `width` a whole number of at least 3, and
+      `value` nil or a finite number in range. Anything else is refused, naming the item:
+      `bar needs whole x >= 0, whole width >= 3 and a value from -1 to 1 or nil`.
+    - A fill of 0 pixels makes no quad. A bar follows its row through scrolling and `set_items`.
+    - The row's tooltip function gets `cell = "bar"` when the pointer is over the bar and over no text cell (the row seam of
+      CK-277, in the same units).
 - **The location tooltip** (CK-275) is what the map's hovered place shows: `main.lua` gives `tooltip.map_hover` the source
   `{class = "location", args = {place = hover.id}}`. It waits `delay` and can lock like any other.
   - **Its classes** are in `scripts/ui/lib/classes.lua`. Each takes `args = {place = <id>}` and reads the place's view,
