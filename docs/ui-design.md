@@ -125,6 +125,9 @@
 >   explanation is light blue and every number is green. On a highlight fill a number is purple instead: dark `#663069` on the
 >   location panel's cyan, light `#d4a8d7` on the red of a hovered or pressed ledger row. There is no good or bad colour: the
 >   theme's `good` is removed. Lists opt in with `numbers = true`.
+> - **A strict UI test rig** (CK-281; `owner-direction-ui-tweaks-manager-r1.md`: "fix the tests to make the stand-ins strict.";
+>   §3.10): the rig's `render` and `texture` stand-ins now call the real host functions, so a call the real renderer refuses fails
+>   in the tests too. Nothing the player sees changed.
 
 ## Owner answers (2026-11-07)
 
@@ -609,6 +612,27 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
   - Groups, order, visibility, offset, clip and tint are tested on the scene's frame building and the backends' readback.
   - Routing and capture are tested on `CodekarlUi` with synthetic snapshots, as CK-198's hover tests are.
   - The widget library is tested in a UI VM with a fake `render`.
+- **The UI rig** (`apps/codekarl/src/readout_tests.rs`, the `Readout` rig that `widget_tests.rs` and others use) runs the shipped
+  `main.lua` and `lib/` in a UI VM over a scene that records what it is asked to do.
+  - **Its `render` and `texture` stand-ins are strict** (CK-281, 2026-11-13; the owner: "fix the tests to make the stand-ins
+    strict."). A call the real extension refuses is refused in the rig with the real message, so it fails the test as it would end
+    the game. That covers the argument count and types, the rectangle and colour rules, the hit key and hit rectangles, a texture
+    path, and a quad or group that was never created or is already destroyed.
+  - **No rule is written twice.** Each stand-in calls the real host function (`render_api.rs`, `texture_api.rs`) on a real scene
+    writer and a headless resource service, and records the call only when it was accepted. A refused call records nothing.
+  - **The rig's names stay.** Scripts and expectations still see the rig's stable names (`q1`, `g1`, `t:<filename>`). The rig maps
+    a name to the real handle it stands for before the call, and a returned handle back to its name.
+    - A destroyed name stays mapped to its stale handle, so a later use reaches the real stale check.
+    - A name the rig never gave out is passed as a handle from another scene or service, which the real extension refuses as one
+      it never issued.
+    - A refusal's message is the real one, unchanged: where it prints a handle, it prints the real token.
+  - **The stand-ins:** `render.create_group`, `raise_groups`, `create_quad`, `set_hit`, `set_position`, `set_rect`, `set_tint`,
+    `set_group_clip`, `set_group_offset`, `set_group_visible`, `destroy_group`, `destroy_quad`, and `texture.load`. Stand-ins for
+    other extensions (`game`, `window`, `frame`) are not covered.
+  - **Tests:** `every_readout_render_and_texture_standin_matches_the_real_refusal` runs each refused call against the real
+    function and the stand-in and compares the results; `strict_readout_standins_keep_the_accepted_call_records` pins what an
+    accepted call records. Making the rig strict found no bad call in the shipped scripts.
+  - **Why:** CK-279's crash passed the tests because the rig's `set_hit` accepted any key (§3.13).
 - **Window tests** run under the existing input layer, one on each backend, per slice that changes what is drawn or routed.
 
 ### 3.11 The place window and map clicks (Firm, owner Q4; mechanism Proposal)
@@ -1036,8 +1060,9 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
   `ui_link/group_tests.rs` hovers a place through the real `main.lua`. The labels, the tooltip-only rows and the herd tooltips are
   tested in `widget_tests.rs`, `ui_link/list_tests.rs` and `ui_link/location_tests.rs`.
   - **The UI rig's `render.set_hit`** (the recording stand-in in `apps/codekarl/src/readout_tests.rs`) refuses a key the real
-    call refuses, with the same message, by calling the real check, `ck_render_2d::valid_key` (CK-279). Before that it accepted
-    any string, which is how a span key holding `:` passed the tests and crashed the game.
+    call refuses, with the same message (CK-279). Before that it accepted any string, which is how a span key holding `:` passed
+    the tests and crashed the game. Since CK-281 every `render` and `texture` stand-in of the rig calls the real function
+    (§3.10).
   - **Through the real render extension:** `ui_link/group_tests.rs` rests the pointer on a map place until the location tooltip
     locks, then opens its nested population tooltip (CK-279).
 
