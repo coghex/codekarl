@@ -89,8 +89,6 @@
 >     and open an explanation.
 >   - **The look:** every number is green and a title is dark gold. Content of more than 12 lines scrolls inside the tooltip.
 >   - **The map's press:** the UI now also hears a left press on the map, as a `map_down` event (§3.5).
->
->   The price breakdown and the tooltips of the pop and building cards are later slices.
 > - **The glossary's entries** (CK-273; `owner-direction-tooltips-designer-r12.md` to `-r16.md`): `assets/ui/glossary.toml` now holds
 >   its **92 entries**, the text the owner approved in five groups (`glossary/glossary-r1.toml`, sha256 `75ae9a2f…`). They explain the
 >   game's concepts and name every good, production method, culture and religion of the game data. A change to an entry's text
@@ -99,12 +97,25 @@
 >   hovering a place on the map now shows its name, population, majority culture and religion, usable land, and the value produced
 >   and consumed last month. The owner: "mousing over a location should give basing info on a location". Each number opens its
 >   breakdown and each word its glossary explanation. The content is seven shared definitions in the new
->   `scripts/ui/lib/classes.lua`: `location`, `population`, `cultures`, `religions`, `land`, `produced` and `consumed`. Only the map
->   hover uses them so far.
+>   `scripts/ui/lib/classes.lua`: `location`, `population`, `cultures`, `religions`, `land`, `produced` and `consumed`.
 > - **Label tooltips** (CK-271; `owner-direction-goods-icons-r3.md`: "Yes, this round"; §3.13): every icon button and the speed boxes
 >   have a one-line label, and a shortened tab shows its full label. In the location tab a price row shows the good's name with its
 >   price and base, so a good is no longer known by its icon alone, and a herd's icon shows its species. List rows can now have a
 >   tooltip without being selectable (`lib/list.lua`, `tooltips = true`).
+> - **The price breakdown** (CK-272; `owner-direction-tooltips-r2.md` to `-r4.md`; §3.13): in a price row's tooltip the price opens
+>   a nested tooltip with the good's price, its base price, and the units bought and offered in the place's latest daily price step.
+>   The owner chose breakdowns for **"Prices"** this round, in the **"Shorter"** form. The engine now keeps each place's daily buy
+>   and sell orders for this; they are not saved (`docs/economy-design.md` §3.16).
+> - **Tooltips on the bars, the ledger, the location tab and the window title** (CK-277; §3.13): the date and the map-mode buttons
+>   show glossary explanations. In the ledger and on the location tab every word opens its explanation and every number its
+>   breakdown, cell by cell, and the location panel's title shows the location tooltip. Seven more shared classes serve them
+>   (`pop_size`, `place_food`, `housing`, `crowding`, `building_land`, `storage`, `overflow`).
+> - **Tooltips on the pop and building cards and rows** (CK-278; §3.13): every field of a pop or building card, of a row and of an
+>   open row's details shows its explanation or its breakdown: a pop's food by good, its jobs, housing and crowding, and a
+>   building's staff, store, herds and the wage of its last twelve months. Eight more shared classes serve them (`pop_food`,
+>   `jobs`, `pop_housing`, `pop_crowding`, `staff`, `store`, `wage`, `herd`).
+>
+>   That completes the tooltip topic: CK-268 to CK-278 are accepted.
 
 ## Owner answers (2026-11-07)
 
@@ -617,8 +628,9 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
 
 One module, `scripts/ui/lib/tooltip.lua`, shows every tooltip (spec:
 `.pipeline/coordination/ui-polish-design/specs/tooltips-t3-core-designer4-r8.md`, sha256 `09832bdf…`). CK-270 is the mechanism. The
-glossary's entries came with CK-273, the labels with CK-271 and the location tooltip with CK-275. The price breakdown and the
-card tooltips are later slices. Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
+glossary's entries came with CK-273, the labels with CK-271, the price breakdown with CK-272, the location tooltip with CK-275,
+the bars, the ledger, the location tab and the window title with CK-277, and the pop and building cards and rows with CK-278.
+Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
 
 - **Settings:** `[ui.tooltips]` in the configuration file, every key optional, read at startup only (the owner chose **"Config file now"**).
 
@@ -657,7 +669,8 @@ card tooltips are later slices. Lengths below are in UI pixels (`ui.P` units eac
     naming it.
   - `tooltip.content(class, args)` returns that content, so a window or a list can show the lines a tooltip shows. An undefined class
     is an error naming it.
-  - The game's classes are defined in `scripts/ui/lib/classes.lua` (the location tooltip, below).
+  - The game's classes are defined in `scripts/ui/lib/classes.lua` (the location tooltip, below) and, for `price`, in
+    `scripts/ui/lib/location.lua`.
 - **Targets:**
   - `tooltip.attach(key, source)` gives the widget under hit key `key` a tooltip, and `tooltip.detach(key)` takes it away. A key has
     one source: attaching again replaces it.
@@ -775,7 +788,7 @@ card tooltips are later slices. Lengths below are in UI pixels (`ui.P` units eac
     | Control | Label |
     |---|---|
     | the ledger bar's two buttons, and the ledger's two tabs | `places`, `pops` |
-    | the map-mode buttons | `stockpile map`, `yield map`, `elevation map` |
+    | the map-mode buttons | `stockpile map`, `yield map`, `elevation map` (replaced by explanations in CK-277, below) |
     | the time bar's rewind and fast-forward buttons | `slower`, `faster` |
     | the time bar's pause button | `pause` while running, `play` while paused |
     | speed box *n* (not a button: `main.lua` attaches it with `tooltip.attach`) | `speed n` |
@@ -785,7 +798,8 @@ card tooltips are later slices. Lengths below are in UI pixels (`ui.P` units eac
     its short or tiny label, and has none while it shows the full one.
   - **Goods names:** `lib/location.lua` names a good by its id with `_` as a space, except `peas_beans`, which is `peas and beans`.
   - **Price rows:** in the location tab, each price row with an icon has a two-line tooltip: the good's name, then
-    `price <price>, base <base>`. A good without an icon keeps its text line, which has no tooltip.
+    `price <price>, base <base>`. Since CK-272 the price is a link (the price breakdown, below). A good without an icon keeps its
+    text line, which has no tooltip.
   - **Tooltip-only rows** (`lib/list.lua`):
     - a cell item may carry `tooltip`: a function returning content (or nil), or `{class = <name>, args = <table>}`. Any other type
       is refused, naming the item;
@@ -796,8 +810,20 @@ card tooltips are later slices. Lengths below are in UI pixels (`ui.P` units eac
     - a row's key is detached when the row leaves the view and when the list is destroyed.
   - **Card items** (`lib/cards.lua`): every card's key has a source that calls the item's `tooltip(x, y)`, when it has one, with
     the pointer's position in UI pixels from the card's top-left. It returns the content and a part.
-  - **Herds:** on a building card the species' name shows over a herd's 9×9 icon, with the species as the part, and nothing
-    elsewhere on the card. In the rows look an open building row does the same for each herd line's icon.
+  - **Herds:** on a building card the species' name showed over a herd's 9×9 icon, with the species as the part; in the rows look
+    an open building row did the same for each herd line's icon. CK-278 replaced that label with the species' explanation, and
+    gave the rest of the card its tooltips (below).
+- **The price breakdown** (CK-272) is the shared class `price`, with `args = {place = <id>, good = <id>}`, defined in
+  `lib/location.lua`.
+  - **Reaching it:** in a price row's tooltip the price is a link to it, so it opens from the locked tooltip. The owner asked to
+    "hover over those numeirical values in the tooltip and get another tooltip showing the component values of that number".
+  - **Its four lines** (the owner chose the **"Shorter"** form, `owner-direction-tooltips-r4.md`): `<good name>: price <price>`,
+    `base price <base>`, `bought (buy orders) <units>` and `offered (sell orders) <units>`. The price is written as the row writes
+    it.
+  - **The orders** are the place view's `bought` and `offered` for that good: the units in the latest daily price step's buy and
+    sell orders (`docs/economy-design.md` §3.11 and §3.16). A place with none yet, before its first step or after a load, shows `-`.
+  - **Live:** it reads `game.place` at the newest economy revision the location panel was told (`location:set_revision`), so a
+    refresh after a day shows the new price and orders.
 - **The location tooltip** (CK-275) is what the map's hovered place shows: `main.lua` gives `tooltip.map_hover` the source
   `{class = "location", args = {place = hover.id}}`. It waits `delay` and can lock like any other.
   - **Its classes** are in `scripts/ui/lib/classes.lua`. Each takes `args = {place = <id>}` and reads the place's view,
@@ -829,8 +855,112 @@ card tooltips are later slices. Lengths below are in UI pixels (`ui.P` units eac
     `land` leaves out `not usable` and `sea` when they are 0.
   - **Consumed is the pops' use** (`used_by_pops`): buildings take no inputs yet.
   - **No county or region line** until the map data has those units (`owner-direction-tooltips-designer-r7.md`).
-  - **Elsewhere:** only the map hover uses these classes so far. The ledger, the location tab and the window title come to them in
-    a later slice. `produced` can pass 12 lines, and then scrolls.
+  - **Elsewhere:** the ledger, the location tab and the window title use these classes too (CK-277, below). `produced` can pass
+    12 lines, and then scrolls.
+- **The bars, the ledger, the location tab and the window title** (CK-277; spec `specs/tooltips-t8b-panels-designer-r3.md`,
+  sha256 `87b4ad0b…`). The rule is the location tooltip's: a word opens its explanation and a number its breakdown.
+  - **`tooltip.explanation(key)`** returns a glossary entry's explanation as content (nil when there is no entry), so a widget can
+    show one without a term span.
+  - **The date** in the time bar has a hit key of its own (`date_readout`) and shows the explanation `date`.
+  - **The map-mode buttons** show the explanations `stockpile_map`, `yield_map` and `elevation_map`. `main.lua` attaches these
+    over the buttons' CK-271 labels, which they replace.
+  - **Seven more classes** in `lib/classes.lua`, each for a place (`args = {place = <id>}`; `pop_size` also takes `pop`, the pop's
+    index in the place view):
+
+    | Class | Its lines |
+    |---|---|
+    | `pop_size` | workers; dependents; births and deaths |
+    | `place_food` | one line per pop, least food first: its type, its culture and its days of food |
+    | `housing` | basic and makeshift, each occupants `of` capacity |
+    | `crowding` | people; room (both capacities added); crowding in % |
+    | `building_land` | in use, prepared and buildable, in m² |
+    | `storage` | the pops' litres used and capacity; then one line per building with a store |
+    | `overflow` | one line per good lost last month, most first; `nothing lost` when none |
+
+  - **A list row's cells** (`lib/list.lua`, on CK-271's tooltip rows): an item's `tooltip` function is called as
+    `tooltip(lx, ly, cell)`.
+    - `lx` and `ly` are the pointer's position from the row's left edge and its top, in UI units.
+    - `cell` is `"icon"` over the item's icon, else the index of the cell whose drawn text is under the pointer, else nil.
+    - The function returns the content and a part. The game's rows give the cell as the part, so moving to another cell of the
+      same row restarts the delay.
+  - **The ledger** (`main.lua`), cell by cell:
+
+    | Tab | Row | Cell and what it shows |
+    |---|---|---|
+    | locations | the heading | `name`, `people`, `food`: the explanations `location`, `population`, `food_days` |
+    | locations | a place | name: `location`; people: `population`; food: `place_food` |
+    | pops | a pop | icon and type: the type's explanation; people: `pop_size`; place: `location` |
+
+    A cell with nothing drawn has no tooltip, and a class gives none for a place with no view yet. The rows still select as before.
+  - **The location tab** (`lib/location.lua`): each line above the prices is a word and its numbers, as cells. The word opens its
+    explanation and the numbers their class:
+
+    | Line | Word (explanation) | Numbers (class) |
+    |---|---|---|
+    | people, workers, dependents | `population`, `worker`, `dependent` | `population` |
+    | housing | `housing`, and `basic_housing` and `makeshift_housing` on their words | `housing` |
+    | crowding | `crowding` | `crowding` |
+    | food | `food_days` | `place_food` |
+    | building land | `building_land` | `building_land` |
+    | storage | `storage` | `storage` |
+    | lost to overflow last month | `overflow` | `overflow` |
+
+    A line too wide for the panel wraps as before, and each wrapped row keeps its own cells.
+  - **The location panel's title** shows the `location` class for its place: the same lines the map hover shows.
+- **The pop and building cards, rows and open rows** (CK-278; spec `specs/tooltips-t8c-cards-designer-r4.md`, sha256
+  `18ea63ec…`). A card's or row's `tooltip` function (CK-271) answers by the field under the pointer, with the field's name as
+  the part. Nothing about pressing, selecting, opening or the look changed.
+  - **Eight more classes** in `lib/classes.lua`. A pop's take `args = {place, pop = <index>}` and a building's
+    `{place, building = <index>}`, the index being the entry's place in the place view. `herd` also takes `species`. A class
+    whose place, pop, building or species is not in the view gives none.
+
+    | Class | Its lines |
+    |---|---|
+    | `pop_food` | one line per food the pop holds: the good, its units and unit, and its share as `P% of meals` |
+    | `jobs` | `employed N`; `unemployed N` |
+    | `pop_housing` | basic and makeshift, the pop's people in each |
+    | `pop_crowding` | the pop's crowding in % (`—` when it has none); housing, its housed people |
+    | `staff` | `filled N`; `open N` |
+    | `store` | `used N L of N L` |
+    | `wage` | the twelve months, newest first, then `average W` |
+    | `herd` | the species, `N of N`: head of maximum |
+
+  - **The wage lines:** a month is `<Mon> <year>: W per head (N paid)`. `<Mon>` is the month's three-letter English name, `W` the
+    wage with one decimal, and `(N paid)` shows only when the paid heads are known. A month no payday has written has no year and
+    reads `<Mon>: W per head`. With the average that is 13 lines, so the tooltip scrolls. The data is the view's `wages`
+    (`docs/economy-design.md` §3.11).
+  - **The food lines:** the unit is the data's, with `s` added when the units are not 1, unless it already ends in `s`, is `head`
+    or holds a space. The share is the view's `share_pm` ÷ 10, floored.
+  - **A pop card,** field by field:
+
+    | Field | Shows |
+    |---|---|
+    | the icon and the type; the culture; the religion | each one's explanation |
+    | the size, and the workers, dependents and trend text | `pop_size` |
+    | the food bar and its days | `pop_food` |
+    | the job bar | `jobs` |
+    | the needs bars | the explanation `needs` |
+    | the mood value | the explanation `satisfaction` |
+    | the housing numbers | `pop_housing` |
+    | the crowd value | `pop_crowding` |
+    | the words `food`, `job`, `needs`, `mood`, `housing`, `crowd` | the explanations `food_days`, `jobs`, `needs`, `satisfaction`, `housing`, `crowding` |
+
+    Needs and mood have no breakdown in this round.
+  - **A building card,** field by field:
+
+    | Field | Shows |
+    |---|---|
+    | the icon and the kind | the kind's explanation |
+    | `wage N` | the word: the explanation `wage`; the number: class `wage` |
+    | the methods text | the explanation of the method under the pointer |
+    | `housing N` | the explanation `housing` |
+    | `staff`, its bar and its count | `staff` |
+    | `store` and its bar | `store` |
+    | a herd's icon | the species' explanation, whose title is its name; this replaces CK-271's name label |
+    | a herd's count | `herd` for that species |
+
+  - **Rows and open rows** (the list look of the pops and buildings tabs, and an open row's detail lines): the same fields give
+    the same explanations and classes, by the cell or the detail line under the pointer.
 - **Tests:** the UI rig in `apps/codekarl/src/widget_tests.rs` drives `tooltip.update` with made-up updates;
   `ui_link/widget_witness_tests.rs` drives a locked tooltip through real pointer ticks; `config.rs` and `glossary.rs` test the
   settings, the loader and the shipped entries (92 keys, three exact literals, an entry for every id of the game data);
