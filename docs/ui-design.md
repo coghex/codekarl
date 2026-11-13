@@ -128,6 +128,10 @@
 > - **A strict UI test rig** (CK-281; `owner-direction-ui-tweaks-manager-r1.md`: "fix the tests to make the stand-ins strict.";
 >   §3.10): the rig's `render` and `texture` stand-ins now call the real host functions, so a call the real renderer refuses fails
 >   in the tests too. Nothing the player sees changed.
+> - **Numbers past a limit are red** (CK-283; `owner-direction-ui-tweaks-manager-r1.md` and `-designer-r2.md`; §3.7): crowding over
+>   100%, housing occupants over capacity, storage and a building's store over capacity, building land over its limit, and any
+>   overflow loss are drawn in `#f66155`, in the panels and in their tooltips. On the location panel's light fills the colour is
+>   `#4b0b06`. A number exactly at its limit stays green.
 
 ## Owner answers (2026-11-07)
 
@@ -552,7 +556,8 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
     - **everything else** keeps its colour: units (`d`, `days`, `L`, `m²`), punctuation, signs, `·` and other words.
 
     Only colours changed: layout, positions, hit areas and tooltip sources are as they were.
-  - **The number colours, and no others.** A numerical value is drawn in exactly one of:
+  - **The number colours, and no others** (CK-283 added two for a number past a limit, below). A numerical value is drawn in
+    exactly one of:
     - `[colour] number` (`#5fb35a`), normally;
     - its kind's `highlight_number`, when it is drawn on that kind's highlight fill: its `outline` or `hot` colour behind text,
       which includes a list's hovered and pressed rows.
@@ -586,6 +591,39 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
   - **No gold in panels** (the owner's choice): window titles, buttons, tabs, the Help window, the speed boxes and the bars keep
     their colours. Title bars and pressed or selected buttons draw no numbers today; one drawn there later takes its kind's
     `highlight_number`.
+- **Numbers past a limit are red** (CK-283; spec sha256 `4c3d9c00…`; `owner-direction-ui-tweaks-manager-r1.md` and
+  `-designer-r2.md`). The owner: "this red color is for numbers that are currently hitting or surpassing limits", then, on the
+  mock-up: "over 100 should be red, at 100 stays green, that goes for any value, things at their limit should stay green, red is
+  for things that are past their limit". This adds a third and fourth number colour to the two above.
+  - **The colours:** `[colour] over_limit = "#f66155"`, and `[kind.place] highlight_over_limit = "#4b0b06"` for a number on the
+    place kind's light fills, where text is inverted. `theme.kind(name).highlight_over_limit` gives it and falls back to
+    `over_limit` for a kind without one. No other kind sets one: no limited number is drawn on a red fill today.
+  - **Past, not at.** A number takes the over-limit colour exactly when:
+
+    | Number | Past its limit when |
+    |---|---|
+    | crowding | it is over 100% (`crowding_pm > 1000`) |
+    | housing occupants | occupants > capacity, judged separately for basic and makeshift |
+    | storage, and a building's store | used > capacity |
+    | building land | in use > the smaller of prepared and buildable |
+    | lost to overflow | units lost > 0: a loss means the store was full and more arrived |
+
+    A number exactly at its limit stays green: `100%`, `300/300`.
+  - **Only the number past the limit changes.** In `a/b`, `a / b` and `a of b` that is `a`; the capacity `b` stays `number`.
+    Units and words are as above.
+  - **Where it applies:**
+    - **the location tab:** the crowding percentage, each housing occupant count, the storage used, the building land in use and
+      the overflow units;
+    - **a pop card's** crowd percentage and **an open pop row's** crowding;
+    - **an open building row's** store used;
+    - **tooltips** (the owner chose **"Yes, tooltips too"**): the classes `crowding`, `pop_crowding`, `housing`, `storage`, `store`,
+      `building_land` (its `in use` line) and `overflow`.
+  - **Not limits:** staff and herd counts, so a full `16/16` or `64/64` stays green. The ledger's numbers and an open row
+    header's numbers have no limit.
+  - **How:** a tooltip span may carry `over_limit = true`, and its number runs are then drawn in `over_limit` (any other type is
+    an error). A list cell may carry `over_limit` too: its number runs are drawn in `over_limit`, or in its kind's
+    `highlight_over_limit` while its row is hovered or pressed. `text.colour_segments` uses a segment's own `number_colour` when
+    it has one.
 
 ### 3.8 Moddability (Proposal)
 
