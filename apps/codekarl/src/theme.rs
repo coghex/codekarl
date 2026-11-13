@@ -199,6 +199,7 @@ mod tests {
         assert_eq!(theme.colour("lock"), Some("#f0a830"));
         assert_eq!(theme.colour("term"), Some("#92ddea"));
         assert_eq!(theme.colour("number"), Some("#5fb35a"));
+        assert_eq!(theme.colour("over_limit"), Some("#f66155"));
         assert_eq!(theme.colour("good"), None);
         let place = theme.kind("place").expect("the place kind");
         assert_eq!(place.get("divider").map(String::as_str), Some("#c9932e"));
@@ -213,7 +214,11 @@ mod tests {
             place.get("highlight_number").map(String::as_str),
             Some("#663069")
         );
-        assert_eq!(place.len(), 6);
+        assert_eq!(
+            place.get("highlight_over_limit").map(String::as_str),
+            Some("#4b0b06")
+        );
+        assert_eq!(place.len(), 7);
         let window = theme.kind("window").expect("the window kind");
         assert_eq!(window.get("outline").map(String::as_str), Some("#6e130f"));
         assert_eq!(window.get("hot").map(String::as_str), Some("#a8261c"));
@@ -315,6 +320,7 @@ mod tests {
             [
                 "divider",
                 "highlight_number",
+                "highlight_over_limit",
                 "hot",
                 "outline",
                 "pressed_text",

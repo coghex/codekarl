@@ -295,8 +295,10 @@ local function pop_card(pop, place_id, pop_index)
       put_term_text(result, group, dx + 5, dy + 48, {term("housing")})
       put_text(result, group, dx + 47, dy + 48, (pop.basic_housing or 0) .. " + " .. (pop.makeshift_housing or 0), theme.colour("text"))
       put_term_text(result, group, dx + 105, dy + 48, {term("crowd")})
+      local crowding_over = pop.crowding_pm ~= false and pop.crowding_pm ~= nil and pop.crowding_pm > 1000
       put_text(result, group, dx + 135, dy + 48,
-        pop.crowding_pm ~= false and pop.crowding_pm ~= nil and percent(pop.crowding_pm) or "—", theme.colour("text"))
+        pop.crowding_pm ~= false and pop.crowding_pm ~= nil and percent(pop.crowding_pm) or "—",
+        theme.colour("text"), nil, crowding_over and theme.colour("over_limit") or nil)
       return result
     end,
   }
@@ -494,6 +496,10 @@ local function pop_row(pop, open, place_id, pop_index)
           elseif index == 4 then
             put_term_text(result, group, dx + 16, y,
               {term("needs "), {text = percent(pop.necessities) .. " " .. percent(pop.niceties) .. " " .. percent(pop.luxuries)}})
+          elseif index == 7 then
+            local crowding_over = pop.crowding_pm ~= false and pop.crowding_pm ~= nil and pop.crowding_pm > 1000
+            put_text(result, group, dx + 16, y, line, theme.colour("text"), nil,
+              crowding_over and theme.colour("over_limit") or nil)
           else
             put_text(result, group, dx + 16, y, line, theme.colour("text"))
           end
@@ -608,7 +614,16 @@ local function building_row(building, open, place_id, building_index)
               put_term_text(result, group, dx + 16, y,
                 {term("housing "), {text = "occupants " .. tostring(building.housing_occupants or 0)}})
             else
-              put_text(result, group, dx + 16, y, line, theme.colour("text"))
+              if index == 2 then
+                put_term_text(result, group, dx + 16, y, {
+                  {text = "store "},
+                  {text = tostring(building.store_used_l), number_colour = building.store_used_l > building.store_capacity_l
+                    and theme.colour("over_limit") or nil},
+                  {text = " / "}, {text = tostring(building.store_capacity_l)}, {text = " L"},
+                })
+              else
+                put_text(result, group, dx + 16, y, line, theme.colour("text"))
+              end
             end
           end
         end
@@ -631,26 +646,36 @@ local function location_lines(place)
     }, place = place.id},
     {tooltip_parts = {
       {text = "housing: ", term = "housing"}, {text = "basic", term = "basic_housing"},
-      {text = " " .. (place.basic_housing_occupants or 0) .. "/" .. (place.basic_housing_capacity or 0), class = "housing"},
+      {text = " ", term = "basic_housing"}, {text = tostring(place.basic_housing_occupants or 0), class = "housing",
+        over_limit = (place.basic_housing_occupants or 0) > (place.basic_housing_capacity or 0)},
+      {text = "/", class = "housing"}, {text = tostring(place.basic_housing_capacity or 0), class = "housing"},
       {text = ", "}, {text = "makeshift", term = "makeshift_housing"},
-      {text = " " .. (place.makeshift_housing_occupants or 0) .. "/" .. (place.makeshift_housing_capacity or 0), class = "housing"},
+      {text = " ", term = "makeshift_housing"}, {text = tostring(place.makeshift_housing_occupants or 0), class = "housing",
+        over_limit = (place.makeshift_housing_occupants or 0) > (place.makeshift_housing_capacity or 0)},
+      {text = "/", class = "housing"}, {text = tostring(place.makeshift_housing_capacity or 0), class = "housing"},
     }, place = place.id},
     {tooltip_parts = {
-      {text = "crowding: ", term = "crowding"}, {text = percent(place.crowding_pm or 0), class = "crowding"},
+      {text = "crowding: ", term = "crowding"},
+      {text = percent(place.crowding_pm or 0), class = "crowding", over_limit = (place.crowding_pm or 0) > 1000},
     }, place = place.id},
     {tooltip_parts = {
       {text = "food: ", term = "food_days"}, {text = place.food_days .. " days", class = "place_food"},
     }, place = place.id},
     {tooltip_parts = {
       {text = "building land: ", term = "building_land"},
-      {text = place.footprint_m2 .. " / " .. math.min(place.prepared_m2, place.max_buildable_m2) .. " m²", class = "building_land"},
+      {text = tostring(place.footprint_m2), class = "building_land",
+        over_limit = place.footprint_m2 > math.min(place.prepared_m2, place.max_buildable_m2)},
+      {text = " / ", class = "building_land"}, {text = tostring(math.min(place.prepared_m2, place.max_buildable_m2)), class = "building_land"},
+      {text = " m²", class = "building_land"},
     }, place = place.id},
     {tooltip_parts = {
       {text = "storage: ", term = "storage"},
-      {text = place.storage_used_l .. " / " .. place.storage_capacity_l .. " L", class = "storage"},
+      {text = tostring(place.storage_used_l), class = "storage", over_limit = place.storage_used_l > place.storage_capacity_l},
+      {text = " / ", class = "storage"}, {text = tostring(place.storage_capacity_l), class = "storage"}, {text = " L", class = "storage"},
     }, place = place.id},
     {tooltip_parts = {
-      {text = "lost to overflow last month: ", term = "overflow"}, {text = tostring(place.overflow_lost), class = "overflow"},
+      {text = "lost to overflow last month: ", term = "overflow"},
+      {text = tostring(place.overflow_lost), class = "overflow", over_limit = place.overflow_lost > 0},
     }, place = place.id},
     "prices (base):",
   }
@@ -788,6 +813,19 @@ end
 function location.rows(lines, width)
   local limit = width // P - 2
   local rows = {}
+  local source_cache = {}
+  local function part_source(part)
+    if part.term == nil and part.class == nil then return nil end
+    local kind, value = part.term ~= nil and "term" or "class", part.term or part.class
+    local key = kind .. ":" .. value .. ":" .. tostring(part.over_limit == true)
+    local source = source_cache[key]
+    if source ~= nil then return source end
+    if part.term ~= nil then source = {term = part.term, over_limit = part.over_limit == true}
+    elseif part.class ~= nil then source = {class = part.class, over_limit = part.over_limit == true}
+    else return nil end
+    source_cache[key] = source
+    return source
+  end
   for _, line in ipairs(lines) do
     if type(line) == "table" and line.tooltip_parts ~= nil then
       local place_id = line.place
@@ -813,6 +851,7 @@ function location.rows(lines, width)
         end
         for _, cell in ipairs(current.cells) do
           cell.colour = cell.source ~= nil and cell.source.term ~= nil and theme.colour("term") or theme.colour("text")
+          cell.over_limit = cell.source ~= nil and cell.source.over_limit == true
           cell.source = nil
         end
         rows[#rows + 1] = current
@@ -825,8 +864,7 @@ function location.rows(lines, width)
       end
       if font.layout(full_text).width <= limit then
         for _, part in ipairs(line.tooltip_parts) do
-          local source = part.term ~= nil and {term = part.term} or part.class ~= nil and {class = part.class} or nil
-          add_cell(part.text, source)
+          add_cell(part.text, part_source(part))
         end
       else
         local indent = full_text:match("^ *")
@@ -835,7 +873,7 @@ function location.rows(lines, width)
         local ranges = {}
         local offset = 1
         for _, part in ipairs(line.tooltip_parts) do
-          local source = part.term ~= nil and {term = part.term} or part.class ~= nil and {class = part.class} or nil
+          local source = part_source(part)
           if #part.text > 0 then
             ranges[#ranges + 1] = {first = offset, last = offset + #part.text - 1, source = source}
             offset = offset + #part.text
@@ -845,12 +883,28 @@ function location.rows(lines, width)
         while true do
           local first, last = full_text:find("%S+", at)
           if first == nil then break end
-          local source
-          for _, range in ipairs(ranges) do
-            if first >= range.first and first <= range.last then source = range.source; break end
-          end
-          words[#words + 1] = {text = full_text:sub(first, last), source = source}
+          words[#words + 1] = {text = full_text:sub(first, last), first = first, last = last}
           at = last + 1
+        end
+        local function add_sourced_slice(item, first_byte, last_byte, separator)
+          local position = first_byte
+          while position <= last_byte do
+            local absolute = item.first + position - 1
+            local source, end_at = nil, last_byte
+            for _, range in ipairs(ranges) do
+              if absolute >= range.first and absolute <= range.last then
+                source = range.source
+                end_at = math.min(last_byte, range.last - item.first + 1)
+                break
+              elseif range.first > absolute then
+                end_at = math.min(last_byte, range.first - item.first)
+                break
+              end
+            end
+            local prefix = position == first_byte and separator or ""
+            add_cell(prefix .. item.text:sub(position, end_at), source)
+            position = end_at + 1
+          end
         end
         local row_text = ""
         local first_wrapped_row = true
@@ -870,6 +924,7 @@ function location.rows(lines, width)
           if lead ~= "" then add_cell(lead, nil) end
           row_text = lead .. row_text
           -- Preserve wrap's UTF-8-safe cut for a token wider than the available row.
+          local word_offset = 1
           while font.layout(candidate).width > limit and utf8.len(word) > 1 do
             local cut = utf8.len(word) - 1
             while cut > 1 and font.layout(lead .. word:sub(1, utf8.offset(word, cut + 1) - 1)).width > limit do
@@ -877,7 +932,7 @@ function location.rows(lines, width)
             end
             local at = utf8.offset(word, cut + 1)
             local piece = word:sub(1, at - 1)
-            add_cell(separator .. piece, item.source)
+            add_sourced_slice(item, word_offset, word_offset + #piece - 1, separator)
             row_text = row_text .. separator .. piece
             finish()
             first_wrapped_row = false
@@ -888,8 +943,9 @@ function location.rows(lines, width)
             row_text = lead
             separator = ""
             candidate = lead .. word
+            word_offset = word_offset + #piece
           end
-          add_cell(separator .. word, item.source)
+          add_sourced_slice(item, word_offset, word_offset + #word - 1, separator)
           row_text = row_text .. separator .. word
         end
       end

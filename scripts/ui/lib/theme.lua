@@ -43,6 +43,7 @@ function theme.kind(name)
     title_text = raw.title_text or text,
     pressed_text = raw.pressed_text or text,
     highlight_number = raw.highlight_number or loaded().colour("number"),
+    highlight_over_limit = raw.highlight_over_limit or loaded().colour("over_limit"),
     divider = raw.divider,
     row_hover = raw.row_hover or raw.outline,
     row_pressed = raw.row_pressed or raw.hot,

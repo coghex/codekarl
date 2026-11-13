@@ -101,10 +101,12 @@ local function checked_items(who, items)
         local cell = cells[cell_index]
         if type(cell) ~= "table" or type(cell.text) ~= "string" or not finite(cell.x)
           or (cell.align ~= "left" and cell.align ~= "right")
-          or (cell.colour ~= nil and type(cell.colour) ~= "string") then
+          or (cell.colour ~= nil and type(cell.colour) ~= "string")
+          or (cell.over_limit ~= nil and type(cell.over_limit) ~= "boolean") then
           error(who .. ": item " .. index .. " cell " .. cell_index .. " needs text, finite x, left/right align, and optional colour", 3)
         end
-        checked.cells[cell_index] = {text = cell.text, x = cell.x, align = cell.align, colour = cell.colour}
+        checked.cells[cell_index] = {text = cell.text, x = cell.x, align = cell.align,
+          colour = cell.colour, over_limit = cell.over_limit}
       end
       copy[index] = checked
     else
@@ -269,9 +271,10 @@ local function set_cell(self, row_view, row_index, index, cell)
     row_view.lines[index] = line
   end
   local colour = cell.colour or self.colours.text
-  if self.numbers then
+  if self.numbers or cell.over_limit then
     local highlighted = self.hover_row == row_index or self.pressed_row == row_index
-    local number_colour = highlighted and self.colours.highlight_number or theme.colour("number")
+    local number_colour = cell.over_limit and (highlighted and self.colours.highlight_over_limit or theme.colour("over_limit"))
+      or highlighted and self.colours.highlight_number or theme.colour("number")
     text.set_segments(line, text.colour_numbers(cell.text, colour, number_colour))
   else
     text.set(line, cell.text)

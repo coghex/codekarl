@@ -9,6 +9,7 @@ text = "#ece3cb"   # text and icons on a body
 lock = "#f0a830"
 term = "#92ddea"
 number = "#5fb35a"
+over_limit = "#f66155"
 dim = "#9a927e"    # subdued ledger column headings
 track = "#3a3326"
 band = "#221c13"
@@ -40,6 +41,7 @@ title_text = "#15110a"
 pressed_text = "#15110a"
 divider = "#c9932e"
 highlight_number = "#663069"
+highlight_over_limit = "#4b0b06"
 
 [kind.tooltip]     # the hover tooltip: all white on black
 outline = "#ece3cb"
