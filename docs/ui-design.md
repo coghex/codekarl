@@ -154,6 +154,12 @@
 >     own icon.
 >   - All 22 goods and the three herd species have their own icon and a glossary entry today, so nothing the player sees changed.
 >   - The art's record is in `docs/ui-art-provenance.md`.
+> - **Labels never lock** (CK-286; `owner-direction-tooltips-manager-r17.md`; §3.13): a one-line tooltip that only names a control
+>   is now its own kind, a **label**. The owner: "these sorts of simple descriptor tooltips should not be lockable, the yellow bar
+>   shouldnt appear, they should be a different new type of tooltip."
+>   - The buttons' and tabs' labels and the speed boxes' are labels: they open after the same delay, never lock, show no lock bar
+>     and let a press through to the control under them.
+>   - A tooltip that explains a word or breaks down a number locks as before, the map-mode buttons' and the date's among them.
 
 ## Owner answers (2026-11-07)
 
@@ -720,6 +726,15 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
     function and the stand-in and compares the results; `strict_readout_standins_keep_the_accepted_call_records` pins what an
     accepted call records. Making the rig strict found no bad call in the shipped scripts.
   - **Why:** CK-279's crash passed the tests because the rig's `set_hit` accepted any key (§3.13).
+- **The real chain's rig** (`apps/codekarl/src/ui_link/group_tests.rs`, `Rig`) runs the shipped `main.lua` and `lib/` over the real
+  render extension, with the engine's hit test choosing the key under the pointer.
+  - **`Rig::deliver_game_time(snapshot)` returns only after the `game_time` callback has run** (CK-286, 2026-11-13). It publishes
+    the snapshot and delivers a fixture frame, then delivers a second frame and waits for its answer.
+  - **Why two frames:** the link posts `game_time` after the first frame's update, and its answer can still be pending when that
+    frame returns. The second frame is queued behind `game_time`, so its answer means the callback has finished.
+  - **What it fixed:** a test that read the UI straight after the helper could run before the callback. In CK-286's first batch
+    `the_open_pause_label_reads_play_after_a_game_time_update` failed that way in the combined check and passed when the same
+    tree was run again; the integration review named it a test race, not a product fault.
 - **Window tests** run under the existing input layer, one on each backend, per slice that changes what is drawn or routed.
 
 ### 3.11 The place window and map clicks (Firm, owner Q4; mechanism Proposal)
@@ -844,7 +859,8 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     `scripts/ui/lib/location.lua`.
 - **Targets:**
   - `tooltip.attach(key, source)` gives the widget under hit key `key` a tooltip, and `tooltip.detach(key)` takes it away. A key has
-    one source: attaching again replaces it.
+    one source: attaching again replaces it. `tooltip.label(key, words)` gives it a label, a tooltip that never locks (CK-286,
+    the label kind, below).
   - `source` is `{class = …, args = …}`, or a `function(x, y)`. The function is given the pointer position in UI units and returns
     the content (nil for none here) and optionally a `part`, a string naming the part of the widget under the pointer. The **target**
     is the key with its part.
@@ -910,7 +926,7 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     and `tooltip_open_is_quiet_and_game_callbacks_restore_the_overlay_in_the_same_call` use it; the real chain checks that ten
     idle updates with a locked tooltip publish no frame.
   - **Escape** closes one: `close_request` in `lib/window.lua` first calls `tooltip.close_top()`, which closes the newest tooltip and
-    says whether it closed one. When it did, nothing else happens (§3.5).
+    says whether it closed one. When it did, nothing else happens (§3.5). Since CK-286 it does not count labels (below).
   - **A left press** (the owner: "escape should clear one nested tooltip at a time but clicking away should clear them all"):
     - on a tooltip, its panel or one of its terms or links: closes the tooltips opened from it and keeps it and the rest;
     - on a **functional widget**: closes nothing;
@@ -985,7 +1001,8 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
 - **Labels** (CK-271; spec `specs/tooltips-t4-labels-designer4-r4.md`, sha256 `fffd8dc0…`). The owner put labelled hover tooltips
   in this round ("Yes, this round") when the goods icons replaced the names in the prices list.
   - **Buttons:** `button.new{…, tooltip = "text"}` gives a button a one-line tooltip on its key, and `button:set_tooltip(text)`
-    changes it (nil removes it; anything but a string or nil is an error). Destroying the button detaches it. The labels:
+    changes it (nil removes it; anything but a string or nil is an error). Destroying the button detaches it. Since CK-286 it is
+    a tooltip of the label kind (below). The labels:
 
     | Control | Label |
     |---|---|
@@ -993,7 +1010,7 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     | the map-mode buttons | `stockpile map`, `yield map`, `elevation map` (replaced by explanations in CK-277, below) |
     | the time bar's rewind and fast-forward buttons | `slower`, `faster` |
     | the time bar's pause button | `pause` while running, `play` while paused |
-    | speed box *n* (not a button: `main.lua` attaches it with `tooltip.attach`) | `speed n` |
+    | speed box *n* (not a button: `main.lua` gives it one with `tooltip.label`; with `tooltip.attach` before CK-286) | `speed n` |
     | the location panel's look buttons | `cards`, `list` |
 
   - **Tabs:** `lib/tabs.lua` passes an item's `tooltip` to its button. A text tab shows its full label as a tooltip while it shows
@@ -1016,6 +1033,69 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
   - **Herds:** on a building card the species' name showed over a herd's 9×9 icon, with the species as the part; in the rows look
     an open building row did the same for each herd line's icon. CK-278 replaced that label with the species' explanation, and
     gave the rest of the card its tooltips (below).
+- **The label kind** (CK-286; spec sha256 `362074cf…`; `owner-direction-tooltips-manager-r17.md`, sha256 `96eb0e7a…`) is a tooltip
+  that only names its control. The owner: "some tooltips should be lockable, others should not be lockable", and "these sorts of
+  simple descriptor tooltips should not be lockable, the yellow bar shouldnt appear, they should be a different new type of
+  tooltip."
+  - **Declared at the source:** `tooltip.label(key, words)` (`lib/tooltip.lua`) attaches a label to `key`.
+    - `words` is a non-empty string. Any other call fails with `tooltip: label: expected a key and non-empty words`.
+    - Nothing decides the kind from the content or its length.
+  - **Who declares one:**
+    - `button:set_tooltip(words)` (`lib/button.lua`) calls `tooltip.label`. So every button's `tooltip`, the tabs' tooltips and a
+      shortened tab's full name are labels;
+    - `main.lua` calls `tooltip.label(key, "speed " .. index)` for each speed box;
+    - every other source is `tooltip.attach`, and lockable.
+
+    | Source | Kind |
+    |---|---|
+    | the ledger bar's `places` and `pops` buttons, and the ledger's two icon tabs | label |
+    | the time bar's `slower`, `pause` or `play`, and `faster` | label |
+    | `speed 1` to `speed 5` | label |
+    | the location panel's look buttons, `cards` and `list` | label |
+    | a shortened text tab's full name (`location`, `pops`, `buildings`) | label |
+    | the map-mode buttons: `main.lua` attaches their explanation after the button is made, which replaces its label | lockable |
+    | the date readout | lockable |
+    | the map's hovered place | lockable |
+    | the ledger's rows and header, the location tab's rows and the market table | lockable |
+    | pop and building cards, rows and open rows | lockable |
+    | the location window's title | lockable |
+    | terms and links inside a locked tooltip | lockable |
+
+  - **What a label is:**
+    - it opens after `delay`, where any tooltip of a UI key opens;
+    - it is one line: the words in the kind's `text`, in font `small`, with numbers in `number` (the 3 of `speed 3`). The words
+      are plain, never a term or a link;
+    - **it never locks:** the timer does not run for it, a middle press does not lock it, and in every `lock` setting no lock
+      bar is drawn on it;
+    - **it takes no input:** it has no panel hit and no span hits, so a press at a point it covers reaches the control under it;
+    - it closes as soon as the pointer leaves its target;
+    - **new words show in place:** an open label reads its key's current words. When time pauses, the pause button's open label
+      changes from `pause` to `play` at the next update.
+  - **Beside other tooltips:**
+    - a label opens while tooltips are locked, on top of them, and does not close, move or change them. When it closes they stay;
+    - **a middle press** with only a label open locks nothing: a label is never the unlocked tooltip that press locks;
+    - **a left press** treats it as any tooltip: on a functional widget (its own button) it stays, and a press anywhere else,
+      a `map_down` included, closes all, labels too;
+    - **Escape skips labels:** `tooltip.close_top()` closes the newest tooltip that is not a label. With only labels open it
+      closes nothing and returns false, so Escape does what it does with no tooltip open.
+  - **A change of kind on a key** closes what the key had open. Each attached key records its kind, and each open tooltip the
+    key it was opened for.
+    - `tooltip.label` on a key with a lockable source, and `tooltip.attach` on a key with a label, close every open tooltip of
+      that key in that call, locked or not, with the tooltips opened from it, and clear its pending one.
+    - Nothing carries over: no lock, no lock time, no hit key, no bar. A pointer still resting there starts `delay` again under
+      the new kind.
+    - **The same kind again:** `tooltip.label` on a key that has a label only changes its words. `tooltip.attach` on a key that
+      has a lockable source is as before: an open tooltip keeps the source it opened with until it closes.
+    - **Removal:** `tooltip.detach` (and `button:set_tooltip(nil)`) on a key with a label closes its open label and clears its
+      pending one in that call. So a shortened tab's open label closes when the tab comes to show its full name.
+  - **Not settled by the owner** (the spec listed them as open points and built its defaults; no owner record answers them):
+    Escape skipping labels; every label waiting the full `delay`, also when the pointer moves straight from one labelled control
+    to the next; and no separate delay setting for labels.
+  - **Tests:** the UI rig (`apps/codekarl/src/readout_tests.rs`) has the call's refusals, a label under each `lock` setting, the
+    changes of kind, live words, and a label beside a locked tooltip with Escape. The real chain (`ui_link/group_tests.rs`) has:
+    - `a_speed_label_has_no_hit_and_the_real_hit_route_delivers_the_underlying_press`: with the label `speed 1` open, a press at
+      a point that the label and speed box 2 both cover is handled by speed box 2;
+    - `the_open_pause_label_reads_play_after_a_game_time_update`.
 - **The price breakdown** (CK-272) is the shared class `price`, with `args = {place = <id>, good = <id>}`, defined in
   `lib/location.lua`.
   - **Reaching it:** in a price row's tooltip the price was a link to it, so it opened from the locked tooltip. The owner asked
@@ -1142,7 +1222,7 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     show one without a term span.
   - **The date** in the time bar has a hit key of its own (`date_readout`) and shows the explanation `date`.
   - **The map-mode buttons** show the explanations `stockpile_map`, `yield_map` and `elevation_map`. `main.lua` attaches these
-    over the buttons' CK-271 labels, which they replace.
+    over the buttons' CK-271 labels, which they replace, so these three stay lockable (CK-286, above).
   - **Seven more classes** in `lib/classes.lua`, each for a place (`args = {place = <id>}`; `pop_size` also takes `pop`, the pop's
     index in the place view):
 
