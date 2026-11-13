@@ -36,6 +36,10 @@ local GOODS_WITH_ICONS = {
 local HAS_GOODS_ICON = {}
 for _, good in ipairs(GOODS_WITH_ICONS) do HAS_GOODS_ICON[good] = true end
 
+local function good_icon(good)
+  return HAS_GOODS_ICON[good] and ("goods/" .. good) or "goods/fallback/unknown"
+end
+
 -- A price given in thousandths: whole units, then the fraction without trailing zeros ("100", "100.5").
 local function milli(value)
   local whole, part = value // 1000, value % 1000
@@ -119,7 +123,7 @@ end
 
 local function draw_goods_icon(result, group, good, x, y)
   local quad = render.create_quad{
-    texture = ui.texture("ui/goods/" .. good .. ".png"), x = x * P, y = y * P,
+    texture = ui.texture("ui/" .. good_icon(good) .. ".png"), x = x * P, y = y * P,
     width = 9 * P, height = 9 * P, group = group,
   }
   result:add({destroy = function() render.destroy_quad(quad) end})
@@ -797,35 +801,34 @@ local function location_lines(place, width)
   end
   lines[#lines + 1] = header
   for _, price in ipairs(place.prices) do
-    if not HAS_GOODS_ICON[price.good] then
-      lines[#lines + 1] = "  " .. price.good .. " " .. milli(price.price_milli) .. " (" .. price.base .. ")"
-    else
-      local value
-      if price.bought ~= nil and price.offered ~= nil then
-        local largest = math.max(price.bought, price.offered)
-        value = largest > 0 and (price.offered - price.bought) / largest or 0
-      end
-      local row = {
-        cells = {
-          {text = clip_column(good_name(price.good), name_width), x = 16, align = "left", colour = theme.colour("term")},
-          {text = milli(price.price_milli), x = price_right, align = "right"},
-          {text = tostring(price.base), x = base_right, align = "right"},
-        },
-        bar = {x = bar_x, width = 46, value = value},
-        tooltip = function(_, _, cell)
-          if cell == "icon" or cell == 1 then
-            return tooltip.explanation(price.good), tostring(cell)
-          elseif cell == 2 or cell == "bar" then
-            return tooltip.content("price", {place = place.id, good = price.good}), tostring(cell)
-          elseif cell == 3 then
-            return tooltip.explanation("base_price"), tostring(cell)
-          end
-          return nil
-        end,
-      }
-      row.icon = {image = "goods/" .. price.good}
-      lines[#lines + 1] = row
+    local entry = glossary.entry(price.good)
+    local name = entry ~= nil and entry.title or good_name(price.good)
+    local name_colour = entry ~= nil and theme.colour("term") or theme.colour("text")
+    local value
+    if price.bought ~= nil and price.offered ~= nil then
+      local largest = math.max(price.bought, price.offered)
+      value = largest > 0 and (price.offered - price.bought) / largest or 0
     end
+    local row = {
+      cells = {
+        {text = clip_column(name, name_width), x = 16, align = "left", colour = name_colour},
+        {text = milli(price.price_milli), x = price_right, align = "right"},
+        {text = tostring(price.base), x = base_right, align = "right"},
+      },
+      bar = {x = bar_x, width = 46, value = value},
+      tooltip = function(_, _, cell)
+        if cell == "icon" or cell == 1 then
+          if entry ~= nil then return tooltip.explanation(price.good), tostring(cell) end
+        elseif cell == 2 or cell == "bar" then
+          return tooltip.content("price", {place = place.id, good = price.good}), tostring(cell)
+        elseif cell == 3 then
+          return tooltip.explanation("base_price"), tostring(cell)
+        end
+        return nil
+      end,
+    }
+    row.icon = {image = good_icon(price.good)}
+    lines[#lines + 1] = row
   end
   return lines
 end

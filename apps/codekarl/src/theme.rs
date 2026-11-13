@@ -173,7 +173,12 @@ pub(crate) fn extension(theme: Arc<Theme>) -> Extension {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, fs, path::PathBuf};
+    use std::{
+        collections::BTreeSet,
+        fs,
+        path::{Path, PathBuf},
+        time::SystemTime,
+    };
 
     use ck_resources::Image;
 
@@ -181,6 +186,28 @@ mod tests {
 
     fn assets() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets")
+    }
+
+    fn copy_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).expect("create fixture directory");
+        for entry in fs::read_dir(source).expect("read source directory") {
+            let entry = entry.expect("read directory entry");
+            let target = destination.join(entry.file_name());
+            if entry.file_type().expect("read entry type").is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).expect("copy fixture file");
+            }
+        }
+    }
+
+    fn goods_check(script: &Path) -> std::process::Output {
+        std::process::Command::new("python3")
+            .arg("-I")
+            .arg(script)
+            .arg("--check")
+            .output()
+            .expect("python3 runs the goods art check")
     }
 
     fn shipped_text() -> String {
@@ -497,6 +524,64 @@ mod tests {
         assert_eq!(&oats.pixels()[..4], &[0, 0, 0, 0]);
     }
 
+    #[test]
+    fn unknown_good_art_check_requires_the_exact_single_fallback_image() {
+        let stamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("codekarl-goods-art-{}-{stamp}", std::process::id()));
+        let goods = root.join("assets/ui/goods");
+        copy_tree(&assets().join("ui/goods"), &goods);
+        fs::create_dir_all(root.join("assets/ui/font")).expect("create font sibling");
+        fs::copy(
+            assets().join("ui/font/make_font.py"),
+            root.join("assets/ui/font/make_font.py"),
+        )
+        .expect("copy the generator's font dependency");
+        let script = goods.join("make_goods.py");
+        let fallback = goods.join("fallback/unknown.png");
+        assert!(
+            goods_check(&script).status.success(),
+            "the copied baseline checks"
+        );
+
+        fs::remove_file(&fallback).expect("remove the unknown art");
+        assert!(
+            !goods_check(&script).status.success(),
+            "a missing fallback is rejected"
+        );
+        let generated = std::process::Command::new("python3")
+            .arg("-I")
+            .arg(&script)
+            .status()
+            .expect("python3 regenerates the fixture art");
+        assert!(generated.success(), "regenerate the exact fallback art");
+
+        let mut bytes = fs::read(&fallback).expect("the generated fallback");
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        fs::write(&fallback, bytes).expect("corrupt the fallback");
+        assert!(
+            !goods_check(&script).status.success(),
+            "changed fallback pixels are rejected"
+        );
+        let generated = std::process::Command::new("python3")
+            .arg("-I")
+            .arg(&script)
+            .status()
+            .expect("python3 restores the fixture art");
+        assert!(generated.success(), "restore the exact fallback art");
+
+        fs::write(goods.join("fallback/extra.png"), b"extra").expect("add unlisted fallback art");
+        assert!(
+            !goods_check(&script).status.success(),
+            "an extra fallback PNG is rejected"
+        );
+        fs::remove_dir_all(root).expect("remove temporary art fixture");
+    }
+
     /// The application's icons: name, width in pixels and the seven shape rows after the two blank ones.
     const ICONS: [(&str, usize, &[&str]); 14] = [
         (
@@ -725,7 +810,7 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .filter(|name| {
-                std::path::Path::new(name)
+                Path::new(name)
                     .extension()
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
             })

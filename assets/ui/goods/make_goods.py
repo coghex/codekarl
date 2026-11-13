@@ -287,30 +287,47 @@ ART = {
     ],
 }
 
+# Unknown-good art: the owner approved the sack in unknown-good-r1.html; see docs/ui-art-provenance.md.
+# Keep this separate from ART so it cannot be selected as a good's own icon.
+UNKNOWN = [
+    "...TTT...",
+    "....b....",
+    "..TTTTT..",
+    ".TTkkTTT.",
+    ".TTTTkTT.",
+    ".TTTkTTT.",
+    ".TTTTTTT.",
+    ".TTTkTTt.",
+    "..TTTtt..",
+]
+
 HERE = Path(__file__).resolve().parent
 FONT_PNG = runpy.run_path(str(HERE.parent / "font" / "make_font.py"))["png"]
 WIDTH = 9
 HEIGHT = 9
 
 
+def image(pattern: list[str], name: str) -> bytes:
+    if len(pattern) != HEIGHT or any(len(row) != WIDTH for row in pattern):
+        raise ValueError(f"{name} must be a {WIDTH}x{HEIGHT} icon")
+    rows = []
+    for row in pattern:
+        pixels = []
+        for cell in row:
+            if cell == ".":
+                pixels.append((0, 0, 0, 0))
+            else:
+                colour = PALETTE[cell]
+                pixels.append(
+                    (*[int(colour[offset : offset + 2], 16) for offset in (1, 3, 5)], 255)
+                )
+        rows.append(pixels)
+    return FONT_PNG(rows)
+
+
 def images() -> dict[Path, bytes]:
-    found: dict[Path, bytes] = {}
-    for good, pattern in ART.items():
-        if len(pattern) != HEIGHT or any(len(row) != WIDTH for row in pattern):
-            raise ValueError(f"{good} must be a {WIDTH}x{HEIGHT} icon")
-        rows = []
-        for row in pattern:
-            pixels = []
-            for cell in row:
-                if cell == ".":
-                    pixels.append((0, 0, 0, 0))
-                else:
-                    colour = PALETTE[cell]
-                    pixels.append(
-                        (*[int(colour[offset : offset + 2], 16) for offset in (1, 3, 5)], 255)
-                    )
-            rows.append(pixels)
-        found[HERE / f"{good}.png"] = FONT_PNG(rows)
+    found = {HERE / f"{good}.png": image(pattern, good) for good, pattern in ART.items()}
+    found[HERE / "fallback/unknown.png"] = image(UNKNOWN, "unknown")
     return found
 
 
@@ -325,6 +342,12 @@ def main(arguments: list[str]) -> int:
         problems += [
             f"{path} is not in ART" for path in sorted(HERE.glob("*.png")) if path not in wanted
         ]
+        fallback = HERE / "fallback"
+        problems += [
+            f"{path} is not the unknown-good fallback"
+            for path in sorted(fallback.rglob("*.png"))
+            if path != HERE / "fallback/unknown.png"
+        ]
         for problem in problems:
             print(problem, file=sys.stderr)
         return 1 if problems else 0
@@ -332,6 +355,7 @@ def main(arguments: list[str]) -> int:
         print(f"usage: {Path(__file__).name} [--check]", file=sys.stderr)
         return 2
     for path, data in sorted(wanted.items()):
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
     return 0
 
