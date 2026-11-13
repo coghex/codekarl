@@ -2721,14 +2721,26 @@ local breakdown = {
   prices = {},
   pops = {
     {kind = "peasant", culture = "mumu", religion = "christianity", workers = 60, dependents = 40,
-      employed = 60, unemployed = 0, food_days = 2, food = {}, necessities = 0, niceties = 0, luxuries = 0,
-      satisfaction = 0, births = 0, deaths = 0, basic_housing = 0, makeshift_housing = 0, crowding_pm = 750},
+      employed = 60, unemployed = 0, food_days = 2, food = {
+        {good = "oats", units = 300, unit = "bushel", share_pm = 658},
+        {good = "barley", units = 100, unit = "bushel", share_pm = 341},
+        {good = "fish", units = 2, unit = "pound dried", share_pm = 1},
+      }, necessities = 0, niceties = 0, luxuries = 0,
+      satisfaction = 0, births = 0, deaths = 0, basic_housing = 80, makeshift_housing = 20, crowding_pm = 750},
     {kind = "labourer", culture = "laigin", religion = "christianity", workers = 60, dependents = 40,
       employed = 60, unemployed = 0, food_days = 5, food = {}, necessities = 0, niceties = 0, luxuries = 0,
       satisfaction = 0, births = 3, deaths = 1, basic_housing = 0, makeshift_housing = 0, crowding_pm = 750},
   },
   buildings = {
-    {kind = "farm", store_used_l = 20, store_capacity_l = 100},
+    {kind = "farm", store_used_l = 20, store_capacity_l = 100, filled = 7, open = 2, wage = 3200,
+      wages = {{month = 5, year = 769, wage_milli = 3200, paid = 18}, {month = 4, wage_milli = 2900},
+        {month = 3, year = 769, wage_milli = 2900, paid = 10}, {month = 2, year = 769, wage_milli = 2900, paid = 10},
+        {month = 1, year = 769, wage_milli = 2900, paid = 10}, {month = 12, year = 768, wage_milli = 2900, paid = 10},
+        {month = 11, year = 768, wage_milli = 2900, paid = 10}, {month = 10, year = 768, wage_milli = 2900, paid = 10},
+        {month = 9, year = 768, wage_milli = 2900, paid = 10}, {month = 8, year = 768, wage_milli = 2900, paid = 10},
+        {month = 7, year = 768, wage_milli = 2900, paid = 10}, {month = 6, year = 768, wage_milli = 2900, paid = 10}},
+      herds = {{species = "cattle", head = 70, maximum = 96}, {species = "pigs", head = 51, maximum = 64},
+        {species = "sheep", head = 40, maximum = 56}}},
     {kind = "brewery", store_used_l = 10, store_capacity_l = 50},
   },
 }
@@ -2818,6 +2830,15 @@ end
 expect("pop_size", joined("pop_size", {place = "breakdown", pop = 2}), "workers 60\ndependents 40\nbirths 3, deaths 1")
 assert(tooltip.content("pop_size", {place = "breakdown", pop = 9}) == nil, "invalid pop index")
 assert(tooltip.content("pop_size", {place = "not_in_view", pop = 1}) == nil, "missing place")
+expect("pop_food", joined("pop_food", {place = "breakdown", pop = 1}),
+  "oats 300 bushels, 65% of meals\nbarley 100 bushels, 34% of meals\nfish 2 pound dried, 0% of meals")
+expect("jobs", joined("jobs", {place = "breakdown", pop = 1}), "employed 60\nunemployed 0")
+expect("pop_housing", joined("pop_housing", {place = "breakdown", pop = 1}), "basic 80\nmakeshift 20")
+expect("pop_crowding", joined("pop_crowding", {place = "breakdown", pop = 1}), "crowding 75%\nhousing 100")
+assert(tooltip.content("pop_food", {place = "breakdown", pop = 9}) == nil, "missing pop food target")
+assert(tooltip.content("jobs", {place = "not_in_view", pop = 1}) == nil, "missing pop jobs target")
+assert(tooltip.content("pop_housing", {place = "breakdown", pop = 9}) == nil, "missing pop housing target")
+assert(tooltip.content("pop_crowding", {place = "breakdown", pop = 9}) == nil, "missing pop crowding target")
 expect("place_food", joined("place_food", {place = "breakdown"}), "peasant Mumu 2 days\nlabourer Laigin 5 days")
 expect("housing", joined("housing", {place = "breakdown"}), "basic 260 of 300\nmakeshift 40 of 60")
 expect("crowding", joined("crowding", {place = "breakdown"}), "people 200\nroom 360\ncrowding 75%")
@@ -2825,6 +2846,18 @@ expect("building_land", joined("building_land", {place = "breakdown"}), "in use 
 expect("storage", joined("storage", {place = "breakdown"}), "pops 200 / 500 L\nfarm 20 / 100 L\nbrewery 10 / 50 L")
 expect("overflow", joined("overflow", {place = "breakdown"}), "oats 40\ndairy 12")
 assert(joined("overflow", {place = "closed_empty"}) == "nothing lost")
+expect("staff", joined("staff", {place = "breakdown", building = 1}), "filled 7\nopen 2")
+expect("store", joined("store", {place = "breakdown", building = 1}), "used 20 L of 100 L")
+assert(tooltip.content("staff", {place = "breakdown", building = 9}) == nil, "missing building staff target")
+assert(tooltip.content("store", {place = "breakdown", building = 9}) == nil, "missing building store target")
+local wage_lines = texts(tooltip.content("wage", {place = "breakdown", building = 1}))
+assert(#wage_lines == 13 and wage_lines[1] == "May 769: 3.2 per head (18 paid)"
+  and wage_lines[2] == "Apr: 2.9 per head" and wage_lines[13] == "average 3.2", table.concat(wage_lines, "\n"))
+expect("herd", joined("herd", {place = "breakdown", building = 1, species = "pigs"}), "pigs 51 of 64")
+assert(tooltip.content("herd", {place = "breakdown", building = 1, species = "goats"}) == nil, "missing herd species")
+assert(tooltip.content("herd", {place = "breakdown", building = 9, species = "pigs"}) == nil, "missing building")
+assert(tooltip.content("herd", {place = "breakdown", building = 1}) == nil, "missing herd species argument")
+assert(tooltip.content("wage", {place = "not_in_view", building = 1}) == nil, "missing building wage target")
 frame.on_update(function() end)
 "#;
 

@@ -208,6 +208,104 @@ tooltip.define("pop_size", function(args)
   }
 end)
 
+local function pop_view(args)
+  local place = place_view(args.place)
+  return place ~= nil and place.pops[args.pop] or nil
+end
+
+tooltip.define("pop_food", function(args)
+  local pop = pop_view(args)
+  if pop == nil then return nil end
+  local lines = {}
+  for _, food in ipairs(pop.food or {}) do
+    local unit = food.unit or ""
+    if food.units ~= 1 and unit ~= "head" and not unit:find(" ", 1, true) and unit:sub(-1) ~= "s" then
+      unit = unit .. "s"
+    end
+    lines[#lines + 1] = {
+      term(food.good), " ", number(food.units), unit == "" and "" or " " .. unit,
+      ", ", number((food.share_pm or 0) // 10), "% of meals",
+    }
+  end
+  return lines
+end)
+
+tooltip.define("jobs", function(args)
+  local pop = pop_view(args)
+  if pop == nil then return nil end
+  return { {"employed ", number(pop.employed)}, {"unemployed ", number(pop.unemployed)} }
+end)
+
+tooltip.define("pop_housing", function(args)
+  local pop = pop_view(args)
+  if pop == nil then return nil end
+  return {
+    {term("basic_housing", "basic"), " ", number(pop.basic_housing)},
+    {term("makeshift_housing", "makeshift"), " ", number(pop.makeshift_housing)},
+  }
+end)
+
+tooltip.define("pop_crowding", function(args)
+  local pop = pop_view(args)
+  if pop == nil then return nil end
+  local crowding = pop.crowding_pm
+  local crowding_text = (crowding == nil or crowding == false) and "—" or number(crowding // 10) .. "%"
+  return {
+    {term("crowding"), " ", crowding_text},
+    {term("housing"), " ", number((pop.basic_housing or 0) + (pop.makeshift_housing or 0))},
+  }
+end)
+
+local function building_view(args)
+  local place = place_view(args.place)
+  return place ~= nil and place.buildings[args.building] or nil
+end
+
+tooltip.define("staff", function(args)
+  local building = building_view(args)
+  if building == nil then return nil end
+  return {{"filled ", number(building.filled)}, {"open ", number(building.open)}}
+end)
+
+tooltip.define("store", function(args)
+  local building = building_view(args)
+  if building == nil then return nil end
+  return {{"used ", number(building.store_used_l), " L of ", number(building.store_capacity_l), " L"}}
+end)
+
+local MONTHS = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+
+local function wage_value(wage_milli)
+  return string.format("%.1f", (wage_milli or 0) / 1000)
+end
+
+tooltip.define("wage", function(args)
+  local building = building_view(args)
+  if building == nil then return nil end
+  local lines = {}
+  for _, wage in ipairs(building.wages or {}) do
+    local month = MONTHS[wage.month]
+    if month ~= nil then
+      local prefix = wage.year == nil and month .. ": " or month .. " " .. number(wage.year) .. ": "
+      local suffix = wage.paid == nil and "" or " (" .. number(wage.paid) .. " paid)"
+      lines[#lines + 1] = {prefix .. wage_value(wage.wage_milli) .. " per head" .. suffix}
+    end
+  end
+  lines[#lines + 1] = {"average ", wage_value(building.wage)}
+  return lines
+end)
+
+tooltip.define("herd", function(args)
+  local building = building_view(args)
+  if building == nil then return nil end
+  for _, herd in ipairs(building.herds or {}) do
+    if herd.species == args.species then
+      return {{term(herd.species), " ", number(herd.head), " of ", number(herd.maximum)}}
+    end
+  end
+  return nil
+end)
+
 tooltip.define("place_food", function(args)
   local place = place_view(args.place)
   if place == nil then return nil end

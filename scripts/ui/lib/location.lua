@@ -118,6 +118,34 @@ local function good_name(id)
   return GOOD_NAMES[id] or id:gsub("_", " ")
 end
 
+local function within(x, y, left, top, right, bottom)
+  return x >= left and x < right and y >= top and y < bottom
+end
+
+local function class_tip(class, place_id, key, index, part, extra)
+  local args = {place = place_id}
+  args[key] = index
+  if extra ~= nil then args.species = extra end
+  return tooltip.content(class, args), part
+end
+
+local function explanation_tip(key, part)
+  return tooltip.explanation(key), part
+end
+
+local function method_tip(building, x, y, origin_x, origin_y)
+  local left, top = origin_x or 17, origin_y or 14
+  for _, method in ipairs(building.methods) do
+    local label = method.id .. " " .. method.levels
+    local right = left + font.layout(label).width
+    if within(x, y, left, top, right, top + font.layout(label).height) then
+      return explanation_tip(method.id, method.id)
+    end
+    left = right + font.layout(", ").width
+  end
+  return nil
+end
+
 tooltip.define("price", function(args)
   if price_revision == nil or game.place == nil then return nil end
   local place = game.place(args.place, price_revision)
@@ -155,11 +183,78 @@ local function building_icon(kind)
   return nil
 end
 
-local function pop_card(pop)
+local function pop_card(pop, place_id, pop_index)
   local colour = type_colour(pop.kind)
+  local card_width
   return {
     height = 61,
+    tooltip = function(x, y)
+      if card_width == nil then return nil end
+      local size = tostring(pop.workers + pop.dependents)
+      local trend_text = string.format("%dw %dd %s", pop.workers, pop.dependents, trend(pop.births, pop.deaths))
+      local food_text, job_text = tostring(pop.food_days) .. "d", "job"
+      local mood = (pop.satisfaction >= 0 and "+" or "") .. pop.satisfaction
+      local housing = (pop.basic_housing or 0) .. " + " .. (pop.makeshift_housing or 0)
+      local crowd = pop.crowding_pm ~= false and pop.crowding_pm ~= nil and percent(pop.crowding_pm) or "—"
+      if within(x, y, 5, 3, 14, 14) or within(x, y, 17, 3, 17 + font.layout(pop.kind).width, 3 + font.layout(pop.kind).height) then
+        return explanation_tip(pop.kind, "kind")
+      end
+      local culture_left = 17
+      local culture_right = culture_left + font.layout(pop.culture).width
+      if within(x, y, culture_left, 14, culture_right, 14 + font.layout(pop.culture).height) then
+        return explanation_tip(pop.culture, "culture")
+      end
+      local religion_left = culture_right + font.layout(" · ").width
+      if within(x, y, religion_left, 14, religion_left + font.layout(pop.religion).width, 14 + font.layout(pop.religion).height) then
+        return explanation_tip(pop.religion, "religion")
+      end
+      local size_right = card_width - 5
+      local size_left = size_right - font.layout(size).width
+      if within(x, y, size_left, 3, size_right, 3 + font.layout(size).height) then
+        return class_tip("pop_size", place_id, "pop", pop_index, "size")
+      end
+      local trend_right = card_width - 5
+      local trend_left = trend_right - font.layout(trend_text).width
+      if within(x, y, trend_left, 14, trend_right, 14 + font.layout(trend_text).height) then
+        return class_tip("pop_size", place_id, "pop", pop_index, "trend")
+      end
+      if within(x, y, 5, 25, 5 + font.layout("food").width, 25 + font.layout("food").height) then
+        return explanation_tip("food_days", "food")
+      end
+      if within(x, y, 29, 30, 69, 33) then return class_tip("pop_food", place_id, "pop", pop_index, "food_bar") end
+      if within(x, y, 73, 25, 73 + font.layout(food_text).width, 25 + font.layout(food_text).height) then
+        return class_tip("pop_food", place_id, "pop", pop_index, "food_days")
+      end
+      if within(x, y, 105, 25, 105 + font.layout(job_text).width, 25 + font.layout(job_text).height) then
+        return explanation_tip("jobs", "job")
+      end
+      if within(x, y, 123, 30, 163, 33) then return class_tip("jobs", place_id, "pop", pop_index, "job_bar") end
+      if within(x, y, 5, 37, 5 + font.layout("needs").width, 37 + font.layout("needs").height) then
+        return explanation_tip("needs", "needs")
+      end
+      if within(x, y, 35, 42, 69, 45) then return explanation_tip("needs", "needs_bar") end
+      if within(x, y, 73, 37, 73 + font.layout("mood").width, 37 + font.layout("mood").height) then
+        return explanation_tip("satisfaction", "mood")
+      end
+      if within(x, y, 101, 37, 101 + font.layout(mood).width, 37 + font.layout(mood).height) then
+        return explanation_tip("satisfaction", "mood_value")
+      end
+      if within(x, y, 5, 48, 5 + font.layout("housing").width, 48 + font.layout("housing").height) then
+        return explanation_tip("housing", "housing")
+      end
+      if within(x, y, 47, 48, 47 + font.layout(housing).width, 48 + font.layout(housing).height) then
+        return class_tip("pop_housing", place_id, "pop", pop_index, "housing_value")
+      end
+      if within(x, y, 105, 48, 105 + font.layout("crowd").width, 48 + font.layout("crowd").height) then
+        return explanation_tip("crowding", "crowd")
+      end
+      if within(x, y, 135, 48, 135 + font.layout(crowd).width, 48 + font.layout(crowd).height) then
+        return class_tip("pop_crowding", place_id, "pop", pop_index, "crowd_value")
+      end
+      return nil
+    end,
     draw = function(group, x, y, width)
+      card_width = width // P
       local result = view()
       local dx, dy = x // P, y // P
       local colours = theme.kind("place")
@@ -193,22 +288,61 @@ local function pop_card(pop)
   }
 end
 
-local function building_card(building)
+local function building_card(building, place_id, building_index)
   local icon = building_icon(building.kind)
+  local card_width
   return {
     height = #building.herds > 0 and 50 or 39,
     tooltip = function(x, y)
+      if card_width == nil then return nil end
+      if within(x, y, 5, 3, 14, 14) or within(x, y, 17, 3, 17 + font.layout(building.kind).width, 3 + font.layout(building.kind).height) then
+        return explanation_tip(building.kind, "kind")
+      end
+      local wage_text = "wage " .. milli(building.wage)
+      local wage_left = card_width - 5 - font.layout(wage_text).width
+      if within(x, y, wage_left, 3, wage_left + font.layout("wage ").width, 3 + font.layout(wage_text).height) then
+        return explanation_tip("wage", "wage_word")
+      end
+      if within(x, y, wage_left + font.layout("wage ").width, 3, card_width - 5, 3 + font.layout(wage_text).height) then
+        return class_tip("wage", place_id, "building", building_index, "wage")
+      end
+      local method_content, method_part = method_tip(building, x, y)
+      if method_content ~= nil then return method_content, method_part end
+      local housing_text = "housing " .. (building.housing_occupants or 0)
+      local housing_left = card_width - 5 - font.layout(housing_text).width
+      if within(x, y, housing_left, 14, card_width - 5, 14 + font.layout(housing_text).height) then
+        local label_width = font.layout("housing ").width
+        if x < housing_left + label_width then return explanation_tip("housing", "housing") end
+        return explanation_tip("housing", "housing_value")
+      end
+      if within(x, y, 5, 25, 5 + font.layout("staff").width, 25 + font.layout("staff").height)
+          or within(x, y, 33, 30, 73, 33) then
+        return class_tip("staff", place_id, "building", building_index, x < 33 and "staff" or "staff_bar")
+      end
+      local staff_text = building.filled .. "/" .. (building.filled + building.open)
+      if within(x, y, 77, 25, 77 + font.layout(staff_text).width, 25 + font.layout(staff_text).height) then
+        return class_tip("staff", place_id, "building", building_index, "staff_count")
+      end
+      if within(x, y, 115, 25, 115 + font.layout("store").width, 25 + font.layout("store").height)
+          or within(x, y, 145, 30, 175, 33) then
+        return class_tip("store", place_id, "building", building_index, x < 145 and "store" or "store_bar")
+      end
       local hx = 5
       for _, herd in ipairs(building.herds) do
         local count = herd.head .. "/" .. herd.maximum
         if x >= hx and x < hx + 9 and y >= 38 and y < 47 then
-          return {good_name(herd.species)}, herd.species
+          return explanation_tip(herd.species, herd.species)
+        end
+        local count_left = hx + 11
+        if within(x, y, count_left, 37, count_left + font.layout(count).width, 37 + font.layout(count).height) then
+          return class_tip("herd", place_id, "building", building_index, herd.species, herd.species)
         end
         hx = hx + 11 + font.layout(count).width + 10
       end
       return nil
     end,
     draw = function(group, x, y, width)
+      card_width = width // P
       local result = view()
       local dx, dy = x // P, y // P
       local colours = theme.kind("place")
@@ -237,7 +371,7 @@ local function building_card(building)
   }
 end
 
-local function pop_row(pop, open)
+local function pop_row(pop, open, place_id, pop_index)
   local lines = {
     pop.culture .. " · " .. pop.religion,
     "workers " .. pop.workers .. ", dependents " .. pop.dependents,
@@ -247,9 +381,70 @@ local function pop_row(pop, open)
     "housing: basic " .. (pop.basic_housing or 0) .. ", makeshift " .. (pop.makeshift_housing or 0),
     "crowding: " .. (pop.crowding_pm ~= false and pop.crowding_pm ~= nil and percent(pop.crowding_pm) or "—"),
   }
+  local row_width
+  local function summary_tip(x, y)
+    if y < 1 or y >= 13 then return nil end
+    if within(x, y, 4, 1, 13, 12) then return explanation_tip(pop.kind, "kind") end
+    local kind_left = 16
+    local culture_left = kind_left + font.layout(pop.kind .. " ").width
+    if within(x, y, kind_left, 1, culture_left - font.layout(" ").width, 1 + font.layout(pop.kind).height) then
+      return explanation_tip(pop.kind, "kind")
+    end
+    if within(x, y, culture_left, 1, culture_left + font.layout(pop.culture).width, 1 + font.layout(pop.culture).height) then
+      return explanation_tip(pop.culture, "culture")
+    end
+    local size = tostring(pop.workers + pop.dependents)
+    local size_right, size_left = row_width - 64, row_width - 64 - font.layout(size).width
+    if within(x, y, size_left, 1, size_right, 1 + font.layout(size).height) then
+      return class_tip("pop_size", place_id, "pop", pop_index, "size")
+    end
+    local food = tostring(pop.food_days) .. "d"
+    local food_right, food_left = row_width - 32, row_width - 32 - font.layout(food).width
+    if within(x, y, food_left, 1, food_right, 1 + font.layout(food).height) then
+      return class_tip("pop_food", place_id, "pop", pop_index, "food_days")
+    end
+    local mood = (pop.satisfaction >= 0 and "+" or "") .. pop.satisfaction
+    local mood_right, mood_left = row_width - 3, row_width - 3 - font.layout(mood).width
+    if within(x, y, mood_left, 1, mood_right, 1 + font.layout(mood).height) then
+      return explanation_tip("satisfaction", "mood")
+    end
+    return nil
+  end
   return {
     height = open and (13 + 12 * #lines + 3) or 13,
+    tooltip = function(x, y)
+      if row_width == nil then return nil end
+      if open then
+        if y < 13 then return summary_tip(x, y) end
+        local line_index = math.floor((y - 13) / 12) + 1
+        if line_index < 1 or line_index > #lines then return nil end
+        if line_index == 1 then
+          local culture_left = 16
+          local culture_right = culture_left + font.layout(pop.culture).width
+          if within(x, y, culture_left, 13, culture_right, 13 + font.layout(pop.culture).height) then
+            return explanation_tip(pop.culture, "culture")
+          end
+          local religion_left = culture_right + font.layout(" · ").width
+          if within(x, y, religion_left, 13, religion_left + font.layout(pop.religion).width, 13 + font.layout(pop.religion).height) then
+            return explanation_tip(pop.religion, "religion")
+          end
+          return nil
+        elseif line_index == 2 or line_index == 5 then
+          return class_tip("pop_size", place_id, "pop", pop_index, line_index == 2 and "size" or "trend")
+        elseif line_index == 3 then
+          return class_tip("jobs", place_id, "pop", pop_index, "jobs")
+        elseif line_index == 4 then
+          return explanation_tip("needs", "needs")
+        elseif line_index == 6 then
+          return class_tip("pop_housing", place_id, "pop", pop_index, "pop_housing")
+        else
+          return class_tip("pop_crowding", place_id, "pop", pop_index, "pop_crowding")
+        end
+      end
+      return summary_tip(x, y)
+    end,
     draw = function(group, x, y, width)
+      row_width = width // P
       local result = view()
       local dx, dy = x // P, y // P
       local ink = open and theme.kind("place").title_text or theme.colour("text")
@@ -268,14 +463,75 @@ local function pop_row(pop, open)
   }
 end
 
-local function building_row(building, open)
+local function building_row(building, open, place_id, building_index)
   local lines = {methods_text(building), "store " .. building.store_used_l .. " / " .. building.store_capacity_l .. " L"}
   for _, herd in ipairs(building.herds) do lines[#lines + 1] = {herd = herd} end
   lines[#lines + 1] = "positions " .. building.filled .. " filled, " .. building.open .. " open"
   lines[#lines + 1] = "housing occupants " .. (building.housing_occupants or 0)
+  local row_width
   return {
     height = open and (13 + 12 * #lines + 3) or 13,
+    tooltip = function(x, y)
+      if row_width == nil then return nil end
+      if not open then
+        if y < 1 or y >= 13 then return nil end
+        if within(x, y, 3, 1, 12, 12) then return explanation_tip(building.kind, "kind") end
+        local kind_right = 16 + font.layout(building.kind).width
+        if within(x, y, 16, 1, kind_right, 1 + font.layout(building.kind).height) then
+          return explanation_tip(building.kind, "kind")
+        end
+        local staff = building.filled .. "/" .. (building.filled + building.open)
+        local staff_right = row_width - 44
+        local staff_left = staff_right - font.layout(staff).width
+        if within(x, y, staff_left, 1, staff_right, 1 + font.layout(staff).height) then
+          return class_tip("staff", place_id, "building", building_index, "staff")
+        end
+        local wage = milli(building.wage)
+        local wage_right, wage_left = row_width - 3, row_width - 3 - font.layout(wage).width
+        if within(x, y, wage_left, 1, wage_right, 1 + font.layout(wage).height) then
+          return class_tip("wage", place_id, "building", building_index, "wage")
+        end
+        return nil
+      end
+      if y < 13 then
+        if within(x, y, 3, 1, 12, 12) or within(x, y, 16, 1, 16 + font.layout(building.kind).width, 1 + font.layout(building.kind).height) then
+          return explanation_tip(building.kind, "kind")
+        end
+        local staff = building.filled .. "/" .. (building.filled + building.open)
+        local staff_right, staff_left = row_width - 44, row_width - 44 - font.layout(staff).width
+        if within(x, y, staff_left, 1, staff_right, 1 + font.layout(staff).height) then
+          return class_tip("staff", place_id, "building", building_index, "staff")
+        end
+        local wage = milli(building.wage)
+        local wage_right, wage_left = row_width - 3, row_width - 3 - font.layout(wage).width
+        if within(x, y, wage_left, 1, wage_right, 1 + font.layout(wage).height) then
+          return class_tip("wage", place_id, "building", building_index, "wage")
+        end
+        return nil
+      end
+      local line_index = math.floor((y - 13) / 12) + 1
+      if line_index < 1 or line_index > #lines then return nil end
+      local line = lines[line_index]
+      if line_index == 1 then return method_tip(building, x, y, 16, 13)
+      elseif line_index == 2 then return class_tip("store", place_id, "building", building_index, "store")
+      elseif type(line) == "table" then
+        local herd = line.herd
+        local herd_y = 13 + (line_index - 1) * 12
+        if within(x, y, 16, herd_y, 25, herd_y + 10) then return explanation_tip(herd.species, herd.species) end
+        local count_left = 28
+        local count = herd.head .. " / " .. herd.maximum
+        if within(x, y, count_left, herd_y, count_left + font.layout(count).width, herd_y + font.layout(count).height) then
+          return class_tip("herd", place_id, "building", building_index, herd.species, herd.species)
+        end
+        return nil
+      elseif line_index == #lines - 1 then
+        return class_tip("staff", place_id, "building", building_index, "staff")
+      else
+        return explanation_tip("housing", "housing")
+      end
+    end,
     draw = function(group, x, y, width)
+      row_width = width // P
       local result = view()
       local dx, dy = x // P, y // P
       local ink = open and theme.kind("place").title_text or theme.colour("text")
@@ -707,7 +963,7 @@ local function row_items(self, key, place)
     header({{text = "pop", x = 16}, {text = "people", right = 64}, {text = "food", right = 32}, {text = "mood", right = 3}})
     for index, pop in ipairs(place.pops) do
       local id = row_identity("p", pop, index)
-      local item = pop_row(pop, id == self.open_pops)
+      local item = pop_row(pop, id == self.open_pops, place.id, index)
       item.on_click = function()
         if self.open_pops == id then
           self.open_pops = nil
@@ -722,17 +978,7 @@ local function row_items(self, key, place)
     header({{text = "building", x = 16}, {text = "staff", right = 44}, {text = "wage", right = 3}})
     for index, building in ipairs(place.buildings) do
       local id = row_identity("b", building, index)
-      local item = building_row(building, id == self.open_buildings)
-      item.tooltip = function(x, y)
-        if id ~= self.open_buildings then return nil end
-        for herd_index, herd in ipairs(building.herds) do
-          local herd_y = 13 + (herd_index + 1) * 12 + 1
-          if x >= 16 and x < 25 and y >= herd_y and y < herd_y + 9 then
-            return {good_name(herd.species)}, herd.species
-          end
-        end
-        return nil
-      end
+      local item = building_row(building, id == self.open_buildings, place.id, index)
       item.on_click = function()
         if self.open_buildings == id then
           self.open_buildings = nil
@@ -757,7 +1003,9 @@ local function card_items(key, place, reason)
       return text_view(group, 1, 1, key == "pops" and "no pops" or "no buildings", theme.colour("dim"))
     end}}
   end
-  for _, item in ipairs(source) do items[#items + 1] = key == "pops" and pop_card(item) or building_card(item) end
+  for index, item in ipairs(source) do
+    items[#items + 1] = key == "pops" and pop_card(item, place.id, index) or building_card(item, place.id, index)
+  end
   return items
 end
 

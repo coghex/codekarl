@@ -68,16 +68,24 @@ cards_place.id = "cards"
 cards_place.dependents = 72
 cards_place.pops = {
   {kind = "peasant", culture = "ulaid", religion = "christianity", workers = 108, dependents = 72, employed = 96, unemployed = 12,
-    food_days = 74, necessities = 1000, niceties = 620, luxuries = 80, satisfaction = 12, births = 2, deaths = 1,
+    food_days = 74, food = {{good = "oats", units = 300, unit = "bushel", share_pm = 658},
+      {good = "barley", units = 100, unit = "bushel", share_pm = 341}},
+    necessities = 1000, niceties = 620, luxuries = 80, satisfaction = 12, births = 2, deaths = 1,
     basic_housing = 380, makeshift_housing = 32, crowding_pm = 950},
   {kind = "monk", culture = "mide", religion = "christianity", workers = 0, dependents = 5, employed = 0, unemployed = 0,
     food_days = 300, necessities = 1200, niceties = 0, luxuries = 0, satisfaction = -3, births = 0, deaths = 2,
     basic_housing = 0, makeshift_housing = 0, crowding_pm = false},
 }
 cards_place.buildings = {
-  {kind = "farm", levels = 8, methods = {{id = "mixed_farming", levels = 8}, {id = "coastal", levels = 0}}, filled = 80, open = 8,
+    {kind = "farm", levels = 8, methods = {{id = "mixed_farming", levels = 8}, {id = "coastal_subsistence", levels = 1}}, filled = 80, open = 8,
     herds = {{species = "cattle", head = 27, maximum = 36}, {species = "sheep", head = 10, maximum = 20},
-      {species = "pigs", head = 9, maximum = 9}}, store_used_l = 6400, store_capacity_l = 8000, wage = 1234,
+      {species = "pigs", head = 9, maximum = 9}}, store_used_l = 6400, store_capacity_l = 8000, wage = 3200,
+    wages = {{month = 5, year = 769, wage_milli = 3200, paid = 18}, {month = 4, wage_milli = 2900},
+      {month = 3, year = 769, wage_milli = 2900, paid = 10}, {month = 2, year = 769, wage_milli = 2900, paid = 10},
+      {month = 1, year = 769, wage_milli = 2900, paid = 10}, {month = 12, year = 768, wage_milli = 2900, paid = 10},
+      {month = 11, year = 768, wage_milli = 2900, paid = 10}, {month = 10, year = 768, wage_milli = 2900, paid = 10},
+      {month = 9, year = 768, wage_milli = 2900, paid = 10}, {month = 8, year = 768, wage_milli = 2900, paid = 10},
+      {month = 7, year = 768, wage_milli = 2900, paid = 10}, {month = 6, year = 768, wage_milli = 2900, paid = 10}},
     housing_occupants = 3},
   {kind = "holdings", levels = 1, methods = {{id = "strip_farming", levels = 1}}, filled = 0, open = 0,
     herds = {}, store_used_l = 0, store_capacity_l = 0, wage = 92, housing_occupants = 0},
@@ -1198,11 +1206,12 @@ local pigs_x = 5 + 11 + font.layout("27/36").width + 10
 local left, top = card_object.origin_x + card_object.x, card_object.origin_y + card_object.y + card_object.tops[1]
 note(string.format("cattle_point %g %g", left + cattle_x * P, top + 42 * P))
 note(string.format("pigs_point %g %g", left + (pigs_x + 4) * P, top + 42 * P))
-note(string.format("gap_point %g %g", left + 30 * P, top + 42 * P))
+local cattle_count_right = 16 + font.layout("27/36").width
+note(string.format("gap_point %g %g", left + (cattle_count_right + 3) * P, top + 42 * P))
 local content, part = building.tooltip(cattle_x + 4, 42)
-note("card_cattle_source " .. table.concat(content, "|") .. " part=" .. tostring(part))
+note("card_cattle_source title=" .. content.title .. " part=" .. tostring(part))
 content, part = building.tooltip(pigs_x + 4, 42)
-note("card_pigs_source " .. table.concat(content, "|") .. " part=" .. tostring(part))"#]);
+note("card_pigs_source title=" .. content.title .. " part=" .. tostring(part))"#]);
     rig.opened();
 
     let cattle = point_note(&rig, "cattle_point ");
@@ -1227,7 +1236,7 @@ note("card_pigs_source " .. table.concat(content, "|") .. " part=" .. tostring(p
     assert!(
         notes(&rig)
             .iter()
-            .any(|line| line == "card_cattle_source cattle part=cattle"),
+            .any(|line| line == "card_cattle_source title=cattle part=cattle"),
         "the card provider returns cattle with the cattle part"
     );
 
@@ -1252,7 +1261,7 @@ note("card_pigs_source " .. table.concat(content, "|") .. " part=" .. tostring(p
     assert!(
         notes(&rig)
             .iter()
-            .any(|line| line == "card_pigs_source pigs part=pigs"),
+            .any(|line| line == "card_pigs_source title=pigs part=pigs"),
         "the card provider returns pigs with the pigs part"
     );
 
@@ -1266,12 +1275,12 @@ note("card_pigs_source " .. table.concat(content, "|") .. " part=" .. tostring(p
         !notes(&rig)[before_gap..]
             .iter()
             .any(|line| line.starts_with("tooltip_text ")),
-        "space between herd icons has no tooltip"
+        "blank space after a herd count has no tooltip"
     );
 }
 
 #[test]
-fn plain_pop_card_tooltip_dispatch_stays_silent() {
+fn pop_card_tooltip_dispatch_opens_its_food_breakdown() {
     let mut rig = rig(&[
         r#"time(1, 1); select_place("cards", "Cards"); tabs_by_title.Cards:select("pops", true)
 local text = require("lib.text"); local real_set = text.set
@@ -1279,25 +1288,266 @@ text.set = function(line, value) real_set(line, value); if capture_tooltips then
 capture_tooltips = true
 local P = require("lib.ui").P
 local left, top = card_object.origin_x + card_object.x, card_object.origin_y + card_object.y + card_object.tops[1]
-note(string.format("plain_pop_point %g %g", left + 40 * P, top + 30 * P))"#,
+note(string.format("pop_food_point %g %g", left + 45 * P, top + 31 * P))"#,
     ]);
     rig.opened();
-    let pop = point_note(&rig, "plain_pop_point ");
+    let pop = point_note(&rig, "pop_food_point ");
     assert!(
         rig.key_at(pop.0, pop.1).is_some(),
         "the pop card has a passive hit key"
     );
-    let before_pop = notes(&rig).len();
     rig.feed(&[PointerEvent::Move(points(pop.0, pop.1))]);
     for _ in 0..22 {
         rig.deliver_fixture_frame_at(1800, 900, 2);
     }
     assert!(
-        !notes(&rig)[before_pop..]
-            .iter()
-            .any(|line| line.starts_with("tooltip_text ")),
-        "a pop card without a tooltip remains silent and does not error"
+        notes(&rig).iter().any(|line| line == "tooltip_text oats"),
+        "the pop card's food bar opens its shared per-good tooltip: {:?}",
+        notes(&rig)
     );
+}
+
+#[test]
+fn pop_card_fields_route_to_their_shared_tooltips() {
+    let mut rig = rig(&[
+        r#"time(1, 1); select_place("cards", "Cards"); tabs_by_title.Cards:select("pops", true)
+local function text(content)
+  if content == nil then return "nil" end
+  if content.title ~= nil then return "title=" .. content.title end
+  local lines = {}
+  for _, line in ipairs(content) do
+    local chunks = {}
+    if type(line) == "table" then
+      for _, span in ipairs(line) do chunks[#chunks + 1] = type(span) == "table" and span.text or tostring(span) end
+    else chunks[1] = tostring(line) end
+    lines[#lines + 1] = table.concat(chunks)
+  end
+  if #lines == 13 then return lines[1] .. "|... 13 lines" end
+  return table.concat(lines, "|")
+end
+local function tip(name, item, x, y)
+  if type(item.tooltip) ~= "function" then note(name .. " <missing>"); return end
+  local content, part = item.tooltip(x, y)
+  note(name .. " " .. text(content) .. " part=" .. tostring(part or "-"))
+end
+local P = require("lib.ui").P
+local pop = card_object.items[1]
+local width = card_object.width // P
+tip("pop_kind", pop, 20, 4)
+tip("pop_culture", pop, 20, 15)
+tip("pop_religion", pop, 17 + font.layout("ulaid · ").width + 1, 15)
+tip("pop_size", pop, width - 12, 4)
+tip("pop_trend", pop, width - 35, 15)
+tip("pop_food_word", pop, 8, 26)
+tip("pop_food_bar", pop, 45, 31)
+tip("pop_food_days", pop, 80, 26)
+tip("pop_job_word", pop, 110, 26)
+tip("pop_job_bar", pop, 140, 31)
+tip("pop_needs_word", pop, 12, 38)
+tip("pop_needs_bar", pop, 40, 43)
+tip("pop_mood_word", pop, 80, 38)
+tip("pop_mood_value", pop, 110, 38)
+tip("pop_housing_word", pop, 15, 49)
+tip("pop_housing_value", pop, 60, 49)
+tip("pop_crowd_word", pop, 112, 49)
+tip("pop_crowd_value", pop, 150, 49)
+
+"#,
+    ]);
+    rig.opened();
+    let captured = notes(&rig);
+    for expected in [
+        "pop_kind title=peasant part=kind",
+        "pop_culture title=Ulaid part=culture",
+        "pop_religion title=Christianity part=religion",
+        "pop_size workers 108|dependents 72|births 2, deaths 1 part=size",
+        "pop_trend workers 108|dependents 72|births 2, deaths 1 part=trend",
+        "pop_food_word title=food days part=food",
+        "pop_food_bar oats 300 bushels, 65% of meals|barley 100 bushels, 34% of meals part=food_bar",
+        "pop_food_days oats 300 bushels, 65% of meals|barley 100 bushels, 34% of meals part=food_days",
+        "pop_job_word title=jobs part=job",
+        "pop_job_bar employed 96|unemployed 12 part=job_bar",
+        "pop_needs_word title=needs part=needs",
+        "pop_needs_bar title=needs part=needs_bar",
+        "pop_mood_word title=satisfaction part=mood",
+        "pop_mood_value title=satisfaction part=mood_value",
+        "pop_housing_word title=housing part=housing",
+        "pop_housing_value basic 380|makeshift 32 part=housing_value",
+        "pop_crowd_word title=crowding part=crowd",
+        "pop_crowd_value crowding 95%|housing 412 part=crowd_value",
+    ] {
+        assert!(
+            captured.iter().any(|line| line == expected),
+            "missing {expected}: {captured:?}"
+        );
+    }
+}
+
+#[test]
+fn building_card_fields_route_to_their_shared_tooltips() {
+    let mut rig = rig(&[r#"VIEWS[1].cards.buildings[1].herds = {
+  {species = "cattle", head = 27, maximum = 36},
+  {species = "pigs", head = 9, maximum = 12},
+  {species = "sheep", head = 10, maximum = 20},
+}
+time(1, 1); select_place("cards", "Cards"); tabs_by_title.Cards:select("buildings", true)
+local function text(content)
+  if content == nil then return "nil" end
+  if content.title ~= nil then return "title=" .. content.title end
+  local lines = {}
+  for _, line in ipairs(content) do
+    local chunks = {}
+    if type(line) == "table" then
+      for _, span in ipairs(line) do chunks[#chunks + 1] = type(span) == "table" and span.text or tostring(span) end
+    else chunks[1] = tostring(line) end
+    lines[#lines + 1] = table.concat(chunks)
+  end
+  if #lines == 13 then return lines[1] .. "|... 13 lines" end
+  return table.concat(lines, "|")
+end
+local function tip(name, item, x, y)
+  if type(item.tooltip) ~= "function" then note(name .. " <missing>"); return end
+  local content, part = item.tooltip(x, y)
+  note(name .. " " .. text(content) .. " part=" .. tostring(part or "-"))
+end
+local P = require("lib.ui").P
+local building = card_object.items[1]
+local width = card_object.width // P
+tip("building_kind", building, 20, 4)
+local wage_text = "wage 3.2"
+local wage_left = width - 5 - font.layout(wage_text).width
+tip("building_wage_word", building, wage_left + 1, 4)
+tip("building_wage_value", building, wage_left + font.layout("wage ").width + 1, 4)
+tip("building_method_one", building, 22, 15)
+tip("building_method_two", building, 110, 15)
+tip("building_housing", building, width - 28, 15)
+tip("building_staff_word", building, 10, 26)
+tip("building_staff_bar", building, 50, 31)
+tip("building_staff_count", building, 83, 26)
+tip("building_store_word", building, 122, 26)
+tip("building_store_bar", building, 155, 31)
+tip("building_herd_icon", building, 9, 42)
+tip("building_herd_count", building, 20, 42)
+local pigs_x = 5 + 11 + font.layout("27/36").width + 10
+tip("building_pigs_icon", building, pigs_x + 2, 42)
+tip("building_pigs_count", building, pigs_x + 12, 42)"#]);
+    rig.opened();
+    let captured = notes(&rig);
+    for expected in [
+        "building_kind title=farm part=kind",
+        "building_wage_word title=wage part=wage_word",
+        "building_wage_value May 769: 3.2 per head (18 paid)|... 13 lines part=wage",
+        "building_method_one title=mixed farming part=mixed_farming",
+        "building_method_two title=coastal subsistence part=coastal_subsistence",
+        "building_housing title=housing part=housing",
+        "building_staff_word filled 80|open 8 part=staff",
+        "building_staff_bar filled 80|open 8 part=staff_bar",
+        "building_staff_count filled 80|open 8 part=staff_count",
+        "building_store_word used 6400 L of 8000 L part=store",
+        "building_store_bar used 6400 L of 8000 L part=store_bar",
+        "building_herd_icon title=cattle part=cattle",
+        "building_herd_count cattle 27 of 36 part=cattle",
+        "building_pigs_icon title=pigs part=pigs",
+        "building_pigs_count pigs 9 of 12 part=pigs",
+    ] {
+        assert!(
+            captured.iter().any(|line| line == expected),
+            "missing {expected}: {captured:?}"
+        );
+    }
+}
+
+#[test]
+fn pop_and_building_rows_route_summary_and_open_details_to_the_same_tooltips() {
+    let mut rig = rig(&[
+        r#"time(1, 1); select_place("cards", "Cards"); tabs_by_title.Cards:select("pops", true)
+"#,
+        r#"look_buttons.rows.on_click()
+local function text(content)
+  if content == nil then return "nil" end
+  if content.title ~= nil then return "title=" .. content.title end
+  local lines = {}
+  for _, line in ipairs(content) do
+    local chunks = {}
+    if type(line) == "table" then
+      for _, span in ipairs(line) do chunks[#chunks + 1] = type(span) == "table" and span.text or tostring(span) end
+    else chunks[1] = tostring(line) end
+    lines[#lines + 1] = table.concat(chunks)
+  end
+  if #lines == 13 then return lines[1] .. "|... 13 lines" end
+  return table.concat(lines, "|")
+end
+local function tip(name, item, x, y)
+  if type(item.tooltip) ~= "function" then note(name .. " <missing>"); return end
+  local content, part = item.tooltip(x, y)
+  note(name .. " " .. text(content) .. " part=" .. tostring(part or "-"))
+end
+tip("pop_row_kind", card_object.items[2], 20, 2)
+tip("pop_row_size", card_object.items[2], card_object.width // 2 - 75, 2)
+card_object.items[2].on_click()
+tip("pop_row_open_kind", card_object.items[2], 20, 2)
+tip("pop_row_open_size", card_object.items[2], card_object.width // 2 - 75, 2)
+tip("pop_row_open_food", card_object.items[2], card_object.width // 2 - 33, 2)
+tip("pop_row_open_mood", card_object.items[2], card_object.width // 2 - 4, 2)
+tip("pop_row_open_culture", card_object.items[2], 18, 14)
+tip("pop_row_open_religion", card_object.items[2], 16 + font.layout("Ulaid · ").width + 1, 14)
+tip("pop_row_detail_size", card_object.items[2], 30, 27)
+tip("pop_row_detail_jobs", card_object.items[2], 30, 39)
+tip("pop_row_detail_housing", card_object.items[2], 30, 75)
+tip("pop_row_detail_crowding", card_object.items[2], 30, 87)
+
+tabs_by_title.Cards:select("buildings", true)
+local building = card_object.items[2]
+tip("building_row_kind", building, 20, 2)
+tip("building_row_staff", building, card_object.width // 2 - 55, 2)
+tip("building_row_wage", building, card_object.width // 2 - 8, 2)
+building.on_click()
+building = card_object.items[2]
+tip("building_row_method_origin", building, 16, 13)
+tip("building_row_method", building, 45, 15)
+tip("building_row_store", building, 40, 27)
+tip("building_row_herd_icon", building, 20, 39)
+tip("building_row_herd_count", building, 45, 39)
+tip("building_row_staff_detail", building, 40, 75)
+tip("building_row_housing_detail", building, 40, 87)"#,
+    ]);
+    rig.opened();
+    rig.opened();
+    rig.deliver_fixture_frame();
+    let captured = notes(&rig);
+    for expected in [
+        "pop_row_kind title=peasant part=kind",
+        "pop_row_size workers 108|dependents 72|births 2, deaths 1 part=size",
+        "pop_row_open_kind title=peasant part=kind",
+        "pop_row_open_size workers 108|dependents 72|births 2, deaths 1 part=size",
+        "pop_row_open_food oats 300 bushels, 65% of meals|barley 100 bushels, 34% of meals part=food_days",
+        "pop_row_open_mood title=satisfaction part=mood",
+        "pop_row_open_culture title=Ulaid part=culture",
+        "pop_row_open_religion title=Christianity part=religion",
+        "pop_row_detail_size workers 108|dependents 72|births 2, deaths 1 part=size",
+        "pop_row_detail_jobs employed 96|unemployed 12 part=jobs",
+        "pop_row_detail_housing basic 380|makeshift 32 part=pop_housing",
+        "pop_row_detail_crowding crowding 95%|housing 412 part=pop_crowding",
+        "building_row_kind title=farm part=kind",
+        "building_row_staff filled 80|open 8 part=staff",
+        "building_row_wage May 769: 3.2 per head (18 paid)|... 13 lines part=wage",
+        "building_row_method_origin title=mixed farming part=mixed_farming",
+        "building_row_method title=mixed farming part=mixed_farming",
+        "building_row_store used 6400 L of 8000 L part=store",
+        "building_row_herd_icon title=cattle part=cattle",
+        "building_row_herd_count cattle 27 of 36 part=cattle",
+        "building_row_staff_detail filled 80|open 8 part=staff",
+        "building_row_housing_detail title=housing part=housing",
+    ] {
+        assert!(
+            captured.iter().any(|line| line == expected),
+            "missing {expected}: {:?}",
+            captured
+                .iter()
+                .filter(|line| line.contains("_row_"))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 #[test]
@@ -1313,7 +1563,19 @@ text.set = function(line, value) real_set(line, value); if capture_tooltips then
 capture_tooltips = true
 look_buttons.rows.on_click(); card_object.items[2].on_click()
 local content, part = card_object.items[2].tooltip(20, 54)
-note("row_pigs_source " .. table.concat(content, "|") .. " part=" .. tostring(part))
+note("row_pigs_source title=" .. content.title .. " part=" .. tostring(part))
+local above = card_object.items[2].tooltip(30, 48)
+note("row_pigs_above_count " .. (above == nil and "nil" or "present"))
+local count, count_part = card_object.items[2].tooltip(30, 49)
+local count_lines = {}
+for _, line in ipairs(count) do
+  if type(line) == "table" then
+    local chunks = {}
+    for _, span in ipairs(line) do chunks[#chunks + 1] = type(span) == "table" and span.text or tostring(span) end
+    count_lines[#count_lines + 1] = table.concat(chunks)
+  else count_lines[#count_lines + 1] = tostring(line) end
+end
+note("row_pigs_count " .. table.concat(count_lines, "|") .. " part=" .. tostring(count_part))
 local P = require("lib.ui").P
 local left = card_object.origin_x + card_object.x
 local top = card_object.origin_y + card_object.y + card_object.tops[2]
@@ -1336,8 +1598,24 @@ note(string.format("row_pigs_point %g %g", left + 20 * P, top + 54 * P))"#]);
     assert!(
         notes(&rig)
             .iter()
-            .any(|line| line == "row_pigs_source pigs part=pigs"),
+            .any(|line| line == "row_pigs_source title=pigs part=pigs"),
         "the open-row provider returns pigs with the pigs part"
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "row_pigs_count pigs 9 of 12 part=pigs"),
+        "the second herd count uses the pigs breakdown, not the first herd: {:?}",
+        notes(&rig)
+            .iter()
+            .filter(|line| line.contains("row_pigs_"))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "row_pigs_above_count nil"),
+        "the herd count hit region starts at the drawn text, not one pixel above it"
     );
 }
 
@@ -1531,8 +1809,8 @@ fn building_cards_render_mockup_values_and_empty_or_clamped_bars() {
         Some("gap=3 heights=50,39,39,39,39")
     );
     for text in [
-        "mixed_farming 8, coastal 0",
-        "wage 1.234",
+        "mixed_farming 8, coastal_subsistence 1",
+        "wage 3.2",
         "housing 3",
         "80/88",
     ] {
