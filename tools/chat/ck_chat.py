@@ -296,30 +296,35 @@ STATUS_NOTE = (
 )
 
 
-def check_reason(reason: str | None) -> str:
+def check_reason(reason: str | None, command: str = "delivery") -> str:
     if reason is None or not reason.strip():
-        raise ValueError("delivery on/off requires a non-empty --reason")
+        detail = "on/off requires " if command == "delivery" else "requires "
+        raise ValueError(f"{command} {detail}a non-empty --reason")
     if len(reason) > 200:  # noqa: PLR2004  # maximum length of a delivery reason
-        raise ValueError("delivery --reason is at most 200 characters")
+        raise ValueError(f"{command} --reason is at most 200 characters")
     if "\n" in reason or "\r" in reason:
-        raise ValueError("delivery --reason must be a single line")
+        raise ValueError(f"{command} --reason must be a single line")
     if "@" in reason:
-        raise ValueError("delivery --reason must not contain '@' (the record must address no one)")
+        raise ValueError(
+            f"{command} --reason must not contain '@' (the record must address no one)"
+        )
     return reason.strip()
 
 
-def delivery_authority(cfg: Mapping[str, object], actor: Agent | None) -> tuple[str, str | None]:
+def delivery_authority(
+    cfg: Mapping[str, object], actor: Agent | None, action: str = "change delivery"
+) -> tuple[str, str | None]:
     """Who is recording: (label, bound name or None). Refuses everyone but the manager and owners."""
     if actor:
         if bound_name(actor) != "ck-manager":
-            raise ValueError("Only the bound ck-manager or an owner shell may change delivery")
+            raise ValueError(f"Only the bound ck-manager or an owner shell may {action}")
         return "ck-manager", "ck-manager"
     account = os.environ.get("CHAT_AS")
     owners = codekarl_chat.settings(cfg).get("owners", [])
     if account and isinstance(owners, list) and account in owners:
         return account, None
     raise ValueError(
-        "Only the bound ck-manager or an owner shell (CHAT_AS an owner account) may change delivery"
+        f"Only the bound ck-manager or an owner shell (CHAT_AS an owner account) may {action}"
     )
 
 
@@ -488,6 +493,12 @@ def run() -> int:  # noqa: PLR0911,PLR0912,PLR0915  # PLR0911: one exit code per
     )
     delivery.add_argument("action", choices=("status", "on", "off"))
     delivery.add_argument("--reason", help="required for on/off; one line, at most 200 characters")
+    flush = sub.add_parser("flush", help="retire a recipient's stale informational notices")
+    flush.add_argument("recipient")
+    flush.add_argument("--reason", required=True, help="one line, at most 200 characters")
+    flush.add_argument(
+        "--dry-run", action="store_true", help="report candidates without changing state"
+    )
     post = sub.add_parser("post")
     post.add_argument("arguments", nargs=argparse.REMAINDER)
     args = (
@@ -505,6 +516,25 @@ def run() -> int:  # noqa: PLR0911,PLR0912,PLR0915  # PLR0911: one exit code per
             return 0
         return delivery_change(cfg, resolve_actor(cfg), args.action == "on", args.reason)
     state = Inbox(chatlib.STATE_DIR)
+    if args.command == "flush":
+        label, _ = delivery_authority(cfg, resolve_actor(cfg), "flush")
+        reason = check_reason(args.reason, "flush")
+        if args.recipient not in codekarl_chat._roles(cfg):
+            raise ValueError(f"Unknown Codekarl recipient {args.recipient!r}")
+        flushed, kept = state.flush(args.recipient, label, reason, args.dry_run)
+        print(
+            json.dumps(
+                {
+                    "recipient": args.recipient,
+                    "by": label,
+                    "reason": reason,
+                    "flushed": flushed,
+                    "kept": kept,
+                    "dry_run": args.dry_run,
+                }
+            )
+        )
+        return 0
     if args.command == "status":
         print(
             json.dumps(

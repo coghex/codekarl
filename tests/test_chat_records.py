@@ -746,7 +746,7 @@ class StoredDamage(unittest.TestCase):
         for history in (False, True):
             with self.assertRaisesRegex(codekarl_chat.RecordError, "observations.*RENAME COLUMN"):
                 inbox.rows(history=history)
-        for name in ("payload", "routing"):
+        for name in ("payload", "routing", "events"):
             inbox = self.fresh()
             db = sqlite3.connect(inbox.path)
             with db:

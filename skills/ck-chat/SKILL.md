@@ -135,6 +135,8 @@ messages are recorded but terminals are untouched. The bounded live pilot
 passed, and delivery is on as the routine state. Pausing or re-enabling it keeps
 its existing authority and command: the owner or manager runs
 `tools/ck-chat delivery on|off --reason "…"` (CK-10; `docs/chat-workflow.md`).
+`ck-chat flush RECIPIENT --reason TEXT [--dry-run]` retires old informational notices a recipient could not receive, and only the bound `ck-manager` or an owner shell may run it.
+It never touches a task, question, blocker or interrupt.
 
 ## Send and acknowledgement recovery
 

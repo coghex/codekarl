@@ -1305,6 +1305,187 @@ class DeliveryCommand(CodekarlFixture):
         del codekarl_project(rest)["delivery_enabled"]
         return rest
 
+    def test_flush_retires_only_queued_and_delivered_informational_rows(self) -> None:
+        self.post("vince", "[status] @ck-worker-1 old status", "status-queued")
+        self.post("vince", "[decision] @ck-worker-1 old decision", "decision-delivered")
+        self.post("vince", "[request] @ck-worker-1 new work", "request")
+        delivered_notice = next(
+            notice
+            for notice in self.inbox.notices(self.cfg)
+            if notice["msgid"] == "decision-delivered"
+        )
+        self.inbox.outcome(delivered_notice, True, "delivered")
+
+        code, out, err = self.run_cli(
+            "flush", "ck-worker-1", "--reason", "old informational notices"
+        )
+
+        report = json.loads(out)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(
+            report,
+            {
+                "recipient": "ck-worker-1",
+                "by": "ck-manager",
+                "reason": "old informational notices",
+                "flushed": ["status-queued", "decision-delivered"],
+                "kept": [{"message": "request", "kind": "request"}],
+                "dry_run": False,
+            },
+        )
+        self.assertEqual(self.calls, [])
+        rows = {row["message"]: row for row in self.inbox.rows(history=True)}
+        for mid in ("status-queued", "decision-delivered"):
+            self.assertEqual(rows[mid]["state"], "flushed")
+            self.assertFalse(self.inbox.needs_delivery(mid, "ck-worker-1"))
+            self.assertNotIn(mid, [notice["msgid"] for notice in self.inbox.notices(self.cfg)])
+            self.assertEqual(self.inbox.effects(mid, "ck-worker-1"), {})
+            event = rows[mid]["events"][-1]
+            self.assertEqual(event["state"], "flushed")
+            self.assertIn("ck-manager", event["detail"])
+            self.assertIn("old informational notices", event["detail"])
+        self.assertEqual(rows["request"]["state"], "queued")
+
+    def test_flush_dry_run_lists_same_rows_without_mutation(self) -> None:
+        self.post("vince", "[status] @ck-worker-1 old status", "status-1")
+        self.post("vince", "[question] @ck-worker-1 help", "question-1")
+        before = self.snapshot()
+
+        code, out, err = self.run_cli("flush", "ck-worker-1", "--reason", "preview", "--dry-run")
+
+        self.assertEqual((code, err), (0, ""))
+        report = json.loads(out)
+        self.assertEqual(report["flushed"], ["status-1"])
+        self.assertEqual(report["kept"], [{"message": "question-1", "kind": "question"}])
+        self.assertTrue(report["dry_run"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_flush_keeps_actionable_kinds_even_with_stale_false_routing(self) -> None:
+        self.post("vince", "[question] @ck-worker-1 help", "question-legacy")
+        with self.inbox.connect() as db:
+            db.execute(
+                "UPDATE messages SET routing=? WHERE id=?",
+                (
+                    json.dumps(
+                        {
+                            "role": "owner",
+                            "recipients": ["ck-worker-1"],
+                            "reason": "",
+                            "owner_direct": False,
+                            "actionable": False,
+                        }
+                    ),
+                    "question-legacy",
+                ),
+            )
+        self.post("vince", "!! @ck-worker-1 pause", "interrupt")
+
+        code, out, _ = self.run_cli("flush", "ck-worker-1", "--reason", "preview", "--dry-run")
+
+        self.assertEqual(code, 0)
+        report = json.loads(out)
+        self.assertEqual(report["flushed"], [])
+        self.assertEqual(
+            report["kept"],
+            [
+                {"message": "question-legacy", "kind": "question"},
+                {"message": "interrupt", "kind": "interrupt"},
+            ],
+        )
+
+    def test_flushed_claim_is_silent_and_reingestion_does_not_reopen_it(self) -> None:
+        self.post("vince", "[status] @ck-worker-1 old status", "status-1")
+        self.assertEqual(self.run_cli("flush", "ck-worker-1", "--reason", "already handled")[0], 0)
+        self.current.return_value = {
+            "name": "ck-worker-1",
+            "project": "codekarl",
+            "status": "active",
+        }
+
+        code, out, _ = self.run_cli("claim", "status-1")
+
+        self.assertEqual(code, 4)
+        self.assertFalse(json.loads(out)["claim"]["fresh"])
+        self.assertEqual(self.inbox.effects("status-1", "ck-worker-1"), {})
+        self.assertEqual(self.calls, [])
+        self.post("vince", "[status] @ck-worker-1 old status", "status-1")
+        row = next(row for row in self.inbox.rows(history=True) if row["message"] == "status-1")
+        self.assertEqual(row["state"], "flushed")
+
+    def test_flush_refuses_unauthorized_actor_bad_reason_and_unknown_recipient(self) -> None:
+        self.post("vince", "[status] @ck-worker-1 old status", "status-1")
+        before = self.snapshot()
+        for actor in (
+            {"name": "ck-worker-1", "project": "codekarl", "status": "active"},
+            {"name": "ck-reviewer-1", "project": "codekarl", "status": "active"},
+        ):
+            self.current.return_value = actor
+            with (
+                self.subTest(actor=actor["name"]),
+                self.assertRaisesRegex(ValueError, "Only the bound ck-manager or an owner shell"),
+            ):
+                self.run_cli("flush", "ck-worker-1", "--reason", "not allowed")
+        self.current.return_value = None
+        for account in (None, "laz"):
+            if account is None:
+                os.environ.pop("CHAT_AS", None)
+            else:
+                os.environ["CHAT_AS"] = account
+            with (
+                self.subTest(unbound_account=account),
+                self.assertRaisesRegex(ValueError, "Only the bound ck-manager or an owner shell"),
+            ):
+                self.run_cli("flush", "ck-worker-1", "--reason", "not allowed")
+            self.assertEqual(self.snapshot(), before)
+            self.assertEqual(self.calls, [])
+        self.current.return_value = dict(MANAGER)
+        os.environ.pop("CHAT_AS", None)
+        with self.assertRaises(SystemExit) as missing_reason:
+            self.run_cli("flush", "ck-worker-1")
+        self.assertEqual(missing_reason.exception.code, 2)
+        for reason in ("", "x" * 201, "first\nsecond"):
+            with self.subTest(reason=reason[:10]), self.assertRaisesRegex(ValueError, "flush"):
+                self.run_cli("flush", "ck-worker-1", "--reason", reason)
+        with self.assertRaisesRegex(ValueError, "Unknown Codekarl recipient"):
+            self.run_cli("flush", "missing-agent", "--reason", "preview")
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.calls, [])
+
+    def test_flush_allows_owner_shell_and_empty_result(self) -> None:
+        self.current.return_value = None
+        os.environ["CHAT_AS"] = "vince"
+
+        code, out, err = self.run_cli("flush", "ck-worker-1", "--reason", "no stale notices")
+
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(
+            json.loads(out),
+            {
+                "recipient": "ck-worker-1",
+                "by": "vince",
+                "reason": "no stale notices",
+                "flushed": [],
+                "kept": [],
+                "dry_run": False,
+            },
+        )
+
+    def test_flush_transaction_rolls_back_all_rows_on_bad_later_row(self) -> None:
+        self.post("vince", "[status] @ck-worker-1 first", "status-first")
+        self.post("vince", "[status] @ck-worker-1 second", "status-second")
+        with self.inbox.connect() as db:
+            db.execute("UPDATE messages SET routing='not-json' WHERE id='status-second'")
+
+        with self.assertRaises(ValueError):
+            self.run_cli("flush", "ck-worker-1", "--reason", "transaction test")
+
+        with self.inbox.connect() as db:
+            states = {
+                row["message"]: row["state"]
+                for row in db.execute("SELECT message, state FROM inbox")
+            }
+        self.assertEqual(states, {"status-first": "queued", "status-second": "queued"})
+
     # --- tests -----------------------------------------------------------------------------
 
     def test_01_off_by_the_manager_changes_only_that_key_and_posts_one_quiet_record(self) -> None:
