@@ -296,6 +296,11 @@ ui_library.texture = function(name)
   texture_names[token] = name
   return token
 end
+local real_texture_load = texture.load
+texture.load = function(name)
+  if name:match("^ui/goods/") then note("goodsload " .. name) end
+  return real_texture_load(name)
+end
 local real_create_quad = render.create_quad
 render.create_quad = function(spec)
   local name = texture_names[spec.texture]
@@ -664,6 +669,12 @@ fn rig(steps: &[&str]) -> Rig {
     rig
 }
 
+fn rig_with_prelude_at(prelude: &str, steps: &[&str], width: u32, height: u32, scale: u32) -> Rig {
+    let mut rig = Rig::new_fixture_body(&script_with_prelude(prelude, steps));
+    rig.deliver_fixture_frame_at(width, height, scale);
+    rig
+}
+
 fn rig_at(steps: &[&str], width: u32, height: u32, scale: u32) -> Rig {
     let mut rig = Rig::new_fixture_body(&script(steps));
     rig.deliver_fixture_frame_at(width, height, scale);
@@ -979,8 +990,12 @@ note_tooltip('oats_gap', line.row_keys[oats], x_for(158 * P - 1), y_for(oats))"]
     assert!(price_rows.contains("oats@16:left:#92ddea,96.5@124:right:-,100@150:right:-;stripe=-;icon=goods/oats;bar=158,46,"), "icon, text and numeric columns: {price_rows}");
     assert!(price_rows.contains("peas and..@16:left:#92ddea,1.2@124:right:-,2@150:right:-;stripe=-;icon=goods/peas_beans;bar=158,46,"), "good titles are used in the table and clipped when the widest price needs room: {price_rows}");
     assert!(
-        price_rows.contains("  moonstone 4.5 (4)"),
-        "a good without an icon keeps its plain line: {price_rows}"
+        price_rows.contains("moonsto..@16:left:#ece3cb,4.5@124:right:-,4@150:right:-;stripe=-;icon=goods/fallback/unknown;bar=158,46,nil"),
+        "a good without its own icon is now a market row with the fallback art: {price_rows}"
+    );
+    assert!(
+        !price_rows.contains("  moonstone 4.5 (4)"),
+        "the old plain line is gone: {price_rows}"
     );
     assert!(
         recorded
@@ -1021,6 +1036,129 @@ note_tooltip('oats_gap', line.row_keys[oats], x_for(158 * P - 1), y_for(oats))"]
             "{expected}: {recorded:?}"
         );
     }
+}
+
+#[test]
+fn unlisted_goods_are_market_rows_with_a_cached_unknown_icon_and_no_explanation() {
+    let mut rig = rig_at(
+        &[r"VIEWS[1].rowan.prices = {
+  price('oats', 100000, 100), price('moonstone', 4500, 4), price('quartz', 2500, 3)
+}; time(1, 1); select_place('rowan', 'Rowan')
+local line = list_object
+local function row_index(label)
+  for index, item in ipairs(line.items) do
+    if item.cells and item.cells[1] and item.cells[1].text == label then return index end
+  end
+end
+local function x_for(value) return line.origin_x + line.x + value end
+local function y_for(row) return line.origin_y + line.y - line.s + row * 26 - 13 end
+for _, name in ipairs({'moonstone', 'quartz'}) do
+  local index = row_index(name)
+  local key = line.row_keys[index]
+  note_tooltip(name .. '_icon', key, x_for(8), y_for(index))
+  note_tooltip(name .. '_name', key, x_for(17 * P), y_for(index))
+  note_tooltip(name .. '_price', key, x_for(124 * P - 1), y_for(index))
+end"],
+        1274,
+        800,
+        2,
+    );
+    rig.opened();
+    let recorded = notes(&rig);
+    let price_rows = rows(&rig).pop().expect("market rows");
+    for (name, price, base) in [("moonstone", "4.5", "4"), ("quartz", "2.5", "3")] {
+        assert!(
+            price_rows.contains(&format!(
+                "{name}@16:left:#ece3cb,{price}@124:right:-,{base}@150:right:-;stripe=-;icon=goods/fallback/unknown;bar=158,46,nil"
+            )),
+            "an unlisted good without a glossary entry uses the text colour: {price_rows}"
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|line| line == &format!("tooltip {name}_icon  part=-")),
+            "an unlisted icon without a glossary entry is not hoverable: {recorded:?}"
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|line| line == &format!("tooltip {name}_name  part=-")),
+            "an unlisted name without a glossary entry is not hoverable: {recorded:?}"
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|line| line.starts_with(&format!("tooltip {name}_price {name}: price "))),
+            "the price remains hoverable for an unlisted good: {recorded:?}"
+        );
+        assert!(
+            !recorded
+                .iter()
+                .any(|line| line.contains(&format!("ui/goods/{name}.png"))),
+            "no per-good texture is loaded for an unlisted good: {recorded:?}"
+        );
+    }
+    assert!(
+        !price_rows.contains("  moonstone 4.5 (4)"),
+        "the CK-282 plain-line fallback is replaced: {price_rows}"
+    );
+    assert_eq!(
+        recorded
+            .iter()
+            .filter(|line| line.as_str() == "goodsload ui/goods/fallback/unknown.png")
+            .count(),
+        1,
+        "two unlisted goods share the cached fallback texture: {recorded:?}"
+    );
+}
+
+#[test]
+fn an_unlisted_good_with_a_glossary_entry_uses_the_term_title_and_tooltip() {
+    let mut rig = rig_with_prelude_at(
+        r"local real_entry = glossary.entry
+glossary.entry = function(key)
+  if key == 'moonstone' then return {key = key, title = 'moon stone', text = 'A test mineral.'} end
+  return real_entry(key)
+end",
+        &[r"VIEWS[1].rowan.prices = {price('moonstone', 4500, 4)}
+time(1, 1); select_place('rowan', 'Rowan')
+local line = list_object
+local index
+for row, item in ipairs(line.items) do
+  if item.cells and item.cells[1] and item.cells[1].text == 'moon stone' then index = row end
+end
+assert(index ~= nil, 'the glossary title is a market row')
+local key = line.row_keys[index]
+local y = line.origin_y + line.y - line.s + index * 26 - 13
+note_tooltip('moonstone_icon', key, line.origin_x + line.x + 8, y)
+note_tooltip('moonstone_name', key, line.origin_x + line.x + 34, y)"],
+        1274,
+        800,
+        2,
+    );
+    rig.opened();
+    let recorded = notes(&rig);
+    let market = rows(&rig).last().unwrap().clone();
+    assert!(
+        market.contains("moon stone@16:left:#92ddea")
+            && market.contains("icon=goods/fallback/unknown"),
+        "the glossary title uses term colour independently of the fallback icon: {market}"
+    );
+    for expected in [
+        "tooltip moonstone_icon title=moon stone|A test mineral. part=icon",
+        "tooltip moonstone_name title=moon stone|A test mineral. part=1",
+    ] {
+        assert!(
+            recorded.iter().any(|line| line == expected),
+            "missing {expected}: {recorded:?}"
+        );
+    }
+    assert!(
+        !recorded
+            .iter()
+            .any(|line| line.contains("ui/goods/moonstone.png")),
+        "the glossary entry does not change icon selection: {recorded:?}"
+    );
 }
 
 #[test]
@@ -1310,6 +1448,80 @@ fn herd_counts_use_full_colour_icons_on_cards_and_open_rows() {
             "open row herd {name} count is at x=28: {row_icons:?}"
         );
     }
+}
+
+#[test]
+fn unlisted_herds_use_the_unknown_icon_on_cards_and_open_rows() {
+    let mut rig = rig(&[
+        r"VIEWS[1].cards.prices = {price('moonstone', 4500, 4), price('quartz', 2500, 3)}
+VIEWS[1].cards.buildings[1].herds = {
+  {species = 'cattle', head = 27, maximum = 36}, {species = 'goats', head = 5, maximum = 8}
+}
+time(1, 1); select_place('cards', 'Cards'); tabs_by_title.Cards:select('buildings', true)
+local building = card_object.items[1]
+local function text(value)
+  if type(value) ~= 'table' then return value == nil and '<none>' or tostring(value) end
+  if type(value.text) == 'string' then return value.text end
+  local result = {}
+  for _, part in ipairs(value) do result[#result + 1] = text(part) end
+  return table.concat(result)
+end
+local function tip(name, x, y)
+  local content, part = building.tooltip(x, y)
+  note(name .. ' ' .. text(content and content.title or content) .. ' part=' .. tostring(part or '-'))
+end
+local goats_x = 5 + 11 + font.layout('27/36').width + 10
+tip('goats_icon_card', goats_x + 1, 42); tip('goats_count_card', goats_x + 12, 42)
+look_buttons.rows.on_click()
+local row = card_object.items[2]
+row.on_click()
+row = card_object.items[2]
+local function row_tip(name, x, y)
+  local content, part = row.tooltip(x, y)
+  note(name .. ' ' .. text(content and content.title or content) .. ' part=' .. tostring(part or '-'))
+end
+row_tip('goats_icon_row', 20, 50); row_tip('goats_count_row', 30, 50)",
+    ]);
+    rig.opened();
+    let card = notes(&rig);
+    assert!(
+        card.iter()
+            .any(|line| line == "goodsquad ui/goods/fallback/unknown.png 112 76 18 18 -"),
+        "the card herd icon uses the fallback at the normal location and size: {card:?}"
+    );
+    assert!(
+        card.iter()
+            .any(|line| line == "goats_icon_card <none> part=goats")
+    );
+    assert!(
+        card.iter()
+            .any(|line| line == "goats_count_card goats 5 of 8 part=goats"),
+        "unknown herd count retains the herd class: {card:?}"
+    );
+    assert!(
+        card.iter()
+            .any(|line| line == "goodsquad ui/goods/fallback/unknown.png 32 128 18 18 -"),
+        "the open-row herd icon uses the fallback at the normal location and size: {card:?}"
+    );
+    assert!(
+        card.iter()
+            .any(|line| line == "goats_icon_row <none> part=goats")
+    );
+    assert!(
+        card.iter()
+            .any(|line| line == "goats_count_row goats 5 of 8 part=goats")
+    );
+    assert!(
+        !card.iter().any(|line| line.contains("ui/goods/goats.png")),
+        "no per-species texture is loaded: {card:?}"
+    );
+    assert_eq!(
+        card.iter()
+            .filter(|line| line.as_str() == "goodsload ui/goods/fallback/unknown.png")
+            .count(),
+        1,
+        "two unknown goods and a herd share one cached fallback texture: {card:?}"
+    );
 }
 
 fn point_note(rig: &Rig, prefix: &str) -> (f64, f64) {
