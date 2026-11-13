@@ -22,7 +22,7 @@ use super::input_tick_tests::{Tables, answer, field, update};
 use super::widget_witness_tests::{points, run_tick};
 use super::*;
 use crate::game::controls::SimControls;
-use crate::game::slot::SimSlot;
+use crate::game::slot::{PauseReason, SimSlot, SimSnapshot};
 use crate::testing::{Extras, Harness, frame_extension};
 use crate::{font, ui_link::SimLink};
 
@@ -99,6 +99,7 @@ pub(super) struct Rig {
     pub(super) sink: Arc<Last>,
     pub(super) tables: Tables,
     pub(super) map_pointer: PointerPosition,
+    simulation_slot: Arc<SimSlot>,
     sequence: u64,
 }
 
@@ -233,12 +234,13 @@ impl Rig {
         let map_pointer = crate::map_app::tests::hover_pointer(&mut controller);
         let map = crate::map_app::shared(controller);
         let (sender, _receiver) = mpsc::channel();
+        let simulation_slot = SimSlot::new(Arc::new(|| {}));
         let link = CodekarlUi::with_map(harness.ui.slot.clone(), Arc::clone(&map))
             .with_scene_bridge(Arc::clone(&harness.bridge))
             .with_sim(SimLink {
                 views: Arc::default(),
                 controls: SimControls::new(sender),
-                slot: SimSlot::new(Arc::new(|| {})),
+                slot: Arc::clone(&simulation_slot),
                 time_registered,
                 hover_registered,
                 select_registered: Arc::clone(&select_registered),
@@ -252,6 +254,7 @@ impl Rig {
             sink,
             tables,
             map_pointer,
+            simulation_slot,
             sequence: 0,
         }
     }
@@ -291,6 +294,14 @@ impl Rig {
             Answer::Returned,
             "fixture frame callback: {answered:?}"
         );
+    }
+
+    fn deliver_game_time(&mut self, snapshot: &SimSnapshot) {
+        self.simulation_slot.publish(snapshot.clone());
+        self.deliver_fixture_frame();
+        // `take_answer` posts game_time after the frame_update; its answer can still be pending when that frame returns.
+        // A following frame is queued behind game_time, so waiting for its answer makes this helper a completion barrier.
+        self.deliver_fixture_frame();
     }
 
     /// Posts a fixture frame at an explicit window size and pixel scale.
@@ -586,6 +597,188 @@ end
     // The accepted tree refuses tooltip.update's raise_groups here and reports the close as failed.
     rig.harness.bridge.detach();
     rig.deliver_fixture_frame();
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one real-input witness follows label opening, overlap routing, and the underlying speed-control click"
+)]
+fn a_speed_label_has_no_hit_and_the_real_hit_route_delivers_the_underlying_press() {
+    let main = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua"),
+    )
+    .expect("the shipped UI entry point");
+    let fixture = r#"
+local panel = require("lib.panel")
+local panel_new = panel.new
+panel.new = function(spec)
+  local value = panel_new(spec)
+  if spec.kind == "tooltip" then
+    window.record({tooltip_panel = true, x = value.x, y = value.y,
+      width = value.width, height = value.height})
+  end
+  return value
+end
+local control = game.control
+game.control = function(name)
+  window.record({control = name})
+  return control(name)
+end
+"#;
+    let mut rig = Rig::new_fixture_body(&format!("{fixture}\n{main}"));
+    rig.opened();
+    rig.deliver_game_time(&crate::readout_tests::snapshot(0, 1, None));
+    for _ in 0..4 {
+        rig.deliver_fixture_frame();
+    }
+
+    let speed_one = (0..400)
+        .flat_map(|y| (0..400).map(move |x| (x, y)))
+        .find(|(x, y)| rig.key_at(f64::from(*x), f64::from(*y)).as_deref() == Some("speed_1"))
+        .expect("the real time bar publishes speed 1's control region");
+    let speed_one_point = points(f64::from(speed_one.0) + 0.25, f64::from(speed_one.1) + 0.25);
+    rig.feed(&[PointerEvent::Move(speed_one_point)]);
+    for _ in 0..40 {
+        rig.deliver_fixture_frame();
+    }
+    let label = rig
+        .tables
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .rev()
+        .find(|table| match table {
+            ConfigValue::Table(fields) => {
+                fields.get("tooltip_panel") == Some(&ConfigValue::Bool(true))
+            }
+            _ => false,
+        })
+        .cloned()
+        .expect("the speed label's panel is visible in the real scene");
+    let number = |name: &str| match field(&label, name) {
+        ConfigValue::Integer(value) => {
+            f64::from(i32::try_from(*value).expect("fixture UI coordinates fit i32"))
+        }
+        ConfigValue::Float(value) => *value,
+        other => panic!("{name} is numeric: {other:?}"),
+    };
+    let (left, top, right, bottom) = (
+        number("x"),
+        number("y"),
+        number("x") + number("width"),
+        number("y") + number("height"),
+    );
+    let overlap = (0..400)
+        .flat_map(|y| (0..400).map(move |x| (x, y)))
+        .map(|(x, y)| (f64::from(x) + 0.25, f64::from(y) + 0.25))
+        .find(|(x, y)| {
+            *x >= left
+                && *x < right
+                && *y >= top
+                && *y < bottom
+                && rig.key_at(*x, *y).as_deref() == Some("speed_2")
+        })
+        .expect("the label rectangle overlaps speed 2's real control hit region");
+    let hit_regions = rig.harness.bridge.hit_regions().expect("real hit regions");
+    assert!(
+        !hit_regions
+            .regions()
+            .iter()
+            .any(|region| region.key().starts_with("tooltip_panel_")),
+        "a label publishes no panel hit key"
+    );
+
+    // Move out of speed 1 and click at a point covered by its visible label and speed 2.
+    // The real hit router, not this fixture, chooses the widget for the press.
+    let click_point = points(overlap.0, overlap.1);
+    rig.feed(&[PointerEvent::Move(click_point)]);
+    rig.deliver_fixture_frame();
+    rig.feed(&[
+        PointerEvent::Down(click_point),
+        PointerEvent::Up(click_point),
+    ]);
+    rig.deliver_fixture_frame();
+    let controls: Vec<_> = rig
+        .tables
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .filter_map(|table| match table {
+            ConfigValue::Table(fields) => match fields.get("control") {
+                Some(ConfigValue::String(name)) => Some(name.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(controls, ["time_speed_2"]);
+}
+
+#[test]
+fn the_open_pause_label_reads_play_after_a_game_time_update() {
+    let main = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua"),
+    )
+    .expect("the shipped UI entry point");
+    let fixture = r#"
+local tooltip = require("lib.tooltip")
+local label = tooltip.label
+tooltip.label = function(key, words)
+  if words == "pause" or words == "play" then
+    window.record({pause_key = key, label_words = words})
+  end
+  return label(key, words)
+end
+"#;
+    let mut rig = Rig::new_fixture_body(&format!("{fixture}\n{main}"));
+    rig.opened();
+    rig.deliver_game_time(&crate::readout_tests::snapshot(0, 1, None));
+    for _ in 0..3 {
+        rig.deliver_fixture_frame();
+    }
+    let pause_key = rig
+        .tables
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .find_map(|table| match table {
+            ConfigValue::Table(fields) => fields.get("pause_key").and_then(|value| match value {
+                ConfigValue::String(key) => Some(key.clone()),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the pause button exposes its key to this observer: {:?}",
+                rig.tables.lock().unwrap_or_else(PoisonError::into_inner)
+            )
+        });
+    let pause_point = points(50.25, 20.25);
+    assert_eq!(
+        rig.key_at(50.25, 20.25).as_deref(),
+        Some(pause_key.as_str()),
+        "the time bar publishes the pause button's hit region"
+    );
+    rig.feed(&[PointerEvent::Move(pause_point)]);
+    for _ in 0..40 {
+        rig.deliver_fixture_frame();
+    }
+    rig.deliver_game_time(&crate::readout_tests::snapshot(
+        0,
+        1,
+        Some(PauseReason::Load),
+    ));
+    assert!(
+        rig.tables
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|table| matches!(table, ConfigValue::Table(fields)
+            if fields.get("label_words") == Some(&ConfigValue::String("play".to_owned())))),
+        "the real game_time callback updates the pause label to play"
+    );
 }
 
 fn pointer_inside_hit_key(rig: &Rig, key: &str) -> PointerPosition {

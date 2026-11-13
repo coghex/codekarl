@@ -234,7 +234,7 @@ function button:set_tooltip(content)
   if type(content) ~= "string" then
     error("button.set_tooltip: expected a string or nil", 2)
   end
-  require("lib.tooltip").attach(self.key, function() return {content} end)
+  require("lib.tooltip").label(self.key, content)
   self.tooltip_attached = true
 end
 

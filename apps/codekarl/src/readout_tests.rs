@@ -1700,7 +1700,8 @@ fn place_tooltip_waits_for_its_delay_then_closes_when_the_place_is_left() {
         panel_count(&readout) == initial_panels,
         "the place tooltip waits for its delay"
     );
-    for _ in 0..80 {
+    // Show a clearly part-filled bar while staying about halfway from opening to the timer lock.
+    for _ in 0..50 {
         readout.update(800, 600, None);
     }
     let shown = readout.entries();
@@ -1711,6 +1712,482 @@ fn place_tooltip_waits_for_its_delay_then_closes_when_the_place_is_left() {
     readout.update(800, 600, None);
     let hidden = readout.entries();
     assert_eq!(panel_count(&readout), initial_panels, "{hidden:?}");
+}
+
+fn tooltip_panel_count(entries: &[String]) -> usize {
+    let mut panels = std::collections::BTreeSet::new();
+    for line in entries {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        match fields.as_slice() {
+            ["create", name, "ui/theme/cut3_tl_fill.png", ..] => {
+                panels.insert((*name).to_owned());
+            }
+            ["destroy", name] => {
+                panels.remove(*name);
+            }
+            _ => {}
+        }
+    }
+    panels.len()
+}
+
+#[test]
+fn changing_a_key_between_label_and_lockable_closes_the_old_record_and_restarts_delay() {
+    let readout = Readout::script(
+        r#"
+local tooltip = require("lib.tooltip")
+local function tick(over, dt)
+  tooltip.update({width = 800, height = 600, dt = dt or 0.016,
+    pointer = {over = over, x = 100, y = 100, events = {}}})
+end
+tooltip.label("key", "old label")
+for _ = 1, 20 do tick("key") end
+window.record("mark")
+tooltip.attach("key", function() return {"lockable"} end)
+window.record("mark")
+for _ = 1, 20 do tick("key") end
+window.record("mark")
+tooltip.label("key", "new label")
+window.record("mark")
+for _ = 1, 20 do tick("key") end
+window.record("mark")
+tooltip.detach("key")
+window.record("mark")
+"#,
+    );
+    let expected_panels = [1, 0, 1, 0, 1, 0];
+    let entries = readout.entries();
+    let marks: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.as_str() == "record mark")
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(marks.len(), expected_panels.len());
+    for (mark, expected) in expected_panels.into_iter().enumerate() {
+        assert_eq!(
+            tooltip_panel_count(&entries[..marks[mark]]),
+            expected,
+            "panel count after lifecycle checkpoint {mark}"
+        );
+    }
+}
+
+#[test]
+fn changing_tooltip_kind_applies_the_replacement_kind_lock_rules() {
+    let readout = Readout::script(
+        r#"
+local tooltip = require("lib.tooltip")
+local function tick(over, dt)
+  tooltip.update({width = 800, height = 600, dt = dt or 0.016,
+    pointer = {over = over, x = 100, y = 100, events = {}}})
+end
+tooltip.label("key", "simple")
+for _ = 1, 20 do tick("key") end
+window.record("mark")
+tooltip.attach("key", function() return {"lockable"} end)
+window.record("mark")
+for _ = 1, 20 do tick("key") end
+window.record("mark")
+for _ = 1, 5 do tick("key") end
+window.record("mark")
+for _ = 1, 10 do tick("key") end
+window.record("mark")
+for _ = 1, 70 do tick("key") end
+window.record("mark")
+tooltip.label("key", "simple again")
+window.record("mark")
+for _ = 1, 100 do tick("key") end
+window.record("mark")
+"#,
+    );
+    assert!(
+        readout
+            .tints_after_mark(2)
+            .iter()
+            .any(|line| line.contains("#f0a830")),
+        "the new lockable source starts a visible bar after opening: {:?}",
+        readout.tints()
+    );
+    assert!(
+        readout
+            .after_mark(2)
+            .iter()
+            .any(|line| line.starts_with("create ") && line.contains("ui/theme/white.png")),
+        "the timer bar starts with a fresh fill quad"
+    );
+    assert!(
+        readout
+            .after_mark(3)
+            .iter()
+            .any(|line| line.starts_with("set_rect ")),
+        "the fresh lock bar fills from its initial width"
+    );
+    assert!(
+        readout
+            .after_mark(3)
+            .iter()
+            .all(|line| !line.starts_with("set_hit ")),
+        "the new lockable source is still unlocked while its bar is filling"
+    );
+    assert!(
+        readout
+            .after_mark(5)
+            .iter()
+            .any(|line| line.starts_with("set_hit ")),
+        "the new lockable source locks by the timer"
+    );
+    assert!(
+        readout
+            .tints_after_mark(7)
+            .iter()
+            .all(|line| !line.contains("#f0a830")),
+        "lockable-to-label removes the lock bar after the full delay and lock interval"
+    );
+    assert!(
+        readout
+            .after_mark(7)
+            .iter()
+            .all(|line| !line.starts_with("set_hit ")),
+        "the replacement label never acquires a hit"
+    );
+    assert_eq!(
+        tooltip_panel_count(&readout.after_mark(7)),
+        1,
+        "the replacement label stays open and unlocked"
+    );
+}
+
+#[test]
+fn replacing_a_locked_parent_by_a_label_closes_its_nested_tooltip_and_hit_keys() {
+    let readout = Readout::script(
+        r#"
+local tooltip = require("lib.tooltip")
+tooltip.attach("parent", function()
+  return {{ {text = "population", tooltip = function() return {"child"} end} }}
+end)
+local function tick(over, dt)
+  tooltip.update({width = 800, height = 600, dt = dt or 0.016,
+    pointer = {over = over, x = 100, y = 100, events = {}}})
+end
+for _ = 1, 100 do tick("parent") end
+window.record("mark")
+for _ = 1, 20 do tick("tooltip_span_0") end
+window.record("mark")
+tooltip.label("parent", "simple")
+window.record("mark")
+for _ = 1, 20 do tick("parent") end
+window.record("mark")
+"#,
+    );
+    let entries = readout.entries();
+    let marks: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.as_str() == "record mark")
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(marks.len(), 4);
+    assert_eq!(tooltip_panel_count(&entries[..marks[0]]), 1);
+    assert_eq!(
+        tooltip_panel_count(&entries[..marks[1]]),
+        2,
+        "parent plus nested child"
+    );
+    assert_eq!(
+        tooltip_panel_count(&entries[..marks[2]]),
+        0,
+        "both close synchronously"
+    );
+    assert_eq!(
+        tooltip_panel_count(&entries),
+        1,
+        "the replacement label opens after a fresh delay"
+    );
+    assert!(
+        readout
+            .observed_calls()
+            .iter()
+            .any(|call| call.name == "render.set_hit"
+                && call.arguments.first().is_some_and(|argument| matches!(
+                    argument,
+                    Some(ConfigValue::String(key)) if key.starts_with("tooltip_span_")
+                )))
+    );
+    assert!(
+        readout.observed_calls().iter().any(|call| {
+            call.name == "render.set_hit"
+                && matches!(
+                    call.arguments.first(),
+                    Some(Some(ConfigValue::String(key))) if key.starts_with("tooltip_span_")
+                )
+                && call.arguments.get(1) == Some(&None)
+        }),
+        "replacing the parent unregisters the nested span hit"
+    );
+}
+
+#[test]
+fn tooltip_label_api_requires_a_key_and_non_empty_words() {
+    let readout = Readout::script(
+        r#"
+local tooltip = require("lib.tooltip")
+for _, call in ipairs({
+  function() tooltip.label() end,
+  function() tooltip.label("k") end,
+  function() tooltip.label("k", "") end,
+  function() tooltip.label(nil, "x") end,
+  function() tooltip.label("k", 3) end,
+}) do
+  local ok, message = pcall(call)
+  local exact = not ok and tostring(message):find("tooltip: label: expected a key and non-empty words", 1, true)
+  window.record(exact and "exact" or "wrong")
+end
+"#,
+    );
+    assert_eq!(
+        readout
+            .entries()
+            .iter()
+            .filter(|line| line.starts_with("record "))
+            .cloned()
+            .collect::<Vec<_>>(),
+        [
+            "record exact",
+            "record exact",
+            "record exact",
+            "record exact",
+            "record exact",
+        ]
+    );
+}
+
+#[test]
+fn same_kind_updates_keep_label_words_live_and_lockable_source_open() {
+    let readout = Readout::script(
+        r#"
+local tooltip = require("lib.tooltip")
+local font_layout = font.layout
+font.layout = function(words, name)
+  window.record("laid:" .. words)
+  return font_layout(words, name)
+end
+local function tick(over)
+  tooltip.update({width = 800, height = 600, dt = 0.016,
+    pointer = {over = over, x = 100, y = 100, events = {}}})
+end
+tooltip.label("label", "pause")
+for _ = 1, 20 do tick("label") end
+window.record("label opened")
+tooltip.label("label", "play")
+tick("label")
+window.record("label updated")
+tooltip.attach("locked", function() return {"old source"} end)
+for _ = 1, 20 do tick("locked") end
+window.record("lockable opened")
+tooltip.attach("locked", function() return {"new source"} end)
+tick("locked")
+window.record("lockable retained")
+tooltip.detach("locked")
+"#,
+    );
+    let entries = readout.entries();
+    assert!(
+        entries.iter().any(|entry| entry == "record laid:play"),
+        "an open label reads the replacement words on its next update: {entries:?}"
+    );
+    let marks: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.as_str() == "record lockable retained")
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(marks.len(), 1);
+    assert_eq!(
+        tooltip_panel_count(&entries[..marks[0]]),
+        1,
+        "the lockable replacement retains its already-open record"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry == "record laid:old source")
+            && !entries
+                .iter()
+                .any(|entry| entry == "record laid:new source"),
+        "an open lockable tooltip keeps the source it opened with"
+    );
+}
+
+#[test]
+fn changing_kind_while_pending_restarts_the_full_delay() {
+    let readout = Readout::script_with_tooltips(
+        r#"
+local tooltip = require("lib.tooltip")
+local function tick()
+  tooltip.update({width = 800, height = 600, dt = 0.016,
+    pointer = {over = "key", x = 100, y = 100, events = {}}})
+end
+tooltip.label("key", "old")
+for _ = 1, 10 do tick() end
+window.record("mark")
+tooltip.attach("key", function() return {"lockable"} end)
+for _ = 1, 10 do tick() end
+window.record("mark")
+for _ = 1, 10 do tick() end
+window.record("mark")
+tooltip.label("key", "new")
+for _ = 1, 10 do tick() end
+window.record("mark")
+for _ = 1, 10 do tick() end
+window.record("mark")
+"#,
+        TooltipsConfig {
+            delay: 0.3,
+            lock: "timer",
+            lock_timer: 1.0,
+        },
+    );
+    let entries = readout.entries();
+    let marks: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.as_str() == "record mark")
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(marks.len(), 5);
+    for index in [0, 1, 3] {
+        assert_eq!(
+            tooltip_panel_count(&entries[..marks[index]]),
+            0,
+            "the replaced pending candidate does not open at its old deadline ({index})"
+        );
+    }
+    assert_eq!(tooltip_panel_count(&entries[..marks[2]]), 1);
+    assert_eq!(tooltip_panel_count(&entries[..marks[4]]), 1);
+}
+
+#[test]
+fn a_label_can_open_beside_a_locked_tooltip_and_escape_closes_only_the_lockable_record() {
+    let readout = Readout::script(
+        r#"
+local tooltip = require("lib.tooltip")
+tooltip.attach("locked", function() return {"locked source"} end)
+tooltip.label("label", "places")
+local function tick(over)
+  tooltip.update({width = 800, height = 600, dt = 0.016,
+    pointer = {over = over, x = 100, y = 100, events = {}}})
+end
+for _ = 1, 100 do tick("locked") end
+window.record("locked")
+for _ = 1, 20 do tick("label") end
+window.record("both")
+window.record(tostring(tooltip.close_top()))
+window.record("after escape")
+tick(false)
+window.record("left")
+"#,
+    );
+    let entries = readout.entries();
+    let marks: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            [
+                "record locked",
+                "record both",
+                "record after escape",
+                "record left",
+            ]
+            .contains(&line.as_str())
+            .then_some(index)
+        })
+        .collect();
+    assert_eq!(marks.len(), 4);
+    assert_eq!(tooltip_panel_count(&entries[..marks[0]]), 1);
+    assert_eq!(tooltip_panel_count(&entries[..marks[1]]), 2);
+    assert!(entries[marks[1]..marks[2]].contains(&"record true".to_owned()));
+    assert_eq!(tooltip_panel_count(&entries[..marks[2]]), 1);
+    assert_eq!(tooltip_panel_count(&entries[..marks[3]]), 0);
+}
+
+#[test]
+fn labels_never_lock_draw_the_bar_or_take_hits_under_any_lock_setting() {
+    let script = r#"
+local tooltip = require("lib.tooltip")
+tooltip.label("label", "speed 3")
+local function update(over, events)
+  tooltip.update({width = 800, height = 600, dt = 0.016,
+    pointer = {over = over, x = 100, y = 100, events = events or {}}})
+end
+for _ = 1, 130 do update("label") end
+window.record("mark")
+window.record(tostring(tooltip.close_top()))
+window.record("mark")
+update("label", {{kind = "button_down", button = "middle"}})
+window.record("mark")
+update(false)
+window.record("mark")
+"#;
+    for lock in ["timer", "middle_mouse", "disabled"] {
+        let readout = Readout::script_with_tooltips(
+            script,
+            TooltipsConfig {
+                delay: 0.3,
+                lock,
+                lock_timer: 1.0,
+            },
+        );
+        assert!(readout.entries().contains(&"record false".to_owned()));
+        assert_eq!(
+            readout.after_mark(1),
+            ["record false"],
+            "close_top ignores labels"
+        );
+        assert!(
+            readout.after_mark(2).is_empty(),
+            "the middle button does not change a label"
+        );
+        assert!(
+            readout
+                .observed_calls()
+                .iter()
+                .all(|call| call.name != "render.set_hit"),
+            "labels publish no panel or span hit targets"
+        );
+        assert!(
+            readout.tints().iter().all(|line| !line.contains("#f0a830")),
+            "labels never draw a lock bar"
+        );
+        assert!(
+            readout.tints().iter().any(|line| line.contains("#5fb35a")),
+            "numbers in label text keep the green number colour"
+        );
+        assert!(
+            !readout.after_mark(3).is_empty(),
+            "leaving the label destroys its panel"
+        );
+    }
+
+    let lockable = Readout::script_with_tooltips(
+        r#"
+local tooltip = require("lib.tooltip")
+tooltip.attach("lockable", function() return {"ordinary"} end)
+for _ = 1, 130 do
+  tooltip.update({width = 800, height = 600, dt = 0.016,
+    pointer = {over = "lockable", x = 100, y = 100, events = {}}})
+end
+"#,
+        TooltipsConfig {
+            delay: 0.3,
+            lock: "timer",
+            lock_timer: 1.0,
+        },
+    );
+    assert!(
+        lockable.tints().iter().any(|line| line.contains("#f0a830")),
+        "a timer-lockable tooltip draws the lock-bar colour"
+    );
 }
 
 #[test]

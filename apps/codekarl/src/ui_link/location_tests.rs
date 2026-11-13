@@ -217,9 +217,16 @@ function announce_selector_count()
 end
 function note(text) window.record(text) end
 tooltip_sources = {}
+tooltip_source_kinds = {}
 capture_tooltip_sources = false
 local tooltip = require("lib.tooltip")
 local real_tooltip_attach = tooltip.attach
+local real_tooltip_label = tooltip.label
+tooltip.label = function(key, words)
+  tooltip_sources[key] = function() return {words} end
+  tooltip_source_kinds[key] = "label"
+  return real_tooltip_label(key, words)
+end
 tooltip.attach = function(key, source)
   if type(source) == "function" then
     local original = source
@@ -242,12 +249,17 @@ tooltip.attach = function(key, source)
     end
   end
   tooltip_sources[key] = source
+  tooltip_source_kinds[key] = "lockable"
   return real_tooltip_attach(key, source)
 end
 local real_tooltip_detach = tooltip.detach
 tooltip.detach = function(key)
   tooltip_sources[key] = nil
+  tooltip_source_kinds[key] = nil
   return real_tooltip_detach(key)
+end
+function note_tooltip_kind(name, key)
+  note("tooltip_kind " .. name .. " " .. tostring(tooltip_source_kinds[key] or "none"))
 end
 function note_tooltip(name, key, x, y)
   local source = tooltip_sources[key]
@@ -273,7 +285,9 @@ function note_tooltip(name, key, x, y)
 end
 function announce_main_tooltips()
   note_tooltip("date", "date_readout")
+  note_tooltip_kind("date", "date_readout")
   note_tooltip("yield", mode_buttons.yield.key)
+  note_tooltip_kind("mode_yield", mode_buttons.yield.key)
   if date_readout_rect ~= nil then
     note(string.format("date_hit %g %g %g %g", date_readout_rect.x, date_readout_rect.y,
       date_readout_rect.width, date_readout_rect.height))
@@ -521,6 +535,7 @@ function announce_location_tooltips()
   local function tip(row, x, name)
     local y = line.origin_y + line.y - line.s + (row - 0.5) * 26
     note_tooltip(name, line.row_keys[row], line.origin_x + line.x + x, y)
+    note_tooltip_kind(name, line.row_keys[row])
   end
   local ui_pixel = require("lib.ui").P
   local people_cells = line.items[1].cells
@@ -530,12 +545,14 @@ function announce_location_tooltips()
   note("food_row_type " .. tostring(type(food_row)))
   tip(6, food_row.cells[2].x * ui_pixel + 1, "food_number")
   note_tooltip("title", window_objects.Rowan.title_key)
+  note_tooltip_kind("title", window_objects.Rowan.title_key)
   for row_index, row in ipairs(line.items) do
     if type(row) == "table" and row.tooltip ~= nil then
       local y = line.origin_y + line.y - line.s + (row_index - 0.5) * 26
       for cell_index, cell in ipairs(row.cells) do
         local x = line.origin_x + line.x + cell.x * ui_pixel + font.layout(cell.text).width * ui_pixel / 2
         note_tooltip("tab_" .. row_index .. "_" .. cell_index, line.row_keys[row_index], x, y)
+        note_tooltip_kind("tab_" .. row_index .. "_" .. cell_index, line.row_keys[row_index])
       end
     end
   end
@@ -575,6 +592,7 @@ function announce_ledger_cell_tips()
   local function tip(row, x, name)
     local y = line.origin_y + line.y - line.s + (row - 0.5) * 26
     note_tooltip(name, line.row_keys[row], line.origin_x + line.x + x, y)
+    note_tooltip_kind(name, line.row_keys[row])
   end
   local place = line.items[2]
   tip(1, 2 + font.layout("name").width, "heading_name")
@@ -593,6 +611,7 @@ function announce_ledger_pop_tips()
   local y = line.origin_y + line.y - line.s + 13 * ui_pixel
   local function tip(x, name)
     note_tooltip(name, line.row_keys[1], line.origin_x + line.x + x, y)
+    note_tooltip_kind(name, line.row_keys[1])
   end
   tip(7 * ui_pixel, "pop_icon")
   tip(item.cells[1].x * ui_pixel + 1, "pop_kind")
@@ -1173,7 +1192,7 @@ end
 local oats_key, oats_index = oats_row_key()
 local oats_x = list_object.origin_x + list_object.x + 200 * P
 local oats_y = list_object.origin_y + list_object.y - list_object.s + (oats_index - 1) * lists.ROW + 10
-note_tooltip("oats", oats_key, oats_x, oats_y)
+note_tooltip("oats", oats_key, oats_x, oats_y); note_tooltip_kind("price_oats", oats_key)
 note_price_content("empty", "rowan", "oats")
 VIEWS[2] = VIEWS[1]; VIEWS[2].rowan.prices = {price("oats", 97250, 100, 1240, 1410)}; time(2, 2)
 note_price_content("updated", "rowan", "oats")"#,
@@ -1186,6 +1205,12 @@ note_price_content("updated", "rowan", "oats")"#,
             .any(|line| line == "tooltip oats oats: price 96.5|base price 100|bought (buy orders) -|offered (sell orders) - part=2"),
         "row tooltip: {recorded:?}"
     );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "tooltip_kind price_oats lockable"),
+        "price rows remain lockable: {recorded:?}"
+    );
     assert!(recorded.iter().any(|line| line == "price_content empty oats: price 96.5|base price 100|bought (buy orders) -|offered (sell orders) -"), "empty breakdown: {recorded:?}");
     assert!(recorded.iter().any(|line| line == "price_content updated oats: price 97.25|base price 100|bought (buy orders) 1240|offered (sell orders) 1410"), "refreshed breakdown: {recorded:?}");
 }
@@ -1195,52 +1220,30 @@ fn built_icon_buttons_and_tabs_have_their_spec_tooltip_labels() {
     let mut rig = rig(&[
         r#"time(1, 1); select_place('rowan', 'Rowan'); tabs_by_title.Rowan:select('pops', true)
 for _, key in ipairs({"location", "pops"}) do note_tooltip("places_" .. key, bar_buttons[key].key) end
-for _, key in ipairs({"stockpile", "yield", "elevation"}) do note_tooltip("mode_" .. key, mode_buttons[key].key) end
+for _, key in ipairs({"location", "pops"}) do note_tooltip_kind("places_" .. key, bar_buttons[key].key) end
+for _, key in ipairs({"stockpile", "yield", "elevation"}) do
+  note_tooltip("mode_" .. key, mode_buttons[key].key); note_tooltip_kind("mode_" .. key, mode_buttons[key].key)
+end
 for _, key in ipairs({"rewind", "fast_forward"}) do note_tooltip("time_" .. key, time_buttons[key].key) end
+for _, key in ipairs({"rewind", "fast_forward"}) do note_tooltip_kind("time_" .. key, time_buttons[key].key) end
 for index = 1, 5 do note_tooltip("speed_" .. index, "speed_" .. index) end
+for index = 1, 5 do note_tooltip_kind("speed_" .. index, "speed_" .. index) end
 for _, key in ipairs({"cards", "rows"}) do note_tooltip("look_" .. key, look_buttons[key].key) end
+for _, key in ipairs({"cards", "rows"}) do note_tooltip_kind("look_" .. key, look_buttons[key].key) end
 note_tooltip("location_full", tabs_by_title.Rowan.buttons[1].key)
+note_tooltip_kind("location_full", tabs_by_title.Rowan.buttons[1].key)
 bar_buttons.location.on_click()
-for index, tab in ipairs(tabs_by_title.ledger.items) do note_tooltip("ledger_" .. tab.key, tabs_by_title.ledger.buttons[index].key) end"#,
-        r#"time(1, 1, true); note_tooltip("time_pause", time_buttons.pause.key)"#,
-        r#"note("location_tier " .. tabs_by_title.Rowan.tier); note_tooltip("location_short", tabs_by_title.Rowan.buttons[1].key)"#,
+for index, tab in ipairs(tabs_by_title.ledger.items) do note_tooltip("ledger_" .. tab.key, tabs_by_title.ledger.buttons[index].key) end
+for index, tab in ipairs(tabs_by_title.ledger.items) do note_tooltip_kind("ledger_" .. tab.key, tabs_by_title.ledger.buttons[index].key) end
+announce_main_tooltips()"#,
+        r#"time(1, 1, true); note_tooltip("time_pause", time_buttons.pause.key); note_tooltip_kind("time_pause", time_buttons.pause.key)"#,
+        r#"note("location_tier " .. tabs_by_title.Rowan.tier); note_tooltip("location_short", tabs_by_title.Rowan.buttons[1].key); note_tooltip_kind("location_short", tabs_by_title.Rowan.buttons[1].key)"#,
     ]);
     rig.opened();
     let recorded = notes(&rig);
-    for (name, expected) in [
-        ("places_location", "places"),
-        ("places_pops", "pops"),
-        ("time_rewind", "slower"),
-        ("time_fast_forward", "faster"),
-        ("speed_1", "speed 1"),
-        ("speed_2", "speed 2"),
-        ("speed_3", "speed 3"),
-        ("speed_4", "speed 4"),
-        ("speed_5", "speed 5"),
-        ("look_cards", "cards"),
-        ("look_rows", "list"),
-        ("ledger_locations", "places"),
-        ("ledger_pops", "pops"),
-    ] {
-        assert!(
-            recorded
-                .iter()
-                .any(|line| line == &format!("tooltip {name} {expected} part=-")),
-            "missing {name}={expected}: {recorded:?}"
-        );
-    }
-    for (name, title) in [
-        ("mode_stockpile", "stockpile map"),
-        ("mode_yield", "yield map"),
-        ("mode_elevation", "elevation map"),
-    ] {
-        assert!(
-            recorded
-                .iter()
-                .any(|line| line.starts_with(&format!("tooltip {name} title={title}|"))),
-            "missing {name} title={title}: {recorded:?}"
-        );
-    }
+    assert_tooltip_labels(&recorded, BUILT_ICON_TOOLTIP_LABELS);
+    assert_tooltip_modes(&recorded, BUILT_ICON_TOOLTIP_MODES);
+    assert_tooltip_kinds(&recorded, BUILT_ICON_TOOLTIP_KINDS);
     assert!(
         recorded
             .iter()
@@ -1252,6 +1255,11 @@ for index, tab in ipairs(tabs_by_title.ledger.items) do note_tooltip("ledger_" .
         notes(&rig)
             .iter()
             .any(|line| line == "tooltip time_pause play part=-")
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "tooltip_kind time_pause label")
     );
 
     rig.deliver_fixture_frame_at(640, 900, 2);
@@ -1267,6 +1275,86 @@ for index, tab in ipairs(tabs_by_title.ledger.items) do note_tooltip("ledger_" .
             .iter()
             .any(|line| line == "tooltip location_short location part=-")
     );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "tooltip_kind location_short label")
+    );
+}
+
+const BUILT_ICON_TOOLTIP_LABELS: &[(&str, &str)] = &[
+    ("places_location", "places"),
+    ("places_pops", "pops"),
+    ("time_rewind", "slower"),
+    ("time_fast_forward", "faster"),
+    ("speed_1", "speed 1"),
+    ("speed_2", "speed 2"),
+    ("speed_3", "speed 3"),
+    ("speed_4", "speed 4"),
+    ("speed_5", "speed 5"),
+    ("look_cards", "cards"),
+    ("look_rows", "list"),
+    ("ledger_locations", "places"),
+    ("ledger_pops", "pops"),
+];
+
+const BUILT_ICON_TOOLTIP_MODES: &[(&str, &str)] = &[
+    ("mode_stockpile", "stockpile map"),
+    ("mode_yield", "yield map"),
+    ("mode_elevation", "elevation map"),
+];
+
+const BUILT_ICON_TOOLTIP_KINDS: &[(&str, &str)] = &[
+    ("places_location", "label"),
+    ("places_pops", "label"),
+    ("time_rewind", "label"),
+    ("time_fast_forward", "label"),
+    ("speed_1", "label"),
+    ("speed_2", "label"),
+    ("speed_3", "label"),
+    ("speed_4", "label"),
+    ("speed_5", "label"),
+    ("look_cards", "label"),
+    ("look_rows", "label"),
+    ("ledger_locations", "label"),
+    ("ledger_pops", "label"),
+    ("mode_stockpile", "lockable"),
+    ("mode_yield", "lockable"),
+    ("mode_elevation", "lockable"),
+    ("date", "lockable"),
+];
+
+fn assert_tooltip_kinds(recorded: &[String], expected: &[(&str, &str)]) {
+    for (name, kind) in expected {
+        assert!(
+            recorded
+                .iter()
+                .any(|line| line == &format!("tooltip_kind {name} {kind}")),
+            "wrong source kind for {name}: {recorded:?}"
+        );
+    }
+}
+
+fn assert_tooltip_labels(recorded: &[String], expected: &[(&str, &str)]) {
+    for (name, words) in expected {
+        assert!(
+            recorded
+                .iter()
+                .any(|line| line == &format!("tooltip {name} {words} part=-")),
+            "missing {name}={words}: {recorded:?}"
+        );
+    }
+}
+
+fn assert_tooltip_modes(recorded: &[String], expected: &[(&str, &str)]) {
+    for (name, title) in expected {
+        assert!(
+            recorded
+                .iter()
+                .any(|line| line.starts_with(&format!("tooltip {name} title={title}|"))),
+            "missing {name} title={title}: {recorded:?}"
+        );
+    }
 }
 
 #[test]
@@ -1679,6 +1767,7 @@ local function tip(name, item, x, y)
 end
 local P = require("lib.ui").P
 local pop = card_object.items[1]
+note_tooltip_kind("pop_card_item", card_object.base .. "_item_" .. card_object.generation .. "_1")
 local width = card_object.width // P
 tip("pop_kind", pop, 20, 4)
 tip("pop_culture", pop, 20, 15)
@@ -1728,6 +1817,12 @@ tip("pop_crowd_value", pop, 150, 49)
             "missing {expected}: {captured:?}"
         );
     }
+    assert!(
+        captured
+            .iter()
+            .any(|line| line == "tooltip_kind pop_card_item lockable"),
+        "pop card fields remain lockable: {captured:?}"
+    );
 }
 
 #[test]
@@ -1760,6 +1855,7 @@ local function tip(name, item, x, y)
 end
 local P = require("lib.ui").P
 local building = card_object.items[1]
+note_tooltip_kind("building_card_item", card_object.base .. "_item_" .. card_object.generation .. "_1")
 local width = card_object.width // P
 local positions_width, storage_width = font.layout("positions").width, font.layout("storage").width
 local count = "80/88"
@@ -1813,6 +1909,12 @@ tip("building_pigs_count", building, pigs_x + 12, 42)"#]);
             "missing {expected}: {captured:?}"
         );
     }
+    assert!(
+        captured
+            .iter()
+            .any(|line| line == "tooltip_kind building_card_item lockable"),
+        "building card fields remain lockable: {captured:?}"
+    );
 }
 
 #[test]
@@ -3381,6 +3483,25 @@ fn location_tab_words_numbers_and_window_title_open_their_sources() {
             .any(|line| line.starts_with("tooltip title title=Rowan|")),
         "{captured:?}"
     );
+    for name in ["title", "people_word", "people_number", "food_number"] {
+        assert!(
+            captured
+                .iter()
+                .any(|line| line == &format!("tooltip_kind {name} lockable")),
+            "{name} stays lockable: {captured:?}"
+        );
+    }
+    let mut tab_kinds = captured
+        .iter()
+        .filter(|line| line.starts_with("tooltip_kind tab_"));
+    assert!(
+        tab_kinds.clone().count() > 0,
+        "tab kinds were captured: {captured:?}"
+    );
+    assert!(
+        tab_kinds.all(|line| line.ends_with(" lockable")),
+        "all location tab cells stay lockable: {captured:?}"
+    );
     let expected = [
         ("tab_1_1", "title=population|"),
         ("tab_1_2", "peasants 120|"),
@@ -3485,6 +3606,12 @@ fn ledger_pop_row_explains_its_kind_and_uses_its_size_and_place_cells() {
             .iter()
             .any(|line| line.starts_with("tooltip pop_icon title=")),
         "the row's icon explains the pop kind: {captured:?}"
+    );
+    assert!(
+        captured
+            .iter()
+            .any(|line| line == "tooltip_kind pop_icon lockable"),
+        "ledger pop rows remain lockable: {captured:?}"
     );
     assert!(
         captured
@@ -3938,6 +4065,21 @@ fn real_ledger_hover_uses_the_drawn_row_cell_after_scroll_and_resize() {
 
 fn assert_ledger_heading_and_place_tooltips(rig: &Rig) {
     let captured = notes(rig);
+    for name in [
+        "heading_name",
+        "heading_people",
+        "heading_food",
+        "place_name",
+        "place_people",
+        "place_food",
+    ] {
+        assert!(
+            captured
+                .iter()
+                .any(|line| line == &format!("tooltip_kind {name} lockable")),
+            "ledger {name} remains lockable: {captured:?}"
+        );
+    }
     assert!(
         captured
             .iter()
