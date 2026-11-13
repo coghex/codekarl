@@ -217,6 +217,17 @@ pub(crate) fn extension(service: Option<ResourceService>) -> Extension {
     extension_noting(service, None)
 }
 
+/// The real `texture.load` host call for a recording test rig. Its wrapper may preserve a fixture's
+/// stable token alias, but validation and admission remain in `Shared::load`.
+#[cfg(test)]
+pub(crate) fn test_load_call(service: ResourceService) -> HostFunction {
+    let shared = Arc::new(Shared {
+        service: Some(service),
+        on_load: None,
+    });
+    Arc::new(move |arguments| Shared::load(&shared, arguments))
+}
+
 /// [`extension`] that also tells `on_load` about `texture.load` calls (see [`LoadNotes`]).
 pub(crate) fn extension_noting(
     service: Option<ResourceService>,

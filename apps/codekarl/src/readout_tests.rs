@@ -1,9 +1,9 @@
 //! The UI script (`scripts/ui/main.lua`) and its widget library (`scripts/ui/lib/`), run for real over the shipped pixel font and a
 //! scene that only records what it is asked to do: the text helpers, the date readout, the hover tooltip and the idle rule.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -19,7 +19,10 @@ end
 "#;
 
 use ck_lua::{CallOutcome, ConfigValue, Extension, HostFunction, Modules, VmOwner, VmSettings};
-use ck_window::{Notifier, Requests};
+use ck_render_2d::{Filter, QuadSink, SceneBridge, Snapshot};
+use ck_resources::{Assets, Mode, ResourceLimits, ResourceService, ServiceWakes};
+use ck_window::PixelSize;
+use ck_window::{Notifier, Requests, WindowDesc};
 
 use crate::config::TooltipsConfig;
 use crate::frame_api::{self, FrameBackend, FrameRegistration};
@@ -99,121 +102,874 @@ pub(crate) fn recording(log: &Log, name: &'static str) -> HostFunction {
     })
 }
 
-/// `render.set_hit`, recorded as `set_hit <key> <x> <y> <width> <height>` per rectangle, or `set_hit <key> nil`.
-fn hit_recording(log: &Log) -> HostFunction {
-    let log = Arc::clone(log);
-    Arc::new(move |arguments| {
-        let Some(Some(ConfigValue::String(key))) = arguments.first() else {
-            return Err("render.set_hit: a key".to_owned());
-        };
-        if !ck_render_2d::valid_key(key) {
-            return Err("render.set_hit: key must match [a-z0-9_]{1,48}".to_owned());
+#[derive(Default)]
+struct Names {
+    quads: HashMap<String, String>,
+    groups: HashMap<String, String>,
+    textures: HashMap<String, String>,
+    quad_count: usize,
+    group_count: usize,
+    foreign_quad: String,
+    foreign_group: String,
+    foreign_texture: String,
+}
+
+fn test_bridge() -> Arc<SceneBridge> {
+    struct Sink;
+    impl QuadSink for Sink {
+        fn publish(&self, _snapshot: Snapshot) -> Option<Snapshot> {
+            None
         }
-        match arguments.get(1).and_then(Option::as_ref) {
-            Some(ConfigValue::Array(rects)) => {
-                for rect in rects {
-                    push(
-                        &log,
-                        format!(
-                            "set_hit {key} {} {} {} {}",
-                            field(rect, "x"),
-                            field(rect, "y"),
-                            field(rect, "width"),
-                            field(rect, "height")
-                        ),
-                    );
-                }
-            }
-            _ => push(&log, format!("set_hit {key} nil")),
+    }
+    let bridge = SceneBridge::new(Filter::Nearest);
+    bridge
+        .attach(
+            &WindowDesc {
+                title: "UI rig".to_owned(),
+                width: 200,
+                height: 100,
+                clear: [0.0; 3],
+                ..WindowDesc::default()
+            },
+            PixelSize {
+                width: 200,
+                height: 100,
+            },
+            Arc::new(Sink),
+        )
+        .expect("the readout scene attaches");
+    bridge
+}
+
+struct StrictScene {
+    calls: HashMap<&'static str, HostFunction>,
+    texture_load: HostFunction,
+    names: Arc<Mutex<Names>>,
+    log: Log,
+    tints: Log,
+}
+
+impl StrictScene {
+    fn new(log: &Log, tints: &Log, assets: &std::path::Path) -> Self {
+        let service = ResourceService::with_assets(
+            ResourceLimits::DEFAULT,
+            Mode::Headless,
+            ServiceWakes::default(),
+            Some(Assets::new(assets.to_path_buf())),
+        )
+        .expect("the readout resource service");
+        let bridge = test_bridge();
+        let writer = bridge.take_writer().expect("the readout scene writer");
+        let (calls, _end) = crate::render_api::test_calls(
+            Some(assets.to_path_buf()),
+            writer,
+            None,
+            service.clone(),
+        );
+        let calls: HashMap<_, _> = calls.into_iter().collect();
+
+        // Unknown rig names use valid handles from a different registry/service. The real API supplies the refusal.
+        let mut foreign_writer = test_bridge().take_writer().expect("a foreign scene writer");
+        let foreign_group = foreign_writer
+            .create_group()
+            .expect("a foreign group")
+            .token()
+            .to_string();
+        let texture_key = service
+            .load("ui/font/glyphs/U+0061.png")
+            .expect("a texture key");
+        let texture_ref = service.retain(texture_key).expect("a texture reference");
+        let foreign_quad = foreign_writer
+            .create_quad(texture_ref, 0.0, 0.0, 1.0, 1.0)
+            .expect("a foreign quad")
+            .token()
+            .to_string();
+        let foreign_service = ResourceService::with_assets(
+            ResourceLimits::DEFAULT,
+            Mode::Headless,
+            ServiceWakes::default(),
+            Some(Assets::new(assets.to_path_buf())),
+        )
+        .expect("the foreign resource service");
+        let foreign_texture = foreign_service
+            .load("ui/font/glyphs/U+0061.png")
+            .expect("a foreign texture")
+            .token()
+            .to_string();
+        let names = Arc::new(Mutex::new(Names {
+            foreign_quad,
+            foreign_group,
+            foreign_texture,
+            ..Names::default()
+        }));
+
+        Self {
+            calls,
+            texture_load: crate::texture_api::test_load_call(service),
+            names,
+            log: Arc::clone(log),
+            tints: Arc::clone(tints),
         }
-        Ok(Vec::new())
-    })
+    }
+
+    fn call(
+        &self,
+        name: &str,
+        arguments: &[Option<ConfigValue>],
+    ) -> Result<Vec<ConfigValue>, String> {
+        if name == "texture.load" {
+            let result = (self.texture_load)(arguments)?;
+            return Ok(record_load(arguments, &result, &self.names, &self.log));
+        }
+        let real = self
+            .calls
+            .get(name)
+            .ok_or_else(|| format!("unknown test call {name}"))?;
+        let translated = translate(name, arguments, &self.names);
+        let result = real(&translated)?;
+        record_success(
+            name,
+            arguments,
+            &result,
+            &self.names,
+            &self.log,
+            &self.tints,
+        )
+    }
+
+    fn call_real(
+        &self,
+        name: &str,
+        arguments: &[Option<ConfigValue>],
+    ) -> Result<Vec<ConfigValue>, String> {
+        if name == "texture.load" {
+            return (self.texture_load)(arguments);
+        }
+        let real = self
+            .calls
+            .get(name)
+            .ok_or_else(|| format!("unknown test call {name}"))?;
+        real(&translate(name, arguments, &self.names))
+    }
+
+    fn extensions(self: &Arc<Self>) -> Vec<Extension> {
+        let mut render = Extension::new("render");
+        for name in [
+            "create_group",
+            "raise_groups",
+            "create_quad",
+            "set_hit",
+            "set_position",
+            "set_rect",
+            "set_tint",
+            "set_group_clip",
+            "set_group_offset",
+            "set_group_visible",
+            "destroy_group",
+            "destroy_quad",
+        ] {
+            let scene = Arc::clone(self);
+            render = render.function(name, Arc::new(move |arguments| scene.call(name, arguments)));
+        }
+        let scene = Arc::clone(self);
+        let texture = Extension::new("texture").function(
+            "load",
+            Arc::new(move |arguments| scene.call("texture.load", arguments)),
+        );
+        vec![render, texture]
+    }
+}
+
+fn strict_scene(log: &Log, tints: &Log, assets: &std::path::Path) -> Vec<Extension> {
+    Arc::new(StrictScene::new(log, tints, assets)).extensions()
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "HostFunction arguments use Option to represent Lua nil"
+)]
+fn value(value: ConfigValue) -> Option<ConfigValue> {
+    Some(value)
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "HostFunction arguments use Option to represent Lua nil"
+)]
+fn string(value: &str) -> Option<ConfigValue> {
+    Some(ConfigValue::String(value.to_owned()))
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "HostFunction arguments use Option to represent Lua nil"
+)]
+fn number(value: f64) -> Option<ConfigValue> {
+    Some(ConfigValue::Float(value))
+}
+
+fn rect(x: f64, y: f64, width: f64, height: f64) -> ConfigValue {
+    ConfigValue::Table(BTreeMap::from([
+        ("x".to_owned(), ConfigValue::Float(x)),
+        ("y".to_owned(), ConfigValue::Float(y)),
+        ("width".to_owned(), ConfigValue::Float(width)),
+        ("height".to_owned(), ConfigValue::Float(height)),
+    ]))
+}
+
+fn test_strict_scene() -> (StrictScene, Log, Log) {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let tints = Arc::new(Mutex::new(Vec::new()));
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    (StrictScene::new(&log, &tints, &assets), log, tints)
+}
+
+fn assert_refusal_matches_real(
+    scene: &StrictScene,
+    name: &str,
+    arguments: &[Option<ConfigValue>],
+    log: &Log,
+    tints: &Log,
+) {
+    let before_log = log.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let before_tints = tints.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let standin = scene.call(name, arguments);
+    let real = scene.call_real(name, arguments);
+    let (Err(standin_error), Err(real_error)) = (standin, real) else {
+        panic!("{name} {arguments:?}: stand-in and real call must both refuse")
+    };
+    assert_eq!(standin_error, real_error, "{name} {arguments:?}");
+    assert_eq!(
+        *log.lock().unwrap_or_else(PoisonError::into_inner),
+        before_log,
+        "a refusal must not append geometry records"
+    );
+    assert_eq!(
+        *tints.lock().unwrap_or_else(PoisonError::into_inner),
+        before_tints,
+        "a refusal must not append tint records"
+    );
+}
+
+fn seed_group(scene: &StrictScene) -> String {
+    match scene
+        .call("create_group", &[])
+        .expect("a group is created")
+        .as_slice()
+    {
+        [ConfigValue::String(group)] => group.clone(),
+        other => panic!("unexpected group result: {other:?}"),
+    }
+}
+
+fn seed_quad(scene: &StrictScene, group: Option<&str>) -> (String, String) {
+    let texture = scene
+        .call("texture.load", &[string("ui/font/glyphs/U+0061.png")])
+        .expect("the fixture texture loads");
+    let [ConfigValue::String(texture)] = texture.as_slice() else {
+        panic!("unexpected texture result: {texture:?}");
+    };
+    let mut table = BTreeMap::from([
+        ("texture".to_owned(), ConfigValue::String(texture.clone())),
+        ("x".to_owned(), ConfigValue::Float(1.0)),
+        ("y".to_owned(), ConfigValue::Float(2.0)),
+        ("width".to_owned(), ConfigValue::Float(3.0)),
+        ("height".to_owned(), ConfigValue::Float(4.0)),
+    ]);
+    if let Some(group) = group {
+        table.insert("group".to_owned(), ConfigValue::String(group.to_owned()));
+    }
+    let quad = scene
+        .call("create_quad", &[value(ConfigValue::Table(table))])
+        .expect("the fixture quad is created");
+    let [ConfigValue::String(quad)] = quad.as_slice() else {
+        panic!("unexpected quad result: {quad:?}");
+    };
+    (quad.clone(), texture.clone())
+}
+
+/// Coverage map: arity/type and rule-specific refusals exercise every readout render stand-in and texture.load;
+/// the paired calls use the same backing writer/service, with rig aliases translated to their real handles.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one refusal matrix keeps parity cases grouped by the single stand-in contract"
+)]
+fn every_readout_render_and_texture_standin_matches_the_real_refusal() {
+    let (scene, log, tints) = test_strict_scene();
+    let group = seed_group(&scene);
+    let (quad, texture) = seed_quad(&scene, Some(&group));
+
+    // create_group, create_quad and texture.load: arity, type, geometry, tint, texture and group checks.
+    for (name, args) in [
+        ("create_group", vec![string("unexpected")]),
+        ("create_quad", vec![]),
+        ("create_quad", vec![string("bad"), string("extra")]),
+        ("create_quad", vec![string("not a table")]),
+        (
+            "create_quad",
+            vec![value(ConfigValue::Table(BTreeMap::from([
+                (
+                    "texture".to_owned(),
+                    ConfigValue::String("t:unknown.png".to_owned()),
+                ),
+                ("width".to_owned(), ConfigValue::Float(1.0)),
+                ("height".to_owned(), ConfigValue::Float(1.0)),
+            ])))],
+        ),
+        (
+            "create_quad",
+            vec![value(ConfigValue::Table(BTreeMap::from([
+                ("texture".to_owned(), ConfigValue::String(texture.clone())),
+                ("x".to_owned(), ConfigValue::Float(0.0)),
+                ("y".to_owned(), ConfigValue::Float(0.0)),
+                ("width".to_owned(), ConfigValue::Float(0.0)),
+                ("height".to_owned(), ConfigValue::Float(1.0)),
+            ])))],
+        ),
+        (
+            "create_quad",
+            vec![value(ConfigValue::Table(BTreeMap::from([
+                ("texture".to_owned(), ConfigValue::String(texture.clone())),
+                ("width".to_owned(), ConfigValue::Float(1.0)),
+                ("height".to_owned(), ConfigValue::Float(1.0)),
+                ("tint".to_owned(), ConfigValue::String("red".to_owned())),
+            ])))],
+        ),
+        (
+            "create_quad",
+            vec![value(ConfigValue::Table(BTreeMap::from([
+                ("texture".to_owned(), ConfigValue::String(texture.clone())),
+                ("width".to_owned(), ConfigValue::Float(1.0)),
+                ("height".to_owned(), ConfigValue::Float(1.0)),
+                ("group".to_owned(), ConfigValue::String("g999".to_owned())),
+            ])))],
+        ),
+        ("texture.load", vec![]),
+        ("texture.load", vec![value(ConfigValue::Integer(3))]),
+        ("texture.load", vec![string("../escape.png")]),
+        ("texture.load", vec![string("a.png"), string("extra")]),
+    ] {
+        assert_refusal_matches_real(&scene, name, &args, &log, &tints);
+    }
+
+    // raise_groups: shape, member type, unknown and tombstoned group names.
+    let stale_group = seed_group(&scene);
+    scene
+        .call("destroy_group", &[string(&stale_group)])
+        .expect("the group is destroyed");
+    for args in [
+        vec![],
+        vec![string("a"), string("b")],
+        vec![value(ConfigValue::Array(vec![ConfigValue::Integer(1)]))],
+        vec![value(ConfigValue::Array(vec![ConfigValue::String(
+            "g999".to_owned(),
+        )]))],
+        vec![value(ConfigValue::Array(vec![ConfigValue::String(
+            stale_group.clone(),
+        )]))],
+    ] {
+        assert_refusal_matches_real(&scene, "raise_groups", &args, &log, &tints);
+    }
+
+    // set_hit: arity, key/rectangle types and values, plus unknown and tombstoned optional groups.
+    for args in [
+        vec![string("bad")],
+        vec![
+            string("bad"),
+            value(ConfigValue::Array(vec![])),
+            string("g1"),
+            string("extra"),
+        ],
+        vec![
+            value(ConfigValue::Integer(1)),
+            value(ConfigValue::Array(vec![])),
+        ],
+        vec![string("bad:key"), value(ConfigValue::Array(vec![]))],
+        vec![
+            string("valid"),
+            value(ConfigValue::Array(vec![ConfigValue::Integer(1)])),
+        ],
+        vec![
+            string("valid"),
+            value(ConfigValue::Array(vec![rect(0.0, 0.0, 0.0, 1.0)])),
+        ],
+        vec![
+            string("valid"),
+            value(ConfigValue::Array(vec![])),
+            string("g999"),
+        ],
+        vec![
+            string("valid"),
+            value(ConfigValue::Array(vec![])),
+            string(&stale_group),
+        ],
+    ] {
+        assert_refusal_matches_real(&scene, "set_hit", &args, &log, &tints);
+    }
+
+    // Quad calls: arity/type, real rectangle/tint checks and unknown/destroyed handle checks.
+    let stale_quad = seed_quad(&scene, None).0;
+    scene
+        .call("destroy_quad", &[string(&stale_quad)])
+        .expect("the quad is destroyed");
+    for (name, args) in [
+        ("set_position", vec![string(&quad), number(1.0)]),
+        (
+            "set_position",
+            vec![string(&quad), number(1.0), number(2.0), number(3.0)],
+        ),
+        (
+            "set_position",
+            vec![value(ConfigValue::Integer(1)), number(1.0), number(2.0)],
+        ),
+        (
+            "set_position",
+            vec![
+                string(&quad),
+                value(ConfigValue::String("x".to_owned())),
+                number(2.0),
+            ],
+        ),
+        (
+            "set_position",
+            vec![string(&quad), number(f64::INFINITY), number(2.0)],
+        ),
+        (
+            "set_position",
+            vec![string("q999"), number(1.0), number(2.0)],
+        ),
+        (
+            "set_position",
+            vec![string(&stale_quad), number(1.0), number(2.0)],
+        ),
+        (
+            "set_rect",
+            vec![string(&quad), number(1.0), number(2.0), number(3.0)],
+        ),
+        (
+            "set_rect",
+            vec![
+                string(&quad),
+                number(1.0),
+                number(2.0),
+                number(3.0),
+                number(4.0),
+                number(5.0),
+            ],
+        ),
+        (
+            "set_rect",
+            vec![
+                string(&quad),
+                string("x"),
+                number(2.0),
+                number(3.0),
+                number(4.0),
+            ],
+        ),
+        (
+            "set_rect",
+            vec![
+                string(&quad),
+                number(1.0),
+                number(2.0),
+                number(0.0),
+                number(4.0),
+            ],
+        ),
+        (
+            "set_rect",
+            vec![
+                string("q999"),
+                number(1.0),
+                number(2.0),
+                number(3.0),
+                number(4.0),
+            ],
+        ),
+        (
+            "set_rect",
+            vec![
+                string(&stale_quad),
+                number(1.0),
+                number(2.0),
+                number(3.0),
+                number(4.0),
+            ],
+        ),
+        ("set_tint", vec![string(&quad)]),
+        (
+            "set_tint",
+            vec![string(&quad), string("red"), string("extra")],
+        ),
+        (
+            "set_tint",
+            vec![value(ConfigValue::Integer(1)), string("#ffffff")],
+        ),
+        ("set_tint", vec![string(&quad), string("#fffff")]),
+        ("set_tint", vec![string("q999"), string("#ffffff")]),
+        ("set_tint", vec![string(&stale_quad), string("#ffffff")]),
+        ("destroy_quad", vec![]),
+        ("destroy_quad", vec![string(&quad), string("extra")]),
+        ("destroy_quad", vec![value(ConfigValue::Integer(1))]),
+        ("destroy_quad", vec![string("q999")]),
+        ("destroy_quad", vec![string(&stale_quad)]),
+    ] {
+        assert_refusal_matches_real(&scene, name, &args, &log, &tints);
+    }
+
+    // Group calls: arity/type, clips/number/bool validation, and unknown/destroyed handles.
+    let live_group = seed_group(&scene);
+    for (name, args) in [
+        ("set_group_clip", vec![string(&live_group)]),
+        (
+            "set_group_clip",
+            vec![
+                string(&live_group),
+                value(rect(0.0, 0.0, -1.0, 2.0)),
+                string("extra"),
+            ],
+        ),
+        (
+            "set_group_clip",
+            vec![
+                value(ConfigValue::Integer(1)),
+                value(rect(0.0, 0.0, 1.0, 1.0)),
+            ],
+        ),
+        (
+            "set_group_clip",
+            vec![string(&live_group), string("not a clip")],
+        ),
+        (
+            "set_group_clip",
+            vec![string(&live_group), value(rect(0.0, 0.0, -1.0, 2.0))],
+        ),
+        (
+            "set_group_clip",
+            vec![string("g999"), value(rect(0.0, 0.0, 1.0, 1.0))],
+        ),
+        (
+            "set_group_clip",
+            vec![string(&stale_group), value(rect(0.0, 0.0, 1.0, 1.0))],
+        ),
+        ("set_group_offset", vec![string(&live_group), number(1.0)]),
+        (
+            "set_group_offset",
+            vec![string(&live_group), number(1.0), number(2.0), number(3.0)],
+        ),
+        (
+            "set_group_offset",
+            vec![
+                string(&live_group),
+                value(ConfigValue::String("x".to_owned())),
+                number(2.0),
+            ],
+        ),
+        (
+            "set_group_offset",
+            vec![string(&live_group), number(f64::INFINITY), number(2.0)],
+        ),
+        (
+            "set_group_offset",
+            vec![string("g999"), number(1.0), number(2.0)],
+        ),
+        (
+            "set_group_offset",
+            vec![string(&stale_group), number(1.0), number(2.0)],
+        ),
+        ("set_group_visible", vec![string(&live_group)]),
+        (
+            "set_group_visible",
+            vec![
+                string(&live_group),
+                value(ConfigValue::Bool(true)),
+                string("extra"),
+            ],
+        ),
+        (
+            "set_group_visible",
+            vec![string(&live_group), string("yes")],
+        ),
+        (
+            "set_group_visible",
+            vec![string("g999"), value(ConfigValue::Bool(true))],
+        ),
+        (
+            "set_group_visible",
+            vec![string(&stale_group), value(ConfigValue::Bool(true))],
+        ),
+        ("destroy_group", vec![]),
+        ("destroy_group", vec![string(&live_group), string("extra")]),
+        ("destroy_group", vec![value(ConfigValue::Integer(1))]),
+        ("destroy_group", vec![string("g999")]),
+        ("destroy_group", vec![string(&stale_group)]),
+    ] {
+        assert_refusal_matches_real(&scene, name, &args, &log, &tints);
+    }
 }
 
 #[test]
-fn the_readout_hit_double_matches_the_render_key_contract() {
-    const ERROR: &str = "render.set_hit: key must match [a-z0-9_]{1,48}";
-    let log = Arc::new(Mutex::new(Vec::new()));
-    let set_hit = hit_recording(&log);
-    let invalid = ["a:b".to_owned(), String::new(), "x".repeat(49)];
-    for key in invalid {
-        assert_eq!(
-            set_hit(&[Some(ConfigValue::String(key)), None]).expect_err("invalid keys are refused"),
-            ERROR
-        );
-    }
-    let accepted = "x".repeat(48);
-    set_hit(&[Some(ConfigValue::String(accepted.clone())), None])
-        .expect("a key of the maximum length is accepted");
+fn strict_readout_standins_keep_the_accepted_call_records() {
+    let (scene, log, tints) = test_strict_scene();
+    let group = seed_group(&scene);
+    let (quad, _texture) = seed_quad(&scene, Some(&group));
+    scene
+        .call(
+            "raise_groups",
+            &[value(ConfigValue::Array(vec![ConfigValue::String(
+                group.clone(),
+            )]))],
+        )
+        .expect("a known group can be raised");
+    scene
+        .call(
+            "set_hit",
+            &[
+                string("panel"),
+                value(ConfigValue::Array(vec![rect(1.0, 2.0, 3.0, 4.0)])),
+                string(&group),
+            ],
+        )
+        .expect("a valid hit region is recorded");
+    scene
+        .call("set_position", &[string(&quad), number(5.0), number(6.0)])
+        .expect("position is accepted");
+    scene
+        .call(
+            "set_rect",
+            &[
+                string(&quad),
+                number(1.0),
+                number(2.0),
+                number(3.0),
+                number(4.0),
+            ],
+        )
+        .expect("rect is accepted");
+    scene
+        .call("set_tint", &[string(&quad), string("#abcdef")])
+        .expect("tint is accepted");
+    scene
+        .call(
+            "set_group_clip",
+            &[string(&group), value(rect(0.0, 0.0, 10.0, 10.0))],
+        )
+        .expect("clip is accepted");
+    scene
+        .call(
+            "set_group_offset",
+            &[string(&group), number(7.0), number(8.0)],
+        )
+        .expect("offset is accepted");
+    scene
+        .call(
+            "set_group_visible",
+            &[string(&group), value(ConfigValue::Bool(false))],
+        )
+        .expect("visibility is accepted");
+    scene
+        .call("destroy_quad", &[string(&quad)])
+        .expect("quad is destroyed");
+    scene
+        .call("destroy_group", &[string(&group)])
+        .expect("group is destroyed");
+    assert_eq!(
+        *log.lock().unwrap_or_else(PoisonError::into_inner),
+        [
+            "create_group g1",
+            "load ui/font/glyphs/U+0061.png",
+            "create q1 ui/font/glyphs/U+0061.png 1 2 3 4",
+            "set_hit panel 1 2 3 4",
+            "set_position q1 5 6",
+            "set_rect q1 1 2 3 4",
+            "set_group_clip g1 Table({\"height\": Float(10.0), \"width\": Float(10.0), \"x\": Float(0.0), \"y\": Float(0.0)})",
+            "set_group_offset g1 7 8",
+            "set_group_visible g1 false",
+            "destroy q1",
+            "destroy_group g1",
+        ]
+    );
+    assert_eq!(
+        *tints.lock().unwrap_or_else(PoisonError::into_inner),
+        ["set_tint q1 #abcdef"]
+    );
 }
 
-/// The scene calls the UI script makes, recorded: textures load to a token naming the file, quads get tokens `q1`, `q2`, ....
-/// The recording scene. Positions and sizes go to `log`; the tints (a quad's at creation, then every `render.set_tint`) go to `tints`,
-/// so the geometry literals of the tests are not cluttered by colours.
-fn scene(log: &Log, tints: &Log) -> Vec<Extension> {
-    let quads = Arc::new(AtomicUsize::new(0));
-    let groups = Arc::new(AtomicUsize::new(0));
-    let create: HostFunction = {
-        let (log, quads, tints) = (Arc::clone(log), quads, Arc::clone(tints));
-        Arc::new(move |arguments| {
-            let Some(Some(table)) = arguments.first() else {
-                return Err("render.create_quad: a table".to_owned());
-            };
-            let number = quads.fetch_add(1, Ordering::SeqCst) + 1;
-            let texture = field(table, "texture");
-            push(
-                &log,
-                format!(
-                    "create q{number} {} {} {} {} {}",
-                    texture.trim_start_matches("t:"),
-                    field(table, "x"),
-                    field(table, "y"),
-                    field(table, "width"),
-                    field(table, "height")
-                ),
-            );
-            let tint = field(table, "tint");
-            if !tint.is_empty() {
-                push(&tints, format!("create q{number} {tint}"));
+fn translate(
+    name: &str,
+    arguments: &[Option<ConfigValue>],
+    names: &Arc<Mutex<Names>>,
+) -> Vec<Option<ConfigValue>> {
+    let names = names.lock().unwrap_or_else(PoisonError::into_inner);
+    let map = |value: &ConfigValue, kind: &str| {
+        let ConfigValue::String(alias) = value else {
+            return value.clone();
+        };
+        let real = match kind {
+            "quad" => names.quads.get(alias).unwrap_or(&names.foreign_quad),
+            "group" => names.groups.get(alias).unwrap_or(&names.foreign_group),
+            "texture" => names.textures.get(alias).unwrap_or(&names.foreign_texture),
+            _ => unreachable!("known handle kind"),
+        };
+        ConfigValue::String(real.clone())
+    };
+    let mut values = arguments.to_vec();
+    let mut at = |index: usize, kind: &str| {
+        if let Some(Some(value)) = values.get_mut(index) {
+            *value = map(value, kind);
+        }
+    };
+    match name {
+        "create_quad" => {
+            if let Some(Some(ConfigValue::Table(table))) = values.first_mut() {
+                for key in ["texture", "group"] {
+                    if let Some(value) = table.get(key) {
+                        table.insert(
+                            key.to_owned(),
+                            map(value, if key == "texture" { "texture" } else { "group" }),
+                        );
+                    }
+                }
             }
-            Ok(vec![ConfigValue::String(format!("q{number}"))])
-        })
-    };
-    let load: HostFunction = {
-        let log = Arc::clone(log);
-        Arc::new(move |arguments| {
-            let Some(Some(ConfigValue::String(name))) = arguments.first() else {
-                return Err("texture.load: a name".to_owned());
+        }
+        "raise_groups" => {
+            if let Some(Some(ConfigValue::Array(items))) = values.first_mut() {
+                for item in items {
+                    *item = map(item, "group");
+                }
+            }
+        }
+        "set_hit" => at(2, "group"),
+        "set_position" | "set_rect" | "set_tint" | "destroy_quad" => at(0, "quad"),
+        "set_group_clip" | "set_group_offset" | "set_group_visible" | "destroy_group" => {
+            at(0, "group");
+        }
+        _ => {}
+    }
+    values
+}
+
+fn record_success(
+    name: &str,
+    arguments: &[Option<ConfigValue>],
+    result: &[ConfigValue],
+    names: &Arc<Mutex<Names>>,
+    log: &Log,
+    tints: &Log,
+) -> Result<Vec<ConfigValue>, String> {
+    match name {
+        "create_group" => {
+            let Some(ConfigValue::String(real)) = result.first() else {
+                return Err("render.create_group: real handler returned no token".to_owned());
             };
-            push(&log, format!("load {name}"));
-            Ok(vec![ConfigValue::String(format!("t:{name}"))])
-        })
+            let alias = {
+                let mut names = names.lock().unwrap_or_else(PoisonError::into_inner);
+                names.group_count += 1;
+                let alias = format!("g{}", names.group_count);
+                names.groups.insert(alias.clone(), real.clone());
+                alias
+            };
+            push(log, format!("create_group {alias}"));
+            Ok(vec![ConfigValue::String(alias)])
+        }
+        "create_quad" => {
+            let Some(ConfigValue::String(real)) = result.first() else {
+                return Err("render.create_quad: real handler returned no token".to_owned());
+            };
+            let alias = {
+                let mut names = names.lock().unwrap_or_else(PoisonError::into_inner);
+                names.quad_count += 1;
+                let alias = format!("q{}", names.quad_count);
+                names.quads.insert(alias.clone(), real.clone());
+                alias
+            };
+            if let Some(Some(table)) = arguments.first() {
+                let texture = field(table, "texture");
+                push(
+                    log,
+                    format!(
+                        "create {alias} {} {} {} {} {}",
+                        texture.trim_start_matches("t:"),
+                        field(table, "x"),
+                        field(table, "y"),
+                        field(table, "width"),
+                        field(table, "height")
+                    ),
+                );
+                let tint = field(table, "tint");
+                if !tint.is_empty() {
+                    push(tints, format!("create {alias} {tint}"));
+                }
+            }
+            Ok(vec![ConfigValue::String(alias)])
+        }
+        "raise_groups" => Ok(result.to_vec()),
+        "set_hit" => {
+            if let Some(Some(ConfigValue::String(key))) = arguments.first() {
+                match arguments.get(1).and_then(Option::as_ref) {
+                    Some(ConfigValue::Array(rects)) => {
+                        for rect in rects {
+                            push(
+                                log,
+                                format!(
+                                    "set_hit {key} {} {} {} {}",
+                                    field(rect, "x"),
+                                    field(rect, "y"),
+                                    field(rect, "width"),
+                                    field(rect, "height")
+                                ),
+                            );
+                        }
+                    }
+                    _ => push(log, format!("set_hit {key} nil")),
+                }
+            }
+            Ok(result.to_vec())
+        }
+        other => {
+            let target = if other == "set_tint" { tints } else { log };
+            let rendered: Vec<String> = arguments.iter().flatten().map(show).collect();
+            let label = if other == "destroy_quad" {
+                "destroy"
+            } else {
+                other
+            };
+            push(
+                target,
+                format!("{label} {}", rendered.join(" "))
+                    .trim_end()
+                    .to_owned(),
+            );
+            Ok(result.to_vec())
+        }
+    }
+}
+
+fn record_load(
+    arguments: &[Option<ConfigValue>],
+    result: &[ConfigValue],
+    names: &Arc<Mutex<Names>>,
+    log: &Log,
+) -> Vec<ConfigValue> {
+    let (Some(Some(ConfigValue::String(name))), Some(ConfigValue::String(real))) =
+        (arguments.first(), result.first())
+    else {
+        return result.to_vec();
     };
-    let create_group: HostFunction = {
-        let (log, groups) = (Arc::clone(log), groups);
-        Arc::new(move |_| {
-            let number = groups.fetch_add(1, Ordering::SeqCst) + 1;
-            push(&log, format!("create_group g{number}"));
-            Ok(vec![ConfigValue::String(format!("g{number}"))])
-        })
-    };
-    let raise_groups: HostFunction = Arc::new(|_| Ok(Vec::new()));
-    vec![
-        Extension::new("render")
-            .function("create_group", create_group)
-            .function("raise_groups", raise_groups)
-            .function("create_quad", create)
-            .function("set_hit", hit_recording(log))
-            .function("set_position", recording(log, "set_position"))
-            .function("set_rect", recording(log, "set_rect"))
-            .function("set_tint", recording(tints, "set_tint"))
-            .function("set_group_clip", recording(log, "set_group_clip"))
-            .function("set_group_offset", recording(log, "set_group_offset"))
-            .function("set_group_visible", recording(log, "set_group_visible"))
-            .function("destroy_group", recording(log, "destroy_group"))
-            .function("destroy_quad", recording(log, "destroy")),
-        Extension::new("texture").function("load", load),
-    ]
+    let alias = format!("t:{name}");
+    names
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .textures
+        .insert(alias.clone(), real.clone());
+    push(log, format!("load {name}"));
+    vec![ConfigValue::String(alias)]
+}
+
+fn scene(log: &Log, tints: &Log, assets: &std::path::Path) -> Vec<Extension> {
+    strict_scene(log, tints, assets)
 }
 
 /// The shipped UI scripts' directory: the root of the UI VM's `require`.
@@ -329,7 +1085,7 @@ impl Readout {
         let mut settings = VmSettings::new("ui", entry, config);
         settings.modules = Modules::Rooted(modules_root);
         settings.extensions = vec![window];
-        settings.extensions.extend(scene(&log, &tints));
+        settings.extensions.extend(scene(&log, &tints, &assets));
         settings
             .extensions
             .push(font::extension(Arc::clone(&shipped_font)));
