@@ -188,14 +188,18 @@ resumable.
 - **After:** the first message to a cleared session names what to read (this
   policy, its role skill, or its brief). The manager types a one-line pointer into
   its empty prompt, because a cleared session is not waiting on chat until it has
-  taken a turn.
+  taken a turn; for Codex that first turn is the identity check below.
 - **Record:** one private action record per clear in
   `.pipeline/coordination/session-clears/` (the old session id and how to resume
   it), and a line in the manager's handoff.
-- **Codex:** a Codex session's chat name is tied to its thread, which a clear
-  replaces, so no Codex session is cleared under this table yet. The only
-  exception is a first test: one Codex worker, named by the owner for that test,
-  at its boundary. Every other Codex session, the reviewer included, stays
-  uncleared until that test has shown that the chat name and the resume of the old
-  conversation both hold, and the owner has then said the practice extends to
-  Codex.
+- **Codex:** Codex sessions are cleared under the same table as Claude Code
+  sessions (owner, 2026-11-13). After a Codex clear the chat name returns only once
+  the registry has seen the new thread. So the manager posts nothing to the session
+  first: it types a one-line pointer asking for `pchat agent who --json`, lets that
+  turn end, runs `pchat agent sync`, and checks with `pchat agent list --json` that
+  the old name carries the new thread and is the only active name on that tab. Only
+  then does it send the first message. If the name has not returned after one more
+  sync, it stops and reports. A session launched without a model flag takes the
+  client's current default model after a clear; the manager checks the session's
+  model and effort against its class before giving it work, and reports a change to
+  the owner.
