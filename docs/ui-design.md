@@ -1443,8 +1443,8 @@ Lengths below are in UI pixels.
   - **The choices are the bar's alone.** A new bar has nothing ticked and the default order. Nothing of them outlives
     `bar:destroy()`, and nothing is written to a file. The owner: "dont save it, just reset it everytime the list is brought up".
 - **The two buttons** are icon buttons in the window's kind, 13 by 15: `filter`, a funnel, and `sort`, an arrow down beside four bars.
-  - The sort button's right edge is the content's right edge, the filter button is 16 pixels left of it, and their tops are 17
-    pixels above the content's bottom.
+  - The sort button's right edge is the content's right edge, the filter button's left edge is 16 pixels left of the sort
+    button's, and their tops are 17 pixels above the content's bottom.
   - Their labels (§3.13) are `filter` and `sort`.
   - The filter button is drawn selected while any box is ticked, and the sort button while the order is not the default.
   - Pressing a button opens its picker, and pressing it again closes it.
@@ -1469,7 +1469,8 @@ Lengths below are in UI pixels.
     top. The panel is 8 wider and 6 taller than what it holds, which starts 4 from its left edge and 3 from its top.
   - **Above its window, below tooltips:** it is made when it opens, as its window's last attached item (`window:attach` in
     `lib/window.lua`: attached items are drawn above the content, in attach order).
-  - Its rows are 13 high. The row under the pointer is filled with the kind's `row_hover`.
+  - Its rows are 13 high. The row under the pointer is filled with the kind's `row_hover`, except the sort picker's chosen row,
+    which keeps its own fill.
   - A press on a row or on "all" leaves the picker open. The wheel over a picker never scrolls the list under it.
   - **Too tall:** a picker's top is never above its window's content top. One with more rows than fit is as tall as that
     leaves, and its rows scroll with the wheel as a list's rows do, clipped. It has no scroll thumb.
@@ -1498,7 +1499,7 @@ Lengths below are in UI pixels.
      position, and would show another item's data once the rows move;
   3. calls the caller's `on_change`, which shows the list again through `view`.
 
-  Opening or closing a picker is not a change and closes no tooltip.
+  Opening a picker is not a change and closes no tooltip.
 - **One picker at a time,** in the whole UI: opening one closes the other. An open picker closes for:
   - its own button, or Escape;
   - a press on the map (`map_down`, §3.5), or a press on anything else in the UI that is not the picker itself. The press still
