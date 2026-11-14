@@ -4,8 +4,8 @@
 --
 -- The window is a library window of kind `window`, `fixed` (no close button) and not draggable, centred in the view and centred again
 -- when the view's size changes. Under it a backdrop, the colour `body` at alpha one half, covers the whole view above every bar and
--- window; it is a hit region, so a press, a drag, a scroll or a hover there reaches nothing else. "settings", "glossary" and
--- "save / load" are greyed (inactive buttons) until their screens exist.
+-- window; it is a hit region, so a press, a drag, a scroll or a hover there reaches nothing else. "glossary" and "save / load" are
+-- greyed (inactive buttons) until their screens exist; "settings" opens the settings window (lib/settings_window.lua).
 local ui = require("lib.ui")
 local button = require("lib.button")
 local windows = require("lib.window")
