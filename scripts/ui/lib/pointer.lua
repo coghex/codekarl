@@ -9,6 +9,14 @@ local owners = {} -- key -> optional widget owner
 local pressed_keys = {} -- key -> true, the widgets whose gesture is pressed
 local last_over = false
 local deferred = {} -- functions to run when the next dispatch ends
+local press_observers = {} -- functions told of each left press, in the packet's order, before any widget hears it
+
+-- Registers `fn(event)`, called for each left press (`down`, or `map_down` for one over no hit region) of an eligible packet, in the
+-- packet's order and before the press reaches its widget. It sees every press, whoever's it is: a widget that must act when a press
+-- lands elsewhere (a number field applying what was typed) reads `event.key`. It routes nothing and cannot stop the press.
+function pointer.observe_press(fn)
+  press_observers[#press_observers + 1] = fn
+end
 
 function pointer.register(key, widget, owner)
   widgets[key] = widget
@@ -105,6 +113,11 @@ function pointer.dispatch(p)
   local eligible = not overflow
   for _, event in ipairs(events) do
     local key = event.key
+    if eligible and (event.kind == "down" or event.kind == "map_down") then
+      for _, observe in ipairs(press_observers) do
+        observe(event)
+      end
+    end
     if key and event.kind == "down" then
       -- A keyed press is classified against the widgets registered at this boundary, even if no widget owns its key.
       event.functional = pointer.functional(key, event)

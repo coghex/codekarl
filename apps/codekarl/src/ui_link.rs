@@ -1443,6 +1443,8 @@ mod location_tests;
 #[cfg(test)]
 mod menu_tests;
 #[cfg(test)]
+mod numberfield_tests;
+#[cfg(test)]
 mod scrollbar_tests;
 #[cfg(test)]
 mod theme_tests;
