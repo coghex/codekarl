@@ -77,8 +77,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
 - **Time:** Space pauses, `1` to `5` pick a speed, `]` and `[` go faster and slower, and the time bar's buttons do the same. F5
   quicksaves and F9 quickloads.
 - **Saves:** the quicksave is `saves/quicksave.cksave`. A save loads only into the build that wrote it, and a save written before
-  CK-302 (2026-11-14) has the older header and is refused. The game can now also write, list, load and delete named saves, one
-  file each, and knows whether it has unsaved changes; the save/load screen that will use them is not built yet
+  CK-302 (2026-11-14) has the older header and is refused. Named saves, one file each, are made, loaded and deleted on the
+  save/load screen (below), and the game knows whether it has unsaved changes
   ([docs/places-time-design.md](docs/places-time-design.md) §5.3).
 - **Keys** act only with exactly the modifiers their binding names (CK-315): with Shift, Control, Alt or Command held, a plain
   key such as `1`, an arrow or Escape does nothing. `+` (`Shift+=`) is bound, and zooms in as `=` does
@@ -88,8 +88,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   the mouse reaches nothing behind it, and the time, quicksave, quickload and map keys do nothing. "return", or Escape again,
   closes the menu and leaves the game paused: Space or the time bar's play button resumes it. "quit to desktop" ends the game at
   once without asking, and so does the window's own close button. Neither saves, and F5 does nothing while the menu is open, so
-  quicksave before you open it. "settings" opens the settings window and "glossary" the glossary reader (below).
-  "save / load" is greyed until that screen is built ([docs/ui-design.md](docs/ui-design.md) §3.15).
+  quicksave before you open it. "settings" opens the settings window, "glossary" the glossary reader and "save / load"
+  the save/load screen (below; [docs/ui-design.md](docs/ui-design.md) §3.15).
 - **Settings** (CK-301): the settings window opens above the menu, with three tabs down its left side. "general" has the
   tooltips' show delay, lock and lock timer; "map" has the pan speed, zoom speed and scroll step; "input" has the keys
   (next). Drag a slider or press a choice and it acts at once and is kept. "defaults" resets the tab
@@ -102,6 +102,13 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
 - **The glossary** (CK-300): the glossary reader opens above the menu too. Its left column lists every glossary entry by its
   title: click one to read it on the right. A light-blue word in the text has its tooltip as elsewhere, and a click on it
   opens that word's entry. Its "x", or Escape, goes back to the menu ([docs/ui-design.md](docs/ui-design.md) §3.20).
+- **Saving and loading** (CK-305): the save/load screen opens above the menu too. At its top is a name, filled in for you
+  with the scenario and the date, and "new save", which saves the game under that name. Under them each save is a card
+  with its name, its in-game date and when it was written. Click a card for its buttons: "load", "save" (save over it) and
+  "delete". Saving over and deleting ask first, and loading asks only when the game has changed since it was last saved
+  or loaded. After a load the menu closes and the game waits paused. The list opens showing this version's saves: the
+  filter button under it shows the others too, greyed, which can only be deleted, and the sort button orders the list.
+  Its "x", or Escape, goes back to the menu ([docs/ui-design.md](docs/ui-design.md) §3.23).
 - **The map:** drag to pan and scroll to zoom at the cursor, or use the arrow keys and `=` and `-`. Click a place to show it in the
   location panel (tabs: location, pops and buildings). The two icons at the top right open the ledger, a list on the right of the
   screen with a locations tab and a pops tab; clicking a row shows that place in the panel. The three buttons centred at the bottom of

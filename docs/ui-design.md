@@ -186,8 +186,8 @@
 >   2026-11-14; §3.15): Escape with nothing left to close now opens a menu, and no longer ends the game. The owner: "ok pause menu
 >   with buttons for resume, settings, glossary, save/load, and quit to desktop".
 >   - **The menu** is a window titled "Menu" in the middle of the screen, over a backdrop that dims everything behind it by
->     half. It has five buttons: "return", "settings", "glossary", "save / load" and "quit to desktop". "save / load" is
->     greyed and does nothing until its screen is built. "settings" and "glossary" were greyed too, until CK-301 and CK-300
+>     half. It has five buttons: "return", "settings", "glossary", "save / load" and "quit to desktop". "settings",
+>     "glossary" and "save / load" were greyed, and did nothing, until CK-301, CK-300 and CK-305 built their screens
 >     (below).
 >   - **It pauses and blocks:** opening it pauses the game. While it is open the pointer reaches nothing behind it, and the
 >     game's own keys (time, quicksave and quickload, the map's keys) do nothing.
@@ -206,15 +206,16 @@
 >   - While the bar shows, the rows are 5 pixels narrower. One new module, `scripts/ui/lib/scrollbar.lua`, is the bar.
 > - **A list may choose its starting ticks** (CK-304, 2026-11-14; `owner-direction-save-load-designer-r2.md`; §3.14): the rule
 >   that every list starts with nothing ticked is retired. The owner: "that rule is not applicable anymore". `listbar.new` takes
->   the boxes ticked at the start. With none given a bar still starts with nothing ticked, as the five shipped lists do.
+>   the boxes ticked at the start. With none given a bar still starts with nothing ticked, as the five lists of CK-295 and
+>   CK-296 do. Since CK-305 the save list is the first that gives some (below).
 > - **The settings file** (CK-298, 2026-11-14; `owner-direction-settings-designer-r1.md`; §3.17): the player's settings are kept
 >   in `settings.toml`, which overrides the configuration file. The UI VM's `settings` table can set and reset the three tooltip
 >   settings and the three map settings; a change acts at once and is written. Since CK-301 the settings window uses
 >   those calls. Since CK-307 and CK-309 the file also holds the graphics settings and the player's key bindings (below).
 > - **Named saves and unsaved changes, for scripts** (CK-302 and CK-311, 2026-11-14; `owner-direction-save-load-designer-r1.md`
 >   and `-r2.md`; §3.6): the game API lists, writes, loads and deletes named saves, and the game knows whether it has unsaved
->   changes. The location panel's look buttons and the map-mode buttons now tell it of a change. The save/load screen is not
->   built yet (`docs/places-time-design.md` §5.3).
+>   changes. The location panel's look buttons and the map-mode buttons now tell it of a change. Since CK-305 the save/load
+>   screen uses them (below; `docs/places-time-design.md` §5.3).
 > - **Exact modifiers** (CK-315, 2026-11-14; `owner-direction-game-menu-manager-r9.md` and `-r10.md`): a key binding fires only
 >   with exactly its modifiers, so Escape with Shift held closes nothing and opens no menu (`docs/scene-design.md` §10.1).
 > - **The settings window** (CK-301, 2026-11-14; `owner-direction-settings-designer-r1.md` to `-r4.md` and
@@ -262,8 +263,37 @@
 > - **The text field, for scripts** (CK-303, 2026-11-14; `owner-direction-save-load-designer-r1.md`; §3.22):
 >   `scripts/ui/lib/textfield.lua` is a field that a line of text is typed into, with a caret that Left and Right move. It
 >   counts characters, not bytes, and takes only characters the project font draws. It shares its editing with the number
->   field through the new `scripts/ui/lib/fieldedit.lua`, so one field edits at a time, of either kind. No shipped screen has
->   a text field yet: the save/load screen will be the first.
+>   field through the new `scripts/ui/lib/fieldedit.lua`, so one field edits at a time, of either kind. Since CK-305 the
+>   save/load screen's name field is the one shipped text field.
+> - **The scenario's id, for scripts** (CK-320, 2026-11-14; `owner-direction-save-load-designer-r1.md`; §3.6):
+>   `game.scenario()` returns the running scenario's id, such as `ireland_768`. The save/load screen makes its generated
+>   save name from it.
+> - **Two faults of the input tab's second slot fixed** (CK-322, 2026-11-14; §3.18): on an action with no keys, emptying
+>   the second slot ended in a Lua error, and a key set there was lost. Emptying an empty slot now changes nothing, and a
+>   key set there is the action's first key.
+> - **Three faults of the input tab fixed** (CK-323, 2026-11-14; §3.18): "defaults" left no tab marked in the tab column,
+>   the wheel scrolled the rows only over the scroll bar, and every change of a key sent the rows back to the top. The tab
+>   now stays marked, the wheel scrolls anywhere over the rows, and a change keeps the rows where they were.
+> - **Key capture and typing: faults fixed** (CK-321, 2026-11-14; §3.17, §3.19): cancelling a capture no longer ends the
+>   hold on a captured key that is still down, so that key's repeats cannot fire an action. A request to turn typing on
+>   that arrives while the key is held is no longer lost: it is applied when the key is let go. For scripts,
+>   `typing.cancel_capture` cancels a capture and lets a field be edited again at once.
+> - **The save/load screen** (CK-305, 2026-11-14; `owner-direction-save-load-designer-r1.md` and `-r2.md`; §3.23): the
+>   pause menu's "save / load" button now opens a window titled "Save / Load", above the menu. The owner: "a list of cards
+>   with each card representing a save", and "a seperate new save button as well, and a textbar on top that autofills with
+>   a generated save name".
+>   - **On top** are the name field, which holds a generated name such as `ireland 768, 3 Mar 771`, and "new save".
+>   - **Each save is a card** with its name, its in-game date and when it was written. A click chooses a card, and the
+>     chosen card shows "load", "save" and "delete". A save that this build cannot load is greyed and can only be deleted.
+>   - **The list bar** (§3.14) filters by version and sorts. It opens showing only this version's saves. The owner:
+>     "default it to only show the current game version".
+>   - **It asks first** before saving over a save and before deleting one. Before a load it asks only when the game has
+>     unsaved changes. The owner: "Delete asks", and "load only asks if the current state is not already saved".
+>   - **After a load** the screen and the menu close, and the loaded game waits paused.
+>   - **For scripts:** `pointer.set_gate` holds back the pointer events of an update, a card's view can put its buttons'
+>     hit regions above the card's own (`raise_hits`), and a window made with `keep_open` can refuse Escape.
+>
+>   That is the last of the four save/load parts: CK-302 and CK-311, CK-303, CK-304 and CK-305.
 
 ## Owner answers (2026-11-07)
 
@@ -616,6 +646,8 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
     - The stash keeps it like any event that is not a move. One dropped by an overflow is never delivered.
   - **`functional`** (CK-270): the dispatcher sets `event.functional` on each keyed `down` before any widget hears it: whether that
     key's widget would act on the press (`pointer.functional`, §3.13).
+  - **The gate** (CK-305): `pointer.set_gate(fn)` lets a script hold back keyed events before they reach their widgets
+    (§3.23).
   - `over` names the topmost group under the cursor.
   - `overflow` repeats `pointer_overflow`, so the library can drop its own pressed state.
   - **Delivery** (r8; replaces r4's, which acknowledged at the accepted post):
@@ -690,8 +722,8 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
       menu and declines. So the order is: a tooltip, the picker, the top window, the pause menu, and Escape never ends the run.
       The close button still always quits (§3.15).
     - **Since CK-301, while the pause menu is open,** "the top window" is the top one of the windows above the menu's
-      backdrop: the settings window or the glossary reader when one is open, else the menu. Escape never closes a window
-      under the backdrop (§3.18, §3.20).
+      backdrop: the settings window, the glossary reader or, since CK-305, the save/load screen when one is open, else
+      the menu. Escape never closes a window under the backdrop (§3.18, §3.20, §3.23).
     - **Since CK-306 a number field that is being edited comes first of all:** the handler puts its old number back, ends
       its editing and declines. So the order is: an editing number field, a tooltip, the picker, the top window, the pause
       menu (§3.21). **Since CK-303** an editing text field is the same step: the one field that edits, of either kind, gets
@@ -700,6 +732,9 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
       key it captures, and no close request is made (§3.17). **Since CK-310** that is how Escape cancels a key slot that
       waits in the settings window's input tab. The "Key in use" prompt, while it is open, is the top window that Escape
       closes (§3.18).
+    - **Since CK-305 the top window can refuse Escape** (`keep_open`, §3.18). The save/load screen does while a load it
+      sent is unanswered: the press then closes no window and opens no menu. An open question of that screen is the top
+      window, and Escape closes it as "cancel" (§3.23).
 
 ### 3.6 From the UI to the game (Proposal)
 
@@ -719,6 +754,12 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
 - **`game.set_modal(on)`** (CK-297) turns the block on the game's own key actions on (`true`) or off (`false`). It takes exactly
   one boolean, returns nothing, and is off at the start of a run. The pause menu is its one caller (§3.15, which lists the
   actions and says what the block does).
+- **`game.scenario()`** (CK-320) returns the running scenario's id as a string, exactly as the scenario file gives it:
+  `ireland_768`, not a name to show. It takes no argument, and one is an error.
+  - It is there whenever the `game` table is, in a run with a scenario, and only in the UI VM: the gameplay VM does not
+    get it.
+  - It is the same for the whole run, a load included: a save of another scenario does not load.
+  - It reads and changes nothing of the simulation. The save/load screen's generated name is its one caller (§3.23).
 - **`game.mark_unsaved()`** (CK-311) tells the game that the player made a choice that counts as an unsaved change
   (`docs/places-time-design.md` §5.3). It takes no argument, returns nothing and never waits: it is a send on the same channel.
   - **Its two callers:** the location panel's look buttons, when the look changes (pressing the look that shows makes no
@@ -736,7 +777,7 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
   - `game.delete_save(filename)` removes a listed save, fitting or not.
   - A wrong argument is a Lua error. A refusal is not: it is the table returned, and the game and its files are as they were.
   - After the simulation owner has ended, the answer is a refusal that says the game is no longer running.
-  - No shipped script calls them yet.
+  - **Since CK-305 the save/load screen calls all five** (§3.23). Before it no shipped script did.
 - **`game.load_save_guarded(filename)`** (CK-311) asks for a load that the game refuses while it has unsaved changes. It
   returns nothing and never waits.
   - **The answer comes later,** to the callback that `game.on_save_result(fn | nil)` registers: `fn(filename, result)`, with
@@ -746,7 +787,8 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
     and the save calls reach the simulation owner on one channel, in the order the script made them, so a mark made just
     before the request counts.
   - `game.load_save(filename)` is the load for a player who was asked and said yes: it never asks.
-  - No shipped script calls it yet: it is for the save/load screen.
+  - **Since CK-305 the save/load screen is its caller** (§3.23): every press of a card's "load" sends it, and only the
+    question's "load" sends `game.load_save`.
 - **`window.set_text_input(on)`** (CK-314) is not a game call. It asks the window's main thread to turn typed text on or off,
   through the window's request slot, and never waits (§3.19).
 - **The `settings` calls** (CK-298, CK-307, CK-309) are not game calls either. They are in §3.17: the settings in force,
@@ -1630,8 +1672,8 @@ Lengths below are in UI pixels.
     it is given rows, "all" clears the ticks, and the filter rule is the ordinary one. A value that no row has is still a box,
     ticked.
   - The bar copies the list, so clearing it changes nothing for the next bar its caller makes from the same list.
-  - **No shipped list uses it yet:** the five lists in the table below start with nothing ticked. It was built for the save
-    list, which is to open showing this version's saves.
+  - **Since CK-305 the save list uses it:** it opens with "this version" ticked (§3.23), which is what it was built for.
+    The five lists in the table below start with nothing ticked.
 - **The order.**
   - **The default** is the order of the rows as given, which is the data's own. The owner: "start the lists with the data file
     order".
@@ -1743,6 +1785,8 @@ direction a sort has when it is chosen.
     tab, and a change of look between cards and rows.
   - After a change the pops or buildings stack shows from its top. The location tab's list keeps its scroll, cut to its new
     length, so the market stays in view.
+- **The save list** (`lib/save_screen.lua`, CK-305) is the sixth list with a bar. Its sorts, its one filter group and its
+  starting tick are in §3.23.
 - **A known limit:** in a very narrow panel the count, and then the bar's buttons, can run under the selector's two buttons. It
   is disclosed, not designed for.
 - **Not there:** remembering a choice, sorting by a click on a column heading, a search box, and keyboard use of a picker.
@@ -1776,12 +1820,14 @@ Lengths below are in UI pixels.
   - **The game window's close button** (source `"button"`) is accepted as before, with the menu open or not: the run ends.
   - **Nothing else opens it.** There is no menu button on the screen. The owner chose "Escape last" over a button on the time
     bar.
-  - **Without a scenario** there is no `game` table. The menu opens all the same and makes neither game call.
+  - **Without a scenario** there is no `game` table. The menu opens all the same and makes neither game call. Its
+    "save / load" button is then greyed (below).
 - **The window** is a library window (`lib/window.lua`) of kind `window`, titled "Menu".
   - It is `fixed`, so it has no close button, and it is not draggable. Its title bar has no action. The owner chose no close
     button ("No x") and "Centred, fixed".
   - It is centred in the view when it opens, and `menu.relayout()` centres it again when the view's size changes. `main.lua`
-    calls that after its other relayouts. It also centres an open settings window (CK-301, §3.18) or glossary reader (CK-300, §3.20) again.
+    calls that after its other relayouts. It also centres an open settings window (CK-301, §3.18), glossary reader
+    (CK-300, §3.20) or save/load screen (CK-305, §3.23) again.
   - **At most one.** `menu.open` on an open menu only raises it and returns the same window. It pauses nothing again.
 - **The five buttons** are a column that is the window's whole content, in this order: "return", "settings", "glossary",
   "save / load", "quit to desktop".
@@ -1789,11 +1835,14 @@ Lengths below are in UI pixels.
     15 tall, with its text centred.
   - There are 3 pixels between two buttons, and 9 above "quit to desktop".
   - "save / load" is one button, the owner's choice over two.
-- **The greyed button.** "save / load" is an inactive button (below) until its screen is built, which is a later step. Its
-  text is in `dim` and its outline in `track`. It has no hover or pressed look, and a press on it does nothing. The owner
-  chose greyed buttons over hidden ones, and this look ("G1: dark outline") over a red outline.
+- **The greyed button.** A button whose screen was not built yet was an inactive button (below). Its text is in `dim` and
+  its outline in `track`. It has no hover or pressed look, and a press on it does nothing. The owner chose greyed buttons
+  over hidden ones, and this look ("G1: dark outline") over a red outline.
   - **"settings" was greyed** until CK-301. It now opens the settings window, or raises it when it is open (§3.18).
   - **"glossary" was greyed** until CK-300. It now opens the glossary reader, or raises it when it is open (§3.20).
+  - **"save / load" was greyed** until CK-305. It now opens the save/load screen, or raises it when it is open (§3.23).
+  - **Without a game "save / load" is still greyed:** a run with no scenario has no `game` table and nothing to save or
+    load (`lib/menu.lua`, `greyed`). In a run with a game all five buttons are live.
 - **The backdrop** dims everything behind the menu and takes the pointer.
   - It is one quad of the theme's white texture over the whole view, tinted with the colour `body` at alpha one half.
   - It is in a group of its own, made when the menu opens and before the menu's window. So it is above every bar and window
@@ -1828,10 +1877,11 @@ Lengths below are in UI pixels.
     happens at every opening, not only the first of a run.
 - **"return" and Escape close it, and the game stays paused.**
   - "return" closes the menu's window. Escape with the menu open closes it too, as the top window. An open settings
-    window (CK-301) or glossary reader (CK-300) is above it, and Escape closes that one first (§3.18, §3.20).
+    window (CK-301), glossary reader (CK-300) or save/load screen (CK-305) is above it, and Escape closes that one first
+    (§3.18, §3.20, §3.23).
   - Either way the window's `on_close` takes the backdrop away (its quad, its group and its hit region) and turns the key block
     off. It sends no control, so the game is paused afterwards, whether or not it was running before the menu opened. It
-    first closes the settings window and the glossary reader, when one is open.
+    first closes the settings window, the glossary reader and the save/load screen, when one is open.
   - Space or the time bar's play button resumes it, as before.
   - A second Escape, with nothing open, opens the menu again.
   - The owner: "resume should be replaced by return, and return should return us to the game, but leave it paused, whenever we
@@ -1853,14 +1903,15 @@ Lengths below are in UI pixels.
     - **It is not functional** (`button:functional()`, §3.13) while inactive, so a press on it closes the open tooltips as a
       press on a panel's body does.
   - A button made without these options is sized and behaves as before.
-- **Not there:** the main menu and the loading screen; what "save / load" opens; a confirmation
-  before quitting; a menu button on the screen. Key rebinding came with CK-310, in the settings window (§3.18).
+- **Not there:** the main menu and the loading screen; a confirmation before quitting; a menu button on the screen. Key
+  rebinding came with CK-310, in the settings window (§3.18), and what "save / load" opens with CK-305 (§3.23).
 - **Tests,** none with a window or the GPU:
   - `apps/codekarl/src/ui_link/menu_tests.rs` runs the shipped `lib/menu.lua`, `lib/window.lua` and `lib/button.lua` in a UI
     VM over the real `render` API and the real input path. Ten of its tests cover the Escape order, the window and its
     buttons, one menu at most, the resize, the backdrop, the pause-only control, "return" and Escape, quitting, the greyed
-    button and the two button options. It has twenty-six more for the settings window, fourteen of them for the input
-    tab of CK-310 (§3.18).
+    button (since CK-305: every button live with a game, and "save / load" greyed without one) and the two button
+    options. It has thirty-six more for the settings window, twenty-four of them for the input tab (§3.18). The
+    save/load screen's own tests are in `ui_link/save_screen_tests.rs` (§3.23).
   - `ui_link/input_tick_tests.rs` has the key block at the tick: each of the sixteen actions stopped at the map and the
     simulation with the rest left alone, a held map key, a press in the tick before, and a captured drag ended at a first
     and at a second opening.
@@ -2028,7 +2079,8 @@ can input whatever numbers they want, and it will clamp to minimums and maximums
 **Since CK-309: the player's key bindings, and key capture.** A script can change the keys of the player's actions while the
 game runs, and can ask for the next key the player presses. It is the engine's side of key rebinding. **Since CK-310 the
 settings window's input tab uses it** (§3.18), and is its one shipped caller: it calls `settings.bindings`, `set_bindings`,
-`capture_key` (through `typing.capture`), `cancel_capture` and `settings.reset("bindings")`. For
+`capture_key` (through `typing.capture`), `cancel_capture` (through `typing.cancel_capture` since CK-321) and
+`settings.reset("bindings")`. For
 the menu key the owner chose "Fixed": it cannot be changed. The records are `owner-direction-keys-designer-r1.md` and `-r2.md`,
 and the spec is `runtime-m55/ck309-spec-r2.md` (sha256 `e85d479f…`).
 
@@ -2065,6 +2117,11 @@ and the spec is `runtime-m55/ck309-spec-r2.md` (sha256 `e85d479f…`).
 - **`settings.capture_key(id)`** asks for the next key press. `id` is a string of 1 to 64 bytes, which comes back with the
   result. **`settings.cancel_capture()`** cancels a capture that waits. Both write the request slot and never wait.
   - One capture waits at a time. A new one replaces it, and the old one ends as cancelled.
+  - **A cancel ends the request that waits, never the hold on a key** (CK-321). A request that still waits for its key
+    ends with its one `cancelled` result, and one that already has its result gets no second one. A captured key that is
+    still down stays swallowed until it is let go, whether this request captured it or an earlier one did
+    (`docs/scene-design.md` §10.1). Before CK-321 a cancel let go of that key, and its next repeat could fire the action
+    bound to it.
   - **What is captured** is the first key-down of a key that was up and is not a modifier. Escape and Backspace are captured
     like any other key, so an Escape pressed while a capture waits closes nothing. `docs/scene-design.md` §10.1 says what a
     capture swallows.
@@ -2073,12 +2130,15 @@ and the spec is `runtime-m55/ck309-spec-r2.md` (sha256 `e85d479f…`).
     result has no `capture` field.
   - **Disclosed:** one result waits at a time, so a later result replaces one that no update has carried yet.
   - **Arming a capture turns text input off** (§3.19). It stays off while the capture waits and while the captured key is
-    still held.
+    still held. **Since CK-321 a call for on made in that time is kept,** and applied when the key is let go (§3.19).
 - **A script arms a capture through `typing.capture(id, settings.capture_key)`** (§3.19), so that a widget that is editing is
   applied first and none starts while the capture waits.
 - **Tests,** with no window and no GPU: `crates/input/src/tests.rs` (the capture and the replacement in the mapper),
   `crates/window/tests/window/` (the slot and the loop, with a fake backend), `apps/codekarl/src/settings.rs` and `config.rs`
   (the calls and the file), and `ui_link/typing_tests.rs` and `numberfield_tests.rs` (capture against an editing widget).
+  CK-321 added to the first two: a cancel with the captured key still held, also after a second capture was armed, a
+  cancel before any key, and a resync that lifts the key; and a withheld call for text input applied once the key is let
+  go, or dropped by a call for off.
 
 ### 3.18 The settings window (accepted, CK-301 and CK-310)
 
@@ -2167,7 +2227,8 @@ Lengths below are in UI pixels.
   A value reads as its number, and the scroll step's as `24 points`.
 - **"defaults"** is a button at the bottom left of each tab's content. It calls `settings.reset("tooltips")`,
   `settings.reset("map")` or, on the input tab since CK-310, `settings.reset("bindings")`, which resets that tab's settings
-  only. The tab is then made again, when the pointer's dispatch ends, with the values in force.
+  only. The tab is then made again, when the pointer's dispatch ends, with the values in force. Its row in the tab column
+  stays the chosen one (CK-323: after "defaults" on the input tab no row was marked).
 - **The input tab** (CK-310) shows the keys in force, from `settings.bindings()` (§3.17), and changes them. Before CK-310 it
   was a read-only list of eight rows, with "changing keys comes later" under them.
   - **Groups and rows.** There are three groups, each under its name in `dim`: **time** (pause, speed 1 to speed 5, faster,
@@ -2180,6 +2241,9 @@ Lengths below are in UI pixels.
     the window kind's `outline`. The key's shown name is centred in it, in `text`. An empty slot shows `-` in `dim`.
   - **The rows scroll.** Their view is the content less a footer 22 tall, so 146 tall, with the scroll bar (§3.16) at the
     content's right edge. The footer has "defaults".
+    - **The wheel scrolls them from anywhere over that view** (CK-323): over a name, a gap, a key slot and the menu's
+      row alike, from the tab's first showing. Before CK-323 it did so only over the scroll bar until the window was
+      placed again, and never over a slot.
   - **Shown names.** `KeyA` reads `A` and `Digit1` reads `1`. The arrows read `Left`, `Right`, `Up` and `Down`. Punctuation
     reads as its character: `Equal` is `=`, `Minus` is `-`, `BracketLeft` is `[`, `BracketRight` is `]`, and likewise the
     semicolon, quote, backslash, comma, period, slash and backquote. Every other key reads as its `[input.bindings]` name,
@@ -2200,9 +2264,12 @@ Lengths below are in UI pixels.
   - **The click** is the left button's release over the slot. It arms a key capture with
     `typing.capture(id, settings.capture_key)`, under an id from `ui.key("settings_capture")` (§3.17, §3.19).
   - **One slot waits at a time.** A click on another slot abandons the first wait and starts the second.
-  - **The wait is abandoned,** and its capture cancelled with `settings.cancel_capture()`, by a left press anywhere but on
-    the waiting slot, by a tab being shown, and by the settings window closing, as it does when the pause menu closes. A
-    capture result of kind `cancelled`, which a loss of focus gives, ends the wait too. The slot is then as it was.
+  - **The wait is abandoned,** and its capture cancelled, by a left press anywhere but on the waiting slot, by a tab
+    being shown, and by the settings window closing, as it does when the pause menu closes. A capture result of kind
+    `cancelled`, which a loss of focus gives, ends the wait too. The slot is then as it was.
+    - **The cancel** is `typing.cancel_capture(settings.cancel_capture)` since CK-321, in both places that make it
+      (§3.19). Before that it was `settings.cancel_capture()` alone, which left the typing function's guard set when a
+      wait began and ended inside one update.
   - **The capture's result** comes in an update's `capture` field (§3.17), which `settings_window.update` reads:
     - `Escape` cancels: the slot is as it was, and nothing is closed;
     - `Backspace` empties the slot, so Backspace cannot be set as a key;
@@ -2246,15 +2313,24 @@ Lengths below are in UI pixels.
 - **Every change is one `settings.set_bindings` call** (§3.17), which holds each action it changes with its whole new
   list: the one action for a free key, a "clear" or an emptied slot; A and B for a "replace" or a "swap"; A and every
   owner for a "replace" with several owners. It never holds `close` or a greyed action.
-  - **The tab is then made again** from `settings.bindings()`, so it shows what is in force.
+  - **The tab is then made again** from `settings.bindings()`, so it shows what is in force. **The rows keep their
+    scroll** (CK-323), cut to the list's new length. "defaults", and showing the tab again from the tab column, start at
+    the top.
   - **An emptied slot** leaves the action's other key first in its list: `[F5, Space]` with its F5 slot emptied is
     `[Space]`, shown `Space` and `-`.
+  - **Emptying a slot that is already empty changes nothing** (CK-322): no call is made and the tab is as it was. That
+    holds for a right-click, for Backspace while the slot waits and for the prompt's "clear".
+  - **An action's keys are a list without holes** (CK-322). A key set in the second slot of an action with no keys is
+    its first key, and shows in its first slot when the tab is made again. That holds for a free key and for "replace".
+  - **Before CK-322,** on the second slot of an action with no keys, emptying ended in a Lua error and a key set there
+    was lost.
   - **A refused call,** a Lua error, changes nothing. The tab stays as it was and the error is logged, at `info`.
 - **A right-click** on a slot that is not greyed empties it at once, and abandons a wait.
 - **Stacking: only the windows the menu opens are above its backdrop.** The window library (`lib/window.lua`) now knows the
   backdrop's group and which windows are modal.
   - `window.new{…, modal = true}` makes a modal window. The menu's window, the settings window and, since CK-300, the
-    glossary reader (§3.20) are three. Since CK-310 the "Key in use" prompt is the fourth.
+    glossary reader (§3.20) are three. Since CK-310 the "Key in use" prompt is the fourth. Since CK-305 the save/load
+    screen and its questions are modal too (§3.23).
   - `window.set_modal_backdrop(group)` names the backdrop's group and `window.clear_modal_backdrop(group)` forgets it. The
     menu calls the first when it opens and the second when it closes.
   - **While a backdrop is named,** the library orders its windows' groups again at every change (a window made, raised or
@@ -2262,12 +2338,15 @@ Lengths below are in UI pixels.
     windows in their own order. The tooltip overlay stays above them all.
   - **Since CK-310 a modal window can have a layer of its own.** `window.set_modal_overlay(owner, group)` names a group
     that is kept just under the window `owner`, above the modal windows before it in the windows' order.
-    `window.clear_modal_overlay(owner, group)` forgets it. Both order the groups again. The prompt's backdrop is the one
-    such layer.
+    `window.clear_modal_overlay(owner, group)` forgets it. Both order the groups again. The prompt's backdrop was the
+    first such layer. Since CK-305 the backdrop of a save/load question is one too (§3.23).
   - **So a window made or raised while the menu is open is under the backdrop** and under its hit region: a press, drag,
     scroll or hover over it reaches nothing. The location panel answering a click that was still on its way when Escape
     opened the menu is such a window.
   - `window.top()`, the window Escape closes, is then the top modal window.
+  - **Since CK-305 a window can keep itself open against Escape:** `window.new{…, keep_open = fn}`. When that window is
+    the top one and `fn()` returns true, `window.close_request` closes nothing for that press and declines. Its "x" and
+    `window:close()` do not ask `fn`. The save/load screen is the one caller (§3.23).
   - When the menu closes, every window is ordinary again, in the windows' own order.
   - Only library windows are ordered this way.
 - **Leaving.** The "x", or Escape with no tooltip or picker to close first, closes the settings window.
@@ -2281,13 +2360,20 @@ Lengths below are in UI pixels.
   - Closing the menu closes the settings window with it.
 - **Not there:** a graphics tab and a gameplay tab; a field to type a number into; tooltips on the window's own controls;
   a mouse button or the wheel as a key; more than two keys for an action; rebinding the demo's actions.
-- **Tests,** through the shipped scripts in the UI rig, with no window: twenty-six tests in
+- **Tests,** through the shipped scripts in the UI rig, with no window: thirty-six tests in
   `apps/codekarl/src/ui_link/menu_tests.rs`.
   - **Twelve** cover opening and the window; the general tab's sliders, choices and "defaults"; a slider's drag across
     several updates, on the general and on the map tab; `button.flow`; the map tab; the "x"; closing the menu; and the
     stacking of a window made late and of an older window raised. The two of CK-318 among them cover the "show delay"
     label and the sliders' places on the general and on the map tab.
-  - **Fourteen are the input tab's** (CK-310), with the settings calls doubled: the slots, their names and the greyed menu
+  - **Twenty-four are the input tab's,** with the settings calls doubled.
+    - **Six are CK-322's:** on the second slot of an action with no keys, a right-click, Backspace and "clear" each
+      change nothing; a free key becomes the action's first key; and "replace" gives the action the key. A "swap" with a
+      filled first slot is as before.
+    - **Three are CK-323's:** a wheel event over a name, a slot and the menu's row of a tab just shown; "defaults"
+      keeping the tab marked; and a change keeping the scroll, with "defaults" back at the top.
+    - **One is CK-321's:** a change of tab while a slot waits lifts the typing function's guard.
+  - **Fourteen are CK-310's:** the slots, their names and the greyed menu
     row; a run with no game actions; a slot waiting; "swap", with the prompt blocking the settings window; "replace" with
     several owners in one call; no "swap" when the owner holds the old key; a key the action already holds, and a
     modifier's variant being free; owners that cannot be changed; the lists after a "replace" and a "swap"; Backspace,
@@ -2301,8 +2387,9 @@ Lengths below are in UI pixels.
 
 A widget can be typed into. What the player types, by the system's keyboard layout and with Shift, Option and dead keys, cannot
 be had from key codes or from bound actions. So it has a route of its own: **typed entries**, one ordered list in each update.
-It was built for the number field (CK-306, §3.21) and for the save name's text field, which came with CK-303 (§3.22). No
-shipped screen has a field of either kind yet, so in the game text input is never turned on.
+It was built for the number field (CK-306, §3.21) and for the save name's text field, which came with CK-303 (§3.22).
+Since CK-305 the save/load screen's name field is the one shipped field (§3.23): in the game text input is on only while
+that field is edited.
 
 - **The records.** The owner, in `owner-direction-settings-designer-r3.md` in `.pipeline/coordination/ui-polish-design/`:
   "here the player can input whatever numbers they want". The spec is `runtime-m55/ck314-spec.md` (sha256 `7acea958…`).
@@ -2321,6 +2408,10 @@ shipped screen has a field of either kind yet, so in the game text input is neve
   - **The main thread applies it** when it next reads the slot (`crates/window/src/main_loop.rs`). Applying a call always
     starts from nothing, on or off: text being composed and the entries not yet given to the UI are discarded.
     - **Since CK-309,** while a key capture is active a call for on is applied as off (§3.17).
+    - **Since CK-321 that call is kept, not lost.** The loop remembers the latest call for on that it withheld, and
+      applies it in its first pass in which no capture is active: text input is turned on, the typed entries start from
+      nothing, and the update's `typed_epoch` is that call's generation. A later call for on takes its place, and a call
+      for off drops it. The captured key itself never gives a typed entry.
   - **Off,** no key is given to the system's text input and there are no typed entries, as before CK-314.
   - **On or off, every key is still recorded as a physical key.** So the actions, the close request and the pause menu's key
     block (§3.15) are unchanged, and a key typed into a widget is also whatever it is bound to.
@@ -2389,6 +2480,17 @@ shipped screen has a field of either kind yet, so in the game text input is neve
   - It then calls `request(id)`. If that raises, no capture is noted and the error is raised again.
   - **While the capture waits, no widget starts editing:** `typing.start` returns `false`. That ends when an update's
     `capture` field carries the capture's id, which `typing.dispatch` reads.
+  - **`typing.cancel_capture(request)`** (CK-321) cancels a capture for a script. `request` is the host's
+    `settings.cancel_capture`. It lifts that guard at once, so a widget can start editing in the same update, and then
+    calls `request()`. An error of that call is raised again, with the guard already lifted. A `request` that is not a
+    function is an error.
+    - **Why:** the request slot keeps only the latest capture command. An arm and a cancel written inside one update
+      reach the loop as the cancel alone, so no result comes back, and the guard would stay set until another capture
+      ended.
+    - A result whose id is not the waiting capture's still lifts nothing.
+  - **A widget may start while the captured key is still held.** The guard lifts with the result, which comes at the
+    key's press. The loop keeps the widget's call for text input until the key is let go (above), and the widget gets
+    its typing from then on. Before CK-321 that call was lost: the widget showed editing and got nothing.
   - **`on_apply()` is the editing widget's part of this.** The number field's applies what was typed and tells its caller, as
     Enter does (§3.21). Since CK-303 the text field's does the same (§3.22).
 - **Nothing of the typing is a bound action.** No action exists for a digit, a letter or an editing key: a game's bindings
@@ -2404,8 +2506,8 @@ shipped screen has a field of either kind yet, so in the game text input is neve
   - `apps/codekarl/src/input_stash.rs`, `ui_link.rs` and `window_api.rs` have the stash's bound and epoch, the update's three
     fields and the call. `config.rs` has the 22 bindings.
   - `apps/codekarl/src/ui_link/typing_tests.rs` runs the shipped `lib/typing.lua` in the UI rig with small widgets of its own:
-    thirteen tests, for the order, text input on and off, stale entries, the rule with the pointer in one update and in
-    two, the sessions and, since CK-309, key capture.
+    fourteen tests, for the order, text input on and off, stale entries, the rule with the pointer in one update and in
+    two, the sessions and, since CK-309, key capture, with its cancel since CK-321.
   - `crates/window-cocoa/tests/typed/mod.rs` has six cases with a real window, in the group `native.window`: a key-down with
     characters, the five commands, a repeat, composition, Escape and a Command chord, and text input off. They post marked
     key-downs and ignore the owner's input like the rest of that group (`docs/scene-design.md` §10.3).
@@ -2555,7 +2657,7 @@ that autofills with a generated save name" (`owner-direction-save-load-designer-
 left-aligned as `mockups/save-load-r1.html` there draws it, and it uses no new art. The spec is
 `runtime-m55/ck303-spec-r2.md` (sha256 `b066c2cb…`).
 
-**No shipped screen has a text field yet.** The save/load screen, a later step, will be the first.
+**Since CK-305 the save/load screen's name field is the one shipped text field** (§3.23).
 
 Lengths below are in UI pixels.
 
@@ -2627,6 +2729,172 @@ Lengths below are in UI pixels.
   and refused; the counts in characters; the caret and the scrolling; the orders inside one update and across two; the
   pointer in the same update; a text field and a number field together; applying, the empty text and Escape; a held
   key; the pause menu's key block; closing the window; what a caller's `on_apply` may do; and key capture.
+
+### 3.23 The save/load screen (accepted, CK-305)
+
+The pause menu's "save / load" button opens the **save/load screen**: a window above the menu where the game is saved under a
+name, and a save is loaded, saved over or deleted. It is the last of the four save/load parts of UI polish item 3, after the
+named saves and the unsaved changes (CK-302 and CK-311), the text field (CK-303) and the starting ticks (CK-304). The owner:
+"a list of cards with each card representing a save, clicking on a card will allow for save/delete, with save giving a popup
+confirmation to override the save. a seperate new save button as well, and a textbar on top that autofills with a generated
+save name."
+
+- **The records** are `owner-direction-save-load-designer-r1.md` and `-r2.md` in `.pipeline/coordination/ui-polish-design/`.
+  - The owner chose "load, save, delete" for a chosen card's buttons, and "In the game, paused" for where a load ends.
+  - On saves of another version, the owner: "greyed, can delete, but also we should include a filter and sort into the
+    list, like all the other lists in the game, and default it to only show the current game version in the filter
+    settings."
+  - On asking first, the owner: "Delete asks", and "load only asks if the current state is not already saved, i.e. unsaved
+    changes exist, then we ask mentioning that unsaved changes will be discarded".
+  - The look is `mockups/save-load-r1.html` and `mockups/save-load-r2.html` there, with no new art
+    (`save-load-provenance-r1.md`). The spec is `runtime-m55/ck305-spec-r3.md` (sha256 `390499dc…`).
+  - **Four of its rules are the spec's own,** marked proposals there: which save "new save" asks about when a name is
+    taken, the generated name's limit of 48 characters, a save of unknown build counting as another version, and that
+    nothing responds while a load is unanswered.
+- **One module,** `scripts/ui/lib/save_screen.lua`, is the screen, its cards and its questions.
+  - `save_screen.open(view)` opens it, or raises it when it is open, and returns the window. There is one at most.
+  - `save_screen.close()` closes it, `save_screen.relayout(view)` centres it and an open question again, and
+    `save_screen.current()` gives a test its parts.
+  - `save_screen.set_time(time)` takes the latest `game_time`, for the generated name's date. `main.lua` calls it from
+    its `game.on_time` handler.
+  - `save_screen.generated_name(id, time)` is the generated name's rule alone (below).
+  - **The menu** (`lib/menu.lua`) **opens and closes it,** as it does the settings window: the "save / load" button opens
+    it, `menu.relayout()` passes on a change of the view's size, and the menu's `on_close` closes it.
+
+Lengths below are in UI pixels.
+
+- **The window** is a library window of kind `window`, titled "Save / Load", with the close "x": 400 by 300 over all and
+  not draggable. It is centred in the view when it opens and again when the view's size changes. It is modal (§3.18), so
+  it is above the menu and its backdrop.
+- **From the top of its content:** the name field and "new save"; a 1-pixel line in the kind's `outline` across the
+  content, 17 down; the cards, from 20 down to the list bar; and the list bar (§3.14) in the bottom 19.
+- **The name field** is a text field (§3.22), the first in a shipped screen. It is as wide as the content less the "new
+  save" button and a gap of 4, and holds up to 48 characters, the most a save's name may have.
+  - **It starts with a generated name:** the scenario's id (`game.scenario()`, §3.6) with each `_` as a space, then a
+    comma and a space, then the in-game date as `3 Mar 771`. So `ireland_768` on that date gives
+    `ireland 768, 3 Mar 771`.
+  - **The date** is that of the latest `game_time` the UI was given. Before the first one the name is the scenario's
+    part alone.
+  - **It is never longer than 48 characters.** The date is kept whole. The scenario's part is cut to what is left, 48
+    less the date's length and 2 for the comma and its space, and then loses the spaces at its end. So an id of 48
+    characters on 3 Mar 771 gives 37 characters of it, the comma and the date.
+  - **It is generated again** each time the screen opens and after every save that succeeds.
+  - **An applied name that is empty,** or only spaces, puts the generated name back.
+- **"new save"** is a text button at the content's right, level with the field. It saves the game as a new save under the
+  field's name, with the spaces at its ends taken off (`game.save(name)`, §3.6). An empty name is replaced by the
+  generated one first.
+  - **If a save of that exact name can be saved over, it asks instead** (the questions, below). The name is compared
+    with the name of every save the game listed, character for character and capitals counting. A save that the list
+    bar's filter hides is compared too.
+  - **Only a save that fits counts** (`fit` is `"fits"`). With none, a new save is made, and two cards may then show one
+    name: the game gives the new save a file of its own (`docs/places-time-design.md` §5.3).
+  - **With several, the question is about the one whose file name comes first.** "overwrite" then saves over that file
+    and no other.
+- **A card** is a cut-3 frame filled `body` and outlined in the kind's `outline`, as wide as the stack's rows (§3.16)
+  and 28 tall, with 3 between two cards.
+  - **Its first line** is the save's name, 3 in and 2 down, in `text`.
+  - **Its second line,** 15 down, is the save's in-game date at the left and the time it was written at the right,
+    ending 4 short of the card's right edge, both in `dim`.
+  - **The time written** is in the player's local time: `today 14:05`, `yesterday 14:05`, or `3 Mar 2026` for an older
+    one.
+  - **A save with no date, or no time written,** has that part left empty. Nothing is made up from the file's own times.
+  - **A save that cannot load is greyed:** its name is in `dim` and its outline in `track`, and its second line says why
+    in the date's place: `made by another version: cannot load` (`fit` is `version`),
+    `made with other game data: cannot load` (`content`) or `cannot be read` (`unreadable`).
+  - **A click chooses a card,** one at a time, when the pointer's dispatch ends. Its outline turns to the kind's `hot`,
+    it grows to 47 tall, and a row of text buttons appears in it, 29 down and 4 in, 3 apart: "load", "save" and
+    "delete", or "delete" alone for a save that cannot load. A click on another card moves the choice. A click on the
+    chosen card changes nothing.
+  - **Nothing is chosen** when the screen opens, after a save or a delete, and once the filter hides the chosen card.
+- **The list bar** (§3.14) is under the cards, in the window's kind.
+  - **The default order** is newest written first. A save with no time written comes last, and saves written in the
+    same second go by file name.
+  - **Sorts:** "name" (a to z), "in-game date" (latest first) and "written" (newest first). A save with no value for the
+    chosen sort comes last, as in every list.
+  - **Filter:** one group, "version", with the values "this version" and "other versions". A save is of this version
+    when the game says its build is this one (`this_build` is `"yes"`). One of another build, or of a build that cannot
+    be read (`"unknown"`), is of the other versions.
+  - **The bar starts with "this version" ticked** (starting ticks, §3.14), so the screen opens showing only this
+    version's saves, with the count beside the filter button. "all" shows the others too.
+  - The choices start again each time the screen opens. They stay through a save, a delete and a refusal.
+- **The questions.** Three actions ask first, each in a small window above the screen.
+  - **The window** is a library window of kind `window`, `fixed` (no "x"), not draggable and modal, centred in the view.
+    Its lines are in `text`, 15 apart, and its two buttons are at the bottom right, 3 apart: the action, then "cancel".
+    Its size follows the "Key in use" prompt's rule (§3.18).
+  - **It has a backdrop of its own,** as that prompt has: one quad over the whole view, `body` at alpha one half, and a
+    hit region over the whole view under a key from `ui.key("save_ask_backdrop")`, kept just under the question with
+    `window.set_modal_overlay`. So nothing behind a question responds, the screen included.
+  - **"cancel", and Escape,** close the question and do nothing more. The action's button closes it and then acts.
+  - **"save" on a card, and "new save" over a name:** the title is "Overwrite this save?", the lines are
+    `"<name>" will be replaced` and `by the game as it is now.`, and the action is "overwrite"
+    (`game.save_over(filename)`).
+  - **"delete":** the title is "Delete this save?", the lines are `"<name>" will be deleted.` and
+    `This cannot be undone.`, and the action is "delete" (`game.delete_save(filename)`).
+  - **"load", only when the game has unsaved changes:** the title is "Load this save?", the lines are
+    `The game has unsaved changes.` and `They will be discarded.`, and the action is "load"
+    (`game.load_save(filename)`).
+- **Whether a load asks is the game's to decide** (`docs/places-time-design.md` §5.3). The screen keeps no copy of the
+  unsaved changes and reads none from `game_time`.
+  - **Every press of "load" sends the guarded load,** `game.load_save_guarded(filename)` (§3.6). The screen then waits
+    for the answer, which comes to the function it gave `game.on_save_result` when it opened.
+  - **Answered with success,** the game is loaded and nothing was asked.
+  - **Answered `"unsaved"`,** the question opens for that save. That answer is not a refusal and shows no refusal line.
+    The question's "load" sends the plain load, which never asks. "cancel" sends nothing.
+  - **Any other refusal,** of either load, shows the refusal line (below).
+- **From a press of "load" until its answer, nothing on the screen responds.**
+  - The click that sends the load sets a **pointer gate** (below) at once, so a later press of the same update, on the
+    name field or on the "x", reaches nothing.
+  - A hit region over the whole view, in a group of its own under a key from `ui.key("save_shield")`, takes the pointer
+    in the updates after it. It draws nothing.
+  - No field is left editing: one that was has its old text put back.
+  - Escape closes nothing: the window is made with `keep_open` (§3.18).
+  - So a second press of "load", on that card or another, sends nothing. The answer takes all of it away again.
+- **The other buttons hold the rest of their update too.** A click on "new save", or on a chosen card's "save" or
+  "delete", sets the gate until the pointer's dispatch ends, and acts then (`pointer.defer`), when the cards can be
+  drawn again. So a press that follows the click inside one update reaches nothing.
+- **After each action.**
+  - **A save,** new or over: the saves are listed again (`game.saves()`), nothing is chosen, and the name field gets a
+    fresh generated name. In the default order the save just written is the first card.
+  - **A delete:** the saves are listed again and nothing is chosen.
+  - **A load:** the save/load window closes, and then the pause menu (`menu.close()`), which unblocks the game's keys
+    as "return" does (§3.15). The loaded game waits paused, with the reason `load`.
+  - **A refusal:** the screen stays, and one line under the name field, 17 down, says what failed, in the theme's
+    `over_limit` colour: `save failed: <reason>`, `delete failed: <reason>`, `load failed: <reason>` or, when the list
+    itself is refused, `cannot list the saves: <reason>`, with no cards. While it shows, the line under the field and
+    the cards are 13 lower. It goes at the next press of one of the screen's buttons.
+  - The game clears its unsaved changes after a save or a load. The screen does nothing for that.
+- **Leaving.** The "x", or Escape with nothing above the screen, closes it. The menu is as it was: still open, the game
+  still paused, its keys still blocked. Closing the menu closes the screen with it, and an open question with the
+  screen.
+- **It remembers nothing** but the latest date. Opened again, it has a new generated name, nothing chosen, the bar's
+  starting tick and the cards at their top.
+- **The pointer gate** is new in `lib/pointer.lua`. `pointer.set_gate(fn)` sets it and `pointer.set_gate(nil)` clears it.
+  - While one is set, the dispatcher asks `fn(key, event)` for every keyed event, in the packet's order, before the
+    event's widget or the widget's owner hears it. True swallows the event. False changes nothing.
+  - **Why:** the events of one update have their keys already, from the layout published before any of them was
+    handled. A click that changes what the screen should take cannot take back the events that follow it in the same
+    packet. The gate holds them back.
+  - It does not stop the press observers (`pointer.observe_press`, §3.21) or the hover. There is one gate, and none is
+    set unless a caller sets it. The save/load screen is the one caller.
+- **A card's widgets above the card.** The card stack (`lib/cards.lua`) sets an item's hit region after the item's
+  `draw`, so that region is above the region of any widget the draw made, and would take its presses.
+  - A view that `draw` returns may have a `raise_hits()` function. The stack calls it each time it sets the item's
+    region, scrolled or not.
+  - `button:raise_hit()` is new in `lib/button.lua`. It publishes the button's hit region again, as the last of its
+    group, which is the top one.
+  - The chosen save card's view raises its buttons that way. So "load", "save" and "delete" take their own presses, and
+    a press on the rest of the card still reaches the card.
+- **Not there:** thumbnails; autosave; renaming a save; loading a save of another scenario; the main menu.
+- **Tests,** through the shipped scripts in the UI rig, with no window: 24 tests in
+  `apps/codekarl/src/ui_link/save_screen_tests.rs`.
+  - **Most answer the game's save calls with a stand-in,** so that every entry, time and refusal is exact. They cover
+    opening above the backdrop, with "x" and Escape back to the menu; the cards, greyed and chosen; the list bar's
+    starting tick and its sorts; "new save" and the names; the questions; the guarded load and its answers; the wait
+    for a load's answer, with a press on the name field and on the "x" inside the same update; the other buttons
+    holding a later press; the refusal line; the generated name and its 48 characters; the empty name; and the resize.
+  - **Three run the real simulation core** over a temporary saves directory: a new save, a save over and a delete on
+    real files; a load answered with success and with `unsaved`; and a save of another build, greyed and deleted.
+  - **Three are the library pieces':** the gate, `raise_hits` and `keep_open`.
 
 ## 4. Packages and ownership
 

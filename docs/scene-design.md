@@ -463,10 +463,16 @@ settings file's `[input.bindings]` are in `docs/ui-design.md` §3.17.
     releases.
   - **It ends without a key** as `replaced` (a new capture was armed), `requested` (the script cancelled it) or `focus` (a
     focus loss, minimising or a size of zero).
+  - **A cancel ends the request, not the hold on a key** (CK-321; `Mapper::cancel_capture`). A request that still waits
+    gets its one `requested` result, and one that has its result gets nothing more. A captured key that is still down,
+    captured by this request or carried over from an earlier one when this one was armed, stays owned: its repeats and
+    its release are swallowed, and the capture counts as active until then. A focus loss ends the hold, as before.
   - A capture armed while the last captured key is still held takes nothing until that key has gone up.
 - **One result** is in the snapshot (`capture`) until the snapshot that reports it is acknowledged.
 - **Text input** (CK-314, above) is turned off when a capture is armed. A request to turn it on is applied as off while a
-  capture is armed or still owns its key.
+  capture is armed or still owns its key. **Since CK-321 the loop keeps the latest such request** and applies it in its
+  first pass in which no capture is active, with that request's generation. A request for off drops it
+  (`docs/ui-design.md` §3.19).
 - **Which binding fires is unchanged** (CK-315, above).
 
 Close's rising edge requests the existing Lua close callback with source `key`; the native close button uses source `button`. Repeated close events coalesce under the current one-outstanding rule. No callback means accept. Default Escape is now a binding, not a second hardcoded exit path. Cmd-Q/no-menu behavior and signal quit remain as accepted.

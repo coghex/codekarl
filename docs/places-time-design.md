@@ -334,7 +334,7 @@ index order or `BTreeMap`), allocation addresses and uninitialised data.
       was.
   - The UI VM reaches them as `game.saves`, `game.save`, `game.save_over`, `game.load_save` and `game.delete_save`
     (`docs/ui-design.md` §3.6). F5 and F9 work as before, on `quicksave.cksave`, whose header is now of format 2 and named
-    `quicksave`. There is still no save screen.
+    `quicksave`. Since CK-305 the save/load screen calls all five (below).
 - **Since CK-311 (unsaved changes;** `core.rs`**):** the core keeps one flag beside its pause and its clock: whether the game
   has changed since it was last saved or loaded. The owner: "if the game is running, then there are unsaved changes", and
   "when in doubt it will pop up" (`.pipeline/coordination/ui-polish-design/owner-direction-save-load-designer-r2.md`).
@@ -352,7 +352,17 @@ index order or `BTreeMap`), allocation addresses and uninitialised data.
     - The UI holds no copy of the flag, so it cannot decide from an old one.
     - F9 and the plain named load never ask.
   - The UI VM's calls are `game.mark_unsaved`, `game.load_save_guarded` and `game.on_save_result` (`docs/ui-design.md` §3.6).
-    The save/load screen that will ask before a load is not built yet.
+    Since CK-305 the save/load screen sends the guarded load at every press of its "load" (below).
+- **Since CK-305 (the save/load screen;** `scripts/ui/lib/save_screen.lua`**):** the pause menu's "save / load" button opens
+  a screen that lists the saves as cards and saves, loads and deletes them (`docs/ui-design.md` §3.23). It is UI script
+  only: the save file, the core and the five operations are as they were.
+  - **A new save's name** is what the player typed, or the generated one: the scenario's id with `_` as spaces, a comma
+    and the in-game date, at most 48 characters.
+  - **Equal names.** Two saves may have one name, since a new save never replaces a file. The screen asks to save over
+    only when a listed save that fits has exactly the name typed, and then about the one whose file name comes first.
+  - **It opens showing this build's saves.** The others are greyed, with the reason from `fit`, and can only be deleted.
+  - **A load from the screen is the guarded load.** The plain load is sent only after the player was asked and chose
+    "load". After a load the screen and the menu close and the game waits paused, as after any load.
 
 ### 5.4 How it is shown (Proposal)
 
