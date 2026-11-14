@@ -88,13 +88,15 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   the mouse reaches nothing behind it, and the time, quicksave, quickload and map keys do nothing. "return", or Escape again,
   closes the menu and leaves the game paused: Space or the time bar's play button resumes it. "quit to desktop" ends the game at
   once without asking, and so does the window's own close button. Neither saves, and F5 does nothing while the menu is open, so
-  quicksave before you open it. "settings" opens the settings window (below). "glossary" and "save / load" are greyed until
-  those screens are built ([docs/ui-design.md](docs/ui-design.md) §3.15).
+  quicksave before you open it. "settings" opens the settings window and "glossary" the glossary reader (below).
+  "save / load" is greyed until that screen is built ([docs/ui-design.md](docs/ui-design.md) §3.15).
 - **Settings** (CK-301): the settings window opens above the menu, with three tabs down its left side. "general" has the
   tooltips' show delay, lock and lock timer; "map" has the pan speed, zoom speed and scroll step; "input" lists the keys in
   force and cannot change them yet. Drag a slider or press a choice and it acts at once and is kept. "defaults" resets the tab
-  that shows. Its "x", or Escape, closes it and leaves the menu open. The first slider of the general tab, the show delay,
-  has no label yet ([docs/ui-design.md](docs/ui-design.md) §3.18).
+  that shows. Its "x", or Escape, closes it and leaves the menu open ([docs/ui-design.md](docs/ui-design.md) §3.18).
+- **The glossary** (CK-300): the glossary reader opens above the menu too. Its left column lists every glossary entry by its
+  title: click one to read it on the right. A light-blue word in the text has its tooltip as elsewhere, and a click on it
+  opens that word's entry. Its "x", or Escape, goes back to the menu ([docs/ui-design.md](docs/ui-design.md) §3.20).
 - **The map:** drag to pan and scroll to zoom at the cursor, or use the arrow keys and `=` and `-`. Click a place to show it in the
   location panel (tabs: location, pops and buildings). The two icons at the top right open the ledger, a list on the right of the
   screen with a locations tab and a pops tab; clicking a row shows that place in the panel. The three buttons centred at the bottom of
@@ -111,14 +113,19 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
 - **The settings file** (CK-298): `settings.toml` holds the player's own settings and overrides the configuration file. It may
   hold `[ui.tooltips]` `delay`, `lock` and `lock_timer`, and `[map]` `pan_pixels_per_frame`, `zoom_steps_per_second` and
   `scroll_points_per_step`, each checked as the configuration checks it. A missing file is normal. An entry that is not accepted
-  is named in a `warn` record and ignored, and the rest applies. The settings window writes it at each change
-  ([docs/ui-design.md](docs/ui-design.md) §3.17).
+  is named in a `warn` record and ignored, and the rest applies. The settings window writes it at each change. The file may
+  also hold `[ui] scale` and `list_look`, `[window] width` and `height` (CK-307), and `[input.bindings]` for the player's own
+  keys (CK-309: at most two keys for an action, and never Escape's `close`). No screen of the game sets those yet, so they are
+  there only when put in by hand ([docs/ui-design.md](docs/ui-design.md) §3.17).
 - **Lists:** a list longer than its view has a thin scroll bar at its right edge: drag its thumb, or press the track to move one
   view ([docs/ui-design.md](docs/ui-design.md) §3.16).
 - **The window** opens at 1280×800 screen pixels, its minimum. Drag an edge to enlarge it (the game lays itself out again when you
   let go), or use macOS full screen: the green title-bar button or Control-Command-F. The UI scale follows the window: 1 from
   1280×800 screen pixels, 1.5 from 1920×1200 and 2 from 2560×1600, so a UI pixel is 2, 3 or 4 screen pixels. `[ui] scale = 1`,
-  `1.5` or `2` caps it (the lower of the two is used; read at startup), and the old `[ui] points_per_pixel` is refused, naming `scale`.
+  `1.5` or `2` caps it (the lower of the two is used), and the old `[ui] points_per_pixel` is refused, naming `scale`. The
+  configuration also takes `[window] width` and `height` (screen pixels, from 1280 and 800 up to 16,384) and `[ui] list_look`
+  (`"cards"` or `"rows"`) for the graphics settings to come (CK-307). Nothing uses them yet, and the window still opens at
+  1280×800.
 - **Run the game on native Metal.** Milestone 9's render features (the new map look and the elevation mode) exist on native Metal
   only. Since CK-238 the Vulkan backend is only kept compiling, and its port of them (CK-239) is parked until the owner says so.
 
