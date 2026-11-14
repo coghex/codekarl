@@ -161,6 +161,8 @@ struct InputState {
     text_epoch: u64,
     /// A text input request taken with the first batch, applied once the window exists.
     pending_text_input: Option<crate::requests::TextInputRequest>,
+    /// The latest text input request held until key capture releases keyboard ownership.
+    withheld_text_input: Option<crate::requests::TextInputRequest>,
     pending_capture: Option<crate::requests::CaptureRequest>,
     pending_bindings: Option<ck_input::Bindings>,
 }
@@ -524,6 +526,7 @@ where
             text_input: false,
             text_epoch: 0,
             pending_text_input: first.text_input,
+            withheld_text_input: None,
             pending_capture: None,
             pending_bindings: None,
         },
@@ -696,17 +699,11 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         }
         // 3. The request slot, once.
         let changes = self.requests.take();
-        // Text input (CK-314): a request taken with the first batch, then the latest since the last take. Applying one always starts
-        // from nothing, however many writes were coalesced into it: the backend and the mapper discard what they hold, and the mapper's
-        // epoch becomes the request's generation, so the UI can tell which of its entries came after its own call.
+        // Text input (CK-314/321): remember the latest request while capture owns the keyboard. Requests and capture changes are
+        // reconciled together below so an arm in this same slot cannot briefly enable text input, and a cancel can apply a withheld
+        // request on the first pass where capture is no longer active.
         let first = self.input.pending_text_input.take();
-        for request in first.into_iter().chain(changes.text_input) {
-            let enabled = request.enabled && !self.input.mapper.capture_active();
-            self.backend.set_text_input(enabled);
-            self.input.mapper.reset_typed(request.generation);
-            self.input.text_input = enabled;
-            self.input.text_epoch = request.generation;
-        }
+        let text_request = first.into_iter().chain(changes.text_input).last();
         if let Some(bindings) = changes
             .bindings
             .or_else(|| self.input.pending_bindings.take())
@@ -729,6 +726,28 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
                 }
                 crate::requests::CaptureRequest::Cancel => self.input.mapper.cancel_capture(),
             }
+        }
+        if let Some(request) = text_request {
+            if request.enabled && self.input.mapper.capture_active() {
+                self.input.withheld_text_input = Some(request);
+                self.backend.set_text_input(false);
+                self.input.mapper.reset_typed(request.generation);
+                self.input.text_input = false;
+                self.input.text_epoch = request.generation;
+            } else {
+                self.input.withheld_text_input = None;
+                self.backend.set_text_input(request.enabled);
+                self.input.mapper.reset_typed(request.generation);
+                self.input.text_input = request.enabled;
+                self.input.text_epoch = request.generation;
+            }
+        } else if !self.input.mapper.capture_active()
+            && let Some(request) = self.input.withheld_text_input.take()
+        {
+            self.backend.set_text_input(request.enabled);
+            self.input.mapper.reset_typed(request.generation);
+            self.input.text_input = request.enabled;
+            self.input.text_epoch = request.generation;
         }
         if let Some(clear) = changes.clear {
             self.presenter.set_clear(clear);

@@ -234,6 +234,151 @@ fn capture_keeps_text_input_off_for_later_on_requests_and_drops_typed_entries() 
 }
 
 #[test]
+fn a_withheld_text_input_request_is_applied_after_capture_releases_its_key() {
+    owned(
+        module_path!(),
+        "a_withheld_text_input_request_is_applied_after_capture_releases_its_key",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let mut rig = Rig::new();
+            rig.writer.capture_key("capture-row");
+            rig.writer.set_text_input(true);
+            with(&mut rig, bindings(&[("close", &["KeyQ"])]));
+            let writer = rig.writer.clone();
+            let quit = Arc::clone(&rig.quit);
+            let notifier = Arc::clone(&rig.notifier);
+            rig.backend.hook = Some(Box::new(move |call| {
+                if call.index == 2 {
+                    // The capture has taken Q in this same pump; the latest request waits for Q's release.
+                    writer.set_text_input(true);
+                    writer.cancel_key_capture();
+                }
+                if call.index == 6 {
+                    quit.store(true, Ordering::SeqCst);
+                    notifier.wake();
+                }
+            }));
+            rig.backend.script.extend([
+                Vec::new(),
+                vec![down(Key::KeyQ)],
+                vec![repeat(Key::KeyQ), NativeEvent::Typed(TypedEntry::Char('q'))],
+                vec![up(Key::KeyQ), NativeEvent::Typed(TypedEntry::Char('x'))],
+                vec![NativeEvent::Typed(TypedEntry::Char('y'))],
+            ]);
+            let updates =
+                UpdateSettings::new(60, Duration::from_millis(100)).expect("valid update settings");
+            updates.control().set(true);
+            rig.settings = LoopSettings::default().with_updates(updates);
+            rig.backend.deadline_supported = true;
+            let clock = InputClock::new();
+            let advance = clock.clone();
+            rig.backend.deadline_hook = Some(Box::new(move |deadline| advance.set(deadline)));
+            lock(&rig.presenter.reports).push_back(PresenterReport::FirstFrameQueued);
+
+            let ran = rig.run_collect_with_clock(&clock);
+            assert_eq!(ran.end, LoopEnd::Quit);
+            assert!(
+                ran.posts
+                    .iter()
+                    .all(|post| !matches!(post, ck_window::UiEvent::CloseRequested { .. })),
+                "captured Q repeats do not trigger the close action: {:?}",
+                ran.posts
+            );
+            assert_eq!(
+                ran.ticks
+                    .iter()
+                    .flat_map(|tick| tick.input.typed.clone())
+                    .collect::<Vec<_>>(),
+                [TypedEntry::Char('y')],
+                "capture input and text before reactivation are dropped; later text is delivered: {:?}",
+                ran.log
+            );
+            let enabled: Vec<_> = ran
+                .log
+                .iter()
+                .filter(|line| *line == "backend.set_text_input true")
+                .collect();
+            assert_eq!(
+                enabled.len(),
+                1,
+                "only the latest withheld on request is applied"
+            );
+            assert_eq!(
+                ran.ticks.last().expect("input tick").input.typed_epoch,
+                2,
+                "the latest withheld request's generation is applied"
+            );
+        },
+    );
+}
+
+#[test]
+fn an_off_request_during_capture_clears_the_withheld_text_input_request() {
+    owned(
+        module_path!(),
+        "an_off_request_during_capture_clears_the_withheld_text_input_request",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let mut rig = Rig::new();
+            rig.writer.capture_key("capture-row");
+            rig.writer.set_text_input(true);
+            let writer = rig.writer.clone();
+            let quit = Arc::clone(&rig.quit);
+            let notifier = Arc::clone(&rig.notifier);
+            rig.backend.hook = Some(Box::new(move |call| {
+                if call.index == 1 {
+                    writer.set_text_input(true);
+                }
+                if call.index == 2 {
+                    writer.set_text_input(false);
+                }
+                if call.index == 5 {
+                    quit.store(true, Ordering::SeqCst);
+                    notifier.wake();
+                }
+            }));
+            rig.backend.script.extend([
+                Vec::new(),
+                vec![down(Key::KeyQ)],
+                vec![repeat(Key::KeyQ), NativeEvent::Typed(TypedEntry::Char('q'))],
+                vec![up(Key::KeyQ), NativeEvent::Typed(TypedEntry::Char('x'))],
+                vec![NativeEvent::Typed(TypedEntry::Char('y'))],
+            ]);
+            let updates =
+                UpdateSettings::new(60, Duration::from_millis(100)).expect("valid update settings");
+            updates.control().set(true);
+            rig.settings = LoopSettings::default().with_updates(updates);
+            rig.backend.deadline_supported = true;
+            let clock = InputClock::new();
+            let advance = clock.clone();
+            rig.backend.deadline_hook = Some(Box::new(move |deadline| advance.set(deadline)));
+            lock(&rig.presenter.reports).push_back(PresenterReport::FirstFrameQueued);
+
+            let ran = rig.run_collect_with_clock(&clock);
+            assert_eq!(ran.end, LoopEnd::Quit);
+            assert!(
+                ran.ticks.iter().all(|tick| tick.input.typed.is_empty()),
+                "the off request supersedes the withheld on request"
+            );
+            assert!(
+                !ran.log
+                    .iter()
+                    .any(|line| line == "backend.set_text_input true"),
+                "text input stays off after the off request: {:?}",
+                ran.log
+            );
+            assert_eq!(
+                ran.ticks.last().expect("input tick").input.typed_epoch,
+                3,
+                "the off request's generation is applied"
+            );
+        },
+    );
+}
+
+#[test]
 fn a_capture_cancel_request_and_a_zero_size_each_release_escape_for_the_close_action() {
     owned(
         module_path!(),

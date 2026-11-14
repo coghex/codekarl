@@ -2079,6 +2079,8 @@ mark_settings()
 expect(require("lib.settings_window").current() == nil)
 eq(fixture.capture, nil, "the X cancels the mapper capture")
 eq(fixture.calls[#fixture.calls][1], "cancel_capture")
+local typing = require("lib.typing")
+eq(typing.start({on_typed=function() end}), true, "closing settings releases the typing guard")
 "#,
     ]);
     rig.opened();
@@ -2089,6 +2091,32 @@ eq(fixture.calls[#fixture.calls][1], "cancel_capture")
     click_marked(&mut rig, "settings_slot_time_pause_2");
     rig.opened();
     click_marked(&mut rig, "settings_close");
+    rig.opened();
+}
+
+#[test]
+fn changing_tabs_cancels_the_typing_capture_guard() {
+    let mut rig = settings_rig(&[
+        r"mark_settings()",
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+local typing = require("lib.typing")
+local slot = s.controls.key_slots.time_pause[1]
+slot:on_event({kind="up", inside=true}, true)
+expect(s.waiting ~= nil)
+local widget = {on_typed=function() end}
+eq(typing.start(widget), false, "an armed capture holds the typing guard")
+s:show("map")
+expect(s.waiting == nil)
+eq(fixture.capture, nil, "tab change cancels the host capture")
+eq(typing.start(widget), true, "cancelling the capture releases the typing guard")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
     rig.opened();
 }
 

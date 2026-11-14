@@ -1500,10 +1500,18 @@ impl Mapper {
     }
 
     fn cancel_capture_with(&mut self, reason: CaptureCancelReason) {
-        if let Some(capture) = self.capture.take()
-            && !capture.completed
-        {
-            self.finish_capture(capture.id, CaptureOutcome::Cancelled(reason));
+        let Some(mut capture) = self.capture.take() else {
+            return;
+        };
+        if !capture.completed {
+            self.finish_capture(capture.id.clone(), CaptureOutcome::Cancelled(reason));
+            capture.completed = true;
+        }
+        // A requested cancellation ends the request, not the physical key's ownership. Keep
+        // draining a key captured by this request (or inherited when it was armed) until its
+        // release. Focus loss is different: it already lifts held-key ownership in the mapper.
+        if reason == CaptureCancelReason::Requested && capture.owned_key.is_some() {
+            self.capture = Some(capture);
         }
     }
 

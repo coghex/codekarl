@@ -66,6 +66,16 @@ pointer.register("capture", {
   on_hover = function() end,
   on_overflow = function() end,
 }, w)
+render.set_hit("cancel_capture", {{x = 220, y = 0, width = 40, height = 40}}, w.content)
+pointer.register("cancel_capture", {
+  on_event = function(_, event)
+    if event.kind == "down" then
+      typing.cancel_capture(function() window.record("cancel_capture") end)
+    end
+  end,
+  on_hover = function() end,
+  on_overflow = function() end,
+}, w)
 frame.on_update(function(f)
   typing.dispatch(f)
   if f.capture ~= nil then window.record("capture_result " .. f.capture.id) end
@@ -98,6 +108,7 @@ fn field_point(key: &str) -> (f64, f64) {
         "field_a" => 0.0,
         "field_b" => 60.0,
         "capture" => 180.0,
+        "cancel_capture" => 220.0,
         _ => 120.0,
     };
     (106.0 + x + 20.0, 86.0 + 20.0)
@@ -549,5 +560,29 @@ fn capture_without_an_editor_still_blocks_a_new_typing_session_until_its_result(
             .iter()
             .any(|line| line == "A char:q" || line == "B char:q"),
         "no editor can receive a character while capture waits: {typed:?}"
+    );
+}
+
+#[test]
+fn cancelling_capture_releases_the_guard_so_a_text_widget_can_edit() {
+    let mut rig = rig();
+    update(&mut rig, &[], &press("capture"));
+    let before_cancel = notes(&rig).len();
+    update(&mut rig, &[], &press("cancel_capture"));
+    update(&mut rig, &[], &press("field_b"));
+    rig.mapper.reset_typed(1);
+    update(&mut rig, &chars("z"), &[]);
+    let after_cancel = since(&rig, before_cancel);
+    assert!(
+        after_cancel.contains(&"cancel_capture".to_owned()),
+        "{after_cancel:?}"
+    );
+    assert!(
+        after_cancel.contains(&"B char:z".to_owned()),
+        "guard was released: {after_cancel:?}"
+    );
+    assert!(
+        after_cancel.iter().any(|line| line.ends_with("editing=B")),
+        "the text widget starts editing after cancellation: {after_cancel:?}"
     );
 }
