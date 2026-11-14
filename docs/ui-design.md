@@ -186,8 +186,8 @@
 >   2026-11-14; §3.15): Escape with nothing left to close now opens a menu, and no longer ends the game. The owner: "ok pause menu
 >   with buttons for resume, settings, glossary, save/load, and quit to desktop".
 >   - **The menu** is a window titled "Menu" in the middle of the screen, over a backdrop that dims everything behind it by
->     half. It has five buttons: "return", "settings", "glossary", "save / load" and "quit to desktop". The middle three are
->     greyed and do nothing until their screens are built.
+>     half. It has five buttons: "return", "settings", "glossary", "save / load" and "quit to desktop". "glossary" and
+>     "save / load" are greyed and do nothing until their screens are built. "settings" was greyed too until CK-301 (below).
 >   - **It pauses and blocks:** opening it pauses the game. While it is open the pointer reaches nothing behind it, and the
 >     game's own keys (time, quicksave and quickload, the map's keys) do nothing.
 >   - **"return" and Escape** close it and leave the game paused. The owner: "return should return us to the game, but leave it
@@ -208,13 +208,28 @@
 >   the boxes ticked at the start. With none given a bar still starts with nothing ticked, as the five shipped lists do.
 > - **The settings file** (CK-298, 2026-11-14; `owner-direction-settings-designer-r1.md`; §3.17): the player's settings are kept
 >   in `settings.toml`, which overrides the configuration file. The UI VM's `settings` table can set and reset the three tooltip
->   settings and the three map settings; a change acts at once and is written. No window uses those calls yet.
+>   settings and the three map settings; a change acts at once and is written. Since CK-301 the settings window uses
+>   those calls.
 > - **Named saves and unsaved changes, for scripts** (CK-302 and CK-311, 2026-11-14; `owner-direction-save-load-designer-r1.md`
 >   and `-r2.md`; §3.6): the game API lists, writes, loads and deletes named saves, and the game knows whether it has unsaved
 >   changes. The location panel's look buttons and the map-mode buttons now tell it of a change. The save/load screen is not
 >   built yet (`docs/places-time-design.md` §5.3).
 > - **Exact modifiers** (CK-315, 2026-11-14; `owner-direction-game-menu-manager-r9.md` and `-r10.md`): a key binding fires only
 >   with exactly its modifiers, so Escape with Shift held closes nothing and opens no menu (`docs/scene-design.md` §10.1).
+> - **The settings window** (CK-301, 2026-11-14; `owner-direction-settings-designer-r1.md` to `-r4.md` and
+>   `owner-direction-settings-manager-r7.md`; §3.18): the pause menu's "settings" button now opens a window titled "Settings",
+>   above the menu. The owner: "i think i want a tabbed window".
+>   - **Three tabs** in a column down its left side: general (the three tooltip settings), map (the three map settings) and
+>     input (the keys in force, read-only). A slider or a choice acts at once and is written to the settings file (§3.17), and
+>     "defaults" resets the tab that shows.
+>   - **Its "x" or Escape** closes it and leaves the menu open and the game paused.
+>   - **For scripts:** `button.flow` lays out a row of buttons that wraps, and a window made with `modal = true` is above the
+>     menu's backdrop. Every other window now stays under the backdrop while the menu is open.
+>   - **2026-11-14, a fault in the code:** the general tab draws no "show delay" label beside its first slider (§3.18).
+> - **Typed text, for scripts** (CK-314, 2026-11-14; `owner-direction-settings-designer-r3.md`; §3.19): a widget can now be
+>   typed into. `window.set_text_input(on)` turns typing on, each update then carries the characters and edit commands typed,
+>   and `scripts/ui/lib/typing.lua` gives them to the one widget that is editing. Only the Cocoa window gives typed text. No
+>   shipped widget uses it yet.
 
 ## Owner answers (2026-11-07)
 
@@ -346,6 +361,8 @@ From `.pipeline/coordination/m8-design/owner-answers-r1.md`. **No question is op
     there is still no text input. Both window backends report them: Cocoa (`rightMouseDown:`, `otherMouseDown:` for button 2 and
     their releases; a drag with either held still moves the pointer; a right click opens no context menu) and GLFW (buttons 1 and 2).
     §3.5 says where they go.
+  - **Since CK-314** there is text input: what the player types reaches the UI as typed entries, a list apart from the key
+    actions and the pointer's events (§3.19).
 - **One snapshot goes to three consumers** (`ui_link.rs`, `CodekarlUi::post`):
   1. the UI VM gets `frame_update` (asynchronously, on its thread);
   2. once the post is accepted, the **map controller** is updated synchronously on the main thread with the same snapshot;
@@ -615,10 +632,14 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
       - a region scrolled outside its clip by then is not hit;
       - a `Down` over such a spot goes to the next region down, or to the map if there is none;
       - for an existing capture, a hidden or removed owner region is a `cancel` (above).
+- **Typed text** (CK-314) is three more fields of `frame_update`: `typed`, `typed_lost` and `typed_epoch`. The entries wait in
+  the same stash as the pointer's events, and the library handles an update's typing before its pointer events (§3.19).
 - **Keys** stay global, as now: actions from `[input.bindings]`.
   - A focused window does not take keys from the map or the time controls in M8. Text entry would need that, and it is out of scope.
     - **Since CK-297 the pause menu is the one exception:** while it is open, the game's sixteen key actions reach neither the
       map nor the simulation. Every other action, `close` included, still arrives (§3.15).
+    - **Since CK-314 typed text has a route of its own** (§3.19). It takes no key from anyone: a key typed into a widget is
+      still recorded as a key, and its action still fires.
   - The one change is **Escape**, the `close` action (Firm, owner Q2): with a window open it closes the top window; with none open it
     requests the app's close as today.
     - **This needs no engine change.** The `close` press already reaches Lua as `close_request` with source `"key"`, and a callback
@@ -633,6 +654,8 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
       (`lib/menu.lua`). For Escape it calls `window.close_request`, and when that has nothing left to close it opens the pause
       menu and declines. So the order is: a tooltip, the picker, the top window, the pause menu, and Escape never ends the run.
       The close button still always quits (§3.15).
+    - **Since CK-301, while the pause menu is open,** "the top window" is the top one of the windows above the menu's
+      backdrop: the settings window when it is open, else the menu. Escape never closes a window under the backdrop (§3.18).
 
 ### 3.6 From the UI to the game (Proposal)
 
@@ -680,6 +703,8 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
     before the request counts.
   - `game.load_save(filename)` is the load for a player who was asked and said yes: it never asks.
   - No shipped script calls it yet: it is for the save/load screen.
+- **`window.set_text_input(on)`** (CK-314) is not a game call. It asks the window's main thread to turn typed text on or off,
+  through the window's request slot, and never waits (§3.19).
 - **No other command path in M8.** Game commands from windows, such as building or trade, come with the systems in M9.
 
 ### 3.7 The look in the map's style (Proposal; the look itself pending the owner's description)
@@ -899,9 +924,11 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
   - the latest pointer position, `held` and `over`;
   - per action, the latest `held`, with `pressed` and `released` OR-ed since the last accepted delivery;
   - transitions, ordered, at most 256 (`ck-input`'s `TRANSITION_CAPACITY`); when full the oldest is dropped and `overflow` is set;
-  - `reset`, OR-ed.
+  - `reset`, OR-ed;
+  - **since CK-314,** typed entries, ordered, at most 256 (`ck-input`'s `TYPED_CAPACITY`). When full the later ones are
+    dropped and `typed_lost` is set. A tick with a newer `typed_epoch` discards the entries gathered before it (§3.19).
 
-  Its size is bounded by the action count (at most 64) plus 256 plus 64.
+  Its size is bounded by the action count (at most 64) plus 256 plus 64, and since CK-314 256 typed entries.
 - **Delivery to the UI:**
   - `post(Update)` builds the `frame_update` table (`ui_link.rs`, `update_table`) **from the stash**.
   - The stash is cleared only when the VM accepted the post. A refused post leaves the stash for the next one.
@@ -1707,7 +1734,7 @@ Lengths below are in UI pixels.
   - It is `fixed`, so it has no close button, and it is not draggable. Its title bar has no action. The owner chose no close
     button ("No x") and "Centred, fixed".
   - It is centred in the view when it opens, and `menu.relayout()` centres it again when the view's size changes. `main.lua`
-    calls that after its other relayouts.
+    calls that after its other relayouts. Since CK-301 it centres an open settings window again too (§3.18).
   - **At most one.** `menu.open` on an open menu only raises it and returns the same window. It pauses nothing again.
 - **The five buttons** are a column that is the window's whole content, in this order: "return", "settings", "glossary",
   "save / load", "quit to desktop".
@@ -1715,14 +1742,16 @@ Lengths below are in UI pixels.
     15 tall, with its text centred.
   - There are 3 pixels between two buttons, and 9 above "quit to desktop".
   - "save / load" is one button, the owner's choice over two.
-- **The three greyed buttons.** "settings", "glossary" and "save / load" are inactive buttons (below) until their screens are
-  built, which are later steps. Their text is in `dim` and their outline in `track`. They have no hover or pressed look, and a
-  press on one does nothing. The owner chose greyed buttons over hidden ones, and this look ("G1: dark outline") over a red
-  outline.
+- **The two greyed buttons.** "glossary" and "save / load" are inactive buttons (below) until their screens are built, which
+  are later steps. Their text is in `dim` and their outline in `track`. They have no hover or pressed look, and a press on one
+  does nothing. The owner chose greyed buttons over hidden ones, and this look ("G1: dark outline") over a red outline.
+  - **"settings" was the third** until CK-301. It now opens the settings window, or raises it when it is open (§3.18).
 - **The backdrop** dims everything behind the menu and takes the pointer.
   - It is one quad of the theme's white texture over the whole view, tinted with the colour `body` at alpha one half.
   - It is in a group of its own, made when the menu opens and before the menu's window. So it is above every bar and window
     that existed then, and below the menu. The tooltip overlay stays above both (§3.13).
+    - **Since CK-301 the window library keeps it there.** The menu names the group to it (`window.set_modal_backdrop`), and a
+      window made or raised while the menu is open, other than one the menu opens, is put under the backdrop (§3.18).
   - **It is a hit region** over the whole view, under a key from `ui.key("menu_backdrop")`. Its widget takes every press, drag,
     scroll and hover and does nothing with them. So none of them reaches the map, a bar or a window behind it, and the map's
     hover is suppressed as it is over any hit region (§3.5).
@@ -1750,9 +1779,11 @@ Lengths below are in UI pixels.
     focus loss does (§3.5): a map drag ends and a pressed widget gets `cancel`. The rest of that press reaches nobody. This
     happens at every opening, not only the first of a run.
 - **"return" and Escape close it, and the game stays paused.**
-  - "return" closes the menu's window. Escape with the menu open closes it too, as the top window.
+  - "return" closes the menu's window. Escape with the menu open closes it too, as the top window. Since CK-301 an open
+    settings window is above it, and Escape closes that one first (§3.18).
   - Either way the window's `on_close` takes the backdrop away (its quad, its group and its hit region) and turns the key block
-    off. It sends no control, so the game is paused afterwards, whether or not it was running before the menu opened.
+    off. It sends no control, so the game is paused afterwards, whether or not it was running before the menu opened. Since
+    CK-301 it first closes the settings window, when that is open.
   - Space or the time bar's play button resumes it, as before.
   - A second Escape, with nothing open, opens the menu again.
   - The owner: "resume should be replaced by return, and return should return us to the game, but leave it paused, whenever we
@@ -1774,13 +1805,13 @@ Lengths below are in UI pixels.
     - **It is not functional** (`button:functional()`, §3.13) while inactive, so a press on it closes the open tooltips as a
       press on a panel's body does.
   - A button made without these options is sized and behaves as before.
-- **Not there:** the main menu and the loading screen; what "settings", "glossary" and "save / load" open; a confirmation
+- **Not there:** the main menu and the loading screen; what "glossary" and "save / load" open; a confirmation
   before quitting; a menu button on the screen; key rebinding.
 - **Tests,** none with a window or the GPU:
   - `apps/codekarl/src/ui_link/menu_tests.rs` runs the shipped `lib/menu.lua`, `lib/window.lua` and `lib/button.lua` in a UI
-    VM over the real `render` API and the real input path. Its ten tests cover the Escape order, the window and its buttons,
-    one menu at most, the resize, the backdrop, the pause-only control, "return" and Escape, quitting, the greyed buttons and
-    the two button options.
+    VM over the real `render` API and the real input path. Ten of its tests cover the Escape order, the window and its
+    buttons, one menu at most, the resize, the backdrop, the pause-only control, "return" and Escape, quitting, the greyed
+    buttons and the two button options. Since CK-301 it has eleven more, for the settings window (§3.18).
   - `ui_link/input_tick_tests.rs` has the key block at the tick: each of the sixteen actions stopped at the map and the
     simulation with the rest left alone, a held map key, a press in the tick before, and a captured drag ended at a first
     and at a second opening.
@@ -1846,8 +1877,8 @@ Lengths below are in UI pixels.
 
 The player's settings are kept in `settings.toml`, a file apart from the configuration file. The owner chose "Own settings
 file" and "At once" (`owner-direction-settings-designer-r1.md` in `.pipeline/coordination/ui-polish-design/`): a change acts
-straight away and is kept. This is the first slice of the settings window (UI polish item 3). The window itself is not built
-yet, so nothing in the shipped UI sets or resets a setting, and the menu's "settings" button is still greyed (§3.15).
+straight away and is kept. This is the first slice of the settings window (UI polish item 3). The window itself came with
+CK-301 (§3.18): its general and map tabs are what sets and resets a setting in the shipped UI.
 
 - **Where:** in the parent directory of the saves directory (`[game] saves`). For `config/game.toml` that is the top of the
   copy, beside `saves/`; with no `[game]` table it is beside the configuration file. A run with no `--config` has no settings
@@ -1871,12 +1902,245 @@ yet, so nothing in the shipped UI sets or resets a setting, and the menu's "sett
   - `settings.reset("tooltips")` and `settings.reset("map")` remove that tab's keys from the file and put back the
     configuration's values, or the defaults.
   - `settings.bindings()` returns the key bindings in force: an array of `{name, bindings}`, each binding a string of the
-    `[input.bindings]` grammar such as `"Control+KeyP"`. Nothing sets a binding.
+    `[input.bindings]` grammar such as `"Control+KeyP"`. Nothing sets a binding. The settings window's input tab shows
+    them (§3.18).
 - **A change acts at once.** The running map controller takes a new map value straight away. The tooltip module reads the
   tooltip values again when a new target comes under the pointer (§3.13).
 - **And it is written at once.** Every accepted set and every reset writes the whole file through a temporary file and a
   rename, as a save is written. The file then holds exactly the overrides in force. A write that fails gives one `warn` record
   in `config`, and the change still holds for the run.
+
+### 3.18 The settings window (accepted, CK-301)
+
+The pause menu's "settings" button opens the **settings window**: a tabbed window above the menu, where a change acts at once
+and is written to the settings file (§3.17). It is the second slice of the settings (UI polish item 3). The owner: "i think i
+want a tabbed window".
+
+- **The records** are `owner-direction-settings-designer-r1.md` to `-r4.md` and `owner-direction-settings-manager-r7.md` in
+  `.pipeline/coordination/ui-polish-design/`.
+  - The owner chose the look "S3: side column" and named the tabs: "i was thinking the tabs would be categories, general,
+    graphics, gameplay, input".
+  - The owner chose "At once", "Hidden for now" for the gameplay tab, "Show keys now, rebind later", "Over the menu, x + Esc"
+    and the order "general, graphics, gameplay, map, input".
+  - For a row of buttons wider than its room the owner chose "Wrap, no justify".
+  - On a slider's fill, the owner: "i answered that to the designer, its the cream".
+  - The look is `mockups/settings-r4.html` (the general tab) and `mockups/settings-r2.html` (the map and input tabs) there,
+    and it uses no new art (`settings-provenance-r1.md`). The spec is `runtime-m55/ck301-spec.md` (sha256 `1baf6fd2…`).
+- **One module,** `scripts/ui/lib/settings_window.lua`, is the window, its tab column, its three tabs and the slider.
+  - `settings_window.open(view)` opens it, or raises it when it is open, and returns the window. There is one at most.
+  - `settings_window.close()` closes it, `settings_window.relayout(view)` centres it again, and `settings_window.current()`
+    gives a test its parts.
+  - **Its one caller is the menu** (`lib/menu.lua`): the "settings" button opens it, `menu.relayout()` passes on a change of
+    the view's size, and the menu's `on_close` closes it.
+
+Lengths below are in UI pixels.
+
+- **The window** is a library window of kind `window`, titled "Settings", with the close "x". It is not draggable. It is
+  centred in the view when it opens and again when the view's size changes.
+  - Its content is 168 tall, and 226 wide plus the tab column's width.
+  - It is made with `modal = true` (below), so it is above the menu and the backdrop.
+  - It is larger than the menu and both are centred, so it covers the menu's buttons while it is open.
+- **The tab column** is down the left side: three rows, 13 tall, in the order general, map, input. The window opens on general.
+  - A row is a text button of kind `window`, with its text 3 in and 1 down. Pressing it shows its tab. The chosen row keeps
+    the selected look, filled with the kind's `hot`.
+  - The column is as wide as the widest of the labels general, graphics, map and input, plus 12. "graphics" is counted though
+    it is not listed, so the window keeps its size when a graphics tab is added. A row's fill stops 3 short of the column's
+    right edge.
+  - A 1-pixel line in the kind's `outline` stands at the column's right edge. It stops 6 short of the content's bottom.
+  - A tab's content starts 6 right of the column's right edge and is 220 wide. It is one group attached to the window and
+    clipped to the window's content. It is destroyed and made again whenever a tab is shown.
+  - There is no graphics tab and no gameplay tab.
+- **A tab's rows** have their label at the content's left and their control 84 right of it. Every label is cut to its room on
+  whole characters, with `..`.
+- **The slider** is drawn from the theme's white texture: a track 80 wide and 2 tall in `track`, filled from its left to the
+  knob in `text` (`#ece3cb`, the owner's "the cream"), and a knob 3 wide and 7 tall in `text`. Its value is written beside
+  it, 86 right of the control's left.
+  - **A press on it, or a drag,** sets the value from the pointer's place along the track, snapped to the slider's step and
+    kept inside its range. The release sets it once more and ends the drag. A `cancel` or a pointer overflow (§3.5) ends the
+    drag and sets nothing.
+  - **A new value is set at once** with `settings.set` (§3.17), which also writes the file. A move that snaps to the value in
+    force makes no call. So a drag across the range makes one call, and one write, for each value it snaps to.
+  - **The slider updates itself in place during a drag:** it moves its knob, resizes its fill and rewrites its value's text.
+    The tab is not made again, so the widget that holds the pointer's capture lives through the whole drag.
+  - **Its hit region** is 84 wide and 10 tall: the track's length and 2 more at each end.
+  - **A greyed slider** has its track, fill and knob in `dim`. It takes no press and is not functional (§3.13).
+  - **2026-11-14, the code against the mock-up:** in a row whose top is at y, the code draws the track at y + 9 and the knob
+    from y + 7, with the label and the value at y + 2. The mock-up's script (`make_settings_r1.py`, `slider_row`) draws the
+    track at y + 7 and the knob from y + 4. This was read in the code, not seen on a screen, and reported to ck-manager.
+- **Rows of buttons wrap.** `button.flow{x, y, room, items, selected, kind, group, owner, on_choose}` in `lib/button.lua` is
+  the shared layout. It makes one text button for each item, left to right from `x`, with 3 between two buttons.
+  - A button that would pass `x + room` starts the next line at `x`, 18 lower. The first button of a line never wraps, and a
+    row that fits is one line.
+  - The item equal to `selected` is drawn selected, and a press on a button calls `on_choose(item)`.
+  - It returns the buttons and the height used: 18 for each line, less 3.
+  - The settings window's lock row is its one caller. No row that existed before was changed.
+- **The general tab** has a "tooltips" heading in `dim` and three rows.
+  - **"show delay":** a slider from 0 to 2 s in steps of 0.1 s for `ui.tooltips.delay`, 14 below the heading. Its value reads
+    like `0.3 s`.
+    - **2026-11-14, a fault in the code:** this row's label is not drawn. `show_general` draws the labels "lock" and
+      "lock timer" but none for this slider, so the slider and its value stand under the heading with no name. The map
+      tab's three rows have their labels. Reported to ck-manager.
+  - **"lock":** three choice buttons, "disabled", "middle mouse" and "timer", for the values `disabled`, `middle_mouse` and
+    `timer` of `ui.tooltips.lock`, 20 below the first row. The one in force is drawn selected. Their room is 136 wide and
+    they wrap: "timer" is on the second line. A press sets the value, and the tab is made again when the pointer's dispatch
+    ends.
+  - **"lock timer":** a slider from 0.3 to 3 s in steps of 0.1 s for `ui.tooltips.lock_timer`, 5 below the lock row's last
+    line. Unless the lock is "timer" it is greyed, and its label and value are in `dim` too.
+  - What a change does to the tooltips is in §3.13 and §3.17.
+- **The map tab** has three sliders, 20 apart, each stepping by 1: "pan speed" from 1 to 32 (`map.pan_pixels_per_frame`),
+  "zoom speed" from 1 to 60 (`map.zoom_steps_per_second`) and "scroll step" from 1 to 256 (`map.scroll_points_per_step`).
+  A value reads as its number, and the scroll step's as `24 points`.
+- **"defaults"** is a button at the bottom left of the general and the map tab's content. It calls `settings.reset("tooltips")`
+  or `settings.reset("map")`, which resets that tab's settings only. The tab is then made again, when the pointer's dispatch
+  ends, with the values in force. The input tab has none.
+- **The input tab** lists the keys in force, read-only, from `settings.bindings()` (§3.17): eight rows, 15 apart.
+
+  | Row | Actions |
+  |---|---|
+  | pause | `time_pause` |
+  | speed 1 to 5 | `time_speed_1` to `time_speed_5` |
+  | faster, slower | `time_faster`, `time_slower` |
+  | quicksave | `game_quicksave` |
+  | quickload | `game_quickload` |
+  | move the map | `map_pan_left`, `map_pan_right`, `map_pan_up`, `map_pan_down` |
+  | zoom in, out | `map_zoom_in`, `map_zoom_out` |
+  | close, menu | `close` |
+
+  - **A key reads** as its `[input.bindings]` name, except `Digit0` to `Digit9` (the digit), `BracketLeft` (`[`),
+    `BracketRight` (`]`), `Equal` (`=`) and `Minus` (`-`). A binding with a modifier reads as its whole string.
+  - A row shows every binding of its actions, in the table's order, with two spaces between them. With `map_zoom_in` bound
+    to `Equal` and `Shift+Equal` and `map_zoom_out` to `Minus`, "zoom in, out" reads `=  Shift+Equal  -`. An action with no
+    binding shows nothing.
+  - "move the map" reads `arrows` while each of its four actions has its own arrow key as its one binding.
+  - The keys start 84 right of the label and are cut at the content's right edge, with `..`.
+  - Under the rows, in `dim`: "changing keys comes later".
+- **Stacking: only the windows the menu opens are above its backdrop.** The window library (`lib/window.lua`) now knows the
+  backdrop's group and which windows are modal.
+  - `window.new{…, modal = true}` makes a modal window. The menu's window and the settings window are the two.
+  - `window.set_modal_backdrop(group)` names the backdrop's group and `window.clear_modal_backdrop(group)` forgets it. The
+    menu calls the first when it opens and the second when it closes.
+  - **While a backdrop is named,** the library orders its windows' groups again at every change (a window made, raised or
+    closed, an item attached): the windows that are not modal first, in their own order, then the backdrop, then the modal
+    windows in their own order. The tooltip overlay stays above them all.
+  - **So a window made or raised while the menu is open is under the backdrop** and under its hit region: a press, drag,
+    scroll or hover over it reaches nothing. The location panel answering a click that was still on its way when Escape
+    opened the menu is such a window.
+  - `window.top()`, the window Escape closes, is then the top modal window.
+  - When the menu closes, every window is ordinary again, in the windows' own order.
+  - Only library windows are ordered this way.
+- **Leaving.** The "x", or Escape with no tooltip or picker to close first, closes the settings window.
+  - The menu is as it was: still open, the game still paused, its keys still blocked. Closing the settings window sends no
+    control and makes no `game.set_modal` call.
+  - A further Escape closes the menu.
+  - Closing the menu closes the settings window with it.
+- **Not there:** a graphics tab and a gameplay tab; rebinding a key; a field to type a number into; tooltips on the window's
+  own controls.
+- **Tests,** through the shipped scripts in the UI rig, with no window: eleven tests in
+  `apps/codekarl/src/ui_link/menu_tests.rs`. They cover opening and the window; the general tab's sliders, choices and
+  "defaults"; a slider's drag across several updates, on the general and on the map tab; `button.flow`; the map tab; the input
+  tab; the "x"; closing the menu; and the stacking of a window made late and of an older window raised.
+
+### 3.19 Typed text (accepted, CK-314)
+
+A widget can be typed into. What the player types, by the system's keyboard layout and with Shift, Option and dead keys, cannot
+be had from key codes or from bound actions. So it has a route of its own: **typed entries**, one ordered list in each update.
+It was built for the number field and the save name's text field, which are later steps. No shipped widget edits yet, so in
+the game text input is never turned on.
+
+- **The records.** The owner, in `owner-direction-settings-designer-r3.md` in `.pipeline/coordination/ui-polish-design/`:
+  "here the player can input whatever numbers they want". The spec is `runtime-m55/ck314-spec.md` (sha256 `7acea958…`).
+- **A typed entry** is a character or an edit command.
+  - **A character** is one Unicode scalar value that the system committed for a key. Committed text is made precomposed
+    (normal form C) and split into its scalar values, one entry each. So a dead key and a vowel give the one entry `á`.
+  - **The five edit commands** are backspace, enter, tab, left and right.
+  - **Never an entry:** text still being composed; a control character (U+0000 to U+001F, U+007F to U+009F); the system's
+    private codes for function and arrow keys (U+F700 to U+F8FF); any other command of the system's; Escape.
+  - A held key gives another entry at each repeat the system sends.
+- **On and off: `window.set_text_input(on)`,** on the UI VM's `window` table (`apps/codekarl/src/window_api.rs`).
+  - It takes exactly one boolean; anything else is a Lua error. It writes the window's request slot and never waits. The
+    last call wins.
+  - **It returns the call's generation,** an integer: 1 for the first call of a run, and one more at each call.
+  - Text input is off when a run starts.
+  - **The main thread applies it** when it next reads the slot (`crates/window/src/main_loop.rs`). Applying a call always
+    starts from nothing, on or off: text being composed and the entries not yet given to the UI are discarded.
+  - **Off,** no key is given to the system's text input and there are no typed entries, as before CK-314.
+  - **On or off, every key is still recorded as a physical key.** So the actions, the close request and the pause menu's key
+    block (§3.15) are unchanged, and a key typed into a widget is also whatever it is bound to.
+- **In the update.** `frame_update` has three more fields (`ui_link.rs`, `update_table`):
+  - `typed`: the entries in the order typed. A character is `{kind = "char", text = "á"}`. A command is `{kind = name}`, the
+    name being `"backspace"`, `"enter"`, `"tab"`, `"left"` or `"right"`;
+  - `typed_lost`: `true` when entries were dropped at a bound;
+  - `typed_epoch`: the generation of the latest `window.set_text_input` call the main thread has applied, and 0 before any.
+
+  The entries wait in the link's stash with the rest of the UI's input (§3.12) and are delivered once, by the next accepted
+  update.
+- **The bound is 256 entries,** in three places: the Cocoa window's own store, `ck-input`'s ring between two acknowledged
+  snapshots (`TYPED_CAPACITY`), and the UI's stash while the UI is busy. The first two hold their entries in fixed storage.
+  - At a bound the **later** entries are dropped, the earlier ones keep their order, and `typed_lost` is set. The key
+    transitions and the pointer's events drop their oldest instead.
+  - What is lost is lost: nothing is typed again.
+- **A loss of focus** discards text being composed. The entries already gathered are delivered, and text input stays as it
+  was set.
+- **What the Cocoa window does** (`crates/window-cocoa/native/window.m`). Its content view is the system's text input client
+  (`NSTextInputClient`).
+  - With text input on, `keyDown:` records the key as before and then gives the event to the system's interpretation
+    (`interpretKeyEvents:`), unless Command or Control is held.
+  - Committed text comes back as `insertText:`. The five commands come back as the system's own commands for those keys
+    (`deleteBackward:`, `insertNewline:`, `insertTab:`, `moveLeft:`, `moveRight:`). Any other command is passed over, without
+    a beep.
+  - Text being composed is only remembered as a flag, and is not shown.
+- **`glfw-vulkan` gives no typed entries.** The GLFW backend has no typed route: it keeps the backend interface's default,
+  which does nothing, and reports no typed event. The call still returns its generation and the update's `typed_epoch` still
+  follows it, but a widget there cannot be typed into. The Vulkan path is compile-only (`AGENTS.md`).
+- **The library's typing function: `scripts/ui/lib/typing.lua`.** It is the one reader of the typed list, and one widget edits
+  at a time.
+  - `typing.start(widget)` starts the widget's editing. The widget needs an `on_typed` function, or the call is an error. It
+    takes the typing from a widget that was editing. When none was, it turns text input on. A call for the widget that is
+    already editing changes nothing.
+  - `typing.stop(widget)` ends the widget's editing when it is the one editing, and turns text input off. Another widget's
+    call changes nothing.
+  - So text input is on while a widget edits, and stays on through a change from one widget to another.
+  - `typing.editing()` returns the widget that is editing, or nil.
+  - `typing.dispatch(update)` gives the update's entries to the widget that is editing, in order, as
+    `widget:on_typed(entry)`. If the update's `typed_lost` is set and the widget has an `on_typed_lost` function, that is
+    called after them. With no widget editing the entries are dropped.
+- **Typing before the pointer's events.** `main.lua` calls `typing.dispatch(update)` first of all in its update handler,
+  before `pointer.dispatch`.
+  - A script cannot know the order of a key and a click inside one update: the typed list and the pointer's events are two
+    lists with no common order. So the rule is that an update's typing is handled first, all of it, and then its pointer
+    events.
+  - Typing and then clicking away, the usual order, comes out right even inside one update: the press finds the widget with
+    everything that was typed.
+  - **Disclosed:** the other order inside one update, a click on another widget and then a key, gives that key to the first
+    widget. Across updates the order is the updates' own.
+- **The editing session.** The library keeps a number that changes whenever an editing starts, ends or passes to another
+  widget.
+  - An update's typing belongs to the session that was under way when its dispatch began.
+  - When that session ends part way, for example an Enter that applies a field, the rest of the update's entries and its
+    loss notice reach no one. That holds even when the same widget starts editing again at once, as a Tab handler might.
+- **Which entries count.** The library keeps the generation of its latest `window.set_text_input` call. The typing of an
+  update whose `typed_epoch` is older than that is dropped: it was typed under the earlier setting, or before the main thread
+  turned text input on.
+  - So a stale entry never reaches a widget that started after it was typed.
+  - **Disclosed:** a key pressed between a widget's start and the main thread turning text input on is not typed.
+- **Nothing of the typing is a bound action.** No action exists for a digit, a letter or an editing key: a game's bindings
+  are the 22 they were. Escape gives no entry and stays the `close` action (§3.5).
+- **Not there:** any field that uses this; showing text while it is composed; input methods for other scripts; selecting, copy
+  and paste.
+- **Tests,** none with the GPU:
+  - `crates/input/src/tests.rs` has the ring: the order, the 257th entry dropped and the loss kept until its snapshot is
+    acknowledged, and the reset with its epoch.
+  - `crates/window/tests/window/update.rs` and `slot.rs` run the loop with a fake backend: the order in one update and across
+    two, text input off, a key's action unchanged with it on, turning it off and on, a loss of focus, and the slot's
+    generations.
+  - `apps/codekarl/src/input_stash.rs`, `ui_link.rs` and `window_api.rs` have the stash's bound and epoch, the update's three
+    fields and the call. `config.rs` has the 22 bindings.
+  - `apps/codekarl/src/ui_link/typing_tests.rs` runs the shipped `lib/typing.lua` in the UI rig with small widgets of its own:
+    eleven tests, for the order, text input on and off, stale entries, the rule with the pointer in one update and in two,
+    and the sessions.
+  - `crates/window-cocoa/tests/typed/mod.rs` has six cases with a real window, in the group `native.window`: a key-down with
+    characters, the five commands, a repeat, composition, Escape and a Command chord, and text input off. They post marked
+    key-downs and ignore the owner's input like the rest of that group (`docs/scene-design.md` §10.3).
 
 ## 4. Packages and ownership
 

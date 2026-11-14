@@ -88,8 +88,13 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   the mouse reaches nothing behind it, and the time, quicksave, quickload and map keys do nothing. "return", or Escape again,
   closes the menu and leaves the game paused: Space or the time bar's play button resumes it. "quit to desktop" ends the game at
   once without asking, and so does the window's own close button. Neither saves, and F5 does nothing while the menu is open, so
-  quicksave before you open it. "settings", "glossary" and "save / load" are greyed until those screens are built
-  ([docs/ui-design.md](docs/ui-design.md) §3.15).
+  quicksave before you open it. "settings" opens the settings window (below). "glossary" and "save / load" are greyed until
+  those screens are built ([docs/ui-design.md](docs/ui-design.md) §3.15).
+- **Settings** (CK-301): the settings window opens above the menu, with three tabs down its left side. "general" has the
+  tooltips' show delay, lock and lock timer; "map" has the pan speed, zoom speed and scroll step; "input" lists the keys in
+  force and cannot change them yet. Drag a slider or press a choice and it acts at once and is kept. "defaults" resets the tab
+  that shows. Its "x", or Escape, closes it and leaves the menu open. The first slider of the general tab, the show delay,
+  has no label yet ([docs/ui-design.md](docs/ui-design.md) §3.18).
 - **The map:** drag to pan and scroll to zoom at the cursor, or use the arrow keys and `=` and `-`. Click a place to show it in the
   location panel (tabs: location, pops and buildings). The two icons at the top right open the ledger, a list on the right of the
   screen with a locations tab and a pops tab; clicking a row shows that place in the panel. The three buttons centred at the bottom of
@@ -106,8 +111,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
 - **The settings file** (CK-298): `settings.toml` holds the player's own settings and overrides the configuration file. It may
   hold `[ui.tooltips]` `delay`, `lock` and `lock_timer`, and `[map]` `pan_pixels_per_frame`, `zoom_steps_per_second` and
   `scroll_points_per_step`, each checked as the configuration checks it. A missing file is normal. An entry that is not accepted
-  is named in a `warn` record and ignored, and the rest applies. The game's settings calls write it, but no settings window
-  exists yet, so today it holds only what is put there by hand ([docs/ui-design.md](docs/ui-design.md) §3.17).
+  is named in a `warn` record and ignored, and the rest applies. The settings window writes it at each change
+  ([docs/ui-design.md](docs/ui-design.md) §3.17).
 - **Lists:** a list longer than its view has a thin scroll bar at its right edge: drag its thumb, or press the track to move one
   view ([docs/ui-design.md](docs/ui-design.md) §3.16).
 - **The window** opens at 1280×800 screen pixels, its minimum. Drag an edge to enlarge it (the game lays itself out again when you
@@ -216,6 +221,10 @@ The VM named `ui` gets a `window` table; no other VM does:
   Lua error); `window.set_clear(r, g, b)` changes the colour; `window.close()` closes it. Since milestone 9, `window.open` also takes
   `unit` (`"points"`, the default, or `"pixels"`), `resizable` and, for a resizable window, `min_width` with `min_height`. It returns
   the size the script lays out in: points for a window opened in points, UI units at the window's UI scale for one opened in pixels.
+- `window.set_text_input(on)` (CK-314) turns typed text on or off and returns a number that grows with each call. While it is
+  on, the table given to `frame.on_update` carries what was typed in `typed`, in order: characters as the keyboard layout
+  gives them, and backspace, enter, tab, left and right. `typed_lost` and `typed_epoch` go with it. Only `native-metal` gives
+  typed text; `glfw-vulkan` gives none. The game's own scripts type nowhere yet ([docs/ui-design.md](docs/ui-design.md) §3.19).
 - `window.on_opened(fn)` runs once the first frame has been queued for presentation; this does not prove it is visible.
   `window.on_close_request(fn)` gets `"key"` (Escape) or `"button"` (the close button) and closes the window when it returns `true`.
   With no callback registered, a close request closes the window.

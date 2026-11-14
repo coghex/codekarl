@@ -249,6 +249,9 @@ waited on:
   - a thousand `set_clear` calls in one callback cost one redraw with the final colour;
   - `open` and `close` are one-shot flags. A second `open` raises an ordinary Lua error in the calling script, at once, since there is one
     window. `close` after `close` changes nothing;
+  - **since CK-314,** text input on or off is one more field (`window.set_text_input(on)`), and the last call wins. Each write
+    has a generation, one more than the write before. So the main thread can tell that a write happened even when a later one
+    put the state back, and applying a request always starts text input from nothing (`docs/ui-design.md` §3.19);
   - the slot's lock is held only to copy a small value in or out. It is never held while Lua runs or a native call is made.
 
   The slot is bounded by its size, so nothing can fill it, and it needs no admission rule.
@@ -363,6 +366,7 @@ backends; that the callback may decline it is ck-guide's reading, kept explicit 
   - `window.on_close_request(fn)`, where `fn(source)` receives `"button"` or `"key"` and returns `true` to accept;
   - `window.on_opened(fn)`;
   - `window.close()`.
+  - *(Since CK-314: `window.set_text_input(on)`, which turns typed text on or off; `docs/ui-design.md` §3.19.)*
   The exact names are for the issue spec.
 - **The close button:** the native window refuses to close by itself. AppKit's `windowShouldClose:` returns `NO`, and GLFW's close flag is
   reset. Instead, the main thread posts `close requested (button)`.
