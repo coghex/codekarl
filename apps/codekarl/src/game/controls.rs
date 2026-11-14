@@ -6,7 +6,7 @@ use std::sync::mpsc::Sender;
 
 use ck_window::{Edge, InputSnapshot};
 
-use super::core::Message;
+use super::core::{Message, SaveCall, SaveReply};
 
 /// The record written (once per update) when the input layer discarded earlier transitions.
 pub(crate) const OVERFLOW_RECORD: &str = "input overflow; earlier time presses were lost";
@@ -144,5 +144,16 @@ impl SimControls {
     /// Sends one control through the same channel used by key presses. A control after the simulation owner ended is dropped.
     pub(crate) fn send_control(&self, control: Control) {
         let _ = self.sender.send(Message::Control(control));
+    }
+
+    /// Runs a named-save operation on the simulation owner and waits for its completed result.
+    pub(crate) fn save_call(&self, call: SaveCall) -> Result<SaveReply, String> {
+        let (reply, result) = std::sync::mpsc::channel();
+        self.sender
+            .send(Message::Save(call, reply))
+            .map_err(|_| "the game is no longer running".to_owned())?;
+        result
+            .recv()
+            .map_err(|_| "the game ended before the save operation finished".to_owned())
     }
 }

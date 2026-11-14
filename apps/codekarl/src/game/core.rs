@@ -4,14 +4,18 @@
 //! thread around it (see [`super::owner`]) only waits for the next control or the next tick and reads the time; tests drive
 //! the core with a fake time and never sleep.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, mpsc::Sender},
+    time::Duration,
+};
 
 use ck_log::Level;
 use ck_sim::{Canonical, Clock, Date, Save, Scheduler, Simulation, Speed};
 
 use super::{
     controls::Control,
-    saves::{Identity, quicksave_path, write_atomically},
+    saves::{self, Entry, Fit, Identity, quicksave_path, write_atomically, write_new_atomically},
     slot::{PauseReason, SimSnapshot},
     view::EconomyView,
 };
@@ -21,14 +25,44 @@ use super::{
 pub(crate) const ECONOMY_HOUR: u8 = 12;
 
 /// What reaches the simulation owner over its control channel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum Message {
     /// A control the player asked for.
     Control(Control),
+    /// A named-save API request; the reply carries only the completed operation outcome.
+    Save(SaveCall, Sender<SaveReply>),
     /// Finish the tick that is running, if any, and end.
     Stop,
     /// End without running another tick.
     Cancel,
+}
+
+impl PartialEq for Message {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Control(left), Self::Control(right)) => left == right,
+            (Self::Save(left, _), Self::Save(right, _)) => left == right,
+            (Self::Stop, Self::Stop) | (Self::Cancel, Self::Cancel) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Message {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SaveCall {
+    List,
+    New(String),
+    Over(String),
+    Delete(String),
+    Load(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SaveReply {
+    Listed(Result<Vec<Entry>, String>),
+    Finished(Result<(), String>),
 }
 
 /// Whether the owner goes on.
@@ -226,6 +260,15 @@ where
                     Flow::Continue
                 }
             }
+            Message::Save(call, reply) => {
+                let result = self.save_call(call);
+                let _ = reply.send(result);
+                if self.failed {
+                    Flow::End
+                } else {
+                    Flow::Continue
+                }
+            }
             Message::Stop | Message::Cancel => Flow::End,
         }
     }
@@ -373,6 +416,107 @@ where
             .save(self.identity.meta(self.simulation.seed()))
     }
 
+    fn save_with_name(&self, name: String) -> Result<Vec<u8>, String> {
+        let mut save = self.save();
+        save.meta.name = name;
+        save.meta.written = saves::utc_now_rfc3339();
+        save.to_bytes().map_err(|error| error.to_string())
+    }
+
+    fn save_call(&mut self, call: SaveCall) -> SaveReply {
+        let reply = match call {
+            SaveCall::List => SaveReply::Listed(saves::list(&self.saves, &self.identity)),
+            SaveCall::New(name) => SaveReply::Finished(self.save_as_new(&name)),
+            SaveCall::Over(filename) => SaveReply::Finished(self.save_over(&filename)),
+            SaveCall::Delete(filename) => SaveReply::Finished(self.delete(&filename)),
+            SaveCall::Load(filename) => {
+                let result = self.load_named(&filename);
+                self.publish_if_changed();
+                SaveReply::Finished(result)
+            }
+        };
+        match &reply {
+            SaveReply::Listed(Ok(entries)) => {
+                self.log(Level::Info, format!("listed {} saves", entries.len()));
+            }
+            SaveReply::Listed(Err(reason)) | SaveReply::Finished(Err(reason)) => {
+                self.log(Level::Error, format!("save call refused: {reason}"));
+            }
+            SaveReply::Finished(Ok(())) => {}
+        }
+        reply
+    }
+
+    fn save_as_new(&mut self, untrimmed_name: &str) -> Result<(), String> {
+        let name = saves::valid_name(untrimmed_name)?;
+        let bytes = self.save_with_name(name.clone())?;
+        for _ in 0..128 {
+            let (filename, path) = saves::new_save_path(&self.saves, &name)?;
+            match write_new_atomically(&path, &bytes) {
+                Ok(()) => {
+                    self.log(Level::Info, format!("saved {name} as {filename}"));
+                    return Ok(());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(format!("cannot publish {filename}: {error}")),
+            }
+        }
+        Err("could not reserve a unique save file name".to_owned())
+    }
+
+    fn save_over(&mut self, filename: &str) -> Result<(), String> {
+        let path = saves::regular_save(&self.saves, filename)?;
+        let entry = saves::list(&self.saves, &self.identity)?
+            .into_iter()
+            .find(|entry| entry.filename == filename)
+            .ok_or_else(|| "not a save".to_owned())?;
+        if entry.fit != Fit::Fits {
+            return Err(format!(
+                "save cannot be overwritten: {}",
+                entry.fit.as_str()
+            ));
+        }
+        let bytes = self.save_with_name(entry.name.clone())?;
+        write_atomically(&path, &bytes)
+            .map_err(|error| format!("cannot replace {filename}: {error}"))?;
+        self.log(
+            Level::Info,
+            format!("saved over {} ({})", entry.name, filename),
+        );
+        Ok(())
+    }
+
+    fn delete(&mut self, filename: &str) -> Result<(), String> {
+        let path = saves::regular_save(&self.saves, filename)?;
+        std::fs::remove_file(&path)
+            .map_err(|error| format!("cannot delete {filename}: {error}"))?;
+        self.log(Level::Info, format!("deleted {filename}"));
+        Ok(())
+    }
+
+    fn load_named(&mut self, filename: &str) -> Result<(), String> {
+        let path = saves::regular_save(&self.saves, filename)?;
+        let entry = saves::list(&self.saves, &self.identity)?
+            .into_iter()
+            .find(|entry| entry.filename == filename)
+            .ok_or_else(|| "not a save".to_owned())?;
+        if entry.fit != Fit::Fits {
+            return Err(format!("save cannot be loaded: {}", entry.fit.as_str()));
+        }
+        match self.load_from(&path) {
+            Ok(simulation) => {
+                (self.rebuild.reset)(simulation.seed());
+                self.simulation = simulation;
+                self.clock = Clock::new();
+                self.paused = Some(PauseReason::Load);
+                self.refresh_view();
+                self.log(Level::Info, format!("loaded {} ({filename})", entry.name));
+                Ok(())
+            }
+            Err(message) => Err(message),
+        }
+    }
+
     /// Writes `<saves>/quicksave.cksave` and carries on as it was.
     fn quicksave(&mut self) {
         let path = quicksave_path(&self.saves);
@@ -409,7 +553,10 @@ where
     }
 
     fn load_from(&self, path: &std::path::Path) -> Result<Simulation<S, C>, String> {
-        let bytes = std::fs::read(path)
+        let mut file = saves::open_regular(path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut bytes)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
         let save = Save::<S>::from_bytes(&bytes, &self.identity.expected())
             .map_err(|error| format!("{}: {error}", path.display()))?;

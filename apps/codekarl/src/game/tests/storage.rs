@@ -1,12 +1,40 @@
-use std::{fs, time::Duration};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use ck_log::Level;
 use ck_sim::{Scheduler, Simulation};
 
 use super::{Harness, after, identity, start};
+use crate::game::core::{SaveCall, SaveReply};
 use crate::game::{controls::Control, saves::QUICKSAVE, slot::PauseReason};
 
 const SECOND: Duration = Duration::from_secs(1);
+
+struct ReadOnlyDirectory {
+    path: PathBuf,
+    original: fs::Permissions,
+}
+
+impl ReadOnlyDirectory {
+    fn new(path: &Path) -> Self {
+        let original = fs::metadata(path).unwrap().permissions();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o555)).unwrap();
+        Self {
+            path: path.to_owned(),
+            original,
+        }
+    }
+}
+
+impl Drop for ReadOnlyDirectory {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(&self.path, self.original.clone());
+    }
+}
 
 fn day_37() -> ck_sim::GameTime {
     after(37, 0)
@@ -22,6 +50,14 @@ fn quicksave_then_quickload_continues_to_the_uninterrupted_digest() {
     harness.control(Control::Quicksave);
     let path = harness.saves.join(QUICKSAVE);
     assert!(path.is_file());
+    let quicksave = ck_sim::Save::<super::World>::from_bytes(
+        &fs::read(&path).unwrap(),
+        &identity("aa").expected(),
+    )
+    .expect("F5 writes the current format");
+    assert_eq!(quicksave.meta.name, "quicksave");
+    assert_eq!(quicksave.meta.written.len(), 20);
+    assert_eq!(quicksave.digest().unwrap(), saved_digest);
     assert_eq!(
         harness.texts(Level::Info).last().unwrap(),
         &format!("saved {} at 0768-02-07 00:00", path.display())
@@ -224,4 +260,395 @@ fn a_quickload_that_leaves_the_hour_unchanged_still_wakes_the_main_thread() {
     assert_eq!(harness.core.snapshot().date, date);
     assert_eq!(harness.paused(), Some(PauseReason::Load));
     assert_eq!(harness.wake_count(), wakes + 1);
+}
+
+#[test]
+fn named_save_calls_list_write_overwrite_load_and_delete_complete_results() {
+    let mut harness = Harness::new(42);
+    harness.run_until(1, &[1000], day_37());
+    let digest = harness.digest();
+
+    assert_eq!(
+        harness.save_call(SaveCall::List),
+        SaveReply::Listed(Ok(Vec::new()))
+    );
+    assert_eq!(
+        harness.save_call(SaveCall::New("  My & Save  ".to_owned())),
+        SaveReply::Finished(Ok(()))
+    );
+    assert_eq!(harness.digest(), digest, "a save does not change the game");
+    let filename = "my-save.cksave";
+    let path = harness.saves.join(filename);
+    let bytes = fs::read(&path).expect("the named save was published");
+    let saved = ck_sim::Save::<super::World>::from_bytes(&bytes, &identity("aa").expected())
+        .expect("the written save loads");
+    assert_eq!(saved.meta.name, "My & Save");
+    assert_eq!(saved.meta.written.len(), 20);
+    assert!(saved.meta.written.ends_with('Z'));
+    assert_eq!(saved.digest().unwrap(), digest);
+
+    let SaveReply::Listed(Ok(entries)) = harness.save_call(SaveCall::List) else {
+        panic!("listing returns completed entries");
+    };
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].filename, filename);
+    assert_eq!(entries[0].name, "My & Save");
+    assert_eq!(
+        entries[0].written.as_deref(),
+        Some(saved.meta.written.as_str())
+    );
+    assert_eq!(entries[0].date.as_deref(), Some("7 Feb 768"));
+    assert_eq!(entries[0].this_build, Some(true));
+    assert_eq!(entries[0].fit.as_str(), "fits");
+
+    harness.run_until(1, &[1000], after(80, 0));
+    assert_ne!(harness.digest(), digest);
+    assert_eq!(
+        harness.save_call(SaveCall::Load(filename.to_owned())),
+        SaveReply::Finished(Ok(()))
+    );
+    assert_eq!(harness.digest(), digest);
+    assert_eq!(harness.paused(), Some(PauseReason::Load));
+
+    assert_eq!(
+        harness.save_call(SaveCall::Over(filename.to_owned())),
+        SaveReply::Finished(Ok(()))
+    );
+    let after_overwrite = fs::read(&path).unwrap();
+    let overwritten =
+        ck_sim::Save::<super::World>::from_bytes(&after_overwrite, &identity("aa").expected())
+            .unwrap();
+    assert_eq!(
+        overwritten.meta.name, "My & Save",
+        "save-over keeps the name"
+    );
+    assert_eq!(overwritten.digest().unwrap(), digest);
+
+    assert_eq!(
+        harness.save_call(SaveCall::Delete(filename.to_owned())),
+        SaveReply::Finished(Ok(()))
+    );
+    assert!(!path.exists());
+    assert_eq!(
+        harness.save_call(SaveCall::List),
+        SaveReply::Listed(Ok(Vec::new()))
+    );
+}
+
+#[test]
+fn failed_named_save_over_new_save_and_delete_leave_the_directory_unchanged() {
+    let mut harness = Harness::new(42);
+    harness.run_until(1, &[1000], day_37());
+    assert_eq!(
+        harness.save_call(SaveCall::New("Existing".to_owned())),
+        SaveReply::Finished(Ok(()))
+    );
+    let existing = harness.saves.join("existing.cksave");
+    let original = fs::read(&existing).unwrap();
+    let readonly = ReadOnlyDirectory::new(&harness.saves);
+
+    for call in [
+        SaveCall::Over("existing.cksave".to_owned()),
+        SaveCall::New("Cannot publish".to_owned()),
+        SaveCall::Delete("existing.cksave".to_owned()),
+    ] {
+        let SaveReply::Finished(Err(reason)) = harness.save_call(call) else {
+            panic!("the operation fails while the saves directory is read-only");
+        };
+        assert!(!reason.is_empty());
+    }
+
+    assert_eq!(fs::read(&existing).unwrap(), original);
+    let mut names: Vec<_> = fs::read_dir(&harness.saves)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert_eq!(names, [std::ffi::OsString::from("existing.cksave")]);
+    drop(readonly);
+    assert_ne!(
+        fs::metadata(&harness.saves).unwrap().permissions().mode() & 0o222,
+        0
+    );
+}
+
+#[test]
+fn invalid_new_save_names_are_refused_before_a_file_is_written() {
+    let mut harness = Harness::new(42);
+    let long = "x".repeat(49);
+    for name in [" ", "line\nbreak", long.as_str()] {
+        assert!(matches!(
+            harness.save_call(SaveCall::New(name.to_owned())),
+            SaveReply::Finished(Err(_))
+        ));
+    }
+    assert!(!harness.saves.exists());
+}
+
+#[test]
+fn a_fitting_header_with_a_damaged_body_is_listed_but_its_load_keeps_the_game_unchanged() {
+    let mut harness = Harness::new(42);
+    harness.run_until(1, &[1000], day_37());
+    harness.save_call(SaveCall::New("Body damage".to_owned()));
+    let path = harness.saves.join("body-damage.cksave");
+    let mut bytes = fs::read(&path).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    fs::write(&path, bytes).unwrap();
+
+    let SaveReply::Listed(Ok(entries)) = harness.save_call(SaveCall::List) else {
+        panic!("the header-only listing succeeds");
+    };
+    assert_eq!(entries[0].fit.as_str(), "fits");
+    let before = (harness.digest(), harness.core.snapshot(), harness.paused());
+    let SaveReply::Finished(Err(reason)) =
+        harness.save_call(SaveCall::Load("body-damage.cksave".to_owned()))
+    else {
+        panic!("the full loader rejects the damaged body");
+    };
+    assert!(reason.contains("checksum"), "{reason}");
+    assert_eq!(
+        (harness.digest(), harness.core.snapshot(), harness.paused()),
+        before
+    );
+}
+
+#[test]
+fn unsupported_saves_are_delete_only_and_file_arguments_cannot_escape_the_saves_directory() {
+    let mut harness = Harness::new(42);
+    harness.save_call(SaveCall::New("Old format".to_owned()));
+    let path = harness.saves.join("old-format.cksave");
+    let mut bytes = fs::read(&path).unwrap();
+    let header_length =
+        usize::try_from(u32::from_le_bytes(bytes[8..12].try_into().unwrap())).unwrap();
+    let header = std::str::from_utf8(&bytes[12..12 + header_length]).unwrap();
+    let old_header = header
+        .lines()
+        .filter(|line| {
+            !line.starts_with("name = ")
+                && !line.starts_with("written = ")
+                && !line.starts_with("date = ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("format = 2", "format = 1")
+        .replace("build = \"test-build\"", "build = \"previous-build\"");
+    let mut old = bytes[..12].to_vec();
+    old[8..12].copy_from_slice(&u32::try_from(old_header.len()).unwrap().to_le_bytes());
+    old.extend_from_slice(old_header.as_bytes());
+    old.extend_from_slice(&bytes[12 + header_length..]);
+    bytes = old;
+    fs::write(&path, bytes).unwrap();
+
+    let SaveReply::Listed(Ok(entries)) = harness.save_call(SaveCall::List) else {
+        panic!("old header remains listable");
+    };
+    assert_eq!(entries[0].fit.as_str(), "version");
+    assert_eq!(entries[0].this_build, Some(false));
+    assert_eq!(entries[0].name, "old-format");
+    assert_eq!(entries[0].date, None);
+    assert_eq!(entries[0].written, None);
+    assert_eq!(
+        harness.save_call(SaveCall::Over("old-format.cksave".to_owned())),
+        SaveReply::Finished(Err("save cannot be overwritten: version".to_owned()))
+    );
+    assert!(matches!(
+        harness.save_call(SaveCall::Load("old-format.cksave".to_owned())),
+        SaveReply::Finished(Err(reason)) if reason == "save cannot be loaded: version"
+    ));
+    assert_eq!(
+        harness.save_call(SaveCall::Delete("old-format.cksave".to_owned())),
+        SaveReply::Finished(Ok(()))
+    );
+
+    let outside = harness.saves.parent().unwrap().join("outside.cksave");
+    fs::write(&outside, b"outside remains").unwrap();
+    for filename in [
+        "../outside.cksave",
+        "/tmp/outside.cksave",
+        "a\\b.cksave",
+        "..",
+        "",
+        "missing-extension",
+    ] {
+        for call in [SaveCall::Over, SaveCall::Delete, SaveCall::Load] {
+            assert!(
+                matches!(
+                    harness.save_call(call(filename.to_owned())),
+                    SaveReply::Finished(Err(_))
+                ),
+                "{filename}"
+            );
+        }
+    }
+    assert_eq!(fs::read(outside).unwrap(), b"outside remains");
+}
+
+fn install_catalog_header_fixtures(harness: &mut Harness) {
+    let source = fs::read(harness.saves.join("fits.cksave")).unwrap();
+    let read_header = |bytes: &[u8]| {
+        let length = usize::try_from(u32::from_le_bytes(bytes[8..12].try_into().unwrap())).unwrap();
+        std::str::from_utf8(&bytes[12..12 + length])
+            .unwrap()
+            .to_owned()
+    };
+    let with_header = |header: &str| {
+        let mut bytes = source[..12].to_vec();
+        bytes[8..12].copy_from_slice(&u32::try_from(header.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        let old_length =
+            usize::try_from(u32::from_le_bytes(source[8..12].try_into().unwrap())).unwrap();
+        bytes.extend_from_slice(&source[12 + old_length..]);
+        bytes
+    };
+    let header = read_header(&source);
+    fs::write(
+        harness.saves.join("future.cksave"),
+        with_header(&format!(
+            "{}future_key = true\n",
+            header.replace("format = 2", "format = 8")
+        )),
+    )
+    .unwrap();
+    fs::write(
+        harness.saves.join("other-build.cksave"),
+        with_header(&header.replace("test-build", "other-build")),
+    )
+    .unwrap();
+    fs::write(
+        harness.saves.join("wrong-content.cksave"),
+        with_header(&header.replace("scenario_hash = \"aa\"", "scenario_hash = \"ee55\"")),
+    )
+    .unwrap();
+    fs::write(
+        harness.saves.join("bad-toml.cksave"),
+        b"CKSAVE\0\x01\x08\0\0\0not=toml",
+    )
+    .unwrap();
+    fs::write(harness.saves.join("bad-magic.cksave"), b"not a save").unwrap();
+    for (filename, key) in [
+        ("missing-format.cksave", "format = "),
+        ("missing-build.cksave", "build = "),
+    ] {
+        let header_missing_line = header
+            .lines()
+            .filter(|line| !line.starts_with(key))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(
+            harness.saves.join(filename),
+            with_header(&header_missing_line),
+        )
+        .unwrap();
+    }
+    let mut oversized = b"CKSAVE\0\x01".to_vec();
+    oversized.extend_from_slice(&65_537_u32.to_le_bytes());
+    fs::write(harness.saves.join("too-large.cksave"), oversized).unwrap();
+    fs::write(
+        harness.saves.join("cut-header.cksave"),
+        b"CKSAVE\0\x01\x10\0\0\0short",
+    )
+    .unwrap();
+}
+
+#[test]
+fn catalog_keeps_scanning_past_unreadable_future_and_content_mismatch_headers() {
+    let mut harness = Harness::new(42);
+    harness.save_call(SaveCall::New("Fits".to_owned()));
+    install_catalog_header_fixtures(&mut harness);
+    let SaveReply::Listed(Ok(entries)) = harness.save_call(SaveCall::List) else {
+        panic!("the catalog returns entries even when individual headers fail");
+    };
+    let fit = |filename: &str| {
+        entries
+            .iter()
+            .find(|entry| entry.filename == filename)
+            .unwrap_or_else(|| panic!("missing catalog row {filename}"))
+            .fit
+            .as_str()
+    };
+    assert_eq!(fit("fits.cksave"), "fits");
+    assert_eq!(fit("future.cksave"), "version");
+    assert_eq!(fit("other-build.cksave"), "version");
+    assert_eq!(fit("wrong-content.cksave"), "content");
+    for (filename, this_build) in [
+        ("bad-magic.cksave", None),
+        ("bad-toml.cksave", None),
+        ("missing-format.cksave", Some(true)),
+        ("missing-build.cksave", None),
+        ("too-large.cksave", None),
+        ("cut-header.cksave", None),
+    ] {
+        assert_eq!(fit(filename), "unreadable", "{filename}");
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.filename == filename)
+                .unwrap()
+                .this_build,
+            this_build,
+            "{filename}"
+        );
+    }
+    for (filename, status) in [
+        ("future.cksave", "version"),
+        ("other-build.cksave", "version"),
+        ("wrong-content.cksave", "content"),
+        ("bad-magic.cksave", "unreadable"),
+        ("bad-toml.cksave", "unreadable"),
+        ("missing-format.cksave", "unreadable"),
+        ("missing-build.cksave", "unreadable"),
+        ("too-large.cksave", "unreadable"),
+        ("cut-header.cksave", "unreadable"),
+    ] {
+        assert!(
+            matches!(
+                harness.save_call(SaveCall::Over(filename.to_owned())),
+                SaveReply::Finished(Err(reason)) if reason.contains(status)
+            ),
+            "save-over {filename}"
+        );
+        assert!(
+            matches!(
+                harness.save_call(SaveCall::Load(filename.to_owned())),
+                SaveReply::Finished(Err(reason)) if reason.contains(status)
+            ),
+            "load {filename}"
+        );
+        assert_eq!(
+            harness.save_call(SaveCall::Delete(filename.to_owned())),
+            SaveReply::Finished(Ok(())),
+            "delete {filename}"
+        );
+    }
+}
+
+#[test]
+fn directories_and_symlinks_are_not_saves_and_calls_never_follow_them() {
+    let mut harness = Harness::new(42);
+    harness.save_call(SaveCall::New("Good".to_owned()));
+    let directory_entry = harness.saves.join("directory.cksave");
+    fs::create_dir(&directory_entry).unwrap();
+    let outside = harness.saves.parent().unwrap().join("outside.cksave");
+    fs::write(&outside, b"outside remains unchanged").unwrap();
+    let link = harness.saves.join("link.cksave");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+    let SaveReply::Listed(Ok(entries)) = harness.save_call(SaveCall::List) else {
+        panic!("listing succeeds");
+    };
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].filename, "good.cksave");
+    for filename in ["directory.cksave", "link.cksave"] {
+        for call in [SaveCall::Over, SaveCall::Delete, SaveCall::Load] {
+            assert!(
+                matches!(
+                    harness.save_call(call(filename.to_owned())),
+                    SaveReply::Finished(Err(_))
+                ),
+                "{filename}"
+            );
+        }
+    }
+    assert_eq!(fs::read(outside).unwrap(), b"outside remains unchanged");
 }
