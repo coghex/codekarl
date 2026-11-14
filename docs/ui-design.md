@@ -35,7 +35,8 @@
 >     bottom, with the two icons as tabs in its title bar and a close button that returns to the bar;
 >   - **locations** lists every place in file order in columns (name, people, food in days); **pops** lists every pop at every place
 >     (its type's colour stripe and icon, type and culture, people, place). A row shows that place in the location panel, a pops row on
->     its pops tab. Long names are cut on whole characters with "..";
+>     its pops tab. Long names are cut on whole characters with "..". Since CK-295 that order is the default one, and each tab has
+>     a list bar that filters and sorts it (§3.14);
 >   - list items can have cells (`lib/list.lua`), and the pop-type colours and the dim text colour are `[colour]` keys of
 >     `assets/ui/theme.toml` (`pop_peasant`, `pop_monk`, `pop_labourer`, `dim`). Labelled hover tooltips on the icons come next milestone.
 > - **Pops and buildings as list elements** (CK-259; same record): the location panel's pops and buildings tabs show **cards** (the
@@ -163,6 +164,24 @@
 >   - **No coloured number in a label** (CK-289, 2026-11-13; `owner-direction-round-end-manager-r1.md`): a label's line is drawn
 >     wholly in the tooltip text colour, so the 3 of `speed 3` is no longer green. The owner: "numbers in labels are green, but i
 >     would think we shouldnt have this".
+> - **Filter and sort on every list** (CK-294 to CK-296, 2026-11-13; `owner-direction-lists-designer4-r1.md` to `-r5.md`; §3.14):
+>   every list has two small icon buttons under it at the right, **filter** and **sort**. The owner: "i want two small buttons at
+>   the bottom right side of lists, the filter button with a filter icon, and the sort button with an arrow down icon".
+>   - **Each button opens a picker,** a small panel of choices for that list: checkboxes for the filter, a list of orders for the
+>     sort. The owner named them: "these should not be called popups, popups will be a real feature we add in the future".
+>   - **The filter** starts with nothing ticked and everything showing; a ticked box shows only the rows that match it, and a
+>     count such as `10 of 94` appears beside the button. One "all" button clears the ticks.
+>   - **The sort** starts in the data's own order, named "default". Choosing an order uses its first direction (text a to z, numbers
+>     largest first), and choosing it again turns it round.
+>   - **Which lists:** the ledger's places and pops (CK-295), and the location panel's market, pops and buildings (CK-296). The
+>     market filters by the goods' tags, food, clothing and herd, which came with CK-294 (`docs/economy-design.md` §3.1).
+>   - **Nothing is remembered:** the choices start again each time a list is brought up. The owner: "dont save it, just reset it
+>     everytime the list is brought up".
+>   - **Escape** closes an open picker before it closes a window (§3.5).
+>   - One new module, `scripts/ui/lib/listbar.lua`, does all of it; the list and card widgets did not change. The art's record is
+>     in `docs/ui-art-provenance.md`.
+>
+>   That completes UI polish item 2, the lists.
 
 ## Owner answers (2026-11-07)
 
@@ -569,6 +588,8 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
     - The close button (source `"button"`) still always quits.
     - **Since CK-270 an open tooltip comes first:** the handler closes the newest tooltip and declines, so one press closes one
       tooltip, and only with none open does it go on to the top window (§3.13).
+    - **Since CK-295 an open list-bar picker comes next:** with no tooltip to close, the handler closes the open picker
+      (`listbar.close_open()`) and declines. So the order is: a tooltip, the picker, the top window, the app's close (§3.14).
 
 ### 3.6 From the UI to the game (Proposal)
 
@@ -930,7 +951,10 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     and `tooltip_open_is_quiet_and_game_callbacks_restore_the_overlay_in_the_same_call` use it; the real chain checks that ten
     idle updates with a locked tooltip publish no frame.
   - **Escape** closes one: `close_request` in `lib/window.lua` first calls `tooltip.close_top()`, which closes the newest tooltip and
-    says whether it closed one. When it did, nothing else happens (§3.5). Since CK-286 it does not count labels (below).
+    says whether it closed one. When it did, nothing else happens (§3.5). Since CK-286 it does not count labels (below). When it
+    closed none, an open list-bar picker closes next, before any window (CK-295, §3.14).
+  - **`tooltip.close_all()`** (CK-295) closes every open tooltip, locked or not, and drops a pending one. The list bar calls it when
+    a filter or sort choice changes (§3.14).
   - **A left press** (the owner: "escape should clear one nested tooltip at a time but clicking away should clear them all"):
     - on a tooltip, its panel or one of its terms or links: closes the tooltips opened from it and keeps it and the rest;
     - on a **functional widget**: closes nothing;
@@ -1390,6 +1414,165 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     (§3.10).
   - **Through the real render extension:** `ui_link/group_tests.rs` rests the pointer on a map place until the location tooltip
     locks, then opens its nested population tooltip (CK-279).
+
+### 3.14 The list bar and its pickers (accepted, CK-295 and CK-296)
+
+Every list has two small buttons under it at the right, **filter** and **sort**. Each opens a **picker**: a small panel of choices
+for that list. The owner asked for them on 2026-11-13 (UI polish item 2): "i want two small buttons at the bottom right side of
+lists, the filter button with a filter icon, and the sort button with an arrow down icon. these will act differently based on the
+list they are working on."
+
+- **The records** are `owner-direction-lists-designer4-r1.md` to `-r5.md` in `.pipeline/coordination/ui-polish-design/`, and the
+  look the owner chose is `mockups/lists-r2.html` there.
+- **The name** "picker" is the owner's choice of word: "these should not be called popups, popups will be a real feature we add in
+  the future".
+- **The slices:** the goods' tags are CK-294 (`docs/economy-design.md` §3.1), the module and the ledger are CK-295, and the
+  location panel is CK-296.
+
+Lengths below are in UI pixels.
+
+- **One module,** `scripts/ui/lib/listbar.lua`, is the bar and both pickers. `lib/list.lua` and `lib/cards.lua` did not change.
+  - `listbar.new{window, sorts, groups, on_change}` makes a bar for one open window. `sorts` is the sort picker's orders, each
+    `{key, label, first}` with `first` either `"ascending"` or `"descending"`. `groups` is the filter's groups, each `{key, label}`.
+  - **The bar does not know the list widget.** The caller gives it the list's rows, `bar:view(rows)`, and shows the rows that
+    come back: a new array of the caller's own row tables, those that pass the filter, in the chosen order. A row carries
+    `sort` (a string or a number for each sort key, or none) and `filter` (a string, or an array of strings, for each group key,
+    or none).
+  - **It uses the bottom 19 pixels** of its window's content area (`listbar.HEIGHT`), and the caller makes its list that much
+    shorter. It is an attached item of its window, so it follows the window and goes when the window closes.
+  - **The choices are the bar's alone.** A new bar has nothing ticked and the default order. Nothing of them outlives
+    `bar:destroy()`, and nothing is written to a file. The owner: "dont save it, just reset it everytime the list is brought up".
+- **The two buttons** are icon buttons in the window's kind, 13 by 15: `filter`, a funnel, and `sort`, an arrow down beside four bars.
+  - The sort button's right edge is the content's right edge, the filter button is 16 pixels left of it, and their tops are 17
+    pixels above the content's bottom.
+  - Their labels (§3.13) are `filter` and `sort`.
+  - The filter button is drawn selected while any box is ticked, and the sort button while the order is not the default.
+  - Pressing a button opens its picker, and pressing it again closes it.
+- **The count:** while any box is ticked, the bar shows `N of M` left of the filter button: the rows showing, of the rows given to
+  `view`. Its right end is 5 pixels left of the button and its top 2 pixels below the buttons' top. The numbers are in the theme's
+  `number` colour and ` of ` in `dim`. With nothing ticked there is no count.
+- **The filter rule** is the owner's: "the list starts unticked and showing everything, press a tick and it resets to a whitelist
+  with the single checked box".
+  - With nothing ticked every row shows.
+  - Otherwise a row shows when, in **every group that has a ticked box**, one of the row's values is ticked. Two ticks in one
+    group show the rows of either; ticks in two groups show the rows that match both.
+  - A row with no value in a group shows only while that group has nothing ticked.
+- **The order.**
+  - **The default** is the order of the rows as given, which is the data's own. The owner: "start the lists with the data file
+    order".
+  - **A sort** is first in its `first` direction and, chosen again, in the other.
+  - Numbers compare as numbers. Texts compare without regard to case, with á é í ó ú counted as a e i o u.
+  - Rows with equal values keep the default order, in both directions.
+  - Rows with no value for the chosen sort come last, in both directions, in the default order.
+- **A picker** is a cut-3 panel (§3.7) in its window's kind, with no title bar.
+  - **Where:** its right edge is the content's right edge and there is one clear pixel between its bottom edge and the buttons'
+    top. The panel is 8 wider and 6 taller than what it holds, which starts 4 from its left edge and 3 from its top.
+  - **Above its window, below tooltips:** it is made when it opens, as its window's last attached item (`window:attach` in
+    `lib/window.lua`: attached items are drawn above the content, in attach order).
+  - Its rows are 13 high. The row under the pointer is filled with the kind's `row_hover`.
+  - A press on a row or on "all" leaves the picker open. The wheel over a picker never scrolls the list under it.
+  - **Too tall:** a picker's top is never above its window's content top. One with more rows than fit is as tall as that
+    leaves, and its rows scroll with the wheel as a list's rows do, clipped. It has no scroll thumb.
+- **The filter picker.**
+  - **"all"** is a text button at the top left. It is drawn selected while nothing is ticked, and pressing it unticks every box. It
+    stays in place when the rows scroll.
+  - The rows start 16 pixels below the top of the panel's content, group after group.
+  - **Headings:** with more than one group, each group starts with a heading row, its label in `dim`. With one group there is
+    no heading.
+  - **A box row** is a checkbox and a label 12 pixels in, and a press anywhere on the row ticks or unticks it. The checkbox is a
+    7 by 7 outline one pixel thick in the kind's text colour; a ticked one has a filled 3 by 3 square at its centre. The owner
+    chose the square over a tick mark: "i want the square".
+  - **A group's boxes** are the distinct values of the rows last given to `view`, and any value that is still ticked though no
+    row has it now. A box's label is its value with `_` drawn as a space, and the boxes are in label order.
+  - The content is 4 wider than the widest of the "all" button, a heading, and a label with its 12 pixels.
+- **The sort picker** is one row for "default" and one for each sort.
+  - The chosen row is filled with the kind's `hot` colour and its text is in `pressed_text`. With the default order, "default" is
+    the chosen row.
+  - A chosen sort's row has a direction mark at its right, a 5 by 5 arrow: up for ascending, down for descending.
+  - Pressing a row that is not chosen chooses it, a sort in its `first` direction. Pressing the chosen sort turns it round.
+    Pressing "default" when it is chosen does nothing.
+  - The content is 22 wider than the widest label.
+- **A change** is a tick, an untick, "all" with something ticked, or a sort choice. The bar then:
+  1. updates its two buttons and the open picker;
+  2. **closes every open tooltip** (`tooltip.close_all()`, §3.13). A locked tooltip opened from a list row follows the row's
+     position, and would show another item's data once the rows move;
+  3. calls the caller's `on_change`, which shows the list again through `view`.
+
+  Opening or closing a picker is not a change and closes no tooltip.
+- **One picker at a time,** in the whole UI: opening one closes the other. An open picker closes for:
+  - its own button, or Escape;
+  - a press on the map (`map_down`, §3.5), or a press on anything else in the UI that is not the picker itself. The press still
+    does what it does;
+  - a change of the game window's size;
+  - its window closing, or its bar being destroyed.
+
+  It stays open through a new economy revision: an open filter picker then shows the new boxes, at the same scroll. The
+  events of an overflow packet (§3.5) close nothing. `main.lua` calls `listbar.update(update)` every frame, after the pointer
+  dispatcher, for the presses and the size.
+- **Escape** (§3.5) closes one thing a press, in this order: the newest tooltip that is not a label; else the open picker; else
+  the top window; else it asks to close the app.
+- **Hit keys:** every key the bar makes comes from `ui.key` with a short fixed prefix (`listbar_panel`, `listbar_box`,
+  `listbar_sort`). A value, a label or a group key is data and is never part of a key: the host accepts only `[a-z0-9_]{1,48}`,
+  and a label such as `base price` is not that (§3.13, CK-279).
+- **The art:** the two icons and the two direction marks are grids in `assets/ui/theme/make_theme.py`, which writes
+  `icon_filter.png`, `icon_sort.png`, `sort_down.png` and `sort_up.png`; its `--check` covers them. The checkbox is drawn from
+  `white.png`. How they were made is in `docs/ui-art-provenance.md`.
+
+**Which lists have a bar, and their choices.** The owner approved the table ("your table was fine, i approve"). "First" is the
+direction a sort has when it is chosen.
+
+| List | Sorts, in the picker's order (first) | Filter groups |
+|---|---|---|
+| ledger, places | name (a to z), people (most first), food (most first) | kind |
+| ledger, pops | type (a to z), culture (a to z), people (most first), place (a to z) | type, religion, culture |
+| location panel, market | name (a to z), price (highest first), base price (highest first), buy/sell (largest surplus first) | tag |
+| location panel, pops | type (a to z), people (most first), food (most first), mood (highest first) | type |
+| location panel, buildings | kind (a to z), positions (most first), wage (highest first) | kind |
+
+- **The ledger** (`main.lua`, CK-295) has a bar on each tab, and its list is 19 pixels shorter.
+  - **Places:** name is the place's name; people is its workers and dependents; food is its `food_days`; kind is the place's
+    kind (in the shipped scenario monastery, ringfort, royal site and crannog). A place that shows no people and no food has no
+    value for those two sorts, so it comes last.
+  - The places tab's header row stays first. It is not sorted, filtered or counted.
+  - **Pops:** type is the pop's kind, people its workers and dependents, and place the name of its place.
+  - A row keeps its cells, its colours, its tooltips and the place it opens, wherever it is shown.
+  - **The choices start again** when the ledger opens and when its tab changes. **They stay** across a new economy revision and
+    a change of the game window's size.
+  - After a change the list shows from its first row. A refresh for a new revision keeps the scroll.
+- **The location panel** (`lib/location.lua`, CK-296) has a bar on each of its three tabs, in the panel's kind.
+  - **The location tab:** the list is 19 pixels shorter. Only the market's goods rows are filtered, ordered and counted; the
+    lines of figures and the market's header row stay above them.
+    - name is the name the row shows, before it is shortened to fit; price is `price_milli`; base price is `base`; buy/sell is
+      the balance bar's value (§3.13), and a good whose bar has none comes last.
+    - tag is the good's tags. The boxes are the tags the place's goods carry, today clothing, food and herd. A good without a
+      tag (herbs and beeswax today) shows only while no box is ticked. The owner: "untagged goods simply not showing up on those
+      filters unless 'all' is selected (or no filters are selected)".
+    - The owner means to move the market to its own tab next milestone, and the buttons go with it: "for now you can place the
+      buttons below the market".
+  - **The pops and buildings tabs:** the bar shares the 19-pixel strip under the stack with the cards-or-rows selector, which
+    stays at the left. The stack's height did not change.
+    - Cards and rows show the same items in the same order.
+    - Each card and row is still built with the item's index in `place.pops` or `place.buildings`, so its tooltips, and which
+      row is open, name the same pop or building as before.
+    - The rows look's header stays first and is not counted.
+    - food is the pop's `food_days`, mood its `satisfaction`, and positions the building's `filled`.
+    - A tick that no item passes shows no card (in rows, only the header) and a count of `0 of M`. The lines `no pops` and
+      `no buildings` are still for a place that has none.
+    - An open row that a tick hides is open again when it shows.
+  - **The choices start again** when the panel opens, when its tab changes (by a click, or by a ledger pops row that opens the
+    pops tab), and when the panel shows another place.
+  - **They stay** across a new economy revision, a change of the game window's size, the same place shown again on the same
+    tab, and a change of look between cards and rows.
+  - After a change the pops or buildings stack shows from its top. The location tab's list keeps its scroll, cut to its new
+    length, so the market stays in view.
+- **A known limit:** in a very narrow panel the count, and then the bar's buttons, can run under the selector's two buttons. It
+  is disclosed, not designed for.
+- **Not there:** remembering a choice, sorting by a click on a column heading, a search box, and keyboard use of a picker.
+- **Tests,** all through the shipped scripts in the UI rig, with no window: `ui_link/listbar_tests.rs` (the module: the filter
+  rule, the orders, the buttons, the count, both pickers, what closes one, the keys); `ui_link/location_tests/ledger.rs`
+  (the ledger's two bars); `market_table.rs`, `cards.rs`, `rows.rs` and `selectors_tabs.rs` beside it (the location panel's
+  three); and `ui_link/group_tests.rs`
+  (`escape_closes_the_top_tooltip_then_the_open_list_bar_picker_then_the_top_window_one_each`).
 
 ## 4. Packages and ownership
 
