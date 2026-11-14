@@ -6,7 +6,7 @@ local pointer = require("lib.pointer")
 local theme = require("lib.theme")
 
 local P = ui.P
-local settings = settings.tooltips()
+local current_settings = settings.tooltips()
 local tooltip = {}
 local overlay
 local definitions, attached, open = {}, {}, {}
@@ -360,13 +360,13 @@ end
 
 local function update_lock_bar(record)
   if record.kind == "label" then return end
-  local fill = settings.lock == "timer" and math.min(1, record.lock_elapsed / settings.lock_timer) or 0
+  local fill = current_settings.lock == "timer" and math.min(1, record.lock_elapsed / current_settings.lock_timer) or 0
   if record.locked then fill = 1 end
   local width_px, height_px = record.width_px, record.height_px
   local run = math.floor((width_px - 2) * fill + 0.5)
   -- The lower-right cut corner remains outline, so the bar ends before its three cut pixels.
   run = math.min(run, width_px - 4)
-  if settings.lock == "disabled" or settings.lock == "middle_mouse" and not record.locked then run = 0 end
+  if current_settings.lock == "disabled" or current_settings.lock == "middle_mouse" and not record.locked then run = 0 end
   if run > 0 then
     local bar = record.bar_quad
     if bar == nil then
@@ -662,11 +662,11 @@ local function process_events(events)
   for _, event in ipairs(events or {}) do
     if event.kind == "map_down" then
       close_all()
-    elseif event.kind == "button_down" and event.button == "middle" and settings.lock == "middle_mouse" then
+    elseif event.kind == "button_down" and event.button == "middle" and current_settings.lock == "middle_mouse" then
       for index = #open, 1, -1 do
         if not open[index].locked and open[index].kind ~= "label" then
           open[index].locked = true
-          open[index].lock_elapsed = settings.lock_timer
+          open[index].lock_elapsed = current_settings.lock_timer
           render_record(open[index], true)
           break
         end
@@ -704,6 +704,15 @@ function tooltip.update(update)
     end
   end
   local candidate = candidate_of(update)
+  if candidate ~= nil then
+    local already_open = false
+    for _, record in ipairs(open) do
+      if record.target == candidate.target then already_open = true; break end
+    end
+    if not already_open and (tooltip.pending == nil or tooltip.pending.target ~= candidate.target) then
+      current_settings = settings.tooltips()
+    end
+  end
   local active
   for _, record in ipairs(open) do if not record.locked then active = record end end
   if active ~= nil and (candidate == nil or candidate.target ~= active.target) then close_record(active); active = nil end
@@ -718,7 +727,7 @@ function tooltip.update(update)
         end
       else
         record.lock_elapsed = record.lock_elapsed + (update.dt or 0)
-        if settings.lock == "timer" and record.lock_elapsed >= settings.lock_timer then
+        if current_settings.lock == "timer" and record.lock_elapsed >= current_settings.lock_timer then
           record.locked = true
           render_record(record, true)
         else
@@ -739,7 +748,7 @@ function tooltip.update(update)
     tooltip.pending.elapsed = tooltip.pending.elapsed + (update.dt or 0)
     tooltip.pending.candidate = candidate
   end
-  if tooltip.pending.elapsed >= settings.delay then
+  if tooltip.pending.elapsed >= current_settings.delay then
     local content = tooltip.pending.candidate.content
     if content ~= nil then open_tooltip(tooltip.pending.candidate, content) end
     tooltip.pending = nil

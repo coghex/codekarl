@@ -4,6 +4,8 @@
 /.ck-hub
 /target
 /saves
+/settings.toml
+/settings.toml.tmp
 __pycache__
 .ruff_cache
 .DS_Store

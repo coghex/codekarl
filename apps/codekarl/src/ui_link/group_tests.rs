@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use ck_input::{Bindings, Mapper};
-use ck_lua::{ConfigValue, HostFunction};
+use ck_lua::{ConfigValue, Extension, HostFunction};
 use ck_render_2d::{FrameQuad, HitRect, Metrics, POINT_DOMAIN, QuadSink, Snapshot};
 use ck_resources::{Assets, Mode, ResourceLimits, ResourceService, ServiceWakes};
 use ck_window::{
@@ -109,12 +109,22 @@ pub(super) struct Rig {
 impl Rig {
     /// A UI VM whose script is the prelude, `script` and the reporting callback. The window is 400 by 320 points at 2 pixels per point.
     pub(super) fn new(script: &str) -> Self {
-        Self::with_script(&format!("{PRELUDE}\n{script}\n{REPORT}"), false, Vec::new())
+        Self::with_script(
+            &format!("{PRELUDE}\n{script}\n{REPORT}"),
+            false,
+            Vec::new(),
+            None,
+        )
     }
 
     /// Runs a fixture's full script without replacing its own frame callback with the reporting callback.
     pub(super) fn new_fixture_body(script: &str) -> Self {
-        Self::with_script(script, false, Vec::new())
+        Self::with_script(script, false, Vec::new(), None)
+    }
+
+    /// Runs a fixture body with a replacement `settings` host table.
+    pub(super) fn new_fixture_body_with_settings(script: &str, settings: Extension) -> Self {
+        Self::with_script(script, false, Vec::new(), Some(settings))
     }
 
     /// Runs a fixture body with additional host functions, for tests that need the same serialized data as a production API.
@@ -122,13 +132,13 @@ impl Rig {
         script: &str,
         functions: Vec<(&'static str, HostFunction)>,
     ) -> Self {
-        Self::with_script(script, false, functions)
+        Self::with_script(script, false, functions, None)
     }
 
     /// [`new_fixture_body`](Self::new_fixture_body) for a window opened in screen pixels: its UI is in UI units at the scale its drawable
     /// allows.
     pub(super) fn new_fixture_body_in_pixels(script: &str) -> Self {
-        Self::with_script(script, true, Vec::new())
+        Self::with_script(script, true, Vec::new(), None)
     }
 
     #[expect(
@@ -139,6 +149,7 @@ impl Rig {
         script: &str,
         in_pixels: bool,
         mut extra_functions: Vec<(&'static str, HostFunction)>,
+        settings_extension: Option<Extension>,
     ) -> Self {
         let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../assets")
@@ -196,7 +207,8 @@ impl Rig {
                     crate::theme::extension(Arc::new(
                         crate::theme::load(&assets).expect("the shipped theme"),
                     )),
-                    crate::config::TooltipsConfig::default().extension(),
+                    settings_extension
+                        .unwrap_or_else(|| crate::config::TooltipsConfig::default().extension()),
                     crate::glossary::extension(Arc::new(
                         crate::glossary::load(
                             &assets,

@@ -679,6 +679,12 @@ fn rig(steps: &[&str]) -> Rig {
     rig
 }
 
+fn rig_with_settings(steps: &[&str], settings: ck_lua::Extension) -> Rig {
+    let mut rig = Rig::new_fixture_body_with_settings(&script(steps), settings);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    rig
+}
+
 fn rig_with_prelude_at(prelude: &str, steps: &[&str], width: u32, height: u32, scale: u32) -> Rig {
     let mut rig = Rig::new_fixture_body(&script_with_prelude(prelude, steps));
     rig.deliver_fixture_frame_at(width, height, scale);

@@ -113,6 +113,7 @@ mod render_api;
 mod resource_runtime;
 #[cfg(test)]
 mod scene_api_tests;
+mod settings;
 mod signals;
 #[cfg(test)]
 mod testing;
@@ -330,6 +331,9 @@ fn execute_with(
             emit(Level::Error, "config", format_args!("{message}"));
             return FAILED;
         }
+    }
+    for warning in &config.settings_warnings {
+        emit(Level::Warn, "config", format_args!("{warning}"));
     }
     emit(
         Level::Info,
@@ -827,7 +831,11 @@ fn supervise_with_owner_factory(
     ui_extensions.extend(font.map(font::extension));
     ui_extensions.extend(theme.map(theme::extension));
     ui_extensions.extend(glossary.map(glossary::extension));
-    ui_extensions.push(config.tooltips.extension());
+    if let Some(settings) = settings::Runtime::new(config, map_controller.clone()) {
+        ui_extensions.push(settings.extension());
+    } else {
+        ui_extensions.push(config.tooltips.extension());
+    }
     // The main screen: filled below from the plan (made on this thread, before the UI VM is spawned), read by `window.open`.
     let screen = window_api::ScreenCell::default();
     let setup = Setup {

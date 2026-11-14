@@ -980,6 +980,118 @@ eq(first, by, "and back to the start and no further")
 }
 
 // ---------------------------------------------------------------------------------------------
+// A list may choose the ticks its filter starts with (CK-304)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_bar_made_with_no_starting_ticks_or_an_empty_list_of_them_starts_with_nothing_ticked_as_before()
+{
+    let mut rig = rig(
+        r"new_window(120, 100)",
+        &[r#"
+for _, extra in ipairs({{}, {ticked = {}}}) do
+  new_bar(extra)
+  eq(bar.ticks, 0, "nothing ticked")
+  expect(bar.filter_button.selected ~= true, "the filter button is not lit")
+  local rows = {row("a", "ringfort", 1), row("b", "crannog", 2)}
+  eq(names(bar:view(rows)), "a,b", "everything shows")
+  eq(line_text(bar.count), "", "no count")
+  bar:destroy()
+end
+expect(not pcall(new_bar, {ticked = "none"}), "the argument is checked: it is a list or nothing")
+"#],
+    );
+    rig.opened();
+}
+
+#[test]
+fn a_bar_made_with_one_starting_tick_is_one_the_player_ticked_by_hand_and_all_clears_it() {
+    let mut rig = rig(
+        r#"new_window(120, 100) new_bar{ticked = {{group = "kind", value = "ringfort"}}}"#,
+        &[r#"
+eq(bar.ticks, 1, "one box ticked")
+expect(bar.filter_button.selected == true, "the filter button is drawn selected at once")
+eq(changes, 0, "making the bar is not a change: no callback")
+local rows = {row("a", "ringfort", 1), row("b", "crannog", 2), row("c", "ringfort", 3)}
+eq(names(bar:view(rows)), "a,c", "the rows are filtered by the ordinary rule")
+eq(line_text(bar.count), "2 of 3", "the count shows")
+-- The picker shows the box ticked and "all" not selected.
+bar.filter_button.on_click()
+local picker = bar.picker
+local ticked = {}
+for _, r in ipairs(picker.rows) do
+  if r.entry.kind == "box" then ticked[r.entry.value] = r.tick ~= nil end
+end
+eq(ticked.ringfort, true) eq(ticked.crannog, false)
+expect(picker.all.selected ~= true, "all is not the chosen look")
+-- "all" clears it, as for a tick made by hand.
+bar:clear()
+eq(bar.ticks, 0)
+expect(bar.filter_button.selected ~= true, "unlit")
+eq(names(bar:view(rows)), "a,b,c")
+eq(line_text(bar.count), "")
+eq(changes, 1, "the clear is a change")
+"#],
+    );
+    rig.opened();
+}
+
+#[test]
+fn a_new_bar_for_the_same_list_starts_from_its_ticks_again_whatever_became_of_the_last() {
+    let mut rig = rig(
+        r"new_window(120, 100)",
+        &[r#"
+local start = {{group = "kind", value = "ringfort"}, {group = "kind", value = "crannog"}, {group = "kind", value = "ringfort"}}
+new_bar{ticked = start}
+eq(bar.ticks, 2, "a box given twice is one box")
+bar:clear()
+eq(bar.ticks, 0)
+bar:destroy()
+eq(#start, 3, "the caller's list is not changed") eq(start[1].value, "ringfort")
+new_bar{ticked = start}
+eq(bar.ticks, 2, "the next bar starts from them again")
+expect(bar.filter_button.selected == true, "lit again")
+bar:toggle(1, "crannog")
+eq(bar.ticks, 1)
+bar:destroy()
+new_bar{ticked = start}
+eq(bar.ticks, 2, "and again, after a tick by hand")
+"#],
+    );
+    rig.opened();
+}
+
+#[test]
+fn a_starting_tick_no_row_has_is_still_a_ticked_box_and_a_bad_ticked_list_is_refused_creating_nothing()
+ {
+    let mut rig = rig(
+        r"new_window(120, 100)",
+        &[r#"
+new_bar{ticked = {{group = "kind", value = "monastery"}}}
+local rows = {row("a", "ringfort", 1)}
+eq(names(bar:view(rows)), "", "nothing matches the ticked value")
+bar.filter_button.on_click()
+local found = false
+for _, r in ipairs(bar.picker.rows) do
+  if r.entry.kind == "box" and r.entry.value == "monastery" then found = r.tick ~= nil end
+end
+expect(found, "the value is a box, ticked, as for one ticked by hand")
+bar:destroy()
+local before = #lines
+for _, bad in ipairs({
+  {ticked = 5}, {ticked = {{group = "nope", value = "x"}}}, {ticked = {{group = "kind"}}},
+  {ticked = {{group = "kind", value = 3}}}, {ticked = {"kind"}},
+}) do
+  local ok = pcall(new_bar, bad)
+  expect(not ok, "refused")
+end
+eq(#lines, before, "no line was made by a refused bar")
+"#],
+    );
+    rig.opened();
+}
+
+// ---------------------------------------------------------------------------------------------
 // The scroll bar of a picker whose rows overflow (CK-299)
 // ---------------------------------------------------------------------------------------------
 
