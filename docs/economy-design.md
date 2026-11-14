@@ -294,6 +294,32 @@ The numbers are placeholders for tuning.
 
 Wheat waits (vision: too dear for ordinary pops). Hops are left out (§2).
 
+**Tags (Firm, owner 2026-11-13; CK-294).** A good's row may carry `tags`, for example `tags=["food"]`: category keys that the UI
+groups goods by. The owner asked for them for the market's filter: "the market filter we will have to categorize the goods into
+categories, for now just use a checkbox for 'food' and one for 'clothing', goods that we tag with those values we can filter here",
+then "you can add a tag for 'herd' too for the cattle, pigs, and sheep herbs and beeswax will remain untagged"
+(`.pipeline/coordination/ui-polish-design/owner-direction-lists-designer4-r3.md` and `-r4.md`).
+
+- **The key rule:** `tags` is optional, and a good without it has none.
+  - A tag starts with a lower-case letter and goes on with lower-case letters, digits and `_`, at most 24 characters in all.
+  - A good may not list the same tag twice.
+  - A file that breaks either rule is refused, naming `goods.<id>.tags` and the tag.
+  - The vocabulary is open: there is no list of allowed tags, and a new tag needs no code.
+- **The shipped tags:**
+
+  | Tag | Goods |
+  |---|---|
+  | `food` | oats, barley, peas and beans, vegetables, apples, dairy, beef, pork, mutton, fish, seabirds, ale, mead, wine, honey |
+  | `clothing` | wool, hides |
+  | `herd` | cattle, pigs, sheep |
+  | none | herbs, beeswax |
+
+  A test (`crates/economy/src/lib.rs`, `shipped_goods_have_the_owner_approved_tags`) holds the shipped file to this table.
+- **No simulation rule reads them.** A good's tags are kept in the order written and copied into the place view, where each
+  entry of `prices` has them (§3.11). The one reader is the filter of the market's list (`docs/ui-design.md` §3.14).
+- **Saves:** `economy.toml` is part of `rules_hash` (§6.1), so adding the tags changed that hash. A quicksave made before CK-294
+  is refused when loaded, as any save made under other rules is.
+
 ### 3.2 Religions and cultures (data, with the start allocation)
 
 - **Religions:**
@@ -835,6 +861,7 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
     `docs/ui-design.md` §3.13). Nothing in the UI shows `lost` yet.
 - **A price's orders, in the view** (CK-272): each entry of `prices` is `{good, price_milli, base}`, and it gains `bought` and
   `offered` once the place has kept orders (§3.16): the units of that good in the latest daily step's buy orders and sell orders.
+  - Since CK-294 an entry also has `tags`: the good's tags in the order written, an empty list for a good without any (§3.1).
   - Both are absent before the first step and after a load.
   - The engine keeps them as 128-bit counts. They become Lua integers only at the Lua boundary, where one too large is given as
     Lua's largest integer.

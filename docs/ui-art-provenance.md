@@ -74,6 +74,55 @@ author's record, moved here from the design round's notes; the files, hashes and
   section carries. The three grids are in `mockups/unknown-good-art-r1.txt` (sha256 `c40ddbe2…`) in that folder, first typed into
   `mockups/make_unknown_good_r1.py`.
 
+## The list bar's icons, direction marks and checkbox (CK-295)
+
+- **What they are** (`docs/ui-design.md` §3.14), all in `assets/ui/theme/` and all white on clear, tinted by the theme when drawn:
+  - `icon_filter.png` and `icon_sort.png`, the 9×11 icons of the two buttons under a list;
+  - `sort_down.png` and `sort_up.png`, the 5×5 marks that show a sort's direction in the sort picker;
+  - the filter picker's **checkbox**, which is not an image: `scripts/ui/lib/listbar.lua` draws it from stretched copies of
+    `white.png`.
+- **Who drew them:** ck-designer-4 (Claude), for Codekarl, on 2026-11-13, in the UI polish round's lists topic.
+- **How:** each is a character grid typed by hand, `#` for a set pixel and `.` for a clear one, composed from plain geometric
+  shapes at the size of the theme's own icons. The shapes are the everyday objects and signs the words name.
+  - **filter** is a kitchen funnel, solid: a 9-wide rim, rows 7 and 5 wide under it, then a 3-wide spout cut at an angle.
+  - **sort** is a 1-wide arrow pointing down (a stem and a 3-wide head) beside four bars 5, 4, 3 and 2 wide.
+  - **The direction marks** are one arrow, pointing down and pointing up: a 1-wide stem and a 5-wide head.
+  - **The checkbox** is a 7-pixel square outline one pixel thick. A ticked one holds a filled 3-pixel square at its centre.
+- **What was not used:** no image, icon set, font or other game's art was opened, traced, copied or used as a reference.
+- **Limit:** a funnel for "filter" and an arrow beside shortening bars for "sort" are common signs, and at 9×11 there are few
+  ways to draw either, so the icons may resemble others by convergence. None was copied.
+- **Approval:** the owner chose among drawn candidates on a mock-up page (`mockups/lists-r1.html` in
+  `.pipeline/coordination/ui-polish-design/`).
+  - The icons: "filter 1, sort 2" (`owner-direction-lists-designer4-r2.md`), the solid funnel and the arrow beside bars. Not
+    chosen: the funnel as an outline, three centred bars, a plain thick arrow, and an up arrow beside a down arrow.
+  - The checkbox: "i want the square" (`owner-direction-lists-designer4-r3.md`), over a tick mark.
+  - The direction marks: the down mark was in the sort picker the owner chose on that page ("popup 3", the same file). Both
+    marks are on the second page, `mockups/lists-r2.html`, the picture the owner had when saying "these look good, i approve
+    them" (`owner-direction-lists-designer4-r5.md`).
+- **The art:**
+
+  ```
+  filter       sort         sort_down   sort_up
+  .........    .........    ..#..       ..#..
+  #########    .#..#####    ..#..       .###.
+  .#######.    .#.......    #.#.#       #.#.#
+  ..#####..    .#..####.    .###.       ..#..
+  ...###...    .#.......    ..#..       ..#..
+  ...###...    .#..###..
+  ...###...    .#.......
+  ...###...    ###.##...
+  ...##....    .#.......
+  .........    .........
+  .........    .........
+  ```
+- **In the tree:** the two icons are `filter` and `sort` in `ICONS`, and the two marks are `sort_down` and `sort_up` in `MARKS`,
+  in `assets/ui/theme/make_theme.py`, which writes the four images.
+  - `make_theme.py --check` fails when a committed image differs from what the script writes, or is missing or extra.
+  - A test (`apps/codekarl/src/theme.rs`, `the_art_scripts_report_their_images_up_to_date`) runs that check.
+- **The round's record:** `.pipeline/coordination/ui-polish-design/lists-provenance-designer4-r1.md` (sha256 `5b0a174a…`), which
+  this section carries. The grids were first typed in `mockups/make_lists_r1.py` (sha256 `59bbddc6…`) in that folder, as `FUNNEL`,
+  `ARROW_BARS`, `SMALL_DOWN` and `SMALL_UP`; the accepted grids are those, unchanged.
+
 ## Elsewhere
 
 - **The goods icons** (CK-267): `.pipeline/coordination/ui-polish-design/goods-icons-provenance-r1.md`; `docs/ui-design.md` describes
