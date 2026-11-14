@@ -1447,6 +1447,8 @@ mod numberfield_tests;
 #[cfg(test)]
 mod scrollbar_tests;
 #[cfg(test)]
+mod textfield_tests;
+#[cfg(test)]
 mod theme_tests;
 #[cfg(test)]
 mod typing_tests;

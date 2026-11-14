@@ -2513,6 +2513,12 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("assets/ui/", "scripts/ui/"),
     ),
+    # CK-303: the text field's tests run the shipped text field, number field, typing, window and pointer libraries over the shipped font and theme.
+    Guard(
+        "apps/codekarl/src/ui_link/textfield_tests.rs",
+        "rust.app",
+        ("assets/ui/", "scripts/ui/"),
+    ),
     # CK-299: the scroll bar's tests run the shipped list, card stack and bar libraries over the shipped font and art.
     Guard(
         "apps/codekarl/src/ui_link/scrollbar_tests.rs",
