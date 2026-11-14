@@ -1374,6 +1374,8 @@ impl UiLink for CodekarlUi {
 }
 
 #[cfg(test)]
+mod glossary_reader_tests;
+#[cfg(test)]
 mod group_tests;
 #[cfg(test)]
 mod input_tick_tests;

@@ -19,7 +19,7 @@ use crate::game::slot::PauseReason;
 
 /// What every test adds to the shared prelude: what `main.lua` does with a close request and with a size change, the menu's marks, and a
 /// stand-in for the one host call that quits (so that a click on "quit to desktop" can be counted).
-const MENU: &str = r#"
+pub(super) const MENU: &str = r#"
 menu = require("lib.menu")
 VIEW = {width = 800, height = 600}
 window.on_close_request(function(source) return menu.close_request(source, VIEW) end)
@@ -53,12 +53,12 @@ function dim_look(b)
 end
 "#;
 
-fn menu_rig(body: &str, steps: &[&str]) -> Rig {
+pub(super) fn menu_rig(body: &str, steps: &[&str]) -> Rig {
     rig(&format!("{MENU}\n{body}"), steps)
 }
 
 /// The simulation's controls the script has sent since the last call.
-fn sent(rig: &Rig) -> Vec<Control> {
+pub(super) fn sent(rig: &Rig) -> Vec<Control> {
     rig.control_receiver
         .try_iter()
         .map(|message| match message {
@@ -68,14 +68,14 @@ fn sent(rig: &Rig) -> Vec<Control> {
         .collect()
 }
 
-fn close_request(rig: &mut Rig, source: CloseSource) -> Answer {
+pub(super) fn close_request(rig: &mut Rig, source: CloseSource) -> Answer {
     rig.link
         .post(UiEvent::CloseRequested { source })
         .expect("the close request is accepted");
     answer(&mut rig.link).answer
 }
 
-fn click_marked(rig: &mut Rig, name: &str) {
+pub(super) fn click_marked(rig: &mut Rig, name: &str) {
     let at = point(rig, name);
     click_at(rig, at);
 }
@@ -486,7 +486,7 @@ fn quit_to_desktop_ends_the_run_at_once_with_no_question() {
 }
 
 #[test]
-fn settings_is_live_while_glossary_and_save_load_stay_greyed() {
+fn settings_and_glossary_are_live_while_save_load_stays_greyed() {
     let mut rig = menu_rig(
         "",
         &[
@@ -495,7 +495,9 @@ menu.open(VIEW)
 mark_buttons()
 local settings = menu_button("settings")
 expect(not settings.inactive and not dim_look(settings), "settings is live")
-for _, label in ipairs({"glossary", "save / load"}) do
+local glossary_button = menu_button("glossary")
+expect(not glossary_button.inactive and not dim_look(glossary_button), "glossary is live")
+for _, label in ipairs({"save / load"}) do
   expect(dim_look(menu_button(label)), label .. ": text dim, outline track, the body inside")
   expect(menu_button(label).inactive, label .. " is inactive")
 end
@@ -509,7 +511,7 @@ for _, label in ipairs(menu.LABELS) do
 end
 "#,
             r#"
-for _, label in ipairs({"glossary", "save / load"}) do
+for _, label in ipairs({"save / load"}) do
   local b = menu_button(label)
   expect(dim_look(b), label .. ": no hover or pressed look")
   expect(not b.pressed, label .. ": never pressed")
@@ -524,14 +526,12 @@ eq(live.frame.line, theme_lib.kind("window").hot, "return's hover look")
         ],
     );
     rig.opened();
-    for label in ["glossary", "save / load"] {
-        let at = point(&rig, label);
-        hover(&mut rig, at);
-        rig.feed(&[PointerEvent::Down(points(at.0, at.1))]);
-        frame(&mut rig);
-        rig.feed(&[PointerEvent::Up(points(at.0, at.1))]);
-        frame(&mut rig);
-    }
+    let at = point(&rig, "save / load");
+    hover(&mut rig, at);
+    rig.feed(&[PointerEvent::Down(points(at.0, at.1))]);
+    frame(&mut rig);
+    rig.feed(&[PointerEvent::Up(points(at.0, at.1))]);
+    frame(&mut rig);
     let at = point(&rig, "return");
     hover(&mut rig, at);
     rig.opened();

@@ -18,6 +18,11 @@
 -- Only the rows that intersect the visible rectangle have glyph quads and, with `on_select`, hit keys; at most `rows + 1`. Two
 -- highlight quads (hover and pressed), created first so that the text is above them, are moved to the row that has the look and
 -- parked at `ui.HIDDEN` otherwise, since one pointer has at most one hovered row and one pressed row.
+--
+-- **A chosen row** (CK-300). A list made with `selectable = true` has a third quad, created before the other two, filled with the kind's
+-- `hot`: `list:select(index)` puts it on that row (`list:select(nil)` takes it away) and it scrolls with the rows. A row that is chosen
+-- shows no hover fill (the chosen look stays); a press on it still shows the pressed look. `selected_inset` (points, default 0) makes
+-- the chosen fill that much narrower than the row, at its right.
 local ui = require("lib.ui")
 local text = require("lib.text")
 local theme = require("lib.theme")
@@ -161,8 +166,16 @@ end
 -- Puts the two highlight quads on the hovered and the pressed rows, or parks them. A look that is already current makes no call.
 local function highlight(self)
   local hover = self.hover_row
-  if hover == self.pressed_row then
+  if hover == self.pressed_row or hover == self.selected_row then
     hover = nil
+  end
+  if self.selected_quad ~= nil and self.shown_selected ~= self.selected_row then
+    if self.selected_row == nil then
+      render.set_position(self.selected_quad, ui.HIDDEN, ui.HIDDEN)
+    else
+      render.set_position(self.selected_quad, 0, row_top(self.selected_row))
+    end
+    self.shown_selected = self.selected_row
   end
   for _, which in ipairs({{"hover_quad", "shown_hover", hover}, {"pressed_quad", "shown_pressed", self.pressed_row}}) do
     local quad, shown, row = self[which[1]], which[2], which[3]
@@ -190,6 +203,10 @@ local function refresh_bar(self)
   render.set_rect(self.hover_quad, ui.HIDDEN, ui.HIDDEN, row_w, ROW)
   render.set_rect(self.pressed_quad, ui.HIDDEN, ui.HIDDEN, row_w, ROW)
   self.shown_hover, self.shown_pressed = nil, nil
+  if self.selected_quad ~= nil then
+    render.set_rect(self.selected_quad, ui.HIDDEN, ui.HIDDEN, math.max(P, row_w - self.selected_inset), ROW)
+    self.shown_selected = nil
+  end
   for index, key in pairs(self.row_keys) do
     render.set_hit(key, {{x = 0, y = row_top(index), width = row_w, height = ROW}}, self.rows_group)
   end
@@ -572,6 +589,12 @@ function list.new(spec)
   if spec.numbers ~= nil and type(spec.numbers) ~= "boolean" then
     error("list.new: numbers must be a boolean", 2)
   end
+  if spec.selectable ~= nil and type(spec.selectable) ~= "boolean" then
+    error("list.new: selectable must be a boolean", 2)
+  end
+  if spec.selected_inset ~= nil and (not finite(spec.selected_inset) or spec.selected_inset < 0) then
+    error("list.new: selected_inset must be a number of points, 0 or more", 2)
+  end
 
   local self = setmetatable({}, list)
   self.window = window
@@ -583,6 +606,7 @@ function list.new(spec)
   self.on_select = spec.on_select
   self.tooltips = spec.tooltips == true
   self.numbers = spec.numbers == true
+  self.selected_inset = ui.snap(spec.selected_inset or 0)
   self.base = ui.key("list")
   self.area_key = self.base .. "_area"
   self.view_height = self.rows * ROW
@@ -604,6 +628,17 @@ function list.new(spec)
   }}
   self.groups = {self.rows_group, self.bar.group}
   -- The highlights are created before any text, so that the glyphs are drawn over them.
+  if spec.selectable == true then
+    self.selected_quad = render.create_quad{
+      texture = ui.texture("ui/theme/white.png"),
+      x = ui.HIDDEN,
+      y = ui.HIDDEN,
+      width = math.max(P, self.row_w - self.selected_inset),
+      height = ROW,
+      group = self.rows_group,
+      tint = self.colours.hot,
+    }
+  end
   self.hover_quad = render.create_quad{
     texture = ui.texture("ui/theme/white.png"),
     x = ui.HIDDEN,
@@ -680,6 +715,9 @@ function list:set_items(items)
     return
   end
   self.items = checked_items("list:set_items", items)
+  if self.selected_row ~= nil and self.selected_row > #self.items then
+    self.selected_row = nil
+  end
   recompute(self)
   self.pos = clamp(self.pos, 0, self.max_s)
   local s = ui.snap(self.pos)
@@ -689,7 +727,28 @@ function list:set_items(items)
     place(self)
   end
   refresh_bar(self)
+  highlight(self)
   sync(self)
+end
+
+-- Chooses row `index` (it is filled with the kind's `hot`), or no row with nil. Only a list made with `selectable = true`.
+function list:select(index)
+  if self.selected_quad == nil then
+    error("list:select: the list was not made with selectable = true", 2)
+  end
+  if index ~= nil and (math.type(index) ~= "integer" or index < 1 or index > #self.items) then
+    error("list:select: no such item", 2)
+  end
+  if self.closed then
+    return
+  end
+  self.selected_row = index
+  highlight(self)
+end
+
+-- The chosen row's index, or nil.
+function list:selected()
+  return self.selected_row
 end
 
 -- Changes the scroll by the least amount that makes row `index` wholly visible.
