@@ -82,7 +82,7 @@ fn state(rig: &mut Rig) -> String {
 }
 
 /// The main thread applies the latest turning on of text input, as the loop does: what was typed before it is dropped.
-fn input_applied(rig: &mut Rig) {
+pub(super) fn input_applied(rig: &mut Rig) {
     let generation = notes(rig)
         .iter()
         .rev()
@@ -95,11 +95,11 @@ fn input_applied(rig: &mut Rig) {
     rig.feed(&[]);
 }
 
-fn chars(text: &str) -> Vec<TypedEntry> {
+pub(super) fn chars(text: &str) -> Vec<TypedEntry> {
     text.chars().map(TypedEntry::Char).collect()
 }
 
-fn press_events(rig: &Rig, name: &str) -> Vec<PointerEvent> {
+pub(super) fn press_events(rig: &Rig, name: &str) -> Vec<PointerEvent> {
     let (x, y) = point(rig, name);
     vec![
         PointerEvent::Down(points(x, y)),
@@ -108,7 +108,7 @@ fn press_events(rig: &Rig, name: &str) -> Vec<PointerEvent> {
 }
 
 /// One update: its typing and its pointer events handed to the mapper (which keeps the two lists apart), one input tick, one frame.
-fn update(rig: &mut Rig, typed: &[TypedEntry], pointer: &[PointerEvent]) {
+pub(super) fn update(rig: &mut Rig, typed: &[TypedEntry], pointer: &[PointerEvent]) {
     for entry in typed {
         rig.mapper.typed(*entry);
     }
@@ -117,7 +117,7 @@ fn update(rig: &mut Rig, typed: &[TypedEntry], pointer: &[PointerEvent]) {
 }
 
 /// The same with the pointer handed to the mapper first.
-fn update_pointer_first(rig: &mut Rig, pointer: &[PointerEvent], typed: &[TypedEntry]) {
+pub(super) fn update_pointer_first(rig: &mut Rig, pointer: &[PointerEvent], typed: &[TypedEntry]) {
     for event in pointer {
         rig.mapper.pointer(*event);
     }
@@ -129,7 +129,7 @@ fn update_pointer_first(rig: &mut Rig, pointer: &[PointerEvent], typed: &[TypedE
 }
 
 /// A press on a field starts its editing, and the main thread turns text input on.
-fn start(rig: &mut Rig, name: &str) {
+pub(super) fn start(rig: &mut Rig, name: &str) {
     click(rig, name);
     input_applied(rig);
 }
@@ -689,7 +689,7 @@ fn with_no_field_editing_typed_digits_and_commands_change_nothing() {
 }
 
 /// The simulation's controls the script has sent since the last call.
-fn sent(rig: &Rig) -> Vec<Control> {
+pub(super) fn sent(rig: &Rig) -> Vec<Control> {
     rig.control_receiver
         .try_iter()
         .map(|message| match message {
