@@ -400,6 +400,26 @@ Load bindings at startup from the settings file. Missing action bindings use doc
 
 **Proposal.** Held action state is the OR of its held bindings. Releasing one of two keys does not release the action while the other remains down. Key repeats do not generate additional pressed edges or accelerate movement. Opposed movement actions produce zero on that axis in the demo; diagonal speed policy belongs to the script. Focus loss clears key/action held state and supplies release/reset information. Modifier changes recompute held combinations so no action gets stuck.
 
+**Since CK-315 (exact modifiers; `crates/input/src/lib.rs`).** The owner chose "Exact modifiers"
+(`.pipeline/coordination/ui-polish-design/owner-direction-game-menu-manager-r9.md`, question 2) and, for held keys, "Decide at key
+press" (`-r10.md`, question 1). The modifiers that count are four families, Control, Alt, Shift and Meta; either side's key is
+the family.
+
+- **A binding starts only at a press of its main key, with exactly its modifiers:** the families down at that press are the ones
+  its prefixes name, no fewer and no more. `F5` starts only with no family down, `Shift+F5` only with Shift and no other.
+- **It then stays held** until its main key goes up or a family it names goes fully up. Any other modifier change leaves it as it
+  is.
+- **A modifier change never starts a binding.** An arrow held when Shift goes down keeps panning. Shift held when the arrow goes
+  down pans nothing, unless `Shift+ArrowLeft` is bound. `Shift+F5` held with Shift released first releases its action and does
+  not fire a plain `F5` binding; that fires at the next press of F5.
+- A binding whose main key is itself a modifier key (an unprefixed `ShiftLeft`) does not count its own family at its press.
+- **After a resync** (§10.2) a binding is kept or started only where the final key states prove it. A press that cannot be
+  proven is lost, never made up, and only an unprefixed binding can get a lost tap.
+- **The grammar of `[input.bindings]` did not change;** only what fires did. A plain key pressed with a modifier held no longer
+  fires: an arrow, `=` or `-` on the map, `Shift+Digit1` for speed 1, Escape with a modifier for `close`.
+- **The zoom key.** The owner chose "Add Shift+=" (`-r10.md`, question 2): with a map, `map_zoom_in` defaults to `Equal` and
+  `Shift+Equal`, so `+` still zooms in. `map_zoom_out` stays `Minus` alone.
+
 Close's rising edge requests the existing Lua close callback with source `key`; the native close button uses source `button`. Repeated close events coalesce under the current one-outstanding rule. No callback means accept. Default Escape is now a binding, not a second hardcoded exit path. Cmd-Q/no-menu behavior and signal quit remain as accepted.
 
 ### 10.2 Bounded transition policy

@@ -427,7 +427,8 @@ neither needs nor reads them.
 - **One camera owner.** A map controller in the application holds the camera.
   - It reads new map actions from the existing configurable bindings (`[input.bindings]`). There are six actions: pan left, right, up and
     down, and zoom in and out.
-  - Default keys are the arrow keys and `=` / `-`.
+  - Default keys are the arrow keys and `=` / `-`. Since CK-315 `Shift+=` (the `+` of a US keyboard) zooms in too, and a key
+    pressed with any other modifier held does nothing unless that chord is bound (`docs/scene-design.md` §10.1).
   - A held pan key moves a configurable number of map pixels per frame. A held zoom key repeats at a configurable rate.
   - On each change it computes the camera snapshot, with the visible river pixels selected from the step's prepared coverage, publishes it
     through the map lane, and wakes the renderer. While a key is held it updates every frame; when nothing moves, nothing is published and

@@ -194,6 +194,8 @@ The Firm rule is: cells within the radius; the nearest location takes an overlap
   - `time_faster` and `time_slower` (proposed defaults `]` and `[`).
 
   A new or loaded game starts paused at speed 1.
+- **Since CK-315** a binding fires only with exactly the modifiers it names (`docs/scene-design.md` §10.1): Shift held with
+  `Digit1` sets no speed, and Space with a modifier held does not pause.
 - **Since CK-297 (the pause menu; `docs/ui-design.md` §3.15 and §3.6):**
   - the simulation also takes a control that **only pauses**: a running game pauses with the reason `player`, and a paused
     game is left as it is, its reason included. No action and no key maps to it: the UI sends it with `game.pause()` when the
@@ -292,6 +294,65 @@ index order or `BTreeMap`), allocation addresses and uninitialised data.
   Nothing loads halfway, and a loaded game starts paused.
 - **Controls:** `game_quicksave` and `game_quickload` (defaults F5 and F9) use `[game] saves` (default `saves/`), and `codekarl --load
   PATH` starts from a save. There is no save screen in M7.
+- **Since CK-302 (named saves;** `crates/sim/src/save.rs`, `apps/codekarl/src/game/saves.rs` and `core.rs`**):**
+  - **The header is format 2.** It has three more keys: `name`, the name shown (the quicksave's is `quicksave`); `written`, when
+    the file was written, in UTC as RFC 3339 to the second; and `date`, the in-game date of the tick saved, as `3 Mar 771`. The
+    file's magic and the layout around the header did not change, and none of the three is in the state digest.
+  - **Older saves no longer load.** A load reads the header strictly: a `format` other than 2 is refused by name, and so is a
+    header with an unknown key or without one of its keys. Nothing converts a save of format 1.
+  - **A header can be read alone,** for a list (`SaveHeader::read_from`): the magic, the length and at most 65,536 bytes of
+    header, and never the sections. It reads leniently. It takes `format`, `build`, the four content hashes, `name`, `written`
+    and `date` where each is there and of the right type, and passes over every other key, so an older and a later header can
+    still be listed.
+  - **The list** (`saves::list`) is every regular file of the saves directory whose name ends in `.cksave`, in file-name order.
+    A symbolic link and a directory are not listed, and a saves directory that does not exist yet is an empty list. An entry
+    has:
+    - `filename`, and `name`: the header's, or the file name without `.cksave` when it has none;
+    - `written` and `date`, when the header has them. Nothing is made up from the file's own times;
+    - `this_build`: `yes`, `no`, or `unknown` when no build can be read;
+    - `fit`, the first of these that is true: `unreadable` (the header cannot be read, or has no `format` or no `build`);
+      `version` (the format is not 2, or the build is another); `content` (one of the four content hashes is missing or is
+      not this game's); otherwise `fits`.
+
+    An entry that `fits` is not a promise that the file loads: only a load checks the sections.
+  - **A named save's file.** A name is trimmed of the spaces at its ends and must then have 1 to 48 characters, none of them a
+    control character.
+    - The file's base is the name's ASCII letters in lower case and its digits, with every run of other characters as one
+      `-` and none at its ends, cut to 48. A base that comes out empty is `save`.
+    - The file is `<base>.cksave`, or `<base>-2.cksave`, `-3` and so on when that name is taken, by a file or by anything
+      else. The base `quicksave` starts at `-2`, so a named save never takes the quicksave's file.
+    - **A new save never replaces an entry:** the finished file is linked into place, and a name taken meanwhile gives the
+      next number.
+  - **Five operations,** each run whole by the simulation owner between ticks: the list; **save as a new save** under a name;
+    **save over** a listed save (the same file, new contents and a new header, its name kept); **load** a listed save (the
+    whole file is checked as a quickload checks it, and the game is left paused with the reason `load`); and **delete** a
+    listed save.
+    - Save over and load refuse an entry that does not `fit`. Delete works for every listed entry.
+    - The three that take a listed save take its file name, checked again at each call: no `/`, no `\` and no NUL, not `.`
+      or `..`, ending in `.cksave` with something before it, and a regular file of the saves directory itself.
+    - **A refusal changes nothing:** a write that fails leaves the old file, and a refused load leaves the running game as it
+      was.
+  - The UI VM reaches them as `game.saves`, `game.save`, `game.save_over`, `game.load_save` and `game.delete_save`
+    (`docs/ui-design.md` §3.6). F5 and F9 work as before, on `quicksave.cksave`, whose header is now of format 2 and named
+    `quicksave`. There is still no save screen.
+- **Since CK-311 (unsaved changes;** `core.rs`**):** the core keeps one flag beside its pause and its clock: whether the game
+  has changed since it was last saved or loaded. The owner: "if the game is running, then there are unsaved changes", and
+  "when in doubt it will pop up" (`.pipeline/coordination/ui-polish-design/owner-direction-save-load-designer-r2.md`).
+  - **It is not simulation state.** It is in no save, no journal and no digest, and the snapshot the UI gets does not carry it.
+  - **Set by** every tick that is run, one that ends in an error included, and by the UI's `game.mark_unsaved()`. The shipped
+    UI calls that when the cards-or-rows look of the location panel's lists changes and when the map mode shown changes.
+    Pausing and a change of speed do not set it.
+  - **Cleared by** a save that succeeds (the quicksave, a new save, a save over) and a load that succeeds (the quickload, a
+    named load). A new game, and one started with `--load`, begin with it clear. A save that fails and a load that is
+    refused leave it as it was.
+  - **The guarded load** is a named load that the core refuses with the reason `unsaved` while the flag is set. It then looks
+    at no file and writes no error record. With the flag clear it is the named load.
+    - **The core decides,** when it handles the request, from the flag as it is then. Its messages are handled in the order
+      they arrived, so a tick or a `game.mark_unsaved()` before the request always counts.
+    - The UI holds no copy of the flag, so it cannot decide from an old one.
+    - F9 and the plain named load never ask.
+  - The UI VM's calls are `game.mark_unsaved`, `game.load_save_guarded` and `game.on_save_result` (`docs/ui-design.md` §3.6).
+    The save/load screen that will ask before a load is not built yet.
 
 ### 5.4 How it is shown (Proposal)
 

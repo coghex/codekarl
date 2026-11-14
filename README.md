@@ -68,13 +68,21 @@ gameplay scripts (paths in the file are relative to it). Run it with
 tools/ck cargo run --features metal -- --config config/game.toml
 ```
 
-Quicksaves go to `saves/` at the top of the copy (`[game] saves = "../saves"`; without the key the default is `saves` beside the
-configuration file). `/saves` is in `.ignore`, so Pijul does not see the saves and they never show as changes.
+Saves go to `saves/` at the top of the copy (`[game] saves = "../saves"`; without the key the default is `saves` beside the
+configuration file). `/saves` is in `.ignore`, so Pijul does not see the saves and they never show as changes. The player's
+settings file, `settings.toml`, is kept beside that directory and is in `.ignore` too (see below).
 
 - **A new game** starts paused at the scenario's start date, with a master seed from `--seed N` or the operating system;
   `--load PATH` starts from a save instead.
 - **Time:** Space pauses, `1` to `5` pick a speed, `]` and `[` go faster and slower, and the time bar's buttons do the same. F5
   quicksaves and F9 quickloads.
+- **Saves:** the quicksave is `saves/quicksave.cksave`. A save loads only into the build that wrote it, and a save written before
+  CK-302 (2026-11-14) has the older header and is refused. The game can now also write, list, load and delete named saves, one
+  file each, and knows whether it has unsaved changes; the save/load screen that will use them is not built yet
+  ([docs/places-time-design.md](docs/places-time-design.md) §5.3).
+- **Keys** act only with exactly the modifiers their binding names (CK-315): with Shift, Control, Alt or Command held, a plain
+  key such as `1`, an arrow or Escape does nothing. `+` (`Shift+=`) is bound, and zooms in as `=` does
+  ([docs/scene-design.md](docs/scene-design.md) §10.1).
 - **The menu:** Escape closes what is open, one thing a press: a tooltip, a list's picker, a window. With nothing left to
   close it opens the pause menu, a small window in the middle of the dimmed screen, and pauses the game. While the menu is open
   the mouse reaches nothing behind it, and the time, quicksave, quickload and map keys do nothing. "return", or Escape again,
@@ -93,8 +101,15 @@ configuration file). `/saves` is in `.ignore`, so Pijul does not see the saves a
   (an orange bar fills along its bottom edge): it then stays until you press Escape or click away from it, and a click on a button
   or other control leaves it open. In the locked tooltip, rest on a number for its breakdown or on a light-blue word for its
   explanation. `[ui.tooltips]` in the configuration sets `delay` (0 to 2 seconds), `lock` (`"timer"`,
-  `"middle_mouse"` or `"disabled"`) and `lock_timer` (0.3 to 3 seconds), read at startup
-  ([docs/ui-design.md](docs/ui-design.md) §3.13).
+  `"middle_mouse"` or `"disabled"`) and `lock_timer` (0.3 to 3 seconds)
+  ([docs/ui-design.md](docs/ui-design.md) §3.13), and the settings file can override them.
+- **The settings file** (CK-298): `settings.toml` holds the player's own settings and overrides the configuration file. It may
+  hold `[ui.tooltips]` `delay`, `lock` and `lock_timer`, and `[map]` `pan_pixels_per_frame`, `zoom_steps_per_second` and
+  `scroll_points_per_step`, each checked as the configuration checks it. A missing file is normal. An entry that is not accepted
+  is named in a `warn` record and ignored, and the rest applies. The game's settings calls write it, but no settings window
+  exists yet, so today it holds only what is put there by hand ([docs/ui-design.md](docs/ui-design.md) §3.17).
+- **Lists:** a list longer than its view has a thin scroll bar at its right edge: drag its thumb, or press the track to move one
+  view ([docs/ui-design.md](docs/ui-design.md) §3.16).
 - **The window** opens at 1280×800 screen pixels, its minimum. Drag an edge to enlarge it (the game lays itself out again when you
   let go), or use macOS full screen: the green title-bar button or Control-Command-F. The UI scale follows the window: 1 from
   1280×800 screen pixels, 1.5 from 1920×1200 and 2 from 2560×1600, so a UI pixel is 2, 3 or 4 screen pixels. `[ui] scale = 1`,
@@ -109,8 +124,10 @@ production, stores, herds, posted wages and losses. It is a tuning tool, outside
 ## The runtime command
 
 `codekarl` starts the runtime, logs, and shuts down. With no arguments it uses built-in defaults; `codekarl --config PATH` reads a
-TOML file instead (only that path; no search of the working directory or the environment). `--help`, `--version` and
-`--metal-smoke` do not start the runtime.
+TOML file instead (only that path; no search of the working directory or the environment). Since CK-298 a run with `--config`
+also reads the settings file, `settings.toml` in the parent directory of that configuration's saves directory, when one is
+there ([The game](#the-game)); a run without `--config` reads none. `--help`, `--version` and `--metal-smoke` do not start the
+runtime.
 
 ```
 codekarl [--config PATH] [--headless | --backend NAME] [--load PATH | --seed N] | --help | --version | --metal-smoke
@@ -133,7 +150,8 @@ runtime = "debug"
 backend = "native-metal"  # native-metal | glfw-vulkan; without it the run is headless
 ```
 
-Every key is optional, and an empty file equals the defaults. An unknown key, a wrong type or an invalid value is an error.
+Every key is optional, and an empty file equals the defaults. An unknown key, a wrong type or an invalid value is an error. (The
+settings file is read more leniently: a bad entry there is named and ignored.)
 
 - **Windowed or headless:** a run is headless with no `--config`, with no `[window]` table or one without `backend`, or with
   `--headless`. Otherwise it is windowed with `--backend NAME` if given (it needs a configured backend to override), else the
