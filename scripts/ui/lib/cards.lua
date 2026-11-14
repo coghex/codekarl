@@ -5,6 +5,9 @@
 -- view's right edge, and `draw` is given the row width, `row_w`: the stack's width less the bar's 5 UI pixels (its 3 and a gap of 2). Each
 -- item's hit region is as wide. The heights do not depend on the width, so the bar appears or goes only when the items change, and
 -- `set_items` then draws every item again at the width it has.
+--
+-- **Widgets over an item (CK-305).** An item's hit region is made after its `draw`, so it is above any widget the draw made. A view
+-- that has `raise_hits()` is called after the item's region is set (at each sync, scrolled or not) and puts its widgets' regions above it.
 local ui = require("lib.ui")
 local pointer = require("lib.pointer")
 local tooltip = require("lib.tooltip")
@@ -163,6 +166,9 @@ local function sync(self, redraw)
       self.item_keys[key] = true
       render.set_hit(key, {{x = 0, y = top_of(self, index), width = self.row_w, height = self.items[index].height * P}}, self.group)
       pointer.register(key, item_widget(self, index, key), self.window)
+      -- An item's view may hold widgets drawn over the item (`raise_hits`, CK-305): their regions go above the item's own.
+      local view = self.views[index]
+      if view.raise_hits ~= nil then view:raise_hits() end
     end
   end
   local stale = {}

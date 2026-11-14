@@ -10,6 +10,15 @@ local pressed_keys = {} -- key -> true, the widgets whose gesture is pressed
 local last_over = false
 local deferred = {} -- functions to run when the next dispatch ends
 local press_observers = {} -- functions told of each left press, in the packet's order, before any widget hears it
+local gate = nil -- while set, `gate(key, event)` is asked before a keyed event reaches its widget; true swallows it (CK-305)
+
+-- Sets the gate (or clears it with nil): a function `gate(key, event)` asked, in the packet's order, for every keyed event before its widget
+-- or the widget's owner hears it. True swallows the event; a gate that returns false changes nothing. It holds the later events of the packet
+-- that set it, which have their keys already: the save screen sets one in the click that sends a load, so that a later click or a field's
+-- press in the same update reaches nothing until the answer. There is one gate; none is set unless a caller sets it.
+function pointer.set_gate(fn)
+  gate = fn
+end
 
 -- Registers `fn(event)`, called for each left press (`down`, or `map_down` for one over no hit region) of an eligible packet, in the
 -- packet's order and before the press reaches its widget. It sees every press, whoever's it is: a widget that must act when a press
@@ -122,7 +131,7 @@ function pointer.dispatch(p)
       -- A keyed press is classified against the widgets registered at this boundary, even if no widget owns its key.
       event.functional = pointer.functional(key, event)
     end
-    if key then
+    if key and not (gate ~= nil and gate(key, event)) then
       local widget = widgets[key]
       if widget ~= nil then
         local owner = owners[key]

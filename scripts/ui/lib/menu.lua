@@ -4,9 +4,10 @@
 --
 -- The window is a library window of kind `window`, `fixed` (no close button) and not draggable, centred in the view and centred again
 -- when the view's size changes. Under it a backdrop, the colour `body` at alpha one half, covers the whole view above every bar and
--- window; it is a hit region, so a press, a drag, a scroll or a hover there reaches nothing else. "save / load" is greyed (an inactive
--- button) until its screen exists; "settings" opens the settings window (lib/settings_window.lua) and "glossary" the glossary reader
--- (lib/glossary_reader.lua), each above the menu and its backdrop.
+-- window; it is a hit region, so a press, a drag, a scroll or a hover there reaches nothing else. "settings" opens the settings window
+-- (lib/settings_window.lua), "glossary" the glossary reader (lib/glossary_reader.lua) and "save / load" the save screen (lib/save_screen.lua),
+-- each above the menu and its backdrop. Without a game ("game" is nil: no scenario) there is nothing to save or load, and "save / load" is
+-- greyed (an inactive button).
 local ui = require("lib.ui")
 local button = require("lib.button")
 local windows = require("lib.window")
@@ -21,8 +22,10 @@ local SIDE = 16 -- UI pixels the widest label's button is wider than the label a
 local menu = {}
 
 menu.LABELS = {"return", "settings", "glossary", "save / load", "quit to desktop"}
--- The buttons no screen is built for yet.
-local GREYED = {["save / load"] = true}
+-- The buttons that are greyed: "save / load" has nothing to act on without a game.
+local function greyed(label)
+  return label == "save / load" and (game == nil or game.saves == nil)
+end
 
 local current = nil
 
@@ -56,6 +59,7 @@ end
 local function dismantle(state)
   require("lib.settings_window").close()
   require("lib.glossary_reader").close()
+  require("lib.save_screen").close()
   windows.clear_modal_backdrop(state.backdrop_group)
   pointer.unregister(state.backdrop_key)
   render.set_hit(state.backdrop_key, nil, state.backdrop_group)
@@ -125,6 +129,7 @@ function menu.open(view)
     ["return"] = function() state.window:close() end,
     ["settings"] = function() require("lib.settings_window").open(state.view) end,
     ["glossary"] = function() require("lib.glossary_reader").open(state.view) end,
+    ["save / load"] = function() require("lib.save_screen").open(state.view) end,
     ["quit to desktop"] = function() window.close() end,
   }
   local y = 0
@@ -140,7 +145,7 @@ function menu.open(view)
       kind = "window",
       group = state.window.content,
       owner = state.window,
-      inactive = GREYED[label] == true,
+      inactive = greyed(label),
       on_click = actions[label],
     }
     y = y + height + GAP
@@ -185,6 +190,7 @@ function menu.relayout()
   centre(state)
   require("lib.settings_window").relayout(state.view)
   require("lib.glossary_reader").relayout(state.view)
+  require("lib.save_screen").relayout(state.view)
 end
 
 return menu

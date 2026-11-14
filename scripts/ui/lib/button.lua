@@ -83,6 +83,13 @@ local function publish_region(self)
   render.set_hit(self.key, {{x = self.x, y = self.y, width = self.width, height = self.height}}, self.group)
 end
 
+-- Puts the button's hit region above every other region of its group (a region later in the group's order is on top): for a button
+-- drawn over another widget's region, as the save screen's card buttons are.
+function button:raise_hit()
+  render.set_hit(self.key, nil, self.group)
+  publish_region(self)
+end
+
 -- The colours the state calls for (the theme's table of the design: fill, line, text), pressed over hover over normal. A selected
 -- button (a tab that is showing) looks pressed until it is deselected. An inactive button always looks the same: no hover, no pressed.
 local function look_of(self)
