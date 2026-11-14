@@ -1662,6 +1662,52 @@ end)
 }
 
 #[test]
+fn escape_closes_the_top_tooltip_then_the_open_list_bar_picker_then_the_top_window_one_each() {
+    use super::listbar_tests::{MARKS, PROBE, frame, hover, point, rig as listbar_rig};
+    // A locked tooltip (hovered over its source long enough, then left), an open picker and a window: three presses close them in
+    // that order, and a fourth asks to quit.
+    let mut rig = listbar_rig(
+        &format!("new_window(120, 100) new_bar() {MARKS} {PROBE}"),
+        &[
+            r#"
+bar:view({row("a", "ringfort", 1), row("b", "crannog", 2)})
+mark("probe", 630, 420)
+"#,
+            r#"
+eq(count_hits("tooltip_panel_"), 1, "the tooltip is open")
+bar.filter_button.on_click()
+expect(bar.picker ~= nil and not W.closed)
+"#,
+            r#"
+eq(count_hits("tooltip_panel_"), 0, "the first Escape closed the tooltip")
+expect(bar.picker ~= nil and not W.closed, "and nothing else")
+"#,
+            r#"
+expect(bar.picker == nil and not W.closed, "the second closed the picker, not the window")
+"#,
+            r#"
+expect(W.closed, "the third closed the window")
+"#,
+        ],
+    );
+    rig.opened();
+    let probe = point(&rig, "probe");
+    hover(&mut rig, probe);
+    for _ in 0..150 {
+        frame(&mut rig);
+    }
+    hover(&mut rig, (700.0, 550.0));
+    rig.opened();
+    assert!(rig.escape(), "Escape closes the tooltip");
+    rig.opened();
+    assert!(rig.escape(), "Escape closes the picker");
+    rig.opened();
+    assert!(rig.escape(), "Escape closes the window");
+    rig.opened();
+    assert!(!rig.escape(), "with nothing else open, Escape asks to quit");
+}
+
+#[test]
 fn the_production_place_panel_updates_in_place_and_help_raises_on_a_second_click() {
     let script = format!(
         r"

@@ -1225,6 +1225,8 @@ mod input_tick_tests;
 #[cfg(test)]
 mod list_tests;
 #[cfg(test)]
+mod listbar_tests;
+#[cfg(test)]
 mod location_tests;
 #[cfg(test)]
 mod theme_tests;

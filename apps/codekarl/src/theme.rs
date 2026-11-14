@@ -583,7 +583,7 @@ mod tests {
     }
 
     /// The application's icons: name, width in pixels and the seven shape rows after the two blank ones.
-    const ICONS: [(&str, usize, &[&str]); 14] = [
+    const ICONS: [(&str, usize, &[&str]); 16] = [
         (
             "rewind",
             9,
@@ -752,6 +752,47 @@ mod tests {
                 ".........",
             ],
         ),
+        // CK-295, rule 1: the list bar's two buttons, the rows exactly as the spec writes them.
+        (
+            "filter",
+            9,
+            &[
+                ".........",
+                "#########",
+                ".#######.",
+                "..#####..",
+                "...###...",
+                "...###...",
+                "...###...",
+                "...###...",
+                "...##....",
+                ".........",
+                ".........",
+            ],
+        ),
+        (
+            "sort",
+            9,
+            &[
+                ".........",
+                ".#..#####",
+                ".#.......",
+                ".#..####.",
+                ".#.......",
+                ".#..###..",
+                ".#.......",
+                "###.##...",
+                ".#.......",
+                ".........",
+                ".........",
+            ],
+        ),
+    ];
+
+    /// CK-295, rule 2: the sort picker's direction marks, 5 by 5, white on clear.
+    const MARKS: [(&str, [&str; 5]); 2] = [
+        ("sort_down", ["..#..", "..#..", "#.#.#", ".###.", "..#.."]),
+        ("sort_up", ["..#..", ".###.", "#.#.#", "..#..", "..#.."]),
     ];
 
     #[test]
@@ -788,6 +829,18 @@ mod tests {
                 "{file}"
             );
             assert_eq!(image.pixels(), expected_icon(width, shape), "{file}");
+            names.insert(file);
+        }
+        for (name, shape) in MARKS {
+            let file = format!("{name}.png");
+            let image = Image::decode(fs::File::open(directory.join(&file)).unwrap()).unwrap();
+            assert_eq!((image.width(), image.height()), (5, 5), "{file}");
+            let expected: Vec<u8> = shape
+                .iter()
+                .flat_map(|row| row.bytes())
+                .flat_map(|byte| if byte == b'#' { [255; 4] } else { [0; 4] })
+                .collect();
+            assert_eq!(image.pixels(), expected, "{file}");
             names.insert(file);
         }
         for cut in [3_usize, 6, 7] {

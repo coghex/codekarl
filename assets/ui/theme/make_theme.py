@@ -4,7 +4,7 @@
     python3 make_theme.py --check    fail if a committed image differs from what this script writes, or is missing or extra
 
 `white.png` is one opaque white pixel: the frames' bands and edges are stretched copies of it, tinted by the theme. `speed_box.png`
-is the one-pixel rounded outline of a 6 by 11 speed indicator. The `icon_*.png` files are white 11-row glyphs: four for the time bar and two for the map modes. For each cut
+is the one-pixel rounded outline of a 6 by 11 speed indicator. The `icon_*.png` files are white 11-row glyphs: four for the time bar, two for the map modes and two (`filter`, `sort`) for the list bar; `sort_down.png` and `sort_up.png` are its 5 by 5 direction marks. For each cut
 `c` in 3, 6 and 7 there are four tiles of `(c + 1) x (c + 1)` pixels, opaque white or transparent:
 
 - `cut<c>_tl_line.png` and `cut<c>_tl_fill.png`, the top-left corner: pixel `(i, j)` is line where `i + j == c`, fill where
@@ -166,6 +166,45 @@ ICONS = {
             ".........",
         ),
     ),
+    # The lists' two buttons (CK-295; owner-approved, docs/ui-art-provenance.md): a solid funnel, and an arrow down beside four bars.
+    "filter": (
+        9,
+        (
+            ".........",
+            "#########",
+            ".#######.",
+            "..#####..",
+            "...###...",
+            "...###...",
+            "...###...",
+            "...###...",
+            "...##....",
+            ".........",
+            ".........",
+        ),
+    ),
+    "sort": (
+        9,
+        (
+            ".........",
+            ".#..#####",
+            ".#.......",
+            ".#..####.",
+            ".#.......",
+            ".#..###..",
+            ".#.......",
+            "###.##...",
+            ".#.......",
+            ".........",
+            ".........",
+        ),
+    ),
+}
+
+# The sort picker's direction marks: 5 by 5, white on clear, an arrow with a one-pixel stem and a five-wide head.
+MARKS = {
+    "sort_down": ("..#..", "..#..", "#.#.#", ".###.", "..#.."),
+    "sort_up": ("..#..", ".###.", "#.#.#", "..#..", "..#.."),
 }
 
 
@@ -205,6 +244,11 @@ def icon(width: int, shape: tuple[str, ...]) -> list[list[Pixel]]:
     return rows
 
 
+def mark(shape: tuple[str, ...]) -> list[list[Pixel]]:
+    """A 5 by 5 direction mark."""
+    return [[WHITE if pixel == "#" else CLEAR for pixel in row] for row in shape]
+
+
 def speed_box() -> list[list[Pixel]]:
     """A 6 by 11 one-pixel outline with transparent corner pixels."""
     return [
@@ -225,6 +269,8 @@ def images() -> dict[Path, bytes]:
     found[HERE / "speed_box.png"] = png(speed_box())
     for name, (width, shape) in ICONS.items():
         found[HERE / f"icon_{name}.png"] = png(icon(width, shape))
+    for name, shape in MARKS.items():
+        found[HERE / f"{name}.png"] = png(mark(shape))
     for cut in CUTS:
         for corner in ("tl", "br"):
             for part in ("fill", "line"):
