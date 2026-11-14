@@ -271,7 +271,10 @@ fn a_resync_applies_the_final_states_and_a_lost_escape_tap_still_closes() {
             assert_eq!((posts.is_empty(), end), (true, LoopEnd::Quit), "{posts:?}");
             let held = states(&[Key::ControlLeft, Key::KeyR], &[Key::KeyR], &[]);
             let (posts, end) = run(
-                vec![vec![NativeEvent::KeyResync(held)]],
+                vec![
+                    vec![down(Key::ControlLeft)],
+                    vec![NativeEvent::KeyResync(held)],
+                ],
                 &[Answer::Accept],
                 |rig| {
                     with(rig, chord());

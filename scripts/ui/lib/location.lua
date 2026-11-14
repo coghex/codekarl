@@ -1168,6 +1168,7 @@ local function ensure_selector(self)
   local function choose(key)
     if self_owner.list_look == key then return end
     self_owner.list_look = key
+    game.mark_unsaved()
     for name, control in pairs(selector.buttons) do control:set_selected(name == self_owner.list_look) end
     if self_owner.cards ~= nil and not self_owner.cards.closed then self_owner.cards:set_pos(0) end
     render(self_owner, false)

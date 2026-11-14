@@ -906,6 +906,12 @@ fn the_places_list_is_shorter_by_the_bar_and_its_pickers_offer_the_kinds_and_the
         note_with(&rig, "picker "),
         "picker sort default,name,people,food"
     );
+    assert!(
+        rig.control_receiver
+            .try_iter()
+            .all(|message| !matches!(message, crate::game::core::Message::MarkUnsaved)),
+        "list filtering and sorting are navigation"
+    );
 }
 
 fn click_pick(rig: &mut Rig, label: &str) {

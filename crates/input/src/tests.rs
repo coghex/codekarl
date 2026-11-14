@@ -624,34 +624,152 @@ fn a_tap_latches_both_edges_and_repeat_rules_do_not_invent_edges() {
 }
 
 #[test]
-fn either_modifier_side_satisfies_prefixes_and_modifier_changes_recompute_actions() {
-    // Negative control: recomputing only on main-key transitions leaves the chord held after Control-up.
+fn either_modifier_side_satisfies_prefixes_but_modifier_changes_never_start_a_binding() {
     let mut mapper = Mapper::new(bindings(&[("combo", &["Control+KeyR"])]));
     mapper.key(Key::ControlLeft, true, false);
     mapper.key(Key::KeyR, true, false);
     let left = mapper.snapshot();
     assert!(action(&left, "combo").held);
-    assert!(action(&left, "reload_texture").held);
+    assert!(!action(&left, "reload_texture").held);
 
     mapper.key(Key::ControlLeft, false, false);
     let released = mapper.snapshot();
     assert!(!action(&released, "combo").held);
     assert!(action(&released, "combo").released);
-    assert!(action(&released, "reload_texture").held);
+    assert!(!action(&released, "reload_texture").held);
+    mapper.acknowledge(released.sequence);
 
     mapper.key(Key::ControlRight, true, false);
+    let right_without_repress = mapper.snapshot();
+    assert!(!action(&right_without_repress, "combo").held);
+    assert!(!action(&right_without_repress, "combo").pressed);
+    assert!(!action(&right_without_repress, "reload_texture").held);
+
+    mapper.key(Key::KeyR, false, false);
+    mapper.key(Key::KeyR, true, false);
     let right = mapper.snapshot();
     assert!(action(&right, "combo").held);
-    assert!(action(&right, "reload_texture").held);
+    assert!(!action(&right, "reload_texture").held);
+
+    mapper.key(Key::ControlRight, false, false);
+    let right_released = mapper.snapshot();
+    assert!(action(&right_released, "combo").released);
+    assert!(!action(&right_released, "reload_texture").held);
+    mapper.key(Key::KeyR, false, false);
+    mapper.key(Key::KeyR, true, false);
+    let plain = mapper.snapshot();
+    assert!(!action(&plain, "combo").held);
+    assert!(action(&plain, "reload_texture").held);
+}
+
+#[test]
+fn bindings_start_only_when_the_main_key_is_pressed_with_the_exact_modifier_mask() {
+    let mut mapper = Mapper::new(bindings(&[
+        ("plain", &["F5"]),
+        ("shifted", &["Shift+F5"]),
+        ("control_shifted", &["Control+Shift+F5"]),
+        ("shift_key", &["ShiftLeft"]),
+    ]));
+
+    mapper.key(Key::ShiftLeft, true, false);
+    mapper.key(Key::F5, true, false);
+    let shifted = mapper.snapshot();
+    assert!(action(&shifted, "shifted").held);
+    assert!(!action(&shifted, "plain").held);
+    assert!(!action(&shifted, "control_shifted").held);
+
+    mapper.key(Key::ControlLeft, true, false);
+    let extra_family = mapper.snapshot();
+    assert!(action(&extra_family, "shifted").held);
+    assert!(!action(&extra_family, "control_shifted").held);
+
+    let mut control_shift = Mapper::new(bindings(&[
+        ("plain", &["F5"]),
+        ("shifted", &["Shift+F5"]),
+        ("control_shifted", &["Control+Shift+F5"]),
+    ]));
+    control_shift.key(Key::ControlRight, true, false);
+    control_shift.key(Key::ShiftRight, true, false);
+    control_shift.key(Key::F5, true, false);
+    let exact = control_shift.snapshot();
+    assert!(action(&exact, "control_shifted").held);
+    assert!(!action(&exact, "plain").held);
+    assert!(!action(&exact, "shifted").held);
+
+    let mut shift_key_alone = Mapper::new(bindings(&[("shift_key", &["ShiftLeft"])]));
+    shift_key_alone.key(Key::ShiftLeft, true, false);
+    assert!(action(&shift_key_alone.snapshot(), "shift_key").held);
+    let mut shift_key_with_control = Mapper::new(bindings(&[("shift_key", &["ShiftLeft"])]));
+    shift_key_with_control.key(Key::ControlLeft, true, false);
+    shift_key_with_control.key(Key::ShiftLeft, true, false);
+    assert!(!action(&shift_key_with_control.snapshot(), "shift_key").held);
+}
+
+#[test]
+fn held_bindings_keep_press_time_identity_across_unrelated_modifiers_and_require_a_new_press_after_release()
+ {
+    let mut plain = Mapper::new(bindings(&[("move", &["ArrowLeft"])]));
+    plain.key(Key::ArrowLeft, true, false);
+    let before = plain.snapshot();
+    plain.acknowledge(before.sequence);
+    plain.key(Key::ShiftLeft, true, false);
+    plain.key(Key::ShiftLeft, false, false);
+    let unchanged = plain.snapshot();
+    assert!(action(&unchanged, "move").held);
+    assert!(!action(&unchanged, "move").pressed);
+    assert!(!action(&unchanged, "move").released);
+
+    let mut no_late_start = Mapper::new(bindings(&[("move", &["ArrowLeft"])]));
+    no_late_start.key(Key::ShiftLeft, true, false);
+    no_late_start.key(Key::ArrowLeft, true, false);
+    assert!(!action(&no_late_start.snapshot(), "move").held);
+
+    let mut chord = Mapper::new(bindings(&[("plain", &["F5"]), ("shifted", &["Shift+F5"])]));
+    chord.key(Key::ShiftLeft, true, false);
+    chord.key(Key::F5, true, false);
+    let active = chord.snapshot();
+    assert!(action(&active, "shifted").held);
+    chord.acknowledge(active.sequence);
+    chord.key(Key::ShiftLeft, false, false);
+    let released = chord.snapshot();
+    assert!(action(&released, "shifted").released);
+    assert!(!action(&released, "plain").pressed);
+    chord.key(Key::F5, false, false);
+    chord.key(Key::F5, true, false);
+    assert!(action(&chord.snapshot(), "plain").pressed);
+
+    let mut repressed_control = Mapper::new(bindings(&[("combo", &["Control+KeyR"])]));
+    repressed_control.key(Key::ControlLeft, true, false);
+    repressed_control.key(Key::KeyR, true, false);
+    let active = repressed_control.snapshot();
+    repressed_control.acknowledge(active.sequence);
+    repressed_control.key(Key::ControlLeft, false, false);
+    repressed_control.key(Key::ControlLeft, true, false);
+    let no_restart = repressed_control.snapshot();
+    assert!(!action(&no_restart, "combo").held);
+    assert!(action(&no_restart, "combo").released);
+    repressed_control.key(Key::ControlLeft, false, false);
+    repressed_control.key(Key::ControlLeft, true, false);
+    repressed_control.key(Key::KeyR, false, false);
+    repressed_control.key(Key::KeyR, true, false);
+    assert!(action(&repressed_control.snapshot(), "combo").held);
+
+    let mut recovery = Mapper::new(bindings(&[("plain", &["F5"]), ("shifted", &["Shift+F5"])]));
+    recovery.key(Key::ShiftLeft, true, false);
+    recovery.key(Key::F5, true, true);
+    assert!(action(&recovery.snapshot(), "shifted").held);
+    let mut modifier_recovery = Mapper::new(bindings(&[("shift_key", &["ShiftLeft"])]));
+    modifier_recovery.key(Key::ShiftLeft, true, true);
+    assert!(action(&modifier_recovery.snapshot(), "shift_key").held);
 }
 
 #[test]
 fn focus_loss_releases_every_action_once_and_latches_reset() {
     // Negative control: preserving the held-key bitset across focus loss leaves movement or a chord stuck.
     let mut mapper = Mapper::new(bindings(&[("combo", &["Control+KeyQ"])]));
+    mapper.key(Key::KeyA, true, false);
     mapper.key(Key::ControlLeft, true, false);
     mapper.key(Key::KeyQ, true, false);
-    mapper.key(Key::KeyA, true, false);
     mapper.focus_lost();
     let reset = mapper.snapshot();
     assert!(reset.reset);
@@ -789,6 +907,177 @@ fn defaults() -> Mapper {
 }
 
 #[test]
+fn resync_does_not_invent_an_activation_from_ambiguous_modifier_order() {
+    let ambiguous = bindings(&[("plain", &["F5"]), ("shifted", &["Shift+F5"])]);
+    for ordered_history in ["F5 then Shift", "Shift then F5"] {
+        // The lost latches are identical for both orders; neither press-time mask is provable.
+        let mut mapper = Mapper::new(ambiguous.clone());
+        mapper.resync(&states(
+            &[Key::F5, Key::ShiftLeft],
+            &[Key::F5, Key::ShiftLeft],
+            &[],
+        ));
+        let snapshot = mapper.snapshot();
+        assert!(
+            !action(&snapshot, "plain").held && !action(&snapshot, "plain").pressed,
+            "{ordered_history}: {:?}",
+            action(&snapshot, "plain")
+        );
+        assert!(
+            !action(&snapshot, "shifted").held && !action(&snapshot, "shifted").pressed,
+            "{ordered_history}: {:?}",
+            action(&snapshot, "shifted")
+        );
+    }
+
+    // Shift was down before the span, then released while F5 was pressed. Plain F5 was never proven.
+    let mut released_modifier = Mapper::new(ambiguous.clone());
+    released_modifier.key(Key::ShiftLeft, true, false);
+    let before = released_modifier.snapshot();
+    released_modifier.acknowledge(before.sequence);
+    released_modifier.resync(&states(&[Key::F5], &[Key::F5], &[Key::ShiftLeft]));
+    let snapshot = released_modifier.snapshot();
+    assert!(!action(&snapshot, "plain").held && !action(&snapshot, "plain").pressed);
+    assert!(!action(&snapshot, "shifted").held && !action(&snapshot, "shifted").pressed);
+
+    // When the modifier never changed, the press time is known and the matching chord may start.
+    let mut stable_shift = Mapper::new(ambiguous);
+    stable_shift.key(Key::ShiftRight, true, false);
+    let before = stable_shift.snapshot();
+    stable_shift.acknowledge(before.sequence);
+    stable_shift.resync(&states(&[Key::F5, Key::ShiftRight], &[Key::F5], &[]));
+    let snapshot = stable_shift.snapshot();
+    assert!(action(&snapshot, "shifted").held && action(&snapshot, "shifted").pressed);
+    assert!(!action(&snapshot, "plain").held && !action(&snapshot, "plain").pressed);
+
+    let mut stable_plain = Mapper::new(bindings(&[("plain", &["F5"]), ("shifted", &["Shift+F5"])]));
+    stable_plain.resync(&states(&[Key::F5], &[Key::F5], &[]));
+    let snapshot = stable_plain.snapshot();
+    assert!(action(&snapshot, "plain").held && action(&snapshot, "plain").pressed);
+    assert!(!action(&snapshot, "shifted").held && !action(&snapshot, "shifted").pressed);
+}
+
+#[test]
+fn resync_keeps_only_steady_main_keys_and_one_steady_side_of_each_required_family() {
+    let mut plain = Mapper::new(bindings(&[("move", &["ArrowLeft"])]));
+    plain.key(Key::ArrowLeft, true, false);
+    let before = plain.snapshot();
+    plain.acknowledge(before.sequence);
+    plain.resync(&states(
+        &[Key::ArrowLeft, Key::ShiftLeft],
+        &[Key::ShiftLeft],
+        &[],
+    ));
+    let snapshot = plain.snapshot();
+    assert!(action(&snapshot, "move").held);
+    assert!(!action(&snapshot, "move").pressed && !action(&snapshot, "move").released);
+
+    let mut other_side = Mapper::new(bindings(&[("shifted", &["Shift+F5"])]));
+    other_side.key(Key::ShiftRight, true, false);
+    other_side.key(Key::F5, true, false);
+    let before = other_side.snapshot();
+    other_side.acknowledge(before.sequence);
+    other_side.resync(&states(
+        &[Key::F5, Key::ShiftLeft, Key::ShiftRight],
+        &[Key::ShiftLeft],
+        &[Key::ShiftLeft],
+    ));
+    let snapshot = other_side.snapshot();
+    assert!(action(&snapshot, "shifted").held);
+    assert!(!action(&snapshot, "shifted").pressed && !action(&snapshot, "shifted").released);
+
+    let mut changed_only_side =
+        Mapper::new(bindings(&[("plain", &["F5"]), ("shifted", &["Shift+F5"])]));
+    changed_only_side.key(Key::ShiftLeft, true, false);
+    changed_only_side.key(Key::F5, true, false);
+    let before = changed_only_side.snapshot();
+    changed_only_side.acknowledge(before.sequence);
+    changed_only_side.resync(&states(
+        &[Key::F5, Key::ShiftLeft],
+        &[Key::ShiftLeft],
+        &[Key::ShiftLeft],
+    ));
+    let snapshot = changed_only_side.snapshot();
+    assert!(!action(&snapshot, "shifted").held);
+    assert!(action(&snapshot, "shifted").released);
+    assert!(!action(&snapshot, "plain").held && !action(&snapshot, "plain").pressed);
+}
+
+#[test]
+fn resync_restarts_only_proven_presses_and_filters_lost_taps_by_stable_modifiers() {
+    let mut plain_restart = Mapper::new(bindings(&[("plain", &["F5"])]));
+    plain_restart.key(Key::F5, true, false);
+    let before = plain_restart.snapshot();
+    plain_restart.acknowledge(before.sequence);
+    plain_restart.resync(&states(&[Key::F5], &[Key::F5], &[Key::F5]));
+    let snapshot = plain_restart.snapshot();
+    assert!(action(&snapshot, "plain").held && action(&snapshot, "plain").pressed);
+    assert!(!action(&snapshot, "plain").released);
+
+    let mut changed_modifier =
+        Mapper::new(bindings(&[("plain", &["F5"]), ("shifted", &["Shift+F5"])]));
+    changed_modifier.key(Key::F5, true, false);
+    let before = changed_modifier.snapshot();
+    changed_modifier.acknowledge(before.sequence);
+    changed_modifier.resync(&states(
+        &[Key::F5, Key::ShiftLeft],
+        &[Key::F5, Key::ShiftLeft],
+        &[],
+    ));
+    let snapshot = changed_modifier.snapshot();
+    assert!(action(&snapshot, "plain").released && !action(&snapshot, "plain").held);
+    assert!(!action(&snapshot, "plain").pressed && !action(&snapshot, "shifted").pressed);
+    assert!(!action(&snapshot, "shifted").held);
+
+    let mut chord_restart = Mapper::new(bindings(&[("shifted", &["Shift+F5"])]));
+    chord_restart.key(Key::ShiftRight, true, false);
+    chord_restart.key(Key::F5, true, false);
+    let before = chord_restart.snapshot();
+    chord_restart.acknowledge(before.sequence);
+    chord_restart.resync(&states(&[Key::F5, Key::ShiftRight], &[Key::F5], &[Key::F5]));
+    let snapshot = chord_restart.snapshot();
+    assert!(action(&snapshot, "shifted").held);
+    assert!(!action(&snapshot, "shifted").released);
+
+    let mut plain_tap = Mapper::new(bindings(&[("plain", &["F5"])]));
+    plain_tap.resync(&states(&[], &[Key::F5], &[Key::F5]));
+    let snapshot = plain_tap.snapshot();
+    let tap = action(&snapshot, "plain");
+    assert!(tap.pressed && tap.released && !tap.held);
+
+    let mut f5_modified_tap = Mapper::new(bindings(&[("plain", &["F5"])]));
+    f5_modified_tap.key(Key::ShiftLeft, true, false);
+    f5_modified_tap.resync(&states(&[Key::ShiftLeft], &[Key::F5], &[Key::F5]));
+    let snapshot = f5_modified_tap.snapshot();
+    let tap = action(&snapshot, "plain");
+    assert!(!tap.pressed && !tap.released && !tap.held);
+
+    let mut ambiguous_tap = Mapper::new(bindings(&[("plain", &["F5"])]));
+    ambiguous_tap.resync(&states(
+        &[Key::ShiftLeft],
+        &[Key::F5, Key::ShiftLeft],
+        &[Key::F5],
+    ));
+    let snapshot = ambiguous_tap.snapshot();
+    let tap = action(&snapshot, "plain");
+    assert!(!tap.pressed && !tap.released && !tap.held);
+
+    let mut escape_after_modifier_change = defaults();
+    escape_after_modifier_change.resync(&states(
+        &[],
+        &[Key::Escape, Key::ShiftLeft],
+        &[Key::Escape],
+    ));
+    assert_eq!(escape_after_modifier_change.take_close_presses(), 0);
+
+    let mut shift_tap = Mapper::new(bindings(&[("shift_tap", &["ShiftLeft"])]));
+    shift_tap.resync(&states(&[], &[Key::ShiftLeft], &[Key::ShiftLeft]));
+    let snapshot = shift_tap.snapshot();
+    let tap = action(&snapshot, "shift_tap");
+    assert!(tap.pressed && tap.released && !tap.held);
+}
+
+#[test]
 fn key_states_keep_three_sets_and_ignore_bits_beyond_the_supported_keys() {
     let mut all = KeyStates::new();
     all.set_held(Key::KeyA);
@@ -809,7 +1098,7 @@ fn key_states_keep_three_sets_and_ignore_bits_beyond_the_supported_keys() {
 }
 
 #[test]
-fn a_resync_recomputes_every_action_from_the_final_states_alone() {
+fn a_resync_starts_proven_plain_keys_and_releases_missing_actions() {
     // The mapper believed Escape and KeyA held; the final states say KeyD and KeyW are held and nothing else.
     let mut mapper = defaults();
     mapper.key(Key::Escape, true, false);
@@ -906,8 +1195,9 @@ fn a_prefixed_binding_never_gets_a_press_or_a_tap_from_the_latches() {
     let snapshot = mapper.snapshot();
     assert!(!action(&snapshot, "reload_texture").pressed && !action(&snapshot, "close").pressed);
     assert_eq!(mapper.take_close_presses(), 0);
-    // Both keys physically held now: the chord overlaps now, so it is pressed, and closes once.
+    // Control is steady through the discarded span, so the chord's press-time mask is proven.
     let mut mapper = Mapper::new(chords);
+    mapper.key(Key::ControlLeft, true, false);
     mapper.resync(&states(&[Key::ControlLeft, Key::KeyR], &[Key::KeyR], &[]));
     let snapshot = mapper.snapshot();
     assert!(action(&snapshot, "reload_texture").held && action(&snapshot, "close").held);

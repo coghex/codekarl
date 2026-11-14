@@ -14,7 +14,7 @@ use ck_log::Level;
 use ck_sim::{Canonical, Clock, Date, Save, Scheduler, Simulation, Speed};
 
 use super::{
-    controls::Control,
+    controls::{Control, GuardedLoadResult, GuardedResultSink},
     saves::{self, Entry, Fit, Identity, quicksave_path, write_atomically, write_new_atomically},
     slot::{PauseReason, SimSnapshot},
     view::EconomyView,
@@ -29,8 +29,15 @@ pub(crate) const ECONOMY_HOUR: u8 = 12;
 pub(crate) enum Message {
     /// A control the player asked for.
     Control(Control),
+    /// A UI choice that counts as an unsaved change.
+    MarkUnsaved,
     /// A named-save API request; the reply carries only the completed operation outcome.
     Save(SaveCall, Sender<SaveReply>),
+    /// A guarded named load; the result is returned to the UI link asynchronously.
+    GuardedLoad {
+        filename: String,
+        reply: GuardedResultSink,
+    },
     /// Finish the tick that is running, if any, and end.
     Stop,
     /// End without running another tick.
@@ -41,8 +48,16 @@ impl PartialEq for Message {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Control(left), Self::Control(right)) => left == right,
+            (Self::MarkUnsaved, Self::MarkUnsaved)
+            | (Self::Stop, Self::Stop)
+            | (Self::Cancel, Self::Cancel) => true,
             (Self::Save(left, _), Self::Save(right, _)) => left == right,
-            (Self::Stop, Self::Stop) | (Self::Cancel, Self::Cancel) => true,
+            (
+                Self::GuardedLoad { filename: left, .. },
+                Self::GuardedLoad {
+                    filename: right, ..
+                },
+            ) => left == right,
             _ => false,
         }
     }
@@ -113,6 +128,8 @@ pub(crate) struct Core<S, C> {
     simulation: Simulation<S, C>,
     clock: Clock,
     paused: Option<PauseReason>,
+    /// Whether the player's game has changed since its last successful save or load.
+    unsaved: bool,
     identity: Identity,
     saves: PathBuf,
     rebuild: Rebuild<S, C>,
@@ -158,6 +175,7 @@ where
             simulation,
             clock: Clock::new(),
             paused: Some(PauseReason::Load),
+            unsaved: false,
             identity,
             saves,
             rebuild,
@@ -225,6 +243,11 @@ where
         self.simulation.state()
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_unsaved_changes(&self) -> bool {
+        self.unsaved
+    }
+
     fn publish_if_changed(&mut self) {
         let snapshot = self.snapshot();
         if self
@@ -260,9 +283,31 @@ where
                     Flow::Continue
                 }
             }
+            Message::MarkUnsaved => {
+                self.unsaved = true;
+                Flow::Continue
+            }
             Message::Save(call, reply) => {
                 let result = self.save_call(call);
                 let _ = reply.send(result);
+                if self.failed {
+                    Flow::End
+                } else {
+                    Flow::Continue
+                }
+            }
+            Message::GuardedLoad { filename, reply } => {
+                let result = if self.unsaved {
+                    Err("unsaved".to_owned())
+                } else {
+                    let result = self.load_named(&filename);
+                    self.publish_if_changed();
+                    if let Err(reason) = &result {
+                        self.log(Level::Error, format!("guarded load refused: {reason}"));
+                    }
+                    result
+                };
+                reply.send(GuardedLoadResult { filename, result });
                 if self.failed {
                     Flow::End
                 } else {
@@ -358,6 +403,7 @@ where
 
     /// One whole tick; it is never cut short.
     fn tick(&mut self) {
+        self.unsaved = true;
         let began = self.simulation.date();
         match self.simulation.step() {
             Ok(errors) => {
@@ -426,8 +472,20 @@ where
     fn save_call(&mut self, call: SaveCall) -> SaveReply {
         let reply = match call {
             SaveCall::List => SaveReply::Listed(saves::list(&self.saves, &self.identity)),
-            SaveCall::New(name) => SaveReply::Finished(self.save_as_new(&name)),
-            SaveCall::Over(filename) => SaveReply::Finished(self.save_over(&filename)),
+            SaveCall::New(name) => {
+                let result = self.save_as_new(&name);
+                if result.is_ok() {
+                    self.unsaved = false;
+                }
+                SaveReply::Finished(result)
+            }
+            SaveCall::Over(filename) => {
+                let result = self.save_over(&filename);
+                if result.is_ok() {
+                    self.unsaved = false;
+                }
+                SaveReply::Finished(result)
+            }
             SaveCall::Delete(filename) => SaveReply::Finished(self.delete(&filename)),
             SaveCall::Load(filename) => {
                 let result = self.load_named(&filename);
@@ -509,6 +567,7 @@ where
                 self.simulation = simulation;
                 self.clock = Clock::new();
                 self.paused = Some(PauseReason::Load);
+                self.unsaved = false;
                 self.refresh_view();
                 self.log(Level::Info, format!("loaded {} ({filename})", entry.name));
                 Ok(())
@@ -530,7 +589,10 @@ where
                     .map_err(|error| format!("cannot write {}: {error}", path.display()))
             });
         match result {
-            Ok(()) => self.log(Level::Info, format!("saved {} at {date}", path.display())),
+            Ok(()) => {
+                self.unsaved = false;
+                self.log(Level::Info, format!("saved {} at {date}", path.display()));
+            }
             Err(message) => self.log(Level::Error, format!("quicksave failed: {message}")),
         }
     }
@@ -544,6 +606,7 @@ where
                 self.simulation = simulation;
                 self.clock = Clock::new();
                 self.paused = Some(PauseReason::Load);
+                self.unsaved = false;
                 self.refresh_view();
                 let date = self.snapshot().date;
                 self.log(Level::Info, format!("loaded {} at {date}", path.display()));

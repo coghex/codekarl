@@ -1506,7 +1506,10 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
             ("map_pan_right".to_owned(), vec!["ArrowRight".to_owned()]),
             ("map_pan_up".to_owned(), vec!["ArrowUp".to_owned()]),
             ("map_pan_down".to_owned(), vec!["ArrowDown".to_owned()]),
-            ("map_zoom_in".to_owned(), vec!["Equal".to_owned()]),
+            (
+                "map_zoom_in".to_owned(),
+                vec!["Equal".to_owned(), "Shift+Equal".to_owned()],
+            ),
             ("map_zoom_out".to_owned(), vec!["Minus".to_owned()]),
         ]);
         if game.is_some() {
@@ -1931,6 +1934,17 @@ mod tests {
 
     const PATH: &str = "/tmp/codekarl-test/config.toml";
 
+    fn input_action<'a>(
+        snapshot: &'a ck_input::InputSnapshot,
+        name: &str,
+    ) -> &'a ck_input::ActionSnapshot {
+        snapshot
+            .actions
+            .iter()
+            .find(|state| state.name == name)
+            .unwrap_or_else(|| panic!("missing action {name}"))
+    }
+
     fn parse_config(text: &str) -> Result<Config, String> {
         parse(Path::new(PATH), text)
     }
@@ -2248,11 +2262,21 @@ mod tests {
                 .name(),
             "ArrowLeft"
         );
+        let zoom_in = defaults.bindings.action("map_zoom_in").unwrap().bindings();
+        assert_eq!(zoom_in.len(), 2);
+        assert_eq!(zoom_in[0].key().name(), "Equal");
+        assert_eq!(zoom_in[1].key().name(), "Equal");
+        let expected_zoom_in = Bindings::from_entries([(
+            "map_zoom_in".to_owned(),
+            vec!["Equal".to_owned(), "Shift+Equal".to_owned()],
+        )])
+        .expect("valid map zoom defaults");
         assert_eq!(
-            defaults.bindings.action("map_zoom_in").unwrap().bindings()[0]
-                .key()
-                .name(),
-            "Equal"
+            zoom_in,
+            expected_zoom_in
+                .action("map_zoom_in")
+                .expect("zoom action")
+                .bindings()
         );
         assert_eq!(
             defaults.bindings.action("map_zoom_out").unwrap().bindings()[0]
@@ -2260,6 +2284,28 @@ mod tests {
                 .name(),
             "Minus"
         );
+
+        let mut mapper = ck_input::Mapper::new(defaults.bindings.clone());
+        mapper.key(ck_input::Key::Equal, true, false);
+        let plain_equal = mapper.snapshot();
+        assert!(input_action(&plain_equal, "map_zoom_in").pressed);
+        mapper.acknowledge(plain_equal.sequence);
+        mapper.key(ck_input::Key::Equal, false, false);
+        let released_equal = mapper.snapshot();
+        mapper.acknowledge(released_equal.sequence);
+        mapper.key(ck_input::Key::ShiftLeft, true, false);
+        mapper.key(ck_input::Key::Equal, true, false);
+        let shifted_equal = mapper.snapshot();
+        assert!(input_action(&shifted_equal, "map_zoom_in").pressed);
+        assert!(!input_action(&shifted_equal, "map_zoom_out").pressed);
+        mapper.acknowledge(shifted_equal.sequence);
+        mapper.key(ck_input::Key::Minus, true, false);
+        let modified_minus = mapper.snapshot();
+        assert!(!input_action(&modified_minus, "map_zoom_out").held);
+        assert!(!modified_minus.actions.iter().any(|state| state.pressed));
+        mapper.key(ck_input::Key::ArrowLeft, true, false);
+        let modified_arrow = mapper.snapshot();
+        assert!(!input_action(&modified_arrow, "map_pan_left").held);
 
         let custom = parse_config(
             "[map]\ndirectory = \"fixture\"\npan_pixels_per_frame = 9\nzoom_steps_per_second = 31\nscroll_points_per_step = 40\n\

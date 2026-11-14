@@ -201,6 +201,7 @@ if game ~= nil then
     if not pcall(game.set_map_mode, wanted) then
       return
     end
+    game.mark_unsaved()
     shown_mode = wanted
     for key, mode_button in pairs(mode_buttons) do
       mode_button:set_selected(key == shown_mode)

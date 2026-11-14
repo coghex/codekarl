@@ -2,11 +2,44 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Mutex, PoisonError};
 
 use ck_window::{Edge, InputSnapshot};
 
 use super::core::{Message, SaveCall, SaveReply};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GuardedLoadResult {
+    pub(crate) filename: String,
+    pub(crate) result: Result<(), String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct GuardedResultSink {
+    sender: Sender<GuardedLoadResult>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl std::fmt::Debug for GuardedResultSink {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("GuardedResultSink")
+    }
+}
+
+impl GuardedResultSink {
+    pub(crate) fn send(&self, result: GuardedLoadResult) {
+        if self.sender.send(result).is_ok() {
+            (self.wake)();
+        }
+    }
+}
+
+struct GuardedResults {
+    sink: GuardedResultSink,
+    receiver: Mutex<Receiver<GuardedLoadResult>>,
+    registered: AtomicBool,
+}
 
 /// The record written (once per update) when the input layer discarded earlier transitions.
 pub(crate) const OVERFLOW_RECORD: &str = "input overflow; earlier time presses were lost";
@@ -112,13 +145,28 @@ pub(crate) fn without_blocked_actions(input: &InputSnapshot) -> InputSnapshot {
 pub(crate) struct SimControls {
     sender: Sender<Message>,
     block: Arc<AtomicBool>,
+    guarded_results: Arc<GuardedResults>,
 }
 
 impl SimControls {
+    #[cfg(test)]
     pub(crate) fn new(sender: Sender<Message>) -> Self {
+        Self::with_wake(sender, Arc::new(|| {}))
+    }
+
+    pub(crate) fn with_wake(sender: Sender<Message>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+        let (result_sender, receiver) = mpsc::channel();
         Self {
             sender,
             block: Arc::new(AtomicBool::new(false)),
+            guarded_results: Arc::new(GuardedResults {
+                sink: GuardedResultSink {
+                    sender: result_sender,
+                    wake,
+                },
+                receiver: Mutex::new(receiver),
+                registered: AtomicBool::new(false),
+            }),
         }
     }
 
@@ -146,9 +194,52 @@ impl SimControls {
         let _ = self.sender.send(Message::Control(control));
     }
 
+    #[cfg(test)]
+    pub(crate) fn send_save_for_test(&self, call: SaveCall, reply: Sender<SaveReply>) {
+        let _ = self.sender.send(Message::Save(call, reply));
+    }
+
+    /// Marks a player choice on the core's ordered message route, without waiting for it.
+    pub(crate) fn mark_unsaved(&self) {
+        let _ = self.sender.send(Message::MarkUnsaved);
+    }
+
+    /// Requests a load that the core will guard against its current unsaved flag. The result is delivered asynchronously.
+    pub(crate) fn guarded_load(&self, filename: String) {
+        let request = Message::GuardedLoad {
+            filename: filename.clone(),
+            reply: self.guarded_results.sink.clone(),
+        };
+        if self.sender.send(request).is_err() {
+            self.guarded_results.sink.send(GuardedLoadResult {
+                filename,
+                result: Err("the game is no longer running".to_owned()),
+            });
+        }
+    }
+
+    pub(crate) fn set_save_result_registered(&self, registered: bool) {
+        self.guarded_results
+            .registered
+            .store(registered, Ordering::SeqCst);
+    }
+
+    pub(crate) fn save_result_registered(&self) -> bool {
+        self.guarded_results.registered.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn take_guarded_result(&self) -> Option<GuardedLoadResult> {
+        self.guarded_results
+            .receiver
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .try_recv()
+            .ok()
+    }
+
     /// Runs a named-save operation on the simulation owner and waits for its completed result.
     pub(crate) fn save_call(&self, call: SaveCall) -> Result<SaveReply, String> {
-        let (reply, result) = std::sync::mpsc::channel();
+        let (reply, result) = mpsc::channel();
         self.sender
             .send(Message::Save(call, reply))
             .map_err(|_| "the game is no longer running".to_owned())?;

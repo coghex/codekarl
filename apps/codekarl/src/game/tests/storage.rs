@@ -12,6 +12,384 @@ use super::{Harness, after, identity, start};
 use crate::game::core::{SaveCall, SaveReply};
 use crate::game::{controls::Control, saves::QUICKSAVE, slot::PauseReason};
 
+fn guarded_load(harness: &mut Harness, filename: &str) -> Result<(), String> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let controls = crate::game::controls::SimControls::new(sender);
+    controls.guarded_load(filename.to_owned());
+    let crate::game::core::Message::GuardedLoad { filename, reply } = receiver.recv().unwrap()
+    else {
+        panic!("guarded load uses the ordered core message route");
+    };
+    harness.core.dispatch(
+        crate::game::core::Message::GuardedLoad { filename, reply },
+        harness.now,
+    );
+    controls.take_guarded_result().unwrap().result
+}
+
+fn mark_unsaved_through_controls(harness: &mut Harness) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let controls = crate::game::controls::SimControls::new(sender);
+    controls.mark_unsaved();
+    let message = receiver.recv().unwrap();
+    assert_eq!(message, crate::game::core::Message::MarkUnsaved);
+    harness.core.dispatch(message, harness.now);
+}
+
+#[test]
+fn unsaved_changes_are_core_only_and_ticks_and_effective_save_loads_update_them() {
+    let mut harness = Harness::new(42);
+    assert!(!harness.core.has_unsaved_changes());
+    let initial_digest = harness.digest();
+    harness.control(Control::Speed(2));
+    harness.control(Control::TogglePause);
+    assert!(
+        !harness.core.has_unsaved_changes(),
+        "time controls are not game choices"
+    );
+    assert_eq!(initial_digest, harness.digest());
+    let clean_snapshot = harness.core.snapshot();
+    mark_unsaved_through_controls(&mut harness);
+    assert_eq!(clean_snapshot, harness.core.snapshot());
+    assert_eq!(initial_digest, harness.digest());
+    assert!(harness.core.has_unsaved_changes());
+
+    harness.run_until(1, &[1000], after(0, 1));
+    assert!(
+        harness.core.has_unsaved_changes(),
+        "a simulation tick dirties the game"
+    );
+    assert_ne!(initial_digest, harness.digest());
+
+    harness.control(Control::Quicksave);
+    assert!(
+        !harness.core.has_unsaved_changes(),
+        "a successful quicksave clears it"
+    );
+    mark_unsaved_through_controls(&mut harness);
+    assert!(harness.core.has_unsaved_changes());
+    assert!(matches!(
+        harness.save_call(SaveCall::New("Named".to_owned())),
+        SaveReply::Finished(Ok(()))
+    ));
+    assert!(
+        !harness.core.has_unsaved_changes(),
+        "a successful new save clears it"
+    );
+
+    mark_unsaved_through_controls(&mut harness);
+    assert!(matches!(
+        harness.save_call(SaveCall::Over("named.cksave".to_owned())),
+        SaveReply::Finished(Ok(()))
+    ));
+    assert!(
+        !harness.core.has_unsaved_changes(),
+        "a successful save-over clears it"
+    );
+    mark_unsaved_through_controls(&mut harness);
+    harness.control(Control::Quickload);
+    assert!(
+        !harness.core.has_unsaved_changes(),
+        "a successful quickload clears it"
+    );
+    assert_eq!(harness.paused(), Some(PauseReason::Load));
+    mark_unsaved_through_controls(&mut harness);
+    assert_eq!(
+        guarded_load(&mut harness, "named.cksave"),
+        Err("unsaved".to_owned())
+    );
+    assert!(
+        harness.core.has_unsaved_changes(),
+        "a guarded refusal preserves it"
+    );
+}
+
+#[test]
+fn failed_saves_and_loads_keep_the_unsaved_flag_and_guarded_refusal_does_no_io() {
+    let mut harness = Harness::new(42);
+    harness.run_until(1, &[1000], after(0, 1));
+    harness.control(Control::TogglePause);
+    let before = (
+        harness.digest(),
+        harness.core.snapshot().date,
+        harness.paused(),
+    );
+    let errors_before = harness.texts(Level::Error).len();
+    assert_eq!(
+        guarded_load(&mut harness, "missing.cksave"),
+        Err("unsaved".to_owned())
+    );
+    assert_eq!(
+        harness.texts(Level::Error).len(),
+        errors_before,
+        "unsaved is a normal guarded outcome"
+    );
+    assert!(harness.core.has_unsaved_changes());
+    assert_eq!(
+        (
+            harness.digest(),
+            harness.core.snapshot().date,
+            harness.paused()
+        ),
+        before,
+        "guarding leaves the game state, date and pause unchanged"
+    );
+
+    let failed = harness.save_call(SaveCall::New("   ".to_owned()));
+    assert!(matches!(failed, SaveReply::Finished(Err(_))));
+    assert!(
+        harness.core.has_unsaved_changes(),
+        "a failed save leaves it set"
+    );
+    assert_eq!(
+        guarded_load(&mut harness, "missing.cksave"),
+        Err("unsaved".to_owned()),
+        "a failed save does not clear the flag before a guarded request"
+    );
+    let (reply, result) = std::sync::mpsc::channel();
+    harness.core.dispatch(
+        crate::game::core::Message::Save(SaveCall::Load("missing.cksave".to_owned()), reply),
+        harness.now,
+    );
+    assert!(matches!(
+        result.recv().unwrap(),
+        SaveReply::Finished(Err(_))
+    ));
+    assert!(
+        harness.core.has_unsaved_changes(),
+        "a failed plain load leaves it set"
+    );
+    assert_eq!(
+        (
+            harness.digest(),
+            harness.core.snapshot().date,
+            harness.paused()
+        ),
+        before,
+        "a refused plain load leaves the game state, date and pause unchanged"
+    );
+}
+
+#[test]
+fn guarded_load_follows_dirty_marks_in_the_same_message_order() {
+    let mut harness = Harness::new(42);
+    harness.control(Control::Quicksave);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let controls = crate::game::controls::SimControls::new(sender);
+
+    controls.mark_unsaved();
+    controls.guarded_load("quicksave.cksave".to_owned());
+    let mark = receiver.recv().unwrap();
+    let guarded = receiver.recv().unwrap();
+    harness.core.dispatch(mark, harness.now);
+    harness.core.dispatch(guarded, harness.now);
+    assert_eq!(
+        controls.take_guarded_result().unwrap().result,
+        Err("unsaved".to_owned())
+    );
+    assert!(harness.core.has_unsaved_changes());
+
+    harness.control(Control::Quickload);
+    assert!(!harness.core.has_unsaved_changes());
+    controls.guarded_load("quicksave.cksave".to_owned());
+    controls.mark_unsaved();
+    let guarded = receiver.recv().unwrap();
+    let mark = receiver.recv().unwrap();
+    harness.core.dispatch(guarded, harness.now);
+    harness.core.dispatch(mark, harness.now);
+    assert_eq!(controls.take_guarded_result().unwrap().result, Ok(()));
+    assert!(
+        harness.core.has_unsaved_changes(),
+        "the later UI choice remains dirty after the load"
+    );
+    assert_eq!(harness.paused(), Some(PauseReason::Load));
+}
+
+#[test]
+fn a_running_tick_then_pause_and_an_erroring_tick_both_guard_the_load() {
+    let mut running = Harness::new(42);
+    running.run_until(1, &[1000], after(0, 1));
+    running.control(Control::TogglePause);
+    assert_eq!(
+        guarded_load(&mut running, "missing.cksave"),
+        Err("unsaved".to_owned())
+    );
+    assert_eq!(running.paused(), Some(PauseReason::Player));
+
+    let mut erroring = Harness::with_faults(
+        42,
+        super::Faults {
+            error_at: Some(start().hours() + 1),
+            end_at: None,
+        },
+    );
+    erroring.run_at(5);
+    erroring.wake(SECOND);
+    assert_eq!(erroring.paused(), Some(PauseReason::Error));
+    assert_eq!(
+        guarded_load(&mut erroring, "missing.cksave"),
+        Err("unsaved".to_owned())
+    );
+}
+
+#[test]
+fn a_successful_save_then_a_ui_choice_then_a_guarded_load_refuses_in_that_order() {
+    let mut harness = Harness::new(42);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let controls = crate::game::controls::SimControls::new(sender);
+    let (save_reply, save_result) = std::sync::mpsc::channel();
+    controls.send_save_for_test(SaveCall::New("Ordered".to_owned()), save_reply);
+    controls.mark_unsaved();
+    controls.guarded_load("ordered.cksave".to_owned());
+    let save = receiver.recv().unwrap();
+    let mark = receiver.recv().unwrap();
+    let guarded = receiver.recv().unwrap();
+    harness.core.dispatch(save, harness.now);
+    assert_eq!(save_result.recv().unwrap(), SaveReply::Finished(Ok(())));
+    harness.core.dispatch(mark, harness.now);
+    harness.core.dispatch(guarded, harness.now);
+    assert_eq!(
+        controls.take_guarded_result().unwrap().result,
+        Err("unsaved".to_owned())
+    );
+    assert!(harness.core.has_unsaved_changes());
+}
+
+#[test]
+fn a_failed_tick_still_marks_the_game_unsaved() {
+    let mut harness = Harness::with_faults(
+        42,
+        super::Faults {
+            error_at: Some(start().hours() + 1),
+            end_at: None,
+        },
+    );
+    harness.run_until(1, &[1000], after(0, 1));
+    assert!(harness.core.has_unsaved_changes());
+}
+
+#[test]
+fn the_unsaved_flag_does_not_change_the_save_body_or_game_digest() {
+    let mut harness = Harness::new(42);
+    harness.run_until(1, &[1000], after(0, 1));
+    let digest = harness.digest();
+    harness.control(Control::Quicksave);
+    let first = fs::read(harness.saves.join(QUICKSAVE)).unwrap();
+    mark_unsaved_through_controls(&mut harness);
+    assert_eq!(harness.digest(), digest);
+    harness.control(Control::Quicksave);
+    let second = fs::read(harness.saves.join(QUICKSAVE)).unwrap();
+    let first_header = u32::from_le_bytes(first[8..12].try_into().unwrap()) as usize;
+    let second_header = u32::from_le_bytes(second[8..12].try_into().unwrap()) as usize;
+    let first_sections_end = first.len() - 12;
+    let second_sections_end = second.len() - 12;
+    assert_eq!(
+        &first[12 + first_header..first_sections_end],
+        &second[12 + second_header..second_sections_end],
+        "the flag is outside serialized sections"
+    );
+}
+
+#[test]
+fn a_load_stays_clean_until_the_first_tick_after_resume_and_a_save_then_tick_is_dirty() {
+    let mut harness = Harness::new(42);
+    harness.run_until(1, &[1000], after(0, 1));
+    harness.control(Control::Quicksave);
+    harness.control(Control::Quickload);
+    assert!(!harness.core.has_unsaved_changes());
+    assert_eq!(harness.paused(), Some(PauseReason::Load));
+    let loaded_time = harness.core.time();
+    harness.wake(SECOND);
+    assert_eq!(
+        harness.core.time(),
+        loaded_time,
+        "a paused load does not tick"
+    );
+    assert!(!harness.core.has_unsaved_changes());
+    harness.control(Control::TogglePause);
+    harness.wake(SECOND);
+    assert!(
+        harness.core.has_unsaved_changes(),
+        "the resumed tick marks the loaded game"
+    );
+
+    harness.control(Control::Quicksave);
+    assert!(!harness.core.has_unsaved_changes());
+    harness.wake(SECOND);
+    assert!(
+        harness.core.has_unsaved_changes(),
+        "a tick after a successful save marks it again"
+    );
+}
+
+#[test]
+fn marking_unsaved_changes_at_multiple_points_keeps_the_same_seeded_state_digest() {
+    let mut plain = Harness::new(42);
+    let mut marked = Harness::new(42);
+    for hour in [1, 3, 9, 17] {
+        let target = after(0, hour);
+        plain.run_until(1, &[1000], target);
+        marked.run_until(1, &[1000], target);
+        mark_unsaved_through_controls(&mut marked);
+        assert!(marked.core.has_unsaved_changes());
+    }
+    assert_eq!(marked.digest(), plain.digest());
+    assert_eq!(marked.core.state(), plain.core.state());
+}
+
+#[test]
+fn a_refused_save_over_keeps_unsaved_changes_and_a_game_running() {
+    let mut harness = Harness::new(42);
+    assert!(matches!(
+        harness.save_call(SaveCall::New("Existing".to_owned())),
+        SaveReply::Finished(Ok(()))
+    ));
+    harness.run_until(1, &[1000], after(0, 1));
+    assert!(harness.core.has_unsaved_changes());
+    let before = harness.core.time();
+    let _readonly = ReadOnlyDirectory::new(&harness.saves);
+    assert!(matches!(
+        harness.save_call(SaveCall::Over("existing.cksave".to_owned())),
+        SaveReply::Finished(Err(_))
+    ));
+    assert!(harness.core.has_unsaved_changes());
+    assert_eq!(harness.paused(), None);
+    assert_eq!(harness.core.time(), before);
+    assert_eq!(
+        guarded_load(&mut harness, "existing.cksave"),
+        Err("unsaved".to_owned()),
+        "a real write failure leaves the next guarded load refused"
+    );
+}
+
+#[test]
+fn successful_plain_load_clears_dirty_state_and_successful_guarded_load_starts_clean() {
+    let mut harness = Harness::new(42);
+    assert!(matches!(
+        harness.save_call(SaveCall::New("Named".to_owned())),
+        SaveReply::Finished(Ok(()))
+    ));
+    mark_unsaved_through_controls(&mut harness);
+    assert!(matches!(
+        harness.save_call(SaveCall::Load("named.cksave".to_owned())),
+        SaveReply::Finished(Ok(()))
+    ));
+    assert!(!harness.core.has_unsaved_changes());
+    assert_eq!(harness.paused(), Some(PauseReason::Load));
+
+    mark_unsaved_through_controls(&mut harness);
+    assert_eq!(
+        guarded_load(&mut harness, "named.cksave"),
+        Err("unsaved".to_owned())
+    );
+    assert!(matches!(
+        harness.save_call(SaveCall::Load("named.cksave".to_owned())),
+        SaveReply::Finished(Ok(()))
+    ));
+    assert!(!harness.core.has_unsaved_changes());
+    assert_eq!(harness.paused(), Some(PauseReason::Load));
+}
+
 const SECOND: Duration = Duration::from_secs(1);
 
 struct ReadOnlyDirectory {
