@@ -102,18 +102,26 @@ canonical JSON, and **`file_digest(p)`** is the SHA-256 of `p`'s bytes.
 
 ### 2.1 Policy table
 
-A session's **role** is declared, never inferred from its model. Class S and
-Class A currently resolve to the same Claude model, so a model alone cannot
-identify a class.
+A session's **role** is declared, never inferred from its model. Two classes
+can resolve to the same model, as Class S and Class A did for Claude when this
+was written, so a model alone cannot identify a class.
 
 | Role | Class | Effort |
 | --- | --- | --- |
-| `manager` | S | high |
+| `manager` | A | high |
 | `worker` | B | high |
 | `reviewer` | A | high |
 | `owner` | none (human) | n/a |
 
-The table is a constant in the gate code. Changing it is a code change.
+The table is a constant in the gate code (`tools/gate/classes.py`,
+`ROLE_CLASS`). Changing it is a code change.
+
+**The manager's class was S until CK-319** (2026-11-14). The owner: "the
+designers can stay class S, but now the managers should be class A"
+(`.pipeline/coordination/ui-polish-design/owner-direction-manager-class-manager-r1.md`).
+Designers have no gate role: design stays Class S under
+`skills/AGENT-POLICY.md`. Where this document or an older
+record says that a manager ran as Class S, it records what was true then.
 
 ### 2.2 Resolution and verification
 
