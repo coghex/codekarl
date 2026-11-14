@@ -236,6 +236,12 @@ local function close_all()
   while #open > 0 do close_record(open[#open]) end
 end
 
+-- Closes every open tooltip, locked or not: a source that follows a list row's position would otherwise show another item's data.
+function tooltip.close_all()
+  tooltip.pending = nil
+  close_all()
+end
+
 close_key = function(key)
   if tooltip.pending ~= nil and tooltip.pending.candidate.key == key then tooltip.pending = nil end
   local snapshot = {}

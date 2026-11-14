@@ -15,6 +15,7 @@ local pointer = require("lib.pointer")
 local button = require("lib.button")
 local windows = require("lib.window")
 local lists = require("lib.list")
+local listbar = require("lib.listbar")
 local theme = require("lib.theme")
 local date_text = require("lib.time")
 local location = require("lib.location")
@@ -407,6 +408,7 @@ if game ~= nil then
   game.on_select(show_place)
 
   local ledger_list = nil
+  local ledger_bar = nil
   local ledger_tabs = nil
   local ledger_selections = {}
   local ledger_key = "locations"
@@ -437,18 +439,41 @@ if game ~= nil then
     return theme.colour("text")
   end
 
+  -- What the list bar of each tab sorts and filters by (CK-295): the labels are the ones the owner approved.
+  local LEDGER_BARS = {
+    locations = {
+      sorts = {
+        {key = "name", label = "name", first = "ascending"},
+        {key = "people", label = "people", first = "descending"},
+        {key = "food", label = "food", first = "descending"},
+      },
+      groups = {{key = "kind", label = "kind"}},
+    },
+    pops = {
+      sorts = {
+        {key = "type", label = "type", first = "ascending"},
+        {key = "culture", label = "culture", first = "ascending"},
+        {key = "people", label = "people", first = "descending"},
+        {key = "place", label = "place", first = "ascending"},
+      },
+      groups = {{key = "type", label = "type"}, {key = "religion", label = "religion"}, {key = "culture", label = "culture"}},
+    },
+  }
+
+  -- The places tab's header row and its data rows, or the pops tab's rows (no header). Each data row carries what the list bar reads
+  -- (`sort`, `filter`) and the place a click on it opens (`place`); the list is given only the cells and the rest.
   local function ledger_items(key)
     local places = game.places()
     local revision = location_panel:current_revision()
     local width = places_window.content_width // P
-    local rows, selections = {}, {}
+    local header, rows = nil, {}
     if key == "locations" then
-      rows[1] = {cells = {
+      header = {cells = {
         {text = "name", x = 1, align = "left", colour = theme.colour("term")},
         {text = "people", x = width - 37, align = "right", colour = theme.colour("term")},
         {text = "food", x = width - 3, align = "right", colour = theme.colour("term")},
       }}
-      rows[1].tooltip = function(_, _, cell)
+      header.tooltip = function(_, _, cell)
         local explanations = {[1] = "location", [2] = "population", [3] = "food_days"}
         local explanation = explanations[cell]
         if explanation == nil then return nil end
@@ -456,10 +481,13 @@ if game ~= nil then
       end
       for _, place in ipairs(places) do
         local place_view = revision ~= nil and game.place(place.id, revision) or nil
-        local row = {cells = {{text = clip_column(place.name, width - 72), x = 1, align = "left"}}}
+        local row = {cells = {{text = clip_column(place.name, width - 72), x = 1, align = "left"}}, place = place,
+          sort = {name = place.name}, filter = {kind = place.kind}}
         if place_view ~= nil and #place_view.pops > 0 then
           row.cells[2] = {text = tostring(place_view.workers + place_view.dependents), x = width - 37, align = "right"}
           row.cells[3] = {text = tostring(place_view.food_days) .. "d", x = width - 3, align = "right"}
+          row.sort.people = place_view.workers + place_view.dependents
+          row.sort.food = place_view.food_days
         end
         local place_id = place.id
         row.tooltip = function(_, _, cell)
@@ -471,7 +499,6 @@ if game ~= nil then
           return tooltip.content(class, args), tostring(cell)
         end
         rows[#rows + 1] = row
-        selections[#rows] = place
       end
     else
       for _, place in ipairs(places) do
@@ -480,6 +507,9 @@ if game ~= nil then
           for pop_index, pop in ipairs(place_view.pops) do
             local kind_culture = pop.kind .. " " .. pop.culture
             local row = {
+              place = place,
+              sort = {type = pop.kind, culture = pop.culture, people = pop.workers + pop.dependents, place = place.name},
+              filter = {type = pop.kind, religion = pop.religion, culture = pop.culture},
               stripe = pop_colour(pop.kind),
               icon = {name = "pops", colour = pop_colour(pop.kind)},
               cells = {
@@ -500,23 +530,45 @@ if game ~= nil then
               return nil
             end
             rows[#rows + 1] = row
-            selections[#rows] = place
           end
         end
       end
     end
-    return rows, selections, revision
+    return header, rows, revision
   end
 
-  fill_ledger = function()
+  -- The bar under the ledger's list. Its choices start again with a new bar (the ledger opens, the tab changes) and stay while the
+  -- bar lives, across a refresh for a new economy revision and across a change of the game window's size.
+  local function ensure_ledger_bar()
+    if ledger_bar ~= nil then return end
+    local spec = LEDGER_BARS[ledger_key]
+    ledger_bar = listbar.new{
+      window = places_window,
+      sorts = spec.sorts,
+      groups = spec.groups,
+      on_change = function() fill_ledger(true) end,
+    }
+  end
+
+  -- Shows the ledger's rows through its list bar. A change of the bar's choices starts the list from its first row (`reset_scroll`); a
+  -- refresh for a new revision keeps the scroll.
+  fill_ledger = function(reset_scroll)
     if places_window == nil or places_window.closed then return end
-    local rows, selections, revision = ledger_items(ledger_key)
-    -- Keep the click mapping in lockstep with the rows across refreshes.
+    ensure_ledger_bar()
+    local header, data, revision = ledger_items(ledger_key)
+    local rows, selections = {}, {}
+    if header ~= nil then rows[1] = header end
+    for _, row in ipairs(ledger_bar:view(data)) do
+      rows[#rows + 1] = row
+      -- Keep the click mapping in lockstep with the rows across refreshes.
+      selections[#rows] = row.place
+    end
     ledger_selections = selections
     if ledger_list ~= nil and not ledger_list.closed then
       ledger_list:set_items(rows)
+      if reset_scroll == true then ledger_list:set_pos(0) end
     else
-      local visible_rows = math.max(1, math.min(lists.MAX_ROWS, places_window.content_height // lists.ROW))
+      local visible_rows = math.max(1, math.min(lists.MAX_ROWS, (places_window.content_height - listbar.HEIGHT) // lists.ROW))
       ledger_list = lists.new{
         window = places_window,
         x = 0,
@@ -556,6 +608,11 @@ if game ~= nil then
       ledger_list:destroy()
       ledger_list = nil
     end
+    -- The other tab has other choices, and they start again.
+    if ledger_bar ~= nil then
+      ledger_bar:destroy()
+      ledger_bar = nil
+    end
     fill_ledger()
   end
 
@@ -580,6 +637,7 @@ if game ~= nil then
         if places_window == created then
           places_window = nil
           ledger_list = nil
+          ledger_bar = nil
           ledger_tabs = nil
           ledger_revision = nil
           set_places_bar_visible(true)
@@ -611,6 +669,7 @@ end
 -- size changed, relayouts the anchored elements. An update with an unchanged size and nothing for the dispatcher makes no scene call.
 frame.on_update(function(update)
   pointer.dispatch(update.pointer)
+  listbar.update(update)
   if update.width ~= view.width or update.height ~= view.height then
     view.width = update.width
     view.height = update.height

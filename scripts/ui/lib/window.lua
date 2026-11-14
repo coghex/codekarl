@@ -488,6 +488,9 @@ function window.close_request(source)
   if source == "key" then
     local ok, tooltip = pcall(require, "lib.tooltip")
     if ok and tooltip.close_top() then return false end
+    -- An open list-bar picker closes before any window does. The module is loaded at the first Escape, not at load, so that this file
+    -- does not depend on a library that its callers use.
+    if require("lib.listbar").close_open() then return false end
   end
   if source == "key" and window.top() ~= nil then
     window.top():close()
