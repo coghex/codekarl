@@ -220,6 +220,8 @@ void ck_win_test_info(CKWinTestInfo *out) {
         NSRect content = [window contentRectForFrameRect:window.frame];
         out->content_width = content.size.width;
         out->content_height = content.size.height;
+        out->frame_left = NSMinX(window.frame);
+        out->frame_top = NSMaxY(window.frame);
         NSWindowStyleMask mask = window.styleMask;
         out->titled = (mask & NSWindowStyleMaskTitled) != 0;
         out->closable = (mask & NSWindowStyleMaskClosable) != 0;

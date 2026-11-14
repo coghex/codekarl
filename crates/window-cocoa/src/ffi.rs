@@ -171,6 +171,7 @@ unsafe extern "C" {
         error: *mut c_char,
         capacity: usize,
     ) -> i32;
+    pub(crate) fn ck_win_resize(handle: *mut c_void, point_width: u32, point_height: u32);
     pub(crate) fn ck_win_pump(handle: *mut c_void, wait: i32, cap: usize, out: *mut RawEvents);
     pub(crate) fn ck_win_pump_until(
         handle: *mut c_void,

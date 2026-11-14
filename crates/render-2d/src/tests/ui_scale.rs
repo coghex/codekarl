@@ -260,6 +260,83 @@ fn a_resize_across_a_threshold_changes_the_scale_at_the_next_metrics() {
 }
 
 #[test]
+fn changing_the_live_limit_republishes_metrics_and_drops_old_hit_regions() {
+    let bridge = SceneBridge::new(Filter::Nearest);
+    let sink = RecordingSink::new();
+    let window = pixels_window(2560, 1600);
+    bridge
+        .attach(
+            &window,
+            pixels(2560, 1600),
+            Arc::clone(&sink) as Arc<dyn QuadSink>,
+        )
+        .expect("attach");
+    let mut writer = bridge.take_writer().expect("writer");
+    writer
+        .set_hit(
+            "old_layout",
+            Some(vec![PointRect::new(0.0, 0.0, 40.0, 40.0)]),
+            None,
+        )
+        .expect("publish initial hit layout");
+    assert!(writer.publish());
+    assert_eq!(bridge.ui_scale(pixels(2560, 1600)), Some(4));
+    let generation = bridge.metrics_generation();
+
+    bridge.set_ui_scale_limit(Some(3));
+
+    assert_eq!(bridge.metrics_generation(), generation + 1);
+    assert_eq!(bridge.ui_scale(pixels(2560, 1600)), Some(3));
+    assert!(
+        bridge.hit_regions().is_none(),
+        "old regions cannot be tested with new units"
+    );
+    assert_eq!(
+        sink.last()
+            .expect("published scale transition")
+            .metrics
+            .ui_scale_k,
+        Some(3)
+    );
+}
+
+#[test]
+fn a_limit_the_drawable_cannot_reach_keeps_the_current_hit_regions_and_metrics() {
+    let bridge = SceneBridge::new(Filter::Nearest);
+    let sink = RecordingSink::new();
+    bridge
+        .attach(
+            &pixels_window(1280, 800),
+            pixels(1280, 800),
+            Arc::clone(&sink) as Arc<dyn QuadSink>,
+        )
+        .expect("attach");
+    let mut writer = bridge.take_writer().expect("writer");
+    writer
+        .set_hit(
+            "small_drawable",
+            Some(vec![PointRect::new(0.0, 0.0, 20.0, 20.0)]),
+            None,
+        )
+        .expect("publish initial hit layout");
+    assert!(writer.publish());
+    let old_regions = bridge.hit_regions().expect("initial regions");
+    let generation = bridge.metrics_generation();
+    let snapshot_count = sink.count();
+
+    // A limit of 2.0 (k = 4) cannot raise this drawable above its natural k = 2.
+    bridge.set_ui_scale_limit(Some(4));
+
+    assert_eq!(bridge.metrics_generation(), generation);
+    assert!(Arc::ptr_eq(
+        &old_regions,
+        &bridge.hit_regions().expect("same visible hit layout")
+    ));
+    assert_eq!(sink.count(), snapshot_count, "the frame is not republished");
+    assert_eq!(bridge.ui_scale(pixels(1280, 800)), Some(2));
+}
+
+#[test]
 fn the_compatibility_quad_is_placed_at_the_ui_scale_in_a_pixels_window_and_at_the_ratio_in_points()
 {
     // The legacy `render.set_quad` lane is part of the UI scene: a quad at unit (10, 4) sized 20 by 2.

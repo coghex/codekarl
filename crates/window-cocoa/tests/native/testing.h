@@ -34,6 +34,8 @@ typedef struct {
     double content_min_height;
     int32_t gravity_top_left;       /* the content view's layer has contentsGravity top-left */
     int32_t full_screen_primary;    /* the window's collection behaviour allows primary full screen */
+    double frame_left;
+    double frame_top;
 } CKWinTestInfo;
 
 typedef struct {

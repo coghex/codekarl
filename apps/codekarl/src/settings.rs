@@ -8,7 +8,7 @@ use ck_lua::{ConfigValue, Extension};
 use ck_window::Bindings;
 use ck_window::RequestWriter;
 
-use crate::config::{Config, MapSettings, SettingsOverrides, TooltipsConfig};
+use crate::config::{Config, GraphicsSettings, MapSettings, SettingsOverrides, TooltipsConfig};
 use crate::lifecycle::emit;
 use crate::map_app::{self, SharedController};
 
@@ -16,6 +16,7 @@ use crate::map_app::{self, SharedController};
 struct Values {
     tooltips: TooltipsConfig,
     map: MapSettings,
+    graphics: GraphicsSettings,
 }
 
 /// Thread-safe live settings state shared by UI host calls and the map controller.
@@ -28,6 +29,9 @@ pub(crate) struct Runtime {
     base_bindings: Bindings,
     requests: Option<RequestWriter>,
     map: Option<SharedController>,
+    bridge: Option<Arc<ck_render_2d::SceneBridge>>,
+    updates: Option<ck_window::UpdateControl>,
+    resize: Option<crate::window_api::ResizeSession>,
 }
 
 impl Runtime {
@@ -46,17 +50,38 @@ impl Runtime {
             base: Values {
                 tooltips: config.settings_base_tooltips,
                 map: config.settings_base_map,
+                graphics: config.settings_base_graphics,
             },
             values: Mutex::new(Values {
                 tooltips: config.tooltips,
                 map: config.map_settings,
+                graphics: config.graphics,
             }),
             overrides: Mutex::new(config.settings_overrides.clone()),
             bindings: Mutex::new(config.bindings.clone()),
             base_bindings: config.settings_base_bindings.clone(),
             requests,
             map,
+            bridge: None,
+            updates: None,
+            resize: None,
         }))
+    }
+
+    pub(crate) fn new_live(
+        config: &Config,
+        map: Option<SharedController>,
+        requests: RequestWriter,
+        bridge: Arc<ck_render_2d::SceneBridge>,
+        updates: Option<ck_window::UpdateControl>,
+        resize: crate::window_api::ResizeSession,
+    ) -> Option<Arc<Self>> {
+        let mut runtime = Self::new_with_requests(config, map, Some(requests))?;
+        let fields = Arc::get_mut(&mut runtime).expect("new runtime is uniquely owned");
+        fields.bridge = Some(bridge);
+        fields.updates = updates;
+        fields.resize = Some(resize);
+        Some(runtime)
     }
 
     pub(crate) fn extension(self: &Arc<Self>) -> Extension {
@@ -65,6 +90,8 @@ impl Runtime {
         let set = Arc::clone(self);
         let reset = Arc::clone(self);
         let bindings = Arc::clone(self);
+        let graphics = Arc::clone(self);
+        let resize = Arc::clone(self);
         let set_bindings = Arc::clone(self);
         let capture = Arc::clone(self);
         let cancel_capture = Arc::clone(self);
@@ -90,6 +117,8 @@ impl Runtime {
             )
             .function("set", Arc::new(move |args| set.set(args)))
             .function("reset", Arc::new(move |args| reset.reset(args)))
+            .function("graphics", Arc::new(move |args| graphics.graphics(args)))
+            .function("resize", Arc::new(move |args| resize.resize(args)))
             .function(
                 "bindings",
                 Arc::new(move |args| {
@@ -168,6 +197,31 @@ impl Runtime {
             "map.scroll_points_per_step" => {
                 values.map.scroll_points_per_step = map_integer(name, value, 1, 256)?;
                 overrides.map_scroll_points_per_step = Some(values.map.scroll_points_per_step);
+            }
+            "ui.scale" => {
+                let number = match value {
+                    ConfigValue::Integer(1) => Some(1.0),
+                    ConfigValue::Integer(2) => Some(2.0),
+                    ConfigValue::Float(number) => Some(*number),
+                    _ => None,
+                };
+                let k = number
+                    .and_then(ck_render_2d::ui_scale::k_of_scale)
+                    .ok_or_else(|| format!("settings.set: `{name}` must be 1, 1.5 or 2"))?;
+                values.graphics.scale_limit_k = Some(k);
+                overrides.ui_scale_limit_k = Some(k);
+                self.apply_scale(Some(k));
+            }
+            "ui.list_look" => {
+                let ConfigValue::String(look) = value else {
+                    return Err(format!("settings.set: `{name}` must be a string"));
+                };
+                values.graphics.list_look = match look.as_str() {
+                    "cards" => "cards",
+                    "rows" => "rows",
+                    _ => return Err(format!("settings.set: `{name}` must be cards or rows")),
+                };
+                overrides.ui_list_look = Some(values.graphics.list_look);
             }
             _ => return Err(format!("settings.set: unknown setting `{name}`")),
         }
@@ -380,7 +434,9 @@ impl Runtime {
 
     fn reset(&self, args: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
         if args.len() != 1 {
-            return Err("settings.reset: expected `tooltips`, `map` or `bindings`".to_owned());
+            return Err(
+                "settings.reset: expected `tooltips`, `map`, `graphics` or `bindings`".to_owned(),
+            );
         }
         let Some(ConfigValue::String(tab)) = args[0].as_ref() else {
             return Err("settings.reset: tab must be a string".to_owned());
@@ -404,6 +460,20 @@ impl Runtime {
                 overrides.map_scroll_points_per_step = None;
                 self.apply_map(values.map);
             }
+            "graphics" => {
+                let base = self.base.graphics;
+                // Keep graphics reset atomic if the live window cannot accept the reset size.
+                self.resize
+                    .as_ref()
+                    .ok_or_else(|| "settings.reset: graphics resize is unavailable".to_owned())?
+                    .resize((base.width, base.height))?;
+                values.graphics = base;
+                overrides.ui_scale_limit_k = None;
+                overrides.ui_list_look = None;
+                overrides.window_width = None;
+                overrides.window_height = None;
+                self.apply_scale(values.graphics.scale_limit_k);
+            }
             "bindings" | "defaults" => {
                 *self.bindings.lock().unwrap_or_else(PoisonError::into_inner) =
                     self.base_bindings.clone();
@@ -414,7 +484,7 @@ impl Runtime {
             }
             _ => {
                 return Err(format!(
-                    "settings.reset: unknown tab `{tab}`; use tooltips, map or bindings"
+                    "settings.reset: unknown tab `{tab}`; use tooltips, map, graphics or bindings"
                 ));
             }
         }
@@ -430,6 +500,73 @@ impl Runtime {
                 settings.scroll_points_per_step,
             );
         }
+    }
+
+    fn apply_scale(&self, limit: Option<u32>) {
+        if let Some(bridge) = &self.bridge {
+            bridge.set_ui_scale_limit(limit);
+        }
+        if let Some(updates) = &self.updates {
+            updates.wake();
+        }
+    }
+
+    fn graphics(&self, args: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
+        expect_no_arguments("settings.graphics", args)?;
+        let values = *self.values.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut entries = std::collections::BTreeMap::from([
+            (
+                "list_look".into(),
+                ConfigValue::String(values.graphics.list_look.into()),
+            ),
+            (
+                "width".into(),
+                ConfigValue::Integer(i64::from(values.graphics.width)),
+            ),
+            (
+                "height".into(),
+                ConfigValue::Integer(i64::from(values.graphics.height)),
+            ),
+        ]);
+        if let Some(k) = values.graphics.scale_limit_k {
+            entries.insert("scale".into(), ConfigValue::Float(f64::from(k) / 2.0));
+        }
+        Ok(vec![ConfigValue::Table(entries)])
+    }
+
+    fn resize(&self, args: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
+        if args.len() != 2 {
+            return Err("settings.resize: expected width and height".into());
+        }
+        let dimension = |index: usize, name: &str| -> Result<u32, String> {
+            let Some(ConfigValue::Integer(value)) = args[index].as_ref() else {
+                return Err(format!("settings.resize: `{name}` must be an integer"));
+            };
+            u32::try_from(*value).map_err(|_| {
+                format!("settings.resize: `{name}` must be a nonnegative integer that fits u32")
+            })
+        };
+        let width = dimension(0, "width")?;
+        let height = dimension(1, "height")?;
+        let result = self
+            .resize
+            .as_ref()
+            .ok_or_else(|| "settings.resize: window resize is unavailable".to_owned())?
+            .resize((width, height))?;
+        let mut values = self.values.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut overrides = self
+            .overrides
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        values.graphics.width = result.kept.0;
+        values.graphics.height = result.kept.1;
+        overrides.window_width = Some(result.kept.0);
+        overrides.window_height = Some(result.kept.1);
+        self.persist(&overrides);
+        Ok(vec![
+            ConfigValue::Integer(i64::from(result.used.0)),
+            ConfigValue::Integer(i64::from(result.used.1)),
+        ])
     }
 
     fn persist(&self, overrides: &SettingsOverrides) {
@@ -596,6 +733,26 @@ fn map_integer(name: &str, value: &ConfigValue, minimum: u32, maximum: u32) -> R
 fn settings_text(overrides: &SettingsOverrides) -> Vec<u8> {
     use std::fmt::Write as _;
     let mut text = String::new();
+    if overrides.ui_scale_limit_k.is_some() || overrides.ui_list_look.is_some() {
+        text.push_str("[ui]\n");
+        if let Some(k) = overrides.ui_scale_limit_k {
+            let _ = writeln!(text, "scale = {}", f64::from(k) / 2.0);
+        }
+        if let Some(value) = overrides.ui_list_look {
+            let _ = writeln!(text, "list_look = \"{value}\"");
+        }
+        text.push('\n');
+    }
+    if overrides.window_width.is_some() || overrides.window_height.is_some() {
+        text.push_str("[window]\n");
+        if let Some(value) = overrides.window_width {
+            let _ = writeln!(text, "width = {value}");
+        }
+        if let Some(value) = overrides.window_height {
+            let _ = writeln!(text, "height = {value}");
+        }
+        text.push('\n');
+    }
     if overrides.tooltip_delay.is_some()
         || overrides.tooltip_lock.is_some()
         || overrides.tooltip_lock_timer.is_some()
@@ -644,7 +801,143 @@ fn settings_text(overrides: &SettingsOverrides) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ck_lua::HostFunction;
     use std::fs;
+    use std::sync::OnceLock;
+
+    struct LiveRig {
+        _dir: crate::testing::Dir,
+        config_path: PathBuf,
+        settings_path: PathBuf,
+        config: Config,
+        requests: ck_window::Requests,
+        notifier: Arc<ck_window::Notifier>,
+        screen: crate::window_api::ScreenCell,
+        bridge: Arc<ck_render_2d::SceneBridge>,
+        headless: Option<Arc<crate::window_api::HeadlessNotes>>,
+        update_control: ck_window::UpdateControl,
+        runtime: Arc<Runtime>,
+    }
+
+    #[derive(Default)]
+    struct ScaleSink(Mutex<usize>);
+
+    impl ck_render_2d::QuadSink for ScaleSink {
+        fn publish(&self, _snapshot: ck_render_2d::Snapshot) -> Option<ck_render_2d::Snapshot> {
+            *self.0.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+            None
+        }
+    }
+
+    impl LiveRig {
+        fn new(
+            config_text: &str,
+            screen_snapshot: Option<ck_window::ScreenSnapshot>,
+            headless: bool,
+        ) -> Self {
+            let dir = crate::testing::Dir::new();
+            let config_path = dir.0.join("config.toml");
+            fs::write(&config_path, config_text).expect("write config");
+            let config = crate::config::load(&config_path).expect("load config");
+            let settings_path = config.settings_file.clone().expect("settings path");
+            let screen = Arc::new(OnceLock::new());
+            if let Some(snapshot) = screen_snapshot {
+                screen.set(snapshot).expect("set screen snapshot");
+            }
+            let requests = ck_window::Requests::new();
+            let notifier = ck_window::Notifier::new();
+            let bridge = ck_render_2d::SceneBridge::new(ck_render_2d::Filter::Nearest);
+            let headless = headless.then(|| Arc::new(crate::window_api::HeadlessNotes::logging()));
+            let update_control = ck_window::UpdateControl::new();
+            let request_writer = requests.writer(Arc::clone(&notifier));
+            let resize = crate::window_api::ResizeSession::new(
+                request_writer.clone(),
+                Arc::clone(&screen),
+                headless.clone(),
+            );
+            let runtime = Runtime::new_live(
+                &config,
+                None,
+                request_writer,
+                Arc::clone(&bridge),
+                Some(update_control.clone()),
+                resize,
+            )
+            .expect("live settings runtime");
+            Self {
+                _dir: dir,
+                config_path,
+                settings_path,
+                config,
+                requests,
+                notifier,
+                screen,
+                bridge,
+                headless,
+                update_control,
+                runtime,
+            }
+        }
+
+        fn run(&self, script: &str) -> crate::testing::Harness {
+            crate::testing::Harness::new(
+                script,
+                crate::testing::Extras {
+                    extensions: vec![self.runtime.extension()],
+                    requests: Some(self.requests.clone()),
+                    notifier: Some(Arc::clone(&self.notifier)),
+                    screen: Some(Arc::clone(&self.screen)),
+                    ui_scale_limit_k: self.config.ui_scale_limit_k,
+                    headless: self.headless.clone(),
+                    ..Default::default()
+                },
+            )
+        }
+
+        fn run_with_bridge(&self, script: &str) -> crate::testing::Harness {
+            crate::testing::Harness::new(
+                script,
+                crate::testing::Extras {
+                    extensions: vec![self.runtime.extension()],
+                    requests: Some(self.requests.clone()),
+                    notifier: Some(Arc::clone(&self.notifier)),
+                    bridge: Some(Arc::clone(&self.bridge)),
+                    screen: Some(Arc::clone(&self.screen)),
+                    ui_scale_limit_k: self.config.ui_scale_limit_k,
+                    headless: self.headless.clone(),
+                    ..Default::default()
+                },
+            )
+        }
+
+        fn attach_scale_bridge(&self, pixels: (u32, u32)) -> Arc<ScaleSink> {
+            self.bridge.set_ui_scale_limit(self.config.ui_scale_limit_k);
+            let sink = Arc::new(ScaleSink::default());
+            self.bridge
+                .attach(
+                    &ck_window::WindowDesc {
+                        title: "settings scale".into(),
+                        width: pixels.0 / 2,
+                        height: pixels.1 / 2,
+                        clear: [0.0; 3],
+                        unit: ck_window::SizeUnit::Points,
+                        resizable: true,
+                        min: None,
+                        pixel_request: Some(ck_window::PixelRequest {
+                            size: (1280, 800),
+                            min: Some((1280, 800)),
+                        }),
+                    },
+                    ck_window::PixelSize {
+                        width: pixels.0,
+                        height: pixels.1,
+                    },
+                    Arc::clone(&sink) as Arc<dyn ck_render_2d::QuadSink>,
+                )
+                .expect("attach settings scale bridge");
+            sink
+        }
+    }
 
     #[test]
     fn ui_calls_set_read_reset_and_persist_without_changing_other_tab_values() {
@@ -995,5 +1288,284 @@ assert(not ok)
             Some(ck_window::CaptureRequest::Arm("map-left".to_owned()))
         );
         drop(harness);
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one integration case covers settings resize persistence, reload, reset and reopen"
+    )]
+    fn graphics_resize_persists_the_kept_pair_and_reset_removes_only_graphics_keys() {
+        let rig = LiveRig::new(
+            "[window]\nwidth = 1600\nheight = 900\n",
+            Some(ck_window::ScreenSnapshot {
+                backing: 1.0,
+                visible_points: (1024, 768),
+            }),
+            false,
+        );
+        {
+            let _first = rig.run(
+                "window.open{title='settings test', width=1280, height=800, clear={0,0,0}, resizable=true}\nlocal width, height = settings.resize(1920, 1200)\nassert(width == 1024 and height == 768)\nlocal g = settings.graphics()\nassert(g.width == 1280 and g.height == 800 and g.list_look == 'cards')",
+            );
+        }
+        let first = rig.requests.reader().take();
+        let opened = first
+            .open
+            .expect("first start opens at the small screen size");
+        assert_eq!(
+            (opened.width, opened.height),
+            (1280, 800),
+            "window.open keeps its requested point size; settings.resize then asks for the screen-limited pair"
+        );
+        assert_eq!(first.resize, Some((1024, 768)));
+        let written: toml::Value = toml::from_str(
+            &fs::read_to_string(&rig.settings_path).expect("resize writes settings"),
+        )
+        .expect("settings TOML parses");
+        assert_eq!(written["window"]["width"].as_integer(), Some(1280));
+        assert_eq!(written["window"]["height"].as_integer(), Some(800));
+
+        let before_bad_call = fs::read_to_string(&rig.settings_path).expect("settings file exists");
+        {
+            let _bad = rig.run(
+                "local ok, message = pcall(function() settings.resize(1280.5, 800) end)\nassert(not ok and string.find(tostring(message), 'width', 1, true))",
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(&rig.settings_path).unwrap(),
+            before_bad_call
+        );
+        assert_eq!(rig.requests.reader().take().resize, None);
+
+        let second = crate::config::load(&rig.config_path).expect("second start reads settings");
+        assert!(second.settings_warnings.is_empty());
+        assert_eq!((second.graphics.width, second.graphics.height), (1280, 800));
+        let second_requests = ck_window::Requests::new();
+        let second_notifier = ck_window::Notifier::new();
+        let second_script = format!(
+            "local width, height = window.open{{title='second start', unit='pixels', width={}, height={}, clear={{0,0,0}}, resizable=true}}\nassert(width == 1024 and height == 768)",
+            second.graphics.width, second.graphics.height
+        );
+        {
+            let _second_start = crate::testing::Harness::new(
+                &second_script,
+                crate::testing::Extras {
+                    requests: Some(second_requests.clone()),
+                    notifier: Some(Arc::clone(&second_notifier)),
+                    screen: Some(Arc::clone(&rig.screen)),
+                    ui_scale_limit_k: second.ui_scale_limit_k,
+                    ..Default::default()
+                },
+            );
+        }
+        let second_open = second_requests
+            .reader()
+            .take()
+            .open
+            .expect("second start opens");
+        assert_eq!((second_open.width, second_open.height), (1024, 768));
+
+        {
+            let _below_minimum = rig.run(
+                "local width, height = settings.resize(900, 600)\nassert(width == 1024 and height == 768)",
+            );
+        }
+        assert_eq!(rig.requests.reader().take().resize, Some((1024, 768)));
+        let written: toml::Value = toml::from_str(
+            &fs::read_to_string(&rig.settings_path).expect("low resize writes settings"),
+        )
+        .expect("settings TOML parses");
+        assert_eq!(written["window"]["width"].as_integer(), Some(1280));
+        assert_eq!(written["window"]["height"].as_integer(), Some(800));
+
+        {
+            let _reset = rig.run(
+                "settings.reset('graphics')\nlocal g = settings.graphics()\nassert(g.width == 1600 and g.height == 900)",
+            );
+        }
+        assert_eq!(rig.requests.reader().take().resize, Some((1024, 768)));
+        let text =
+            fs::read_to_string(&rig.settings_path).expect("reset writes preserved overrides");
+        let written: toml::Value = toml::from_str(&text).expect("reset TOML parses");
+        assert!(
+            written.get("window").is_none(),
+            "graphics reset removes resolution keys: {text}"
+        );
+        let third = crate::config::load(&rig.config_path).expect("third start reads reset file");
+        assert!(third.settings_warnings.is_empty());
+        assert_eq!((third.graphics.width, third.graphics.height), (1600, 900));
+        let third_requests = ck_window::Requests::new();
+        let third_notifier = ck_window::Notifier::new();
+        let third_script = format!(
+            "local width, height = window.open{{title='third start', unit='pixels', width={}, height={}, clear={{0,0,0}}, resizable=true}}\nassert(width == 1024 and height == 768)",
+            third.graphics.width, third.graphics.height
+        );
+        {
+            let _third_start = crate::testing::Harness::new(
+                &third_script,
+                crate::testing::Extras {
+                    requests: Some(third_requests.clone()),
+                    notifier: Some(Arc::clone(&third_notifier)),
+                    screen: Some(Arc::clone(&rig.screen)),
+                    ui_scale_limit_k: third.ui_scale_limit_k,
+                    ..Default::default()
+                },
+            );
+        }
+        let third_open = third_requests
+            .reader()
+            .take()
+            .open
+            .expect("third start opens");
+        assert_eq!((third_open.width, third_open.height), (1024, 768));
+    }
+
+    #[test]
+    fn settings_resize_clamps_above_maximum_through_the_lua_call() {
+        let rig = LiveRig::new(
+            "",
+            Some(ck_window::ScreenSnapshot {
+                backing: 1.0,
+                visible_points: (20_000, 12_000),
+            }),
+            false,
+        );
+        {
+            let _inside = rig.run(
+                "window.open{title='settings test', width=1280, height=800, clear={0,0,0}, resizable=true}\nlocal width, height = settings.resize(1400, 850)\nassert(width == 1400 and height == 850)",
+            );
+        }
+        assert_eq!(rig.requests.reader().take().resize, Some((1400, 850)));
+        {
+            let _above = rig.run(
+                "local width, height = settings.resize(20000, 12000)\nassert(width == 16384 and height == 12000)",
+            );
+        }
+        assert_eq!(rig.requests.reader().take().resize, Some((16_384, 12_000)));
+        let written: toml::Value = toml::from_str(
+            &fs::read_to_string(&rig.settings_path).expect("resize writes settings"),
+        )
+        .expect("settings TOML parses");
+        assert_eq!(written["window"]["width"].as_integer(), Some(16_384));
+        assert_eq!(written["window"]["height"].as_integer(), Some(12_000));
+    }
+
+    #[test]
+    fn headless_settings_resize_is_kept_and_counted_without_a_backend() {
+        let rig = LiveRig::new("", None, true);
+        {
+            let _headless = rig.run(
+                "window.open{title='settings test', width=1280, height=800, clear={0,0,0}, resizable=true}\nlocal width, height = settings.resize(20000, 1200)\nassert(width == 16384 and height == 1200)",
+            );
+        }
+        let changes = rig.requests.reader().take();
+        assert!(changes.open.is_some());
+        assert_eq!(changes.resize, Some((16_384, 1_200)));
+        assert_eq!(
+            rig.headless.as_ref().and_then(|notes| notes.final_count()),
+            Some("1 further window request(s) ignored: headless run".to_owned())
+        );
+        let second = crate::config::load(&rig.config_path).expect("second headless start");
+        assert!(second.settings_warnings.is_empty());
+        assert_eq!(
+            (second.graphics.width, second.graphics.height),
+            (16_384, 1_200)
+        );
+    }
+
+    #[test]
+    fn settings_scale_set_and_graphics_reset_update_the_live_bridge() {
+        for (config_text, wanted) in [("[ui]\nscale = 2.0\n", [4, 3, 4]), ("", [4, 3, 4])] {
+            let rig = LiveRig::new(
+                config_text,
+                Some(ck_window::ScreenSnapshot {
+                    backing: 2.0,
+                    visible_points: (1280, 800),
+                }),
+                false,
+            );
+            let _sink = rig.attach_scale_bridge((2560, 1600));
+            let control_before = format!("{:?}", rig.update_control);
+            let observed: Arc<Mutex<Vec<Option<u32>>>> = Arc::default();
+            let observe: HostFunction = {
+                let observed = Arc::clone(&observed);
+                let bridge = Arc::clone(&rig.bridge);
+                Arc::new(move |_| {
+                    observed
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(bridge.ui_scale(ck_window::PixelSize {
+                            width: 2560,
+                            height: 1600,
+                        }));
+                    Ok(Vec::new())
+                })
+            };
+            {
+                let _harness = crate::testing::Harness::new(
+                    "window.open{title='scale settings', width=640, height=400, clear={0,0,0}, resizable=true}\nwindow.observe()\nsettings.set('ui.scale', 1.5)\nwindow.observe()\nsettings.reset('graphics')\nwindow.observe()",
+                    crate::testing::Extras {
+                        functions: vec![("observe", observe)],
+                        extensions: vec![rig.runtime.extension()],
+                        requests: Some(rig.requests.clone()),
+                        notifier: Some(Arc::clone(&rig.notifier)),
+                        bridge: Some(Arc::clone(&rig.bridge)),
+                        screen: Some(Arc::clone(&rig.screen)),
+                        ui_scale_limit_k: rig.config.ui_scale_limit_k,
+                        ..Default::default()
+                    },
+                );
+            }
+            assert_eq!(*observed.lock().unwrap(), wanted.map(Some));
+            assert_ne!(format!("{:?}", rig.update_control), control_before);
+        }
+    }
+
+    #[test]
+    fn settings_set_to_an_unreachable_scale_keeps_the_visible_layout() {
+        let rig = LiveRig::new(
+            "",
+            Some(ck_window::ScreenSnapshot {
+                backing: 1.0,
+                visible_points: (1280, 800),
+            }),
+            false,
+        );
+        let sink = rig.attach_scale_bridge((1280, 800));
+        let generation = rig.bridge.metrics_generation();
+        {
+            let _harness = rig.run_with_bridge(
+                "window.open{title='small settings scale', width=1280, height=800, clear={0,0,0}, resizable=true}\nrender.set_hit('probe', {{x=0,y=0,width=20,height=20}})\nsettings.set('ui.scale', 2)",
+            );
+        }
+        assert_eq!(rig.bridge.metrics_generation(), generation);
+        assert!(rig.bridge.hit_regions().is_some());
+        assert_eq!(
+            *sink.0.lock().unwrap(),
+            2,
+            "only attach and hit layout publish"
+        );
+        assert_eq!(
+            rig.bridge.ui_scale(ck_window::PixelSize {
+                width: 1280,
+                height: 800
+            }),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn graphics_reset_without_a_resizable_open_keeps_all_overrides() {
+        let rig = LiveRig::new("[ui]\nscale = 2.0\n", None, false);
+        {
+            let _harness = rig.run(
+                "settings.set('ui.scale', 1.5)\nlocal before = settings.graphics()\nlocal ok, message = pcall(function() settings.reset('graphics') end)\nassert(not ok and string.find(tostring(message), 'window.resize', 1, true))\nlocal after = settings.graphics()\nassert(before.scale == 1.5 and after.scale == 1.5)",
+            );
+        }
+        let text = fs::read_to_string(&rig.settings_path).expect("the scale override was written");
+        let written: toml::Value = toml::from_str(&text).expect("settings TOML parses");
+        assert_eq!(written["ui"]["scale"].as_float(), Some(1.5));
+        assert_eq!(rig.requests.reader().take().resize, None);
     }
 }

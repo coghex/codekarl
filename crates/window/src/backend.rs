@@ -109,6 +109,10 @@ pub trait Backend {
     /// returning, and only [`terminate`](Self::terminate) may still be needed.
     fn create_window(&mut self, desc: &WindowDesc) -> Result<CreatedWindow<Self::Handles>, String>;
 
+    /// Changes a resizable window's content size in points. Backends that do not implement runtime
+    /// resizing may leave this as a no-op (the GLFW/Vulkan path is compile-only).
+    fn resize_window(&mut self, _points: (u32, u32)) {}
+
     /// The object the notifier arms with: valid from after `create_window` until `destroy_window`.
     fn wake_target(&self) -> Arc<dyn NativeWake>;
 

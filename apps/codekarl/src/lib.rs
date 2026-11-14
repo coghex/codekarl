@@ -831,17 +831,29 @@ fn supervise_with_owner_factory(
     ui_extensions.extend(font.map(font::extension));
     ui_extensions.extend(theme.map(theme::extension));
     ui_extensions.extend(glossary.map(glossary::extension));
-    if let Some(settings) = settings::Runtime::new_with_requests(
+    let screen = window_api::ScreenCell::default();
+    let settings_requests = requests.writer(Arc::clone(&shared.notifier));
+    let resize = window_api::ResizeSession::new(
+        settings_requests.clone(),
+        Arc::clone(&screen),
+        headless.clone(),
+    );
+    let update_control = window_loop_settings
+        .updates()
+        .map(ck_window::UpdateSettings::control);
+    if let Some(settings) = settings::Runtime::new_live(
         config,
         map_controller.clone(),
-        Some(requests.writer(Arc::clone(&shared.notifier))),
+        settings_requests,
+        Arc::clone(&bridge),
+        update_control,
+        resize,
     ) {
         ui_extensions.push(settings.extension());
     } else {
         ui_extensions.push(config.tooltips.extension());
     }
     // The main screen: filled below from the plan (made on this thread, before the UI VM is spawned), read by `window.open`.
-    let screen = window_api::ScreenCell::default();
     let setup = Setup {
         // Replaced by the mode's backend for a windowed run (a headless run has no backend).
         backend: mode::Backend::NativeMetal,

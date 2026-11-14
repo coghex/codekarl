@@ -410,6 +410,13 @@ impl Backend for CocoaBackend {
         })
     }
 
+    fn resize_window(&mut self, points: (u32, u32)) {
+        if self.window {
+            // SAFETY: the backend handle owns the live window and this method runs on the main thread.
+            unsafe { ffi::ck_win_resize(self.handle.as_ptr(), points.0, points.1) };
+        }
+    }
+
     fn main_screen(&mut self) -> ScreenSnapshot {
         let mut backing = 1.0_f64;
         let (mut visible_width, mut visible_height) = (0_u32, 0_u32);

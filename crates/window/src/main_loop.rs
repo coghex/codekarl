@@ -737,6 +737,9 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         if changes.close {
             return Some(LoopEnd::Closed);
         }
+        if let Some(points) = changes.resize {
+            self.backend.resize_window(points);
+        }
         if self.quit_requested() {
             return Some(LoopEnd::Quit);
         }

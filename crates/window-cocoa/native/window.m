@@ -935,6 +935,21 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
     self.growing = NO;
 }
 
+- (void)resizeToPoints:(NSSize)wanted {
+    NSWindow *window = self.window;
+    if (window == nil || !self.resizable || (window.styleMask & NSWindowStyleMaskFullScreen) != 0 || self.fullScreenTransition) {
+        return;
+    }
+    NSRect frame = window.frame;
+    NSRect resized = [window frameRectForContentRect:NSMakeRect(0, 0, wanted.width, wanted.height)];
+    resized.origin.x = frame.origin.x;
+    resized.origin.y = NSMaxY(frame) - resized.size.height;
+    self.growing = YES;
+    [window setFrame:resized display:YES];
+    self.growing = NO;
+    [self applyScaleAndRecordSize];
+}
+
 - (void)backingScaleChanged {
     if (self.window == nil || self.view == nil) {
         return;
@@ -1167,6 +1182,13 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
         *pixel_width = pixels_wide;
         *pixel_height = pixels_high;
         return 0;
+    }
+}
+
+void ck_win_resize(CKWinHandle *handle, uint32_t point_width, uint32_t point_height) {
+    @autoreleasepool {
+        CKWinState *state = (__bridge CKWinState *)handle;
+        [state resizeToPoints:NSMakeSize(point_width, point_height)];
     }
 }
 

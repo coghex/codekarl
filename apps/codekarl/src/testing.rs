@@ -99,6 +99,16 @@ pub(crate) struct Extras {
     pub(crate) assets: Option<PathBuf>,
     /// Headless notes: the run is headless, so `render` writes nothing and counts into them.
     pub(crate) headless: Option<Arc<HeadlessNotes>>,
+    /// Shared window request state for tests that exercise cooperating extensions.
+    pub(crate) requests: Option<Requests>,
+    /// Shared notifier for tests that exercise cooperating extensions.
+    pub(crate) notifier: Option<Arc<Notifier>>,
+    /// Shared scene bridge for extensions and the UI link under test.
+    pub(crate) bridge: Option<Arc<ck_render_2d::SceneBridge>>,
+    /// The screen snapshot used by `window.open` in tests with a constrained display.
+    pub(crate) screen: Option<window_api::ScreenCell>,
+    /// UI scale limit passed to `window.open` in tests with a live graphics setting.
+    pub(crate) ui_scale_limit_k: Option<u32>,
     /// More extensions for the UI VM (for example [`frame_extension`]).
     pub(crate) extensions: Vec<Extension>,
     /// A resource service: the UI VM then also gets the `texture` extension and the new scene calls work, as in a real
@@ -120,14 +130,23 @@ impl Harness {
         let dir = Dir::new();
         let entry = dir.0.join("main.lua");
         fs::write(&entry, script).expect("a script");
-        let notifier = Notifier::new();
-        let requests = Requests::new();
-        let mut extension =
-            window_api::extension(requests.writer(Arc::clone(&notifier)), None, None);
+        let notifier = extras.notifier.clone().unwrap_or_else(Notifier::new);
+        let requests = extras.requests.clone().unwrap_or_default();
+        let screen = extras.screen.clone().unwrap_or_default();
+        let mut extension = window_api::extension_with_screen(
+            requests.writer(Arc::clone(&notifier)),
+            extras.headless.clone(),
+            None,
+            screen,
+            extras.ui_scale_limit_k,
+        );
         for (name, function) in extras.functions {
             extension = extension.function(name, function);
         }
-        let bridge = ck_render_2d::SceneBridge::new(ck_render_2d::Filter::Nearest);
+        let bridge = extras
+            .bridge
+            .clone()
+            .unwrap_or_else(|| ck_render_2d::SceneBridge::new(ck_render_2d::Filter::Nearest));
         let writer = bridge.take_writer().expect("the one writer");
         let (render, render_end) = render_api::extension_with_end(
             extras.assets,

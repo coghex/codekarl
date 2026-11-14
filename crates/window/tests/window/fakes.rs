@@ -412,6 +412,10 @@ impl Backend for FakeBackend {
         }
     }
 
+    fn resize_window(&mut self, points: (u32, u32)) {
+        note(&self.log, format!("backend.resize_window {points:?}"));
+    }
+
     fn wake_target(&self) -> Arc<dyn NativeWake> {
         note(&self.log, "backend.wake_target");
         Arc::clone(&self.native) as Arc<dyn NativeWake>

@@ -402,7 +402,28 @@ impl SceneBridge {
     /// Limits the UI scale of a window opened in screen pixels to `k` (2, 3 or 4: the configured scale 1, 1.5 or 2), or lifts the limit. It
     /// is read at startup and applies to the metrics set after it.
     pub fn set_ui_scale_limit(&self, limit_k: Option<u32>) {
-        self.lock().ui_scale_limit = limit_k;
+        let mut displaced = Displaced::default();
+        {
+            let mut state = self.lock();
+            if state.ui_scale_limit == limit_k {
+                return;
+            }
+            state.ui_scale_limit = limit_k;
+            let Some(metrics) = state.metrics else {
+                return;
+            };
+            let updated = state.with_ui_scale(metrics);
+            if updated.ui_scale_k == metrics.ui_scale_k {
+                return;
+            }
+            state.metrics = Some(updated);
+            state.metrics_generation += 1;
+            state.generation += 1;
+            // Hit regions were laid out in the previous units; input remains unowned until the next layout publishes new ones.
+            displaced.hit_regions = state.hit_regions.take();
+            displaced.snapshot = state.publish();
+        }
+        drop(displaced);
     }
 
     /// Removes the sink and ends the bridge. Nothing is published afterwards, and it is idempotent.

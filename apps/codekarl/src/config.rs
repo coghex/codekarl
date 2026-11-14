@@ -504,6 +504,8 @@ impl TryFrom<String> for BackendName {
 #[serde(deny_unknown_fields, default)]
 struct WindowFields {
     backend: Option<BackendName>,
+    width: Option<u32>,
+    height: Option<u32>,
 }
 
 /// The `window` table.
@@ -747,6 +749,7 @@ impl FrameConfig {
 #[serde(deny_unknown_fields, default)]
 struct UiFields {
     scale: Option<toml::Value>,
+    list_look: Option<String>,
     points_per_pixel: Option<toml::Value>,
     font_points_per_pixel: Option<toml::Value>,
     tooltips: Option<toml::Value>,
@@ -1180,6 +1183,8 @@ pub(crate) struct VmConfig {
 pub(crate) struct Config {
     /// `[ui] scale` as `k` (2, 3 or 4), the limit on the UI scale of a window opened in screen pixels, if the file sets one.
     pub(crate) ui_scale_limit_k: Option<u32>,
+    pub(crate) settings_base_graphics: GraphicsSettings,
+    pub(crate) graphics: GraphicsSettings,
     /// Startup-only tooltip settings.
     pub(crate) tooltips: TooltipsConfig,
     /// Effective `[map]` controls, including settings-file overrides even when no map is present.
@@ -1254,7 +1259,30 @@ pub(crate) struct SettingsOverrides {
     pub(crate) map_pan_pixels_per_frame: Option<u32>,
     pub(crate) map_zoom_steps_per_second: Option<u32>,
     pub(crate) map_scroll_points_per_step: Option<u32>,
+    pub(crate) ui_scale_limit_k: Option<u32>,
+    pub(crate) ui_list_look: Option<&'static str>,
+    pub(crate) window_width: Option<u32>,
+    pub(crate) window_height: Option<u32>,
     pub(crate) bindings: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GraphicsSettings {
+    pub(crate) scale_limit_k: Option<u32>,
+    pub(crate) list_look: &'static str,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+impl Default for GraphicsSettings {
+    fn default() -> Self {
+        Self {
+            scale_limit_k: None,
+            list_look: "cards",
+            width: 1280,
+            height: 800,
+        }
+    }
 }
 
 impl Default for TooltipsConfig {
@@ -1331,6 +1359,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             ui_scale_limit_k: None,
+            settings_base_graphics: GraphicsSettings::default(),
+            graphics: GraphicsSettings::default(),
             tooltips: TooltipsConfig::default(),
             map_settings: MapSettings::default(),
             settings_file: None,
@@ -1551,6 +1581,25 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         .as_ref()
         .map(|scale| ui_scale_k(path, scale))
         .transpose()?;
+    let list_look = match file.ui.0.list_look.as_deref().unwrap_or("cards") {
+        "cards" => "cards",
+        "rows" => "rows",
+        other => {
+            return Err(format!(
+                "{}: [ui]: list_look = {other:?} is not accepted: use cards or rows",
+                path.display()
+            ));
+        }
+    };
+    let window_width = checked_dimension(path, "width", file.window.0.width.unwrap_or(1280), 1280)?;
+    let window_height =
+        checked_dimension(path, "height", file.window.0.height.unwrap_or(800), 800)?;
+    let graphics = GraphicsSettings {
+        scale_limit_k: ui_scale_limit_k,
+        list_look,
+        width: window_width,
+        height: window_height,
+    };
     let resources = ResourceConfig::parse(file.resources.0)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let (max_quads, max_groups) = scene_capacities(path, &file.render.0)?;
@@ -1566,6 +1615,8 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         .collect();
     Ok(Config {
         ui_scale_limit_k,
+        settings_base_graphics: graphics,
+        graphics,
         tooltips,
         map_settings,
         settings_file: None,
@@ -1607,6 +1658,18 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         bindings,
         whole: to_config_value(&toml::Value::Table(whole)),
     })
+}
+
+fn checked_dimension(path: &Path, name: &str, value: u32, minimum: u32) -> Result<u32, String> {
+    if (minimum..=ck_window::MAX_DIMENSION).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!(
+            "{}: [window]: {name}={value} is outside {minimum}..={}",
+            path.display(),
+            ck_window::MAX_DIMENSION
+        ))
+    }
 }
 
 /// Validates `[ui.tooltips]`; integer tenths avoid binary-float step errors in the TOML values.
@@ -1808,7 +1871,8 @@ fn load_settings(config_path: &Path, config: &mut Config) {
     };
     for (table, contents) in root {
         match table.as_str() {
-            "ui" => load_tooltip_settings(&path, contents, config),
+            "ui" => load_ui_settings(&path, contents, config),
+            "window" => load_window_settings(&path, contents, config),
             "map" => load_map_settings(&path, contents, config),
             "input" => load_input_settings(&path, contents, config),
             _ => config.settings_warnings.push(format!(
@@ -1954,7 +2018,7 @@ fn load_input_settings(path: &Path, value: &toml::Value, config: &mut Config) {
     }
 }
 
-fn load_tooltip_settings(path: &Path, value: &toml::Value, config: &mut Config) {
+fn load_ui_settings(path: &Path, value: &toml::Value, config: &mut Config) {
     let Some(ui) = value.as_table() else {
         config.settings_warnings.push(format!(
             "{}: [ui] must be a table; ignoring it",
@@ -1963,6 +2027,34 @@ fn load_tooltip_settings(path: &Path, value: &toml::Value, config: &mut Config) 
         return;
     };
     for (key, value) in ui {
+        if key == "scale" {
+            match ui_scale_k(path, value) {
+                Ok(k) => {
+                    config.ui_scale_limit_k = Some(k);
+                    config.graphics.scale_limit_k = Some(k);
+                    config.settings_overrides.ui_scale_limit_k = Some(k);
+                }
+                Err(message) => config.settings_warnings.push(message),
+            }
+            continue;
+        }
+        if key == "list_look" {
+            match value.as_str() {
+                Some("cards") => {
+                    config.graphics.list_look = "cards";
+                    config.settings_overrides.ui_list_look = Some("cards");
+                }
+                Some("rows") => {
+                    config.graphics.list_look = "rows";
+                    config.settings_overrides.ui_list_look = Some("rows");
+                }
+                _ => config.settings_warnings.push(format!(
+                    "{}: [ui] list_look = {value} is not accepted: use cards or rows",
+                    path.display()
+                )),
+            }
+            continue;
+        }
         if key != "tooltips" {
             config.settings_warnings.push(format!(
                 "{}: unknown settings table [ui.{key}]; ignoring it",
@@ -2002,6 +2094,48 @@ fn load_tooltip_settings(path: &Path, value: &toml::Value, config: &mut Config) 
                 },
                 Err(message) => config.settings_warnings.push(message),
             }
+        }
+    }
+}
+
+fn load_window_settings(path: &Path, value: &toml::Value, config: &mut Config) {
+    let Some(entries) = value.as_table() else {
+        config.settings_warnings.push(format!(
+            "{}: [window] must be a table; ignoring it",
+            path.display()
+        ));
+        return;
+    };
+    for (key, entry) in entries {
+        let minimum = match key.as_str() {
+            "width" => 1280,
+            "height" => 800,
+            _ => {
+                config.settings_warnings.push(format!(
+                    "{}: [window] unknown key `{key}`; accepted keys are width and height",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let parsed = entry
+            .as_integer()
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| (minimum..=ck_window::MAX_DIMENSION).contains(n));
+        let Some(number) = parsed else {
+            config.settings_warnings.push(format!(
+                "{}: [window] {key} is not an integer in {minimum}..={}",
+                path.display(),
+                ck_window::MAX_DIMENSION
+            ));
+            continue;
+        };
+        if key == "width" {
+            config.graphics.width = number;
+            config.settings_overrides.window_width = Some(number);
+        } else {
+            config.graphics.height = number;
+            config.settings_overrides.window_height = Some(number);
         }
     }
 }
@@ -2067,6 +2201,55 @@ fn setting_integer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graphics_configuration_accepts_the_scale_list_look_and_bounded_resolution() {
+        let config = parse_config(
+            "[ui]\nscale = 1.5\nlist_look = 'rows'\n\n[window]\nwidth = 1920\nheight = 1080\n",
+        )
+        .expect("valid graphics configuration");
+        assert_eq!(config.graphics.scale_limit_k, Some(3));
+        assert_eq!(config.graphics.list_look, "rows");
+        assert_eq!(
+            (config.graphics.width, config.graphics.height),
+            (1920, 1080)
+        );
+        for bad in [
+            "[window]\nwidth = 1279\n",
+            "[window]\nheight = 16385\n",
+            "[ui]\nlist_look = 'columns'\n",
+        ] {
+            assert!(parse_config(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn graphics_settings_file_overrides_config_and_reports_each_bad_sibling() {
+        let dir = crate::testing::Dir::new();
+        let config_path = dir.0.join("config.toml");
+        fs::write(
+            &config_path,
+            "[ui]\nscale = 1\nlist_look = 'cards'\n\n[window]\nwidth = 1600\nheight = 900\n",
+        )
+        .expect("write config");
+        let settings_path = dir.0.join("settings.toml");
+        fs::write(
+            &settings_path,
+            "[ui]\nscale = 2\nlist_look = 'rows'\n\n[window]\nwidth = 20000\nheight = 1000\n",
+        )
+        .expect("write settings");
+        let config = load(&config_path).expect("load config");
+        assert_eq!(config.graphics.scale_limit_k, Some(4));
+        assert_eq!(config.ui_scale_limit_k, Some(4));
+        assert_eq!(config.graphics.list_look, "rows");
+        assert_eq!(
+            (config.graphics.width, config.graphics.height),
+            (1600, 1000)
+        );
+        assert_eq!(config.settings_base_graphics.width, 1600);
+        assert_eq!(config.settings_warnings.len(), 1);
+        assert!(config.settings_warnings[0].contains("width"));
+    }
 
     const PATH: &str = "/tmp/codekarl-test/config.toml";
 
