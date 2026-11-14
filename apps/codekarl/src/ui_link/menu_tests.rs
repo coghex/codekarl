@@ -671,6 +671,11 @@ function fixture_action(name)
   for _, action in ipairs(fixture.bindings) do if action.name == name then return action end end
   error("missing fixture binding " .. name)
 end
+function fixture_binding_writes()
+  local count = 0
+  for _, call in ipairs(fixture.calls) do if call[1] == "set_bindings" then count = count + 1 end end
+  return count
+end
 function finish_capture(value)
   local state = require("lib.settings_window").current()
   if state == nil or state.waiting == nil then error("no waiting settings slot") end
@@ -1762,6 +1767,229 @@ eq(fixture.capture, nil, "closing the menu cancels capture")
     click_marked(&mut rig, "settings_slot_time_pause_1");
     rig.opened();
     click_marked(&mut rig, "settings_slot_time_pause_1");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_right_click_on_an_empty_second_slot_is_a_noop() {
+    let mut rig = settings_rig(&[
+        r#"fixture_action("time_pause").bindings = {}"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+eq(line_text(s.controls.key_slots.time_pause[2].line), "-")
+mark_settings()
+"#,
+        r#"
+eq(fixture_binding_writes(), 0, "the empty slot causes no binding write")
+eq(#fixture_action("time_pause").bindings, 0)
+mark_settings()
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    let slot = point(&rig, "settings_slot_time_pause_2");
+    rig.feed(&[
+        PointerEvent::ButtonDown {
+            position: points(slot.0, slot.1),
+            button: ck_window::PointerButton::Right,
+        },
+        PointerEvent::ButtonUp {
+            position: points(slot.0, slot.1),
+            button: ck_window::PointerButton::Right,
+        },
+    ]);
+    frame(&mut rig);
+    rig.opened();
+}
+
+#[test]
+fn settings_input_backspace_on_an_empty_second_slot_is_a_noop() {
+    let mut rig = settings_rig(&[
+        r#"fixture_action("time_pause").bindings = {}"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+finish_capture("Backspace")
+eq(#fixture_action("time_pause").bindings, 0)
+eq(fixture_binding_writes(), 0, "Backspace on an empty slot causes no binding write")
+mark_settings()
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_2");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_clear_on_an_empty_second_slot_closes_the_prompt_without_a_write() {
+    let mut rig = settings_rig(&[
+        r#"fixture_action("time_pause").bindings = {}"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+finish_capture("F5")
+expect(s.prompt ~= nil and s.prompt.window.title == "Key in use")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.prompt == nil, "clear closes the prompt")
+eq(#fixture_action("time_pause").bindings, 0)
+eq(fixture_action("game_quicksave").bindings[1], "F5", "clear leaves its owner alone")
+eq(fixture_binding_writes(), 0, "clearing an empty slot causes no binding write")
+mark_settings()
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_2");
+    rig.opened();
+    click_marked(&mut rig, "settings_prompt_clear");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_free_key_in_an_empty_second_slot_becomes_the_actions_first_key() {
+    let mut rig = settings_rig(&[
+        r#"fixture_action("time_pause").bindings = {}"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+mark_settings()
+"#,
+        r#"
+expect(require("lib.settings_window").current().waiting ~= nil)
+finish_capture("Control+KeyP")
+local bindings = fixture_action("time_pause").bindings
+eq(bindings[1], "Control+KeyP", "the key is kept as the first list entry")
+eq(bindings[2], nil)
+local s = require("lib.settings_window").current()
+eq(line_text(s.controls.key_slots.time_pause[1].line), "Ctrl+P", "redraw shows the canonical first slot")
+eq(line_text(s.controls.key_slots.time_pause[2].line), "-")
+eq(fixture.calls[#fixture.calls][1], "set_bindings")
+eq(fixture.calls[#fixture.calls][2].time_pause[1], "Control+KeyP")
+mark_settings()
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_2");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_replace_from_an_empty_second_slot_keeps_the_key_with_the_target() {
+    let mut rig = settings_rig(&[
+        r#"fixture_action("time_pause").bindings = {}"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+finish_capture("F5")
+expect(s.prompt ~= nil and s.prompt.window.title == "Key in use")
+eq(#s.prompt.buttons, 3, "an empty target has no old key to swap")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.prompt == nil)
+eq(fixture_action("time_pause").bindings[1], "F5", "replace assigns the key to the target")
+eq(fixture_action("time_pause").bindings[2], nil)
+eq(#fixture_action("game_quicksave").bindings, 0, "replace clears the former owner")
+eq(fixture.calls[#fixture.calls][1], "set_bindings")
+local changes = fixture.calls[#fixture.calls][2]
+eq(changes.time_pause[1], "F5")
+eq(#changes.game_quicksave, 0)
+mark_settings()
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_2");
+    rig.opened();
+    click_marked(&mut rig, "settings_prompt_replace");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_swap_keeps_the_filled_first_slot_and_moves_the_second_slot_key() {
+    let mut rig = settings_rig(&[
+        r#"
+fixture_action("time_pause").bindings = {"Space", "F9"}
+fixture_action("game_quicksave").bindings = {"F5"}
+"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+finish_capture("F5")
+expect(s.prompt ~= nil)
+eq(#s.prompt.buttons, 4, "swap remains available for the existing second key")
+local choices = {}
+for _, item in ipairs(s.prompt.buttons) do choices[line_text(item.line)] = true end
+expect(choices.replace and choices.swap and choices.clear and choices.cancel, "the existing prompt choices remain")
+mark_settings()
+"#,
+        r#"
+expect(require("lib.settings_window").current().prompt == nil)
+local target = fixture_action("time_pause").bindings
+eq(target[1], "Space", "swap leaves the filled first slot unchanged")
+eq(target[2], "F5")
+local owner = fixture_action("game_quicksave").bindings
+eq(owner[1], "F9", "swap moves the replaced second-slot key to its owner")
+eq(owner[2], nil)
+mark_settings()
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_2");
+    rig.opened();
+    click_marked(&mut rig, "settings_prompt_swap");
     rig.opened();
 }
 
