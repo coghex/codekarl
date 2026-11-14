@@ -75,6 +75,13 @@ configuration file). `/saves` is in `.ignore`, so Pijul does not see the saves a
   `--load PATH` starts from a save instead.
 - **Time:** Space pauses, `1` to `5` pick a speed, `]` and `[` go faster and slower, and the time bar's buttons do the same. F5
   quicksaves and F9 quickloads.
+- **The menu:** Escape closes what is open, one thing a press: a tooltip, a list's picker, a window. With nothing left to
+  close it opens the pause menu, a small window in the middle of the dimmed screen, and pauses the game. While the menu is open
+  the mouse reaches nothing behind it, and the time, quicksave, quickload and map keys do nothing. "return", or Escape again,
+  closes the menu and leaves the game paused: Space or the time bar's play button resumes it. "quit to desktop" ends the game at
+  once without asking, and so does the window's own close button. Neither saves, and F5 does nothing while the menu is open, so
+  quicksave before you open it. "settings", "glossary" and "save / load" are greyed until those screens are built
+  ([docs/ui-design.md](docs/ui-design.md) §3.15).
 - **The map:** drag to pan and scroll to zoom at the cursor, or use the arrow keys and `=` and `-`. Click a place to show it in the
   location panel (tabs: location, pops and buildings). The two icons at the top right open the ledger, a list on the right of the
   screen with a locations tab and a pops tab; clicking a row shows that place in the panel. The three buttons centred at the bottom of
