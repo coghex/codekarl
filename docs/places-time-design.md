@@ -194,6 +194,12 @@ The Firm rule is: cells within the radius; the nearest location takes an overlap
   - `time_faster` and `time_slower` (proposed defaults `]` and `[`).
 
   A new or loaded game starts paused at speed 1.
+- **Since CK-297 (the pause menu; `docs/ui-design.md` §3.15 and §3.6):**
+  - the simulation also takes a control that **only pauses**: a running game pauses with the reason `player`, and a paused
+    game is left as it is, its reason included. No action and no key maps to it: the UI sends it with `game.pause()` when the
+    pause menu opens;
+  - while that menu is open, the time actions above, `game_quicksave` and `game_quickload` (§5.3) and the six map actions do
+    nothing.
 - **Never skip (Firm).** The clock decides only how many ticks are due. If the simulation falls behind, it runs slower; it never skips,
   merges or shortens a tick. A single wake runs at most a bounded number of ticks, so a stall cannot cause a burst.
 - **Real time never changes outcomes.** Speed, pause, frame rate and machine load are not simulation state, and the save does not hold

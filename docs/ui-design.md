@@ -182,6 +182,21 @@
 >     in `docs/ui-art-provenance.md`.
 >
 >   That completes UI polish item 2, the lists.
+> - **The pause menu** (CK-297; `owner-direction-game-menu-manager-r1.md` and `-designer-r2.md` to `-r6.md`, dated 2026-11-13 and
+>   2026-11-14; §3.15): Escape with nothing left to close now opens a menu, and no longer ends the game. The owner: "ok pause menu
+>   with buttons for resume, settings, glossary, save/load, and quit to desktop".
+>   - **The menu** is a window titled "Menu" in the middle of the screen, over a backdrop that dims everything behind it by
+>     half. It has five buttons: "return", "settings", "glossary", "save / load" and "quit to desktop". The middle three are
+>     greyed and do nothing until their screens are built.
+>   - **It pauses and blocks:** opening it pauses the game. While it is open the pointer reaches nothing behind it, and the
+>     game's own keys (time, quicksave and quickload, the map's keys) do nothing.
+>   - **"return" and Escape** close it and leave the game paused. The owner: "return should return us to the game, but leave it
+>     paused".
+>   - **"quit to desktop"** ends the game at once, with no question. The game window's own close button still ends it too.
+>   - **For scripts:** the button library has a width option and an inactive (greyed) state, and the game API has
+>     `game.pause()` and `game.set_modal(on)` (§3.6).
+>
+>   That is the first step of UI polish item 3, the game menu.
 
 ## Owner answers (2026-11-07)
 
@@ -189,7 +204,8 @@ From `.pipeline/coordination/m8-design/owner-answers-r1.md`. **No question is op
 
 1. **The look:** "I'll describe it". The owner describes the look, and a mock-up follows the description. Theming (slice 7) waits for
    both. The description is pending. *(Historical: given and mocked up; see "Delivered" above.)*
-2. **Escape:** it closes the top window; with none open, it requests the close as today (§3.5).
+2. **Escape:** it closes the top window; with none open, it requests the close as today (§3.5). *(Superseded by CK-297: with
+   nothing open, Escape opens the pause menu and the run goes on; see §3.15.)*
 3. **UI scale:** one `[ui] points_per_pixel` for the font, borders and icons; the old key is refused, naming the new one (§3.3).
    *(Superseded on 2026-11-10: one UI scale still covers the font, borders and icons, but it follows the window, and
    `points_per_pixel` is retired in favour of `[ui] scale`; see §3.3.)*
@@ -498,7 +514,9 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
   - the snapshot's `reset` is set (focus loss);
   - the published frame no longer gives the owner group a hit region, because it was hidden, destroyed or its regions removed;
   - **pointer detail overflowed** (`pointer_overflow`; `ck-input` keeps at most `POINTER_CAPACITY` = 64 events,
-    `crates/input/src/lib.rs`) and the button is no longer held (`pointer_held` is false). The `Up` may have been lost.
+    `crates/input/src/lib.rs`) and the button is no longer held (`pointer_held` is false). The `Up` may have been lost;
+  - **the pause menu's key block turns on** (CK-297, §3.15): the first tick that sees the block on ends the gesture someone
+    holds, as a focus loss does. A UI capture gets `cancel`, and a map drag ends.
 
   After a cancel, the rest of that gesture, up to the next retained `Down`, goes to nobody: not to the map, so a cancelled UI drag never
   turns into a pan.
@@ -580,6 +598,8 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
       - for an existing capture, a hidden or removed owner region is a `cancel` (above).
 - **Keys** stay global, as now: actions from `[input.bindings]`.
   - A focused window does not take keys from the map or the time controls in M8. Text entry would need that, and it is out of scope.
+    - **Since CK-297 the pause menu is the one exception:** while it is open, the game's sixteen key actions reach neither the
+      map nor the simulation. Every other action, `close` included, still arrives (§3.15).
   - The one change is **Escape**, the `close` action (Firm, owner Q2): with a window open it closes the top window; with none open it
     requests the app's close as today.
     - **This needs no engine change.** The `close` press already reaches Lua as `close_request` with source `"key"`, and a callback
@@ -589,7 +609,11 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
     - **Since CK-270 an open tooltip comes first:** the handler closes the newest tooltip and declines, so one press closes one
       tooltip, and only with none open does it go on to the top window (§3.13).
     - **Since CK-295 an open list-bar picker comes next:** with no tooltip to close, the handler closes the open picker
-      (`listbar.close_open()`) and declines. So the order is: a tooltip, the picker, the top window, the app's close (§3.14).
+      (`listbar.close_open()`) and declines. So the order was: a tooltip, the picker, the top window, the app's close (§3.14).
+    - **Since CK-297 the last step is the pause menu, not the app's close.** `main.lua`'s handler is now `menu.close_request`
+      (`lib/menu.lua`). For Escape it calls `window.close_request`, and when that has nothing left to close it opens the pause
+      menu and declines. So the order is: a tooltip, the picker, the top window, the pause menu, and Escape never ends the run.
+      The close button still always quits (§3.15).
 
 ### 3.6 From the UI to the game (Proposal)
 
@@ -599,6 +623,16 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
   - **It never blocks.** It is a send on the existing channel (`controls.rs`, `SimControls::send` ignores the send's result). After the
     simulation owner has ended, the control is dropped silently, exactly as a key press is then.
   - It goes through the same channel, so a click and a key are indistinguishable to the simulation and nothing new is journalled.
+- **`game.pause()`** (CK-297) sends a control that only pauses, on the same channel (`Control::Pause`; `core.rs`, `pause_only`).
+  - A running game pauses with the reason `player`. A paused game is left as it is, its reason (`player`, `error` or `load`)
+    included. It never resumes.
+  - It takes no argument and returns nothing. An argument is an error.
+  - **No key reaches it.** No input action maps to this control, and `game.control` has no name for it: only this call sends it.
+  - **Why it is not `game.control("time_pause")`:** that one toggles. A script that toggled on the `paused` it last heard from
+    `game_time` would resume the game when that value was out of date. `game.pause()` gives the same result either way.
+- **`game.set_modal(on)`** (CK-297) turns the block on the game's own key actions on (`true`) or off (`false`). It takes exactly
+  one boolean, returns nothing, and is off at the start of a run. The pause menu is its one caller (§3.15, which lists the
+  actions and says what the block does).
 - **No other command path in M8.** Game commands from windows, such as building or trade, come with the systems in M9.
 
 ### 3.7 The look in the map's style (Proposal; the look itself pending the owner's description)
@@ -810,6 +844,8 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
   - **updates the map controller** with the map's share: its routed pointer events and the map actions. Pan, zoom, hover (CK-198) and map
     clicks (§3.11) are computed here. The camera publication is unchanged;
   - **sends the time and save presses** to `SimControls` (`controls.rs`), so they act at their tick, not when the UI is next free;
+    - **Since CK-297:** while the pause menu's key block is on, the tick first takes the blocked actions out of what the map
+      and the simulation are given. The UI's share is not filtered (§3.15);
   - **appends the UI's share to its stash.**
 - **The stash,** which is what the UI has not yet been given, is bounded:
   - routed UI pointer events, ordered, at most 64; when full the oldest is dropped and `overflow` is set;
@@ -967,7 +1003,7 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
 
     | Widget | Functional when |
     |---|---|
-    | a button (`lib/button.lua`: also tabs, close buttons, the map-mode and ledger buttons) | it has `on_click` |
+    | a button (`lib/button.lua`: also tabs, close buttons, the map-mode and ledger buttons) | it has `on_click` and, since CK-297, is not inactive (§3.15) |
     | a list row (`lib/list.lua`) | its list has `on_select` |
     | a card item (`lib/cards.lua`) | the item at that index has `on_click` now |
     | a window's title (`lib/window.lua`) | the window is draggable and not `fixed`, or is `fixed` with `on_title_click` |
@@ -1511,7 +1547,7 @@ Lengths below are in UI pixels.
   events of an overflow packet (§3.5) close nothing. `main.lua` calls `listbar.update(update)` every frame, after the pointer
   dispatcher, for the presses and the size.
 - **Escape** (§3.5) closes one thing a press, in this order: the newest tooltip that is not a label; else the open picker; else
-  the top window; else it asks to close the app.
+  the top window. With nothing left it asked to close the app; since CK-297 it opens the pause menu (§3.15).
 - **Hit keys:** every key the bar makes comes from `ui.key` with a short fixed prefix (`listbar_panel`, `listbar_box`,
   `listbar_sort`). A value, a label or a group key is data and is never part of a key: the host accepts only `[a-z0-9_]{1,48}`,
   and a label such as `base price` is not that (§3.13, CK-279).
@@ -1574,6 +1610,118 @@ direction a sort has when it is chosen.
   (the ledger's two bars); `market_table.rs`, `cards.rs`, `rows.rs` and `selectors_tabs.rs` beside it (the location panel's
   three); and `ui_link/group_tests.rs`
   (`escape_closes_the_top_tooltip_then_the_open_list_bar_picker_then_the_top_window_one_each`).
+
+### 3.15 The pause menu (accepted, CK-297)
+
+Escape, with nothing left to close, opens the **pause menu**: a small window in the middle of the screen, over a backdrop that
+dims the game. Before CK-297 that press ended the run. The owner asked for it on 2026-11-13, as the first step of UI polish
+item 3 (the game menu): "ok pause menu with buttons for resume, settings, glossary, save/load, and quit to desktop."
+
+- **The records** are `owner-direction-game-menu-manager-r1.md` and `owner-direction-game-menu-designer-r2.md` to `-r6.md` in
+  `.pipeline/coordination/ui-polish-design/`. The look the owner chose is look A of `mockups/game-menu-r2.html` there, and it
+  uses no new art (`game-menu-provenance-r1.md`). The spec is `runtime-m55/ck297-spec.md` (sha256 `ef260486…`).
+- **One module,** `scripts/ui/lib/menu.lua`, is the menu, its backdrop and the Escape rule. `main.lua` gives it the view's size.
+  - `menu.open(view)` opens it, `menu.close()` closes it, and `menu.is_open()` says whether it is open.
+  - `menu.close_request(source, view)` answers the game window's close request, and `menu.relayout()` follows a change of the
+    view's size.
+  - `menu.LABELS` is the five labels in order, and `menu.current()` gives a test the open menu's parts.
+
+Lengths below are in UI pixels.
+
+- **What opens it.** `main.lua` answers every close request with `menu.close_request(source, view)`.
+  - **Escape** (source `"key"`) first does what it did before, through `window.close_request` (§3.5): it closes the newest
+    tooltip that is not a label, else the open list-bar picker, else the top window, one thing a press, and declines. Only
+    with nothing left to close does it open the menu, and it declines then too. So Escape never ends the run.
+  - **The game window's close button** (source `"button"`) is accepted as before, with the menu open or not: the run ends.
+  - **Nothing else opens it.** There is no menu button on the screen. The owner chose "Escape last" over a button on the time
+    bar.
+  - **Without a scenario** there is no `game` table. The menu opens all the same and makes neither game call.
+- **The window** is a library window (`lib/window.lua`) of kind `window`, titled "Menu".
+  - It is `fixed`, so it has no close button, and it is not draggable. Its title bar has no action. The owner chose no close
+    button ("No x") and "Centred, fixed".
+  - It is centred in the view when it opens, and `menu.relayout()` centres it again when the view's size changes. `main.lua`
+    calls that after its other relayouts.
+  - **At most one.** `menu.open` on an open menu only raises it and returns the same window. It pauses nothing again.
+- **The five buttons** are a column that is the window's whole content, in this order: "return", "settings", "glossary",
+  "save / load", "quit to desktop".
+  - All five have the same width: the widest label's `font.layout` width, plus the button's own 4 of padding, plus 16. Each is
+    15 tall, with its text centred.
+  - There are 3 pixels between two buttons, and 9 above "quit to desktop".
+  - "save / load" is one button, the owner's choice over two.
+- **The three greyed buttons.** "settings", "glossary" and "save / load" are inactive buttons (below) until their screens are
+  built, which are later steps. Their text is in `dim` and their outline in `track`. They have no hover or pressed look, and a
+  press on one does nothing. The owner chose greyed buttons over hidden ones, and this look ("G1: dark outline") over a red
+  outline.
+- **The backdrop** dims everything behind the menu and takes the pointer.
+  - It is one quad of the theme's white texture over the whole view, tinted with the colour `body` at alpha one half.
+  - It is in a group of its own, made when the menu opens and before the menu's window. So it is above every bar and window
+    that existed then, and below the menu. The tooltip overlay stays above both (§3.13).
+  - **It is a hit region** over the whole view, under a key from `ui.key("menu_backdrop")`. Its widget takes every press, drag,
+    scroll and hover and does nothing with them. So none of them reaches the map, a bar or a window behind it, and the map's
+    hover is suppressed as it is over any hit region (§3.5).
+  - `menu.relayout()` fits the quad and the hit region to the view's new size.
+  - The owner chose "Pauses and blocks".
+- **Pausing.** `menu.open` calls `game.pause()` (§3.6). A running game pauses with the reason `player`, and a game that is
+  already paused, for any reason, is left as it is. This holds when a `game_time` is still on its way to the UI, for example
+  after Space pressed just before Escape, because the simulation decides from its own state.
+- **The game's keys do nothing while the menu is open.** `menu.open` calls `game.set_modal(true)`, and closing the menu calls
+  `game.set_modal(false)`.
+  - **The block names sixteen actions** (`BLOCKED_ACTIONS`, `apps/codekarl/src/game/controls.rs`) and nothing else:
+    `time_pause`, `time_speed_1` to `time_speed_5`, `time_faster`, `time_slower`, `game_quicksave`, `game_quickload`,
+    `map_pan_left`, `map_pan_right`, `map_pan_up`, `map_pan_down`, `map_zoom_in` and `map_zoom_out`.
+  - **It is not a rule about keys.** The owner: "all ignored, but not as a rule, later we will have a grave key shell that will
+    still need to work, only the game keys can be ignored". `close` (Escape) and every action not on the list still arrive.
+  - **How:** the block is one flag in `SimControls`, off at the start of a run. Each input tick (§3.12) reads it
+    (`ui_link.rs`, `key_block`). While it is on, the map and the simulation are given the tick's input without the blocked
+    actions: none of their transitions, and each one not held, not pressed and not released. So a held arrow key stops
+    panning the map and a speed key sends no control.
+  - **The UI still gets everything.** The input kept for `frame_update` is not filtered, so a script still sees those actions.
+  - **Only key actions are blocked.** `game.control(name)` from a script still sends its control.
+  - **When it starts.** The block acts from the first input tick after the UI's call. A game key pressed in a tick before that
+    one still acts.
+  - **A gesture already under way ends.** The first tick that sees the block on ends the gesture someone had captured, as a
+    focus loss does (§3.5): a map drag ends and a pressed widget gets `cancel`. The rest of that press reaches nobody. This
+    happens at every opening, not only the first of a run.
+- **"return" and Escape close it, and the game stays paused.**
+  - "return" closes the menu's window. Escape with the menu open closes it too, as the top window.
+  - Either way the window's `on_close` takes the backdrop away (its quad, its group and its hit region) and turns the key block
+    off. It sends no control, so the game is paused afterwards, whether or not it was running before the menu opened.
+  - Space or the time bar's play button resumes it, as before.
+  - A second Escape, with nothing open, opens the menu again.
+  - The owner: "resume should be replaced by return, and return should return us to the game, but leave it paused, whenever we
+    pause with escape it stops the game timer to paused, and when we return it maintains the pause."
+- **"quit to desktop"** calls `window.close()` at once: the run ends. The menu asks nothing and saves nothing. The owner chose
+  "Quits at once" over a confirmation.
+- **Unchanged:** the time bar, the ledger and its bar, the map-mode bar, the location panel and the Help window. The Help
+  window's text still reads `esc: close window`.
+- **The button library** (`lib/button.lua`) has two new things, which the menu uses.
+  - **A width:** `button.new{…, width = points}` makes a text button at least that wide, with its text centred. It never
+    makes one narrower than its text needs, and it holds when `set_text` changes the text. On an icon button it is an error.
+  - **An inactive state:** `button.new{…, inactive = true}` starts a button greyed, and `button:set_inactive(true or false)`
+    greys it or makes it live again.
+    - **The look:** the fill of its kind as before, the outline in `[colour] track` (`#3a3326`) and the text or icon in
+      `[colour] dim` (`#9a927e`), whatever the pointer does and whether or not it is selected.
+    - **A press does nothing:** nothing is pressed and nothing is clicked. A press under way when the button is greyed is let
+      go without a click.
+    - **It keeps its `on_click`,** so making it live again needs nothing else.
+    - **It is not functional** (`button:functional()`, §3.13) while inactive, so a press on it closes the open tooltips as a
+      press on a panel's body does.
+  - A button made without these options is sized and behaves as before.
+- **Not there:** the main menu and the loading screen; what "settings", "glossary" and "save / load" open; a confirmation
+  before quitting; a menu button on the screen; key rebinding.
+- **Tests,** none with a window or the GPU:
+  - `apps/codekarl/src/ui_link/menu_tests.rs` runs the shipped `lib/menu.lua`, `lib/window.lua` and `lib/button.lua` in a UI
+    VM over the real `render` API and the real input path. Its ten tests cover the Escape order, the window and its buttons,
+    one menu at most, the resize, the backdrop, the pause-only control, "return" and Escape, quitting, the greyed buttons and
+    the two button options.
+  - `ui_link/input_tick_tests.rs` has the key block at the tick: each of the sixteen actions stopped at the map and the
+    simulation with the rest left alone, a held map key, a press in the tick before, and a captured drag ended at a first
+    and at a second opening.
+  - `game/tests/presses.rs` has the list of blocked actions and the filtering, and `game/tests/core_behaviour.rs` the
+    pause-only control from a running game and from each paused state.
+  - **The two shipped UI cases** (`app.ui-witness`; `apps/codekarl/tests/support/time_bar.rs` and `places_list.rs`) used to end
+    their run with a last Escape. That Escape now opens the menu, so each case then calls the menu's own "quit to desktop"
+    action.
 
 ## 4. Packages and ownership
 
