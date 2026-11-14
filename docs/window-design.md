@@ -68,6 +68,8 @@ trade-offs; recorded in `.pipeline/coordination/runtime-m3/handoff.md`):
   resizable by the user, and its size came from Lua. Since CK-257 the game's window:
   - opens at 1280×800 screen pixels and cannot be made smaller. The owner chose "1280x800 is a fine minimum", in screen pixels ("Yes,
     screen pixels"), and to open "for now at the minimum". The size is not remembered between runs: that waits for a settings screen;
+    - *(Since CK-307 the settings file can hold a resolution, `[window] width` and `height`, and a script can resize the
+      window. The game does not open at that resolution yet: `docs/ui-design.md` §3.17.)*
   - can be resized, zoomed and made full screen. While its edge is dragged, the last frame stays where it was, anchored to the top left
     and unscaled, and the game lays itself out again once, on release ("Re-layout on release"). Full screen is macOS's own, entered
     and left with the green title-bar button or Control-Command-F ("macOS standard").
@@ -252,6 +254,11 @@ waited on:
   - **since CK-314,** text input on or off is one more field (`window.set_text_input(on)`), and the last call wins. Each write
     has a generation, one more than the write before. So the main thread can tell that a write happened even when a later one
     put the state back, and applying a request always starts text input from nothing (`docs/ui-design.md` §3.19);
+  - **since CK-307,** a content size to resize to, in points, is one more field, and the last request wins. Until a resizable
+    `open` was accepted the write is refused, with an error in the calling script (`settings.resize`, `docs/ui-design.md`
+    §3.17);
+  - **since CK-309,** two more fields: the latest key-capture command (arm, with an id, or cancel) and the latest whole set
+    of key bindings (`docs/scene-design.md` §10.1);
   - the slot's lock is held only to copy a small value in or out. It is never held while Lua runs or a native call is made.
 
   The slot is bounded by its size, so nothing can fill it, and it needs no admission rule.
@@ -556,7 +563,11 @@ All drawing runs on the render thread (§4).
     last reported size, the layer's contents gravity keeps it at the top left, unscaled, and the rest of the window shows the clear
     colour the window was created with. **Known limit, not a decision:** a later `window.set_clear` does not reach that margin (the
     shipped game never changes the colour after opening); a follow-up is to carry `set_clear` to it;
-  - reports entering and leaving full screen once each, when the transition has finished.
+  - reports entering and leaving full screen once each, when the transition has finished;
+  - **since CK-307, can be resized by a script** (`Backend::resize_window`, with the request slot's size in points). Cocoa
+    sets the content size and keeps the top-left corner, as it does when the window grows to its minimum, and reports one
+    size change. A window that is full screen, or changing to or from it, is left as it is. The GLFW backend keeps the
+    interface's default, which does nothing.
 
 ### Present lifetime (Vulkan)
 

@@ -440,6 +440,35 @@ value, or one of five edit commands: backspace, enter, tab, left and right.
 - **Tests while the owner types** (§10.3): the test executable drops real key-downs before the view, so the owner's typing
   reaches no text input in a test window. The Cocoa cases post marked key-downs that carry characters.
 
+**Since CK-309 (key capture and live bindings; `crates/input/src/lib.rs`, `crates/window/src/main_loop.rs`).** The bindings are
+no longer fixed for a run, and a script can take the next key press for itself. The calls, the player's actions and the
+settings file's `[input.bindings]` are in `docs/ui-design.md` §3.17.
+
+- **Three requests go through the request slot** (`docs/window-design.md` §4.2): a whole new set of bindings, a capture to
+  arm and a capture to cancel. The loop applies them when it reads the slot, the bindings first.
+- **A new set replaces the old one whole** (`Mapper::replace_bindings`), between two input ticks.
+  - A binding that is in both sets and was active stays active.
+  - **No press is made up:** a binding that is new for its action while its key is down stays off until that key has gone
+    up and is pressed again.
+  - An action that loses the key that held it is released, with a real release edge.
+- **A capture is in the mapper** (`Mapper::arm_capture`, `Mapper::key`), in front of every binding.
+  - **The captured press** is the first key-down, repeat or not, of a key that the mapper holds as up and that is not a
+    modifier. It is not recorded as a key: it starts no binding, makes no transition and counts no close press. So a
+    captured Escape closes nothing.
+  - **The result** is that key's name with the modifier families down at the press as prefixes, in the order Control, Alt,
+    Shift, Meta: `"Shift+F5"`.
+  - **The captured key is owned until it goes up:** its repeats and its release are swallowed too. Ownership also ends at a
+    resync that reports the key up (§10.2). The mapper gets no edge for the key either way.
+  - **Modifiers, and keys that were already down when the capture was armed,** go on as before, with their repeats and
+    releases.
+  - **It ends without a key** as `replaced` (a new capture was armed), `requested` (the script cancelled it) or `focus` (a
+    focus loss, minimising or a size of zero).
+  - A capture armed while the last captured key is still held takes nothing until that key has gone up.
+- **One result** is in the snapshot (`capture`) until the snapshot that reports it is acknowledged.
+- **Text input** (CK-314, above) is turned off when a capture is armed. A request to turn it on is applied as off while a
+  capture is armed or still owns its key.
+- **Which binding fires is unchanged** (CK-315, above).
+
 Close's rising edge requests the existing Lua close callback with source `key`; the native close button uses source `button`. Repeated close events coalesce under the current one-outstanding rule. No callback means accept. Default Escape is now a binding, not a second hardcoded exit path. Cmd-Q/no-menu behavior and signal quit remain as accepted.
 
 ### 10.2 Bounded transition policy
