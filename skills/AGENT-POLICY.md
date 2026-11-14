@@ -8,7 +8,8 @@ Codekarl; do not apply the production GitHub manager workflow here.
 
 | Work | Class | Default brand | Effort |
 | --- | --- | --- | --- |
-| Management and design | S | Claude | high |
+| Management | A | Claude | high |
+| Design | S | Claude | high |
 | Implementation | B | Claude | high |
 | Independent review | A | Opposite the implementation brand; normally Codex | high |
 | Guide review (advisory) | S | Claude or Codex | high |
@@ -18,7 +19,8 @@ Guide findings are advisory and grant no review, acceptance or repair authority.
 The owner can choose either brand for a role. Class and review independence are
 requirements; the default brand is a convention. Design performed inside a
 worker task still belongs to Class S: return substantial unresolved design to
-the manager instead of silently designing it as a Class B worker.
+the manager, who gives it to a designer session instead of silently designing
+it as a Class B worker.
 
 Brand means the actual model family, **not the CLI or billing provider**. Opus or
 Sonnet in Copilot counts as Claude; an OpenAI model in Copilot counts as Codex.
@@ -138,7 +140,7 @@ Launch through `modelclass run` with explicit Codekarl identity roles. These
 commands illustrate role/class selection, not authority to type into a terminal:
 
 ```sh
-modelclass run --effort high --chat-project codekarl --chat-role manager S claude -- '/ck-manager'
+modelclass run --effort high --chat-project codekarl --chat-role manager A claude -- '/ck-manager'
 CHAT_ROLE=worker modelclass run --effort high --chat-project codekarl B claude -- '/ck-work'
 modelclass run --effort high --chat-project codekarl --chat-role reviewer A codex -- '$ck-review'
 ```

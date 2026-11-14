@@ -367,7 +367,7 @@ class GateCriteria(unittest.TestCase):
             classes.verify("manager", "claude", [{"model": "claude-opus-5-5", "effort": "high"}])[
                 "class"
             ],
-            "S",
+            "A",
         )
         with self.assertRaisesRegex(RuntimeError, "does not match role"):
             classes.verify("reviewer", "claude", [{"model": "claude-opus-5-5", "effort": "medium"}])
@@ -717,7 +717,7 @@ class GateCriteria(unittest.TestCase):
         self.assertEqual(
             report["mapping"],
             {
-                "class": "S",
+                "class": "A",
                 "family": "claude",
                 "model": "claude-opus-5-5",
                 "effort": "high",
@@ -1006,7 +1006,9 @@ class GateCriteria(unittest.TestCase):
         recovered, _ = self.readiness_of(
             "codex",
             "manager",
-            self.codex_log({"model": luna, "effort": "high"}, {"model": astra, "effort": "high"}),
+            self.codex_log(
+                {"model": luna, "effort": "high"}, {"model": "gpt-6.1-sol", "effort": "high"}
+            ),
         )
         self.assertEqual(recovered["off_class"], [{"model": luna, "effort": "high", "events": 1}])
         with self.assertRaisesRegex(RuntimeError, "does not match role"):
@@ -1211,7 +1213,7 @@ class GateCriteria(unittest.TestCase):
     MASTER = """schema_version = 1
 
 [classes.S]
-claude = { model = "claude-opus-5-5", effort = "high" }
+claude = { model = "claude-fable-5-2", effort = "high" }
 codex = { model = "gpt-6-astra", effort = "high" }
 
 [classes.A]
@@ -1252,7 +1254,11 @@ codex = { model = "gpt-6-luna", effort = "high" }
             events.append(self.spoke(name))
         return self.copilot_log(*events)
 
-    OPUS_H, SONNET_H = ("claude-opus-5-5", "high"), ("claude-sonnet-5-5", "high")
+    FABLE_H, OPUS_H, SONNET_H = (
+        ("claude-fable-5-2", "high"),
+        ("claude-opus-5-5", "high"),
+        ("claude-sonnet-5-5", "high"),
+    )
     ASTRA, LUNA, SOL = ("gpt-6-astra", "high"), ("gpt-6-luna", "high"), ("gpt-6.1-sol", "high")
 
     def test_h01_mixed_history_with_an_off_class_current_is_refused(self) -> None:
@@ -1271,25 +1277,80 @@ codex = { model = "gpt-6-luna", effort = "high" }
                 with self.assertRaisesRegex(RuntimeError, "does not match role"):
                     classes.readiness(role, "copilot", models, current)
 
+    def test_manager_class_a_is_accepted_for_both_families(self) -> None:
+        self.fixture_master()
+        for client, selected, family in (
+            ("claude", self.OPUS_H, "claude"),
+            ("codex", self.SOL, "codex"),
+        ):
+            with self.subTest(family=family):
+                mapping, current = self.readiness_of(
+                    client, "manager", self.client_log(client, selected)
+                )
+                self.assertEqual(current, {"model": selected[0], "effort": "high"})
+                self.assertEqual((mapping["class"], mapping["family"]), ("A", family))
+
+    def test_manager_class_s_is_refused_as_class_a_for_both_families(self) -> None:
+        self.fixture_master()
+        for client, selected in (("claude", self.FABLE_H), ("codex", self.ASTRA)):
+            with (
+                self.subTest(client=client),
+                self.assertRaisesRegex(RuntimeError, "role manager Class A"),
+            ):
+                self.readiness_of(client, "manager", self.client_log(client, selected))
+
+    def test_manager_can_switch_from_class_s_to_class_a_and_keeps_off_class_history(self) -> None:
+        self.fixture_master()
+        mapping, current = self.readiness_of(
+            "claude", "manager", self.client_log("claude", self.FABLE_H, self.OPUS_H)
+        )
+        self.assertEqual(current, {"model": "claude-opus-5-5", "effort": "high"})
+        self.assertEqual(mapping["class"], "A")
+        self.assertEqual(
+            mapping["off_class"],
+            [{"model": "claude-fable-5-2", "effort": "high", "events": 1}],
+        )
+
+    def test_role_policy_keeps_management_a_and_design_s(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        policy = (root / "skills/AGENT-POLICY.md").read_text()
+        agents = (root / "AGENTS.md").read_text()
+        manager = (root / "skills/ck-manager/SKILL.md").read_text()
+        self.assertIn("| Management | A | Claude | high |", policy)
+        self.assertIn("| Design | S | Claude | high |", policy)
+        self.assertIn(
+            "Design is Class S, management and review are Class A, implementation is Class B, all at high effort.",
+            " ".join(agents.split()),
+        )
+        self.assertIn("Management is Class A at high effort.", " ".join(manager.split()))
+        normalized_manager = " ".join(manager.split()).lower()
+        self.assertIn(
+            "substantial design is class s work for a designer session", normalized_manager
+        )
+        self.assertIn(
+            "a spec the manager writes itself is a bug fix or a tidy-up", normalized_manager
+        )
+
     def test_h02_mixed_history_with_an_on_class_current_is_accepted_with_a_full_mapping(
         self,
     ) -> None:
         master_sha = self.fixture_master()
-        content = self.client_log("copilot", self.OPUS_H, self.LUNA, self.ASTRA)
+        content = self.client_log("copilot", self.OPUS_H, self.LUNA, self.ASTRA, self.SOL)
         mapping, current = self.readiness_of("copilot", "manager", content)
-        self.assertEqual(current, {"model": "gpt-6-astra", "effort": "high"})
+        self.assertEqual(current, {"model": "gpt-6.1-sol", "effort": "high"})
         self.assertEqual(
             mapping,
             {
-                "class": "S",
+                "class": "A",
                 "family": "multi-family",
                 "families": ["claude", "codex"],
                 "current_family": "codex",
-                "model": "gpt-6-astra",
+                "model": "gpt-6.1-sol",
                 "effort": "high",
                 "master_sha256": master_sha,
                 "off_class": [
                     {"model": "claude-opus-5-5", "effort": "high", "events": 1, "family": "claude"},
+                    {"model": "gpt-6-astra", "effort": "high", "events": 1, "family": "codex"},
                     {"model": "gpt-6-luna", "effort": "high", "events": 1, "family": "codex"},
                 ],
             },
@@ -1299,7 +1360,7 @@ codex = { model = "gpt-6-luna", effort = "high" }
         self.fixture_master()
         mystery = ("mystery-9", "high")
         mapping, _ = self.readiness_of(
-            "codex", "manager", self.client_log("codex", mystery, self.ASTRA)
+            "codex", "manager", self.client_log("codex", mystery, self.SOL)
         )
         # Today's exact classification, kept: multi-family with both history families.
         self.assertEqual(
@@ -1307,14 +1368,14 @@ codex = { model = "gpt-6-luna", effort = "high" }
         )
         self.assertEqual(mapping["current_family"], "codex")
         self.assertEqual(
-            (mapping["class"], mapping["model"], mapping["effort"]), ("S", "gpt-6-astra", "high")
+            (mapping["class"], mapping["model"], mapping["effort"]), ("A", "gpt-6.1-sol", "high")
         )
         self.assertEqual(
             mapping["off_class"],
             [{"model": "mystery-9", "effort": "high", "events": 1, "family": "unknown"}],
         )
         log = Path(self.temp.name) / "unknown-history.jsonl"
-        log.write_text(self.client_log("codex", mystery, self.ASTRA))
+        log.write_text(self.client_log("codex", mystery, self.SOL))
         models, _, _, _ = sessions.parse(log, "codex")
         verified = classes.verify("manager", "codex", models)
         self.assertEqual({k: dict(mapping)[k] for k in verified}, verified)
@@ -1373,7 +1434,10 @@ codex = { model = "gpt-6-luna", effort = "high" }
     def test_h06_coverage_of_a_mixed_history_author_is_unchanged(self) -> None:
         self.fixture_master()
         self.bound(
-            "copilot", "manager", self.client_log("copilot", self.OPUS_H, self.ASTRA), name="mixed"
+            "copilot",
+            "manager",
+            self.client_log("copilot", self.OPUS_H, self.ASTRA, self.SOL),
+            name="mixed",
         )
         (author,) = meta._authors()
         self.assertEqual(
@@ -1399,7 +1463,7 @@ codex = { model = "gpt-6-luna", effort = "high" }
         for client in ("claude", "codex", "copilot"):
             for role, expected, other, wrong in (
                 ("worker", self.LUNA, self.SONNET_H, self.ASTRA),
-                ("manager", self.ASTRA, self.OPUS_H, self.LUNA),
+                ("manager", self.SOL, self.OPUS_H, self.ASTRA),
             ):
                 with self.subTest(client=client, role=role):
                     self.check_client_flow(client, role, expected, other, wrong)

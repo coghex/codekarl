@@ -369,7 +369,7 @@ class CopilotEvidence(unittest.TestCase):
     def test_valid_session_resolves_with_class_family_and_evidence(self) -> None:
         for model, role, expected in (
             ("claude-sonnet-5.5", "worker", ("B", "claude", "claude-sonnet-5-5")),
-            ("claude-opus-5.5", "manager", ("S", "claude", "claude-opus-5-5")),
+            ("claude-opus-5.5", "manager", ("A", "claude", "claude-opus-5-5")),
             ("claude-opus-5.5", "reviewer", ("A", "claude", "claude-opus-5-5")),
         ):
             with self.subTest(model=model, role=role):
