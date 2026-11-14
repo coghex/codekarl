@@ -10,6 +10,7 @@ local windows = require("lib.window")
 local lists = require("lib.list")
 local tabs = require("lib.tabs")
 local cards = require("lib.cards")
+local listbar = require("lib.listbar")
 local button = require("lib.button")
 local frame = require("lib.frame")
 local text = require("lib.text")
@@ -810,6 +811,9 @@ local function location_lines(place, width)
       value = largest > 0 and (price.offered - price.bought) / largest or 0
     end
     local row = {
+      -- What the list bar sorts and filters by (CK-296): the name as shown before it is clipped, and the good's tags.
+      sort = {name = name, price = price.price_milli, base_price = price.base, buy_sell = value},
+      filter = {tag = price.tags},
       cells = {
         {text = clip_column(name, name_width), x = 16, align = "left", colour = name_colour},
         {text = milli(price.price_milli), x = price_right, align = "right"},
@@ -1108,6 +1112,7 @@ function location.new(spec)
   self.list = nil
   self.cards = nil
   self.selector = nil
+  self.bar, self.bar_key = nil, nil
   self.tabs = nil
   self.id = nil
   self.revision = nil
@@ -1198,7 +1203,77 @@ local function row_identity(kind, item, index)
     .. tostring(item.culture or (item.methods[1] ~= nil and item.methods[1].id) or "")
 end
 
-local function row_items(self, key, place)
+-- What the bars of the location panel sort and filter by (CK-296; labels as the owner approved them), by tab.
+local BARS = {
+  location = {
+    sorts = {
+      {key = "name", label = "name", first = "ascending"},
+      {key = "price", label = "price", first = "descending"},
+      {key = "base_price", label = "base price", first = "descending"},
+      {key = "buy_sell", label = "buy/sell", first = "descending"},
+    },
+    groups = {{key = "tag", label = "tag"}},
+  },
+  pops = {
+    sorts = {
+      {key = "type", label = "type", first = "ascending"},
+      {key = "people", label = "people", first = "descending"},
+      {key = "food", label = "food", first = "descending"},
+      {key = "mood", label = "mood", first = "descending"},
+    },
+    groups = {{key = "type", label = "type"}},
+  },
+  buildings = {
+    sorts = {
+      {key = "kind", label = "kind", first = "ascending"},
+      {key = "positions", label = "positions", first = "descending"},
+      {key = "wage", label = "wage", first = "descending"},
+    },
+    groups = {{key = "kind", label = "kind"}},
+  },
+}
+
+-- The pops or buildings of `place` as the rows the tab's bar takes: each keeps the item and its index in `place.pops` or
+-- `place.buildings`, which every tooltip and the open row name, wherever the bar puts it.
+local function bar_rows(key, place)
+  local rows = {}
+  if place == nil then return rows end
+  for index, item in ipairs(key == "pops" and place.pops or place.buildings) do
+    local row = {item = item, index = index}
+    if key == "pops" then
+      row.sort = {type = item.kind, people = item.workers + item.dependents, food = item.food_days, mood = item.satisfaction}
+      row.filter = {type = item.kind}
+    else
+      row.sort = {kind = item.kind, positions = item.filled, wage = item.wage}
+      row.filter = {kind = item.kind}
+    end
+    rows[#rows + 1] = row
+  end
+  return rows
+end
+
+-- The tab's bar. Its choices start again with a new bar (the panel opens, the tab changes, another place is shown) and stay while it
+-- lives (a new revision, a new window size, the same place shown again, the look changing between cards and rows).
+local function drop_bar(self)
+  if self.bar ~= nil then self.bar:destroy() end
+  self.bar, self.bar_key = nil, nil
+end
+
+local function ensure_bar(self)
+  if self.bar ~= nil and self.bar_key == self.key and not self.bar.closed then return end
+  drop_bar(self)
+  local spec = BARS[self.key]
+  self.bar_key = self.key
+  self.bar = listbar.new{
+    window = self.window,
+    sorts = spec.sorts,
+    groups = spec.groups,
+    -- A change shows the pops or buildings from their top; the location tab's list keeps its scroll, cut to its new length.
+    on_change = function() render(self, self.key == "location") end,
+  }
+end
+
+local function row_items(self, key, place, shown)
   local items = {}
   local function header(columns)
     items[#items + 1] = {
@@ -1215,7 +1290,8 @@ local function row_items(self, key, place)
   end
   if key == "pops" then
     header({{text = "pop", x = 16}, {text = "people", right = 64}, {text = "food", right = 32}, {text = "mood", right = 3}})
-    for index, pop in ipairs(place.pops) do
+    for _, entry in ipairs(shown) do
+      local pop, index = entry.item, entry.index
       local id = row_identity("p", pop, index)
       local item = pop_row(pop, id == self.open_pops, place.id, index)
       item.on_click = function()
@@ -1230,7 +1306,8 @@ local function row_items(self, key, place)
     end
   else
     header({{text = "building", x = 16}, {text = "positions", right = 44}, {text = "wage", right = 3}})
-    for index, building in ipairs(place.buildings) do
+    for _, entry in ipairs(shown) do
+      local building, index = entry.item, entry.index
       local id = row_identity("b", building, index)
       local item = building_row(building, id == self.open_buildings, place.id, index)
       item.on_click = function()
@@ -1247,7 +1324,7 @@ local function row_items(self, key, place)
   return items
 end
 
-local function card_items(key, place, reason)
+local function card_items(key, place, reason, shown)
   if place == nil then
     return {{height = 13, draw = function(group) return text_view(group, 1, 1, reason or "economy: not published yet", theme.colour("text")) end}}
   end
@@ -1257,7 +1334,8 @@ local function card_items(key, place, reason)
       return text_view(group, 1, 1, key == "pops" and "no pops" or "no buildings", theme.colour("dim"))
     end}}
   end
-  for index, item in ipairs(source) do
+  for _, entry in ipairs(shown) do
+    local item, index = entry.item, entry.index
     items[#items + 1] = key == "pops" and pop_card(item, place.id, index) or building_card(item, place.id, index)
   end
   return items
@@ -1272,9 +1350,11 @@ render = function(self, keep_scroll)
   if self.key == "pops" or self.key == "buildings" then
     if self.list ~= nil and not self.list.closed then self.list:destroy(); self.list = nil end
     ensure_selector(self)
+    ensure_bar(self)
     local strip_top = math.max(0, self.window.content_height - 19 * P)
-    local items = self.list_look == "cards" and card_items(self.key, place, reason)
-      or row_items(self, self.key, place or {pops = {}, buildings = {}})
+    local shown = self.bar:view(bar_rows(self.key, place))
+    local items = self.list_look == "cards" and card_items(self.key, place, reason, shown)
+      or row_items(self, self.key, place or {pops = {}, buildings = {}}, shown)
     local gap = self.list_look == "cards" and 3 or 1
     if self.cards ~= nil and not self.cards.closed then
       self.cards:set_items(items, gap)
@@ -1288,8 +1368,15 @@ render = function(self, keep_scroll)
     return
   end
   destroy_cards(self)
+  ensure_bar(self)
   local lines = place ~= nil and location.lines(self.key, place, self.window.content_width) or {reason}
-  local rows = location.rows(lines, self.window.content_width)
+  -- Only the goods rows go through the bar; the lines of figures and the market's header stay where they are, above them.
+  local fixed, goods = {}, {}
+  for _, row in ipairs(location.rows(lines, self.window.content_width)) do
+    if type(row) == "table" and row.sort ~= nil then goods[#goods + 1] = row else fixed[#fixed + 1] = row end
+  end
+  local rows = fixed
+  for _, row in ipairs(self.bar:view(goods)) do rows[#rows + 1] = row end
   if self.list ~= nil and not self.list.closed then
     self.list:set_items(rows)
     if not keep_scroll then
@@ -1297,7 +1384,7 @@ render = function(self, keep_scroll)
     end
   else
     -- A list shows at most `MAX_ROWS` rows; a taller window leaves the rest of its content empty.
-    local count = math.min(lists.MAX_ROWS, math.max(1, self.window.content_height // lists.ROW))
+    local count = math.min(lists.MAX_ROWS, math.max(1, (self.window.content_height - listbar.HEIGHT) // lists.ROW))
     self.list = lists.new{
       window = self.window,
       x = 0,
@@ -1339,6 +1426,7 @@ function location:show(selection, tab)
   end
   if self.id ~= nil and self.id ~= selection.id then
     self.open_pops, self.open_buildings = nil, nil
+    drop_bar(self)
   end
   self.id = selection.id
   if not open(self) then
@@ -1358,6 +1446,7 @@ function location:show(selection, tab)
           self.list = nil
           self.cards = nil
           self.selector = nil
+          self.bar, self.bar_key = nil, nil
           self.tabs = nil
         end
         if self.on_close ~= nil then

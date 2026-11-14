@@ -429,3 +429,181 @@ note(string.format('resized_oats_point %g %g', x, y)); note('resized_price_key '
         "resized price tooltip did not preserve the class breakdown: {final_notes:?}"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// The market's list bar (CK-296, slice L3)
+// ---------------------------------------------------------------------------------------------
+
+/// Lua for the market tests: the lines of figures and the header (everything before the first goods row) as one text.
+const MARKET_HELPERS: &str = r#"
+function figures()
+  local texts = {}
+  for _, item in ipairs(list_object.items) do
+    if item.bar ~= nil then break end
+    local cells = {}
+    for _, cell in ipairs(item.cells) do cells[#cells + 1] = cell.text end
+    texts[#texts + 1] = table.concat(cells, "|")
+  end
+  return table.concat(texts, "/")
+end
+-- The list item of the first goods row.
+function first_goods_item()
+  for _, item in ipairs(list_object.items) do
+    if item.bar ~= nil then return item end
+  end
+end
+"#;
+
+fn shipped_panel_rig(extra: &str, steps: &[&str]) -> Rig {
+    let (actual_place, _) = ledger::shipped_place_fixture();
+    let prelude = format!("{PANEL_BARS}\n{MARKET_HELPERS}\n{extra}");
+    let script = script_with_prelude(&prelude, steps);
+    let mut rig =
+        Rig::new_fixture_body_with_functions(&script, vec![("actual_place", actual_place)]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    rig
+}
+
+fn numbers_of(line: &str) -> Vec<i64> {
+    line.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+        .filter(|part| !part.is_empty() && *part != "-")
+        .map(|part| part.parse().unwrap())
+        .collect()
+}
+
+#[test]
+fn the_location_list_is_shorter_by_the_bar_and_the_market_filters_by_tag_on_the_shipped_goods() {
+    let mut rig = shipped_panel_rig(
+        "",
+        &[
+            "time(1, 1) select_place('clonmacnoise', 'Cluain Mhic Nóis')",
+            r"announce_panel_bar('list')
+note('plist rows=' .. list_object.rows .. ' view=' .. list_object.view_height)
+figures_before = figures()
+note('goods ' .. #panel_given)
+local untagged = {}
+for _, row in ipairs(panel_given) do if #row.filter.tag == 0 then untagged[#untagged + 1] = row.sort.name end end
+note('untagged ' .. table.concat(untagged, ','))",
+            "announce_ppicker()",
+            "note_order('herd_order') announce_panel_bar('list') note('figures_same ' .. tostring(figures() == figures_before))",
+            r"local missing = {}
+for _, tag in ipairs({'clothing', 'food', 'herd'}) do
+  panel_bar:clear()
+  panel_bar:toggle(1, tag)
+  for _, row in ipairs(panel_shown) do
+    if row.sort.name == 'herbs' or row.sort.name == 'beeswax' then missing[#missing + 1] = tag end
+  end
+end
+note('untagged_in_filters ' .. #missing)
+panel_bar:clear()
+note('after_all ' .. #panel_shown)",
+            "announce_ppicker()",
+        ],
+    );
+    rig.opened();
+    rig.opened();
+    // The list is whole rows and ends above the bar; the buttons are under it at the content's right.
+    let content = numbers_of(&pnote(&rig, "pbar_content "));
+    let (width, height) = (content[0], content[1]);
+    let list = numbers_of(&pnote(&rig, "plist "));
+    assert_eq!(list[1], list[0] * 26);
+    assert_eq!(list[0], (height - 38) / 26, "{content:?} {list:?}");
+    assert_eq!(
+        pnote(&rig, "pbar_sort_rect "),
+        format!("pbar_sort_rect {} {} 26 30", width - 26, height - 34)
+    );
+    assert_eq!(
+        pnote(&rig, "pbar_filter_rect "),
+        format!("pbar_filter_rect {} {} 26 30", width - 58, height - 34)
+    );
+    assert_eq!(pnote(&rig, "goods "), "goods 22");
+    assert_eq!(pnote(&rig, "untagged "), "untagged herbs,beeswax");
+    assert_eq!(
+        pnote(&rig, "pcount "),
+        "pcount ",
+        "no count with nothing ticked"
+    );
+    pclick(&mut rig, "pbar_filter");
+    rig.opened();
+    assert_eq!(
+        pnote(&rig, "ppicker "),
+        "ppicker filter clothing,food,herd",
+        "the tags the goods carry, with no heading"
+    );
+    ppick_click(&mut rig, "herd");
+    rig.opened();
+    assert_eq!(pnote(&rig, "herd_order "), "herd_order cattle,pigs,sheep");
+    assert_eq!(pnote(&rig, "pcount "), "pcount 3 of 22");
+    assert_eq!(pnote(&rig, "figures_same "), "figures_same true");
+    rig.opened();
+    assert_eq!(pnote(&rig, "untagged_in_filters "), "untagged_in_filters 0");
+    assert_eq!(pnote(&rig, "after_all "), "after_all 22");
+    pclick(&mut rig, "pbar_sort");
+    rig.opened();
+    assert_eq!(
+        pnote(&rig, "ppicker "),
+        "ppicker sort default,name,price,base price,buy/sell"
+    );
+}
+
+#[test]
+fn the_market_sorts_by_price_buy_sell_and_name_with_the_missing_buy_sell_last_in_both_directions() {
+    let extra = "VIEWS[1].rowan.prices = {
+  price('oats', 96500, 100, 820, 610), price('peas_beans', 1200, 2, 0, 140),
+  price('seabirds', 750, 1, 510, 505), price('moonstone', 4500, 4),
+}";
+    let mut rig = rig_with_prelude_at(
+        &format!("{PANEL_BARS}\n{MARKET_HELPERS}\n{extra}"),
+        &[
+            "time(1, 1) select_place('rowan', 'Rowan') announce_panel_bar('list')",
+            "announce_ppicker()",
+            // price: highest first; the first row's price cell asks for that good's `price` tooltip.
+            "note_order('by_price') first_goods_item().tooltip(0, 0, 2) note('hover ' .. last_content.class .. ' ' .. last_content.args.good)",
+            "note_order('by_price_again')",
+            "note_order('by_buy_sell')",
+            "note_order('by_buy_sell_again')",
+            "note_order('by_name')",
+        ],
+        1800,
+        900,
+        2,
+    );
+    rig.opened();
+    pclick(&mut rig, "pbar_sort");
+    rig.opened();
+    ppick_click(&mut rig, "price");
+    rig.opened();
+    assert_eq!(
+        pnote(&rig, "by_price "),
+        "by_price oats,moonstone,peas and beans,seabirds"
+    );
+    assert_eq!(pnote(&rig, "hover "), "hover price oats");
+    ppick_click(&mut rig, "price");
+    rig.opened();
+    assert_eq!(
+        pnote(&rig, "by_price_again "),
+        "by_price_again seabirds,peas and beans,moonstone,oats",
+        "pressed again: lowest first"
+    );
+    ppick_click(&mut rig, "buy/sell");
+    rig.opened();
+    assert_eq!(
+        pnote(&rig, "by_buy_sell "),
+        "by_buy_sell peas and beans,seabirds,oats,moonstone",
+        "largest surplus first, the good without a value last"
+    );
+    ppick_click(&mut rig, "buy/sell");
+    rig.opened();
+    assert_eq!(
+        pnote(&rig, "by_buy_sell_again "),
+        "by_buy_sell_again oats,seabirds,peas and beans,moonstone",
+        "the other direction, the good without a value still last"
+    );
+    ppick_click(&mut rig, "name");
+    rig.opened();
+    assert_eq!(
+        pnote(&rig, "by_name "),
+        "by_name moonstone,oats,peas and beans,seabirds",
+        "'peas and beans' sorts under p, by the name shown"
+    );
+}
