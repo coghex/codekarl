@@ -1,4 +1,6 @@
 use super::*;
+use crate::ui_link::widget_witness_tests::points;
+use ck_window::PointerPosition;
 
 #[test]
 fn built_icon_buttons_and_tabs_have_their_spec_tooltip_labels() {
@@ -503,6 +505,148 @@ note(string.format("positions_bar_point %g %g", left + (5 + positions_width + 4 
         "the staff class appears after the restarted delay: {:?}",
         notes(&rig)
     );
+}
+
+#[test]
+fn a_changed_tooltip_delay_is_used_by_the_next_shipped_tooltip() {
+    let directory = crate::testing::Dir::new();
+    let config_path = directory.0.join("config.toml");
+    std::fs::write(&config_path, "").expect("write isolated config");
+    let config = crate::config::load(&config_path).expect("load isolated config");
+    let settings = crate::settings::Runtime::new(&config, None).expect("settings runtime");
+    let mut rig = rig_with_settings(
+        &[
+            r#"local text = require("lib.text"); local real_set = text.set
+text.set = function(line, value) real_set(line, value); if capture_tooltips then note("tooltip_text " .. value) end end
+capture_tooltips = true
+settings.set("ui.tooltips.delay", 1.5); time(1, 1); announce_main_tooltips()"#,
+        ],
+        settings.extension(),
+    );
+    rig.opened();
+
+    let recorded = notes(&rig);
+    let hit = recorded
+        .iter()
+        .find_map(|line| line.strip_prefix("date_hit "))
+        .expect("the shipped UI publishes the date tooltip hit region");
+    let rect = hit
+        .split_whitespace()
+        .map(|value| value.parse::<f64>().expect("numeric date hit bound"))
+        .collect::<Vec<_>>();
+    let point = (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0);
+    rig.feed(&[PointerEvent::Move(points(point.0, point.1))]);
+    for _ in 0..24 {
+        rig.deliver_fixture_frame_at(1800, 900, 2);
+    }
+    assert!(
+        !notes(&rig).iter().any(|line| line == "tooltip_text date"),
+        "the changed delay has not elapsed after 24 frame updates"
+    );
+    for _ in 0..100 {
+        rig.deliver_fixture_frame_at(1800, 900, 2);
+    }
+    assert!(
+        notes(&rig).iter().any(|line| line == "tooltip_text date"),
+        "the shipped tooltip appears after the delay measured by frame updates"
+    );
+}
+
+#[test]
+fn a_changed_disabled_tooltip_lock_never_locks_the_next_shipped_tooltip() {
+    let directory = crate::testing::Dir::new();
+    let config_path = directory.0.join("config.toml");
+    std::fs::write(&config_path, "").expect("write isolated config");
+    let config = crate::config::load(&config_path).expect("load isolated config");
+    let settings = crate::settings::Runtime::new(&config, None).expect("settings runtime");
+    let mut rig = rig_with_settings(
+        &[
+            r#"local text = require("lib.text"); local real_set = text.set
+        local real_destroy = text.destroy
+text.set = function(line, value)
+  line.ck_date = value == "date"
+  real_set(line, value)
+  if capture_tooltips then note("tooltip_text " .. value) end
+end
+text.destroy = function(line)
+  if line.ck_date then note("tooltip_destroy date") end
+  return real_destroy(line)
+end
+capture_tooltips = true
+settings.set("ui.tooltips.lock", "disabled"); time(1, 1); announce_main_tooltips()"#,
+        ],
+        settings.extension(),
+    );
+    rig.opened();
+    rig.feed(&[PointerEvent::Move(main_date_pointer(&rig))]);
+    for _ in 0..100 {
+        rig.deliver_fixture_frame_at(1800, 900, 2);
+    }
+    assert!(notes(&rig).iter().any(|line| line == "tooltip_text date"));
+    rig.feed(&[PointerEvent::Move(points(1700.0, 800.0))]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "tooltip_destroy date"),
+        "a tooltip with locking disabled is destroyed when its hover ends"
+    );
+}
+
+#[test]
+fn a_changed_tooltip_lock_timer_locks_the_next_shipped_tooltip_at_the_new_time() {
+    let directory = crate::testing::Dir::new();
+    let config_path = directory.0.join("config.toml");
+    std::fs::write(&config_path, "").expect("write isolated config");
+    let config = crate::config::load(&config_path).expect("load isolated config");
+    let settings = crate::settings::Runtime::new(&config, None).expect("settings runtime");
+    let mut rig = rig_with_settings(
+        &[
+            r#"local text = require("lib.text"); local real_set = text.set
+text.set = function(line, value) real_set(line, value); if capture_tooltips then note("tooltip_text " .. value) end end
+capture_tooltips = true
+settings.set("ui.tooltips.lock_timer", 0.3); time(1, 1); announce_main_tooltips()"#,
+        ],
+        settings.extension(),
+    );
+    rig.opened();
+    rig.feed(&[PointerEvent::Move(main_date_pointer(&rig))]);
+    for _ in 0..70 {
+        rig.deliver_fixture_frame_at(1800, 900, 2);
+    }
+    assert!(notes(&rig).iter().any(|line| line == "tooltip_text date"));
+    assert_eq!(tooltip_panel_count(&rig), 1, "the date tooltip opened");
+
+    rig.feed(&[PointerEvent::Move(points(1700.0, 800.0))]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+    assert_eq!(
+        tooltip_panel_count(&rig),
+        1,
+        "the tooltip stays open after the changed lock timer expires"
+    );
+}
+
+fn main_date_pointer(rig: &Rig) -> PointerPosition {
+    let hit = notes(rig)
+        .into_iter()
+        .find_map(|line| line.strip_prefix("date_hit ").map(str::to_owned))
+        .expect("the shipped UI publishes the date tooltip hit region");
+    let rect = hit
+        .split_whitespace()
+        .map(|value| value.parse::<f64>().expect("numeric date hit bound"))
+        .collect::<Vec<_>>();
+    points(rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0)
+}
+
+fn tooltip_panel_count(rig: &Rig) -> usize {
+    rig.harness
+        .bridge
+        .hit_regions()
+        .expect("published hit regions")
+        .regions()
+        .iter()
+        .filter(|region| region.key().starts_with("tooltip_panel_"))
+        .count()
 }
 
 #[test]

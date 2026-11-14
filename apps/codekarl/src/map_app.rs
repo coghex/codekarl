@@ -159,6 +159,19 @@ impl MapController<PreparedRivers> {
 }
 
 impl<R: RiverViewSelector> MapController<R> {
+    /// Changes all three input rates together; the next tick observes the new values.
+    pub(crate) fn set_controls(
+        &mut self,
+        pan_pixels_per_frame: u32,
+        zoom_steps_per_second: u32,
+        scroll_points_per_step: u32,
+    ) {
+        self.pan_pixels_per_frame =
+            i32::try_from(pan_pixels_per_frame).expect("validated map pan range fits i32");
+        self.zoom_steps_per_second = zoom_steps_per_second;
+        self.scroll_points_per_step = scroll_points_per_step;
+    }
+
     #[cfg(test)]
     fn with_rivers(
         loaded: &LoadedMap,
@@ -815,8 +828,9 @@ fn rules(loaded: &LoadedMap, overlay_palette: &[ck_map::Rgba8]) -> MapRules {
 pub(crate) mod tests {
     use super::*;
     use std::collections::HashSet;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
+    use ck_lua::{ConfigValue, Extension};
     use ck_window::{InputSnapshot, PixelSize, WindowMetrics};
 
     #[derive(Default)]
@@ -949,10 +963,14 @@ pub(crate) mod tests {
     }
 
     fn controller(pan: u32, zoom: u32) -> MapController {
+        controller_with_controls(pan, zoom, 24)
+    }
+
+    fn controller_with_controls(pan: u32, zoom: u32, scroll: u32) -> MapController {
         let loaded = loaded_map();
         let bridge = SceneBridge::new(ck_render_2d::Filter::Nearest);
-        let mut controller =
-            MapController::new(&loaded, bridge, pan, zoom, 24).expect("map lane accepts fixture");
+        let mut controller = MapController::new(&loaded, bridge, pan, zoom, scroll)
+            .expect("map lane accepts fixture");
         controller
             .open(&WindowDesc {
                 title: "map controller test".to_owned(),
@@ -1545,6 +1563,154 @@ pub(crate) mod tests {
                 i64::from(dy) * pixels
             );
         }
+    }
+
+    #[test]
+    fn changed_controls_take_effect_on_the_next_input_tick() {
+        let mut pan = controller(1, 20);
+        let before = at_step(&mut pan, 75);
+        pan.set_controls(5, 20, 24);
+        pan.update(&update(&[(PAN_RIGHT, true, false)], Duration::ZERO))
+            .expect("updated pan publishes");
+        let after = pan.camera().expect("camera remains open");
+        assert_eq!(
+            i64::from(after.center.x) - i64::from(before.center.x),
+            i64::from(STEP_SIZE[75]) * 5
+        );
+
+        let mut zoom = controller(4, 20);
+        at_step(&mut zoom, 10);
+        zoom.set_controls(4, 1, 24);
+        zoom.update(&update(&[(ZOOM_IN, true, false)], Duration::from_secs(1)))
+            .expect("updated zoom publishes");
+        assert_eq!(zoom.camera().expect("camera remains open").step, 11);
+
+        let mut scroll = expanded_controller();
+        let before = scroll.camera().expect("camera remains open").step;
+        scroll.set_controls(4, 20, 1);
+        scroll
+            .update(&pointer_update(
+                vec![PointerEvent::Scroll {
+                    position: PointerPosition {
+                        x: 160 * 256,
+                        y: 120 * 256,
+                    },
+                    amount: 256,
+                    unit: ScrollUnit::Points,
+                }],
+                Some(PointerPosition {
+                    x: 160 * 256,
+                    y: 120 * 256,
+                }),
+                false,
+                false,
+            ))
+            .expect("updated scroll publishes");
+        assert_eq!(
+            scroll.camera().expect("camera remains open").step,
+            before + 1
+        );
+    }
+
+    #[test]
+    fn settings_set_and_reset_change_all_map_controls_on_the_next_tick() {
+        let dir = crate::testing::Dir::new();
+        let config_path = dir.0.join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[map]\ndirectory = 'fixture'\npan_pixels_per_frame = 2\nzoom_steps_per_second = 3\nscroll_points_per_step = 2\n",
+        )
+        .expect("write config");
+        let config = crate::config::load(&config_path).expect("load config and settings");
+        let mut map = controller_with_controls(
+            config.map_settings.pan_pixels_per_frame,
+            config.map_settings.zoom_steps_per_second,
+            config.map_settings.scroll_points_per_step,
+        );
+        at_step(&mut map, 30);
+        let shared = shared(map);
+        let runtime = crate::settings::Runtime::new(&config, Some(Arc::clone(&shared)))
+            .expect("settings runtime with a map");
+        let map_for_tick = Arc::clone(&shared);
+        let map_tick = Extension::new("map_test").function(
+            "tick",
+            Arc::new(move |args| {
+                let Some(Some(ConfigValue::String(control))) = args.first() else {
+                    return Err("map_test.tick: expected a control name".to_owned());
+                };
+                let mut map = lock(&map_for_tick);
+                match control.as_str() {
+                    "pan" => {
+                        at_step(&mut map, 75);
+                    }
+                    "zoom" => {
+                        at_step(&mut map, 10);
+                    }
+                    "scroll" => {
+                        at_step(&mut map, 30);
+                    }
+                    _ => return Err(format!("map_test.tick: unknown control `{control}`")),
+                }
+                let before = map.camera().ok_or("map_test.tick: no camera")?;
+                let input = match control.as_str() {
+                    "pan" => update(&[(PAN_RIGHT, true, false)], Duration::ZERO),
+                    "zoom" => update(&[(ZOOM_IN, true, false)], Duration::from_secs(1)),
+                    "scroll" => pointer_update(
+                        vec![PointerEvent::Scroll {
+                            position: PointerPosition {
+                                x: 160 * 256,
+                                y: 120 * 256,
+                            },
+                            amount: 512,
+                            unit: ScrollUnit::Points,
+                        }],
+                        Some(PointerPosition {
+                            x: 160 * 256,
+                            y: 120 * 256,
+                        }),
+                        false,
+                        false,
+                    ),
+                    _ => unreachable!("control was validated above"),
+                };
+                map.update(&input)?;
+                let after = map
+                    .camera()
+                    .ok_or("map_test.tick: no camera after update")?;
+                let amount = if control == "pan" {
+                    (i64::from(after.center.x) - i64::from(before.center.x))
+                        / i64::from(STEP_SIZE[usize::from(before.step)])
+                } else {
+                    i64::from(after.step) - i64::from(before.step)
+                };
+                Ok(vec![ConfigValue::Integer(amount)])
+            }),
+        );
+        let script = r#"
+settings.set("map.pan_pixels_per_frame", 7)
+local pan_set = map_test.tick("pan")
+assert(pan_set == 7, "set pan used " .. tostring(pan_set))
+settings.set("map.zoom_steps_per_second", 5)
+local zoom_set = map_test.tick("zoom")
+assert(zoom_set == 5, "set zoom used " .. tostring(zoom_set))
+settings.set("map.scroll_points_per_step", 1)
+local scroll_set = map_test.tick("scroll")
+assert(scroll_set == 2, "set scroll used " .. tostring(scroll_set))
+settings.reset("map")
+local pan_reset = map_test.tick("pan")
+assert(pan_reset == 2, "reset pan used " .. tostring(pan_reset))
+local zoom_reset = map_test.tick("zoom")
+assert(zoom_reset == 3, "reset zoom used " .. tostring(zoom_reset))
+local scroll_reset = map_test.tick("scroll")
+assert(scroll_reset == 1, "reset scroll used " .. tostring(scroll_reset))
+"#;
+        let _harness = crate::testing::Harness::new(
+            script,
+            crate::testing::Extras {
+                extensions: vec![runtime.extension(), map_tick],
+                ..Default::default()
+            },
+        );
     }
 
     #[test]

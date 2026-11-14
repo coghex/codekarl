@@ -1182,6 +1182,17 @@ pub(crate) struct Config {
     pub(crate) ui_scale_limit_k: Option<u32>,
     /// Startup-only tooltip settings.
     pub(crate) tooltips: TooltipsConfig,
+    /// Effective `[map]` controls, including settings-file overrides even when no map is present.
+    pub(crate) map_settings: MapSettings,
+    /// The settings file is anchored to the configured saves directory; `None` means this run had no `--config`.
+    pub(crate) settings_file: Option<PathBuf>,
+    /// Values the settings file overrides, retained so a later set/reset writes only those overrides.
+    pub(crate) settings_overrides: SettingsOverrides,
+    /// The configuration-file values to which a tab reset returns.
+    pub(crate) settings_base_tooltips: TooltipsConfig,
+    pub(crate) settings_base_map: MapSettings,
+    /// Startup settings-file warnings, emitted after the configured logger is installed.
+    pub(crate) settings_warnings: Vec<String>,
     pub(crate) log: LogConfig,
     pub(crate) deadlines: OwnerDeadlines,
     /// The VMs in name order (they start in this order and stop in reverse).
@@ -1212,6 +1223,35 @@ pub(crate) struct TooltipsConfig {
     pub(crate) delay: f64,
     pub(crate) lock: &'static str,
     pub(crate) lock_timer: f64,
+}
+
+/// The three settings that control map input, whether or not a map is loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MapSettings {
+    pub(crate) pan_pixels_per_frame: u32,
+    pub(crate) zoom_steps_per_second: u32,
+    pub(crate) scroll_points_per_step: u32,
+}
+
+impl Default for MapSettings {
+    fn default() -> Self {
+        Self {
+            pan_pixels_per_frame: 4,
+            zoom_steps_per_second: 20,
+            scroll_points_per_step: 24,
+        }
+    }
+}
+
+/// Validated values present in `settings.toml`; absent keys inherit their config/default values.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct SettingsOverrides {
+    pub(crate) tooltip_delay: Option<f64>,
+    pub(crate) tooltip_lock: Option<&'static str>,
+    pub(crate) tooltip_lock_timer: Option<f64>,
+    pub(crate) map_pan_pixels_per_frame: Option<u32>,
+    pub(crate) map_zoom_steps_per_second: Option<u32>,
+    pub(crate) map_scroll_points_per_step: Option<u32>,
 }
 
 impl Default for TooltipsConfig {
@@ -1289,6 +1329,12 @@ impl Default for Config {
         Self {
             ui_scale_limit_k: None,
             tooltips: TooltipsConfig::default(),
+            map_settings: MapSettings::default(),
+            settings_file: None,
+            settings_overrides: SettingsOverrides::default(),
+            settings_base_tooltips: TooltipsConfig::default(),
+            settings_base_map: MapSettings::default(),
+            settings_warnings: Vec::new(),
             log: LogConfig::default(),
             deadlines: OwnerDeadlines::default(),
             vms: Vec::new(),
@@ -1327,6 +1373,16 @@ fn to_config_value(value: &toml::Value) -> ConfigValue {
 /// Reads and parses the file at `path`. The error is the message of the `config` record: it names the
 /// path, and for a problem in the text, the 1-based line and the offending key or value.
 pub(crate) fn load(path: &Path) -> Result<Config, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let mut config = parse(path, &text)?;
+    load_settings(path, &mut config);
+    Ok(config)
+}
+
+/// The shipped-config test keeps its fixture independent of a player's `settings.toml` in the copy root.
+#[cfg(test)]
+fn load_without_settings(path: &Path) -> Result<Config, String> {
     let text = fs::read_to_string(path)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     parse(path, &text)
@@ -1431,6 +1487,10 @@ fn scene_capacities(path: &Path, render: &RenderFields) -> Result<(u32, u32), St
     Ok((max_quads, max_groups))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one strict parse pass validates the source tables before building the effective config"
+)]
 fn parse(path: &Path, text: &str) -> Result<Config, String> {
     let file = toml::from_str::<File>(text).map_err(|error| describe(path, text, &error))?;
     let whole = text
@@ -1470,6 +1530,13 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
     };
     check_pixel_font(path, &file.ui.0, game.is_some(), file.render.0.filter)?;
     let tooltips = parse_tooltips(path, file.ui.0.tooltips.as_ref())?;
+    let map_settings = map
+        .as_ref()
+        .map_or_else(MapSettings::default, |map| MapSettings {
+            pan_pixels_per_frame: map.pan_pixels_per_frame,
+            zoom_steps_per_second: map.zoom_steps_per_second,
+            scroll_points_per_step: map.scroll_points_per_step,
+        });
     let ui_scale_limit_k = file
         .ui
         .0
@@ -1493,6 +1560,12 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
     Ok(Config {
         ui_scale_limit_k,
         tooltips,
+        map_settings,
+        settings_file: None,
+        settings_overrides: SettingsOverrides::default(),
+        settings_base_tooltips: tooltips,
+        settings_base_map: map_settings,
+        settings_warnings: Vec::new(),
         log: file.log.into(),
         deadlines: file.runtime.into(),
         vms,
@@ -1576,22 +1649,41 @@ fn tooltip_seconds(
         toml::Value::Float(value) => *value,
         _ => f64::NAN,
     };
+    checked_tooltip_tenths(number, min_tenths, max_tenths)
+        .map(|tenths| f64::from(tenths) / 10.0)
+        .ok_or_else(|| {
+            let accepted = if key == "delay" {
+                "0..=2 in 0.1-second steps"
+            } else {
+                "0.3..=3 in 0.1-second steps"
+            };
+            format!(
+                "{}: [ui.tooltips] {key} = {value} is not accepted: use {accepted}",
+                path.display()
+            )
+        })
+}
+
+/// Applies the shared tooltip range and tenth-step rule, returning the canonical rounded value.
+pub(crate) fn checked_tooltip_tenths(number: f64, min_tenths: u32, max_tenths: u32) -> Option<u32> {
     let tenths = (number * 10.0).round();
-    let valid = number.is_finite()
+    if number.is_finite()
         && (number * 10.0 - tenths).abs() < 1.0e-9
-        && (f64::from(min_tenths)..=f64::from(max_tenths)).contains(&tenths);
-    if !valid {
-        let accepted = if key == "delay" {
-            "0..=2 in 0.1-second steps"
-        } else {
-            "0.3..=3 in 0.1-second steps"
-        };
-        return Err(format!(
-            "{}: [ui.tooltips] {key} = {value} is not accepted: use {accepted}",
-            path.display()
-        ));
+        && (f64::from(min_tenths)..=f64::from(max_tenths)).contains(&tenths)
+    {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the checked range is an integral number of tenths within u32"
+        )]
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "the checked tooltip range starts at zero and remains nonnegative"
+        )]
+        let tenths = tenths as u32;
+        Some(tenths)
+    } else {
+        None
     }
-    Ok(tenths / 10.0)
 }
 
 /// `[game]`: the scenario directory and the quicksave directory, both joined to the configuration file's directory.
@@ -1669,6 +1761,170 @@ fn parse_map(
     }))
 }
 
+/// Loads the optional, tolerant player settings file without changing `Config::whole` or the strict config parser.
+fn load_settings(config_path: &Path, config: &mut Config) {
+    let base = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let saves = config
+        .game
+        .as_ref()
+        .map_or_else(|| base.join(DEFAULT_SAVES), |game| game.saves.clone());
+    let path = saves.parent().unwrap_or(base).join("settings.toml");
+    config.settings_file = Some(path.clone());
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            config.settings_warnings.push(format!(
+                "{}: cannot read settings file: {error}; ignoring it",
+                path.display()
+            ));
+            return;
+        }
+    };
+    let value = match toml::from_str::<toml::Value>(&text) {
+        Ok(value) => value,
+        Err(error) => {
+            config.settings_warnings.push(format!(
+                "{}: invalid settings TOML ({error}); ignoring it",
+                path.display()
+            ));
+            return;
+        }
+    };
+    let Some(root) = value.as_table() else {
+        config.settings_warnings.push(format!(
+            "{}: settings file must contain a table; ignoring it",
+            path.display()
+        ));
+        return;
+    };
+    for (table, contents) in root {
+        match table.as_str() {
+            "ui" => load_tooltip_settings(&path, contents, config),
+            "map" => load_map_settings(&path, contents, config),
+            _ => config.settings_warnings.push(format!(
+                "{}: unknown settings table [{table}]; ignoring it",
+                path.display()
+            )),
+        }
+    }
+    if let Some(map) = &mut config.map {
+        map.pan_pixels_per_frame = config.map_settings.pan_pixels_per_frame;
+        map.zoom_steps_per_second = config.map_settings.zoom_steps_per_second;
+        map.scroll_points_per_step = config.map_settings.scroll_points_per_step;
+    }
+}
+
+fn load_tooltip_settings(path: &Path, value: &toml::Value, config: &mut Config) {
+    let Some(ui) = value.as_table() else {
+        config.settings_warnings.push(format!(
+            "{}: [ui] must be a table; ignoring it",
+            path.display()
+        ));
+        return;
+    };
+    for (key, value) in ui {
+        if key != "tooltips" {
+            config.settings_warnings.push(format!(
+                "{}: unknown settings table [ui.{key}]; ignoring it",
+                path.display()
+            ));
+            continue;
+        }
+        let Some(entries) = value.as_table() else {
+            config.settings_warnings.push(format!(
+                "{}: [ui.tooltips] must be a table; ignoring it",
+                path.display()
+            ));
+            continue;
+        };
+        for (key, entry) in entries {
+            let mut singleton = toml::Table::new();
+            singleton.insert(key.clone(), entry.clone());
+            let singleton = toml::Value::Table(singleton);
+            match parse_tooltips(path, Some(&singleton)) {
+                Ok(validated) => match key.as_str() {
+                    "delay" => {
+                        config.tooltips.delay = validated.delay;
+                        config.settings_overrides.tooltip_delay = Some(validated.delay);
+                    }
+                    "lock" => {
+                        config.tooltips.lock = validated.lock;
+                        config.settings_overrides.tooltip_lock = Some(validated.lock);
+                    }
+                    "lock_timer" => {
+                        config.tooltips.lock_timer = validated.lock_timer;
+                        config.settings_overrides.tooltip_lock_timer = Some(validated.lock_timer);
+                    }
+                    _ => config.settings_warnings.push(format!(
+                        "{}: [ui.tooltips] unknown key `{key}`; accepted keys are delay, lock and lock_timer",
+                        path.display()
+                    )),
+                },
+                Err(message) => config.settings_warnings.push(message),
+            }
+        }
+    }
+}
+
+fn load_map_settings(path: &Path, value: &toml::Value, config: &mut Config) {
+    let Some(entries) = value.as_table() else {
+        config.settings_warnings.push(format!(
+            "{}: [map] must be a table; ignoring it",
+            path.display()
+        ));
+        return;
+    };
+    for (key, entry) in entries {
+        let parsed = match key.as_str() {
+            "pan_pixels_per_frame" => setting_integer(path, key, entry, 1, 32),
+            "zoom_steps_per_second" => setting_integer(path, key, entry, 1, 60),
+            "scroll_points_per_step" => setting_integer(path, key, entry, 1, 256),
+            _ => Err(format!(
+                "{}: [map] {key} is not an allowed settings key; accepted keys are pan_pixels_per_frame, zoom_steps_per_second and scroll_points_per_step",
+                path.display()
+            )),
+        };
+        match parsed {
+            Ok(number) => match key.as_str() {
+                "pan_pixels_per_frame" => {
+                    config.map_settings.pan_pixels_per_frame = number;
+                    config.settings_overrides.map_pan_pixels_per_frame = Some(number);
+                }
+                "zoom_steps_per_second" => {
+                    config.map_settings.zoom_steps_per_second = number;
+                    config.settings_overrides.map_zoom_steps_per_second = Some(number);
+                }
+                "scroll_points_per_step" => {
+                    config.map_settings.scroll_points_per_step = number;
+                    config.settings_overrides.map_scroll_points_per_step = Some(number);
+                }
+                _ => unreachable!("unknown settings keys are errors"),
+            },
+            Err(message) => config.settings_warnings.push(message),
+        }
+    }
+}
+
+fn setting_integer(
+    path: &Path,
+    key: &str,
+    value: &toml::Value,
+    minimum: u32,
+    maximum: u32,
+) -> Result<u32, String> {
+    value
+        .as_integer()
+        .and_then(|number| u32::try_from(number).ok())
+        .filter(|number| (*number >= minimum) && (*number <= maximum))
+        .ok_or_else(|| {
+            format!(
+                "{}: [map] {key} = {value} is not accepted: use an integer in {minimum}..={maximum}",
+                path.display()
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1700,7 +1956,8 @@ mod tests {
         let app = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = app.join("../..");
         let config_path = root.join("config/game.toml");
-        let config = load(&config_path).expect("the shipped game configuration loads");
+        let config =
+            load_without_settings(&config_path).expect("the shipped game configuration loads");
 
         let assets = config.render.assets.expect("render assets are configured");
         assert!(
@@ -1736,6 +1993,181 @@ mod tests {
             manifest["package"]["default-run"].as_str(),
             Some("codekarl")
         );
+    }
+
+    #[test]
+    fn settings_file_overrides_the_tooltip_values_without_changing_config() {
+        let dir = crate::testing::Dir::new();
+        let path = dir.0.join("config.toml");
+        fs::write(&path, "[ui.tooltips]\ndelay = 0.4\nlock = \"timer\"\n").expect("write config");
+        fs::write(
+            dir.0.join("settings.toml"),
+            "[ui.tooltips]\ndelay = 0.8\nlock = \"disabled\"\n",
+        )
+        .expect("write settings");
+
+        let config = load(&path).expect("settings overrides are optional and valid");
+
+        assert!((config.tooltips.delay - 0.8).abs() < f64::EPSILON);
+        assert_eq!(config.tooltips.lock, "disabled");
+        assert_eq!(
+            config.whole,
+            to_config_value(
+                &toml::from_str::<toml::Value>("[ui.tooltips]\ndelay = 0.4\nlock = \"timer\"\n")
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn settings_file_keeps_valid_siblings_and_reports_invalid_entries_by_name() {
+        let dir = crate::testing::Dir::new();
+        let path = dir.0.join("config.toml");
+        fs::write(
+            &path,
+            "[map]\ndirectory = 'map'\nzoom_steps_per_second = 7\n",
+        )
+        .expect("write config");
+        fs::write(
+            dir.0.join("settings.toml"),
+            "[ui.tooltips]\ndelay = 0.8\nlock_timer = 0.25\nextra = true\n[map]\npan_pixels_per_frame = 9\ndirectory = 'wrong'\nscroll_points_per_step = 400\n",
+        )
+        .expect("write settings");
+
+        let config = load(&path).expect("invalid settings entries are ignored");
+
+        assert!((config.tooltips.delay - 0.8).abs() < f64::EPSILON);
+        assert!((config.tooltips.lock_timer - 1.0).abs() < f64::EPSILON);
+        assert_eq!(config.map_settings.pan_pixels_per_frame, 9);
+        assert_eq!(config.map_settings.zoom_steps_per_second, 7);
+        assert_eq!(config.map_settings.scroll_points_per_step, 24);
+        assert_eq!(config.map.as_ref().unwrap().pan_pixels_per_frame, 9);
+        assert_eq!(config.settings_warnings.len(), 4);
+        for name in ["lock_timer", "extra", "directory", "scroll_points_per_step"] {
+            if name == "scroll_points_per_step" {
+                assert!(
+                    config
+                        .settings_warnings
+                        .iter()
+                        .any(|warning| warning.contains(name))
+                );
+            } else if name == "directory" {
+                assert!(
+                    config
+                        .settings_warnings
+                        .iter()
+                        .any(|warning| warning.contains("[map] directory"))
+                );
+            } else {
+                assert!(
+                    config
+                        .settings_warnings
+                        .iter()
+                        .any(|warning| warning.contains(name))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_settings_are_ignored_and_missing_settings_are_silent() {
+        let dir = crate::testing::Dir::new();
+        let path = dir.0.join("config.toml");
+        fs::write(&path, "[ui.tooltips]\ndelay = 0.4\n").expect("write config");
+        let absent = load(&path).expect("missing settings are allowed");
+        assert!(absent.settings_warnings.is_empty());
+        assert!((absent.tooltips.delay - 0.4).abs() < f64::EPSILON);
+
+        fs::write(dir.0.join("settings.toml"), "[ui.tooltips\ndelay = 1")
+            .expect("write invalid TOML");
+        let malformed = load(&path).expect("malformed settings are ignored");
+        assert!((malformed.tooltips.delay - 0.4).abs() < f64::EPSILON);
+        assert_eq!(malformed.settings_warnings.len(), 1);
+        assert!(malformed.settings_warnings[0].contains("settings.toml"));
+    }
+
+    #[test]
+    fn settings_path_uses_the_parent_of_the_configured_saves_directory() {
+        let dir = crate::testing::Dir::new();
+        let config_dir = dir.0.join("config");
+        fs::create_dir_all(&config_dir).expect("create config directory");
+        let path = config_dir.join("game.toml");
+        fs::write(
+            &path,
+            "[game]\nscenario = '../scenario'\nsaves = '../saves'\n",
+        )
+        .expect("write config");
+        fs::write(
+            dir.0.join("settings.toml"),
+            "[map]\nzoom_steps_per_second = 33\n",
+        )
+        .expect("write settings beside the saves directory");
+
+        let config = load(&path).expect("load configured saves and settings");
+
+        assert_eq!(
+            config.settings_file,
+            Some(config_dir.join("../settings.toml"))
+        );
+        assert_eq!(config.map_settings.zoom_steps_per_second, 33);
+    }
+
+    #[test]
+    fn every_bad_settings_entry_is_ignored_independently() {
+        let dir = crate::testing::Dir::new();
+        let path = dir.0.join("config.toml");
+        fs::write(&path, "").expect("write config");
+        fs::write(
+            dir.0.join("settings.toml"),
+            "[ui.tooltips]\ndelay = 0.25\nlock = 'never'\nlock_timer = 3.1\nextra = true\n\n[map]\npan_pixels_per_frame = 0\nzoom_steps_per_second = 61\nscroll_points_per_step = '24'\ndirectory = 'map'\n\n[graphics]\nscale = 2\n",
+        )
+        .expect("write bad values");
+
+        let config = load(&path).expect("bad settings do not prevent startup");
+
+        assert_eq!(config.tooltips, TooltipsConfig::default());
+        assert_eq!(config.map_settings, MapSettings::default());
+        assert_eq!(config.settings_warnings.len(), 9);
+        for name in [
+            "delay",
+            "lock",
+            "lock_timer",
+            "extra",
+            "pan_pixels_per_frame",
+            "zoom_steps_per_second",
+            "scroll_points_per_step",
+            "directory",
+            "graphics",
+        ] {
+            assert!(
+                config
+                    .settings_warnings
+                    .iter()
+                    .any(|warning| warning.contains(name)),
+                "missing warning for {name}: {:?}",
+                config.settings_warnings
+            );
+        }
+    }
+
+    #[test]
+    fn an_out_of_range_tooltip_delay_is_ignored_without_losing_valid_siblings() {
+        let dir = crate::testing::Dir::new();
+        let path = dir.0.join("config.toml");
+        fs::write(&path, "").expect("write config");
+        fs::write(
+            dir.0.join("settings.toml"),
+            "[ui.tooltips]\ndelay = 2.1\nlock_timer = 2.0\n",
+        )
+        .expect("write settings");
+
+        let config = load(&path).expect("invalid delay is ignored");
+
+        assert!((config.tooltips.delay - TooltipsConfig::default().delay).abs() < 1.0e-9);
+        assert!((config.tooltips.lock_timer - 2.0).abs() < 1.0e-9);
+        assert_eq!(config.settings_warnings.len(), 1);
+        assert!(config.settings_warnings[0].contains("delay"));
+        assert!(config.settings_warnings[0].contains("2.1"));
     }
 
     #[test]

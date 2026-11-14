@@ -2422,6 +2422,11 @@ GUARDS: tuple[Guard, ...] = (
         ("assets/scenarios/ireland-768/", "assets/game/economy.toml", "scripts/ui/main.lua"),
     ),
     Guard(
+        "apps/codekarl/src/ui_link/location_tests/tooltips.rs",
+        "rust.app",
+        ("scripts/ui/main.lua", "assets/ui/"),
+    ),
+    Guard(
         "apps/codekarl/src/ui_link/location_tests/ledger.rs",
         "rust.app",
         ("assets/scenarios/ireland-768/", "assets/game/economy.toml"),

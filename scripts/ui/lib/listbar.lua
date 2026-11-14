@@ -7,10 +7,16 @@
 --     sorts = {{key = "name", label = "name", first = "ascending"}, ...},  -- "ascending" or "descending"
 --     groups = {{key = "kind", label = "kind"}, ...},                      -- the filter's groups, in order
 --     on_change = function() end,                                          -- after a tick, "all" or a sort choice changed the choices
+--     ticked = {{group = "kind", value = "town"}, ...},                    -- optional: the boxes ticked when the bar is made (CK-304)
 --   }
 --   local shown = bar:view(rows)  -- each row has `sort` (key -> string | number | nil) and `filter` (key -> string | {strings} | nil)
 --
 -- The choices are the bar's alone: nothing of them outlives `destroy`, and nothing is written anywhere.
+--
+-- **Starting ticks (CK-304).** A bar starts with nothing ticked unless the caller gives `ticked`: a list of boxes, each a group key and a
+-- value. A bar so made is one the player ticked by hand: its filter button is selected, its count shows once it is given rows, "all" clears
+-- the ticks, and the filter rule is the ordinary one. The bar copies them, so clearing it changes nothing for the next bar the caller makes
+-- from the same list, which starts from them again. A value no row has is still a box, ticked, as for a box ticked by hand.
 --
 -- **Hit keys.** Every key the bar makes comes from `ui.key` with a short fixed prefix. A value, a label or a group key is data and is never
 -- part of a key (the host takes `[a-z0-9_]{1,48}` and a label such as "base price" is not one); the association lives in Lua tables.
@@ -495,6 +501,18 @@ function listbar.new(spec)
   if spec.on_change ~= nil and type(spec.on_change) ~= "function" then
     error("listbar.new: on_change must be nil or a function", 2)
   end
+  local starting = {}
+  if spec.ticked ~= nil then
+    if type(spec.ticked) ~= "table" then error("listbar.new: ticked must be nil or a list of {group, value}", 2) end
+    local known = {}
+    for _, group in ipairs(groups) do known[group.key] = true end
+    for index, box in ipairs(spec.ticked) do
+      if type(box) ~= "table" or type(box.group) ~= "string" or type(box.value) ~= "string" or not known[box.group] then
+        error("listbar.new: ticked " .. index .. " needs the key of one of the groups and a string value", 2)
+      end
+      starting[#starting + 1] = {group = box.group, value = box.value}
+    end
+  end
   local self = setmetatable({}, Bar)
   self.window = window
   self.sorts, self.filters = sorts, groups
@@ -508,6 +526,13 @@ function listbar.new(spec)
     self.boxes[index] = {}
   end
   self.ticks = 0
+  for _, box in ipairs(starting) do
+    if not self.ticked[box.group][box.value] then
+      self.ticked[box.group][box.value] = true
+      self.group_ticks[box.group] = self.group_ticks[box.group] + 1
+      self.ticks = self.ticks + 1
+    end
+  end
   self.sort_index = nil -- the chosen sort; nil is the default order
   self.direction = nil
   self.shown, self.total = 0, 0
@@ -518,6 +543,7 @@ function listbar.new(spec)
   self.sort_button = button.new{x = 0, y = 0, icons = {"sort"}, icon = "sort", kind = window.kind, group = window.content,
     owner = window, tooltip = "sort", on_click = function() toggle_picker(self, "sort") end}
   self.count = text.line(0, 0, window.content)
+  self.filter_button:set_selected(self.ticks > 0)
   window:attach(self)
   return self
 end
