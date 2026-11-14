@@ -43,6 +43,7 @@ mountain = 75
 
 [[goods]]
 id="oats"
+tags=["food"]
 unit="bushel"
 weight_g=14500
 volume_ml=35000
@@ -54,6 +55,7 @@ base_price=100
 pop_limit_milli=20000
 [[goods]]
 id="barley"
+tags=["food"]
 unit="bushel"
 weight_g=21800
 volume_ml=35000
@@ -65,6 +67,7 @@ base_price=120
 pop_limit_milli=8000
 [[goods]]
 id="peas_beans"
+tags=["food"]
 unit="bushel"
 weight_g=27000
 volume_ml=35000
@@ -76,6 +79,7 @@ base_price=120
 pop_limit_milli=3000
 [[goods]]
 id="vegetables"
+tags=["food"]
 unit="bushel"
 weight_g=20000
 volume_ml=35000
@@ -87,6 +91,7 @@ base_price=40
 pop_limit_milli=4000
 [[goods]]
 id="apples"
+tags=["food"]
 unit="bushel"
 weight_g=18000
 volume_ml=35000
@@ -98,6 +103,7 @@ base_price=150
 pop_limit_milli=500
 [[goods]]
 id="dairy"
+tags=["food"]
 unit="pound"
 weight_g=450
 volume_ml=500
@@ -109,6 +115,7 @@ base_price=40
 pop_limit_milli=40000
 [[goods]]
 id="beef"
+tags=["food"]
 unit="pound salted"
 weight_g=450
 volume_ml=500
@@ -120,6 +127,7 @@ base_price=10
 pop_limit_milli=30000
 [[goods]]
 id="pork"
+tags=["food"]
 unit="pound salted"
 weight_g=450
 volume_ml=500
@@ -131,6 +139,7 @@ base_price=9
 pop_limit_milli=30000
 [[goods]]
 id="mutton"
+tags=["food"]
 unit="pound salted"
 weight_g=450
 volume_ml=500
@@ -142,6 +151,7 @@ base_price=8
 pop_limit_milli=30000
 [[goods]]
 id="fish"
+tags=["food"]
 unit="pound dried or salted"
 weight_g=450
 volume_ml=1000
@@ -153,6 +163,7 @@ base_price=30
 pop_limit_milli=30000
 [[goods]]
 id="seabirds"
+tags=["food"]
 unit="bird"
 weight_g=1000
 volume_ml=3000
@@ -164,6 +175,7 @@ base_price=20
 pop_limit_milli=5000
 [[goods]]
 id="ale"
+tags=["food"]
 unit="gallon"
 weight_g=4600
 volume_ml=5000
@@ -175,6 +187,7 @@ base_price=60
 pop_limit_milli=5000
 [[goods]]
 id="mead"
+tags=["food"]
 unit="gallon"
 weight_g=5000
 volume_ml=5000
@@ -186,6 +199,7 @@ base_price=300
 pop_limit_milli=2000
 [[goods]]
 id="wine"
+tags=["food"]
 unit="gallon"
 weight_g=4600
 volume_ml=5000
@@ -197,6 +211,7 @@ base_price=600
 pop_limit_milli=2000
 [[goods]]
 id="honey"
+tags=["food"]
 unit="pound"
 weight_g=450
 volume_ml=350
@@ -219,6 +234,7 @@ base_price=100
 pop_limit_milli=1000
 [[goods]]
 id="wool"
+tags=["clothing"]
 unit="pound fleece"
 weight_g=450
 volume_ml=3000
@@ -241,6 +257,7 @@ base_price=150
 pop_limit_milli=2000
 [[goods]]
 id="hides"
+tags=["clothing"]
 unit="hide dried"
 weight_g=10000
 volume_ml=30000
@@ -252,6 +269,7 @@ base_price=200
 pop_limit_milli=1000
 [[goods]]
 id="cattle"
+tags=["herd"]
 unit="head"
 weight_g=250000
 volume_ml=0
@@ -263,6 +281,7 @@ base_price=2400
 pop_limit_milli=0
 [[goods]]
 id="pigs"
+tags=["herd"]
 unit="head"
 weight_g=80000
 volume_ml=0
@@ -274,6 +293,7 @@ base_price=600
 pop_limit_milli=0
 [[goods]]
 id="sheep"
+tags=["herd"]
 unit="head"
 weight_g=35000
 volume_ml=0
