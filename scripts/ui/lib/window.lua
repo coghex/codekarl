@@ -235,6 +235,7 @@ function window.new(spec)
     draggable = spec.draggable ~= false,
     clip_title = spec.clip_title == true,
     on_close = spec.on_close,
+    keep_open = spec.keep_open,
     on_title_click = spec.on_title_click,
     closed = false,
     attached = {},
@@ -545,7 +546,10 @@ function window.close_request(source)
     if require("lib.listbar").close_open() then return false end
   end
   if source == "key" and window.top() ~= nil then
-    window.top():close()
+    -- A window may keep itself open (`keep_open`, CK-305: the save screen while a load is unanswered): Escape then does nothing at all.
+    local top = window.top()
+    if top.keep_open ~= nil and top.keep_open() then return false end
+    top:close()
     return false
   end
   return true

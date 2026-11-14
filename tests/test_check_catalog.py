@@ -2543,6 +2543,13 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("assets/ui/", "scripts/ui/"),
     ),
+    # CK-305: the save / load screen's tests run the shipped screen, menu, window, card stack, text field and list bar libraries over the
+    # shipped font and theme, with the game's save calls answered by a stand-in or by a real core over a temporary saves directory.
+    Guard(
+        "apps/codekarl/src/ui_link/save_screen_tests.rs",
+        "rust.app",
+        ("assets/ui/", "scripts/ui/"),
+    ),
     Guard("apps/codekarl/src/game_api.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
     # CK-235: the map controller's rule-table test loads Ireland's shipped map and checks the lane accepts its grids.
     Guard("apps/codekarl/src/map_app.rs", "rust.app", ("assets/map/ireland/",)),

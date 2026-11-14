@@ -487,11 +487,26 @@ fn quit_to_desktop_ends_the_run_at_once_with_no_question() {
 }
 
 #[test]
-fn settings_and_glossary_are_live_while_save_load_stays_greyed() {
+fn with_a_game_every_button_is_live_and_without_one_save_load_is_greyed() {
+    // With a game (the rig has one) all five buttons are live: "save / load" opens the save screen (CK-305).
+    let mut live_rig = menu_rig(
+        "",
+        &[r#"
+menu.open(VIEW)
+for _, label in ipairs(menu.LABELS) do
+  local b = menu_button(label)
+  expect(not b.inactive and not dim_look(b), label .. " is live")
+end
+"#],
+    );
+    live_rig.opened();
+    // Without one ("game" is nil: no scenario) there is nothing to save or load.
     let mut rig = menu_rig(
         "",
         &[
             r#"
+real_game = game
+game = nil
 menu.open(VIEW)
 mark_buttons()
 local settings = menu_button("settings")
@@ -520,6 +535,7 @@ for _, label in ipairs({"save / load"}) do
 end
 expect(menu.is_open(), "a press on a greyed button does nothing: the menu is still there")
 eq(quit_calls, 0)
+game = real_game
 local live = menu_button("return")
 expect(live.hovered, "the live button shows its hover (the pointer is on it)")
 eq(live.frame.line, theme_lib.kind("window").hot, "return's hover look")
@@ -536,10 +552,9 @@ eq(live.frame.line, theme_lib.kind("window").hot, "return's hover look")
     let at = point(&rig, "return");
     hover(&mut rig, at);
     rig.opened();
-    assert_eq!(
-        sent(&rig),
-        [Control::Pause],
-        "nothing but the opening's pause"
+    assert!(
+        sent(&rig).is_empty(),
+        "without a game the menu sends nothing, and the greyed button sends nothing"
     );
 }
 
@@ -741,6 +756,77 @@ fn settings_rig(steps: &[&str]) -> Rig {
     )
 }
 
+fn settings_input_wheel_case(target: &str) {
+    let setup = match target {
+        "name" => {
+            r#"
+local s = require("lib.settings_window").current()
+expect(s.selected == "input")
+mark_settings()
+local pause
+for _, line in ipairs(lines_in(s.page.rows_group)) do
+  if line_text(line) == "pause" then pause = line end
+end
+expect(pause ~= nil, "the pause action name is present")
+local x, y = line_at(pause)
+mark("wheel_target", x + 2, y + 2)
+"#
+        }
+        "slot" => {
+            r#"
+local s = require("lib.settings_window").current()
+expect(s.selected == "input")
+mark_settings()
+local x, y, w, h = hit_rect(s.controls.key_slots.time_pause[1].key)
+mark("wheel_target", x + w / 2, y + h / 2)
+"#
+        }
+        "menu" => {
+            r#"
+local s = require("lib.settings_window").current()
+expect(s.selected == "input")
+s.page:set_scroll(s.controls.key_slots.close[1].y - 80 * P)
+mark_settings()
+local x, y, w, h = hit_rect(s.controls.key_slots.close[1].key)
+mark("wheel_target", x + w / 2, y + h / 2)
+"#
+        }
+        _ => panic!("unknown settings wheel target {target}"),
+    };
+    let steps = [
+        r"mark_settings()",
+        r"mark_settings()",
+        setup,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.page.scroll > 0, "a real wheel event scrolls the input rows")
+"#,
+    ];
+    let mut rig = settings_rig(&steps);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    let at = point(&rig, "wheel_target");
+    let hit = key_at(&rig, at);
+    let expected = if target == "name" {
+        "settings_input_area_"
+    } else {
+        "settings_key_slot_"
+    };
+    assert!(
+        hit.starts_with(expected),
+        "wheel target {target} should hit {expected}, got {hit} at {at:?}"
+    );
+    rig.feed(&[PointerEvent::Scroll {
+        position: points(at.0, at.1),
+        amount: -256,
+        unit: ScrollUnit::Lines,
+    }]);
+    frame(&mut rig);
+}
+
 #[test]
 fn settings_opens_from_the_menu_as_a_centred_resizable_window_with_the_three_side_tabs() {
     let mut rig = settings_rig(&[
@@ -855,6 +941,7 @@ eq(fixture.calls[#fixture.calls][1], "reset")
 eq(fixture.calls[#fixture.calls][2], "tooltips")
 eq(fixture.tooltips.delay, 0.3) eq(fixture.tooltips.lock, "middle_mouse") eq(fixture.tooltips.lock_timer, 1.5)
 eq(fixture.map.pan_pixels_per_frame, 4, "reset affects only the current tab")
+eq(require("lib.settings_window").current().selected, "general", "defaults keeps its tab selected")
 "#,
     ]);
     rig.opened();
@@ -871,6 +958,81 @@ eq(fixture.map.pan_pixels_per_frame, 4, "reset affects only the current tab")
     );
     rig.opened();
     click_marked(&mut rig, "settings_control_show delay");
+    rig.opened();
+    click_marked(&mut rig, "settings_control_defaults");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_wheels_scroll_on_first_show_over_names_slots_and_the_menu_row() {
+    for target in ["name", "slot", "menu"] {
+        settings_input_wheel_case(target);
+    }
+}
+
+#[test]
+fn settings_input_defaults_keep_the_input_tab_marked_and_reset_scroll() {
+    let mut rig = settings_rig(&[
+        r"mark_settings()",
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.selected == "input")
+s.page:set_scroll(s.page.row_height)
+expect(s.page.scroll > 0, "the input rows are scrolled before defaults")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input", "defaults leaves the input tab marked")
+eq(s.page.scroll, 0, "defaults starts the rows at the top")
+eq(fixture.calls[#fixture.calls][1], "reset")
+eq(fixture.calls[#fixture.calls][2], "bindings")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_control_defaults");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_binding_changes_preserve_scroll_and_defaults_returns_to_top() {
+    let mut rig = settings_rig(&[
+        r"mark_settings()",
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.selected == "input")
+local slot = s.controls.key_slots.map_pan_down[2]
+s.page:set_scroll(math.max(0, slot.y - 80 * P))
+expect(s.page.scroll > 0, "the lower binding row is scrolled into view")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil, "the lower slot is waiting for a key")
+local before = s.page.scroll
+finish_capture("Control+KeyK")
+eq(s.page.scroll, before, "applying a binding keeps the current scroll position")
+expect(s.page.scroll > 0, "the changed list remains scrolled")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.page.scroll, 0, "defaults starts at the top")
+eq(s.selected, "input")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_map_pan_down_2");
     rig.opened();
     click_marked(&mut rig, "settings_control_defaults");
     rig.opened();

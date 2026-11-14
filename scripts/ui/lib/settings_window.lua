@@ -1,4 +1,4 @@
--- The settings window (CK-301, slice A): live tooltips and map values plus a read-only view of input bindings.
+-- The settings window (CK-301, slice A): live tooltips and map values plus editable input bindings.
 local ui = require("lib.ui")
 local button = require("lib.button")
 local label = require("lib.label")
@@ -210,6 +210,10 @@ local function make_page(state)
     on_overflow = function() end,
     functional = function() return false end,
   }
+  function page:update_area_hit()
+    render.set_hit(self.area_key, self.input and {{x = self.x, y = 0, width = self.room,
+      height = self.row_view_height}} or nil, state.window.content)
+  end
   page.item = {
     groups = page.groups,
     layout = function(_, ox, oy, clip)
@@ -224,8 +228,7 @@ local function make_page(state)
         x = clip.x + page.x, y = clip.y, width = math.max(P, clip.width - page.x - scrollbar.RESERVE),
         height = page.row_view_height,
       })
-      render.set_hit(page.area_key, page.input and {{x = page.x, y = 0, width = page.room, height = page.row_view_height}} or nil,
-        state.window.content)
+      page:update_area_hit()
       page.bar:place(ox + page.x + page.room - scrollbar.WIDTH, oy, {
         x = clip.x + page.x, y = clip.y, width = page.room, height = page.row_view_height,
       })
@@ -257,7 +260,9 @@ local function add_defaults(state, page, tab, y)
       local setting = tab == "general" and "tooltips" or tab == "bindings" and "bindings" or "map"
       settings.reset(setting)
       pointer.defer(function()
-        if current == state and not state.window.closed then state:show(tab) end
+        if current == state and not state.window.closed then
+          state:show(tab == "bindings" and "input" or tab)
+        end
       end)
     end,
   }
@@ -350,12 +355,16 @@ cancel_wait = function(state)
 end
 
 local function apply_bindings(state, changes)
+  local scroll = state.page and state.page.scroll or 0
   local ok, failure = pcall(settings.set_bindings, changes)
   if not ok then
     log.info("settings.set_bindings refused: " .. tostring(failure))
     return false
   end
-  if current == state and not state.window.closed then state:show("input") end
+  if current == state and not state.window.closed then
+    state:show("input")
+    if state.page ~= nil then state.page:set_scroll(scroll) end
+  end
   return true
 end
 
@@ -596,6 +605,10 @@ local function make_slot(state, page, action, index, key, y, read_only)
       or self.value == nil and theme.colour("dim") or theme.colour("text"))
   end
   function slot:on_event(event, eligible)
+    if event.kind == "scroll" then
+      page:wheel(event)
+      return
+    end
     if read_only or eligible == false then return end
     if event.kind == "button_down" and event.button == "right" then
       cancel_wait(state)
@@ -634,6 +647,7 @@ local function show_input(state, page)
   local actions = bindings_by_name()
   page.input = true
   pointer.register(page.area_key, page.area, page.owner)
+  page:update_area_hit()
   state.controls.key_slots, state.controls.rows = {}, {}
   page.row_view_height = math.max(P, state.content_height - INPUT_FOOTER)
   local y = 0

@@ -364,6 +364,7 @@ if game ~= nil then
   }
 
   game.on_time(function(time)
+    require("lib.save_screen").set_time(time)
     location_panel:set_revision(time.economy_revision)
     classes.set_revision(time.economy_revision)
     if fill_ledger ~= nil and places_window ~= nil and not places_window.closed
