@@ -13,7 +13,6 @@ local SIDE_TABS = {"general", "map", "input"}
 local WIDTH_TABS = {"general", "graphics", "map", "input"}
 local LABEL_WIDTH = 84 * P
 local SLIDER_WIDTH = 80 * P
-local GAP = 3 * P
 
 local settings_window = {}
 local current
@@ -102,11 +101,11 @@ local function slider(state, page, name, key, y, minimum, maximum, step, value, 
   }
   local track_colour = self.enabled and theme.colour("track") or theme.colour("dim")
   local fill_colour = self.enabled and theme.colour("text") or theme.colour("dim")
-  self.track = render.create_quad{texture = ui.texture(WHITE), x = self.x, y = self.y + 5 * P,
+  self.track = render.create_quad{texture = ui.texture(WHITE), x = self.x, y = self.y + 3 * P,
     width = SLIDER_WIDTH, height = 2 * P, group = page.group, tint = track_colour}
-  self.fill = render.create_quad{texture = ui.texture(WHITE), x = self.x, y = self.y + 5 * P,
+  self.fill = render.create_quad{texture = ui.texture(WHITE), x = self.x, y = self.y + 3 * P,
     width = P, height = 2 * P, group = page.group, tint = fill_colour}
-  self.knob = render.create_quad{texture = ui.texture(WHITE), x = self.x, y = self.y + 3 * P,
+  self.knob = render.create_quad{texture = ui.texture(WHITE), x = self.x, y = self.y,
     width = 3 * P, height = 7 * P, group = page.group, tint = fill_colour}
   local maximum_offset = SLIDER_WIDTH - 3 * P
   local function offset()
@@ -115,8 +114,8 @@ local function slider(state, page, name, key, y, minimum, maximum, step, value, 
   end
   local function place()
     local dx = offset()
-    render.set_position(self.knob, self.x + dx, self.y + 3 * P)
-    render.set_rect(self.fill, self.x, self.y + 5 * P, math.max(P, dx + 2 * P), 2 * P)
+    render.set_position(self.knob, self.x + dx, self.y)
+    render.set_rect(self.fill, self.x, self.y + 3 * P, math.max(P, dx + 2 * P), 2 * P)
     local wx = select(1, self.window:content_origin())
     local wy = select(2, self.window:content_origin())
     self.abs_x = wx + page.x + self.x
@@ -168,7 +167,7 @@ local function slider(state, page, name, key, y, minimum, maximum, step, value, 
   end
   function self:functional() return self.enabled end
   function self:destroy() pointer.unregister(self.key) end
-  render.set_hit(self.key, {{x = self.x - 2 * P, y = self.y, width = SLIDER_WIDTH + 4 * P, height = 10 * P}}, page.group)
+  render.set_hit(self.key, {{x = self.x - 2 * P, y = self.y, width = SLIDER_WIDTH + 4 * P, height = 7 * P}}, page.group)
   pointer.register(self.key, self, page.owner)
   place()
   state.controls[name] = self
@@ -235,6 +234,7 @@ local function show_general(state, page)
   label_at(page.group, 0, 0, "tooltips", theme.colour("dim"), page.room)
   local enabled_colour = theme.colour("text")
   local dim_colour = theme.colour("dim")
+  label_at(page.group, 0, 16 * P, "show delay", enabled_colour, LABEL_WIDTH)
   slider(state, page, "show delay", "ui.tooltips.delay", 14 * P, 0, 2, 0.1, values.delay,
     string.format("%.1f s", values.delay), true, enabled_colour)
   label_at(page.group, 0, 36 * P, "lock", enabled_colour, LABEL_WIDTH)

@@ -1228,3 +1228,102 @@ expect(not preexisting.closed, "the older window remains open")
     click_at(&mut rig, button);
     rig.opened();
 }
+
+/// The Lua both slider-geometry tests share: the labels of the page by their text, and one slider's checks. A row at `y` has its label
+/// and value text at `y + 2`, its knob (3 by 7) from `y + 4` and its track (2 high) at `y + 7` (the mock-up's `slider_row`), so a slider
+/// is checked against its own label's place; the press and drag region must cover the drawn knob and track.
+const SLIDER_GEOMETRY: &str = r#"
+function page_labels(s)
+  local labels = {}
+  for _, line in ipairs(lines_in(s.page.group)) do labels[line_text(line)] = line end
+  return labels
+end
+function check_slider(s, labels, name)
+  local c = s.controls[name]
+  expect(labels[name] ~= nil, name .. " has its label")
+  local row_label_y = labels[name].y
+  local knob, track, fill = scene.quads[c.knob], scene.quads[c.track], scene.quads[c.fill]
+  eq(knob.y, row_label_y + 2 * P, name .. ": the knob's top is the row's y + 4")
+  eq(knob.w, 3 * P, name .. ": the knob is 3 wide") eq(knob.h, 7 * P, name .. ": and 7 tall")
+  eq(track.y, row_label_y + 5 * P, name .. ": the track's top is the row's y + 7")
+  eq(track.h, 2 * P, name .. ": the track is 2 high")
+  eq(fill.y, track.y, name .. ": the fill is on the track") eq(fill.h, 2 * P)
+  local hx, hy, hw, hh = hit_rect(c.key)
+  for _, part in ipairs({{"knob", knob}, {"track", track}}) do
+    local x, y, w, h = quad_at(part[2])
+    expect(hx <= x and hy <= y and hx + hw >= x + w and hy + hh >= y + h, name .. ": the press region covers the drawn " .. part[1])
+  end
+  return row_label_y
+end
+"#;
+
+#[test]
+fn the_general_tab_labels_show_delay_and_places_its_sliders_as_drawn() {
+    let mut rig = settings_rig(&[
+        r#"expect(not menu_button("settings").inactive)"#,
+        &format!(
+            r#"
+{SLIDER_GEOMETRY}
+local s = require("lib.settings_window").current()
+eq(s.selected, "general")
+local labels = page_labels(s)
+local show = labels["show delay"]
+expect(show ~= nil, "the first row has its label")
+eq(show.x, 0, "at the content's left") eq(show.y, 16 * P, "at the row's y + 2")
+eq(show.colour, theme_lib.colour("text"), "in the text colour")
+expect(show.width <= 84, "within the 84-pixel label width")
+expect(labels["lock"] ~= nil and labels["lock timer"] ~= nil, "the other two rows keep theirs")
+eq(labels["lock"].x, 0) eq(labels["lock"].y, 36 * P)
+eq(labels["lock timer"].x, 0)
+local delay_y = check_slider(s, labels, "show delay")
+eq(scene.quads[s.controls["show delay"].knob].y, 18 * P, "the first row is at 14: its knob from 18")
+eq(scene.quads[s.controls["show delay"].track].y, 21 * P, "and its track at 21")
+check_slider(s, labels, "lock timer")
+mark_settings()
+"#
+        ),
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.controls["show delay"].value, 1.0, "a press on the drawn track sets the value")
+eq(fixture.calls[#fixture.calls][2], "ui.tooltips.delay")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_slider_mid_show delay");
+    rig.opened();
+}
+
+#[test]
+fn the_map_tab_places_its_sliders_as_drawn() {
+    let mut rig = settings_rig(&[
+        r#"expect(not menu_button("settings").inactive)"#,
+        r"mark_settings()",
+        &format!(
+            r#"
+{SLIDER_GEOMETRY}
+local s = require("lib.settings_window").current()
+eq(s.selected, "map")
+local labels = page_labels(s)
+for index, name in ipairs({{"pan speed", "zoom speed", "scroll step"}}) do
+  local row_y = check_slider(s, labels, name) - 2 * P
+  eq(row_y, (index - 1) * 20 * P, name .. ": rows are 20 apart from 0")
+end
+mark_settings()
+"#
+        ),
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.controls["pan speed"].value, 17, "a press on the drawn track sets the value")
+eq(fixture.calls[#fixture.calls][2], "map.pan_pixels_per_frame")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_map");
+    rig.opened();
+    click_marked(&mut rig, "settings_slider_mid_pan speed");
+    rig.opened();
+}
