@@ -192,6 +192,7 @@ end
 -- The frame hook of main.lua.
 frame.on_update(function(update)
   pointer.dispatch(update.pointer)
+  require("lib.settings_window").update(update)
   lb.update(update)
   tooltip.update(update)
   if on_frame ~= nil then on_frame(update) end
