@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use ck_log::Level;
 use ck_lua::{ConfigValue, Extension};
 use ck_window::Bindings;
+use ck_window::RequestWriter;
 
 use crate::config::{Config, MapSettings, SettingsOverrides, TooltipsConfig};
 use crate::lifecycle::emit;
@@ -23,12 +24,23 @@ pub(crate) struct Runtime {
     base: Values,
     values: Mutex<Values>,
     overrides: Mutex<SettingsOverrides>,
-    bindings: Bindings,
+    bindings: Mutex<Bindings>,
+    base_bindings: Bindings,
+    requests: Option<RequestWriter>,
     map: Option<SharedController>,
 }
 
 impl Runtime {
+    #[cfg(test)]
     pub(crate) fn new(config: &Config, map: Option<SharedController>) -> Option<Arc<Self>> {
+        Self::new_with_requests(config, map, None)
+    }
+
+    pub(crate) fn new_with_requests(
+        config: &Config,
+        map: Option<SharedController>,
+        requests: Option<RequestWriter>,
+    ) -> Option<Arc<Self>> {
         Some(Arc::new(Self {
             path: config.settings_file.clone()?,
             base: Values {
@@ -40,7 +52,9 @@ impl Runtime {
                 map: config.map_settings,
             }),
             overrides: Mutex::new(config.settings_overrides.clone()),
-            bindings: config.bindings.clone(),
+            bindings: Mutex::new(config.bindings.clone()),
+            base_bindings: config.settings_base_bindings.clone(),
+            requests,
             map,
         }))
     }
@@ -51,6 +65,9 @@ impl Runtime {
         let set = Arc::clone(self);
         let reset = Arc::clone(self);
         let bindings = Arc::clone(self);
+        let set_bindings = Arc::clone(self);
+        let capture = Arc::clone(self);
+        let cancel_capture = Arc::clone(self);
         Extension::new("settings")
             .function(
                 "tooltips",
@@ -77,8 +94,24 @@ impl Runtime {
                 "bindings",
                 Arc::new(move |args| {
                     expect_no_arguments("settings.bindings", args)?;
-                    Ok(vec![bindings_value(&bindings.bindings)])
+                    let current = bindings
+                        .bindings
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    Ok(vec![bindings_value(&current, &bindings.base_bindings)])
                 }),
+            )
+            .function(
+                "set_bindings",
+                Arc::new(move |args| set_bindings.set_bindings(args)),
+            )
+            .function(
+                "capture_key",
+                Arc::new(move |args| capture.capture_key(args)),
+            )
+            .function(
+                "cancel_capture",
+                Arc::new(move |args| cancel_capture.cancel_capture(args)),
             )
     }
 
@@ -143,9 +176,211 @@ impl Runtime {
         Ok(Vec::new())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "validate, persist and publish a binding replacement as one operation"
+    )]
+    fn set_bindings(&self, args: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
+        const PLAYER_ACTIONS: [&str; 16] = [
+            "time_pause",
+            "time_speed_1",
+            "time_speed_2",
+            "time_speed_3",
+            "time_speed_4",
+            "time_speed_5",
+            "time_faster",
+            "time_slower",
+            "game_quicksave",
+            "game_quickload",
+            "map_pan_left",
+            "map_pan_right",
+            "map_pan_up",
+            "map_pan_down",
+            "map_zoom_in",
+            "map_zoom_out",
+        ];
+        if args.len() != 1 {
+            return Err(
+                "settings.set_bindings: expected one table of complete action binding lists"
+                    .to_owned(),
+            );
+        }
+        let Some(ConfigValue::Table(changes)) = args[0].as_ref() else {
+            return Err("settings.set_bindings: expected a table".to_owned());
+        };
+        if changes.is_empty() {
+            return Err(
+                "settings.set_bindings: the table must change at least one action".to_owned(),
+            );
+        }
+        let mut bindings = self.bindings.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut entries = bindings
+            .actions()
+            .iter()
+            .map(|action| {
+                (
+                    action.name().to_owned(),
+                    action
+                        .bindings()
+                        .iter()
+                        .map(|binding| {
+                            let mut parts = Vec::new();
+                            if binding.requires_control() {
+                                parts.push("Control");
+                            }
+                            if binding.requires_alt() {
+                                parts.push("Alt");
+                            }
+                            if binding.requires_shift() {
+                                parts.push("Shift");
+                            }
+                            if binding.requires_meta() {
+                                parts.push("Meta");
+                            }
+                            parts.push(binding.key().name());
+                            parts.join("+")
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for (action, value) in changes {
+            if !PLAYER_ACTIONS.contains(&action.as_str()) || bindings.action(action).is_none() {
+                return Err(format!(
+                    "settings.set_bindings: `{action}` is not a rebindable player action in this run"
+                ));
+            }
+            if bindings
+                .action(action)
+                .is_some_and(|current| current.bindings().len() > 2)
+            {
+                return Err(format!(
+                    "settings.set_bindings: `{action}` has more than two current bindings and is read-only"
+                ));
+            }
+            let values = match value {
+                ConfigValue::Array(values) => values.as_slice(),
+                ConfigValue::Table(values) if values.is_empty() => &[],
+                _ => {
+                    return Err(format!(
+                        "settings.set_bindings: `{action}` must be an array"
+                    ));
+                }
+            };
+            if values.len() > 2 {
+                return Err(format!(
+                    "settings.set_bindings: `{action}` accepts at most two bindings"
+                ));
+            }
+            let strings = values
+                .iter()
+                .map(|value| match value {
+                    ConfigValue::String(value) => Ok(value.clone()),
+                    _ => Err(format!(
+                        "settings.set_bindings: `{action}` entries must be strings"
+                    )),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            entries.insert(action.clone(), strings);
+        }
+        let next = Bindings::from_entries(entries)
+            .map_err(|error| format!("settings.set_bindings: {error}"))?;
+        let mut overrides = self
+            .overrides
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for action in changes.keys() {
+            let current = next.action(action).expect("validated player action");
+            let value = current
+                .bindings()
+                .iter()
+                .map(|binding| {
+                    let mut parts = Vec::new();
+                    if binding.requires_control() {
+                        parts.push("Control");
+                    }
+                    if binding.requires_alt() {
+                        parts.push("Alt");
+                    }
+                    if binding.requires_shift() {
+                        parts.push("Shift");
+                    }
+                    if binding.requires_meta() {
+                        parts.push("Meta");
+                    }
+                    parts.push(binding.key().name());
+                    parts.join("+")
+                })
+                .collect::<Vec<_>>();
+            let default = self
+                .base_bindings
+                .action(action)
+                .expect("same action set")
+                .bindings()
+                .iter()
+                .map(|binding| {
+                    let mut parts = Vec::new();
+                    if binding.requires_control() {
+                        parts.push("Control");
+                    }
+                    if binding.requires_alt() {
+                        parts.push("Alt");
+                    }
+                    if binding.requires_shift() {
+                        parts.push("Shift");
+                    }
+                    if binding.requires_meta() {
+                        parts.push("Meta");
+                    }
+                    parts.push(binding.key().name());
+                    parts.join("+")
+                })
+                .collect::<Vec<_>>();
+            if value == default {
+                overrides.bindings.remove(action);
+            } else {
+                overrides.bindings.insert(action.clone(), value);
+            }
+        }
+        *bindings = next.clone();
+        if let Some(requests) = &self.requests {
+            requests.set_bindings(next);
+        }
+        self.persist(&overrides);
+        Ok(Vec::new())
+    }
+
+    fn capture_key(&self, args: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
+        if args.len() != 1 {
+            return Err("settings.capture_key: expected a request id".to_owned());
+        }
+        let Some(ConfigValue::String(id)) = args[0].as_ref() else {
+            return Err("settings.capture_key: request id must be a string".to_owned());
+        };
+        if id.is_empty() || id.len() > 64 {
+            return Err("settings.capture_key: request id must contain 1 to 64 bytes".to_owned());
+        }
+        let requests = self
+            .requests
+            .as_ref()
+            .ok_or("settings.capture_key: input requests are unavailable")?;
+        requests.capture_key(id.clone());
+        Ok(Vec::new())
+    }
+
+    fn cancel_capture(&self, args: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
+        expect_no_arguments("settings.cancel_capture", args)?;
+        let requests = self
+            .requests
+            .as_ref()
+            .ok_or("settings.cancel_capture: input requests are unavailable")?;
+        requests.cancel_key_capture();
+        Ok(Vec::new())
+    }
+
     fn reset(&self, args: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
         if args.len() != 1 {
-            return Err("settings.reset: expected `tooltips` or `map`".to_owned());
+            return Err("settings.reset: expected `tooltips`, `map` or `bindings`".to_owned());
         }
         let Some(ConfigValue::String(tab)) = args[0].as_ref() else {
             return Err("settings.reset: tab must be a string".to_owned());
@@ -169,9 +404,17 @@ impl Runtime {
                 overrides.map_scroll_points_per_step = None;
                 self.apply_map(values.map);
             }
+            "bindings" | "defaults" => {
+                *self.bindings.lock().unwrap_or_else(PoisonError::into_inner) =
+                    self.base_bindings.clone();
+                overrides.bindings.clear();
+                if let Some(requests) = &self.requests {
+                    requests.set_bindings(self.base_bindings.clone());
+                }
+            }
             _ => {
                 return Err(format!(
-                    "settings.reset: unknown tab `{tab}`; use tooltips or map"
+                    "settings.reset: unknown tab `{tab}`; use tooltips, map or bindings"
                 ));
             }
         }
@@ -241,11 +484,15 @@ fn map_value(settings: MapSettings) -> ConfigValue {
     ]))
 }
 
-fn bindings_value(bindings: &Bindings) -> ConfigValue {
+fn bindings_value(bindings: &Bindings, defaults: &Bindings) -> ConfigValue {
     ConfigValue::Array(
         bindings
             .actions()
             .iter()
+            .filter(|action| {
+                action.name() == "close"
+                    || crate::config::REBINDABLE_ACTIONS.contains(&action.name())
+            })
             .map(|action| {
                 let entries = action
                     .bindings()
@@ -274,6 +521,37 @@ fn bindings_value(bindings: &Bindings) -> ConfigValue {
                         ConfigValue::String(action.name().to_owned()),
                     ),
                     ("bindings".to_owned(), ConfigValue::Array(entries)),
+                    (
+                        "default".to_owned(),
+                        ConfigValue::Array(
+                            defaults
+                                .action(action.name())
+                                .into_iter()
+                                .flat_map(|item| item.bindings().iter())
+                                .map(|binding| {
+                                    let mut parts = Vec::new();
+                                    if binding.requires_control() {
+                                        parts.push("Control");
+                                    }
+                                    if binding.requires_alt() {
+                                        parts.push("Alt");
+                                    }
+                                    if binding.requires_shift() {
+                                        parts.push("Shift");
+                                    }
+                                    if binding.requires_meta() {
+                                        parts.push("Meta");
+                                    }
+                                    parts.push(binding.key().name());
+                                    ConfigValue::String(parts.join("+"))
+                                })
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "fixed".to_owned(),
+                        ConfigValue::Bool(action.name() == "close"),
+                    ),
                 ]))
             })
             .collect(),
@@ -349,6 +627,17 @@ fn settings_text(overrides: &SettingsOverrides) -> Vec<u8> {
             let _ = writeln!(text, "scroll_points_per_step = {value}");
         }
     }
+    if !overrides.bindings.is_empty() {
+        text.push_str("\n[input.bindings]\n");
+        for (action, bindings) in &overrides.bindings {
+            let values = bindings
+                .iter()
+                .map(|value| format!("\"{value}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(text, "{action} = [{values}]");
+        }
+    }
     text.into_bytes()
 }
 
@@ -382,7 +671,7 @@ local ok, message = pcall(function() settings.set("ui.tooltips.delay", 0.25) end
 assert(not ok and string.find(tostring(message), "ui.tooltips.delay", 1, true))
 assert(settings.tooltips().delay == 0.8)
 local actions = settings.bindings()
-assert(#actions == 22)
+assert(#actions == 17)
 assert(actions[1].name == "close" and actions[1].bindings[1] == "Escape")
 local pause, quickload
 for _, action in ipairs(actions) do
@@ -450,5 +739,261 @@ assert(settings.map().pan_pixels_per_frame == 4)
         );
         assert!(!path.exists(), "a refused setting does not create the file");
         assert!(!path.with_extension("toml.tmp").exists());
+    }
+
+    #[test]
+    fn binding_change_is_validated_as_a_whole_and_defaults_preserve_other_settings() {
+        let dir = crate::testing::Dir::new();
+        let config_path = dir.0.join("config.toml");
+        fs::write(&config_path, "[game]\nscenario = '.'\n").expect("write config");
+        fs::write(
+            dir.0.join("settings.toml"),
+            "[map]\npan_pixels_per_frame = 9\n",
+        )
+        .expect("write existing settings");
+        let config = crate::config::load(&config_path).expect("load config");
+        let requests = ck_window::Requests::new();
+        let reader = requests.reader();
+        let runtime = Runtime::new_with_requests(
+            &config,
+            None,
+            Some(requests.writer(ck_window::Notifier::new())),
+        )
+        .expect("runtime settings");
+        let rejected = r"
+local before = settings.bindings()
+assert(#before == 17)
+local ok, message = pcall(function()
+  settings.set_bindings({time_pause={'Control+KeyQ'}, close={'KeyQ'}})
+end)
+assert(not ok and string.find(tostring(message), 'close', 1, true))
+assert(settings.bindings()[1].name == before[1].name)
+";
+        let rejected_harness = crate::testing::Harness::new(
+            rejected,
+            crate::testing::Extras {
+                extensions: vec![runtime.extension()],
+                ..Default::default()
+            },
+        );
+        let unchanged = fs::read(config.settings_file.as_ref().unwrap())
+            .expect("refused binding change leaves the settings file untouched");
+        assert_eq!(unchanged, b"[map]\npan_pixels_per_frame = 9\n");
+        assert!(
+            reader.take().bindings.is_none(),
+            "refusal queues no mapper change"
+        );
+        drop(rejected_harness);
+        let script = r"
+local before = settings.bindings()
+settings.set_bindings({time_pause={'Control+KeyQ'}, map_pan_left={}})
+local current = settings.bindings()
+local pause, left, close
+for _, action in ipairs(current) do
+  if action.name == 'time_pause' then pause = action end
+  if action.name == 'map_pan_left' then left = action end
+  if action.name == 'close' then close = action end
+end
+assert(pause.bindings[1] == 'Control+KeyQ' and pause.default[1] == 'Space')
+assert(#left.bindings == 0 and close.fixed)
+settings.reset('defaults')
+assert(settings.bindings()[1].name == before[1].name)
+";
+        let _harness = crate::testing::Harness::new(
+            script,
+            crate::testing::Extras {
+                extensions: vec![runtime.extension()],
+                ..Default::default()
+            },
+        );
+        let changed = reader
+            .take()
+            .bindings
+            .expect("binding replacement was queued");
+        assert_eq!(
+            changed, config.bindings,
+            "defaults restored configuration bindings"
+        );
+        let written =
+            fs::read_to_string(config.settings_file.as_ref().unwrap()).expect("settings persist");
+        assert!(!written.contains("[input.bindings]"));
+        assert!(written.contains("pan_pixels_per_frame = 9"));
+    }
+
+    #[test]
+    fn binding_lists_follow_the_actions_available_in_each_run() {
+        let dir = crate::testing::Dir::new();
+        for (name, config_text, expected) in [
+            ("game", "[game]\nscenario = '.'\n", "game_quicksave"),
+            ("map", "[map]\ndirectory = '.'\n", "map_pan_left"),
+            ("neither", "", "close"),
+        ] {
+            let config_path = dir.0.join(format!("{name}.toml"));
+            fs::write(&config_path, config_text).expect("write run config");
+            let config = crate::config::load(&config_path).expect("load run config");
+            let runtime = Runtime::new(&config, None).expect("settings runtime");
+            let script = format!(
+                r#"
+local actions = settings.bindings()
+local names = {{}}
+for _, item in ipairs(actions) do names[item.name] = true end
+assert(names.close and names["{expected}"])
+assert(not names.move_left and not names.custom_action)
+local ok = pcall(function() settings.set_bindings({{move_left={{"KeyZ"}}}}) end)
+assert(not ok)
+settings.reset("bindings")
+for _, item in ipairs(settings.bindings()) do
+  assert(item.name == "close" or item.name:match("^time_") or item.name:match("^game_") or item.name:match("^map_"))
+end
+"#
+            );
+            let _harness = crate::testing::Harness::new(
+                &script,
+                crate::testing::Extras {
+                    extensions: vec![runtime.extension()],
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn configured_close_and_non_player_bindings_survive_player_changes_and_reset() {
+        let dir = crate::testing::Dir::new();
+        let config_path = dir.0.join("config.toml");
+        fs::write(
+            &config_path,
+            "[game]\nscenario = '.'\n\n[input.bindings]\nclose = ['KeyQ']\nmove_left = ['KeyZ']\n",
+        )
+        .expect("write config");
+        let settings_path = dir.0.join("settings.toml");
+        fs::write(
+            &settings_path,
+            "[input.bindings]\nclose = ['KeyQ']\nmove_left = ['KeyZ']\n",
+        )
+        .expect("write configured bindings");
+        let config = crate::config::load(&config_path).expect("load config and settings");
+        let runtime = Runtime::new(&config, None).expect("settings runtime");
+        let script = r#"
+local actions = settings.bindings()
+local close, move_left
+for _, item in ipairs(actions) do
+  if item.name == "close" then close = item end
+  if item.name == "move_left" then move_left = item end
+end
+assert(close and close.bindings[1] == "KeyQ" and close.fixed)
+assert(move_left == nil)
+settings.set_bindings({time_pause={"KeyP"}})
+settings.reset("bindings")
+local after = settings.bindings()
+assert(after[1].name == "close" and after[1].bindings[1] == "KeyQ")
+local ok = pcall(function() settings.set_bindings({move_left={"KeyX"}}) end)
+assert(not ok)
+"#;
+        let _harness = crate::testing::Harness::new(
+            script,
+            crate::testing::Extras {
+                extensions: vec![runtime.extension()],
+                ..Default::default()
+            },
+        );
+        let written = fs::read_to_string(&settings_path).expect("settings persist");
+        assert!(!written.contains("[input.bindings]"));
+        let current = runtime
+            .bindings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(
+            current.action("close").unwrap().bindings()[0].key().name(),
+            "KeyQ"
+        );
+        assert_eq!(
+            current.action("move_left").unwrap().bindings()[0]
+                .key()
+                .name(),
+            "KeyZ",
+            "reset restores the non-player config action"
+        );
+    }
+
+    #[test]
+    fn failed_settings_write_does_not_raise_or_roll_back_the_live_mapper_change() {
+        let dir = crate::testing::Dir::new();
+        let config_path = dir.0.join("config.toml");
+        fs::write(&config_path, "[game]\nscenario = '.'\n").expect("write config");
+        let config = crate::config::load(&config_path).expect("load config");
+        let settings_path = config.settings_file.clone().expect("settings path");
+        fs::create_dir(&settings_path).expect("make settings path unwritable as a file");
+        let requests = ck_window::Requests::new();
+        let reader = requests.reader();
+        let runtime = Runtime::new_with_requests(
+            &config,
+            None,
+            Some(requests.writer(ck_window::Notifier::new())),
+        )
+        .expect("settings runtime");
+        let _harness = crate::testing::Harness::new(
+            "settings.set_bindings({time_pause={'KeyP'}})",
+            crate::testing::Extras {
+                extensions: vec![runtime.extension()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            runtime
+                .bindings
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .action("time_pause")
+                .unwrap()
+                .bindings()[0]
+                .key()
+                .name(),
+            "KeyP"
+        );
+        let queued = reader.take().bindings.expect("live mapper change queued");
+        assert_eq!(
+            queued.action("time_pause").unwrap().bindings()[0]
+                .key()
+                .name(),
+            "KeyP"
+        );
+        assert!(
+            settings_path.is_dir(),
+            "the failed write leaves the blocking path alone"
+        );
+    }
+
+    #[test]
+    fn capture_call_disables_typed_input_and_writes_a_request_id() {
+        let dir = crate::testing::Dir::new();
+        let config_path = dir.0.join("config.toml");
+        fs::write(&config_path, "[map]\ndirectory = '.'\n").expect("write config");
+        let config = crate::config::load(&config_path).expect("load config");
+        let requests = ck_window::Requests::new();
+        let reader = requests.reader();
+        let runtime = Runtime::new_with_requests(
+            &config,
+            None,
+            Some(requests.writer(ck_window::Notifier::new())),
+        )
+        .expect("runtime settings");
+        let harness = crate::testing::Harness::new(
+            "settings.capture_key('map-left')",
+            crate::testing::Extras {
+                extensions: vec![runtime.extension()],
+                ..Default::default()
+            },
+        );
+        let change = reader.take();
+        assert!(
+            change.text_input.is_none(),
+            "the loop, not the settings extension, disables native text input when it arms capture"
+        );
+        assert_eq!(
+            change.capture,
+            Some(ck_window::CaptureRequest::Arm("map-left".to_owned()))
+        );
+        drop(harness);
     }
 }

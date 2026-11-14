@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::desc::{InvalidColour, OpenError, WindowDesc, clamp_colour};
 use crate::notifier::Notifier;
+use ck_input::Bindings;
 
 /// A one-shot request: made at most once, and taken at most once.
 #[derive(Default)]
@@ -54,10 +55,21 @@ pub struct TextInputRequest {
     pub generation: u64,
 }
 
+/// A one-shot key-capture command from the UI VM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptureRequest {
+    /// Arm capture for this request id.
+    Arm(String),
+    /// Cancel the active request.
+    Cancel,
+}
+
 #[derive(Default)]
 struct State {
     /// The latest text input request, not yet taken.
     text_input: Option<TextInputRequest>,
+    capture: Option<CaptureRequest>,
+    bindings: Option<Bindings>,
     /// How many text input writes there have been.
     text_generation: u64,
     /// `open`: a second one is [`OpenError::AlreadyOpened`].
@@ -92,6 +104,10 @@ pub struct RequestChanges {
     pub close: bool,
     /// The latest text input request written since the last take (CK-314).
     pub text_input: Option<TextInputRequest>,
+    /// Latest key-capture command since the prior read.
+    pub capture: Option<CaptureRequest>,
+    /// Complete replacement binding set, if one was requested.
+    pub bindings: Option<Bindings>,
 }
 
 /// The request slot. Create it with [`Requests::new`], then hand a [`RequestWriter`] to the UI VM's
@@ -221,6 +237,41 @@ impl RequestWriter {
         generation
     }
 
+    /// Requests capture of the next eligible physical key.
+    pub fn capture_key(&self, id: impl Into<String>) {
+        self.set_capture(CaptureRequest::Arm(id.into()));
+    }
+
+    /// Cancels the active key capture.
+    pub fn cancel_key_capture(&self) {
+        self.set_capture(CaptureRequest::Cancel);
+    }
+
+    fn set_capture(&self, request: CaptureRequest) {
+        {
+            let mut state = self.shared.lock();
+            if state.ended {
+                self.shared.discarded.fetch_add(1, Ordering::SeqCst);
+            } else {
+                state.capture = Some(request);
+            }
+        }
+        self.notifier.wake();
+    }
+
+    /// Publishes a complete replacement set of input bindings.
+    pub fn set_bindings(&self, bindings: Bindings) {
+        {
+            let mut state = self.shared.lock();
+            if state.ended {
+                self.shared.discarded.fetch_add(1, Ordering::SeqCst);
+            } else {
+                state.bindings = Some(bindings);
+            }
+        }
+        self.notifier.wake();
+    }
+
     /// Requests the window be closed, without asking the close callback. One-shot: a second `close`
     /// changes nothing.
     pub fn close(&self) {
@@ -251,6 +302,8 @@ impl RequestReader {
             clear: state.clear.take(),
             close: state.close.take().is_some(),
             text_input: state.text_input.take(),
+            capture: state.capture.take(),
+            bindings: state.bindings.take(),
         }
     }
 

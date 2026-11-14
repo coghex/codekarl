@@ -5,8 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ck_window::{
-    InvalidColour, LoopSettings, MAX_DIMENSION, NativeWake, Notifier, OpenError, RequestChanges,
-    Requests, WindowDesc,
+    Bindings, CaptureRequest, InvalidColour, LoopSettings, MAX_DIMENSION, NativeWake, Notifier,
+    OpenError, RequestChanges, Requests, WindowDesc,
 };
 
 use crate::fakes::{BOUND, SHORT, owned};
@@ -49,6 +49,8 @@ fn a_thousand_set_clear_calls_between_two_takes_give_one_change_with_the_last_co
             clear: Some([0.999, 0.0, 0.0]),
             close: false,
             text_input: None,
+            capture: None,
+            bindings: None,
         }
     );
     assert_eq!(
@@ -56,6 +58,34 @@ fn a_thousand_set_clear_calls_between_two_takes_give_one_change_with_the_last_co
         RequestChanges::default(),
         "nothing changed since"
     );
+}
+
+#[test]
+fn capture_and_binding_replacements_are_latest_value_requests() {
+    let (_, writer, reader, _) = fixture();
+    writer.capture_key("first");
+    writer.capture_key("latest");
+    writer.set_bindings(
+        Bindings::from_entries([("time_pause".to_owned(), vec!["KeyQ".to_owned()])])
+            .expect("valid replacement"),
+    );
+    let changes = reader.take();
+    assert_eq!(
+        changes.capture,
+        Some(CaptureRequest::Arm("latest".to_owned()))
+    );
+    assert_eq!(
+        changes
+            .bindings
+            .unwrap()
+            .action("time_pause")
+            .unwrap()
+            .bindings()[0]
+            .key()
+            .name(),
+        "KeyQ"
+    );
+    assert_eq!(reader.take(), RequestChanges::default());
 }
 
 #[test]

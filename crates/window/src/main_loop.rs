@@ -158,8 +158,11 @@ struct InputState {
     pixel_size: PixelSize,
     /// Whether the typed-entry route is on (CK-314): typed events that arrive while it is off are dropped.
     text_input: bool,
+    text_epoch: u64,
     /// A text input request taken with the first batch, applied once the window exists.
     pending_text_input: Option<crate::requests::TextInputRequest>,
+    pending_capture: Option<crate::requests::CaptureRequest>,
+    pending_bindings: Option<ck_input::Bindings>,
 }
 
 #[derive(Clone, Copy)]
@@ -482,8 +485,8 @@ where
         }
     }
     // Setup takes the first batch as a whole.
-    let first = requests.take();
-    let Some(mut desc) = first.open else {
+    let mut first = requests.take();
+    let Some(mut desc) = first.open.take() else {
         requests.end();
         return LoopEnd::NoWindow;
     };
@@ -498,9 +501,18 @@ where
     if let Some(clear) = first.clear {
         desc.clear = clear;
     }
+    let mut mapper = Mapper::new(
+        first
+            .bindings
+            .take()
+            .unwrap_or_else(|| settings.bindings().clone()),
+    );
+    if let Some(crate::requests::CaptureRequest::Arm(id)) = first.capture.take() {
+        mapper.arm_capture(id);
+    }
     let mut state = Loop {
         input: InputState {
-            mapper: Mapper::new(settings.bindings().clone()),
+            mapper,
             points: (desc.width, desc.height),
             // A window is created active: the native layer reports a change only when there is one.
             focused: true,
@@ -510,7 +522,10 @@ where
                 height: 0,
             },
             text_input: false,
+            text_epoch: 0,
             pending_text_input: first.text_input,
+            pending_capture: None,
+            pending_bindings: None,
         },
         backend,
         presenter,
@@ -686,9 +701,34 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         // epoch becomes the request's generation, so the UI can tell which of its entries came after its own call.
         let first = self.input.pending_text_input.take();
         for request in first.into_iter().chain(changes.text_input) {
-            self.backend.set_text_input(request.enabled);
+            let enabled = request.enabled && !self.input.mapper.capture_active();
+            self.backend.set_text_input(enabled);
             self.input.mapper.reset_typed(request.generation);
-            self.input.text_input = request.enabled;
+            self.input.text_input = enabled;
+            self.input.text_epoch = request.generation;
+        }
+        if let Some(bindings) = changes
+            .bindings
+            .or_else(|| self.input.pending_bindings.take())
+        {
+            self.input.mapper.replace_bindings(bindings);
+        }
+        if let Some(capture) = changes
+            .capture
+            .or_else(|| self.input.pending_capture.take())
+        {
+            match capture {
+                crate::requests::CaptureRequest::Arm(id) => {
+                    if self.input.text_input {
+                        self.backend.set_text_input(false);
+                        self.input.text_input = false;
+                        self.input.text_epoch = self.input.text_epoch.saturating_add(1);
+                        self.input.mapper.reset_typed(self.input.text_epoch);
+                    }
+                    self.input.mapper.arm_capture(id);
+                }
+                crate::requests::CaptureRequest::Cancel => self.input.mapper.cancel_capture(),
+            }
         }
         if let Some(clear) = changes.clear {
             self.presenter.set_clear(clear);

@@ -26,6 +26,7 @@ local typing = {}
 
 local editor = nil -- the widget editing now
 local generation = 0 -- the generation of the latest window.set_text_input call
+local capture_id = nil -- the capture that owns the keyboard, until its result arrives
 -- The editing session: one number that changes whenever an editing starts, ends or passes to another widget. It is the session that owns an
 -- update's typing, not the widget's table: a widget that ends its editing and starts it again (in its own Tab handler, say) has a new session,
 -- and what is left of the update it was handling belongs to the old one.
@@ -36,14 +37,18 @@ function typing.start(widget)
   if type(widget) ~= "table" or type(widget.on_typed) ~= "function" then
     error("typing.start: the widget needs an on_typed function", 2)
   end
+  if capture_id ~= nil then
+    return false -- capture owns the keyboard until it completes or is cancelled
+  end
   if editor == widget then
-    return -- already editing: the same session goes on
+    return true -- already editing: the same session goes on
   end
   if editor == nil then
     generation = window.set_text_input(true)
   end
   editor = widget
   session = session + 1
+  return true
 end
 
 -- Ends `widget`'s editing, when it is the one editing; turns text input off. Another widget's call changes nothing.
@@ -60,8 +65,39 @@ function typing.editing()
   return editor
 end
 
+-- Applies and ends the current editing before asking the window to capture a key. `request` is the
+-- host's `settings.capture_key` function; keeping it as an argument avoids coupling this library to
+-- the settings extension.
+function typing.capture(id, request)
+  if type(id) ~= "string" or id == "" then
+    error("typing.capture: request id must be a non-empty string", 2)
+  end
+  if type(request) ~= "function" then
+    error("typing.capture: expected a capture request function", 2)
+  end
+  local target = editor
+  if target ~= nil then
+    if type(target.on_apply) == "function" then
+      target:on_apply()
+    end
+    if editor ~= nil then
+      typing.stop(editor)
+    end
+  end
+  capture_id = id
+  local ok, message = pcall(request, id)
+  if not ok then
+    capture_id = nil
+    error(message, 2)
+  end
+  return true
+end
+
 -- Gives an update's typed entries to the widget that was editing when it began, in order. Called once per update, before the pointer.
 function typing.dispatch(update)
+  if capture_id ~= nil and update.capture ~= nil and update.capture.id == capture_id then
+    capture_id = nil
+  end
   local target, mine = editor, session
   if target == nil then
     return

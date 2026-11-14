@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, atomic::AtomicU64};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ck_input::Bindings;
 use ck_window::{
     Answer, Clock, CloseSource, LoopEnd, LoopMetrics, LoopSettings, MetricsWindow, NativeEvent,
     PixelSize, PointerEvent, PointerPosition, PresenterReport, UiAnswer, UiEvent, UpdateEvent,
@@ -132,6 +133,92 @@ fn update_settings_validate_rate_and_representable_periods() {
             .expect_err("zero delta")
             .setting,
         "max_delta"
+    );
+}
+
+#[test]
+fn a_binding_replacement_takes_effect_as_one_input_tick_snapshot() {
+    owned(
+        module_path!(),
+        "a_binding_replacement_takes_effect_as_one_input_tick_snapshot",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let clock = FakeClock::new();
+            let mut rig = Rig::new();
+            let make_bindings = |left: &str, right: &str| {
+                Bindings::from_entries([
+                    ("time_pause".to_owned(), vec![left.to_owned()]),
+                    ("time_speed_1".to_owned(), vec![right.to_owned()]),
+                ])
+                .expect("valid binding pairs")
+            };
+            rig.settings = LoopSettings::default().with_bindings(make_bindings("F11", "F12"));
+            rig.backend.script.extend([
+                vec![NativeEvent::Key {
+                    key: ck_window::Key::F11,
+                    down: true,
+                    repeat: false,
+                }],
+                Vec::new(),
+                vec![
+                    NativeEvent::Key {
+                        key: ck_window::Key::F10,
+                        down: true,
+                        repeat: false,
+                    },
+                    NativeEvent::Key {
+                        key: ck_window::Key::F8,
+                        down: true,
+                        repeat: false,
+                    },
+                ],
+            ]);
+            configure_updates(&mut rig, &clock, 60, Duration::from_millis(50));
+            lock(&rig.ui.update_answers).extend(std::iter::repeat_n(Answer::Returned, 6));
+            let writer = rig.writer.clone();
+            let ui = Arc::clone(&rig.ui);
+            let quit = Arc::clone(&rig.quit);
+            let notifier = Arc::clone(&rig.notifier);
+            rig.backend.hook = Some(Box::new(move |call| {
+                if call.index == 2 {
+                    writer.set_bindings(
+                        Bindings::from_entries([
+                            ("time_faster".to_owned(), vec!["F10".to_owned()]),
+                            ("time_slower".to_owned(), vec!["F8".to_owned()]),
+                        ])
+                        .expect("valid replacement actions"),
+                    );
+                }
+                if call.index >= 6 && extract_updates(&ui.posted()).len() >= 2 {
+                    quit.store(true, Ordering::SeqCst);
+                    notifier.wake();
+                }
+            }));
+            let ran = rig.run_collect_with_clock(&clock);
+            let ticks = ran.ticks;
+            assert!(!ticks.is_empty(), "the scheduled update consumed input");
+            let pressed = ticks
+                .iter()
+                .map(|tick| {
+                    tick.input
+                        .transitions
+                        .iter()
+                        .filter(|transition| transition.edge == ck_input::Edge::Press)
+                        .map(|transition| transition.action.as_str())
+                        .collect::<Vec<_>>()
+                })
+                .filter(|actions| !actions.is_empty())
+                .collect::<Vec<_>>();
+            assert!(
+                pressed.iter().any(|actions| {
+                    actions == &["time_faster", "time_slower"]
+                        || actions == &["time_slower", "time_faster"]
+                }),
+                "the complete replacement is visible in one tick: {pressed:?}; log: {:?}",
+                ran.log
+            );
+        },
     );
 }
 

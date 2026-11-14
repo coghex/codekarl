@@ -837,6 +837,44 @@ pub struct InputSnapshot {
     /// The text-input epoch: the generation of the latest request that turned typing on or off and was applied
     /// ([`Mapper::reset_typed`]). Entries gathered under an older epoch were discarded by that reset.
     pub typed_epoch: u64,
+    /// One key-capture result not yet acknowledged by the UI.
+    pub capture: Option<CaptureResult>,
+}
+
+/// The outcome of one key-capture request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaptureResult {
+    /// The identifier supplied by the requester.
+    pub id: String,
+    /// The captured binding or cancellation reason.
+    pub outcome: CaptureOutcome,
+}
+
+/// A key-capture outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CaptureOutcome {
+    /// Canonical physical binding string, including modifier prefixes.
+    Binding(String),
+    /// Why the request ended without a binding.
+    Cancelled(CaptureCancelReason),
+}
+
+/// Why a key-capture request was cancelled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureCancelReason {
+    /// A newer capture replaced it.
+    Replaced,
+    /// The requester cancelled it.
+    Requested,
+    /// Focus was lost or the window became unavailable.
+    Focus,
+}
+
+#[derive(Clone, Debug)]
+struct CaptureSession {
+    id: String,
+    owned_key: Option<Key>,
+    completed: bool,
 }
 
 /// The final physical state of every supported key, with the taps a native layer could not deliver in order, as one
@@ -861,6 +899,14 @@ impl KeyStates {
             pressed: [0; 2],
             released: [0; 2],
         }
+    }
+
+    fn clear_key(&mut self, key: Key) {
+        let index = key.index();
+        let bit = !(1_u64 << (index % 64));
+        self.held[index / 64] &= bit;
+        self.pressed[index / 64] &= bit;
+        self.released[index / 64] &= bit;
     }
 
     /// The three sets as the words a native layer keeps them in (bit `n % 64` of word `n / 64` is the key whose
@@ -935,13 +981,15 @@ struct ActionState {
 
 /// The single-owner mapper for physical keys and named actions.
 ///
-/// The per-binding state, action state and 256-entry transition ring are allocated at construction. [`Mapper::key`]
-/// and [`Mapper::focus_lost`] do not allocate. [`Mapper::resync`] replaces the key bitset and recovers only the
-/// binding activations and lost taps that the final keys and loss latches prove.
+/// The per-binding state, action state and 256-entry transition ring are allocated at construction. Ordinary
+/// [`Mapper::key`] transitions, [`Mapper::focus_lost`] and [`Mapper::resync`] do not allocate. Completing a capture
+/// allocates its returned binding string. [`Mapper::resync`] replaces the key bitset and recovers only the binding
+/// activations and lost taps that the final keys and loss latches prove.
 pub struct Mapper {
     bindings: Bindings,
     keys: [u64; 2],
     held_bindings: Vec<Vec<bool>>,
+    inhibited_bindings: Vec<Vec<bool>>,
     actions: Vec<ActionState>,
     transitions: [Option<TransitionRecord>; TRANSITION_CAPACITY],
     transition_head: usize,
@@ -964,6 +1012,8 @@ pub struct Mapper {
     typed_len: usize,
     typed_lost_sequence: Option<u128>,
     typed_epoch: u64,
+    capture: Option<CaptureSession>,
+    capture_result: Option<(u128, CaptureResult)>,
 }
 
 impl Mapper {
@@ -976,10 +1026,16 @@ impl Mapper {
             .iter()
             .map(|action| vec![false; action.bindings.len()])
             .collect();
+        let inhibited_bindings = bindings
+            .actions
+            .iter()
+            .map(|action| vec![false; action.bindings.len()])
+            .collect();
         Self {
             bindings,
             keys: [0; 2],
             held_bindings,
+            inhibited_bindings,
             actions,
             transitions: [None; TRANSITION_CAPACITY],
             transition_head: 0,
@@ -1002,6 +1058,8 @@ impl Mapper {
             typed_len: 0,
             typed_lost_sequence: None,
             typed_epoch: 0,
+            capture: None,
+            capture_result: None,
         }
     }
 
@@ -1037,6 +1095,36 @@ impl Mapper {
     /// for an unheld key is treated as a press to recover from a missed initial event.
     pub fn key(&mut self, key: Key, down: bool, repeat: bool) {
         let was_down = self.key_is_down(key);
+        if let Some(capture) = &mut self.capture
+            && capture.owned_key == Some(key)
+        {
+            if !down {
+                capture.owned_key = None;
+                if capture.completed {
+                    self.capture = None;
+                }
+            }
+            return;
+        }
+        if down
+            && !was_down
+            && key.modifier().is_none()
+            && self
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.owned_key.is_none())
+        {
+            let Some(id) = self.capture.as_ref().map(|capture| capture.id.clone()) else {
+                return;
+            };
+            let binding = Self::binding_name(key, self.modifier_mask(key));
+            if let Some(capture) = self.capture.as_mut() {
+                capture.owned_key = Some(key);
+                capture.completed = true;
+            }
+            self.finish_capture(id, CaptureOutcome::Binding(binding));
+            return;
+        }
         if repeat && down && was_down {
             return;
         }
@@ -1045,6 +1133,15 @@ impl Mapper {
         }
 
         self.set_key(key, down);
+        if !down {
+            for (action_index, action) in self.bindings.actions.iter().enumerate() {
+                for (binding_index, binding) in action.bindings.iter().enumerate() {
+                    if binding.key == key {
+                        self.inhibited_bindings[action_index][binding_index] = false;
+                    }
+                }
+            }
+        }
         if down {
             self.start_bindings_for(key);
         }
@@ -1055,7 +1152,11 @@ impl Mapper {
     ///
     /// `reset` remains latched until its reporting snapshot is acknowledged.
     pub fn focus_lost(&mut self) {
+        self.cancel_capture_with(CaptureCancelReason::Focus);
         self.keys = [0; 2];
+        for action in &mut self.inhibited_bindings {
+            action.fill(false);
+        }
         self.recompute_actions();
         if self.pointer_held
             && let Some(position) = self.pointer_position
@@ -1148,16 +1249,35 @@ impl Mapper {
     ///   press per resync, when the `close` action got a press by either rule.
     /// - The snapshot reports `overflow`, and the overflow count grows by one (a resync is one loss of detail).
     pub fn resync(&mut self, states: &KeyStates) {
+        let mut states = *states;
+        if let Some(key) = self.capture.as_ref().and_then(|capture| capture.owned_key) {
+            if !states.is_held(key) {
+                if self
+                    .capture
+                    .as_ref()
+                    .is_some_and(|capture| capture.completed)
+                {
+                    self.capture = None;
+                } else if let Some(capture) = self.capture.as_mut() {
+                    capture.owned_key = None;
+                }
+            }
+            states.clear_key(key);
+        }
         let old_keys = self.keys;
         self.keys = states.held;
         for index in 0..self.bindings.actions.len() {
             for position in 0..self.bindings.actions[index].bindings.len() {
                 let binding = self.bindings.actions[index].bindings[position];
+                if !states.is_held(binding.key) {
+                    self.inhibited_bindings[index][position] = false;
+                }
                 let was_active = self.held_bindings[index][position];
                 let kept =
-                    was_active && Self::binding_kept_across_resync(binding, &old_keys, states);
-                let started = !kept && self.binding_started_by_resync(binding, &old_keys, states);
-                self.held_bindings[index][position] = kept || started;
+                    was_active && Self::binding_kept_across_resync(binding, &old_keys, &states);
+                let started = !kept && self.binding_started_by_resync(binding, &old_keys, &states);
+                self.held_bindings[index][position] =
+                    (kept || started) && !self.inhibited_bindings[index][position];
             }
         }
         let mut close_pressed = self.update_actions();
@@ -1165,7 +1285,7 @@ impl Mapper {
             // A tap lost inside the discarded span, on an unprefixed binding of this action.
             for position in 0..self.bindings.actions[index].bindings.len() {
                 let binding = self.bindings.actions[index].bindings[position];
-                if binding.modifiers != 0 || !self.lost_tap_is_proven(binding, &old_keys, states) {
+                if binding.modifiers != 0 || !self.lost_tap_is_proven(binding, &old_keys, &states) {
                     continue;
                 }
                 // Every latched edge is stamped with the sequence of this resync, even when an older, unacknowledged
@@ -1238,6 +1358,10 @@ impl Mapper {
                 .collect(),
             typed_lost: self.typed_lost_sequence.is_some(),
             typed_epoch: self.typed_epoch,
+            capture: self
+                .capture_result
+                .as_ref()
+                .map(|(_, result)| result.clone()),
         }
     }
 
@@ -1317,6 +1441,13 @@ impl Mapper {
         {
             self.typed_lost_sequence = None;
         }
+        if self
+            .capture_result
+            .as_ref()
+            .is_some_and(|(stamp, _)| *stamp <= sequence)
+        {
+            self.capture_result = None;
+        }
     }
 
     /// Drains the saturating, lossless count of close-action presses.
@@ -1335,6 +1466,102 @@ impl Mapper {
     #[must_use]
     pub const fn bindings(&self) -> &Bindings {
         &self.bindings
+    }
+
+    /// Arms capture; an existing request completes as cancelled with `replaced`.
+    pub fn arm_capture(&mut self, id: String) {
+        let inherited_key = if let Some(previous) = self.capture.take() {
+            if !previous.completed {
+                self.finish_capture(
+                    previous.id,
+                    CaptureOutcome::Cancelled(CaptureCancelReason::Replaced),
+                );
+            }
+            previous.owned_key
+        } else {
+            None
+        };
+        self.capture = Some(CaptureSession {
+            id,
+            owned_key: inherited_key,
+            completed: false,
+        });
+    }
+
+    /// Cancels an active capture at the requester's direction.
+    pub fn cancel_capture(&mut self) {
+        self.cancel_capture_with(CaptureCancelReason::Requested);
+    }
+
+    /// Whether capture is armed or still owns the key it captured.
+    #[must_use]
+    pub fn capture_active(&self) -> bool {
+        self.capture.is_some()
+    }
+
+    fn cancel_capture_with(&mut self, reason: CaptureCancelReason) {
+        if let Some(capture) = self.capture.take()
+            && !capture.completed
+        {
+            self.finish_capture(capture.id, CaptureOutcome::Cancelled(reason));
+        }
+    }
+
+    /// Replaces the complete binding set at one input tick.
+    pub fn replace_bindings(&mut self, bindings: Bindings) {
+        let mut held_bindings = Vec::with_capacity(bindings.actions.len());
+        let mut inhibited_bindings = Vec::with_capacity(bindings.actions.len());
+        let mut actions = Vec::with_capacity(bindings.actions.len());
+        for action in &bindings.actions {
+            let old_index = self
+                .bindings
+                .actions
+                .binary_search_by(|old| old.name.cmp(&action.name))
+                .ok();
+            let mut held = Vec::with_capacity(action.bindings.len());
+            let mut inhibited = Vec::with_capacity(action.bindings.len());
+            for binding in &action.bindings {
+                let unchanged_active = old_index.is_some_and(|index| {
+                    self.bindings.actions[index]
+                        .bindings
+                        .iter()
+                        .position(|old| old == binding)
+                        .is_some_and(|position| self.held_bindings[index][position])
+                });
+                held.push(unchanged_active);
+                inhibited.push(!unchanged_active && self.key_is_down(binding.key));
+            }
+            held_bindings.push(held);
+            inhibited_bindings.push(inhibited);
+            actions.push(old_index.map_or_else(ActionState::default, |index| self.actions[index]));
+        }
+        self.bindings = bindings;
+        self.held_bindings = held_bindings;
+        self.inhibited_bindings = inhibited_bindings;
+        self.actions = actions;
+        self.recompute_actions();
+    }
+
+    fn finish_capture(&mut self, id: String, outcome: CaptureOutcome) {
+        self.capture_result = Some((self.next_sequence(), CaptureResult { id, outcome }));
+    }
+
+    fn binding_name(key: Key, modifiers: u8) -> String {
+        let mut parts = Vec::new();
+        if modifiers & CONTROL != 0 {
+            parts.push("Control");
+        }
+        if modifiers & ALT != 0 {
+            parts.push("Alt");
+        }
+        if modifiers & SHIFT != 0 {
+            parts.push("Shift");
+        }
+        if modifiers & META != 0 {
+            parts.push("Meta");
+        }
+        parts.push(key.name());
+        parts.join("+")
     }
 
     fn next_sequence(&self) -> u128 {
@@ -1460,7 +1687,10 @@ impl Mapper {
         for index in 0..self.bindings.actions.len() {
             for position in 0..self.bindings.actions[index].bindings.len() {
                 let binding = self.bindings.actions[index].bindings[position];
-                if binding.key == key && self.modifier_mask(key) == binding.modifiers {
+                if binding.key == key
+                    && self.modifier_mask(key) == binding.modifiers
+                    && !self.inhibited_bindings[index][position]
+                {
                     self.held_bindings[index][position] = true;
                 }
             }

@@ -68,6 +68,7 @@ pub(crate) struct InputStash {
     typed: VecDeque<TypedEntry>,
     typed_lost: bool,
     typed_epoch: u64,
+    capture: Option<ck_window::CaptureResult>,
 }
 
 impl InputStash {
@@ -103,6 +104,9 @@ impl InputStash {
             self.typed.push_back(*entry);
         }
         self.typed_lost |= input.typed_lost;
+        if input.capture.is_some() {
+            self.capture.clone_from(&input.capture);
+        }
     }
 
     /// Drops everything that is an event: transitions, latches, `reset` and `overflow`. Each action's latest `held` stays.
@@ -118,12 +122,14 @@ impl InputStash {
         self.pointer_overflow = false;
         self.typed.clear();
         self.typed_lost = false;
+        self.capture = None;
     }
 
     /// The tick's input while no callback is registered: nothing of it is kept but each action's latest `held`.
     pub(crate) fn follow_held(&mut self, input: &InputSnapshot) {
         self.clear();
         self.typed_epoch = self.typed_epoch.max(input.typed_epoch);
+        self.capture.clone_from(&input.capture);
         for action in &input.actions {
             self.actions.entry(action.name.clone()).or_default().held = action.held;
         }
@@ -210,6 +216,10 @@ impl InputStash {
     pub(crate) fn typed_epoch(&self) -> u64 {
         self.typed_epoch
     }
+
+    pub(crate) fn capture(&self) -> Option<&ck_window::CaptureResult> {
+        self.capture.as_ref()
+    }
 }
 
 #[cfg(test)]
@@ -242,6 +252,7 @@ mod tests {
             typed: Vec::new(),
             typed_lost: false,
             typed_epoch: 0,
+            capture: None,
         }
     }
 

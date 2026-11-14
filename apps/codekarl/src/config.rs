@@ -1191,6 +1191,8 @@ pub(crate) struct Config {
     /// The configuration-file values to which a tab reset returns.
     pub(crate) settings_base_tooltips: TooltipsConfig,
     pub(crate) settings_base_map: MapSettings,
+    /// Configuration-file bindings before the player settings overlay.
+    pub(crate) settings_base_bindings: Bindings,
     /// Startup settings-file warnings, emitted after the configured logger is installed.
     pub(crate) settings_warnings: Vec<String>,
     pub(crate) log: LogConfig,
@@ -1252,6 +1254,7 @@ pub(crate) struct SettingsOverrides {
     pub(crate) map_pan_pixels_per_frame: Option<u32>,
     pub(crate) map_zoom_steps_per_second: Option<u32>,
     pub(crate) map_scroll_points_per_step: Option<u32>,
+    pub(crate) bindings: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for TooltipsConfig {
@@ -1334,6 +1337,7 @@ impl Default for Config {
             settings_overrides: SettingsOverrides::default(),
             settings_base_tooltips: TooltipsConfig::default(),
             settings_base_map: MapSettings::default(),
+            settings_base_bindings: ck_window::LoopSettings::default().bindings().clone(),
             settings_warnings: Vec::new(),
             log: LogConfig::default(),
             deadlines: OwnerDeadlines::default(),
@@ -1568,6 +1572,7 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         settings_overrides: SettingsOverrides::default(),
         settings_base_tooltips: tooltips,
         settings_base_map: map_settings,
+        settings_base_bindings: bindings.clone(),
         settings_warnings: Vec::new(),
         log: file.log.into(),
         deadlines: file.runtime.into(),
@@ -1805,6 +1810,7 @@ fn load_settings(config_path: &Path, config: &mut Config) {
         match table.as_str() {
             "ui" => load_tooltip_settings(&path, contents, config),
             "map" => load_map_settings(&path, contents, config),
+            "input" => load_input_settings(&path, contents, config),
             _ => config.settings_warnings.push(format!(
                 "{}: unknown settings table [{table}]; ignoring it",
                 path.display()
@@ -1815,6 +1821,136 @@ fn load_settings(config_path: &Path, config: &mut Config) {
         map.pan_pixels_per_frame = config.map_settings.pan_pixels_per_frame;
         map.zoom_steps_per_second = config.map_settings.zoom_steps_per_second;
         map.scroll_points_per_step = config.map_settings.scroll_points_per_step;
+    }
+}
+
+pub(crate) const REBINDABLE_ACTIONS: [&str; 16] = [
+    "time_pause",
+    "time_speed_1",
+    "time_speed_2",
+    "time_speed_3",
+    "time_speed_4",
+    "time_speed_5",
+    "time_faster",
+    "time_slower",
+    "game_quicksave",
+    "game_quickload",
+    "map_pan_left",
+    "map_pan_right",
+    "map_pan_up",
+    "map_pan_down",
+    "map_zoom_in",
+    "map_zoom_out",
+];
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "tolerant per-entry validation keeps unrelated settings entries usable"
+)]
+fn load_input_settings(path: &Path, value: &toml::Value, config: &mut Config) {
+    let Some(input) = value.as_table() else {
+        config.settings_warnings.push(format!(
+            "{}: [input] must be a table; ignoring it",
+            path.display()
+        ));
+        return;
+    };
+    for (key, entries) in input {
+        if key != "bindings" {
+            config.settings_warnings.push(format!(
+                "{}: unknown settings table [input.{key}]; ignoring it",
+                path.display()
+            ));
+            continue;
+        }
+        let Some(entries) = entries.as_table() else {
+            config.settings_warnings.push(format!(
+                "{}: [input.bindings] must be a table; ignoring it",
+                path.display()
+            ));
+            continue;
+        };
+        for (action, value) in entries {
+            if !REBINDABLE_ACTIONS.contains(&action.as_str())
+                || config.bindings.action(action).is_none()
+            {
+                config.settings_warnings.push(format!("{}: [input.bindings] {action} is not a rebindable player action in this run; ignoring it", path.display()));
+                continue;
+            }
+            let Some(values) = value.as_array() else {
+                config.settings_warnings.push(format!(
+                    "{}: [input.bindings] {action} must be an array; ignoring it",
+                    path.display()
+                ));
+                continue;
+            };
+            if values.len() > 2 {
+                config.settings_warnings.push(format!(
+                    "{}: [input.bindings] {action} has more than two bindings; ignoring it",
+                    path.display()
+                ));
+                continue;
+            }
+            let Some(values) = values
+                .iter()
+                .map(toml::Value::as_str)
+                .collect::<Option<Vec<_>>>()
+            else {
+                config.settings_warnings.push(format!(
+                    "{}: [input.bindings] {action} entries must be strings; ignoring it",
+                    path.display()
+                ));
+                continue;
+            };
+            let values = values.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            let mut complete = config
+                .bindings
+                .actions()
+                .iter()
+                .map(|item| {
+                    (
+                        item.name().to_owned(),
+                        if item.name() == action {
+                            values.clone()
+                        } else {
+                            item.bindings()
+                                .iter()
+                                .map(|binding| {
+                                    let mut parts = Vec::new();
+                                    if binding.requires_control() {
+                                        parts.push("Control");
+                                    }
+                                    if binding.requires_alt() {
+                                        parts.push("Alt");
+                                    }
+                                    if binding.requires_shift() {
+                                        parts.push("Shift");
+                                    }
+                                    if binding.requires_meta() {
+                                        parts.push("Meta");
+                                    }
+                                    parts.push(binding.key().name());
+                                    parts.join("+")
+                                })
+                                .collect()
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            match Bindings::from_entries(std::mem::take(&mut complete)) {
+                Ok(bindings) => {
+                    config.bindings = bindings;
+                    config
+                        .settings_overrides
+                        .bindings
+                        .insert(action.clone(), values);
+                }
+                Err(error) => config.settings_warnings.push(format!(
+                    "{}: [input.bindings] {error}; ignoring this entry",
+                    path.display()
+                )),
+            }
+        }
     }
 }
 
@@ -2080,6 +2216,59 @@ mod tests {
                         .any(|warning| warning.contains(name))
                 );
             }
+        }
+    }
+
+    #[test]
+    fn settings_bindings_allowlist_entries_are_independent_and_configuration_values_are_defaults() {
+        let dir = crate::testing::Dir::new();
+        let path = dir.0.join("config.toml");
+        fs::write(&path, "[map]\ndirectory = '.'\n").expect("write config");
+        fs::write(
+            dir.0.join("settings.toml"),
+            "[input.bindings]\nmap_pan_left = ['KeyA', 'Shift+KeyA']\nmap_zoom_out = []\nclose = ['KeyQ']\nmove_left = ['KeyZ']\ntime_pause = ['Space']\nmap_pan_right = ['KeyB', 'KeyB']\nmap_pan_up = ['bad key']\nmap_pan_down = ['KeyA', 'KeyB', 'KeyC']\n",
+        )
+        .expect("write settings");
+
+        let config = load(&path).expect("bad player entries are ignored independently");
+        let bindings = &config.bindings;
+        assert_eq!(bindings.action("map_pan_left").unwrap().bindings().len(), 2);
+        assert!(
+            bindings
+                .action("map_zoom_out")
+                .unwrap()
+                .bindings()
+                .is_empty()
+        );
+        assert_eq!(
+            bindings.action("close").unwrap().bindings()[0].key(),
+            ck_input::Key::Escape
+        );
+        assert_eq!(
+            bindings.action("move_left").unwrap().bindings()[0].key(),
+            ck_input::Key::KeyA
+        );
+        assert_eq!(
+            bindings.action("map_pan_right").unwrap().bindings()[0].key(),
+            ck_input::Key::ArrowRight
+        );
+        assert_eq!(config.settings_overrides.bindings.len(), 2);
+        for name in [
+            "close",
+            "move_left",
+            "time_pause",
+            "map_pan_right",
+            "map_pan_up",
+            "map_pan_down",
+        ] {
+            assert!(
+                config
+                    .settings_warnings
+                    .iter()
+                    .any(|warning| warning.contains(name)),
+                "missing warning for {name}: {:?}",
+                config.settings_warnings
+            );
         }
     }
 

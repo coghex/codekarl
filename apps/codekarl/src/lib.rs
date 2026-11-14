@@ -831,7 +831,11 @@ fn supervise_with_owner_factory(
     ui_extensions.extend(font.map(font::extension));
     ui_extensions.extend(theme.map(theme::extension));
     ui_extensions.extend(glossary.map(glossary::extension));
-    if let Some(settings) = settings::Runtime::new(config, map_controller.clone()) {
+    if let Some(settings) = settings::Runtime::new_with_requests(
+        config,
+        map_controller.clone(),
+        Some(requests.writer(Arc::clone(&shared.notifier))),
+    ) {
         ui_extensions.push(settings.extension());
     } else {
         ui_extensions.push(config.tooltips.extension());
