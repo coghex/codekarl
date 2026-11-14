@@ -5,7 +5,7 @@ use std::{
     error::Error,
     fmt,
     path::PathBuf,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError, mpsc},
     time::Duration,
 };
 
@@ -15,7 +15,7 @@ use ck_sim::{Cadence, Canonical, CanonicalError, Date, GameTime, Reader, Schedul
 use super::{
     GameCommand,
     controls::Control,
-    core::{Core, Flow, Message, Outputs, Rebuild, ViewBuilder},
+    core::{Core, Flow, Message, Outputs, Rebuild, SaveCall, SaveReply, ViewBuilder},
     saves::Identity,
     slot::SimSnapshot,
 };
@@ -304,6 +304,12 @@ impl Harness {
         self.core.dispatch(Message::Control(control), self.now);
     }
 
+    pub(super) fn save_call(&mut self, call: SaveCall) -> SaveReply {
+        let (reply, result) = mpsc::channel();
+        self.core.dispatch(Message::Save(call, reply), self.now);
+        result.recv().expect("the core replies to every save call")
+    }
+
     /// Lets `by` of fake time pass and runs the wake, with no control arriving during it.
     pub(super) fn wake(&mut self, by: Duration) -> Flow {
         self.now += by;
@@ -464,7 +470,7 @@ pub(crate) fn spawn_test_owner(
     preload: Vec<Message>,
 ) -> (
     super::owner::SimOwner,
-    std::sync::mpsc::Sender<Message>,
+    mpsc::Sender<Message>,
     Arc<super::slot::SimSlot>,
 ) {
     let (sender, receiver) = super::owner::channel();

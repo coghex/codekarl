@@ -24,7 +24,7 @@ use crate::{
 };
 
 const MAGIC: [u8; 8] = *b"CKSAVE\x00\x01";
-const FORMAT: i64 = 1;
+const FORMAT: i64 = 2;
 const CLOCK: [u8; 4] = *b"CLCK";
 const STATE: [u8; 4] = *b"STAT";
 const PENDING: [u8; 4] = *b"PEND";
@@ -35,6 +35,10 @@ const SECTION_ORDER: [[u8; 4]; 4] = [CLOCK, STATE, PENDING, JOURNAL];
 /// The header of a save: what identifies the game it belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SaveMeta {
+    /// The name shown for this save. It is outside the simulation state digest.
+    pub name: String,
+    /// The UTC RFC 3339 time, to the second, when the save was written.
+    pub written: String,
     /// The build id. A save loads only into the build that wrote it.
     pub build: String,
     /// The scenario id.
@@ -279,6 +283,9 @@ pub struct Save<S> {
 #[serde(deny_unknown_fields)]
 struct HeaderToml {
     format: i64,
+    name: String,
+    written: String,
+    date: String,
     build: String,
     scenario: String,
     scenario_hash: String,
@@ -299,9 +306,73 @@ struct StartToml {
     hour: u8,
 }
 
-#[derive(Deserialize)]
-struct FormatProbe {
-    format: i64,
+/// A bounded, lenient read of only the save header, for a catalog that must show old and future formats.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveHeader {
+    /// The format when the header supplies an integer.
+    pub format: Option<i64>,
+    /// The build when the header supplies a string.
+    pub build: Option<String>,
+    /// The four compatibility hashes, when present as strings.
+    pub content_hashes: [Option<String>; 4],
+    /// The displayed save name, when present as a string.
+    pub name: Option<String>,
+    /// The UTC time, when present as a string.
+    pub written: Option<String>,
+    /// The in-game date, when present as a string.
+    pub date: Option<String>,
+}
+
+impl SaveHeader {
+    /// Reads the magic, length and bounded TOML header from `reader`, without reading any save sections.
+    ///
+    /// # Errors
+    /// Returns a save error for a bad or incomplete prefix, a too-large header, or invalid UTF-8/TOML.
+    ///
+    /// # Panics
+    /// This function does not panic when passed arbitrary input.
+    pub fn read_from(reader: &mut impl std::io::Read) -> Result<Self, SaveError> {
+        let mut prefix = [0; 12];
+        reader
+            .read_exact(&mut prefix)
+            .map_err(|_| SaveError::Truncated)?;
+        if prefix[..8] != MAGIC {
+            return Err(SaveError::BadMagic);
+        }
+        let length = u32::from_le_bytes([prefix[8], prefix[9], prefix[10], prefix[11]]) as usize;
+        if length > 65_536 {
+            return Err(malformed("header exceeds 65536 bytes"));
+        }
+        let mut bytes = vec![0; length];
+        reader
+            .read_exact(&mut bytes)
+            .map_err(|_| SaveError::Truncated)?;
+        let text = std::str::from_utf8(&bytes).map_err(malformed)?;
+        let value: toml::Value = toml::from_str(text).map_err(malformed)?;
+        let table = value
+            .as_table()
+            .ok_or_else(|| malformed("header is not a TOML table"))?;
+        let string = |key: &str| {
+            table
+                .get(key)
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned)
+        };
+        let integer = |key: &str| table.get(key).and_then(toml::Value::as_integer);
+        Ok(Self {
+            format: integer("format"),
+            build: string("build"),
+            content_hashes: [
+                string("scenario_hash"),
+                string("map_hash"),
+                string("scripts_hash"),
+                string("rules_hash"),
+            ],
+            name: string("name"),
+            written: string("written"),
+            date: string("date"),
+        })
+    }
 }
 
 fn malformed(reason: impl fmt::Display) -> SaveError {
@@ -332,6 +403,20 @@ fn parse_seed(text: &str) -> Result<u64, SaveError> {
 }
 
 fn check_meta(meta: &SaveMeta, tick: u64) -> Result<(), SaveError> {
+    let name_length = meta.name.chars().count();
+    if !(1..=48).contains(&name_length)
+        || meta.name.chars().any(char::is_control)
+        || meta.name.trim_matches(' ') != meta.name
+    {
+        return Err(malformed(
+            "name must be 1 to 48 non-control characters with no edge spaces",
+        ));
+    }
+    if !is_utc_rfc3339_second(&meta.written) {
+        return Err(malformed(
+            "written is not a UTC RFC 3339 timestamp to the second",
+        ));
+    }
     for (name, hash) in [
         ("scenario_hash", &meta.scenario_hash),
         ("map_hash", &meta.map_hash),
@@ -347,10 +432,59 @@ fn check_meta(meta: &SaveMeta, tick: u64) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn is_utc_rfc3339_second(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if bytes.len() != 20
+        || ![(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':')]
+            .iter()
+            .all(|&(index, separator)| bytes[index] == separator)
+        || bytes[19] != b'Z'
+        || bytes
+            .iter()
+            .enumerate()
+            .any(|(index, byte)| ![4, 7, 10, 13, 16, 19].contains(&index) && !byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let pair = |at: usize| u16::from(bytes[at] - b'0') * 10 + u16::from(bytes[at + 1] - b'0');
+    let year = u16::from(bytes[0] - b'0') * 1_000
+        + u16::from(bytes[1] - b'0') * 100
+        + u16::from(bytes[2] - b'0') * 10
+        + u16::from(bytes[3] - b'0');
+    let month = pair(5);
+    let day = pair(8);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => return false,
+    };
+    year > 0
+        && (1..=days_in_month).contains(&day)
+        && pair(11) <= 23
+        && pair(14) <= 59
+        && pair(17) <= 59
+}
+
+fn game_date(tick: u64) -> Result<String, SaveError> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let date = GameTime::from_hours(tick).date().map_err(malformed)?;
+    let month = MONTHS
+        .get(usize::from(date.month - 1))
+        .ok_or_else(|| malformed("month is outside the calendar"))?;
+    Ok(format!("{} {month} {}", date.day, date.year))
+}
+
 fn write_header(meta: &SaveMeta, tick: u64) -> Result<String, SaveError> {
     check_meta(meta, tick)?;
     let header = HeaderToml {
         format: FORMAT,
+        name: meta.name.clone(),
+        written: meta.written.clone(),
+        date: game_date(tick)?,
         build: meta.build.clone(),
         scenario: meta.scenario.clone(),
         scenario_hash: meta.scenario_hash.clone(),
@@ -371,15 +505,19 @@ fn write_header(meta: &SaveMeta, tick: u64) -> Result<String, SaveError> {
 
 fn read_header(bytes: &[u8]) -> Result<(SaveMeta, u64), SaveError> {
     let text = str::from_utf8(bytes).map_err(malformed)?;
-    let probe: FormatProbe = toml::from_str(text).map_err(malformed)?;
-    if probe.format != FORMAT {
-        return Err(SaveError::UnknownFormat {
-            found: probe.format,
-        });
+    let probe: toml::Value = toml::from_str(text).map_err(malformed)?;
+    let format = probe
+        .get("format")
+        .and_then(toml::Value::as_integer)
+        .ok_or_else(|| malformed("format is missing or is not an integer"))?;
+    if format != FORMAT {
+        return Err(SaveError::UnknownFormat { found: format });
     }
     let header: HeaderToml = toml::from_str(text).map_err(malformed)?;
     let tick = u64::try_from(header.tick).map_err(malformed)?;
     let meta = SaveMeta {
+        name: header.name,
+        written: header.written,
         build: header.build,
         scenario: header.scenario,
         scenario_hash: header.scenario_hash,
@@ -395,6 +533,9 @@ fn read_header(bytes: &[u8]) -> Result<(SaveMeta, u64), SaveError> {
         seed: parse_seed(&header.seed)?,
     };
     check_meta(&meta, tick)?;
+    if header.date != game_date(tick)? {
+        return Err(malformed("date does not match the saved tick"));
+    }
     Ok((meta, tick))
 }
 

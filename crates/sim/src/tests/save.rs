@@ -126,7 +126,10 @@ fn the_file_starts_with_the_magic_and_ends_with_the_end_tag_and_a_checksum_of_ev
 fn the_header_is_toml_with_the_documented_keys() {
     let header = take_apart(&valid_bytes()).header;
     let table: toml::Table = header.parse().unwrap();
-    assert_eq!(table["format"].as_integer(), Some(1));
+    assert_eq!(table["format"].as_integer(), Some(2));
+    assert_eq!(table["name"].as_str(), Some("test save"));
+    assert_eq!(table["written"].as_str(), Some("2026-11-13T12:34:56Z"));
+    assert_eq!(table["date"].as_str(), Some("7 Feb 768"));
     assert_eq!(table["build"].as_str(), Some("test-build"));
     assert_eq!(table["scenario"].as_str(), Some("test-scenario"));
     assert_eq!(table["scenario_hash"].as_str(), Some("aa11"));
@@ -142,6 +145,76 @@ fn the_header_is_toml_with_the_documented_keys() {
     assert_eq!(start["month"].as_integer(), Some(1));
     assert_eq!(start["day"].as_integer(), Some(1));
     assert_eq!(start["hour"].as_integer(), Some(0));
+}
+
+#[test]
+fn the_format_two_header_carries_name_written_time_and_the_game_date() {
+    let table: toml::Table = take_apart(&valid_bytes()).header.parse().unwrap();
+    assert_eq!(table["format"].as_integer(), Some(2));
+    assert_eq!(table["name"].as_str(), Some("test save"));
+    assert_eq!(table["written"].as_str(), Some("2026-11-13T12:34:56Z"));
+    assert_eq!(table["date"].as_str(), Some("7 Feb 768"));
+}
+
+#[test]
+fn name_and_written_time_change_header_bytes_but_not_the_canonical_state_digest() {
+    let mut first = valid_save();
+    let mut second = first.clone();
+    second.meta.name = "another name".to_owned();
+    second.meta.written = "2027-01-01T00:00:00Z".to_owned();
+    assert_eq!(first.digest().unwrap(), second.digest().unwrap());
+    assert_ne!(first.to_bytes().unwrap(), second.to_bytes().unwrap());
+    first.meta.written = "2026-02-31T00:00:00Z".to_owned();
+    assert!(matches!(
+        first.to_bytes(),
+        Err(SaveError::MalformedHeader { .. })
+    ));
+}
+
+#[test]
+fn a_format_two_load_requires_its_display_metadata() {
+    for key in ["name", "written", "date"] {
+        let bytes = with_header(|header| {
+            header
+                .lines()
+                .filter(|line| !line.starts_with(&format!("{key} = ")))
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        assert!(
+            matches!(load(&bytes), Err(SaveError::MalformedHeader { .. })),
+            "{key}"
+        );
+    }
+}
+
+#[test]
+fn a_header_probe_reads_only_the_bounded_prefix_and_keeps_later_format_fields() {
+    let bytes = with_header(|header| {
+        format!(
+            "{}future_flag = true\n",
+            header.replace("format = 2", "format = 9")
+        )
+    });
+    let mut reader = std::io::Cursor::new(bytes.clone());
+    let header = crate::SaveHeader::read_from(&mut reader).unwrap();
+    assert_eq!(header.format, Some(9));
+    assert_eq!(header.build.as_deref(), Some("test-build"));
+    assert_eq!(header.name.as_deref(), Some("test save"));
+    let header_length = u64::from(u32::from_le_bytes(bytes[8..12].try_into().unwrap()));
+    assert_eq!(reader.position(), 12 + header_length);
+}
+
+#[test]
+fn a_header_probe_refuses_an_oversized_length_before_reading_body_bytes() {
+    let mut bytes = MAGIC.to_vec();
+    bytes.extend_from_slice(&65_537_u32.to_le_bytes());
+    let mut reader = std::io::Cursor::new(bytes);
+    assert!(matches!(
+        crate::SaveHeader::read_from(&mut reader),
+        Err(SaveError::MalformedHeader { .. })
+    ));
+    assert_eq!(reader.position(), 12);
 }
 
 #[test]
@@ -273,8 +346,8 @@ fn bad_magic_is_refused() {
 
 #[test]
 fn an_unknown_format_is_refused() {
-    let bytes = with_header(|header| header.replace("format = 1", "format = 2"));
-    assert_eq!(load(&bytes), Err(SaveError::UnknownFormat { found: 2 }));
+    let bytes = with_header(|header| header.replace("format = 2", "format = 99"));
+    assert_eq!(load(&bytes), Err(SaveError::UnknownFormat { found: 99 }));
 }
 
 #[test]

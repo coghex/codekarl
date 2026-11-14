@@ -161,6 +161,8 @@ pub(super) fn simulation(seed: u64) -> Simulation<World, Order> {
 
 pub(super) fn meta(seed: u64) -> SaveMeta {
     SaveMeta {
+        name: "test save".to_owned(),
+        written: "2026-11-13T12:34:56Z".to_owned(),
         build: "test-build".to_owned(),
         scenario: "test-scenario".to_owned(),
         scenario_hash: "aa11".to_owned(),

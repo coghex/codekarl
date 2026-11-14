@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use ck_lua::{ConfigValue, Extension, HostFunction};
 
 use crate::game::controls::{self, SimControls};
+use crate::game::core::{SaveCall, SaveReply};
+use crate::game::saves::Entry;
 use crate::game::slot::{PauseReason, SimSnapshot};
 use crate::game::view::{BuildingView, EconomyView, PlaceView, PopView};
 use crate::vm::UI_CALL_LIMIT;
@@ -55,7 +57,15 @@ pub(crate) fn extension_with_select(
     Extension::new("game")
         .function("control", control_function(controls.clone()))
         .function("pause", pause_function(controls.clone()))
-        .function("set_modal", set_modal_function(controls))
+        .function("set_modal", set_modal_function(controls.clone()))
+        .function("saves", saves_function(controls.clone()))
+        .function("save", save_function(controls.clone(), SaveCall::New))
+        .function("save_over", save_function(controls.clone(), SaveCall::Over))
+        .function(
+            "delete_save",
+            save_function(controls.clone(), SaveCall::Delete),
+        )
+        .function("load_save", save_function(controls, SaveCall::Load))
         .callback_observed(
             "on_time",
             GAME_TIME,
@@ -80,6 +90,91 @@ pub(crate) fn extension_with_select(
                 wake();
             }),
         )
+}
+
+fn saves_function(controls: SimControls) -> HostFunction {
+    Arc::new(move |arguments| {
+        if !arguments.is_empty() {
+            return Err("game.saves: expected no arguments".to_owned());
+        }
+        let result = controls
+            .save_call(SaveCall::List)
+            .and_then(|reply| match reply {
+                SaveReply::Listed(result) => result,
+                SaveReply::Finished(_) => Err("unexpected save reply".to_owned()),
+            });
+        Ok(vec![match result {
+            Ok(entries) => ConfigValue::Table(BTreeMap::from([
+                ("ok".to_owned(), ConfigValue::Bool(true)),
+                (
+                    "entries".to_owned(),
+                    ConfigValue::Array(entries.iter().map(entry_value).collect()),
+                ),
+            ])),
+            Err(reason) => error_value(reason),
+        }])
+    })
+}
+
+fn save_function(controls: SimControls, build: fn(String) -> SaveCall) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [Some(ConfigValue::String(filename))] = arguments else {
+            return Err("save call: expected one string argument".to_owned());
+        };
+        let result = controls
+            .save_call(build(filename.clone()))
+            .and_then(|reply| match reply {
+                SaveReply::Finished(result) => result,
+                SaveReply::Listed(_) => Err("unexpected save reply".to_owned()),
+            });
+        Ok(vec![result_value(result)])
+    })
+}
+
+fn result_value(result: Result<(), String>) -> ConfigValue {
+    match result {
+        Ok(()) => ConfigValue::Table(BTreeMap::from([("ok".to_owned(), ConfigValue::Bool(true))])),
+        Err(reason) => error_value(reason),
+    }
+}
+
+fn error_value(reason: String) -> ConfigValue {
+    ConfigValue::Table(BTreeMap::from([
+        ("ok".to_owned(), ConfigValue::Bool(false)),
+        ("reason".to_owned(), ConfigValue::String(reason)),
+    ]))
+}
+
+fn entry_value(entry: &Entry) -> ConfigValue {
+    let mut fields = BTreeMap::from([
+        (
+            "filename".to_owned(),
+            ConfigValue::String(entry.filename.clone()),
+        ),
+        ("name".to_owned(), ConfigValue::String(entry.name.clone())),
+        (
+            "fit".to_owned(),
+            ConfigValue::String(entry.fit.as_str().to_owned()),
+        ),
+        (
+            "this_build".to_owned(),
+            ConfigValue::String(
+                match entry.this_build {
+                    Some(true) => "yes",
+                    Some(false) => "no",
+                    None => "unknown",
+                }
+                .to_owned(),
+            ),
+        ),
+    ]);
+    if let Some(written) = &entry.written {
+        fields.insert("written".to_owned(), ConfigValue::String(written.clone()));
+    }
+    if let Some(date) = &entry.date {
+        fields.insert("date".to_owned(), ConfigValue::String(date.clone()));
+    }
+    ConfigValue::Table(fields)
 }
 
 /// `game.control(name)` sends the named time or save control over the run's simulation channel.
@@ -688,6 +783,7 @@ pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::{core::Message, saves::Fit};
 
     #[test]
     fn selected_place_arguments_use_authored_kind_and_size_fields() {
@@ -715,6 +811,67 @@ mod tests {
             Some(&ConfigValue::String("town".to_owned()))
         );
         assert_eq!(fields.get("size"), Some(&ConfigValue::Integer(3)));
+    }
+
+    #[test]
+    fn save_host_calls_return_only_after_the_owner_reports_the_completed_result() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let list = saves_function(SimControls::new(sender));
+        let caller = std::thread::spawn(move || list(&[]));
+        let Message::Save(call, reply) = receiver.recv().unwrap() else {
+            panic!("game.saves sends a list request");
+        };
+        assert_eq!(call, SaveCall::List);
+        reply
+            .send(SaveReply::Listed(Ok(vec![Entry {
+                filename: "ireland.cksave".to_owned(),
+                name: "Ireland".to_owned(),
+                written: Some("2026-11-13T12:34:56Z".to_owned()),
+                date: Some("3 Mar 771".to_owned()),
+                this_build: Some(false),
+                fit: Fit::Version,
+            }])))
+            .unwrap();
+        let returned = caller.join().unwrap().unwrap();
+        let [ConfigValue::Table(result)] = returned.as_slice() else {
+            panic!("the host returns one completed result table");
+        };
+        assert_eq!(result.get("ok"), Some(&ConfigValue::Bool(true)));
+        let Some(ConfigValue::Array(entries)) = result.get("entries") else {
+            panic!("the list result carries the save entries");
+        };
+        let [ConfigValue::Table(entry)] = entries.as_slice() else {
+            panic!("one save is listed");
+        };
+        assert_eq!(
+            entry.get("fit"),
+            Some(&ConfigValue::String("version".to_owned()))
+        );
+        assert_eq!(
+            entry.get("this_build"),
+            Some(&ConfigValue::String("no".to_owned()))
+        );
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let save = save_function(SimControls::new(sender), SaveCall::New);
+        let caller =
+            std::thread::spawn(move || save(&[Some(ConfigValue::String("Campaign".to_owned()))]));
+        let Message::Save(call, reply) = receiver.recv().unwrap() else {
+            panic!("game.save sends its requested name");
+        };
+        assert_eq!(call, SaveCall::New("Campaign".to_owned()));
+        reply
+            .send(SaveReply::Finished(Err("name is invalid".to_owned())))
+            .unwrap();
+        let returned = caller.join().unwrap().unwrap();
+        let [ConfigValue::Table(result)] = returned.as_slice() else {
+            panic!("the save result is a table");
+        };
+        assert_eq!(result.get("ok"), Some(&ConfigValue::Bool(false)));
+        assert_eq!(
+            result.get("reason"),
+            Some(&ConfigValue::String("name is invalid".to_owned()))
+        );
     }
 
     fn view_with(workers: u64) -> Arc<EconomyView> {
