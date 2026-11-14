@@ -281,6 +281,9 @@ struct State {
     hovers: RefCell<Vec<CallId>>,
     /// The `game_select` calls posted and not yet answered.
     selections: RefCell<Vec<CallId>>,
+    /// Guarded-load outcomes waiting for a free callback place and the outcomes already posted.
+    guarded_results: RefCell<VecDeque<crate::game::controls::GuardedLoadResult>>,
+    guarded_calls: RefCell<Vec<CallId>>,
     /// The snapshot last delivered through `game_time`, to post the next only when something displayed differs.
     delivered: RefCell<Option<crate::game::slot::SimSnapshot>>,
     /// Hover last posted; outer `None` means callback registration changed and needs a fresh delivery.
@@ -729,6 +732,7 @@ impl CodekarlUi {
             + self.state.times.borrow().len()
             + self.state.hovers.borrow().len()
             + self.state.selections.borrow().len()
+            + self.state.guarded_calls.borrow().len()
     }
 
     /// The names of the callbacks still running, oldest first.
@@ -760,6 +764,13 @@ impl CodekarlUi {
                 .borrow()
                 .iter()
                 .map(|_| crate::game_api::GAME_SELECT),
+        );
+        names.extend(
+            self.state
+                .guarded_calls
+                .borrow()
+                .iter()
+                .map(|_| crate::game_api::GAME_SAVE_RESULT),
         );
         names
     }
@@ -948,9 +959,51 @@ impl CodekarlUi {
         false
     }
 
+    /// Posts one completed guarded-load result without waiting on the simulation owner.
+    fn deliver_guarded_result(&self) -> bool {
+        let Some(sim) = &self.sim else {
+            return false;
+        };
+        while let Some(result) = sim.controls.take_guarded_result() {
+            self.state.guarded_results.borrow_mut().push_back(result);
+        }
+        if !sim.controls.save_result_registered()
+            || self.outstanding() >= UI_CALL_LIMIT - 1
+            || self.state.guarded_results.borrow().is_empty()
+        {
+            return false;
+        }
+        let Some(vm) = self.vm() else {
+            return false;
+        };
+        let result = self
+            .state
+            .guarded_results
+            .borrow()
+            .front()
+            .cloned()
+            .expect("the queue was checked above");
+        match vm.borrow_mut().post(
+            crate::game_api::GAME_SAVE_RESULT,
+            crate::game_api::guarded_result_arguments(&result),
+        ) {
+            Ok(id) => {
+                self.state.guarded_results.borrow_mut().pop_front();
+                self.state.guarded_calls.borrow_mut().push(id);
+                true
+            }
+            Err(VmError::Full { .. }) => false,
+            Err(_) => {
+                self.state.disconnected.set(true);
+                false
+            }
+        }
+    }
+
     /// Gives each changed latest-wins channel a chance at each available place. When only one place
     /// is free, the channel that did not get the previous successful delivery goes first.
     fn deliver_updates(&self) {
+        self.deliver_guarded_result();
         let first = self.state.next_update.get();
         let mut channel = first;
         for _ in 0..3 {
@@ -1026,6 +1079,22 @@ impl CodekarlUi {
                 }
                 continue;
             }
+            let guarded = {
+                let mut calls = self.state.guarded_calls.borrow_mut();
+                calls
+                    .iter()
+                    .position(|id| *id == result.id)
+                    .map(|position| calls.remove(position))
+            };
+            if guarded.is_some() {
+                if let CallOutcome::Failed { message, traceback } = result.outcome {
+                    return Some(Taken::SaveResultFailed(format!(
+                        "ui callback {} failed: {message}\n{traceback}",
+                        crate::game_api::GAME_SAVE_RESULT
+                    )));
+                }
+                continue;
+            }
             let mut pending = self.state.pending.borrow_mut();
             let position = pending.iter().position(|(id, _)| *id == result.id)?;
             let (_, event) = pending.remove(position)?;
@@ -1043,7 +1112,8 @@ impl CodekarlUi {
                 Taken::Answer(answer) => return Some(answer),
                 Taken::TimeFailed(message)
                 | Taken::HoverFailed(message)
-                | Taken::SelectFailed(message) => {
+                | Taken::SelectFailed(message)
+                | Taken::SaveResultFailed(message) => {
                     self.state.failure.borrow_mut().get_or_insert(message);
                 }
             }
@@ -1060,7 +1130,8 @@ impl CodekarlUi {
             })
             | Taken::TimeFailed(message)
             | Taken::HoverFailed(message)
-            | Taken::SelectFailed(message) => vec![message],
+            | Taken::SelectFailed(message)
+            | Taken::SaveResultFailed(message) => vec![message],
             Taken::Answer(_) => Vec::new(),
         })
     }
@@ -1076,6 +1147,8 @@ enum Taken {
     HoverFailed(String),
     /// A `game_select` call failed.
     SelectFailed(String),
+    /// A `game_save_result` callback failed.
+    SaveResultFailed(String),
 }
 
 impl UiLink for CodekarlUi {

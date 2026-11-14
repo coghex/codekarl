@@ -901,12 +901,13 @@ struct ActionState {
 
 /// The single-owner mapper for physical keys and named actions.
 ///
-/// The action state and 256-entry transition ring are allocated at construction. [`Mapper::key`]
-/// and [`Mapper::focus_lost`] do not allocate. [`Mapper::resync`] replaces the key bitset and recomputes the actions
-/// from that final set, for a native layer that lost ordered detail.
+/// The per-binding state, action state and 256-entry transition ring are allocated at construction. [`Mapper::key`]
+/// and [`Mapper::focus_lost`] do not allocate. [`Mapper::resync`] replaces the key bitset and recovers only the
+/// binding activations and lost taps that the final keys and loss latches prove.
 pub struct Mapper {
     bindings: Bindings,
     keys: [u64; 2],
+    held_bindings: Vec<Vec<bool>>,
     actions: Vec<ActionState>,
     transitions: [Option<TransitionRecord>; TRANSITION_CAPACITY],
     transition_head: usize,
@@ -931,9 +932,15 @@ impl Mapper {
     #[must_use]
     pub fn new(bindings: Bindings) -> Self {
         let actions = vec![ActionState::default(); bindings.actions.len()];
+        let held_bindings = bindings
+            .actions
+            .iter()
+            .map(|action| vec![false; action.bindings.len()])
+            .collect();
         Self {
             bindings,
             keys: [0; 2],
+            held_bindings,
             actions,
             transitions: [None; TRANSITION_CAPACITY],
             transition_head: 0,
@@ -966,6 +973,9 @@ impl Mapper {
         }
 
         self.set_key(key, down);
+        if down {
+            self.start_bindings_for(key);
+        }
         self.recompute_actions();
     }
 
@@ -1054,48 +1064,36 @@ impl Mapper {
     /// Resynchronises with the final physical key states of a native layer that discarded ordered detail, in one step
     /// and with no ordered event (`docs/scene-design.md` §10.2).
     ///
-    /// - **Held state, from the final key states only.** The mapper's key set becomes `states.held` and every
-    ///   action's held state is recomputed from it, independent of what the mapper believed before: an action held
-    ///   now and not before gets a press edge, one held before and not now a release edge. A prefixed binding is held
-    ///   here **only** when its main key and a key of each of its prefixes are physically held now.
-    /// - **Lost taps, unprefixed bindings only.** A key whose latch shows a press latches `pressed` (and `released` if
-    ///   the key is up now) on every action that has that key as an **unprefixed** binding (an unprefixed binding fires
-    ///   whatever modifiers are held, so this is true whatever the lost order was). A prefixed binding never gets a
-    ///   press or a tap from the latches: latches and final modifier states do not prove that a chord overlapped, so a
-    ///   prefixed chord tapped inside the lost span is lost, and is never invented.
-    /// - **Close.** The close-press counter gains at most one press per resync, when the `close` action got a press by
-    ///   either rule.
+    /// - **Held state, only when proven.** A binding held before the span stays held only when its main key and a
+    ///   held key of each required modifier family stayed steady. A new binding starts only when its main-key press
+    ///   and every counted modifier key stayed steady, proving the exact modifier mask at that press. Ambiguous
+    ///   activations are lost rather than inferred from final keys alone.
+    /// - **Lost taps, unprefixed bindings only.** A press latch gives an unprefixed binding a tap only when every
+    ///   counted modifier key stayed steady and none was held. A modifier used as the main key does not count its own
+    ///   family. A prefixed binding never gets a tap from unordered latches.
+    /// - **Action edges.** Held state is the OR of its active bindings. Edges follow changes to that state; a proven
+    ///   lost tap may add a press (and a release when its main key is up). The close-press counter gains at most one
+    ///   press per resync, when the `close` action got a press by either rule.
     /// - The snapshot reports `overflow`, and the overflow count grows by one (a resync is one loss of detail).
     pub fn resync(&mut self, states: &KeyStates) {
+        let old_keys = self.keys;
         self.keys = states.held;
-        let mut close_pressed = false;
         for index in 0..self.bindings.actions.len() {
-            let now_held = self.bindings.actions[index]
-                .bindings
-                .iter()
-                .copied()
-                .any(|binding| self.binding_is_held(binding));
-            let was_held = self.actions[index].held;
-            let mut pressed = now_held && !was_held;
-            if now_held != was_held {
-                self.actions[index].held = now_held;
-                let edge = if now_held { Edge::Press } else { Edge::Release };
-                let sequence = self.next_sequence();
-                if now_held {
-                    self.actions[index].pressed_sequence = Some(sequence);
-                } else {
-                    self.actions[index].released_sequence = Some(sequence);
-                }
-                self.push_transition(TransitionRecord {
-                    action: index,
-                    edge,
-                    sequence,
-                });
+            for position in 0..self.bindings.actions[index].bindings.len() {
+                let binding = self.bindings.actions[index].bindings[position];
+                let was_active = self.held_bindings[index][position];
+                let kept =
+                    was_active && Self::binding_kept_across_resync(binding, &old_keys, states);
+                let started = !kept && self.binding_started_by_resync(binding, &old_keys, states);
+                self.held_bindings[index][position] = kept || started;
             }
+        }
+        let mut close_pressed = self.update_actions();
+        for index in 0..self.bindings.actions.len() {
             // A tap lost inside the discarded span, on an unprefixed binding of this action.
             for position in 0..self.bindings.actions[index].bindings.len() {
                 let binding = self.bindings.actions[index].bindings[position];
-                if binding.modifiers != 0 || !states.was_pressed(binding.key) {
+                if binding.modifiers != 0 || !self.lost_tap_is_proven(binding, &old_keys, states) {
                     continue;
                 }
                 // Every latched edge is stamped with the sequence of this resync, even when an older, unacknowledged
@@ -1103,13 +1101,12 @@ impl Mapper {
                 // not clear the tap the resync latched.
                 let sequence = self.next_sequence();
                 self.actions[index].pressed_sequence = Some(sequence);
-                pressed = true;
                 if !states.is_held(binding.key) {
                     self.actions[index].released_sequence = Some(sequence);
                 }
-            }
-            if pressed && self.bindings.actions[index].name == "close" {
-                close_pressed = true;
+                if self.bindings.actions[index].name == "close" {
+                    close_pressed = true;
+                }
             }
         }
         if close_pressed {
@@ -1250,8 +1247,12 @@ impl Mapper {
     }
 
     fn key_is_down(&self, key: Key) -> bool {
+        Self::key_is_down_in(&self.keys, key)
+    }
+
+    fn key_is_down_in(keys: &[u64; 2], key: Key) -> bool {
         let index = key.index();
-        self.keys[index / 64] & (1_u64 << (index % 64)) != 0
+        keys[index / 64] & (1_u64 << (index % 64)) != 0
     }
 
     fn set_key(&mut self, key: Key, down: bool) {
@@ -1274,6 +1275,103 @@ impl Mapper {
         }
     }
 
+    fn modifier_keys(modifier: u8) -> [Key; 2] {
+        match modifier {
+            CONTROL => [Key::ControlLeft, Key::ControlRight],
+            ALT => [Key::AltLeft, Key::AltRight],
+            SHIFT => [Key::ShiftLeft, Key::ShiftRight],
+            META => [Key::MetaLeft, Key::MetaRight],
+            _ => unreachable!("validated modifier family"),
+        }
+    }
+
+    fn modifier_mask(&self, main_key: Key) -> u8 {
+        let ignored_family = main_key.modifier().unwrap_or(0);
+        [CONTROL, ALT, SHIFT, META]
+            .into_iter()
+            .filter(|family| *family != ignored_family && self.modifier_is_down(*family))
+            .fold(0, |mask, family| mask | family)
+    }
+
+    fn counted_modifier_families_are_steady(
+        binding: Binding,
+        old_keys: &[u64; 2],
+        states: &KeyStates,
+    ) -> bool {
+        let ignored_family = binding.key.modifier().unwrap_or(0);
+        [CONTROL, ALT, SHIFT, META]
+            .into_iter()
+            .filter(|family| *family != ignored_family)
+            .flat_map(Self::modifier_keys)
+            .all(|key| {
+                Self::key_is_down_in(old_keys, key) == states.is_held(key)
+                    && !states.was_pressed(key)
+                    && !states.was_released(key)
+            })
+    }
+
+    fn binding_kept_across_resync(
+        binding: Binding,
+        old_keys: &[u64; 2],
+        states: &KeyStates,
+    ) -> bool {
+        let main_key_is_steady = Self::key_is_down_in(old_keys, binding.key)
+            == states.is_held(binding.key)
+            && !states.was_pressed(binding.key)
+            && !states.was_released(binding.key);
+        if !main_key_is_steady || !states.is_held(binding.key) {
+            return false;
+        }
+        [CONTROL, ALT, SHIFT, META]
+            .into_iter()
+            .filter(|family| binding.modifiers & family != 0)
+            .all(|family| {
+                Self::modifier_keys(family).into_iter().any(|key| {
+                    states.is_held(key)
+                        && Self::key_is_down_in(old_keys, key)
+                        && !states.was_pressed(key)
+                        && !states.was_released(key)
+                })
+            })
+    }
+
+    fn binding_started_by_resync(
+        &self,
+        binding: Binding,
+        old_keys: &[u64; 2],
+        states: &KeyStates,
+    ) -> bool {
+        states.is_held(binding.key)
+            && (!Self::key_is_down_in(old_keys, binding.key) || states.was_pressed(binding.key))
+            && Self::counted_modifier_families_are_steady(binding, old_keys, states)
+            && self.modifier_mask(binding.key) == binding.modifiers
+    }
+
+    fn lost_tap_is_proven(
+        &self,
+        binding: Binding,
+        old_keys: &[u64; 2],
+        states: &KeyStates,
+    ) -> bool {
+        states.was_pressed(binding.key)
+            && Self::counted_modifier_families_are_steady(binding, old_keys, states)
+            && [CONTROL, ALT, SHIFT, META]
+                .into_iter()
+                .filter(|family| *family != binding.key.modifier().unwrap_or(0))
+                .all(|family| !self.modifier_is_down(family))
+    }
+
+    fn start_bindings_for(&mut self, key: Key) {
+        for index in 0..self.bindings.actions.len() {
+            for position in 0..self.bindings.actions[index].bindings.len() {
+                let binding = self.bindings.actions[index].bindings[position];
+                if binding.key == key && self.modifier_mask(key) == binding.modifiers {
+                    self.held_bindings[index][position] = true;
+                }
+            }
+        }
+    }
+
     fn binding_is_held(&self, binding: Binding) -> bool {
         self.key_is_down(binding.key)
             && (binding.modifiers & CONTROL == 0 || self.modifier_is_down(CONTROL))
@@ -1283,12 +1381,23 @@ impl Mapper {
     }
 
     fn recompute_actions(&mut self) {
+        if self.update_actions() {
+            self.close_presses = self.close_presses.saturating_add(1);
+        }
+    }
+
+    fn update_actions(&mut self) -> bool {
+        let mut close_pressed = false;
         for index in 0..self.bindings.actions.len() {
-            let now_held = self.bindings.actions[index]
-                .bindings
-                .iter()
-                .copied()
-                .any(|binding| self.binding_is_held(binding));
+            for position in 0..self.bindings.actions[index].bindings.len() {
+                if self.held_bindings[index][position] {
+                    let binding = self.bindings.actions[index].bindings[position];
+                    if !self.binding_is_held(binding) {
+                        self.held_bindings[index][position] = false;
+                    }
+                }
+            }
+            let now_held = self.held_bindings[index].iter().any(|active| *active);
             let was_held = self.actions[index].held;
             if now_held != was_held {
                 self.actions[index].held = now_held;
@@ -1297,7 +1406,7 @@ impl Mapper {
                 if now_held {
                     self.actions[index].pressed_sequence = Some(sequence);
                     if self.bindings.actions[index].name == "close" {
-                        self.close_presses = self.close_presses.saturating_add(1);
+                        close_pressed = true;
                     }
                 } else {
                     self.actions[index].released_sequence = Some(sequence);
@@ -1309,6 +1418,7 @@ impl Mapper {
                 });
             }
         }
+        close_pressed
     }
 
     fn push_transition(&mut self, record: TransitionRecord) {

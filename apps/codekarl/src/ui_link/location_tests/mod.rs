@@ -105,11 +105,17 @@ place_data = {
   {id = "fada", name = "Cluain Mhic Nóis", kind = "monastery", size = 2},
   {id = "long", name = string.rep("\u{D3}", 40), kind = "town", size = 1},
 }
+local host_game = game
 game = {
   on_time = function(callback) callbacks.time = callback end,
   on_select = function(callback) callbacks.select = callback end,
   on_hover = function(callback) callbacks.hover = callback end,
   control = function() end,
+  mark_unsaved = function()
+    unsaved_marks = (unsaved_marks or 0) + 1
+    host_game.mark_unsaved()
+    note("unsaved_count " .. tostring(unsaved_marks))
+  end,
   places = function() return place_data end,
   place = function(id, revision)
     place_calls[#place_calls + 1] = id .. "@" .. revision
@@ -921,6 +927,42 @@ fn click_look(rig: &mut Rig, key: &str) {
         PointerEvent::Up(points(x, y)),
     ]);
     rig.deliver_fixture_frame_at(1800, 900, 2);
+}
+
+#[test]
+fn an_effective_list_look_choice_marks_unsaved_but_reselecting_it_does_not() {
+    let mut rig = rig(&[
+        "time(1, 1) select_place('rowan', 'Rowan') announce_tabs()",
+        "announce_look()",
+    ]);
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    rig.opened();
+    assert!(
+        rig.control_receiver
+            .try_iter()
+            .all(|message| !matches!(message, crate::game::core::Message::MarkUnsaved)),
+        "changing the location tab is navigation"
+    );
+    click_look(&mut rig, "rows");
+    assert!(notes(&rig).iter().any(|line| line == "unsaved_count 1"));
+    click_look(&mut rig, "rows");
+    assert!(notes(&rig).iter().any(|line| line == "unsaved_count 1"));
+    click_look(&mut rig, "cards");
+    assert!(notes(&rig).iter().any(|line| line == "unsaved_count 2"));
+    let marks: Vec<_> = notes(&rig)
+        .into_iter()
+        .filter(|line| line.starts_with("unsaved_count "))
+        .collect();
+    assert_eq!(marks, ["unsaved_count 1", "unsaved_count 2"]);
+    assert_eq!(
+        rig.control_receiver.try_iter().collect::<Vec<_>>(),
+        [
+            crate::game::core::Message::MarkUnsaved,
+            crate::game::core::Message::MarkUnsaved,
+        ],
+        "the effective look choices reach the real core channel once each"
+    );
 }
 
 fn tab_point(rig: &Rig, key: &str) -> (f64, f64) {

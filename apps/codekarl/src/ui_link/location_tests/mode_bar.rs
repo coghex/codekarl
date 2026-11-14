@@ -73,6 +73,14 @@ fn the_mode_buttons_publish_the_mode_and_a_second_press_turns_it_off() {
         ["stockpile", "off", "yield", "stockpile"]
     );
     assert!(mode_button(&rig, "stockpile").2 && !mode_button(&rig, "yield").2);
+    let messages = rig.control_receiver.try_iter().collect::<Vec<_>>();
+    assert_eq!(messages.len(), 4);
+    assert!(
+        messages
+            .into_iter()
+            .all(|message| matches!(message, crate::game::core::Message::MarkUnsaved)),
+        "turning a mode on, off, and replacing modes each reaches the real core channel"
+    );
 }
 
 #[test]
@@ -132,12 +140,20 @@ fn a_mode_the_lane_refuses_leaves_the_buttons_and_the_mode_as_they_were() {
     // The refused press changed nothing: no mode was set, and no button is selected.
     assert_eq!(modes_called(&rig), Vec::<String>::new());
     assert!(!mode_button(&rig, "yield").2 && !mode_button(&rig, "stockpile").2);
+    assert!(matches!(
+        rig.control_receiver.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
     // Once the lane takes it, the same press works.
     rig.opened();
     press_mode(&mut rig, "yield");
     rig.opened();
     assert_eq!(modes_called(&rig), ["yield"]);
     assert!(mode_button(&rig, "yield").2);
+    assert_eq!(
+        rig.control_receiver.try_recv().unwrap(),
+        crate::game::core::Message::MarkUnsaved
+    );
 }
 
 #[test]

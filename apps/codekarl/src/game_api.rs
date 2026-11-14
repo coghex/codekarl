@@ -6,6 +6,10 @@
 //!
 //! `game.place(id, revision)` returns the economy view of a place at a revision a `game_time` carried (milestone 9, design §6). It
 //! reads only the [`ViewCache`] the UI link fills when it posts a snapshot, never the live simulation.
+//!
+//! `game.mark_unsaved()` and `game.load_save_guarded(filename)` share the simulation's ordered message route with saves and loads. The
+//! guarded load returns immediately; its eventual outcome reaches `game_save_result(filename, result)` after
+//! `game.on_save_result(fn | nil)` registers a callback.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ck_lua::{ConfigValue, Extension, HostFunction};
 
-use crate::game::controls::{self, SimControls};
+use crate::game::controls::{self, GuardedLoadResult, SimControls};
 use crate::game::core::{SaveCall, SaveReply};
 use crate::game::saves::Entry;
 use crate::game::slot::{PauseReason, SimSnapshot};
@@ -26,6 +30,8 @@ pub(crate) const GAME_TIME: &str = "game_time";
 pub(crate) const GAME_HOVER: &str = "game_hover";
 /// The callback `game.on_select` registers.
 pub(crate) const GAME_SELECT: &str = "game_select";
+/// The callback for the completed outcome of a guarded load.
+pub(crate) const GAME_SAVE_RESULT: &str = "game_save_result";
 
 /// The `game` extension. `registered` follows whether a callback is set; `wake` runs after each change so the loop's next pass
 /// delivers the current state to a callback that has just been registered.
@@ -54,10 +60,12 @@ pub(crate) fn extension_with_select(
 ) -> Extension {
     let time_wake = Arc::clone(&wake);
     let hover_wake = Arc::clone(&wake);
+    let result_controls = controls.clone();
     Extension::new("game")
         .function("control", control_function(controls.clone()))
         .function("pause", pause_function(controls.clone()))
         .function("set_modal", set_modal_function(controls.clone()))
+        .function("mark_unsaved", mark_unsaved_function(controls.clone()))
         .function("saves", saves_function(controls.clone()))
         .function("save", save_function(controls.clone(), SaveCall::New))
         .function("save_over", save_function(controls.clone(), SaveCall::Over))
@@ -65,7 +73,8 @@ pub(crate) fn extension_with_select(
             "delete_save",
             save_function(controls.clone(), SaveCall::Delete),
         )
-        .function("load_save", save_function(controls, SaveCall::Load))
+        .function("load_save", save_function(controls.clone(), SaveCall::Load))
+        .function("load_save_guarded", guarded_load_function(controls))
         .callback_observed(
             "on_time",
             GAME_TIME,
@@ -90,6 +99,40 @@ pub(crate) fn extension_with_select(
                 wake();
             }),
         )
+        .callback_observed(
+            "on_save_result",
+            GAME_SAVE_RESULT,
+            Arc::new(move |is_registered| {
+                result_controls.set_save_result_registered(is_registered);
+            }),
+        )
+}
+
+fn mark_unsaved_function(controls: SimControls) -> HostFunction {
+    Arc::new(move |arguments| {
+        if !arguments.is_empty() {
+            return Err("game.mark_unsaved: expected no arguments".to_owned());
+        }
+        controls.mark_unsaved();
+        Ok(Vec::new())
+    })
+}
+
+fn guarded_load_function(controls: SimControls) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [Some(ConfigValue::String(filename))] = arguments else {
+            return Err("game.load_save_guarded: expected one save filename".to_owned());
+        };
+        controls.guarded_load(filename.clone());
+        Ok(Vec::new())
+    })
+}
+
+pub(crate) fn guarded_result_arguments(result: &GuardedLoadResult) -> Vec<ConfigValue> {
+    vec![
+        ConfigValue::String(result.filename.clone()),
+        result_value(result.result.clone()),
+    ]
 }
 
 fn saves_function(controls: SimControls) -> HostFunction {
@@ -814,6 +857,27 @@ mod tests {
     }
 
     #[test]
+    fn game_time_keeps_exactly_its_seven_existing_fields() {
+        let value = time_table(&crate::readout_tests::snapshot(3, 2, None));
+        let ConfigValue::Table(fields) = value else {
+            panic!("game_time gets one table");
+        };
+        let keys: Vec<_> = fields.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "day",
+                "economy_revision",
+                "hour",
+                "month",
+                "paused",
+                "speed",
+                "year",
+            ]
+        );
+    }
+
+    #[test]
     fn save_host_calls_return_only_after_the_owner_reports_the_completed_result() {
         let (sender, receiver) = std::sync::mpsc::channel();
         let list = saves_function(SimControls::new(sender));
@@ -871,6 +935,39 @@ mod tests {
         assert_eq!(
             result.get("reason"),
             Some(&ConfigValue::String("name is invalid".to_owned()))
+        );
+    }
+
+    #[test]
+    fn dirty_mark_and_guarded_load_use_the_ordered_route_and_guarded_result_is_async() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let controls = SimControls::new(sender);
+        let mark = mark_unsaved_function(controls.clone());
+        assert!(mark(&[]).unwrap().is_empty());
+        assert_eq!(receiver.recv().unwrap(), Message::MarkUnsaved);
+
+        let guarded = guarded_load_function(controls.clone());
+        assert!(
+            guarded(&[Some(ConfigValue::String("slot.cksave".to_owned()))])
+                .unwrap()
+                .is_empty()
+        );
+        let Message::GuardedLoad { filename, reply } = receiver.recv().unwrap() else {
+            panic!("guarded load is sent on the simulation route");
+        };
+        assert_eq!(filename, "slot.cksave");
+        reply.send(GuardedLoadResult {
+            filename: filename.clone(),
+            result: Err("unsaved".to_owned()),
+        });
+        let result = controls.take_guarded_result().unwrap();
+        assert_eq!(result.filename, "slot.cksave");
+        assert_eq!(
+            guarded_result_arguments(&result),
+            vec![
+                ConfigValue::String("slot.cksave".to_owned()),
+                error_value("unsaved".to_owned()),
+            ]
         );
     }
 

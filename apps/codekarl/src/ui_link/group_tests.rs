@@ -194,6 +194,22 @@ impl Rig {
             })
         };
         extra_functions.insert(0, ("record", record));
+        let test_save: HostFunction = {
+            let controls = controls.clone();
+            Arc::new(move |arguments| {
+                if !arguments.is_empty() {
+                    return Err("send_save_for_test takes no arguments".to_owned());
+                }
+                let (reply, result) = mpsc::channel();
+                controls.send_save_for_test(
+                    crate::game::core::SaveCall::New("rig save".to_owned()),
+                    reply,
+                );
+                drop(result);
+                Ok(Vec::new())
+            })
+        };
+        extra_functions.insert(0, ("send_save_for_test", test_save));
         let harness = Harness::new(
             script,
             Extras {
@@ -380,6 +396,294 @@ impl Rig {
     }
 }
 
+fn ordered_choice_rig(choice_label: &str, deliver_time_before_change: bool) -> Rig {
+    let script = format!(
+        r#"
+local windows = require("lib.window")
+local button = require("lib.button")
+local pointer = require("lib.pointer")
+local panel = windows.new{{title = "Ordering", content_width = 150, content_height = 60, x = 20, y = 20}}
+local choice = button.new{{x = 0, y = 0, text = "{choice_label}", group = panel.content, owner = panel,
+  on_click = function() game.mark_unsaved() end}}
+local guard = button.new{{x = 0, y = 24, text = "Guard", group = panel.content, owner = panel,
+  on_click = function() game.load_save_guarded("test.cksave") end}}
+game.on_time(function() end)
+frame.on_update(function(update) pointer.dispatch(update.pointer) end)
+window.on_opened(function() window.record(choice.key); window.record(guard.key) end)
+"#
+    );
+    let mut rig = Rig::new_fixture_body(&script);
+    rig.opened();
+    if deliver_time_before_change {
+        rig.deliver_game_time(&crate::readout_tests::snapshot(3, 2, None));
+    }
+    rig
+}
+
+fn recorded_keys(rig: &Rig) -> (String, String) {
+    let tables = rig.tables.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut keys = tables.iter().filter_map(|value| match value {
+        ConfigValue::String(key) => Some(key.clone()),
+        _ => None,
+    });
+    (
+        keys.next().expect("choice key"),
+        keys.next().expect("guard key"),
+    )
+}
+
+fn click_two_keys_in_one_update(rig: &mut Rig, first: &str, second: &str) {
+    let first = pointer_inside_hit_key(rig, first);
+    let second = pointer_inside_hit_key(rig, second);
+    rig.feed(&[
+        PointerEvent::Down(first),
+        PointerEvent::Up(first),
+        PointerEvent::Down(second),
+        PointerEvent::Up(second),
+    ]);
+    rig.deliver_fixture_frame();
+}
+
+fn assert_mark_then_guarded(rig: &mut Rig) {
+    assert!(matches!(
+        rig.control_receiver.try_recv(),
+        Ok(crate::game::core::Message::MarkUnsaved)
+    ));
+    let Ok(crate::game::core::Message::GuardedLoad { filename, .. }) =
+        rig.control_receiver.try_recv()
+    else {
+        panic!("guarded load follows the UI choice on the same route");
+    };
+    assert_eq!(filename, "test.cksave");
+    assert!(rig.control_receiver.try_recv().is_err());
+}
+
+#[test]
+fn look_then_guarded_load_stays_ordered_with_game_time_withheld() {
+    for deliver_time_before_change in [false, true] {
+        let mut rig = ordered_choice_rig("Rows", deliver_time_before_change);
+        let (choice, guard) = recorded_keys(&rig);
+        click_two_keys_in_one_update(&mut rig, &choice, &guard);
+        assert_mark_then_guarded(&mut rig);
+    }
+}
+
+#[test]
+fn map_mode_then_guarded_load_stays_ordered_with_game_time_withheld() {
+    for deliver_time_before_change in [false, true] {
+        let mut rig = ordered_choice_rig("Mode", deliver_time_before_change);
+        let (mode, guard) = recorded_keys(&rig);
+        click_two_keys_in_one_update(&mut rig, &mode, &guard);
+        assert_mark_then_guarded(&mut rig);
+    }
+}
+
+#[test]
+fn save_look_and_guarded_load_stay_ordered_with_game_time_withheld() {
+    let script = r#"
+local windows = require("lib.window")
+local button = require("lib.button")
+local pointer = require("lib.pointer")
+local panel = windows.new{title = "Ordering", content_width = 150, content_height = 60, x = 20, y = 20}
+local change = button.new{x = 0, y = 0, text = "Save and rows", group = panel.content, owner = panel,
+  on_click = function()
+    window.send_save_for_test()
+    game.mark_unsaved()
+    game.load_save_guarded("test.cksave")
+  end}
+game.on_time(function() end)
+frame.on_update(function(update) pointer.dispatch(update.pointer) end)
+window.on_opened(function() window.record(change.key) end)
+"#;
+    for deliver_time_before_change in [false, true] {
+        let mut rig = Rig::new_fixture_body(script);
+        rig.opened();
+        if deliver_time_before_change {
+            rig.deliver_game_time(&crate::readout_tests::snapshot(3, 2, None));
+        }
+        let tables = rig.tables.lock().unwrap_or_else(PoisonError::into_inner);
+        let key = tables
+            .iter()
+            .find_map(|value| match value {
+                ConfigValue::String(key) => Some(key.clone()),
+                _ => None,
+            })
+            .expect("save choice button key");
+        drop(tables);
+        let point = pointer_inside_hit_key(&rig, &key);
+        rig.feed(&[PointerEvent::Down(point), PointerEvent::Up(point)]);
+        rig.deliver_fixture_frame();
+        assert!(matches!(
+            rig.control_receiver.try_recv(),
+            Ok(crate::game::core::Message::Save(crate::game::core::SaveCall::New(name), _))
+                if name == "rig save"
+        ));
+        assert_eq!(
+            rig.control_receiver.try_recv().unwrap(),
+            crate::game::core::Message::MarkUnsaved
+        );
+        let Ok(crate::game::core::Message::GuardedLoad { filename, .. }) =
+            rig.control_receiver.try_recv()
+        else {
+            panic!("guarded load follows save and UI choice on the same route");
+        };
+        assert_eq!(filename, "test.cksave");
+        assert!(rig.control_receiver.try_recv().is_err());
+    }
+}
+
+#[test]
+fn pause_then_guarded_load_stay_ordered_with_game_time_withheld() {
+    let script = r#"
+local button = require("lib.button")
+local menu = require("lib.menu")
+local pointer = require("lib.pointer")
+local view = {width = 400, height = 320}
+local guard
+game.on_time(function() end)
+frame.on_update(function(update) pointer.dispatch(update.pointer) end)
+window.on_opened(function()
+  local menu_window = menu.open(view)
+  guard = button.new{x = 0, y = 0, text = "Test load", group = menu_window.content, owner = menu_window,
+    on_click = function() game.load_save_guarded("test.cksave") end}
+  window.record(guard.key)
+end)
+"#;
+    for deliver_time_before_change in [false, true] {
+        let mut rig = Rig::new_fixture_body(script);
+        rig.opened();
+        assert_eq!(
+            rig.control_receiver.try_recv().unwrap(),
+            crate::game::core::Message::Control(crate::game::controls::Control::Pause)
+        );
+        if deliver_time_before_change {
+            rig.deliver_game_time(&crate::readout_tests::snapshot(3, 2, None));
+        }
+        let tables = rig.tables.lock().unwrap_or_else(PoisonError::into_inner);
+        let key = tables
+            .iter()
+            .find_map(|value| match value {
+                ConfigValue::String(key) => Some(key.clone()),
+                _ => None,
+            })
+            .expect("pause menu load button key");
+        drop(tables);
+        let point = pointer_inside_hit_key(&rig, &key);
+        rig.feed(&[PointerEvent::Down(point), PointerEvent::Up(point)]);
+        rig.deliver_fixture_frame();
+        let Ok(crate::game::core::Message::GuardedLoad { filename, .. }) =
+            rig.control_receiver.try_recv()
+        else {
+            panic!("guarded load follows the menu pause on the same route");
+        };
+        assert_eq!(filename, "test.cksave");
+        assert!(rig.control_receiver.try_recv().is_err());
+    }
+}
+
+fn guarded_result_rig(register_on_open: bool) -> Rig {
+    let register = if register_on_open {
+        "game.on_save_result(receive_save_result)"
+    } else {
+        ""
+    };
+    let script = format!(
+        r#"
+local function receive_save_result(filename, result)
+  window.record({{filename = filename, ok = result.ok, reason = result.reason}})
+end
+local requested = false
+game.on_time(function() end)
+frame.on_update(function() end)
+window.on_opened(function()
+  if not requested then
+    requested = true
+    {register}
+    game.load_save_guarded("test.cksave")
+  else
+    game.on_save_result(receive_save_result)
+  end
+end)
+"#
+    );
+    let mut rig = Rig::new_fixture_body(&script);
+    rig.opened();
+    rig
+}
+
+fn answer_guarded_request(rig: &Rig, result: Result<(), &str>) {
+    let crate::game::core::Message::GuardedLoad { filename, reply } =
+        rig.control_receiver.try_recv().expect("guarded request")
+    else {
+        panic!("UI asks the owner for a guarded load");
+    };
+    assert_eq!(filename, "test.cksave");
+    reply.send(crate::game::controls::GuardedLoadResult {
+        filename,
+        result: result.map_err(str::to_owned),
+    });
+    assert!(rig.control_receiver.try_recv().is_err());
+}
+
+fn assert_recorded_guard_result(rig: &Rig, expected: Result<(), &str>) {
+    let tables = rig.tables.lock().unwrap_or_else(PoisonError::into_inner);
+    let value = tables
+        .iter()
+        .find_map(|value| match value {
+            ConfigValue::Table(fields) if fields.contains_key("filename") => Some(fields),
+            _ => None,
+        })
+        .expect("game_save_result reached the UI callback");
+    assert_eq!(
+        value.get("filename"),
+        Some(&ConfigValue::String("test.cksave".to_owned()))
+    );
+    assert_eq!(value.get("ok"), Some(&ConfigValue::Bool(expected.is_ok())));
+    match expected {
+        Ok(()) => assert!(!value.contains_key("reason")),
+        Err(reason) => assert_eq!(
+            value.get("reason"),
+            Some(&ConfigValue::String(reason.to_owned()))
+        ),
+    }
+}
+
+#[test]
+fn guarded_load_results_reach_registered_callbacks_and_wait_for_late_registration() {
+    for (register_first, result) in [
+        (true, Err("unsaved")),
+        (true, Ok(())),
+        (false, Err("unsaved")),
+    ] {
+        let mut rig = guarded_result_rig(register_first);
+        assert_eq!(rig.controls.save_result_registered(), register_first);
+        answer_guarded_request(&rig, result);
+        rig.link.deliver_updates();
+        if !register_first {
+            rig.deliver_fixture_frame();
+            assert!(
+                !rig.tables.lock().unwrap_or_else(PoisonError::into_inner)
+                    .iter()
+                    .any(|value| matches!(value, ConfigValue::Table(fields) if fields.contains_key("filename"))),
+                "an unregistered callback keeps the result queued"
+            );
+            rig.opened();
+            assert!(rig.controls.save_result_registered());
+            rig.link.deliver_updates();
+        }
+        assert!(
+            rig.link
+                .outstanding_names()
+                .contains(&crate::game_api::GAME_SAVE_RESULT),
+            "the link posts the completed result once a callback is registered"
+        );
+        // Opened is a marker behind the hidden result callback, so its answer proves that the
+        // preceding save result ran in the real VM before inspecting the recorded value.
+        rig.opened();
+        assert_recorded_guard_result(&rig, result);
+    }
+}
+
 #[test]
 fn both_backend_map_selection_bodies_start_and_receive_pointer_events_in_a_real_ui_vm() {
     const CHILD: &str = "CK_UI_LINK_MAP_SELECT_VM_CHILD";
@@ -455,6 +759,12 @@ fn run_map_selection_fixture_vm(markers: &std::path::Path) {
     open_and_raise_fixture_windows(&mut rig, markers);
     move_fixture_place_window(&mut rig, markers);
     close_fixture_windows(&mut rig, markers);
+    assert!(
+        rig.control_receiver
+            .try_iter()
+            .all(|message| !matches!(message, crate::game::core::Message::MarkUnsaved)),
+        "map scrolling and window open, raise, move, and close are navigation"
+    );
 }
 
 #[test]
@@ -512,6 +822,12 @@ end
     assert_eq!(text_field(&observed, "class"), "location");
     assert_eq!(text_field(&observed, "title"), "Fixture Town");
     assert_eq!(text_field(&observed, "population"), "population 412");
+    assert!(
+        rig.control_receiver
+            .try_iter()
+            .all(|message| !matches!(message, crate::game::core::Message::MarkUnsaved)),
+        "map hover and its tooltip are navigation"
+    );
 }
 
 #[test]

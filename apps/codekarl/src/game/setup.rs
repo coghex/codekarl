@@ -276,8 +276,8 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
     let wiring_gameplay = gameplay.clone();
     let wiring_rules = economy_rules.clone();
     let (sender, receiver) = channel();
+    let controls = SimControls::with_wake(sender.clone(), Arc::clone(&wake));
     let slot = SimSlot::new(wake);
-    let controls = SimControls::new(sender.clone());
     let owned_slot = Arc::clone(&slot);
     let spawn = OwnerSpawn::new("sim", move || {
         let publishing = Arc::clone(&owned_slot);
