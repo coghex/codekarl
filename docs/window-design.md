@@ -259,6 +259,8 @@ waited on:
     §3.17);
   - **since CK-309,** two more fields: the latest key-capture command (arm, with an id, or cancel) and the latest whole set
     of key bindings (`docs/scene-design.md` §10.1);
+  - **since CK-321,** a request for text input on that the loop reads while a key capture is active is not lost. The loop
+    keeps it, outside the slot, and applies it once no capture is active (`docs/ui-design.md` §3.19);
   - the slot's lock is held only to copy a small value in or out. It is never held while Lua runs or a native call is made.
 
   The slot is bounded by its size, so nothing can fill it, and it needs no admission rule.
