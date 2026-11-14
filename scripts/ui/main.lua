@@ -690,6 +690,7 @@ frame.on_update(function(update)
   -- An update's typing is handled first, all of it, and then its pointer events (lib/typing.lua).
   typing.dispatch(update)
   pointer.dispatch(update.pointer)
+  require("lib.settings_window").update(update)
   listbar.update(update)
   if update.width ~= view.width or update.height ~= view.height then
     view.width = update.width

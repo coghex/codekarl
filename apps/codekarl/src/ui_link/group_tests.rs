@@ -96,6 +96,7 @@ pub(super) struct Rig {
     pub(super) map: crate::map_app::SharedController,
     select_registered: Arc<AtomicBool>,
     pub(super) mapper: Mapper,
+    request_reader: Option<ck_window::RequestReader>,
     pub(super) sink: Arc<Last>,
     pub(super) tables: Tables,
     pub(super) map_pointer: PointerPosition,
@@ -114,17 +115,27 @@ impl Rig {
             false,
             Vec::new(),
             None,
+            None,
         )
     }
 
     /// Runs a fixture's full script without replacing its own frame callback with the reporting callback.
     pub(super) fn new_fixture_body(script: &str) -> Self {
-        Self::with_script(script, false, Vec::new(), None)
+        Self::with_script(script, false, Vec::new(), None, None)
     }
 
     /// Runs a fixture body with a replacement `settings` host table.
     pub(super) fn new_fixture_body_with_settings(script: &str, settings: Extension) -> Self {
-        Self::with_script(script, false, Vec::new(), Some(settings))
+        Self::with_script(script, false, Vec::new(), Some(settings), None)
+    }
+
+    /// Runs a fixture against the production settings runtime and its loop request slot.
+    pub(super) fn new_fixture_body_with_requests(
+        script: &str,
+        settings: Extension,
+        reader: ck_window::RequestReader,
+    ) -> Self {
+        Self::with_script(script, false, Vec::new(), Some(settings), Some(reader))
     }
 
     /// Runs a fixture body with additional host functions, for tests that need the same serialized data as a production API.
@@ -132,13 +143,13 @@ impl Rig {
         script: &str,
         functions: Vec<(&'static str, HostFunction)>,
     ) -> Self {
-        Self::with_script(script, false, functions, None)
+        Self::with_script(script, false, functions, None, None)
     }
 
     /// [`new_fixture_body`](Self::new_fixture_body) for a window opened in screen pixels: its UI is in UI units at the scale its drawable
     /// allows.
     pub(super) fn new_fixture_body_in_pixels(script: &str) -> Self {
-        Self::with_script(script, true, Vec::new(), None)
+        Self::with_script(script, true, Vec::new(), None, None)
     }
 
     #[expect(
@@ -150,6 +161,7 @@ impl Rig {
         in_pixels: bool,
         mut extra_functions: Vec<(&'static str, HostFunction)>,
         settings_extension: Option<Extension>,
+        request_reader: Option<ck_window::RequestReader>,
     ) -> Self {
         let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../assets")
@@ -284,6 +296,7 @@ impl Rig {
             map,
             select_registered,
             mapper: Mapper::new(Bindings::from_entries(Vec::new()).expect("default bindings")),
+            request_reader,
             sink,
             tables,
             map_pointer,
@@ -300,6 +313,24 @@ impl Rig {
             self.mapper.pointer(*event);
         }
         run_tick(&mut self.mapper, &mut self.link);
+    }
+
+    /// Applies one settings request batch as the main loop does before the next input event.
+    pub(super) fn apply_settings_requests(&mut self) -> ck_window::RequestChanges {
+        let Some(reader) = &self.request_reader else {
+            panic!("this fixture has no settings request reader");
+        };
+        let changes = reader.take();
+        if let Some(bindings) = changes.bindings.clone() {
+            self.mapper.replace_bindings(bindings);
+        }
+        if let Some(capture) = changes.capture.clone() {
+            match capture {
+                ck_window::CaptureRequest::Arm(id) => self.mapper.arm_capture(id),
+                ck_window::CaptureRequest::Cancel => self.mapper.cancel_capture(),
+            }
+        }
+        changes
     }
 
     /// Posts the next `frame_update`, waits for it, and returns what the script recorded for it.

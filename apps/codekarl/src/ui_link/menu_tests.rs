@@ -9,8 +9,8 @@
 use ck_window::{CloseSource, PointerEvent, ScrollUnit, UiEvent};
 
 use super::group_tests::Rig;
-use super::input_tick_tests::{answer, camera_of};
-use super::listbar_tests::{MARKS, PROBE, click, click_at, frame, hover, point, rig};
+use super::input_tick_tests::{answer, camera_of, tick};
+use super::listbar_tests::{MARKS, PRELUDE, PROBE, click, click_at, frame, hover, point, rig};
 use super::widget_witness_tests::points;
 use super::*;
 use crate::game::controls::Control;
@@ -24,6 +24,7 @@ menu = require("lib.menu")
 VIEW = {width = 800, height = 600}
 window.on_close_request(function(source) return menu.close_request(source, VIEW) end)
 function on_frame(update)
+  require("lib.settings_window").update(update)
   if update.width ~= VIEW.width or update.height ~= VIEW.height then
     VIEW.width, VIEW.height = update.width, update.height
     windows.update_viewport(VIEW.width, VIEW.height)
@@ -617,10 +618,34 @@ fixture = {
     {name="map_zoom_out", bindings={"Minus"}},
   }
 }
+fixture.base_bindings = {}
+for _, action in ipairs(fixture.bindings) do
+  fixture.base_bindings[action.name] = {}
+  for index, key in ipairs(action.bindings) do fixture.base_bindings[action.name][index] = key end
+end
 settings = {
   tooltips = function() return fixture.tooltips end,
   map = function() return fixture.map end,
   bindings = function() return fixture.bindings end,
+  set_bindings = function(changes)
+    fixture.calls[#fixture.calls + 1] = {"set_bindings", changes}
+    for name, keys in pairs(changes) do
+      for _, action in ipairs(fixture.bindings) do
+        if action.name == name then
+          action.bindings = {}
+          for index, key in ipairs(keys) do action.bindings[index] = key end
+        end
+      end
+    end
+  end,
+  capture_key = function(id)
+    fixture.calls[#fixture.calls + 1] = {"capture_key", id}
+    fixture.capture = id
+  end,
+  cancel_capture = function()
+    fixture.calls[#fixture.calls + 1] = {"cancel_capture"}
+    fixture.capture = nil
+  end,
   set = function(name, value)
     fixture.calls[#fixture.calls + 1] = {"set", name, value}
     if name == "ui.tooltips.delay" then fixture.tooltips.delay = value
@@ -633,9 +658,24 @@ settings = {
   reset = function(tab)
     fixture.calls[#fixture.calls + 1] = {"reset", tab}
     if tab == "tooltips" then fixture.tooltips = {delay=0.3, lock="middle_mouse", lock_timer=1.5}
-    else fixture.map = {pan_pixels_per_frame=4, zoom_steps_per_second=20, scroll_points_per_step=24} end
+    elseif tab == "map" then fixture.map = {pan_pixels_per_frame=4, zoom_steps_per_second=20, scroll_points_per_step=24}
+    else
+      for _, action in ipairs(fixture.bindings) do
+        action.bindings = {}
+        for index, key in ipairs(fixture.base_bindings[action.name] or {}) do action.bindings[index] = key end
+      end
+    end
   end,
 }
+function fixture_action(name)
+  for _, action in ipairs(fixture.bindings) do if action.name == name then return action end end
+  error("missing fixture binding " .. name)
+end
+function finish_capture(value)
+  local state = require("lib.settings_window").current()
+  if state == nil or state.waiting == nil then error("no waiting settings slot") end
+  require("lib.settings_window").update({capture={id=state.waiting.id, kind="binding", value=value}})
+end
 function mark_settings()
   local s = require("lib.settings_window").current()
   if s == nil then return end
@@ -661,6 +701,20 @@ function mark_settings()
         mark("settings_control_" .. name .. "_" .. index, x + w / 2, y + h / 2)
       end
     end
+  end
+  for action, slots in pairs(s.controls.key_slots or {}) do
+    for index, slot in ipairs(slots) do
+      local x, y, w, h = hit_rect(slot.key)
+      mark("settings_slot_" .. action .. "_" .. index, x + w / 2, y + h / 2)
+    end
+  end
+  if s.prompt ~= nil then
+    for _, b in ipairs(s.prompt.buttons or {}) do
+      local x, y, w, h = hit_rect(b.key)
+      mark("settings_prompt_" .. line_text(b.line), x + w / 2, y + h / 2)
+    end
+    local x, y, w, h = hit_rect(s.prompt.backdrop_key)
+    mark("settings_prompt_backdrop", x + w / 2, y + h / 2)
   end
   if s.window.close_button ~= nil then
     local b = s.window.close_button
@@ -1034,7 +1088,7 @@ eq(fixture.tooltips.delay, 0.3, "map reset leaves general values alone")
 }
 
 #[test]
-fn settings_input_rows_format_bindings_abbreviate_arrows_and_clip_long_names() {
+fn settings_input_slots_format_names_and_keep_the_fixed_menu_row_inert() {
     let mut rig = settings_rig(&[
         r#"
 for _, action in ipairs(fixture.bindings) do
@@ -1046,23 +1100,31 @@ end
         r#"
 local s = require("lib.settings_window").current()
 eq(s.selected, "input")
-expect(s.controls.defaults == nil, "input has no defaults button")
-local found = {}
+expect(s.controls.defaults ~= nil, "input has a defaults button")
 local all = {}
-for _, line in ipairs(lines_in(s.page.group)) do
+for _, line in ipairs(lines_in(s.page.rows_group)) do
   local shown = line_text(line)
-  found[shown] = true
   all[#all + 1] = shown
-  expect(line.x + line.width * P <= s.page.room + P, "row stays within the content right edge")
 end
-for _, value in ipairs({"pause", "Space", "speed 1 to 5", "1  2  3  4  5", "faster, slower", "]  [",
-  "quicksave", "Control+", "quickload", "move the map", "arrows", "zoom in, out", "=  Shift+Equal  -", "close, menu", "Escape",
-  "changing keys comes later"}) do
-  local matched = false
-  for _, shown in ipairs(all) do if shown:find(value, 1, true) then matched = true end end
-  expect(matched, "input shows " .. value)
-end
-expect(not table.concat(all, " "):find("ArrowLeft", 1, true), "the exact four default arrows collapse to arrows")
+expect(table.concat(all, " "):find("time", 1, true) < table.concat(all, " "):find("game", 1, true), "time group comes before game")
+expect(table.concat(all, " "):find("game", 1, true) < table.concat(all, " "):find("map", 1, true), "game group comes before map")
+expect(line_text(s.controls.key_slots.game_quicksave[1].line):find("Ctrl+", 1, true) == 1,
+  "long physical names retain their modifier before clipping")
+eq(line_text(s.controls.key_slots.game_quicksave[2].line), "-")
+eq(line_text(s.controls.key_slots.game_quickload[1].line), "-")
+eq(line_text(s.controls.key_slots.map_pan_left[1].line), "Left")
+eq(line_text(s.controls.key_slots.map_zoom_in[1].line), "=")
+eq(line_text(s.controls.key_slots.map_zoom_in[2].line), "Shift+=")
+eq(line_text(s.controls.key_slots.close[1].line), "Escape")
+expect(s.controls.key_slots.game_quickload[1].y < s.controls.key_slots.close[1].y,
+  "the fixed menu row follows quickload in the game group")
+expect(s.controls.key_slots.close[1].y < s.controls.key_slots.map_pan_left[1].y,
+  "the fixed menu row appears before the map group")
+eq(s.controls.key_slots.game_quicksave[2].line.colour, theme_lib.colour("dim"), "an empty slot is dim")
+expect(line_text(s.controls.key_slots.game_quicksave[1].line):find("..", 1, true) ~= nil,
+  "a physical key name that does not fit ends in two dots")
+expect(s.controls.rows.close.read_only and s.controls.rows.close.slots[1].frame.line == theme_lib.colour("track"),
+  "the fixed menu slot is dimmed and read-only")
 "#,
     ]);
     rig.opened();
@@ -1070,6 +1132,1069 @@ expect(not table.concat(all, " "):find("ArrowLeft", 1, true), "the exact four de
     rig.opened();
     click_marked(&mut rig, "settings_tab_input");
     rig.opened();
+}
+
+#[test]
+fn settings_input_keeps_the_menu_under_game_when_no_game_actions_are_available() {
+    let mut rig = settings_rig(&[
+        r#"
+for index = #fixture.bindings, 1, -1 do
+  local name = fixture.bindings[index].name
+  if name == "game_quicksave" or name == "game_quickload" then table.remove(fixture.bindings, index) end
+end
+"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+local lines = lines_in(s.page.rows_group)
+local game_y, menu_y, map_y
+for _, line in ipairs(lines) do
+  local shown = line_text(line)
+  if shown == "game" then game_y = line.y end
+  if shown == "menu" then menu_y = line.y end
+  if shown == "map" then map_y = line.y end
+end
+expect(game_y ~= nil and menu_y ~= nil and map_y ~= nil, "the menu keeps an otherwise empty game group visible")
+expect(game_y < menu_y and menu_y < map_y, "the game group contains only menu before map")
+expect(s.controls.rows.game_quicksave == nil and s.controls.rows.game_quickload == nil)
+expect(s.controls.rows.close.read_only, "the menu remains fixed")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_tab_has_two_real_rebinding_slots_per_player_action() {
+    let mut rig = settings_rig(&[
+        r#"
+expect(not menu_button("settings").inactive)
+"#,
+        r#"
+expect(require("lib.settings_window").current() ~= nil)
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.selected == "input")
+expect(s.controls.defaults ~= nil, "input restores the binding defaults")
+local slots = s.controls.key_slots
+expect(slots ~= nil, "input exposes interactive key slots")
+eq(#slots.time_pause, 2)
+eq(line_text(slots.time_pause[1].line), "Space")
+eq(line_text(slots.time_pause[2].line), "-")
+eq(line_text(slots.game_quicksave[1].line), "F5")
+eq(line_text(slots.map_zoom_in[2].line), "Shift+=")
+expect(slots.close[1].read_only and slots.close[2].read_only, "the menu row stays fixed")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_capture_swaps_exact_bindings_and_the_modal_prompt_blocks_settings() {
+    let mut rig = settings_rig(&[
+        r#"expect(not menu_button("settings").inactive)"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil and fixture.capture == s.waiting.id,
+  "the slot arms capture through the settings call: waiting=" .. tostring(s.waiting) .. " capture=" .. tostring(fixture.capture))
+expect(not require("lib.typing").start({on_typed = function() end}), "key capture keeps typing disabled")
+eq(line_text(s.controls.key_slots.time_pause[2].line), "press a key")
+expect(s.controls.escape_cancel ~= nil and line_text(s.controls.escape_cancel.line) == "Escape cancels")
+local id = s.waiting.id
+require("lib.settings_window").update({capture={id=id, kind="binding", value="Control+KeyP"}})
+expect(s.waiting == nil and s.prompt == nil, "an unused key binds immediately")
+eq(fixture.calls[#fixture.calls][1], "set_bindings")
+eq(fixture.calls[#fixture.calls][2].time_pause[2], "Control+KeyP", "modifiers stay exact")
+eq(line_text(s.controls.key_slots.time_pause[2].line), "Ctrl+P")
+s.page:set_scroll(s.page.row_height)
+expect(s.page.scroll > 0, "the long bindings list scrolls to its later groups")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(line_text(s.controls.key_slots.time_pause[2].line), "Ctrl+P")
+local id = s.waiting.id
+require("lib.settings_window").update({capture={id=id, kind="binding", value="Space"}})
+expect(s.prompt ~= nil and s.prompt.window.modal, "a used key opens a modal decision")
+eq(s.prompt.window.title, "Key in use")
+expect(windows.top() == s.prompt.window, "the decision is above Settings")
+expect(hit_rect(s.prompt.backdrop_key) ~= nil and not require("lib.pointer").functional(s.prompt.backdrop_key),
+  "the prompt's full-view backdrop is hit-tested but passive")
+eq(line_text(s.controls.key_slots.map_zoom_in[2].line), "Shift+=", "opening a prompt leaves both actions untouched")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.prompt == nil, "swap applies and closes the prompt")
+local bindings = {}
+for _, action in ipairs(fixture.bindings) do bindings[action.name] = action.bindings end
+eq(bindings.time_pause[1], "Shift+Equal")
+eq(bindings.map_zoom_in[2], "Space")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    let slot = point(&rig, "settings_slot_time_pause_2");
+    assert!(
+        rig.key_at(slot.0, slot.1)
+            .is_some_and(|key| key.starts_with("settings_key_slot_")),
+        "the marked second pause slot is topmost at {slot:?}: {:?}",
+        rig.key_at(slot.0, slot.1)
+    );
+    click_at(&mut rig, slot);
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_map_zoom_in_2");
+    rig.opened();
+    click_marked(&mut rig, "settings_prompt_swap");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_replace_names_and_clears_every_editable_owner_in_one_call() {
+    let mut rig = settings_rig(&[
+        r#"
+fixture_action("time_pause").bindings = {"Control+KeyX"}
+fixture_action("game_quicksave").bindings = {"Control+KeyX"}
+fixture_action("game_quickload").bindings = {"F9"}
+expect(not menu_button("settings").inactive)
+"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+s.page:set_scroll(s.controls.key_slots.game_quickload[1].y)
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+finish_capture("Control+KeyX")
+expect(s.prompt ~= nil)
+local lines = lines_in(s.prompt.window.content)
+eq(line_text(lines[1]), "Ctrl+X is pause's and quicksave's key.")
+eq(line_text(lines[2]), "Use it for quickload instead?")
+eq(line_text(lines[3]), "Their slots will be empty.")
+eq(#s.prompt.buttons, 3)
+eq(line_text(s.prompt.buttons[1].line), "replace")
+eq(line_text(s.prompt.buttons[2].line), "clear")
+eq(line_text(s.prompt.buttons[3].line), "cancel")
+expect(s.prompt.buttons[4] == nil, "several owners have no swap")
+calls_before = #fixture.calls
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.prompt == nil)
+eq(#fixture.calls, calls_before + 1, "one atomic setter call replaces all owners")
+eq(fixture.calls[#fixture.calls][1], "set_bindings")
+local changes = fixture.calls[#fixture.calls][2]
+local changed = 0
+for _ in pairs(changes) do changed = changed + 1 end
+eq(changed, 3, "the target and every owner are in the same call")
+local values = {}
+for _, action in ipairs(fixture.bindings) do values[action.name] = action.bindings end
+eq(values.game_quickload[1], "Control+KeyX")
+eq(#values.time_pause, 0)
+eq(#values.game_quicksave, 0)
+fixture_action("time_pause").bindings = {"Control+KeyY"}
+fixture_action("game_quicksave").bindings = {"Control+KeyY"}
+fixture_action("game_quickload").bindings = {}
+s:show("input")
+s.page:set_scroll(s.controls.key_slots.game_quickload[1].y)
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+calls_before = #fixture.calls
+finish_capture("Control+KeyY")
+expect(s.prompt ~= nil)
+local lines = lines_in(s.prompt.window.content)
+eq(line_text(lines[1]), "Ctrl+Y is pause's and quicksave's key.")
+eq(#s.prompt.buttons, 3, "several owners of an empty slot have no swap")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.prompt == nil)
+eq(#fixture.calls, calls_before + 1)
+local changes = fixture.calls[#fixture.calls][2]
+eq(changes.game_quickload[1], "Control+KeyY")
+eq(#changes.time_pause, 0)
+eq(#changes.game_quicksave, 0)
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_game_quickload_1");
+    rig.opened();
+    click_marked(&mut rig, "settings_prompt_replace");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_game_quickload_1");
+    rig.opened();
+    click_marked(&mut rig, "settings_prompt_replace");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_does_not_offer_a_swap_when_the_owner_already_holds_the_old_key() {
+    let mut rig = settings_rig(&[
+        r#"
+fixture_action("game_quicksave").bindings = {"F5", "F9"}
+fixture_action("game_quickload").bindings = {"F9"}
+expect(not menu_button("settings").inactive)
+"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+s.page:set_scroll(s.controls.key_slots.game_quickload[1].y)
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+finish_capture("F5")
+expect(s.prompt ~= nil)
+eq(#s.prompt.buttons, 3, "replace, clear and cancel are offered")
+eq(line_text(s.prompt.buttons[1].line), "replace")
+eq(line_text(s.prompt.buttons[2].line), "clear")
+eq(line_text(s.prompt.buttons[3].line), "cancel")
+eq(s.prompt.buttons[4], nil, "swap would duplicate the owner's existing F9")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.prompt == nil)
+local values = {}
+for _, action in ipairs(fixture.bindings) do values[action.name] = action.bindings end
+eq(#values.game_quicksave, 1)
+eq(values.game_quicksave[1], "F9", "the old-key slot remains once after compaction")
+eq(#values.game_quickload, 1)
+eq(values.game_quickload[1], "F5")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_game_quickload_1");
+    rig.opened();
+    click_marked(&mut rig, "settings_prompt_replace");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_same_action_keys_are_noops_and_modifier_variants_are_free() {
+    let mut rig = settings_rig(&[
+        r#"
+fixture_action("time_pause").bindings = {"F5"}
+expect(not menu_button("settings").inactive)
+"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil, "the clicked slot is waiting for capture")
+local setters = 0
+for _, call in ipairs(fixture.calls) do if call[1] == "set_bindings" then setters = setters + 1 end end
+finish_capture("F5")
+expect(s.waiting == nil and s.prompt == nil, "A already holds the key before other owners are considered")
+eq(fixture_action("time_pause").bindings[1], "F5")
+eq(#fixture_action("time_pause").bindings, 1)
+local after_setters = 0
+for _, call in ipairs(fixture.calls) do if call[1] == "set_bindings" then after_setters = after_setters + 1 end end
+eq(after_setters, setters, "same-action capture makes no setter call")
+fixture_action("time_pause").bindings = {"Space", "F5"}
+s:show("input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+finish_capture("F5")
+expect(s.waiting == nil and s.prompt == nil, "A's second slot is also a no-op")
+eq(#fixture_action("time_pause").bindings, 2)
+eq(fixture_action("time_pause").bindings[1], "Space")
+eq(fixture_action("time_pause").bindings[2], "F5")
+fixture_action("time_pause").bindings = {"Space"}
+s:show("input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+finish_capture("Shift+F5")
+expect(s.waiting == nil and s.prompt == nil, "Shift+F5 differs from the other action's F5")
+eq(fixture_action("time_pause").bindings[2], "Shift+F5")
+eq(fixture_action("game_quicksave").bindings[1], "F5", "the exact owner is unchanged")
+eq(fixture.calls[#fixture.calls][1], "set_bindings")
+fixture_action("time_pause").bindings = {"Space"}
+fixture_action("game_quicksave").bindings = {"Shift+F5"}
+s:show("input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+finish_capture("F5")
+expect(s.waiting == nil and s.prompt == nil, "F5 differs from the other action's Shift+F5")
+eq(fixture_action("time_pause").bindings[2], "F5")
+eq(fixture_action("game_quicksave").bindings[1], "Shift+F5")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_2");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_1");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_2");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_2");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_read_only_owners_offer_cancel_only_and_keep_more_than_two_keys() {
+    let mut rig = settings_rig(&[
+        r#"
+fixture_action("close").bindings = {"F6"}
+fixture_action("time_faster").bindings = {"F7", "F8", "F9"}
+fixture_action("game_quicksave").bindings = {"F6", "F7"}
+"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+s.page:set_scroll(s.controls.key_slots.game_quickload[1].y)
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+finish_capture("F6")
+local lines = lines_in(s.prompt.window.content)
+eq(line_text(lines[1]), "F6 is quicksave's and the menu's key.")
+eq(line_text(lines[2]), "It cannot be changed here.")
+eq(#s.prompt.buttons, 1)
+eq(line_text(s.prompt.buttons[1].line), "cancel")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.prompt == nil)
+s.page:set_scroll(s.controls.key_slots.game_quickload[1].y)
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+finish_capture("F7")
+local lines = lines_in(s.prompt.window.content)
+eq(line_text(lines[1]), "F7 is faster's and quicksave's key.")
+eq(line_text(lines[2]), "It cannot be changed here.")
+eq(#s.prompt.buttons, 1, "one read-only owner makes every owner immutable")
+eq(line_text(s.prompt.buttons[1].line), "cancel")
+expect(s.controls.rows.time_faster.read_only)
+eq(line_text(s.controls.key_slots.time_faster[1].line), "F7")
+eq(line_text(s.controls.key_slots.time_faster[2].line), "F8")
+local extras = lines_in(s.page.rows_group)
+local disclosed = false
+for _, line in ipairs(extras) do if line_text(line) == "+1" then disclosed = true end end
+expect(disclosed, "the hidden third key is disclosed")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.prompt == nil)
+eq(fixture_action("time_faster").bindings[3], "F9", "the hidden key is retained")
+eq(fixture_action("game_quicksave").bindings[1], "F6")
+local setters = 0
+for _, call in ipairs(fixture.calls) do if call[1] == "set_bindings" then setters = setters + 1 end end
+eq(setters, 0, "cancel never mutates any owner")
+s.page:set_scroll(s.controls.key_slots.time_faster[1].y)
+calls_before = #fixture.calls
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting == nil, "a read-only slot does not arm capture")
+eq(#fixture.calls, calls_before, "a read-only slot makes no capture request")
+eq(fixture_action("time_faster").bindings[3], "F9")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_game_quickload_1");
+    rig.opened();
+    click_marked(&mut rig, "settings_prompt_cancel");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_game_quickload_1");
+    rig.opened();
+    click_marked(&mut rig, "settings_prompt_cancel");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_faster_1");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_replace_compacts_both_owner_slot_orders_and_swap_keeps_unrelated_keys() {
+    let mut rig = settings_rig(&[
+        r#"
+fixture_action("time_pause").bindings = {"Space"}
+fixture_action("game_quicksave").bindings = {"F5", "Space"}
+"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+calls_before = #fixture.calls
+finish_capture("F5")
+expect(s.prompt ~= nil)
+eq(#s.prompt.buttons, 3, "the owner already has the old key")
+eq(line_text(s.prompt.buttons[1].line), "replace")
+eq(line_text(s.prompt.buttons[2].line), "clear")
+eq(line_text(s.prompt.buttons[3].line), "cancel")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.prompt == nil)
+eq(#fixture.calls, calls_before + 1)
+eq(fixture.calls[#fixture.calls][1], "set_bindings")
+eq(fixture.calls[#fixture.calls][2].time_pause[1], "F5")
+eq(#fixture.calls[#fixture.calls][2].time_pause, 1)
+eq(fixture.calls[#fixture.calls][2].game_quicksave[1], "Space")
+eq(#fixture.calls[#fixture.calls][2].game_quicksave, 1)
+eq(fixture_action("game_quicksave").bindings[1], "Space")
+eq(fixture_action("game_quicksave").bindings[2], nil)
+fixture_action("time_pause").bindings = {"Space"}
+fixture_action("game_quicksave").bindings = {"Space", "F5"}
+s:show("input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+finish_capture("F5")
+expect(s.prompt ~= nil)
+eq(#s.prompt.buttons, 3, "the other slot order also suppresses swap")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(fixture_action("time_pause").bindings[1], "F5")
+eq(fixture_action("game_quicksave").bindings[1], "Space")
+eq(fixture_action("game_quicksave").bindings[2], nil)
+fixture_action("time_pause").bindings = {"Space"}
+fixture_action("game_quicksave").bindings = {"F5", "Tab"}
+s:show("input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+calls_before = #fixture.calls
+finish_capture("F5")
+expect(s.prompt ~= nil)
+eq(#s.prompt.buttons, 4, "swap remains available when it is distinct from replace")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.prompt, nil)
+eq(#fixture.calls, calls_before + 1)
+local changes = fixture.calls[#fixture.calls][2]
+eq(changes.time_pause[1], "F5")
+eq(changes.game_quicksave[1], "Space")
+eq(changes.game_quicksave[2], "Tab", "swap preserves the unrelated second key")
+eq(fixture_action("game_quicksave").bindings[2], "Tab")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_1");
+    rig.opened();
+    click_marked(&mut rig, "settings_prompt_replace");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_1");
+    rig.opened();
+    click_marked(&mut rig, "settings_prompt_replace");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_1");
+    rig.opened();
+    click_marked(&mut rig, "settings_prompt_swap");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_backspace_right_click_and_lifecycle_cancel_only_change_the_target_slot() {
+    let mut rig = settings_rig(&[
+        r#"
+fixture_action("time_pause").bindings = {"Space", "F5"}
+"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+finish_capture("Backspace")
+eq(#fixture_action("time_pause").bindings, 1)
+eq(fixture_action("time_pause").bindings[1], "F5", "clearing the first slot compacts the second")
+eq(fixture.calls[#fixture.calls][1], "set_bindings")
+s.page:set_scroll(s.controls.key_slots.game_quicksave[1].y)
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(#fixture_action("game_quicksave").bindings, 0, "right click clears only the clicked action")
+eq(fixture_action("time_pause").bindings[1], "F5")
+s.page:set_scroll(s.controls.key_slots.time_pause[2].y)
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+previous_waiting_id = s.waiting.id
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil and s.waiting.id ~= previous_waiting_id,
+  "clicking elsewhere abandons the old slot and arms the clicked slot")
+eq(fixture.calls[#fixture.calls - 1][1], "cancel_capture")
+eq(fixture.calls[#fixture.calls][1], "capture_key")
+s:show("map")
+eq(fixture.capture, nil, "changing tabs abandons the pending capture")
+eq(fixture.calls[#fixture.calls][1], "cancel_capture")
+s:show("input")
+s.page:set_scroll(s.controls.key_slots.time_pause[1].y)
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+finish_capture("Escape")
+expect(s.waiting == nil and s.prompt == nil, "Escape cancels capture without changing a binding")
+eq(fixture_action("time_pause").bindings[1], "F5")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+local id = s.waiting.id
+require("lib.settings_window").update({capture={id=id, kind="cancelled"}})
+expect(s.waiting == nil, "focus loss cancels the wait")
+eq(fixture_action("time_pause").bindings[1], "F5")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+menu.close()
+expect(require("lib.settings_window").current() == nil, "closing the menu closes settings")
+eq(fixture.capture, nil, "closing the menu cancels capture")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_1");
+    rig.opened();
+    let quicksave = point(&rig, "settings_slot_game_quicksave_1");
+    rig.feed(&[
+        PointerEvent::ButtonDown {
+            position: points(quicksave.0, quicksave.1),
+            button: ck_window::PointerButton::Right,
+        },
+        PointerEvent::ButtonUp {
+            position: points(quicksave.0, quicksave.1),
+            button: ck_window::PointerButton::Right,
+        },
+    ]);
+    frame(&mut rig);
+    click_marked(&mut rig, "settings_slot_time_pause_2");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_game_quicksave_1");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_1");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_1");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_1");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_clear_and_escape_close_only_the_top_prompt_first() {
+    let mut rig = settings_rig(&[
+        r#"
+fixture_action("time_pause").bindings = {"Space", "Tab"}
+"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+finish_capture("F5")
+expect(s.prompt ~= nil)
+eq(#s.prompt.buttons, 4)
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.prompt == nil)
+eq(fixture.calls[#fixture.calls][1], "set_bindings")
+eq(fixture.calls[#fixture.calls][2].time_pause[1], "Space")
+eq(#fixture.calls[#fixture.calls][2].time_pause, 1, "clear drops the target's old key")
+eq(fixture_action("game_quicksave").bindings[1], "F5", "clear leaves the owner alone")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+finish_capture("F5")
+expect(s.prompt ~= nil)
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.prompt == nil and s.window.closed == false, "first Escape cancels only the prompt")
+expect(require("lib.settings_window").current() == s, "Settings remains open")
+eq(fixture_action("time_pause").bindings[1], "Space")
+mark_settings()
+"#,
+        r#"
+expect(require("lib.settings_window").current() == nil, "the next Escape closes Settings")
+expect(menu.is_open(), "the pause menu remains open")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_2");
+    rig.opened();
+    click_marked(&mut rig, "settings_prompt_clear");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_2");
+    rig.opened();
+    assert!(rig.escape(), "Escape closes the prompt first");
+    rig.opened();
+    assert!(rig.escape(), "the next Escape closes Settings");
+    rig.opened();
+}
+
+#[test]
+fn closing_the_settings_window_cancels_a_waiting_capture() {
+    let mut rig = settings_rig(&[
+        r"mark_settings()",
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.selected == "input" and s.waiting == nil)
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+local id = s.waiting.id
+expect(fixture.capture == id)
+mark_settings()
+"#,
+        r#"
+expect(require("lib.settings_window").current() == nil)
+eq(fixture.capture, nil, "the X cancels the mapper capture")
+eq(fixture.calls[#fixture.calls][1], "cancel_capture")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_2");
+    rig.opened();
+    click_marked(&mut rig, "settings_close");
+    rig.opened();
+}
+
+#[test]
+fn closing_the_menu_discards_an_open_key_prompt_and_its_capture_result() {
+    let mut rig = settings_rig(&[
+        r"mark_settings()",
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.selected == "input")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil)
+finish_capture("F5")
+expect(s.prompt ~= nil)
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.prompt ~= nil)
+menu.close()
+expect(require("lib.settings_window").current() == nil)
+expect(not menu.is_open())
+eq(fixture_action("time_pause").bindings[1], "Space", "closing the parent discards the prompt result")
+eq(fixture_action("game_quicksave").bindings[1], "F5")
+for _, call in ipairs(fixture.calls) do expect(call[1] ~= "set_bindings") end
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_time_pause_2");
+    rig.opened();
+    rig.opened();
+}
+
+#[test]
+fn settings_capture_reaches_the_real_mapper_and_persists_in_a_private_settings_file() {
+    let (_directory, mut rig, settings_path, config_path) = settings_mapper_rig();
+    settings_mapper_capture_and_swap(&mut rig, &settings_path);
+    settings_mapper_replace_cancel_escape_and_defaults(&mut rig, &settings_path, &config_path);
+}
+
+fn settings_mapper_rig() -> (
+    crate::testing::Dir,
+    Rig,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let directory = crate::testing::Dir::new();
+    let config_path = directory.0.join("config.toml");
+    std::fs::write(&config_path, "[game]\nscenario = '.'\n").expect("private test config");
+    let config = crate::config::load(&config_path).expect("load private config");
+    let settings_path = config.settings_file.clone().expect("settings path");
+    let requests = ck_window::Requests::new();
+    let reader = requests.reader();
+    let runtime = crate::settings::Runtime::new_with_requests(
+        &config,
+        None,
+        Some(requests.writer(ck_window::Notifier::new())),
+    )
+    .expect("production settings runtime");
+    let script = format!(
+        "{PRELUDE}\n{MENU}\n\
+         local focus_action, focus_index = 'game_quicksave', 2\n\
+         local p_captured = false\n\
+         menu.open(VIEW)\n\
+         local settings_window = require('lib.settings_window')\n\
+         function on_frame(update)\n\
+           if update.capture ~= nil then\n\
+             if update.capture.kind == 'cancelled' then\n\
+               focus_action, focus_index = 'close', 1\n\
+             elseif update.capture.value == 'KeyP' then\n\
+               if p_captured then\n\
+                 focus_action, focus_index = 'game_quickload', 2\n\
+               else\n\
+                 focus_action, focus_index = 'time_pause', 1\n\
+                 p_captured = true\n\
+               end\n\
+             elseif update.capture.value == 'F5' then\n\
+               focus_action, focus_index = 'time_pause', 2\n\
+             elseif update.capture.value == 'Space' then\n\
+               focus_action, focus_index = 'game_quickload', 2\n\
+             end\n\
+           end\n\
+           if update.width ~= VIEW.width or update.height ~= VIEW.height then\n\
+             VIEW.width, VIEW.height = update.width, update.height\n\
+             windows.update_viewport(VIEW.width, VIEW.height)\n\
+             menu.relayout()\n\
+           end\n\
+           mark_buttons()\n\
+           local current = settings_window.current()\n\
+           if current ~= nil then\n\
+             if current.selected == 'input' and current.waiting == nil and current.prompt == nil then\n\
+               local slots = current.controls.key_slots[focus_action]\n\
+               local target = slots ~= nil and slots[focus_index] or nil\n\
+               if target ~= nil then current.page:set_scroll(math.max(0, target.y - 100 * P)) end\n\
+             end\n\
+             for name, tab in pairs(current.tabs) do\n\
+               local x, y, w, h = hit_rect(tab.key)\n\
+               mark('settings_tab_' .. name, x + w / 2, y + h / 2)\n\
+             end\n\
+             for action, slots in pairs(current.controls.key_slots or {{}}) do\n\
+               for index, slot in ipairs(slots) do\n\
+                 local x, y, w, h = hit_rect(slot.key)\n\
+                 mark('settings_slot_' .. action .. '_' .. index, x + w / 2, y + h / 2)\n\
+               end\n\
+             end\n\
+             local defaults = current.controls.defaults\n\
+             if defaults ~= nil then\n\
+               local x, y, w, h = hit_rect(defaults.key)\n\
+               mark('settings_control_defaults', x + w / 2, y + h / 2)\n\
+             end\n\
+             if current.prompt ~= nil then\n\
+               for _, b in ipairs(current.prompt.buttons or {{}}) do\n\
+                 local x, y, w, h = hit_rect(b.key)\n\
+                 mark('settings_prompt_' .. line_text(b.line), x + w / 2, y + h / 2)\n\
+               end\n\
+             end\n\
+           end\n\
+         end\n",
+    );
+    let mut rig = Rig::new_fixture_body_with_requests(&script, runtime.extension(), reader);
+    rig.mapper.replace_bindings(config.bindings.clone());
+    rig.deliver_fixture_frame_at(800, 600, 2);
+    click_marked(&mut rig, "settings");
+    click_marked(&mut rig, "settings_tab_input");
+    (directory, rig, settings_path, config_path)
+}
+
+fn settings_mapper_capture_and_swap(rig: &mut Rig, settings_path: &std::path::Path) {
+    click_marked(rig, "settings_slot_game_quicksave_2");
+    assert_capture_armed(rig);
+    capture_mapper_key(rig, ck_input::Key::KeyP);
+    let first = rig
+        .apply_settings_requests()
+        .bindings
+        .expect("the first key is live");
+    assert_binding_names(&first, "game_quicksave", &["F5", "KeyP"]);
+    let first_file = std::fs::read_to_string(settings_path).expect("private settings persisted");
+    assert!(first_file.contains("game_quicksave = [\"F5\", \"KeyP\"]"));
+    assert_binding_names(rig.mapper.bindings(), "time_pause", &["Space"]);
+
+    release_mapper_key(rig, ck_input::Key::KeyP);
+    click_marked(rig, "settings_slot_time_pause_1");
+    assert_capture_armed(rig);
+    capture_mapper_key(rig, ck_input::Key::F5);
+    release_mapper_key(rig, ck_input::Key::F5);
+    assert_binding_names(rig.mapper.bindings(), "time_pause", &["Space"]);
+    assert_binding_names(rig.mapper.bindings(), "game_quicksave", &["F5", "KeyP"]);
+    let before_swap = std::fs::read(settings_path).expect("bytes before swap");
+    click_marked(rig, "settings_prompt_swap");
+    let swapped = rig
+        .apply_settings_requests()
+        .bindings
+        .expect("swap publishes one complete binding set");
+    assert_binding_names(&swapped, "time_pause", &["F5"]);
+    assert_binding_names(&swapped, "game_quicksave", &["Space", "KeyP"]);
+    let after_swap = std::fs::read(settings_path).expect("bytes after swap");
+    assert_ne!(before_swap, after_swap);
+    let swapped_file = String::from_utf8(after_swap).expect("settings are UTF-8");
+    assert!(swapped_file.contains("time_pause = [\"F5\"]"));
+    assert!(swapped_file.contains("game_quicksave = [\"Space\", \"KeyP\"]"));
+
+    let space_tick = press_mapper_key(rig, ck_input::Key::Space);
+    assert!(space_tick.transitions.iter().any(|transition| {
+        transition.action == "game_quicksave" && transition.edge == Edge::Press
+    }));
+    release_mapper_key(rig, ck_input::Key::Space);
+    let pause_tick = press_mapper_key(rig, ck_input::Key::F5);
+    assert!(
+        pause_tick.transitions.iter().any(|transition| {
+            transition.action == "time_pause" && transition.edge == Edge::Press
+        })
+    );
+    release_mapper_key(rig, ck_input::Key::F5);
+}
+
+fn settings_mapper_replace_cancel_escape_and_defaults(
+    rig: &mut Rig,
+    settings_path: &std::path::Path,
+    config_path: &std::path::Path,
+) {
+    click_marked(rig, "settings_slot_time_pause_2");
+    assert_capture_armed(rig);
+    capture_mapper_key(rig, ck_input::Key::Space);
+    release_mapper_key(rig, ck_input::Key::Space);
+    click_marked(rig, "settings_prompt_replace");
+    let replaced = rig
+        .apply_settings_requests()
+        .bindings
+        .expect("replace publishes one complete binding set");
+    assert_binding_names(&replaced, "time_pause", &["F5", "Space"]);
+    assert_binding_names(&replaced, "game_quicksave", &["KeyP"]);
+
+    click_marked(rig, "settings_slot_game_quickload_2");
+    assert_capture_armed(rig);
+    capture_mapper_key(rig, ck_input::Key::KeyP);
+    release_mapper_key(rig, ck_input::Key::KeyP);
+    let before_cancel = std::fs::read(settings_path).expect("bytes before cancel");
+    let cancel_point = point(rig, "settings_prompt_cancel");
+    assert!(
+        rig.key_at(cancel_point.0, cancel_point.1)
+            .is_some_and(|key| key.starts_with("button_")),
+        "cancel button is topmost at {cancel_point:?}: {:?}",
+        rig.key_at(cancel_point.0, cancel_point.1)
+    );
+    click_at(rig, cancel_point);
+    assert!(rig.apply_settings_requests().bindings.is_none());
+    assert_eq!(
+        std::fs::read(settings_path).expect("cancel leaves settings untouched"),
+        before_cancel
+    );
+
+    click_marked(rig, "settings_slot_game_quickload_2");
+    assert_capture_armed(rig);
+    rig.mapper.key(ck_input::Key::Escape, true, false);
+    let escape = rig.mapper.snapshot();
+    assert!(
+        escape.transitions.is_empty(),
+        "Escape is owned by the waiting capture"
+    );
+    assert_eq!(
+        rig.mapper.take_close_presses(),
+        0,
+        "capture does not request a close"
+    );
+    let sequence = escape.sequence;
+    rig.link
+        .input(&tick(escape))
+        .expect("Escape capture tick is consumed");
+    rig.mapper.acknowledge(sequence);
+    rig.deliver_fixture_frame();
+    assert!(rig.controls.keys_blocked(), "the pause menu stays open");
+    assert!(
+        point(rig, "settings_slot_close_1").0 > 0.0,
+        "settings stays open"
+    );
+    assert!(rig.apply_settings_requests().bindings.is_none());
+    release_mapper_key(rig, ck_input::Key::Escape);
+
+    let fixed_menu_slot = point(rig, "settings_slot_close_1");
+    click_at(rig, fixed_menu_slot);
+    assert!(
+        rig.apply_settings_requests().capture.is_none(),
+        "the fixed menu row cannot arm capture"
+    );
+    let defaults_point = point(rig, "settings_control_defaults");
+    let defaults_key = rig.key_at(defaults_point.0, defaults_point.1);
+    assert!(
+        defaults_key
+            .as_deref()
+            .is_some_and(|key| key.starts_with("button_")),
+        "defaults button is the hit at {defaults_point:?}: {defaults_key:?}"
+    );
+    click_at(rig, defaults_point);
+    let defaults = rig
+        .apply_settings_requests()
+        .bindings
+        .expect("defaults publish to the mapper");
+    assert_binding_names(&defaults, "time_pause", &["Space"]);
+    assert_binding_names(&defaults, "game_quicksave", &["F5"]);
+    let default_file = std::fs::read_to_string(settings_path).expect("defaults persisted");
+    assert!(!default_file.contains("[input.bindings]"));
+    let next_run = crate::config::load(config_path).expect("a new run reloads private settings");
+    assert_binding_names(&next_run.bindings, "time_pause", &["Space"]);
+    assert_binding_names(&next_run.bindings, "game_quicksave", &["F5"]);
+}
+
+fn assert_capture_armed(rig: &mut Rig) {
+    let capture = rig.apply_settings_requests().capture;
+    assert!(
+        matches!(capture, Some(ck_window::CaptureRequest::Arm(ref id)) if !id.is_empty()),
+        "the UI requests mapper capture for its active slot: {capture:?}"
+    );
+}
+
+fn capture_mapper_key(rig: &mut Rig, key: ck_input::Key) {
+    assert!(
+        rig.mapper.capture_active(),
+        "capture must be armed before {key:?}"
+    );
+    rig.mapper.key(key, true, false);
+    let captured = rig.mapper.snapshot();
+    assert!(
+        captured.transitions.is_empty(),
+        "a key claimed by capture never reaches a game action: {key:?}, {:?}",
+        captured.transitions
+    );
+    let sequence = captured.sequence;
+    rig.link
+        .input(&tick(captured))
+        .expect("capture tick is consumed");
+    rig.mapper.acknowledge(sequence);
+    rig.deliver_fixture_frame();
+}
+
+fn press_mapper_key(rig: &mut Rig, key: ck_input::Key) -> ck_input::InputSnapshot {
+    rig.mapper.key(key, true, false);
+    let snapshot = rig.mapper.snapshot();
+    let sequence = snapshot.sequence;
+    rig.link
+        .input(&tick(snapshot.clone()))
+        .expect("input tick is consumed");
+    rig.mapper.acknowledge(sequence);
+    rig.deliver_fixture_frame();
+    snapshot
+}
+
+fn release_mapper_key(rig: &mut Rig, key: ck_input::Key) {
+    rig.mapper.key(key, false, false);
+    let snapshot = rig.mapper.snapshot();
+    let sequence = snapshot.sequence;
+    rig.link
+        .input(&tick(snapshot))
+        .expect("release tick is consumed");
+    rig.mapper.acknowledge(sequence);
+    rig.deliver_fixture_frame();
+}
+
+fn assert_binding_names(bindings: &ck_input::Bindings, action: &str, expected: &[&str]) {
+    let names: Vec<_> = bindings
+        .action(action)
+        .expect("known player action")
+        .bindings()
+        .iter()
+        .map(|binding| binding.key().name())
+        .collect();
+    assert_eq!(names, expected, "{action}");
 }
 
 #[test]

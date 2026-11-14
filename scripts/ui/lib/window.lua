@@ -16,6 +16,7 @@ local windows = {}
 local viewport = {width = 800, height = 600}
 local counter = 0
 local modal_backdrop
+local modal_overlays = {}
 
 local window = {}
 local Window = {}
@@ -50,27 +51,21 @@ end
 -- Keep every library window on the same side of the pause-menu backdrop as its modal owner. Ordinary windows are listed first,
 -- followed by the backdrop and the modal windows in window order. The tooltip overlay remains the UI library's top group.
 local function restack()
-  if modal_backdrop == nil then
-    local groups = {}
-    for _, candidate in ipairs(windows) do
-      for _, group in ipairs(stack(candidate)) do groups[#groups + 1] = group end
-    end
-    if #groups > 0 then ui.raise_groups(groups) end
-    return
-  end
   local groups = {}
   for _, candidate in ipairs(windows) do
     if not candidate.modal then
       for _, group in ipairs(stack(candidate)) do groups[#groups + 1] = group end
     end
   end
-  groups[#groups + 1] = modal_backdrop
+  if modal_backdrop ~= nil then groups[#groups + 1] = modal_backdrop end
   for _, candidate in ipairs(windows) do
     if candidate.modal then
+      local overlay = modal_overlays[candidate]
+      if overlay ~= nil then groups[#groups + 1] = overlay end
       for _, group in ipairs(stack(candidate)) do groups[#groups + 1] = group end
     end
   end
-  ui.raise_groups(groups)
+  if #groups > 0 then ui.raise_groups(groups) end
 end
 
 -- Lays the attached items out for the window's current position and content rectangle, in the callback that changed them.
@@ -522,6 +517,19 @@ end
 function window.clear_modal_backdrop(group)
   if modal_backdrop == group then
     modal_backdrop = nil
+    restack()
+  end
+end
+
+-- Places a modal layer over earlier modal windows but under its own window, so nested prompts block their parents too.
+function window.set_modal_overlay(owner, group)
+  modal_overlays[owner] = group
+  restack()
+end
+
+function window.clear_modal_overlay(owner, group)
+  if modal_overlays[owner] == group then
+    modal_overlays[owner] = nil
     restack()
   end
 end
