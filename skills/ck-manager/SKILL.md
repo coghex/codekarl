@@ -5,8 +5,10 @@ description: Coordinate Codekarl design, visible workers, opposite-brand reviews
 
 # Codekarl manager
 
-Read the master Codekarl policy at entry and before dispatch. Management/design
-is Class S at high effort. Resolve models through `model-classes`.
+Read the master Codekarl policy at entry and before dispatch. Management is
+Class A at high effort. Resolve models through `model-classes`. Substantial
+design is Class S work for a designer session; route it there instead of doing
+it yourself. A spec the manager writes itself is a bug fix or a tidy-up.
 
 Use `ck-chat` as the bound `ck-manager` (always the root
 `~/work/codekarl/tools/ck-chat`, never a worker copy's). A manager in a
@@ -30,8 +32,9 @@ used only when the manager's client cannot be woken, with owner authorization.
 
 When authorized to dispatch:
 
-1. Turn the request into observable behavior and acceptance criteria. Resolve
-   substantial design as Class S before implementation.
+1. Turn the request into observable behavior and acceptance criteria. If
+   substantial design is needed, route it to a Class S designer session before
+   implementation; the manager does not do that design itself.
 2. Create an isolated worker copy for each task and serialize fragile shared
    boundaries. Use only visible owner-provided sessions.
 3. Ensure every issue spec has fresh independent Class A/high opposite-family
@@ -58,7 +61,7 @@ When authorized to dispatch:
 Launch and live-check rules:
 
 - `modelclass run` options come before the class and brand
-  (`modelclass run --effort high --chat-project codekarl ... S claude`). A worker uses
+  (`modelclass run --effort high --chat-project codekarl ... A claude`). A worker uses
   `CHAT_ROLE=worker`; the resolver's `--chat-role` has no `worker`.
 - A live check that needs a busy agent uses a real, bounded, harmless command (for example a
   full `tools/ck check`). A tool's refusal of a wait or sleep is reported, never worked around.

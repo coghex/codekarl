@@ -10,9 +10,9 @@ command advances the accepted pointer. Agents never take work from, push to or
 open issues on it.
 
 Before Codekarl agent work, read `skills/AGENT-POLICY.md`, the master role and
-opposite-brand review policy. Management/design is Class S, implementation B,
-review A, all at high effort. Resolve current models from the shared model-class
-configuration. Every issue spec and submission needs fresh independent review;
+opposite-brand review policy. Design is Class S, management and review are
+Class A, implementation is Class B, all at high effort. Resolve current models
+from the shared model-class configuration. Every issue spec and submission needs fresh independent review;
 CI alone does not authorize publication. The setup hold is lifted: the manager
 dispatches owner-authorized work through the normal workflow (see
 `skills/AGENT-POLICY.md`); known deferrals and gates are unchanged.

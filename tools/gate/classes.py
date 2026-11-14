@@ -16,7 +16,7 @@ from .records import (
     load_model_classes,
 )
 
-ROLE_CLASS = {"manager": "S", "worker": "B", "reviewer": "A"}
+ROLE_CLASS = {"manager": "A", "worker": "B", "reviewer": "A"}
 Pair = tuple[str, str | None]  # a model and the effort it ran at
 
 
