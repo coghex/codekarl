@@ -149,10 +149,10 @@ end
       time_bar_log("time-bar box up " .. event.key .. " inside " .. tostring(event.inside))
     end
   end
-  pointer.dispatch(update.pointer)
+  typing.dispatch(update) pointer.dispatch(update.pointer)
 "#;
     script = script.replace(
-        "frame.on_update(function(update)\n  pointer.dispatch(update.pointer)\n",
+        "frame.on_update(function(update)\n  -- An update's typing is handled first, all of it, and then its pointer events (lib/typing.lua).\n  typing.dispatch(update)\n  pointer.dispatch(update.pointer)\n",
         frame,
     );
     script

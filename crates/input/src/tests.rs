@@ -1278,3 +1278,74 @@ fn two_lost_taps_with_a_snapshot_between_them_are_not_merged_by_the_old_acknowle
     close.resync(&states(&[], &[Key::Escape], &[Key::Escape]));
     assert_eq!(close.take_close_presses(), 2);
 }
+
+#[test]
+fn typed_entries_keep_their_order_are_reported_in_snapshots_and_acknowledged_by_watermark() {
+    let mut mapper = Mapper::new(bindings(&[]));
+    mapper.typed(TypedEntry::Char('a'));
+    mapper.typed(TypedEntry::Backspace);
+    mapper.typed(TypedEntry::Char('b'));
+    let first = mapper.snapshot();
+    assert_eq!(
+        first.typed,
+        [
+            TypedEntry::Char('a'),
+            TypedEntry::Backspace,
+            TypedEntry::Char('b')
+        ]
+    );
+    // An entry typed after the snapshot is not in it, and an acknowledgement takes only what the snapshot held.
+    mapper.typed(TypedEntry::Enter);
+    mapper.acknowledge(first.sequence);
+    let second = mapper.snapshot();
+    assert_eq!(second.typed, [TypedEntry::Enter]);
+    mapper.acknowledge(second.sequence);
+    assert!(mapper.snapshot().typed.is_empty(), "delivered once");
+}
+
+#[test]
+fn the_257th_typed_entry_is_dropped_the_loss_is_latched_until_its_snapshot_is_acknowledged() {
+    let mut mapper = Mapper::new(bindings(&[]));
+    for index in 0..=TYPED_CAPACITY {
+        mapper.typed(TypedEntry::Char(
+            char::from_u32(0x100 + u32::try_from(index).unwrap()).unwrap(),
+        ));
+    }
+    let snapshot = mapper.snapshot();
+    assert_eq!(snapshot.typed.len(), TYPED_CAPACITY);
+    assert!(snapshot.typed_lost);
+    assert_eq!(snapshot.typed[0], TypedEntry::Char('\u{100}'));
+    assert_eq!(
+        snapshot.typed[TYPED_CAPACITY - 1],
+        TypedEntry::Char(char::from_u32(0x100 + 255).unwrap()),
+        "the earlier entries keep their order; the later one was dropped"
+    );
+    // A loss after a snapshot was taken is not cleared by acknowledging that snapshot.
+    mapper.acknowledge(snapshot.sequence);
+    assert!(!mapper.snapshot().typed_lost);
+    mapper.typed_lost();
+    let reported = mapper.snapshot();
+    mapper.typed_lost();
+    mapper.acknowledge(reported.sequence);
+    assert!(
+        mapper.snapshot().typed_lost,
+        "the second loss is still to be reported"
+    );
+}
+
+#[test]
+fn resetting_typed_input_discards_entries_and_the_loss_and_sets_the_epoch() {
+    let mut mapper = Mapper::new(bindings(&[]));
+    mapper.typed(TypedEntry::Char('a'));
+    mapper.typed_lost();
+    assert_eq!(mapper.snapshot().typed_epoch, 0);
+    mapper.reset_typed(7);
+    let snapshot = mapper.snapshot();
+    assert!(snapshot.typed.is_empty());
+    assert!(!snapshot.typed_lost);
+    assert_eq!(snapshot.typed_epoch, 7);
+    // A focus loss leaves typed entries alone.
+    mapper.typed(TypedEntry::Char('b'));
+    mapper.focus_lost();
+    assert_eq!(mapper.snapshot().typed, [TypedEntry::Char('b')]);
+}

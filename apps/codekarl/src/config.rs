@@ -3655,6 +3655,34 @@ mod tests {
     }
 
     #[test]
+    fn typed_text_adds_no_bound_action_a_games_bindings_are_the_22_of_today() {
+        // CK-314: a digit, a letter or an editing key reaches a widget as a typed entry, never as an action. The game's actions are the
+        // loop's 6 (the map's pan and zoom among them) and the 10 time and save actions.
+        let config = parse_config("[game]\nscenario = \"s\"\n").unwrap();
+        let names: Vec<_> = config
+            .bindings
+            .actions()
+            .iter()
+            .map(ck_window::ActionBindings::name)
+            .collect();
+        assert_eq!(names.len(), 22, "{names:?}");
+        assert!(
+            names.iter().all(|name| ![
+                "type",
+                "typed",
+                "text",
+                "backspace",
+                "enter",
+                "tab",
+                "edit_left",
+                "edit_right"
+            ]
+            .contains(name)),
+            "{names:?}"
+        );
+    }
+
+    #[test]
     fn the_time_and_save_actions_have_defaults_only_with_a_scenario() {
         let actions = [
             ("time_pause", "Space"),

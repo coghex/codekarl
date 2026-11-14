@@ -79,6 +79,13 @@ void ck_win_test_perform_close(void);
 /* Posts a key-down NSEvent made from a CGEvent (postEvent:atStart:NO). A marked event carries the tests'
  * kCGEventSourceUserData mark, which real input cannot; an unmarked one stands for the owner's typing.
  * Returns 0 when it could not be made. */
+/* Text input as the system gives it to the content view's text input client (CK-314): set text being composed, and commit text. They
+ * call the view's NSTextInputClient methods directly, as the system's input context does, on the process's one backend window. */
+void ck_win_test_set_marked_text(const char *text);
+void ck_win_test_insert_text(const char *text);
+/* Whether the content view says text is being composed. */
+int32_t ck_win_test_has_marked_text(void);
+
 int32_t ck_win_test_post_key(uint16_t key_code, uint64_t modifier_flags, int32_t repeat,
                              const char *characters, int32_t marked);
 /* The other keyboard events: kind 1 is a key-up, kind 2 a modifier change. */

@@ -77,6 +77,9 @@ unsafe extern "C" {
     fn ck_win_test_counters(out: *mut RawCounters);
     fn ck_win_test_set_first_responder(to_view: i32);
     fn ck_win_test_perform_close();
+    fn ck_win_test_set_marked_text(text: *const c_char);
+    fn ck_win_test_insert_text(text: *const c_char);
+    fn ck_win_test_has_marked_text() -> i32;
     fn ck_win_test_post_key(
         key_code: u16,
         modifier_flags: u64,
@@ -392,6 +395,27 @@ pub(crate) fn perform_close() {
 #[must_use]
 pub(crate) fn post_key(key_code: u16, modifier_flags: u64, repeat: bool, characters: &str) -> bool {
     post_key_with(key_code, modifier_flags, repeat, characters, true)
+}
+
+/// Sets text being composed in the content view, as the system's input context does after a dead key (CK-314).
+pub(crate) fn set_marked_text(text: &str) {
+    let text = CString::new(text).expect("no NUL in the text");
+    // SAFETY: main thread; `text` is NUL-terminated and valid for the call.
+    unsafe { ck_win_test_set_marked_text(text.as_ptr().cast::<c_char>()) };
+}
+
+/// Commits text into the content view, as the system's input context does (CK-314).
+pub(crate) fn insert_text(text: &str) {
+    let text = CString::new(text).expect("no NUL in the text");
+    // SAFETY: main thread; `text` is NUL-terminated and valid for the call.
+    unsafe { ck_win_test_insert_text(text.as_ptr().cast::<c_char>()) };
+}
+
+/// Whether the content view says text is being composed.
+#[must_use]
+pub(crate) fn has_marked_text() -> bool {
+    // SAFETY: main thread; no pointers.
+    unsafe { ck_win_test_has_marked_text() != 0 }
 }
 
 /// Posts a key-down event with no mark, as the owner's typing would arrive: the input filter drops it.

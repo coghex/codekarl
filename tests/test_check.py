@@ -19,7 +19,7 @@ import threading
 import time
 import tomllib
 import unittest
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import NoReturn
 from unittest import mock
@@ -1948,6 +1948,24 @@ def alive(pid: int) -> bool:
     return True
 
 
+def observe_orphaned_slot(
+    slot_is_free: Callable[[], bool], living_orphans: Callable[[], list[int]]
+) -> tuple[list[int], bool]:
+    """One observation of the slot an orphaned toolchain holds: `(violation, finished)`.
+
+    The property is that the slot is never free while an orphan that inherited its descriptor
+    lives. The slot is observed FIRST and the processes SECOND: a slot seen free followed by a
+    process still alive means the process was alive throughout, so the slot really was free
+    while it lived (`violation` names it); a slot seen held proves nothing, whatever lives or
+    has just exited after it. Observing the processes first would call a normal exit between the
+    two observations a violation: the slot is then correctly free while `living` still names
+    the dead process. `finished` is a free slot with no orphan living.
+    """
+    free = slot_is_free()
+    living = living_orphans()
+    return (living if free else []), free and not living
+
+
 # The real-toolchain copy: the Cargo workspace, the Python the recipe lints and runs, and the hub marker.
 # The copy runs the real recipe up to the first Cargo test step (fmt, ruff, shellcheck, doctor, clippy,
 # doc, test), so every root file that configures one of those steps must be here, or the copy would
@@ -3384,6 +3402,49 @@ class HubMarker(unittest.TestCase):
                 )
 
 
+class OrphanedSlotObservationOrder(unittest.TestCase):
+    """CK-316: the order in which test 7 observes the slot and the orphans, with no real toolchain.
+
+    A fake clock: each observation takes the next tick, so a test says what is true at which
+    observation, and the helper's order decides which tick each of the two sees.
+    """
+
+    def clock(self) -> Iterator[int]:
+        return iter(range(100))
+
+    def test_a_normal_exit_between_the_two_observations_is_not_a_violation(self) -> None:
+        # The process lives and holds the slot at tick 0 and has exited, releasing it, by tick 1.
+        ticks = self.clock()
+        violation, finished = observe_orphaned_slot(
+            lambda: next(ticks) >= 1, lambda: [1447] if next(ticks) < 1 else []
+        )
+        self.assertEqual(violation, [], "slot first: held at tick 0, then no process at tick 1")
+        self.assertFalse(finished, "the next observation sees the free slot and ends")
+        # The same timeline observed in the old order (processes first) is the false failure.
+        ticks = self.clock()
+        living = [1447] if next(ticks) < 1 else []
+        free = next(ticks) >= 1
+        self.assertEqual((living, free), ([1447], True), "what the old order reported")
+
+    def test_a_slot_free_while_the_same_process_stays_alive_is_a_violation(self) -> None:
+        violation, finished = observe_orphaned_slot(lambda: True, lambda: [1447])
+        self.assertEqual(violation, [1447])
+        self.assertFalse(finished)
+
+    def test_a_held_slot_and_a_living_process_is_neither_a_violation_nor_the_end(self) -> None:
+        self.assertEqual(observe_orphaned_slot(lambda: False, lambda: [1447]), ([], False))
+
+    def test_a_free_slot_and_no_process_ends_the_wait(self) -> None:
+        self.assertEqual(observe_orphaned_slot(lambda: True, list), ([], True))
+
+    def test_the_real_loop_uses_the_helper_in_that_order(self) -> None:
+        source = inspect.getsource(
+            RealToolchain.test_07_sigkill_of_check_py_leaves_the_slot_held_by_the_real_toolchain
+        )
+        self.assertIn("observe_orphaned_slot(", source)
+        self.assertNotIn("if living:", source, "the old in-loop decision is gone")
+
+
 class RealToolchain(unittest.TestCase):
     """Test 7: the real Cargo recipe on a disposable copy, interrupted with SIGKILL."""
 
@@ -3475,11 +3536,12 @@ class RealToolchain(unittest.TestCase):
         # Slot 0 stays held for as long as any orphaned process lives, then is free again.
         deadline = time.monotonic() + 600
         while True:
-            living = [pid for pid in orphans if alive(pid)]
-            free = slot_free(base / "0.lock")
-            if living:
-                self.assertFalse(free, f"slot 0 was free while {living} lived")
-            elif free:
+            violation, finished = observe_orphaned_slot(
+                lambda: slot_free(base / "0.lock"),
+                lambda: [pid for pid in orphans if alive(pid)],
+            )
+            self.assertFalse(violation, f"slot 0 was free while {violation} lived")
+            if finished:
                 break
             self.assertLess(time.monotonic(), deadline, "the orphaned toolchain never exited")
             time.sleep(0.05)

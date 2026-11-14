@@ -15,6 +15,7 @@ local TITLE_X = (CUT + 1) * P -- the title starts inside the cut title bar
 local windows = {}
 local viewport = {width = 800, height = 600}
 local counter = 0
+local modal_backdrop
 
 local window = {}
 local Window = {}
@@ -44,6 +45,32 @@ local function stack(self)
     end
   end
   return groups
+end
+
+-- Keep every library window on the same side of the pause-menu backdrop as its modal owner. Ordinary windows are listed first,
+-- followed by the backdrop and the modal windows in window order. The tooltip overlay remains the UI library's top group.
+local function restack()
+  if modal_backdrop == nil then
+    local groups = {}
+    for _, candidate in ipairs(windows) do
+      for _, group in ipairs(stack(candidate)) do groups[#groups + 1] = group end
+    end
+    if #groups > 0 then ui.raise_groups(groups) end
+    return
+  end
+  local groups = {}
+  for _, candidate in ipairs(windows) do
+    if not candidate.modal then
+      for _, group in ipairs(stack(candidate)) do groups[#groups + 1] = group end
+    end
+  end
+  groups[#groups + 1] = modal_backdrop
+  for _, candidate in ipairs(windows) do
+    if candidate.modal then
+      for _, group in ipairs(stack(candidate)) do groups[#groups + 1] = group end
+    end
+  end
+  ui.raise_groups(groups)
 end
 
 -- Lays the attached items out for the window's current position and content rectangle, in the callback that changed them.
@@ -183,7 +210,6 @@ local function raise(self)
   if self.closed then
     return
   end
-  ui.raise_groups(stack(self))
   for index, candidate in ipairs(windows) do
     if candidate == self then
       table.remove(windows, index)
@@ -191,6 +217,7 @@ local function raise(self)
     end
   end
   windows[#windows + 1] = self
+  restack()
 end
 
 function window.new(spec)
@@ -209,6 +236,7 @@ function window.new(spec)
     y = spec.y,
     kind = spec.kind or "window",
     fixed = spec.fixed == true,
+    modal = spec.modal == true,
     draggable = spec.draggable ~= false,
     clip_title = spec.clip_title == true,
     on_close = spec.on_close,
@@ -288,6 +316,7 @@ function window.new(spec)
   render.set_group_offset(self.content, self.x + PAD, self.y + self.title_height + PAD)
   ui.raise_groups{self.chrome, self.content}
   windows[#windows + 1] = self
+  restack()
   return self
 end
 
@@ -356,13 +385,7 @@ function Window:attach(item)
   end
   self.attached[#self.attached + 1] = item
   layout_items(self, item)
-  local groups = {}
-  for _, candidate in ipairs(windows) do
-    for _, group in ipairs(stack(candidate)) do
-      groups[#groups + 1] = group
-    end
-  end
-  ui.raise_groups(groups)
+  restack()
 end
 
 -- Removes an item that destroyed itself.
@@ -465,6 +488,7 @@ function Window:close()
       break
     end
   end
+  restack()
   if self.on_close ~= nil then
     self.on_close(self)
   end
@@ -481,7 +505,25 @@ function window.min_outer_width(reserved, fixed)
 end
 
 function window.top()
+  if modal_backdrop ~= nil then
+    for index = #windows, 1, -1 do
+      if windows[index].modal then return windows[index] end
+    end
+    return nil
+  end
   return windows[#windows]
+end
+
+function window.set_modal_backdrop(group)
+  modal_backdrop = group
+  restack()
+end
+
+function window.clear_modal_backdrop(group)
+  if modal_backdrop == group then
+    modal_backdrop = nil
+    restack()
+  end
 end
 
 function window.close_request(source)

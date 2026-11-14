@@ -43,8 +43,23 @@ impl<T> OneShot<T> {
     }
 }
 
+/// A request to turn the text input route on or off (CK-314), with the generation of the write that made it. Every write has a new
+/// generation, so the main thread can tell that one happened even when a later write coalesced it into the same state (an off and
+/// then an on): applying a request always starts text input from nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextInputRequest {
+    /// Whether text input is wanted on.
+    pub enabled: bool,
+    /// The generation of the latest write: 1 for the first, then each write one more.
+    pub generation: u64,
+}
+
 #[derive(Default)]
 struct State {
+    /// The latest text input request, not yet taken.
+    text_input: Option<TextInputRequest>,
+    /// How many text input writes there have been.
+    text_generation: u64,
     /// `open`: a second one is [`OpenError::AlreadyOpened`].
     open: OneShot<WindowDesc>,
     /// The latest colour, not yet taken.
@@ -75,6 +90,8 @@ pub struct RequestChanges {
     pub clear: Option<[f32; 3]>,
     /// A `close` newly requested.
     pub close: bool,
+    /// The latest text input request written since the last take (CK-314).
+    pub text_input: Option<TextInputRequest>,
 }
 
 /// The request slot. Create it with [`Requests::new`], then hand a [`RequestWriter`] to the UI VM's
@@ -179,6 +196,31 @@ impl RequestWriter {
         Ok(())
     }
 
+    /// Turns text input on or off (CK-314): the latest value wins, and the write is never waited on. Returns the write's generation
+    /// (a write after the slot ended is discarded and counted, and still returns one).
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "the write is the point; the generation is for callers that track it"
+    )]
+    pub fn set_text_input(&self, enabled: bool) -> u64 {
+        let generation = {
+            let mut state = self.shared.lock();
+            state.text_generation = state.text_generation.saturating_add(1);
+            let generation = state.text_generation;
+            if state.ended {
+                self.shared.discarded.fetch_add(1, Ordering::SeqCst);
+            } else {
+                state.text_input = Some(TextInputRequest {
+                    enabled,
+                    generation,
+                });
+            }
+            generation
+        };
+        self.notifier.wake();
+        generation
+    }
+
     /// Requests the window be closed, without asking the close callback. One-shot: a second `close`
     /// changes nothing.
     pub fn close(&self) {
@@ -208,6 +250,7 @@ impl RequestReader {
             open: state.open.take(),
             clear: state.clear.take(),
             close: state.close.take().is_some(),
+            text_input: state.text_input.take(),
         }
     }
 

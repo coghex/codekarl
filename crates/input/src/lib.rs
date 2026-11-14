@@ -17,6 +17,33 @@ pub const TRANSITION_CAPACITY: usize = 256;
 /// Capacity of the ordered pointer-event ring.
 pub const POINTER_CAPACITY: usize = 64;
 
+/// Capacity of the ordered typed-entry ring (CK-314): at most this many entries between two acknowledged snapshots.
+pub const TYPED_CAPACITY: usize = 256;
+
+/// One typed entry (CK-314): a character the system committed for a key (a Unicode scalar value, never a control character), or one of
+/// the five edit commands. Typed entries are one ordered list, apart from the physical keys and the pointer events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypedEntry {
+    /// A committed character.
+    Char(char),
+    /// Delete backward.
+    Backspace,
+    /// Enter (insert newline).
+    Enter,
+    /// Tab.
+    Tab,
+    /// Move left.
+    Left,
+    /// Move right.
+    Right,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TypedRecord {
+    entry: TypedEntry,
+    sequence: u128,
+}
+
 /// Pointer positions and scroll amounts are measured in 1/256 of a point or unit.
 pub const POINTER_FRACTION: i32 = 256;
 
@@ -777,7 +804,7 @@ pub struct ActionSnapshot {
 }
 
 /// An immutable copy of the mapper state at one sequence watermark.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "snapshot flags are independent latched input conditions"
@@ -803,6 +830,13 @@ pub struct InputSnapshot {
     pub pointer_held: bool,
     /// Whether pointer detail overflowed since the last acknowledged snapshot.
     pub pointer_overflow: bool,
+    /// The typed entries not yet acknowledged, in the order typed (at most [`TYPED_CAPACITY`]).
+    pub typed: Vec<TypedEntry>,
+    /// Whether entries were dropped at the bound since the last acknowledged snapshot.
+    pub typed_lost: bool,
+    /// The text-input epoch: the generation of the latest request that turned typing on or off and was applied
+    /// ([`Mapper::reset_typed`]). Entries gathered under an older epoch were discarded by that reset.
+    pub typed_epoch: u64,
 }
 
 /// The final physical state of every supported key, with the taps a native layer could not deliver in order, as one
@@ -925,6 +959,11 @@ pub struct Mapper {
     pointer_held: bool,
     pointer_overflow_sequence: Option<u128>,
     last_snapshot_sequence: u128,
+    typed: [Option<TypedRecord>; TYPED_CAPACITY],
+    typed_head: usize,
+    typed_len: usize,
+    typed_lost_sequence: Option<u128>,
+    typed_epoch: u64,
 }
 
 impl Mapper {
@@ -958,7 +997,40 @@ impl Mapper {
             pointer_held: false,
             pointer_overflow_sequence: None,
             last_snapshot_sequence: 0,
+            typed: [None; TYPED_CAPACITY],
+            typed_head: 0,
+            typed_len: 0,
+            typed_lost_sequence: None,
+            typed_epoch: 0,
         }
+    }
+
+    /// Records one typed entry (CK-314) in fixed storage. At the bound the new entry is dropped, the earlier ones keep their order, and
+    /// the loss is latched until the snapshot that reports it is acknowledged.
+    pub fn typed(&mut self, entry: TypedEntry) {
+        let sequence = self.next_sequence();
+        if self.typed_len == TYPED_CAPACITY {
+            self.typed_lost_sequence = Some(sequence);
+            return;
+        }
+        let tail = (self.typed_head + self.typed_len) % TYPED_CAPACITY;
+        self.typed[tail] = Some(TypedRecord { entry, sequence });
+        self.typed_len += 1;
+    }
+
+    /// Records that a native layer dropped entries at its own bound.
+    pub fn typed_lost(&mut self) {
+        self.typed_lost_sequence = Some(self.next_sequence());
+    }
+
+    /// Starts text input from nothing (turned on or off, CK-314): every entry gathered and the loss flag go, and the epoch becomes
+    /// `epoch`, the generation of the request being applied.
+    pub fn reset_typed(&mut self, epoch: u64) {
+        self.typed = [None; TYPED_CAPACITY];
+        self.typed_head = 0;
+        self.typed_len = 0;
+        self.typed_lost_sequence = None;
+        self.typed_epoch = epoch;
     }
 
     /// Applies one physical key transition. Repeats of a held key do nothing; a repeated down
@@ -1160,6 +1232,12 @@ impl Mapper {
             pointer_position: self.pointer_position,
             pointer_held: self.pointer_held,
             pointer_overflow: self.pointer_overflow_sequence.is_some(),
+            typed: (0..self.typed_len)
+                .filter_map(|offset| self.typed[(self.typed_head + offset) % TYPED_CAPACITY])
+                .map(|record| record.entry)
+                .collect(),
+            typed_lost: self.typed_lost_sequence.is_some(),
+            typed_epoch: self.typed_epoch,
         }
     }
 
@@ -1221,6 +1299,23 @@ impl Mapper {
             .is_some_and(|stamp| stamp <= sequence)
         {
             self.pointer_overflow_sequence = None;
+        }
+        while self.typed_len > 0 {
+            let Some(front) = self.typed[self.typed_head] else {
+                break;
+            };
+            if front.sequence > sequence {
+                break;
+            }
+            self.typed[self.typed_head] = None;
+            self.typed_head = (self.typed_head + 1) % TYPED_CAPACITY;
+            self.typed_len -= 1;
+        }
+        if self
+            .typed_lost_sequence
+            .is_some_and(|stamp| stamp <= sequence)
+        {
+            self.typed_lost_sequence = None;
         }
     }
 

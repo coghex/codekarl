@@ -20,8 +20,14 @@
 - (void)clearQueued;
 @end
 
-@interface CKWinView : NSView
+/* The content view is also the window's text input client (CK-314): with text input on, each key-down is given to the system's
+ * interpretation, which comes back as inserted text and the system's editing commands. */
+@interface CKWinView : NSView <NSTextInputClient>
 @property(nonatomic, weak) CKWinState *state;
+/* Whether text is being composed (a dead key, before the next key): it is never an entry. */
+@property(nonatomic) BOOL composing;
+/* Discards text being composed, here and in the system's input context. */
+- (void)discardComposition;
 @end
 
 /* One recorded key transition (the ring's entry). */
@@ -75,7 +81,12 @@ BOOL ck_win_key_table_entry(NSUInteger position, uint16_t *code, uint8_t *key, c
     BOOL _pointerHeld;
     int32_t _pointerX;
     int32_t _pointerY;
+    CKWinTyped _typed[CK_WIN_TYPED_CAPACITY];
+    uint32_t _typedLength;
+    BOOL _typedLost;
 }
+/* Whether the typed-entry route is on (CK-314). */
+@property(nonatomic) BOOL textInput;
 @property(nonatomic, strong) NSApplication *application;
 @property(nonatomic, strong) CKWakeBox *wake;
 @property(nonatomic, strong) NSWindow *window;
@@ -128,6 +139,14 @@ BOOL ck_win_key_table_entry(NSUInteger position, uint16_t *code, uint8_t *key, c
 - (void)recordFocusGained;
 - (void)recordPointerKind:(uint8_t)kind point:(NSPoint)point amount:(double)amount unit:(uint8_t)unit button:(uint8_t)button;
 - (void)takePointersInto:(CKWinEvents *)out;
+/* One typed entry, kept only while text input is on and in fixed storage; past the bound the later ones are dropped. */
+- (void)recordTypedKind:(uint8_t)kind value:(uint32_t)value;
+/* Committed text: made precomposed (normal form C) and split into Unicode scalars, one entry each; control characters and the
+ * system's private function-key codes are no entries. */
+- (void)recordTypedText:(NSString *)text;
+- (void)takeTypedInto:(CKWinEvents *)out;
+/* Turns the route on or off; either way it starts from nothing. */
+- (void)setTextInputEnabled:(BOOL)enabled;
 /* Fills `out` with at most `cap` key and focus entries (and the resync after an overflow), in recorded order; the
  * pump calls it before dispatch, so input recorded while it runs waits for the next pump. */
 - (void)takeKeysInto:(CKWinEvents *)out cap:(size_t)cap;

@@ -11,6 +11,10 @@
 //! - `window.set_clear(r, g, b)`: the colour (finite components are clamped to 0..=1, a non-finite one
 //!   raises an error);
 //! - `window.close()`: the one-shot `close`;
+//! - `window.set_text_input(on)` (CK-314): turns the typed-entry route on or off (a boolean; the latest value wins, and the call never
+//!   waits). Either way it starts from nothing on the main thread. It returns the call's generation, an integer that grows with each
+//!   call: an update's `typed_epoch` is the generation of the latest call the main thread has applied, so a script can tell which
+//!   typed entries came after its own call;
 //! - `window.on_close_request(fn)` and `window.on_opened(fn)`: the callbacks `close_request` and `opened`.
 //!
 //! **Headless runs** get the same extension over a real slot, so every call is validated the same way and
@@ -365,6 +369,22 @@ impl Shared {
         Ok(Vec::new())
     }
 
+    fn set_text_input(
+        &self,
+        arguments: &[Option<ConfigValue>],
+    ) -> Result<Vec<ConfigValue>, String> {
+        let [Some(ConfigValue::Bool(enabled))] = arguments else {
+            return Err("window.set_text_input takes one boolean".into());
+        };
+        let generation = self.writer.set_text_input(*enabled);
+        if let Some(notes) = &self.headless {
+            notes.accepted_write();
+        }
+        Ok(vec![ConfigValue::Integer(
+            i64::try_from(generation).unwrap_or(i64::MAX),
+        )])
+    }
+
     fn close(&self, arguments: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
         if !arguments.is_empty() {
             return Err("window.close takes no arguments".into());
@@ -411,11 +431,16 @@ pub(crate) fn extension_with_screen(
         let shared = shared.clone();
         Arc::new(move |arguments| shared.set_clear(arguments))
     };
+    let set_text_input: HostFunction = {
+        let shared = shared.clone();
+        Arc::new(move |arguments| shared.set_text_input(arguments))
+    };
     let close: HostFunction = Arc::new(move |arguments| shared.close(arguments));
     Extension::new("window")
         .function("open", open)
         .function("set_clear", set_clear)
         .function("close", close)
+        .function("set_text_input", set_text_input)
         .callback("on_close_request", CLOSE_REQUEST)
         .callback("on_opened", OPENED)
 }
@@ -600,6 +625,43 @@ mod tests {
         );
         assert_eq!(changes.clear, Some([0.5, 1.0, 0.0]));
         assert!(changes.close);
+    }
+
+    #[test]
+    fn set_text_input_writes_the_slot_returns_a_growing_generation_and_checks_its_argument() {
+        let rig = Rig::new(false);
+        assert_eq!(
+            error_of(
+                &rig,
+                "assert(window.set_text_input(true) == 1) assert(window.set_text_input(false) == 2)"
+            ),
+            "ok"
+        );
+        let request = rig.requests.reader().take().text_input;
+        assert_eq!(
+            request,
+            Some(ck_window::TextInputRequest {
+                enabled: false,
+                generation: 2
+            }),
+            "the latest value wins and carries the latest generation"
+        );
+        for call in [
+            "window.set_text_input()",
+            "window.set_text_input(1)",
+            "window.set_text_input('on')",
+            "window.set_text_input(true, true)",
+        ] {
+            assert!(
+                error_of(&rig, call).contains("window.set_text_input takes one boolean"),
+                "{call}"
+            );
+        }
+        assert_eq!(
+            rig.requests.reader().take().text_input,
+            None,
+            "refused calls write nothing"
+        );
     }
 
     #[test]

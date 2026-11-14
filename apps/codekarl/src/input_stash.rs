@@ -7,6 +7,9 @@
 //! - **transitions:** ordered, at most [`TRANSITION_CAPACITY`]; when full the oldest is dropped and `overflow` is set;
 //! - **pointer:** the latest position, left-button held state and hit key, plus ordered events; only adjacent moves with the same key
 //!   coalesce, and the oldest event is dropped past the bound with `pointer_overflow` set;
+//! - **typed entries** (CK-314): one ordered list, at most [`TYPED_CAPACITY`]; past the bound the later entries are dropped (the earlier
+//!   ones keep their order) and `typed_lost` is set. A snapshot of a newer text-input epoch discards what was gathered before it;
+//!   the epoch is kept (like `held`) so the UI can tell which entries came after its own call;
 //! - **`overflow`** and **`reset`:** OR-ed (a snapshot's own `overflow` is OR-ed in).
 //!
 //! The stash is cleared only when the UI VM accepted the post that carried it, and a clear keeps each action's latest `held`: that is
@@ -14,7 +17,9 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use ck_window::{InputSnapshot, PointerPosition, TRANSITION_CAPACITY, Transition};
+use ck_window::{
+    InputSnapshot, PointerPosition, TRANSITION_CAPACITY, TYPED_CAPACITY, Transition, TypedEntry,
+};
 
 pub(crate) const POINTER_EVENT_CAPACITY: usize = 64;
 
@@ -48,6 +53,10 @@ pub(crate) struct StashedAction {
 
 /// The input the UI has not been given yet.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the stash's latched conditions are independent flags"
+)]
 pub(crate) struct InputStash {
     actions: BTreeMap<String, StashedAction>,
     transitions: VecDeque<Transition>,
@@ -56,6 +65,9 @@ pub(crate) struct InputStash {
     pointer: Option<PointerView>,
     pointer_events: VecDeque<PointerViewEvent>,
     pointer_overflow: bool,
+    typed: VecDeque<TypedEntry>,
+    typed_lost: bool,
+    typed_epoch: u64,
 }
 
 impl InputStash {
@@ -77,6 +89,20 @@ impl InputStash {
         }
         self.overflow |= input.overflow;
         self.reset |= input.reset;
+        if input.typed_epoch > self.typed_epoch {
+            // Text input was turned on or off since: what was gathered before was typed under the old setting.
+            self.typed.clear();
+            self.typed_lost = false;
+            self.typed_epoch = input.typed_epoch;
+        }
+        for entry in &input.typed {
+            if self.typed.len() == TYPED_CAPACITY {
+                self.typed_lost = true;
+                break;
+            }
+            self.typed.push_back(*entry);
+        }
+        self.typed_lost |= input.typed_lost;
     }
 
     /// Drops everything that is an event: transitions, latches, `reset` and `overflow`. Each action's latest `held` stays.
@@ -90,11 +116,14 @@ impl InputStash {
         self.reset = false;
         self.pointer_events.clear();
         self.pointer_overflow = false;
+        self.typed.clear();
+        self.typed_lost = false;
     }
 
     /// The tick's input while no callback is registered: nothing of it is kept but each action's latest `held`.
     pub(crate) fn follow_held(&mut self, input: &InputSnapshot) {
         self.clear();
+        self.typed_epoch = self.typed_epoch.max(input.typed_epoch);
         for action in &input.actions {
             self.actions.entry(action.name.clone()).or_default().held = action.held;
         }
@@ -168,6 +197,19 @@ impl InputStash {
     pub(crate) fn pointer_overflow(&self) -> bool {
         self.pointer_overflow
     }
+
+    /// The typed entries, in the order typed.
+    pub(crate) fn typed(&self) -> impl Iterator<Item = &TypedEntry> {
+        self.typed.iter()
+    }
+
+    pub(crate) fn typed_lost(&self) -> bool {
+        self.typed_lost
+    }
+
+    pub(crate) fn typed_epoch(&self) -> u64 {
+        self.typed_epoch
+    }
 }
 
 #[cfg(test)]
@@ -197,6 +239,9 @@ mod tests {
             pointer_position: None,
             pointer_held: false,
             pointer_overflow: false,
+            typed: Vec::new(),
+            typed_lost: false,
+            typed_epoch: 0,
         }
     }
 
@@ -383,5 +428,69 @@ mod tests {
         assert_eq!(stash.pointer(), Some(&latest));
         assert_eq!(stash.pointer_events().count(), 0);
         assert!(!stash.pointer_overflow());
+    }
+
+    fn typed_snapshot(entries: &[TypedEntry], lost: bool, epoch: u64) -> InputSnapshot {
+        let mut input = snapshot(Vec::new(), Vec::new());
+        input.typed = entries.to_vec();
+        input.typed_lost = lost;
+        input.typed_epoch = epoch;
+        input
+    }
+
+    #[test]
+    fn typed_entries_gather_in_order_are_bounded_with_the_later_dropped_and_cleared_with_the_rest()
+    {
+        let mut stash = InputStash::default();
+        stash.absorb(&typed_snapshot(&[TypedEntry::Char('a')], false, 0));
+        stash.absorb(&typed_snapshot(
+            &[TypedEntry::Backspace, TypedEntry::Char('b')],
+            false,
+            0,
+        ));
+        assert_eq!(
+            stash.typed().copied().collect::<Vec<_>>(),
+            [
+                TypedEntry::Char('a'),
+                TypedEntry::Backspace,
+                TypedEntry::Char('b')
+            ]
+        );
+        assert!(!stash.typed_lost());
+        // Past the bound the later entries are dropped and the loss is set; the earlier ones keep their order.
+        let many = vec![TypedEntry::Tab; TYPED_CAPACITY];
+        stash.absorb(&typed_snapshot(&many, false, 0));
+        assert_eq!(stash.typed().count(), TYPED_CAPACITY);
+        assert!(stash.typed_lost());
+        assert_eq!(stash.typed().next(), Some(&TypedEntry::Char('a')));
+        // A snapshot's own loss is OR-ed in, and a clear (an accepted post) drops entries and the loss.
+        stash.clear();
+        assert_eq!(stash.typed().count(), 0);
+        assert!(!stash.typed_lost());
+        stash.absorb(&typed_snapshot(&[], true, 0));
+        assert!(stash.typed_lost());
+    }
+
+    #[test]
+    fn a_newer_text_input_epoch_discards_what_was_gathered_before_it_and_the_epoch_survives_a_clear()
+     {
+        let mut stash = InputStash::default();
+        stash.absorb(&typed_snapshot(&[TypedEntry::Char('a')], true, 1));
+        stash.absorb(&typed_snapshot(&[TypedEntry::Char('b')], false, 2));
+        assert_eq!(
+            stash.typed().copied().collect::<Vec<_>>(),
+            [TypedEntry::Char('b')]
+        );
+        assert!(
+            !stash.typed_lost(),
+            "the earlier loss belonged to the older epoch"
+        );
+        assert_eq!(stash.typed_epoch(), 2);
+        stash.clear();
+        assert_eq!(stash.typed_epoch(), 2, "the epoch is state, like `held`");
+        // With no callback registered the entries are dropped, and the epoch still follows.
+        stash.follow_held(&typed_snapshot(&[TypedEntry::Char('c')], false, 3));
+        assert_eq!(stash.typed().count(), 0);
+        assert_eq!(stash.typed_epoch(), 3);
     }
 }
