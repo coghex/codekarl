@@ -2525,6 +2525,12 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("assets/ui/", "scripts/ui/"),
     ),
+    # CK-300: the glossary reader's tests run the shipped reader, list, tooltip and menu libraries over the shipped glossary, font and theme.
+    Guard(
+        "apps/codekarl/src/ui_link/glossary_reader_tests.rs",
+        "rust.app",
+        ("assets/ui/", "scripts/ui/"),
+    ),
     Guard("apps/codekarl/src/game_api.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
     # CK-235: the map controller's rule-table test loads Ireland's shipped map and checks the lane accepts its grids.
     Guard("apps/codekarl/src/map_app.rs", "rust.app", ("assets/map/ireland/",)),

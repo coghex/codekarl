@@ -4,8 +4,9 @@
 --
 -- The window is a library window of kind `window`, `fixed` (no close button) and not draggable, centred in the view and centred again
 -- when the view's size changes. Under it a backdrop, the colour `body` at alpha one half, covers the whole view above every bar and
--- window; it is a hit region, so a press, a drag, a scroll or a hover there reaches nothing else. "glossary" and "save / load" are
--- greyed (inactive buttons) until their screens exist; "settings" opens the settings window (lib/settings_window.lua).
+-- window; it is a hit region, so a press, a drag, a scroll or a hover there reaches nothing else. "save / load" is greyed (an inactive
+-- button) until its screen exists; "settings" opens the settings window (lib/settings_window.lua) and "glossary" the glossary reader
+-- (lib/glossary_reader.lua), each above the menu and its backdrop.
 local ui = require("lib.ui")
 local button = require("lib.button")
 local windows = require("lib.window")
@@ -21,7 +22,7 @@ local menu = {}
 
 menu.LABELS = {"return", "settings", "glossary", "save / load", "quit to desktop"}
 -- The buttons no screen is built for yet.
-local GREYED = {glossary = true, ["save / load"] = true}
+local GREYED = {["save / load"] = true}
 
 local current = nil
 
@@ -54,6 +55,7 @@ end
 -- Takes the backdrop away. Runs when the window closes, however it was closed.
 local function dismantle(state)
   require("lib.settings_window").close()
+  require("lib.glossary_reader").close()
   windows.clear_modal_backdrop(state.backdrop_group)
   pointer.unregister(state.backdrop_key)
   render.set_hit(state.backdrop_key, nil, state.backdrop_group)
@@ -122,6 +124,7 @@ function menu.open(view)
   local actions = {
     ["return"] = function() state.window:close() end,
     ["settings"] = function() require("lib.settings_window").open(state.view) end,
+    ["glossary"] = function() require("lib.glossary_reader").open(state.view) end,
     ["quit to desktop"] = function() window.close() end,
   }
   local y = 0
@@ -181,6 +184,7 @@ function menu.relayout()
   render.set_hit(state.backdrop_key, {{x = 0, y = 0, width = state.view.width, height = state.view.height}}, state.backdrop_group)
   centre(state)
   require("lib.settings_window").relayout(state.view)
+  require("lib.glossary_reader").relayout(state.view)
 end
 
 return menu
