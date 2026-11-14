@@ -233,6 +233,7 @@ where
     fn control(&mut self, control: Control, now: Duration) {
         match control {
             Control::TogglePause => self.toggle_pause(now),
+            Control::Pause => self.pause_only(),
             Control::Speed(level) => self.set_level(level),
             Control::Faster => self.set_level(self.clock.speed().level().saturating_add(1)),
             Control::Slower => self.set_level(self.clock.speed().level().saturating_sub(1)),
@@ -240,6 +241,14 @@ where
             Control::Quickload => self.quickload(),
         }
         self.publish_if_changed();
+    }
+
+    /// Pauses a running game with the reason `player`. A paused game is left as it is: its reason (`load`, `error` or `player`) stays.
+    fn pause_only(&mut self) {
+        if self.paused.is_none() {
+            self.clock.pause();
+            self.paused = Some(PauseReason::Player);
+        }
     }
 
     fn toggle_pause(&mut self, now: Duration) {

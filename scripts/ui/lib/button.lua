@@ -18,9 +18,10 @@ local TRANSPARENT = "#00000000"
 local button = {}
 button.__index = button
 
--- The size in UI pixels from the text's size in font pixels: the text plus the padding on each side, at least the frame's minimum.
-local function size_of(text_width, text_height)
-  return math.max(text_width + 2 * PADDING, LEAST), math.max(text_height + 2 * PADDING, LEAST)
+-- The size in UI pixels from the text's size in font pixels: the text plus the padding on each side, at least the frame's minimum and
+-- at least `least_width` (the button's own `width` option, in UI pixels, or nil).
+local function size_of(text_width, text_height, least_width)
+  return math.max(text_width + 2 * PADDING, LEAST, least_width or 0), math.max(text_height + 2 * PADDING, LEAST)
 end
 
 -- The size in points of a button with `content` as its text.
@@ -43,7 +44,7 @@ local function text_offset(width_px, text_width)
 end
 
 local function resize(self, text_width, text_height)
-  local width, height = size_of(text_width, text_height)
+  local width, height = size_of(text_width, text_height, self.least_width)
   self.width = width * P
   self.height = height * P
   self.text_x = text_offset(width, text_width) * P
@@ -54,9 +55,12 @@ local function publish_region(self)
 end
 
 -- The colours the state calls for (the theme's table of the design: fill, line, text), pressed over hover over normal. A selected
--- button (a tab that is showing) looks pressed until it is deselected.
+-- button (a tab that is showing) looks pressed until it is deselected. An inactive button always looks the same: no hover, no pressed.
 local function look_of(self)
   local kind = self.colours
+  if self.inactive then
+    return kind.fill, theme.colour("track"), theme.colour("dim")
+  end
   local down = self.pressed or self.selected
   if self.style == "title" then
     if down then
@@ -146,8 +150,17 @@ end
 -- `button.new{x, y, text, on_click, kind = "window", style = "panel", group = nil}` or `button.new{..., icons = {...}, icon = name}`.
 -- With a `group` the quads and the hit key go into it and the position is local to it (the engine applies the group's offset).
 -- `style = "title"` is the look on a title bar. Icons are all created up front and `:set_icon` only retints them.
+-- `width` (points) makes a text button at least that wide, its text centred; it never makes it narrower than its text needs.
+-- `inactive = true` starts the button greyed (see `button:set_inactive`).
 function button.new(spec)
   local self = setmetatable({}, button)
+  if spec.width ~= nil then
+    if spec.icons ~= nil then
+      error("button.new: width applies to text buttons", 2)
+    end
+    self.least_width = ui.snap_size(spec.width) // P
+  end
+  self.inactive = spec.inactive == true
   self.on_click = spec.on_click
   self.group = spec.group
   self.owner = spec.owner
@@ -240,6 +253,10 @@ end
 
 function button:on_event(event, eligible)
   local kind = event.kind
+  if self.inactive then
+    -- Greyed: nothing is pressed and nothing is clicked. A button greyed while pressed is released by its own `set_inactive`.
+    return
+  end
   if kind == "down" then
     if not self.pressed then
       self.pressed = true
@@ -261,7 +278,7 @@ function button:on_event(event, eligible)
 end
 
 function button:functional()
-  return self.on_click ~= nil
+  return self.on_click ~= nil and not self.inactive
 end
 
 function button:on_hover(is_hovered)
@@ -286,6 +303,20 @@ function button:move(x, y)
     text.move(self.line, self.x + self.text_x, self.y + PADDING * P)
   end
   publish_region(self)
+end
+
+-- Greys the button (text `dim`, outline `track`, no hover or pressed look, a press does nothing) or makes it live again. It can be
+-- turned off again: the button keeps its `on_click`. A press in progress when it is greyed is let go without a click.
+function button:set_inactive(inactive)
+  inactive = inactive == true
+  if self.inactive == inactive then
+    return
+  end
+  self.inactive = inactive
+  if inactive then
+    release(self)
+  end
+  show(self)
 end
 
 -- Marks the button as selected (it keeps the pressed look) or not.

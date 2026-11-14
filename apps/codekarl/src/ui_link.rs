@@ -304,6 +304,8 @@ struct State {
     seen_generation: Cell<u64>,
     /// The owner of the current pointer gesture, independent of what input detail survived overflow.
     pointer_owner: RefCell<GestureOwner>,
+    /// Whether the previous input tick saw the game-key block on, to end a captured gesture on the tick it turns on.
+    keys_were_blocked: Cell<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -347,15 +349,30 @@ fn route_pointer(
     route_pointer_in(owner, input, regions, None)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "gesture ownership and per-event routing form one ordered state transition"
-)]
+/// [`route_pointer_with`] when no gesture is ended from outside.
+#[cfg(test)]
 fn route_pointer_in(
     owner: &mut GestureOwner,
     input: &ck_window::InputSnapshot,
     regions: Option<&ck_render_2d::HitRegions>,
     units: Option<ck_render_2d::ui_scale::UnitMap>,
+) -> RoutedPointer {
+    route_pointer_with(owner, input, regions, units, false)
+}
+
+/// Routes one tick's pointer input. `end_capture` ends the gesture someone already owns, as a focus loss does: the pause menu's
+/// backdrop is a hit region above everything, but a drag the map (or a widget) captured before it opened would otherwise go on, so
+/// the tick the menu's key block turns on ends it. The rest of that button press then reaches nobody.
+#[expect(
+    clippy::too_many_lines,
+    reason = "gesture ownership and per-event routing form one ordered state transition"
+)]
+fn route_pointer_with(
+    owner: &mut GestureOwner,
+    input: &ck_window::InputSnapshot,
+    regions: Option<&ck_render_2d::HitRegions>,
+    units: Option<ck_render_2d::ui_scale::UnitMap>,
+    end_capture: bool,
 ) -> RoutedPointer {
     use crate::map_app::RoutedMapEvent as MapEvent;
     let mut routed = RoutedPointer::default();
@@ -365,7 +382,7 @@ fn route_pointer_in(
     if matches!(owner, GestureOwner::Nobody) && !input.pointer_held {
         *owner = GestureOwner::Idle;
     }
-    if input.reset {
+    if input.reset || end_capture {
         match owner {
             GestureOwner::Ui(key) => {
                 routed
@@ -651,6 +668,39 @@ impl CodekarlUi {
     pub(crate) fn with_sim(mut self, sim: SimLink) -> Self {
         self.sim = Some(sim);
         self
+    }
+
+    /// The pause menu's key block: its backdrop takes every new press, so the tick the block turns on (the first returned value) also ends
+    /// a gesture someone had already captured, and while it is on the game's own actions stop reaching the map and the simulation (the
+    /// second: the input without them; the UI still gets all of it).
+    fn key_block(
+        &self,
+        input: &ck_window::InputSnapshot,
+    ) -> (bool, Option<ck_window::InputSnapshot>) {
+        let blocked = self
+            .sim
+            .as_ref()
+            .is_some_and(|sim| sim.controls.keys_blocked());
+        // Always store this tick's state: a short-circuit here would leave an old `true` behind when the block turns off.
+        let was_blocked = self.state.keys_were_blocked.replace(blocked);
+        let began = blocked && !was_blocked;
+        (
+            began,
+            blocked.then(|| crate::game::controls::without_blocked_actions(input)),
+        )
+    }
+
+    /// Sends the presses of `input` to the simulation owner, and writes the one record when the input layer discarded earlier transitions.
+    fn send_controls(&self, input: &ck_window::InputSnapshot) {
+        if let Some(sim) = &self.sim
+            && sim.controls.send(input)
+        {
+            crate::lifecycle::emit(
+                ck_log::Level::Warn,
+                "sim",
+                format_args!("{}", crate::game::controls::OVERFLOW_RECORD),
+            );
+        }
     }
 
     /// Whether the simulation owner recorded a terminal failure; the message becomes the link's own terminal failure, which
@@ -1110,8 +1160,15 @@ impl UiLink for CodekarlUi {
             .pointer_position
             .map(|position| units.map_or(position, |map| map.position(position)))
             .or(previous_ui);
+        let (block_began, game_input) = self.key_block(&tick.input);
         let mut owner = self.state.pointer_owner.borrow_mut();
-        let routed = route_pointer_in(&mut owner, &tick.input, regions.as_deref(), units);
+        let routed = route_pointer_with(
+            &mut owner,
+            &tick.input,
+            regions.as_deref(),
+            units,
+            block_began,
+        );
         let latest_over = latest_position
             .and_then(|position| {
                 regions
@@ -1126,6 +1183,9 @@ impl UiLink for CodekarlUi {
             || latest_over.is_some();
         if let Some(map) = &self.map {
             let mut map_tick = tick.clone();
+            if let Some(filtered) = &game_input {
+                map_tick.input.actions.clone_from(&filtered.actions);
+            }
             map_tick.input.pointer_events.clear();
             map_tick.input.pointer_position = map_owns_gesture
                 .then_some(tick.input.pointer_position)
@@ -1148,15 +1208,7 @@ impl UiLink for CodekarlUi {
         if map_owns_gesture && tick.input.pointer_overflow && !tick.input.pointer_held {
             *owner = GestureOwner::Idle;
         }
-        if let Some(sim) = &self.sim
-            && sim.controls.send(&tick.input)
-        {
-            crate::lifecycle::emit(
-                ck_log::Level::Warn,
-                "sim",
-                format_args!("{}", crate::game::controls::OVERFLOW_RECORD),
-            );
-        }
+        self.send_controls(game_input.as_ref().unwrap_or(&tick.input));
         let mut stash = self.state.stash.borrow_mut();
         // A registration since the previous look at it (a tick or a post): what was gathered before it is never delivered.
         let registered = self.observe_registration(&mut stash);
@@ -1228,6 +1280,8 @@ mod list_tests;
 mod listbar_tests;
 #[cfg(test)]
 mod location_tests;
+#[cfg(test)]
+mod menu_tests;
 #[cfg(test)]
 mod theme_tests;
 #[cfg(test)]
@@ -2366,6 +2420,90 @@ mod tests {
             [crate::map_app::RoutedMapEvent::Pointer(PointerEvent::Up(position))] if *position == outside
         ));
         assert_eq!(owner, GestureOwner::Idle);
+    }
+
+    #[test]
+    fn ending_a_capture_ends_a_map_drag_and_cancels_a_widget_gesture_and_the_rest_reaches_nobody() {
+        let regions = hit_regions(&[("backdrop", 0.0, 0.0, 400.0, 300.0)]);
+        let at = |x: i32| PointerPosition {
+            x: x * 256,
+            y: 50 * 256,
+        };
+        // Control: a map drag goes on (the backdrop alone does not stop a drag the map already owns).
+        let mut owner = GestureOwner::Map;
+        let kept = route_pointer_with(
+            &mut owner,
+            &pointer_input(vec![PointerEvent::Move(at(60))], Some(at(60)), true),
+            Some(&regions),
+            None,
+            false,
+        );
+        assert!(matches!(
+            kept.map.as_slice(),
+            [crate::map_app::RoutedMapEvent::Pointer(PointerEvent::Move(
+                _
+            ))]
+        ));
+        assert_eq!(owner, GestureOwner::Map);
+
+        // The tick the menu's block turns on: the map's drag ends, and the move that tick carried goes nowhere.
+        let ended = route_pointer_with(
+            &mut owner,
+            &pointer_input(vec![PointerEvent::Move(at(80))], Some(at(80)), true),
+            Some(&regions),
+            None,
+            true,
+        );
+        assert!(matches!(
+            ended.map.as_slice(),
+            [crate::map_app::RoutedMapEvent::EndDrag]
+        ));
+        assert!(ended.ui.is_empty());
+        assert_eq!(owner, GestureOwner::Nobody);
+        // The held button's later moves and its release reach neither the map nor the UI; then the pointer is idle again.
+        for (events, held) in [
+            (vec![PointerEvent::Move(at(100))], true),
+            (vec![PointerEvent::Up(at(100))], false),
+        ] {
+            let routed = route_pointer_with(
+                &mut owner,
+                &pointer_input(events, Some(at(100)), held),
+                Some(&regions),
+                None,
+                false,
+            );
+            assert!(routed.map.is_empty() && routed.ui.is_empty());
+        }
+        assert_eq!(owner, GestureOwner::Idle);
+
+        // A widget's gesture is cancelled, with its key, instead.
+        let mut owner = GestureOwner::Ui("backdrop".to_owned());
+        let cancelled = route_pointer_with(
+            &mut owner,
+            &pointer_input(Vec::new(), Some(at(80)), true),
+            Some(&regions),
+            None,
+            true,
+        );
+        assert!(cancelled.map.is_empty());
+        assert_eq!(cancelled.ui.len(), 1);
+        assert_eq!(cancelled.ui[0].kind, "cancel");
+        assert_eq!(cancelled.ui[0].key.as_deref(), Some("backdrop"));
+        assert_eq!(owner, GestureOwner::Nobody);
+
+        // With nothing captured, ending a capture changes nothing, and a press on the backdrop is the UI's, not the map's.
+        let mut owner = GestureOwner::Idle;
+        let pressed = route_pointer_with(
+            &mut owner,
+            &pointer_input(vec![PointerEvent::Down(at(80))], Some(at(80)), true),
+            Some(&regions),
+            None,
+            true,
+        );
+        assert!(pressed.map.is_empty());
+        assert_eq!(pressed.ui.len(), 1);
+        assert_eq!(pressed.ui[0].kind, "down");
+        assert_eq!(pressed.ui[0].key.as_deref(), Some("backdrop"));
     }
 
     #[test]

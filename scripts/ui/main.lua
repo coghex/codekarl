@@ -1,5 +1,6 @@
 -- The ui VM: the common demo. It opens a resizable window of 1280 by 800 screen pixels (its minimum) with a solid clear colour, logs when the
--- window is open, and logs the source of a close request (Escape or the close button) and accepts it.
+-- window is open, and logs the source of a close request (Escape or the close button). The window's own close button ends the run; Escape
+-- closes what is open (a tooltip, a list-bar picker, a window) and, with nothing left, opens the pause menu (`lib/menu.lua`) and declines.
 -- Run headless (--headless, or no [window] backend), `window.open` is ignored with one record and the rest
 -- of the script runs unchanged.
 --
@@ -21,6 +22,7 @@ local date_text = require("lib.time")
 local location = require("lib.location")
 local tooltip = require("lib.tooltip")
 local classes = require("lib.classes")
+local menu = require("lib.menu")
 
 local P = ui.P
 local MARGIN = 8 -- UI units from the window's edges
@@ -677,6 +679,7 @@ frame.on_update(function(update)
     for _, relayout in ipairs(relayouts) do
       relayout()
     end
+    menu.relayout()
   end
   tooltip.update(update)
 end)
@@ -691,7 +694,8 @@ end)
 
 window.on_close_request(function(source)
   log.info("close requested by " .. source)
-  return windows.close_request(source)
+  -- Escape closes what is open and, with nothing left, opens the pause menu; the close button ends the run.
+  return menu.close_request(source, view)
 end)
 
 function startup()

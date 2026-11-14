@@ -365,3 +365,58 @@ fn each_published_snapshot_is_also_a_debug_record() {
         ]
     );
 }
+
+#[test]
+fn the_pause_only_control_pauses_a_running_game_with_the_reason_player_and_never_resumes_it() {
+    let mut harness = Harness::new(1);
+    harness.run_at(2);
+    harness.wake(SECOND);
+    let stopped_at = harness.core.time();
+    assert_eq!(harness.paused(), None);
+    harness.control(Control::Pause);
+    assert_eq!(harness.paused(), Some(PauseReason::Player));
+    assert_eq!(
+        harness.core.snapshot().speed.level(),
+        2,
+        "the speed is left"
+    );
+    harness.wake(Duration::from_secs(600));
+    assert_eq!(harness.core.time(), stopped_at, "paused, no time passes");
+    // The toggle would resume here; this control never does.
+    harness.control(Control::Pause);
+    assert_eq!(harness.paused(), Some(PauseReason::Player));
+    harness.wake(SECOND);
+    assert_eq!(harness.core.time(), stopped_at);
+}
+
+#[test]
+fn the_pause_only_control_leaves_every_paused_game_as_it_is_the_reason_included() {
+    // Just started: the reason is `load`.
+    let mut loaded = Harness::new(1);
+    assert_eq!(loaded.paused(), Some(PauseReason::Load));
+    loaded.control(Control::Pause);
+    assert_eq!(loaded.paused(), Some(PauseReason::Load));
+
+    // After a system error: the reason is `error`.
+    let mut failed = Harness::with_faults(
+        42,
+        Faults {
+            error_at: Some(start().hours() + 3),
+            end_at: None,
+        },
+    );
+    failed.run_at(5);
+    failed.wake(SECOND);
+    assert_eq!(failed.paused(), Some(PauseReason::Error));
+    failed.control(Control::Pause);
+    assert_eq!(failed.paused(), Some(PauseReason::Error));
+    assert_eq!(failed.texts(Level::Error).len(), 1, "no second record");
+
+    // Paused by the player: still `player`.
+    let mut player = Harness::new(1);
+    player.run_at(1);
+    player.control(Control::TogglePause);
+    assert_eq!(player.paused(), Some(PauseReason::Player));
+    player.control(Control::Pause);
+    assert_eq!(player.paused(), Some(PauseReason::Player));
+}

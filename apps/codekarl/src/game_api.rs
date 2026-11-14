@@ -53,7 +53,9 @@ pub(crate) fn extension_with_select(
     let time_wake = Arc::clone(&wake);
     let hover_wake = Arc::clone(&wake);
     Extension::new("game")
-        .function("control", control_function(controls))
+        .function("control", control_function(controls.clone()))
+        .function("pause", pause_function(controls.clone()))
+        .function("set_modal", set_modal_function(controls))
         .callback_observed(
             "on_time",
             GAME_TIME,
@@ -90,6 +92,30 @@ fn control_function(controls: SimControls) -> HostFunction {
             return Err(format!("game.control: unknown control name `{name}`"));
         };
         controls.send_control(control);
+        Ok(Vec::new())
+    })
+}
+
+/// `game.pause()` sends the pause-only control: a running game pauses with the reason `player`, a paused one is left as it is. It is not
+/// `time_pause`, which toggles from the simulation's own state, so it is right even when the UI's last `game_time` is out of date.
+fn pause_function(controls: SimControls) -> HostFunction {
+    Arc::new(move |arguments| {
+        if !arguments.is_empty() {
+            return Err("game.pause: expected no arguments".to_owned());
+        }
+        controls.send_control(controls::Control::Pause);
+        Ok(Vec::new())
+    })
+}
+
+/// `game.set_modal(on)` tells the host a modal menu is open (or closed): the game's own key actions (`controls::BLOCKED_ACTIONS`) stop
+/// while it is, and a gesture the map or a widget had captured before the block turned on ends, and every other action still arrives.
+fn set_modal_function(controls: SimControls) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [Some(ConfigValue::Bool(on))] = arguments else {
+            return Err("game.set_modal: expected one boolean argument (on)".to_owned());
+        };
+        controls.set_keys_blocked(*on);
         Ok(Vec::new())
     })
 }

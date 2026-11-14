@@ -56,6 +56,16 @@ local windows_library = require('lib.window')
 local lists_library = require('lib.list')
 local button_library = require('lib.button')
 local places_button = nil
+
+-- The run's last Escape now opens the pause menu (CK-297) instead of ending the run: the witness leaves as the player does, through the
+-- menu's own quit button.
+local menu_library = require('lib.menu')
+local real_menu_open = menu_library.open
+menu_library.open = function(view)
+  local created = real_menu_open(view)
+  menu_library.current().buttons['quit to desktop'].on_click()
+  return created
+end
 local view_width, view_height = nil, nil
 -- Keep this in step with ck_app_map_select_list_point in native/testing.m.
 local list_click_y = 45
