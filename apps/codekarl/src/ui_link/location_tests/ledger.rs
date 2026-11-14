@@ -323,7 +323,9 @@ fn real_ledger_hover_uses_the_drawn_row_cell_after_scroll_and_resize() {
     rig.opened();
     assert_ledger_heading_and_place_tooltips(&rig);
     let (origin_x, origin_y) = ledger_origin(&rig);
-    let width = ledger_content_width(&rig);
+    // The ledger overflows its view, so its list has a scroll bar and its columns are 5 UI pixels (10 points) further left (CK-299).
+    let bar = 10.0;
+    let width = ledger_content_width(&rig) - bar;
     let people_point = (origin_x + width - 84.0, origin_y + 39.0);
     let row_key = rig
         .key_at(people_point.0, people_point.1)
@@ -366,7 +368,7 @@ fn real_ledger_hover_uses_the_drawn_row_cell_after_scroll_and_resize() {
     rig.deliver_fixture_frame_at(1200, 700, 2);
     rig.opened();
     let (resized_x, resized_y) = ledger_origin(&rig);
-    let resized_width = ledger_content_width(&rig);
+    let resized_width = ledger_content_width(&rig) - bar;
     let resized_point = (resized_x + resized_width - 84.0, resized_y + 39.0);
     rig.feed(&[PointerEvent::Move(points(resized_point.0, resized_point.1))]);
     for _ in 0..35 {
@@ -1250,5 +1252,169 @@ fn the_sort_and_the_scroll_stay_across_a_revision_a_change_starts_the_list_from_
     assert_eq!(
         note_with(&rig, "bar_state "),
         "bar_state ticks=0 sort=nil bars=4"
+    );
+}
+
+/// Lua that checks the ledger's list against the row width: `narrow` is whether the list overflows its view (so it has its scroll bar and
+/// its rows are 5 UI pixels narrower), and every column of the places tab is that much to the left.
+const LEDGER_WIDTH_CHECKS: &str = r"
+function check_places_width(narrow, label)
+  local px = window_objects.ledger.content_width // 2
+  local row_px = narrow and px - 5 or px
+  local items = list_object.items
+  expect_that((#items * 26 > list_object.view_height) == narrow, label .. ': the list overflows is ' .. tostring(narrow))
+  eq_that(items[1].cells[2].x, row_px - 37, label .. ': the people heading')
+  eq_that(items[1].cells[3].x, row_px - 3, label .. ': the food heading')
+  for index = 2, #items do
+    local cells = items[index].cells
+    if cells[2] ~= nil then
+      eq_that(cells[2].x, row_px - 37, label .. ': people of row ' .. index)
+      eq_that(cells[3].x, row_px - 3, label .. ': food of row ' .. index)
+    end
+    expect_that(font.layout(cells[1].text).width <= row_px - 72, label .. ': a name is cut to the room')
+  end
+end
+function check_pops_width(narrow, label)
+  local px = window_objects.ledger.content_width // 2
+  local row_px = narrow and px - 5 or px
+  local items = list_object.items
+  expect_that((#items * 26 > list_object.view_height) == narrow, label .. ': the list overflows is ' .. tostring(narrow))
+  for index = 1, #items do
+    local cells = items[index].cells
+    eq_that(cells[1].x, 16, label .. ': the type and culture')
+    eq_that(cells[2].x, row_px - 70, label .. ': the people of row ' .. index)
+    eq_that(cells[3].x, row_px - 66, label .. ': the place of row ' .. index)
+    expect_that(font.layout(cells[1].text).width <= row_px - 120 - 16 + 16, label .. ': cut to the room')
+    expect_that(font.layout(cells[3].text).width <= 63, label .. ': the place is cut as before')
+  end
+end
+";
+
+#[test]
+fn with_more_rows_than_fit_the_places_tab_lays_its_header_and_rows_out_against_the_row_width() {
+    let mut rig = rig(&[
+        "use_many_ledger_places(); time(1, 1) announce_bars()",
+        "announce_ledger()",
+        r"local function expect_that(ok, message) if not ok then error(message, 2) end end
+local function eq_that(actual, wanted, message)
+  if actual ~= wanted then error(message .. ': got ' .. tostring(actual) .. ', wanted ' .. tostring(wanted), 2) end
+end
+local px = window_objects.ledger.content_width // 2
+local items = list_object.items
+expect_that(#items * 26 > list_object.view_height, 'more rows than fit')
+eq_that(items[1].cells[2].x, px - 5 - 37, 'the people heading is 5 pixels further left than at the full width')
+eq_that(items[1].cells[3].x, px - 5 - 3, 'the food heading')
+local with_people, cut = 0, 0
+for index = 2, #items do
+  local cells = items[index].cells
+  if cells[2] ~= nil then
+    with_people = with_people + 1
+    eq_that(cells[2].x, px - 5 - 37, 'people')
+    eq_that(cells[3].x, px - 5 - 3, 'food')
+  end
+  local width = font.layout(cells[1].text).width
+  expect_that(width <= px - 5 - 72, 'a long name is cut to the narrower room')
+  if cells[1].text:find('%.%.$') then
+    cut = cut + 1
+    expect_that(width > px - 5 - 72 - 8, 'and no shorter than it must be')
+  end
+end
+expect_that(with_people > 0 and cut > 0, 'rows with people and a cut name were seen')
+note('width ok')",
+    ]);
+    rig.opened();
+    press_bar(&mut rig, "location");
+    rig.opened();
+    rig.opened();
+    assert!(notes(&rig).iter().any(|line| line == "width ok"));
+}
+
+#[test]
+fn the_pops_tab_lays_its_rows_out_against_the_row_width_when_they_overflow() {
+    let mut rig = shipped_ledger_rig_with(
+        "pops",
+        LEDGER_WIDTH_CHECKS,
+        &["check_pops_width(true, 'pops') note('pops width ok')"],
+    );
+    rig.opened();
+    assert!(notes(&rig).iter().any(|line| line == "pops width ok"));
+}
+
+#[test]
+fn a_filter_that_leaves_few_rows_gives_the_full_width_again_unticking_the_narrower_and_a_revision_or_resize_keeps_the_rule()
+ {
+    let mut rig = shipped_ledger_rig_with(
+        "location",
+        LEDGER_WIDTH_CHECKS,
+        &[
+            "announce_ledger() announce_bar() check_places_width(true, 'all 94 places')",
+            "announce_picker()",
+            "check_places_width(false, 'ringforts only: 10 rows and the heading fit') eq_that(bar_object.ticks, 1, 'one box ticked')",
+            "check_places_width(true, 'unticked')",
+            "time(1, 2)",
+            "check_places_width(true, 'a new economy revision')",
+            "check_places_width(true, 'a new window size') note('ledger done')",
+        ],
+    );
+    rig.opened();
+    // The list bar's strip, its buttons and its choices are where they were.
+    let content = ledger_content_height(&rig);
+    let width = ledger_content_width(&rig);
+    assert_eq!(
+        note_with(&rig, "bar_sort_rect "),
+        format!("bar_sort_rect {} {} 26 30", width - 26.0, content - 34.0)
+    );
+    assert_eq!(
+        note_with(&rig, "bar_filter_rect "),
+        format!("bar_filter_rect {} {} 26 30", width - 58.0, content - 34.0)
+    );
+    click(&mut rig, "bar_filter");
+    rig.opened();
+    assert_eq!(
+        note_with(&rig, "picker "),
+        "picker filter crannog,monastery,ringfort,royal site"
+    );
+    click_pick(&mut rig, "ringfort");
+    rig.opened();
+    click_pick(&mut rig, "ringfort");
+    rig.opened();
+    rig.opened();
+    rig.opened();
+    rig.deliver_fixture_frame_at(1500, 900, 2);
+    rig.opened();
+    assert!(notes(&rig).iter().any(|line| line == "ledger done"));
+}
+
+fn ledger_content_height(rig: &Rig) -> f64 {
+    let line = notes(rig)
+        .into_iter()
+        .rev()
+        .find(|line| line.starts_with("ledger "))
+        .expect("the ledger geometry");
+    let content = line.split("content=").nth(1).expect("the content geometry");
+    content.split_whitespace().nth(1).unwrap().parse().unwrap()
+}
+
+#[test]
+fn a_click_on_a_filtered_sorted_and_scrolled_overflowing_row_opens_that_rows_place() {
+    let mut rig = shipped_ledger_rig_with(
+        "location",
+        LEDGER_WIDTH_CHECKS,
+        &[
+            "announce_ledger() announce_bar()",
+            // Sorted by name, scrolled 3 rows: the second row in view is the fifth of the list, the fourth place shown.
+            "bar_object:choose(1) list_object:set_pos(78) check_places_width(true, 'sorted and scrolled') note('expect ' .. last_shown[4].place.id)",
+            "note('last_call ' .. place_calls[#place_calls])",
+        ],
+    );
+    rig.opened();
+    rig.opened();
+    let expected = note_with(&rig, "expect ")["expect ".len()..].to_owned();
+    click_ledger_row(&mut rig, 2, 1800, 900);
+    rig.opened();
+    let opened = note_with(&rig, "last_call ");
+    assert!(
+        opened.starts_with(&format!("last_call {expected}@")),
+        "the click opened {opened}, the row's place is {expected}"
     );
 }

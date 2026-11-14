@@ -9,6 +9,12 @@
 -- - The rows live in the list's own group, attached to the window, above the content group. Its offset carries the scroll
 --   (`origin + (x, y - s)`) and its clip is the visible rectangle cut to the content area, so a scroll is one offset change.
 --
+-- **The scroll bar** (CK-299, `lib/scrollbar.lua`). While the items are taller than the view the list has a bar at the view's right edge,
+-- and its rows are 5 UI pixels narrower than the view: the hover and pressed fills and the row hit regions are `row_w` wide. The list
+-- cannot move the cells a caller laid out, so the caller asks `list.row_width(width, rows, count)` for the width of a row of a list of
+-- this width and this many rows that holds `count` items, before it lays the cells out. The bar appears or goes only in `list.new` and
+-- `list:set_items`, never in a scroll.
+--
 -- Only the rows that intersect the visible rectangle have glyph quads and, with `on_select`, hit keys; at most `rows + 1`. Two
 -- highlight quads (hover and pressed), created first so that the text is above them, are moved to the row that has the look and
 -- parked at `ui.HIDDEN` otherwise, since one pointer has at most one hovered row and one pressed row.
@@ -17,6 +23,7 @@ local text = require("lib.text")
 local theme = require("lib.theme")
 local pointer = require("lib.pointer")
 local tooltip = require("lib.tooltip")
+local scrollbar = require("lib.scrollbar")
 
 local P = ui.P
 local ROW = 13 * P
@@ -129,6 +136,14 @@ local function recompute(self)
   self.max_s = math.max(0, (#self.items - self.rows) * ROW)
 end
 
+-- The width of a row of a list `width` points wide, `rows` rows high, that holds `count` items.
+function list.row_width(width, rows, count)
+  if not finite(width) or width <= 0 or not finite(rows) or rows < 1 or not finite(count) or count < 0 then
+    error("list.row_width: width, rows and count must be numbers (width > 0, rows >= 1, count >= 0)", 2)
+  end
+  return scrollbar.row_width(ui.snap_size(width), rows * ROW, count * ROW)
+end
+
 -- The rows that intersect the visible rectangle at the current scroll: `first .. last` (empty when last < first).
 local function visible_range(self)
   if #self.items == 0 then
@@ -163,6 +178,23 @@ local function highlight(self)
 end
 
 local refresh_visible
+
+-- Takes the bar's account of the items and the scroll, and the row width it makes: the fills and the rows' hit regions follow it.
+local function refresh_bar(self)
+  self.bar:update(self.view_height, #self.items * ROW, self.s)
+  local row_w = scrollbar.row_width(self.width, self.view_height, #self.items * ROW)
+  if row_w == self.row_w then
+    return
+  end
+  self.row_w = row_w
+  render.set_rect(self.hover_quad, ui.HIDDEN, ui.HIDDEN, row_w, ROW)
+  render.set_rect(self.pressed_quad, ui.HIDDEN, ui.HIDDEN, row_w, ROW)
+  self.shown_hover, self.shown_pressed = nil, nil
+  for index, key in pairs(self.row_keys) do
+    render.set_hit(key, {{x = 0, y = row_top(index), width = row_w, height = ROW}}, self.rows_group)
+  end
+  highlight(self)
+end
 
 local function release(self, index, key)
   if self.pressed_row == index then
@@ -412,7 +444,7 @@ local function add_row(self, index)
   if self.on_select ~= nil or self.tooltips then
     local key = self.base .. "_row_" .. index
     self.row_keys[index] = key
-    render.set_hit(key, {{x = 0, y = row_top(index), width = self.width, height = ROW}}, self.rows_group)
+    render.set_hit(key, {{x = 0, y = row_top(index), width = self.row_w, height = ROW}}, self.rows_group)
     pointer.register(key, row_widget(self, index, key), self.window)
     if self.tooltips then
       tooltip.attach(key, function(x, y)
@@ -481,6 +513,7 @@ local function place(self)
   if self.closed or self.origin_x == nil then
     return
   end
+  self.bar:place(self.origin_x + self.x + math.max(0, self.width - scrollbar.WIDTH), self.origin_y + self.y, self.content_clip)
   local offset_x = self.origin_x + self.x
   local offset_y = self.origin_y + self.y - self.s
   if offset_x ~= self.shown_offset_x or offset_y ~= self.shown_offset_y then
@@ -561,15 +594,21 @@ function list.new(spec)
   self.closed = false
   self.colours = theme.kind(window.kind)
   recompute(self)
+  self.row_w = scrollbar.row_width(self.width, self.view_height, #items * ROW)
 
   self.rows_group = ui.create_group()
-  self.groups = {self.rows_group}
+  self.bar = scrollbar.new{window = window, owner = {
+    scroll = function() return self.s end,
+    set_scroll = function(pos) self:set_pos(pos) end,
+    wheel = function(event) self:scroll(event) end,
+  }}
+  self.groups = {self.rows_group, self.bar.group}
   -- The highlights are created before any text, so that the glyphs are drawn over them.
   self.hover_quad = render.create_quad{
     texture = ui.texture("ui/theme/white.png"),
     x = ui.HIDDEN,
     y = ui.HIDDEN,
-    width = self.width,
+    width = self.row_w,
     height = ROW,
     group = self.rows_group,
     tint = self.colours.row_hover,
@@ -578,7 +617,7 @@ function list.new(spec)
     texture = ui.texture("ui/theme/white.png"),
     x = ui.HIDDEN,
     y = ui.HIDDEN,
-    width = self.width,
+    width = self.row_w,
     height = ROW,
     group = self.rows_group,
     tint = self.colours.row_pressed,
@@ -587,6 +626,7 @@ function list.new(spec)
   render.set_hit(self.area_key, {{x = self.x, y = self.y, width = self.width, height = self.view_height}}, window.content)
   pointer.register(self.area_key, self, window)
   window:attach(self)
+  self.bar:update(self.view_height, #self.items * ROW, self.s)
   sync(self)
   return self
 end
@@ -620,6 +660,7 @@ function list:set_pos(pos)
   if s ~= self.s then
     self.s = s
     place(self)
+    self.bar:update(self.view_height, #self.items * ROW, self.s)
     sync(self)
   end
 end
@@ -647,6 +688,7 @@ function list:set_items(items)
   if moved then
     place(self)
   end
+  refresh_bar(self)
   sync(self)
 end
 
@@ -704,6 +746,7 @@ function list:destroy()
     render.set_hit(self.area_key, nil, self.window.content)
   end
   pointer.unregister(self.area_key)
+  self.bar:destroy()
   render.destroy_group(self.rows_group)
   self.window:detach(self)
 end

@@ -607,3 +607,205 @@ fn the_market_sorts_by_price_buy_sell_and_name_with_the_missing_buy_sell_last_in
         "'peas and beans' sorts under p, by the name shown"
     );
 }
+
+/// What the location tab's layout was asked for: the widths `location.lines` and `location.rows` were called with, in order.
+const WIDTH_SPY: &str = r#"
+spy_widths = {}
+do
+  local location_library = require("lib.location")
+  local real_lines, real_rows = location_library.lines, location_library.rows
+  location_library.lines = function(key, place, width) spy_widths[#spy_widths + 1] = "lines " .. width; return real_lines(key, place, width) end
+  location_library.rows = function(lines, width) spy_widths[#spy_widths + 1] = "rows " .. width; return real_rows(lines, width) end
+end
+function market_columns()
+  local columns = {}
+  for _, item in ipairs(list_object.items) do
+    if item.cells ~= nil and item.cells[1] ~= nil and (item.cells[1].text == "good" or item.cells[1].text:match("^good")) and item.cells[2] ~= nil then
+      columns[#columns + 1] = item
+    end
+  end
+  return columns
+end
+"#;
+
+#[test]
+fn a_market_with_more_goods_than_fit_lays_its_columns_out_against_the_row_width_and_a_tag_filter_crosses_the_boundary_both_ways()
+ {
+    let mut rig = rig_with_prelude_at(
+        &format!("{PANEL_BARS}\n{WIDTH_SPY}"),
+        &[
+            r"local goods = {}
+for i = 1, 60 do
+  local entry = price('good' .. i, 1000 + i * 10, 5 + i % 7, 10, 20)
+  entry.tags = {i <= 3 and 'rare' or 'common'}
+  goods[i] = entry
+end
+VIEWS[1].rowan.prices = goods
+time(1, 1); select_place('rowan', 'Rowan')
+local px = panel_bar.window.content_width // P
+-- 60 goods and the figures are more rows than the list holds: its bar shows, and its rows are 5 pixels narrower.
+expect_that(#list_object.items * 26 > list_object.view_height, 'more rows than fit')
+local at = 1
+while list_object.items[at].cells[1].text ~= 'good' do at = at + 1 end
+local header = list_object.items[at]
+eq_that(header.cells[1].text, 'good', 'the header')
+eq_that(header.cells[2].x, px - 5 - 82, 'prices end at the row width less 82')
+eq_that(header.cells[3].x, px - 5 - 56, 'base prices end at the row width less 56')
+eq_that(header.cells[4].x, px - 5 - 48, 'the balance bar runs from the row width less 48')
+local row = list_object.items[at + 1]
+eq_that(row.cells[2].x, px - 5 - 82) eq_that(row.cells[3].x, px - 5 - 56)
+eq_that(row.bar.x, px - 5 - 48) eq_that(row.bar.width, 46, 'the balance bar stays whole')
+expect_that(row.bar.x + row.bar.width <= px - 5, 'and clear of the gap and the track')
+local widest = 0
+for _, item in ipairs(list_object.items) do
+  if item.bar ~= nil then
+    widest = math.max(widest, font.layout(item.cells[2].text).width)
+    expect_that(font.layout(item.cells[1].text).width + 16 + widest + 4 <= px - 5 - 82 + widest, 'the name leaves its gap before the widest price')
+  end
+end
+-- The lines of figures were wrapped for the row width: the layout was asked for the full width and then for the row width.
+eq_that(spy_widths[#spy_widths - 3], 'lines ' .. (px * 2), 'the full width first')
+eq_that(spy_widths[#spy_widths - 2], 'rows ' .. (px * 2), 'wrapped at the full width first')
+eq_that(spy_widths[#spy_widths - 1], 'lines ' .. ((px - 5) * 2), 'then the figures and columns for the row width')
+eq_that(spy_widths[#spy_widths], 'rows ' .. ((px - 5) * 2), 'and wrapped at the row width')
+note('tab ready')",
+            r"panel_bar:toggle(1, 'rare')
+local px = panel_bar.window.content_width // P
+expect_that(#list_object.items * 26 <= list_object.view_height, 'three goods fit')
+local at = 1
+while list_object.items[at].cells[1].text ~= 'good' do at = at + 1 end
+local header = list_object.items[at]
+eq_that(header.cells[2].x, px - 82, 'the full width again')
+eq_that(header.cells[3].x, px - 56) eq_that(header.cells[4].x, px - 48)
+eq_that(list_object.items[at + 1].bar.x, px - 48)
+eq_that(spy_widths[#spy_widths], 'rows ' .. (px * 2), 'wrapped at the full width')",
+            r"panel_bar:clear()
+local px = panel_bar.window.content_width // P
+local at = 1
+while list_object.items[at].cells[1].text ~= 'good' do at = at + 1 end
+local header = list_object.items[at]
+eq_that(header.cells[2].x, px - 5 - 82, 'clearing the filter gives the narrower columns back')
+eq_that(list_object.items[at + 1].bar.x, px - 5 - 48)",
+        ],
+        1274,
+        800,
+        2,
+    );
+    rig.opened();
+    rig.opened();
+    rig.opened();
+}
+
+/// What `location.rows` returned for each layout of the tab: the width it was asked for and how many rows it made.
+const ROWS_SPY: &str = r"
+spy_rows = {}
+do
+  local location_library = require('lib.location')
+  local real_rows = location_library.rows
+  location_library.rows = function(lines, width)
+    local made = real_rows(lines, width)
+    spy_rows[#spy_rows + 1] = {width, #made}
+    return made
+  end
+end
+function note_wrap(label)
+  local last, before = spy_rows[#spy_rows], spy_rows[#spy_rows - 1]
+  local two_passes = before ~= nil and before[1] > last[1]
+  note(string.format('%s items=%d rows=%d width=%d full_rows=%s', label, #list_object.items, last[2], last[1], two_passes and before[2] or 'none'))
+end
+const_goods = function()
+  local goods = {}
+  for i = 1, 60 do
+    local entry = price('good' .. i, 1000 + i * 10, 5 + i % 7, 10, 20)
+    entry.tags = {i <= 3 and 'rare' or 'common'}
+    goods[i] = entry
+  end
+  VIEWS[1].rowan.prices = goods
+end
+";
+
+fn wrap_note(rig: &Rig, label: &str) -> (i64, i64, i64, Option<i64>) {
+    let line = notes(rig)
+        .into_iter()
+        .rev()
+        .find(|line| line.starts_with(&format!("{label} ")))
+        .unwrap_or_else(|| panic!("no {label}: {:?}", notes(rig)));
+    let field = |name: &str| {
+        line.split_whitespace()
+            .find_map(|part| part.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("no {name} in {line}"))
+            .to_owned()
+    };
+    (
+        field("items").parse().unwrap(),
+        field("rows").parse().unwrap(),
+        field("width").parse().unwrap(),
+        field("full_rows").parse().ok(),
+    )
+}
+
+#[test]
+fn a_width_where_the_bar_forces_one_more_wrapped_line_lays_the_figures_out_again_and_a_fitting_filter_gives_the_full_layout_back()
+ {
+    // The panel is a third of the window: scan the window's width until the figures wrap into more rows at the row width than at the full
+    // width (a line that fits the full width and not the 5 pixels less).
+    let found = (1200..=1800).step_by(3).find_map(|width| {
+        let mut rig = rig_with_prelude_at(
+            &format!("{PANEL_BARS}\n{ROWS_SPY}"),
+            &["const_goods() time(1, 1); select_place('rowan', 'Rowan') note_wrap('probe')"],
+            width,
+            800,
+            2,
+        );
+        rig.opened();
+        let (_, rows, _, full_rows) = wrap_note(&rig, "probe");
+        full_rows
+            .filter(|full| rows > *full)
+            .map(|full| (width, full, rows))
+    });
+    let (width, full_rows, narrow_rows) =
+        found.expect("some width wraps a figure line only at the row width");
+    let mut rig = rig_with_prelude_at(
+        &format!("{PANEL_BARS}\n{ROWS_SPY}"),
+        &[
+            "const_goods() time(1, 1); select_place('rowan', 'Rowan') note_wrap('overflowing')",
+            "panel_bar:toggle(1, 'rare') note_wrap('fitting')",
+            "panel_bar:clear() note_wrap('cleared')",
+        ],
+        width,
+        800,
+        2,
+    );
+    rig.opened();
+    // Overflowing: laid out at the row width, with the extra wrapped row, and the list shows all of it.
+    let (items, rows, row_width, full) = wrap_note(&rig, "overflowing");
+    assert_eq!(
+        (items, rows, full),
+        (narrow_rows, narrow_rows, Some(full_rows))
+    );
+    assert!(narrow_rows > full_rows, "the bar made a line wrap");
+    assert!(
+        row_width < width.into(),
+        "{row_width} is the row width, the narrower one"
+    );
+    rig.opened();
+    // Fitting after a filter that leaves 3 goods: the full layout again, one row fewer per wrapped line, and nothing of the bar's width.
+    let (items, _, fitting_width, _) = wrap_note(&rig, "fitting");
+    assert_eq!(
+        items,
+        full_rows - 57,
+        "60 goods less 57, laid out at the full width"
+    );
+    assert_eq!(
+        fitting_width,
+        row_width + 10,
+        "the full width is 5 UI pixels (10 points) more"
+    );
+    rig.opened();
+    // Cleared: overflowing again, with the same layout as before.
+    let (items, rows, again_width, _) = wrap_note(&rig, "cleared");
+    assert_eq!(
+        (items, rows, again_width),
+        (narrow_rows, narrow_rows, row_width)
+    );
+}

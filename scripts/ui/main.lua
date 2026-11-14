@@ -463,18 +463,22 @@ if game ~= nil then
   }
 
   -- The places tab's header row and its data rows, or the pops tab's rows (no header). Each data row carries what the list bar reads
-  -- (`sort`, `filter`) and the place a click on it opens (`place`); the list is given only the cells and the rest.
+  -- (`sort`, `filter`) and the place a click on it opens (`place`); the list is given only the cells and the rest. The cells are not
+  -- laid out here: a row's `lay(width)` lays them out against the width of a row in UI pixels, once the rows that show are settled
+  -- and the list has said how wide a row is (CK-299: 5 pixels less than the view while its scroll bar shows).
   local function ledger_items(key)
     local places = game.places()
     local revision = location_panel:current_revision()
-    local width = places_window.content_width // P
     local header, rows = nil, {}
     if key == "locations" then
-      header = {cells = {
-        {text = "name", x = 1, align = "left", colour = theme.colour("term")},
-        {text = "people", x = width - 37, align = "right", colour = theme.colour("term")},
-        {text = "food", x = width - 3, align = "right", colour = theme.colour("term")},
-      }}
+      header = {}
+      header.lay = function(width)
+        header.cells = {
+          {text = "name", x = 1, align = "left", colour = theme.colour("term")},
+          {text = "people", x = width - 37, align = "right", colour = theme.colour("term")},
+          {text = "food", x = width - 3, align = "right", colour = theme.colour("term")},
+        }
+      end
       header.tooltip = function(_, _, cell)
         local explanations = {[1] = "location", [2] = "population", [3] = "food_days"}
         local explanation = explanations[cell]
@@ -483,11 +487,15 @@ if game ~= nil then
       end
       for _, place in ipairs(places) do
         local place_view = revision ~= nil and game.place(place.id, revision) or nil
-        local row = {cells = {{text = clip_column(place.name, width - 72), x = 1, align = "left"}}, place = place,
-          sort = {name = place.name}, filter = {kind = place.kind}}
+        local row = {place = place, sort = {name = place.name}, filter = {kind = place.kind}}
+        row.lay = function(width)
+          row.cells = {{text = clip_column(place.name, width - 72), x = 1, align = "left"}}
+          if place_view ~= nil and #place_view.pops > 0 then
+            row.cells[2] = {text = tostring(place_view.workers + place_view.dependents), x = width - 37, align = "right"}
+            row.cells[3] = {text = tostring(place_view.food_days) .. "d", x = width - 3, align = "right"}
+          end
+        end
         if place_view ~= nil and #place_view.pops > 0 then
-          row.cells[2] = {text = tostring(place_view.workers + place_view.dependents), x = width - 37, align = "right"}
-          row.cells[3] = {text = tostring(place_view.food_days) .. "d", x = width - 3, align = "right"}
           row.sort.people = place_view.workers + place_view.dependents
           row.sort.food = place_view.food_days
         end
@@ -514,12 +522,14 @@ if game ~= nil then
               filter = {type = pop.kind, religion = pop.religion, culture = pop.culture},
               stripe = pop_colour(pop.kind),
               icon = {name = "pops", colour = pop_colour(pop.kind)},
-              cells = {
+            }
+            row.lay = function(width)
+              row.cells = {
                 {text = clip_column(kind_culture, width - 120), x = 16, align = "left", colour = pop_colour(pop.kind)},
                 {text = tostring(pop.workers + pop.dependents), x = width - 70, align = "right"},
                 {text = clip_column(place.name, 63), x = width - 66, align = "left"},
-              },
-            }
+              }
+            end
             local place_id, kind, selected_pop_index = place.id, pop.kind, pop_index
             row.tooltip = function(_, _, cell)
               if cell == "icon" or cell == 1 then
@@ -566,11 +576,16 @@ if game ~= nil then
       selections[#rows] = row.place
     end
     ledger_selections = selections
-    if ledger_list ~= nil and not ledger_list.closed then
+    -- The rows that show are settled: the list says how wide a row is for that many, and the cells are laid out against it.
+    local has_list = ledger_list ~= nil and not ledger_list.closed
+    local visible_rows = has_list and ledger_list.rows
+      or math.max(1, math.min(lists.MAX_ROWS, (places_window.content_height - listbar.HEIGHT) // lists.ROW))
+    local row_width = lists.row_width(places_window.content_width, visible_rows, #rows) // P
+    for _, row in ipairs(rows) do row.lay(row_width) end
+    if has_list then
       ledger_list:set_items(rows)
       if reset_scroll == true then ledger_list:set_pos(0) end
     else
-      local visible_rows = math.max(1, math.min(lists.MAX_ROWS, (places_window.content_height - listbar.HEIGHT) // lists.ROW))
       ledger_list = lists.new{
         window = places_window,
         x = 0,

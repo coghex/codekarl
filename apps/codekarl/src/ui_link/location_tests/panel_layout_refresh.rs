@@ -293,3 +293,42 @@ end)
         "{resized}"
     );
 }
+
+/// CK-299: the location panel's floor is 5 UI pixels (10 points) wider, 118 points where it was 108, so that the market's columns
+/// (the balance bar is 46 wide from 48 pixels before the row's right edge) fit beside the list's scroll bar. At the floor the
+/// overflowing market's bar starts at 0, whole, and nothing is refused.
+#[test]
+fn at_the_new_floor_an_overflowing_market_has_its_balance_bar_whole_beside_the_scroll_bar() {
+    let mut rig = rig_with_prelude_at(
+        PANEL_BARS,
+        &[r"
+local function eq_that(actual, wanted, message)
+  if actual ~= wanted then error(message .. ': got ' .. tostring(actual) .. ', wanted ' .. tostring(wanted), 2) end
+end
+local goods = {}
+for i = 1, 60 do goods[i] = price('good' .. i, 1000 + i * 10, 5, 10, 20) end
+VIEWS[1].rowan.prices = goods
+time(1, 1); select_place('rowan', 'Rowan')
+eq_that(require('lib.location').min_width(), 118, 'the floor was 108 points')
+local window = panel_bar.window
+eq_that(window.outer_width, 118, 'the panel is the floor wide')
+eq_that(window.content_width, 106)
+local px = window.content_width // 2
+eq_that(px, 53, 'the content is 53 pixels: the 48 of the market and the 5 of the bar')
+local overflowing = #list_object.items * 26 > list_object.view_height
+eq_that(overflowing, true, 'the goods overflow the list')
+for _, item in ipairs(list_object.items) do
+  if item.bar ~= nil then
+    eq_that(item.bar.x, 0, 'the balance bar starts at the row width less 48, which is 0 here')
+    eq_that(item.bar.width, 46, 'and is whole')
+    eq_that(item.bar.x + item.bar.width <= px - 5, true, 'clear of the gap and the track')
+  end
+end
+note('floor ok')"],
+        200,
+        800,
+        2,
+    );
+    rig.opened();
+    assert!(notes(&rig).iter().any(|line| line == "floor ok"));
+}

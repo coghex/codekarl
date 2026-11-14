@@ -8,6 +8,7 @@
 local ui = require("lib.ui")
 local windows = require("lib.window")
 local lists = require("lib.list")
+local scrollbar = require("lib.scrollbar")
 local tabs = require("lib.tabs")
 local cards = require("lib.cards")
 local listbar = require("lib.listbar")
@@ -1129,7 +1130,10 @@ end
 
 -- The narrowest the panel gets, in points: what holds its three tabs (with their tiny labels), the close button and the frame.
 function location.min_width()
-  return windows.min_outer_width(tabs.reserved(TABS), false)
+  -- Also what holds the market's columns beside the scroll bar of its list: they end 48 pixels from the row's right edge (the balance
+  -- bar is 46 wide from there), and the bar takes 5 pixels of the content's width (CK-299).
+  local columns = (48 + scrollbar.RESERVE // P) * P + 6 * P
+  return math.max(windows.min_outer_width(tabs.reserved(TABS), false), columns)
 end
 
 -- The outer size of the panel and where it sits: the left third of the screen, from `top` to the bottom edge. Where the third is
@@ -1369,22 +1373,34 @@ render = function(self, keep_scroll)
   end
   destroy_cards(self)
   ensure_bar(self)
-  local lines = place ~= nil and location.lines(self.key, place, self.window.content_width) or {reason}
-  -- Only the goods rows go through the bar; the lines of figures and the market's header stay where they are, above them.
-  local fixed, goods = {}, {}
-  for _, row in ipairs(location.rows(lines, self.window.content_width)) do
-    if type(row) == "table" and row.sort ~= nil then goods[#goods + 1] = row else fixed[#fixed + 1] = row end
+  -- The rows of the list laid out for a row `width` points wide. Only the goods rows go through the bar; the lines of figures and the
+  -- market's header stay where they are, above them.
+  local function laid_out(width)
+    local lines = place ~= nil and location.lines(self.key, place, width) or {reason}
+    local fixed, goods = {}, {}
+    for _, row in ipairs(location.rows(lines, width)) do
+      if type(row) == "table" and row.sort ~= nil then goods[#goods + 1] = row else fixed[#fixed + 1] = row end
+    end
+    local rows = fixed
+    for _, row in ipairs(self.bar:view(goods)) do rows[#rows + 1] = row end
+    return rows
   end
-  local rows = fixed
-  for _, row in ipairs(self.bar:view(goods)) do rows[#rows + 1] = row end
+  -- A list shows at most `MAX_ROWS` rows; a taller window leaves the rest of its content empty.
+  local count = math.min(lists.MAX_ROWS, math.max(1, (self.window.content_height - listbar.HEIGHT) // lists.ROW))
+  if self.list ~= nil and not self.list.closed then count = self.list.rows end
+  -- The rows' number depends on the width (the lines of figures wrap): lay out at the full width, and when that does not fit the view
+  -- (so the list has its scroll bar) lay out again at the row width the list gives for that many rows. Narrowing a wrapped text never
+  -- makes it shorter, so the second layout overflows too.
+  local full = self.window.content_width
+  local rows = laid_out(full)
+  local row_width = lists.row_width(full, count, #rows)
+  if row_width ~= full then rows = laid_out(row_width) end
   if self.list ~= nil and not self.list.closed then
     self.list:set_items(rows)
     if not keep_scroll then
       self.list:set_pos(0)
     end
   else
-    -- A list shows at most `MAX_ROWS` rows; a taller window leaves the rest of its content empty.
-    local count = math.min(lists.MAX_ROWS, math.max(1, (self.window.content_height - listbar.HEIGHT) // lists.ROW))
     self.list = lists.new{
       window = self.window,
       x = 0,

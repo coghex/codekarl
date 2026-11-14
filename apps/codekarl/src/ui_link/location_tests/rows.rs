@@ -351,3 +351,126 @@ note('pop_hover ' .. last_content.class .. ' ' .. last_content.args.place .. ' '
         "the open row is open again"
     );
 }
+
+#[test]
+fn rows_taller_than_their_view_are_drawn_5_pixels_narrower_and_opening_a_row_or_a_filter_crosses_the_boundary_both_ways()
+ {
+    let mut rig = rig_with_prelude_at(
+        &format!("{PANEL_BARS}\n{PANEL_FIXTURE}\n{}", cards::CARD_WIDTH_SPY),
+        &[
+            "time(1, 1) select_place('cards', 'Cards') announce_tabs()",
+            "announce_tabs(); tabs_by_title.Cards:select('pops', true)",
+            "card_widths = {}; look_buttons.rows.on_click()",
+            // The header and five closed rows fit the 202 points of view.
+            r"expect_that(card_object.content_height <= card_object.height, 'closed rows fit')
+local width = panel_window.content_width
+eq_that(card_object.row_w, width, 'the rows are the view wide')
+for _, w in ipairs(card_widths) do eq_that(w, width, 'every row and the header drawn at the full width') end
+card_widths = {}
+card_object.items[2].on_click()",
+            // Opening a row makes the stack overflow: every item is drawn again, 5 pixels narrower.
+            r"expect_that(card_object.content_height > card_object.height, 'an open row overflows')
+local width = panel_window.content_width
+eq_that(card_object.row_w, width - 10, 'the stack gives the row width')
+expect_that(#card_widths > 0, 'the items in view were drawn again')
+for _, w in ipairs(card_widths) do eq_that(w, width - 10, 'the header and every row drawn again, narrower') end
+panel_bar:toggle(1, 'noble')",
+            // A filter that hides the open row makes it fit again.
+            r"local width = panel_window.content_width
+expect_that(card_object.content_height <= card_object.height, 'a filtered stack fits')
+eq_that(card_widths[#card_widths], width, 'drawn at the full width again')
+panel_bar:clear()",
+            r"local width = panel_window.content_width
+eq_that(card_widths[#card_widths], width - 10, 'the open row is back, and the narrower width with it')",
+        ],
+        1800,
+        340,
+        2,
+    );
+    for _ in 0..7 {
+        rig.opened();
+    }
+}
+
+/// What the buildings rows drew in a window `height` points high (`cardtext x y width colour value`, `cardquad ...`), and where the first
+/// building row's tooltips answer.
+fn building_rows_drawing(height: u32) -> (Vec<String>, String) {
+    let mut rig = rig_at(
+        &[
+            "time(1, 1) select_place('cards', 'Cards')",
+            "announce_tabs(); tabs_by_title.Cards:select('buildings', true)",
+            "note('rows_from_here') look_buttons.rows.on_click()",
+            r"local P = require('lib.ui').P
+local row = card_object.items[2]
+local full, narrow = card_object.width // P, card_object.row_w // P
+local function part(x) local content, name = row.tooltip(x, 3); return tostring(name) end
+note('tip full=' .. full .. ' row=' .. narrow .. ' at_row_edge=' .. part(narrow - 4) .. ' at_full_edge=' .. part(full - 4))",
+        ],
+        1800,
+        height,
+        2,
+    );
+    for _ in 0..4 {
+        rig.opened();
+    }
+    let recorded = notes(&rig);
+    // Only what the rows look drew: after the switch from cards.
+    let from = recorded
+        .iter()
+        .rposition(|line| line == "rows_from_here")
+        .expect("the look switch");
+    let drawn = recorded[from..]
+        .iter()
+        .filter(|line| line.starts_with("cardtext ") || line.starts_with("cardquad "))
+        .cloned()
+        .collect();
+    let tip = recorded
+        .iter()
+        .rev()
+        .find(|line| line.starts_with("tip "))
+        .expect("the tooltip note")
+        .clone();
+    (drawn, tip)
+}
+
+fn text_x_of(drawn: &[String], value: &str) -> i64 {
+    drawn
+        .iter()
+        .find(|line| line.starts_with("cardtext ") && line.ends_with(&format!(" {value}")))
+        .unwrap_or_else(|| panic!("no text {value}: {drawn:?}"))
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn overflowing_building_rows_draw_their_header_and_numbers_5_pixels_narrower_and_their_tooltips_follow()
+ {
+    let (fits, fit_tip) = building_rows_drawing(900);
+    let (over, over_tip) = building_rows_drawing(260);
+    // The header: `building` is at the left and `positions` and `wage` are right-aligned.
+    assert_eq!(text_x_of(&over, "building"), text_x_of(&fits, "building"));
+    assert_eq!(
+        text_x_of(&over, "positions"),
+        text_x_of(&fits, "positions") - 10
+    );
+    assert_eq!(text_x_of(&over, "wage"), text_x_of(&fits, "wage") - 10);
+    // The first building's row: its wage is right-aligned too, and its kind is at the left.
+    assert_eq!(text_x_of(&over, "3.2"), text_x_of(&fits, "3.2") - 10);
+    assert_eq!(text_x_of(&over, "farm"), text_x_of(&fits, "farm"));
+    // The tooltip of the wage follows the drawn wage: at the narrower edge it answers, at the old edge it does not.
+    let field = |tip: &str, name: &str| {
+        tip.split_whitespace()
+            .find_map(|part| part.strip_prefix(&format!("{name}=")).map(str::to_owned))
+            .unwrap_or_else(|| panic!("no {name} in {tip}"))
+    };
+    assert_eq!(
+        field(&over_tip, "row").parse::<i64>().unwrap(),
+        field(&over_tip, "full").parse::<i64>().unwrap() - 5
+    );
+    assert_eq!(field(&over_tip, "at_row_edge"), "wage", "{over_tip}");
+    assert_eq!(field(&over_tip, "at_full_edge"), "nil", "{over_tip}");
+    assert_eq!(field(&fit_tip, "at_full_edge"), "wage", "{fit_tip}");
+}
