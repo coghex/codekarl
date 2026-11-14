@@ -330,6 +330,11 @@ local function compact(keys)
   return out
 end
 
+local function set_slot(keys, index, value)
+  if index == 2 and keys[1] == nil then keys[1] = value
+  else keys[index] = value end
+end
+
 local function set_escape_hint(state, waiting)
   local hint = state.controls.escape_cancel
   if hint ~= nil then hint:set_text(waiting and "Escape cancels" or "") end
@@ -362,13 +367,14 @@ end
 local function change_slot(state, action, index, value)
   local actions = bindings_by_name()
   local keys = slot_list(actions, action)
-  keys[index] = value
+  set_slot(keys, index, value)
   return apply_bindings(state, {[action] = compact(keys)})
 end
 
 local function clear_slot(state, action, index)
   local actions = bindings_by_name()
   local keys = slot_list(actions, action)
+  if keys[index] == nil then return false end
   table.remove(keys, index)
   return apply_bindings(state, {[action] = keys})
 end
@@ -439,10 +445,12 @@ local function resolve_conflict(state, decision)
   local changes = {}
   local target_keys = slot_list(bindings_by_name(), target.action)
   if decision == "clear" then
-    table.remove(target_keys, target.index)
-    changes[target.action] = target_keys
+    if target_keys[target.index] ~= nil then
+      table.remove(target_keys, target.index)
+      changes[target.action] = target_keys
+    end
   elseif decision == "replace" or decision == "swap" then
-    target_keys[target.index] = target.key
+    set_slot(target_keys, target.index, target.key)
     changes[target.action] = compact(target_keys)
     local latest = bindings_by_name()
     for _, owner in ipairs(prompt.owners) do
