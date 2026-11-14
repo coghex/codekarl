@@ -368,6 +368,16 @@ pub(crate) fn places_function(places: Vec<Place>) -> HostFunction {
     })
 }
 
+/// `game.scenario()`: the immutable id of the scenario for this run. It takes no arguments.
+pub(crate) fn scenario_function(id: String) -> HostFunction {
+    Arc::new(move |arguments| {
+        if !arguments.is_empty() {
+            return Err("game.scenario: takes no arguments".to_owned());
+        }
+        Ok(vec![ConfigValue::String(id.clone())])
+    })
+}
+
 /// `game.set_map_mode(name)`: shows the map mode `"stockpile"`, `"yield"` or `"elevation"`, or the plain map for `"off"`. The values of the first two come
 /// from the newest view the UI has been given; the elevation mode needs none. An unknown name, or a map the lane refuses a table for, is an error.
 pub(crate) fn set_map_mode_function(modes: Arc<crate::map_modes::MapModes>) -> HostFunction {
@@ -1513,5 +1523,22 @@ mod tests {
         assert_eq!(first["name"], ConfigValue::String("Ard Mhacha".to_owned()));
         let refused = function(&[Some(ConfigValue::Integer(1))]).unwrap_err();
         assert_eq!(refused, "game.places: takes no arguments");
+    }
+
+    #[test]
+    fn scenario_returns_the_literal_id_and_rejects_arguments() {
+        let function = scenario_function("ireland_768".to_owned());
+        assert_eq!(
+            function(&[]),
+            Ok(vec![ConfigValue::String("ireland_768".to_owned())])
+        );
+        assert_eq!(
+            function(&[Some(ConfigValue::String("other".to_owned()))]),
+            Err("game.scenario: takes no arguments".to_owned())
+        );
+        assert_eq!(
+            function(&[None]),
+            Err("game.scenario: takes no arguments".to_owned())
+        );
     }
 }

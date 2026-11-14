@@ -814,6 +814,37 @@ mod tests {
     }
 
     #[test]
+    fn a_game_scenario_getter_is_given_to_the_ui_vm_not_the_gameplay_vm() {
+        use ck_runtime::Runtime;
+
+        let (dir, vms) = scripts(
+            "assert(game.scenario() == 'fixture_768', 'the ui VM gets the scenario getter')",
+            "assert(game == nil or type(game.scenario) ~= 'function', 'the gameplay VM has no scenario getter')",
+        );
+        let wiring = UiWiring {
+            extensions: vec![Extension::new("game").function(
+                "scenario",
+                crate::game_api::scenario_function("fixture_768".to_owned()),
+            )],
+            slot: Rc::new(RefCell::new(None)),
+            wake: Arc::new(|| {}),
+            bridge: SceneBridge::new(ck_render_2d::Filter::Nearest),
+            notes: Rc::new(crate::windowed::RunNotes::default()),
+            on_complete: None,
+            gameplay: None,
+        };
+        let spawned = spawns(
+            &vms,
+            &ConfigValue::Table(std::collections::BTreeMap::new()),
+            Some(&wiring),
+        );
+        let report = Runtime::new(Vec::new()).with_owners(spawned).run_report();
+        assert_eq!(report.outcome, Outcome::Clean, "{report:?}");
+        assert!(report.missed.is_empty() && report.unfinished.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn the_ui_vm_requires_modules_only_from_beneath_its_entry_directory_and_other_vms_keep_the_default()
      {
         use ck_runtime::{RunEnd, Runtime};

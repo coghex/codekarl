@@ -754,6 +754,7 @@ fn supervise_with_owner_factory(
         .as_ref()
         .map(|prepared| game_api::places_of(&prepared.scenario))
         .unwrap_or_default();
+    let scenario_id = game.as_ref().map(|prepared| prepared.scenario.id.clone());
     let connected = game.map(|prepared| game::setup::connect(prepared, Arc::clone(&wake)));
     // The UI VM's `frame.on_update` registration, published by the setter's observer and read by the input tick.
     let frame_registration = frame_api::FrameRegistration::default();
@@ -796,6 +797,12 @@ fn supervise_with_owner_factory(
                     select_registered,
                     Arc::clone(&wake),
                     connected.controls,
+                )
+                .function(
+                    "scenario",
+                    game_api::scenario_function(
+                        scenario_id.expect("a connected game has a scenario id"),
+                    ),
                 )
                 .function("places", game_api::places_function(places))
                 .function("place", game_api::place_function(view_cache))
@@ -1169,11 +1176,39 @@ mod tests {
         let config = ui_without_game(
             &dir,
             "assert(font ~= nil and font.layout('a').width > 0, 'the font extension')\n\
-             assert(game == nil, 'game stays scenario-only')",
+             assert(game == nil, 'game.scenario stays scenario-only')",
             Some(&shipped_font()),
         );
         assert!(config.game.is_none());
         assert!(pixel_font(&config).expect("a valid font").is_some());
+        assert_eq!(headless(&config).code, 0);
+    }
+
+    #[test]
+    fn the_real_headless_game_ui_composition_registers_the_exact_scenario_id() {
+        let dir = testing::Dir::new();
+        let assets = dir.0.join("assets");
+        let scenario = assets.join("scenarios/fixture");
+        game::tests::write_scenario(
+            &scenario,
+            ck_sim::Date {
+                year: 768,
+                month: 1,
+                day: 1,
+                hour: 0,
+            },
+        );
+        let ui = dir.0.join("ui.lua");
+        std::fs::write(
+            &ui,
+            "assert(game.scenario() == 'fixture_768', 'the authored scenario id is available')\n\
+             assert(not pcall(game.scenario, 'other'), 'game.scenario takes no arguments')",
+        )
+        .expect("the ui script");
+        let config = config::load_text_for_test(&format!(
+            "[game]\nscenario = {scenario:?}\n[render]\nassets = {assets:?}\n[lua.ui]\nentry = {ui:?}\n"
+        ));
+        assert!(config.game.is_some());
         assert_eq!(headless(&config).code, 0);
     }
 
