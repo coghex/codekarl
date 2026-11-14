@@ -2502,6 +2502,12 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("assets/ui/", "scripts/ui/"),
     ),
+    # CK-299: the scroll bar's tests run the shipped list, card stack and bar libraries over the shipped font and art.
+    Guard(
+        "apps/codekarl/src/ui_link/scrollbar_tests.rs",
+        "rust.app",
+        ("assets/ui/", "scripts/ui/"),
+    ),
     # CK-297: the pause menu's tests run the shipped menu, window and button libraries over the shipped font and theme.
     Guard(
         "apps/codekarl/src/ui_link/menu_tests.rs",

@@ -664,3 +664,162 @@ note('wage_hover ' .. last_content.class .. ' ' .. last_content.args.place .. ' 
     );
     assert_eq!(pnote(&rig, "wage_hover "), "wage_hover wage cards 4");
 }
+
+/// What every card of the stack was drawn with: the `width` of each `draw`.
+pub(super) const CARD_WIDTH_SPY: &str = r#"
+card_widths = {}
+do
+  local cards_library = require("lib.cards")
+  local real_new = cards_library.new
+  local function spy(items)
+    for _, item in ipairs(items) do
+      local draw = item.draw
+      item.draw = function(group, x, y, width)
+        card_widths[#card_widths + 1] = width
+        return draw(group, x, y, width)
+      end
+    end
+  end
+  cards_library.new = function(spec)
+    spy(spec.items)
+    local created = real_new(spec)
+    local real_set_items = created.set_items
+    function created:set_items(items, gap)
+      spy(items)
+      return real_set_items(self, items, gap)
+    end
+    return created
+  end
+end
+"#;
+
+#[test]
+fn a_card_stack_taller_than_its_view_draws_its_cards_5_pixels_narrower_and_crosses_back_when_a_filter_makes_it_fit()
+ {
+    let mut rig = rig_with_prelude_at(
+        &format!("{PANEL_BARS}\n{PANEL_FIXTURE}\n{CARD_WIDTH_SPY}"),
+        &[
+            "time(1, 1) select_place('cards', 'Cards') announce_tabs()",
+            "announce_tabs()",
+            // The pops tab at a window 380 points high: five cards of 61 pixels do not fit the 242 points of view.
+            r"expect_that(card_object.content_height > card_object.height, 'five cards overflow')
+local width = panel_window.content_width
+eq_that(card_object.width, width)
+eq_that(card_object.row_w, width - 10, 'the stack gives the row width')
+for _, w in ipairs(card_widths) do eq_that(w, width - 10, 'every card was drawn 5 pixels narrower') end
+panel_bar:toggle(1, 'noble')",
+            r"local width = panel_window.content_width
+expect_that(card_object.content_height <= card_object.height, 'one card fits')
+eq_that(card_widths[#card_widths], width, 'drawn again at the full width')
+panel_bar:clear()",
+            r"local width = panel_window.content_width
+eq_that(card_widths[#card_widths], width - 10, 'and the narrower again when the filter is cleared')",
+        ],
+        1800,
+        380,
+        2,
+    );
+    rig.opened();
+    rig.opened();
+    click_tab_at(&mut rig, "pops", (1800, 380));
+    rig.opened();
+    rig.opened();
+    rig.opened();
+}
+
+/// What the first pop card drew in a window `height` points high, as the rig recorded it (`cardtext x y width colour value` and
+/// `cardquad texture x y width height colour`, in points inside the card's group), and where its tooltip answers (`tip` notes, in UI pixels).
+fn pop_card_drawing(height: u32) -> (Vec<String>, String) {
+    let mut rig = rig_at(
+        &[
+            "time(1, 1) select_place('cards', 'Cards')",
+            "announce_tabs()",
+            r"local P = require('lib.ui').P
+local pop = card_object.items[1]
+local full, row = card_object.width // P, card_object.row_w // P
+local function part(x) local content, name = pop.tooltip(x, 4); return tostring(name) end
+note('tip full=' .. full .. ' row=' .. row .. ' at_row_edge=' .. part(row - 6) .. ' at_full_edge=' .. part(full - 6))",
+        ],
+        1800,
+        height,
+        2,
+    );
+    rig.opened();
+    rig.opened();
+    click_tab_at(&mut rig, "pops", (1800, height));
+    rig.opened();
+    let recorded = notes(&rig);
+    let drawn = recorded
+        .iter()
+        .filter(|line| line.starts_with("cardtext ") || line.starts_with("cardquad "))
+        .cloned()
+        .collect();
+    let tip = recorded
+        .iter()
+        .rev()
+        .find(|line| line.starts_with("tip "))
+        .expect("the tooltip note")
+        .clone();
+    (drawn, tip)
+}
+
+/// The `x` of the first `cardtext` line that ends with `value`.
+fn text_x(drawn: &[String], value: &str) -> i64 {
+    drawn
+        .iter()
+        .find(|line| line.starts_with("cardtext ") && line.ends_with(&format!(" {value}")))
+        .unwrap_or_else(|| panic!("no card text {value}: {drawn:?}"))
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+/// The width of the card's frame quad that starts at x 2 and is 106 high (the fill under the line).
+fn frame_width(drawn: &[String]) -> i64 {
+    let line = drawn
+        .iter()
+        .find(|line| {
+            line.starts_with("cardquad ") && line.contains(" 2 8 ") && line.contains(" 106 #")
+        })
+        .unwrap_or_else(|| panic!("no frame quad: {drawn:?}"));
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    parts[4].parse().unwrap()
+}
+
+#[test]
+fn an_overflowing_card_stack_draws_its_frame_and_right_aligned_numbers_5_pixels_narrower_and_its_tooltips_follow()
+ {
+    let (fits, fit_tip) = pop_card_drawing(900);
+    let (over, over_tip) = pop_card_drawing(380);
+    // A window 900 high holds the two cards; one 380 high does not, so its stack has the bar and its cards are 5 UI pixels (10 points)
+    // narrower: the frame, and the numbers aligned to the right edge. What is aligned to the left stays.
+    assert_eq!(frame_width(&over), frame_width(&fits) - 10, "{over:?}");
+    assert_eq!(
+        text_x(&over, "180"),
+        text_x(&fits, "180") - 10,
+        "the size, right-aligned"
+    );
+    assert_eq!(
+        text_x(&over, "peasant"),
+        text_x(&fits, "peasant"),
+        "the kind, left-aligned"
+    );
+    // The tooltip answers where the card is drawn: at the narrower edge the size's tooltip answers and at the old edge it does not; a
+    // card that fits answers at the full-width edge.
+    let field = |tip: &str, name: &str| {
+        tip.split_whitespace()
+            .find_map(|part| part.strip_prefix(&format!("{name}=")).map(str::to_owned))
+            .unwrap_or_else(|| panic!("no {name} in {tip}"))
+    };
+    let (full, row) = (
+        field(&over_tip, "full").parse::<i64>().unwrap(),
+        field(&over_tip, "row").parse::<i64>().unwrap(),
+    );
+    assert_eq!(row, full - 5, "{over_tip}");
+    assert_eq!(field(&over_tip, "at_row_edge"), "size", "{over_tip}");
+    assert_eq!(field(&over_tip, "at_full_edge"), "nil", "{over_tip}");
+    assert_eq!(field(&fit_tip, "row"), field(&fit_tip, "full"), "{fit_tip}");
+    assert_eq!(field(&fit_tip, "at_full_edge"), "size", "{fit_tip}");
+}

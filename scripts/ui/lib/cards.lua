@@ -1,8 +1,14 @@
 -- A clipped, variable-height stack for the place panel's pop and building cards/rows (M9 s12e).
 -- Items use UI-pixel heights and draw(group, x, y, width) in window points. `draw` returns a view with `destroy()`.
+--
+-- **The scroll bar** (CK-299, `lib/scrollbar.lua`). While the items and their gaps are taller than the view the stack has a bar at the
+-- view's right edge, and `draw` is given the row width, `row_w`: the stack's width less the bar's 5 UI pixels (its 3 and a gap of 2). Each
+-- item's hit region is as wide. The heights do not depend on the width, so the bar appears or goes only when the items change, and
+-- `set_items` then draws every item again at the width it has.
 local ui = require("lib.ui")
 local pointer = require("lib.pointer")
 local tooltip = require("lib.tooltip")
+local scrollbar = require("lib.scrollbar")
 
 local P = ui.P
 local MAX_ITEMS = 65536
@@ -48,6 +54,7 @@ local function measure(self)
   end
   self.tops = tops
   self.content_height = total
+  self.row_w = scrollbar.row_width(self.width, self.height, total)
 end
 
 local function max_scroll(self)
@@ -148,13 +155,13 @@ local function sync(self, redraw)
       if self.views[index] == nil then
         local item = self.items[index]
         local top = top_of(self, index)
-        local view = item.draw(self.group, 0, top, self.width)
+        local view = item.draw(self.group, 0, top, self.row_w)
         if view ~= nil and type(view) ~= "table" then error("cards: draw must return a view or nil", 2) end
         self.views[index] = view or {}
       end
       local key = self.base .. "_item_" .. self.generation .. "_" .. index
       self.item_keys[key] = true
-      render.set_hit(key, {{x = 0, y = top_of(self, index), width = self.width, height = self.items[index].height * P}}, self.group)
+      render.set_hit(key, {{x = 0, y = top_of(self, index), width = self.row_w, height = self.items[index].height * P}}, self.group)
       pointer.register(key, item_widget(self, index, key), self.window)
     end
   end
@@ -170,6 +177,7 @@ end
 
 local function place(self)
   if self.closed or self.origin_x == nil then return end
+  self.bar:place(self.origin_x + self.x + math.max(0, self.width - scrollbar.WIDTH), self.origin_y + self.y, self.content_clip)
   local x, y = self.origin_x + self.x, self.origin_y + self.y - ui.snap(self.scroll_offset)
   if x ~= self.shown_x or y ~= self.shown_y then
     render.set_group_offset(self.group, x, y)
@@ -206,10 +214,15 @@ function cards.new(spec)
     gap = spec.gap, items = checked_items(spec.items), scroll_offset = 0, views = {}, item_keys = {}, generation = 0, closed = false,
     base = ui.key("cards"),
   }, cards)
+  self.group = ui.create_group()
+  self.bar = scrollbar.new{window = window, owner = {
+    scroll = function() return ui.snap(self.scroll_offset) end,
+    set_scroll = function(pos) self:set_pos(pos) end,
+    wheel = function(event) self:scroll(event) end,
+  }}
   measure(self)
   self.area_key = self.base .. "_area"
-  self.group = ui.create_group()
-  self.groups = {self.group}
+  self.groups = {self.group, self.bar.group}
   self.area_widget = {}
   function self.area_widget:on_event(event)
     if event.kind == "scroll" then self.cards:scroll(event) end
@@ -219,6 +232,7 @@ function cards.new(spec)
   render.set_hit(self.area_key, {{x = self.x, y = self.y, width = self.width, height = self.height}}, window.content)
   pointer.register(self.area_key, self.area_widget, window)
   window:attach(self)
+  self.bar:update(self.height, self.content_height, ui.snap(self.scroll_offset))
   sync(self, false)
   return self
 end
@@ -241,6 +255,7 @@ function cards:set_pos(position)
   if next_scroll ~= self.scroll_offset then
     self.scroll_offset = next_scroll
     place(self)
+    self.bar:update(self.height, self.content_height, ui.snap(self.scroll_offset))
     sync(self, false)
   end
 end
@@ -259,6 +274,7 @@ function cards:set_items(items, gap)
   measure(self)
   self.scroll_offset = math.max(0, math.min(self.scroll_offset, max_scroll(self)))
   place(self)
+  self.bar:update(self.height, self.content_height, ui.snap(self.scroll_offset))
   sync(self, true)
 end
 
@@ -269,6 +285,7 @@ function cards:destroy()
   destroy_views(self)
   render.set_hit(self.area_key, nil, self.window.content)
   pointer.unregister(self.area_key)
+  self.bar:destroy()
   render.destroy_group(self.group)
   self.window:detach(self)
 end

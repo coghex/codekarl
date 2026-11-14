@@ -980,6 +980,243 @@ eq(first, by, "and back to the start and no further")
 }
 
 // ---------------------------------------------------------------------------------------------
+// The scroll bar of a picker whose rows overflow (CK-299)
+// ---------------------------------------------------------------------------------------------
+
+/// A window of 120 by 100 UI pixels with a list under the bar, and a bar over `count` kinds; `picker_marks()` marks the thumb, the
+/// track below it and a box row of the open picker.
+fn bar_body(count: u32) -> String {
+    format!(
+        r#"
+new_window(120, 100)
+list = lists.new{{window = W, x = 0, y = 0, width = 120 * P, rows = 2, items = {{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}}}}
+new_bar()
+{MARKS}
+function kinds(n)
+  local rows = {{}}
+  for index = 1, n do rows[index] = row("r" .. index, string.format("k%02d", index), index) end
+  return rows
+end
+function panel_rect() return hit_rect(bar.picker.panel_key) end
+-- How many of a scroll bar's two hit regions exist (the list under the picker has a bar of its own).
+function bar_hits(sb)
+  local n = 0
+  for _, key in ipairs({{sb.track_key or "none", sb.thumb_key or "none"}}) do
+    if scene.hits[key] ~= nil then n = n + 1 end
+  end
+  return n
+end
+function picker_marks()
+  local picker = bar.picker
+  local sb = picker.scroll_bar
+  local x, y, w, h = hit_rect(sb.thumb_key)
+  mark("thumb", x + 3, y + 4)
+  local px, py, pw, ph = panel_rect()
+  mark("track", x + 3, py + ph - 8)
+  mark("viewport_row", x - 20, y + 20)
+  marks()
+end
+bar:view(kinds({count}))
+"#
+    )
+}
+
+#[test]
+fn a_filter_picker_too_tall_for_its_room_has_the_bar_over_its_rows_its_panel_5_pixels_wider_and_all_in_place()
+ {
+    let mut rig = rig(
+        &bar_body(12),
+        &[r#"
+bar.filter_button.on_click()
+local picker = bar.picker
+local ox, oy = content_origin()
+local x, y, w, h = panel_rect()
+eq(w, picker.content_width + 8 * P + 5 * P, "the panel is 5 UI pixels wider than a picker that fits")
+eq(x + w, ox + 120 * P, "and grew to the left: its right edge is still the content's")
+eq(h, (100 - 18) * P, "as tall as the room")
+local sb = picker.scroll_bar
+eq(#quads_in(sb.group), 2, "a track and a thumb")
+local track = quads_in(sb.group)[1]
+local tx, ty, tw, th = quad_at(track)
+eq(tw, 3 * P) eq(tx, x + w - 4 * P, "at the right end of the rows' viewport")
+eq(ty, y + 3 * P + 16 * P, "under the all button")
+eq(th, h - 6 * P - 16 * P, "as tall as the viewport")
+local all_x, all_y = quad_at({x = picker.all.x, y = picker.all.y, group = picker.group})
+eq(all_x, x + 4 * P) eq(all_y, y + 3 * P, "the all button is where it was in the panel")
+-- The rows keep their width: a row's region ends where it did, the bar stands in the room the panel grew by.
+local rx, ry, rw, rh = hit_rect(picker.rows[2].key)
+eq(rx + rw, x + w - 6 * P, "the box rows end 5 UI pixels before the panel's right edge, a gap of 2 before the track")
+-- A picker that fits is as wide as it was and has no bar, and the one it replaced took its regions with it.
+eq(bar_hits(sb), 2)
+bar:view(kinds(2))
+local x2, y2, w2, h2 = panel_rect()
+eq(w2, bar.picker.content_width + 8 * P)
+eq(bar_hits(sb), 0, "the old picker's regions are gone")
+eq(bar_hits(bar.picker.scroll_bar), 0)
+eq(#quads_in(bar.picker.scroll_bar.group), 0)
+"#],
+    );
+    rig.opened();
+}
+
+#[test]
+fn the_thumb_the_track_and_the_wheel_scroll_the_pickers_rows_and_not_the_list_and_a_press_on_the_bar_leaves_it_open()
+ {
+    let mut rig = rig(
+        &bar_body(12),
+        &[
+            r#"
+bar.filter_button.on_click()
+picker_marks()
+local rx, ry = offset_of(bar.picker.rows_group)
+mark("rows_y", rx, ry)
+"#,
+            r#"
+local picker = bar.picker
+local rx, ry = offset_of(picker.rows_group)
+local _, y0 = point_of("rows_y")
+eq(ry, y0 - 13 * P, "one wheel line over the thumb moves the rows 13 pixels")
+eq(list:scroll_position(), 0, "and the list under the picker stays where it was")
+expect(bar.picker ~= nil, "the picker is open")
+local x, y = hit_rect(picker.scroll_bar.thumb_key)
+mark("thumb", x + 3, y + 4)
+"#,
+            r#"
+local picker = bar.picker
+expect(picker ~= nil, "a press on the thumb leaves the picker open")
+local _, y0 = point_of("rows_y")
+local rx, ry = offset_of(picker.rows_group)
+expect(ry < y0 - 13 * P, "the drag scrolled the rows further: " .. ry .. " from " .. y0)
+eq(list:scroll_position(), 0)
+-- The thumb is where the picker's scroll puts it.
+local viewport, content = picker.viewport, picker.rows_height
+local function snap(v) return math.floor(v / P + 0.5) * P end
+local length = math.min(viewport, math.max(9 * P, snap(viewport * viewport / content)))
+local travel = viewport - length
+local expected_top = snap(travel * picker.s / (content - viewport))
+local tx, ty, tw, th = quad_at(quads_in(picker.scroll_bar.group)[2])
+local px, py, pw, ph = panel_rect()
+eq(ty - (py + 3 * P + 16 * P), expected_top)
+eq(th, length)
+"#,
+            r#"
+local picker = bar.picker
+expect(picker ~= nil, "a press on the track leaves the picker open")
+eq(picker.s, picker.max_s, "a press below the thumb moved a viewport, here to the end")
+eq(list:scroll_position(), 0)
+"#,
+        ],
+    );
+    rig.opened();
+    let thumb = point(&rig, "thumb");
+    wheel(&mut rig, thumb, -1);
+    rig.opened();
+    let thumb = point(&rig, "thumb");
+    rig.feed(&[
+        PointerEvent::Down(points(thumb.0, thumb.1)),
+        PointerEvent::Move(points(thumb.0, thumb.1 + 20.0)),
+        PointerEvent::Up(points(thumb.0, thumb.1 + 20.0)),
+    ]);
+    frame(&mut rig);
+    rig.opened();
+    let track = point(&rig, "track");
+    click_at(&mut rig, track);
+    rig.opened();
+}
+
+#[test]
+fn ticking_a_box_of_an_overflowing_picker_keeps_the_tick_and_when_the_boxes_fit_the_bar_goes_and_the_ticks_stay()
+ {
+    let mut rig = rig(
+        &bar_body(12),
+        &[
+            r"
+bar.filter_button.on_click()
+picker_marks()
+",
+            r#"
+expect(bar.picker ~= nil, "a tick leaves the picker open")
+eq(bar.ticks, 1, "the box is ticked")
+expect(bar.ticked.kind["k01"] == true, "the first box")
+eq(#quads_in(bar.picker.scroll_bar.group), 2, "and the bar is still there")
+-- Fewer boxes: the picker is made again, and the ticked box is kept besides.
+local old = bar.picker.scroll_bar
+bar:view(kinds(3))
+local picker = bar.picker
+eq(bar_hits(old), 0, "the bar is gone")
+eq(bar_hits(picker.scroll_bar), 0)
+local x, y, w, h = panel_rect()
+eq(w, picker.content_width + 8 * P, "the panel is its old width")
+eq(bar.ticks, 1, "the tick is kept")
+expect(bar.ticked.kind["k01"] == true, "the same box")
+"#,
+        ],
+    );
+    rig.opened();
+    // The first box row of the open picker, over the rows.
+    let row = point(&rig, "row1");
+    click_at(&mut rig, row);
+    rig.opened();
+}
+
+#[test]
+fn a_press_on_the_bar_does_not_close_the_picker_and_everything_else_closes_it_as_before() {
+    let mut rig = rig(
+        &bar_body(12),
+        &[r#"
+bar.filter_button.on_click()
+local sb = bar.picker.scroll_bar
+local key = bar.picker.scroll_bar.thumb_key
+local track = bar.picker.scroll_bar.track_key
+local function press(on) lb.update({pointer = {events = {{kind = "down", key = on}}}}) end
+press(key)
+expect(bar.picker ~= nil, "a press on the thumb")
+press(track)
+expect(bar.picker ~= nil, "a press on the track")
+press("elsewhere_1")
+expect(bar.picker == nil, "a press elsewhere closes it")
+bar.filter_button.on_click()
+bar.filter_button.on_click()
+expect(bar.picker == nil, "its own button closes it")
+bar.filter_button.on_click()
+lb.update({pointer = {events = {{kind = "map_down"}}}})
+expect(bar.picker == nil, "a press on the map closes it")
+bar.filter_button.on_click()
+expect(lb.close_open(), "Escape closes it")
+eq(bar_hits(sb), 0, "and the bar's regions go with it")
+"#],
+    );
+    rig.opened();
+}
+
+#[test]
+fn a_sort_picker_too_tall_for_its_room_has_the_bar_too() {
+    let mut rig = rig(
+        r#"
+new_window(120, 100)
+list = lists.new{window = W, x = 0, y = 0, width = 120 * P, rows = 2, items = {"1", "2"}}
+local sorts = {}
+for index = 1, 12 do sorts[index] = {key = "s" .. index, label = "sort " .. index, first = "ascending"} end
+new_bar({sorts = sorts})
+"#,
+        &[r#"
+bar.sort_button.on_click()
+local picker = bar.picker
+local ox, oy = content_origin()
+local x, y, w, h = hit_rect(picker.panel_key)
+eq(picker.kind, "sort")
+eq(w, picker.content_width + 8 * P + 5 * P, "5 UI pixels wider")
+eq(#quads_in(picker.scroll_bar.group), 2, "with the bar")
+local tx, ty, tw, th = quad_at(quads_in(picker.scroll_bar.group)[1])
+eq(ty, y + 3 * P, "a sort picker has no all button: the viewport starts under the panel's top margin")
+eq(th, h - 6 * P)
+eq(tx, x + w - 4 * P)
+"#],
+    );
+    rig.opened();
+}
+
+// ---------------------------------------------------------------------------------------------
 // Open and close (rule 14)
 // ---------------------------------------------------------------------------------------------
 

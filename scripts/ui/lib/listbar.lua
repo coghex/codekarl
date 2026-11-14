@@ -21,6 +21,7 @@ local panel = require("lib.panel")
 local theme = require("lib.theme")
 local pointer = require("lib.pointer")
 local tooltip = require("lib.tooltip")
+local scrollbar = require("lib.scrollbar")
 
 local P = ui.P
 local ROW = 13 * P
@@ -212,7 +213,14 @@ local function new_picker(bar, kind)
   local _, _, pw, ph = self:geometry()
   self.group = ui.create_group()
   self.rows_group = ui.create_group()
-  self.groups = {self.group, self.rows_group}
+  -- A picker whose rows overflow its room has the scroll bar (CK-299, `lib/scrollbar.lua`) over its rows' viewport, in the 5 UI pixels its
+  -- panel grows by (`geometry`); the bar's keys are the picker's own, so a press on it does not close the picker.
+  self.scroll_bar = scrollbar.new{window = window, owner = {
+    scroll = function() return self.s end,
+    set_scroll = function(pos) self:set_pos(pos) end,
+    wheel = function(event) self:scroll(event) end,
+  }}
+  self.groups = {self.group, self.rows_group, self.scroll_bar.group}
   self.panel = panel.new{x = 0, y = 0, width = pw, height = ph, kind = window.kind, cut = 3, group = self.group}
   -- The panel's own region goes first, so that the "all" button's narrower one is over it. It takes the presses and the wheel over the
   -- blank parts of the panel.
@@ -271,14 +279,21 @@ local function new_picker(bar, kind)
   return self
 end
 
+-- The rows' viewport of a panel `height` high: what is left under its fixed top part, at least a pixel.
+function Picker:viewport_of(height)
+  return math.max(height - 6 * P - self.rows_top, P)
+end
+
 -- Where the panel is, in content coordinates, and how big: its right edge is the content's right edge, its bottom edge is a pixel above
--- the buttons' top, and its top is never above the content's top: a panel that does not fit is as tall as that leaves.
+-- the buttons' top, and its top is never above the content's top: a panel that does not fit is as tall as that leaves. A panel whose
+-- rows overflow its viewport is 5 pixels wider, growing to the left, and the scroll bar stands in that room.
 function Picker:geometry()
   local window = self.window
   local width = self.content_width + 8 * P
   local limit = window.content_height - 18 * P
   local height = self.content_height + 6 * P
   if height > limit then height = math.max(limit, 9 * P) end
+  if self.rows_height > self:viewport_of(height) then width = width + scrollbar.RESERVE end
   return window.content_width - width, math.max(0, limit - height), width, height
 end
 
@@ -295,12 +310,15 @@ function Picker:apply()
   self.panel:set_rect(0, 0, pw, ph)
   render.set_hit(self.panel_key, {{x = 0, y = 0, width = pw, height = ph}}, self.group)
   render.set_group_offset(self.group, ox, oy)
-  local viewport = math.max(ph - 6 * P - self.rows_top, P)
+  local viewport = self:viewport_of(ph)
   self.max_s = math.max(0, self.rows_height - viewport)
   self.pos = math.max(0, math.min(self.pos, self.max_s))
   self.s = ui.snap(self.pos)
+  self.viewport = viewport
   self:place_rows()
   render.set_group_clip(self.rows_group, {x = ox + P, y = oy + 3 * P + self.rows_top, width = pw - 2 * P, height = viewport})
+  self.scroll_bar:update(viewport, self.rows_height, self.s)
+  self.scroll_bar:place(ox + pw - 4 * P, oy + 3 * P + self.rows_top, nil)
 end
 
 -- Called by the window: at attach and after every change of its position or content rectangle.
@@ -313,15 +331,21 @@ end
 function Picker:scroll(event)
   local amount = event.amount or 0
   if event.unit == "lines" then
-    self.pos = self.pos - amount * ROW
+    self:set_pos(self.pos - amount * ROW)
   else
-    self.pos = self.pos - amount
+    self:set_pos(self.pos - amount)
   end
-  self.pos = math.max(0, math.min(self.pos, self.max_s or 0))
+end
+
+-- Sets the rows' scroll to `pos` points (clamped); the bar's thumb follows.
+function Picker:set_pos(pos)
+  if self.closed then return end
+  self.pos = math.max(0, math.min(pos, self.max_s or 0))
   local s = ui.snap(self.pos)
   if s ~= self.s then
     self.s = s
     self:place_rows()
+    self.scroll_bar:update(self.viewport or P, self.rows_height, s)
   end
 end
 
@@ -376,13 +400,16 @@ function Picker:refresh()
 end
 
 function Picker:owns(key)
-  return self.owned[key] == true
+  return self.owned[key] == true or self.scroll_bar:owns(key)
 end
 
 function Picker:destroy()
   if self.closed then return end
   self.closed = true
   for key in pairs(self.owned) do retired[key] = true end
+  if self.scroll_bar.track_key ~= nil then
+    retired[self.scroll_bar.track_key], retired[self.scroll_bar.thumb_key] = true, true
+  end
   render.set_hit(self.panel_key, nil, self.group)
   pointer.unregister(self.panel_key)
   for _, row in ipairs(self.rows) do
@@ -392,6 +419,7 @@ function Picker:destroy()
     end
   end
   if self.all ~= nil then self.all:destroy() end
+  self.scroll_bar:destroy()
   self.panel:destroy()
   if not self.window.closed then self.window:detach(self) end
   render.destroy_group(self.rows_group)

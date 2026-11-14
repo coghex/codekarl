@@ -165,7 +165,15 @@ fn the_geometry_of_a_list_is_literal_at_two_points_per_pixel() {
     let base = note_of(&rig, "base");
     let area = format!("{base}_area");
     assert_eq!(rig.key_at(106.5, 86.5).as_deref(), Some(area.as_str()));
-    assert_eq!(rig.key_at(205.5, 215.5).as_deref(), Some(area.as_str()));
+    // 20 items overflow 5 rows (CK-299): the scroll bar's track is the view's right 3 UI pixels (x 200..206) and the 2 pixels left of it
+    // (196..200) are the bar's gap, still the viewport's. The bottom right corner was the viewport's; it is the track's now.
+    assert_eq!(rig.key_at(199.5, 215.5).as_deref(), Some(area.as_str()));
+    assert!(
+        rig.key_at(205.5, 215.5)
+            .is_some_and(|key| key.starts_with("scroll_track_")),
+        "{:?}",
+        rig.key_at(205.5, 215.5)
+    );
     assert_ne!(rig.key_at(206.5, 100.0).as_deref(), Some(area.as_str()));
     assert_ne!(rig.key_at(150.0, 216.5).as_deref(), Some(area.as_str()));
 }
@@ -1281,11 +1289,12 @@ end)
 // Selecting a row
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// The highlight quads of the rows group (the only ones as wide as the list and as high as a row), hover first.
+/// The highlight quads of the rows group (the only ones as wide as a row of the list and as high as one), hover first. The lists of
+/// these tests overflow, so a row is 5 UI pixels (10 points) narrower than the 100-point view (CK-299).
 fn highlights(rig: &Rig) -> Vec<Rect> {
     quads_clipped_to(rig, (106.0, 86.0, 100.0, 130.0))
         .into_iter()
-        .filter(|rect| (rect.2, rect.3) == (100.0, 26.0))
+        .filter(|rect| (rect.2, rect.3) == (90.0, 26.0))
         .collect()
 }
 
@@ -1728,7 +1737,7 @@ window.on_opened(function() {drive} end)
         rig.sink
             .quads()
             .iter()
-            .filter(|quad| (quad.width, quad.height) == (100.0, 26.0) && quad.x > -1.0e11)
+            .filter(|quad| (quad.width, quad.height) == (90.0, 26.0) && quad.x > -1.0e11)
             .map(|quad| ((quad.x, quad.y, quad.width, quad.height), quad.tint))
             .collect()
     };
@@ -1738,13 +1747,13 @@ window.on_opened(function() {drive} end)
     rig.opened();
     assert_eq!(
         shown(&rig),
-        [((106.0, 138.0, 100.0, 26.0), tint(0x6e, 0x13, 0x0f))]
+        [((106.0, 138.0, 90.0, 26.0), tint(0x6e, 0x13, 0x0f))]
     );
     let mut rig = Rig::new(&script("dispatch({ev('down', row(3), 150, 125)}, row(3))"));
     rig.opened();
     assert_eq!(
         shown(&rig),
-        [((106.0, 138.0, 100.0, 26.0), tint(0xa8, 0x26, 0x1c))]
+        [((106.0, 138.0, 90.0, 26.0), tint(0xa8, 0x26, 0x1c))]
     );
     // The highlight is the shared `white` texture: nothing loads the old button art.
     assert!(
