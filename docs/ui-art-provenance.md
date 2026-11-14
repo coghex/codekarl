@@ -123,6 +123,21 @@ author's record, moved here from the design round's notes; the files, hashes and
   this section carries. The grids were first typed in `mockups/make_lists_r1.py` (sha256 `59bbddc6…`) in that folder, as `FUNNEL`,
   `ARROW_BARS`, `SMALL_DOWN` and `SMALL_UP`; the accepted grids are those, unchanged.
 
+## The scroll bar (CK-299)
+
+- **What it is** (`docs/ui-design.md` §3.16): not an image. `scripts/ui/lib/scrollbar.lua` draws it from two stretched copies
+  of `assets/ui/theme/white.png`: a track 3 UI pixels wide in the theme's `track`, and on it a thumb of the same width in `dim`,
+  or in `text` while the pointer is over it or it is dragged.
+- **Who drew it:** ck-designer-1 (Claude), for Codekarl, on 2026-11-14, as three candidate looks on a mock-up page of the
+  glossary reader (`mockups/glossary-reader-r2.html` in `.pipeline/coordination/ui-polish-design/`).
+- **How:** plain rectangles only. No image, icon set or other game's scroll bar was opened, traced, copied or used as a
+  reference.
+- **Approval:** the owner chose the look "B2: grey thumb" among the three, and "Every scrolling list"
+  (`owner-direction-glossary-reader-designer-r2.md`). Not chosen: B1, the thumb in the window's red outline colour; and B3, no
+  track and a 2-pixel thumb.
+- **The round's record:** `.pipeline/coordination/ui-polish-design/glossary-reader-provenance-r2.md` (sha256 `3d51af8a…`), which
+  this section carries.
+
 ## Elsewhere
 
 - **The goods icons** (CK-267): `.pipeline/coordination/ui-polish-design/goods-icons-provenance-r1.md`; `docs/ui-design.md` describes

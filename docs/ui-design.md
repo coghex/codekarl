@@ -197,6 +197,24 @@
 >     `game.pause()` and `game.set_modal(on)` (§3.6).
 >
 >   That is the first step of UI polish item 3, the game menu.
+> - **A scroll bar on every scrolling list** (CK-299, 2026-11-14; `owner-direction-glossary-reader-designer-r1.md` and `-r2.md`;
+>   §3.16): a list, a card stack and a picker with more rows than fit now show a thin bar at their right edge while their
+>   content is taller than their view. The owner chose "Wheel + scroll bar", the look "B2: grey thumb" and "Every scrolling
+>   list".
+>   - The thumb can be dragged, a press on the track moves one view, and the wheel works as before.
+>   - While the bar shows, the rows are 5 pixels narrower. One new module, `scripts/ui/lib/scrollbar.lua`, is the bar.
+> - **A list may choose its starting ticks** (CK-304, 2026-11-14; `owner-direction-save-load-designer-r2.md`; §3.14): the rule
+>   that every list starts with nothing ticked is retired. The owner: "that rule is not applicable anymore". `listbar.new` takes
+>   the boxes ticked at the start. With none given a bar still starts with nothing ticked, as the five shipped lists do.
+> - **The settings file** (CK-298, 2026-11-14; `owner-direction-settings-designer-r1.md`; §3.17): the player's settings are kept
+>   in `settings.toml`, which overrides the configuration file. The UI VM's `settings` table can set and reset the three tooltip
+>   settings and the three map settings; a change acts at once and is written. No window uses those calls yet.
+> - **Named saves and unsaved changes, for scripts** (CK-302 and CK-311, 2026-11-14; `owner-direction-save-load-designer-r1.md`
+>   and `-r2.md`; §3.6): the game API lists, writes, loads and deletes named saves, and the game knows whether it has unsaved
+>   changes. The location panel's look buttons and the map-mode buttons now tell it of a change. The save/load screen is not
+>   built yet (`docs/places-time-design.md` §5.3).
+> - **Exact modifiers** (CK-315, 2026-11-14; `owner-direction-game-menu-manager-r9.md` and `-r10.md`): a key binding fires only
+>   with exactly its modifiers, so Escape with Shift held closes nothing and opens no menu (`docs/scene-design.md` §10.1).
 
 ## Owner answers (2026-11-07)
 
@@ -316,6 +334,7 @@ From `.pipeline/coordination/m8-design/owner-answers-r1.md`. **No question is op
 ### 2.6 Input (CK-189 and earlier)
 
 - **Keys** become named actions through `[input.bindings]` (`crates/input`; `docs/scene-design.md` §10.1).
+  - **Since CK-315** a binding fires only with exactly the modifiers it names, decided at the press of its main key.
   - `close` is reserved: its press requests the window close with source `key`.
   - The time and save actions become simulation controls (`apps/codekarl/src/game/controls.rs`).
   - The six map actions pan and zoom (`map_app.rs`).
@@ -633,6 +652,34 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
 - **`game.set_modal(on)`** (CK-297) turns the block on the game's own key actions on (`true`) or off (`false`). It takes exactly
   one boolean, returns nothing, and is off at the start of a run. The pause menu is its one caller (§3.15, which lists the
   actions and says what the block does).
+- **`game.mark_unsaved()`** (CK-311) tells the game that the player made a choice that counts as an unsaved change
+  (`docs/places-time-design.md` §5.3). It takes no argument, returns nothing and never waits: it is a send on the same channel.
+  - **Its two callers:** the location panel's look buttons, when the look changes (pressing the look that shows makes no
+    call), and the map-mode buttons, when the mode shown changes (a mode the map refuses makes no call).
+  - Nothing else in the shipped UI calls it. The owner: "simply navigating the ui and windows will not trigger it".
+- **The named saves** (CK-302; `docs/places-time-design.md` §5.3): five calls, each run by the simulation owner between ticks.
+  **Each waits for the finished operation** and returns a table: `{ok = true}`, or `{ok = false, reason = "..."}` for a
+  refusal.
+  - `game.saves()` returns `{ok = true, entries = {...}}`: the saves in file-name order, each `{filename, name, fit, this_build}`
+    with `written` and `date` when the save's header has them. `fit` is `"fits"`, `"version"`, `"content"` or `"unreadable"`,
+    and `this_build` is `"yes"`, `"no"` or `"unknown"`.
+  - `game.save(name)` saves the game as a new save under `name`. It never replaces a file.
+  - `game.save_over(filename)` saves over a listed save and keeps its name. `game.load_save(filename)` loads one and leaves
+    the game paused with `load`. Both refuse an entry that does not fit.
+  - `game.delete_save(filename)` removes a listed save, fitting or not.
+  - A wrong argument is a Lua error. A refusal is not: it is the table returned, and the game and its files are as they were.
+  - After the simulation owner has ended, the answer is a refusal that says the game is no longer running.
+  - No shipped script calls them yet.
+- **`game.load_save_guarded(filename)`** (CK-311) asks for a load that the game refuses while it has unsaved changes. It
+  returns nothing and never waits.
+  - **The answer comes later,** to the callback that `game.on_save_result(fn | nil)` registers: `fn(filename, result)`, with
+    `result` a table as above. A game with unsaved changes answers `{ok = false, reason = "unsaved"}`: nothing was loaded and
+    no file was looked at. Answers are kept, in order, until a callback is registered.
+  - **The game decides, not the script.** `game_time` has no field for unsaved changes. This request, `game.mark_unsaved()`
+    and the save calls reach the simulation owner on one channel, in the order the script made them, so a mark made just
+    before the request counts.
+  - `game.load_save(filename)` is the load for a player who was asked and said yes: it never asks.
+  - No shipped script calls it yet: it is for the save/load screen.
 - **No other command path in M8.** Game commands from windows, such as building or trade, come with the systems in M9.
 
 ### 3.7 The look in the map's style (Proposal; the look itself pending the owner's description)
@@ -877,7 +924,8 @@ glossary's entries came with CK-273, the labels with CK-271, the price breakdown
 the bars, the ledger, the location tab and the window title with CK-277, and the pop and building cards and rows with CK-278.
 Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
 
-- **Settings:** `[ui.tooltips]` in the configuration file, every key optional, read at startup only (the owner chose **"Config file now"**).
+- **Settings:** `[ui.tooltips]` in the configuration file, every key optional (the owner chose **"Config file now"**). Since CK-298
+  the settings file can override each key, and a script can change one while the game runs (§3.17).
 
   | Key | Values | Default |
   |---|---|---|
@@ -887,7 +935,9 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
 
   - A value out of range, off the step or of the wrong type, and an unknown key, are refused at startup. The message names the file,
     `[ui.tooltips]`, the key and what is accepted (`apps/codekarl/src/config.rs`, `parse_tooltips`).
-  - The UI VM reads them with `settings.tooltips()`, which returns `{delay, lock, lock_timer}`. The module reads it once, when loaded.
+  - The UI VM reads them with `settings.tooltips()`, which returns `{delay, lock, lock_timer}` as they are in force when it is
+    called. Since CK-298 the module reads them when it is loaded and again whenever a new target comes under the pointer, not at
+    every update, so a change acts from the next tooltip target on.
 - **Theme** (`assets/ui/theme.toml`): `[colour]` has `lock = "#f0a830"` (the lock bar), `term = "#92ddea"` (glossary words) and
   `number = "#5fb35a"` (numbers); `[kind.tooltip]` has `title_text = "#c9932e"`. The panel is theme kind `tooltip` with a cut corner
   of 3.
@@ -1470,13 +1520,15 @@ Lengths below are in UI pixels.
 - **One module,** `scripts/ui/lib/listbar.lua`, is the bar and both pickers. `lib/list.lua` and `lib/cards.lua` did not change.
   - `listbar.new{window, sorts, groups, on_change}` makes a bar for one open window. `sorts` is the sort picker's orders, each
     `{key, label, first}` with `first` either `"ascending"` or `"descending"`. `groups` is the filter's groups, each `{key, label}`.
+    Since CK-304 it also takes `ticked`, the boxes ticked at the start (starting ticks, below).
   - **The bar does not know the list widget.** The caller gives it the list's rows, `bar:view(rows)`, and shows the rows that
     come back: a new array of the caller's own row tables, those that pass the filter, in the chosen order. A row carries
     `sort` (a string or a number for each sort key, or none) and `filter` (a string, or an array of strings, for each group key,
     or none).
   - **It uses the bottom 19 pixels** of its window's content area (`listbar.HEIGHT`), and the caller makes its list that much
     shorter. It is an attached item of its window, so it follows the window and goes when the window closes.
-  - **The choices are the bar's alone.** A new bar has nothing ticked and the default order. Nothing of them outlives
+  - **The choices are the bar's alone.** A new bar has the default order and, unless its caller gives starting ticks, nothing
+    ticked. Nothing of them outlives
     `bar:destroy()`, and nothing is written to a file. The owner: "dont save it, just reset it everytime the list is brought up".
 - **The two buttons** are icon buttons in the window's kind, 13 by 15: `filter`, a funnel, and `sort`, an arrow down beside four bars.
   - The sort button's right edge is the content's right edge, the filter button's left edge is 16 pixels left of the sort
@@ -1488,11 +1540,24 @@ Lengths below are in UI pixels.
   `view`. Its right end is 5 pixels left of the button and its top 2 pixels below the buttons' top. The numbers are in the theme's
   `number` colour and ` of ` in `dim`. With nothing ticked there is no count.
 - **The filter rule** is the owner's: "the list starts unticked and showing everything, press a tick and it resets to a whitelist
-  with the single checked box".
+  with the single checked box". Its first half, that every list starts unticked, was retired on 2026-11-14 (starting ticks,
+  below); the rest stands.
   - With nothing ticked every row shows.
   - Otherwise a row shows when, in **every group that has a ticked box**, one of the row's values is ticked. Two ticks in one
     group show the rows of either; ticks in two groups show the rows that match both.
   - A row with no value in a group shows only while that group has nothing ticked.
+- **Starting ticks (CK-304).** The owner retired the rule that every list starts with nothing ticked: "this is an exception to
+  that rule, and that rule is not applicable anymore, i expect to add other exceptions like this in the future"
+  (`owner-direction-save-load-designer-r2.md`). So a list may choose what its filter starts with, and a list that chooses
+  nothing still starts with nothing ticked.
+  - `listbar.new` takes `ticked`: a list of boxes, each `{group = <one of the groups' keys>, value = <a string>}`. Anything
+    else is an error.
+  - **A bar so made is as if the player had ticked those boxes by hand:** its filter button is selected, its count shows once
+    it is given rows, "all" clears the ticks, and the filter rule is the ordinary one. A value that no row has is still a box,
+    ticked.
+  - The bar copies the list, so clearing it changes nothing for the next bar its caller makes from the same list.
+  - **No shipped list uses it yet:** the five lists in the table below start with nothing ticked. It was built for the save
+    list, which is to open showing this version's saves.
 - **The order.**
   - **The default** is the order of the rows as given, which is the data's own. The owner: "start the lists with the data file
     order".
@@ -1509,7 +1574,9 @@ Lengths below are in UI pixels.
     which keeps its own fill.
   - A press on a row or on "all" leaves the picker open. The wheel over a picker never scrolls the list under it.
   - **Too tall:** a picker's top is never above its window's content top. One with more rows than fit is as tall as that
-    leaves, and its rows scroll with the wheel as a list's rows do, clipped. It has no scroll thumb.
+    leaves, and its rows scroll with the wheel as a list's rows do, clipped. Since CK-299 it then has the scroll bar (§3.16):
+    the panel is 5 wider, growing to the left, and the bar stands in that room beside the rows. A press on the bar does not
+    close the picker.
 - **The filter picker.**
   - **"all"** is a text button at the top left. It is drawn selected while nothing is ticked, and pressing it unticks every box. It
     stays in place when the rows scroll.
@@ -1722,6 +1789,94 @@ Lengths below are in UI pixels.
   - **The two shipped UI cases** (`app.ui-witness`; `apps/codekarl/tests/support/time_bar.rs` and `places_list.rs`) used to end
     their run with a last Escape. That Escape now opens the menu, so each case then calls the menu's own "quit to desktop"
     action.
+
+### 3.16 The scroll bar (accepted, CK-299)
+
+Everything that scrolls rows of its own shows a thin bar at its right edge while its content is taller than its view: the
+scroll list (`lib/list.lua`), the card stack (`lib/cards.lua`) and a list bar's picker with more rows than fit (§3.14). The
+owner asked for it with the glossary reader (UI polish item 3) and chose:
+
+- "Wheel + scroll bar": "Also a thin scroll bar beside the list showing where you are (a new control)";
+- the look "B2: grey thumb": "The same dark track, a grey thumb, lit cream while hovered or dragged";
+- "Every scrolling list": "Built once in the shared list widget, so every list that scrolls gets it, shown only when the list is
+  longer than its view."
+
+The option texts are ck-designer-1's and the choices are the owner's (`owner-direction-glossary-reader-designer-r1.md` and
+`-r2.md` in `.pipeline/coordination/ui-polish-design/`; the picture is `mockups/glossary-reader-r2-b2-scale1.png` there).
+
+Lengths below are in UI pixels.
+
+- **One module,** `scripts/ui/lib/scrollbar.lua`, is the bar. `scrollbar.new{window, owner}` makes one, hidden. Its owner gives
+  it three functions, `scroll()`, `set_scroll(pos)` and `wheel(event)`; calls `bar:update(view, content, scroll)` when the
+  view, the content or the scroll changed; and calls `bar:place(x, y, content_clip)` when its place or the window's content
+  clip did.
+- **The look:** a track 3 wide and as tall as the view, in the theme's `track`, and on it a thumb of the same width in `dim`, or
+  in `text` while the pointer is over it or it is dragged. Both are plain rectangles of `white.png`
+  (`docs/ui-art-provenance.md`).
+- **Shown only while the content is taller than the view.** A bar that is not shown has no quad and no hit region.
+- **The thumb.**
+  - Its length is the shown share of the content, view × view ÷ content, rounded to a whole pixel, at least 9 and never
+    longer than the view.
+  - Its top is travel × scroll ÷ the greatest scroll, rounded to a whole pixel, where the travel is the view less the thumb.
+  - A view too short to give the thumb any travel has a thumb that fills the track.
+- **Use.**
+  - Dragging the thumb keeps the point that was grabbed under the pointer, clamped to the ends.
+  - A press on the track above or below the thumb moves one view that way.
+  - The wheel over the bar scrolls its owner.
+  - A drag ends at the release, at a `cancel`, at a pointer overflow (§3.5), and when the bar goes or is destroyed.
+- **Hit regions.** The bar has a group of its own that does not scroll, above its owner's rows. Its two keys come from `ui.key`
+  (`scroll_track` and `scroll_thumb`): the thumb's region is the thumb, and the track's are the parts above and below it, so the
+  two never overlap. A bar whose view the window's content clip has cut away has none. Both are functional widgets (§3.13).
+- **The width contract.** While the bar shows, the rows stop 2 short of the track, so a row is 5 narrower than the view
+  (`scrollbar.RESERVE`). `scrollbar.row_width(width, view, content)` gives that width.
+  - **The list** draws its hover and pressed fills and its rows' hit regions that wide. It cannot move the cells its caller
+    laid out, so a caller that lays out columns asks `list.row_width(width, rows, count)` first. The bar appears or goes only
+    in `list.new` and `list:set_items`, never in a scroll.
+  - **The card stack** gives each item's `draw` the row width, and each item's hit region is as wide. The bar appears or goes
+    only when the items change, and `set_items` then draws every item again at the width it has.
+  - **A picker** whose rows overflow is 5 wider, growing to the left, with the bar in that room (§3.14).
+- **In the game:** the ledger's two tabs and the location tab's list lay their columns out at `list.row_width`
+  (`main.lua`, `lib/location.lua`), and the pops and buildings stacks draw their cards and rows at the stack's row width.
+  `location.min_width()` is now the larger of what holds the title bar's tabs and close button and 59 pixels, which holds the
+  market's columns beside the bar.
+- **The tooltip's own scroll bar** (§3.13) is older and is not this module.
+- **Tests,** through the shipped scripts in the UI rig, with no window: `ui_link/scrollbar_tests.rs` and `ui_link/list_tests.rs`.
+
+### 3.17 The settings file (accepted, CK-298)
+
+The player's settings are kept in `settings.toml`, a file apart from the configuration file. The owner chose "Own settings
+file" and "At once" (`owner-direction-settings-designer-r1.md` in `.pipeline/coordination/ui-polish-design/`): a change acts
+straight away and is kept. This is the first slice of the settings window (UI polish item 3). The window itself is not built
+yet, so nothing in the shipped UI sets or resets a setting, and the menu's "settings" button is still greyed (§3.15).
+
+- **Where:** in the parent directory of the saves directory (`[game] saves`). For `config/game.toml` that is the top of the
+  copy, beside `saves/`; with no `[game]` table it is beside the configuration file. A run with no `--config` has no settings
+  file. `/settings.toml` is in `.ignore`.
+- **What it holds:** six keys, under the configuration file's own tables:
+  - `[ui.tooltips]`: `delay`, `lock` and `lock_timer` (§3.13);
+  - `[map]`: `pan_pixels_per_frame` (1 to 32), `zoom_steps_per_second` (1 to 60) and `scroll_points_per_step` (1 to 256).
+- **Read at start,** after the configuration file (`apps/codekarl/src/config.rs`, `load_settings`). A key in it overrides the
+  configuration's value; a key it does not have keeps the configuration's value, or the default. A missing file is not
+  reported.
+- **A bad entry is named and ignored.** An unknown table or key, or a value the configuration's own rule refuses, gives one
+  `warn` record in the category `config` that names the file and the entry. The file's other entries apply and the game
+  starts. A file that cannot be read or is not TOML is reported once and ignored whole. The configuration file itself is as
+  strict as before.
+- **The calls** are on the UI VM's `settings` table (`apps/codekarl/src/settings.rs`); the gameplay VM has none.
+  - `settings.tooltips()` returns `{delay, lock, lock_timer}`, and `settings.map()` returns `{pan_pixels_per_frame,
+    zoom_steps_per_second, scroll_points_per_step}`, as they are in force when called.
+  - `settings.set(name, value)` sets one setting: `"ui.tooltips.delay"`, `"ui.tooltips.lock"`, `"ui.tooltips.lock_timer"`,
+    `"map.pan_pixels_per_frame"`, `"map.zoom_steps_per_second"` or `"map.scroll_points_per_step"`. A refused value, a wrong
+    type or an unknown name is a Lua error that names it, and nothing changes.
+  - `settings.reset("tooltips")` and `settings.reset("map")` remove that tab's keys from the file and put back the
+    configuration's values, or the defaults.
+  - `settings.bindings()` returns the key bindings in force: an array of `{name, bindings}`, each binding a string of the
+    `[input.bindings]` grammar such as `"Control+KeyP"`. Nothing sets a binding.
+- **A change acts at once.** The running map controller takes a new map value straight away. The tooltip module reads the
+  tooltip values again when a new target comes under the pointer (§3.13).
+- **And it is written at once.** Every accepted set and every reset writes the whole file through a temporary file and a
+  rename, as a save is written. The file then holds exactly the overrides in force. A write that fails gives one `warn` record
+  in `config`, and the change still holds for the run.
 
 ## 4. Packages and ownership
 
