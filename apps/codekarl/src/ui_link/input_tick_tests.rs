@@ -967,3 +967,173 @@ fn a_re_registration_between_ticks_never_lets_an_older_press_reach_the_new_callb
         [("y".to_owned(), "press".to_owned())]
     );
 }
+
+/// One tick in which `name` is held, pressed and in the transitions, as a key press delivers it.
+fn key_down(name: &str) -> InputSnapshot {
+    let mut input = idle();
+    input.actions = vec![action(name, true, true, false)];
+    input.transitions = vec![edge(name, Edge::Press)];
+    input
+}
+
+/// What one game key does to the map and to the simulation, on a fresh link, with the pause menu's key block `blocked`: whether the
+/// camera moved, and the controls the simulation was sent.
+fn effect_of_key(name: &str, blocked: bool) -> (bool, Vec<Message>) {
+    let held = held_ui();
+    let (mut link, map, receiver, _pointer) = mapped_link(&held);
+    link.sim
+        .as_ref()
+        .expect("a simulation")
+        .controls
+        .set_keys_blocked(blocked);
+    let before = camera_of(&map);
+    link.input(&tick(key_down(name))).expect("a key tick");
+    let stashed: Vec<_> = link
+        .state
+        .stash
+        .borrow()
+        .transitions()
+        .map(|transition| (transition.action.clone(), transition.edge))
+        .collect();
+    assert_eq!(
+        stashed,
+        [(name.to_owned(), Edge::Press)],
+        "the UI is given the key either way: the block is on the game's actions, not on the UI's input"
+    );
+    (camera_of(&map) != before, receiver.try_iter().collect())
+}
+
+#[test]
+fn the_key_block_stops_each_game_key_at_the_map_and_the_simulation_and_leaves_the_rest() {
+    for name in crate::game::controls::BLOCKED_ACTIONS {
+        let (moved, controls) = effect_of_key(name, false);
+        assert!(
+            moved || !controls.is_empty(),
+            "{name}: with no block the key acts, or this test proves nothing"
+        );
+        let (moved, controls) = effect_of_key(name, true);
+        assert!(!moved, "{name}: the camera stays");
+        assert!(
+            controls.is_empty(),
+            "{name}: no control reaches the simulation: {controls:?}"
+        );
+    }
+    // Escape and any other action are not the game's keys: they still reach the UI (checked in `effect_of_key`) and are not touched.
+    for name in ["close", "other"] {
+        let (moved, controls) = effect_of_key(name, true);
+        assert!(
+            !moved && controls.is_empty(),
+            "{name} has no game effect to block"
+        );
+    }
+}
+
+#[test]
+fn a_held_map_key_stops_while_the_block_is_on_and_a_press_in_the_tick_before_it_still_acts() {
+    let held = held_ui();
+    let (mut link, map, receiver, _pointer) = mapped_link(&held);
+    let controls = link.sim.as_ref().expect("a simulation").controls.clone();
+    // The tick of the opening Escape was taken before the UI turned the block on: its key acts.
+    let start = camera_of(&map);
+    link.input(&tick(key_down("map_pan_left"))).expect("tick");
+    let first = camera_of(&map);
+    assert_ne!(first, start, "same-tick keys may act");
+    controls.set_keys_blocked(true);
+    // The key is still held: every tick it would pan, and none does.
+    let mut held_key = with(idle(), "map_pan_left", true, false, false);
+    held_key.transitions = Vec::new();
+    for _ in 0..3 {
+        link.input(&tick(held_key.clone())).expect("tick");
+    }
+    assert_eq!(
+        camera_of(&map),
+        first,
+        "a held pan key does nothing under the block"
+    );
+    controls.set_keys_blocked(false);
+    link.input(&tick(held_key)).expect("tick");
+    assert_ne!(
+        camera_of(&map),
+        first,
+        "and acts again when the block is off"
+    );
+    assert!(receiver.try_iter().next().is_none());
+}
+
+#[test]
+fn the_tick_the_block_turns_on_ends_a_map_drag_already_captured() {
+    let held = held_ui();
+    let (mut link, map, _receiver, pointer) = mapped_link(&held);
+    let controls = link.sim.as_ref().expect("a simulation").controls.clone();
+    let at = |dx: i32| PointerPosition {
+        x: pointer.x + dx * 256,
+        y: pointer.y,
+    };
+    let start = camera_of(&map);
+    let mut press = idle();
+    press.pointer_held = true;
+    press.pointer_position = Some(at(0));
+    press.pointer_events = vec![PointerEvent::Down(at(0))];
+    link.input(&tick(press)).expect("the press");
+    let mut drag = |dx: i32| {
+        let mut input = idle();
+        input.pointer_held = true;
+        input.pointer_position = Some(at(dx));
+        input.pointer_events = vec![PointerEvent::Move(at(dx))];
+        link.input(&tick(input)).expect("a drag tick");
+        camera_of(&map)
+    };
+    let panned = drag(30);
+    // The drag pans while nothing blocks it.
+    assert_ne!(panned, start);
+    controls.set_keys_blocked(true);
+    assert_eq!(
+        drag(60),
+        panned,
+        "the drag ends with the tick the block turns on"
+    );
+    assert_eq!(
+        drag(90),
+        panned,
+        "and the held button's later moves do nothing"
+    );
+    controls.set_keys_blocked(false);
+    assert_eq!(drag(120), panned, "the drag does not come back by itself");
+}
+
+#[test]
+fn a_second_opening_ends_a_drag_captured_after_the_first_closed() {
+    let held = held_ui();
+    let (mut link, map, _receiver, pointer) = mapped_link(&held);
+    let controls = link.sim.as_ref().expect("a simulation").controls.clone();
+    let at = |dx: i32| PointerPosition {
+        x: pointer.x + dx * 256,
+        y: pointer.y,
+    };
+    let drag_tick = |link: &mut CodekarlUi, events: Vec<PointerEvent>, held: bool, dx: i32| {
+        let mut input = idle();
+        input.pointer_held = held;
+        input.pointer_position = Some(at(dx));
+        input.pointer_events = events;
+        link.input(&tick(input)).expect("a pointer tick");
+        camera_of(&map)
+    };
+    // The menu opens and closes once with no gesture in flight.
+    controls.set_keys_blocked(true);
+    drag_tick(&mut link, Vec::new(), false, 0);
+    controls.set_keys_blocked(false);
+    drag_tick(&mut link, Vec::new(), false, 0);
+    // A new drag is captured by the map, and the menu opens again: this opening ends it too.
+    drag_tick(&mut link, vec![PointerEvent::Down(at(0))], true, 0);
+    let panned = drag_tick(&mut link, vec![PointerEvent::Move(at(30))], true, 30);
+    controls.set_keys_blocked(true);
+    assert_eq!(
+        drag_tick(&mut link, vec![PointerEvent::Move(at(60))], true, 60),
+        panned,
+        "the second opening ends the drag the map had captured"
+    );
+    assert_eq!(
+        drag_tick(&mut link, vec![PointerEvent::Move(at(90))], true, 90),
+        panned
+    );
+}

@@ -14,7 +14,10 @@ use ck_window::{
 use super::Harness as CoreHarness;
 use crate::{
     game::{
-        controls::{Control, OVERFLOW_RECORD, SimControls, control_of, presses},
+        controls::{
+            BLOCKED_ACTIONS, Control, OVERFLOW_RECORD, SimControls, control_of, is_blocked_action,
+            presses, without_blocked_actions,
+        },
         core::Message,
         slot::{PauseReason, SimSlot},
     },
@@ -90,16 +93,29 @@ fn tick(input: InputSnapshot) -> InputTick {
 
 /// A UI link with a simulation attached, and the receiving end of its control channel.
 fn linked(harness: &Harness) -> (crate::ui_link::CodekarlUi, mpsc::Receiver<Message>) {
+    let (link, receiver, _controls) = linked_with_controls(harness);
+    (link, receiver)
+}
+
+/// [`linked`], and the link's own controls (a clone shares the key block), for a test that turns the pause menu's block on and off.
+fn linked_with_controls(
+    harness: &Harness,
+) -> (
+    crate::ui_link::CodekarlUi,
+    mpsc::Receiver<Message>,
+    SimControls,
+) {
     let (sender, receiver) = mpsc::channel();
+    let controls = SimControls::new(sender);
     let link = harness.ui.clone().with_sim(SimLink {
         views: Arc::default(),
-        controls: SimControls::new(sender),
+        controls: controls.clone(),
         slot: SimSlot::new(Arc::new(|| {})),
         time_registered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         hover_registered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         select_registered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
-    (link, receiver)
+    (link, receiver, controls)
 }
 
 fn received(receiver: &mpsc::Receiver<Message>) -> Vec<Message> {
@@ -297,4 +313,136 @@ fn presses_sent_after_the_owner_ended_are_dropped() {
     drop(receiver);
     let controls = SimControls::new(sender);
     assert!(!controls.send(&snapshot(vec![press("time_pause")], false)));
+}
+
+#[test]
+fn the_pause_only_control_is_sent_by_the_host_and_no_action_maps_to_it() {
+    // `time_pause` toggles; the menu's pause is a different control that no key or action name reaches.
+    for name in BLOCKED_ACTIONS
+        .into_iter()
+        .chain(["close", "pause", "game_pause", ""])
+    {
+        assert_ne!(control_of(name), Some(Control::Pause), "{name}");
+    }
+}
+
+#[test]
+fn the_key_block_names_the_games_sixteen_keys_and_no_others() {
+    assert_eq!(
+        BLOCKED_ACTIONS,
+        [
+            "time_pause",
+            "time_speed_1",
+            "time_speed_2",
+            "time_speed_3",
+            "time_speed_4",
+            "time_speed_5",
+            "time_faster",
+            "time_slower",
+            "game_quicksave",
+            "game_quickload",
+            "map_pan_left",
+            "map_pan_right",
+            "map_pan_up",
+            "map_pan_down",
+            "map_zoom_in",
+            "map_zoom_out",
+        ]
+    );
+    // Every simulation control is blocked, and a key in general is not: Escape (`close`) and a later key-driven tool still arrive.
+    for name in BLOCKED_ACTIONS {
+        assert!(is_blocked_action(name), "{name}");
+    }
+    for name in ["close", "grave", "other", "time_speed_6", "map_pan", ""] {
+        assert!(!is_blocked_action(name), "{name}");
+    }
+}
+
+#[test]
+fn blocked_actions_lose_their_edges_and_held_state_and_everything_else_is_kept() {
+    let mut input = snapshot(
+        vec![
+            press("close"),
+            press("time_pause"),
+            press("grave"),
+            transition("map_pan_left", Edge::Release),
+            press("map_zoom_in"),
+        ],
+        true,
+    );
+    input.actions = [
+        "close",
+        "grave",
+        "map_pan_left",
+        "map_zoom_in",
+        "time_pause",
+    ]
+    .into_iter()
+    .map(|name| ActionSnapshot {
+        name: name.to_owned(),
+        held: true,
+        pressed: true,
+        released: true,
+    })
+    .collect();
+    input.reset = true;
+    input.pointer_held = true;
+    let filtered = without_blocked_actions(&input);
+    assert_eq!(
+        filtered.transitions,
+        [press("close"), press("grave")],
+        "the order of what is kept does not change"
+    );
+    for action in &filtered.actions {
+        let kept = !is_blocked_action(&action.name);
+        assert_eq!(
+            (action.held, action.pressed, action.released),
+            (kept, kept, kept),
+            "{}",
+            action.name
+        );
+    }
+    assert_eq!(
+        filtered
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "close",
+            "grave",
+            "map_pan_left",
+            "map_zoom_in",
+            "time_pause"
+        ],
+        "every action stays listed"
+    );
+    // The rest of the snapshot is the input's own.
+    assert!(filtered.overflow && filtered.reset && filtered.pointer_held);
+    assert_eq!(filtered.sequence, input.sequence);
+}
+
+#[test]
+fn while_the_block_is_on_no_press_reaches_the_simulation_and_when_it_is_off_all_do() {
+    let harness = Harness::new("", Extras::default());
+    let (mut link, receiver, controls) = linked_with_controls(&harness);
+    let every: Vec<Transition> = BLOCKED_ACTIONS
+        .into_iter()
+        .map(press)
+        .chain([press("close")])
+        .collect();
+    controls.set_keys_blocked(true);
+    link.input(&tick(snapshot(every.clone(), false)))
+        .expect("the tick");
+    assert!(
+        received(&receiver).is_empty(),
+        "the block holds every listed key"
+    );
+    controls.set_keys_blocked(false);
+    link.input(&tick(snapshot(every, false))).expect("the tick");
+    assert_eq!(
+        received(&receiver).len(),
+        10,
+        "the ten simulation controls act again (the map keys and `close` are not controls)"
+    );
 }

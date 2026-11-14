@@ -2502,6 +2502,12 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("assets/ui/", "scripts/ui/"),
     ),
+    # CK-297: the pause menu's tests run the shipped menu, window and button libraries over the shipped font and theme.
+    Guard(
+        "apps/codekarl/src/ui_link/menu_tests.rs",
+        "rust.app",
+        ("assets/ui/", "scripts/ui/"),
+    ),
     Guard("apps/codekarl/src/game_api.rs", "rust.app", ("assets/scenarios/ireland-768/",)),
     # CK-235: the map controller's rule-table test loads Ireland's shipped map and checks the lane accepts its grids.
     Guard("apps/codekarl/src/map_app.rs", "rust.app", ("assets/map/ireland/",)),

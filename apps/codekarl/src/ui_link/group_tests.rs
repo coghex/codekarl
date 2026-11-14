@@ -100,6 +100,9 @@ pub(super) struct Rig {
     pub(super) tables: Tables,
     pub(super) map_pointer: PointerPosition,
     simulation_slot: Arc<SimSlot>,
+    /// The run's controls (a clone shares the key block) and the receiving end of the simulation's control channel.
+    pub(super) controls: SimControls,
+    pub(super) control_receiver: mpsc::Receiver<crate::game::core::Message>,
     sequence: u64,
 }
 
@@ -156,13 +159,16 @@ impl Rig {
         let time_registered = Arc::new(AtomicBool::new(false));
         let hover_registered = Arc::new(AtomicBool::new(false));
         let select_registered = Arc::new(AtomicBool::new(false));
-        let (game_sender, _game_receiver) = mpsc::channel();
+        // One control channel and one key block for the `game` extension and the link, as in a run, so a test sees what the script
+        // sent and the link sees the block the script turned on.
+        let (control_sender, control_receiver) = mpsc::channel();
+        let controls = SimControls::new(control_sender);
         let game = crate::game_api::extension_with_select(
             Arc::clone(&time_registered),
             Arc::clone(&hover_registered),
             Arc::clone(&select_registered),
             Arc::new(|| {}),
-            SimControls::new(game_sender),
+            controls.clone(),
         );
         let record: HostFunction = {
             let tables = Arc::clone(&tables);
@@ -233,13 +239,12 @@ impl Rig {
         let mut controller = crate::map_app::tests::hover_controller();
         let map_pointer = crate::map_app::tests::hover_pointer(&mut controller);
         let map = crate::map_app::shared(controller);
-        let (sender, _receiver) = mpsc::channel();
         let simulation_slot = SimSlot::new(Arc::new(|| {}));
         let link = CodekarlUi::with_map(harness.ui.slot.clone(), Arc::clone(&map))
             .with_scene_bridge(Arc::clone(&harness.bridge))
             .with_sim(SimLink {
                 views: Arc::default(),
-                controls: SimControls::new(sender),
+                controls: controls.clone(),
                 slot: Arc::clone(&simulation_slot),
                 time_registered,
                 hover_registered,
@@ -255,6 +260,8 @@ impl Rig {
             tables,
             map_pointer,
             simulation_slot,
+            controls,
+            control_receiver,
             sequence: 0,
         }
     }
@@ -296,7 +303,7 @@ impl Rig {
         );
     }
 
-    fn deliver_game_time(&mut self, snapshot: &SimSnapshot) {
+    pub(super) fn deliver_game_time(&mut self, snapshot: &SimSnapshot) {
         self.simulation_slot.publish(snapshot.clone());
         self.deliver_fixture_frame();
         // `take_answer` posts game_time after the frame_update; its answer can still be pending when that frame returns.

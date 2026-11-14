@@ -38,8 +38,24 @@ pub(crate) fn install_theme(assets_root: &Path) {
     }
 }
 
+/// The run's last Escape opens the pause menu (CK-297) instead of ending the run: the witness leaves as the player does, through the
+/// menu's own "quit to desktop" button.
+const QUIT_THROUGH_MENU: &str = r#"
+local time_bar_menu = require("lib.menu")
+local real_time_bar_menu_open = time_bar_menu.open
+time_bar_menu.open = function(view)
+  local created = real_time_bar_menu_open(view)
+  time_bar_menu.current().buttons["quit to desktop"].on_click()
+  return created
+end
+"#;
+
 /// The shipped UI script with observation markers inside its real time and frame callbacks.
 pub(crate) fn script() -> String {
+    format!("{QUIT_THROUGH_MENU}{}", observed_script())
+}
+
+fn observed_script() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ui/main.lua");
     let mut script = fs::read_to_string(path).expect("the shipped UI script");
     script.insert_str(
