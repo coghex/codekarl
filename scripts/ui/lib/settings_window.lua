@@ -342,7 +342,7 @@ end
 
 cancel_wait = function(state)
   if state.waiting == nil then return end
-  pcall(settings.cancel_capture)
+  pcall(typing.cancel_capture, settings.cancel_capture)
   local slot = state.waiting.slot
   state.waiting = nil
   set_escape_hint(state, false)
@@ -711,7 +711,7 @@ function settings_window.open(view)
     on_close = function()
       if state.prompt ~= nil then state.prompt.window:close() end
       if state.waiting ~= nil then
-        pcall(settings.cancel_capture)
+        pcall(typing.cancel_capture, settings.cancel_capture)
         state.waiting = nil
       end
       clear_page(state)

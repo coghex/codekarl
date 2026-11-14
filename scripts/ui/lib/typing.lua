@@ -93,6 +93,20 @@ function typing.capture(id, request)
   return true
 end
 
+-- Cancels a pending host capture and releases the typing guard immediately. `request` is the host's
+-- `settings.cancel_capture` function; errors are forwarded just as they are by `typing.capture`.
+function typing.cancel_capture(request)
+  if type(request) ~= "function" then
+    error("typing.cancel_capture: expected a capture cancellation function", 2)
+  end
+  capture_id = nil
+  local ok, message = pcall(request)
+  if not ok then
+    error(message, 2)
+  end
+  return true
+end
+
 -- Gives an update's typed entries to the widget that was editing when it began, in order. Called once per update, before the pointer.
 function typing.dispatch(update)
   if capture_id ~= nil and update.capture ~= nil and update.capture.id == capture_id then

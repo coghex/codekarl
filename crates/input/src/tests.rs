@@ -1495,6 +1495,91 @@ fn capture_cancellation_and_replacement_return_one_reasoned_result() {
 }
 
 #[test]
+fn cancelling_capture_keeps_its_captured_key_owned_until_release() {
+    let mut mapper = Mapper::new(bindings(&[("close", &["KeyQ"])]));
+    mapper.arm_capture("slot".to_owned());
+    mapper.key(Key::KeyQ, true, false);
+    let result = mapper.snapshot();
+    assert_eq!(
+        result.capture.unwrap().outcome,
+        CaptureOutcome::Binding("KeyQ".to_owned())
+    );
+    mapper.acknowledge(result.sequence);
+
+    mapper.cancel_capture();
+    assert!(mapper.capture_active(), "the captured key is still held");
+    assert!(
+        mapper.snapshot().capture.is_none(),
+        "a completed request has no second result"
+    );
+    mapper.key(Key::KeyQ, true, true);
+    let repeated = mapper.snapshot();
+    assert!(repeated.transitions.is_empty());
+    assert_eq!(mapper.take_close_presses(), 0);
+    mapper.key(Key::KeyQ, false, false);
+    assert!(!mapper.capture_active(), "release ends key ownership");
+    assert!(mapper.snapshot().transitions.is_empty());
+}
+
+#[test]
+fn cancelling_a_rearmed_capture_reports_cancelled_but_keeps_the_inherited_key_owned() {
+    let mut mapper = Mapper::new(bindings(&[("close", &["KeyQ"])]));
+    mapper.arm_capture("first".to_owned());
+    mapper.key(Key::KeyQ, true, false);
+    let result = mapper.snapshot();
+    mapper.acknowledge(result.sequence);
+
+    mapper.arm_capture("second".to_owned());
+    mapper.cancel_capture();
+    assert!(mapper.capture_active());
+    let cancelled = mapper.snapshot();
+    assert_eq!(
+        cancelled.capture.unwrap().outcome,
+        CaptureOutcome::Cancelled(CaptureCancelReason::Requested)
+    );
+    mapper.acknowledge(cancelled.sequence);
+    mapper.key(Key::KeyQ, true, true);
+    assert!(mapper.snapshot().transitions.is_empty());
+    assert_eq!(mapper.take_close_presses(), 0);
+    mapper.key(Key::KeyQ, false, false);
+    assert!(!mapper.capture_active());
+}
+
+#[test]
+fn cancelling_an_empty_capture_finishes_it_immediately() {
+    let mut mapper = Mapper::new(bindings(&[]));
+    mapper.arm_capture("empty".to_owned());
+    mapper.cancel_capture();
+    assert!(!mapper.capture_active());
+    assert_eq!(
+        mapper.snapshot().capture.unwrap().outcome,
+        CaptureOutcome::Cancelled(CaptureCancelReason::Requested)
+    );
+}
+
+#[test]
+fn resync_lifting_a_cancelled_capture_key_ends_its_ownership() {
+    let mut mapper = Mapper::new(bindings(&[("close", &["KeyQ"])]));
+    mapper.arm_capture("slot".to_owned());
+    mapper.key(Key::KeyQ, true, false);
+    let captured = mapper.snapshot();
+    mapper.acknowledge(captured.sequence);
+    mapper.cancel_capture();
+    assert!(mapper.capture_active());
+
+    mapper.resync(&KeyStates::new());
+    assert!(!mapper.capture_active(), "resync proves the key was lifted");
+    mapper.key(Key::KeyQ, true, false);
+    assert!(
+        mapper
+            .snapshot()
+            .transitions
+            .iter()
+            .any(|edge| edge.edge == Edge::Press)
+    );
+}
+
+#[test]
 fn replacing_bindings_is_whole_and_does_not_make_a_new_held_key_press() {
     let mut mapper = Mapper::new(bindings(&[("first", &["KeyA"]), ("second", &["KeyB"])]));
     mapper.key(Key::KeyA, true, false);
