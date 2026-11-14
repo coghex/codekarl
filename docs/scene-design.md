@@ -420,6 +420,26 @@ the family.
 - **The zoom key.** The owner chose "Add Shift+=" (`-r10.md`, question 2): with a map, `map_zoom_in` defaults to `Equal` and
   `Shift+Equal`, so `+` still zooms in. `map_zoom_out` stays `Minus` alone.
 
+**Since CK-314 (typed text; `crates/input/src/lib.rs`, `crates/window/src/main_loop.rs`).** The text channel that the first
+paragraph of this section left for later now exists. It is apart from the keys: a physical key is still a keyboard position,
+and what the player types arrives as **typed entries** (`TypedEntry`). An entry is a committed character, one Unicode scalar
+value, or one of five edit commands: backspace, enter, tab, left and right.
+
+- **A backend reports** `NativeEvent::Typed(entry)` in the order typed, and `NativeEvent::TypedLost` when its own bounded
+  store dropped entries. Cocoa does (`docs/ui-design.md` §3.19). GLFW reports neither, so the Vulkan path has no typed text.
+- **The route is off at the start.** A script turns it on or off with `window.set_text_input(on)`, a field of the request
+  slot (`docs/window-design.md` §4.2). The loop applies a request when it reads the slot: it tells the backend
+  (`Backend::set_text_input`), empties the mapper's typed ring (`Mapper::reset_typed`) and makes the request's generation the
+  snapshot's `typed_epoch`. While the route is off the loop drops typed events.
+- **Keys are unchanged.** On or off, every key is recorded and mapped as before, so a typed key is also its action.
+- **Bounded like the transitions** (§10.2): the mapper keeps at most 256 typed entries (`TYPED_CAPACITY`) between two
+  acknowledged snapshots, in fixed storage. Unlike the transitions it drops the **later** entries at the bound and keeps the
+  earlier ones in order. `typed_lost` is then set until the snapshot that reports it is acknowledged.
+- **The snapshot** carries `typed`, `typed_lost` and `typed_epoch`, and the UI's update carries the same three
+  (`docs/ui-design.md` §3.19).
+- **Tests while the owner types** (§10.3): the test executable drops real key-downs before the view, so the owner's typing
+  reaches no text input in a test window. The Cocoa cases post marked key-downs that carry characters.
+
 Close's rising edge requests the existing Lua close callback with source `key`; the native close button uses source `button`. Repeated close events coalesce under the current one-outstanding rule. No callback means accept. Default Escape is now a binding, not a second hardcoded exit path. Cmd-Q/no-menu behavior and signal quit remain as accepted.
 
 ### 10.2 Bounded transition policy
