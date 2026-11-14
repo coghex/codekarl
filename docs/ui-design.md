@@ -221,8 +221,8 @@
 >   `owner-direction-settings-manager-r7.md`; §3.18): the pause menu's "settings" button now opens a window titled "Settings",
 >   above the menu. The owner: "i think i want a tabbed window".
 >   - **Three tabs** in a column down its left side: general (the three tooltip settings), map (the three map settings) and
->     input (the keys in force, read-only). A slider or a choice acts at once and is written to the settings file (§3.17), and
->     "defaults" resets the tab that shows.
+>     input (the keys in force; read-only until CK-310, below). A slider or a choice acts at once and is written to the
+>     settings file (§3.17), and "defaults" resets the tab that shows.
 >   - **Its "x" or Escape** closes it and leaves the menu open and the game paused.
 >   - **For scripts:** `button.flow` lays out a row of buttons that wraps, and a window made with `modal = true` is above the
 >     menu's backdrop. Every other window now stays under the backdrop while the menu is open.
@@ -249,7 +249,21 @@
 > - **Key capture and live key bindings, for scripts** (CK-309, 2026-11-14; `owner-direction-keys-designer-r1.md` and
 >   `-r2.md`; §3.17): `settings.capture_key` gives a script the next key the player presses, `settings.set_bindings` changes
 >   the keys of the player's actions while the game runs, and the settings file keeps them in `[input.bindings]`. Escape's
->   action, `close`, is fixed. No shipped screen calls them yet: the input tab is still read-only.
+>   action, `close`, is fixed. Since CK-310 the settings window's input tab calls them (below).
+> - **Rebinding keys** (CK-310, 2026-11-14; `owner-direction-keys-designer-r1.md` and `-r2.md`,
+>   `owner-direction-game-menu-manager-r9.md` and `-r10.md`; §3.18): the settings window's input tab now changes the keys.
+>   Each action has two key slots, the look the owner chose: "lets do K1 for now".
+>   - **A click on a slot** makes it wait for a key, and the next key pressed is set. Escape cancels the wait. Backspace, or a
+>     right-click on the slot, empties it. The owner: "right click should clear, backspace while waiting".
+>   - **A key that another action has** opens the prompt "Key in use", with "replace", "clear" and "cancel", and "swap" when
+>     the slot had a key of its own. The owner: "it should pop up a popup for confirmation on replacement of the old value".
+>   - **The menu's row** (Escape) is greyed and cannot be changed. "defaults" puts every key back.
+>   - **For scripts:** `window.set_modal_overlay` gives a modal window a layer of its own, just under it.
+> - **The text field, for scripts** (CK-303, 2026-11-14; `owner-direction-save-load-designer-r1.md`; §3.22):
+>   `scripts/ui/lib/textfield.lua` is a field that a line of text is typed into, with a caret that Left and Right move. It
+>   counts characters, not bytes, and takes only characters the project font draws. It shares its editing with the number
+>   field through the new `scripts/ui/lib/fieldedit.lua`, so one field edits at a time, of either kind. No shipped screen has
+>   a text field yet: the save/load screen will be the first.
 
 ## Owner answers (2026-11-07)
 
@@ -680,9 +694,12 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
       under the backdrop (§3.18, §3.20).
     - **Since CK-306 a number field that is being edited comes first of all:** the handler puts its old number back, ends
       its editing and declines. So the order is: an editing number field, a tooltip, the picker, the top window, the pause
-      menu (§3.21).
+      menu (§3.21). **Since CK-303** an editing text field is the same step: the one field that edits, of either kind, gets
+      its old value back (§3.22).
     - **Since CK-309 a key capture comes before the handler:** while a capture waits for a key, a press of Escape is the
-      key it captures, and no close request is made (§3.17).
+      key it captures, and no close request is made (§3.17). **Since CK-310** that is how Escape cancels a key slot that
+      waits in the settings window's input tab. The "Key in use" prompt, while it is open, is the top window that Escape
+      closes (§3.18).
 
 ### 3.6 From the UI to the game (Proposal)
 
@@ -1837,13 +1854,13 @@ Lengths below are in UI pixels.
       press on a panel's body does.
   - A button made without these options is sized and behaves as before.
 - **Not there:** the main menu and the loading screen; what "save / load" opens; a confirmation
-  before quitting; a menu button on the screen; key rebinding.
+  before quitting; a menu button on the screen. Key rebinding came with CK-310, in the settings window (§3.18).
 - **Tests,** none with a window or the GPU:
   - `apps/codekarl/src/ui_link/menu_tests.rs` runs the shipped `lib/menu.lua`, `lib/window.lua` and `lib/button.lua` in a UI
     VM over the real `render` API and the real input path. Ten of its tests cover the Escape order, the window and its
     buttons, one menu at most, the resize, the backdrop, the pause-only control, "return" and Escape, quitting, the greyed
-    button and the two button options. It has thirteen more for the settings window, eleven of CK-301 and two of CK-318
-    (§3.18).
+    button and the two button options. It has twenty-six more for the settings window, fourteen of them for the input
+    tab of CK-310 (§3.18).
   - `ui_link/input_tick_tests.rs` has the key block at the tick: each of the sixteen actions stopped at the map and the
     simulation with the rest left alone, a held map key, a press in the tick before, and a captured drag ended at a first
     and at a second opening.
@@ -1910,7 +1927,8 @@ Lengths below are in UI pixels.
 The player's settings are kept in `settings.toml`, a file apart from the configuration file. The owner chose "Own settings
 file" and "At once" (`owner-direction-settings-designer-r1.md` in `.pipeline/coordination/ui-polish-design/`): a change acts
 straight away and is kept. This is the first slice of the settings window (UI polish item 3). The window itself came with
-CK-301 (§3.18): its general and map tabs are what sets and resets a setting in the shipped UI.
+CK-301 (§3.18): its general and map tabs are what sets and resets a setting in the shipped UI. Since CK-310 its input tab
+sets and resets the player's keys.
 
 - **Where:** in the parent directory of the saves directory (`[game] saves`). For `config/game.toml` that is the top of the
   copy, beside `saves/`; with no `[game]` table it is beside the configuration file. A run with no `--config` has no settings
@@ -2008,8 +2026,9 @@ can input whatever numbers they want, and it will clamp to minimums and maximums
   `ui_link/input_tick_tests.rs` (the live limit), and one case with a real window in `crates/window-cocoa/tests/resize/`.
 
 **Since CK-309: the player's key bindings, and key capture.** A script can change the keys of the player's actions while the
-game runs, and can ask for the next key the player presses. It is the engine's side of key rebinding. The input tab that will
-use it is a later step (CK-310), so no shipped script calls any of it yet, and the input tab is still read-only (§3.18). For
+game runs, and can ask for the next key the player presses. It is the engine's side of key rebinding. **Since CK-310 the
+settings window's input tab uses it** (§3.18), and is its one shipped caller: it calls `settings.bindings`, `set_bindings`,
+`capture_key` (through `typing.capture`), `cancel_capture` and `settings.reset("bindings")`. For
 the menu key the owner chose "Fixed": it cannot be changed. The records are `owner-direction-keys-designer-r1.md` and `-r2.md`,
 and the spec is `runtime-m55/ck309-spec-r2.md` (sha256 `e85d479f…`).
 
@@ -2061,11 +2080,11 @@ and the spec is `runtime-m55/ck309-spec-r2.md` (sha256 `e85d479f…`).
   `crates/window/tests/window/` (the slot and the loop, with a fake backend), `apps/codekarl/src/settings.rs` and `config.rs`
   (the calls and the file), and `ui_link/typing_tests.rs` and `numberfield_tests.rs` (capture against an editing widget).
 
-### 3.18 The settings window (accepted, CK-301)
+### 3.18 The settings window (accepted, CK-301 and CK-310)
 
 The pause menu's "settings" button opens the **settings window**: a tabbed window above the menu, where a change acts at once
 and is written to the settings file (§3.17). It is the second slice of the settings (UI polish item 3). The owner: "i think i
-want a tabbed window".
+want a tabbed window". Since CK-310 its input tab changes the keys.
 
 - **The records** are `owner-direction-settings-designer-r1.md` to `-r4.md` and `owner-direction-settings-manager-r7.md` in
   `.pipeline/coordination/ui-polish-design/`.
@@ -2077,12 +2096,19 @@ want a tabbed window".
   - On a slider's fill, the owner: "i answered that to the designer, its the cream".
   - The look is `mockups/settings-r4.html` (the general tab) and `mockups/settings-r2.html` (the map and input tabs) there,
     and it uses no new art (`settings-provenance-r1.md`). The spec is `runtime-m55/ck301-spec.md` (sha256 `1baf6fd2…`).
-- **One module,** `scripts/ui/lib/settings_window.lua`, is the window, its tab column, its three tabs and the slider.
+  - **For the keys (CK-310)** the records are `owner-direction-keys-designer-r1.md` and `-r2.md` and
+    `owner-direction-game-menu-manager-r9.md` and `-r10.md`. The look is K1 of `mockups/keys-r1.html` and the two prompts
+    of `mockups/keys-r2.html`, with no new art (`keys-provenance-r1.md`). The spec is `runtime-m55/ck310-spec-r4.md` (sha256
+    `03594c5a…`).
+- **One module,** `scripts/ui/lib/settings_window.lua`, is the window, its tab column, its three tabs and the slider. Since
+  CK-310 it is the key slots and the "Key in use" prompt too.
   - `settings_window.open(view)` opens it, or raises it when it is open, and returns the window. There is one at most.
   - `settings_window.close()` closes it, `settings_window.relayout(view)` centres it again, and `settings_window.current()`
     gives a test its parts.
-  - **Its one caller is the menu** (`lib/menu.lua`): the "settings" button opens it, `menu.relayout()` passes on a change of
-    the view's size, and the menu's `on_close` closes it.
+  - **The menu** (`lib/menu.lua`) **opens and closes it:** the "settings" button opens it, `menu.relayout()` passes on a
+    change of the view's size, and the menu's `on_close` closes it.
+  - **Since CK-310 `main.lua` calls `settings_window.update(update)` in every update,** after the pointer's dispatch. It
+    reads the update's key capture result and ends a slot's wait (below). With no settings window open it does nothing.
 
 Lengths below are in UI pixels.
 
@@ -2099,7 +2125,8 @@ Lengths below are in UI pixels.
     right edge.
   - A 1-pixel line in the kind's `outline` stands at the column's right edge. It stops 6 short of the content's bottom.
   - A tab's content starts 6 right of the column's right edge and is 220 wide. It is one group attached to the window and
-    clipped to the window's content. It is destroyed and made again whenever a tab is shown.
+    clipped to the window's content. It is destroyed and made again whenever a tab is shown. Since CK-310 a second group
+    and a scroll bar go with it, for the input tab's rows.
   - There is no graphics tab and no gameplay tab.
 - **A tab's rows** have their label at the content's left and their control 84 right of it. Every label is cut to its room on
   whole characters, with `..`.
@@ -2138,39 +2165,105 @@ Lengths below are in UI pixels.
 - **The map tab** has three sliders, 20 apart, each stepping by 1: "pan speed" from 1 to 32 (`map.pan_pixels_per_frame`),
   "zoom speed" from 1 to 60 (`map.zoom_steps_per_second`) and "scroll step" from 1 to 256 (`map.scroll_points_per_step`).
   A value reads as its number, and the scroll step's as `24 points`.
-- **"defaults"** is a button at the bottom left of the general and the map tab's content. It calls `settings.reset("tooltips")`
-  or `settings.reset("map")`, which resets that tab's settings only. The tab is then made again, when the pointer's dispatch
-  ends, with the values in force. The input tab has none.
-- **The input tab** lists the keys in force, read-only, from `settings.bindings()` (§3.17): eight rows, 15 apart.
-
-  | Row | Actions |
-  |---|---|
-  | pause | `time_pause` |
-  | speed 1 to 5 | `time_speed_1` to `time_speed_5` |
-  | faster, slower | `time_faster`, `time_slower` |
-  | quicksave | `game_quicksave` |
-  | quickload | `game_quickload` |
-  | move the map | `map_pan_left`, `map_pan_right`, `map_pan_up`, `map_pan_down` |
-  | zoom in, out | `map_zoom_in`, `map_zoom_out` |
-  | close, menu | `close` |
-
-  - **A key reads** as its `[input.bindings]` name, except `Digit0` to `Digit9` (the digit), `BracketLeft` (`[`),
-    `BracketRight` (`]`), `Equal` (`=`) and `Minus` (`-`). A binding with a modifier reads as its whole string.
-  - A row shows every binding of its actions, in the table's order, with two spaces between them. With `map_zoom_in` bound
-    to `Equal` and `Shift+Equal` and `map_zoom_out` to `Minus`, "zoom in, out" reads `=  Shift+Equal  -`. An action with no
-    binding shows nothing.
-  - "move the map" reads `arrows` while each of its four actions has its own arrow key as its one binding.
-  - The keys start 84 right of the label and are cut at the content's right edge, with `..`.
-  - Under the rows, in `dim`: "changing keys comes later".
+- **"defaults"** is a button at the bottom left of each tab's content. It calls `settings.reset("tooltips")`,
+  `settings.reset("map")` or, on the input tab since CK-310, `settings.reset("bindings")`, which resets that tab's settings
+  only. The tab is then made again, when the pointer's dispatch ends, with the values in force.
+- **The input tab** (CK-310) shows the keys in force, from `settings.bindings()` (§3.17), and changes them. Before CK-310 it
+  was a read-only list of eight rows, with "changing keys comes later" under them.
+  - **Groups and rows.** There are three groups, each under its name in `dim`: **time** (pause, speed 1 to speed 5, faster,
+    slower), **game** (quicksave, quickload, menu) and **map** (pan left, pan right, pan up, pan down, zoom in, zoom out).
+    A heading and a row are each 15 tall. Only the actions the run has are listed, and a group with none of its actions
+    is left out. The menu's row, for `close`, is always there.
+  - **A row** has the action's name, 4 in, and **two key slots:** the first 70 right of the rows' left edge and the second
+    3 right of the first. They show the action's first and second keys in force.
+  - **A slot** is a cut-3 frame, 13 tall and as wide as `font.layout("press a key")` plus 8, filled `body` and outlined in
+    the window kind's `outline`. The key's shown name is centred in it, in `text`. An empty slot shows `-` in `dim`.
+  - **The rows scroll.** Their view is the content less a footer 22 tall, so 146 tall, with the scroll bar (§3.16) at the
+    content's right edge. The footer has "defaults".
+  - **Shown names.** `KeyA` reads `A` and `Digit1` reads `1`. The arrows read `Left`, `Right`, `Up` and `Down`. Punctuation
+    reads as its character: `Equal` is `=`, `Minus` is `-`, `BracketLeft` is `[`, `BracketRight` is `]`, and likewise the
+    semicolon, quote, backslash, comma, period, slash and backquote. Every other key reads as its `[input.bindings]` name,
+    such as `Space`, `Escape`, `Enter`, `Tab` and `F5`.
+    - Modifiers come before the key, as the binding's string has them: `Control` reads `Ctrl`, `Alt` reads `Option`, `Meta`
+      reads `Cmd`, and `Shift` is itself. So `Shift+Equal` reads `Shift+=`.
+    - A name too wide for its slot is cut on whole characters, with `..`.
+    - **Disclosed:** a name is a physical key position. On a keyboard layout that is not the US one, `A` may not be the
+      letter printed on that key.
+  - **The menu's row is greyed:** its name and its slots' text are in `dim` and its slots' outlines in `track`. A click or
+    a right-click on it does nothing. The owner chose "Fixed" for the menu key.
+  - **An action with more than two keys in force** is shown the same way: greyed, its first two keys in its slots, and
+    `+N` in `dim` after them for the N more. Only a hand-written configuration can give one (§3.17). Nothing changes it
+    here, so no key that is not shown is dropped. This is the spec's own rule, marked a proposal there.
+- **Setting a key** (CK-310). A click on a slot that is not greyed makes it **wait:** it is filled and outlined in the
+  kind's `hot`, it reads `press a key` in the kind's `pressed_text`, and "Escape cancels" shows in `dim` right of
+  "defaults".
+  - **The click** is the left button's release over the slot. It arms a key capture with
+    `typing.capture(id, settings.capture_key)`, under an id from `ui.key("settings_capture")` (§3.17, §3.19).
+  - **One slot waits at a time.** A click on another slot abandons the first wait and starts the second.
+  - **The wait is abandoned,** and its capture cancelled with `settings.cancel_capture()`, by a left press anywhere but on
+    the waiting slot, by a tab being shown, and by the settings window closing, as it does when the pause menu closes. A
+    capture result of kind `cancelled`, which a loss of focus gives, ends the wait too. The slot is then as it was.
+  - **The capture's result** comes in an update's `capture` field (§3.17), which `settings_window.update` reads:
+    - `Escape` cancels: the slot is as it was, and nothing is closed;
+    - `Backspace` empties the slot, so Backspace cannot be set as a key;
+    - any other key K is set by the next rule.
+- **Is the key free?** An action **holds** K when one of its keys in force is exactly K: the same key with the same
+  modifiers, so `F5` and `Shift+F5` are two keys (§2.6). The tab compares the binding strings. K's **owners** are the
+  other actions that `settings.bindings()` lists and that hold K, in the tab's order. The demo's actions are not listed,
+  so a key that only they have is free. The first case that applies decides:
+  - **The action already holds K,** in either of its slots: nothing changes. No call is made and no prompt opens.
+  - **No owner:** K is set in the slot at once.
+  - **An owner cannot be changed:** it is `close`, or an action greyed for its more than two keys, alone or among several
+    owners. The prompt names every owner and offers only "cancel". This is the spec's own rule, marked a proposal there.
+  - **One owner:** the prompt offers "replace", "clear" and "cancel", and "swap" too when the slot had a key of its own.
+  - **Several owners,** which only a configuration can make: the prompt names them all and offers "replace", "clear" and
+    "cancel". The owner chose "Name all, no swap".
+- **The prompt "Key in use"** (CK-310) is a library window of kind `window` with that title. It is `fixed`, so it has no
+  "x", it is not draggable, and it is modal. It is centred in the view, and `settings_window.relayout` centres it again.
+  The owner approved the first two prompts below as drawn ("Yes, as drawn") and then added "clear": "it should have a
+  fourth button, clear".
+  - **It has a backdrop of its own:** one quad over the whole view, tinted with `body` at alpha one half, in a group of
+    its own, and a hit region over the whole view under a key from `ui.key("key_prompt_backdrop")`. Its widget does
+    nothing with what it takes. The window library keeps that group just under the prompt and above the settings window
+    (below). So nothing behind the prompt responds, the settings window included.
+  - **Its lines** are in `text`, 15 apart. Below, X is K's shown name, A the row being set, B the owner's row and Y the
+    key the slot had.
+    - **One owner, the slot was empty:** `X is B's key.`, then `Use it for A instead?`, then `B's slot will be empty.` The
+      buttons are "replace", "clear" and "cancel".
+    - **One owner, the slot had Y:** `X is B's key.`, then `Use it for A instead?`, then `swap: B gets Y.`, then
+      `replace: B's slot will be empty.` The buttons are "swap", "replace", "clear" and "cancel".
+    - **One owner that already holds Y:** the lines and buttons of the empty slot, with no "swap". B cannot hold Y twice,
+      so a swap could give only what "replace" gives. This is the spec's own rule, marked a proposal there.
+    - **Several owners:** `X is B's and C's key.`, or `X is B's, C's and D's key.` for more, then `Use it for A instead?`,
+      then `Their slots will be empty.` The buttons are "replace", "clear" and "cancel".
+    - **An owner that cannot be changed:** `X is B's key.`, or the line for several, then `It cannot be changed here.`
+      The one button is "cancel". `close` is named "the menu", so the line reads `X is the menu's key.`
+  - **Its size:** as wide as its widest line plus 10, or as its row of buttons plus 8 when that is more. It is as tall as
+    its lines, 15 each, plus 7 and a button's height. The buttons are one row at the bottom right, 3 apart, in the order
+    given above.
+  - **"replace"** puts K in A's slot and takes K from every owner. **"swap"** puts K in A's slot and Y in K's place in B's
+    list. **"clear"** empties A's slot, and the owners keep K. **"cancel"** changes nothing. Each closes the prompt.
+- **Every change is one `settings.set_bindings` call** (§3.17), which holds each action it changes with its whole new
+  list: the one action for a free key, a "clear" or an emptied slot; A and B for a "replace" or a "swap"; A and every
+  owner for a "replace" with several owners. It never holds `close` or a greyed action.
+  - **The tab is then made again** from `settings.bindings()`, so it shows what is in force.
+  - **An emptied slot** leaves the action's other key first in its list: `[F5, Space]` with its F5 slot emptied is
+    `[Space]`, shown `Space` and `-`.
+  - **A refused call,** a Lua error, changes nothing. The tab stays as it was and the error is logged, at `info`.
+- **A right-click** on a slot that is not greyed empties it at once, and abandons a wait.
 - **Stacking: only the windows the menu opens are above its backdrop.** The window library (`lib/window.lua`) now knows the
   backdrop's group and which windows are modal.
   - `window.new{…, modal = true}` makes a modal window. The menu's window, the settings window and, since CK-300, the
-    glossary reader (§3.20) are the three.
+    glossary reader (§3.20) are three. Since CK-310 the "Key in use" prompt is the fourth.
   - `window.set_modal_backdrop(group)` names the backdrop's group and `window.clear_modal_backdrop(group)` forgets it. The
     menu calls the first when it opens and the second when it closes.
   - **While a backdrop is named,** the library orders its windows' groups again at every change (a window made, raised or
     closed, an item attached): the windows that are not modal first, in their own order, then the backdrop, then the modal
     windows in their own order. The tooltip overlay stays above them all.
+  - **Since CK-310 a modal window can have a layer of its own.** `window.set_modal_overlay(owner, group)` names a group
+    that is kept just under the window `owner`, above the modal windows before it in the windows' order.
+    `window.clear_modal_overlay(owner, group)` forgets it. Both order the groups again. The prompt's backdrop is the one
+    such layer.
   - **So a window made or raised while the menu is open is under the backdrop** and under its hit region: a press, drag,
     scroll or hover over it reaches nothing. The location panel answering a click that was still on its way when Escape
     opened the menu is such a window.
@@ -2178,24 +2271,38 @@ Lengths below are in UI pixels.
   - When the menu closes, every window is ordinary again, in the windows' own order.
   - Only library windows are ordered this way.
 - **Leaving.** The "x", or Escape with no tooltip or picker to close first, closes the settings window.
+  - **Since CK-310:** while a slot waits, Escape is the captured key and only ends the wait. While the prompt is open,
+    Escape closes the prompt alone, which is "cancel", and the next Escape closes the settings window.
+  - Closing the settings window, with its "x" or with the menu, closes an open prompt as "cancel" and cancels a capture
+    that waits.
   - The menu is as it was: still open, the game still paused, its keys still blocked. Closing the settings window sends no
     control and makes no `game.set_modal` call.
   - A further Escape closes the menu.
   - Closing the menu closes the settings window with it.
-- **Not there:** a graphics tab and a gameplay tab; rebinding a key; a field to type a number into; tooltips on the window's
-  own controls.
-- **Tests,** through the shipped scripts in the UI rig, with no window: thirteen tests in
-  `apps/codekarl/src/ui_link/menu_tests.rs`. They cover opening and the window; the general tab's sliders, choices and
-  "defaults"; a slider's drag across several updates, on the general and on the map tab; `button.flow`; the map tab; the input
-  tab; the "x"; closing the menu; and the stacking of a window made late and of an older window raised. The two of CK-318
-  cover the "show delay" label and the sliders' places on the general and on the map tab.
+- **Not there:** a graphics tab and a gameplay tab; a field to type a number into; tooltips on the window's own controls;
+  a mouse button or the wheel as a key; more than two keys for an action; rebinding the demo's actions.
+- **Tests,** through the shipped scripts in the UI rig, with no window: twenty-six tests in
+  `apps/codekarl/src/ui_link/menu_tests.rs`.
+  - **Twelve** cover opening and the window; the general tab's sliders, choices and "defaults"; a slider's drag across
+    several updates, on the general and on the map tab; `button.flow`; the map tab; the "x"; closing the menu; and the
+    stacking of a window made late and of an older window raised. The two of CK-318 among them cover the "show delay"
+    label and the sliders' places on the general and on the map tab.
+  - **Fourteen are the input tab's** (CK-310), with the settings calls doubled: the slots, their names and the greyed menu
+    row; a run with no game actions; a slot waiting; "swap", with the prompt blocking the settings window; "replace" with
+    several owners in one call; no "swap" when the owner holds the old key; a key the action already holds, and a
+    modifier's variant being free; owners that cannot be changed; the lists after a "replace" and a "swap"; Backspace,
+    a right-click and the ways a wait is abandoned; "clear" and Escape at the prompt; closing the settings window; and
+    closing the menu.
+  - **One of the fourteen runs the real calls:** the shipped scripts over a real `Mapper`, the real settings calls and
+    a private settings file. A captured key is in force at the mapper and in the file, a "swap" reaches the mapper as
+    one whole set with both actions in the file, and "replace", "cancel", Escape and "defaults" follow.
 
 ### 3.19 Typed text (accepted, CK-314)
 
 A widget can be typed into. What the player types, by the system's keyboard layout and with Shift, Option and dead keys, cannot
 be had from key codes or from bound actions. So it has a route of its own: **typed entries**, one ordered list in each update.
-It was built for the number field (CK-306, §3.21) and for the save name's text field, which is a later step. No shipped
-screen has a field yet, so in the game text input is never turned on.
+It was built for the number field (CK-306, §3.21) and for the save name's text field, which came with CK-303 (§3.22). No
+shipped screen has a field of either kind yet, so in the game text input is never turned on.
 
 - **The records.** The owner, in `owner-direction-settings-designer-r3.md` in `.pipeline/coordination/ui-polish-design/`:
   "here the player can input whatever numbers they want". The spec is `runtime-m55/ck314-spec.md` (sha256 `7acea958…`).
@@ -2276,18 +2383,18 @@ screen has a field yet, so in the game text input is never turned on.
   - So a stale entry never reaches a widget that started after it was typed.
   - **Disclosed:** a key pressed between a widget's start and the main thread turning text input on is not typed.
 - **Key capture** (CK-309, §3.17). `typing.capture(id, request)` arms a capture for a script. `request` is the host's
-  `settings.capture_key`.
+  `settings.capture_key`. Since CK-310 the settings window's key slots are its callers (§3.18).
   - **It applies and ends the editing first.** A widget that is editing has its `on_apply()` called, if it has one, and its
     editing is then stopped, which turns text input off.
   - It then calls `request(id)`. If that raises, no capture is noted and the error is raised again.
   - **While the capture waits, no widget starts editing:** `typing.start` returns `false`. That ends when an update's
     `capture` field carries the capture's id, which `typing.dispatch` reads.
   - **`on_apply()` is the editing widget's part of this.** The number field's applies what was typed and tells its caller, as
-    Enter does (§3.21).
+    Enter does (§3.21). Since CK-303 the text field's does the same (§3.22).
 - **Nothing of the typing is a bound action.** No action exists for a digit, a letter or an editing key: a game's bindings
   are the 22 they were. Escape gives no entry and stays the `close` action (§3.5).
-- **Not there:** a field that takes letters; showing text while it is composed; input methods for other scripts; selecting, copy
-  and paste.
+- **Not there:** showing text while it is composed; input methods for other scripts; selecting, copy and paste. A field
+  that takes letters came with CK-303 (§3.22).
 - **Tests,** none with the GPU:
   - `crates/input/src/tests.rs` has the ring: the order, the 257th entry dropped and the loss kept until its snapshot is
     acknowledged, and the reset with its epoch.
@@ -2374,6 +2481,9 @@ of `mockups/settings-r4.html` there (`settings-provenance-r3.md`: plain shapes).
 
 **No shipped screen has a number field yet.** The settings window's graphics tab, a later step, will be the first.
 
+**Since CK-303 the editing itself is shared with the text field** (§3.22). It is in `scripts/ui/lib/fieldedit.lua`, and one
+field edits at a time, a number field or a text field. What a number field does is as it was.
+
 Lengths below are in UI pixels.
 
 - **`numberfield.new{x, y, value, least, greatest, on_apply, digits, kind, group, owner}`** makes one.
@@ -2396,7 +2506,8 @@ Lengths below are in UI pixels.
     commands of those names. Every other character, `left` and `right` are passed over.
   - No bound action carries any of it. A key typed into a field is still its key's action (§3.19): the field is meant for
     windows the pause menu opens, where the game's keys are blocked (§3.15).
-- **Applying** is Enter, Tab, or a left press anywhere that is not a number field, the map included.
+- **Applying** is Enter, Tab, or a left press anywhere that is not a field, the map included. Since CK-303 a text field
+  counts as a field here: a press on one applies the number field and starts the text field.
   - The number is brought into the range, the field shows the result, the editing ends, and `on_apply(number)` is called
     once.
   - A field that was emptied puts its old number back. Neither that nor a number that did not change tells the caller.
@@ -2407,7 +2518,7 @@ Lengths below are in UI pixels.
     `on_apply` is called. So the caller may close the window, destroy fields or start an editing from inside it.
 - **Escape** while a field edits puts the old number back, ends the editing and tells the caller nothing. It goes no
   further: `window.close_request` asks `numberfield.cancel()` first of all, before a tooltip, a picker or a window (§3.5).
-  With no field editing, Escape acts as before.
+  With no field editing, Escape acts as before. Since CK-303 that call cancels the field that edits, of either kind.
 - **Closing the window, or destroying the field,** while it edits ends the editing and applies nothing.
 - **Typing and the pointer in one update** follow the typing function's rule (§3.19): the update's typing first, then its
   pointer events.
@@ -2423,15 +2534,99 @@ Lengths below are in UI pixels.
   - `field:get()` returns the number last applied, and `field:set(number)` sets it, brought into the range. A field that is
     editing then shows the new number and goes on editing.
   - `field:move(x, y)`, `field:size()`, `field:editing()` and `field:destroy()`.
-  - `numberfield.current()` returns the field that is editing, or nil, and `numberfield.cancel()` is Escape's step.
+  - `numberfield.current()` returns the field that is editing, or nil, and `numberfield.cancel()` is Escape's step. Since
+    CK-303 both are the shared editing's, so the field returned may be a text field.
 - **`pointer.observe_press(fn)`** is new in `lib/pointer.lua`. `fn(event)` is called for each left press of a packet that is
   not an overflow packet, a `down` or a `map_down`, in the packet's order and before the press reaches its widget. It routes
   nothing and cannot stop the press.
-- **Not there:** letters, a caret that moves, selecting, copy and paste; a sign or a decimal point; a greyed field.
+- **Not there:** letters and a caret that moves, which the text field has (§3.22); selecting, copy and paste; a sign or a
+  decimal point; a greyed field.
 - **Tests,** through the shipped scripts in the UI rig, with typed entries and real pointer input and no window: 31 tests in
   `apps/codekarl/src/ui_link/numberfield_tests.rs`. They cover the look, typing, applying by Enter, by Tab and by a press
   elsewhere, two fields, the cases of one update and of two, Escape, the pause menu's key block, closing the window, what a
   caller's `on_apply` may do, and key capture.
+
+### 3.22 The text field (accepted, CK-303)
+
+A widget of the library that a line of text is typed into: `scripts/ui/lib/textfield.lua`. It is the number field (§3.21)
+with any character of the font and a caret that moves. The owner asked for it for the save/load screen: "a textbar on top
+that autofills with a generated save name" (`owner-direction-save-load-designer-r1.md` in
+`.pipeline/coordination/ui-polish-design/`). Its look and its editing rules are the number field's, with the text
+left-aligned as `mockups/save-load-r1.html` there draws it, and it uses no new art. The spec is
+`runtime-m55/ck303-spec-r2.md` (sha256 `b066c2cb…`).
+
+**No shipped screen has a text field yet.** The save/load screen, a later step, will be the first.
+
+Lengths below are in UI pixels.
+
+- **`textfield.new{x, y, width, value, greatest, on_apply, kind, group, owner}`** makes one.
+  - `width` is the whole field's and is at least 16. `greatest` is the greatest length in characters, a whole number of
+    at least 1. Anything else is an error.
+  - `value` is the text it starts with, empty unless given. A value that is not valid UTF-8, is longer than `greatest` or
+    has a character the field does not take is an error.
+  - `on_apply(text)` is the caller's function. It is told when an applied text differs from the one before.
+  - `kind` is `window` unless given. With a `group` the field's quads and hit region are in it, at a place local to it.
+- **The look:** the number field's cut-3 frame, 15 tall, filled `body` and outlined in the kind's `outline`. The text is
+  left-aligned in `text`, 3 from the left edge and 2 down.
+- **Which characters.** A character is one Unicode scalar value. The field takes the space, and every character the
+  project font has a glyph of its own for. It takes no control character, and none that the font would draw as its
+  replacement glyph. Printable ASCII and the accented vowels `ÁÉÍÓÚáéíóú` are all taken.
+- **Everything counts characters, not bytes.** The greatest length, the caret's place and what Backspace takes are
+  counted in characters, and the text is kept as a list of them. So the text is valid UTF-8 after every edit, 48 accented
+  vowels fit a field of 48, and Backspace takes an accented vowel whole.
+- **Editing.** A left press on the field starts it: the outline turns to the kind's `hot`, and a caret 1 wide and 11 tall,
+  in `text`, stands at the end of the text.
+  - A typed character goes in at the caret. Backspace takes away the character before it. Left and Right move the caret
+    one character.
+  - A character typed into a full field does nothing. Neither do Left and Backspace at the start, or Right at the end.
+  - **Text wider than the field scrolls,** a character at a time, so that the caret stays in view. The text's room is
+    the field's width less 7. When characters are taken away, the text moves back to fill the room. A field that is not
+    editing shows its text from the start.
+  - A press on the field while it edits changes nothing: the caret is not placed with a click.
+- **The typing** comes only from the typing function (§3.19), as the number field's does. `on_typed` gets a character, or
+  one of the commands `backspace`, `left`, `right`, `enter` and `tab`, in the order typed.
+  - So `a`, backspace, `b` leaves `b`, and `a`, `b`, left, `x` leaves `axb`.
+  - A held key acts again at each entry it gives.
+- **Applying** is Enter, Tab, or a left press anywhere that is not a field, the map included. The press still does what
+  it does.
+  - The field shows its text from the start, the editing ends, and `on_apply(text)` is called once, last of all.
+  - A text that did not change tells the caller nothing.
+  - **An empty text is the caller's to decide.** It is applied like any other, as `on_apply("")`, and the caller may
+    `set` another text.
+- **Escape** while the field edits puts the old text back, ends the editing and tells the caller nothing. It goes no
+  further (§3.5).
+- **Closing the window, or destroying the field,** while it edits ends the editing and applies nothing.
+- **Typing with the pointer in one update, and key capture,** follow the number field's rules (§3.21). An update's typing
+  is handled first, then its pointer events. Arming a capture applies the field first, and while a capture waits a press
+  on the field starts nothing.
+- **For scripts:**
+  - `field:get()` returns the text last applied or set.
+  - `field:set(text)` sets it, with the errors of `new`. A field that is editing then shows it, with the caret at its
+    end, and goes on editing.
+  - `field:move(x, y)`, `field:size()`, `field:editing()` and `field:destroy()`.
+- **The shared editing, `scripts/ui/lib/fieldedit.lua`,** is new with CK-303. It owns which field edits, for both kinds.
+  - **One field edits at a time,** a number field or a text field. A press on another field of either kind applies the
+    first and starts the second, and the first one's caller is told last. Text input stays on through the change.
+  - `fieldedit.begin(field)` starts a field's editing, and does nothing while a key capture waits.
+    `fieldedit.apply(field)` applies it. `fieldedit.cancel()` is Escape's step, and `fieldedit.current()` returns the
+    field that edits, or nil.
+  - `numberfield.cancel()` and `numberfield.current()` now call those two. So `window.close_request` did not change for
+    the text field.
+  - `fieldedit.end_editing(field, handoff)` ends an editing and tells nobody, and `fieldedit.capture_apply(field)` is
+    what a field's `on_apply()` calls for `typing.capture` (§3.19).
+  - **A field takes part** by having `field_edit = true` on its class, the fields `is_editing` and `frame`, and the
+    methods `commit()`, `revert()`, `show_editing()`, `hide_caret()` and `on_typed(entry)`.
+  - **Every transition settles its own state before any caller's code runs,** and the caller's `on_apply` is the last
+    thing it does. So that function may close the window, destroy fields or start an editing.
+  - The module registers the one `pointer.observe_press` function (§3.21): a left press on a widget that is not a field
+    applies the field that edits.
+- **Not there:** selecting text, copy and paste; Delete, Home and End; placing the caret with a click; input methods for
+  other scripts; a greyed field.
+- **Tests,** through the shipped scripts in the UI rig, with typed entries and real pointer input and no window: 34 tests
+  in `apps/codekarl/src/ui_link/textfield_tests.rs`. They cover the look and the refused arguments; the characters taken
+  and refused; the counts in characters; the caret and the scrolling; the orders inside one update and across two; the
+  pointer in the same update; a text field and a number field together; applying, the empty text and Escape; a held
+  key; the pause menu's key block; closing the window; what a caller's `on_apply` may do; and key capture.
 
 ## 4. Packages and ownership
 

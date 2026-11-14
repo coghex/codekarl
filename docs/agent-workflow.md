@@ -7,9 +7,13 @@ Every ck skill reads it. Current model IDs live only in
 
 | Job | Class | Default model family | Effort |
 | --- | --- | --- | --- |
-| Management and design | S | Claude | high |
+| Management | A | Claude | high |
+| Design | S | Claude | high |
 | Implementation | B | Claude | high |
 | Review | A | Opposite the implementation family; normally Codex | high |
+
+Management was Class S, with design, until CK-319 (2026-11-14): the owner made the manager Class A and kept the designers
+on Class S. The gate checks a manager session against Class A (review gate plan §2.1).
 
 The model family determines review independence, not the application or billing
 provider. Opus/Sonnet through Copilot counts as Claude. An OpenAI model through

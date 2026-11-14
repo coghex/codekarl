@@ -91,9 +91,14 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   quicksave before you open it. "settings" opens the settings window and "glossary" the glossary reader (below).
   "save / load" is greyed until that screen is built ([docs/ui-design.md](docs/ui-design.md) §3.15).
 - **Settings** (CK-301): the settings window opens above the menu, with three tabs down its left side. "general" has the
-  tooltips' show delay, lock and lock timer; "map" has the pan speed, zoom speed and scroll step; "input" lists the keys in
-  force and cannot change them yet. Drag a slider or press a choice and it acts at once and is kept. "defaults" resets the tab
+  tooltips' show delay, lock and lock timer; "map" has the pan speed, zoom speed and scroll step; "input" has the keys
+  (next). Drag a slider or press a choice and it acts at once and is kept. "defaults" resets the tab
   that shows. Its "x", or Escape, closes it and leaves the menu open ([docs/ui-design.md](docs/ui-design.md) §3.18).
+- **Changing keys** (CK-310): on the "input" tab each action has two key slots. Click a slot and press the key you want,
+  with Shift, Control, Option or Command held if you like. Escape cancels. Backspace while the slot waits, or a right-click
+  on a slot, empties it. When another action has the key, a "Key in use" prompt offers "replace" (the other action loses
+  it), "swap" (the other action gets your slot's old key), "clear" (your slot is emptied) and "cancel". The menu's Escape
+  cannot be changed, and "defaults" puts every key back ([docs/ui-design.md](docs/ui-design.md) §3.18).
 - **The glossary** (CK-300): the glossary reader opens above the menu too. Its left column lists every glossary entry by its
   title: click one to read it on the right. A light-blue word in the text has its tooltip as elsewhere, and a click on it
   opens that word's entry. Its "x", or Escape, goes back to the menu ([docs/ui-design.md](docs/ui-design.md) §3.20).
@@ -115,8 +120,9 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   `scroll_points_per_step`, each checked as the configuration checks it. A missing file is normal. An entry that is not accepted
   is named in a `warn` record and ignored, and the rest applies. The settings window writes it at each change. The file may
   also hold `[ui] scale` and `list_look`, `[window] width` and `height` (CK-307), and `[input.bindings]` for the player's own
-  keys (CK-309: at most two keys for an action, and never Escape's `close`). No screen of the game sets those yet, so they are
-  there only when put in by hand ([docs/ui-design.md](docs/ui-design.md) §3.17).
+  keys (CK-309: at most two keys for an action, and never Escape's `close`). The input tab writes the keys (CK-310). No
+  screen of the game sets the other four yet, so they are there only when put in by hand
+  ([docs/ui-design.md](docs/ui-design.md) §3.17).
 - **Lists:** a list longer than its view has a thin scroll bar at its right edge: drag its thumb, or press the track to move one
   view ([docs/ui-design.md](docs/ui-design.md) §3.16).
 - **The window** opens at 1280×800 screen pixels, its minimum. Drag an edge to enlarge it (the game lays itself out again when you
@@ -231,7 +237,8 @@ The VM named `ui` gets a `window` table; no other VM does:
 - `window.set_text_input(on)` (CK-314) turns typed text on or off and returns a number that grows with each call. While it is
   on, the table given to `frame.on_update` carries what was typed in `typed`, in order: characters as the keyboard layout
   gives them, and backspace, enter, tab, left and right. `typed_lost` and `typed_epoch` go with it. Only `native-metal` gives
-  typed text; `glfw-vulkan` gives none. The game's own scripts type nowhere yet ([docs/ui-design.md](docs/ui-design.md) §3.19).
+  typed text; `glfw-vulkan` gives none. The UI library has a number field and a text field that use it (CK-306, CK-303),
+  but no screen of the game has one yet, so the game types nowhere ([docs/ui-design.md](docs/ui-design.md) §3.19, §3.21, §3.22).
 - `window.on_opened(fn)` runs once the first frame has been queued for presentation; this does not prove it is visible.
   `window.on_close_request(fn)` gets `"key"` (Escape) or `"button"` (the close button) and closes the window when it returns `true`.
   With no callback registered, a close request closes the window.
