@@ -1219,6 +1219,9 @@ pub(crate) mod tests {
                 pointer_position: None,
                 pointer_held: false,
                 pointer_overflow: false,
+                typed: Vec::new(),
+                typed_lost: false,
+                typed_epoch: 0,
             },
         }
     }

@@ -445,6 +445,9 @@ impl Drive {
                     pointer_position: None,
                     pointer_held: false,
                     pointer_overflow: false,
+                    typed: Vec::new(),
+                    typed_lost: false,
+                    typed_epoch: 0,
                 },
             })
             .expect("the tick is consumed");

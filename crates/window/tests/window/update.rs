@@ -1471,3 +1471,388 @@ fn a_size_change_reaches_the_presenter_whole_and_once_before_the_tick_that_carri
         },
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Typed entries (CK-314): one ordered list through the mapper and the input tick
+// ---------------------------------------------------------------------------------------------
+
+mod typed {
+    use super::*;
+    use ck_window::{Key, RequestWriter, TYPED_CAPACITY, TypedEntry};
+
+    use crate::fakes::{PumpCall, Ran};
+
+    fn typed(character: char) -> NativeEvent {
+        NativeEvent::Typed(TypedEntry::Char(character))
+    }
+
+    fn key(key: Key, down: bool) -> NativeEvent {
+        NativeEvent::Key {
+            key,
+            down,
+            repeat: false,
+        }
+    }
+
+    /// Runs the loop on a fake clock with updates on: the backend's pumps deliver `batches` in order (the first pump's events are
+    /// applied before text input is turned on, so a test puts what it wants delivered in the second batch or later), text input is turned on
+    /// before the loop starts when `enable`, and `on_pump` runs at the entry of each pump with its index and a writer of the request slot.
+    /// The loop quits once the batches have been delivered and two more updates have been posted.
+    fn run(
+        batches: Vec<Vec<NativeEvent>>,
+        enable: bool,
+        on_pump: impl FnMut(usize, &RequestWriter) + 'static,
+    ) -> Ran {
+        run_with_cap(batches, enable, 64, on_pump)
+    }
+
+    /// [`run`] with `cap` native events per pump (the default is 64): a test that puts more than that in one pump raises it.
+    fn run_with_cap(
+        batches: Vec<Vec<NativeEvent>>,
+        enable: bool,
+        cap: usize,
+        mut on_pump: impl FnMut(usize, &RequestWriter) + 'static,
+    ) -> Ran {
+        let clock = FakeClock::new();
+        let mut rig = Rig::new();
+        configure_updates(&mut rig, &clock, 60, Duration::from_millis(20));
+        let with_updates = rig
+            .settings
+            .updates()
+            .cloned()
+            .expect("updates are configured");
+        rig.settings =
+            LoopSettings::new(cap, 16, Duration::from_secs(2), Duration::from_millis(100))
+                .expect("valid settings")
+                .with_updates(with_updates);
+        if enable {
+            rig.writer.set_text_input(true);
+        }
+        let count = batches.len() + 3;
+        for batch in batches {
+            rig.backend.script.push_back(batch);
+        }
+        lock(&rig.ui.update_answers).extend(std::iter::repeat_n(Answer::Returned, count + 2));
+        let ui = Arc::clone(&rig.ui);
+        let quit = Arc::clone(&rig.quit);
+        let notifier = Arc::clone(&rig.notifier);
+        let writer = rig.writer.clone();
+        rig.backend.hook = Some(Box::new(move |call: &PumpCall| {
+            on_pump(call.index, &writer);
+            if extract_updates(&ui.posted()).len() >= count {
+                quit.store(true, Ordering::SeqCst);
+                notifier.wake();
+            }
+        }));
+        rig.run_collect_with_clock(&clock)
+    }
+
+    /// Every typed entry the link was given, in order, and how many ticks reported a loss.
+    fn all_typed(ran: &Ran) -> Vec<TypedEntry> {
+        ran.ticks
+            .iter()
+            .flat_map(|tick| tick.input.typed.clone())
+            .collect()
+    }
+
+    #[test]
+    fn typed_entries_reach_the_input_in_the_order_typed_in_one_update_and_across_two() {
+        owned(
+            module_path!(),
+            "typed_entries_reach_the_input_in_the_order_typed_in_one_update_and_across_two",
+            DEADLINE,
+            || {
+                let _scenario = scenario();
+                // One batch: `a`, backspace, `b` are one pump, so one tick holds them in that order.
+                let ran = run(
+                    vec![
+                        Vec::new(),
+                        vec![
+                            typed('a'),
+                            NativeEvent::Typed(TypedEntry::Backspace),
+                            typed('b'),
+                        ],
+                    ],
+                    true,
+                    |_, _| {},
+                );
+                let one = ran
+                    .ticks
+                    .iter()
+                    .find(|tick| !tick.input.typed.is_empty())
+                    .expect("a tick carried the entries");
+                assert_eq!(
+                    one.input.typed,
+                    [
+                        TypedEntry::Char('a'),
+                        TypedEntry::Backspace,
+                        TypedEntry::Char('b')
+                    ]
+                );
+                // Two batches (two pumps, so two updates' worth): the order across them is the order typed.
+                let ran = run(
+                    vec![
+                        Vec::new(),
+                        vec![typed('x'), NativeEvent::Typed(TypedEntry::Enter)],
+                        vec![typed('y'), NativeEvent::Typed(TypedEntry::Tab)],
+                    ],
+                    true,
+                    |_, _| {},
+                );
+                assert_eq!(
+                    all_typed(&ran),
+                    [
+                        TypedEntry::Char('x'),
+                        TypedEntry::Enter,
+                        TypedEntry::Char('y'),
+                        TypedEntry::Tab
+                    ]
+                );
+                // Delivered once: the next ticks carry none of them again.
+                assert_eq!(all_typed(&ran).len(), 4);
+            },
+        );
+    }
+
+    #[test]
+    fn with_text_input_off_there_are_no_entries_and_the_keys_are_recorded_as_before() {
+        owned(
+            module_path!(),
+            "with_text_input_off_there_are_no_entries_and_the_keys_are_recorded_as_before",
+            DEADLINE,
+            || {
+                let _scenario = scenario();
+                let ran = run(
+                    vec![
+                        Vec::new(),
+                        vec![
+                            key(Key::ArrowLeft, true),
+                            typed('a'),
+                            key(Key::ArrowLeft, false),
+                        ],
+                    ],
+                    false,
+                    |_, _| {},
+                );
+                assert!(all_typed(&ran).is_empty(), "{:?}", all_typed(&ran));
+                assert!(
+                    ran.ticks.iter().any(|tick| tick
+                        .input
+                        .actions
+                        .iter()
+                        .any(|action| action.pressed)),
+                    "the key was recorded as a physical key"
+                );
+                assert!(
+                    !ran.log
+                        .iter()
+                        .any(|line| line.starts_with("backend.set_text_input")),
+                    "no request, no call: {:?}",
+                    ran.log
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn with_text_input_on_a_keys_action_is_still_pressed_and_released_as_before() {
+        owned(
+            module_path!(),
+            "with_text_input_on_a_keys_action_is_still_pressed_and_released_as_before",
+            DEADLINE,
+            || {
+                let _scenario = scenario();
+                let ran = run(
+                    vec![
+                        Vec::new(),
+                        vec![
+                            key(Key::ArrowLeft, true),
+                            NativeEvent::Typed(TypedEntry::Left),
+                            key(Key::ArrowLeft, false),
+                        ],
+                    ],
+                    true,
+                    |_, _| {},
+                );
+                assert_eq!(all_typed(&ran), [TypedEntry::Left]);
+                let edges: Vec<_> = ran
+                    .ticks
+                    .iter()
+                    .flat_map(|tick| tick.input.transitions.iter().map(|t| t.edge))
+                    .collect();
+                assert_eq!(edges, [ck_window::Edge::Press, ck_window::Edge::Release]);
+            },
+        );
+    }
+
+    #[test]
+    fn turning_text_input_off_drops_what_was_not_delivered_and_turning_it_on_starts_empty() {
+        owned(
+            module_path!(),
+            "turning_text_input_off_drops_what_was_not_delivered_and_turning_it_on_starts_empty",
+            DEADLINE,
+            || {
+                let _scenario = scenario();
+                let ran = run(
+                    vec![
+                        Vec::new(),
+                        // Gathered, then turned off before the tick: dropped.
+                        vec![typed('a'), typed('b')],
+                        // Typed while it is off: dropped by the loop.
+                        vec![typed('c')],
+                        // Typed after it was turned on: delivered.
+                        vec![typed('d')],
+                    ],
+                    true,
+                    |index, writer| {
+                        if index == 2 {
+                            writer.set_text_input(false);
+                        }
+                        if index == 3 {
+                            writer.set_text_input(true);
+                        }
+                    },
+                );
+                assert_eq!(all_typed(&ran), [TypedEntry::Char('d')]);
+                let calls: Vec<_> = ran
+                    .log
+                    .iter()
+                    .filter(|line| line.starts_with("backend.set_text_input"))
+                    .collect();
+                assert_eq!(
+                    calls,
+                    [
+                        "backend.set_text_input true",
+                        "backend.set_text_input false",
+                        "backend.set_text_input true"
+                    ]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn an_off_and_an_on_coalesced_in_the_slot_still_start_from_nothing_and_move_the_epoch() {
+        owned(
+            module_path!(),
+            "an_off_and_an_on_coalesced_in_the_slot_still_start_from_nothing_and_move_the_epoch",
+            DEADLINE,
+            || {
+                let _scenario = scenario();
+                let ran = run(
+                    vec![Vec::new(), vec![typed('a'), typed('b')], vec![typed('c')]],
+                    true,
+                    |index, writer| {
+                        if index == 2 {
+                            // Both writes land before the main thread takes the slot: one request, state `on`, a new generation.
+                            writer.set_text_input(false);
+                            writer.set_text_input(true);
+                        }
+                    },
+                );
+                assert_eq!(
+                    all_typed(&ran),
+                    [TypedEntry::Char('c')],
+                    "a and b were gathered before the restart and are gone"
+                );
+                assert_eq!(
+                    ran.ticks.last().expect("ticks").input.typed_epoch,
+                    3,
+                    "the first on is generation 1, the off 2 and the on 3"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn the_257th_entry_is_dropped_the_first_256_keep_their_order_and_the_loss_is_reported_once() {
+        owned(
+            module_path!(),
+            "the_257th_entry_is_dropped_the_first_256_keep_their_order_and_the_loss_is_reported_once",
+            DEADLINE,
+            || {
+                let _scenario = scenario();
+                let entries: Vec<NativeEvent> = (0..=TYPED_CAPACITY)
+                    .map(|index| {
+                        typed(char::from_u32(0x100 + u32::try_from(index).unwrap()).unwrap())
+                    })
+                    .collect();
+                let ran = run_with_cap(vec![Vec::new(), entries], true, 512, |_, _| {});
+                let loud = ran
+                    .ticks
+                    .iter()
+                    .find(|tick| !tick.input.typed.is_empty())
+                    .expect("a tick carried the entries");
+                assert_eq!(loud.input.typed.len(), TYPED_CAPACITY);
+                assert!(loud.input.typed_lost, "the update says entries were lost");
+                for (index, entry) in loud.input.typed.iter().enumerate() {
+                    let wanted = char::from_u32(0x100 + u32::try_from(index).unwrap()).unwrap();
+                    assert_eq!(*entry, TypedEntry::Char(wanted), "entry {index} in order");
+                }
+                assert_eq!(
+                    ran.ticks
+                        .iter()
+                        .filter(|tick| tick.input.typed_lost)
+                        .count(),
+                    1,
+                    "reported once, then acknowledged"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn a_backend_that_dropped_entries_at_its_own_bound_reports_the_loss() {
+        owned(
+            module_path!(),
+            "a_backend_that_dropped_entries_at_its_own_bound_reports_the_loss",
+            DEADLINE,
+            || {
+                let _scenario = scenario();
+                let ran = run(
+                    vec![Vec::new(), vec![typed('a'), NativeEvent::TypedLost]],
+                    true,
+                    |_, _| {},
+                );
+                assert_eq!(all_typed(&ran), [TypedEntry::Char('a')]);
+                assert!(ran.ticks.iter().any(|tick| tick.input.typed_lost));
+            },
+        );
+    }
+
+    #[test]
+    fn a_loss_of_focus_delivers_what_was_gathered_and_leaves_text_input_as_it_was() {
+        owned(
+            module_path!(),
+            "a_loss_of_focus_delivers_what_was_gathered_and_leaves_text_input_as_it_was",
+            DEADLINE,
+            || {
+                let _scenario = scenario();
+                let ran = run(
+                    vec![
+                        Vec::new(),
+                        vec![typed('a'), NativeEvent::FocusLost, typed('b')],
+                        vec![NativeEvent::FocusGained, typed('c')],
+                    ],
+                    true,
+                    |_, _| {},
+                );
+                assert_eq!(
+                    all_typed(&ran),
+                    [
+                        TypedEntry::Char('a'),
+                        TypedEntry::Char('b'),
+                        TypedEntry::Char('c')
+                    ]
+                );
+                assert!(
+                    !ran.log
+                        .iter()
+                        .filter(|line| line.starts_with("backend.set_text_input"))
+                        .any(|line| line.ends_with("false")),
+                    "text input stayed on"
+                );
+            },
+        );
+    }
+}

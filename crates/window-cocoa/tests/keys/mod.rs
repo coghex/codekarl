@@ -439,10 +439,11 @@ pub(crate) fn focus_events_and_the_reset() {
     support::become_key();
     assert_eq!(deliver(&mut fixture).input, [NativeEvent::FocusGained]);
 
-    // Modifiers and a key held: the loss clears the native state and the loop's mapper alike.
+    // J starts with no modifiers; ControlLeft is pressed afterward, so both unprefixed actions are held. At ControlLeft's press,
+    // its own family is excluded (rules 2–3). The focus loss must clear both native and mapper state.
     let mut mapper = watching();
-    modifier(Key::ControlLeft, CONTROL | L_CONTROL);
     down(Key::KeyJ);
+    modifier(Key::ControlLeft, CONTROL | L_CONTROL);
     feed(&mut mapper, &deliver(&mut fixture));
     assert!(state(&mut mapper, "control").0 && state(&mut mapper, "jay").0);
     assert!(support::native_keys().any_held());
@@ -613,16 +614,20 @@ fn run_schedule(fixture: &mut Fixture, mapper: &mut Mapper, schedule: Schedule) 
     pumped
 }
 
-/// Schedule A: the surviving `KeyR` tap is not mapped against the stale `Control` (r2 would press `Control+KeyR`);
-/// `reload_texture` (`KeyR`) is latched; nothing is held afterwards.
+/// Schedule A: `ControlLeft` was delivered before the lost span, then released in it alongside a `KeyR` tap. The lost Control release
+/// makes the tap's modifier state unprovable, so rule 4 drops it instead of starting either binding.
 pub(crate) fn schedule_a_a_stale_modifier_is_not_replayed() {
     let mut fixture = Fixture::open(300, 200);
     let mut mapper = watching();
     let _ = run_schedule(&mut fixture, &mut mapper, Schedule::StaleModifier);
     let chord = state(&mut mapper, "chord");
     assert_eq!(chord, (false, false, false), "Control+KeyR is not pressed");
-    let (held, pressed, released) = state(&mut mapper, "reload_texture");
-    assert!(!held && pressed && released, "KeyR is latched");
+    // Control was not steady through the lost span, so CK-315 rule 4 cannot prove this was a plain KeyR tap.
+    assert_eq!(
+        state(&mut mapper, "reload_texture"),
+        (false, false, false),
+        "the KeyR tap is unproven"
+    );
     assert!(!state(&mut mapper, "control").0, "ControlLeft was released");
     assert!(
         !support::native_keys().any_held(),
@@ -630,23 +635,28 @@ pub(crate) fn schedule_a_a_stale_modifier_is_not_replayed() {
     );
 }
 
-/// Schedule B: the order is unknown, so no chord is invented: `Control+KeyR` is not pressed, `reload_texture` is
-/// latched and `ControlLeft` is held (r2's prefix rule would press the chord).
+/// Schedule B: `KeyR` and `ControlLeft` both change inside the lost span. Rule 4 cannot prove the modifier state at the tap or invent a
+/// chord from their final overlap; the unprefixed `ControlLeft` action can still start because its own family is excluded.
 pub(crate) fn schedule_b_an_unknown_order_invents_no_chord() {
     let mut fixture = Fixture::open(300, 200);
     let mut mapper = watching();
     let _ = run_schedule(&mut fixture, &mut mapper, Schedule::OrderUnknown);
     assert_eq!(state(&mut mapper, "chord"), (false, false, false));
-    let (held, pressed, released) = state(&mut mapper, "reload_texture");
-    assert!(!held && pressed && released);
+    // The Control family changed in the span, so the plain KeyR tap cannot be proven (CK-315 rule 4).
+    assert_eq!(
+        state(&mut mapper, "reload_texture"),
+        (false, false, false),
+        "the KeyR tap is unproven"
+    );
+    // ControlLeft itself is held; its own family is excluded at its press (CK-315 rules 2 and 4).
     assert!(state(&mut mapper, "control").0, "ControlLeft is held");
     assert!(support::native_keys().is_held(Key::ControlLeft));
     modifier(Key::ControlLeft, 0);
     let _ = deliver(&mut fixture);
 }
 
-/// Both schedules with `close = ["Control+KeyR"]`: no close request; with both keys physically held at the resync:
-/// one close.
+/// With `close = ["Control+KeyR"]`, neither ambiguous schedule closes. A Control key delivered before the lost span and held steadily
+/// while `KeyR` is pressed inside it proves one chord close under rule 4.
 pub(crate) fn a_prefixed_close_binding_closes_only_through_a_chord_held_now() {
     let mut fixture = Fixture::open(300, 200);
     let chord_close = || Mapper::new(bindings(&[("close", &["Control+KeyR"])]));
@@ -661,7 +671,7 @@ pub(crate) fn a_prefixed_close_binding_closes_only_through_a_chord_held_now() {
         modifier(Key::ControlLeft, 0);
         let _ = deliver(&mut fixture);
     }
-    // Both physically held at the resync: the chord overlaps now.
+    // Both presses in the lost span leave only final overlap; the mask at KeyR's press is unproven (CK-315 rule 4).
     let mut mapper = chord_close();
     fill(&fixture);
     modifier(Key::ControlLeft, CONTROL | L_CONTROL);
@@ -670,7 +680,26 @@ pub(crate) fn a_prefixed_close_binding_closes_only_through_a_chord_held_now() {
     let pumped = pump_all(&mut fixture);
     only_resync(&pumped);
     feed(&mut mapper, &pumped);
-    assert_eq!(mapper.take_close_presses(), 1, "one close");
+    assert_eq!(
+        mapper.take_close_presses(),
+        0,
+        "final overlap does not prove the mask at KeyR's press"
+    );
+    modifier(Key::ControlLeft, 0);
+    let _ = deliver(&mut fixture);
+
+    // Control is already known held by the mapper and stays steady through the overflow span; only KeyR is pressed in that span.
+    let mut mapper = chord_close();
+    modifier(Key::ControlLeft, CONTROL | L_CONTROL);
+    feed(&mut mapper, &deliver(&mut fixture));
+    fill(&fixture);
+    down(Key::KeyR);
+    record_only();
+    let pumped = pump_all(&mut fixture);
+    only_resync(&pumped);
+    feed(&mut mapper, &pumped);
+    // A steady modifier at KeyR's press proves exactly this prefixed binding (CK-315 rule 4).
+    assert_eq!(mapper.take_close_presses(), 1, "one proven close");
     up(Key::KeyR);
     modifier(Key::ControlLeft, 0);
     let _ = deliver(&mut fixture);

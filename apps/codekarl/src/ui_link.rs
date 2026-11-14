@@ -210,6 +210,18 @@ fn update_table_in(
         ("transitions".to_owned(), ConfigValue::Array(transitions)),
         ("overflow".to_owned(), boolean(stash.overflow())),
         ("reset".to_owned(), boolean(stash.reset())),
+        // The typed entries (CK-314), one ordered list: `{kind = "char", text = "á"}` for a committed character, and `{kind = name}` for
+        // an edit command (`"backspace"`, `"enter"`, `"tab"`, `"left"`, `"right"`). `typed_lost` says that entries were dropped at the
+        // bound; `typed_epoch` is the generation of the latest `window.set_text_input` call the main thread has applied.
+        (
+            "typed".to_owned(),
+            ConfigValue::Array(stash.typed().copied().map(typed_entry_table).collect()),
+        ),
+        ("typed_lost".to_owned(), boolean(stash.typed_lost())),
+        (
+            "typed_epoch".to_owned(),
+            ConfigValue::Integer(i64::try_from(stash.typed_epoch()).unwrap_or(i64::MAX)),
+        ),
     ]);
     if let Some(pointer) = stash.pointer() {
         fields.insert(
@@ -228,6 +240,24 @@ fn update_table_in(
         );
     }
     Ok(ConfigValue::Table(fields))
+}
+
+/// One typed entry as the update's table.
+fn typed_entry_table(entry: ck_window::TypedEntry) -> ConfigValue {
+    use ck_window::TypedEntry;
+    let (kind, text) = match entry {
+        TypedEntry::Char(character) => ("char", Some(character.to_string())),
+        TypedEntry::Backspace => ("backspace", None),
+        TypedEntry::Enter => ("enter", None),
+        TypedEntry::Tab => ("tab", None),
+        TypedEntry::Left => ("left", None),
+        TypedEntry::Right => ("right", None),
+    };
+    let mut fields = BTreeMap::from([("kind".to_owned(), ConfigValue::String(kind.to_owned()))]);
+    if let Some(text) = text {
+        fields.insert("text".to_owned(), ConfigValue::String(text));
+    }
+    ConfigValue::Table(fields)
 }
 
 /// The name of an event's callback.
@@ -1360,6 +1390,8 @@ mod scrollbar_tests;
 #[cfg(test)]
 mod theme_tests;
 #[cfg(test)]
+mod typing_tests;
+#[cfg(test)]
 mod widget_witness_tests;
 
 #[cfg(test)]
@@ -2195,6 +2227,9 @@ mod tests {
             pointer_position: None,
             pointer_held: false,
             pointer_overflow: false,
+            typed: Vec::new(),
+            typed_lost: false,
+            typed_epoch: 0,
             reset: false,
             overflow_count: 3,
         }
@@ -3423,6 +3458,9 @@ mod tests {
             ),
             ("overflow".to_owned(), ConfigValue::Bool(true)),
             ("reset".to_owned(), ConfigValue::Bool(false)),
+            ("typed".to_owned(), ConfigValue::Array(Vec::new())),
+            ("typed_lost".to_owned(), ConfigValue::Bool(false)),
+            ("typed_epoch".to_owned(), ConfigValue::Integer(0)),
         ]))
     }
 
@@ -3654,12 +3692,64 @@ mod tests {
         let seen = seen
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A real VM reads an empty list back as an empty table: the update's empty `typed` list (CK-314) is one.
+        let mut expected = expected_table(9);
+        if let ConfigValue::Table(fields) = &mut expected {
+            fields.insert("typed".to_owned(), ConfigValue::Table(BTreeMap::new()));
+        }
         assert_eq!(
             &*seen,
-            &[expected_table(9)],
+            &[expected],
             "the script read exactly the table of the design (a held and a tapped action, an unbound action present and false, the transitions in order, overflow and reset)"
         );
         assert_eq!(link.outstanding(), 0);
+    }
+
+    #[test]
+    fn the_update_carries_the_typed_entries_as_one_ordered_list_with_the_loss_and_the_epoch() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record: HostFunction = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |arguments| {
+                if let Some(Some(value)) = arguments.first() {
+                    seen.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(value.clone());
+                }
+                Ok(Vec::new())
+            })
+        };
+        // The script reads the three fields back as the strings a widget would see.
+        let harness = frame_harness(
+            "local parts = {}\n\
+             for _, e in ipairs(f.typed) do parts[#parts + 1] = e.kind .. (e.text ~= nil and (':' .. e.text) or '') end\n\
+             window.record(table.concat(parts, ',') .. '|' .. tostring(f.typed_lost) .. '|' .. f.typed_epoch)",
+            vec![("record", record)],
+        );
+        let mut link = harness.ui.clone();
+        let mut input = known_input();
+        input.typed = vec![
+            ck_window::TypedEntry::Char('a'),
+            ck_window::TypedEntry::Char('\u{e1}'),
+            ck_window::TypedEntry::Backspace,
+            ck_window::TypedEntry::Enter,
+            ck_window::TypedEntry::Tab,
+            ck_window::TypedEntry::Left,
+            ck_window::TypedEntry::Right,
+        ];
+        input.typed_lost = true;
+        input.typed_epoch = 5;
+        post_after_tick(&mut link, update(3), input).expect("posted");
+        assert_eq!(answer(&mut link).answer, Answer::Returned);
+        let seen = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            &*seen,
+            &[ConfigValue::String(
+                "char:a,char:\u{e1},backspace,enter,tab,left,right|true|5".to_owned()
+            )]
+        );
     }
 
     #[test]

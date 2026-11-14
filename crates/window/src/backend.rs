@@ -35,6 +35,11 @@ pub enum NativeEvent {
         /// Whether the left button remains held.
         held: bool,
     },
+    /// One typed entry (CK-314): a committed character or an edit command, in the order typed. The loop gathers it only while text
+    /// input is on.
+    Typed(ck_input::TypedEntry),
+    /// The backend's own bounded store of typed entries overflowed and dropped the later ones.
+    TypedLost,
     /// The window lost key focus: every held key is released.
     FocusLost,
     /// The window gained key focus.
@@ -131,6 +136,10 @@ pub trait Backend {
             "pump_until called on a backend without deadline support"
         );
     }
+
+    /// Turns the typed-entry route on or off (CK-314), on the main thread and outside `pump`. Either way it starts from nothing: text
+    /// being composed and entries not yet reported are discarded. A backend with no typed route (the default) does nothing.
+    fn set_text_input(&mut self, _enabled: bool) {}
 
     /// Destroys the window. Called only by the loop's teardown, outside `pump`.
     fn destroy_window(&mut self);

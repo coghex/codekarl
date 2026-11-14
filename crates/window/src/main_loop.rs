@@ -156,6 +156,10 @@ struct InputState {
     focused: bool,
     minimized: bool,
     pixel_size: PixelSize,
+    /// Whether the typed-entry route is on (CK-314): typed events that arrive while it is off are dropped.
+    text_input: bool,
+    /// A text input request taken with the first batch, applied once the window exists.
+    pending_text_input: Option<crate::requests::TextInputRequest>,
 }
 
 #[derive(Clone, Copy)]
@@ -505,6 +509,8 @@ where
                 width: 0,
                 height: 0,
             },
+            text_input: false,
+            pending_text_input: first.text_input,
         },
         backend,
         presenter,
@@ -596,6 +602,16 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
             let mut record = |event: NativeEvent| match event {
                 NativeEvent::Key { key, down, repeat } => input.mapper.key(key, down, repeat),
                 NativeEvent::KeyResync(states) => input.mapper.resync(&states),
+                NativeEvent::Typed(entry) => {
+                    if input.text_input {
+                        input.mapper.typed(entry);
+                    }
+                }
+                NativeEvent::TypedLost => {
+                    if input.text_input {
+                        input.mapper.typed_lost();
+                    }
+                }
                 NativeEvent::Pointer(event) => {
                     input.mapper.pointer(event);
                 }
@@ -665,6 +681,15 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         }
         // 3. The request slot, once.
         let changes = self.requests.take();
+        // Text input (CK-314): a request taken with the first batch, then the latest since the last take. Applying one always starts
+        // from nothing, however many writes were coalesced into it: the backend and the mapper discard what they hold, and the mapper's
+        // epoch becomes the request's generation, so the UI can tell which of its entries came after its own call.
+        let first = self.input.pending_text_input.take();
+        for request in first.into_iter().chain(changes.text_input) {
+            self.backend.set_text_input(request.enabled);
+            self.input.mapper.reset_typed(request.generation);
+            self.input.text_input = request.enabled;
+        }
         if let Some(clear) = changes.clear {
             self.presenter.set_clear(clear);
             self.presenter.request_redraw();

@@ -261,6 +261,82 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
         return;
     }
     [self.state recordKeyCode:event.keyCode down:YES repeat:event.isARepeat];
+    /* Text input (CK-314): while it is on, a key-down without Command or Control goes to the system's interpretation, which calls
+     * back into the client methods below. Every key is recorded as a physical key above either way. */
+    if (self.state.textInput &&
+        (event.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) == 0) {
+        [self interpretKeyEvents:@[ event ]];
+    }
+}
+
+/* ---- NSTextInputClient: committed text and the five editing commands are typed entries; composition is not shown ---- */
+
+- (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
+    NSString *text = [string isKindOfClass:[NSAttributedString class]] ? [(NSAttributedString *)string string] : string;
+    self.composing = NO;
+    if ([text isKindOfClass:[NSString class]]) {
+        [self.state recordTypedText:text];
+    }
+}
+
+- (void)doCommandBySelector:(SEL)selector {
+    /* Any command but the five is passed over, without a beep: the superclass would beep for an unhandled one. */
+    if (selector == @selector(deleteBackward:)) {
+        [self.state recordTypedKind:CK_WIN_TYPED_BACKSPACE value:0];
+    } else if (selector == @selector(insertNewline:)) {
+        [self.state recordTypedKind:CK_WIN_TYPED_ENTER value:0];
+    } else if (selector == @selector(insertTab:)) {
+        [self.state recordTypedKind:CK_WIN_TYPED_TAB value:0];
+    } else if (selector == @selector(moveLeft:)) {
+        [self.state recordTypedKind:CK_WIN_TYPED_LEFT value:0];
+    } else if (selector == @selector(moveRight:)) {
+        [self.state recordTypedKind:CK_WIN_TYPED_RIGHT value:0];
+    }
+}
+
+- (void)setMarkedText:(id)string selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange {
+    NSString *text = [string isKindOfClass:[NSAttributedString class]] ? [(NSAttributedString *)string string] : string;
+    self.composing = [text isKindOfClass:[NSString class]] && text.length != 0;
+}
+
+- (void)unmarkText {
+    self.composing = NO;
+}
+
+- (BOOL)hasMarkedText {
+    return self.composing;
+}
+
+- (NSRange)markedRange {
+    return self.composing ? NSMakeRange(0, 1) : NSMakeRange(NSNotFound, 0);
+}
+
+- (NSRange)selectedRange {
+    return NSMakeRange(NSNotFound, 0);
+}
+
+- (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText {
+    return @[];
+}
+
+- (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
+    return nil;
+}
+
+- (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
+    NSRect rect = NSMakeRect(0, 0, 0, 0);
+    return self.window != nil ? [self.window convertRectToScreen:[self convertRect:rect toView:nil]] : rect;
+}
+
+- (NSUInteger)characterIndexForPoint:(NSPoint)point {
+    return NSNotFound;
+}
+
+- (void)discardComposition {
+    if (self.composing) {
+        self.composing = NO;
+        [self.inputContext discardMarkedText];
+    }
 }
 
 - (void)keyUp:(NSEvent *)event {
@@ -427,7 +503,56 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
 - (BOOL)isPending {
     return self.closeSource != CK_WIN_CLOSE_NONE || self.sizeChanged || self.needsDisplay ||
            self.minimizedPending || self.restoredPending || _ringLength != 0 || _overflow || _focusLostPending ||
-           _focusGainedPending || _pointerLength != 0 || _pointerOverflow;
+           _focusGainedPending || _pointerLength != 0 || _pointerOverflow || _typedLength != 0 || _typedLost;
+}
+
+/* ---- typed entries (CK-314): constant work, no allocation ---- */
+
+- (void)recordTypedKind:(uint8_t)kind value:(uint32_t)value {
+    if (!self.textInput) return;
+    BOOL wasEmpty = ![self isPending];
+    if (_typedLength == CK_WIN_TYPED_CAPACITY) {
+        _typedLost = YES;
+    } else {
+        _typed[_typedLength] = (CKWinTyped){.kind = kind, .value = value};
+        _typedLength += 1;
+    }
+    [self afterRecord:wasEmpty];
+}
+
+- (void)recordTypedText:(NSString *)text {
+    NSString *composed = [text precomposedStringWithCanonicalMapping];
+    NSUInteger length = composed.length;
+    for (NSUInteger index = 0; index < length; index++) {
+        uint32_t scalar = [composed characterAtIndex:index];
+        if (scalar >= 0xD800 && scalar <= 0xDBFF) {
+            if (index + 1 >= length) continue;
+            uint32_t low = [composed characterAtIndex:index + 1];
+            if (low < 0xDC00 || low > 0xDFFF) continue;
+            scalar = 0x10000 + ((scalar - 0xD800) << 10) + (low - 0xDC00);
+            index += 1;
+        } else if (scalar >= 0xDC00 && scalar <= 0xDFFF) {
+            continue; /* a lone low surrogate is no scalar value */
+        }
+        /* Never an entry: a control character, and the system's private codes for function and arrow keys. */
+        if (scalar < 0x20 || (scalar >= 0x7F && scalar <= 0x9F) || (scalar >= 0xF700 && scalar <= 0xF8FF)) continue;
+        [self recordTypedKind:CK_WIN_TYPED_CHAR value:scalar];
+    }
+}
+
+- (void)takeTypedInto:(CKWinEvents *)out {
+    out->typed_count = _typedLength;
+    out->typed_lost = _typedLost ? 1 : 0;
+    for (uint32_t index = 0; index < _typedLength; index++) out->typed[index] = _typed[index];
+    _typedLength = 0;
+    _typedLost = NO;
+}
+
+- (void)setTextInputEnabled:(BOOL)enabled {
+    self.textInput = enabled;
+    _typedLength = 0;
+    _typedLost = NO;
+    [self.view discardComposition];
 }
 
 - (void)recordPointerKind:(uint8_t)kind point:(NSPoint)point amount:(double)amount unit:(uint8_t)unit button:(uint8_t)button {
@@ -614,6 +739,8 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
     _pointerOverflow = NO;
     _pointerHeld = NO;
     _focusLostPending = YES;
+    /* Text being composed is discarded; the typed entries already gathered are delivered, and text input stays as it was set. */
+    [self.view discardComposition];
     [self afterRecord:wasEmpty];
 }
 
@@ -1060,6 +1187,7 @@ static void ck_win_pump_impl(CKWinHandle *handle, int wait, size_t cap, BOOL tim
          * records belongs to the next pump (and keeps the pump from sleeping). */
         [state takeKeysInto:out cap:cap];
         [state takePointersInto:out];
+        [state takeTypedInto:out];
         uint64_t taken = 0;
         while (taken < cap) {
             BOOL first = taken == 0 && block;
@@ -1100,6 +1228,12 @@ static void ck_win_pump_impl(CKWinHandle *handle, int wait, size_t cap, BOOL tim
         out->native_events = taken;
         [state clearPending];
         out->overflow_total = [state overflowTotal];
+    }
+}
+
+void ck_win_set_text_input(CKWinHandle *handle, int enabled) {
+    @autoreleasepool {
+        [(__bridge CKWinState *)handle setTextInputEnabled:enabled != 0];
     }
 }
 

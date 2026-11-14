@@ -436,6 +436,10 @@ impl Backend for FakeBackend {
         self.pump_inner(events, Wait::UntilEvent, cap, Some(deadline));
     }
 
+    fn set_text_input(&mut self, enabled: bool) {
+        note(&self.log, format!("backend.set_text_input {enabled}"));
+    }
+
     fn destroy_window(&mut self) {
         self.teardown_call("destroy_window");
     }

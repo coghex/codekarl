@@ -23,6 +23,7 @@ local location = require("lib.location")
 local tooltip = require("lib.tooltip")
 local classes = require("lib.classes")
 local menu = require("lib.menu")
+local typing = require("lib.typing")
 
 local P = ui.P
 local MARGIN = 8 -- UI units from the window's edges
@@ -686,6 +687,8 @@ end
 -- Every update gives the pointer to the dispatcher (which makes scene calls only for a change a widget shows) and, when the window's
 -- size changed, relayouts the anchored elements. An update with an unchanged size and nothing for the dispatcher makes no scene call.
 frame.on_update(function(update)
+  -- An update's typing is handled first, all of it, and then its pointer events (lib/typing.lua).
+  typing.dispatch(update)
   pointer.dispatch(update.pointer)
   listbar.update(update)
   if update.width ~= view.width or update.height ~= view.height then

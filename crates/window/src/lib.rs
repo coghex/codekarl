@@ -133,8 +133,9 @@ pub fn window_mouse_input_allowed() -> bool {
 // snapshot an `InputTick` carries), so a caller needs no dependency of its own on `ck-input`.
 pub use backend::{Backend, CreatedWindow, NativeEvent, PixelSize, Wait};
 pub use ck_input::{
-    ActionSnapshot, Bindings, BindingsError, Edge, InputSnapshot, Key, KeyStates, PointerButton,
-    PointerEvent, PointerPosition, ScrollUnit, TRANSITION_CAPACITY, Transition,
+    ActionBindings, ActionSnapshot, Bindings, BindingsError, Edge, InputSnapshot, Key, KeyStates,
+    PointerButton, PointerEvent, PointerPosition, ScrollUnit, TRANSITION_CAPACITY, TYPED_CAPACITY,
+    Transition, TypedEntry,
 };
 pub use desc::{
     InvalidColour, MAX_DIMENSION, OpenError, PixelRequest, Resolved, ScreenSnapshot, SizeUnit,
@@ -150,5 +151,5 @@ pub use metrics::{
     Tracked, UptimeNs, Windows,
 };
 pub use notifier::{ArmRefused, DisarmTimeout, NativeWake, Notifier, NotifierState};
-pub use requests::{RequestChanges, RequestReader, RequestWriter, Requests};
+pub use requests::{RequestChanges, RequestReader, RequestWriter, Requests, TextInputRequest};
 pub use settings::{LoopSettings, SettingsError, UpdateControl, UpdateSettings};

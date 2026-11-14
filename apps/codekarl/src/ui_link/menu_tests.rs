@@ -75,6 +75,20 @@ fn close_request(rig: &mut Rig, source: CloseSource) -> Answer {
     answer(&mut rig.link).answer
 }
 
+fn click_marked(rig: &mut Rig, name: &str) {
+    let at = point(rig, name);
+    click_at(rig, at);
+}
+
+fn drag_marked(rig: &mut Rig, start: &str, finish: &str) {
+    let from = point(rig, start);
+    let to = point(rig, finish);
+    rig.feed(&[PointerEvent::Down(points(from.0, from.1))]);
+    rig.feed(&[PointerEvent::Move(points(to.0, to.1))]);
+    rig.feed(&[PointerEvent::Up(points(to.0, to.1))]);
+    frame(rig);
+}
+
 fn key_at(rig: &Rig, (x, y): (f64, f64)) -> String {
     rig.key_at(x, y)
         .unwrap_or_else(|| panic!("a hit region at ({x}, {y})"))
@@ -472,14 +486,16 @@ fn quit_to_desktop_ends_the_run_at_once_with_no_question() {
 }
 
 #[test]
-fn settings_glossary_and_save_load_are_greyed_and_do_nothing_and_return_is_live() {
+fn settings_is_live_while_glossary_and_save_load_stay_greyed() {
     let mut rig = menu_rig(
         "",
         &[
             r#"
 menu.open(VIEW)
 mark_buttons()
-for _, label in ipairs({"settings", "glossary", "save / load"}) do
+local settings = menu_button("settings")
+expect(not settings.inactive and not dim_look(settings), "settings is live")
+for _, label in ipairs({"glossary", "save / load"}) do
   expect(dim_look(menu_button(label)), label .. ": text dim, outline track, the body inside")
   expect(menu_button(label).inactive, label .. " is inactive")
 end
@@ -493,7 +509,7 @@ for _, label in ipairs(menu.LABELS) do
 end
 "#,
             r#"
-for _, label in ipairs({"settings", "glossary", "save / load"}) do
+for _, label in ipairs({"glossary", "save / load"}) do
   local b = menu_button(label)
   expect(dim_look(b), label .. ": no hover or pressed look")
   expect(not b.pressed, label .. ": never pressed")
@@ -508,7 +524,7 @@ eq(live.frame.line, theme_lib.kind("window").hot, "return's hover look")
         ],
     );
     rig.opened();
-    for label in ["settings", "glossary", "save / load"] {
+    for label in ["glossary", "save / load"] {
         let at = point(&rig, label);
         hover(&mut rig, at);
         rig.feed(&[PointerEvent::Down(points(at.0, at.1))]);
@@ -573,5 +589,642 @@ eq(presses, 1, "greyed again: no further click")
     click(&mut rig, "live");
     rig.opened();
     click(&mut rig, "live");
+    rig.opened();
+}
+
+const SETTINGS_HOST: &str = r#"
+fixture = {
+  tooltips = {delay = 0.3, lock = "middle_mouse", lock_timer = 1.5},
+  map = {pan_pixels_per_frame = 4, zoom_steps_per_second = 20, scroll_points_per_step = 24},
+  calls = {},
+  bindings = {
+    {name="close", bindings={"Escape"}},
+    {name="time_pause", bindings={"Space"}},
+    {name="time_speed_1", bindings={"Digit1"}},
+    {name="time_speed_2", bindings={"Digit2"}},
+    {name="time_speed_3", bindings={"Digit3"}},
+    {name="time_speed_4", bindings={"Digit4"}},
+    {name="time_speed_5", bindings={"Digit5"}},
+    {name="time_faster", bindings={"BracketRight"}},
+    {name="time_slower", bindings={"BracketLeft"}},
+    {name="game_quicksave", bindings={"F5"}},
+    {name="game_quickload", bindings={"F9"}},
+    {name="map_pan_left", bindings={"ArrowLeft"}},
+    {name="map_pan_right", bindings={"ArrowRight"}},
+    {name="map_pan_up", bindings={"ArrowUp"}},
+    {name="map_pan_down", bindings={"ArrowDown"}},
+    {name="map_zoom_in", bindings={"Equal", "Shift+Equal"}},
+    {name="map_zoom_out", bindings={"Minus"}},
+  }
+}
+settings = {
+  tooltips = function() return fixture.tooltips end,
+  map = function() return fixture.map end,
+  bindings = function() return fixture.bindings end,
+  set = function(name, value)
+    fixture.calls[#fixture.calls + 1] = {"set", name, value}
+    if name == "ui.tooltips.delay" then fixture.tooltips.delay = value
+    elseif name == "ui.tooltips.lock" then fixture.tooltips.lock = value
+    elseif name == "ui.tooltips.lock_timer" then fixture.tooltips.lock_timer = value
+    elseif name == "map.pan_pixels_per_frame" then fixture.map.pan_pixels_per_frame = value
+    elseif name == "map.zoom_steps_per_second" then fixture.map.zoom_steps_per_second = value
+    elseif name == "map.scroll_points_per_step" then fixture.map.scroll_points_per_step = value end
+  end,
+  reset = function(tab)
+    fixture.calls[#fixture.calls + 1] = {"reset", tab}
+    if tab == "tooltips" then fixture.tooltips = {delay=0.3, lock="middle_mouse", lock_timer=1.5}
+    else fixture.map = {pan_pixels_per_frame=4, zoom_steps_per_second=20, scroll_points_per_step=24} end
+  end,
+}
+function mark_settings()
+  local s = require("lib.settings_window").current()
+  if s == nil then return end
+  local ox, oy = s.window:content_origin()
+  for name, b in pairs(s.tabs) do
+    local x, y, w, h = hit_rect(b.key)
+    mark("settings_tab_" .. name, x + w / 2, y + h / 2)
+  end
+  for name, control in pairs(s.controls) do
+    if control.key ~= nil then
+      local x, y, w, h = hit_rect(control.key)
+      mark("settings_control_" .. name, x + w / 2, y + h / 2)
+      if control.knob ~= nil and control.track ~= nil then
+        local kx, ky, kw, kh = quad_at(scene.quads[control.knob])
+        local tx, ty, tw, th = quad_at(scene.quads[control.track])
+        mark("settings_slider_knob_" .. name, kx + kw / 2, ky + kh / 2)
+        mark("settings_slider_mid_" .. name, tx + tw / 2, ty + th / 2)
+        mark("settings_slider_right_" .. name, tx + tw - 1, ty + th / 2)
+      end
+    elseif type(control) == "table" then
+      for index, item in ipairs(control) do
+        local x, y, w, h = hit_rect(item.key)
+        mark("settings_control_" .. name .. "_" .. index, x + w / 2, y + h / 2)
+      end
+    end
+  end
+  if s.window.close_button ~= nil then
+    local b = s.window.close_button
+    local _, y = s.window:position()
+    local x, h
+    x = select(1, s.window:position())
+    local w
+    w, h = b:size()
+    mark("settings_close", x + b.x + w / 2, y + b.y + h / 2)
+  end
+  mark("settings_content_origin", ox, oy)
+end
+"#;
+
+fn settings_rig(steps: &[&str]) -> Rig {
+    menu_rig(
+        &format!("{SETTINGS_HOST}\nmenu.open(VIEW) mark_buttons()"),
+        steps,
+    )
+}
+
+#[test]
+fn settings_opens_from_the_menu_as_a_centred_resizable_window_with_the_three_side_tabs() {
+    let mut rig = settings_rig(&[
+        r#"
+expect(not menu_button("settings").inactive, "settings is a live menu action")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s ~= nil, "the menu's settings button opens the settings window")
+local win = s.window
+eq(win.title, "Settings")
+eq(win.kind, "window")
+expect(not win.fixed and not win.draggable and win.close_button ~= nil, "a close x, not draggable")
+eq(s.selected, "general", "opens on general")
+eq(#s.tab_order, 3)
+eq(s.tab_order[1], "general") eq(s.tab_order[2], "map") eq(s.tab_order[3], "input")
+expect(s.tabs.graphics == nil and s.tabs.gameplay == nil, "no graphics or gameplay row in slice A")
+local widest = math.max(font.layout("general").width, font.layout("graphics").width,
+  font.layout("map").width, font.layout("input").width)
+eq(s.tab_width, (widest + 12) * P, "the reserved column includes graphics")
+eq(s.tabs.general.width, s.tab_width - 3 * P, "the tab fill stops three UI pixels before the divider")
+eq(s.tabs.map.y - s.tabs.general.y, 13 * P, "tab rows are thirteen UI pixels tall")
+expect(s.tabs.general.selected and s.tabs.general.frame.fill == theme_lib.kind("window").hot)
+local x, y = win:position()
+local w, h = win:size()
+expect(math.abs(x + w / 2 - 400) <= P and math.abs(y + h / 2 - 300) <= P, "centred")
+local _, _, _, divider_height = quad_at(scene.quads[s.divider])
+eq(divider_height, s.content_height - 6 * P, "the divider ends six UI pixels above the content bottom")
+local original = win
+menu_button("settings").on_click()
+eq(require("lib.settings_window").current().window, original, "a second opening raises the same window")
+eq(count_hits("window_frame_"), 2, "there is one settings window beside the menu")
+mark_settings()
+"#,
+        r#"
+expect(menu.is_open(), "the menu stays open behind settings")
+local s = require("lib.settings_window").current()
+expect(s ~= nil and s.selected == "general")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+local a, b = s.window:position()
+local w, h = s.window:size()
+expect(math.abs(a + w / 2 - 500) <= P and math.abs(b + h / 2 - 350) <= P, "settings recentres after resize")
+"#,
+    ]);
+    rig.opened();
+    let settings = point(&rig, "settings");
+    click_at(&mut rig, settings);
+    rig.opened();
+    let center_key = key_at(&rig, (400.0, 300.0));
+    assert!(
+        center_key.starts_with("window_frame_"),
+        "settings is above the menu"
+    );
+    let _ = point(&rig, "settings_content_origin");
+    rig.deliver_fixture_frame_at(1000, 700, 2);
+    rig.opened();
+}
+
+#[test]
+fn settings_general_sliders_choices_and_defaults_use_the_settings_calls() {
+    let mut rig = settings_rig(&[
+        r#"expect(not menu_button("settings").inactive)"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s ~= nil and s.selected == "general")
+expect(not s.controls["lock timer"].enabled, "lock timer starts disabled")
+eq(s.controls["show delay"].minimum, 0) eq(s.controls["show delay"].maximum, 2) eq(s.controls["show delay"].step, 0.1)
+eq(s.controls["lock timer"].minimum, 0.3) eq(s.controls["lock timer"].maximum, 3) eq(s.controls["lock timer"].step, 0.1)
+eq(#s.controls.lock, 3)
+eq(s.controls.lock[3].y - s.controls.lock[1].y, 18 * P, "the choice row wraps to a second line")
+expect(s.controls.lock[3].x == s.controls.lock[1].x, "wrapped rows start at the same left edge")
+expect(s.controls.lock[2].selected, "the effective lock choice is selected")
+eq(s.controls["lock timer"].value_label.line.colour, theme_lib.colour("dim"), "disabled timer value is dim")
+eq(scene.quads[s.controls["lock timer"].track].tint, theme_lib.colour("dim"), "disabled timer track is dim")
+for _, line in ipairs(lines_in(s.page.group)) do
+  expect(line.x + line.width * P <= s.page.room + P, "general row stays within the content right edge")
+end
+mark_settings()
+"#,
+        r#"
+eq(#fixture.calls, 0, "a disabled slider does not respond")
+expect(fixture.tooltips.lock == "middle_mouse")
+"#,
+        r#"
+expect(fixture.tooltips.lock == "timer", "choice writes through settings.set")
+local s = require("lib.settings_window").current()
+expect(s.controls["lock timer"].enabled, "timer choice enables its slider")
+eq(fixture.calls[#fixture.calls][1], "set")
+eq(fixture.calls[#fixture.calls][2], "ui.tooltips.lock")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.controls["lock timer"].value, 3, "dragging the knob reaches the upper bound")
+eq(fixture.calls[#fixture.calls][2], "ui.tooltips.lock_timer")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+local value = s.controls["show delay"].value
+expect(value >= 0 and value <= 2 and math.abs(value * 10 - math.floor(value * 10 + 0.5)) < 1e-8,
+  "show delay is snapped to a tenth")
+eq(fixture.calls[#fixture.calls][2], "ui.tooltips.delay")
+eq(line_text(s.controls["show delay"].value_label.line), string.format("%.1f s", value))
+mark_settings()
+"#,
+        r#"
+expect(#fixture.calls >= 3)
+eq(fixture.calls[#fixture.calls][1], "reset")
+eq(fixture.calls[#fixture.calls][2], "tooltips")
+eq(fixture.tooltips.delay, 0.3) eq(fixture.tooltips.lock, "middle_mouse") eq(fixture.tooltips.lock_timer, 1.5)
+eq(fixture.map.pan_pixels_per_frame, 4, "reset affects only the current tab")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_control_lock timer");
+    rig.opened();
+    click_marked(&mut rig, "settings_control_lock_3");
+    rig.opened();
+    drag_marked(
+        &mut rig,
+        "settings_slider_knob_lock timer",
+        "settings_slider_right_lock timer",
+    );
+    rig.opened();
+    click_marked(&mut rig, "settings_control_show delay");
+    rig.opened();
+    click_marked(&mut rig, "settings_control_defaults");
+    rig.opened();
+}
+
+#[test]
+fn settings_general_slider_stays_live_during_a_drag_across_frame_updates() {
+    let mut rig = settings_rig(&[
+        r#"expect(not menu_button("settings").inactive)"#,
+        r#"
+mark_settings()
+dragged_control = require("lib.settings_window").current().controls["show delay"]
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls["show delay"] == dragged_control, "the slider remains registered after the press frame")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls["show delay"] == dragged_control, "the slider remains registered after the middle move")
+eq(s.controls["show delay"].value, 1.0, "the middle move updates the value")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls["show delay"] == dragged_control, "the slider remains registered after the final move")
+eq(s.controls["show delay"].value, 2.0)
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls["show delay"] == dragged_control, "the slider remains registered through release")
+eq(s.controls["show delay"].value, 2.0)
+eq(line_text(s.controls["show delay"].value_label.line), "2.0 s", "the live value is shown")
+eq(fixture.calls[#fixture.calls][1], "set")
+eq(fixture.calls[#fixture.calls][2], "ui.tooltips.delay")
+eq(fixture.calls[#fixture.calls][3], 2.0, "the last snapped value reaches settings.set")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    let from = point(&rig, "settings_slider_knob_show delay");
+    let middle = point(&rig, "settings_slider_mid_show delay");
+    let right = point(&rig, "settings_slider_right_show delay");
+    rig.feed(&[PointerEvent::Down(points(from.0, from.1))]);
+    frame(&mut rig);
+    rig.opened();
+    rig.feed(&[PointerEvent::Move(points(middle.0, middle.1))]);
+    frame(&mut rig);
+    rig.opened();
+    rig.feed(&[PointerEvent::Move(points(right.0, right.1))]);
+    frame(&mut rig);
+    rig.opened();
+    rig.feed(&[PointerEvent::Up(points(right.0, right.1))]);
+    frame(&mut rig);
+    rig.opened();
+}
+
+#[test]
+fn settings_map_slider_stays_live_during_a_drag_across_frame_updates() {
+    let mut rig = settings_rig(&[
+        r#"expect(not menu_button("settings").inactive)"#,
+        r"mark_settings()",
+        r#"
+mark_settings()
+dragged_control = require("lib.settings_window").current().controls["pan speed"]
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls["pan speed"] == dragged_control, "the slider remains registered after the press frame")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls["pan speed"] == dragged_control, "the slider remains registered after the middle move")
+expect(s.controls["pan speed"].value > 4 and s.controls["pan speed"].value < 32)
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls["pan speed"] == dragged_control, "the slider remains registered after the final move")
+eq(s.controls["pan speed"].value, 32)
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls["pan speed"] == dragged_control, "the slider remains registered through release")
+eq(s.controls["pan speed"].value, 32)
+eq(line_text(s.controls["pan speed"].value_label.line), "32", "the live value is shown")
+eq(fixture.calls[#fixture.calls][1], "set")
+eq(fixture.calls[#fixture.calls][2], "map.pan_pixels_per_frame")
+eq(fixture.calls[#fixture.calls][3], 32, "the last snapped value reaches settings.set")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_map");
+    rig.opened();
+    let from = point(&rig, "settings_slider_knob_pan speed");
+    let middle = point(&rig, "settings_slider_mid_pan speed");
+    let right = point(&rig, "settings_slider_right_pan speed");
+    rig.feed(&[PointerEvent::Down(points(from.0, from.1))]);
+    frame(&mut rig);
+    rig.opened();
+    rig.feed(&[PointerEvent::Move(points(middle.0, middle.1))]);
+    frame(&mut rig);
+    rig.opened();
+    rig.feed(&[PointerEvent::Move(points(right.0, right.1))]);
+    frame(&mut rig);
+    rig.opened();
+    rig.feed(&[PointerEvent::Up(points(right.0, right.1))]);
+    frame(&mut rig);
+    rig.opened();
+}
+
+#[test]
+fn shared_button_flow_keeps_fitting_rows_on_one_line_and_wraps_with_exact_gaps() {
+    let mut rig = settings_rig(&[r#"
+local button = require("lib.button")
+local group = render.create_group()
+local width = button.measure("same")
+local fitted, fitted_height = button.flow{
+  x = 20 * P, y = 10 * P, room = 3 * width + 2 * 3 * P,
+  items = {"same", "same", "same"}, group = group,
+}
+eq(#fitted, 3)
+eq(fitted_height, 15 * P, "one line has the measured button height")
+for index = 2, #fitted do
+  eq(fitted[index].y, fitted[1].y, "a row that fits stays on one line")
+  eq(fitted[index].x - fitted[index - 1].x - fitted[index - 1].width, 3 * P, "buttons have a three pixel gap")
+end
+local wrapped, wrapped_height = button.flow{
+  x = 20 * P, y = 80 * P, room = 2 * width + 3 * P,
+  items = {"same", "same", "same", "same", "same"}, group = group,
+}
+eq(#wrapped, 5)
+eq(wrapped_height, 51 * P, "three lines report their full height")
+for index = 2, #wrapped do
+  if index == 3 or index == 5 then
+    eq(wrapped[index].x, wrapped[1].x, "every wrapped line begins at the same left edge")
+    eq(wrapped[index].y - wrapped[index - 1].y, 18 * P, "wrapped lines are eighteen pixels apart")
+  else
+    eq(wrapped[index].y, wrapped[index - 1].y)
+    eq(wrapped[index].x - wrapped[index - 1].x - wrapped[index - 1].width, 3 * P, "wrapped buttons retain the three pixel gap")
+  end
+end
+"#]);
+    rig.opened();
+}
+
+#[test]
+fn settings_map_sliders_show_effective_values_and_reset_only_map() {
+    let mut rig = settings_rig(&[
+        r#"expect(not menu_button("settings").inactive)"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "map")
+eq(s.controls["pan speed"].minimum, 1) eq(s.controls["pan speed"].maximum, 32)
+eq(s.controls["zoom speed"].minimum, 1) eq(s.controls["zoom speed"].maximum, 60)
+eq(s.controls["scroll step"].minimum, 1) eq(s.controls["scroll step"].maximum, 256)
+eq(s.controls["pan speed"].step, 1) eq(s.controls["zoom speed"].step, 1) eq(s.controls["scroll step"].step, 1)
+eq(line_text(s.controls["pan speed"].value_label.line), "4")
+eq(line_text(s.controls["zoom speed"].value_label.line), "20")
+eq(line_text(s.controls["scroll step"].value_label.line), "24 points")
+for _, line in ipairs(lines_in(s.page.group)) do
+  expect(line.x + line.width * P <= s.page.room + P, "map row stays within the content right edge")
+end
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "map")
+local value = s.controls["pan speed"].value
+expect(value >= 1 and value <= 32 and value == math.floor(value), "pan speed snaps to an integer")
+eq(fixture.calls[#fixture.calls][1], "set")
+eq(fixture.calls[#fixture.calls][2], "map.pan_pixels_per_frame")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.controls["zoom speed"].value, 60, "dragging the knob reaches the zoom upper bound")
+eq(fixture.calls[#fixture.calls][2], "map.zoom_steps_per_second")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.controls["scroll step"].value, 256, "dragging the knob reaches the scroll upper bound")
+eq(fixture.calls[#fixture.calls][2], "map.scroll_points_per_step")
+mark_settings()
+"#,
+        r#"
+eq(fixture.calls[#fixture.calls][1], "reset")
+eq(fixture.calls[#fixture.calls][2], "map")
+local s = require("lib.settings_window").current()
+eq(s.controls["pan speed"].value, 4)
+eq(s.controls["zoom speed"].value, 20)
+eq(s.controls["scroll step"].value, 24)
+eq(fixture.tooltips.delay, 0.3, "map reset leaves general values alone")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_map");
+    rig.opened();
+    click_marked(&mut rig, "settings_control_pan speed");
+    rig.opened();
+    drag_marked(
+        &mut rig,
+        "settings_slider_knob_zoom speed",
+        "settings_slider_right_zoom speed",
+    );
+    rig.opened();
+    drag_marked(
+        &mut rig,
+        "settings_slider_knob_scroll step",
+        "settings_slider_right_scroll step",
+    );
+    rig.opened();
+    click_marked(&mut rig, "settings_control_defaults");
+    rig.opened();
+}
+
+#[test]
+fn settings_input_rows_format_bindings_abbreviate_arrows_and_clip_long_names() {
+    let mut rig = settings_rig(&[
+        r#"
+for _, action in ipairs(fixture.bindings) do
+  if action.name == "game_quicksave" then action.bindings = {"Control+VeryLongPhysicalKeyName"} end
+  if action.name == "game_quickload" then action.bindings = {} end
+end
+"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.selected, "input")
+expect(s.controls.defaults == nil, "input has no defaults button")
+local found = {}
+local all = {}
+for _, line in ipairs(lines_in(s.page.group)) do
+  local shown = line_text(line)
+  found[shown] = true
+  all[#all + 1] = shown
+  expect(line.x + line.width * P <= s.page.room + P, "row stays within the content right edge")
+end
+for _, value in ipairs({"pause", "Space", "speed 1 to 5", "1  2  3  4  5", "faster, slower", "]  [",
+  "quicksave", "Control+", "quickload", "move the map", "arrows", "zoom in, out", "=  Shift+Equal  -", "close, menu", "Escape",
+  "changing keys comes later"}) do
+  local matched = false
+  for _, shown in ipairs(all) do if shown:find(value, 1, true) then matched = true end end
+  expect(matched, "input shows " .. value)
+end
+expect(not table.concat(all, " "):find("ArrowLeft", 1, true), "the exact four default arrows collapse to arrows")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+}
+
+#[test]
+fn settings_close_x_returns_to_the_open_menu_without_releasing_its_key_block() {
+    let mut rig = settings_rig(&[
+        r#"expect(not menu_button("settings").inactive)"#,
+        r#"
+expect(require("lib.settings_window").current() ~= nil)
+mark_settings()
+"#,
+        r#"
+expect(menu.is_open(), "the settings x leaves the menu open")
+expect(require("lib.settings_window").current() == nil)
+eq(count_hits("menu_backdrop_"), 1)
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_close");
+    rig.opened();
+    assert_eq!(
+        sent(&rig),
+        [Control::Pause],
+        "closing settings adds no game control"
+    );
+    assert!(rig.controls.keys_blocked());
+}
+
+#[test]
+fn closing_the_menu_closes_its_settings_child_and_releases_the_key_block() {
+    let mut rig = settings_rig(&[
+        r#"expect(not menu_button("settings").inactive)"#,
+        r#"
+local settings = require("lib.settings_window").current()
+expect(settings ~= nil and menu.is_open())
+menu.close()
+expect(not menu.is_open(), "the parent menu closed")
+expect(require("lib.settings_window").current() == nil, "closing the parent closes settings")
+eq(count_hits("window_frame_"), 0)
+eq(count_hits("menu_backdrop_"), 0)
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    assert!(!rig.controls.keys_blocked());
+    assert_eq!(
+        sent(&rig),
+        [Control::Pause],
+        "closing both windows sends no additional control"
+    );
+}
+
+#[test]
+fn late_windows_stay_under_the_menu_backdrop_and_escape_closes_modal_windows_first() {
+    let mut rig = settings_rig(&[
+        r#"expect(not menu_button("settings").inactive)"#,
+        r#"
+late_created_clicks, late_raised_clicks = 0, 0
+late_created = windows.new{title="late created", content_width=90*P, content_height=50*P, x=20*P, y=20*P}
+button.new{x=0,y=0,text="created",group=late_created.content,owner=late_created,on_click=function() late_created_clicks=late_created_clicks+1 end}
+late_raised = windows.new{title="late raised", content_width=90*P, content_height=50*P, x=300*P, y=20*P}
+button.new{x=0,y=0,text="raised",group=late_raised.content,owner=late_raised,on_click=function() late_raised_clicks=late_raised_clicks+1 end}
+late_raised:raise()
+expect(require("lib.settings_window").current() ~= nil and windows.top() == require("lib.settings_window").current().window,
+  "the modal settings window remains the top eligible window")
+mark("late_created", 30*P, 50*P)
+mark("late_raised", 310*P, 50*P)
+"#,
+        r#"
+eq(late_created_clicks, 0) eq(late_raised_clicks, 0)
+expect(require("lib.settings_window").current() == nil, "Escape closes settings first")
+expect(menu.is_open() and not late_created.closed and not late_raised.closed)
+"#,
+        r#"
+expect(not menu.is_open(), "the next Escape closes the menu")
+expect(not late_created.closed and not late_raised.closed, "covered windows remain open")
+"#,
+        r#"
+eq(late_created_clicks + late_raised_clicks, 1, "late windows take input again after the menu closes")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    let made = point(&rig, "late_created");
+    let raised = point(&rig, "late_raised");
+    assert!(key_at(&rig, made).starts_with("menu_backdrop_"));
+    click_at(&mut rig, made);
+    assert!(key_at(&rig, raised).starts_with("menu_backdrop_"));
+    click_at(&mut rig, raised);
+    assert!(rig.escape());
+    rig.opened();
+    assert_eq!(
+        sent(&rig),
+        [Control::Pause],
+        "Escape from settings sends no additional game control"
+    );
+    assert!(
+        rig.controls.keys_blocked(),
+        "Escape leaves the menu key block on"
+    );
+    assert!(rig.escape());
+    rig.opened();
+    click_marked(&mut rig, "late_created");
+    rig.opened();
+}
+
+#[test]
+fn a_window_that_predates_the_menu_stays_under_its_backdrop_when_raised() {
+    let mut rig = menu_rig(
+        &format!(
+            r#"
+{SETTINGS_HOST}
+preexisting_clicks = 0
+preexisting = windows.new{{title="preexisting", content_width=90*P, content_height=50*P, x=20*P, y=20*P}}
+preexisting_button = require("lib.button").new{{x=0,y=0,text="preexisting",group=preexisting.content,owner=preexisting,
+  on_click=function() preexisting_clicks=preexisting_clicks+1 end}}
+menu.open(VIEW)
+mark_buttons()
+"#
+        ),
+        &[
+            r#"
+expect(menu.is_open())
+preexisting:raise()
+menu_button("settings").on_click()
+local x, y, w, h = hit_rect(preexisting_button.key)
+mark("preexisting_button", x + w / 2, y + h / 2)
+"#,
+            r#"
+eq(preexisting_clicks, 0, "the backdrop blocks a pre-existing window that was raised")
+"#,
+            r#"
+expect(menu.is_open() and require("lib.settings_window").current() == nil,
+  "Escape closes settings but leaves the menu open")
+expect(not preexisting.closed, "the older window remains open")
+"#,
+            r#"
+expect(not menu.is_open(), "the next Escape closes the menu")
+expect(not preexisting.closed, "the older window remains open")
+"#,
+            r#"eq(preexisting_clicks, 1, "the older window receives input again after the menu closes")"#,
+        ],
+    );
+    rig.opened();
+    let button = point(&rig, "preexisting_button");
+    assert!(key_at(&rig, button).starts_with("menu_backdrop_"));
+    click_at(&mut rig, button);
+    rig.opened();
+    assert!(rig.escape());
+    rig.opened();
+    assert!(rig.escape());
+    rig.opened();
+    click_at(&mut rig, button);
     rig.opened();
 }

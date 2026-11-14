@@ -247,6 +247,17 @@ fn input_events(raw: &RawEvents) -> Vec<NativeEvent> {
             _ => None,
         })
         .collect();
+    let typed_count =
+        usize::try_from(raw.typed_count).map_or(0, |count| count.min(raw.typed.len()));
+    events.extend(
+        raw.typed[..typed_count]
+            .iter()
+            .copied()
+            .filter_map(typed_event),
+    );
+    if raw.typed_lost != 0 {
+        events.push(NativeEvent::TypedLost);
+    }
     let pointer_count = usize::try_from(raw.pointer_count)
         .unwrap_or(0)
         .min(raw.pointers.len());
@@ -306,6 +317,22 @@ fn input_events(raw: &RawEvents) -> Vec<NativeEvent> {
         });
     }
     events
+}
+
+/// One typed entry of a pump as an event: a committed character (a Unicode scalar value) or one of the five edit commands. An entry
+/// the native layer numbers outside these (it cannot) is dropped.
+fn typed_event(entry: ffi::RawTyped) -> Option<NativeEvent> {
+    use ck_input::TypedEntry;
+    let typed = match entry.kind {
+        ffi::TYPED_CHAR => TypedEntry::Char(char::from_u32(entry.value)?),
+        ffi::TYPED_BACKSPACE => TypedEntry::Backspace,
+        ffi::TYPED_ENTER => TypedEntry::Enter,
+        ffi::TYPED_TAB => TypedEntry::Tab,
+        ffi::TYPED_LEFT => TypedEntry::Left,
+        ffi::TYPED_RIGHT => TypedEntry::Right,
+        _ => return None,
+    };
+    Some(NativeEvent::Typed(typed))
 }
 
 /// Records one `debug` line for the close presses a pump absorbed, through `log_within`.
@@ -459,6 +486,11 @@ impl Backend for CocoaBackend {
         if raw.restored != 0 {
             events(NativeEvent::Restored);
         }
+    }
+
+    fn set_text_input(&mut self, enabled: bool) {
+        // SAFETY: the handle is live and this runs on the main thread, outside a pump.
+        unsafe { ffi::ck_win_set_text_input(self.handle.as_ptr(), i32::from(enabled)) };
     }
 
     fn destroy_window(&mut self) {

@@ -6,6 +6,24 @@ use std::ffi::{c_char, c_void};
 /// The most entries one pump hands over (`CK_WIN_OUT_MAX`).
 pub(crate) const OUT_MAX: usize = 258;
 pub(crate) const POINTER_CAPACITY: usize = 64;
+/// The typed entries one pump can hand over (`CK_WIN_TYPED_CAPACITY`).
+pub(crate) const TYPED_CAPACITY: usize = 256;
+
+/// The kinds of a typed entry (`CK_WIN_TYPED_*`).
+pub(crate) const TYPED_CHAR: u8 = 0;
+pub(crate) const TYPED_BACKSPACE: u8 = 1;
+pub(crate) const TYPED_ENTER: u8 = 2;
+pub(crate) const TYPED_TAB: u8 = 3;
+pub(crate) const TYPED_LEFT: u8 = 4;
+pub(crate) const TYPED_RIGHT: u8 = 5;
+
+/// One typed entry (`CKWinTyped`).
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RawTyped {
+    pub(crate) kind: u8,
+    pub(crate) value: u32,
+}
 
 /// The kinds of an entry (`CK_WIN_OUT_*`).
 pub(crate) const OUT_KEY: u8 = 0;
@@ -81,6 +99,9 @@ pub(crate) struct RawEvents {
     pub(crate) pointer_x: i32,
     pub(crate) pointer_y: i32,
     pub(crate) pointers: [RawPointer; POINTER_CAPACITY],
+    pub(crate) typed_count: u32,
+    pub(crate) typed_lost: u8,
+    pub(crate) typed: [RawTyped; TYPED_CAPACITY],
 }
 
 impl Default for RawEvents {
@@ -112,6 +133,9 @@ impl Default for RawEvents {
             pointer_x: 0,
             pointer_y: 0,
             pointers: [RawPointer::default(); POINTER_CAPACITY],
+            typed_count: 0,
+            typed_lost: 0,
+            typed: [RawTyped::default(); TYPED_CAPACITY],
         }
     }
 }
@@ -154,6 +178,7 @@ unsafe extern "C" {
         timeout_seconds: f64,
         out: *mut RawEvents,
     );
+    pub(crate) fn ck_win_set_text_input(handle: *mut c_void, enabled: i32);
     pub(crate) fn ck_win_destroy_window(handle: *mut c_void);
     pub(crate) fn ck_win_terminate(handle: *mut c_void);
     pub(crate) fn ck_win_free(handle: *mut c_void);

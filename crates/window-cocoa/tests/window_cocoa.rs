@@ -45,6 +45,8 @@ use support::Pumped;
 mod keys;
 #[path = "resize/mod.rs"]
 mod resize;
+#[path = "typed/mod.rs"]
+mod typed;
 
 const WORKER_FLAG: &str = "--worker";
 const FILTER_SELF_TEST_FLAG: &str = "--test-filter-selection";
@@ -1130,7 +1132,7 @@ fn test_windows_let_clicks_through() {
 
 type Case = fn();
 
-const CASES: [(&str, Case); 48] = [
+const CASES: [(&str, Case); 54] = [
     ("create_and_destroy", create_and_destroy),
     (
         "production_open_still_asks_for_activation",
@@ -1219,6 +1221,30 @@ const CASES: [(&str, Case); 48] = [
     (
         "a_mixed_side_chord_stays_held",
         keys::a_mixed_side_chord_stays_held,
+    ),
+    (
+        "a_key_down_with_characters_gives_one_character_entry",
+        typed::a_key_down_with_characters_gives_one_character_entry,
+    ),
+    (
+        "the_five_edit_commands_and_several_keys_keep_their_order",
+        typed::the_five_edit_commands_and_several_keys_keep_their_order,
+    ),
+    (
+        "a_repeated_key_down_gives_another_entry",
+        typed::a_repeated_key_down_gives_another_entry,
+    ),
+    (
+        "composed_text_gives_one_precomposed_entry_and_nothing_while_composing",
+        typed::composed_text_gives_one_precomposed_entry_and_nothing_while_composing,
+    ),
+    (
+        "escape_and_a_command_chord_give_no_entry_and_the_keys_are_recorded",
+        typed::escape_and_a_command_chord_give_no_entry_and_the_keys_are_recorded,
+    ),
+    (
+        "with_text_input_off_there_are_no_entries_and_turning_it_off_discards_what_waits",
+        typed::with_text_input_off_there_are_no_entries_and_turning_it_off_discards_what_waits,
     ),
     (
         "modifiers_without_side_bits_toggle_and_release_with_the_family",

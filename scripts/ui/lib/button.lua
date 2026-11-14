@@ -31,6 +31,35 @@ function button.measure(content)
   return width * P, height * P
 end
 
+-- Places a shared row of choice buttons in a room, wrapping before a button that would cross its right edge. Each line begins at
+-- `x`, with a 3 UI-pixel gap between buttons and 18 UI-pixels between lines. `room` is the available width in points.
+function button.flow(spec)
+  local x, y, room = ui.snap(spec.x), ui.snap(spec.y), spec.room
+  local buttons, bx, line = {}, x, 0
+  for _, item in ipairs(spec.items) do
+    local width = button.measure(item)
+    if bx > x and bx - x + width > room then
+      bx, line = x, line + 1
+    end
+    local b = button.new{
+      x = bx,
+      y = y + line * 18 * P,
+      text = item,
+      kind = spec.kind or "window",
+      group = spec.group,
+      owner = spec.owner,
+      selected = item == spec.selected,
+      on_click = function()
+        if spec.on_choose ~= nil then spec.on_choose(item) end
+      end,
+    }
+    if item == spec.selected then b:set_selected(true) end
+    buttons[#buttons + 1] = b
+    bx = bx + width + 3 * P
+  end
+  return buttons, (line + 1) * 18 * P - 3 * P
+end
+
 -- The size of an icon button without creating it.
 function button.measure_icon(name)
   local width = ICON_WIDTHS[name]

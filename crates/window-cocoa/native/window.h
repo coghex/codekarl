@@ -23,6 +23,21 @@ typedef struct CKWinWakeHandle CKWinWakeHandle;
 #define CK_WIN_RING_CAPACITY 256
 #define CK_WIN_OUT_MAX (CK_WIN_RING_CAPACITY + 2)
 #define CK_WIN_POINTER_CAPACITY 64
+/* The typed entries one pump can hand over (CK-314): the native store is this big, and drops the later entries past it. */
+#define CK_WIN_TYPED_CAPACITY 256
+
+/* The kinds of a typed entry. */
+#define CK_WIN_TYPED_CHAR 0       /* a committed character: `value` is its Unicode scalar value */
+#define CK_WIN_TYPED_BACKSPACE 1
+#define CK_WIN_TYPED_ENTER 2
+#define CK_WIN_TYPED_TAB 3
+#define CK_WIN_TYPED_LEFT 4
+#define CK_WIN_TYPED_RIGHT 5
+
+typedef struct {
+    uint8_t kind;    /* CK_WIN_TYPED_* */
+    uint32_t value;  /* the scalar value, for CK_WIN_TYPED_CHAR */
+} CKWinTyped;
 
 /* The kinds of what a pump hands over, in recorded order. */
 #define CK_WIN_OUT_KEY 0          /* a key transition: key, down, repeat */
@@ -83,6 +98,9 @@ typedef struct {
     int32_t pointer_x;
     int32_t pointer_y;
     CKWinPointer pointers[CK_WIN_POINTER_CAPACITY];
+    uint32_t typed_count;     /* entries of `typed`, in the order typed (CK-314) */
+    uint8_t typed_lost;       /* 1 when later entries were dropped at the native bound */
+    CKWinTyped typed[CK_WIN_TYPED_CAPACITY];
 } CKWinEvents;
 
 /* The size of CKWinEvents, so the Rust side can refuse to run with a different layout. */
@@ -125,6 +143,10 @@ void ck_win_destroy_window(CKWinHandle *handle);
 void ck_win_terminate(CKWinHandle *handle);
 /* Consumes the handle (terminates first); NULL is allowed. */
 void ck_win_free(CKWinHandle *handle);
+
+/* Turns the typed-entry route on or off (CK-314), on the main thread, outside a pump. Either way it starts from nothing: text being
+ * composed and entries not yet handed over are discarded. While it is off no key is given to the system's text input. */
+void ck_win_set_text_input(CKWinHandle *handle, int enabled);
 
 /* Returns one retained wake reference for ck_win_wake_release to consume. Main thread. */
 CKWinWakeHandle *ck_win_wake_target(CKWinHandle *handle);

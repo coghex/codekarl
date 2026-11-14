@@ -21,7 +21,7 @@ local menu = {}
 
 menu.LABELS = {"return", "settings", "glossary", "save / load", "quit to desktop"}
 -- The buttons no screen is built for yet.
-local GREYED = {settings = true, glossary = true, ["save / load"] = true}
+local GREYED = {glossary = true, ["save / load"] = true}
 
 local current = nil
 
@@ -53,6 +53,8 @@ end
 
 -- Takes the backdrop away. Runs when the window closes, however it was closed.
 local function dismantle(state)
+  require("lib.settings_window").close()
+  windows.clear_modal_backdrop(state.backdrop_group)
   pointer.unregister(state.backdrop_key)
   render.set_hit(state.backdrop_key, nil, state.backdrop_group)
   render.destroy_group(state.backdrop_group)
@@ -89,6 +91,7 @@ function menu.open(view)
   end
   local state = {view = view, buttons = {}}
   state.backdrop_group = ui.create_group()
+  windows.set_modal_backdrop(state.backdrop_group)
   state.backdrop = render.create_quad{
     texture = ui.texture("ui/theme/white.png"),
     x = 0,
@@ -111,12 +114,14 @@ function menu.open(view)
     kind = "window",
     fixed = true,
     draggable = false,
+    modal = true,
     content_width = width,
     content_height = content_height,
     on_close = function() dismantle(state) end,
   }
   local actions = {
     ["return"] = function() state.window:close() end,
+    ["settings"] = function() require("lib.settings_window").open(state.view) end,
     ["quit to desktop"] = function() window.close() end,
   }
   local y = 0
@@ -175,6 +180,7 @@ function menu.relayout()
   render.set_rect(state.backdrop, 0, 0, state.view.width, state.view.height)
   render.set_hit(state.backdrop_key, {{x = 0, y = 0, width = state.view.width, height = state.view.height}}, state.backdrop_group)
   centre(state)
+  require("lib.settings_window").relayout(state.view)
 end
 
 return menu

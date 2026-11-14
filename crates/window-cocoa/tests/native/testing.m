@@ -153,7 +153,14 @@ static void ck_instrument_classes(void) {
  * Finding the backend
  * ------------------------------------------------------------------------------------------- */
 
+/* The backend's window: the one whose delegate is the backend's. With the content view a text input client (CK-314) the system may keep
+ * a window of its own in the application's list, ahead of ours, so the first window is not necessarily the backend's. */
 static NSWindow *ck_window(void) {
+    for (NSWindow *window in NSApp.windows) {
+        if ([window.delegate isKindOfClass:[CKWinDelegate class]]) {
+            return window;
+        }
+    }
     return NSApp.windows.firstObject;
 }
 
@@ -423,6 +430,30 @@ static NSEvent *ck_keyboard_event(int32_t kind, uint16_t key_code, uint64_t flag
     NSEvent *event = [NSEvent eventWithCGEvent:raw];
     CFRelease(raw);
     return event;
+}
+
+static CKWinView *ck_content_view(void) {
+    NSView *view = ck_window().contentView;
+    return [view isKindOfClass:[CKWinView class]] ? (CKWinView *)view : nil;
+}
+
+void ck_win_test_set_marked_text(const char *text) {
+    @autoreleasepool {
+        [ck_content_view() setMarkedText:[NSString stringWithUTF8String:text]
+                           selectedRange:NSMakeRange(0, 0)
+                        replacementRange:NSMakeRange(NSNotFound, 0)];
+    }
+}
+
+void ck_win_test_insert_text(const char *text) {
+    @autoreleasepool {
+        [ck_content_view() insertText:[NSString stringWithUTF8String:text]
+                     replacementRange:NSMakeRange(NSNotFound, 0)];
+    }
+}
+
+int32_t ck_win_test_has_marked_text(void) {
+    return [ck_content_view() hasMarkedText] ? 1 : 0;
 }
 
 int32_t ck_win_test_post_key(uint16_t key_code, uint64_t modifier_flags, int32_t repeat,

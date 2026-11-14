@@ -48,6 +48,7 @@ fn a_thousand_set_clear_calls_between_two_takes_give_one_change_with_the_last_co
             open: None,
             clear: Some([0.999, 0.0, 0.0]),
             close: false,
+            text_input: None,
         }
     );
     assert_eq!(
@@ -316,4 +317,41 @@ fn settings_reject_zero_caps_and_zero_deadlines() {
     assert_eq!((defaults.native_events(), defaults.items()), (64, 16));
     assert_eq!(defaults.presenter_teardown(), Duration::from_secs(2));
     assert_eq!(defaults.disarm(), Duration::from_millis(100));
+}
+
+#[test]
+fn text_input_writes_are_state_with_a_generation_each_and_the_latest_wins() {
+    owned(
+        module_path!(),
+        "text_input_writes_are_state_with_a_generation_each_and_the_latest_wins",
+        BOUND,
+        || {
+            let (requests, writer, reader, _notifier) = fixture();
+            assert_eq!(reader.take().text_input, None, "nothing written");
+            // Three writes between two takes are one request: the latest state, with the latest generation.
+            assert_eq!(writer.set_text_input(true), 1);
+            assert_eq!(writer.set_text_input(false), 2);
+            assert_eq!(writer.set_text_input(true), 3);
+            assert_eq!(
+                reader.take().text_input,
+                Some(ck_window::TextInputRequest {
+                    enabled: true,
+                    generation: 3
+                })
+            );
+            assert_eq!(reader.take().text_input, None, "taken once");
+            // An off then an on is not lost to coalescing: the request is `on` with a generation the main thread has not seen.
+            assert_eq!(writer.set_text_input(false), 4);
+            assert_eq!(writer.set_text_input(true), 5);
+            assert_eq!(
+                reader.take().text_input.map(|request| request.generation),
+                Some(5)
+            );
+            // A write after the slot ended is discarded and counted, and still gets a generation.
+            reader.end();
+            assert_eq!(writer.set_text_input(true), 6);
+            assert_eq!(reader.take().text_input, None);
+            assert_eq!(requests.discarded(), 1);
+        },
+    );
 }
