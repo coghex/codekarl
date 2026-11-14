@@ -33,6 +33,8 @@ const HERDS: [(&str, u64); 3] = [("cattle", 12), ("pigs", 8), ("sheep", 7)];
 pub(crate) struct PriceView {
     /// The good's key.
     pub(crate) good: String,
+    /// Open-vocabulary data tags from the good definition, in authored order.
+    pub(crate) tags: Vec<String>,
     /// The local price in thousandths of a value unit.
     pub(crate) price_milli: u64,
     /// The base price in whole value units.
@@ -606,6 +608,7 @@ fn place_view(
         .enumerate()
         .map(|(index, (good, price))| PriceView {
             good: good.id.clone(),
+            tags: good.tags.clone(),
             price_milli: *price,
             base: good.base_price,
             bought: place
@@ -1447,6 +1450,22 @@ mod tests {
         let rules = shipped_rules();
         let mut place = fixture(&rules);
         let view = view_for_place(&rules, place.clone());
+        assert_eq!(
+            view.prices
+                .iter()
+                .find(|price| price.good == "oats")
+                .unwrap()
+                .tags,
+            ["food"]
+        );
+        assert!(
+            view.prices
+                .iter()
+                .find(|price| price.good == "herbs")
+                .unwrap()
+                .tags
+                .is_empty()
+        );
         assert!(
             view.prices
                 .iter()

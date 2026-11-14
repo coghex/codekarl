@@ -570,6 +570,12 @@ pub(crate) fn place_table(place: &PlaceView) -> ConfigValue {
                     .map(|price| {
                         let mut fields = BTreeMap::from([
                             ("good".to_owned(), text(&price.good)),
+                            (
+                                "tags".to_owned(),
+                                ConfigValue::Array(
+                                    price.tags.iter().map(|tag| text(tag)).collect(),
+                                ),
+                            ),
                             ("price_milli".to_owned(), integer(price.price_milli)),
                             ("base".to_owned(), integer(price.base)),
                         ]);
@@ -871,21 +877,23 @@ mod tests {
     #[test]
     fn game_place_exposes_order_values_and_omits_them_before_the_price_step() {
         let cache = Arc::new(ViewCache::default());
-        let make_price = |good: &str, bought, offered| crate::game::view::PriceView {
-            good: good.to_owned(),
-            price_milli: 96_500,
-            base: 100,
-            bought,
-            offered,
-        };
+        let make_price =
+            |good: &str, tags: &[&str], bought, offered| crate::game::view::PriceView {
+                good: good.to_owned(),
+                tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+                price_milli: 96_500,
+                base: 100,
+                bought,
+                offered,
+            };
         cache.post(
             1,
             Arc::new(EconomyView {
                 places: vec![PlaceView {
                     id: "fixture".to_owned(),
                     prices: vec![
-                        make_price("oats", Some(1240), Some(1410)),
-                        make_price("barley", None, None),
+                        make_price("oats", &["food", "grain"], Some(1240), Some(1410)),
+                        make_price("barley", &[], None, None),
                     ],
                     ..PlaceView::default()
                 }],
@@ -903,11 +911,16 @@ mod tests {
         };
         assert_eq!(oats["bought"], ConfigValue::Integer(1240));
         assert_eq!(oats["offered"], ConfigValue::Integer(1410));
+        assert_eq!(
+            oats["tags"],
+            ConfigValue::Array(vec![text("food"), text("grain")])
+        );
         let ConfigValue::Table(barley) = &prices[1] else {
             panic!("barley price table");
         };
         assert!(!barley.contains_key("bought"));
         assert!(!barley.contains_key("offered"));
+        assert_eq!(barley["tags"], ConfigValue::Array(Vec::new()));
     }
 
     #[test]
@@ -926,6 +939,7 @@ mod tests {
             prices: vec![
                 crate::game::view::PriceView {
                     good: "oats".to_owned(),
+                    tags: vec!["food".to_owned()],
                     price_milli: 100_500,
                     base: 100,
                     bought: Some(u128::from(u64::MAX) + 5),
@@ -933,6 +947,7 @@ mod tests {
                 },
                 crate::game::view::PriceView {
                     good: "barley".to_owned(),
+                    tags: Vec::new(),
                     price_milli: 2000,
                     base: 2,
                     bought: Some(1240),
@@ -940,6 +955,7 @@ mod tests {
                 },
                 crate::game::view::PriceView {
                     good: "ale".to_owned(),
+                    tags: vec!["food".to_owned()],
                     price_milli: 2500,
                     base: 2,
                     bought: None,
@@ -1087,16 +1103,19 @@ mod tests {
         let ConfigValue::Table(price) = &price_rows[0] else {
             panic!("a table");
         };
+        assert_eq!(price["tags"], ConfigValue::Array(vec![text("food")]));
         assert_eq!(price["price_milli"], ConfigValue::Integer(100_500));
         assert_eq!(price["bought"], ConfigValue::Integer(i64::MAX));
         assert_eq!(price["offered"], ConfigValue::Integer(1410));
         let ConfigValue::Table(second_price) = &price_rows[1] else {
             panic!("a price table");
         };
+        assert_eq!(second_price["tags"], ConfigValue::Array(Vec::new()));
         assert_eq!(second_price["bought"], ConfigValue::Integer(1240));
         let ConfigValue::Table(unavailable) = &price_rows[2] else {
             panic!("a price table");
         };
+        assert_eq!(unavailable["tags"], ConfigValue::Array(vec![text("food")]));
         assert!(!unavailable.contains_key("bought"));
         assert!(!unavailable.contains_key("offered"));
         let ConfigValue::Array(pops) = &fields["pops"] else {

@@ -45,6 +45,9 @@ impl Error for DataError {}
 pub struct Good {
     /// Stable lower-case key.
     pub id: String,
+    /// Open-vocabulary category keys for data-driven presentation.
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Human-readable unit.
     pub unit: String,
     /// Weight in grams per unit.
@@ -231,6 +234,26 @@ impl Rules {
             "goods",
             self.goods.iter().map(|item| item.id.as_str()),
         )?;
+        for good in &self.goods {
+            let entry = format!("goods.{}.tags", good.id);
+            let mut found = std::collections::BTreeSet::new();
+            for tag in &good.tags {
+                let bytes = tag.as_bytes();
+                let valid_key = bytes.first().is_some_and(u8::is_ascii_lowercase)
+                    && bytes[1..].iter().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_'
+                    });
+                if !valid_key || bytes.len() > 24 {
+                    return Err(refuse(
+                        entry,
+                        format!("tag \"{tag}\" is not a lower-case key of at most 24 characters"),
+                    ));
+                }
+                if !found.insert(tag) {
+                    return Err(refuse(entry, format!("tag \"{tag}\" is listed twice")));
+                }
+            }
+        }
         unique_ids(
             file,
             "pop_types",
@@ -7679,6 +7702,7 @@ mod tests {
         Rules {
             goods: vec![Good {
                 id: "food".to_owned(),
+                tags: Vec::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
@@ -7828,6 +7852,7 @@ mod tests {
         ] {
             rules.goods.push(Good {
                 id: id.to_owned(),
+                tags: Vec::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
@@ -9083,6 +9108,96 @@ mod tests {
             ("tory", 100),
         ] {
             assert_eq!(starts.places[id].pagan_share_pm, Some(share));
+        }
+    }
+
+    #[test]
+    fn good_tags_are_optional_ordered_and_validated_as_open_lowercase_keys() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml");
+        let source = fs::read_to_string(path).unwrap();
+        let tagged_source = source.replacen("tags=[\"food\"]\n", "tags=[\"food\", \"grain\"]\n", 1);
+        let rules: Rules = toml::from_str(&tagged_source).unwrap();
+        rules.validate("fixture/economy.toml").unwrap();
+        assert_eq!(rules.goods[0].tags, ["food", "grain"]);
+        assert!(
+            rules
+                .goods
+                .iter()
+                .find(|good| good.id == "herbs")
+                .unwrap()
+                .tags
+                .is_empty()
+        );
+
+        for (tags, tag, problem) in [
+            (
+                "[\"Food\"]",
+                "Food",
+                "tag \"Food\" is not a lower-case key of at most 24 characters",
+            ),
+            (
+                "[\"9lives\"]",
+                "9lives",
+                "tag \"9lives\" is not a lower-case key of at most 24 characters",
+            ),
+            (
+                "[\"\"]",
+                "",
+                "tag \"\" is not a lower-case key of at most 24 characters",
+            ),
+            (
+                "[\"abcdefghijklmnopqrstuvwxy\"]",
+                "abcdefghijklmnopqrstuvwxy",
+                "tag \"abcdefghijklmnopqrstuvwxy\" is not a lower-case key of at most 24 characters",
+            ),
+            (
+                "[\"food\", \"food\"]",
+                "food",
+                "tag \"food\" is listed twice",
+            ),
+        ] {
+            let invalid_source = source.replacen("tags=[\"food\"]\n", &format!("tags={tags}\n"), 1);
+            let invalid: Rules = toml::from_str(&invalid_source).unwrap();
+            let error = invalid.validate("fixture/economy.toml").unwrap_err();
+            assert_eq!(error.entry, "goods.oats.tags");
+            assert_eq!(error.problem, problem, "invalid tag {tag:?}");
+        }
+    }
+
+    #[test]
+    fn shipped_goods_have_the_owner_approved_tags() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml");
+        let rules = Rules::load(path).unwrap();
+        let expected: BTreeMap<&str, &[&str]> = BTreeMap::from([
+            ("oats", &["food"][..]),
+            ("barley", &["food"][..]),
+            ("peas_beans", &["food"][..]),
+            ("vegetables", &["food"][..]),
+            ("apples", &["food"][..]),
+            ("dairy", &["food"][..]),
+            ("beef", &["food"][..]),
+            ("pork", &["food"][..]),
+            ("mutton", &["food"][..]),
+            ("fish", &["food"][..]),
+            ("seabirds", &["food"][..]),
+            ("ale", &["food"][..]),
+            ("mead", &["food"][..]),
+            ("wine", &["food"][..]),
+            ("honey", &["food"][..]),
+            ("wool", &["clothing"][..]),
+            ("hides", &["clothing"][..]),
+            ("cattle", &["herd"][..]),
+            ("pigs", &["herd"][..]),
+            ("sheep", &["herd"][..]),
+        ]);
+        for good in &rules.goods {
+            let expected_tags = expected.get(good.id.as_str()).copied().unwrap_or_default();
+            assert_eq!(
+                good.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+                expected_tags,
+                "goods.{}.tags",
+                good.id
+            );
         }
     }
 
@@ -11334,6 +11449,7 @@ mod tests {
         rules.goods.extend([
             Good {
                 id: "grain_2".to_owned(),
+                tags: Vec::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
@@ -11346,6 +11462,7 @@ mod tests {
             },
             Good {
                 id: "fish".to_owned(),
+                tags: Vec::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
@@ -11531,6 +11648,7 @@ mod tests {
         let mut rules = tiny_rules();
         rules.goods.push(Good {
             id: "fish".to_owned(),
+            tags: Vec::new(),
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -11719,6 +11837,7 @@ mod tests {
         for (id, volume_ml) in [("oats", 1000), ("ale", 500), ("dairy", 200)] {
             rules.goods.push(Good {
                 id: id.to_owned(),
+                tags: Vec::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml,
@@ -11997,6 +12116,7 @@ mod tests {
         for id in ["beef", "pork", "mutton", "dairy", "wool", "hides"] {
             rules.goods.push(Good {
                 id: id.to_owned(),
+                tags: Vec::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
@@ -12300,6 +12420,7 @@ mod tests {
 
         rules.goods.push(Good {
             id: "beef".to_owned(),
+            tags: Vec::new(),
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -12312,6 +12433,7 @@ mod tests {
         });
         rules.goods.push(Good {
             id: "hides".to_owned(),
+            tags: Vec::new(),
             unit: "hide".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -12805,6 +12927,7 @@ mod tests {
         let mut rules = tiny_rules();
         rules.goods.push(Good {
             id: "herbs".to_owned(),
+            tags: Vec::new(),
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -12866,6 +12989,7 @@ mod tests {
         let mut rules = tiny_rules();
         rules.goods.push(Good {
             id: "herbs".to_owned(),
+            tags: Vec::new(),
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -13061,6 +13185,7 @@ mod tests {
         let mut rules = tiny_rules();
         rules.goods.push(Good {
             id: "herbs".to_owned(),
+            tags: Vec::new(),
             unit: "pound".to_owned(),
             weight_g: 1,
             volume_ml: 1,
@@ -13143,6 +13268,7 @@ mod tests {
         for id in ["wool", "hides"] {
             rules.goods.push(Good {
                 id: id.to_owned(),
+                tags: Vec::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
@@ -13209,6 +13335,7 @@ mod tests {
         for (id, hunger) in [("beef", 10), ("pork", 10), ("mutton", 10), ("hides", 0)] {
             rules.goods.push(Good {
                 id: id.to_owned(),
+                tags: Vec::new(),
                 unit: "unit".to_owned(),
                 weight_g: 1,
                 volume_ml: 1,
