@@ -528,6 +528,8 @@ end
 
 function window.close_request(source)
   if source == "key" then
+    -- A number field that is being edited comes first: that press puts its old number back and does nothing more.
+    if require("lib.numberfield").cancel() then return false end
     local ok, tooltip = pcall(require, "lib.tooltip")
     if ok and tooltip.close_top() then return false end
     -- An open list-bar picker closes before any window does. The module is loaded at the first Escape, not at load, so that this file
