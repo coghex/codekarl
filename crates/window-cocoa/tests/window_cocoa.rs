@@ -1132,7 +1132,7 @@ fn test_windows_let_clicks_through() {
 
 type Case = fn();
 
-const CASES: [(&str, Case); 54] = [
+const CASES: [(&str, Case); 55] = [
     ("create_and_destroy", create_and_destroy),
     (
         "production_open_still_asks_for_activation",
@@ -1187,6 +1187,10 @@ const CASES: [(&str, Case); 54] = [
     (
         "a_resize_outside_a_live_resize_reports_each_change",
         resize::a_resize_outside_a_live_resize_reports_each_change,
+    ),
+    (
+        "a_backend_resize_preserves_the_top_left_and_reports_once",
+        resize::a_backend_resize_preserves_the_top_left_and_reports_once,
     ),
     (
         "full_screen_reports_one_size_when_each_transition_finishes",

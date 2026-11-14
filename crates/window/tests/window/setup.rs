@@ -157,6 +157,44 @@ fn open_then_set_clear_in_one_batch_creates_the_window_with_the_later_colour() {
 }
 
 #[test]
+fn a_resize_request_is_delivered_to_the_backend_from_the_main_loop() {
+    owned(
+        module_path!(),
+        "a_resize_request_is_delivered_to_the_backend_from_the_main_loop",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let ran = {
+                let mut rig = Rig::empty();
+                rig.writer
+                    .open(WindowDesc {
+                        resizable: true,
+                        ..desc()
+                    })
+                    .expect("resizable open");
+                let writer = rig.writer.clone();
+                rig.backend.hook = Some(Box::new(move |call| {
+                    if call.index == 1 {
+                        writer.resize((960, 720)).expect("resize request");
+                    } else {
+                        writer.close();
+                    }
+                }));
+                rig.run_collect()
+            };
+            assert_eq!(ran.end, LoopEnd::Closed);
+            assert!(
+                ran.log
+                    .iter()
+                    .any(|entry| entry == "backend.resize_window (960, 720)"),
+                "{:#?}",
+                ran.log
+            );
+        },
+    );
+}
+
+#[test]
 fn invalid_input_followed_by_a_valid_first_open_creates_the_window() {
     owned(
         module_path!(),

@@ -78,6 +78,9 @@ struct State {
     clear: Option<[f32; 3]>,
     /// `close`: a second one changes nothing.
     close: OneShot<()>,
+    /// Latest requested content size in points; later requests before a pass replace it.
+    resize: Option<(u32, u32)>,
+    resizable: Option<bool>,
     /// The loop has finished: writes change nothing visible.
     ended: bool,
 }
@@ -102,6 +105,8 @@ pub struct RequestChanges {
     pub clear: Option<[f32; 3]>,
     /// A `close` newly requested.
     pub close: bool,
+    /// Latest content-size request in points.
+    pub resize: Option<(u32, u32)>,
     /// The latest text input request written since the last take (CK-314).
     pub text_input: Option<TextInputRequest>,
     /// Latest key-capture command since the prior read.
@@ -186,9 +191,32 @@ impl RequestWriter {
             if state.ended {
                 self.shared.discarded.fetch_add(1, Ordering::SeqCst);
             } else {
+                state.resizable = Some(desc.resizable);
                 state.open = OneShot::Pending(desc);
             }
         }
+        self.notifier.wake();
+        Ok(())
+    }
+
+    /// Requests a new content size in points. Requires an accepted resizable open; never waits for the main thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when no window has been accepted or the accepted window is not resizable.
+    pub fn resize(&self, points: (u32, u32)) -> Result<(), &'static str> {
+        let mut state = self.shared.lock();
+        match state.resizable {
+            None => return Err("window.resize: the window is not open"),
+            Some(false) => return Err("window.resize: the window is not resizable"),
+            Some(true) => {}
+        }
+        if state.ended {
+            self.shared.discarded.fetch_add(1, Ordering::SeqCst);
+        } else {
+            state.resize = Some(points);
+        }
+        drop(state);
         self.notifier.wake();
         Ok(())
     }
@@ -301,6 +329,7 @@ impl RequestReader {
             open: state.open.take(),
             clear: state.clear.take(),
             close: state.close.take().is_some(),
+            resize: state.resize.take(),
             text_input: state.text_input.take(),
             capture: state.capture.take(),
             bindings: state.bindings.take(),

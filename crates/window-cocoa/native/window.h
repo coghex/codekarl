@@ -129,6 +129,8 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
                          void **layer, uint32_t *point_width, uint32_t *point_height,
                          uint32_t *pixel_width, uint32_t *pixel_height,
                          char *error, size_t error_capacity);
+/* Requests a settled content-size change in points; ignored when unavailable or full screen. */
+void ck_win_resize(CKWinHandle *handle, uint32_t point_width, uint32_t point_height);
 
 /* Takes events with the caller's cap, dispatches them with sendEvent:, consumes this backend's wake
  * events, runs updateWindows and hands over the pending state: at most `cap` of the key and focus entries

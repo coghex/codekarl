@@ -106,6 +106,22 @@ pub(crate) fn a_resize_outside_a_live_resize_reports_each_change() {
     }
 }
 
+/// The backend resize request reaches `AppKit`, preserves the frame's top-left, and reports the final content size once.
+pub(crate) fn a_backend_resize_preserves_the_top_left_and_reports_once() {
+    let mut fixture = Fixture::open_desc(&resizable((640, 400), (320, 200)));
+    let before = support::info();
+    fixture.backend.resize_window((720, 480));
+    let pumped = fixture.drain();
+    let after = support::info();
+    assert_eq!(after.content_size, (720.0, 480.0), "{after:?}");
+    assert_eq!(
+        after.frame_top_left, before.frame_top_left,
+        "{before:?} → {after:?}"
+    );
+    assert_eq!(pumped.points, Some((720, 480)), "{pumped:?}");
+    assert_eq!(fixture.drain().points, None, "one size report");
+}
+
 /// Entering and leaving full screen are size changes that report when the transition has finished, none during it.
 pub(crate) fn full_screen_reports_one_size_when_each_transition_finishes() {
     let mut fixture = Fixture::open_desc(&resizable((640, 400), (320, 200)));

@@ -48,6 +48,7 @@ fn a_thousand_set_clear_calls_between_two_takes_give_one_change_with_the_last_co
             open: None,
             clear: Some([0.999, 0.0, 0.0]),
             close: false,
+            resize: None,
             text_input: None,
             capture: None,
             bindings: None,
@@ -86,6 +87,38 @@ fn capture_and_binding_replacements_are_latest_value_requests() {
         "KeyQ"
     );
     assert_eq!(reader.take(), RequestChanges::default());
+}
+
+#[test]
+fn resize_is_latest_wins_and_requires_an_accepted_resizable_open() {
+    let (_, writer, reader, _) = fixture();
+    assert_eq!(
+        writer.resize((640, 480)),
+        Err("window.resize: the window is not open")
+    );
+    writer
+        .open(WindowDesc {
+            resizable: true,
+            ..desc()
+        })
+        .expect("open resizable window");
+    writer.resize((640, 480)).expect("first resize");
+    writer.resize((1024, 768)).expect("last resize");
+    let changes = reader.take();
+    assert_eq!(
+        changes.open,
+        Some(WindowDesc {
+            resizable: true,
+            ..desc()
+        })
+    );
+    assert_eq!(changes.resize, Some((1024, 768)));
+    let (_, fixed, _, _) = fixture();
+    fixed.open(desc()).expect("open fixed window");
+    assert_eq!(
+        fixed.resize((640, 480)),
+        Err("window.resize: the window is not resizable")
+    );
 }
 
 #[test]

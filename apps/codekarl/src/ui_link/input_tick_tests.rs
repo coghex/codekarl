@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use ck_input::{Bindings, Mapper, POINTER_CAPACITY};
 use ck_lua::{ConfigValue, HostFunction};
 use ck_window::{
-    ActionSnapshot, InputSnapshot, InputTick, PixelSize, PointerEvent, PostError, ScrollUnit,
-    Transition, UiEvent, UiLink, UpdateEvent, WindowMetrics,
+    ActionSnapshot, InputSnapshot, InputTick, PixelRequest, PixelSize, PointerEvent, PostError,
+    ScrollUnit, SizeUnit, Transition, UiEvent, UiLink, UpdateEvent, WindowDesc, WindowMetrics,
 };
 
 use super::*;
@@ -381,6 +381,204 @@ frame.on_update(function(update) window.record(update.pointer.events) end)
         observed,
         [("down", "fixture_panel"), ("up", "fixture_panel")]
     );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one integration case checks scale, cancellation, and relayout together"
+)]
+fn a_live_scale_change_keeps_the_scene_hit_layout_and_pointer_in_one_update_generation() {
+    #[derive(Default)]
+    struct Sink(Mutex<Option<ck_render_2d::Snapshot>>);
+    impl ck_render_2d::QuadSink for Sink {
+        fn publish(&self, snapshot: ck_render_2d::Snapshot) -> Option<ck_render_2d::Snapshot> {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .replace(snapshot)
+        }
+    }
+
+    let received: Tables = Arc::default();
+    let record: HostFunction = {
+        let received = Arc::clone(&received);
+        Arc::new(move |arguments| {
+            if let Some(Some(value)) = arguments.first() {
+                received
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(value.clone());
+            }
+            Ok(Vec::new())
+        })
+    };
+    let harness = Harness::new(
+        r#"
+render.set_hit("probe", {{x=0, y=0, width=40, height=40}})
+frame.on_update(function(f)
+  if f.sequence == 1 then render.set_hit("probe", {{x=12, y=0, width=40, height=40}}) end
+  window.record(f)
+end)
+"#,
+        Extras {
+            functions: vec![("record", record)],
+            extensions: vec![frame_extension()],
+            ..Default::default()
+        },
+    );
+    let bridge = Arc::clone(&harness.bridge);
+    let sink = Arc::new(Sink::default());
+    bridge
+        .attach(
+            &WindowDesc {
+                title: "scale change".into(),
+                width: 640,
+                height: 400,
+                clear: [0.0; 3],
+                unit: SizeUnit::Points,
+                resizable: true,
+                min: Some((640, 400)),
+                pixel_request: Some(PixelRequest {
+                    size: (1280, 800),
+                    min: Some((1280, 800)),
+                }),
+            },
+            PixelSize {
+                width: 2560,
+                height: 1600,
+            },
+            Arc::clone(&sink) as Arc<dyn ck_render_2d::QuadSink>,
+        )
+        .expect("attach the UI scene at scale 2");
+    let mut link = CodekarlUi::new(harness.ui.slot.clone()).with_scene_bridge(Arc::clone(&bridge));
+    let point = PointerPosition {
+        x: 10 * 256,
+        y: 12 * 256,
+    };
+    let mut down = idle();
+    down.pointer_held = true;
+    down.pointer_position = Some(point);
+    down.pointer_events = vec![PointerEvent::Down(point)];
+    let mut first_tick = tick(down);
+    first_tick.metrics = WindowMetrics {
+        points: (640, 400),
+        pixels: PixelSize {
+            width: 2560,
+            height: 1600,
+        },
+    };
+    link.input(&first_tick)
+        .expect("capture the initial hit region");
+
+    bridge.set_ui_scale_limit(Some(3));
+    assert!(
+        bridge.hit_regions().is_none(),
+        "the old layout is retired at the scale boundary"
+    );
+    let mut transition = tick(idle());
+    transition.metrics = first_tick.metrics;
+    link.input(&transition).expect("cancel the old capture");
+    assert!(
+        link.state.awaiting_scene_layout.get(),
+        "scale change waits for a relayout"
+    );
+    let mut before_relayout = idle();
+    before_relayout.pointer_held = true;
+    before_relayout.pointer_position = Some(point);
+    before_relayout.pointer_events = vec![PointerEvent::Down(point)];
+    let mut before_relayout_tick = tick(before_relayout);
+    before_relayout_tick.metrics = first_tick.metrics;
+    link.input(&before_relayout_tick)
+        .expect("press before relayout has no current hit region");
+    assert!(
+        link.state.awaiting_scene_layout.get(),
+        "the empty layout has not published since the scale boundary"
+    );
+    let mut before_relayout_up = idle();
+    before_relayout_up.pointer_position = Some(point);
+    before_relayout_up.pointer_events = vec![PointerEvent::Up(point)];
+    let mut before_relayout_up_tick = tick(before_relayout_up);
+    before_relayout_up_tick.metrics = first_tick.metrics;
+    link.input(&before_relayout_up_tick)
+        .expect("release before relayout has no current hit region");
+    let UiEvent::Update(mut frame_update) = update(1) else {
+        unreachable!()
+    };
+    frame_update.metrics = first_tick.metrics;
+    link.post(UiEvent::Update(frame_update))
+        .expect("deliver the new-scale frame");
+    assert_eq!(answer(&mut link).answer, Answer::Returned);
+
+    let tables = received.lock().unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(field(&tables[0], "width"), &ConfigValue::Integer(1706));
+    let ConfigValue::Table(pointer) = field(&tables[0], "pointer") else {
+        panic!("pointer table")
+    };
+    let ConfigValue::Array(events) = pointer.get("events").expect("pointer events") else {
+        panic!("pointer event array")
+    };
+    assert!(events.iter().any(|event| {
+        field(event, "kind") == &ConfigValue::String("down".into())
+            && field(event, "key") == &ConfigValue::String("probe".into())
+    }));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    field(event, "kind"),
+                    ConfigValue::String(kind) if kind == "down" || kind == "map_down"
+                )
+            })
+            .count(),
+        1,
+        "the gap press is not added to the original probe press: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| field(event, "kind") == &ConfigValue::String("cancel".into()))
+    );
+    drop(tables);
+    assert_eq!(
+        sink.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .unwrap()
+            .metrics
+            .ui_scale_k,
+        Some(3)
+    );
+
+    let mut second_down = idle();
+    second_down.pointer_held = true;
+    second_down.pointer_position = Some(point);
+    second_down.pointer_events = vec![PointerEvent::Down(point)];
+    let mut second_tick = tick(second_down);
+    second_tick.metrics = first_tick.metrics;
+    link.input(&second_tick)
+        .expect("hit the relaid-out region with new units");
+    let UiEvent::Update(mut frame_update) = update(2) else {
+        unreachable!()
+    };
+    frame_update.metrics = first_tick.metrics;
+    link.post(UiEvent::Update(frame_update))
+        .expect("deliver input after relayout");
+    assert_eq!(answer(&mut link).answer, Answer::Returned);
+    let tables = received.lock().unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(field(&tables[1], "width"), &ConfigValue::Integer(1706));
+    let ConfigValue::Table(pointer) = field(&tables[1], "pointer") else {
+        panic!("pointer table")
+    };
+    let ConfigValue::Array(events) = pointer.get("events").expect("pointer events") else {
+        panic!("pointer event array")
+    };
+    assert!(events.iter().any(|event| {
+        field(event, "kind") == &ConfigValue::String("down".into())
+            && field(event, "key") == &ConfigValue::String("probe".into())
+    }));
 }
 
 #[test]

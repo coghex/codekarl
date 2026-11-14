@@ -1559,6 +1559,87 @@ fn a_size_change_reaches_the_presenter_whole_and_once_before_the_tick_that_carri
     );
 }
 
+#[test]
+fn a_resize_request_size_change_reaches_the_presenter_and_next_update() {
+    owned(
+        module_path!(),
+        "a_resize_request_size_change_reaches_the_presenter_and_next_update",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let clock = FakeClock::new();
+            let mut rig = Rig::empty();
+            let update_settings =
+                UpdateSettings::new(60, Duration::from_millis(20)).expect("valid settings");
+            update_settings.control().set(true);
+            rig.settings = LoopSettings::default().with_updates(update_settings);
+            rig.backend.deadline_supported = true;
+            let fake_time = clock.clone();
+            rig.backend.deadline_hook = Some(Box::new(move |deadline| fake_time.set(deadline)));
+            lock(&rig.presenter.reports).push_back(PresenterReport::FirstFrameQueued);
+            rig.writer
+                .open(ck_window::WindowDesc {
+                    resizable: true,
+                    ..crate::fakes::desc()
+                })
+                .expect("resizable open");
+            // The request is made during the first pass and delivered to the backend after it.
+            // The native event on the next pass is the OS's resulting size, in physical pixels.
+            rig.backend.script.extend([
+                vec![],
+                vec![NativeEvent::SizeChanged {
+                    points: (960, 720),
+                    pixels: PixelSize {
+                        width: 1920,
+                        height: 1440,
+                    },
+                }],
+            ]);
+            let writer = rig.writer.clone();
+            let ui = Arc::clone(&rig.ui);
+            let quit = Arc::clone(&rig.quit);
+            let notifier = Arc::clone(&rig.notifier);
+            rig.backend.hook = Some(Box::new(move |call| {
+                if call.index == 1 {
+                    writer.resize((960, 720)).expect("resize request");
+                }
+                if ui.ticks().len() >= 2 {
+                    quit.store(true, Ordering::SeqCst);
+                    notifier.wake();
+                }
+            }));
+            let ran = rig.run_collect_with_clock(&clock);
+            assert_eq!(ran.end, LoopEnd::Quit);
+            assert!(
+                ran.log
+                    .iter()
+                    .any(|line| line == "backend.resize_window (960, 720)"),
+                "the request reached the backend: {:?}",
+                ran.log
+            );
+            assert!(
+                ran.log
+                    .iter()
+                    .any(|line| line == "presenter.set_size 960x720 points 1920x1440 pixels"),
+                "the native result reached the presenter: {:?}",
+                ran.log
+            );
+            assert!(
+                ran.ticks.iter().any(|tick| {
+                    tick.metrics.points == (960, 720)
+                        && tick.metrics.pixels
+                            == PixelSize {
+                                width: 1920,
+                                height: 1440,
+                            }
+                }),
+                "the next update carries the native pixel dimensions: {:?}",
+                ran.ticks
+            );
+        },
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Typed entries (CK-314): one ordered list through the mapper and the input tick
 // ---------------------------------------------------------------------------------------------

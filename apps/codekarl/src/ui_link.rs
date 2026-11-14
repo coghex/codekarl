@@ -358,6 +358,10 @@ struct State {
     last_points: Cell<Option<PointerPosition>>,
     /// The metrics of the latest input tick: what converts the map's hover positions to the UI's units when they are delivered.
     last_metrics: Cell<Option<ck_window::WindowMetrics>>,
+    /// The UI scale of the last input tick, so a live scale change ends any capture before routing again.
+    last_scale_k: Cell<Option<u32>>,
+    /// A scene scale changed but the UI has not yet published hit regions in the new units.
+    awaiting_scene_layout: Cell<bool>,
     /// The input the UI VM has not been given yet; cleared when a post carrying it was accepted.
     stash: RefCell<InputStash>,
     /// The `frame.on_update` registration generation the previous input tick saw.
@@ -1264,6 +1268,10 @@ impl UiLink for CodekarlUi {
 
     /// One input tick, on the main thread, never waiting: the map controller and the time controls take it, and the UI's share goes
     /// to the stash (trimmed as the `frame.on_update` registration says).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the scale-boundary transition must route one coherent input tick"
+    )]
     fn input(&mut self, tick: &InputTick) -> Result<(), String> {
         let regions = if let Some(scene) = &self.scene {
             scene.hit_regions()
@@ -1275,6 +1283,32 @@ impl UiLink for CodekarlUi {
         // In a window opened in pixels the UI works in UI units: the scale follows the drawable, and one conversion serves the Lua events, the
         // hit tests and the hover. The map's own input stays in points.
         let units = self.unit_map(tick.metrics);
+        let scale_k = self
+            .scene
+            .as_ref()
+            .and_then(|scene| scene.ui_scale(tick.metrics.pixels));
+        let previous_scale_k = self.state.last_scale_k.replace(scale_k);
+        let scale_changed = previous_scale_k.is_some_and(|old| Some(old) != scale_k);
+        let awaiting_scene_layout = if scale_changed && self.scene.is_some() {
+            self.state.awaiting_scene_layout.set(true);
+            true
+        } else if self.state.awaiting_scene_layout.get() && regions.is_some() {
+            self.state.awaiting_scene_layout.set(false);
+            false
+        } else {
+            self.state.awaiting_scene_layout.get()
+        };
+        let mut input = tick.input.clone();
+        if scale_changed {
+            // A held gesture belongs to the old unit map. Cancel it and discard this tick's detailed pointer events;
+            // the held state remains, so it cannot be captured again until release.
+            input.reset = true;
+            input.pointer_events.clear();
+        } else if awaiting_scene_layout {
+            // The old hit regions were retired at the scale boundary. A press before the new layout publishes
+            // belongs to neither that old UI nor the map's differently scaled pointer space.
+            input.pointer_events.clear();
+        }
         self.state.last_metrics.set(Some(tick.metrics));
         let previous_ui = self
             .state
@@ -1283,22 +1317,16 @@ impl UiLink for CodekarlUi {
             .pointer()
             .map(|pointer| pointer.position);
         let previous_points = self.state.last_points.get();
-        let latest_points = tick.input.pointer_position.or(previous_points);
+        let latest_points = input.pointer_position.or(previous_points);
         self.state.last_points.set(latest_points);
         let latest_position = tick
             .input
             .pointer_position
             .map(|position| units.map_or(position, |map| map.position(position)))
             .or(previous_ui);
-        let (block_began, game_input) = self.key_block(&tick.input);
+        let (block_began, game_input) = self.key_block(&input);
         let mut owner = self.state.pointer_owner.borrow_mut();
-        let routed = route_pointer_with(
-            &mut owner,
-            &tick.input,
-            regions.as_deref(),
-            units,
-            block_began,
-        );
+        let routed = route_pointer_with(&mut owner, &input, regions.as_deref(), units, block_began);
         let latest_over = latest_position
             .and_then(|position| {
                 regions
@@ -1307,21 +1335,21 @@ impl UiLink for CodekarlUi {
             })
             .map(str::to_owned);
         let map_owns_gesture = matches!(*owner, GestureOwner::Map);
-        let suppress_hover = tick.input.reset
-            || tick.input.pointer_held
+        let suppress_hover = input.reset
+            || input.pointer_held
             || matches!(*owner, GestureOwner::Ui(_))
             || latest_over.is_some();
         if let Some(map) = &self.map {
             let mut map_tick = tick.clone();
+            map_tick.input = input.clone();
             if let Some(filtered) = &game_input {
                 map_tick.input.actions.clone_from(&filtered.actions);
             }
             map_tick.input.pointer_events.clear();
-            map_tick.input.pointer_position = map_owns_gesture
-                .then_some(tick.input.pointer_position)
-                .flatten();
-            map_tick.input.pointer_held = map_owns_gesture && tick.input.pointer_held;
-            map_tick.input.pointer_overflow = map_owns_gesture && tick.input.pointer_overflow;
+            map_tick.input.pointer_position =
+                map_owns_gesture.then_some(input.pointer_position).flatten();
+            map_tick.input.pointer_held = map_owns_gesture && input.pointer_held;
+            map_tick.input.pointer_overflow = map_owns_gesture && input.pointer_overflow;
             let hover_position = if !suppress_hover && !map_owns_gesture {
                 latest_points
             } else {
@@ -1332,34 +1360,34 @@ impl UiLink for CodekarlUi {
                 &routed.map,
                 hover_position,
                 suppress_hover,
-                tick.input.pointer_overflow,
+                input.pointer_overflow,
             )?;
         }
-        if map_owns_gesture && tick.input.pointer_overflow && !tick.input.pointer_held {
+        if map_owns_gesture && input.pointer_overflow && !input.pointer_held {
             *owner = GestureOwner::Idle;
         }
-        self.send_controls(game_input.as_ref().unwrap_or(&tick.input));
+        self.send_controls(game_input.as_ref().unwrap_or(&input));
         let mut stash = self.state.stash.borrow_mut();
         // A registration since the previous look at it (a tick or a post): what was gathered before it is never delivered.
         let registered = self.observe_registration(&mut stash);
         if registered {
-            stash.absorb(&tick.input);
+            stash.absorb(&input);
             stash.absorb_pointer(
                 latest_position.map(|position| crate::input_stash::PointerView {
                     position,
-                    held: tick.input.pointer_held,
+                    held: input.pointer_held,
                     over: latest_over,
                 }),
                 routed.ui,
-                tick.input.pointer_overflow,
+                input.pointer_overflow,
             );
         } else {
             // No callback: the stash follows only each action's held state, and everything that was an event is dropped.
-            stash.follow_held(&tick.input);
+            stash.follow_held(&input);
             stash.absorb_pointer(
                 latest_position.map(|position| crate::input_stash::PointerView {
                     position,
-                    held: tick.input.pointer_held,
+                    held: input.pointer_held,
                     over: latest_over,
                 }),
                 [],

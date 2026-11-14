@@ -44,6 +44,87 @@ pub(crate) const FRAME_UPDATE: &str = "frame_update";
 /// run, or a backend that gave none), where a size in pixels resolves at one pixel per point with no limit on the screen's size.
 pub(crate) type ScreenCell = Arc<OnceLock<ScreenSnapshot>>;
 
+/// The settings API's nonblocking resize handle, sharing the window loop's request slot and startup screen snapshot.
+#[derive(Clone)]
+pub(crate) struct ResizeSession {
+    writer: RequestWriter,
+    screen: ScreenCell,
+    headless: Option<Arc<HeadlessNotes>>,
+}
+
+pub(crate) struct ResizeResult {
+    pub(crate) kept: (u32, u32),
+    pub(crate) used: (u32, u32),
+}
+
+impl ResizeSession {
+    pub(crate) fn new(
+        writer: RequestWriter,
+        screen: ScreenCell,
+        headless: Option<Arc<HeadlessNotes>>,
+    ) -> Self {
+        Self {
+            writer,
+            screen,
+            headless,
+        }
+    }
+
+    /// Returns the valid resolution kept and the screen-limited pixel size used by the window.
+    pub(crate) fn resize(&self, requested: (u32, u32)) -> Result<ResizeResult, String> {
+        let screen = self
+            .screen
+            .get()
+            .copied()
+            .unwrap_or_else(ScreenSnapshot::unlimited);
+        let backing = if screen.backing.is_finite() && screen.backing > 0.0 {
+            screen.backing
+        } else {
+            1.0
+        };
+        let screen_pixels = |points: u32| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a nonnegative finite screen extent rounded to pixels"
+            )]
+            {
+                (f64::from(points) * backing)
+                    .round()
+                    .clamp(0.0, f64::from(u32::MAX)) as u32
+            }
+        };
+        let visible = (
+            screen_pixels(screen.visible_points.0),
+            screen_pixels(screen.visible_points.1),
+        );
+        let kept = (
+            requested.0.min(visible.0).clamp(1280, MAX_DIMENSION),
+            requested.1.min(visible.1).clamp(800, MAX_DIMENSION),
+        );
+        let used = (kept.0.min(visible.0), kept.1.min(visible.1));
+        let points = |pixels: u32| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a positive finite pixel quotient rounded up"
+            )]
+            {
+                (f64::from(pixels) / backing)
+                    .ceil()
+                    .clamp(1.0, f64::from(MAX_DIMENSION)) as u32
+            }
+        };
+        self.writer
+            .resize((points(used.0), points(used.1)))
+            .map_err(str::to_owned)?;
+        if let Some(headless) = &self.headless {
+            headless.accepted_write();
+        }
+        Ok(ResizeResult { kept, used })
+    }
+}
+
 /// The record text of the first accepted `open` in a headless run.
 const IGNORED: &str = "window.open ignored: headless run";
 /// The record text of the first accepted `render` call in a headless run.
@@ -450,7 +531,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicUsize;
-    use std::sync::{Mutex, PoisonError};
+    use std::sync::{Mutex, OnceLock, PoisonError};
     use std::time::{Duration, Instant};
 
     use ck_lua::{CallOutcome, VmOwner, VmSettings};
@@ -974,6 +1055,60 @@ mod tests {
         assert_eq!(
             at(2.0, "title='t', width=800, height=600, clear={0,0,0}"),
             integers(800, 600)
+        );
+    }
+
+    #[test]
+    fn resize_keeps_supported_resolution_but_uses_the_screen_limited_size() {
+        let requests = Requests::new();
+        let writer = requests.writer(Notifier::new());
+        writer
+            .open(WindowDesc {
+                title: "resize".into(),
+                width: 1280,
+                height: 800,
+                clear: [0.0; 3],
+                resizable: true,
+                min: Some((1280, 800)),
+                ..Default::default()
+            })
+            .expect("open a resizable window");
+        let screen = Arc::new(OnceLock::new());
+        screen
+            .set(ScreenSnapshot {
+                backing: 1.0,
+                visible_points: (20_000, 12_000),
+            })
+            .expect("set screen");
+        let resize = ResizeSession::new(writer, screen, None);
+        let result = resize
+            .resize((20_000, 12_000))
+            .expect("clamp valid dimensions");
+        assert_eq!(result.kept, (MAX_DIMENSION, 12_000));
+        assert_eq!(result.used, (MAX_DIMENSION, 12_000));
+        assert_eq!(
+            requests.reader().take().resize,
+            Some((MAX_DIMENSION, 12_000))
+        );
+
+        let headless = Requests::new();
+        let writer = headless.writer(Notifier::new());
+        writer
+            .open(WindowDesc {
+                title: "headless".into(),
+                width: 1280,
+                height: 800,
+                clear: [0.0; 3],
+                resizable: true,
+                ..Default::default()
+            })
+            .expect("open headless request");
+        let result = ResizeSession::new(writer, Arc::new(OnceLock::new()), None)
+            .resize((20_000, 1200))
+            .expect("headless clamp");
+        assert_eq!(
+            (result.kept, result.used),
+            ((MAX_DIMENSION, 1200), (MAX_DIMENSION, 1200))
         );
     }
 }

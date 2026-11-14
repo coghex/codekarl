@@ -37,6 +37,8 @@ struct RawInfo {
     content_min_height: f64,
     gravity_top_left: i32,
     full_screen_primary: i32,
+    frame_left: f64,
+    frame_top: f64,
 }
 
 #[repr(C)]
@@ -225,6 +227,8 @@ pub(crate) struct WindowInfo {
     pub(crate) title: String,
     /// The content size in points.
     pub(crate) content_size: (f64, f64),
+    /// The window frame's top-left position in screen coordinates.
+    pub(crate) frame_top_left: (f64, f64),
     /// The buttons.
     pub(crate) style: Style,
     /// How it behaves.
@@ -281,6 +285,8 @@ pub(crate) fn info() -> WindowInfo {
         content_min_height: 0.0,
         gravity_top_left: 0,
         full_screen_primary: 0,
+        frame_left: 0.0,
+        frame_top: 0.0,
     };
     // SAFETY: main thread; `raw` is valid for the call, which fills the whole structure.
     unsafe { ck_win_test_info(&raw mut raw) };
@@ -292,6 +298,7 @@ pub(crate) fn info() -> WindowInfo {
         visible: raw.visible != 0,
         title,
         content_size: (raw.content_width, raw.content_height),
+        frame_top_left: (raw.frame_left, raw.frame_top),
         style: Style {
             titled: raw.titled != 0,
             closable: raw.closable != 0,

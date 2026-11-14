@@ -81,6 +81,18 @@ impl UpdateControl {
         }
     }
 
+    /// Wakes the loop and starts a fresh update epoch without changing whether updates are enabled.
+    pub fn wake(&self) {
+        let notifier = {
+            let mut state = self.lock();
+            state.epoch = state.epoch.saturating_add(1);
+            state.notifier.upgrade()
+        };
+        if let Some(notifier) = notifier {
+            notifier.wake();
+        }
+    }
+
     /// The current enabled flag and its registration identity.
     pub(crate) fn state(&self) -> (bool, u64) {
         let state = self.lock();
