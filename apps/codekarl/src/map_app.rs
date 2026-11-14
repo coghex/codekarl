@@ -1222,6 +1222,7 @@ pub(crate) mod tests {
                 typed: Vec::new(),
                 typed_lost: false,
                 typed_epoch: 0,
+                capture: None,
             },
         }
     }

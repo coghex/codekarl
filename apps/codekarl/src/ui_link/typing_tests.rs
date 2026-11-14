@@ -25,6 +25,7 @@ end
 local function entry_text(entry) return entry.kind .. (entry.text ~= nil and (":" .. entry.text) or "") end
 local function editor_widget(name)
   local widget = {}
+  function widget.on_apply() window.record(name .. " apply") end
   function widget.on_typed(_, entry)
     window.record(name .. " " .. entry_text(entry))
     -- Enter applies the field: its editing ends part way through the update's typing.
@@ -53,8 +54,21 @@ end
 region("field_a", 0, A)
 region("field_b", 60, B)
 region("elsewhere", 120, nil)
+render.set_hit("capture", {{x = 180, y = 0, width = 40, height = 40}}, w.content)
+pointer.register("capture", {
+  on_event = function(_, event)
+    if event.kind == "down" then
+      game.set_modal(true)
+      typing.capture("capture-row", function(id) window.record("capture " .. id) end)
+      window.record("start_during_capture " .. tostring(typing.start(B)))
+    end
+  end,
+  on_hover = function() end,
+  on_overflow = function() end,
+}, w)
 frame.on_update(function(f)
   typing.dispatch(f)
+  if f.capture ~= nil then window.record("capture_result " .. f.capture.id) end
   pointer.dispatch(f.pointer)
   local who = typing.editing() == A and "A" or (typing.editing() == B and "B" or "none")
   window.record("frame epoch=" .. f.typed_epoch .. " typed=" .. #f.typed .. " lost=" .. tostring(f.typed_lost) .. " editing=" .. who)
@@ -83,6 +97,7 @@ fn field_point(key: &str) -> (f64, f64) {
     let x = match key {
         "field_a" => 0.0,
         "field_b" => 60.0,
+        "capture" => 180.0,
         _ => 120.0,
     };
     (106.0 + x + 20.0, 86.0 + 20.0)
@@ -423,5 +438,116 @@ fn starting_again_on_the_widget_already_editing_goes_on_in_the_same_session_and_
         notes(&rig)
             .last()
             .is_some_and(|line| line.ends_with("editing=B"))
+    );
+}
+
+#[test]
+fn capture_applies_and_ends_the_editor_and_refuses_new_editing_until_its_result() {
+    let mut rig = rig();
+    editing_a(&mut rig);
+    let before_capture = notes(&rig).len();
+    update(&mut rig, &[], &press("capture"));
+    assert!(
+        rig.controls.keys_blocked(),
+        "capture can be started while the game's modal key block is active"
+    );
+    let capture_notes = since(&rig, before_capture);
+    assert!(
+        capture_notes.contains(&"A apply".to_owned()),
+        "{capture_notes:?}"
+    );
+    assert!(
+        capture_notes.contains(&"call false 2".to_owned()),
+        "{capture_notes:?}"
+    );
+    assert!(
+        capture_notes.contains(&"capture capture-row".to_owned()),
+        "{capture_notes:?}"
+    );
+    assert!(
+        capture_notes.contains(&"start_during_capture false".to_owned()),
+        "a widget cannot start a typing session while a capture is waiting: {capture_notes:?}"
+    );
+
+    let before_typed = notes(&rig).len();
+    update(&mut rig, &chars("q"), &[]);
+    let typed_notes = since(&rig, before_typed);
+    assert!(
+        !typed_notes
+            .iter()
+            .any(|line| line == "A char:q" || line == "B char:q"),
+        "the capture and typed-entry route never share a key: {typed_notes:?}"
+    );
+
+    rig.mapper.replace_bindings(
+        ck_input::Bindings::from_entries([
+            ("close".to_owned(), vec!["Escape".to_owned()]),
+            ("time_pause".to_owned(), vec!["Escape".to_owned()]),
+        ])
+        .expect("close and a modal game action share the captured key"),
+    );
+    rig.mapper.arm_capture("capture-row".to_owned());
+    rig.mapper.key(ck_input::Key::Escape, true, false);
+    let captured_input = rig.mapper.snapshot();
+    assert!(
+        captured_input.capture.is_some(),
+        "the modal key was captured"
+    );
+    assert!(
+        captured_input.transitions.is_empty(),
+        "capture adds neither a blocked game action nor a close transition: {:?}",
+        captured_input.transitions
+    );
+    assert_eq!(
+        rig.mapper.take_close_presses(),
+        0,
+        "capture does not close the window"
+    );
+    rig.feed(&[]);
+    rig.deliver_fixture_frame();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "capture_result capture-row"),
+        "the result ends the library's capture guard"
+    );
+
+    let before_next_editor = notes(&rig).len();
+    update(&mut rig, &[], &press("field_b"));
+    rig.mapper.reset_typed(3);
+    update(&mut rig, &chars("z"), &[]);
+    let next_notes = since(&rig, before_next_editor);
+    assert!(
+        next_notes.contains(&"B char:z".to_owned()),
+        "{next_notes:?}"
+    );
+}
+
+#[test]
+fn capture_without_an_editor_still_blocks_a_new_typing_session_until_its_result() {
+    let mut rig = rig();
+    let before = notes(&rig).len();
+    update(&mut rig, &[], &press("capture"));
+    let captured = since(&rig, before);
+    assert!(
+        captured.contains(&"capture capture-row".to_owned()),
+        "{captured:?}"
+    );
+    assert!(
+        captured.contains(&"start_during_capture false".to_owned()),
+        "the capture guard also applies when there was no editor: {captured:?}"
+    );
+    assert!(
+        !captured.iter().any(|line| line.ends_with(" apply")),
+        "{captured:?}"
+    );
+    let before_typed = notes(&rig).len();
+    update(&mut rig, &chars("q"), &[]);
+    let typed = since(&rig, before_typed);
+    assert!(
+        !typed
+            .iter()
+            .any(|line| line == "A char:q" || line == "B char:q"),
+        "no editor can receive a character while capture waits: {typed:?}"
     );
 }

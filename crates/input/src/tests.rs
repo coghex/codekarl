@@ -1349,3 +1349,241 @@ fn resetting_typed_input_discards_entries_and_the_loss_and_sets_the_epoch() {
     mapper.focus_lost();
     assert_eq!(mapper.snapshot().typed, [TypedEntry::Char('b')]);
 }
+
+#[test]
+fn capture_owns_the_key_through_repeats_release_and_resync_without_a_close_press() {
+    let mut mapper = Mapper::new(bindings(&[("close", &["Escape"]), ("action", &["KeyQ"])]));
+    mapper.arm_capture("slot-1".to_owned());
+    mapper.key(Key::Escape, true, false);
+    mapper.key(Key::Escape, true, true);
+    let mut resync = KeyStates::new();
+    resync.set_held(Key::Escape);
+    resync.set_pressed(Key::Escape);
+    resync.set_released(Key::Escape);
+    mapper.resync(&resync);
+    mapper.key(Key::Escape, true, true);
+    mapper.key(Key::Escape, false, false);
+    let result = mapper.snapshot();
+    assert_eq!(
+        result.capture,
+        Some(CaptureResult {
+            id: "slot-1".to_owned(),
+            outcome: CaptureOutcome::Binding("Escape".to_owned()),
+        })
+    );
+    assert!(
+        !result
+            .actions
+            .iter()
+            .find(|action| action.name == "close")
+            .unwrap()
+            .pressed
+    );
+    assert_eq!(mapper.take_close_presses(), 0);
+
+    let up = KeyStates::new();
+    mapper.resync(&up);
+    mapper.key(Key::Escape, true, false);
+    assert!(
+        mapper
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.name == "close")
+            .unwrap()
+            .pressed
+    );
+}
+
+#[test]
+fn capture_includes_backspace_and_a_missed_down_repeat_but_leaves_preheld_keys_alone() {
+    let mut mapper = Mapper::new(bindings(&[
+        ("close", &["Escape"]),
+        ("held_before_capture", &["KeyA"]),
+        ("backspace_action", &["Backspace"]),
+    ]));
+    mapper.key(Key::KeyA, true, false);
+    assert!(
+        mapper
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.name == "held_before_capture")
+            .unwrap()
+            .held
+    );
+
+    mapper.arm_capture("backspace-slot".to_owned());
+    mapper.key(Key::KeyA, true, true);
+    mapper.key(Key::KeyA, false, false);
+    mapper.key(Key::Backspace, true, true);
+    mapper.key(Key::Backspace, true, true);
+    mapper.key(Key::Backspace, false, false);
+    let captured = mapper.snapshot();
+    assert_eq!(
+        captured.capture.unwrap().outcome,
+        CaptureOutcome::Binding("Backspace".to_owned())
+    );
+    assert!(
+        captured
+            .actions
+            .iter()
+            .find(|action| action.name == "held_before_capture")
+            .unwrap()
+            .released
+    );
+    assert!(
+        !captured
+            .actions
+            .iter()
+            .find(|action| action.name == "backspace_action")
+            .unwrap()
+            .pressed
+    );
+    assert_eq!(mapper.take_close_presses(), 0);
+
+    mapper.key(Key::Backspace, true, false);
+    assert!(
+        mapper
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.name == "backspace_action")
+            .unwrap()
+            .pressed
+    );
+}
+
+#[test]
+fn capture_keeps_modifier_state_and_reports_modifier_prefixes() {
+    let mut mapper = Mapper::new(bindings(&[]));
+    mapper.arm_capture("slot-2".to_owned());
+    mapper.key(Key::ShiftLeft, true, false);
+    assert!(
+        mapper.snapshot().capture.is_none(),
+        "a modifier by itself does not finish capture"
+    );
+    mapper.key(Key::KeyQ, true, false);
+    assert_eq!(
+        mapper.snapshot().capture.unwrap().outcome,
+        CaptureOutcome::Binding("Shift+KeyQ".to_owned())
+    );
+}
+
+#[test]
+fn capture_cancellation_and_replacement_return_one_reasoned_result() {
+    let mut mapper = Mapper::new(bindings(&[]));
+    mapper.arm_capture("old".to_owned());
+    mapper.arm_capture("new".to_owned());
+    let replaced = mapper.snapshot();
+    assert_eq!(
+        replaced.capture.unwrap(),
+        CaptureResult {
+            id: "old".to_owned(),
+            outcome: CaptureOutcome::Cancelled(CaptureCancelReason::Replaced),
+        }
+    );
+    mapper.acknowledge(replaced.sequence);
+    mapper.focus_lost();
+    assert_eq!(
+        mapper.snapshot().capture.unwrap(),
+        CaptureResult {
+            id: "new".to_owned(),
+            outcome: CaptureOutcome::Cancelled(CaptureCancelReason::Focus),
+        }
+    );
+}
+
+#[test]
+fn replacing_bindings_is_whole_and_does_not_make_a_new_held_key_press() {
+    let mut mapper = Mapper::new(bindings(&[("first", &["KeyA"]), ("second", &["KeyB"])]));
+    mapper.key(Key::KeyA, true, false);
+    let before = mapper.snapshot();
+    assert!(
+        before
+            .actions
+            .iter()
+            .find(|action| action.name == "first")
+            .unwrap()
+            .held
+    );
+    mapper.replace_bindings(bindings(&[("first", &["KeyB"]), ("second", &["KeyA"])]));
+    let after = mapper.snapshot();
+    assert!(
+        !after
+            .actions
+            .iter()
+            .find(|action| action.name == "first")
+            .unwrap()
+            .held
+    );
+    assert!(
+        !after
+            .actions
+            .iter()
+            .find(|action| action.name == "second")
+            .unwrap()
+            .held
+    );
+    assert!(
+        after
+            .actions
+            .iter()
+            .find(|action| action.name == "first")
+            .unwrap()
+            .released
+    );
+    mapper.key(Key::KeyA, false, false);
+    mapper.key(Key::KeyA, true, false);
+    assert!(
+        mapper
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.name == "second")
+            .unwrap()
+            .held
+    );
+}
+
+#[test]
+fn a_focus_loss_releases_a_replacement_key_inhibited_until_its_next_press() {
+    let mut mapper = Mapper::new(bindings(&[("old", &["KeyA"]), ("new", &["KeyB"])]));
+    mapper.key(Key::KeyA, true, false);
+    mapper.replace_bindings(bindings(&[("old", &["KeyB"]), ("new", &["KeyA"])]));
+
+    mapper.focus_lost();
+    mapper.key(Key::KeyA, true, false);
+
+    let after = mapper.snapshot();
+    assert!(
+        after
+            .actions
+            .iter()
+            .find(|action| action.name == "new")
+            .unwrap()
+            .pressed,
+        "focus loss released the formerly held key, so its next press must start the new binding"
+    );
+}
+
+#[test]
+fn a_resync_key_up_releases_a_replacement_key_inhibited_until_its_next_press() {
+    let mut mapper = Mapper::new(bindings(&[("old", &["KeyA"]), ("new", &["KeyB"])]));
+    mapper.key(Key::KeyA, true, false);
+    mapper.replace_bindings(bindings(&[("old", &["KeyB"]), ("new", &["KeyA"])]));
+
+    mapper.resync(&KeyStates::new());
+    mapper.key(Key::KeyA, true, false);
+
+    let after = mapper.snapshot();
+    assert!(
+        after
+            .actions
+            .iter()
+            .find(|action| action.name == "new")
+            .unwrap()
+            .pressed,
+        "a resync reporting the key up released the inhibition before its next press"
+    );
+}

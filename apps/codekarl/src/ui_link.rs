@@ -223,6 +223,9 @@ fn update_table_in(
             ConfigValue::Integer(i64::try_from(stash.typed_epoch()).unwrap_or(i64::MAX)),
         ),
     ]);
+    if let Some(capture) = stash.capture() {
+        fields.insert("capture".to_owned(), capture_table(capture));
+    }
     if let Some(pointer) = stash.pointer() {
         fields.insert(
             "pointer".to_owned(),
@@ -240,6 +243,30 @@ fn update_table_in(
         );
     }
     Ok(ConfigValue::Table(fields))
+}
+
+fn capture_table(capture: &ck_window::CaptureResult) -> ConfigValue {
+    let (kind, value) = match &capture.outcome {
+        ck_window::CaptureOutcome::Binding(binding) => {
+            ("binding", ConfigValue::String(binding.clone()))
+        }
+        ck_window::CaptureOutcome::Cancelled(reason) => (
+            "cancelled",
+            ConfigValue::String(
+                match reason {
+                    ck_window::CaptureCancelReason::Replaced => "replaced",
+                    ck_window::CaptureCancelReason::Requested => "requested",
+                    ck_window::CaptureCancelReason::Focus => "focus",
+                }
+                .to_owned(),
+            ),
+        ),
+    };
+    ConfigValue::Table(BTreeMap::from([
+        ("id".to_owned(), ConfigValue::String(capture.id.clone())),
+        ("kind".to_owned(), ConfigValue::String(kind.to_owned())),
+        ("value".to_owned(), value),
+    ]))
 }
 
 /// One typed entry as the update's table.
@@ -2232,6 +2259,7 @@ mod tests {
             typed: Vec::new(),
             typed_lost: false,
             typed_epoch: 0,
+            capture: None,
             reset: false,
             overflow_count: 3,
         }

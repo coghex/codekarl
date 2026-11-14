@@ -1,12 +1,48 @@
 //! Normalised keys and focus in the loop (CK-121): `Key`, `KeyResync`, `FocusLost` and `FocusGained` drive the loop's
 //! `ck-input` mapper, and the close action replaces the hardcoded Escape on the native path.
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use ck_input::{Bindings, Key, KeyStates};
-use ck_window::{Answer, CloseSource, LoopEnd, LoopSettings, NativeEvent};
+use ck_window::{
+    Answer, Clock, CloseSource, LoopEnd, LoopSettings, NativeEvent, PixelSize, PresenterReport,
+    TypedEntry, UpdateSettings,
+};
 
 use crate::fakes::{DEADLINE, Rig, lock, owned, scenario};
+
+#[derive(Clone)]
+struct InputClock {
+    base: Instant,
+    nanos: Arc<AtomicU64>,
+}
+
+impl InputClock {
+    fn new() -> Self {
+        Self {
+            base: Instant::now(),
+            nanos: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn set(&self, at: Instant) {
+        let nanos = at.saturating_duration_since(self.base).as_nanos();
+        self.nanos.store(
+            u64::try_from(nanos).expect("test instant fits"),
+            Ordering::SeqCst,
+        );
+    }
+}
+
+impl Clock for InputClock {
+    fn now(&self) -> Instant {
+        self.base
+            .checked_add(Duration::from_nanos(self.nanos.load(Ordering::SeqCst)))
+            .expect("test instant fits")
+    }
+}
 
 fn press() -> ck_window::UiEvent {
     ck_window::UiEvent::CloseRequested {
@@ -103,6 +139,151 @@ fn a_close_action_press_requests_a_close_with_the_source_key() {
             let (posts, end) = run(vec![vec![down(Key::Escape)]], &[Answer::Accept], |_| {});
             assert_eq!(end, LoopEnd::Closed);
             assert_eq!(posts, [press()]);
+        },
+    );
+}
+
+#[test]
+fn an_armed_capture_consumes_escape_before_the_close_action_and_owns_repeats_until_release() {
+    owned(
+        module_path!(),
+        "an_armed_capture_consumes_escape_before_the_close_action_and_owns_repeats_until_release",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let mut rig = Rig::new();
+            rig.writer.capture_key("menu-row");
+            rig.backend.script.push_back(vec![
+                down(Key::Escape),
+                repeat(Key::Escape),
+                up(Key::Escape),
+            ]);
+            rig.quit_at_pump(2);
+            let ran = rig.run_collect();
+            assert_eq!(ran.end, LoopEnd::Quit);
+            assert!(
+                ran.posts.is_empty(),
+                "the captured Escape and its repeat did not reach the close action"
+            );
+        },
+    );
+}
+
+#[test]
+fn capture_keeps_text_input_off_for_later_on_requests_and_drops_typed_entries() {
+    owned(
+        module_path!(),
+        "capture_keeps_text_input_off_for_later_on_requests_and_drops_typed_entries",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let mut rig = Rig::new();
+            rig.writer.capture_key("capture-row");
+            rig.writer.set_text_input(true);
+            let writer = rig.writer.clone();
+            let quit = Arc::clone(&rig.quit);
+            let notifier = Arc::clone(&rig.notifier);
+            rig.backend.hook = Some(Box::new(move |call| {
+                if call.index == 3 {
+                    writer.set_text_input(true);
+                }
+                if call.index == 4 {
+                    quit.store(true, Ordering::SeqCst);
+                    notifier.wake();
+                }
+            }));
+            rig.backend.script.extend([
+                Vec::new(),
+                vec![
+                    down(Key::KeyQ),
+                    NativeEvent::Typed(TypedEntry::Char('q')),
+                    repeat(Key::KeyQ),
+                    NativeEvent::Typed(TypedEntry::Char('q')),
+                ],
+                Vec::new(),
+            ]);
+            let updates =
+                UpdateSettings::new(60, Duration::from_millis(100)).expect("valid update settings");
+            updates.control().set(true);
+            rig.settings = LoopSettings::default().with_updates(updates);
+            rig.backend.deadline_supported = true;
+            let clock = InputClock::new();
+            let advance = clock.clone();
+            rig.backend.deadline_hook = Some(Box::new(move |deadline| advance.set(deadline)));
+            lock(&rig.presenter.reports).push_back(PresenterReport::FirstFrameQueued);
+
+            let ran = rig.run_collect_with_clock(&clock);
+            assert_eq!(ran.end, LoopEnd::Quit);
+            assert!(
+                !ran.log
+                    .iter()
+                    .any(|line| line == "backend.set_text_input true"),
+                "the loop refuses text input while the capture is armed or owns its key: {:?}",
+                ran.log
+            );
+            assert!(
+                ran.ticks.iter().all(|tick| tick.input.typed.is_empty()),
+                "neither the captured press nor its repeat enters typed input: {:?}",
+                ran.ticks
+                    .iter()
+                    .map(|tick| &tick.input.typed)
+                    .collect::<Vec<_>>()
+            );
+        },
+    );
+}
+
+#[test]
+fn a_capture_cancel_request_and_a_zero_size_each_release_escape_for_the_close_action() {
+    owned(
+        module_path!(),
+        "a_capture_cancel_request_and_a_zero_size_each_release_escape_for_the_close_action",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let mut cancelled = Rig::new();
+            cancelled.writer.capture_key("menu-row");
+            cancelled
+                .ui
+                .close_answers
+                .lock()
+                .unwrap()
+                .push_back(Answer::Accept);
+            let writer = cancelled.writer.clone();
+            cancelled.backend.hook = Some(Box::new(move |call| {
+                if call.index == 1 {
+                    writer.cancel_key_capture();
+                }
+            }));
+            cancelled
+                .backend
+                .script
+                .extend([Vec::new(), vec![down(Key::Escape)]]);
+            let cancelled = cancelled.run_collect();
+            assert_eq!(cancelled.end, LoopEnd::Closed);
+            assert_eq!(cancelled.posts, [press()]);
+
+            let mut zero_size = Rig::new();
+            zero_size.writer.capture_key("menu-row");
+            zero_size
+                .ui
+                .close_answers
+                .lock()
+                .unwrap()
+                .push_back(Answer::Accept);
+            zero_size.backend.script.extend([
+                vec![NativeEvent::SizeChanged {
+                    points: (0, 0),
+                    pixels: PixelSize {
+                        width: 0,
+                        height: 0,
+                    },
+                }],
+                vec![down(Key::Escape)],
+            ]);
+            let zero_size = zero_size.run_collect();
+            assert_eq!(zero_size.end, LoopEnd::Closed);
+            assert_eq!(zero_size.posts, [press()]);
         },
     );
 }

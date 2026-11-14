@@ -448,6 +448,7 @@ impl Drive {
                     typed: Vec::new(),
                     typed_lost: false,
                     typed_epoch: 0,
+                    capture: None,
                 },
             })
             .expect("the tick is consumed");
