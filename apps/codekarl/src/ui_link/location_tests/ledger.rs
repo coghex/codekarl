@@ -173,7 +173,7 @@ fn selecting_a_ledger_place_renders_its_location_tab_from_the_game_place_view() 
     );
 }
 
-fn shipped_place_fixture() -> (HostFunction, String) {
+pub(super) fn shipped_place_fixture() -> (HostFunction, String) {
     let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
     let scenario_dir = assets.join("scenarios/ireland-768");
     let scenario = ck_map::load_scenario(&scenario_dir).expect("the shipped Ireland scenario");
@@ -685,8 +685,10 @@ local listbar_library = require("lib.listbar")
 local real_listbar_new = listbar_library.new
 bars_created = 0
 listbar_library.new = function(spec)
-  bars_created = bars_created + 1
   local created = real_listbar_new(spec)
+  -- Only the ledger's bar: the location panel has bars of its own (CK-296).
+  if spec.window.title ~= "ledger" then return created end
+  bars_created = bars_created + 1
   bar_object = created
   local real_view = created.view
   function created:view(rows)

@@ -691,6 +691,178 @@ fn rig_at(steps: &[&str], width: u32, height: u32, scale: u32) -> Rig {
     rig
 }
 
+/// Observers for the list bars of the location panel (CK-296): the bar the shipped script made (`panel_bar`, the newest) and how many
+/// were made, the rows it last was given and returned, the content class the last tooltip asked for, and where the picker's rows are.
+/// The ledger has bars of its own, which these leave alone.
+pub(super) const PANEL_BARS: &str = r#"
+do
+local listbar_library = require("lib.listbar")
+local real_listbar_new = listbar_library.new
+panel_bars = 0
+listbar_library.new = function(spec)
+  local created = real_listbar_new(spec)
+  if spec.window.title == "ledger" then return created end
+  panel_bars = panel_bars + 1
+  panel_bar = created
+  local real_view = created.view
+  function created:view(rows)
+    local shown = real_view(self, rows)
+    panel_shown, panel_given = shown, rows
+    return shown
+  end
+  return created
+end
+local tooltip_library = require("lib.tooltip")
+local real_tooltip_content = tooltip_library.content
+tooltip_library.content = function(class, args)
+  last_content = {class = class, args = args}
+  return real_tooltip_content(class, args)
+end
+spy_hits, spy_offsets = {}, {}
+local real_spy_hit = render.set_hit
+render.set_hit = function(key, rects, group)
+  spy_hits[key] = rects ~= nil and {rects = rects, group = group} or nil
+  return real_spy_hit(key, rects, group)
+end
+local real_spy_offset = render.set_group_offset
+render.set_group_offset = function(group, x, y)
+  spy_offsets[group] = {x, y}
+  return real_spy_offset(group, x, y)
+end
+end
+function hit_centre(key)
+  local kept = spy_hits[key]
+  local offset = spy_offsets[kept.group] or {0, 0}
+  local rect = kept.rects[1]
+  return rect.x + offset[1] + rect.width / 2, rect.y + offset[2] + rect.height / 2
+end
+-- Notes the bar's buttons (centre, and rectangle in content points), its choices, count and the scroll of `scroller` ("list" or "cards").
+function announce_panel_bar(scroller)
+  local ox, oy = panel_bar.window:content_origin()
+  for name, control in pairs({filter = panel_bar.filter_button, sort = panel_bar.sort_button}) do
+    local width, height = control:size()
+    note(string.format("pbar_%s %g %g", name, ox + control.x + width / 2, oy + control.y + height / 2))
+    note(string.format("pbar_%s_rect %g %g %g %g", name, control.x, control.y, width, height))
+  end
+  note(string.format("pbar_content %g %g", panel_bar.window.content_width, panel_bar.window.content_height))
+  local scroll = scroller == "cards" and card_object:scroll_position() or (scroller == "list" and list_object:scroll_position() or -1)
+  note("pstate ticks=" .. panel_bar.ticks .. " sort=" .. tostring(panel_bar.sort_index) .. " bars=" .. panel_bars
+    .. " shown=" .. #panel_shown .. " given=" .. #panel_given .. " scroll=" .. scroll)
+  note("pcount " .. tostring(panel_bar.count.ck_test_text or ""))
+end
+function announce_ppicker()
+  local picker = panel_bar.picker
+  local labels = {}
+  for index, row in ipairs(picker.rows) do
+    labels[index] = row.entry.label
+    if row.key ~= nil then
+      local x, y = hit_centre(row.key)
+      note(string.format("pick|%s|%g|%g", row.entry.label, x, y))
+    end
+  end
+  note("ppicker " .. picker.kind .. " " .. table.concat(labels, ","))
+end
+-- The market's rows as the list shows them: the goods' names in order (the figures and the header are not goods).
+function note_order(name)
+  local names = {}
+  for _, row in ipairs(panel_shown) do names[#names + 1] = row.sort.name end
+  note(name .. " " .. table.concat(names, ","))
+end
+function note_kinds(name)
+  local kinds = {}
+  for _, row in ipairs(panel_shown) do kinds[#kinds + 1] = row.item.kind .. "@" .. row.index end
+  note(name .. " " .. table.concat(kinds, ","))
+end
+function expect_that(ok, message) if not ok then error(message, 2) end end
+function eq_that(actual, wanted, message)
+  if actual ~= wanted then error(message .. ": got " .. tostring(actual) .. ", wanted " .. tostring(wanted), 2) end
+end
+-- Pops with every field a card and a row read.
+function make_pop(kind, workers, dependents, food, mood)
+  return {kind = kind, culture = "ulaid", religion = "christianity", workers = workers, dependents = dependents,
+    employed = workers, unemployed = 0, food_days = food, necessities = 1000, niceties = 0, luxuries = 0, satisfaction = mood,
+    births = 0, deaths = 0, basic_housing = 0, makeshift_housing = 0, crowding_pm = 0}
+end
+"#;
+
+/// The place `cards` with five pops (peasant 40 people, monk 5, peasant 120, noble 10, monk 5) and its fourth building the one with the
+/// most positions filled and a wage of 3, as revision 1; revisions 2 and 3 have it with no monks.
+pub(super) const PANEL_FIXTURE: &str = r#"
+VIEWS[1].cards.pops = {
+  make_pop("peasant", 30, 10, 50, 5), make_pop("monk", 3, 2, 300, -2), make_pop("peasant", 100, 20, 20, 9),
+  make_pop("noble", 5, 5, 90, 1), make_pop("monk", 4, 1, 200, 3),
+}
+VIEWS[1].cards.buildings[4].filled = 99
+VIEWS[1].cards.buildings[4].wage = 3000
+do
+  local no_monks = {}
+  for key, value in pairs(VIEWS[1].cards) do no_monks[key] = value end
+  no_monks.pops = {make_pop("peasant", 30, 10, 50, 5), make_pop("peasant", 100, 20, 20, 9)}
+  VIEWS[2].cards = no_monks
+  VIEWS[3] = VIEWS[2]
+end
+"#;
+
+/// A rig on the shared panel fixture at 1800 by 900 points.
+pub(super) fn panel_rig(steps: &[&str]) -> Rig {
+    rig_with_prelude_at(
+        &format!("{PANEL_BARS}\n{PANEL_FIXTURE}"),
+        steps,
+        1800,
+        900,
+        2,
+    )
+}
+
+/// The last note that starts with `prefix`.
+pub(super) fn pnote(rig: &Rig, prefix: &str) -> String {
+    notes(rig)
+        .into_iter()
+        .rev()
+        .find(|line| line.starts_with(prefix))
+        .unwrap_or_else(|| panic!("no note {prefix}: {:?}", notes(rig)))
+}
+
+/// The note `{name} x y` as a point.
+pub(super) fn ppoint(rig: &Rig, name: &str) -> (f64, f64) {
+    let line = pnote(rig, &format!("{name} "));
+    let mut parts = line[name.len() + 1..].split_whitespace();
+    (
+        parts.next().unwrap().parse().unwrap(),
+        parts.next().unwrap().parse().unwrap(),
+    )
+}
+
+/// The centre of the picker row labelled `label`, as the last `announce_ppicker` marked it.
+pub(super) fn ppick(rig: &Rig, label: &str) -> (f64, f64) {
+    let prefix = format!("pick|{label}|");
+    let line = pnote(rig, &prefix);
+    let mut parts = line[prefix.len()..].split('|');
+    (
+        parts.next().unwrap().parse().unwrap(),
+        parts.next().unwrap().parse().unwrap(),
+    )
+}
+
+/// A click at a point and a frame at the rig's 1800 by 900.
+pub(super) fn pclick_at(rig: &mut Rig, (x, y): (f64, f64)) {
+    rig.feed(&[
+        PointerEvent::Down(points(x, y)),
+        PointerEvent::Up(points(x, y)),
+    ]);
+    rig.deliver_fixture_frame_at(1800, 900, 2);
+}
+
+pub(super) fn pclick(rig: &mut Rig, name: &str) {
+    let at = ppoint(rig, name);
+    pclick_at(rig, at);
+}
+
+pub(super) fn ppick_click(rig: &mut Rig, label: &str) {
+    let at = ppick(rig, label);
+    pclick_at(rig, at);
+}
+
 fn notes(rig: &Rig) -> Vec<String> {
     rig.tables
         .lock()

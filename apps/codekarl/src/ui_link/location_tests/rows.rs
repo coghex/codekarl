@@ -287,3 +287,67 @@ fn pop_rows_have_type_tints_and_route_to_the_place_pops_tab() {
         notes(&rig)
     );
 }
+
+#[test]
+fn pop_rows_by_people_open_and_hover_the_pop_at_its_original_index_and_an_open_row_a_tick_hides_opens_again()
+ {
+    let mut rig = panel_rig(&[
+        "time(1, 1) select_place('cards', 'Cards') announce_tabs()",
+        "announce_look()",
+        "announce_panel_bar('cards')",
+        "announce_ppicker()",
+        "note_kinds('by_people') note(string.format('first_row %g %g', card_object.origin_x + 40, card_object.origin_y + 14 * 2 + 6))",
+        r"local P = require('lib.ui').P
+card_object.items[2].tooltip(card_object.width // 2 - 75, 2)
+note('pop_hover ' .. last_content.class .. ' ' .. last_content.args.place .. ' ' .. last_content.args.pop)",
+        "announce_ppicker()",
+        "note_kinds('hidden')",
+        "note_kinds('back')",
+    ]);
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    rig.opened();
+    click_look(&mut rig, "rows");
+    rig.opened();
+    pclick(&mut rig, "pbar_sort");
+    rig.opened();
+    ppick_click(&mut rig, "people");
+    rig.opened();
+    assert_eq!(
+        pnote(&rig, "by_people "),
+        "by_people peasant@3,peasant@1,noble@4,monk@2,monk@5",
+        "most people first, the third pop at the top"
+    );
+    // A click on the first row opens that pop's row.
+    let first = ppoint(&rig, "first_row");
+    pclick_at(&mut rig, first);
+    let opened = card_stacks(&rig).last().cloned().expect("a stack");
+    assert!(
+        opened.starts_with("gap=1 heights=13,")
+            && !opened.starts_with("gap=1 heights=13,13,13,13,13,13"),
+        "the first row is open: {opened}"
+    );
+    rig.opened();
+    assert_eq!(pnote(&rig, "pop_hover "), "pop_hover pop_size cards 3");
+    // A tick hides the open row; removing the tick shows it open again.
+    pclick(&mut rig, "pbar_filter");
+    rig.opened();
+    ppick_click(&mut rig, "monk");
+    rig.opened();
+    assert_eq!(pnote(&rig, "hidden "), "hidden monk@2,monk@5");
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=1 heights=13,13,13")
+    );
+    ppick_click(&mut rig, "monk");
+    rig.opened();
+    assert_eq!(
+        pnote(&rig, "back "),
+        "back peasant@3,peasant@1,noble@4,monk@2,monk@5"
+    );
+    assert_eq!(
+        card_stacks(&rig).last(),
+        Some(&opened),
+        "the open row is open again"
+    );
+}

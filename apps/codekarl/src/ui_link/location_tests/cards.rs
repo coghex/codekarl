@@ -543,3 +543,124 @@ fn card_content_is_clipped_without_wrapping_long_place_values() {
         Some("gap=3 heights=61,61")
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// The pops and buildings bars (CK-296, slice L3)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn pop_cards_filter_by_type_with_a_count_the_same_items_show_as_rows_and_a_tick_nothing_passes_shows_no_card()
+ {
+    let mut rig = panel_rig(&[
+        "time(1, 1) select_place('cards', 'Cards') announce_tabs()",
+        "announce_panel_bar('cards') note_kinds('all_cards')",
+        "announce_ppicker()",
+        "announce_panel_bar('cards') note_kinds('monk_cards') announce_look()",
+        "announce_panel_bar('cards') note_kinds('monk_rows')",
+        "time(2, 2) announce_panel_bar('cards') note_kinds('no_monks_rows') announce_look()",
+        "announce_panel_bar('cards') note_kinds('no_monks_cards') announce_tabs()",
+        "select_place('nobody', 'No Economy') announce_panel_bar('cards') announce_look()",
+    ]);
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    rig.opened();
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=3 heights=61,61,61,61,61")
+    );
+    assert_eq!(
+        pnote(&rig, "all_cards "),
+        "all_cards peasant@1,monk@2,peasant@3,noble@4,monk@5"
+    );
+    assert_eq!(
+        pnote(&rig, "pcount "),
+        "pcount ",
+        "no count with nothing ticked"
+    );
+    pclick(&mut rig, "pbar_filter");
+    rig.opened();
+    assert_eq!(pnote(&rig, "ppicker "), "ppicker filter monk,noble,peasant");
+    ppick_click(&mut rig, "monk");
+    rig.opened();
+    assert_eq!(pnote(&rig, "monk_cards "), "monk_cards monk@2,monk@5");
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=3 heights=61,61")
+    );
+    assert_eq!(pnote(&rig, "pcount "), "pcount 2 of 5");
+    // The look changes to rows: the same items, in the same order, with the same choices and the same bar.
+    click_look(&mut rig, "rows");
+    rig.opened();
+    assert_eq!(pnote(&rig, "monk_rows "), "monk_rows monk@2,monk@5");
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=1 heights=13,13,13"),
+        "the header and the two rows"
+    );
+    assert_eq!(pnote(&rig, "pcount "), "pcount 2 of 5");
+    assert!(
+        pnote(&rig, "pstate ").starts_with("pstate ticks=1 sort=nil bars=2 "),
+        "{}",
+        pnote(&rig, "pstate ")
+    );
+    // A new revision with no monks: the tick stays and no item passes. Rows: only the header; cards: no card.
+    rig.opened();
+    assert_eq!(pnote(&rig, "pcount "), "pcount 0 of 2");
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=1 heights=13"),
+        "only the header"
+    );
+    click_look(&mut rig, "cards");
+    rig.opened();
+    assert_eq!(pnote(&rig, "pcount "), "pcount 0 of 2");
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=3 heights="),
+        "no card, and not the `no pops` line"
+    );
+    // A place with no pops still says so, with no count.
+    rig.opened();
+    assert_eq!(
+        card_stacks(&rig).last().map(String::as_str),
+        Some("gap=3 heights=13")
+    );
+    assert_eq!(pnote(&rig, "pcount "), "pcount ");
+}
+
+#[test]
+fn building_cards_order_by_positions_and_the_wage_hover_names_the_original_index() {
+    let mut rig = panel_rig(&[
+        "time(1, 1) select_place('cards', 'Cards') announce_tabs()",
+        "announce_panel_bar('cards') note_kinds('all_buildings')",
+        "announce_ppicker()",
+        r"note_kinds('by_positions')
+local P = require('lib.ui').P
+local width = card_object.width // P
+local wage_text = 'wage 3'
+local wage_left = width - 5 - font.layout(wage_text).width
+card_object.items[1].tooltip(wage_left + font.layout('wage ').width + 1, 4)
+note('wage_hover ' .. last_content.class .. ' ' .. last_content.args.place .. ' ' .. last_content.args.building)",
+    ]);
+    rig.opened();
+    click_tab(&mut rig, "buildings");
+    rig.opened();
+    assert_eq!(
+        pnote(&rig, "all_buildings "),
+        "all_buildings farm@1,holdings@2,storehouse@3,holdings@4,granary@5"
+    );
+    pclick(&mut rig, "pbar_sort");
+    rig.opened();
+    assert_eq!(
+        pnote(&rig, "ppicker "),
+        "ppicker sort default,kind,positions,wage"
+    );
+    ppick_click(&mut rig, "positions");
+    rig.opened();
+    assert_eq!(
+        pnote(&rig, "by_positions "),
+        "by_positions holdings@4,farm@1,holdings@2,storehouse@3,granary@5",
+        "most positions filled first; equal ones in the given order"
+    );
+    assert_eq!(pnote(&rig, "wage_hover "), "wage_hover wage cards 4");
+}
