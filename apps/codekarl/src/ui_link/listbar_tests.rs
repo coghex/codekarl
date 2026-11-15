@@ -107,12 +107,24 @@ text.line = function(x, y, group, colour, font_name)
   lines[#lines + 1] = line
   return line
 end
+-- CK-324: right after a set, before any move can repair it, every glyph quad is where its glyph belongs on the line.
+local function expect_laid_out(line)
+  for index, glyph in ipairs(line.glyphs) do
+    local kept = scene.quads[glyph.quad]
+    local wanted = line.x + glyph.x * P
+    if kept == nil or kept.x ~= wanted then
+      error("glyph " .. index .. " of a line is drawn at " .. tostring(kept and kept.x) .. ", not at " .. wanted, 3)
+    end
+  end
+end
 text.set = function(line, content)
   real_set(line, content)
+  expect_laid_out(line)
   line.test_runs = {{text = content, colour = line.colour}}
 end
 text.set_segments = function(line, segments)
   real_segments(line, segments)
+  expect_laid_out(line)
   line.test_runs = {}
   for _, segment in ipairs(segments) do line.test_runs[#line.test_runs + 1] = {text = segment.text, colour = segment.colour or line.colour} end
 end

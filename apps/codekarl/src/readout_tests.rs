@@ -1,7 +1,7 @@
 //! The UI script (`scripts/ui/main.lua`) and its widget library (`scripts/ui/lib/`), run for real over the shipped pixel font and a
 //! scene that only records what it is asked to do: the text helpers, the date readout, the hover tooltip and the idle rule.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -1474,6 +1474,130 @@ fn setting_the_next_hour_replaces_one_quad_and_moves_none() {
     );
 }
 
+/// The live quads after replaying `entries`: quad name to (texture, x, y), in creation order of names.
+fn replay_quads(entries: &[String]) -> BTreeMap<String, (String, i64, i64)> {
+    let mut quads = BTreeMap::new();
+    for entry in entries {
+        let fields: Vec<&str> = entry.split_whitespace().collect();
+        match fields.as_slice() {
+            ["create", name, texture, x, y, ..] => {
+                quads.insert(
+                    (*name).to_owned(),
+                    (
+                        (*texture).to_owned(),
+                        x.parse().expect("x"),
+                        y.parse().expect("y"),
+                    ),
+                );
+            }
+            ["set_position", name, x, y] => {
+                let quad = quads.get_mut(*name).expect("a live quad");
+                quad.1 = x.parse().expect("x");
+                quad.2 = y.parse().expect("y");
+            }
+            ["destroy", name] => {
+                quads.remove(*name);
+            }
+            _ => {}
+        }
+    }
+    quads
+}
+
+/// CK-324: the time bar's date is a segmented line (digits in one colour, the rest in another). A glyph created after the first
+/// layout (a replaced digit, or a longer date) was placed at its fragment-local x, so it sat over the start of the readout and
+/// stayed there. After every update the segmented line must be exactly the single-fragment layout of the same text: each glyph
+/// once, at its cumulative place, digits in the number colour and the rest in the text colour.
+#[test]
+fn a_segmented_line_stays_laid_out_exactly_across_date_changes() {
+    let dates = [
+        "9 Oct 768 \u{b7} 14:00",
+        "9 Oct 768 \u{b7} 15:00",
+        "9 Oct 768 \u{b7} 23:00",
+        "10 Oct 768 \u{b7} 00:00",
+        "10 Oct 768 \u{b7} 01:00",
+        "31 Dec 1768 \u{b7} 12:00",
+        "9 Oct 768 \u{b7} 14:00",
+    ];
+    let mut script = String::from(
+        "local theme = require('lib.theme')\n\
+         local segmented = text.line(10, 20)\n\
+         local reference = text.line(10, 60)\n\
+         local function show(content)\n\
+           text.set_segments(segmented, text.colour_numbers(content, theme.colour('text'), theme.colour('number')))\n\
+           text.set(reference, content)\n\
+           window.record('mark')\n\
+         end\n",
+    );
+    for date in dates {
+        script.push_str("show('");
+        script.push_str(date);
+        script.push_str("')\n");
+    }
+    let readout = Readout::new(&script);
+    let entries = readout.entries();
+    let tints = readout.tints();
+    let marks: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.as_str() == "record mark")
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(marks.len(), dates.len(), "{entries:?}");
+    let tint_marks: Vec<usize> = tints
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.as_str() == "record mark")
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(tint_marks.len(), dates.len(), "{tints:?}");
+    for (step, date) in dates.iter().enumerate() {
+        let quads = replay_quads(&entries[..marks[step]]);
+        let line = |y: i64| -> Vec<(String, i64, String)> {
+            let mut glyphs: Vec<(String, i64, String)> = quads
+                .iter()
+                .filter(|(_, quad)| quad.2 == y)
+                .map(|(name, quad)| (quad.0.clone(), quad.1 - 10, name.clone()))
+                .collect();
+            glyphs.sort_by_key(|glyph| glyph.1);
+            glyphs
+        };
+        let drawn = line(20);
+        let wanted = line(60);
+        let shape = |glyphs: &[(String, i64, String)]| -> Vec<(String, i64)> {
+            glyphs.iter().map(|g| (g.0.clone(), g.1)).collect()
+        };
+        assert_eq!(
+            shape(&drawn),
+            shape(&wanted),
+            "step {step} ({date}): the segmented line differs from the plain layout"
+        );
+        // Colours: replay the tints to this step.
+        let mut colour = BTreeMap::new();
+        for entry in &tints[..tint_marks[step]] {
+            let fields: Vec<&str> = entry.split_whitespace().collect();
+            if let ["create" | "set_tint", name, value] = fields.as_slice() {
+                colour.insert((*name).to_owned(), (*value).to_owned());
+            }
+        }
+        let mut digit_colours = BTreeSet::new();
+        let mut other_colours = BTreeSet::new();
+        for (texture, _, name) in &drawn {
+            let is_digit = ('0'..='9')
+                .any(|digit| texture.ends_with(&format!("U+{:04X}.png", u32::from(digit))));
+            let value = colour.get(name).cloned().unwrap_or_default();
+            if is_digit {
+                digit_colours.insert(value);
+            } else {
+                other_colours.insert(value);
+            }
+        }
+        assert_eq!(digit_colours.len(), 1, "step {step}: {digit_colours:?}");
+        assert_eq!(other_colours.len(), 1, "step {step}: {other_colours:?}");
+        assert_ne!(digit_colours, other_colours, "step {step}");
+    }
+}
+
 #[test]
 fn a_wider_glyph_moves_the_later_quads_and_replaces_nothing_else() {
     let readout = Readout::new(
@@ -1694,7 +1818,7 @@ fn place_tooltip_waits_for_its_delay_then_closes_when_the_place_is_left() {
     let mut readout = Readout::new(PLACE_TOOLTIP_TEST_FIXTURE);
     assert!(readout.hover_registered.load(Ordering::SeqCst));
     let panel_count = |readout: &Readout| {
-        let mut panels = std::collections::BTreeSet::new();
+        let mut panels = BTreeSet::new();
         for line in readout.entries() {
             let fields: Vec<_> = line.split_whitespace().collect();
             match fields.as_slice() {
@@ -1734,7 +1858,7 @@ fn place_tooltip_waits_for_its_delay_then_closes_when_the_place_is_left() {
 }
 
 fn tooltip_panel_count(entries: &[String]) -> usize {
-    let mut panels = std::collections::BTreeSet::new();
+    let mut panels = BTreeSet::new();
     for line in entries {
         let fields: Vec<_> = line.split_whitespace().collect();
         match fields.as_slice() {

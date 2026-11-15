@@ -11,10 +11,12 @@ local function place(l, glyph)
   return l.x + glyph.x * P
 end
 
-local function create_glyph(l, glyph, height, colour)
+-- `x` is the glyph's place along the whole line, in font pixels: for a line of several fragments that is the widths of the
+-- fragments before it plus the glyph's own place in its fragment, which `glyph.x` alone omits (CK-324).
+local function create_glyph(l, glyph, x, height, colour)
   return render.create_quad{
     texture = ui.texture(glyph.texture),
-    x = place(l, glyph),
+    x = l.x + x * P,
     y = l.y,
     width = glyph.width * P,
     height = height * P,
@@ -131,7 +133,7 @@ local function set_fragments(l, fragments)
       if kept ~= nil then
         render.destroy_quad(kept.quad)
       end
-      new[index] = {texture = glyph.texture, x = fragment.x, quad = create_glyph(l, glyph, height, fragment.colour), colour = fragment.colour}
+      new[index] = {texture = glyph.texture, x = fragment.x, quad = create_glyph(l, glyph, fragment.x, height, fragment.colour), colour = fragment.colour}
     end
   end
   for index = #laid_glyphs + 1, #old do
