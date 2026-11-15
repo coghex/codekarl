@@ -331,6 +331,23 @@
 >   - **No automated test switches a real window's mode:** the mode's geometry is tested as arithmetic, and the switch
 >     itself is for the owner to check by hand (`docs/window-design.md` §8).
 >   - **For scripts:** a number field can be made inactive (`inactive`, `field:set_inactive`; §3.21).
+> - **Window requests reach the game's window** (CK-325, 2026-11-15; `owner-direction-window-modes-dead-manager-r1.md`;
+>   §3.17): a fault the owner found in the running game. The owner: "im changing around between fullscree, windowed, and
+>   windowed fullscreen in the settings page, and its not doing anything".
+>   - **The cause:** the application runs its window loop on a wrapper that makes the real window backend late, and the
+>     wrapper did not pass on a change of mode, a resize or text input on and off. The settings were kept and written,
+>     and the window got nothing.
+>   - **Since CK-325** the wrapper passes on every call. So these now reach the game's window: a window mode chosen on
+>     the graphics tab, a mode kept for the start, an applied resolution, and text input turned on for a field.
+> - **A key for fullscreen** (CK-326, 2026-11-15; the same record; §3.17, §3.18): F11 switches the window mode. The
+>   owner: "ok just use F11, we will deal with the fullscreen shortcut when i implement a menubar".
+>   - **In windowed** it goes to fullscreen, and **in fullscreen or windowed fullscreen** back to windowed. The mode is
+>     set and kept as a press on the graphics tab's button sets and keeps it.
+>   - **It is an action,** `window_fullscreen`. The input tab lists it as "fullscreen" in its game group, after
+>     quickload, and it can be rebound there.
+>   - **It does nothing** while the pause menu is open, while a field is edited and while a key slot waits for its key.
+>   - **For scripts:** `scripts/ui/lib/fullscreen_key.lua` is the key's module, and `menu.opens()`, `typing.changes()`
+>     and `typing.capturing()` are new.
 
 ## Owner answers (2026-11-07)
 
@@ -454,6 +471,7 @@ From `.pipeline/coordination/m8-design/owner-answers-r1.md`. **No question is op
   - `close` is reserved: its press requests the window close with source `key`.
   - The time and save actions become simulation controls (`apps/codekarl/src/game/controls.rs`).
   - The six map actions pan and zoom (`map_app.rs`).
+  - **Since CK-326** `window_fullscreen` is neither: the game's UI script reads its press and sets the window mode (§3.17).
 - **The pointer** is the left button, moves and vertical scroll only (`crates/input/src/lib.rs`, `PointerEvent`). There is no right
   button and no text input.
   - **Since CK-269** `PointerEvent` also has `ButtonDown` and `ButtonUp`, each with a `PointerButton` (`Middle` or `Right`) and its
@@ -749,6 +767,9 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
       map nor the simulation. Every other action, `close` included, still arrives (§3.15).
     - **Since CK-314 typed text has a route of its own** (§3.19). It takes no key from anyone: a key typed into a widget is
       still recorded as a key, and its action still fires.
+    - **Since CK-326 one action is the UI script's own:** `window_fullscreen`, F11 by default. It is not one of the
+      sixteen, so the pause menu's block lets it through. The script that acts on it holds it back itself while the menu
+      is open, while a widget is edited and while a key capture waits (§3.17).
   - The one change is **Escape**, the `close` action (Firm, owner Q2): with a window open it closes the top window; with none open it
     requests the app's close as today.
     - **This needs no engine change.** The `close` press already reaches Lua as `close_request` with source `"key"`, and a callback
@@ -1856,6 +1877,8 @@ item 3 (the game menu): "ok pause menu with buttons for resume, settings, glossa
   - `menu.close_request(source, view)` answers the game window's close request, and `menu.relayout()` follows a change of the
     view's size.
   - `menu.LABELS` is the five labels in order, and `menu.current()` gives a test the open menu's parts.
+  - **Since CK-326** `menu.opens()` returns how many times the menu has opened. A call that only raises an open menu is
+    not counted. The fullscreen key reads it (§3.17).
 
 Lengths below are in UI pixels.
 
@@ -1916,6 +1939,8 @@ Lengths below are in UI pixels.
     panning the map and a speed key sends no control.
   - **The UI still gets everything.** The input kept for `frame_update` is not filtered, so a script still sees those actions.
   - **Only key actions are blocked.** `game.control(name)` from a script still sends its control.
+  - **Since CK-326 the fullscreen key is held back as well, but not by this block.** `window_fullscreen` is not on the
+    list and reaches the UI like any action. `lib/fullscreen_key.lua` ignores its press while the menu is open (§3.17).
   - **When it starts.** The block acts from the first input tick after the UI's call. A game key pressed in a tick before that
     one still acts.
   - **A gesture already under way ends.** The first tick that sees the block on ends the gesture someone had captured, as a
@@ -1956,7 +1981,7 @@ Lengths below are in UI pixels.
     VM over the real `render` API and the real input path. Ten of its tests cover the Escape order, the window and its
     buttons, one menu at most, the resize, the backdrop, the pause-only control, "return" and Escape, quitting, the greyed
     button (since CK-305: every button live with a game, and "save / load" greyed without one) and the two button
-    options. It has thirty-six more for the settings window, twenty-four of them for the input tab (§3.18). The
+    options. It has thirty-seven more for the settings window, twenty-five of them for the input tab (§3.18). The
     save/load screen's own tests are in `ui_link/save_screen_tests.rs` (§3.23).
   - `ui_link/input_tick_tests.rs` has the key block at the tick: each of the sixteen actions stopped at the map and the
     simulation with the rest left alone, a held map key, a press in the tick before, and a captured drag ended at a first
@@ -2025,7 +2050,8 @@ The player's settings are kept in `settings.toml`, a file apart from the configu
 file" and "At once" (`owner-direction-settings-designer-r1.md` in `.pipeline/coordination/ui-polish-design/`): a change acts
 straight away and is kept. This is the first slice of the settings window (UI polish item 3). The window itself came with
 CK-301 (§3.18): its general and map tabs are what sets and resets a setting in the shipped UI. Since CK-310 its input tab
-sets and resets the player's keys, and since CK-308 its graphics tab the graphics settings.
+sets and resets the player's keys, and since CK-308 its graphics tab the graphics settings. Since CK-326 the fullscreen
+key sets the window mode as well (below).
 
 - **Where:** in the parent directory of the saves directory (`[game] saves`). For `config/game.toml` that is the top of the
   copy, beside `saves/`; with no `[game]` table it is beside the configuration file. A run with no `--config` has no settings
@@ -2214,6 +2240,29 @@ The spec is `runtime-m55/ck312-spec-r3.md` (sha256 `b37e2b62…`). What the wind
   and screens below 1280 by 800 and above 16,384), `config.rs` (the key in both files), and `ui_link.rs` and `map_app.rs`
   (the pointer on the bars, §3.5).
 
+**Since CK-325: the requests reach the window.** A fault fixed, with no new call. The owner, running the game on
+2026-11-15: "im changing around between fullscree, windowed, and windowed fullscreen in the settings page, and its not
+doing anything", and, asked whether the lit button moved, "Highlight moves"
+(`owner-direction-window-modes-dead-manager-r1.md`). The spec is `runtime-m55/ck325-spec.md` (sha256 `7fbde15e…`).
+
+- **The cause.** Every windowed run of the application gives the window loop a wrapper, `Lazy`
+  (`apps/codekarl/src/windowed.rs`), which makes the real backend when the window is created and passes the loop's calls
+  on to it. Four calls it did not pass on: `set_mode`, `resize_window`, `resize_window_pixels` and `set_text_input`. The
+  backend interface gives each a default body, so the loop's call ended in the wrapper and did nothing.
+- **What that did in the game,** until CK-325. The settings calls checked, kept, wrote and returned as this section
+  says, and the window got nothing:
+  - a mode chosen on the graphics tab lit its button and left the window as it was. The owner saw this. A mode kept
+    for the start was not applied either: read in the code, not seen;
+  - an applied resolution, and the graphics tab's "defaults", resized nothing. Read in the code, not seen;
+  - text input was never turned on at the Cocoa window, so no field got a typed entry (§3.19). Read in the code, not
+    seen.
+- **Now the wrapper passes on every call of the interface,** all twelve, each with its arguments unchanged. One made
+  before the backend exists does nothing, and the loop makes none of these four before it has created the window.
+- **So the change of mode and the resize by a script first acted on the game's window with CK-325.** No automated test
+  switches a real window's mode (`docs/window-design.md` §8): the switch is still the owner's to check by hand.
+- **The test,** with no window, is in `apps/codekarl/src/windowed/tests.rs`: a recording backend inside the wrapper gets
+  a mode, a resize in points, a resize with exact pixels, and text input on and off, in that order and unchanged.
+
 **Since CK-309: the player's key bindings, and key capture.** A script can change the keys of the player's actions while the
 game runs, and can ask for the next key the player presses. It is the engine's side of key rebinding. **Since CK-310 the
 settings window's input tab uses it** (§3.18), and is its one shipped caller: it calls `settings.bindings`, `set_bindings`,
@@ -2222,10 +2271,12 @@ settings window's input tab uses it** (§3.18), and is its one shipped caller: i
 the menu key the owner chose "Fixed": it cannot be changed. The records are `owner-direction-keys-designer-r1.md` and `-r2.md`,
 and the spec is `runtime-m55/ck309-spec-r2.md` (sha256 `e85d479f…`).
 
-- **The player's actions** are sixteen that can be rebound, in a run that has them, and `close`: `time_pause`, `time_speed_1`
-  to `time_speed_5`, `time_faster`, `time_slower`, `game_quicksave`, `game_quickload`, `map_pan_left`, `map_pan_right`,
-  `map_pan_up`, `map_pan_down`, `map_zoom_in` and `map_zoom_out` (`REBINDABLE_ACTIONS`, `apps/codekarl/src/config.rs`). Any
-  other action, the demo's included, is not listed, set or reset by these calls and keeps the configuration's keys.
+- **The player's actions** are the ones that can be rebound, in a run that has them, and `close`. CK-309 made sixteen so:
+  `time_pause`, `time_speed_1` to `time_speed_5`, `time_faster`, `time_slower`, `game_quicksave`, `game_quickload`,
+  `map_pan_left`, `map_pan_right`, `map_pan_up`, `map_pan_down`, `map_zoom_in` and `map_zoom_out` (`REBINDABLE_ACTIONS`,
+  `apps/codekarl/src/config.rs`). **Since CK-326 there are seventeen:** `window_fullscreen`, the fullscreen key (below),
+  is in that list after `game_quickload`. Any other action, the demo's included, is not listed, set or reset by these
+  calls and keeps the configuration's keys.
 - **`close` is fixed.** Its keys are the configuration file's, or Escape. No call and no entry of the settings file changes
   them.
 - **`[input.bindings]` in `settings.toml`** holds an entry for an action the player changed: a list of at most two bindings in
@@ -2278,12 +2329,62 @@ and the spec is `runtime-m55/ck309-spec-r2.md` (sha256 `e85d479f…`).
   cancel before any key, and a resync that lifts the key; and a withheld call for text input applied once the key is let
   go, or dropped by a call for off.
 
+**Since CK-326: a key for fullscreen.** The owner asked for a key that switches fullscreen now, with no menu bar: "ok just
+use F11, we will deal with the fullscreen shortcut when i implement a menubar"
+(`owner-direction-window-modes-dead-manager-r1.md`). The owner chose the key. The rest is ck-manager's, as plain defaults
+that the owner may change. The spec is `runtime-m55/ck326-spec.md` (sha256 `2903c179…`).
+
+- **The action** is `window_fullscreen`, bound to `F11` by default in a run with a scenario (`GAME_BINDINGS`,
+  `apps/codekarl/src/config.rs`). It is one of the player's actions (above): `settings.bindings()` lists it,
+  `settings.set_bindings` and an `[input.bindings]` entry change or empty it, and `settings.reset("bindings")` puts F11
+  back. The input tab shows it (§3.18).
+- **One module,** `scripts/ui/lib/fullscreen_key.lua`, acts on it. `main.lua` calls `fullscreen_key.update(update)` in
+  every update, after the typing's and the pointer's dispatch, the settings window's update and the list bars'.
+- **A press switches the mode** (`fullscreen_key.next_mode`): from windowed to fullscreen, and from fullscreen or
+  windowed fullscreen to windowed.
+  - The module reads `settings.graphics().mode` and calls `settings.set("window.mode", …)`, the call the graphics tab's
+    buttons make (above). So the mode is asked of the window, kept and written the same way, `settings.graphics().mode`
+    reports it at once, and the graphics tab shows it when it is next made.
+  - `update` returns the mode it asked for, or nil. In a run without the `settings` table it asks for nothing.
+- **It is not a game control.** The simulation and the map do nothing with the action, and `game.control` has no name
+  for it. It is the one action the game's UI script reads from an update's `actions`.
+- **A press is ignored while something else has the keyboard.** `fullscreen_key.blocked()` says so: the pause menu is
+  open, with any window it opened; a widget is being edited (`typing.editing()`); or a key capture waits
+  (`typing.capturing()`).
+  - **The pause menu's key block does not do this** (§3.15): the action is not on its list, and the script still gets
+    it. The module holds the press back.
+  - **A press is ignored in an update** when the module is blocked then, when it was blocked at the end of the update
+    before, or when a block began since that update: the menu opened (`menu.opens()` moved on) or the keyboard changed
+    hands (`typing.changes()` moved on).
+  - **Why the last two.** The module runs after the update's typing and pointer events, which can end the block the key
+    was pressed under: an Enter that applies a field, a click on the menu's "return". And a block can begin between two
+    updates, where no update sees it begin: Escape opens the menu in the close-request callback.
+  - **An ignored press is dropped,** not kept for later. A new press acts once an update has ended with nothing blocked
+    and nothing changed.
+  - **A key that a capture takes** never arrives as an action (above). So F11 pressed for a waiting key slot switches
+    nothing.
+  - **Disclosed,** read in the code: when a block ends between two updates, as when Escape closes the menu, a press
+    that arrives in the next update is dropped too, even one made after the block ended. The module cannot tell it
+    from a press made under the block.
+- **For the module, two libraries count their changes.** `menu.opens()` is in §3.15. `typing.changes()` returns how many
+  times what holds the keyboard has changed, and `typing.capturing()` whether a capture waits (§3.19).
+- **Not there:** a menu bar and Command-F. macOS's own full screen (the green button, or Control-Command-F in windowed
+  mode) is as it was, and is none of the three modes (`docs/window-design.md` §8).
+- **Tests,** with no window; none switches a real window's mode:
+  - `apps/codekarl/src/ui_link/fullscreen_tests.rs` runs the shipped module in the UI rig over the real mapper and the
+    real settings calls, with a private settings file, and reads the mode asked for from the window's request slot.
+    It has eleven tests. Five: the three directions, with the mode written and read at a restart; F11 as the default;
+    a rebinding and "defaults"; and the menu, an editing and a capture each blocking. Six on the order of things: a
+    block that the press's own update ends, a block that began between two updates, and a capture taking F11.
+  - `ui_link/menu_tests.rs` has the input tab's row (§3.18). `config.rs` has the default, a rebinding and an emptying
+    in the configuration, and `settings.rs` counts the action among those `settings.bindings()` lists.
+
 ### 3.18 The settings window (accepted, CK-301, CK-310 and CK-308)
 
 The pause menu's "settings" button opens the **settings window**: a tabbed window above the menu, where a change acts at once
 and is written to the settings file (§3.17). It is the second slice of the settings (UI polish item 3). The owner: "i think i
 want a tabbed window". Since CK-310 its input tab changes the keys. Since CK-308 it has a graphics tab, to which CK-313 and
-CK-312 each added a row.
+CK-312 each added a row. Since CK-326 the input tab has a row for the fullscreen key.
 
 - **The records** are `owner-direction-settings-designer-r1.md` to `-r4.md` and `owner-direction-settings-manager-r7.md` in
   `.pipeline/coordination/ui-polish-design/`.
@@ -2397,6 +2498,8 @@ Lengths below are in UI pixels.
     "fullscreen", in a room 136 wide, where they wrap. The one of the mode in force is lit.
     - **A press** calls `settings.set("window.mode", …)` with `windowed`, `windowed_fullscreen` or `fullscreen` (§3.17)
       and lights its button.
+    - **Since CK-326 F11 sets the mode too** (§3.17), though never while this window is open: the pause menu is open
+      under it. The tab reads the mode again each time it is made.
     - **In windowed fullscreen the resolution's fields are inactive** (§3.21) and the label "resolution" is in `dim`.
       They show the screen's size once an update reports it. In the other two modes they are live.
   - **"UI scale up to"** is three choice buttons, "1", "1.5" and "2", for `[ui] scale`.
@@ -2433,13 +2536,19 @@ Lengths below are in UI pixels.
   - **"defaults"** calls `settings.reset("graphics")` (§3.17) and then `list_look.refresh()`, which reads the look again
     and tells the subscribers when it changed. The tab is made again with the values in force. Its resolution fields
     show the resolution then in force until an update reports a new size.
+  - **Until CK-325 the game's window got none of this** (§3.17). A press on a mode's button, and "defaults", changed
+    the settings and not the window, and the number fields got no typed entry. The owner saw the mode's press do
+    nothing. The rest is read in the code, not seen.
   - **Disclosed:** a UI scale chosen with the settings window open lays the whole UI out again under it.
 - **The input tab** (CK-310) shows the keys in force, from `settings.bindings()` (§3.17), and changes them. Before CK-310 it
   was a read-only list of eight rows, with "changing keys comes later" under them.
   - **Groups and rows.** There are three groups, each under its name in `dim`: **time** (pause, speed 1 to speed 5, faster,
-    slower), **game** (quicksave, quickload, menu) and **map** (pan left, pan right, pan up, pan down, zoom in, zoom out).
-    A heading and a row are each 15 tall. Only the actions the run has are listed, and a group with none of its actions
-    is left out. The menu's row, for `close`, is always there.
+    slower), **game** (quicksave, quickload, fullscreen, menu) and **map** (pan left, pan right, pan up, pan down, zoom
+    in, zoom out). A heading and a row are each 15 tall. Only the actions the run has are listed, and a group with none
+    of its actions is left out. The menu's row, for `close`, is always there.
+    - **"fullscreen"** (CK-326) is the row of `window_fullscreen` (§3.17), with `F11` in its first slot by default. It is
+      a row like the others: its slots are set, emptied and reset the same way, and the "Key in use" prompt names it
+      "fullscreen".
   - **A row** has the action's name, 4 in, and **two key slots:** the first 70 right of the rows' left edge and the second
     3 right of the first. They show the action's first and second keys in force.
   - **A slot** is a cut-3 frame, 13 tall and as wide as `font.layout("press a key")` plus 8, filled `body` and outlined in
@@ -2565,19 +2674,21 @@ Lengths below are in UI pixels.
   - Closing the menu closes the settings window with it.
 - **Not there:** a gameplay tab; tooltips on the window's own controls;
   a mouse button or the wheel as a key; more than two keys for an action; rebinding the demo's actions.
-- **Tests,** through the shipped scripts in the UI rig, with no window: thirty-six tests in
+- **Tests,** through the shipped scripts in the UI rig, with no window: thirty-seven tests in
   `apps/codekarl/src/ui_link/menu_tests.rs`, and fourteen for the graphics tab in `ui_link/settings_graphics_tests.rs`.
   - **Twelve** cover opening and the window; the general tab's sliders, choices and "defaults"; a slider's drag across
     several updates, on the general and on the map tab; `button.flow`; the map tab; the "x"; closing the menu; and the
     stacking of a window made late and of an older window raised. The two of CK-318 among them cover the "show delay"
     label and the sliders' places on the general and on the map tab.
-  - **Twenty-four are the input tab's,** with the settings calls doubled.
+  - **Twenty-five are the input tab's,** with the settings calls doubled.
     - **Six are CK-322's:** on the second slot of an action with no keys, a right-click, Backspace and "clear" each
       change nothing; a free key becomes the action's first key; and "replace" gives the action the key. A "swap" with a
       filled first slot is as before.
     - **Three are CK-323's:** a wheel event over a name, a slot and the menu's row of a tab just shown; "defaults"
       keeping the tab marked; and a change keeping the scroll, with "defaults" back at the top.
     - **One is CK-321's:** a change of tab while a slot waits lifts the typing function's guard.
+    - **One is CK-326's:** the "fullscreen" row is in the game group, after quickload and before the menu's row and the
+      map group, with `F11` in its first slot.
   - **Fourteen are CK-310's:** the slots, their names and the greyed menu
     row; a run with no game actions; a slot waiting; "swap", with the prompt blocking the settings window; "replace" with
     several owners in one call; no "swap" when the owner holds the old key; a key the action already holds, and a
@@ -2600,6 +2711,8 @@ be had from key codes or from bound actions. So it has a route of its own: **typ
 It was built for the number field (CK-306, §3.21) and for the save name's text field, which came with CK-303 (§3.22).
 Since CK-305 the save/load screen's name field is a shipped field (§3.23), and since CK-308 and CK-313 the graphics tab's
 three number fields are too (§3.18): in the game text input is on only while one of them is edited.
+**Until CK-325** the call that turns it on stopped short of the Cocoa window in the application, so in the running game
+those fields got no typed entry (§3.17; read in the code, not seen).
 
 - **The records.** The owner, in `owner-direction-settings-designer-r3.md` in `.pipeline/coordination/ui-polish-design/`:
   "here the player can input whatever numbers they want". The spec is `runtime-m55/ck314-spec.md` (sha256 `7acea958…`).
@@ -2661,6 +2774,9 @@ three number fields are too (§3.18): in the game text input is on only while on
     call changes nothing.
   - So text input is on while a widget edits, and stays on through a change from one widget to another.
   - `typing.editing()` returns the widget that is editing, or nil.
+  - **Since CK-326** `typing.changes()` returns a count that goes up at each change of what holds the keyboard: an editing
+    started, passed to another widget or ended, and a capture armed, cancelled or ended by its result.
+    `typing.capturing()` says whether a capture waits. The fullscreen key reads both (§3.17).
   - `typing.dispatch(update)` gives the update's entries to the widget that is editing, in order, as
     `widget:on_typed(entry)`. If the update's `typed_lost` is set and the widget has an `on_typed_lost` function, that is
     called after them. With no widget editing the entries are dropped.
@@ -2704,7 +2820,8 @@ three number fields are too (§3.18): in the game text input is on only while on
   - **`on_apply()` is the editing widget's part of this.** The number field's applies what was typed and tells its caller, as
     Enter does (§3.21). Since CK-303 the text field's does the same (§3.22).
 - **Nothing of the typing is a bound action.** No action exists for a digit, a letter or an editing key: a game's bindings
-  are the 22 they were. Escape gives no entry and stays the `close` action (§3.5).
+  stayed the 22 they were. Since CK-326's fullscreen key they are 23. Escape gives no entry and stays the `close` action
+  (§3.5).
 - **Not there:** showing text while it is composed; input methods for other scripts; selecting, copy and paste. A field
   that takes letters came with CK-303 (§3.22).
 - **Tests,** none with the GPU:
@@ -2714,7 +2831,7 @@ three number fields are too (§3.18): in the game text input is on only while on
     two, text input off, a key's action unchanged with it on, turning it off and on, a loss of focus, and the slot's
     generations.
   - `apps/codekarl/src/input_stash.rs`, `ui_link.rs` and `window_api.rs` have the stash's bound and epoch, the update's three
-    fields and the call. `config.rs` has the 22 bindings.
+    fields and the call. `config.rs` has the bindings' count, 23 since CK-326.
   - `apps/codekarl/src/ui_link/typing_tests.rs` runs the shipped `lib/typing.lua` in the UI rig with small widgets of its own:
     fourteen tests, for the order, text input on and off, stale entries, the rule with the pointer in one update and in
     two, the sessions and, since CK-309, key capture, with its cancel since CK-321.

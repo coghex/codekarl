@@ -75,7 +75,7 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
 - **A new game** starts paused at the scenario's start date, with a master seed from `--seed N` or the operating system;
   `--load PATH` starts from a save instead.
 - **Time:** Space pauses, `1` to `5` pick a speed, `]` and `[` go faster and slower, and the time bar's buttons do the same. F5
-  quicksaves and F9 quickloads.
+  quicksaves, F9 quickloads and F11 switches fullscreen.
 - **Saves:** the quicksave is `saves/quicksave.cksave`. A save loads only into the build that wrote it, and a save written before
   CK-302 (2026-11-14) has the older header and is refused. Named saves, one file each, are made, loaded and deleted on the
   save/load screen (below), and the game knows whether it has unsaved changes
@@ -85,7 +85,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   ([docs/scene-design.md](docs/scene-design.md) §10.1).
 - **The menu:** Escape closes what is open, one thing a press: a tooltip, a list's picker, a window. With nothing left to
   close it opens the pause menu, a small window in the middle of the dimmed screen, and pauses the game. While the menu is open
-  the mouse reaches nothing behind it, and the time, quicksave, quickload and map keys do nothing. "return", or Escape again,
+  the mouse reaches nothing behind it, and the time, quicksave, quickload, fullscreen and map keys do nothing. "return", or
+  Escape again,
   closes the menu and leaves the game paused: Space or the time bar's play button resumes it. "quit to desktop" ends the game at
   once without asking, and so does the window's own close button. Neither saves, and F5 does nothing while the menu is open, so
   quicksave before you open it. "settings" opens the settings window, "glossary" the glossary reader and "save / load"
@@ -98,7 +99,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   screen pixels. Click one, type, and press Enter or click elsewhere: the pair is brought into the range, from 1280×800 up
   to the screen, and the window takes that size. "window mode" is "windowed", "windowed fullscreen" (no title bar, the
   whole screen at its own pixels; the resolution is greyed) or "fullscreen" (the whole screen, drawn at your resolution
-  and scaled; a resolution of another shape than the screen keeps its shape between black bars). "UI scale up to" caps
+  and scaled; a resolution of another shape than the screen keeps its shape between black bars). F11 switches from
+  windowed to fullscreen, and from either of the other two back to windowed (CK-326). "UI scale up to" caps
   the UI scale at 1, 1.5 or 2, and a scale the size cannot hold is greyed. "frame rate" limits the frames drawn a second,
   from 30 to 240: type a number, or press "none" for no limit. "list look" chooses cards or rows for the location
   panel's pops and buildings, as the panel's own two buttons do. Each is kept in the settings file, and the game starts
@@ -107,7 +109,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   with Shift, Control, Option or Command held if you like. Escape cancels. Backspace while the slot waits, or a right-click
   on a slot, empties it. When another action has the key, a "Key in use" prompt offers "replace" (the other action loses
   it), "swap" (the other action gets your slot's old key), "clear" (your slot is emptied) and "cancel". The menu's Escape
-  cannot be changed, and "defaults" puts every key back ([docs/ui-design.md](docs/ui-design.md) §3.18).
+  cannot be changed, and "defaults" puts every key back. "fullscreen" (F11, CK-326) is one of the "game" keys
+  ([docs/ui-design.md](docs/ui-design.md) §3.18).
 - **The glossary** (CK-300): the glossary reader opens above the menu too. Its left column lists every glossary entry by its
   title: click one to read it on the right. A light-blue word in the text has its tooltip as elsewhere, and a click on it
   opens that word's entry. Its "x", or Escape, goes back to the menu ([docs/ui-design.md](docs/ui-design.md) §3.20).
@@ -144,7 +147,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
 - **The window** opens at the resolution in force, the settings file's or else the configuration's, or at 1280×800 screen
   pixels, its minimum, with none set (CK-308). Drag an edge to enlarge it (the game lays itself out again when you let go),
   choose a window mode on the
-  graphics tab, or, in windowed mode, use macOS full screen: the green title-bar button or Control-Command-F.
+  graphics tab, press F11 for fullscreen and again to come back, or, in windowed mode, use macOS full screen: the green
+  title-bar button or Control-Command-F.
   The UI scale follows the window: 1 from
   1280×800 screen pixels, 1.5 from 1920×1200 and 2 from 2560×1600, so a UI pixel is 2, 3 or 4 screen pixels. `[ui] scale = 1`,
   `1.5` or `2` caps it (the lower of the two is used), and the old `[ui] points_per_pixel` is refused, naming `scale`. The

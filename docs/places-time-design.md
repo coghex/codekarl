@@ -202,6 +202,9 @@ The Firm rule is: cells within the radius; the nearest location takes an overlap
     pause menu opens;
   - while that menu is open, the time actions above, `game_quicksave` and `game_quickload` (§5.3) and the six map actions do
     nothing.
+- **Since CK-326** a run with a scenario has one more action, which is not the simulation's: `window_fullscreen`, F11 by
+  default, switches the window between windowed and fullscreen. The UI script acts on it, and not while the pause menu
+  is open (`docs/ui-design.md` §3.17).
 - **Never skip (Firm).** The clock decides only how many ticks are due. If the simulation falls behind, it runs slower; it never skips,
   merges or shortens a tick. A single wake runs at most a bounded number of ticks, so a stall cannot cause a burst.
 - **Real time never changes outcomes.** Speed, pause, frame rate and machine load are not simulation state, and the save does not hold
