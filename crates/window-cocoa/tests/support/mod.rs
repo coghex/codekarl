@@ -77,6 +77,7 @@ unsafe extern "C" {
     fn ck_win_test_info(out: *mut RawInfo);
     fn ck_win_test_mouse_ignored() -> i32;
     fn ck_win_test_borderless_eligibility() -> i32;
+    fn ck_win_test_restore_keyboard(was_key: i32) -> i32;
     fn ck_win_test_mouse_passthrough_probe() -> i32;
     fn ck_win_test_counters(out: *mut RawCounters);
     fn ck_win_test_set_first_responder(to_view: i32);
@@ -196,6 +197,8 @@ pub(crate) struct Behaviour {
 pub(crate) struct Focus {
     /// The content view is the first responder.
     pub(crate) first_responder_is_view: bool,
+    /// The window is the key window (read only).
+    pub(crate) is_key: bool,
 }
 
 /// The presenter's Metal layer.
@@ -316,6 +319,7 @@ pub(crate) fn info() -> WindowInfo {
         },
         focus: Focus {
             first_responder_is_view: raw.first_responder_is_view != 0,
+            is_key: raw.is_key != 0,
         },
         layer: LayerInfo {
             is_metal: raw.layer_is_metal != 0,
@@ -368,6 +372,16 @@ pub(crate) fn borderless_eligibility() -> Eligibility {
             main: answers & 8 != 0,
         },
     }
+}
+
+/// Runs the window's after-a-style-change step (CK-332) without a style change and returns whether it asked the
+/// window to become key. Never orders, activates or changes a mode.
+pub(crate) fn restore_keyboard(was_key: bool) -> bool {
+    // SAFETY: sets the first responder of the backend's window on the main thread; makes no window key unless the window
+    // was created with activation allowed, which no test window is.
+    let answer = unsafe { ck_win_test_restore_keyboard(i32::from(was_key)) };
+    assert_ne!(answer, -1, "the backend has a window");
+    answer == 1
 }
 
 pub(crate) fn mouse_passthrough_probe() -> i32 {

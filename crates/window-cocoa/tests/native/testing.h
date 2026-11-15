@@ -76,6 +76,10 @@ int32_t ck_win_test_mouse_ignored(void);
  * window's in the next two. It builds a deferred window object of each and never orders one front, makes one key or main, shows
  * it or activates anything. */
 int32_t ck_win_test_borderless_eligibility(void);
+/* CK-332: runs the backend window's after-a-style-change step (the view becomes first responder again; the window is made key only
+ * if `was_key` and it was created with activation allowed) without any style change, and returns whether it asked the window to become
+ * key, or -1 when there is no backend window. Never orders, activates or changes a mode. */
+int32_t ck_win_test_restore_keyboard(int32_t was_key);
 int32_t ck_win_test_mouse_passthrough_probe(void);
 void ck_win_test_counters(CKWinTestCounters *out);
 
