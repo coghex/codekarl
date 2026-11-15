@@ -299,6 +299,8 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
         [self.state recordTypedKind:CK_WIN_TYPED_ENTER value:0];
     } else if (selector == @selector(insertTab:)) {
         [self.state recordTypedKind:CK_WIN_TYPED_TAB value:0];
+    } else if (selector == @selector(insertBacktab:)) {
+        [self.state recordTypedKind:CK_WIN_TYPED_BACKTAB value:0];
     } else if (selector == @selector(moveLeft:)) {
         [self.state recordTypedKind:CK_WIN_TYPED_LEFT value:0];
     } else if (selector == @selector(moveRight:)) {

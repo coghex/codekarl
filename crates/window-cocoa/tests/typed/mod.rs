@@ -64,13 +64,14 @@ pub(crate) fn a_key_down_with_characters_gives_one_character_entry() {
     assert_eq!(typed(&fixture.drain()), [TypedEntry::Char('A')]);
 }
 
-/// Backspace, Enter, Tab, Left and Right give their five commands, and several keys keep their order.
-pub(crate) fn the_five_edit_commands_and_several_keys_keep_their_order() {
+/// Backspace, Enter, Tab, Shift+Tab, Left and Right give their commands in order, with Shift+Tab's direction fixed at its key event.
+pub(crate) fn the_six_edit_commands_and_several_keys_keep_their_order() {
     let mut fixture = open_with_text_input();
     type_key(Key::KeyA, 0, "a");
     type_key(Key::Backspace, 0, "\u{7f}");
     type_key(Key::Enter, 0, "\r");
     type_key(Key::Tab, 0, "\t");
+    type_key(Key::Tab, SHIFT, "\t");
     type_key(Key::ArrowLeft, 0, "\u{f702}");
     type_key(Key::ArrowRight, 0, "\u{f703}");
     type_key(Key::KeyB, 0, "b");
@@ -81,6 +82,7 @@ pub(crate) fn the_five_edit_commands_and_several_keys_keep_their_order() {
             TypedEntry::Backspace,
             TypedEntry::Enter,
             TypedEntry::Tab,
+            TypedEntry::Backtab,
             TypedEntry::Left,
             TypedEntry::Right,
             TypedEntry::Char('b'),

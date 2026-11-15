@@ -124,6 +124,10 @@ expect(call ~= nil, "applying either dimension requests resize")
 eq(call[2], 99999) eq(call[3], 1200)
 eq(s.controls.resolution_width:get(), 16384, "the engine's returned clamp is shown immediately")
 eq(s.controls.resolution_height:get(), 1200, "the other dimension is sent with the field")
+expect(s.controls.resolution_height:editing(), "Tab starts height after the resize callback")
+expect(s.controls.resolution_height.caret ~= nil
+  and s.controls.resolution_height.frame.line == theme_lib.kind("window").hot,
+  "the destination keeps its caret and outline after the resolution layout update")
 eq(fixture.graphics.scale, 1.5, "an applied size drops a limit the drawable cannot hold")
 eq(s.controls.scale[2].selected, true) eq(s.controls.scale[3].inactive, true)
 "#,
@@ -146,7 +150,7 @@ eq(s.controls.resolution_width:get(), 16384, "the later drawable metrics are fol
     rig.deliver_fixture_frame_at(6000, 600, 2);
     let mut typed = vec![TypedEntry::Backspace; 5];
     typed.extend(chars("99999"));
-    typed.push(TypedEntry::Enter);
+    typed.push(TypedEntry::Tab);
     for entry in typed {
         rig.mapper.typed(entry);
         rig.feed(&[]);
@@ -406,6 +410,31 @@ fn open_graphics(rig: &mut super::group_tests::Rig) {
     rig.opened();
 }
 
+fn replace_graphics_field_and_navigate(
+    rig: &mut super::group_tests::Rig,
+    control: Option<&str>,
+    backspaces: usize,
+    digits: &str,
+    navigation: TypedEntry,
+) {
+    if let Some(control) = control {
+        click_at_metrics(rig, control, 640, 400);
+        rig.opened();
+        input_applied(rig);
+        rig.deliver_fixture_frame_at(640, 400, 2);
+    }
+    for _ in 0..backspaces {
+        rig.mapper.typed(TypedEntry::Backspace);
+    }
+    for entry in chars(digits) {
+        rig.mapper.typed(entry);
+    }
+    rig.mapper.typed(navigation);
+    rig.feed(&[]);
+    rig.deliver_fixture_frame_at(640, 400, 2);
+    rig.opened();
+}
+
 /// A press on the frame-rate field, then the entries typed into it (the field's editing is ready after one frame).
 fn type_into_the_frame_rate_field(
     rig: &mut super::group_tests::Rig,
@@ -484,6 +513,231 @@ eq(fixture.calls[#fixture.calls][3], 60)
     ]);
     open_graphics(&mut rig);
     click_at_metrics(&mut rig, "settings_control_fps", 640, 400);
+    rig.opened();
+}
+
+#[test]
+fn graphics_tab_with_a_limit_visits_width_height_fps_and_wraps_in_both_directions() {
+    let mut rig = settings_graphics_rig(&[
+        r"fixture.graphics.fps_limit = 60",
+        r"mark_settings()",
+        r#"
+mark_settings()
+local s = require("lib.settings_window").current()
+eq(s.controls.resolution_width:get(), 1280)
+eq(s.controls.resolution_height:get(), 800)
+eq(s.controls.fps:get(), 60)
+expect(not s.controls.resolution_width:editing() and not s.controls.resolution_height:editing()
+  and not s.controls.fps:editing(), "the graphics fields begin closed")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls.resolution_width:editing(), "the real graphics width field begins editing")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.controls.resolution_width:get(), 1400, "Tab applies width")
+expect(s.controls.resolution_height:editing(), "width advances to height")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.controls.resolution_height:get(), 900, "Tab applies height")
+expect(s.controls.fps:editing(), "height advances to the live frame-rate field")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.controls.fps:get(), 75, "Tab applies the frame-rate field")
+eq(fixture.graphics.fps_limit, 75)
+expect(s.controls.resolution_width:editing(), "the order wraps from frame rate to width")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls.resolution_height:editing(), "Tab advances from width to height")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls.resolution_width:editing(), "Shift+Tab from height returns to width")
+expect(not s.controls.resolution_height:editing() and not s.controls.fps:editing(),
+  "only the destination edits")
+"#,
+    ]);
+    open_graphics(&mut rig);
+    replace_graphics_field_and_navigate(
+        &mut rig,
+        Some("settings_control_resolution_width"),
+        5,
+        "1400",
+        TypedEntry::Tab,
+    );
+    replace_graphics_field_and_navigate(&mut rig, None, 5, "900", TypedEntry::Tab);
+    replace_graphics_field_and_navigate(&mut rig, None, 3, "75", TypedEntry::Tab);
+    rig.mapper.typed(TypedEntry::Tab);
+    rig.feed(&[]);
+    rig.deliver_fixture_frame_at(640, 400, 2);
+    rig.opened();
+    rig.mapper.typed(TypedEntry::Backtab);
+    rig.feed(&[]);
+    rig.deliver_fixture_frame_at(640, 400, 2);
+    rig.opened();
+}
+
+#[test]
+fn graphics_tab_without_a_limit_skips_the_greyed_frame_rate_field() {
+    let mut rig = settings_graphics_rig(&[
+        r"fixture.graphics.fps_limit = nil",
+        r"mark_settings()",
+        r#"
+mark_settings()
+local s = require("lib.settings_window").current()
+expect(s.controls.fps:is_greyed(), "no limit leaves the frame-rate field greyed")
+expect(not s.controls.resolution_width:editing() and not s.controls.resolution_height:editing()
+  and not s.controls.fps:editing(), "the graphics fields begin closed")
+eq(fixture.graphics.fps_limit, nil)
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls.resolution_width:editing(), "the real graphics width field begins editing")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.controls.resolution_width:get(), 1400, "Tab applies width")
+expect(s.controls.resolution_height:editing(), "width advances to height")
+expect(s.controls.fps:is_greyed() and not s.controls.fps:editing(), "the greyed field is skipped")
+eq(fixture.graphics.fps_limit, nil, "Tab does not turn on a frame-rate limit")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.controls.resolution_height:get(), 900, "Tab applies height")
+expect(s.controls.resolution_width:editing(), "height wraps to width")
+expect(s.controls.fps:is_greyed() and not s.controls.fps:editing(), "frame rate remains skipped")
+eq(fixture.graphics.fps_limit, nil)
+local writes = 0
+for _, call in ipairs(fixture.calls) do
+  if call[1] == "set" and call[2] == "frame.fps_limit" then writes = writes + 1 end
+end
+eq(writes, 0, "traversal never writes frame.fps_limit")
+"#,
+    ]);
+    open_graphics(&mut rig);
+    replace_graphics_field_and_navigate(
+        &mut rig,
+        Some("settings_control_resolution_width"),
+        5,
+        "1400",
+        TypedEntry::Tab,
+    );
+    replace_graphics_field_and_navigate(&mut rig, None, 5, "900", TypedEntry::Tab);
+}
+
+#[test]
+fn windowed_fullscreen_graphics_tab_keeps_its_only_live_limited_field_editing() {
+    let mut rig = settings_graphics_rig(&[
+        r"fixture.graphics.fps_limit = 60",
+        r"mark_settings()",
+        r#"
+mark_settings()
+local s = require("lib.settings_window").current()
+expect(not s.controls.resolution_width.inactive and not s.controls.resolution_height.inactive,
+  "windowed mode starts with live resolution fields")
+expect(not s.controls.fps:is_greyed(), "the frame-rate field is live with a limit")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls.resolution_width.inactive and s.controls.resolution_height.inactive,
+  "windowed fullscreen deactivates the resolution fields")
+expect(not s.controls.fps:is_greyed(), "the frame-rate field remains live with a limit")
+eq(fixture.graphics.fps_limit, 60)
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls.fps:editing(), "the live frame-rate field starts editing")
+expect(not s.controls.resolution_width:editing() and not s.controls.resolution_height:editing(),
+  "inactive resolution fields are skipped")
+eq(fixture.graphics.width, 1280) eq(fixture.graphics.height, 800)
+eq(fixture.graphics.fps_limit, 60)
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls.fps:editing(), "Tab leaves the only open field editing")
+expect(not s.controls.resolution_width:editing() and not s.controls.resolution_height:editing(),
+  "inactive resolution fields remain skipped")
+eq(fixture.graphics.width, 1280) eq(fixture.graphics.height, 800)
+eq(fixture.graphics.fps_limit, 60)
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls.fps:editing(), "Shift+Tab also leaves the only open field editing")
+expect(not s.controls.resolution_width:editing() and not s.controls.resolution_height:editing(),
+  "inactive resolution fields remain skipped")
+eq(fixture.graphics.width, 1280) eq(fixture.graphics.height, 800)
+eq(fixture.graphics.fps_limit, 60)
+"#,
+    ]);
+    open_graphics(&mut rig);
+    click_at_metrics(&mut rig, "settings_control_window_mode_2", 640, 400);
+    rig.opened();
+    click_at_metrics(&mut rig, "settings_control_fps", 640, 400);
+    rig.opened();
+    input_applied(&mut rig);
+    rig.deliver_fixture_frame_at(640, 400, 2);
+    rig.mapper.typed(TypedEntry::Tab);
+    rig.feed(&[]);
+    rig.deliver_fixture_frame_at(640, 400, 2);
+    rig.opened();
+    rig.mapper.typed(TypedEntry::Backtab);
+    rig.feed(&[]);
+    rig.deliver_fixture_frame_at(640, 400, 2);
+    rig.opened();
+}
+
+#[test]
+fn windowed_fullscreen_without_a_limit_has_no_field_for_tab_to_edit() {
+    let mut rig = settings_graphics_rig(&[
+        r"fixture.graphics.fps_limit = nil",
+        r"mark_settings()",
+        r#"
+mark_settings()
+local s = require("lib.settings_window").current()
+expect(not s.controls.resolution_width.inactive and not s.controls.resolution_height.inactive,
+  "windowed mode starts with live resolution fields")
+expect(s.controls.fps:is_greyed(), "no limit greys the frame-rate field")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.controls.resolution_width.inactive and s.controls.resolution_height.inactive,
+  "windowed fullscreen deactivates the resolution fields")
+expect(s.controls.fps:is_greyed(), "no limit greys the frame-rate field")
+eq(fixture.graphics.fps_limit, nil)
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(not s.controls.resolution_width:editing() and not s.controls.resolution_height:editing()
+  and not s.controls.fps:editing(), "no field starts editing")
+eq(fixture.graphics.width, 1280) eq(fixture.graphics.height, 800)
+eq(fixture.graphics.fps_limit, nil)
+local writes = 0
+for _, call in ipairs(fixture.calls) do
+  if call[1] == "set" and call[2] == "frame.fps_limit" then writes = writes + 1 end
+end
+eq(writes, 0, "Tab with no open field writes no frame-rate limit")
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(not s.controls.resolution_width:editing() and not s.controls.resolution_height:editing()
+  and not s.controls.fps:editing(), "Shift+Tab also leaves all fields closed")
+eq(fixture.graphics.fps_limit, nil)
+"#,
+    ]);
+    open_graphics(&mut rig);
+    click_at_metrics(&mut rig, "settings_control_window_mode_2", 640, 400);
+    rig.opened();
+    rig.mapper.typed(TypedEntry::Tab);
+    rig.feed(&[]);
+    rig.deliver_fixture_frame_at(640, 400, 2);
+    rig.opened();
+    rig.mapper.typed(TypedEntry::Backtab);
+    rig.feed(&[]);
+    rig.deliver_fixture_frame_at(640, 400, 2);
     rig.opened();
 }
 

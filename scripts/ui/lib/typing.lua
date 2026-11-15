@@ -2,7 +2,7 @@
 --
 -- The window gives each update `typed`, one ordered list of the characters the system committed and the edit commands, `typed_lost`
 -- (entries were dropped at the bound) and `typed_epoch`. An entry is `{kind = "char", text = "á"}` (one Unicode scalar) or
--- `{kind = "backspace" | "enter" | "tab" | "left" | "right"}`. Nothing else reads the list, and no action is bound to a typing key.
+-- `{kind = "backspace" | "enter" | "tab" | "backtab" | "left" | "right"}`. Nothing else reads the list, and no action is bound to a typing key.
 --
 -- **Sessions.** What an update's typing reaches is decided by the editing session that was under way when the update began, not by the widget's
 -- table: when that session ends, or passes to another widget, the rest of the update (and its loss notice) reaches no one, even if the same

@@ -831,8 +831,8 @@ fn enter_tab_and_a_press_elsewhere_each_apply_the_text_once_and_an_unchanged_tex
     update(&mut rig, &[TypedEntry::Tab], &[]);
     assert_eq!(
         state(&mut rig),
-        wanted("T=one,T=one!", "none", "one!", "wxyz", "1920", 0),
-        "Tab applies and does nothing more"
+        wanted("T=one,T=one!", "N", "one!", "wxyz", "1920", 0),
+        "Tab applies T and starts the next field in screen order"
     );
     start(&mut rig, "T");
     update(&mut rig, &[TypedEntry::Backspace], &[]);
@@ -855,6 +855,96 @@ fn enter_tab_and_a_press_elsewhere_each_apply_the_text_once_and_an_unchanged_tex
         state(&mut rig),
         wanted("T=one,T=one!,T=one", "none", "one", "wxyz", "1920", 1),
         "the same text again calls nobody"
+    );
+}
+
+#[test]
+fn tab_and_backtab_follow_screen_order_wrap_and_keep_the_typed_session_boundary() {
+    let mut rig = field_rig(
+        "fields.N:move(140, 40)",
+        &["report()", "report()", "report()", "report()", "report()"],
+    );
+    start(&mut rig, "T");
+    update(&mut rig, &typed("hello"), &[]);
+
+    // The destination is U by top-to-bottom order. The old update's tail and loss notice belong to T's session and are dropped.
+    rig.mapper.typed(TypedEntry::Tab);
+    rig.mapper.typed(TypedEntry::Char('x'));
+    rig.mapper.typed_lost();
+    rig.feed(&[]);
+    frame(&mut rig);
+    assert_eq!(
+        state(&mut rig),
+        wanted("T=hello", "U", "hello", "wxyz", "1920", 0),
+        "the update tail did not reach U"
+    );
+
+    // A later update belongs to U; backward traversal returns to T and wraps from T to W.
+    update(&mut rig, &typed("q"), &[]);
+    assert_eq!(
+        state(&mut rig),
+        wanted("T=hello", "U", "hello", "wxyzq", "1920", 0)
+    );
+    update(&mut rig, &[TypedEntry::Backtab], &[]);
+    assert_eq!(
+        state(&mut rig),
+        wanted("T=hello,U=wxyzq", "T", "hello", "wxyzq", "1920", 0)
+    );
+    update(&mut rig, &[TypedEntry::Backtab], &[]);
+    assert_eq!(
+        state(&mut rig),
+        wanted("T=hello,U=wxyzq", "W", "hello", "wxyzq", "1920", 0)
+    );
+    update(&mut rig, &[TypedEntry::Tab], &[]);
+    assert_eq!(
+        state(&mut rig),
+        wanted("T=hello,U=wxyzq", "T", "hello", "wxyzq", "1920", 0)
+    );
+}
+
+#[test]
+fn tab_and_backtab_with_one_open_field_keep_the_same_editing_session() {
+    let mut rig = field_rig(
+        "fields.U:destroy() fields.W:destroy() fields.N:destroy()",
+        &["report()", "report()"],
+    );
+    start(&mut rig, "T");
+    update(&mut rig, &typed("a"), &[]);
+    update(
+        &mut rig,
+        &[
+            TypedEntry::Tab,
+            TypedEntry::Char('b'),
+            TypedEntry::Backtab,
+            TypedEntry::Char('c'),
+        ],
+        &[],
+    );
+    assert_eq!(
+        state(&mut rig),
+        wanted("", "T", "abc", "wxyz", "1920", 0),
+        "with no other open field, both commands leave editing and its update intact"
+    );
+}
+
+#[test]
+fn tab_skips_greyed_and_inactive_fields_instead_of_enabling_or_editing_them() {
+    let mut rig = field_rig(
+        "local field = require('lib.numberfield').new{x = 100, y = 40, value = 640, least = 0, greatest = 9999, digits = 4, group = W.content, owner = W} fields.C = field fields.N:set_greyed(true) fields.C:set_inactive(true) fields.W:destroy()",
+        &["report()", "report()", "report()"],
+    );
+    start(&mut rig, "T");
+    update(&mut rig, &[TypedEntry::Tab], &[]);
+    assert_eq!(
+        state(&mut rig),
+        wanted("", "U", "", "wxyz", "1920", 0),
+        "the next active field in screen order is U"
+    );
+    update(&mut rig, &[TypedEntry::Tab], &[]);
+    assert_eq!(
+        state(&mut rig),
+        wanted("", "T", "", "wxyz", "1920", 0),
+        "greyed N and inactive W are skipped when the order wraps"
     );
 }
 
