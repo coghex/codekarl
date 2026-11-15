@@ -100,7 +100,7 @@ pub(super) struct Rig {
     pub(super) sink: Arc<Last>,
     pub(super) tables: Tables,
     pub(super) map_pointer: PointerPosition,
-    simulation_slot: Arc<SimSlot>,
+    pub(super) simulation_slot: Arc<SimSlot>,
     /// The run's controls (a clone shares the key block) and the receiving end of the simulation's control channel.
     pub(super) controls: SimControls,
     pub(super) control_receiver: mpsc::Receiver<crate::game::core::Message>,
@@ -2104,7 +2104,8 @@ place = windows.top()
 place:move_to(200, 200)
 callbacks.select({{id = 'place-b', name = 'A Much Longer Place', kind = 'city', size = 7}})
 assert(windows.top() == place, 'the second selection updates and raises the existing place window')
-assert(place.title == 'A Much Longer Place', 'the update gives the window the selected place name')
+assert(place.title == '', 'the place name is no longer drawn as a separate window title')
+assert(place.title_items[1].items[1].labels[1] == 'A Much Longer Place', 'the first tab carries the selected place name')
 assert(created_lists == 1, 'the update refreshes the one panel list and opens no other')
 local x, y = place:position()
 assert(x == 200 and y == 200, 'place update preserves its top-left')

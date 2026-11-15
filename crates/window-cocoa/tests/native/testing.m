@@ -204,6 +204,23 @@ uint64_t ck_win_test_ns_window_count(void) {
     }
 }
 
+/* Both eligibility answers of one deferred, borderless window object of the class: bit 0 canBecomeKeyWindow, bit 1 canBecomeMainWindow.
+ * Asking changes nothing; the object is never ordered front, made key or main, shown, or given a view, and is released at once. */
+static int32_t ck_borderless_answers(Class window_class) {
+    NSWindow *window = [[window_class alloc] initWithContentRect:NSMakeRect(0, 0, 100, 100)
+                                                       styleMask:NSWindowStyleMaskBorderless
+                                                         backing:NSBackingStoreBuffered
+                                                           defer:YES];
+    window.releasedWhenClosed = NO;
+    return (window.canBecomeKeyWindow ? 1 : 0) | (window.canBecomeMainWindow ? 2 : 0);
+}
+
+int32_t ck_win_test_borderless_eligibility(void) {
+    @autoreleasepool {
+        return ck_borderless_answers([CKWindow class]) | (ck_borderless_answers([NSWindow class]) << 2);
+    }
+}
+
 void ck_win_test_info(CKWinTestInfo *out) {
     @autoreleasepool {
         memset(out, 0, sizeof *out);

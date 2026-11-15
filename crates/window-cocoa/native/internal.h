@@ -30,6 +30,13 @@
 - (void)discardComposition;
 @end
 
+/* The game window. A plain NSWindow answers no to canBecomeKeyWindow and canBecomeMainWindow once its style is borderless (the
+ * fullscreen and windowed-fullscreen modes), so after it gave up the key it could never take it back, even when clicked (CK-331).
+ * This class answers yes in every mode, as GLFW's and SDL's window classes do. It adds no request: the window only accepts the key
+ * when macOS offers it. */
+@interface CKWindow : NSWindow
+@end
+
 /* One recorded key transition (the ring's entry). */
 typedef struct {
     uint8_t key;

@@ -826,6 +826,7 @@ pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
             ConfigValue::Integer(i64::from(snapshot.speed.level())),
         ),
         ("paused".to_owned(), paused),
+        ("unsaved".to_owned(), ConfigValue::Bool(snapshot.unsaved)),
         (
             "economy_revision".to_owned(),
             integer(snapshot.economy_revision),
@@ -867,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn game_time_keeps_exactly_its_seven_existing_fields() {
+    fn game_time_includes_the_saved_status_with_its_existing_fields() {
         let value = time_table(&crate::readout_tests::snapshot(3, 2, None));
         let ConfigValue::Table(fields) = value else {
             panic!("game_time gets one table");
@@ -882,9 +883,11 @@ mod tests {
                 "month",
                 "paused",
                 "speed",
+                "unsaved",
                 "year",
             ]
         );
+        assert_eq!(fields.get("unsaved"), Some(&ConfigValue::Bool(false)));
     }
 
     #[test]

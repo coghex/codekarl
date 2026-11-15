@@ -1429,6 +1429,7 @@ pub(crate) fn snapshot(hour: u8, speed: u8, paused: Option<PauseReason>) -> SimS
         date,
         speed: ck_sim::Speed::new(speed).expect("a speed"),
         paused,
+        unsaved: false,
         economy_revision: 0,
         economy: None,
     }

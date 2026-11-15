@@ -26,10 +26,25 @@ location.__index = location
 local price_revision
 
 local TABS = {
-  {key = "location", label = "location", short = "loc", tiny = "l"},
+  {key = "location", label = "location", short = "loc", tiny = "l", label_tooltip = false},
   {key = "pops", label = "pops", short = "pop", tiny = "p"},
   {key = "buildings", label = "buildings", short = "bld", tiny = "b"},
 }
+
+local function location_tab_labels(name)
+  local count = utf8.len(name) or #name
+  local short = name
+  if count > 12 then short = name:sub(1, utf8.offset(name, 13) - 1) .. "…" end
+  local tiny = name
+  if count > 1 then tiny = name:sub(1, utf8.offset(name, 2) - 1) end
+  return name, short, tiny
+end
+
+local function update_location_tab(self, selection)
+  local full, short, tiny = location_tab_labels(selection.name)
+  self.tabs:set_labels("location", full, short, tiny)
+  tooltip.attach(self.tabs.buttons[1].key, {class = "location", args = {place = selection.id}})
+end
 
 -- This list is deliberately fixed: an unlisted future good keeps its readable name without an asynchronous file lookup.
 local GOODS_WITH_ICONS = {
@@ -1476,7 +1491,8 @@ function location:show(selection, tab)
       end,
     }
     self.window = created
-    tooltip.attach(created.title_key, {class = "location", args = {place = selection.id}})
+    -- The name belongs to the first tab, not to a separate title beside it.
+    created:set_title("")
     self.tabs = tabs.new{
       window = created,
       items = TABS,
@@ -1486,11 +1502,11 @@ function location:show(selection, tab)
         render(self, false)
       end,
     }
+    update_location_tab(self, selection)
     render(self, false)
     return
   end
-  self.window:set_title(selection.name)
-  tooltip.attach(self.window.title_key, {class = "location", args = {place = selection.id}})
+  update_location_tab(self, selection)
   self.window:raise()
   if tab ~= nil then
     self.tabs:select(tab)

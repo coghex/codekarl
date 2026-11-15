@@ -38,11 +38,12 @@ local P = ui.P
 local OUTER_WIDTH, OUTER_HEIGHT = 400 * P, 300 * P
 local GREATEST = 48 -- the most characters a name may have (saves rule 1)
 local FIELD_HEIGHT = 15 -- UI pixels
+local FIELD_Y = 12 -- UI pixels: leave a line for the saved status above the name field
 local FIELD_GAP = 4 -- UI pixels between the name field and "new save"
-local REFUSAL_Y = 17 -- UI pixels: the refusal line's top, under the field
+local REFUSAL_Y = 29 -- UI pixels: the refusal line's top, under the field
 local REFUSAL_SHIFT = 13 -- UI pixels the line and the cards move down while the refusal line shows
-local LINE_Y = 17 -- UI pixels: the line under the field
-local CARDS_Y = 20 -- UI pixels: the first card's top
+local LINE_Y = 29 -- UI pixels: the line under the field
+local CARDS_Y = 32 -- UI pixels: the first card's top
 local CARD_HEIGHT = 28 -- UI pixels: a card's two lines
 local CHOSEN_HEIGHT = 47 -- UI pixels: and its buttons
 local CARD_GAP = 3
@@ -66,6 +67,14 @@ local WHITE = "ui/theme/white.png"
 local save_screen = {}
 local current
 local latest_time -- {year, month, day} of the last `game_time`
+local latest_unsaved = false
+
+local function set_status(state, unsaved)
+  local label = unsaved and "unsaved" or "saved"
+  local colour = theme.colour(unsaved and "dim" or "saved")
+  text.set(state.status_line, label)
+  text.set_colour(state.status_line, colour)
+end
 
 -- ---------------------------------------------------------------------------------------------------------------------------------
 -- Names, dates and times
@@ -390,15 +399,17 @@ local function build(state)
   local window = state.window
   local content_width = window.content_width
   local new_width = button.measure("new save")
+  state.status_line = text.line(0, 0, window.content, theme.colour("saved"))
+  set_status(state, latest_unsaved)
   state.field = textfield.new{
-    x = 0, y = 0, width = content_width - new_width - FIELD_GAP * P, value = generated(), greatest = GREATEST, group = window.content,
+    x = 0, y = FIELD_Y * P, width = content_width - new_width - FIELD_GAP * P, value = generated(), greatest = GREATEST, group = window.content,
     owner = window,
     on_apply = function(value)
       if trimmed(value) == "" then state.field:set(generated()) end
     end,
   }
   state.new_button = button.new{
-    x = content_width - new_width, y = 0, text = "new save", kind = "window", group = window.content, owner = window,
+    x = content_width - new_width, y = FIELD_Y * P, text = "new save", kind = "window", group = window.content, owner = window,
     on_click = function() state:pressed("new save") end,
   }
   state.refusal_line = text.line(0, REFUSAL_Y * P, window.content, theme.colour("over_limit"))
@@ -580,6 +591,8 @@ end
 -- Hands over the latest `game_time` (its date is the generated name's).
 function save_screen.set_time(time)
   latest_time = {year = time.year, month = time.month, day = time.day}
+  latest_unsaved = time.unsaved == true
+  if current ~= nil and not current.window.closed then set_status(current, latest_unsaved) end
 end
 
 function save_screen.relayout(view)

@@ -142,13 +142,19 @@ fn narrow_layout(width: u32, expect_floor: bool) {
             "the panel is its floor wide, and passes the window"
         );
     }
-    // The whole name is kept; the tabs are inside the panel, apart from each other and the close button, and clear of the title.
+    // The tab carries the place name; the tabs are inside the panel, apart from each other and the close button, and clear of the empty title.
     assert_eq!(
         line(&rig, "fit "),
         "fit title=true tabs_right=true title_clear=true"
     );
     assert_eq!(line(&rig, "tabs_left "), "tabs_left true");
     assert_eq!(line(&rig, "apart "), "apart true");
+    assert!(
+        ["Droim Ineasclainn", "Droim Ineasc…", "D"]
+            .contains(&line(&rig, "place_label ").trim_start_matches("place_label ")),
+        "the first tab carries a tier of the full place name: {:?}",
+        notes(&rig)
+    );
     if expect_floor {
         assert_eq!(line(&rig, "shown "), "shown ", "no room: no title");
     }

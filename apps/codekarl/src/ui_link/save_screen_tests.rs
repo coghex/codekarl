@@ -187,12 +187,15 @@ eq(count_hits("window_frame_"), 2, "the menu and the screen")
 local content_width = w.content_width
 local field_width, field_height = s.field:size()
 local new_width = s.new_button:size()
+eq(s.status_line.y, 0, "the saved status is at the top")
+eq(line_text(s.status_line), "saved")
+eq(s.field.y, 12 * P, "the name field shifts down to make room")
 eq(field_width, content_width - new_width - 4 * P, "the name field is as wide as the content less the button and a 4-pixel gap")
-eq(field_height, 15 * P) eq(s.new_button.x, content_width - new_width) eq(s.new_button.y, 0)
+eq(field_height, 15 * P) eq(s.new_button.x, content_width - new_width) eq(s.new_button.y, 12 * P)
 local rule = scene.quads[s.rule]
-eq(rule.y, 17 * P, "a line under them") eq(rule.h, P) eq(rule.w, content_width)
+eq(rule.y, 29 * P, "a line under them") eq(rule.h, P) eq(rule.w, content_width)
 eq(rule.tint, theme_lib.kind("window").outline, "in the kind's outline")
-eq(s.cards.y, 20 * P, "the cards start under the line")
+eq(s.cards.y, 32 * P, "the cards start under the line")
 eq(s.cards.y + s.cards.height + 19 * P, w.content_height, "and the list bar has the bottom 19 pixels")
 menu_button("save / load").on_click()
 eq(the_screen().window, w, "a second press raises the same screen")
@@ -872,14 +875,14 @@ eq(refusal_text(), "save failed: disk full", "the line says what failed")
 eq(the_screen().refusal_line.test_runs[1].colour, theme_lib.colour("over_limit"), "in over_limit")
 eq(field_text(), "mine", "the field keeps the name")
 eq(order(), "a.cksave", "the list is as it was")
-eq(the_screen().cards_top, 33 * P, "the cards make room for the line")
+eq(the_screen().cards_top, 45 * P, "the cards make room for both lines")
 REFUSE.save = nil
 mark_screen()
 "#,
             // 3: new save works; the line goes
             r#"
 eq(refusal_text(), nil, "the next action takes the line away")
-eq(the_screen().cards_top, 20 * P, "the cards come back up")
+eq(the_screen().cards_top, 32 * P, "the cards come back up")
 eq(order(), "zz-new-1.cksave,a.cksave", "the saved one is first in the default order")
 expect(field_text() ~= "mine" and field_text() ~= "", "the name field got a fresh generated name")
 eq(#STORE, 2)
@@ -1143,7 +1146,7 @@ impl RealSaves {
         let dir = Dir::new();
         let saves = dir.0.join("saves");
         let (sender, receiver) = owner::channel();
-        let slot = SimSlot::new(Arc::new(|| {}));
+        let slot = Arc::clone(&rig.simulation_slot);
         let thread_slot = Arc::clone(&slot);
         let thread_saves = saves.clone();
         let owner = SimOwner::spawn(sender.clone(), receiver, slot, move || {
@@ -1264,6 +1267,94 @@ fn wait_for_note(rig: &mut Rig, needle: &str) {
         std::thread::yield_now();
     }
     panic!("the script never noted {needle}");
+}
+
+#[test]
+fn the_screen_tracks_the_real_core_saved_flag_through_marks_saves_and_loads() {
+    let (mut rig, _real) = real_rig(
+        r#"
+game.on_time(function(time)
+  save_lib.set_time(time)
+  save_status_events = (save_status_events or 0) + 1
+  note("save status " .. tostring(time.unsaved) .. " " .. save_status_events)
+end)
+menu.open(VIEW)
+mark_buttons()
+function expect_status(label, colour)
+  local found
+  for _, line in ipairs(lines_in(the_screen().window.content)) do
+    if line_text(line) == label then found = line end
+  end
+  expect(found ~= nil, "the screen shows " .. label)
+  eq(found.colour, theme_lib.colour(colour), "the " .. label .. " word has its theme colour")
+end
+"#,
+        &[
+            r#"
+open_screen()
+expect_status("saved", "saved")
+game.mark_unsaved()
+mark_screen()
+"#,
+            r#"
+expect_status("unsaved", "dim")
+the_screen().field:set("one")
+mark_screen()
+"#,
+            r#"
+expect_status("saved", "saved")
+eq(order(), "one.cksave", "the successful save is listed")
+game.mark_unsaved()
+mark_screen()
+"#,
+            r#"
+expect_status("unsaved", "dim")
+local failed = game.save("")
+expect(not failed.ok, "the real core refuses an empty save name")
+expect_status("unsaved", "dim")
+mark_screen()
+"#,
+            r#"
+expect_status("unsaved", "dim")
+mark_screen()
+"#,
+            r#"
+expect(the_screen().question ~= nil, "the guarded load answers unsaved")
+expect_status("unsaved", "dim")
+mark_screen()
+"#,
+            r#"
+expect(the_screen() == nil and not menu.is_open(), "the confirmed load closes the screen as before")
+menu.open(VIEW)
+mark_buttons()
+open_screen()
+expect_status("saved", "saved")
+"#,
+        ],
+    );
+
+    wait_for_note(&mut rig, "save status false 1");
+    rig.opened(); // saved at open
+
+    wait_for_note(&mut rig, "save status true 2");
+    rig.opened(); // the mark reaches the open screen
+
+    press(&mut rig, "new_save");
+    wait_for_note(&mut rig, "save status false 3");
+    rig.opened(); // a successful save clears the label
+
+    wait_for_note(&mut rig, "save status true 4");
+    rig.opened(); // the second mark makes it unsaved again
+
+    press(&mut rig, "card1");
+    rig.opened(); // select the saved game
+    press(&mut rig, "btn_load");
+    wait_for_note(&mut rig, "result one.cksave false unsaved");
+    rig.opened(); // guarded-load refusal agrees with the label
+
+    press(&mut rig, "q_load");
+    wait_for_note(&mut rig, "save status false 5");
+    rig.opened(); // the plain load succeeds and reopening reads saved
 }
 
 #[test]

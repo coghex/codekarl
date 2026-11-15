@@ -37,6 +37,54 @@ fn mark_unsaved_through_controls(harness: &mut Harness) {
 }
 
 #[test]
+fn flag_only_changes_publish_the_save_status_and_failed_saves_keep_it_unsaved() {
+    let mut harness = Harness::new(42);
+    assert_eq!(
+        harness.published().len(),
+        1,
+        "the initial snapshot is saved"
+    );
+    assert!(!harness.published()[0].unsaved);
+
+    mark_unsaved_through_controls(&mut harness);
+    assert_eq!(
+        harness.published().len(),
+        2,
+        "a flag-only choice publishes while the game is paused"
+    );
+    assert!(harness.published()[1].unsaved);
+
+    assert!(matches!(
+        harness.save_call(SaveCall::New("Named".to_owned())),
+        SaveReply::Finished(Ok(()))
+    ));
+    assert_eq!(
+        harness.published().len(),
+        3,
+        "a successful save publishes saved"
+    );
+    assert!(!harness.published()[2].unsaved);
+
+    mark_unsaved_through_controls(&mut harness);
+    assert_eq!(
+        harness.published().len(),
+        4,
+        "the next flag-only change publishes"
+    );
+    assert!(harness.published()[3].unsaved);
+    assert!(matches!(
+        harness.save_call(SaveCall::New("   ".to_owned())),
+        SaveReply::Finished(Err(_))
+    ));
+    assert_eq!(
+        harness.published().len(),
+        4,
+        "a failed save does not clear or republish the unsaved status"
+    );
+    assert!(harness.core.has_unsaved_changes());
+}
+
+#[test]
 fn unsaved_changes_are_core_only_and_ticks_and_effective_save_loads_update_them() {
     let mut harness = Harness::new(42);
     assert!(!harness.core.has_unsaved_changes());
@@ -50,7 +98,10 @@ fn unsaved_changes_are_core_only_and_ticks_and_effective_save_loads_update_them(
     assert_eq!(initial_digest, harness.digest());
     let clean_snapshot = harness.core.snapshot();
     mark_unsaved_through_controls(&mut harness);
-    assert_eq!(clean_snapshot, harness.core.snapshot());
+    let mut dirty_snapshot = harness.core.snapshot();
+    assert!(dirty_snapshot.unsaved);
+    dirty_snapshot.unsaved = false;
+    assert_eq!(clean_snapshot, dirty_snapshot, "only save status changes");
     assert_eq!(initial_digest, harness.digest());
     assert!(harness.core.has_unsaved_changes());
 

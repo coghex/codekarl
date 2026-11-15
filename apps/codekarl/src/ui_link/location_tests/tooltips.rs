@@ -34,7 +34,12 @@ announce_main_tooltips()"#,
     assert!(
         recorded
             .iter()
-            .any(|line| line == "tooltip location_full <none>")
+            .any(|line| line.starts_with("tooltip location_full title=Rowan|"))
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "tooltip_kind location_full lockable")
     );
 
     rig.opened();
@@ -60,12 +65,12 @@ announce_main_tooltips()"#,
     assert!(
         recorded
             .iter()
-            .any(|line| line == "tooltip location_short location part=-")
+            .any(|line| line.starts_with("tooltip location_short title=Rowan|"))
     );
     assert!(
         recorded
             .iter()
-            .any(|line| line == "tooltip_kind location_short label")
+            .any(|line| line == "tooltip_kind location_short lockable")
     );
 }
 
@@ -869,7 +874,7 @@ fn the_date_and_yield_map_mode_use_their_glossary_explanations() {
 }
 
 #[test]
-fn location_tab_words_numbers_and_window_title_open_their_sources() {
+fn location_tab_words_and_place_tab_open_their_sources_without_a_window_title() {
     let mut rig = rig(&["time(1, 1) select_place('rowan', 'Rowan'); announce_location_tooltips()"]);
     rig.opened();
     let captured = notes(&rig);
@@ -893,12 +898,21 @@ fn location_tab_words_numbers_and_window_title_open_their_sources() {
         "{captured:?}"
     );
     assert!(
-        captured
-            .iter()
-            .any(|line| line.starts_with("tooltip title title=Rowan|")),
+        captured.iter().any(|line| line == "tooltip title <none>"),
         "{captured:?}"
     );
-    for name in ["title", "people_word", "people_number", "food_number"] {
+    assert!(
+        captured
+            .iter()
+            .any(|line| line.starts_with("tooltip location_tab title=Rowan|")),
+        "{captured:?}"
+    );
+    for name in [
+        "location_tab",
+        "people_word",
+        "people_number",
+        "food_number",
+    ] {
         assert!(
             captured
                 .iter()

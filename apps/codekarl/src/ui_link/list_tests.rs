@@ -2329,6 +2329,7 @@ local top = require("lib.window")
 window.on_opened(function()
   local current = top.top()
   window.record("top=" .. (current and current.title or "none"))
+  window.record("place-tab=" .. (current and current.title_items[1].items[1].labels[1] or "none"))
 end)
 "#,
         markers = markers.0.display(),
@@ -2422,7 +2423,8 @@ end)
     rig.deliver_fixture_frame();
     assert!(marker("place-ready"));
     rig.opened();
-    assert_eq!(note_of(&rig, "top"), "Place 2");
+    assert_eq!(note_of(&rig, "top"), "");
+    assert_eq!(note_of(&rig, "place-tab"), "Place 2");
     let title = std::fs::read_to_string(markers.0.join("places-title-center"))
         .expect("the ledger close-button center marker");
     let mut title = title.split_whitespace();

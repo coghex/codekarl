@@ -28,6 +28,8 @@ pub(crate) struct SimSnapshot {
     pub(crate) speed: Speed,
     /// `None` while running.
     pub(crate) paused: Option<PauseReason>,
+    /// Whether the current game state has changes since its last successful save.
+    pub(crate) unsaved: bool,
     /// The revision of [`economy`](Self::economy): it rises with every new view, a load included, and is `0` while there is
     /// none.
     pub(crate) economy_revision: u64,
@@ -54,6 +56,7 @@ impl SimSnapshot {
         self.date != other.date
             || self.speed != other.speed
             || self.paused != other.paused
+            || self.unsaved != other.unsaved
             || self.economy_revision != other.economy_revision
     }
 }
