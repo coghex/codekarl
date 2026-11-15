@@ -1449,6 +1449,8 @@ mod save_screen_tests;
 #[cfg(test)]
 mod scrollbar_tests;
 #[cfg(test)]
+mod settings_graphics_tests;
+#[cfg(test)]
 mod textfield_tests;
 #[cfg(test)]
 mod theme_tests;

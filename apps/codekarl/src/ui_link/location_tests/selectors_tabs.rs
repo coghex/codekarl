@@ -205,6 +205,70 @@ fn the_location_tab_stays_text_while_pops_and_buildings_start_as_cards_and_share
 }
 
 #[test]
+fn a_kept_list_look_starts_the_open_location_panel_and_its_buttons_write_the_setting() {
+    let prelude = r#"
+look_setting = "rows"
+settings = {
+  tooltips = function() return {delay=0.3, lock="disabled", lock_timer=0.5} end,
+  graphics = function() return {width=1280, height=800, list_look=look_setting} end,
+  set = function(name, value)
+    assert(name == "ui.list_look")
+    look_setting = value
+  end,
+}
+"#;
+    let mut rig = rig_with_prelude_at(
+        prelude,
+        &[
+            "time(1, 1) select_place('cards', 'Cards') announce_tabs()",
+            "announce_look()",
+            "note('look_setting ' .. look_setting); note('cards_control ' .. tostring(look_buttons.cards ~= nil) .. ' ' .. tostring(look_buttons.cards and look_buttons.cards.selected == true))",
+            "note('reselected ' .. tostring(look_buttons.cards.selected == true))",
+        ],
+        1800,
+        900,
+        2,
+    );
+    rig.opened();
+    click_tab(&mut rig, "pops");
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line.starts_with("look rows ") && line.ends_with("selected=true")),
+        "the panel starts in the setting's rows look: {:?}",
+        notes(&rig)
+    );
+    click_look(&mut rig, "cards");
+    rig.opened();
+    assert!(notes(&rig).iter().any(|line| line == "look_setting cards"));
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "cards_control true true")
+    );
+    click_look(&mut rig, "cards");
+    rig.opened();
+    assert!(notes(&rig).iter().any(|line| line == "reselected true"));
+    let unsaved_marks: Vec<_> = notes(&rig)
+        .into_iter()
+        .filter(|line| line.starts_with("unsaved_count "))
+        .collect();
+    assert_eq!(
+        unsaved_marks,
+        ["unsaved_count 1"],
+        "the location panel marks an effective look change once, even with settings.set present; reselecting it is inert"
+    );
+    assert!(
+        card_stacks(&rig)
+            .last()
+            .is_some_and(|stack| stack.starts_with("gap=3 heights=")),
+        "the open panel rerenders in cards: {:?}",
+        card_stacks(&rig)
+    );
+}
+
+#[test]
 fn a_selection_reads_the_newest_revision_the_ui_has_seen() {
     let mut rig = rig(&[
         "time(1, 1) time(12, 2) select_place('rowan', 'Rowan')",

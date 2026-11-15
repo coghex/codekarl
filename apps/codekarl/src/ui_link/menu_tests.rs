@@ -608,10 +608,17 @@ eq(presses, 1, "greyed again: no further click")
     rig.opened();
 }
 
-const SETTINGS_HOST: &str = r#"
+pub(super) const SETTINGS_HOST: &str = r#"
+local set_text_input = window.set_text_input
+window.set_text_input = function(on)
+  local generation = set_text_input(on)
+  note("input " .. tostring(on) .. " " .. generation)
+  return generation
+end
 fixture = {
   tooltips = {delay = 0.3, lock = "middle_mouse", lock_timer = 1.5},
   map = {pan_pixels_per_frame = 4, zoom_steps_per_second = 20, scroll_points_per_step = 24},
+  graphics = {width = 1280, height = 800, list_look = "cards", scale = nil},
   calls = {},
   bindings = {
     {name="close", bindings={"Escape"}},
@@ -641,6 +648,17 @@ end
 settings = {
   tooltips = function() return fixture.tooltips end,
   map = function() return fixture.map end,
+  graphics = function()
+    return {width = fixture.graphics.width, height = fixture.graphics.height,
+      list_look = fixture.graphics.list_look, scale = fixture.graphics.scale}
+  end,
+  resize = function(width, height)
+    local used_width = math.min(16384, math.max(1280, width))
+    local used_height = math.min(16384, math.max(800, height))
+    fixture.calls[#fixture.calls + 1] = {"resize", width, height}
+    fixture.graphics.width, fixture.graphics.height = used_width, used_height
+    return used_width, used_height
+  end,
   bindings = function() return fixture.bindings end,
   set_bindings = function(changes)
     fixture.calls[#fixture.calls + 1] = {"set_bindings", changes}
@@ -668,11 +686,16 @@ settings = {
     elseif name == "ui.tooltips.lock_timer" then fixture.tooltips.lock_timer = value
     elseif name == "map.pan_pixels_per_frame" then fixture.map.pan_pixels_per_frame = value
     elseif name == "map.zoom_steps_per_second" then fixture.map.zoom_steps_per_second = value
-    elseif name == "map.scroll_points_per_step" then fixture.map.scroll_points_per_step = value end
+    elseif name == "map.scroll_points_per_step" then fixture.map.scroll_points_per_step = value
+    elseif name == "ui.scale" then fixture.graphics.scale = value
+    elseif name == "ui.list_look" then fixture.graphics.list_look = value end
   end,
   reset = function(tab)
     fixture.calls[#fixture.calls + 1] = {"reset", tab}
     if tab == "tooltips" then fixture.tooltips = {delay=0.3, lock="middle_mouse", lock_timer=1.5}
+    elseif tab == "graphics" then
+      fixture.graphics = {width=1280, height=800, list_look="cards", scale=nil}
+      fixture.calls[#fixture.calls + 1] = {"resize", 1280, 800}
     elseif tab == "map" then fixture.map = {pan_pixels_per_frame=4, zoom_steps_per_second=20, scroll_points_per_step=24}
     else
       for _, action in ipairs(fixture.bindings) do
@@ -749,9 +772,19 @@ function mark_settings()
 end
 "#;
 
-fn settings_rig(steps: &[&str]) -> Rig {
+pub(super) fn settings_rig(steps: &[&str]) -> Rig {
     menu_rig(
         &format!("{SETTINGS_HOST}\nmenu.open(VIEW) mark_buttons()"),
+        steps,
+    )
+}
+
+/// The resolution field tests need the real typing dispatcher that the small settings fixture omits.
+pub(super) fn settings_graphics_rig(steps: &[&str]) -> Rig {
+    menu_rig(
+        &format!(
+            "{SETTINGS_HOST}\nmenu.open(VIEW) mark_buttons()\nfunction on_frame(update) require('lib.typing').dispatch(update); require('lib.settings_window').update(update) end"
+        ),
         steps,
     )
 }
@@ -828,7 +861,7 @@ expect(s.page.scroll > 0, "a real wheel event scrolls the input rows")
 }
 
 #[test]
-fn settings_opens_from_the_menu_as_a_centred_resizable_window_with_the_three_side_tabs() {
+fn settings_opens_from_the_menu_as_a_centred_resizable_window_with_the_four_side_tabs() {
     let mut rig = settings_rig(&[
         r#"
 expect(not menu_button("settings").inactive, "settings is a live menu action")
@@ -841,14 +874,16 @@ eq(win.title, "Settings")
 eq(win.kind, "window")
 expect(not win.fixed and not win.draggable and win.close_button ~= nil, "a close x, not draggable")
 eq(s.selected, "general", "opens on general")
-eq(#s.tab_order, 3)
-eq(s.tab_order[1], "general") eq(s.tab_order[2], "map") eq(s.tab_order[3], "input")
-expect(s.tabs.graphics == nil and s.tabs.gameplay == nil, "no graphics or gameplay row in slice A")
+eq(#s.tab_order, 4)
+eq(s.tab_order[1], "general") eq(s.tab_order[2], "graphics")
+eq(s.tab_order[3], "map") eq(s.tab_order[4], "input")
+expect(s.tabs.graphics ~= nil and s.tabs.gameplay == nil, "graphics is present and gameplay is not")
 local widest = math.max(font.layout("general").width, font.layout("graphics").width,
   font.layout("map").width, font.layout("input").width)
 eq(s.tab_width, (widest + 12) * P, "the reserved column includes graphics")
 eq(s.tabs.general.width, s.tab_width - 3 * P, "the tab fill stops three UI pixels before the divider")
-eq(s.tabs.map.y - s.tabs.general.y, 13 * P, "tab rows are thirteen UI pixels tall")
+eq(s.tabs.graphics.y - s.tabs.general.y, 13 * P, "tab rows are thirteen UI pixels tall")
+eq(s.tabs.map.y - s.tabs.graphics.y, 13 * P, "the graphics row keeps the same spacing")
 expect(s.tabs.general.selected and s.tabs.general.frame.fill == theme_lib.kind("window").hot)
 local x, y = win:position()
 local w, h = win:size()

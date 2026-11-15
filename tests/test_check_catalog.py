@@ -2525,6 +2525,11 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("assets/ui/", "scripts/ui/"),
     ),
+    Guard(
+        "apps/codekarl/src/ui_link/settings_graphics_tests.rs",
+        "rust.app",
+        ("assets/ui/", "scripts/ui/"),
+    ),
     # CK-314: the typing function's tests run the shipped typing and window libraries over the shipped font and art.
     Guard(
         "apps/codekarl/src/ui_link/typing_tests.rs",

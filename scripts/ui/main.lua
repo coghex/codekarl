@@ -31,8 +31,11 @@ local MARGIN = 8 -- UI units from the window's edges
 -- The window opens at its minimum, in screen pixels (the owner: "for now at the minimum"; the size will be a setting later) and the user
 -- can enlarge it. `window.open` returns the initial view in UI units for this pixel-sized window, which the first layout starts from; then
 -- each update reports the window's size as it is.
+local initial_graphics = settings ~= nil and settings.graphics ~= nil and settings.graphics()
+  or {width = 1280, height = 800}
 local OPEN_WIDTH, OPEN_HEIGHT = window.open{
-  title = "Codekarl", unit = "pixels", width = 1280, height = 800, resizable = true, min_width = 1280, min_height = 800,
+  title = "Codekarl", unit = "pixels", width = initial_graphics.width, height = initial_graphics.height,
+  resizable = true, min_width = 1280, min_height = 800,
   clear = {0.10, 0.25, 0.45},
 }
 local view = {width = OPEN_WIDTH, height = OPEN_HEIGHT}
