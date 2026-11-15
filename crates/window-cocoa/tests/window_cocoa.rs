@@ -1140,6 +1140,38 @@ fn the_game_window_class_can_become_key_when_borderless() {
     );
 }
 
+/// CK-332: the step a mode change runs after its style change puts the keys back on the game view, and a test window,
+/// created without activation, is never asked to become key whatever its previous key state said. The step is run
+/// directly: no mode is changed (no window goes fullscreen), nothing is focused, ordered or activated (CK-187).
+fn the_keyboard_step_after_a_style_change_restores_the_view_and_never_keys_a_test_window() {
+    assert!(
+        !ck_window::window_activation_allowed(),
+        "the guard: this worker's windows are created without activation, so the key call is unreachable"
+    );
+    let _fixture = Fixture::open(200, 120);
+    let key_before = support::info().focus.is_key;
+    for was_key in [false, true] {
+        support::set_first_responder(false);
+        assert!(
+            !support::info().focus.first_responder_is_view,
+            "the setup cleared the first responder"
+        );
+        assert!(
+            !support::restore_keyboard(was_key),
+            "a test window is never asked to become key (was key: {was_key})"
+        );
+        let info = support::info();
+        assert!(
+            info.focus.first_responder_is_view,
+            "the game view is the first responder again (was key: {was_key})"
+        );
+        assert_eq!(
+            info.focus.is_key, key_before,
+            "the window's key state is untouched (was key: {was_key})"
+        );
+    }
+}
+
 fn test_windows_let_clicks_through() {
     let _fixture = Fixture::open(260, 180);
     match support::mouse_passthrough_probe() {
@@ -1156,7 +1188,7 @@ fn test_windows_let_clicks_through() {
 
 type Case = fn();
 
-const CASES: [(&str, Case); 56] = [
+const CASES: [(&str, Case); 57] = [
     ("create_and_destroy", create_and_destroy),
     (
         "production_open_still_asks_for_activation",
@@ -1169,6 +1201,10 @@ const CASES: [(&str, Case); 56] = [
     (
         "the_game_window_class_can_become_key_when_borderless",
         the_game_window_class_can_become_key_when_borderless,
+    ),
+    (
+        "the_keyboard_step_after_a_style_change_restores_the_view_and_never_keys_a_test_window",
+        the_keyboard_step_after_a_style_change_restores_the_view_and_never_keys_a_test_window,
     ),
     ("off_the_main_thread", off_the_main_thread),
     ("close_button", close_button),

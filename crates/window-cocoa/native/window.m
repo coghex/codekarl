@@ -1000,10 +1000,25 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
     return YES;
 }
 
+- (BOOL)restoreKeyboardAfterStyleChange:(BOOL)wasKey {
+    NSWindow *window = self.window;
+    if (window == nil || self.view == nil) return NO;
+    /* Changing the style mask can clear the first responder (GLFW resets it for this reason): without it the keys go nowhere. */
+    [window makeFirstResponder:self.view];
+    /* Only a window that was key is made key again, and never one created without activation (a test window, CK-164): its being key
+     * could only be outside doing, and it must not be given the key. This asks for the key alone: no activation, no ordering front. */
+    if (!wasKey || !self.activationAllowed) return NO;
+    [window makeKeyWindow];
+    return YES;
+}
+
 - (void)setMode:(int)mode outer:(NSSize)outer picture:(NSRect)picture drawable:(NSSize)drawable {
     if (self.window == nil || self.view == nil || self.rootLayer == nil || self.metalLayer == nil || mode < 0 || mode > 2) return;
     NSWindow *window = self.window;
     BOOL borderless = mode != 0;
+    /* Read before any style change: changing the style can take the key away (CK-332). */
+    BOOL wasKey = window.isKeyWindow;
+    BOOL styleChanged = NO;
     if (borderless && !self.savedWindowedFrame) {
         self.windowedFrame = window.frame;
         self.windowedStyleMask = window.styleMask;
@@ -1017,10 +1032,12 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
             self.application.presentationOptions = NSApplicationPresentationAutoHideMenuBar |
                                                    NSApplicationPresentationAutoHideDock;
             window.styleMask = NSWindowStyleMaskBorderless;
+            styleChanged = YES;
             [window setFrame:screen.frame display:YES];
         }
     } else if (self.savedWindowedFrame) {
         window.styleMask = self.windowedStyleMask;
+        styleChanged = YES;
         NSRect contentRect = [window frameRectForContentRect:NSMakeRect(0, 0, outer.width, outer.height)];
         contentRect.origin.x = self.windowedFrame.origin.x;
         contentRect.origin.y = NSMaxY(self.windowedFrame) - contentRect.size.height;
@@ -1030,6 +1047,9 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
             self.application.presentationOptions = self.savedPresentationOptions;
             self.savedPresentationOptionsValid = NO;
         }
+    }
+    if (styleChanged) {
+        [self restoreKeyboardAfterStyleChange:wasKey];
     }
     self.mode = mode;
     self.pictureX = (uint32_t)picture.origin.x;
@@ -1258,6 +1278,7 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
         state.drawableWidth = pixels_wide;
         state.drawableHeight = pixels_high;
         state.resizable = resizable != 0;
+        state.activationAllowed = activate != 0;
         state.minPointWidth = content_min_width;
         state.minPointHeight = content_min_height;
         state.minPixelWidth = pixel_min_width;

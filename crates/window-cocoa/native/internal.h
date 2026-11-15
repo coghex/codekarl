@@ -104,6 +104,9 @@ BOOL ck_win_key_table_entry(NSUInteger position, uint16_t *code, uint8_t *key, c
 @property(nonatomic) NSRect windowedFrame;
 @property(nonatomic) NSWindowStyleMask windowedStyleMask;
 @property(nonatomic) BOOL savedWindowedFrame;
+/* Whether the window was created with activation allowed (never for a test window, CK-164): the only case in which a mode change
+ * may make the window key again (CK-332). */
+@property(nonatomic) BOOL activationAllowed;
 @property(nonatomic) NSApplicationPresentationOptions savedPresentationOptions;
 @property(nonatomic) BOOL savedPresentationOptionsValid;
 @property(nonatomic) int mode;
@@ -178,6 +181,10 @@ BOOL ck_win_key_table_entry(NSUInteger position, uint16_t *code, uint8_t *key, c
 /* Updates the layer's contentsScale and records the size (points and pixels, read together) if it changed. */
 - (void)applyScaleAndRecordSize;
 - (void)setMode:(int)mode outer:(NSSize)outer picture:(NSRect)picture drawable:(NSSize)drawable;
+/* After a style change: the view is the first responder again, and a window that was key just before is made key again (key only:
+ * no activation, no ordering front), and only if it was created with activation allowed. Returns whether it asked the window to
+ * become key. */
+- (BOOL)restoreKeyboardAfterStyleChange:(BOOL)wasKey;
 /* The window was resized (not a live resize or a full-screen transition, which report once, at their end). */
 - (void)recordResizeIfSettled;
 /* The backing scale changed: the content minimum is recomputed from the pixels requested, a window below it grows to it

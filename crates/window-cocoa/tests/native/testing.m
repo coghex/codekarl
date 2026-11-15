@@ -221,6 +221,13 @@ int32_t ck_win_test_borderless_eligibility(void) {
     }
 }
 
+int32_t ck_win_test_restore_keyboard(int32_t was_key) {
+    @autoreleasepool {
+        CKWinState *state = ck_state();
+        return state == nil ? -1 : ([state restoreKeyboardAfterStyleChange:was_key != 0] ? 1 : 0);
+    }
+}
+
 void ck_win_test_info(CKWinTestInfo *out) {
     @autoreleasepool {
         memset(out, 0, sizeof *out);
