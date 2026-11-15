@@ -356,16 +356,24 @@ fn enter_applies_the_number_brought_into_its_range_and_tells_the_caller_once() {
 }
 
 #[test]
-fn tab_applies_and_does_nothing_more() {
-    let mut rig = field_rig("", &["report()"]);
+fn tab_applies_and_starts_editing_the_next_field_in_the_same_window() {
+    let mut rig = field_rig(
+        "local other = {closed = false} fields.D = numberfield.new{x = 50, y = 0, value = 700, least = 0, greatest = 9999, digits = 4, group = W.content, owner = other} function after_apply(name) if name == 'A' then fields.B:move(110, 20) note('callback target ' .. (numberfield.current() == fields.B and 'B' or 'other') .. ' caret=' .. tostring(fields.B.caret ~= nil) .. ' outline=' .. tostring(fields.B.frame.line == theme_lib.kind('window').hot)) end end",
+        &["report()"],
+    );
     start(&mut rig, "A");
     update(&mut rig, &three_backspaces(), &[]);
     update(&mut rig, &chars("300"), &[]);
     update(&mut rig, &[TypedEntry::Tab], &[]);
     assert_eq!(
         state(&mut rig),
-        "applied=A=1300 editing=none A=1300 B=480 clicks=0",
-        "Tab applied the field and started no other"
+        "applied=A=1300 editing=B A=1300 B=480 clicks=0",
+        "Tab applied A and began B"
+    );
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "callback target B caret=true outline=true")
     );
 }
 

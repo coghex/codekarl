@@ -266,6 +266,7 @@ function textfield.new(spec)
   draw(self)
   publish_region(self)
   pointer.register(self.key, self, self.owner)
+  fieldedit.register(self)
   return self
 end
 
@@ -299,8 +300,10 @@ function textfield:on_typed(entry)
       scroll(self)
       draw(self)
     end
-  elseif kind == "enter" or kind == "tab" then
+  elseif kind == "enter" then
     fieldedit.apply(self)
+  elseif kind == "tab" or kind == "backtab" then
+    fieldedit.tab(self, kind == "backtab")
   end
 end
 
@@ -378,6 +381,7 @@ function textfield:destroy()
     return
   end
   fieldedit.end_editing(self, false)
+  fieldedit.unregister(self)
   pointer.unregister(self.key)
   render.set_hit(self.key, nil, self.group)
   self.frame:destroy()

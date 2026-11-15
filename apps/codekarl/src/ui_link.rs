@@ -211,7 +211,7 @@ fn update_table_in(
         ("overflow".to_owned(), boolean(stash.overflow())),
         ("reset".to_owned(), boolean(stash.reset())),
         // The typed entries (CK-314), one ordered list: `{kind = "char", text = "á"}` for a committed character, and `{kind = name}` for
-        // an edit command (`"backspace"`, `"enter"`, `"tab"`, `"left"`, `"right"`). `typed_lost` says that entries were dropped at the
+        // an edit command (`"backspace"`, `"enter"`, `"tab"`, `"backtab"`, `"left"`, `"right"`). `typed_lost` says that entries were dropped at the
         // bound; `typed_epoch` is the generation of the latest `window.set_text_input` call the main thread has applied.
         (
             "typed".to_owned(),
@@ -277,6 +277,7 @@ fn typed_entry_table(entry: ck_window::TypedEntry) -> ConfigValue {
         TypedEntry::Backspace => ("backspace", None),
         TypedEntry::Enter => ("enter", None),
         TypedEntry::Tab => ("tab", None),
+        TypedEntry::Backtab => ("backtab", None),
         TypedEntry::Left => ("left", None),
         TypedEntry::Right => ("right", None),
     };
@@ -3996,6 +3997,7 @@ mod tests {
             ck_window::TypedEntry::Backspace,
             ck_window::TypedEntry::Enter,
             ck_window::TypedEntry::Tab,
+            ck_window::TypedEntry::Backtab,
             ck_window::TypedEntry::Left,
             ck_window::TypedEntry::Right,
         ];
@@ -4009,7 +4011,7 @@ mod tests {
         assert_eq!(
             &*seen,
             &[ConfigValue::String(
-                "char:a,char:\u{e1},backspace,enter,tab,left,right|true|5".to_owned()
+                "char:a,char:\u{e1},backspace,enter,tab,backtab,left,right|true|5".to_owned()
             )]
         );
     }

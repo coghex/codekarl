@@ -1259,8 +1259,8 @@ const CASES: [(&str, Case); 56] = [
         typed::a_key_down_with_characters_gives_one_character_entry,
     ),
     (
-        "the_five_edit_commands_and_several_keys_keep_their_order",
-        typed::the_five_edit_commands_and_several_keys_keep_their_order,
+        "the_six_edit_commands_and_several_keys_keep_their_order",
+        typed::the_six_edit_commands_and_several_keys_keep_their_order,
     ),
     (
         "a_repeated_key_down_gives_another_entry",

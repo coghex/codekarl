@@ -413,7 +413,7 @@ fn input_events(raw: &RawEvents) -> Vec<NativeEvent> {
     events
 }
 
-/// One typed entry of a pump as an event: a committed character (a Unicode scalar value) or one of the five edit commands. An entry
+/// One typed entry of a pump as an event: a committed character (a Unicode scalar value) or one of the six edit commands. An entry
 /// the native layer numbers outside these (it cannot) is dropped.
 fn typed_event(entry: ffi::RawTyped) -> Option<NativeEvent> {
     use ck_input::TypedEntry;
@@ -422,6 +422,7 @@ fn typed_event(entry: ffi::RawTyped) -> Option<NativeEvent> {
         ffi::TYPED_BACKSPACE => TypedEntry::Backspace,
         ffi::TYPED_ENTER => TypedEntry::Enter,
         ffi::TYPED_TAB => TypedEntry::Tab,
+        ffi::TYPED_BACKTAB => TypedEntry::Backtab,
         ffi::TYPED_LEFT => TypedEntry::Left,
         ffi::TYPED_RIGHT => TypedEntry::Right,
         _ => return None,

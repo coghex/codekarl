@@ -21,7 +21,7 @@ pub const POINTER_CAPACITY: usize = 64;
 pub const TYPED_CAPACITY: usize = 256;
 
 /// One typed entry (CK-314): a character the system committed for a key (a Unicode scalar value, never a control character), or one of
-/// the five edit commands. Typed entries are one ordered list, apart from the physical keys and the pointer events.
+/// the six edit commands. Typed entries are one ordered list, apart from the physical keys and the pointer events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TypedEntry {
     /// A committed character.
@@ -32,6 +32,8 @@ pub enum TypedEntry {
     Enter,
     /// Tab.
     Tab,
+    /// Shift+Tab, kept distinct from Tab even if Shift is released before the UI consumes it.
+    Backtab,
     /// Move left.
     Left,
     /// Move right.

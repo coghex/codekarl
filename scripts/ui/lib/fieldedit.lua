@@ -20,6 +20,19 @@ local pointer = require("lib.pointer")
 local fieldedit = {}
 
 local editing = nil -- the field editing now
+local fields = {} -- live number and text fields, ordered by creation for stable geometric ties
+
+function fieldedit.register(self)
+  fields[#fields + 1] = self
+end
+
+function fieldedit.unregister(self)
+  for index = #fields, 1, -1 do
+    if fields[index] == self then
+      table.remove(fields, index)
+    end
+  end
+end
 
 -- Ends the editing without telling anyone; `handoff` leaves the typing function's editor as it is, for the field that takes over.
 function fieldedit.end_editing(self, handoff)
@@ -49,6 +62,44 @@ function fieldedit.apply(self)
     return
   end
   local tell = settle(self, false)
+  if tell ~= nil then tell() end
+end
+
+-- Commits `self` and hands editing to the next live field in the same window, in screen order. A lone open field keeps the same editing
+-- session, so its update's remaining typed entries still belong to it.
+function fieldedit.tab(self, backwards)
+  if editing ~= self or not self.is_editing then
+    return
+  end
+  local ordered = {}
+  for index, candidate in ipairs(fields) do
+    if candidate.frame ~= nil and candidate.owner == self.owner
+        and (candidate.owner == nil or not candidate.owner.closed)
+        and not candidate.inactive and not candidate.greyed then
+      ordered[#ordered + 1] = {field = candidate, order = index}
+    end
+  end
+  table.sort(ordered, function(left, right)
+    local a, b = left.field, right.field
+    if a.y ~= b.y then return a.y < b.y end
+    if a.x ~= b.x then return a.x < b.x end
+    return left.order < right.order
+  end)
+  local current
+  for index, candidate in ipairs(ordered) do
+    if candidate.field == self then
+      current = index
+      break
+    end
+  end
+  if current == nil or #ordered < 2 then
+    return
+  end
+  local step = backwards and -1 or 1
+  local next_index = ((current - 1 + step) % #ordered) + 1
+  local next_field = ordered[next_index].field
+  local tell = settle(self, true)
+  fieldedit.begin(next_field)
   if tell ~= nil then tell() end
 end
 
