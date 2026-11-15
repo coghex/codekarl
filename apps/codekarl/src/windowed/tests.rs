@@ -2,18 +2,128 @@
 //! mapping, the lazy backend and the resource latch, the late callback failures, and the UI link's
 //! disconnection rules (the final-wake regression is proven with gates, not sleeps).
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError};
 use std::thread;
 
 use ck_lua::HostFunction;
-use ck_window::{NativeEvent, UiEvent};
+use ck_window::{
+    Backend, CreatedWindow, ModeLayout, NativeEvent, NativeWake, PixelSize, ScreenSnapshot,
+    UiEvent, Wait, WindowDesc, WindowMode,
+};
 
 use super::*;
 use crate::fakes::{
     BackendScript, End, FakeBackend, FakePresenter, PresenterScript, Recorder, vector_recorder,
 };
 use crate::testing::{Extras, Gate, Harness, WINDOW};
+
+#[derive(Debug, PartialEq, Eq)]
+enum ForwardedCall {
+    SetMode(ModeLayout),
+    ResizePoints((u32, u32)),
+    ResizePixels((u32, u32), PixelSize),
+    SetTextInput(bool),
+}
+
+struct RecordingBackend(Rc<RefCell<Vec<ForwardedCall>>>);
+
+impl Backend for RecordingBackend {
+    type Handles = ();
+
+    fn main_screen(&mut self) -> ScreenSnapshot {
+        ScreenSnapshot::unlimited()
+    }
+
+    fn create_window(&mut self, _desc: &WindowDesc) -> Result<CreatedWindow<()>, String> {
+        Ok(CreatedWindow {
+            handles: (),
+            pixel_size: PixelSize {
+                width: 1,
+                height: 1,
+            },
+        })
+    }
+
+    fn wake_target(&self) -> Arc<dyn NativeWake> {
+        struct Wake;
+        impl NativeWake for Wake {
+            fn wake(&self) {}
+        }
+        Arc::new(Wake)
+    }
+
+    fn pump(&mut self, _events: &mut dyn FnMut(NativeEvent), _wait: Wait, _cap: usize) {}
+
+    fn resize_window(&mut self, points: (u32, u32)) {
+        self.0
+            .borrow_mut()
+            .push(ForwardedCall::ResizePoints(points));
+    }
+
+    fn resize_window_pixels(&mut self, points: (u32, u32), pixels: PixelSize) {
+        self.0
+            .borrow_mut()
+            .push(ForwardedCall::ResizePixels(points, pixels));
+    }
+
+    fn set_mode(&mut self, layout: ModeLayout) {
+        self.0.borrow_mut().push(ForwardedCall::SetMode(layout));
+    }
+
+    fn set_text_input(&mut self, enabled: bool) {
+        self.0
+            .borrow_mut()
+            .push(ForwardedCall::SetTextInput(enabled));
+    }
+
+    fn destroy_window(&mut self) {}
+
+    fn terminate(&mut self) {}
+}
+
+#[test]
+fn lazy_forwards_mode_resize_and_text_input_calls_after_window_creation() {
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let backend_calls = Rc::clone(&calls);
+    let latch = ResourceLatch::new();
+    let mut lazy = Lazy {
+        make: Some(move || Ok(RecordingBackend(backend_calls))),
+        backend: None,
+        latch: &latch,
+        deadline: false,
+    };
+
+    lazy.create_window(&WindowDesc::default()).unwrap();
+    let screen = ScreenSnapshot {
+        backing: 1.0,
+        screen_points: (1920, 1080),
+        visible_points: (1920, 1040),
+    };
+    let mode = screen.mode_layout(WindowMode::Fullscreen, (1280, 720));
+    lazy.set_mode(mode);
+    lazy.resize_window((800, 600));
+    let pixels = PixelSize {
+        width: 2560,
+        height: 1440,
+    };
+    lazy.resize_window_pixels((1280, 720), pixels);
+    lazy.set_text_input(true);
+    lazy.set_text_input(false);
+
+    assert_eq!(
+        *calls.borrow(),
+        [
+            ForwardedCall::SetMode(mode),
+            ForwardedCall::ResizePoints((800, 600)),
+            ForwardedCall::ResizePixels((1280, 720), pixels),
+            ForwardedCall::SetTextInput(true),
+            ForwardedCall::SetTextInput(false),
+        ]
+    );
+}
 
 /// What a run did.
 struct Outcome {
