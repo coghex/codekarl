@@ -436,6 +436,8 @@ value, or one of five edit commands: backspace, enter, tab, left and right.
   slot (`docs/window-design.md` §4.2). The loop applies a request when it reads the slot: it tells the backend
   (`Backend::set_text_input`), empties the mapper's typed ring (`Mapper::reset_typed`) and makes the request's generation the
   snapshot's `typed_epoch`. While the route is off the loop drops typed events.
+  - *(Until CK-325 the application's backend wrapper did not pass `set_text_input` on, so in `codekarl` the Cocoa backend
+    was never told: `docs/ui-design.md` §3.17.)*
 - **Keys are unchanged.** On or off, every key is recorded and mapped as before, so a typed key is also its action.
 - **Bounded like the transitions** (§10.2): the mapper keeps at most 256 typed entries (`TYPED_CAPACITY`) between two
   acknowledged snapshots, in fixed storage. Unlike the transitions it drops the **later** entries at the bound and keeps the

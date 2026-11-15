@@ -11,6 +11,9 @@ macOS full screen and a 1280×800 screen-pixel minimum. §1 records the change; 
 **Since CK-312 and CK-313 (2026-11-14):** the game window has three modes, windowed, windowed fullscreen and fullscreen, and
 the drawing can be limited to a frame rate. §1, §4.2 and §8 record them.
 
+**Since CK-325 and CK-326 (2026-11-15):** the application passes the loop's mode, resize and text-input calls on to the
+backend, which it had not done, and F11 switches between windowed and fullscreen. §8 records both.
+
 **Milestone split (owner, 2026-10-19):** "yes, you can hold off on glfw and vulkan, we can do a milestone 3.5 after 3, we need to run
 the guide when 3 is done too". **Milestone 3 is the native path** (a native window with Metal); **milestone 3.5 is the GLFW and Vulkan
 path**, designed here but not yet filed. ck-guide reviews milestone 3 when it is accepted. Where this document describes two paths or
@@ -620,6 +623,14 @@ All drawing runs on the render thread (§4).
   - **No automated test switches a real window's mode** (CK-312's rule 4: such a run would take the owner's screen).
     The tests of `mode.rs` give the screens, and the window crate's tests use a fake backend. The native switch is for
     the owner to check by hand.
+  - **Since CK-325 these calls reach the backend in the application.** `codekarl` runs the loop on a wrapper that makes
+    the backend at `create_window` (`Lazy`, `apps/codekarl/src/windowed.rs`). Until CK-325 it left `set_mode`,
+    `resize_window`, `resize_window_pixels` and `set_text_input` to the interface's defaults, so none reached Cocoa: the
+    game's window never changed mode and was never resized by a script (`docs/ui-design.md` §3.17). It now passes on
+    every call of the interface.
+  - **Since CK-326 a key switches the mode:** F11 by default, from windowed to fullscreen and from either covering mode
+    to windowed. It is a bound action that the game's UI script acts on, through the same mode request. The backends
+    know nothing of it (`docs/ui-design.md` §3.17).
 
 ### Present lifetime (Vulkan)
 
