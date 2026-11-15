@@ -262,13 +262,40 @@ impl ResidentAdapter {
     }
 }
 
+/// The late-bound setter of the draw-rate limit: a backend presenter's.
+type LimitSetter = Arc<dyn Fn(Option<u32>) + Send + Sync>;
+
 #[derive(Default)]
 struct RelayState {
     connected: Option<Arc<dyn Fn() + Send + Sync>>,
     pending: bool,
+    /// The frame-rate limit in frames per second (`None`: none), kept so a presenter connected later starts with it.
+    frame_limit: Option<u32>,
+    limit_setter: Option<LimitSetter>,
+    /// A thread is giving the limit to the presenter; another change meanwhile only sets `redeliver`.
+    delivering: bool,
+    /// The limit or the setter changed while a delivery was under way: the delivering thread gives the latest again.
+    redeliver: bool,
 }
 
-/// Late-bound, short-lock wake relay for service work and a backend presenter.
+/// Ends a frame-limit delivery that unwinds: a setter that panics must not leave the relay believing a delivery is under way for ever.
+struct Delivery<'a> {
+    relay: &'a WakeRelay,
+    finished: bool,
+}
+
+impl Drop for Delivery<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            let mut state = self.relay.lock();
+            state.delivering = false;
+            state.redeliver = false;
+        }
+    }
+}
+
+/// Late-bound, short-lock relay between the run and a backend presenter: the wake for service work, and the frame-rate limit
+/// (CK-313), both of which the run can give before the presenter exists and after it is gone.
 #[derive(Clone, Default)]
 pub struct WakeRelay {
     state: Arc<Mutex<RelayState>>,
@@ -303,6 +330,72 @@ impl WakeRelay {
         let mut state = self.lock();
         state.connected = None;
         state.pending = false;
+    }
+
+    /// Sets the frame-rate limit in frames per second (`None`: none, a frame per display refresh). It is kept, and given to the
+    /// presenter if one is connected: the presenter starts no frame sooner than one N-th of a second after the frame before, from
+    /// its next frame on. Deliveries are ordered (one thread delivers at a time and rereads the limit until it is current): the presenter always
+    /// ends with the latest limit, whichever threads set and connect at once.
+    pub fn set_frame_limit(&self, limit: Option<u32>) {
+        self.lock().frame_limit = limit;
+        self.deliver_frame_limit();
+    }
+
+    /// The frame-rate limit last set.
+    #[must_use]
+    pub fn frame_limit(&self) -> Option<u32> {
+        self.lock().frame_limit
+    }
+
+    /// Connects a presenter's limit setter and gives it the limit in force.
+    pub fn connect_frame_limit(&self, setter: Arc<dyn Fn(Option<u32>) + Send + Sync>) {
+        self.lock().limit_setter = Some(setter);
+        self.deliver_frame_limit();
+    }
+
+    /// Disconnects the limit setter; the limit stays. A delivery already under way can still finish its one call.
+    pub fn disconnect_frame_limit(&self) {
+        self.lock().limit_setter = None;
+    }
+
+    /// Gives the presenter the latest kept limit, never an older one.
+    ///
+    /// One thread delivers at a time, **without holding the relay's lock** (the setter may take its own locks, and may even call
+    /// back into the relay). A change that arrives during a delivery is recorded and returns at once; the delivering thread reads the
+    /// limit and the setter again before it finishes, so an older value can never be applied after a newer one and no caller waits
+    /// for another's setter.
+    fn deliver_frame_limit(&self) {
+        {
+            let mut state = self.lock();
+            if state.delivering {
+                state.redeliver = true;
+                return;
+            }
+            state.delivering = true;
+        }
+        let mut delivery = Delivery {
+            relay: self,
+            finished: false,
+        };
+        loop {
+            let (setter, limit) = {
+                let mut state = self.lock();
+                state.redeliver = false;
+                (
+                    state.limit_setter.as_ref().map(Arc::clone),
+                    state.frame_limit,
+                )
+            };
+            if let Some(setter) = setter {
+                setter(limit);
+            }
+            let mut state = self.lock();
+            if !state.redeliver {
+                state.delivering = false;
+                delivery.finished = true;
+                return;
+            }
+        }
     }
 
     fn fire(&self) {

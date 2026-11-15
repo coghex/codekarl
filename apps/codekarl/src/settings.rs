@@ -8,7 +8,10 @@ use ck_lua::{ConfigValue, Extension};
 use ck_window::Bindings;
 use ck_window::RequestWriter;
 
-use crate::config::{Config, GraphicsSettings, MapSettings, SettingsOverrides, TooltipsConfig};
+use crate::config::{
+    Config, GraphicsSettings, MAX_FPS_LIMIT, MIN_FPS_LIMIT, MapSettings, SettingsOverrides,
+    TooltipsConfig,
+};
 use crate::lifecycle::emit;
 use crate::map_app::{self, SharedController};
 
@@ -32,6 +35,7 @@ pub(crate) struct Runtime {
     bridge: Option<Arc<ck_render_2d::SceneBridge>>,
     updates: Option<ck_window::UpdateControl>,
     resize: Option<crate::window_api::ResizeSession>,
+    relay: Option<ck_render_2d::WakeRelay>,
 }
 
 impl Runtime {
@@ -65,6 +69,7 @@ impl Runtime {
             bridge: None,
             updates: None,
             resize: None,
+            relay: None,
         }))
     }
 
@@ -75,12 +80,14 @@ impl Runtime {
         bridge: Arc<ck_render_2d::SceneBridge>,
         updates: Option<ck_window::UpdateControl>,
         resize: crate::window_api::ResizeSession,
+        relay: ck_render_2d::WakeRelay,
     ) -> Option<Arc<Self>> {
         let mut runtime = Self::new_with_requests(config, map, Some(requests))?;
         let fields = Arc::get_mut(&mut runtime).expect("new runtime is uniquely owned");
         fields.bridge = Some(bridge);
         fields.updates = updates;
         fields.resize = Some(resize);
+        fields.relay = Some(relay);
         Some(runtime)
     }
 
@@ -222,6 +229,12 @@ impl Runtime {
                     _ => return Err(format!("settings.set: `{name}` must be cards or rows")),
                 };
                 overrides.ui_list_look = Some(values.graphics.list_look);
+            }
+            "frame.fps_limit" => {
+                let limit = fps_limit_value(name, value)?;
+                values.graphics.fps_limit = limit;
+                overrides.frame_fps_limit = Some(limit);
+                self.apply_fps_limit(limit);
             }
             _ => return Err(format!("settings.set: unknown setting `{name}`")),
         }
@@ -472,7 +485,9 @@ impl Runtime {
                 overrides.ui_list_look = None;
                 overrides.window_width = None;
                 overrides.window_height = None;
+                overrides.frame_fps_limit = None;
                 self.apply_scale(values.graphics.scale_limit_k);
+                self.apply_fps_limit(values.graphics.fps_limit);
             }
             "bindings" | "defaults" => {
                 *self.bindings.lock().unwrap_or_else(PoisonError::into_inner) =
@@ -511,6 +526,13 @@ impl Runtime {
         }
     }
 
+    /// Gives the frame-rate limit to the presenter's thread, at once and from its next frame.
+    fn apply_fps_limit(&self, limit: Option<u32>) {
+        if let Some(relay) = &self.relay {
+            relay.set_frame_limit(limit);
+        }
+    }
+
     fn graphics(&self, args: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
         expect_no_arguments("settings.graphics", args)?;
         let values = *self.values.lock().unwrap_or_else(PoisonError::into_inner);
@@ -530,6 +552,9 @@ impl Runtime {
         ]);
         if let Some(k) = values.graphics.scale_limit_k {
             entries.insert("scale".into(), ConfigValue::Float(f64::from(k) / 2.0));
+        }
+        if let Some(limit) = values.graphics.fps_limit {
+            entries.insert("fps_limit".into(), ConfigValue::Integer(i64::from(limit)));
         }
         Ok(vec![ConfigValue::Table(entries)])
     }
@@ -579,6 +604,25 @@ impl Runtime {
                 format_args!("{}: could not write settings: {error}", self.path.display()),
             );
         }
+    }
+}
+
+/// The value of `frame.fps_limit` a script sets: an integer from 30 to 240, or the text `"none"`.
+fn fps_limit_value(name: &str, value: &ConfigValue) -> Result<Option<u32>, String> {
+    match value {
+        ConfigValue::String(text) if text == "none" => Ok(None),
+        ConfigValue::Integer(number) => u32::try_from(*number)
+            .ok()
+            .filter(|limit| (MIN_FPS_LIMIT..=MAX_FPS_LIMIT).contains(limit))
+            .map(Some)
+            .ok_or_else(|| {
+                format!(
+                    "settings.set: `{name}` must be from {MIN_FPS_LIMIT} to {MAX_FPS_LIMIT} or \"none\""
+                )
+            }),
+        _ => Err(format!(
+            "settings.set: `{name}` must be an integer from {MIN_FPS_LIMIT} to {MAX_FPS_LIMIT} or \"none\""
+        )),
     }
 }
 
@@ -743,6 +787,16 @@ fn settings_text(overrides: &SettingsOverrides) -> Vec<u8> {
         }
         text.push('\n');
     }
+    if let Some(limit) = overrides.frame_fps_limit {
+        text.push_str("[frame]\n");
+        match limit {
+            Some(limit) => {
+                let _ = writeln!(text, "fps_limit = {limit}");
+            }
+            None => text.push_str("fps_limit = \"none\"\n"),
+        }
+        text.push('\n');
+    }
     if overrides.window_width.is_some() || overrides.window_height.is_some() {
         text.push_str("[window]\n");
         if let Some(value) = overrides.window_width {
@@ -816,6 +870,7 @@ mod tests {
         bridge: Arc<ck_render_2d::SceneBridge>,
         headless: Option<Arc<crate::window_api::HeadlessNotes>>,
         update_control: ck_window::UpdateControl,
+        relay: ck_render_2d::WakeRelay,
         runtime: Arc<Runtime>,
     }
 
@@ -855,6 +910,8 @@ mod tests {
                 Arc::clone(&screen),
                 headless.clone(),
             );
+            let relay = ck_render_2d::WakeRelay::default();
+            relay.set_frame_limit(config.graphics.fps_limit);
             let runtime = Runtime::new_live(
                 &config,
                 None,
@@ -862,6 +919,7 @@ mod tests {
                 Arc::clone(&bridge),
                 Some(update_control.clone()),
                 resize,
+                relay.clone(),
             )
             .expect("live settings runtime");
             Self {
@@ -875,6 +933,7 @@ mod tests {
                 bridge,
                 headless,
                 update_control,
+                relay,
                 runtime,
             }
         }
@@ -1552,6 +1611,89 @@ assert(not ok)
                 height: 800
             }),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn the_frame_rate_limit_is_set_kept_reset_and_given_to_the_presenter_at_once() {
+        // Limits of 30 and 60 only, and nothing is drawn: the relay stands for the render thread.
+        let rig = LiveRig::new(
+            "[frame]\nfps_limit = 120\n",
+            Some(ck_window::ScreenSnapshot {
+                backing: 1.0,
+                visible_points: (2560, 1600),
+            }),
+            false,
+        );
+        let read = || -> toml::Value {
+            toml::from_str(&fs::read_to_string(&rig.settings_path).expect("settings file"))
+                .expect("settings TOML parses")
+        };
+        assert_eq!(
+            rig.relay.frame_limit(),
+            Some(120),
+            "the configured limit is in force first"
+        );
+        {
+            let _harness = rig.run(
+                "window.open{title='frame rate', width=1280, height=800, clear={0,0,0}, resizable=true}\nassert(settings.graphics().fps_limit == 120)\nsettings.set('frame.fps_limit', 30)\nassert(settings.graphics().fps_limit == 30)",
+            );
+        }
+        assert_eq!(rig.relay.frame_limit(), Some(30), "a set acts at once");
+        assert_eq!(read()["frame"]["fps_limit"].as_integer(), Some(30));
+        {
+            let _harness = rig.run("settings.set('frame.fps_limit', 60)");
+        }
+        assert_eq!(rig.relay.frame_limit(), Some(60));
+        assert_eq!(read()["frame"]["fps_limit"].as_integer(), Some(60));
+        {
+            let _harness = rig.run(
+                "settings.set('frame.fps_limit', 'none')\nassert(settings.graphics().fps_limit == nil)",
+            );
+        }
+        assert_eq!(rig.relay.frame_limit(), None);
+        assert_eq!(
+            read()["frame"]["fps_limit"].as_str(),
+            Some("none"),
+            "a kept none is written, since the configuration says 120"
+        );
+        let before = fs::read_to_string(&rig.settings_path).expect("settings file");
+        {
+            let _harness = rig.run(
+                "for _, bad in ipairs({29, 241, 30.5, 'fast', true, 0}) do\n  local ok, message = pcall(function() settings.set('frame.fps_limit', bad) end)\n  assert(not ok and string.find(tostring(message), 'frame.fps_limit', 1, true), tostring(bad))\nend",
+            );
+        }
+        assert_eq!(
+            rig.relay.frame_limit(),
+            None,
+            "a refused value changes nothing"
+        );
+        assert_eq!(fs::read_to_string(&rig.settings_path).unwrap(), before);
+        // The graphics reset (it needs its own run: a run opens its window once).
+        let reset = LiveRig::new(
+            "[frame]\nfps_limit = 120\n",
+            Some(ck_window::ScreenSnapshot {
+                backing: 1.0,
+                visible_points: (2560, 1600),
+            }),
+            false,
+        );
+        {
+            let _harness = reset.run(
+                "window.open{title='frame rate', width=1280, height=800, clear={0,0,0}, resizable=true}\nsettings.set('frame.fps_limit', 60)\nassert(settings.graphics().fps_limit == 60)\nsettings.reset('graphics')\nassert(settings.graphics().fps_limit == 120)",
+            );
+        }
+        assert_eq!(
+            reset.relay.frame_limit(),
+            Some(120),
+            "the graphics reset puts the configured limit back"
+        );
+        let written: toml::Value =
+            toml::from_str(&fs::read_to_string(&reset.settings_path).expect("settings file"))
+                .expect("settings TOML parses");
+        assert!(
+            written.get("frame").is_none(),
+            "and takes the key out of the settings file"
         );
     }
 

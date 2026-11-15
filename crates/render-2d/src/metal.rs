@@ -974,6 +974,7 @@ impl MetalBackend {
     fn disconnect_relay(&self) {
         if let Some(resources) = &self.resources {
             resources.relay.disconnect();
+            resources.relay.disconnect_frame_limit();
         }
     }
 
@@ -1051,6 +1052,10 @@ impl MetalBackend {
         // Only now, with the presenter alive, can its weak texture wake be obtained: a wake before this point stayed
         // pending in the relay and is delivered once by `connect`.
         resources.relay.connect(presenter.texture_wake());
+        // The frame-rate limit in force goes to the new presenter, and a later change reaches it while it lives.
+        resources
+            .relay
+            .connect_frame_limit(presenter.frame_limit_setter());
         self.presenter = Some(presenter);
         Ok(())
     }

@@ -815,6 +815,8 @@ fn supervise_with_owner_factory(
         .take_writer()
         .expect("a new bridge hands out its one writer");
     let wake_relay = ck_render_2d::WakeRelay::default();
+    // The configured frame-rate limit is in force from the first frame; the settings window changes it through this relay.
+    wake_relay.set_frame_limit(config.graphics.fps_limit);
     // Every run has a resource service now; the downstream seams keep an `Option` for the tests that run without one.
     let resource_service = match compose_resources(config, mode, &wake_relay) {
         Ok(service) => Some(service),
@@ -855,6 +857,7 @@ fn supervise_with_owner_factory(
         Arc::clone(&bridge),
         update_control,
         resize,
+        wake_relay.clone(),
     ) {
         ui_extensions.push(settings.extension());
     } else {

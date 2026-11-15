@@ -35,6 +35,7 @@
 //! [frame]                 # optional; the paced UI update of the native-metal loop (design §7.1)
 //! updates_per_second = 60 # an integer, 1 to 240 (default 60)
 //! max_delta_seconds = 0.1 # a number from 0.000000001 (one nanosecond, the timer resolution) to 1.0 (default 0.1)
+//! fps_limit = "none"      # the most frames drawn per second: an integer, 30 to 240, or "none" (default; a frame per display refresh)
 //!
 //! [ui.tooltips]          # optional tooltip behavior, read at startup
 //! delay = 0.3            # 0..=2 seconds in 0.1-second steps
@@ -52,9 +53,10 @@
 //! `[map].scroll_points_per_step` applies to precise Cocoa point deltas. GLFW exposes fractional line offsets on
 //! both platforms; on macOS it scales precise trackpad deltas by 0.1 and drops the precision flag, so this setting
 //! does not apply to GLFW.
-//! `[frame]` has two keys, each optional with its default; a value outside its range fails the load naming the key, the
-//! value and the range. Both backends' loops pace the `frame_update` callback by them (and post nothing until a script
-//! registers one). Whether a configured backend can be opened is not checked here:
+//! `[frame]` has three keys, each optional with its default; a value outside its range fails the load naming the key, the
+//! value and the range. Both backends' loops pace the `frame_update` callback by the first two (and post nothing until a script
+//! registers one). `fps_limit` limits only the drawing, on the native Metal path: the script's updates and the game's clock keep their
+//! rates, and a limit above the display's refresh changes nothing that is seen. Whether a configured backend can be opened is not checked here:
 //! only a windowed run checks it (see [`crate::mode`]).
 //! The whole file, not only the `lua` tables, is also copied to every VM as its `config`.
 
@@ -693,12 +695,77 @@ impl<'de> Deserialize<'de> for MaxDelta {
     }
 }
 
+/// The least `fps_limit` (CK-313), in frames per second.
+pub(crate) const MIN_FPS_LIMIT: u32 = 30;
+/// The most `fps_limit` allows.
+pub(crate) const MAX_FPS_LIMIT: u32 = 240;
+
+/// `fps_limit`: a whole number from [`MIN_FPS_LIMIT`] to [`MAX_FPS_LIMIT`] (the most frames drawn per second), or the text
+/// `"none"` (no limit, a frame per display refresh). It limits the drawing only, not `updates_per_second`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FpsLimit(Option<u32>);
+
+impl<'de> Deserialize<'de> for FpsLimit {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Value;
+
+        impl Value {
+            fn refused<E: de::Error>(shown: impl fmt::Display) -> E {
+                E::custom(format!(
+                    "fps_limit {shown} is not accepted: expected an integer from {MIN_FPS_LIMIT} to {MAX_FPS_LIMIT} or \"none\""
+                ))
+            }
+        }
+
+        impl Visitor<'_> for Value {
+            type Value = FpsLimit;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(
+                    formatter,
+                    "fps_limit as an integer from {MIN_FPS_LIMIT} to {MAX_FPS_LIMIT} or \"none\""
+                )
+            }
+
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<FpsLimit, E> {
+                u32::try_from(value)
+                    .ok()
+                    .filter(|limit| (MIN_FPS_LIMIT..=MAX_FPS_LIMIT).contains(limit))
+                    .map(|limit| FpsLimit(Some(limit)))
+                    .ok_or_else(|| Self::refused(value))
+            }
+
+            fn visit_i64<E: de::Error>(self, value: i64) -> Result<FpsLimit, E> {
+                u64::try_from(value)
+                    .map_err(|_| Self::refused(value))
+                    .and_then(|value| self.visit_u64(value))
+            }
+
+            fn visit_f64<E: de::Error>(self, value: f64) -> Result<FpsLimit, E> {
+                // A fraction is not a rate, whatever its value.
+                Err(Self::refused(value))
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<FpsLimit, E> {
+                if value == "none" {
+                    Ok(FpsLimit(None))
+                } else {
+                    Err(Self::refused(format!("{value:?}")))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(Value)
+    }
+}
+
 /// The keys of the `frame` table (design §7.1).
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 struct FrameFields {
     updates_per_second: Option<Rate>,
     max_delta_seconds: Option<MaxDelta>,
+    fps_limit: Option<FpsLimit>,
 }
 
 /// The `frame` table.
@@ -1263,6 +1330,12 @@ pub(crate) struct SettingsOverrides {
     pub(crate) ui_list_look: Option<&'static str>,
     pub(crate) window_width: Option<u32>,
     pub(crate) window_height: Option<u32>,
+    /// The kept `[frame] fps_limit`: `Some(None)` is a kept `"none"`, which differs from the configuration's value.
+    #[expect(
+        clippy::option_option,
+        reason = "absent, kept `none` and a kept number are three different overrides"
+    )]
+    pub(crate) frame_fps_limit: Option<Option<u32>>,
     pub(crate) bindings: BTreeMap<String, Vec<String>>,
 }
 
@@ -1272,6 +1345,8 @@ pub(crate) struct GraphicsSettings {
     pub(crate) list_look: &'static str,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    /// The most frames drawn per second, 30 to 240 (`None`: no limit, a frame per display refresh; CK-313).
+    pub(crate) fps_limit: Option<u32>,
 }
 
 impl Default for GraphicsSettings {
@@ -1281,6 +1356,7 @@ impl Default for GraphicsSettings {
             list_look: "cards",
             width: 1280,
             height: 800,
+            fps_limit: None,
         }
     }
 }
@@ -1599,6 +1675,7 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         list_look,
         width: window_width,
         height: window_height,
+        fps_limit: file.frame.0.fps_limit.and_then(|limit| limit.0),
     };
     let resources = ResourceConfig::parse(file.resources.0)
         .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -1873,6 +1950,7 @@ fn load_settings(config_path: &Path, config: &mut Config) {
         match table.as_str() {
             "ui" => load_ui_settings(&path, contents, config),
             "window" => load_window_settings(&path, contents, config),
+            "frame" => load_frame_settings(&path, contents, config),
             "map" => load_map_settings(&path, contents, config),
             "input" => load_input_settings(&path, contents, config),
             _ => config.settings_warnings.push(format!(
@@ -2098,6 +2176,36 @@ fn load_ui_settings(path: &Path, value: &toml::Value, config: &mut Config) {
     }
 }
 
+/// The settings file's `[frame]` table: only `fps_limit`, which the player may change. A value the key does not accept is named and
+/// ignored (the configuration refuses it instead).
+fn load_frame_settings(path: &Path, value: &toml::Value, config: &mut Config) {
+    let Some(entries) = value.as_table() else {
+        config.settings_warnings.push(format!(
+            "{}: [frame] must be a table; ignoring it",
+            path.display()
+        ));
+        return;
+    };
+    for (key, entry) in entries {
+        if key != "fps_limit" {
+            config.settings_warnings.push(format!(
+                "{}: [frame] unknown key `{key}`; the only accepted key is fps_limit",
+                path.display()
+            ));
+            continue;
+        }
+        match FpsLimit::deserialize(entry.clone()) {
+            Ok(FpsLimit(limit)) => {
+                config.graphics.fps_limit = limit;
+                config.settings_overrides.frame_fps_limit = Some(limit);
+            }
+            Err(error) => config
+                .settings_warnings
+                .push(format!("{}: [frame] {error}; ignoring it", path.display())),
+        }
+    }
+}
+
 fn load_window_settings(path: &Path, value: &toml::Value, config: &mut Config) {
     let Some(entries) = value.as_table() else {
         config.settings_warnings.push(format!(
@@ -2249,6 +2357,95 @@ mod tests {
         assert_eq!(config.settings_base_graphics.width, 1600);
         assert_eq!(config.settings_warnings.len(), 1);
         assert!(config.settings_warnings[0].contains("width"));
+    }
+
+    #[test]
+    fn fps_limit_is_a_whole_number_from_30_to_240_or_none_and_defaults_to_none() {
+        // Arithmetic on the key only: no frame is drawn under any of these numbers.
+        assert_eq!(parse_config("").expect("empty").graphics.fps_limit, None);
+        for (text, expected) in [
+            ("[frame]\nfps_limit = 30\n", Some(30)),
+            ("[frame]\nfps_limit = 60\n", Some(60)),
+            ("[frame]\nfps_limit = 240\n", Some(240)),
+            ("[frame]\nfps_limit = 'none'\n", None),
+        ] {
+            let config = parse_config(text).unwrap_or_else(|error| panic!("{text}: {error}"));
+            assert_eq!(config.graphics.fps_limit, expected, "{text}");
+            assert_eq!(config.settings_base_graphics.fps_limit, expected, "{text}");
+        }
+        for bad in [
+            "[frame]\nfps_limit = 29\n",
+            "[frame]\nfps_limit = 241\n",
+            "[frame]\nfps_limit = 0\n",
+            "[frame]\nfps_limit = -60\n",
+            "[frame]\nfps_limit = 60.5\n",
+            "[frame]\nfps_limit = 60.0\n",
+            "[frame]\nfps_limit = 'fast'\n",
+            "[frame]\nfps_limit = 'None'\n",
+            "[frame]\nfps_limit = true\n",
+        ] {
+            let error = parse_config(bad).expect_err(bad);
+            assert!(error.contains("fps_limit"), "{bad}: {error}");
+        }
+    }
+
+    #[test]
+    fn fps_limit_changes_neither_the_update_rate_nor_the_largest_delta() {
+        let without = parse_config("").expect("defaults");
+        let limited = parse_config("[frame]\nfps_limit = 30\n").expect("limited");
+        assert_eq!(limited.frame, without.frame);
+        assert_eq!(limited.frame, FrameConfig::default());
+        let both = parse_config(
+            "[frame]\nupdates_per_second = 30\nmax_delta_seconds = 0.25\nfps_limit = 60\n",
+        )
+        .expect("all three keys");
+        assert_eq!(both.frame.updates_per_second, 30);
+        assert_eq!(both.frame.max_delta, Duration::from_millis(250));
+        assert_eq!(both.graphics.fps_limit, Some(60));
+    }
+
+    #[test]
+    fn fps_limit_settings_file_overrides_the_configuration_and_names_what_it_ignores() {
+        let dir = crate::testing::Dir::new();
+        let config_path = dir.0.join("config.toml");
+        let settings_path = dir.0.join("settings.toml");
+        let load_with = |config_text: &str, settings_text: &str| {
+            fs::write(&config_path, config_text).expect("write config");
+            fs::write(&settings_path, settings_text).expect("write settings");
+            load(&config_path).expect("load config")
+        };
+        let kept = load_with("", "[frame]\nfps_limit = 60\n");
+        assert_eq!(kept.graphics.fps_limit, Some(60));
+        assert_eq!(kept.settings_base_graphics.fps_limit, None);
+        assert_eq!(kept.settings_overrides.frame_fps_limit, Some(Some(60)));
+        assert!(kept.settings_warnings.is_empty());
+        let none = load_with(
+            "[frame]\nfps_limit = 120\n",
+            "[frame]\nfps_limit = 'none'\n",
+        );
+        assert_eq!(
+            none.graphics.fps_limit, None,
+            "a kept none beats the configuration's limit"
+        );
+        assert_eq!(none.settings_base_graphics.fps_limit, Some(120));
+        assert_eq!(none.settings_overrides.frame_fps_limit, Some(None));
+        for bad in ["29", "241", "1.5", "'fast'", "true"] {
+            let config = load_with(
+                "[frame]\nfps_limit = 30\n",
+                &format!("[frame]\nfps_limit = {bad}\n"),
+            );
+            assert_eq!(config.graphics.fps_limit, Some(30), "{bad} is ignored");
+            assert_eq!(config.settings_overrides.frame_fps_limit, None, "{bad}");
+            assert_eq!(config.settings_warnings.len(), 1, "{bad}");
+            assert!(config.settings_warnings[0].contains("fps_limit"), "{bad}");
+        }
+        let other = load_with("", "[frame]\nupdates_per_second = 30\n");
+        assert_eq!(
+            other.frame.updates_per_second, 60,
+            "the settings file cannot change the update rate"
+        );
+        assert_eq!(other.settings_warnings.len(), 1);
+        assert!(other.settings_warnings[0].contains("updates_per_second"));
     }
 
     const PATH: &str = "/tmp/codekarl-test/config.toml";

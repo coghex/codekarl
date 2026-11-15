@@ -555,6 +555,160 @@ fn wake_relay_delivers_preconnect_work_once_and_disconnects_future_calls() {
 }
 
 #[test]
+fn the_relay_keeps_the_frame_rate_limit_and_gives_it_to_a_presenter_connected_later() {
+    // Limits of 30 and 60 only (the owner's rule for CK-313): the relay moves a number, nothing is drawn.
+    let relay = WakeRelay::default();
+    assert_eq!(relay.frame_limit(), None, "no limit until one is set");
+    relay.set_frame_limit(Some(30));
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    relay.connect_frame_limit(Arc::new(move |limit| {
+        sink.lock().expect("lock").push(limit);
+    }));
+    assert_eq!(
+        *seen.lock().expect("lock"),
+        vec![Some(30)],
+        "the presenter starts with the limit in force"
+    );
+    relay.set_frame_limit(Some(60));
+    relay.set_frame_limit(None);
+    assert_eq!(
+        *seen.lock().expect("lock"),
+        vec![Some(30), Some(60), None],
+        "a later change reaches it at once"
+    );
+    relay.disconnect_frame_limit();
+    relay.set_frame_limit(Some(30));
+    assert_eq!(
+        seen.lock().expect("lock").len(),
+        3,
+        "a disconnected relay gives nothing"
+    );
+    assert_eq!(relay.frame_limit(), Some(30), "the limit is kept");
+}
+
+/// A setter that records what it was given and, for its first call with `hold`, stops until released: the pause a thread
+/// preempted inside the presenter's slot write would have. Bounded channel waits only; nothing sleeps.
+struct Held {
+    seen: Arc<std::sync::Mutex<Vec<Option<u32>>>>,
+    entered: mpsc::Receiver<()>,
+    release: mpsc::Sender<()>,
+    setter: Arc<dyn Fn(Option<u32>) + Send + Sync>,
+}
+
+fn held_setter(hold: Option<u32>) -> Held {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    let (entered_tx, entered) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    let release_rx = std::sync::Mutex::new(release_rx);
+    let held_once = std::sync::atomic::AtomicBool::new(false);
+    let setter: Arc<dyn Fn(Option<u32>) + Send + Sync> = Arc::new(move |limit| {
+        if limit == hold && !held_once.swap(true, Ordering::SeqCst) {
+            entered_tx.send(()).expect("test receiver remains open");
+            release_rx
+                .lock()
+                .expect("release lock")
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the test releases the held delivery");
+        }
+        sink.lock().expect("lock").push(limit);
+    });
+    Held {
+        seen,
+        entered,
+        release,
+        setter,
+    }
+}
+
+#[test]
+fn a_newer_limit_is_never_overwritten_by_an_older_delivery_still_in_flight() {
+    // Limits of 30 and 60 only; nothing is drawn.
+    let relay = WakeRelay::default();
+    let held = held_setter(Some(30));
+    relay.connect_frame_limit(Arc::clone(&held.setter));
+    let first = relay.clone();
+    let first = std::thread::spawn(move || first.set_frame_limit(Some(30)));
+    held.entered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the older delivery is in the setter");
+    // The newer set returns without waiting for the older one, and records its limit.
+    relay.set_frame_limit(Some(60));
+    assert_eq!(relay.frame_limit(), Some(60));
+    held.release.send(()).expect("release");
+    first.join().expect("the first set ends");
+    assert_eq!(
+        held.seen.lock().expect("lock").last().copied(),
+        Some(Some(60)),
+        "the presenter ends with the latest kept limit"
+    );
+}
+
+#[test]
+fn a_connection_snapshot_never_overwrites_a_limit_set_while_it_is_delivered() {
+    let relay = WakeRelay::default();
+    relay.set_frame_limit(Some(30));
+    let held = held_setter(Some(30));
+    let connecting = relay.clone();
+    let setter = Arc::clone(&held.setter);
+    let connecting = std::thread::spawn(move || connecting.connect_frame_limit(setter));
+    held.entered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the connection's initial delivery is in the setter");
+    relay.set_frame_limit(Some(60));
+    held.release.send(()).expect("release");
+    connecting.join().expect("the connection ends");
+    assert_eq!(relay.frame_limit(), Some(60));
+    assert_eq!(
+        held.seen.lock().expect("lock").last().copied(),
+        Some(Some(60)),
+        "a late connection does not restore its stale limit"
+    );
+}
+
+#[test]
+fn a_setter_that_sets_the_limit_again_gets_the_latest_and_a_panicking_setter_does_not_stop_later_deliveries()
+ {
+    let relay = WakeRelay::default();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    let again = relay.clone();
+    relay.connect_frame_limit(Arc::new(move |limit| {
+        sink.lock().expect("lock").push(limit);
+        // Re-entering the relay from the setter neither deadlocks nor loses the newer limit.
+        if limit == Some(30) {
+            again.set_frame_limit(Some(60));
+        }
+    }));
+    relay.set_frame_limit(Some(30));
+    assert_eq!(seen.lock().expect("lock").last().copied(), Some(Some(60)));
+    assert_eq!(relay.frame_limit(), Some(60));
+
+    let panicking = WakeRelay::default();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&calls);
+    panicking.connect_frame_limit(Arc::new(move |limit| {
+        // The initial delivery (nothing set yet) is the first call; the first limit set is the second and panics.
+        assert_ne!(
+            counted.fetch_add(1, Ordering::SeqCst),
+            1,
+            "the setter fails once, at limit {limit:?}"
+        );
+    }));
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        panicking.set_frame_limit(Some(30));
+    }));
+    assert!(failed.is_err(), "the setter's panic reaches its caller");
+    panicking.set_frame_limit(Some(60));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "a later set still reaches the setter"
+    );
+}
+
+#[test]
 fn wake_callback_can_reenter_disconnect_and_a_copied_callback_may_finish_once() {
     let relay = WakeRelay::default();
     let wake = relay.wake();

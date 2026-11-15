@@ -22,6 +22,7 @@ use crate::batch::{
 };
 use crate::bindless::BindlessLimits;
 use crate::frame::{InstanceRole, MetalFrameSlot, MetalInstance, MetalSceneSource, SceneStats};
+use crate::frame_limit::{self, FrameStart};
 use crate::ledger::LedgerLimits;
 use crate::map::{MetalMap, NativeMap};
 use crate::metrics::{
@@ -491,6 +492,9 @@ struct Slot {
     stop_deadline: Option<Instant>,
     /// A measurement window was requested: the thread adopts it at its next boundary. Set under this mutex like the other wants.
     metrics_check: bool,
+    /// The frame-rate limit in frames per second (`None`: none). Read under this mutex by the render thread each time it looks at
+    /// a wanted frame, so a change applies from the next frame (CK-313).
+    frame_limit: Option<u32>,
 }
 
 struct Shared {
@@ -527,6 +531,19 @@ fn texture_marker(shared: &Arc<Shared>) -> Wake {
             shared.signal.notify_all();
         }
     })
+}
+
+/// The handle [`MetalPresenter::frame_limit_setter`] returns.
+pub type FrameLimitSetter = Arc<dyn Fn(Option<u32>) + Send + Sync>;
+
+/// Writes the limit under the slot's mutex and signals the render thread, which may be waiting for the end of an interval.
+fn set_frame_limit(shared: &Shared, limit: Option<u32>) {
+    let mut slot = lock(&shared.slot);
+    if slot.frame_limit != limit {
+        slot.frame_limit = limit;
+        drop(slot);
+        shared.signal.notify_all();
+    }
 }
 
 impl Shared {
@@ -1518,6 +1535,7 @@ impl MetalPresenter {
                 stop: false,
                 stop_deadline: None,
                 metrics_check: false,
+                frame_limit: None,
             }),
             signal: Condvar::new(),
             reports: Mutex::new(VecDeque::new()),
@@ -1607,6 +1625,24 @@ impl MetalPresenter {
     pub fn request_redraw(&self) {
         lock(&self.shared.slot).dirty = true;
         self.shared.signal.notify_all();
+    }
+
+    /// Sets the frame-rate limit in frames per second (`None`: no limit, a frame per display refresh as before). With a limit of
+    /// N the render thread starts no frame sooner than one N-th of a second after it started the frame before; a frame wanted
+    /// sooner waits until then and is drawn once. Nothing is drawn that nothing wanted. A change applies from the next frame.
+    pub fn set_frame_limit(&self, limit: Option<u32>) {
+        set_frame_limit(&self.shared, limit);
+    }
+
+    /// A handle that sets the frame-rate limit and holds the presenter weakly: once the presenter ends it does nothing.
+    #[must_use]
+    pub fn frame_limit_setter(&self) -> FrameLimitSetter {
+        let weak = Arc::downgrade(&self.shared);
+        Arc::new(move |limit| {
+            if let Some(shared) = weak.upgrade() {
+                set_frame_limit(&shared, limit);
+            }
+        })
     }
 
     /// The scene presenter's counters and charges (all zero for a presenter without a scene): per committed frame the latest
@@ -1903,6 +1939,20 @@ struct Loop<'a> {
     step_counters: Option<FrameCounters>,
     /// Presentation results a test asked to be kept back (`TestHooks::hold_presentations`); empty in every other run.
     held_presentations: Vec<NativeTiming>,
+    /// When the thread last took a frame to start (`None`: not yet), the reference of the frame-rate limit (CK-313).
+    last_frame_start: Option<Instant>,
+}
+
+/// What the frame-rate limit made of a wanted frame.
+enum Hold {
+    /// The frame may start now.
+    Go,
+    /// The stop was requested.
+    Stop,
+    /// Pending texture work runs first; the frame stays wanted.
+    Texture,
+    /// The thread waited (or must look again): the loop starts over.
+    Waited,
 }
 
 /// Where the frame being built stands with its boundary pass.
@@ -2055,6 +2105,7 @@ fn run(shared: &Arc<Shared>, core: Core, hooks: TestHooks) -> CleanupResult {
         step_counters: None,
         submitted: 0,
         held_presentations: Vec::new(),
+        last_frame_start: None,
     };
     state.frames();
     state.teardown()
@@ -2320,6 +2371,13 @@ impl Loop<'_> {
                 }
                 continue;
             }
+            // 1b. The frame-rate limit: a wanted frame that comes sooner than its interval allows waits (CK-313).
+            match self.hold_for_limit() {
+                Hold::Go => {}
+                Hold::Stop => return None,
+                Hold::Texture => return Some(Work::Texture),
+                Hold::Waited => continue,
+            }
             // 2. The gate, if a test holds frame progress.
             if let Some(gate) = &self.hooks.gate
                 && !gate.take(|| !lock(&self.shared.slot).stop)
@@ -2337,9 +2395,65 @@ impl Loop<'_> {
                 if self.boundary == FrameBoundary::Due {
                     slot.texture_work = false;
                 }
+                self.last_frame_start = Some(Instant::now());
                 return Some(Work::Frame(slot.clear, slot.size));
             }
         }
+    }
+
+    /// Applies the frame-rate limit to the wanted frame [`next_work`](Self::next_work) is about to take.
+    ///
+    /// Without a limit, or once the interval since the last frame's start has passed, the frame goes ahead. Otherwise the thread
+    /// serves what must not wait (the stop, pending texture work, a requested measurement window) and, with nothing of that, waits
+    /// on the slot's signal until the interval ends. The limit is read again under the mutex the wait releases, so a limit set
+    /// meanwhile, which signals under that mutex, is never missed and a new limit decides at once.
+    fn hold_for_limit(&mut self) -> Hold {
+        let adopt_window = {
+            let mut slot = lock(&self.shared.slot);
+            if slot.stop {
+                return Hold::Stop;
+            }
+            match frame_limit::decide(self.last_frame_start, Instant::now(), slot.frame_limit) {
+                FrameStart::Now => return Hold::Go,
+                FrameStart::At(_) => {}
+            }
+            // Texture work does not wait for the interval: it runs as an ordinary pass and the frame stays wanted.
+            if slot.texture_work && !self.failed && self.scene.is_some() {
+                slot.texture_work = false;
+                return Hold::Texture;
+            }
+            slot.metrics_check
+        };
+        if adopt_window {
+            // The measurement window is adopted at the top of the loop.
+            return Hold::Waited;
+        }
+        // SAFETY: the core is live and used on this thread only.
+        let outstanding = unsafe { ck_pr_outstanding(self.core.0.as_ptr()) } != 0;
+        self.drain_timing();
+        {
+            let slot = lock(&self.shared.slot);
+            let now = Instant::now();
+            let texture_waits = slot.texture_work && !self.failed && self.scene.is_some();
+            let work_pending = slot.stop || slot.metrics_check || texture_waits;
+            if !work_pending
+                && let FrameStart::At(due) =
+                    frame_limit::decide(self.last_frame_start, now, slot.frame_limit)
+            {
+                let wait = due.saturating_duration_since(now);
+                let wait = if outstanding { wait.min(POLL) } else { wait };
+                drop(
+                    self.shared
+                        .signal
+                        .wait_timeout(slot, wait)
+                        .unwrap_or_else(PoisonError::into_inner),
+                );
+            }
+        }
+        if !self.failed {
+            self.poll_while_running();
+        }
+        Hold::Waited
     }
 
     /// Whether the initial gate lets a frame be attempted (always, without a scene).
@@ -3641,6 +3755,7 @@ mod tests {
                 stop: false,
                 stop_deadline: None,
                 metrics_check: false,
+                frame_limit: None,
             }),
             signal: Condvar::new(),
             reports: Mutex::new(VecDeque::new()),
@@ -3653,6 +3768,21 @@ mod tests {
             metrics: Mutex::new(Recorder::default()),
             metrics_changed: Condvar::new(),
         })
+    }
+
+    #[test]
+    fn a_frame_limit_is_kept_in_the_slot_the_render_thread_reads() {
+        // Limits of 30 and 60 only: nothing here draws; the slot is what the render thread reads under its mutex.
+        let shared = shared(counting(&counter()));
+        assert_eq!(
+            lock(&shared.slot).frame_limit,
+            None,
+            "a new presenter has no limit"
+        );
+        for limit in [Some(30), Some(60), None] {
+            set_frame_limit(&shared, limit);
+            assert_eq!(lock(&shared.slot).frame_limit, limit);
+        }
     }
 
     /// A wake that counts its calls.

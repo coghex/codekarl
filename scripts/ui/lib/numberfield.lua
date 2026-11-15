@@ -23,10 +23,16 @@
 -- **Key capture** (CK-309). Arming a capture (`typing.capture`) applies and ends the editing first, through the field's `on_apply()` editor
 -- hook, and while it is armed no field starts editing (`typing.start` refuses, and a press on a field then changes nothing).
 --
+-- **Greyed** (CK-313). `field:set_greyed(true)` draws the field with its outline in `track` and its number in `dim`; it keeps its number and
+-- still answers a press: the press makes the field live again, starts its editing and calls the caller's `on_enable(number)` once (the
+-- frame-rate field: "none" is lit and the press turns the limit back on). A press that cannot start the editing (a key capture owns the
+-- keyboard) changes nothing. The field is made live when the editing starts, before the previous field's apply callback runs (which may
+-- close the window or destroy this field: it is then neither drawn nor reported); `on_enable` is told last, and only of a live field.
+--
 -- The editing's ownership (one field at a time, a number field or a text field alike) is lib/fieldedit.lua's; this file keeps what is the
 -- number's: its buffer of digits, its look and its caret.
 --
--- `numberfield.new{x, y, value, least, greatest, on_apply, digits = 4, kind = "window", group = nil, owner = nil}`: points, snapped; with a
+-- `numberfield.new{x, y, value, least, greatest, on_apply, on_enable = nil, greyed = false, digits = 4, kind = "window", group = nil, owner = nil}`: points, snapped; with a
 -- `group` the quads and the hit key go into it and the position is local to it. A `digits` of 5 asks for a longer field.
 local ui = require("lib.ui")
 local text = require("lib.text")
@@ -50,11 +56,17 @@ numberfield.field_edit = true -- a field of lib/fieldedit.lua
 
 local function draw(self)
   local width = self.width // P
-  local ink = self.colours.text
+  local ink = self.greyed and theme.colour("dim") or self.colours.text
+  local outline = self.colours.outline
+  if self.is_editing then
+    outline = self.colours.hot
+  elseif self.greyed then
+    outline = theme.colour("track")
+  end
   text.set(self.line, self.buffer)
   text.move(self.line, self.x + (width - PAD - self.line.width) * P, self.y + TEXT_TOP * P)
   text.set_colour(self.line, ink)
-  self.frame:set_colours(self.colours.fill, self.is_editing and self.colours.hot or self.colours.outline)
+  self.frame:set_colours(self.colours.fill, outline)
 end
 
 local function show_caret(self)
@@ -107,6 +119,11 @@ function numberfield:revert()
 end
 
 function numberfield:show_editing()
+  -- The editing has started (a refused start never gets here): a greyed field is live from now on, and `on_event` tells the caller.
+  if self.greyed then
+    self.greyed = false
+    self.enable_pending = true
+  end
   draw(self)
   show_caret(self)
 end
@@ -142,6 +159,8 @@ function numberfield.new(spec)
   self.buffer = tostring(self.value)
   self.digits = digits
   self.apply_callback = spec.on_apply -- the caller's; `on_apply` as a method is the editor protocol of lib/typing.lua (below)
+  self.enable_callback = spec.on_enable
+  self.greyed = spec.greyed == true
   self.group = spec.group
   self.owner = spec.owner
   self.colours = theme.kind(spec.kind or "window")
@@ -198,6 +217,12 @@ end
 function numberfield:on_event(event, eligible)
   if event.kind == "down" and eligible ~= false then
     fieldedit.begin(self)
+    -- A greyed field that started editing was made live by `show_editing` (below), before the previous field's callback ran. The
+    -- caller is told last, and only of a field that still exists: that callback may have closed the window or destroyed this field.
+    if self.enable_pending then
+      self.enable_pending = false
+      if self.frame ~= nil and self.enable_callback ~= nil then self.enable_callback(self.value) end
+    end
   end
 end
 
@@ -222,6 +247,24 @@ function numberfield:set(value)
   self.value = clamp(value, self.least, self.greatest)
   self.buffer = tostring(self.value)
   draw(self)
+end
+
+-- Greys the field (see the header) or makes it live again. A field that edits stops, applying nothing, and shows its number.
+function numberfield:set_greyed(greyed)
+  greyed = greyed == true
+  if self.greyed == greyed then
+    return
+  end
+  if greyed and self.is_editing then
+    fieldedit.end_editing(self, false)
+    self.buffer = tostring(self.value)
+  end
+  self.greyed = greyed
+  draw(self)
+end
+
+function numberfield:is_greyed()
+  return self.greyed
 end
 
 function numberfield:move(x, y)
