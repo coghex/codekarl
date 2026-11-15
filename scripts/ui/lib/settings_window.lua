@@ -31,7 +31,11 @@ local INPUT_GROUPS = {
     {"map_pan_down", "pan down"}, {"map_zoom_in", "zoom in"}, {"map_zoom_out", "zoom out"}}},
 }
 
+local FPS_LEAST, FPS_GREATEST = 30, 240 -- the frame-rate limit's range (CK-313)
+local FPS_FIRST = 60 -- what the field shows beside a lit "none" before any limit was set this run
+
 local settings_window = {}
+local fps_kept = FPS_FIRST -- the last frame-rate limit (not kept across a restart)
 local current
 local last_pixels = {width = 1280, height = 800}
 local cancel_wait
@@ -394,10 +398,41 @@ local function show_graphics(state, page)
   end
   state.controls.scale = scales
 
+  -- The frame rate (CK-313): a number field, "fps" and the "none" button. While "none" is lit the field is greyed, keeps its number
+  -- and a press on it turns the limit back on with that number.
+  local fps_limit = values.fps_limit
+  if fps_limit ~= nil then fps_kept = fps_limit end
+  label_at(page.group, 0, 42 * P, "frame rate", text_colour, LABEL_WIDTH)
+  local none
+  local function limit_on(value)
+    fps_kept = value
+    settings.set("frame.fps_limit", value)
+    if none ~= nil then none:set_selected(false) end
+  end
+  fields.fps = numberfield.new{
+    x = LABEL_WIDTH, y = 40 * P, value = fps_kept, least = FPS_LEAST, greatest = FPS_GREATEST, digits = 3,
+    greyed = fps_limit == nil, group = page.group, owner = page.owner,
+    on_apply = limit_on, on_enable = limit_on,
+  }
+  local fps_x = LABEL_WIDTH + select(1, fields.fps:size()) + 4 * P
+  label_at(page.group, fps_x, 42 * P, "fps", theme.colour("dim"), page.room - fps_x)
+  none = button.new{
+    x = fps_x + text_width("fps") + 6 * P, y = 40 * P, text = "none", kind = "window",
+    group = page.group, owner = page.owner,
+    on_click = function()
+      settings.set("frame.fps_limit", "none")
+      fields.fps:set_greyed(true)
+      none:set_selected(true)
+    end,
+  }
+  none:set_selected(fps_limit == nil)
+  page.fields[#page.fields + 1] = fields.fps
+  state.controls.fps, state.controls.fps_none = fields.fps, none
+
   local look = list_look.get()
-  label_at(page.group, 0, 42 * P, "list look", text_colour, LABEL_WIDTH)
+  label_at(page.group, 0, 62 * P, "list look", text_colour, LABEL_WIDTH)
   local looks = button.flow{
-    x = LABEL_WIDTH, y = 40 * P, room = page.room - LABEL_WIDTH,
+    x = LABEL_WIDTH, y = 60 * P, room = page.room - LABEL_WIDTH,
     items = {"cards", "rows"}, selected = look,
     group = page.group, owner = page.owner, kind = "window",
     on_choose = function(value) list_look.set(value) end,

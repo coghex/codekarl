@@ -203,6 +203,7 @@
 mod batch;
 mod bindless;
 mod frame;
+mod frame_limit;
 mod hash;
 mod ledger;
 mod map;
@@ -240,10 +241,11 @@ pub use metrics::{
     Percentile, RANGE_END_NS, RequestError, Tracked, Windows, now_ns, seconds_to_ns,
 };
 pub use presenter::{
-    CapturedFrame, CleanupResult, ErrorPoll, Gate, MarksProbe, MetalPresenter, MetricsEndGuard,
-    MetricsReading, NeverComplete, Observer, PauseSite, PresenterReport, ReadbackImage,
-    ReadbackInstance, ReadbackPath, ReadbackTexture, TestHooks, TimingProbe, TimingReplacement,
-    WaitPause, readback_clear, readback_quad, readback_scene, readback_scene_counted,
+    CapturedFrame, CleanupResult, ErrorPoll, FrameLimitSetter, Gate, MarksProbe, MetalPresenter,
+    MetricsEndGuard, MetricsReading, NeverComplete, Observer, PauseSite, PresenterReport,
+    ReadbackImage, ReadbackInstance, ReadbackPath, ReadbackTexture, TestHooks, TimingProbe,
+    TimingReplacement, WaitPause, readback_clear, readback_quad, readback_scene,
+    readback_scene_counted,
 };
 pub use quad::{
     DestinationRect, MAX_IMAGE_BYTES, MAX_IMAGE_SIDE, MetalFilter, MetalQuad, MetalQuadError,

@@ -650,7 +650,7 @@ settings = {
   map = function() return fixture.map end,
   graphics = function()
     return {width = fixture.graphics.width, height = fixture.graphics.height,
-      list_look = fixture.graphics.list_look, scale = fixture.graphics.scale}
+      list_look = fixture.graphics.list_look, scale = fixture.graphics.scale, fps_limit = fixture.graphics.fps_limit}
   end,
   resize = function(width, height)
     local used_width = math.min(16384, math.max(1280, width))
@@ -688,7 +688,8 @@ settings = {
     elseif name == "map.zoom_steps_per_second" then fixture.map.zoom_steps_per_second = value
     elseif name == "map.scroll_points_per_step" then fixture.map.scroll_points_per_step = value
     elseif name == "ui.scale" then fixture.graphics.scale = value
-    elseif name == "ui.list_look" then fixture.graphics.list_look = value end
+    elseif name == "ui.list_look" then fixture.graphics.list_look = value
+    elseif name == "frame.fps_limit" then fixture.graphics.fps_limit = value ~= "none" and value or nil end
   end,
   reset = function(tab)
     fixture.calls[#fixture.calls + 1] = {"reset", tab}

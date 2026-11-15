@@ -1119,3 +1119,87 @@ eq(#applied, 0)
     rig.opened();
     assert!(!notes(&rig).iter().any(|x| x.starts_with("input true ")));
 }
+
+// ---- A greyed target (CK-313): the same handoff guarantees as any other field ----
+
+/// A press on the greyed `B` while `A` edits 1300: `after` is what `A`'s apply callback does (it runs last, once `B` is live).
+fn greyed_target_handoff(after: &str, check: &str) -> Rig {
+    let mut rig = field_rig(
+        &format!(
+            "fields.B:set_greyed(true)\nenabled = nil\nfields.B.enable_callback = function(v) enabled = (enabled or \"\") .. v end\nfunction after_apply(name) if name == \"A\" then {after} end end"
+        ),
+        &[check],
+    );
+    start(&mut rig, "A");
+    update(&mut rig, &three_backspaces(), &[]);
+    update(&mut rig, &chars("300"), &[]);
+    click(&mut rig, "B");
+    rig.opened();
+    rig
+}
+
+#[test]
+fn an_apply_callback_that_closes_the_window_during_a_handoff_to_a_greyed_field_leaves_no_editor() {
+    let mut rig = greyed_target_handoff(
+        "W:close()",
+        &format!(
+            r#"
+{GONE}
+eq(table.concat(applied, ","), "A=1300", "A's callback ran once")
+expect(W.closed, "the window closed")
+"#
+        ),
+    );
+    // What is typed now reaches no field.
+    update(&mut rig, &chars("5"), &[]);
+}
+
+#[test]
+fn an_apply_callback_that_destroys_a_greyed_target_during_a_handoff_leaves_no_editor() {
+    let mut rig = greyed_target_handoff(
+        "fields.B:destroy()",
+        &format!(
+            r#"
+{GONE}
+eq(table.concat(applied, ","), "A=1300", "A's callback ran once")
+expect(not W.closed, "the window is open")
+"#
+        ),
+    );
+    update(&mut rig, &chars("5"), &[]);
+}
+
+#[test]
+fn a_press_on_a_greyed_field_during_a_handoff_applies_the_other_field_and_tells_the_caller_once_last()
+ {
+    let _rig = greyed_target_handoff(
+        "enabled_after_apply = enabled",
+        r#"
+eq(table.concat(applied, ","), "A=1300", "A was applied")
+expect(fields.B:editing() and not fields.B:is_greyed(), "B is live and edits")
+eq(enabled, "480", "the caller was told once, with B's number")
+eq(enabled_after_apply, nil, "A's callback ran before the caller was told")
+"#,
+    );
+}
+
+#[test]
+fn a_press_on_a_greyed_field_while_a_capture_is_armed_changes_nothing() {
+    let mut rig = field_rig(
+        &format!(
+            "{CAPTURE}\nfields.B:set_greyed(true)\nenabled = nil\nfields.B.enable_callback = function(v) enabled = (enabled or \"\") .. v end"
+        ),
+        &[
+            r#"arm("cap")"#,
+            r#"
+local f = fields.B
+expect(f:is_greyed() and not f:editing(), "the refused press left the field greyed and not editing")
+eq(f.frame.line, theme_lib.colour("track"), "the outline is still `track`")
+eq(enabled, nil, "the caller was not told")
+"#,
+        ],
+    );
+    rig.opened();
+    click(&mut rig, "B");
+    rig.opened();
+}

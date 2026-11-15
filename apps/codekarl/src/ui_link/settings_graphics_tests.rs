@@ -16,7 +16,7 @@ fn click_at_metrics(rig: &mut super::group_tests::Rig, name: &str, width: u32, h
 }
 
 #[test]
-fn graphics_is_the_second_settings_tab_and_has_the_three_graphics_rows() {
+fn graphics_is_the_second_settings_tab_and_has_its_rows() {
     let mut rig = settings_graphics_rig(&[
         r#"expect(not menu_button("settings").inactive, "settings is available")"#,
         r#"
@@ -34,8 +34,8 @@ local labels = {}
 for _, line in ipairs(lines_in(s.page.group)) do labels[line_text(line)] = line end
 expect(labels.resolution ~= nil and labels["UI scale up to"] ~= nil and labels["list look"] ~= nil,
   "graphics has resolution, UI scale up to, and list look")
-expect(labels["window mode"] == nil and labels["frame rate"] == nil,
-  "window mode and frame rate belong to later slices")
+expect(labels["frame rate"] ~= nil, "graphics has the frame rate row (CK-313)")
+expect(labels["window mode"] == nil, "window mode belongs to a later slice")
 "#,
     ]);
     rig.opened();
@@ -347,5 +347,161 @@ eq(game, nil)
     click_at_metrics(&mut rig, "settings_tab_graphics", 960, 600);
     rig.opened();
     click_at_metrics(&mut rig, "settings_control_list_look_2", 960, 600);
+    rig.opened();
+}
+
+/// Opens the settings window on its graphics tab: three steps (the first two before the tab's own).
+fn open_graphics(rig: &mut super::group_tests::Rig) {
+    rig.opened();
+    click_at_metrics(rig, "settings", 640, 400);
+    rig.opened();
+    click_at_metrics(rig, "settings_tab_graphics", 640, 400);
+    rig.opened();
+}
+
+/// A press on the frame-rate field, then the entries typed into it (the field's editing is ready after one frame).
+fn type_into_the_frame_rate_field(
+    rig: &mut super::group_tests::Rig,
+    backspaces: usize,
+    digits: &str,
+) {
+    click_at_metrics(rig, "settings_control_fps", 640, 400);
+    rig.opened();
+    input_applied(rig);
+    rig.deliver_fixture_frame_at(640, 400, 2);
+    let mut typed = vec![TypedEntry::Backspace; backspaces];
+    typed.extend(chars(digits));
+    typed.push(TypedEntry::Enter);
+    for entry in typed {
+        rig.mapper.typed(entry);
+    }
+    rig.feed(&[]);
+    rig.deliver_fixture_frame_at(640, 400, 2);
+}
+
+#[test]
+fn the_frame_rate_row_sits_between_scale_and_list_look_with_none_lit_and_the_field_greyed() {
+    let mut rig = settings_graphics_rig(&[
+        r"fixture.graphics.fps_limit = nil",
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.selected == "graphics")
+local labels = {}
+for _, line in ipairs(lines_in(s.page.group)) do labels[line_text(line)] = line end
+local _, scale_y = line_at(labels["UI scale up to"])
+local rate_x, rate_y = line_at(labels["frame rate"])
+local _, look_y = line_at(labels["list look"])
+eq(rate_y - scale_y, 20 * P, "the frame rate row is 20 below the scale row")
+eq(look_y - rate_y, 20 * P, "and list look is 20 below it")
+local fps, none = s.controls.fps, s.controls.fps_none
+eq(fps.x, 84 * P, "the field is 84 right of the label")
+eq(fps.y, 40 * P)
+local fps_width = select(1, fps:size())
+eq(select(1, fps:size()), (font.layout("000").width + 8) * P, "the field holds three digits")
+expect(labels.fps ~= nil, "fps is shown beside the field")
+local fps_x = line_at(labels.fps) - rate_x -- the label's own x is the group's origin
+eq(fps_x, fps.x + fps_width + 4 * P, "fps is 4 right of the field")
+eq(none.x, fps_x + font.layout("fps").width * P + 6 * P, "the none button is 6 right of fps")
+eq(none.y, 40 * P)
+expect(none.selected, "none is lit when no limit is set")
+expect(fps:is_greyed(), "the field is greyed")
+eq(fps:get(), 60, "a run that starts with none shows 60")
+for _, control in ipairs({fps, none}) do
+  local width = select(1, control:size())
+  expect(control.x + width <= s.page.room, "no control of the row passes the content's right edge")
+end
+eq(#fixture.calls, 0, "showing the row sets nothing")
+"#,
+    ]);
+    open_graphics(&mut rig);
+}
+
+#[test]
+fn a_press_on_the_greyed_field_turns_the_limit_on_with_its_number_and_starts_editing() {
+    let mut rig = settings_graphics_rig(&[
+        r"fixture.graphics.fps_limit = nil",
+        r"mark_settings()",
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+local fps = s.controls.fps
+expect(fps:editing(), "the press starts the editing")
+expect(not fps:is_greyed(), "the field is lit")
+expect(not s.controls.fps_none.selected, "none is no longer lit")
+eq(fixture.graphics.fps_limit, 60, "the limit is the number the field showed")
+eq(fixture.calls[#fixture.calls][2], "frame.fps_limit")
+eq(fixture.calls[#fixture.calls][3], 60)
+"#,
+    ]);
+    open_graphics(&mut rig);
+    click_at_metrics(&mut rig, "settings_control_fps", 640, 400);
+    rig.opened();
+}
+
+#[test]
+fn a_typed_limit_is_applied_and_clamped_to_30_through_240() {
+    for (typed, backspaces, expected) in [("30", 2, 30), ("20", 2, 30), ("999", 2, 240)] {
+        let check = format!(
+            r#"
+local s = require("lib.settings_window").current()
+eq(fixture.graphics.fps_limit, {expected}, "typing {typed} sets {expected}")
+eq(s.controls.fps:get(), {expected}, "the field shows {expected}")
+expect(not s.controls.fps:editing(), "applying ends the editing")
+"#
+        );
+        let mut rig = settings_graphics_rig(&[
+            r"fixture.graphics.fps_limit = 60",
+            r"mark_settings()",
+            r"mark_settings()",
+            r#"expect(require("lib.settings_window").current().controls.fps:editing())"#,
+            &check,
+        ]);
+        open_graphics(&mut rig);
+        type_into_the_frame_rate_field(&mut rig, backspaces, typed);
+        rig.opened();
+    }
+}
+
+#[test]
+fn a_press_on_none_sets_none_greys_the_field_and_keeps_its_number() {
+    let mut rig = settings_graphics_rig(&[
+        r"fixture.graphics.fps_limit = 90",
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(s.controls.fps:get(), 90)
+expect(not s.controls.fps:is_greyed() and not s.controls.fps_none.selected, "a limit in force: lit field, none not lit")
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+eq(fixture.graphics.fps_limit, nil, "none is set")
+eq(fixture.calls[#fixture.calls][3], "none")
+expect(s.controls.fps:is_greyed(), "the field is greyed")
+expect(s.controls.fps_none.selected, "none is lit")
+eq(s.controls.fps:get(), 90, "the field keeps the last limit")
+"#,
+    ]);
+    open_graphics(&mut rig);
+    click_at_metrics(&mut rig, "settings_control_fps_none", 640, 400);
+    rig.opened();
+}
+
+#[test]
+fn graphics_defaults_put_the_frame_rate_limit_back_to_none() {
+    let mut rig = settings_graphics_rig(&[
+        r"fixture.graphics.fps_limit = 45",
+        r"mark_settings()",
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+eq(fixture.graphics.fps_limit, nil, "defaults put the limit back")
+expect(s.controls.fps_none.selected and s.controls.fps:is_greyed(), "none is lit and the field greyed again")
+eq(s.controls.fps:get(), 45, "the field keeps the last number for the run")
+"#,
+    ]);
+    open_graphics(&mut rig);
+    click_at_metrics(&mut rig, "settings_control_defaults", 640, 400);
     rig.opened();
 }
