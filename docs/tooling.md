@@ -201,6 +201,20 @@ damaged storage. Keep the accepted pointer, referenced checkpoints, receipts,
 queue captures and Pijul databases in backups, together with the sibling metadata
 repository `~/work/codekarl-meta` (issues, specs and review receipts); see the README.
 
+**Ctrl+C on `tools/ck check`, `cargo` and `pijul` (CK-327).** `tools/ck` runs these three as a child process,
+with a private signing agent (`ssh-agent`) in a temporary directory. The terminal sends Ctrl+C to the whole
+foreground group, so the child gets it as it would without the launcher and handles it in its own way: the game
+shuts down cleanly. The launcher catches the signal and goes on waiting for the child. It does not stop the
+child or wait less for it, and it prints nothing of its own. Before CK-327 the interrupt was raised in the
+launcher, which printed a Python `KeyboardInterrupt` traceback after the game had shut down.
+
+When the child has ended, the launcher stops the agent and removes the directory, as on any exit; a Ctrl+C
+during that step is ignored. Its exit status is the child's: the child's exit code, or 128 plus the signal's
+number when a signal ended the child (130 for Ctrl+C), as a shell reports it. The other commands are not run
+this way: for them `tools/ck` replaces itself with the accepted controller, and what that does at an interrupt
+is unchanged. Two tests in `tests/test_bootstrap.py` (`test_c32_…`) send the interrupt to the launcher's process
+group, with a child that exits 0 after it and with one that the signal ends.
+
 ## Metal and Cargo
 
 The boundary is `Rust -> extern "C" -> Objective-C -> Apple's Metal framework`.

@@ -102,7 +102,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   and scaled; a resolution of another shape than the screen keeps its shape between black bars). F11 switches from
   windowed to fullscreen, and from either of the other two back to windowed (CK-326). "UI scale up to" caps
   the UI scale at 1, 1.5 or 2, and a scale the size cannot hold is greyed. "frame rate" limits the frames drawn a second,
-  from 30 to 240: type a number, or press "none" for no limit. "list look" chooses cards or rows for the location
+  from 30 to 240: type a number, or press "none" for no limit. While you type in one of these number fields, Tab goes
+  on to the next and Shift+Tab back, applying the one it leaves (CK-329). "list look" chooses cards or rows for the location
   panel's pops and buildings, as the panel's own two buttons do. Each is kept in the settings file, and the game starts
   with them the next time ([docs/ui-design.md](docs/ui-design.md) §3.18).
 - **Changing keys** (CK-310): on the "input" tab each action has two key slots. Click a slot and press the key you want,
@@ -114,7 +115,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
 - **The glossary** (CK-300): the glossary reader opens above the menu too. Its left column lists every glossary entry by its
   title: click one to read it on the right. A light-blue word in the text has its tooltip as elsewhere, and a click on it
   opens that word's entry. Its "x", or Escape, goes back to the menu ([docs/ui-design.md](docs/ui-design.md) §3.20).
-- **Saving and loading** (CK-305): the save/load screen opens above the menu too. At its top is a name, filled in for you
+- **Saving and loading** (CK-305): the save/load screen opens above the menu too. At its top a word says whether the
+  game is saved: "saved" in green, or "unsaved" in grey (CK-330). Under it is a name, filled in for you
   with the scenario and the date, and "new save", which saves the game under that name. Under them each save is a card
   with its name, its in-game date and when it was written. Click a card for its buttons: "load", "save" (save over it) and
   "delete". Saving over and deleting ask first, and loading asks only when the game has changed since it was last saved
@@ -122,7 +124,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   filter button under it shows the others too, greyed, which can only be deleted, and the sort button orders the list.
   Its "x", or Escape, goes back to the menu ([docs/ui-design.md](docs/ui-design.md) §3.23).
 - **The map:** drag to pan and scroll to zoom at the cursor, or use the arrow keys and `=` and `-`. Click a place to show it in the
-  location panel (tabs: location, pops and buildings). The two icons at the top right open the ledger, a list on the right of the
+  location panel. Its first tab carries the place's name, with the place's tooltip, and shows the location; the other two are
+  pops and buildings (CK-328). The two icons at the top right open the ledger, a list on the right of the
   screen with a locations tab and a pops tab; clicking a row shows that place in the panel. The three buttons centred at the bottom of
   the screen switch the map mode (stockpile, expected yield, elevation); pressing the one showing turns it off.
 - **Tooltips:** rest the pointer on a place for 0.3 seconds to see its tooltip: its name, population, majority culture and
@@ -201,7 +204,8 @@ settings file is read more leniently: a bad entry there is named and ignored.)
   `native-metal` is available in builds with `--features metal` on macOS, and `glfw-vulkan` in builds with `--features vulkan`
   (both features may be on; `--backend` then picks either over the configured one). A windowed run with an unavailable backend stops with `backend <name> is not available in this build` (exit 1).
 - **Ctrl-C and SIGTERM:** the first asks for a clean quit and is logged (`received SIGINT, quitting`); a second ends the process at
-  once with exit 3.
+  once with exit 3. Under `tools/ck cargo run` Ctrl-C reaches the run as it does without the launcher: `tools/ck` waits for
+  its command to end, prints nothing of its own and exits with that command's status (CK-327; `docs/tooling.md`).
 
 - **Output:** everything goes to stdout, and stderr is redirected to the same place at start-up. Each record is one line:
   timestamp, level, category and message. With `colour = "auto"` the level is coloured only when stdout is a terminal and `NO_COLOR`
@@ -260,9 +264,11 @@ The VM named `ui` gets a `window` table; no other VM does:
   the size the script lays out in: points for a window opened in points, UI units at the window's UI scale for one opened in pixels.
 - `window.set_text_input(on)` (CK-314) turns typed text on or off and returns a number that grows with each call. While it is
   on, the table given to `frame.on_update` carries what was typed in `typed`, in order: characters as the keyboard layout
-  gives them, and backspace, enter, tab, left and right. `typed_lost` and `typed_epoch` go with it. Only `native-metal` gives
-  typed text; `glfw-vulkan` gives none. The UI library has a number field and a text field that use it (CK-306, CK-303),
-  but no screen of the game has one yet, so the game types nowhere ([docs/ui-design.md](docs/ui-design.md) §3.19, §3.21, §3.22).
+  gives them, and backspace, enter, tab, backtab (Shift+Tab, CK-329), left and right. `typed_lost` and `typed_epoch` go
+  with it. Only `native-metal` gives
+  typed text; `glfw-vulkan` gives none. The UI library has a number field and a text field that use it (CK-306, CK-303):
+  the game's graphics tab has number fields and its save/load screen a text field
+  ([docs/ui-design.md](docs/ui-design.md) §3.19, §3.21, §3.22).
 - `window.on_opened(fn)` runs once the first frame has been queued for presentation; this does not prove it is visible.
   `window.on_close_request(fn)` gets `"key"` (Escape) or `"button"` (the close button) and closes the window when it returns `true`.
   With no callback registered, a close request closes the window.

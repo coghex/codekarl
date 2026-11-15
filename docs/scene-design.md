@@ -428,7 +428,9 @@ the family.
 **Since CK-314 (typed text; `crates/input/src/lib.rs`, `crates/window/src/main_loop.rs`).** The text channel that the first
 paragraph of this section left for later now exists. It is apart from the keys: a physical key is still a keyboard position,
 and what the player types arrives as **typed entries** (`TypedEntry`). An entry is a committed character, one Unicode scalar
-value, or one of five edit commands: backspace, enter, tab, left and right.
+value, or one of six edit commands: backspace, enter, tab, backtab, left and right. Backtab is Shift+Tab
+(`TypedEntry::Backtab`, since CK-329; until then there were five): an entry of its own, so its direction does not depend
+on Shift still being held when the UI takes it.
 
 - **A backend reports** `NativeEvent::Typed(entry)` in the order typed, and `NativeEvent::TypedLost` when its own bounded
   store dropped entries. Cocoa does (`docs/ui-design.md` §3.19). GLFW reports neither, so the Vulkan path has no typed text.

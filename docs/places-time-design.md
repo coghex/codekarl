@@ -230,6 +230,7 @@ The Firm rule is: cells within the radius; the nearest location takes an overlap
   reason: player, error or load).
   - **It wakes the UI whenever any displayed field changes**: the shown hour, the speed or the paused state. That includes a pause, a speed
     picked while paused, an error pause and a load, even when the shown hour is unchanged. (r3 woke on the hour only: F2.)
+  - **Since CK-330** the snapshot also has the unsaved flag (§5.3), and a change of that flag alone wakes the UI too.
   - Wakes are coalesced to at most one per frame. When nothing changes, nothing wakes; there is no polling.
   - Rendering never waits on the simulation.
 - **The gameplay VM on the clock (Firm, question 6).**
@@ -341,7 +342,8 @@ index order or `BTreeMap`), allocation addresses and uninitialised data.
 - **Since CK-311 (unsaved changes;** `core.rs`**):** the core keeps one flag beside its pause and its clock: whether the game
   has changed since it was last saved or loaded. The owner: "if the game is running, then there are unsaved changes", and
   "when in doubt it will pop up" (`.pipeline/coordination/ui-polish-design/owner-direction-save-load-designer-r2.md`).
-  - **It is not simulation state.** It is in no save, no journal and no digest, and the snapshot the UI gets does not carry it.
+  - **It is not simulation state.** It is in no save, no journal and no digest. Until CK-330 the snapshot the UI gets did
+    not carry it. It does now (below).
   - **Set by** every tick that is run, one that ends in an error included, and by the UI's `game.mark_unsaved()`. The shipped
     UI calls that when the cards-or-rows look of the location panel's lists changes and when the map mode shown changes.
     Pausing and a change of speed do not set it.
@@ -352,10 +354,24 @@ index order or `BTreeMap`), allocation addresses and uninitialised data.
     at no file and writes no error record. With the flag clear it is the named load.
     - **The core decides,** when it handles the request, from the flag as it is then. Its messages are handled in the order
       they arrived, so a tick or a `game.mark_unsaved()` before the request always counts.
-    - The UI holds no copy of the flag, so it cannot decide from an old one.
+    - The UI does not decide. Until CK-330 it held no copy of the flag. It now keeps the last one it was told, for the
+      save/load screen's word alone (below), and decides no load from it.
     - F9 and the plain named load never ask.
   - The UI VM's calls are `game.mark_unsaved`, `game.load_save_guarded` and `game.on_save_result` (`docs/ui-design.md` §3.6).
     Since CK-305 the save/load screen sends the guarded load at every press of its "load" (below).
+- **Since CK-330 (the flag in the snapshot;** `game/slot.rs`, `core.rs`**):** the snapshot the simulation publishes has
+  `unsaved`, the flag as it was when the snapshot was made, and a snapshot that differs only in it counts as changed.
+  It is there for the save/load screen's word, "saved" or "unsaved", which the owner asked for
+  (`owner-direction-hand-check-results-manager-r1.md`; `docs/ui-design.md` §3.23).
+  - **The core publishes after each change of the flag:** after a `game.mark_unsaved()`, also while paused, and after
+    a save call. A save that fails changes nothing, so nothing new is published. A load, a quicksave, a quickload and
+    a tick published already.
+  - **The UI gets it** as `unsaved` in `game_time` (`docs/ui-design.md` §3.6).
+  - **The guarded load is as it was:** the core decides from the flag it holds. What the UI was told can be one
+    delivery behind.
+  - **Tests:** `flag_only_changes_publish_the_save_status_and_failed_saves_keep_it_unsaved`
+    (`apps/codekarl/src/game/tests/storage.rs`) and `game_time_includes_the_saved_status_with_its_existing_fields`
+    (`game_api.rs`).
 - **Since CK-305 (the save/load screen;** `scripts/ui/lib/save_screen.lua`**):** the pause menu's "save / load" button opens
   a screen that lists the saves as cards and saves, loads and deletes them (`docs/ui-design.md` §3.23). It is UI script
   only: the save file, the core and the five operations are as they were.
