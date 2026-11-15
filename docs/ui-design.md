@@ -45,10 +45,12 @@
 >   food, employment and the three needs, mood, and its housing and crowding; a building card has its icon, methods, wage, housing,
 >   staffing and store bars, and herds. A row is one line, and clicking it opens its details beneath. Both looks use the new scroll view
 >   `lib/cards.lua` (items of their own heights, clipped like a list). The location tab keeps its text lines.
+>   Since CK-308 the choice is the `[ui] list_look` setting, kept between runs (below).
 > - **Window size and UI scale** (CK-257 and CK-256; `owner-direction-ui-size-r1.md`, `owner-direction-window-resizable-r1.md`,
 >   `owner-direction-window-resize-behaviour-r1.md`): the game window opens at its minimum, **1280×800 screen pixels**, and can be
 >   resized and made full screen (macOS standard: the green button or Control-Command-F). The UI and map lay out again when a drag ends.
 >   The **UI scale** (§3.3) follows the window. See `docs/window-design.md` for the window itself.
+>   Since CK-308 it opens at the resolution the player set, and since CK-312 it has three window modes (both below).
 > - **Superscripts** (CK-260; `owner-direction-superscript-r1.md`): the font has 3×5 superscript digits and signs (⁰–⁹, ⁺, ⁻), drawn
 >   high, and subscript digits (₀–₉), drawn low, so text such as "m²" draws without markup (§2.4).
 >
@@ -224,6 +226,7 @@
 >   - **Three tabs** in a column down its left side: general (the three tooltip settings), map (the three map settings) and
 >     input (the keys in force; read-only until CK-310, below). A slider or a choice acts at once and is written to the
 >     settings file (§3.17), and "defaults" resets the tab that shows.
+>   - **Since CK-308 there are four:** graphics is the second (below).
 >   - **Its "x" or Escape** closes it and leaves the menu open and the game paused.
 >   - **For scripts:** `button.flow` lays out a row of buttons that wraps, and a window made with `modal = true` is above the
 >     menu's backdrop. Every other window now stays under the backdrop while the menu is open.
@@ -241,12 +244,12 @@
 >   - **For scripts:** a list made with `selectable = true` can keep one chosen row filled (`lib/list.lua`).
 > - **The number field, for scripts** (CK-306, 2026-11-14; `owner-direction-settings-designer-r3.md` and `-r5.md`; §3.21):
 >   `scripts/ui/lib/numberfield.lua` is a field that a whole number is typed into. A click starts the editing. Enter, Tab or a
->   click elsewhere applies the number, brought into its range. Escape puts the old number back and closes nothing. No shipped
->   screen has a field yet: the graphics tab will be the first.
+>   click elsewhere applies the number, brought into its range. Escape puts the old number back and closes nothing. Since
+>   CK-308 the graphics tab's resolution fields are the first shipped ones (below).
 > - **The graphics settings, for scripts** (CK-307, 2026-11-14; `owner-direction-settings-designer-r3.md` and `-r4.md`; §3.17):
 >   the configuration and the settings file take `[ui] list_look` and `[window] width` and `height`, and the settings file
 >   takes `[ui] scale`. `settings.resize(width, height)` resizes the game's window, and a change of `[ui] scale` now acts while
->   the game runs. No shipped screen calls them yet, and the game still opens at 1280 by 800.
+>   the game runs. Since CK-308 the graphics tab calls them, and the game opens at the resolution kept (below).
 > - **Key capture and live key bindings, for scripts** (CK-309, 2026-11-14; `owner-direction-keys-designer-r1.md` and
 >   `-r2.md`; §3.17): `settings.capture_key` gives a script the next key the player presses, `settings.set_bindings` changes
 >   the keys of the player's actions while the game runs, and the settings file keeps them in `[input.bindings]`. Escape's
@@ -294,6 +297,40 @@
 >     hit regions above the card's own (`raise_hits`), and a window made with `keep_open` can refuse Escape.
 >
 >   That is the last of the four save/load parts: CK-302 and CK-311, CK-303, CK-304 and CK-305.
+> - **The graphics tab** (CK-308, 2026-11-14; `owner-direction-settings-designer-r1.md` and `-r3.md` to `-r5.md`; §3.18): the
+>   settings window has a fourth tab, "graphics", between general and map. The owner: "it should be 'resolution' with two
+>   values available to input, here the player can input whatever numbers they want, and it will clamp to minimums and
+>   maximums, and clamp the ui scale too".
+>   - **"resolution"** is two number fields, width `x` height, of five digits each. An applied pair is brought into the
+>     range, from 1280 by 800 up to the screen, and the window is resized to it. A resize by hand shows in the fields.
+>   - **"UI scale up to"** is three buttons, 1, 1.5 and 2. A scale the size shown cannot hold is greyed. When an applied
+>     resolution cannot hold the scale chosen, the choice drops to the largest that fits. The owner: "clamps, the 2 becomes
+>     a 1.5 right after the user sets the text in the textbox".
+>   - **"list look"** is "cards" or "rows": the choice the location panel's two look buttons make, now kept in the settings
+>     file. Both places show one choice.
+>   - **"defaults"** puts the graphics settings back, and the window goes to the resolution then in force.
+>   - **At start** the game opens its window at the resolution kept, no longer at a size written in the script.
+> - **The frame-rate limit** (CK-313, 2026-11-14; `owner-direction-settings-designer-r3.md` to `-r5.md` and
+>   `owner-direction-game-menu-manager-r8.md`; §3.17, §3.18): `[frame] fps_limit` limits how often a frame is drawn, from 30 to
+>   240 frames a second, or `"none"`, the default. The owner: "we also need, graphics options for fps, another unimplemented
+>   engine feature", and "30 to 240 is fine".
+>   - **The "frame rate" row** of the graphics tab has a number field, `fps` and a "none" button. While "none" is lit the
+>     field is greyed and keeps its number, and a click on it turns the limit back on with that number.
+>   - **Only drawing is limited,** on native Metal: the script's updates, the input and the game's clock keep their rates.
+>   - **For scripts:** a number field can be greyed and still answer a press (`greyed`, `on_enable`; §3.21).
+> - **Window modes** (CK-312, 2026-11-14; `owner-direction-settings-designer-r3.md` and `-r4.md`,
+>   `owner-direction-game-menu-manager-r8.md` and `-r9.md`; §3.17, §3.18): the graphics tab's "window mode" row chooses
+>   "windowed", "windowed fullscreen" or "fullscreen", kept as `[window] mode`. The owner: "then seperately will be the
+>   window mode buttons 'windowed', 'windowed fullscreen', and 'fullscreen'".
+>   - **Windowed fullscreen** is a window with no title bar that covers the screen, drawn at the screen's own pixels. The
+>     resolution fields are greyed there and show that size.
+>   - **Fullscreen** covers the screen the same way and draws at the resolution kept, scaled to the screen. A resolution
+>     of another shape than the screen keeps its shape between black bars: the owner chose "Keep shape, bars". A press,
+>     a scroll or a hover on a bar reaches nothing.
+>   - **A change of mode** acts at once and is kept. It never changes the resolution kept.
+>   - **No automated test switches a real window's mode:** the mode's geometry is tested as arithmetic, and the switch
+>     itself is for the owner to check by hand (`docs/window-design.md` §8).
+>   - **For scripts:** a number field can be made inactive (`inactive`, `field:set_inactive`; §3.21).
 
 ## Owner answers (2026-11-07)
 
@@ -609,6 +646,11 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
     to the captured group.
   - **Map hover:** the map's hover (`game_hover`) is suppressed while the cursor is over a hit region or while the UI holds a capture, so
     no tooltip is drawn under a panel.
+  - **Since CK-312, in fullscreen the picture bounds the pointer.** The input tick carries the window's mode (`InputTick`'s
+    `mode`, `crates/window/src/link.rs`). In fullscreen the link routes with the picture's size, in points, as a viewport
+    (`ui_link.rs`, `route_pointer_with`): a position outside it, on a black bar, hits no region, and its event is never
+    `inside`. The map starts no drag there and takes no scroll, hover or selection from it (`map_app.rs`,
+    `map_pointer_in_view`). In the other two modes nothing is bounded this way (`docs/window-design.md` §8).
 - **Cancellation** (r2, ck-reviewer-1's question 2). A capture ends with a **`cancel`** event to the UI, never with a synthesized `up` or
   click, when:
   - the snapshot's `reset` is set (focus loss);
@@ -762,8 +804,11 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
   - It reads and changes nothing of the simulation. The save/load screen's generated name is its one caller (§3.23).
 - **`game.mark_unsaved()`** (CK-311) tells the game that the player made a choice that counts as an unsaved change
   (`docs/places-time-design.md` §5.3). It takes no argument, returns nothing and never waits: it is a send on the same channel.
-  - **Its two callers:** the location panel's look buttons, when the look changes (pressing the look that shows makes no
-    call), and the map-mode buttons, when the mode shown changes (a mode the map refuses makes no call).
+  - **Its two callers:** a change of the cards-or-rows look (choosing the look that shows makes no call), and the map-mode
+    buttons, when the mode shown changes (a mode the map refuses makes no call).
+    - **Since CK-308 the look's call is in `lib/list_look.lua`,** which the location panel's look buttons and the graphics
+      tab's "list look" row both set (§3.18). So a look chosen in the settings window counts as an unsaved change too.
+      "defaults" on the graphics tab makes no such call.
   - Nothing else in the shipped UI calls it. The owner: "simply navigating the ui and windows will not trigger it".
 - **The named saves** (CK-302; `docs/places-time-design.md` §5.3): five calls, each run by the simulation owner between ticks.
   **Each waits for the finished operation** and returns a table: `{ok = true}`, or `{ok = false, reason = "..."}` for a
@@ -1606,9 +1651,10 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
   tested in `widget_tests.rs`, `ui_link/list_tests.rs` and `ui_link/location_tests/` (`tooltips.rs`).
   - **`ui_link/location_tests/` is a directory** (CK-291, 2026-11-13). Until then it was one file, `ui_link/location_tests.rs`,
     of 4762 lines, and two slices adding tests to it conflicted when their patches were replayed, three times on 2026-11-13.
-    - `mod.rs` holds the shared fixture and helpers, and no test.
-    - Nine files hold the 67 tests by subject: `selectors_tabs.rs`, `market_table.rs`, `tooltips.rs`, `cards.rs`, `rows.rs`,
+    - `mod.rs` held the shared fixture and helpers, and no test.
+    - Nine files held the 67 tests by subject: `selectors_tabs.rs`, `market_table.rs`, `tooltips.rs`, `cards.rs`, `rows.rs`,
       `panel_layout_refresh.rs`, `mode_bar.rs`, `ledger.rs` and `scale_limits.rs`.
+    - Read at CK-312, the nine hold 97 tests and `mod.rs` has one.
     - The split moved the tests and changed none: each kept its name and its body.
   - **The UI rig's `render.set_hit`** (the recording stand-in in `apps/codekarl/src/readout_tests.rs`) refuses a key the real
     call refuses, with the same message (CK-279). Before that it accepted any string, which is how a span key holding `:` passed
@@ -1979,7 +2025,7 @@ The player's settings are kept in `settings.toml`, a file apart from the configu
 file" and "At once" (`owner-direction-settings-designer-r1.md` in `.pipeline/coordination/ui-polish-design/`): a change acts
 straight away and is kept. This is the first slice of the settings window (UI polish item 3). The window itself came with
 CK-301 (§3.18): its general and map tabs are what sets and resets a setting in the shipped UI. Since CK-310 its input tab
-sets and resets the player's keys.
+sets and resets the player's keys, and since CK-308 its graphics tab the graphics settings.
 
 - **Where:** in the parent directory of the saves directory (`[game] saves`). For `config/game.toml` that is the top of the
   copy, beside `saves/`; with no `[game]` table it is beside the configuration file. A run with no `--config` has no settings
@@ -1988,6 +2034,7 @@ sets and resets the player's keys.
   - `[ui.tooltips]`: `delay`, `lock` and `lock_timer` (§3.13);
   - `[map]`: `pan_pixels_per_frame` (1 to 32), `zoom_steps_per_second` (1 to 60) and `scroll_points_per_step` (1 to 256).
   - **Since CK-307,** the four graphics settings: `[ui] scale`, `[ui] list_look`, `[window] width` and `[window] height`.
+    Since CK-313 and CK-312 there are six, with `[frame] fps_limit` and `[window] mode`.
   - **Since CK-309,** `[input.bindings]`: the player's key bindings. Both are below.
 - **Read at start,** after the configuration file (`apps/codekarl/src/config.rs`, `load_settings`). A key in it overrides the
   configuration's value; a key it does not have keeps the configuration's value, or the default. A missing file is not
@@ -2014,8 +2061,10 @@ sets and resets the player's keys.
   in `config`, and the change still holds for the run.
 
 **Since CK-307: the graphics settings.** Four keys, a call that resizes the window, and a UI scale limit that acts at once. It
-is the engine's side of the settings window's graphics tab, which is a later step: no shipped script reads or sets any of it
-yet. The owner asked for a resolution to type: "it should be 'resolution' with two values available to input, here the player
+is the engine's side of the settings window's graphics tab. **Since CK-308 that tab and `main.lua` use it** (§3.18): the tab
+reads, sets and resets these settings, and the game's script opens its window at the resolution kept. CK-313 and CK-312 each
+added a key (below).
+The owner asked for a resolution to type: "it should be 'resolution' with two values available to input, here the player
 can input whatever numbers they want, and it will clamp to minimums and maximums". For its range the owner chose
 "Min 1280x800, max screen" (`owner-direction-settings-designer-r3.md` and `-r4.md`). The spec is
 `runtime-m55/ck307-spec-r3.md` (sha256 `7a814cea…`).
@@ -2028,16 +2077,22 @@ can input whatever numbers they want, and it will clamp to minimums and maximums
   | `[ui] list_look` | `"cards"` or `"rows"` | `"cards"` |
   | `[window] width` | a whole number of screen pixels, 1280 to 16,384 | 1280 |
   | `[window] height` | a whole number of screen pixels, 800 to 16,384 | 800 |
+  | `[window] mode` (CK-312) | `"windowed"`, `"windowed_fullscreen"` or `"fullscreen"` | `"windowed"` |
+  | `[frame] fps_limit` (CK-313) | a whole number, 30 to 240, or `"none"` | `"none"` |
 
-  - The configuration file takes all four (`[ui] scale` is older, §3.3) and refuses a bad value as it refuses any other. The
-    settings file takes all four too, and names and ignores a bad one.
-  - **`[window] width` and `height` are the resolution kept:** what the player asked for, brought into the range. Nothing
-    opens the window at it yet: `main.lua` still opens the game at 1280 by 800.
-  - **`[ui] list_look` is only kept and read.** The location panel still starts each run on cards.
-- **`settings.graphics()`** returns `{list_look, width, height}` in force, and `scale` (1, 1.5 or 2) when a limit is set.
+  - The configuration file takes all six (`[ui] scale` is older, §3.3) and refuses a bad value as it refuses any other. The
+    settings file takes all six too, and names and ignores a bad one. Of `[frame]` the settings file takes only `fps_limit`.
+  - **`[window] width` and `height` are the resolution kept:** what the player asked for, brought into the range. **Since
+    CK-308 `main.lua` opens the game's window at it:** `window.open` gets `settings.graphics()`'s `width` and `height`, in
+    screen pixels, and a least size of 1280 by 800. Before CK-308 it opened at 1280 by 800, written in the script.
+  - **Since CK-308 `[ui] list_look` is the look in force** of the location panel's pops and buildings tabs. A panel starts
+    on it, and its two look buttons set it (`scripts/ui/lib/list_look.lua`, §3.18). Before CK-308 it was only kept and read.
+- **`settings.graphics()`** returns `{list_look, width, height, mode}` in force, `scale` (1, 1.5 or 2) when a limit is set, and
+  `fps_limit`, a number, when a frame-rate limit is on. `mode` came with CK-312 and `fps_limit` with CK-313.
   `width` and `height` are the resolution kept, never the window's size, which the updates report.
 - **`settings.set("ui.scale", value)`** takes 1, 1.5 or 2, and **`settings.set("ui.list_look", value)`** takes `"cards"` or
-  `"rows"`. Both are written like any set.
+  `"rows"`. Both are written like any set. `settings.set("frame.fps_limit", value)` and `settings.set("window.mode", value)`
+  are below.
 - **`settings.resize(width, height)`** resizes the window. It takes two whole numbers of screen pixels that are not negative;
   anything else is a Lua error that names the argument.
   - **The resolution kept** is each number lowered to the screen's size and then brought into its key's range. It becomes
@@ -2046,19 +2101,24 @@ can input whatever numbers they want, and it will clamp to minimums and maximums
     size, while the pair kept and written stays 1280 by 800. So the file never holds a pair the next start refuses.
   - **The screen** is the main screen's visible size, in pixels, as the main thread read it at start
     (`apps/codekarl/src/window_api.rs`, `ResizeSession`). A headless run has no screen, and nothing limits a size there but
-    16,384.
+    16,384. **Since CK-312, in fullscreen mode it is the whole screen,** the menu bar's and the Dock's areas included.
   - **It returns the size used,** width and height, at once. It asks the main thread for that content size through the
     window's request slot, in points (the pixels divided by the screen's pixels per point, rounded up), and never waits.
     Of two requests not yet taken, the later wins.
   - **Without an open resizable window** the call is a Lua error, and nothing is kept or written.
   - **The new size arrives as any size change does:** one `SizeChanged`, and then the update's `width`, `height`,
     `pixel_width` and `pixel_height` (`docs/window-design.md` §8).
-  - **On Cocoa** the window keeps its top-left corner. A window that is full screen, or on its way in or out of it, is not
-    resized; the resolution is kept all the same. The GLFW backend does not resize: the Vulkan path is compile-only.
+  - **On Cocoa** the window keeps its top-left corner. A window in macOS's own full screen, or on its way in or out of it,
+    is not resized; the resolution is kept all the same. The GLFW backend does not resize: the Vulkan path is compile-only.
+  - **Since CK-312 what the request does depends on the window mode** (below): in windowed mode it resizes the window, in
+    windowed fullscreen it changes nothing that is seen, and in fullscreen it changes the drawable and not the window.
   - **Headless,** the call is checked, clamped, kept and counted like the other window calls, and nothing is resized.
-- **`settings.reset("graphics")`** removes the four keys and puts back the configuration's values, or the defaults.
+- **`settings.reset("graphics")`** removes the graphics keys, six since CK-313 and CK-312, and puts back the configuration's
+  values, or the defaults.
   - It first asks the window for the size used for the resolution then in force (the configuration's, or 1280 by 800), by
     the same request. It writes no pair.
+  - **Since CK-312** it then asks for the mode then in force (the configuration's, or windowed), and **since CK-313** it
+    gives the presenter the frame-rate limit then in force.
   - Without an open resizable window it is a Lua error, and nothing is reset.
 - **The UI scale limit acts at once** (`crates/render-2d/src/bridge.rs`, `set_ui_scale_limit`). A set or a reset of
   `[ui] scale` gives the scene bridge the new limit, and the scale in use is the lower of the limit and what the drawable
@@ -2075,6 +2135,84 @@ can input whatever numbers they want, and it will clamp to minimums and maximums
 - **Tests,** none with the GPU: `apps/codekarl/src/settings.rs` and `window_api.rs` (the calls, the clamps, the file, headless),
   `config.rs` (the keys in both files), `crates/window/tests/window/` (the request through the loop), `crates/render-2d` and
   `ui_link/input_tick_tests.rs` (the live limit), and one case with a real window in `crates/window-cocoa/tests/resize/`.
+
+**Since CK-313: the frame-rate limit.** One key and its set, which limit how often a frame is drawn. The owner asked for it
+("we also need, graphics options for fps, another unimplemented engine feature"), chose "Typed limit", and settled the range:
+"30 to 240 is fine, but dont test the higher framerates on my lower screen, we shouldnt test these more than at 30 and 60"
+(`owner-direction-settings-designer-r3.md` to `-r5.md`). The spec is `runtime-m55/ck313-spec.md` (sha256 `8d228f80…`).
+
+- **`[frame] fps_limit`** is a whole number from 30 to 240, or the text `"none"`; without it, `"none"`. The configuration
+  file refuses anything else, a fraction such as `60.0` included. The settings file names and ignores it.
+- **`settings.set("frame.fps_limit", value)`** takes a whole number from 30 to 240, or `"none"`. Anything else is a Lua
+  error that names the setting and the range, and nothing changes. An accepted set is written like any set: a kept
+  `"none"` is written as `fps_limit = "none"`.
+- **`settings.graphics().fps_limit`** is the limit in force. It is absent while there is none.
+- **What the limit does.** With a limit of N, the Metal presenter's render thread starts no frame sooner than one N-th of a
+  second after it started the frame before. A frame wanted sooner waits until then and is drawn once.
+  - **No frame is added.** Nothing is drawn that nothing wanted, and wants coalesce as before.
+  - **With `"none"`** a wanted frame may always start at once, as before CK-313.
+  - **Only drawing is limited.** `[frame] updates_per_second` and `max_delta_seconds` are as they were: the script's
+    updates, the input and the game's clock keep their rates.
+  - **A stop and pending texture work do not wait** for the interval's end. The frame stays wanted meanwhile.
+- **The limit is one decision** (`crates/gpu-metal/src/frame_limit.rs`, `decide`): given when the last frame started, the
+  time now and the limit, a frame may start now, or at a stated time. The interval is a whole number of nanoseconds,
+  rounded down. The render thread reads the clock, asks, and waits until the stated time on the signal it already waits
+  on (`presenter.rs`, `hold_for_limit`), so a newly set limit decides at once.
+- **A set acts at once, from the next frame.** `settings.set` and `settings.reset("graphics")` give the limit to
+  `WakeRelay::set_frame_limit` in `ck-render-2d`, which keeps it and gives it to the presenter's setter
+  (`MetalPresenter::frame_limit_setter`). A presenter connected later starts with the limit kept, and the application
+  gives the relay the configured limit before any presenter exists (`apps/codekarl/src/lib.rs`).
+  - **Deliveries are ordered:** one thread delivers at a time and reads the limit again until it is current, so the
+    presenter always ends with the latest limit.
+- **On Metal only.** The Vulkan path connects no setter and limits nothing: it is compile-only.
+- **Tests,** with no window and no GPU. Every limit that is run is 30 or 60, as the owner asked: `frame_limit.rs` (the
+  decision with given times and no sleep), `presenter.rs` (the limit kept in the slot the render thread reads),
+  `crates/render-2d/src/tests/resident.rs` (the relay's delivery and its order), `config.rs` (the key in both files; 29,
+  241, a fraction and another text refused; the update rate and the largest delta unchanged) and `settings.rs` (the set,
+  the file and the reset).
+
+**Since CK-312: window modes.** One key and its set. The owner asked for three modes ("then seperately will be the window
+mode buttons 'windowed', 'windowed fullscreen', and 'fullscreen'. we will have to implement these"). For a fullscreen
+resolution of another shape than the screen the owner chose "Keep shape, bars": the question and the option's words are
+ck-manager's (`owner-direction-settings-designer-r3.md` and `-r4.md`; `owner-direction-game-menu-manager-r9.md`, question 1).
+The spec is `runtime-m55/ck312-spec-r3.md` (sha256 `b37e2b62…`). What the window does in each mode is in
+`docs/window-design.md` §8.
+
+- **`[window] mode`** is `"windowed"`, `"windowed_fullscreen"` or `"fullscreen"`; without it, `"windowed"`. The
+  configuration file refuses another value, and the settings file names and ignores it.
+- **`settings.set("window.mode", value)`** takes one of the three. Another value is a Lua error that names it, with no
+  request and no write. An accepted one is asked of the main thread through the window's request slot, kept, and written
+  like any set. It never waits.
+  - Without an open resizable window it is a Lua error, and nothing is kept or written.
+  - **Headless,** it takes the same path as the resize: checked, kept and counted.
+- **`settings.graphics().mode`** is the mode in force.
+- **A change of mode writes the mode and never the resolution.** `[window] width` and `height` stay as they were, and each
+  mode works out its drawable from that pair (`WindowMode::layout`, `crates/window/src/mode.rs`):
+
+  | Mode | The window | The drawable, in pixels |
+  |---|---|---|
+  | windowed | titled, at the size used | the resolution kept, lowered to the screen's visible size |
+  | windowed fullscreen | no title bar, covering the whole screen | the screen's own pixels, each lowered to 16,384 |
+  | fullscreen | no title bar, covering the whole screen | the resolution kept, lowered to the screen's own pixels |
+
+- **`settings.resize` in each mode** (`ResizeSession::resize`, with the mode in force):
+  - **windowed:** as before CK-312;
+  - **fullscreen:** the screen that limits the pair is the whole screen. The resolution kept is written, the pair
+    returned is the drawable's new size, and the window does not change size;
+  - **windowed fullscreen:** the resolution is kept and written, and nothing that is seen changes. The pair returned is
+    the one windowed mode would use, not the drawable's. The graphics tab's fields are inactive there (§3.18), so the
+    shipped UI makes no such call.
+- **The settings read** gives the resolution kept in every mode: never the screen's size and never a drawable's.
+- **At start** `main.lua` opens its window and then, when the mode in force is not windowed, calls
+  `settings.set("window.mode", …)` with it. The window is made as a windowed one, and the main loop applies the mode
+  once the presenter has started.
+- **Disclosed:** the settings calls work out their pairs from the main screen as it was read at start, while the Cocoa
+  backend reads the window's own screen again at each change of mode. With the window on another screen of another
+  size, the pair a call returns can differ from the drawable, which the next update reports.
+- **Tests,** none with a real window: `crates/window/src/mode.rs` (the geometry), `crates/window/tests/window/` (the slot,
+  a mode asked with the open, and the bars' report through a fake backend), `settings.rs` (the call, the file, the reset,
+  and screens below 1280 by 800 and above 16,384), `config.rs` (the key in both files), and `ui_link.rs` and `map_app.rs`
+  (the pointer on the bars, §3.5).
 
 **Since CK-309: the player's key bindings, and key capture.** A script can change the keys of the player's actions while the
 game runs, and can ask for the next key the player presses. It is the engine's side of key rebinding. **Since CK-310 the
@@ -2140,11 +2278,12 @@ and the spec is `runtime-m55/ck309-spec-r2.md` (sha256 `e85d479f…`).
   cancel before any key, and a resync that lifts the key; and a withheld call for text input applied once the key is let
   go, or dropped by a call for off.
 
-### 3.18 The settings window (accepted, CK-301 and CK-310)
+### 3.18 The settings window (accepted, CK-301, CK-310 and CK-308)
 
 The pause menu's "settings" button opens the **settings window**: a tabbed window above the menu, where a change acts at once
 and is written to the settings file (§3.17). It is the second slice of the settings (UI polish item 3). The owner: "i think i
-want a tabbed window". Since CK-310 its input tab changes the keys.
+want a tabbed window". Since CK-310 its input tab changes the keys. Since CK-308 it has a graphics tab, to which CK-313 and
+CK-312 each added a row.
 
 - **The records** are `owner-direction-settings-designer-r1.md` to `-r4.md` and `owner-direction-settings-manager-r7.md` in
   `.pipeline/coordination/ui-polish-design/`.
@@ -2160,7 +2299,11 @@ want a tabbed window". Since CK-310 its input tab changes the keys.
     `owner-direction-game-menu-manager-r9.md` and `-r10.md`. The look is K1 of `mockups/keys-r1.html` and the two prompts
     of `mockups/keys-r2.html`, with no new art (`keys-provenance-r1.md`). The spec is `runtime-m55/ck310-spec-r4.md` (sha256
     `03594c5a…`).
-- **One module,** `scripts/ui/lib/settings_window.lua`, is the window, its tab column, its three tabs and the slider. Since
+  - **For the graphics tab (CK-308, CK-313 and CK-312)** the records are `owner-direction-settings-designer-r1.md` and
+    `-r3.md` to `-r5.md`, and `owner-direction-game-menu-manager-r8.md` and `-r9.md`. The look is the graphics picture and
+    the windowed fullscreen picture of `mockups/settings-r4.html`. The specs are `runtime-m55/ck308-spec-r2.md` (sha256
+    `8f3154d0…`), `ck313-spec.md` (`8d228f80…`) and `ck312-spec-r3.md` (`b37e2b62…`).
+- **One module,** `scripts/ui/lib/settings_window.lua`, is the window, its tab column, its tabs and the slider. Since
   CK-310 it is the key slots and the "Key in use" prompt too.
   - `settings_window.open(view)` opens it, or raises it when it is open, and returns the window. There is one at most.
   - `settings_window.close()` closes it, `settings_window.relayout(view)` centres it again, and `settings_window.current()`
@@ -2168,7 +2311,8 @@ want a tabbed window". Since CK-310 its input tab changes the keys.
   - **The menu** (`lib/menu.lua`) **opens and closes it:** the "settings" button opens it, `menu.relayout()` passes on a
     change of the view's size, and the menu's `on_close` closes it.
   - **Since CK-310 `main.lua` calls `settings_window.update(update)` in every update,** after the pointer's dispatch. It
-    reads the update's key capture result and ends a slot's wait (below). With no settings window open it does nothing.
+    reads the update's key capture result and ends a slot's wait (below). Since CK-308 it also takes the update's
+    `pixel_width` and `pixel_height`, for the graphics tab (below). With no settings window open it does nothing else.
 
 Lengths below are in UI pixels.
 
@@ -2177,17 +2321,18 @@ Lengths below are in UI pixels.
   - Its content is 168 tall, and 226 wide plus the tab column's width.
   - It is made with `modal = true` (below), so it is above the menu and the backdrop.
   - It is larger than the menu and both are centred, so it covers the menu's buttons while it is open.
-- **The tab column** is down the left side: three rows, 13 tall, in the order general, map, input. The window opens on general.
+- **The tab column** is down the left side: four rows since CK-308, 13 tall, in the order general, graphics, map, input. The
+  window opens on general.
   - A row is a text button of kind `window`, with its text 3 in and 1 down. Pressing it shows its tab. The chosen row keeps
     the selected look, filled with the kind's `hot`.
-  - The column is as wide as the widest of the labels general, graphics, map and input, plus 12. "graphics" is counted though
-    it is not listed, so the window keeps its size when a graphics tab is added. A row's fill stops 3 short of the column's
+  - The column is as wide as the widest of the labels general, graphics, map and input, plus 12. CK-301 counted "graphics"
+    before it was listed, so the window kept its size when CK-308 added the tab. A row's fill stops 3 short of the column's
     right edge.
   - A 1-pixel line in the kind's `outline` stands at the column's right edge. It stops 6 short of the content's bottom.
   - A tab's content starts 6 right of the column's right edge and is 220 wide. It is one group attached to the window and
     clipped to the window's content. It is destroyed and made again whenever a tab is shown. Since CK-310 a second group
     and a scroll bar go with it, for the input tab's rows.
-  - There is no graphics tab and no gameplay tab.
+  - There is no gameplay tab. The graphics tab came with CK-308 (below).
 - **A tab's rows** have their label at the content's left and their control 84 right of it. Every label is cut to its room on
   whole characters, with `..`.
 - **The slider** is drawn from the theme's white texture: a track 80 wide and 2 tall in `track`, filled from its left to the
@@ -2211,7 +2356,8 @@ Lengths below are in UI pixels.
     row that fits is one line.
   - The item equal to `selected` is drawn selected, and a press on a button calls `on_choose(item)`.
   - It returns the buttons and the height used: 18 for each line, less 3.
-  - The settings window's lock row is its one caller. No row that existed before was changed.
+  - The settings window's lock row was its one caller. Since CK-308 and CK-312 the graphics tab's scale, list look and mode
+    rows call it too. No row that existed before was changed.
 - **The general tab** has a "tooltips" heading in `dim` and three rows.
   - **"show delay":** a slider from 0 to 2 s in steps of 0.1 s for `ui.tooltips.delay`, 14 below the heading. Its value reads
     like `0.3 s`. Its label is drawn as the other rows' labels are since CK-318; CK-301 had left it out.
@@ -2227,8 +2373,67 @@ Lengths below are in UI pixels.
   A value reads as its number, and the scroll step's as `24 points`.
 - **"defaults"** is a button at the bottom left of each tab's content. It calls `settings.reset("tooltips")`,
   `settings.reset("map")` or, on the input tab since CK-310, `settings.reset("bindings")`, which resets that tab's settings
-  only. The tab is then made again, when the pointer's dispatch ends, with the values in force. Its row in the tab column
+  only. On the graphics tab, since CK-308, it calls `settings.reset("graphics")` (below).
+  The tab is then made again, when the pointer's dispatch ends, with the values in force. Its row in the tab column
   stays the chosen one (CK-323: after "defaults" on the input tab no row was marked).
+- **The graphics tab** (CK-308, with a row each from CK-312 and CK-313) has five rows and "defaults". From the top:
+  resolution, window mode, UI scale up to, frame rate, list look. Each row is 20 below the one before, but for the scale
+  row, which is 5 below the last line of the mode's buttons.
+  - **It reads `settings.graphics()`** (§3.17) each time it is made, and the drawable's size from the updates:
+    `settings_window.update` keeps the last `pixel_width` and `pixel_height` it was given, also while the window is
+    closed. Before the first update the size counts as 1280 by 800.
+  - **"resolution"** is two number fields (§3.21) of five digits, with a range of 0 to 99999: the width's 84 right of
+    the label, an `x` in `dim` 4 right of it, and the height's 4 right of that. Five digits take every size the engine
+    accepts, up to 16,384.
+    - **They show the drawable's size in pixels.** An update that reports another size sets both, unless one of the two
+      is being edited: then both keep what they show.
+    - **Applying either field** calls `settings.resize` (§3.17) with the number applied and the other field's number.
+      Both fields show the pair returned, the size used, at once. The resize call is the one authority on the range: a
+      typed 99999 comes back clamped.
+    - **Until the new size is reported,** an update that still carries the size from before the apply changes nothing.
+      After that the fields follow the updates again, a resize by hand included.
+    - **A resize by hand** makes no call and writes nothing: only an applied resolution is kept.
+  - **"window mode"** (CK-312) is three choice buttons laid out by `button.flow`, "windowed", "windowed fullscreen" and
+    "fullscreen", in a room 136 wide, where they wrap. The one of the mode in force is lit.
+    - **A press** calls `settings.set("window.mode", …)` with `windowed`, `windowed_fullscreen` or `fullscreen` (§3.17)
+      and lights its button.
+    - **In windowed fullscreen the resolution's fields are inactive** (§3.21) and the label "resolution" is in `dim`.
+      They show the screen's size once an update reports it. In the other two modes they are live.
+  - **"UI scale up to"** is three choice buttons, "1", "1.5" and "2", for `[ui] scale`.
+    - **A scale the size shown cannot hold is inactive,** the greyed button of §3.15: 1.5 under 1920 by 1200, and 2 under
+      2560 by 1600. 1 is never greyed. The owner: "stick with the recommended greyed out values".
+    - **The lit button** is the limit in force, or the largest scale the size shown holds when that is lower. With no
+      limit set, the limit counts as 2. Showing this sets nothing.
+    - **A press** on a live button calls `settings.set("ui.scale", …)`. The limit acts at once (§3.17), and the tab is
+      made again when the pointer's dispatch ends.
+    - **The drop.** When the pair an applied resolution returns cannot hold the limit in force, the tab sets `[ui] scale`
+      to the largest scale that pair holds. The owner: "clamps, the 2 becomes a 1.5 right after the user sets the text
+      in the textbox". A larger resolution applied later does not raise it again. Since no limit counts as 2, applying
+      a resolution under 2560 by 1600 with none set writes one.
+    - **A size that was not applied** (a resize by hand, a change of mode) greys and lights the buttons by the new
+      pixels, also in an update whose `width` and `height` did not change, and sets nothing.
+  - **"frame rate"** (CK-313) is a number field of three digits with a range of 30 to 240, 84 right of the label;
+    `fps` in `dim`, 4 right of the field; and a "none" button, 6 right of that.
+    - **With a limit on,** the field shows it, and applying a number calls `settings.set("frame.fps_limit", …)` with
+      the number brought into 30 to 240: a typed 20 gives 30.
+    - **"none"** calls `settings.set("frame.fps_limit", "none")`, is lit, and greys the field (§3.21), which keeps its
+      number. The owner chose "Greyed, keeps number".
+    - **A press on the greyed field** sets the limit to the number it shows, puts "none" out and starts the field's
+      editing.
+    - **The number kept** is the last limit of the run. It is held in the module, not in the file, so a game that starts
+      with `"none"` shows 60.
+  - **"list look"** is two choice buttons, "cards" and "rows". The one of the look in force is lit.
+    - **One module holds the choice,** `scripts/ui/lib/list_look.lua`: `list_look.get()`, `list_look.set(value)`,
+      `list_look.refresh()`, and `list_look.subscribe(fn)`, which returns a function that ends the subscription.
+    - **`set`** with a look that is not the one in force calls `settings.set("ui.list_look", …)`, tells every
+      subscriber, and then calls `game.mark_unsaved()` in a run that has a game (§3.6).
+    - **The location panel uses it** (`lib/location.lua`): a panel starts on the look in force, its two look buttons
+      call `list_look.set`, and it subscribes. So a look set in either place shows in the other, and an open panel
+      draws its pops or buildings in the new look at once.
+  - **"defaults"** calls `settings.reset("graphics")` (§3.17) and then `list_look.refresh()`, which reads the look again
+    and tells the subscribers when it changed. The tab is made again with the values in force. Its resolution fields
+    show the resolution then in force until an update reports a new size.
+  - **Disclosed:** a UI scale chosen with the settings window open lays the whole UI out again under it.
 - **The input tab** (CK-310) shows the keys in force, from `settings.bindings()` (§3.17), and changes them. Before CK-310 it
   was a read-only list of eight rows, with "changing keys comes later" under them.
   - **Groups and rows.** There are three groups, each under its name in `dim`: **time** (pause, speed 1 to speed 5, faster,
@@ -2358,10 +2563,10 @@ Lengths below are in UI pixels.
     control and makes no `game.set_modal` call.
   - A further Escape closes the menu.
   - Closing the menu closes the settings window with it.
-- **Not there:** a graphics tab and a gameplay tab; a field to type a number into; tooltips on the window's own controls;
+- **Not there:** a gameplay tab; tooltips on the window's own controls;
   a mouse button or the wheel as a key; more than two keys for an action; rebinding the demo's actions.
 - **Tests,** through the shipped scripts in the UI rig, with no window: thirty-six tests in
-  `apps/codekarl/src/ui_link/menu_tests.rs`.
+  `apps/codekarl/src/ui_link/menu_tests.rs`, and fourteen for the graphics tab in `ui_link/settings_graphics_tests.rs`.
   - **Twelve** cover opening and the window; the general tab's sliders, choices and "defaults"; a slider's drag across
     several updates, on the general and on the map tab; `button.flow`; the map tab; the "x"; closing the menu; and the
     stacking of a window made late and of an older window raised. The two of CK-318 among them cover the "show delay"
@@ -2382,14 +2587,19 @@ Lengths below are in UI pixels.
   - **One of the fourteen runs the real calls:** the shipped scripts over a real `Mapper`, the real settings calls and
     a private settings file. A captured key is in force at the mapper and in the file, a "swap" reaches the mapper as
     one whole set with both actions in the file, and "replace", "cancel", Escape and "defaults" follow.
+  - **The graphics tab's fourteen:** nine of CK-308 and CK-312 (the tab column and the rows; the mode's buttons and the
+    inactive fields; five digits, the clamp and an old size ignored; the height applied with the width shown; a screen
+    below the least size; the scale buttons by the pair returned, and by new pixels; the list look, "defaults" and its
+    one resize; a look chosen in a run with no game) and five of CK-313 (the row's place; a press on the greyed field;
+    a typed limit clamped; "none"; "defaults").
 
 ### 3.19 Typed text (accepted, CK-314)
 
 A widget can be typed into. What the player types, by the system's keyboard layout and with Shift, Option and dead keys, cannot
 be had from key codes or from bound actions. So it has a route of its own: **typed entries**, one ordered list in each update.
 It was built for the number field (CK-306, §3.21) and for the save name's text field, which came with CK-303 (§3.22).
-Since CK-305 the save/load screen's name field is the one shipped field (§3.23): in the game text input is on only while
-that field is edited.
+Since CK-305 the save/load screen's name field is a shipped field (§3.23), and since CK-308 and CK-313 the graphics tab's
+three number fields are too (§3.18): in the game text input is on only while one of them is edited.
 
 - **The records.** The owner, in `owner-direction-settings-designer-r3.md` in `.pipeline/coordination/ui-polish-design/`:
   "here the player can input whatever numbers they want". The spec is `runtime-m55/ck314-spec.md` (sha256 `7acea958…`).
@@ -2581,14 +2791,17 @@ they want, and it will clamp to minimums and maximums") and chose "Enter or leav
 of `mockups/settings-r4.html` there (`settings-provenance-r3.md`: plain shapes). The spec is `runtime-m55/ck306-spec-r3.md`
 (sha256 `235c72a2…`).
 
-**No shipped screen has a number field yet.** The settings window's graphics tab, a later step, will be the first.
+**Since CK-308 the settings window's graphics tab has the shipped number fields** (§3.18): the resolution's two, and since
+CK-313 the frame rate's. CK-313 and CK-312 each gave the field a state: greyed, and inactive (below).
 
 **Since CK-303 the editing itself is shared with the text field** (§3.22). It is in `scripts/ui/lib/fieldedit.lua`, and one
 field edits at a time, a number field or a text field. What a number field does is as it was.
 
 Lengths below are in UI pixels.
 
-- **`numberfield.new{x, y, value, least, greatest, on_apply, digits, kind, group, owner}`** makes one.
+- **`numberfield.new{x, y, value, least, greatest, on_apply, on_enable, greyed, inactive, digits, kind, group, owner}`**
+  makes one.
+  - `greyed` and `on_enable` (CK-313) and `inactive` (CK-312) are below. A field is neither greyed nor inactive unless asked.
   - `value`, `least` and `greatest` are whole numbers that are not negative, with `least` not above `greatest`. The field
     starts on `value` brought into that range.
   - `digits` is how many digits it holds, 4 unless given. A `greatest` with more digits than that is an error.
@@ -2632,6 +2845,18 @@ Lengths below are in UI pixels.
 - **Key capture** (CK-309, §3.17). The field has the editor's `on_apply()` method, which `typing.capture` calls: it applies
   what was typed and tells the caller, as Enter does, and leaves no field editing. While a capture waits, a press on a
   field starts nothing.
+- **A greyed field** (CK-313) is drawn with its outline in `track` and its number in `dim`. It keeps its number and still
+  answers a press.
+  - **The press** makes the field live, starts its editing and calls the caller's `on_enable(number)` once, with the
+    number it shows. A press that cannot start the editing, because a key capture waits, changes nothing.
+  - **The order.** The field is made live when its editing starts, before the apply callback of a field that was editing
+    runs. `on_enable` is told last, and only of a field that still exists: that callback may have closed the window.
+  - `field:set_greyed(on)` greys the field or makes it live. Greying a field that edits ends the editing, applies
+    nothing and shows its number. `field:is_greyed()` reads it.
+  - The frame rate's field is the one shipped greyed field (§3.18).
+- **An inactive field** (CK-312) is drawn the same way, has no hit region and answers nothing: it is not functional
+  (§3.13). `inactive = true` makes one, and `field:set_inactive(on)` changes it. The resolution's two fields, in windowed
+  fullscreen, are the shipped inactive fields (§3.18).
 - **For scripts:**
   - `field:get()` returns the number last applied, and `field:set(number)` sets it, brought into the range. A field that is
     editing then shows the new number and goes on editing.
@@ -2642,11 +2867,12 @@ Lengths below are in UI pixels.
   not an overflow packet, a `down` or a `map_down`, in the packet's order and before the press reaches its widget. It routes
   nothing and cannot stop the press.
 - **Not there:** letters and a caret that moves, which the text field has (§3.22); selecting, copy and paste; a sign or a
-  decimal point; a greyed field.
-- **Tests,** through the shipped scripts in the UI rig, with typed entries and real pointer input and no window: 31 tests in
+  decimal point.
+- **Tests,** through the shipped scripts in the UI rig, with typed entries and real pointer input and no window: 35 tests in
   `apps/codekarl/src/ui_link/numberfield_tests.rs`. They cover the look, typing, applying by Enter, by Tab and by a press
   elsewhere, two fields, the cases of one update and of two, Escape, the pause menu's key block, closing the window, what a
-  caller's `on_apply` may do, and key capture.
+  caller's `on_apply` may do, and key capture. Four are CK-313's, of a press on a greyed field: while another field
+  edits, with an apply callback that closes the window or destroys the greyed field, and while a capture waits.
 
 ### 3.22 The text field (accepted, CK-303)
 

@@ -390,6 +390,11 @@ Keep close/lifecycle admission separate from frame work: check/post pending clos
 
 **Proposal.** An input-driven movement test uses fake time to show equal displacement for equal delivered delta at different update rates. Long stalls exercise the documented visual clamp. The gameplay VM receives no frame delta and remains independent: the vision's hourly logical game tick and reproducibility need a separate simulation design.
 
+**Since CK-313: a frame-rate limit on the drawing.** `[frame] fps_limit` (a whole number from 30 to 240, or `"none"`, the default)
+limits how often the Metal presenter's render thread starts a frame. It is apart from the update rate above:
+`updates_per_second` and `max_delta_seconds` pace the UI's updates and are unchanged by it, and it adds no frame.
+`docs/ui-design.md` §3.17 has the rule and the calls.
+
 ## 10. Input actions and test isolation
 
 ### 10.1 Normalization and bindings
