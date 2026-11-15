@@ -227,13 +227,20 @@ void ck_win_test_info(CKWinTestInfo *out) {
         out->closable = (mask & NSWindowStyleMaskClosable) != 0;
         out->miniaturizable = (mask & NSWindowStyleMaskMiniaturizable) != 0;
         out->resizable = (mask & NSWindowStyleMaskResizable) != 0;
-        CALayer *layer = window.contentView.layer;
+        CKWinState *state = ck_state();
+        CALayer *layer = state.metalLayer;
+        CALayer *root = window.contentView.layer;
         out->layer_is_metal = [layer isKindOfClass:[CAMetalLayer class]] ? 1 : 0;
-        out->layer_is_view_backing_layer = window.contentView.wantsLayer && layer != nil ? 1 : 0;
+        out->layer_is_view_backing_layer = window.contentView.wantsLayer && root != nil && layer.superlayer == root ? 1 : 0;
         out->layer_scale = layer.contentsScale;
         out->content_min_width = window.contentMinSize.width;
         out->content_min_height = window.contentMinSize.height;
         out->gravity_top_left = [layer.contentsGravity isEqualToString:kCAGravityTopLeft] ? 1 : 0;
+        out->metal_resizes_with_window =
+            (layer.autoresizingMask & (kCALayerWidthSizable | kCALayerHeightSizable)) ==
+                    (kCALayerWidthSizable | kCALayerHeightSizable)
+                ? 1
+                : 0;
         out->full_screen_primary =
             (window.collectionBehavior & NSWindowCollectionBehaviorFullScreenPrimary) != 0 ? 1 : 0;
         out->window_scale = window.backingScaleFactor;

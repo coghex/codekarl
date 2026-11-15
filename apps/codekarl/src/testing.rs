@@ -444,6 +444,7 @@ impl Drive {
         self.ui
             .input(&InputTick {
                 dt: step,
+                mode: ck_window::WindowMode::Windowed,
                 metrics: update.metrics,
                 input: InputSnapshot {
                     sequence: u128::from(self.sequence),

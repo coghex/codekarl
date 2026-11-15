@@ -1,6 +1,5 @@
 /// The shared map-selection UI body used by both window backends and the real-VM fixture test.
-pub(crate) fn body() -> &'static str {
-    r"
+const SCRIPT: &str = r"
 local windows = require('lib.window')
 local label = require('lib.label')
 local button = require('lib.button')
@@ -35,7 +34,16 @@ local panel = location.new{
 }
 game.on_time(function(time) panel:set_revision(time.economy_revision) end)
 local real_list_new = lists.new
-lists.new = function(spec) log.info('location tab ' .. spec.items[1]); return real_list_new(spec) end
+lists.new = function(spec)
+  local first = spec.items[1]
+  if type(first) == 'table' then
+    local cells = {}
+    for _, cell in ipairs(first.cells) do cells[#cells + 1] = cell.text end
+    first = table.concat(cells)
+  end
+  log.info('location tab ' .. first)
+  return real_list_new(spec)
+end
 game.on_select(function(value)
   selection_count = selection_count + 1
   log.info('game_select ' .. value.id)
@@ -99,5 +107,8 @@ frame.on_update(function(f)
   end
 end)
 window.open{title = 'map selection', width = 400, height = 240, clear = {0, 0, 0}}
-"
+";
+
+pub(crate) fn body() -> &'static str {
+    SCRIPT
 }

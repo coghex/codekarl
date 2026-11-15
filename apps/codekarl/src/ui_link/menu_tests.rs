@@ -618,7 +618,7 @@ end
 fixture = {
   tooltips = {delay = 0.3, lock = "middle_mouse", lock_timer = 1.5},
   map = {pan_pixels_per_frame = 4, zoom_steps_per_second = 20, scroll_points_per_step = 24},
-  graphics = {width = 1280, height = 800, list_look = "cards", scale = nil},
+  graphics = {width = 1280, height = 800, list_look = "cards", scale = nil, mode = "windowed"},
   calls = {},
   bindings = {
     {name="close", bindings={"Escape"}},
@@ -650,7 +650,8 @@ settings = {
   map = function() return fixture.map end,
   graphics = function()
     return {width = fixture.graphics.width, height = fixture.graphics.height,
-      list_look = fixture.graphics.list_look, scale = fixture.graphics.scale, fps_limit = fixture.graphics.fps_limit}
+      list_look = fixture.graphics.list_look, scale = fixture.graphics.scale,
+      mode = fixture.graphics.mode, fps_limit = fixture.graphics.fps_limit}
   end,
   resize = function(width, height)
     local used_width = math.min(16384, math.max(1280, width))
@@ -689,13 +690,14 @@ settings = {
     elseif name == "map.scroll_points_per_step" then fixture.map.scroll_points_per_step = value
     elseif name == "ui.scale" then fixture.graphics.scale = value
     elseif name == "ui.list_look" then fixture.graphics.list_look = value
+    elseif name == "window.mode" then fixture.graphics.mode = value
     elseif name == "frame.fps_limit" then fixture.graphics.fps_limit = value ~= "none" and value or nil end
   end,
   reset = function(tab)
     fixture.calls[#fixture.calls + 1] = {"reset", tab}
     if tab == "tooltips" then fixture.tooltips = {delay=0.3, lock="middle_mouse", lock_timer=1.5}
     elseif tab == "graphics" then
-      fixture.graphics = {width=1280, height=800, list_look="cards", scale=nil}
+      fixture.graphics = {width=1280, height=800, list_look="cards", scale=nil, mode="windowed"}
       fixture.calls[#fixture.calls + 1] = {"resize", 1280, 800}
     elseif tab == "map" then fixture.map = {pan_pixels_per_frame=4, zoom_steps_per_second=20, scroll_points_per_step=24}
     else

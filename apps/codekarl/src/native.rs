@@ -546,6 +546,7 @@ mod tests {
                     BackendScript {
                         screen: ScreenSnapshot {
                             backing: 2.0,
+                            screen_points: (4000, 3000),
                             visible_points: (4000, 3000),
                         },
                         ..BackendScript::default()

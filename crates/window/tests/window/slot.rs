@@ -49,6 +49,8 @@ fn a_thousand_set_clear_calls_between_two_takes_give_one_change_with_the_last_co
             clear: Some([0.999, 0.0, 0.0]),
             close: false,
             resize: None,
+            resize_pixels: None,
+            mode: None,
             text_input: None,
             capture: None,
             bindings: None,
@@ -113,12 +115,77 @@ fn resize_is_latest_wins_and_requires_an_accepted_resizable_open() {
         })
     );
     assert_eq!(changes.resize, Some((1024, 768)));
+    assert_eq!(
+        changes.resize_pixels, None,
+        "point-only writes clear pixel data"
+    );
     let (_, fixed, _, _) = fixture();
     fixed.open(desc()).expect("open fixed window");
     assert_eq!(
         fixed.resize((640, 480)),
         Err("window.resize: the window is not resizable")
     );
+}
+
+#[test]
+fn a_resize_keeps_the_exact_pixel_pair_with_the_latest_points_request() {
+    let (_, writer, reader, _) = fixture();
+    writer
+        .open(WindowDesc {
+            resizable: true,
+            ..desc()
+        })
+        .expect("open resizable window");
+    writer
+        .resize_pixels(
+            (1281, 801),
+            ck_window::PixelSize {
+                width: 2561,
+                height: 1601,
+            },
+        )
+        .expect("pixel-backed resize");
+    let changes = reader.take();
+    assert_eq!(changes.resize, Some((1281, 801)));
+    assert_eq!(
+        changes.resize_pixels,
+        Some(ck_window::PixelSize {
+            width: 2561,
+            height: 1601,
+        })
+    );
+}
+
+#[test]
+fn mode_changes_require_a_resizable_open_and_keep_the_latest_layout() {
+    let (_, writer, _, _) = fixture();
+    let screen = (1920, 1080);
+    let layout = ck_window::WindowMode::Fullscreen.layout(screen, screen, (1280, 800));
+    assert_eq!(
+        writer.set_mode(layout),
+        Err("window.mode: the window is not open")
+    );
+    writer.open(desc()).expect("open fixed window");
+    assert_eq!(
+        writer.set_mode(layout),
+        Err("window.mode: the window is not resizable")
+    );
+
+    let (requests, writer, reader, _) = fixture();
+    writer
+        .open(WindowDesc {
+            resizable: true,
+            ..desc()
+        })
+        .expect("open resizable window");
+    writer.set_mode(layout).expect("first mode");
+    let latest = ck_window::WindowMode::WindowedFullscreen.layout(screen, screen, (1280, 800));
+    writer.set_mode(latest).expect("replacement mode");
+    assert_eq!(reader.take().mode, Some(latest));
+    reader.end();
+    writer.set_mode(layout).expect("accepted after end");
+    assert_eq!(requests.discarded(), 1);
+    assert_eq!(reader.take().mode, None);
 }
 
 #[test]

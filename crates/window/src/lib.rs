@@ -88,6 +88,7 @@ mod desc;
 mod link;
 mod main_loop;
 mod metrics;
+mod mode;
 mod notifier;
 mod requests;
 mod settings;
@@ -150,6 +151,7 @@ pub use metrics::{
     EndError, LoopEndGuard, LoopMetrics, LoopReading, LoopWindowStats, MetricsWindow, RequestError,
     Tracked, UptimeNs, Windows,
 };
+pub use mode::{ModeLayout, ModeRect, ResizeAction, WindowMode};
 pub use notifier::{ArmRefused, DisarmTimeout, NativeWake, Notifier, NotifierState};
 pub use requests::{
     CaptureRequest, RequestChanges, RequestReader, RequestWriter, Requests, TextInputRequest,

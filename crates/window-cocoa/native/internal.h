@@ -91,7 +91,22 @@ BOOL ck_win_key_table_entry(NSUInteger position, uint16_t *code, uint8_t *key, c
 @property(nonatomic, strong) CKWakeBox *wake;
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) CKWinView *view;
+@property(nonatomic, strong) CALayer *rootLayer;
+@property(nonatomic, strong) CAMetalLayer *metalLayer;
 @property(nonatomic, strong) CKWinDelegate *delegate;
+@property(nonatomic) NSRect windowedFrame;
+@property(nonatomic) NSWindowStyleMask windowedStyleMask;
+@property(nonatomic) BOOL savedWindowedFrame;
+@property(nonatomic) NSApplicationPresentationOptions savedPresentationOptions;
+@property(nonatomic) BOOL savedPresentationOptionsValid;
+@property(nonatomic) int mode;
+@property(nonatomic) uint32_t pictureX;
+@property(nonatomic) uint32_t pictureY;
+@property(nonatomic) uint32_t pictureWidth;
+@property(nonatomic) uint32_t pictureHeight;
+@property(nonatomic) uint32_t drawableWidth;
+@property(nonatomic) uint32_t drawableHeight;
+@property(nonatomic, strong) id clearColour;
 @property(nonatomic) BOOL terminated;
 @property(nonatomic) int32_t closeSource;
 @property(nonatomic) uint32_t closeAbsorbed;
@@ -155,6 +170,7 @@ BOOL ck_win_key_table_entry(NSUInteger position, uint16_t *code, uint8_t *key, c
 - (uint64_t)overflowTotal;
 /* Updates the layer's contentsScale and records the size (points and pixels, read together) if it changed. */
 - (void)applyScaleAndRecordSize;
+- (void)setMode:(int)mode outer:(NSSize)outer picture:(NSRect)picture drawable:(NSSize)drawable;
 /* The window was resized (not a live resize or a full-screen transition, which report once, at their end). */
 - (void)recordResizeIfSettled;
 /* The backing scale changed: the content minimum is recomputed from the pixels requested, a window below it grows to it

@@ -32,12 +32,15 @@ local MARGIN = 8 -- UI units from the window's edges
 -- can enlarge it. `window.open` returns the initial view in UI units for this pixel-sized window, which the first layout starts from; then
 -- each update reports the window's size as it is.
 local initial_graphics = settings ~= nil and settings.graphics ~= nil and settings.graphics()
-  or {width = 1280, height = 800}
+  or {width = 1280, height = 800, mode = "windowed"}
 local OPEN_WIDTH, OPEN_HEIGHT = window.open{
   title = "Codekarl", unit = "pixels", width = initial_graphics.width, height = initial_graphics.height,
   resizable = true, min_width = 1280, min_height = 800,
   clear = {0.10, 0.25, 0.45},
 }
+if settings ~= nil and settings.set ~= nil and initial_graphics.mode ~= nil and initial_graphics.mode ~= "windowed" then
+  settings.set("window.mode", initial_graphics.mode)
+end
 local view = {width = OPEN_WIDTH, height = OPEN_HEIGHT}
 windows.update_viewport(view.width, view.height)
 

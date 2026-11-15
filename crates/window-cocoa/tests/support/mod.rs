@@ -36,6 +36,7 @@ struct RawInfo {
     content_min_width: f64,
     content_min_height: f64,
     gravity_top_left: i32,
+    metal_resizes_with_window: i32,
     full_screen_primary: i32,
     frame_left: f64,
     frame_top: f64,
@@ -196,13 +197,15 @@ pub(crate) struct Focus {
     pub(crate) first_responder_is_view: bool,
 }
 
-/// The content view's layer.
+/// The presenter's Metal layer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct LayerInfo {
     /// It is a `CAMetalLayer`.
     pub(crate) is_metal: bool,
-    /// It is the content view's own backing layer.
+    /// It is attached to the content view's backing layer.
     pub(crate) is_backing_layer: bool,
+    /// The windowed Metal sublayer follows the content layer's bounds during a live resize.
+    pub(crate) resizes_with_window: bool,
     /// Its `contentsScale`.
     pub(crate) scale: f64,
 }
@@ -235,7 +238,7 @@ pub(crate) struct WindowInfo {
     pub(crate) behaviour: Behaviour,
     /// Keyboard focus.
     pub(crate) focus: Focus,
-    /// The content view's layer.
+    /// The presenter's Metal layer.
     pub(crate) layer: LayerInfo,
     /// The window's backing scale factor.
     pub(crate) window_scale: f64,
@@ -250,7 +253,7 @@ pub(crate) struct WindowInfo {
 /// The window's resizing and drawing during a drag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Resizing {
-    /// The content layer shows its drawable anchored to the top left, unscaled.
+    /// The presenter's Metal layer shows its drawable anchored to the top left, unscaled in windowed mode.
     pub(crate) gravity_top_left: bool,
     /// The window's collection behaviour allows primary full screen.
     pub(crate) full_screen_primary: bool,
@@ -284,6 +287,7 @@ pub(crate) fn info() -> WindowInfo {
         content_min_width: 0.0,
         content_min_height: 0.0,
         gravity_top_left: 0,
+        metal_resizes_with_window: 0,
         full_screen_primary: 0,
         frame_left: 0.0,
         frame_top: 0.0,
@@ -315,6 +319,7 @@ pub(crate) fn info() -> WindowInfo {
         layer: LayerInfo {
             is_metal: raw.layer_is_metal != 0,
             is_backing_layer: raw.layer_is_view_backing_layer != 0,
+            resizes_with_window: raw.metal_resizes_with_window != 0,
             scale: raw.layer_scale,
         },
         window_scale: raw.window_scale,

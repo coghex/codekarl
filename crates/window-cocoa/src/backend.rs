@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 use ck_input::{Key, KeyStates};
 use ck_log::Level;
 use ck_window::{
-    Backend, CreatedWindow, NativeEvent, NativeWake, PixelSize, ScreenSnapshot, Wait, WindowDesc,
+    Backend, CreatedWindow, ModeLayout, NativeEvent, NativeWake, PixelSize, ResizeAction,
+    ScreenSnapshot, Wait, WindowDesc, WindowMode,
 };
 
 use crate::ffi::{self, RawEvents};
@@ -27,6 +28,19 @@ const LOG_WAIT: Duration = Duration::from_millis(100);
 
 /// The error text when the native layer left no NUL inside the buffer it was given.
 const UNTERMINATED: &str = "native error message was not NUL-terminated";
+
+fn points_to_pixels(points: u32, backing: f64) -> u32 {
+    let pixels = (f64::from(points) * backing)
+        .round()
+        .clamp(1.0, f64::from(u32::MAX));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the clamped backing conversion is finite and non-negative"
+    )]
+    let pixels = pixels as u32;
+    pixels
+}
 
 /// Reads the native error message from the buffer the native call filled. The read stops at the first
 /// NUL and never goes past the buffer: a buffer with no NUL gets the fixed fallback text.
@@ -91,6 +105,8 @@ impl CocoaHandles {
 pub struct CocoaBackend {
     handle: NonNull<c_void>,
     window: bool,
+    screen: ScreenSnapshot,
+    mode: Option<ModeLayout>,
     wake: Option<Arc<CocoaWake>>,
     /// Neither `Send` nor `Sync`: every call stays on the thread that created the backend.
     _main_thread: PhantomData<*const ()>,
@@ -129,6 +145,8 @@ impl CocoaBackend {
         Ok(Self {
             handle,
             window: false,
+            screen: ScreenSnapshot::unlimited(),
+            mode: None,
             wake: Some(Arc::new(wake)),
             _main_thread: PhantomData,
         })
@@ -184,6 +202,82 @@ impl CocoaBackend {
             ffi::ck_win_pump_until(self.handle.as_ptr(), cap, timeout, &raw mut events);
         }
         events
+    }
+
+    fn read_screen(&self) -> ScreenSnapshot {
+        let mut backing = 1.0_f64;
+        let (mut screen_width, mut screen_height) = (0_u32, 0_u32);
+        let (mut visible_width, mut visible_height) = (0_u32, 0_u32);
+        // SAFETY: the handle is live and this runs on the main thread. All out pointers are valid for this call.
+        unsafe {
+            ffi::ck_win_screen(
+                self.handle.as_ptr(),
+                &raw mut backing,
+                &raw mut screen_width,
+                &raw mut screen_height,
+                &raw mut visible_width,
+                &raw mut visible_height,
+            );
+        }
+        ScreenSnapshot {
+            backing,
+            screen_points: (screen_width, screen_height),
+            visible_points: (visible_width, visible_height),
+        }
+    }
+
+    fn screen_pixels(&self, points: (u32, u32)) -> (u32, u32) {
+        (
+            points_to_pixels(points.0, self.screen.backing),
+            points_to_pixels(points.1, self.screen.backing),
+        )
+    }
+
+    fn apply_mode_layout(&mut self, layout: ModeLayout) {
+        let mode = match layout.mode {
+            WindowMode::Windowed => 0,
+            WindowMode::WindowedFullscreen => 1,
+            WindowMode::Fullscreen => 2,
+        };
+        // SAFETY: the backend handle owns the live window and this method runs on the main thread.
+        unsafe {
+            ffi::ck_win_set_mode(
+                self.handle.as_ptr(),
+                mode,
+                layout.outer_points.0,
+                layout.outer_points.1,
+                layout.picture.x,
+                layout.picture.y,
+                layout.picture.width,
+                layout.picture.height,
+                layout.pixels.0,
+                layout.pixels.1,
+            );
+        }
+        self.mode = Some(layout);
+    }
+
+    fn resize_for_mode(&mut self, points: (u32, u32), exact_pixels: Option<PixelSize>) {
+        if !self.window {
+            return;
+        }
+        let mode = self.mode.map_or(WindowMode::Windowed, |layout| layout.mode);
+        match mode.resize_action() {
+            ResizeAction::Window => {
+                // SAFETY: the backend handle owns the live window and this method runs on the main thread.
+                unsafe { ffi::ck_win_resize(self.handle.as_ptr(), points.0, points.1) };
+            }
+            ResizeAction::Ignore => {}
+            ResizeAction::Drawable => {
+                self.screen = self.read_screen();
+                let resolution = exact_pixels.map_or_else(
+                    || self.screen_pixels(points),
+                    |pixels| (pixels.width, pixels.height),
+                );
+                let layout = self.screen.mode_layout(WindowMode::Fullscreen, resolution);
+                self.apply_mode_layout(layout);
+            }
+        }
     }
 }
 
@@ -401,6 +495,7 @@ impl Backend for CocoaBackend {
             return Err("the native layer returned no CAMetalLayer".to_owned());
         };
         self.window = true;
+        self.mode = None;
         Ok(CreatedWindow {
             handles: CocoaHandles { layer },
             pixel_size: PixelSize {
@@ -411,29 +506,25 @@ impl Backend for CocoaBackend {
     }
 
     fn resize_window(&mut self, points: (u32, u32)) {
-        if self.window {
-            // SAFETY: the backend handle owns the live window and this method runs on the main thread.
-            unsafe { ffi::ck_win_resize(self.handle.as_ptr(), points.0, points.1) };
+        self.resize_for_mode(points, None);
+    }
+
+    fn resize_window_pixels(&mut self, points: (u32, u32), pixels: PixelSize) {
+        self.resize_for_mode(points, Some(pixels));
+    }
+
+    fn set_mode(&mut self, layout: ModeLayout) {
+        if !self.window {
+            return;
         }
+        self.screen = self.read_screen();
+        let layout = self.screen.mode_layout(layout.mode, layout.resolution_kept);
+        self.apply_mode_layout(layout);
     }
 
     fn main_screen(&mut self) -> ScreenSnapshot {
-        let mut backing = 1.0_f64;
-        let (mut visible_width, mut visible_height) = (0_u32, 0_u32);
-        // SAFETY: the handle is live and this runs on the main thread (the backend is not Send). The out pointers are valid for
-        // this synchronous call.
-        unsafe {
-            ffi::ck_win_main_screen(
-                self.handle.as_ptr(),
-                &raw mut backing,
-                &raw mut visible_width,
-                &raw mut visible_height,
-            );
-        }
-        ScreenSnapshot {
-            backing,
-            visible_points: (visible_width, visible_height),
-        }
+        self.screen = self.read_screen();
+        self.screen
     }
 
     fn wake_target(&self) -> Arc<dyn NativeWake> {

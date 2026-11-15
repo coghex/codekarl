@@ -150,6 +150,7 @@ struct Pass {
 /// The loop's input state: the mapper that turns normalised key events into actions, and the window's focus.
 struct InputState {
     mapper: Mapper,
+    mode: crate::mode::WindowMode,
     /// The content size in points: the opening size, then each size the backend reports.
     points: (u32, u32),
     /// Whether the window has key focus (the native layer reports each change). M5-7's pause rule reads it.
@@ -515,6 +516,9 @@ where
     let mut state = Loop {
         input: InputState {
             mapper,
+            mode: first
+                .mode
+                .map_or(crate::mode::WindowMode::default(), |layout| layout.mode),
             points: (desc.width, desc.height),
             // A window is created active: the native layer reports a change only when there is one.
             focused: true,
@@ -541,14 +545,18 @@ where
         updates: settings.updates().cloned().map(UpdateScheduler::new),
         parts: Parts::default(),
     };
-    let end = state.setup_and_run(&desc);
+    let end = state.setup_and_run(&desc, first.mode.take());
     state.teardown(end)
 }
 
 impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U> {
     /// Creates the window, arms the notifier, starts the presenter and runs the passes. Whatever the end
     /// is, `self.parts` says what exists.
-    fn setup_and_run(&mut self, desc: &crate::desc::WindowDesc) -> LoopEnd {
+    fn setup_and_run(
+        &mut self,
+        desc: &crate::desc::WindowDesc,
+        initial_mode: Option<crate::mode::ModeLayout>,
+    ) -> LoopEnd {
         let created = match self.backend.create_window(desc) {
             Ok(created) => created,
             Err(message) => {
@@ -574,6 +582,9 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
             };
         }
         self.parts.presenter_started = true;
+        if let Some(layout) = initial_mode {
+            self.backend.set_mode(layout);
+        }
         let mut pass = Pass {
             exhausted: false,
             opened: OpenedEvent::Waiting,
@@ -757,7 +768,15 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
             return Some(LoopEnd::Closed);
         }
         if let Some(points) = changes.resize {
-            self.backend.resize_window(points);
+            if let Some(pixels) = changes.resize_pixels {
+                self.backend.resize_window_pixels(points, pixels);
+            } else {
+                self.backend.resize_window(points);
+            }
+        }
+        if let Some(layout) = changes.mode {
+            self.backend.set_mode(layout);
+            self.input.mode = layout.mode;
         }
         if self.quit_requested() {
             return Some(LoopEnd::Quit);
@@ -896,6 +915,7 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         let input_sequence = snapshot.sequence;
         let tick = InputTick {
             dt,
+            mode: self.input.mode,
             metrics: WindowMetrics {
                 points: self.input.points,
                 pixels: self.input.pixel_size,

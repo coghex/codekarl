@@ -143,9 +143,11 @@ impl Default for RawEvents {
 unsafe extern "C" {
     pub(crate) fn ck_win_events_size() -> usize;
     pub(crate) fn ck_win_create(error: *mut c_char, capacity: usize) -> *mut c_void;
-    pub(crate) fn ck_win_main_screen(
+    pub(crate) fn ck_win_screen(
         handle: *mut c_void,
         backing: *mut f64,
+        screen_width: *mut u32,
+        screen_height: *mut u32,
         visible_width: *mut u32,
         visible_height: *mut u32,
     );
@@ -172,6 +174,18 @@ unsafe extern "C" {
         capacity: usize,
     ) -> i32;
     pub(crate) fn ck_win_resize(handle: *mut c_void, point_width: u32, point_height: u32);
+    pub(crate) fn ck_win_set_mode(
+        handle: *mut c_void,
+        mode: i32,
+        outer_width: u32,
+        outer_height: u32,
+        picture_x: u32,
+        picture_y: u32,
+        picture_width: u32,
+        picture_height: u32,
+        pixel_width: u32,
+        pixel_height: u32,
+    );
     pub(crate) fn ck_win_pump(handle: *mut c_void, wait: i32, cap: usize, out: *mut RawEvents);
     pub(crate) fn ck_win_pump_until(
         handle: *mut c_void,

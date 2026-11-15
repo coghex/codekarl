@@ -24,6 +24,7 @@ fn resizable(unit: SizeUnit, width: u32, height: u32, min: Option<(u32, u32)>) -
 fn screen(backing: f64, visible: (u32, u32)) -> ScreenSnapshot {
     ScreenSnapshot {
         backing,
+        screen_points: visible,
         visible_points: visible,
     }
 }

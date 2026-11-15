@@ -32,7 +32,8 @@ typedef struct {
     uint32_t menu_key_equivalents;
     double content_min_width;       /* the window's contentMinSize */
     double content_min_height;
-    int32_t gravity_top_left;       /* the content view's layer has contentsGravity top-left */
+    int32_t gravity_top_left;       /* the presenter's Metal layer has contentsGravity top-left */
+    int32_t metal_resizes_with_window; /* windowed Metal sublayer follows its content layer's bounds */
     int32_t full_screen_primary;    /* the window's collection behaviour allows primary full screen */
     double frame_left;
     double frame_top;

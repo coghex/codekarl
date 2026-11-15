@@ -31,7 +31,9 @@ use std::sync::{Arc, OnceLock};
 
 use ck_log::Level;
 use ck_lua::{ConfigValue, Extension, HostFunction};
-use ck_window::{MAX_DIMENSION, RequestWriter, ScreenSnapshot, SizeUnit, WindowDesc};
+use ck_window::{
+    MAX_DIMENSION, ModeLayout, RequestWriter, ScreenSnapshot, SizeUnit, WindowDesc, WindowMode,
+};
 
 /// The name of the callback `window.on_close_request` registers.
 pub(crate) const CLOSE_REQUEST: &str = "close_request";
@@ -70,8 +72,12 @@ impl ResizeSession {
         }
     }
 
-    /// Returns the valid resolution kept and the screen-limited pixel size used by the window.
-    pub(crate) fn resize(&self, requested: (u32, u32)) -> Result<ResizeResult, String> {
+    /// Returns the valid resolution kept and the mode-limited pixel size used by the window.
+    pub(crate) fn resize(
+        &self,
+        requested: (u32, u32),
+        mode: WindowMode,
+    ) -> Result<ResizeResult, String> {
         let screen = self
             .screen
             .get()
@@ -94,15 +100,17 @@ impl ResizeSession {
                     .clamp(0.0, f64::from(u32::MAX)) as u32
             }
         };
-        let visible = (
-            screen_pixels(screen.visible_points.0),
-            screen_pixels(screen.visible_points.1),
-        );
+        let limit_points = if mode == WindowMode::Fullscreen {
+            screen.screen_points
+        } else {
+            screen.visible_points
+        };
+        let limit = (screen_pixels(limit_points.0), screen_pixels(limit_points.1));
         let kept = (
-            requested.0.min(visible.0).clamp(1280, MAX_DIMENSION),
-            requested.1.min(visible.1).clamp(800, MAX_DIMENSION),
+            requested.0.min(limit.0).clamp(1280, MAX_DIMENSION),
+            requested.1.min(limit.1).clamp(800, MAX_DIMENSION),
         );
-        let used = (kept.0.min(visible.0), kept.1.min(visible.1));
+        let used = (kept.0.min(limit.0), kept.1.min(limit.1));
         let points = |pixels: u32| {
             #[expect(
                 clippy::cast_possible_truncation,
@@ -116,12 +124,37 @@ impl ResizeSession {
             }
         };
         self.writer
-            .resize((points(used.0), points(used.1)))
+            .resize_pixels(
+                (points(used.0), points(used.1)),
+                ck_window::PixelSize {
+                    width: kept.0,
+                    height: kept.1,
+                },
+            )
             .map_err(str::to_owned)?;
         if let Some(headless) = &self.headless {
             headless.accepted_write();
         }
         Ok(ResizeResult { kept, used })
+    }
+
+    /// Requests a mode with geometry derived from the same screen snapshot as resolution changes.
+    pub(crate) fn set_mode(
+        &self,
+        mode: WindowMode,
+        resolution_kept: (u32, u32),
+    ) -> Result<ModeLayout, String> {
+        let screen = self
+            .screen
+            .get()
+            .copied()
+            .unwrap_or_else(ScreenSnapshot::unlimited);
+        let layout = screen.mode_layout(mode, resolution_kept);
+        self.writer.set_mode(layout).map_err(str::to_owned)?;
+        if let Some(headless) = &self.headless {
+            headless.accepted_write();
+        }
+        Ok(layout)
     }
 }
 
@@ -911,6 +944,7 @@ mod tests {
         // A fake snapshot at 2 pixels a point: the binding has no backend to ask, only what the main thread left.
         let rig = Rig::with_screen(ScreenSnapshot {
             backing: 2.0,
+            screen_points: (4000, 3000),
             visible_points: (4000, 3000),
         });
         let open = "window.open{title='t', unit='pixels', width=1281, height=801, resizable=true, \
@@ -1021,6 +1055,7 @@ mod tests {
         let at = |backing: f64, request: &str| {
             let rig = Rig::with_screen(ScreenSnapshot {
                 backing,
+                screen_points: (4000, 3000),
                 visible_points: (4000, 3000),
             });
             lua(&rig, &format!("return window.open{{{request}}}"))
@@ -1077,12 +1112,13 @@ mod tests {
         screen
             .set(ScreenSnapshot {
                 backing: 1.0,
+                screen_points: (20_000, 12_000),
                 visible_points: (20_000, 12_000),
             })
             .expect("set screen");
         let resize = ResizeSession::new(writer, screen, None);
         let result = resize
-            .resize((20_000, 12_000))
+            .resize((20_000, 12_000), WindowMode::Windowed)
             .expect("clamp valid dimensions");
         assert_eq!(result.kept, (MAX_DIMENSION, 12_000));
         assert_eq!(result.used, (MAX_DIMENSION, 12_000));
@@ -1104,7 +1140,7 @@ mod tests {
             })
             .expect("open headless request");
         let result = ResizeSession::new(writer, Arc::new(OnceLock::new()), None)
-            .resize((20_000, 1200))
+            .resize((20_000, 1200), WindowMode::Windowed)
             .expect("headless clamp");
         assert_eq!(
             (result.kept, result.used),

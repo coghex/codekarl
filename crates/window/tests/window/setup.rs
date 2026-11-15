@@ -94,6 +94,46 @@ fn open_and_close_in_one_batch_close_without_creating_a_window() {
 }
 
 #[test]
+fn a_mode_queued_with_open_is_applied_after_the_presenter_starts() {
+    owned(
+        module_path!(),
+        "a_mode_queued_with_open_is_applied_after_the_presenter_starts",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let mut rig = Rig::empty();
+            rig.writer
+                .open(WindowDesc {
+                    resizable: true,
+                    ..desc()
+                })
+                .expect("open resizable window");
+            let layout =
+                ck_window::WindowMode::Fullscreen.layout((1920, 1080), (1920, 1080), (1280, 800));
+            rig.writer.set_mode(layout).expect("queue initial mode");
+            let writer = rig.writer.clone();
+            rig.backend.hook = Some(Box::new(move |_| writer.close()));
+
+            let ran = rig.run_collect();
+            let started = at(&ran.log, "presenter.start");
+            let applied = at(&ran.log, "backend.set_mode");
+            assert!(
+                applied > started,
+                "mode is applied after presenter start: {:#?}",
+                ran.log
+            );
+            assert_eq!(
+                ran.log
+                    .iter()
+                    .filter(|line| line.starts_with("backend.set_mode"))
+                    .count(),
+                1
+            );
+        },
+    );
+}
+
+#[test]
 fn the_three_field_batch_open_colour_and_close_closes_without_creating_a_window() {
     owned(
         module_path!(),
