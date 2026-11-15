@@ -1044,9 +1044,18 @@ pub(crate) struct Readout {
 impl Readout {
     /// The UI script (`scripts/ui/main.lua`, as shipped) followed by `tail`.
     pub(crate) fn new(tail: &str) -> Self {
+        Self::new_with_graphics(tail, 1280, 800)
+    }
+
+    fn new_with_graphics(tail: &str, width: u32, height: u32) -> Self {
         let shipped =
             fs::read_to_string(ui_scripts().join("main.lua")).expect("the shipped UI script");
-        Self::script(&format!("{shipped}\n{tail}\n"))
+        Self::script(&format!(
+            "settings.graphics = function() return {{width={width}, height={height}, list_look='cards'}} end\n\
+             local real_open = window.open\n\
+             window.open = function(spec) window.test_open_spec = spec return real_open(spec) end\n\
+             {shipped}\n{tail}\n"
+        ))
     }
 
     /// `script` as the UI script.
@@ -1389,6 +1398,16 @@ impl Readout {
             std::thread::yield_now();
         }
     }
+}
+
+#[test]
+fn main_opens_at_the_kept_resolution_and_keeps_the_minimum_size() {
+    let _readout = Readout::new_with_graphics(
+        "assert(window.test_open_spec.width == 1920 and window.test_open_spec.height == 1200)\
+         assert(window.test_open_spec.min_width == 1280 and window.test_open_spec.min_height == 800)",
+        1920,
+        1200,
+    );
 }
 
 impl Drop for Readout {

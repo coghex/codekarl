@@ -16,6 +16,7 @@ local button = require("lib.button")
 local frame = require("lib.frame")
 local text = require("lib.text")
 local theme = require("lib.theme")
+local list_look = require("lib.list_look")
 local tooltip = require("lib.tooltip")
 
 local P = ui.P
@@ -1104,6 +1105,8 @@ end
 -- A panel over the windows of `spec.view` (a table with the window's current `width` and `height` in points, kept up to date by the
 -- caller) that sits `spec.top()` points from the top of the screen (below the time bar, say). `spec.on_close` is called when the
 -- window closes.
+local render
+
 function location.new(spec)
   local self = setmetatable({}, location)
   self.view = spec.view
@@ -1120,7 +1123,14 @@ function location.new(spec)
   self.open_pops = nil
   self.open_buildings = nil
   self.key = TABS[1].key
-  self.list_look = "cards"
+  self.list_look = list_look.get()
+  list_look.subscribe(function(value)
+    self.list_look = value
+    if self.selector ~= nil then
+      for key, control in pairs(self.selector.buttons) do control:set_selected(key == value) end
+    end
+    if self.window ~= nil and not self.window.closed then render(self, false) end
+  end)
   return self
 end
 
@@ -1153,8 +1163,6 @@ local function fetch(self)
   return game.place(self.id, self.revision)
 end
 
-local render
-
 local function destroy_cards(self)
   if self.cards ~= nil and not self.cards.closed then self.cards:destroy() end
   if self.selector ~= nil then self.selector:destroy() end
@@ -1166,12 +1174,8 @@ local function ensure_selector(self)
   local self_owner = self
   local selector = {groups = {}, buttons = {}}
   local function choose(key)
-    if self_owner.list_look == key then return end
-    self_owner.list_look = key
-    game.mark_unsaved()
-    for name, control in pairs(selector.buttons) do control:set_selected(name == self_owner.list_look) end
+    if not list_look.set(key) then return end
     if self_owner.cards ~= nil and not self_owner.cards.closed then self_owner.cards:set_pos(0) end
-    render(self_owner, false)
   end
   for _, key in ipairs({"cards", "rows"}) do
     selector.buttons[key] = button.new{

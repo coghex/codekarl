@@ -9,10 +9,12 @@ local pointer = require("lib.pointer")
 local frame = require("lib.frame")
 local scrollbar = require("lib.scrollbar")
 local typing = require("lib.typing")
+local numberfield = require("lib.numberfield")
+local list_look = require("lib.list_look")
 
 local P = ui.P
 local WHITE = "ui/theme/white.png"
-local SIDE_TABS = {"general", "map", "input"}
+local SIDE_TABS = {"general", "graphics", "map", "input"}
 local WIDTH_TABS = {"general", "graphics", "map", "input"}
 local LABEL_WIDTH = 84 * P
 local SLIDER_WIDTH = 80 * P
@@ -31,6 +33,7 @@ local INPUT_GROUPS = {
 
 local settings_window = {}
 local current
+local last_pixels = {width = 1280, height = 800}
 local cancel_wait
 
 local function text_width(value)
@@ -168,6 +171,8 @@ end
 
 local function clear_page(state)
   if state.page ~= nil then
+    for _, field in ipairs(state.page.fields or {}) do field:destroy() end
+    for _, unsubscribe in ipairs(state.page.subscriptions or {}) do unsubscribe() end
     if not state.page.destroyed then
       state.window:detach(state.page.item)
       state.page.item:destroy()
@@ -183,6 +188,7 @@ local function make_page(state)
     room = state.content_width - state.content_x,
     rows_group = render.create_group(), scroll = 0, row_height = 0,
     row_view_height = state.content_height - INPUT_FOOTER,
+    fields = {}, subscriptions = {},
   }
   page.bar = scrollbar.new{window = state.window, owner = {
     scroll = function() return page.scroll end,
@@ -257,16 +263,152 @@ local function add_defaults(state, page, tab, y)
   local b = button.new{
     x = 0, y = y, text = "defaults", kind = "window", group = page.group, owner = page.owner,
     on_click = function()
-      local setting = tab == "general" and "tooltips" or tab == "bindings" and "bindings" or "map"
+      local setting = tab == "general" and "tooltips" or tab == "bindings" and "bindings"
+        or tab == "graphics" and "graphics" or "map"
       settings.reset(setting)
+      if tab == "graphics" then
+        list_look.refresh()
+        local values = settings.graphics()
+        state.pending_pixels = {
+          width = values.width, height = values.height,
+          previous_width = last_pixels.width, previous_height = last_pixels.height,
+        }
+      end
       pointer.defer(function()
         if current == state and not state.window.closed then
-          state:show(tab == "bindings" and "input" or tab)
+          local name = tab == "bindings" and "input" or tab
+          state:show(name, name == "graphics")
         end
       end)
     end,
   }
   state.controls.defaults = b
+end
+
+local function maximum_scale(width, height)
+  if width >= 2560 and height >= 1600 then return 2 end
+  if width >= 1920 and height >= 1200 then return 1.5 end
+  return 1
+end
+
+local function effective_scale(limit, width, height)
+  return math.min(limit or 2, maximum_scale(width, height))
+end
+
+local function update_scale_controls(state, width, height)
+  local page = state.page
+  if page == nil or state.selected ~= "graphics" then return end
+  local controls = state.controls
+  local values = settings.graphics()
+  local selected = effective_scale(values.scale, width, height)
+  for index, scale in ipairs({1, 1.5, 2}) do
+    local button = controls.scale[index]
+    button:set_selected(scale == selected)
+    button:set_inactive(scale > maximum_scale(width, height))
+  end
+end
+
+local function update_graphics_controls(state, width, height)
+  local page = state.page
+  if page == nil or state.selected ~= "graphics" then return end
+  local controls = state.controls
+  local pending = state.pending_pixels
+  local stale = pending ~= nil and width == pending.previous_width and height == pending.previous_height
+  if stale then return end
+
+  local pixel_change = width ~= last_pixels.width or height ~= last_pixels.height
+  local shown = state.shown_pixels
+  if shown == nil or shown.width ~= width or shown.height ~= height then
+    if not controls.resolution_width:editing() and not controls.resolution_height:editing() then
+      controls.resolution_width:set(width)
+      controls.resolution_height:set(height)
+      state.shown_pixels = {width = width, height = height}
+    end
+  end
+  state.pending_pixels = nil
+  if pixel_change then update_scale_controls(state, width, height) end
+  last_pixels.width, last_pixels.height = width, height
+end
+
+local function apply_resolution(state, which, value)
+  local controls = state.controls
+  local width = which == "width" and value or controls.resolution_width:get()
+  local height = which == "height" and value or controls.resolution_height:get()
+  local used_width, used_height = settings.resize(width, height)
+  controls.resolution_width:set(used_width)
+  controls.resolution_height:set(used_height)
+  state.shown_pixels = {width = used_width, height = used_height}
+  state.pending_pixels = {
+    width = used_width, height = used_height,
+    previous_width = last_pixels.width, previous_height = last_pixels.height,
+  }
+  local limit = settings.graphics().scale or 2
+  local attainable = maximum_scale(used_width, used_height)
+  if limit > attainable then settings.set("ui.scale", attainable) end
+  update_scale_controls(state, used_width, used_height)
+end
+
+local function show_graphics(state, page)
+  local values = settings.graphics()
+  local width = state.pending_pixels and state.pending_pixels.width or last_pixels.width
+  local height = state.pending_pixels and state.pending_pixels.height or last_pixels.height
+  local text_colour = theme.colour("text")
+  label_at(page.group, 0, 2 * P, "resolution", text_colour, LABEL_WIDTH)
+  local fields = {}
+  fields.width = numberfield.new{
+    x = LABEL_WIDTH, y = 0, value = width, least = 0, greatest = 99999, digits = 5,
+    group = page.group, owner = page.owner,
+    on_apply = function(value) apply_resolution(state, "width", value) end,
+  }
+  local width_size = select(1, fields.width:size())
+  local separator_x = LABEL_WIDTH + width_size + 4 * P
+  local separator = text.line(separator_x, 2 * P, page.group, theme.colour("dim"))
+  text.set(separator, "x")
+  fields.height = numberfield.new{
+    x = separator_x + font.layout("x").width * P + 4 * P, y = 0,
+    value = height, least = 0, greatest = 99999, digits = 5,
+    group = page.group, owner = page.owner,
+    on_apply = function(value) apply_resolution(state, "height", value) end,
+  }
+  state.shown_pixels = {width = width, height = height}
+  page.fields = {fields.width, fields.height}
+  state.controls.resolution_width, state.controls.resolution_height = fields.width, fields.height
+
+  label_at(page.group, 0, 22 * P, "UI scale up to", text_colour, LABEL_WIDTH)
+  local selected_scale = effective_scale(values.scale, width, height)
+  local scales = button.flow{
+    x = LABEL_WIDTH, y = 20 * P, room = page.room - LABEL_WIDTH,
+    items = {"1", "1.5", "2"}, selected = tostring(selected_scale),
+    group = page.group, owner = page.owner, kind = "window",
+    on_choose = function(label)
+      local scale = tonumber(label)
+      if scale == nil or scale > maximum_scale(state.controls.resolution_width:get(), state.controls.resolution_height:get()) then return end
+      settings.set("ui.scale", scale)
+      pointer.defer(function()
+        if current == state and not state.window.closed then state:show("graphics", true) end
+      end)
+    end,
+  }
+  for index, scale in ipairs({1, 1.5, 2}) do
+    scales[index]:set_inactive(scale > maximum_scale(width, height))
+  end
+  state.controls.scale = scales
+
+  local look = list_look.get()
+  label_at(page.group, 0, 42 * P, "list look", text_colour, LABEL_WIDTH)
+  local looks = button.flow{
+    x = LABEL_WIDTH, y = 40 * P, room = page.room - LABEL_WIDTH,
+    items = {"cards", "rows"}, selected = look,
+    group = page.group, owner = page.owner, kind = "window",
+    on_choose = function(value) list_look.set(value) end,
+  }
+  state.controls.list_look = looks
+  page.subscriptions[#page.subscriptions + 1] = list_look.subscribe(function(value)
+    if current == state and state.selected == "graphics" then
+      for index, control in ipairs(looks) do control:set_selected(({"cards", "rows"})[index] == value) end
+    end
+  end)
+  add_defaults(state, page, "graphics", state.content_height - 18 * P)
 end
 
 local function show_general(state, page)
@@ -732,14 +874,16 @@ function settings_window.open(view)
       if current == state then current = nil end
     end,
   }
-  function state:show(name)
+  function state:show(name, preserve_pending)
     if self.window.closed then return end
     cancel_wait(self)
     self.selected = name
+    if name == "graphics" and not preserve_pending then self.pending_pixels = nil end
     for tab_name, tab in pairs(self.tabs) do tab:set_selected(tab_name == name) end
     clear_page(self)
     local page = make_page(self)
     if name == "general" then show_general(self, page)
+    elseif name == "graphics" then show_graphics(self, page)
     elseif name == "map" then show_map(self, page)
     else show_input(self, page) end
   end
@@ -775,7 +919,15 @@ end
 
 function settings_window.update(update)
   local state = current
+  if update ~= nil and type(update.pixel_width) == "number" and type(update.pixel_height) == "number"
+    and (state == nil or state.window.closed or state.selected ~= "graphics") then
+    last_pixels.width, last_pixels.height = update.pixel_width, update.pixel_height
+  end
   if state == nil or state.window.closed then return end
+  if state.selected == "graphics" and update ~= nil and type(update.pixel_width) == "number"
+    and type(update.pixel_height) == "number" then
+    update_graphics_controls(state, update.pixel_width, update.pixel_height)
+  end
   if state.waiting ~= nil and update ~= nil and update.pointer ~= nil then
     for _, event in ipairs(update.pointer.events or {}) do
       if event.kind == "down" and event.key ~= state.waiting.slot.key then
