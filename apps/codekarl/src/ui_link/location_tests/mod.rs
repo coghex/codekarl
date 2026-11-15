@@ -312,6 +312,17 @@ texture.load = function(name)
   if name:match("^ui/goods/") then note("goodsload " .. name) end
   return real_texture_load(name)
 end
+local quad_places = {}
+local real_set_position = render.set_position
+render.set_position = function(quad, x, y)
+  real_set_position(quad, x, y)
+  quad_places[quad] = {x, y}
+end
+local real_destroy_quad = render.destroy_quad
+render.destroy_quad = function(quad)
+  real_destroy_quad(quad)
+  quad_places[quad] = nil
+end
 local real_create_quad = render.create_quad
 render.create_quad = function(spec)
   local name = texture_names[spec.texture]
@@ -323,18 +334,32 @@ render.create_quad = function(spec)
     note(string.format("cardquad %s %g %g %g %g %s", tostring(spec.texture), spec.x, spec.y,
       spec.width, spec.height, tostring(spec.tint or "-")))
   end
-  return real_create_quad(spec)
+  local quad = real_create_quad(spec)
+  quad_places[quad] = {spec.x, spec.y}
+  return quad
 end
 local text_library = require("lib.text")
+-- CK-324: right after a set, before any move can repair it, every glyph quad is where its glyph belongs on the line.
+local function expect_laid_out(line)
+  for index, glyph in ipairs(line.glyphs) do
+    local kept = quad_places[glyph.quad]
+    local wanted = line.x + glyph.x * ui_library.P
+    if kept == nil or kept[1] ~= wanted then
+      error("glyph " .. index .. " of a line is drawn at " .. tostring(kept and kept[1]) .. ", not at " .. wanted, 3)
+    end
+  end
+end
 local real_text_set = text_library.set
 text_library.set = function(line, content)
   real_text_set(line, content)
+  expect_laid_out(line)
   line.ck_test_text = content
   line.ck_test_runs = {{colour = line.colour, text = content}}
 end
 local real_text_set_segments = text_library.set_segments
 text_library.set_segments = function(line, segments)
   real_text_set_segments(line, segments)
+  expect_laid_out(line)
   local words, runs = {}, {}
   for _, segment in ipairs(segments) do
     words[#words + 1] = segment.text
