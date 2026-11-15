@@ -215,6 +215,24 @@ where
         backend.create_window(desc)
     }
 
+    fn resize_window(&mut self, points: (u32, u32)) {
+        if let Some(backend) = &mut self.backend {
+            backend.resize_window(points);
+        }
+    }
+
+    fn resize_window_pixels(&mut self, points: (u32, u32), pixels: ck_window::PixelSize) {
+        if let Some(backend) = &mut self.backend {
+            backend.resize_window_pixels(points, pixels);
+        }
+    }
+
+    fn set_mode(&mut self, layout: ck_window::ModeLayout) {
+        if let Some(backend) = &mut self.backend {
+            backend.set_mode(layout);
+        }
+    }
+
     fn wake_target(&self) -> Arc<dyn NativeWake> {
         self.backend
             .as_ref()
@@ -236,6 +254,12 @@ where
     fn pump_until(&mut self, events: &mut dyn FnMut(NativeEvent), deadline: Instant, cap: usize) {
         if let Some(backend) = &mut self.backend {
             backend.pump_until(events, deadline, cap);
+        }
+    }
+
+    fn set_text_input(&mut self, enabled: bool) {
+        if let Some(backend) = &mut self.backend {
+            backend.set_text_input(enabled);
         }
     }
 
