@@ -8,6 +8,9 @@ their reviews.
 **Since milestone 9:** the owner reversed the fixed-size window on 2026-11-10, and CK-257 made the game window resizable, with
 macOS full screen and a 1280×800 screen-pixel minimum. §1 records the change; §6, §8 and §10 note where it alters this design.
 
+**Since CK-312 and CK-313 (2026-11-14):** the game window has three modes, windowed, windowed fullscreen and fullscreen, and
+the drawing can be limited to a frame rate. §1, §4.2 and §8 record them.
+
 **Milestone split (owner, 2026-10-19):** "yes, you can hold off on glfw and vulkan, we can do a milestone 3.5 after 3, we need to run
 the guide when 3 is done too". **Milestone 3 is the native path** (a native window with Metal); **milestone 3.5 is the GLFW and Vulkan
 path**, designed here but not yet filed. ck-guide reviews milestone 3 when it is accepted. Where this document describes two paths or
@@ -69,10 +72,17 @@ trade-offs; recorded in `.pipeline/coordination/runtime-m3/handoff.md`):
   - opens at 1280×800 screen pixels and cannot be made smaller. The owner chose "1280x800 is a fine minimum", in screen pixels ("Yes,
     screen pixels"), and to open "for now at the minimum". The size is not remembered between runs: that waits for a settings screen;
     - *(Since CK-307 the settings file can hold a resolution, `[window] width` and `height`, and a script can resize the
-      window. The game does not open at that resolution yet: `docs/ui-design.md` §3.17.)*
+      window. Since CK-308 the game opens at that resolution, and the settings window's graphics tab sets it:
+      `docs/ui-design.md` §3.17 and §3.18.)*
   - can be resized, zoomed and made full screen. While its edge is dragged, the last frame stays where it was, anchored to the top left
     and unscaled, and the game lays itself out again once, on release ("Re-layout on release"). Full screen is macOS's own, entered
-    and left with the green title-bar button or Control-Command-F ("macOS standard").
+    and left with the green title-bar button or Control-Command-F ("macOS standard");
+  - **has three modes since CK-312.** The owner, on 2026-11-14: "then seperately will be the window mode buttons 'windowed',
+    'windowed fullscreen', and 'fullscreen'. we will have to implement these". The window above is **windowed**.
+    **Windowed fullscreen** is a window with no title bar that covers the screen. **Fullscreen** covers the screen too and
+    draws at the chosen resolution, scaled to the screen; for a resolution of another shape than the screen the owner
+    chose "Keep shape, bars". §8 says how. The records are `owner-direction-settings-designer-r3.md` and `-r4.md` and
+    `owner-direction-game-menu-manager-r9.md`, in `.pipeline/coordination/ui-polish-design/`.
 
   Resizing is chosen per window: `window.open` without `resizable = true` still opens a fixed-size window, as before. The owner's
   records, in `.pipeline/coordination/m9-design/`, are `owner-direction-window-resizable-r1.md` (the reversal),
@@ -261,6 +271,10 @@ waited on:
     of key bindings (`docs/scene-design.md` §10.1);
   - **since CK-321,** a request for text input on that the loop reads while a key capture is active is not lost. The loop
     keeps it, outside the slot, and applies it once no capture is active (`docs/ui-design.md` §3.19);
+  - **since CK-312,** the latest window mode asked for is one more field, with the geometry worked out for it (a
+    `ModeLayout`), and a resize request also carries the exact resolution kept, in pixels. Like the resize, a mode is
+    refused until a resizable `open` was accepted. A mode asked before the run phase is applied once the presenter has
+    started (`settings.set("window.mode", …)`, `docs/ui-design.md` §3.17);
   - the slot's lock is held only to copy a small value in or out. It is never held while Lua runs or a native call is made.
 
   The slot is bounded by its size, so nothing can fill it, and it needs no admission rule.
@@ -554,6 +568,11 @@ All drawing runs on the render thread (§4).
 
   A continuous frame loop is deferred until there is something that animates (the textured quad, or later). This keeps an idle window from
   using the CPU and GPU.
+- **A frame-rate limit (since CK-313, Metal only).** `[frame] fps_limit`, from 30 to 240 or `"none"` (the default), limits
+  how often the render thread starts a frame: with a limit of N, no sooner than one N-th of a second after it started the
+  frame before. A frame wanted sooner waits and is drawn once, and nothing is drawn that nothing wanted. A stop and
+  pending texture work do not wait for it. The script's updates and the game's clock are not limited (`docs/ui-design.md`
+  §3.17).
 - **High-resolution displays:** the drawable or swap chain uses the window's pixel size, not its point size.
 - **Window size (owner, §1):** in milestone 3 the window was created without the native resizable style (`NSWindowStyleMaskResizable`
   off, and `GLFW_RESIZABLE` false), so there was no user resize and no live-resize loop. That is still so for a window opened without
@@ -569,7 +588,38 @@ All drawing runs on the render thread (§4).
   - **since CK-307, can be resized by a script** (`Backend::resize_window`, with the request slot's size in points). Cocoa
     sets the content size and keeps the top-left corner, as it does when the window grows to its minimum, and reports one
     size change. A window that is full screen, or changing to or from it, is left as it is. The GLFW backend keeps the
-    interface's default, which does nothing.
+    interface's default, which does nothing;
+  - **since CK-312, has three modes** (`Backend::set_mode`, with the request slot's `ModeLayout`). The geometry is one pure
+    decision, `WindowMode::layout` in `crates/window/src/mode.rs`: for a mode, a screen and the resolution kept it gives
+    whether the window is borderless, the rectangle it covers, the picture's rectangle in it, and the points and pixels
+    to report. On Cocoa (`window.m`, `setMode:`):
+    - **windowed** is the window above, at the points of the size used. Coming back from another mode, the window gets
+      its style back, and its top-left corner is where it was before it left windowed;
+    - **windowed fullscreen and fullscreen** make the window borderless and give it the frame of the screen it is on,
+      and the menu bar and the Dock hide themselves. Neither enters macOS's own full screen. The backend reads the
+      window's screen again at each change of mode;
+    - **the drawable** is the screen's own pixels in windowed fullscreen, and in fullscreen the resolution kept, lowered
+      to the screen's pixels. Neither is above 16,384. The Metal layer is given that drawable size and scales it into
+      its frame;
+    - **the picture's rectangle** in fullscreen is the largest rectangle of the drawable's shape that fits the screen,
+      in whole points and centred; a point left over in centring goes to the right or to the bottom. The Metal layer has
+      that frame, and the view's root layer behind it is black, so the bars are black whatever the clear colour is. A
+      drawable of the screen's own shape has no bars;
+    - **the size reported** is one coherent pair, as before. In fullscreen the points are the picture's rectangle and
+      the pixels the drawable's, not the points times the screen's scale. In windowed fullscreen the points are the
+      screen's;
+    - **a pointer position** is told from the picture's top-left corner, so on a bar it is negative, or at or past the
+      width or the height. The loop's input tick carries the mode, and in fullscreen the application takes no UI hit
+      and no map input from a position outside the picture (`docs/ui-design.md` §3.5);
+    - **a change of mode** reports the new size once, marks the pointer's events as overflowed and puts the pointer
+      outside the picture until it moves;
+    - **a resize request** resizes the window in windowed mode, is ignored in windowed fullscreen, and in fullscreen
+      changes the drawable and its rectangle and not the window (`WindowMode::resize_action`);
+    - **Control-Command-F** toggles macOS's own full screen in windowed mode only;
+    - the GLFW backend keeps the interface's default, which does nothing.
+  - **No automated test switches a real window's mode** (CK-312's rule 4: such a run would take the owner's screen).
+    The tests of `mode.rs` give the screens, and the window crate's tests use a fake backend. The native switch is for
+    the owner to check by hand.
 
 ### Present lifetime (Vulkan)
 

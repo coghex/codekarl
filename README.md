@@ -90,10 +90,19 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   once without asking, and so does the window's own close button. Neither saves, and F5 does nothing while the menu is open, so
   quicksave before you open it. "settings" opens the settings window, "glossary" the glossary reader and "save / load"
   the save/load screen (below; [docs/ui-design.md](docs/ui-design.md) §3.15).
-- **Settings** (CK-301): the settings window opens above the menu, with three tabs down its left side. "general" has the
-  tooltips' show delay, lock and lock timer; "map" has the pan speed, zoom speed and scroll step; "input" has the keys
-  (next). Drag a slider or press a choice and it acts at once and is kept. "defaults" resets the tab
+- **Settings** (CK-301): the settings window opens above the menu, with four tabs down its left side. "general" has the
+  tooltips' show delay, lock and lock timer; "graphics" is next; "map" has the pan speed, zoom speed and scroll step;
+  "input" has the keys (below). Drag a slider or press a choice and it acts at once and is kept. "defaults" resets the tab
   that shows. Its "x", or Escape, closes it and leaves the menu open ([docs/ui-design.md](docs/ui-design.md) §3.18).
+- **Graphics** (CK-308, CK-312, CK-313): on the "graphics" tab, "resolution" is two numbers, the width and the height in
+  screen pixels. Click one, type, and press Enter or click elsewhere: the pair is brought into the range, from 1280×800 up
+  to the screen, and the window takes that size. "window mode" is "windowed", "windowed fullscreen" (no title bar, the
+  whole screen at its own pixels; the resolution is greyed) or "fullscreen" (the whole screen, drawn at your resolution
+  and scaled; a resolution of another shape than the screen keeps its shape between black bars). "UI scale up to" caps
+  the UI scale at 1, 1.5 or 2, and a scale the size cannot hold is greyed. "frame rate" limits the frames drawn a second,
+  from 30 to 240: type a number, or press "none" for no limit. "list look" chooses cards or rows for the location
+  panel's pops and buildings, as the panel's own two buttons do. Each is kept in the settings file, and the game starts
+  with them the next time ([docs/ui-design.md](docs/ui-design.md) §3.18).
 - **Changing keys** (CK-310): on the "input" tab each action has two key slots. Click a slot and press the key you want,
   with Shift, Control, Option or Command held if you like. Escape cancels. Backspace while the slot waits, or a right-click
   on a slot, empties it. When another action has the key, a "Key in use" prompt offers "replace" (the other action loses
@@ -126,19 +135,23 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   hold `[ui.tooltips]` `delay`, `lock` and `lock_timer`, and `[map]` `pan_pixels_per_frame`, `zoom_steps_per_second` and
   `scroll_points_per_step`, each checked as the configuration checks it. A missing file is normal. An entry that is not accepted
   is named in a `warn` record and ignored, and the rest applies. The settings window writes it at each change. The file may
-  also hold `[ui] scale` and `list_look`, `[window] width` and `height` (CK-307), and `[input.bindings]` for the player's own
-  keys (CK-309: at most two keys for an action, and never Escape's `close`). The input tab writes the keys (CK-310). No
-  screen of the game sets the other four yet, so they are there only when put in by hand
+  also hold `[ui] scale` and `list_look`, `[window] width`, `height` and `mode`, and `[frame] fps_limit` (CK-307, CK-312,
+  CK-313), and `[input.bindings]` for the player's own keys (CK-309: at most two keys for an action, and never Escape's
+  `close`). The input tab writes the keys (CK-310), and the graphics tab the other six (CK-308)
   ([docs/ui-design.md](docs/ui-design.md) §3.17).
 - **Lists:** a list longer than its view has a thin scroll bar at its right edge: drag its thumb, or press the track to move one
   view ([docs/ui-design.md](docs/ui-design.md) §3.16).
-- **The window** opens at 1280×800 screen pixels, its minimum. Drag an edge to enlarge it (the game lays itself out again when you
-  let go), or use macOS full screen: the green title-bar button or Control-Command-F. The UI scale follows the window: 1 from
+- **The window** opens at the resolution in force, the settings file's or else the configuration's, or at 1280×800 screen
+  pixels, its minimum, with none set (CK-308). Drag an edge to enlarge it (the game lays itself out again when you let go),
+  choose a window mode on the
+  graphics tab, or, in windowed mode, use macOS full screen: the green title-bar button or Control-Command-F.
+  The UI scale follows the window: 1 from
   1280×800 screen pixels, 1.5 from 1920×1200 and 2 from 2560×1600, so a UI pixel is 2, 3 or 4 screen pixels. `[ui] scale = 1`,
   `1.5` or `2` caps it (the lower of the two is used), and the old `[ui] points_per_pixel` is refused, naming `scale`. The
-  configuration also takes `[window] width` and `height` (screen pixels, from 1280 and 800 up to 16,384) and `[ui] list_look`
-  (`"cards"` or `"rows"`) for the graphics settings to come (CK-307). Nothing uses them yet, and the window still opens at
-  1280×800.
+  configuration also takes `[window] width` and `height` (screen pixels, from 1280 and 800 up to 16,384), `[window] mode`
+  (`"windowed"`, `"windowed_fullscreen"` or `"fullscreen"`), `[ui] list_look` (`"cards"` or `"rows"`) and `[frame] fps_limit`
+  (30 to 240, or `"none"`, the default): the graphics tab's settings (CK-307, CK-312, CK-313). The window modes and the
+  frame-rate limit work on the native Metal path only.
 - **Run the game on native Metal.** Milestone 9's render features (the new map look and the elevation mode) exist on native Metal
   only. Since CK-238 the Vulkan backend is only kept compiling, and its port of them (CK-239) is parked until the owner says so.
 
