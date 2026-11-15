@@ -888,6 +888,8 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
   show their entries as **cards** (the default) or one-line **rows** that open, switched by two buttons at the bottom of the panel; the
   places list is replaced by the **ledger**, a window docked on the right third with a locations tab and a tab of every pop. Details in
   `docs/ui-design.md`.
+- **Since CK-328 (2026-11-15):** the panel's first tab is labelled with the selected place's name, and the window draws no
+  title beside it (`docs/ui-design.md` §3.13).
 
 ### 3.12 The starting numbers (Firm: approved by the owner, 2026-11-08, as placeholders for tuning)
 

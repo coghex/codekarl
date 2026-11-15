@@ -14,6 +14,9 @@ the drawing can be limited to a frame rate. §1, §4.2 and §8 record them.
 **Since CK-325 and CK-326 (2026-11-15):** the application passes the loop's mode, resize and text-input calls on to the
 backend, which it had not done, and F11 switches between windowed and fullscreen. §8 records both.
 
+**Since CK-331 and CK-332 (2026-11-15):** the Cocoa window's class can be the key window in every mode, and a change of
+mode puts the first responder back, and the key when the window had it. §8 records both.
+
 **Milestone split (owner, 2026-10-19):** "yes, you can hold off on glfw and vulkan, we can do a milestone 3.5 after 3, we need to run
 the guide when 3 is done too". **Milestone 3 is the native path** (a native window with Metal); **milestone 3.5 is the GLFW and Vulkan
 path**, designed here but not yet filed. ck-guide reviews milestone 3 when it is accepted. Where this document describes two paths or
@@ -631,6 +634,35 @@ All drawing runs on the render thread (§4).
   - **Since CK-326 a key switches the mode:** F11 by default, from windowed to fullscreen and from either covering mode
     to windowed. It is a bound action that the game's UI script acts on, through the same mode request. The backends
     know nothing of it (`docs/ui-design.md` §3.17).
+  - **Since CK-331 the window can be key in every mode.** The game window is a `CKWindow`, a subclass of `NSWindow`
+    that answers yes to `canBecomeKeyWindow` and `canBecomeMainWindow` and does nothing else (`native/internal.h`,
+    `window.m`).
+    - **Why:** a plain `NSWindow` answers no to both once its style is borderless, as the two covering modes make
+      it. So a covering window that had given the key up, to another Space or another application, could not take
+      it back, even when clicked. The loop runs no update while the window is not focused (`docs/scene-design.md`
+      §9), so the game stayed paused. A titled window takes the key back, which is why windowed mode recovered.
+    - **It adds no request.** Nothing new makes a window key, orders one front or activates the application. The
+      window only accepts the key when macOS offers it.
+    - **Test:** `the_game_window_class_can_become_key_when_borderless` (`crates/window-cocoa/tests/window_cocoa.rs`,
+      group `native.window`) asks both questions of two borderless windows that are never shown: a plain `NSWindow`
+      says no to both, and a `CKWindow` yes.
+  - **Since CK-332 a change of mode keeps the keyboard.** `setMode:` reads whether the window is key before it
+    touches the style. After a change that set the style mask it makes the game's view the first responder again.
+    It then makes the window key again when it was key before and was created with activation allowed.
+    - **Why:** setting the style mask can clear the first responder, and then the game runs and no key reaches it.
+      It can also take the key away, and then the game pauses. Until CK-332 the view was made first responder, and
+      the window key, only when the window was created.
+    - **Every change that sets the style counts,** from one covering mode to the other included. A request that
+      sets none, such as windowed while windowed, restores nothing.
+    - **It asks for the key alone** (`makeKeyWindow`): the application is not activated and no window is ordered
+      front. A window that was not key is not made key. A test window, created without activation (CK-164), never
+      reaches the request.
+    - **Test:** `the_keyboard_step_after_a_style_change_restores_the_view_and_never_keys_a_test_window`, in the same
+      file, runs that step alone on a test window, with no change of mode. The view is first responder again, and
+      no key request is made, whether the window is said to have been key or not.
+  - **Neither is seen working.** No automated test switches a real window's mode (above), and no focus test or
+    diagnostic is run for these two: their specs forbid it, after CK-187. Whether a covering window takes the
+    keyboard back, and whether F11 keeps it, is for the owner to check by hand.
 
 ### Present lifetime (Vulkan)
 

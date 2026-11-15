@@ -22,7 +22,8 @@
 > **Since milestone 8.** Milestone 9 added, with the same widgets and theme (`docs/economy-design.md` §3.11 and §3.22):
 > - **the location panel:** a window filling the left third of the screen with the selected place's economy, in three tabs (location,
 >   pops and buildings) shown as title-bar buttons. Its tab widget, `scripts/ui/lib/tabs.lua`, is the one new widget. A map click or a
->   ledger row shows that place in the panel;
+>   ledger row shows that place in the panel. Since CK-328 the first tab is labelled with the place's name, and the window
+>   draws no title beside it (below);
 > - **the map-mode bar:** three icon buttons in one row, centred at the bottom of the screen and independent of the other panels (owner,
 >   2026-11-10, CK-255), for the stockpile, yield and elevation map modes. They call
 >   `game.set_map_mode`; the button of the mode showing is selected, and pressing it turns the mode off.
@@ -112,7 +113,8 @@
 >   and sell orders for this; they are not saved (`docs/economy-design.md` §3.16).
 > - **Tooltips on the bars, the ledger, the location tab and the window title** (CK-277; §3.13): the date and the map-mode buttons
 >   show glossary explanations. In the ledger and on the location tab every word opens its explanation and every number its
->   breakdown, cell by cell, and the location panel's title shows the location tooltip. Seven more shared classes serve them
+>   breakdown, cell by cell, and the location panel's title shows the location tooltip (since CK-328 its first tab does;
+>   below). Seven more shared classes serve them
 >   (`pop_size`, `place_food`, `housing`, `crowding`, `building_land`, `storage`, `overflow`).
 > - **Tooltips on the pop and building cards and rows** (CK-278; §3.13): every field of a pop or building card, of a row and of an
 >   open row's details shows its explanation or its breakdown: a pop's food by good, its jobs, housing and crowding, and a
@@ -245,7 +247,8 @@
 > - **The number field, for scripts** (CK-306, 2026-11-14; `owner-direction-settings-designer-r3.md` and `-r5.md`; §3.21):
 >   `scripts/ui/lib/numberfield.lua` is a field that a whole number is typed into. A click starts the editing. Enter, Tab or a
 >   click elsewhere applies the number, brought into its range. Escape puts the old number back and closes nothing. Since
->   CK-308 the graphics tab's resolution fields are the first shipped ones (below).
+>   CK-308 the graphics tab's resolution fields are the first shipped ones (below). Since CK-329 Tab applies a field only
+>   when it moves on to another one (below).
 > - **The graphics settings, for scripts** (CK-307, 2026-11-14; `owner-direction-settings-designer-r3.md` and `-r4.md`; §3.17):
 >   the configuration and the settings file take `[ui] list_look` and `[window] width` and `height`, and the settings file
 >   takes `[ui] scale`. `settings.resize(width, height)` resizes the game's window, and a change of `[ui] scale` now acts while
@@ -348,6 +351,44 @@
 >   - **It does nothing** while the pause menu is open, while a field is edited and while a key slot waits for its key.
 >   - **For scripts:** `scripts/ui/lib/fullscreen_key.lua` is the key's module, and `menu.opens()`, `typing.changes()`
 >     and `typing.capturing()` are new.
+> - **The location panel's first tab is the place's name** (CK-328, 2026-11-15;
+>   `owner-direction-hand-check-results-manager-r1.md`; §3.13): the window no longer draws the place's name as a title
+>   beside a tab that said "location". ck-manager proposed "make the tab show the place name" from the owner's hand
+>   check, and the owner: "6) file this".
+>   - **The first tab** shows what it showed, and follows the place chosen.
+>   - **A name too wide for the bar** is cut to its first 12 characters and "…", and then to its first character. The
+>     pops and buildings tabs shorten with it, to "pop" and "bld" and then to "p" and "b".
+>   - **The place's tooltip,** which the title had, is on that tab at every length of its label.
+>   - **For scripts:** `tabs:set_labels(key, full, short, tiny)` changes a text tab's labels, and a tab item made with
+>     `label_tooltip = false` keeps the tooltip its caller attached (`lib/tabs.lua`).
+> - **Tab moves between the open fields** (CK-329, 2026-11-15; the same record; §3.18, §3.19, §3.22): while a field is
+>   edited, Tab applies it and starts the next field, and Shift+Tab the one before. The owner: "just tab through all
+>   open text fields".
+>   - **The open fields** are the number and text fields made with the editing field's owner that are neither greyed
+>     nor inactive, from the top down and then from the left. The order goes round.
+>   - **On the graphics tab** Tab goes from the width to the height to the frame rate, and passes the frame rate over
+>     while "none" is lit: it turns no limit on.
+>   - **With one open field** Tab and Shift+Tab do nothing, and the field goes on editing. Before CK-329 Tab applied a
+>     field and ended its editing.
+>   - **Shift+Tab is a typed entry of its own,** `backtab`, from the Cocoa window to the script. Its direction is fixed
+>     when the key is pressed.
+> - **The save/load screen says whether the game is saved** (CK-330, 2026-11-15; the same record; §3.23): the word
+>   "saved" in green, or "unsaved" in grey, is at the top of the screen, above the name field. The owner: "just a
+>   green text 'saved' or grey text 'unsaved' should suffice".
+>   - **The word is the game's own flag** (`docs/places-time-design.md` §5.3), which `game_time` now carries as
+>     `unsaved` (§3.6). It changes while the screen is open.
+>   - **Whether a load asks is still the game's to decide,** at the load. The word is not read for it.
+>   - **The green** is a new theme colour, `saved`, `#5fb35a`.
+> - **The keyboard and a covering window** (CK-331 and CK-332, 2026-11-15; `docs/window-design.md` §8): two faults in
+>   the Cocoa window, found by reading the code after the owner reported that the game in fullscreen did not take the
+>   keyboard back and stayed frozen once the owner had switched away and come back.
+>   - **CK-331:** the window's class now says it can be the key window in every mode. A plain borderless window says
+>     no, so once it had given the keyboard up it could not take it back, and the game runs no update while its window
+>     is not focused.
+>   - **CK-332:** after a change of mode the game's view is the window's first responder again, and a window that was
+>     key before the change is made key again.
+>   - **Not seen working:** no automated test switches a real window's mode or tests focus. Whether the owner's fault is
+>     gone is for the owner to check by hand.
 
 ## Owner answers (2026-11-07)
 
@@ -849,9 +890,16 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
   - **The answer comes later,** to the callback that `game.on_save_result(fn | nil)` registers: `fn(filename, result)`, with
     `result` a table as above. A game with unsaved changes answers `{ok = false, reason = "unsaved"}`: nothing was loaded and
     no file was looked at. Answers are kept, in order, until a callback is registered.
-  - **The game decides, not the script.** `game_time` has no field for unsaved changes. This request, `game.mark_unsaved()`
+  - **The game decides, not the script.** This request, `game.mark_unsaved()`
     and the save calls reach the simulation owner on one channel, in the order the script made them, so a mark made just
     before the request counts.
+    - **Until CK-330 `game_time` had no field for unsaved changes.** It now has `unsaved`, a boolean: the game's flag as
+      it was in the snapshot the table was made from (`game_api.rs`). The table's eight fields are `year`, `month`,
+      `day`, `hour`, `speed`, `paused`, `unsaved` and `economy_revision`.
+    - **A change of the flag alone is a change of the snapshot,** so a `game_time` is posted for it: after a
+      `game.mark_unsaved()`, also while the game is paused, and after a save that succeeds.
+    - **The field is for showing:** the save/load screen's word reads it (§3.23). It is what the UI was last told and
+      can be one delivery behind the game, so a load is still decided by the guarded load's answer.
   - `game.load_save(filename)` is the load for a player who was asked and said yes: it never asks.
   - **Since CK-305 the save/load screen is its caller** (§3.23): every press of a card's "load" sends it, and only the
     question's "load" sends `game.load_save`.
@@ -1315,6 +1363,12 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
 
   - **Tabs:** `lib/tabs.lua` passes an item's `tooltip` to its button. A text tab shows its full label as a tooltip while it shows
     its short or tiny label, and has none while it shows the full one.
+    - **Since CK-328** an item made with `label_tooltip = false` is left out of that: its button keeps the tooltip its
+      caller attached, whichever label shows. The location panel's first tab is the one such item (below).
+    - **`tabs:set_labels(key, full, short, tiny)`** (CK-328) replaces a text tab's three labels, shows the one of the
+      length in force, and lays the tabs out again, which may change the length all of them show. `short` defaults to
+      `full` and `tiny` to `short`. A label that is empty or not a string, a key that is no tab, and an icon tab are Lua
+      errors.
   - **Goods names:** `lib/location.lua` names a good by its id with `_` as a space, except `peas_beans`, which is `peas and beans`.
   - **Price rows:** in the location tab, each price row with an icon had a two-line tooltip: the good's name, then
     `price <price>, base <base>`. With CK-272 the price became a link (the price breakdown, below). CK-282 replaced that tooltip:
@@ -1352,13 +1406,13 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     | the time bar's `slower`, `pause` or `play`, and `faster` | label |
     | `speed 1` to `speed 5` | label |
     | the location panel's look buttons, `cards` and `list` | label |
-    | a shortened text tab's full name (`location`, `pops`, `buildings`) | label |
+    | a shortened text tab's full name (`pops`, `buildings`; `location` too until CK-328) | label |
     | the map-mode buttons: `main.lua` attaches their explanation after the button is made, which replaces its label | lockable |
     | the date readout | lockable |
     | the map's hovered place | lockable |
     | the ledger's rows and header, the location tab's rows and the market table | lockable |
     | pop and building cards, rows and open rows | lockable |
-    | the location window's title | lockable |
+    | the location panel's first tab (since CK-328; until then the window's title) | lockable |
     | terms and links inside a locked tooltip | lockable |
 
   - **What a label is:**
@@ -1580,6 +1634,27 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
 
     A line too wide for the panel wraps as before, and each wrapped row keeps its own cells.
   - **The location panel's title** shows the `location` class for its place: the same lines the map hover shows.
+  - **Since CK-328 the panel draws no title, and its first tab has that tooltip** (`lib/location.lua`; spec
+    `runtime-m55/ck328-spec.md`, sha256 `9f4d580d…`). ck-manager proposed "make the tab show the place name" from the
+    owner's hand check, and the owner: "6) file this" (`owner-direction-hand-check-results-manager-r1.md` in
+    `.pipeline/coordination/ui-polish-design/`).
+    - **The window** is made with the place's name, and its title is set to the empty text at once, so none is drawn.
+      Its size, its place, its "x" and its title bar's drag are as they were. The tabs have the room the title took.
+    - **The first tab's key is still `location`,** and it shows what it showed. Its labels are set from the name with
+      `tabs:set_labels` (above) when the panel is made and at every new selection.
+    - **Its three labels** are the whole name; the name's first 12 characters and "…", or the whole name when it has
+      12 or fewer; and the name's first character. The cuts are by character, not by byte.
+    - **The three tabs shorten together,** as before: a name that does not fit sends pops and buildings to `pop` and
+      `bld`, or to `p` and `b`, with it.
+    - **The tooltip** is the class `location` for the selected place, attached to the first tab's button with
+      `tooltip.attach` at every selection, and lockable. It is the same whichever label shows. Its title is the full
+      name, so a shortened tab still gives the whole name. The item's `label_tooltip = false` keeps the tabs from
+      putting a label in its place.
+    - **Read in the code:** the panel's least width (`location.min_width()`) still measures the first tab's shortest
+      label as `l`, not as the name's first character, so it can be out by the difference of two characters' widths.
+    - **Tests:** `place_name_relabels_the_first_tab_and_keeps_its_place_tooltip` in
+      `apps/codekarl/src/ui_link/location_tests/selectors_tabs.rs`, and changed assertions in the location tests
+      beside it: the empty title, the tab's label, and the class tooltip on the tab where a label was.
 - **The pop and building cards, rows and open rows** (CK-278; spec `specs/tooltips-t8c-cards-designer-r4.md`, sha256
   `18ea63ec…`). A card's or row's `tooltip` function (CK-271) answers by the field under the pointer, with the field's name as
   the part. Nothing about pressing, selecting, opening or the look changed.
@@ -2536,6 +2611,16 @@ Lengths below are in UI pixels.
   - **"defaults"** calls `settings.reset("graphics")` (§3.17) and then `list_look.refresh()`, which reads the look again
     and tells the subscribers when it changed. The tab is made again with the values in force. Its resolution fields
     show the resolution then in force until an update reports a new size.
+  - **Tab between the fields** (CK-329; §3.22). The tab's fields are the width, the height and the frame rate, in that
+    order, and the order goes round. Tab applies the field that edits, as a press elsewhere does, and starts the
+    next. Shift+Tab goes the other way.
+    - **With "none" lit** the frame rate's field is greyed and passed over: Tab goes between the width and the height,
+      and no limit is turned on.
+    - **In windowed fullscreen** the two resolution fields are inactive and passed over. With a limit, the frame
+      rate's field is the only open one, and Tab leaves it editing with nothing applied. With "none" lit there is
+      no open field: Tab starts none and changes nothing.
+    - **A width applied by Tab** sets both fields to the pair returned while the height's field already edits. That
+      field goes on editing, with its caret and outline, and it is the only one that does.
   - **Until CK-325 the game's window got none of this** (§3.17). A press on a mode's button, and "defaults", changed
     the settings and not the window, and the number fields got no typed entry. The owner saw the mode's press do
     nothing. The rest is read in the code, not seen.
@@ -2675,7 +2760,7 @@ Lengths below are in UI pixels.
 - **Not there:** a gameplay tab; tooltips on the window's own controls;
   a mouse button or the wheel as a key; more than two keys for an action; rebinding the demo's actions.
 - **Tests,** through the shipped scripts in the UI rig, with no window: thirty-seven tests in
-  `apps/codekarl/src/ui_link/menu_tests.rs`, and fourteen for the graphics tab in `ui_link/settings_graphics_tests.rs`.
+  `apps/codekarl/src/ui_link/menu_tests.rs`, and eighteen for the graphics tab in `ui_link/settings_graphics_tests.rs`.
   - **Twelve** cover opening and the window; the general tab's sliders, choices and "defaults"; a slider's drag across
     several updates, on the general and on the map tab; `button.flow`; the map tab; the "x"; closing the menu; and the
     stacking of a window made late and of an older window raised. The two of CK-318 among them cover the "show delay"
@@ -2698,11 +2783,18 @@ Lengths below are in UI pixels.
   - **One of the fourteen runs the real calls:** the shipped scripts over a real `Mapper`, the real settings calls and
     a private settings file. A captured key is in force at the mapper and in the file, a "swap" reaches the mapper as
     one whole set with both actions in the file, and "replace", "cancel", Escape and "defaults" follow.
-  - **The graphics tab's fourteen:** nine of CK-308 and CK-312 (the tab column and the rows; the mode's buttons and the
+  - **The graphics tab's eighteen:** nine of CK-308 and CK-312 (the tab column and the rows; the mode's buttons and the
     inactive fields; five digits, the clamp and an old size ignored; the height applied with the width shown; a screen
     below the least size; the scale buttons by the pair returned, and by new pixels; the list look, "defaults" and its
-    one resize; a look chosen in a run with no game) and five of CK-313 (the row's place; a press on the greyed field;
-    a typed limit clamped; "none"; "defaults").
+    one resize; a look chosen in a run with no game), five of CK-313 (the row's place; a press on the greyed field;
+    a typed limit clamped; "none"; "defaults") and four of CK-329, which type Tab and Shift+Tab into the real tab.
+    - **With a limit:** from the width to the height to the frame rate and round to the width, each field applied as
+      it is left, and Shift+Tab from the height back to the width.
+    - **With no limit:** the width, the height and the width again. The greyed field never edits, and nothing writes
+      `frame.fps_limit`.
+    - **In windowed fullscreen with a limit:** the frame rate's field is left editing by both keys, and neither
+      resolution field edits.
+    - **In windowed fullscreen with no limit:** both keys leave every field as it was, and nothing is written.
 
 ### 3.19 Typed text (accepted, CK-314)
 
@@ -2719,7 +2811,8 @@ those fields got no typed entry (§3.17; read in the code, not seen).
 - **A typed entry** is a character or an edit command.
   - **A character** is one Unicode scalar value that the system committed for a key. Committed text is made precomposed
     (normal form C) and split into its scalar values, one entry each. So a dead key and a vowel give the one entry `á`.
-  - **The five edit commands** are backspace, enter, tab, left and right.
+  - **The six edit commands** are backspace, enter, tab, backtab, left and right. Backtab is Shift+Tab, and came with
+    CK-329: until then there were five, and Shift+Tab gave no entry.
   - **Never an entry:** text still being composed; a control character (U+0000 to U+001F, U+007F to U+009F); the system's
     private codes for function and arrow keys (U+F700 to U+F8FF); any other command of the system's; Escape.
   - A held key gives another entry at each repeat the system sends.
@@ -2740,7 +2833,7 @@ those fields got no typed entry (§3.17; read in the code, not seen).
     block (§3.15) are unchanged, and a key typed into a widget is also whatever it is bound to.
 - **In the update.** `frame_update` has three more fields (`ui_link.rs`, `update_table`):
   - `typed`: the entries in the order typed. A character is `{kind = "char", text = "á"}`. A command is `{kind = name}`, the
-    name being `"backspace"`, `"enter"`, `"tab"`, `"left"` or `"right"`;
+    name being `"backspace"`, `"enter"`, `"tab"`, `"backtab"` (CK-329), `"left"` or `"right"`;
   - `typed_lost`: `true` when entries were dropped at a bound;
   - `typed_epoch`: the generation of the latest `window.set_text_input` call the main thread has applied, and 0 before any.
 
@@ -2757,9 +2850,13 @@ those fields got no typed entry (§3.17; read in the code, not seen).
   (`NSTextInputClient`).
   - With text input on, `keyDown:` records the key as before and then gives the event to the system's interpretation
     (`interpretKeyEvents:`), unless Command or Control is held.
-  - Committed text comes back as `insertText:`. The five commands come back as the system's own commands for those keys
-    (`deleteBackward:`, `insertNewline:`, `insertTab:`, `moveLeft:`, `moveRight:`). Any other command is passed over, without
-    a beep.
+  - Committed text comes back as `insertText:`. The six commands come back as the system's own commands for those keys
+    (`deleteBackward:`, `insertNewline:`, `insertTab:`, `insertBacktab:`, `moveLeft:`, `moveRight:`). Any other command is
+    passed over, without a beep.
+  - **Shift+Tab** (CK-329) is the system's `insertBacktab:`. It is recorded as a kind of its own in the same ordered
+    store as the other entries, becomes `TypedEntry::Backtab` (`crates/input/src/lib.rs`) and reaches Lua as
+    `{kind = "backtab"}`. The direction is the entry's kind, fixed when the key is pressed: nothing reads Shift
+    afterwards, so a Shift let go before the UI takes the entry changes nothing.
   - Text being composed is only remembered as a flag, and is not shown.
 - **`glfw-vulkan` gives no typed entries.** The GLFW backend has no typed route: it keeps the backend interface's default,
   which does nothing, and reports no typed event. The call still returns its generation and the update's `typed_epoch` still
@@ -2794,6 +2891,8 @@ those fields got no typed entry (§3.17; read in the code, not seen).
   - An update's typing belongs to the session that was under way when its dispatch began.
   - When that session ends part way, for example an Enter that applies a field, the rest of the update's entries and its
     loss notice reach no one. That holds even when the same widget starts editing again at once, as a Tab handler might.
+  - **Since CK-329 a Tab that moves to another field is such an end** (§3.22): the entries after the Tab in its update,
+    and that update's loss notice, reach neither field. The next update types into the field the Tab started.
 - **Which entries count.** The library keeps the generation of its latest `window.set_text_input` call. The typing of an
   update whose `typed_epoch` is older than that is dropped: it was typed under the earlier setting, or before the main thread
   turned text input on.
@@ -2836,7 +2935,7 @@ those fields got no typed entry (§3.17; read in the code, not seen).
     fourteen tests, for the order, text input on and off, stale entries, the rule with the pointer in one update and in
     two, the sessions and, since CK-309, key capture, with its cancel since CK-321.
   - `crates/window-cocoa/tests/typed/mod.rs` has six cases with a real window, in the group `native.window`: a key-down with
-    characters, the five commands, a repeat, composition, Escape and a Command chord, and text input off. They post marked
+    characters, the six commands, a repeat, composition, Escape and a Command chord, and text input off. They post marked
     key-downs and ignore the owner's input like the rest of that group (`docs/scene-design.md` §10.3).
 
 ### 3.20 The glossary reader (accepted, CK-300)
@@ -2934,16 +3033,19 @@ Lengths below are in UI pixels.
     on through the change.
 - **The typing** comes only from the typing function: the field calls `typing.start` when its editing begins and
   `typing.stop` when it ends, and its `on_typed` gets the entries.
-  - A character `0` to `9` is a digit, from the digit row or the number pad alike. `backspace`, `enter` and `tab` are the
-    commands of those names. Every other character, `left` and `right` are passed over.
+  - A character `0` to `9` is a digit, from the digit row or the number pad alike. `backspace`, `enter`, `tab` and, since
+    CK-329, `backtab` are the commands of those names. Every other character, `left` and `right` are passed over.
   - No bound action carries any of it. A key typed into a field is still its key's action (§3.19): the field is meant for
     windows the pause menu opens, where the game's keys are blocked (§3.15).
-- **Applying** is Enter, Tab, or a left press anywhere that is not a field, the map included. Since CK-303 a text field
+- **Applying** is Enter, a Tab that moves to another field (below), or a left press anywhere that is not a field, the
+  map included. Since CK-303 a text field
   counts as a field here: a press on one applies the number field and starts the text field.
   - The number is brought into the range, the field shows the result, the editing ends, and `on_apply(number)` is called
     once.
   - A field that was emptied puts its old number back. Neither that nor a number that did not change tells the caller.
-  - Tab does nothing more: it starts no other field.
+  - **Since CK-329 Tab moves on:** it applies the field and starts the next open field, and Shift+Tab the one before
+    (§3.22). With no other open field both do nothing, and the field goes on editing. Until CK-329 Tab applied the
+    field, ended its editing and started no other.
   - **The press still does what it does.** The field hears of it through `pointer.observe_press`, before the press reaches
     its own widget.
   - **The caller's function runs last.** The field's own state, the caret and the typing function are all settled before
@@ -2971,9 +3073,11 @@ Lengths below are in UI pixels.
   - `field:set_greyed(on)` greys the field or makes it live. Greying a field that edits ends the editing, applies
     nothing and shows its number. `field:is_greyed()` reads it.
   - The frame rate's field is the one shipped greyed field (§3.18).
+  - Tab and Shift+Tab pass a greyed field over (CK-329, §3.22), so they never call `on_enable`: only a press makes the
+    field live.
 - **An inactive field** (CK-312) is drawn the same way, has no hit region and answers nothing: it is not functional
   (§3.13). `inactive = true` makes one, and `field:set_inactive(on)` changes it. The resolution's two fields, in windowed
-  fullscreen, are the shipped inactive fields (§3.18).
+  fullscreen, are the shipped inactive fields (§3.18). Tab and Shift+Tab pass an inactive field over too (CK-329).
 - **For scripts:**
   - `field:get()` returns the number last applied, and `field:set(number)` sets it, brought into the range. A field that is
     editing then shows the new number and goes on editing.
@@ -2986,7 +3090,8 @@ Lengths below are in UI pixels.
 - **Not there:** letters and a caret that moves, which the text field has (§3.22); selecting, copy and paste; a sign or a
   decimal point.
 - **Tests,** through the shipped scripts in the UI rig, with typed entries and real pointer input and no window: 35 tests in
-  `apps/codekarl/src/ui_link/numberfield_tests.rs`. They cover the look, typing, applying by Enter, by Tab and by a press
+  `apps/codekarl/src/ui_link/numberfield_tests.rs`. They cover the look, typing, applying by Enter, by a Tab to the next
+  field (since CK-329) and by a press
   elsewhere, two fields, the cases of one update and of two, Escape, the pause menu's key block, closing the window, what a
   caller's `on_apply` may do, and key capture. Four are CK-313's, of a press on a greyed field: while another field
   edits, with an apply callback that closes the window or destroys the greyed field, and while a capture waits.
@@ -3029,10 +3134,11 @@ Lengths below are in UI pixels.
     editing shows its text from the start.
   - A press on the field while it edits changes nothing: the caret is not placed with a click.
 - **The typing** comes only from the typing function (§3.19), as the number field's does. `on_typed` gets a character, or
-  one of the commands `backspace`, `left`, `right`, `enter` and `tab`, in the order typed.
+  one of the commands `backspace`, `left`, `right`, `enter`, `tab` and, since CK-329, `backtab`, in the order typed.
   - So `a`, backspace, `b` leaves `b`, and `a`, `b`, left, `x` leaves `axb`.
   - A held key acts again at each entry it gives.
-- **Applying** is Enter, Tab, or a left press anywhere that is not a field, the map included. The press still does what
+- **Applying** is Enter, a Tab that moves to another field (CK-329, below), or a left press anywhere that is not a
+  field, the map included. The press still does what
   it does.
   - The field shows its text from the start, the editing ends, and `on_apply(text)` is called once, last of all.
   - A text that did not change tells the caller nothing.
@@ -3065,13 +3171,40 @@ Lengths below are in UI pixels.
     thing it does. So that function may close the window, destroy fields or start an editing.
   - The module registers the one `pointer.observe_press` function (§3.21): a left press on a widget that is not a field
     applies the field that edits.
+- **Tab and Shift+Tab, since CK-329:** `fieldedit.tab(field, backwards)` is their step. Both kinds of field call it for
+  a `tab` entry and, with `backwards` true, for a `backtab` (§3.19). The owner: "ok i approve your recommendation, just
+  the tab for the two fields now is fine, or perhaps the optional third fps field on the panel as well. just tab through
+  all open text fields." (`owner-direction-hand-check-results-manager-r1.md` in
+  `.pipeline/coordination/ui-polish-design/`; spec `runtime-m55/ck329-spec-r3.md`, sha256 `7039c570…`).
+  - **The module keeps a list of the live fields.** A field joins it when it is made (`fieldedit.register`) and leaves
+    it when it is destroyed (`fieldedit.unregister`).
+  - **The open fields** of a Tab are the listed fields made with the editing field's `owner`, that owner not being
+    closed, which are neither greyed nor inactive. Fields made with no owner count together. The graphics tab's
+    fields have their page as owner, and the save/load screen's field has its window.
+  - **Their order** is by `y`, then by `x`, then by when they were made: from the top down, and then from the left.
+  - **Tab** settles the editing field as a hand-off, starts the next open field, and then tells the first field's
+    caller, last of all. Shift+Tab does the same to the one before. The order goes round, from the last to the first
+    and back.
+  - **With fewer than two open fields,** or when the editing field is not among them, the step does nothing. Nothing
+    is settled, the field goes on editing in the same session, and the rest of its update still reaches it. So on
+    the save/load screen, with its one field, Tab does nothing. Until CK-329 it applied the name.
+  - **A greyed field is never started,** so its `on_enable` is never called, and an inactive field is never edited.
+  - **The typing session changes at the move** (§3.19): the entries after the Tab in that update, and its loss notice,
+    reach neither field. Later updates type into the field the Tab started.
+  - **No character is typed** for either key. While a key capture waits no field edits, and the capture takes the
+    physical Tab key as a key to bind, as before (§3.18).
+  - **Disclosed:** the save/load screen does not destroy its name field when it closes, so each opening of the screen
+    leaves one more field in the list for the rest of the run. The step passes them over, by their closed owner.
 - **Not there:** selecting text, copy and paste; Delete, Home and End; placing the caret with a click; input methods for
   other scripts; a greyed field.
-- **Tests,** through the shipped scripts in the UI rig, with typed entries and real pointer input and no window: 34 tests
+- **Tests,** through the shipped scripts in the UI rig, with typed entries and real pointer input and no window: 37 tests
   in `apps/codekarl/src/ui_link/textfield_tests.rs`. They cover the look and the refused arguments; the characters taken
   and refused; the counts in characters; the caret and the scrolling; the orders inside one update and across two; the
   pointer in the same update; a text field and a number field together; applying, the empty text and Escape; a held
   key; the pause menu's key block; closing the window; what a caller's `on_apply` may do; and key capture.
+  Three of the 37 are CK-329's: Tab and Shift+Tab in screen order and round, with the update's later entries and loss
+  notice dropped at the move; one open field left editing with its update whole; and a greyed and an inactive field
+  passed over.
 
 ### 3.23 The save/load screen (accepted, CK-305)
 
@@ -3098,8 +3231,8 @@ save name."
   - `save_screen.open(view)` opens it, or raises it when it is open, and returns the window. There is one at most.
   - `save_screen.close()` closes it, `save_screen.relayout(view)` centres it and an open question again, and
     `save_screen.current()` gives a test its parts.
-  - `save_screen.set_time(time)` takes the latest `game_time`, for the generated name's date. `main.lua` calls it from
-    its `game.on_time` handler.
+  - `save_screen.set_time(time)` takes the latest `game_time`, for the generated name's date and, since CK-330, for the
+    saved word (below). `main.lua` calls it from its `game.on_time` handler.
   - `save_screen.generated_name(id, time)` is the generated name's rule alone (below).
   - **The menu** (`lib/menu.lua`) **opens and closes it,** as it does the settings window: the "save / load" button opens
     it, `menu.relayout()` passes on a change of the view's size, and the menu's `on_close` closes it.
@@ -3109,8 +3242,23 @@ Lengths below are in UI pixels.
 - **The window** is a library window of kind `window`, titled "Save / Load", with the close "x": 400 by 300 over all and
   not draggable. It is centred in the view when it opens and again when the view's size changes. It is modal (§3.18), so
   it is above the menu and its backdrop.
-- **From the top of its content:** the name field and "new save"; a 1-pixel line in the kind's `outline` across the
-  content, 17 down; the cards, from 20 down to the list bar; and the list bar (§3.14) in the bottom 19.
+- **From the top of its content,** since CK-330: the saved word; the name field and "new save", 12 down; a 1-pixel
+  line in the kind's `outline` across the content, 29 down; the cards, from 32 down to the list bar; and the list bar
+  (§3.14) in the bottom 19. Until CK-330 there was no word, and the field, the line and the cards were 12 higher.
+- **The saved word** (CK-330) is one line of text at the content's top left: "saved" in the theme's new colour
+  `saved`, or "unsaved" in `dim`. The owner: "i think there should be some indicater at the top of the save load
+  screen that tells the player if the current state of game is saved or not, just a green text 'saved' or grey text
+  'unsaved' should suffice." (`owner-direction-hand-check-results-manager-r1.md`; spec `runtime-m55/ck330-spec.md`,
+  sha256 `217cf743…`).
+  - **`saved` is `#5fb35a`** in `assets/ui/theme.toml`, the value of the theme's `number`. The spec proposed it; the
+    owner asked for green.
+  - **It shows `unsaved` of the latest `game_time`** (§3.6). `save_screen.set_time` keeps that value whether the
+    screen is open or not, and sets the word of an open screen. Before the first `game_time` the word is "saved",
+    as a game just started is.
+  - **It changes while the screen is open:** to "saved" after a save that succeeds, and to "unsaved" when the
+    game's flag is set. A save that fails leaves it.
+  - **It can be one `game_time` behind the game.** No load reads it: the guarded load decides (below).
+  - **The window is no taller,** so the cards' list is 12 shorter.
 - **The name field** is a text field (§3.22), the first in a shipped screen. It is as wide as the content less the "new
   save" button and a gap of 4, and holds up to 48 characters, the most a save's name may have.
   - **It starts with a generated name:** the scenario's id (`game.scenario()`, §3.6) with each `_` as a space, then a
@@ -3176,8 +3324,9 @@ Lengths below are in UI pixels.
   - **"load", only when the game has unsaved changes:** the title is "Load this save?", the lines are
     `The game has unsaved changes.` and `They will be discarded.`, and the action is "load"
     (`game.load_save(filename)`).
-- **Whether a load asks is the game's to decide** (`docs/places-time-design.md` §5.3). The screen keeps no copy of the
-  unsaved changes and reads none from `game_time`.
+- **Whether a load asks is the game's to decide** (`docs/places-time-design.md` §5.3). The screen does not decide it.
+  Until CK-330 it kept no copy of the unsaved changes and read none from `game_time`. It now keeps the latest
+  `unsaved` for its word (above), and reads it for nothing else.
   - **Every press of "load" sends the guarded load,** `game.load_save_guarded(filename)` (§3.6). The screen then waits
     for the answer, which comes to the function it gave `game.on_save_result` when it opened.
   - **Answered with success,** the game is loaded and nothing was asked.
@@ -3201,15 +3350,17 @@ Lengths below are in UI pixels.
   - **A delete:** the saves are listed again and nothing is chosen.
   - **A load:** the save/load window closes, and then the pause menu (`menu.close()`), which unblocks the game's keys
     as "return" does (§3.15). The loaded game waits paused, with the reason `load`.
-  - **A refusal:** the screen stays, and one line under the name field, 17 down, says what failed, in the theme's
+  - **A refusal:** the screen stays, and one line under the name field, 29 down since CK-330, says what failed, in the theme's
     `over_limit` colour: `save failed: <reason>`, `delete failed: <reason>`, `load failed: <reason>` or, when the list
     itself is refused, `cannot list the saves: <reason>`, with no cards. While it shows, the line under the field and
     the cards are 13 lower. It goes at the next press of one of the screen's buttons.
-  - The game clears its unsaved changes after a save or a load. The screen does nothing for that.
+  - The game clears its unsaved changes after a save or a load. The screen does nothing for that: since CK-330 its
+    word follows from the `game_time` that comes after.
 - **Leaving.** The "x", or Escape with nothing above the screen, closes it. The menu is as it was: still open, the game
   still paused, its keys still blocked. Closing the menu closes the screen with it, and an open question with the
   screen.
-- **It remembers nothing** but the latest date. Opened again, it has a new generated name, nothing chosen, the bar's
+- **It remembers nothing** but the latest date and, since CK-330, the latest `unsaved`. Opened again, it has a new
+  generated name, nothing chosen, the bar's
   starting tick and the cards at their top.
 - **The pointer gate** is new in `lib/pointer.lua`. `pointer.set_gate(fn)` sets it and `pointer.set_gate(nil)` clears it.
   - While one is set, the dispatcher asks `fn(key, event)` for every keyed event, in the packet's order, before the
@@ -3228,15 +3379,21 @@ Lengths below are in UI pixels.
   - The chosen save card's view raises its buttons that way. So "load", "save" and "delete" take their own presses, and
     a press on the rest of the card still reaches the card.
 - **Not there:** thumbnails; autosave; renaming a save; loading a save of another scenario; the main menu.
-- **Tests,** through the shipped scripts in the UI rig, with no window: 24 tests in
+- **Tests,** through the shipped scripts in the UI rig, with no window: 25 tests in
   `apps/codekarl/src/ui_link/save_screen_tests.rs`.
   - **Most answer the game's save calls with a stand-in,** so that every entry, time and refusal is exact. They cover
     opening above the backdrop, with "x" and Escape back to the menu; the cards, greyed and chosen; the list bar's
     starting tick and its sorts; "new save" and the names; the questions; the guarded load and its answers; the wait
     for a load's answer, with a press on the name field and on the "x" inside the same update; the other buttons
     holding a later press; the refusal line; the generated name and its 48 characters; the empty name; and the resize.
-  - **Three run the real simulation core** over a temporary saves directory: a new save, a save over and a delete on
-    real files; a load answered with success and with `unsaved`; and a save of another build, greyed and deleted.
+  - **Four run the real simulation core** over a temporary saves directory: a new save, a save over and a delete on
+    real files; a load answered with success and with `unsaved`; a save of another build, greyed and deleted; and,
+    since CK-330, the saved word.
+    - **The word's test** goes through a mark, a new save, a second mark, a save that fails, a guarded load answered
+      `unsaved` while the word says so, and a load, after which the reopened screen says "saved". Each step waits for
+      the `game_time` that carries the flag before it looks.
+    - The layout test has the word at the top and the places 12 lower. `game_api.rs` has the table's eight fields,
+      and `apps/codekarl/src/game/tests/storage.rs` what the core publishes (`docs/places-time-design.md` §5.3).
   - **Three are the library pieces':** the gate, `raise_hits` and `keep_open`.
 
 ## 4. Packages and ownership
