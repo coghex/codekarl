@@ -1462,6 +1462,8 @@ impl UiLink for CodekarlUi {
 }
 
 #[cfg(test)]
+mod fullscreen_tests;
+#[cfg(test)]
 mod glossary_reader_tests;
 #[cfg(test)]
 mod group_tests;

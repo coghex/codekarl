@@ -31,6 +31,9 @@ local capture_id = nil -- the capture that owns the keyboard, until its result a
 -- update's typing, not the widget's table: a widget that ends its editing and starts it again (in its own Tab handler, say) has a new session,
 -- and what is left of the update it was handling belongs to the old one.
 local session = 0
+-- A count of every change of what holds the keyboard (an editing starts or ends, a capture is armed, ends or is cancelled), for the code that
+-- must know whether such a change happened since it last looked (lib/fullscreen_key.lua).
+local changes = 0
 
 -- Starts `widget`'s editing: it takes the typing from any widget that was editing, and turns text input on when none was.
 function typing.start(widget)
@@ -48,6 +51,7 @@ function typing.start(widget)
   end
   editor = widget
   session = session + 1
+  changes = changes + 1
   return true
 end
 
@@ -56,13 +60,24 @@ function typing.stop(widget)
   if editor ~= nil and editor == widget then
     editor = nil
     session = session + 1
+    changes = changes + 1
     generation = window.set_text_input(false)
   end
+end
+
+-- How many times what holds the keyboard has changed.
+function typing.changes()
+  return changes
 end
 
 -- The widget editing now, or nil.
 function typing.editing()
   return editor
+end
+
+-- Whether a host key capture is waiting for its result.
+function typing.capturing()
+  return capture_id ~= nil
 end
 
 -- Applies and ends the current editing before asking the window to capture a key. `request` is the
@@ -85,6 +100,7 @@ function typing.capture(id, request)
     end
   end
   capture_id = id
+  changes = changes + 1
   local ok, message = pcall(request, id)
   if not ok then
     capture_id = nil
@@ -100,6 +116,7 @@ function typing.cancel_capture(request)
     error("typing.cancel_capture: expected a capture cancellation function", 2)
   end
   capture_id = nil
+  changes = changes + 1
   local ok, message = pcall(request)
   if not ok then
     error(message, 2)
@@ -111,6 +128,7 @@ end
 function typing.dispatch(update)
   if capture_id ~= nil and update.capture ~= nil and update.capture.id == capture_id then
     capture_id = nil
+    changes = changes + 1
   end
   local target, mine = editor, session
   if target == nil then

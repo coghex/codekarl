@@ -24,6 +24,7 @@ local tooltip = require("lib.tooltip")
 local classes = require("lib.classes")
 local menu = require("lib.menu")
 local typing = require("lib.typing")
+local fullscreen_key = require("lib.fullscreen_key")
 
 local P = ui.P
 local MARGIN = 8 -- UI units from the window's edges
@@ -699,6 +700,7 @@ frame.on_update(function(update)
   pointer.dispatch(update.pointer)
   require("lib.settings_window").update(update)
   listbar.update(update)
+  fullscreen_key.update(update)
   if update.width ~= view.width or update.height ~= view.height then
     view.width = update.width
     view.height = update.height
