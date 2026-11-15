@@ -660,9 +660,10 @@ All drawing runs on the render thread (§4).
     - **Test:** `the_keyboard_step_after_a_style_change_restores_the_view_and_never_keys_a_test_window`, in the same
       file, runs that step alone on a test window, with no change of mode. The view is first responder again, and
       no key request is made, whether the window is said to have been key or not.
-  - **Neither is seen working.** No automated test switches a real window's mode (above), and no focus test or
-    diagnostic is run for these two: their specs forbid it, after CK-187. Whether a covering window takes the
-    keyboard back, and whether F11 keeps it, is for the owner to check by hand.
+  - **The owner saw both work, by hand, on 2026-11-15:** the hand-check items `f11-refocus` and `f11-toggle` are
+    marked pass in the owner's checklist (relayed by ck-manager). No automated test covers either: none switches a
+    real window's mode (above), and no focus test or diagnostic is run for these two, which their specs forbid,
+    after CK-187.
 
 ### Present lifetime (Vulkan)
 

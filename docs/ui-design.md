@@ -387,8 +387,8 @@
 >     is not focused.
 >   - **CK-332:** after a change of mode the game's view is the window's first responder again, and a window that was
 >     key before the change is made key again.
->   - **Not seen working:** no automated test switches a real window's mode or tests focus. Whether the owner's fault is
->     gone is for the owner to check by hand.
+>   - **The owner saw both work, by hand, on 2026-11-15:** the hand-check items `f11-refocus` and `f11-toggle` are
+>     marked pass. No automated test switches a real window's mode or tests focus.
 
 ## Owner answers (2026-11-07)
 
