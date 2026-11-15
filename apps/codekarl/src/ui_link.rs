@@ -421,7 +421,7 @@ fn route_pointer_in(
     regions: Option<&ck_render_2d::HitRegions>,
     units: Option<ck_render_2d::ui_scale::UnitMap>,
 ) -> RoutedPointer {
-    route_pointer_with(owner, input, regions, units, false)
+    route_pointer_with(owner, input, regions, units, false, None)
 }
 
 /// Routes one tick's pointer input. `end_capture` ends the gesture someone already owns, as a focus loss does: the pause menu's
@@ -437,11 +437,19 @@ fn route_pointer_with(
     regions: Option<&ck_render_2d::HitRegions>,
     units: Option<ck_render_2d::ui_scale::UnitMap>,
     end_capture: bool,
+    viewport: Option<(u32, u32)>,
 ) -> RoutedPointer {
     use crate::map_app::RoutedMapEvent as MapEvent;
     let mut routed = RoutedPointer::default();
     // In a window opened in pixels the UI's positions, hit tests and scroll amounts are in UI units; the map's events keep their points.
     let ui = |position: PointerPosition| units.map_or(position, |map| map.position(position));
+    let viewport = viewport.map(|(width, height)| {
+        let edge = PointerPosition {
+            x: i32::try_from(i64::from(width) * 256).unwrap_or(i32::MAX),
+            y: i32::try_from(i64::from(height) * 256).unwrap_or(i32::MAX),
+        };
+        units.map_or(edge, |map| map.position(edge))
+    });
     let latest = ui(input.pointer_position.unwrap_or_default());
     if matches!(owner, GestureOwner::Nobody) && !input.pointer_held {
         *owner = GestureOwner::Idle;
@@ -480,7 +488,7 @@ fn route_pointer_with(
                     }
                     GestureOwner::Idle | GestureOwner::Nobody => {}
                 }
-                if let Some(key) = regions.and_then(|regions| regions.key_at(ui(position))) {
+                if let Some(key) = key_at(regions, ui(position), viewport) {
                     let key = key.to_owned();
                     routed
                         .ui
@@ -494,9 +502,7 @@ fn route_pointer_with(
                 }
             }
             PointerEvent::ButtonDown { button, position } => {
-                let key = regions
-                    .and_then(|regions| regions.key_at(ui(position)))
-                    .map(str::to_owned);
+                let key = key_at(regions, ui(position), viewport).map(str::to_owned);
                 let mut event = view_event("button_down", ui(position), key);
                 event.button = Some(match button {
                     ck_window::PointerButton::Middle => "middle",
@@ -505,9 +511,7 @@ fn route_pointer_with(
                 routed.ui.push(event);
             }
             PointerEvent::ButtonUp { button, position } => {
-                let key = regions
-                    .and_then(|regions| regions.key_at(ui(position)))
-                    .map(str::to_owned);
+                let key = key_at(regions, ui(position), viewport).map(str::to_owned);
                 let mut event = view_event("button_up", ui(position), key);
                 event.button = Some(match button {
                     ck_window::PointerButton::Middle => "middle",
@@ -523,9 +527,7 @@ fn route_pointer_with(
                 }
                 GestureOwner::Map => routed.map.push(MapEvent::Pointer(*event)),
                 GestureOwner::Idle => {
-                    let key = regions
-                        .and_then(|regions| regions.key_at(ui(position)))
-                        .map(str::to_owned);
+                    let key = key_at(regions, ui(position), viewport).map(str::to_owned);
                     routed
                         .ui
                         .push(view_event("move", ui(position), key.clone()));
@@ -556,9 +558,9 @@ fn route_pointer_with(
             } => {
                 let key = match owner {
                     GestureOwner::Ui(key) => Some(key.clone()),
-                    GestureOwner::Idle | GestureOwner::Map | GestureOwner::Nobody => regions
-                        .and_then(|regions| regions.key_at(ui(position)))
-                        .map(str::to_owned),
+                    GestureOwner::Idle | GestureOwner::Map | GestureOwner::Nobody => {
+                        key_at(regions, ui(position), viewport).map(str::to_owned)
+                    }
                 };
                 if key.is_some() {
                     let mut view = view_event("scroll", ui(position), key);
@@ -606,13 +608,32 @@ fn route_pointer_with(
     // Each event says whether it lay inside one of its key's published rectangles, decided here, once, against the very regions this
     // tick routed with: the widget never recomputes geometry against a frame the player was not pointing at.
     for event in &mut routed.ui {
-        event.inside = event
-            .key
-            .as_deref()
-            .zip(regions)
-            .is_some_and(|(key, regions)| regions.key_contains(key, event.position));
+        event.inside = viewport.is_none_or(|view| in_view(event.position, view))
+            && event
+                .key
+                .as_deref()
+                .zip(regions)
+                .is_some_and(|(key, regions)| regions.key_contains(key, event.position));
     }
     routed
+}
+
+fn key_at(
+    regions: Option<&ck_render_2d::HitRegions>,
+    position: PointerPosition,
+    viewport: Option<PointerPosition>,
+) -> Option<&str> {
+    if viewport.is_some_and(|view| !in_view(position, view)) {
+        return None;
+    }
+    regions.and_then(|regions| regions.key_at(position))
+}
+
+fn in_view(position: PointerPosition, viewport: PointerPosition) -> bool {
+    i64::from(position.x) >= 0
+        && i64::from(position.y) >= 0
+        && position.x < viewport.x
+        && position.y < viewport.y
 }
 
 #[derive(Default)]
@@ -1326,13 +1347,25 @@ impl UiLink for CodekarlUi {
             .or(previous_ui);
         let (block_began, game_input) = self.key_block(&input);
         let mut owner = self.state.pointer_owner.borrow_mut();
-        let routed = route_pointer_with(&mut owner, &input, regions.as_deref(), units, block_began);
+        let pointer_viewport =
+            (tick.mode == ck_window::WindowMode::Fullscreen).then_some(tick.metrics.points);
+        let routed = route_pointer_with(
+            &mut owner,
+            &input,
+            regions.as_deref(),
+            units,
+            block_began,
+            pointer_viewport,
+        );
+        let viewport = pointer_viewport.map(|(width, height)| {
+            let edge = PointerPosition {
+                x: i32::try_from(i64::from(width) * 256).unwrap_or(i32::MAX),
+                y: i32::try_from(i64::from(height) * 256).unwrap_or(i32::MAX),
+            };
+            units.map_or(edge, |map| map.position(edge))
+        });
         let latest_over = latest_position
-            .and_then(|position| {
-                regions
-                    .as_deref()
-                    .and_then(|regions| regions.key_at(position))
-            })
+            .and_then(|position| key_at(regions.as_deref(), position, viewport))
             .map(str::to_owned);
         let map_owns_gesture = matches!(*owner, GestureOwner::Map);
         let suppress_hover = input.reset
@@ -2305,6 +2338,7 @@ mod tests {
     fn known_tick() -> InputTick {
         InputTick {
             dt: Duration::from_millis(250),
+            mode: ck_window::WindowMode::Windowed,
             metrics: known_metrics(),
             input: known_input(),
         }
@@ -2613,6 +2647,7 @@ mod tests {
             Some(&regions),
             None,
             false,
+            None,
         );
         assert!(matches!(
             kept.map.as_slice(),
@@ -2629,6 +2664,7 @@ mod tests {
             Some(&regions),
             None,
             true,
+            None,
         );
         assert!(matches!(
             ended.map.as_slice(),
@@ -2647,6 +2683,7 @@ mod tests {
                 Some(&regions),
                 None,
                 false,
+                None,
             );
             assert!(routed.map.is_empty() && routed.ui.is_empty());
         }
@@ -2660,6 +2697,7 @@ mod tests {
             Some(&regions),
             None,
             true,
+            None,
         );
         assert!(cancelled.map.is_empty());
         assert_eq!(cancelled.ui.len(), 1);
@@ -2675,11 +2713,166 @@ mod tests {
             Some(&regions),
             None,
             true,
+            None,
         );
         assert!(pressed.map.is_empty());
         assert_eq!(pressed.ui.len(), 1);
         assert_eq!(pressed.ui[0].kind, "down");
         assert_eq!(pressed.ui[0].key.as_deref(), Some("backdrop"));
+    }
+
+    #[test]
+    fn positions_on_fullscreen_bars_cannot_hit_regions_that_extend_past_the_picture() {
+        let regions = hit_regions(&[
+            ("left_chrome", -4.0, 40.0, 6.0, 20.0),
+            ("right_chrome", 1280.0, 40.0, 10.0, 20.0),
+        ]);
+        for position in [
+            PointerPosition {
+                x: -256,
+                y: 50 * 256,
+            },
+            PointerPosition {
+                x: 1280 * 256,
+                y: 50 * 256,
+            },
+        ] {
+            let mut owner = GestureOwner::Idle;
+            let down = route_pointer_with(
+                &mut owner,
+                &pointer_input(vec![PointerEvent::Down(position)], Some(position), true),
+                Some(&regions),
+                None,
+                false,
+                Some((1280, 800)),
+            );
+            assert!(matches!(
+                down.map.as_slice(),
+                [crate::map_app::RoutedMapEvent::Pointer(PointerEvent::Down(p))] if *p == position
+            ));
+            assert_eq!(down.ui.len(), 1);
+            assert_eq!(down.ui[0].kind, "map_down");
+            assert_eq!(down.ui[0].key, None);
+            assert!(!down.ui[0].inside);
+
+            let moved = route_pointer_with(
+                &mut owner,
+                &pointer_input(vec![PointerEvent::Move(position)], Some(position), true),
+                Some(&regions),
+                None,
+                false,
+                Some((1280, 800)),
+            );
+            assert!(moved.ui.iter().all(|event| event.key.is_none()));
+        }
+    }
+
+    #[test]
+    fn fullscreen_viewport_keeps_in_rectangle_ui_hits_with_and_without_unit_conversion() {
+        use ck_render_2d::ui_scale::UnitMap;
+
+        let viewport_points = (1728, 1080);
+        let samples = [
+            ("points", None),
+            (
+                "1280x800 drawable at UI scale 2",
+                Some(UnitMap {
+                    pixels: PixelSize {
+                        width: 1280,
+                        height: 800,
+                    },
+                    points: viewport_points,
+                    k: ck_render_2d::ui_scale::K_TWO,
+                }),
+            ),
+            (
+                "2560x1600 drawable at two pixels per point",
+                Some(UnitMap {
+                    pixels: PixelSize {
+                        width: 2560,
+                        height: 1600,
+                    },
+                    points: viewport_points,
+                    k: ck_render_2d::ui_scale::K_ONE,
+                }),
+            ),
+        ];
+
+        for (label, units) in samples {
+            let point = PointerPosition {
+                x: 800 * 256,
+                y: 500 * 256,
+            };
+            let ui_point = units.map_or(point, |map| map.position(point));
+            let left = f64::from(ui_point.x) / 256.0 - 5.0;
+            let top = f64::from(ui_point.y) / 256.0 - 5.0;
+            let regions = hit_regions(&[("panel", left, top, 10.0, 10.0)]);
+
+            let mut down_owner = GestureOwner::Idle;
+            let down = route_pointer_with(
+                &mut down_owner,
+                &pointer_input(vec![PointerEvent::Down(point)], Some(point), true),
+                Some(&regions),
+                units,
+                false,
+                Some(viewport_points),
+            );
+            assert!(
+                down.map.is_empty(),
+                "{label}: inside press belongs to the UI"
+            );
+            assert_eq!(down.ui.len(), 1, "{label}: one press event");
+            assert_eq!(down.ui[0].kind, "down", "{label}");
+            assert_eq!(down.ui[0].key.as_deref(), Some("panel"), "{label}");
+            assert!(down.ui[0].inside, "{label}: press is inside the hit region");
+
+            let mut move_owner = GestureOwner::Idle;
+            let moved = route_pointer_with(
+                &mut move_owner,
+                &pointer_input(vec![PointerEvent::Move(point)], Some(point), false),
+                Some(&regions),
+                units,
+                false,
+                Some(viewport_points),
+            );
+            assert!(
+                moved.map.is_empty(),
+                "{label}: inside idle move belongs to the UI"
+            );
+            assert_eq!(moved.ui.len(), 1, "{label}: one move event");
+            assert_eq!(moved.ui[0].kind, "move", "{label}");
+            assert_eq!(moved.ui[0].key.as_deref(), Some("panel"), "{label}");
+            assert!(moved.ui[0].inside, "{label}: move is inside the hit region");
+
+            let right = PointerPosition {
+                x: i32::try_from(viewport_points.0).expect("viewport width fits in points") * 256,
+                y: point.y,
+            };
+            let mut outside_owner = GestureOwner::Idle;
+            let outside = route_pointer_with(
+                &mut outside_owner,
+                &pointer_input(vec![PointerEvent::Down(right)], Some(right), true),
+                Some(&regions),
+                units,
+                false,
+                Some(viewport_points),
+            );
+            assert_eq!(outside.ui.len(), 1, "{label}: map-down notification only");
+            assert_eq!(outside.ui[0].kind, "map_down", "{label}");
+            assert_eq!(
+                outside.ui[0].key, None,
+                "{label}: right of picture does not hit the panel"
+            );
+            assert!(
+                !outside.ui[0].inside,
+                "{label}: right of picture is outside"
+            );
+            assert!(matches!(
+                outside.map.as_slice(),
+                [crate::map_app::RoutedMapEvent::Pointer(PointerEvent::Down(position))]
+                    if *position == right
+            ));
+        }
     }
 
     #[test]
@@ -3474,6 +3667,7 @@ mod tests {
         };
         link.input(&InputTick {
             dt: update.dt,
+            mode: ck_window::WindowMode::Windowed,
             metrics: update.metrics,
             input,
         })

@@ -33,6 +33,8 @@ pub struct PixelRequest {
 pub struct ScreenSnapshot {
     /// Pixels per point.
     pub backing: f64,
+    /// The width and height of the whole screen in points, including the menu bar and Dock areas.
+    pub screen_points: (u32, u32),
     /// The width and height of the screen's visible area in points.
     pub visible_points: (u32, u32),
 }
@@ -43,6 +45,7 @@ impl ScreenSnapshot {
     pub const fn unlimited() -> Self {
         Self {
             backing: 1.0,
+            screen_points: (u32::MAX, u32::MAX),
             visible_points: (u32::MAX, u32::MAX),
         }
     }

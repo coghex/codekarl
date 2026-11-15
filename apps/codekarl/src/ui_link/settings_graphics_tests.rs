@@ -16,7 +16,7 @@ fn click_at_metrics(rig: &mut super::group_tests::Rig, name: &str, width: u32, h
 }
 
 #[test]
-fn graphics_is_the_second_settings_tab_and_has_its_rows() {
+fn graphics_is_the_second_settings_tab_and_has_window_mode_and_frame_rate_rows() {
     let mut rig = settings_graphics_rig(&[
         r#"expect(not menu_button("settings").inactive, "settings is available")"#,
         r#"
@@ -32,10 +32,55 @@ local s = require("lib.settings_window").current()
 expect(s.selected == "graphics", "the graphics tab opens")
 local labels = {}
 for _, line in ipairs(lines_in(s.page.group)) do labels[line_text(line)] = line end
-expect(labels.resolution ~= nil and labels["UI scale up to"] ~= nil and labels["list look"] ~= nil,
-  "graphics has resolution, UI scale up to, and list look")
+expect(labels.resolution ~= nil and labels["window mode"] ~= nil and labels["UI scale up to"] ~= nil
+  and labels["frame rate"] ~= nil and labels["list look"] ~= nil,
+  "graphics has resolution, window mode, UI scale up to, frame rate, and list look")
 expect(labels["frame rate"] ~= nil, "graphics has the frame rate row (CK-313)")
-expect(labels["window mode"] == nil, "window mode belongs to a later slice")
+eq(#s.controls.window_mode, 3, "the mode row has three choices")
+eq(s.controls.window_mode[1].y, 20 * P, "the mode row is 20 below the resolution row")
+eq(s.controls.scale[1].y, s.controls.window_mode[#s.controls.window_mode].y + 20 * P,
+  "the scale row begins five pixels after the mode buttons")
+for _, control in ipairs(s.controls.window_mode) do
+  expect(control.x + control.width <= s.page.room, "each window mode button stays inside the content edge")
+end
+"#,
+    ]);
+    rig.opened();
+    click(&mut rig, "settings");
+    rig.opened();
+    click(&mut rig, "settings_tab_graphics");
+    rig.opened();
+}
+
+#[test]
+fn window_mode_choices_update_the_mode_and_deactivate_resolution_fields_only_in_borderless_mode() {
+    let mut rig = settings_graphics_rig(&[
+        r"mark_settings()",
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+s.controls.window_mode[2].on_click()
+eq(fixture.calls[#fixture.calls][1], "set")
+eq(fixture.calls[#fixture.calls][2], "window.mode")
+eq(fixture.calls[#fixture.calls][3], "windowed_fullscreen")
+eq(s.controls.window_mode[2].selected, true)
+fixture.graphics.width, fixture.graphics.height = 1280, 800
+require("lib.settings_window").update({pixel_width=1920, pixel_height=1200})
+eq(s.controls.resolution_width:get(), 1920, "windowed fullscreen shows the screen drawable width")
+eq(s.controls.resolution_height:get(), 1200, "windowed fullscreen shows the screen drawable height")
+expect(s.controls.resolution_width.inactive and s.controls.resolution_height.inactive,
+  "windowed fullscreen greys both resolution fields")
+expect(hit_rect(s.controls.resolution_width.key) == nil, "a greyed field publishes no hit region")
+eq(s.controls.scale[2].selected, true, "screen drawable selects its attainable scale")
+expect(s.controls.scale[3].inactive, "screen drawable greys a scale it cannot hold")
+s.controls.window_mode[3].on_click()
+eq(fixture.graphics.mode, "fullscreen")
+eq(s.controls.window_mode[3].selected, true)
+expect(not s.controls.resolution_width.inactive and not s.controls.resolution_height.inactive,
+  "fullscreen keeps resolution fields live")
+s.controls.window_mode[1].on_click()
+eq(fixture.graphics.mode, "windowed")
+eq(s.controls.window_mode[1].selected, true)
 "#,
     ]);
     rig.opened();
@@ -262,7 +307,7 @@ eq(fixture.calls[#fixture.calls][2], "ui.scale")
 fn list_look_is_kept_and_graphics_defaults_reset_the_tab_with_one_resize() {
     let mut rig = settings_graphics_rig(&[
         r#"
-fixture.graphics = {width=1920, height=1200, list_look="cards", scale=1.5}
+fixture.graphics = {width=1920, height=1200, list_look="cards", scale=1.5, mode="fullscreen"}
 unsaved_marks = 0
 local mark_unsaved = game.mark_unsaved
 game.mark_unsaved = function()
@@ -296,6 +341,7 @@ local s = require("lib.settings_window").current()
 eq(fixture.calls[#fixture.calls][1], "resize", "defaults asks the resize service")
 eq(fixture.graphics.width, 1280) eq(fixture.graphics.height, 800)
 eq(fixture.graphics.list_look, "cards") eq(fixture.graphics.scale, nil)
+eq(fixture.graphics.mode, "windowed", "defaults restores the saved window mode")
 eq(fixture.calls[#fixture.calls][1], "resize")
 eq(fixture.calls[#fixture.calls][2], 1280) eq(fixture.calls[#fixture.calls][3], 800)
 local resize_count = 0
@@ -304,6 +350,7 @@ eq(resize_count, 1, "defaults request exactly one resize")
 eq(s.controls.resolution_width:get(), 1280)
 eq(s.controls.resolution_height:get(), 800)
 eq(s.controls.list_look[1].selected, true)
+eq(s.controls.window_mode[1].selected, true, "defaults lights the windowed choice")
 "#,
     ]);
     rig.opened();
@@ -392,18 +439,19 @@ for _, line in ipairs(lines_in(s.page.group)) do labels[line_text(line)] = line 
 local _, scale_y = line_at(labels["UI scale up to"])
 local rate_x, rate_y = line_at(labels["frame rate"])
 local _, look_y = line_at(labels["list look"])
-eq(rate_y - scale_y, 20 * P, "the frame rate row is 20 below the scale row")
-eq(look_y - rate_y, 20 * P, "and list look is 20 below it")
+expect(rate_y > scale_y, "the frame rate row follows the scale row")
+expect(look_y > rate_y, "list look follows the frame rate row")
+eq(s.controls.list_look[1].y, s.controls.fps.y + 20 * P)
 local fps, none = s.controls.fps, s.controls.fps_none
 eq(fps.x, 84 * P, "the field is 84 right of the label")
-eq(fps.y, 40 * P)
+eq(fps.y, s.controls.scale[1].y + 20 * P)
 local fps_width = select(1, fps:size())
 eq(select(1, fps:size()), (font.layout("000").width + 8) * P, "the field holds three digits")
 expect(labels.fps ~= nil, "fps is shown beside the field")
 local fps_x = line_at(labels.fps) - rate_x -- the label's own x is the group's origin
 eq(fps_x, fps.x + fps_width + 4 * P, "fps is 4 right of the field")
 eq(none.x, fps_x + font.layout("fps").width * P + 6 * P, "the none button is 6 right of fps")
-eq(none.y, 40 * P)
+eq(none.y, fps.y)
 expect(none.selected, "none is lit when no limit is set")
 expect(fps:is_greyed(), "the field is greyed")
 eq(fps:get(), 60, "a run that starts with none shows 60")

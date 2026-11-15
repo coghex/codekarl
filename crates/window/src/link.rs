@@ -61,6 +61,8 @@ pub struct InputTick {
     pub dt: Duration,
     /// Window geometry at the tick.
     pub metrics: WindowMetrics,
+    /// The requested presentation mode at this tick.
+    pub mode: crate::mode::WindowMode,
     /// The input snapshot, taken at the tick.
     pub input: ck_input::InputSnapshot,
 }

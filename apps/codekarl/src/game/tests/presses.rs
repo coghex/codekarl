@@ -90,6 +90,7 @@ fn metrics() -> WindowMetrics {
 fn tick(input: InputSnapshot) -> InputTick {
     InputTick {
         dt: Duration::from_millis(16),
+        mode: ck_window::WindowMode::Windowed,
         metrics: metrics(),
         input,
     }

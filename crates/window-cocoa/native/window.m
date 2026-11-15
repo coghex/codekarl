@@ -247,9 +247,9 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
     return YES;
 }
 
-/* The view's backing layer is the Metal layer the presenter draws to. */
+/* A plain root provides the black letterbox area; the presenter owns the child Metal layer. */
 - (CALayer *)makeBackingLayer {
-    return [CAMetalLayer layer];
+    return [CALayer layer];
 }
 
 /* Every key event is recorded (a code outside the key table is dropped) and consumed here, so none reaches the
@@ -558,8 +558,8 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
 - (void)recordPointerKind:(uint8_t)kind point:(NSPoint)point amount:(double)amount unit:(uint8_t)unit button:(uint8_t)button {
     if (self.view == nil) return;
     NSPoint local = [self.view convertPoint:point fromView:nil];
-    double x = nearbyint(local.x * 256.0);
-    double y = nearbyint((self.view.bounds.size.height - local.y) * 256.0);
+    double x = nearbyint((local.x - self.pictureX) * 256.0);
+    double y = nearbyint((self.view.bounds.size.height - local.y - self.pictureY) * 256.0);
     int32_t px = (int32_t)fmax((double)INT32_MIN, fmin((double)INT32_MAX, x));
     int32_t py = (int32_t)fmax((double)INT32_MIN, fmin((double)INT32_MAX, y));
     double scaled = nearbyint(amount * 256.0);
@@ -854,12 +854,18 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
         return;
     }
     double scale = [self scale];
-    self.view.layer.contentsScale = scale;
-    NSSize points = self.view.bounds.size;
+    self.rootLayer.contentsScale = scale;
+    self.metalLayer.contentsScale = scale;
+    NSSize bounds = self.view.bounds.size;
+    NSSize points = self.mode == 2 ? NSMakeSize(self.pictureWidth, self.pictureHeight) : bounds;
     uint32_t point_width = (uint32_t)llround(points.width);
     uint32_t point_height = (uint32_t)llround(points.height);
-    uint32_t width = (uint32_t)llround(points.width * scale);
-    uint32_t height = (uint32_t)llround(points.height * scale);
+    uint32_t width = self.mode == 0 ? (uint32_t)llround(bounds.width * scale) : self.drawableWidth;
+    uint32_t height = self.mode == 0 ? (uint32_t)llround(bounds.height * scale) : self.drawableHeight;
+    if (self.mode == 0) {
+        self.metalLayer.frame = self.rootLayer.bounds;
+        self.metalLayer.drawableSize = CGSizeMake(width, height);
+    }
     if (width == self.knownWidth && height == self.knownHeight && point_width == self.knownPointWidth &&
         point_height == self.knownPointHeight) {
         return;
@@ -964,7 +970,7 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
 }
 
 - (BOOL)handleShortcutEvent:(NSEvent *)event {
-    if (event.type != NSEventTypeKeyDown || event.keyCode != CK_KEY_CODE_F || self.window == nil || !self.resizable) {
+    if (event.type != NSEventTypeKeyDown || event.keyCode != CK_KEY_CODE_F || self.window == nil || !self.resizable || self.mode != 0) {
         return NO;
     }
     NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
@@ -978,6 +984,66 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
         [self.window toggleFullScreen:nil];
     }
     return YES;
+}
+
+- (void)setMode:(int)mode outer:(NSSize)outer picture:(NSRect)picture drawable:(NSSize)drawable {
+    if (self.window == nil || self.view == nil || self.rootLayer == nil || self.metalLayer == nil || mode < 0 || mode > 2) return;
+    NSWindow *window = self.window;
+    BOOL borderless = mode != 0;
+    if (borderless && !self.savedWindowedFrame) {
+        self.windowedFrame = window.frame;
+        self.windowedStyleMask = window.styleMask;
+        self.savedWindowedFrame = YES;
+        self.savedPresentationOptions = self.application.presentationOptions;
+        self.savedPresentationOptionsValid = YES;
+    }
+    if (borderless) {
+        NSScreen *screen = window.screen ?: NSScreen.mainScreen;
+        if (screen != nil) {
+            self.application.presentationOptions = NSApplicationPresentationAutoHideMenuBar |
+                                                   NSApplicationPresentationAutoHideDock;
+            window.styleMask = NSWindowStyleMaskBorderless;
+            [window setFrame:screen.frame display:YES];
+        }
+    } else if (self.savedWindowedFrame) {
+        window.styleMask = self.windowedStyleMask;
+        NSRect contentRect = [window frameRectForContentRect:NSMakeRect(0, 0, outer.width, outer.height)];
+        contentRect.origin.x = self.windowedFrame.origin.x;
+        contentRect.origin.y = NSMaxY(self.windowedFrame) - contentRect.size.height;
+        [window setFrame:contentRect display:YES];
+        self.savedWindowedFrame = NO;
+        if (self.savedPresentationOptionsValid) {
+            self.application.presentationOptions = self.savedPresentationOptions;
+            self.savedPresentationOptionsValid = NO;
+        }
+    }
+    self.mode = mode;
+    self.pictureX = (uint32_t)picture.origin.x;
+    self.pictureY = (uint32_t)picture.origin.y;
+    self.pictureWidth = (uint32_t)picture.size.width;
+    self.pictureHeight = (uint32_t)picture.size.height;
+    self.drawableWidth = (uint32_t)drawable.width;
+    self.drawableHeight = (uint32_t)drawable.height;
+    self.rootLayer.frame = self.view.bounds;
+    self.rootLayer.backgroundColor = borderless ? NSColor.blackColor.CGColor : (__bridge CGColorRef)self.clearColour;
+    CGFloat y = outer.height - picture.origin.y - picture.size.height;
+    self.metalLayer.autoresizingMask = borderless ? kCALayerNotSizable
+                                                  : (kCALayerWidthSizable | kCALayerHeightSizable);
+    self.metalLayer.frame = CGRectMake(picture.origin.x, y, picture.size.width, picture.size.height);
+    self.metalLayer.contentsGravity = mode == 0 ? kCAGravityTopLeft : kCAGravityResize;
+    self.metalLayer.drawableSize = drawable;
+    [self.rootLayer setNeedsDisplay];
+    [self.metalLayer setNeedsDisplay];
+    /* A mode change invalidates held pointer state and leaves the pointer safely outside the game picture until it moves. */
+    BOOL wasEmpty = ![self isPending];
+    self->_pointerHead = 0;
+    self->_pointerLength = 0;
+    self->_pointerOverflow = YES;
+    self->_pointerHeld = NO;
+    self->_pointerX = -256;
+    self->_pointerY = -256;
+    [self afterRecord:wasEmpty];
+    [self applyScaleAndRecordSize];
 }
 
 - (void)clearPending {
@@ -1006,7 +1072,15 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
     window.contentView = nil;
     self.window = nil;
     self.view = nil;
+    self.rootLayer = nil;
+    self.metalLayer = nil;
     self.delegate = nil;
+    self.clearColour = nil;
+    self.savedWindowedFrame = NO;
+    if (self.savedPresentationOptionsValid) {
+        self.application.presentationOptions = self.savedPresentationOptions;
+        self.savedPresentationOptionsValid = NO;
+    }
     self.knownWidth = 0;
     self.knownHeight = 0;
     self.knownPointWidth = 0;
@@ -1058,18 +1132,24 @@ CKWinHandle *ck_win_create(char *error, size_t capacity) {
     }
 }
 
-void ck_win_main_screen(CKWinHandle *handle, double *backing, uint32_t *visible_width, uint32_t *visible_height) {
+void ck_win_screen(CKWinHandle *handle, double *backing, uint32_t *screen_width, uint32_t *screen_height,
+                   uint32_t *visible_width, uint32_t *visible_height) {
     @autoreleasepool {
-        (void)handle;
-        NSScreen *screen = NSScreen.mainScreen;
+        CKWinState *state = (__bridge CKWinState *)handle;
+        NSScreen *screen = state.window.screen ?: NSScreen.mainScreen;
         if (screen == nil) {
             *backing = 1.0;
+            *screen_width = UINT32_MAX;
+            *screen_height = UINT32_MAX;
             *visible_width = UINT32_MAX;
             *visible_height = UINT32_MAX;
             return;
         }
+        NSRect frame = screen.frame;
         NSRect visible = screen.visibleFrame;
         *backing = screen.backingScaleFactor;
+        *screen_width = (uint32_t)floor(frame.size.width);
+        *screen_height = (uint32_t)floor(frame.size.height);
         *visible_width = (uint32_t)floor(visible.size.width);
         *visible_height = (uint32_t)floor(visible.size.height);
     }
@@ -1127,29 +1207,42 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
         CKWinView *view = [[CKWinView alloc] initWithFrame:content];
         view.state = state;
         view.wantsLayer = YES;
-        if (![view.layer isKindOfClass:[CAMetalLayer class]]) {
-            ck_error(error, capacity, @"the view's backing layer is not a CAMetalLayer");
-            return 1;
-        }
+        CALayer *root = view.layer;
+        CAMetalLayer *metal = [CAMetalLayer layer];
+        metal.frame = root.bounds;
+        metal.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+        [root addSublayer:metal];
         CKWinDelegate *delegate = [CKWinDelegate new];
         delegate.state = state;
         window.contentView = view;
         window.delegate = delegate;
         double scale = window.backingScaleFactor;
-        view.layer.contentsScale = scale;
+        root.contentsScale = scale;
+        metal.contentsScale = scale;
         /* While the edge is dragged the presenter's drawable keeps its last reported size and the window shows it anchored to the
          * top left, unscaled; the part of the window it does not cover shows the clear colour. */
-        view.layer.contentsGravity = kCAGravityTopLeft;
+        metal.contentsGravity = kCAGravityTopLeft;
         if (clear != NULL) {
             CGColorRef colour = CGColorCreateGenericRGB(clear[0], clear[1], clear[2], 1.0);
-            view.layer.backgroundColor = colour;
+            state.clearColour = (__bridge id)colour;
             CGColorRelease(colour);
+            root.backgroundColor = colour;
         }
         uint32_t pixels_wide = (uint32_t)llround(width * scale);
         uint32_t pixels_high = (uint32_t)llround(height * scale);
+        metal.drawableSize = CGSizeMake(pixels_wide, pixels_high);
         state.window = window;
         state.view = view;
+        state.rootLayer = root;
+        state.metalLayer = metal;
         state.delegate = delegate;
+        state.mode = 0;
+        state.pictureX = 0;
+        state.pictureY = 0;
+        state.pictureWidth = width;
+        state.pictureHeight = height;
+        state.drawableWidth = pixels_wide;
+        state.drawableHeight = pixels_high;
         state.resizable = resizable != 0;
         state.minPointWidth = content_min_width;
         state.minPointHeight = content_min_height;
@@ -1163,6 +1256,9 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
         window.acceptsMouseMovedEvents = YES;
         [window center];
         [window makeFirstResponder:view];
+        state.windowedFrame = window.frame;
+        state.windowedStyleMask = window.styleMask;
+        state.savedWindowedFrame = NO;
         if (activate) {
             [window makeKeyAndOrderFront:nil];
             if (@available(macOS 14.0, *)) {
@@ -1176,7 +1272,7 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
         } else {
             [window orderFront:nil];
         }
-        *layer = (__bridge void *)view.layer;
+        *layer = (__bridge void *)metal;
         *point_width = width;
         *point_height = height;
         *pixel_width = pixels_wide;
@@ -1189,6 +1285,18 @@ void ck_win_resize(CKWinHandle *handle, uint32_t point_width, uint32_t point_hei
     @autoreleasepool {
         CKWinState *state = (__bridge CKWinState *)handle;
         [state resizeToPoints:NSMakeSize(point_width, point_height)];
+    }
+}
+
+void ck_win_set_mode(CKWinHandle *handle, int mode, uint32_t outer_width, uint32_t outer_height,
+                     uint32_t picture_x, uint32_t picture_y, uint32_t picture_width, uint32_t picture_height,
+                     uint32_t pixel_width, uint32_t pixel_height) {
+    @autoreleasepool {
+        CKWinState *state = (__bridge CKWinState *)handle;
+        [state setMode:mode
+                 outer:NSMakeSize(outer_width, outer_height)
+               picture:NSMakeRect(picture_x, picture_y, picture_width, picture_height)
+              drawable:NSMakeSize(pixel_width, pixel_height)];
     }
 }
 

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::desc::{ScreenSnapshot, WindowDesc};
+use crate::mode::ModeLayout;
 use crate::notifier::NativeWake;
 
 /// A native event a backend reports from `pump`. Callbacks only record these: the loop never tears
@@ -112,6 +113,14 @@ pub trait Backend {
     /// Changes a resizable window's content size in points. Backends that do not implement runtime
     /// resizing may leave this as a no-op (the GLFW/Vulkan path is compile-only).
     fn resize_window(&mut self, _points: (u32, u32)) {}
+
+    /// Changes size while retaining the exact selected pixel resolution when a settings control supplied it.
+    fn resize_window_pixels(&mut self, points: (u32, u32), _pixels: PixelSize) {
+        self.resize_window(points);
+    }
+
+    /// Applies a mode after an accepted UI request. Native implementations report the settled size through `pump`.
+    fn set_mode(&mut self, _layout: ModeLayout) {}
 
     /// The object the notifier arms with: valid from after `create_window` until `destroy_window`.
     fn wake_target(&self) -> Arc<dyn NativeWake>;

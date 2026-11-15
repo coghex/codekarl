@@ -73,7 +73,7 @@ use ck_lua::ConfigValue;
 use ck_render_2d::Filter as ImageFilter;
 use ck_render_2d::SceneLimits;
 use ck_resources::ResourceLimits;
-use ck_window::{Bindings, SettingsError, UpdateSettings};
+use ck_window::{Bindings, SettingsError, UpdateSettings, WindowMode};
 use serde::de::value::MapAccessDeserializer;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -508,6 +508,7 @@ struct WindowFields {
     backend: Option<BackendName>,
     width: Option<u32>,
     height: Option<u32>,
+    mode: Option<String>,
 }
 
 /// The `window` table.
@@ -1330,6 +1331,7 @@ pub(crate) struct SettingsOverrides {
     pub(crate) ui_list_look: Option<&'static str>,
     pub(crate) window_width: Option<u32>,
     pub(crate) window_height: Option<u32>,
+    pub(crate) window_mode: Option<WindowMode>,
     /// The kept `[frame] fps_limit`: `Some(None)` is a kept `"none"`, which differs from the configuration's value.
     #[expect(
         clippy::option_option,
@@ -1345,6 +1347,7 @@ pub(crate) struct GraphicsSettings {
     pub(crate) list_look: &'static str,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) mode: WindowMode,
     /// The most frames drawn per second, 30 to 240 (`None`: no limit, a frame per display refresh; CK-313).
     pub(crate) fps_limit: Option<u32>,
 }
@@ -1356,6 +1359,7 @@ impl Default for GraphicsSettings {
             list_look: "cards",
             width: 1280,
             height: 800,
+            mode: WindowMode::Windowed,
             fps_limit: None,
         }
     }
@@ -1670,11 +1674,20 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
     let window_width = checked_dimension(path, "width", file.window.0.width.unwrap_or(1280), 1280)?;
     let window_height =
         checked_dimension(path, "height", file.window.0.height.unwrap_or(800), 800)?;
+    let window_mode = file
+        .window
+        .0
+        .mode
+        .as_deref()
+        .unwrap_or("windowed")
+        .try_into()
+        .map_err(|error: String| format!("{}: [window]: {error}", path.display()))?;
     let graphics = GraphicsSettings {
         scale_limit_k: ui_scale_limit_k,
         list_look,
         width: window_width,
         height: window_height,
+        mode: window_mode,
         fps_limit: file.frame.0.fps_limit.and_then(|limit| limit.0),
     };
     let resources = ResourceConfig::parse(file.resources.0)
@@ -2215,12 +2228,25 @@ fn load_window_settings(path: &Path, value: &toml::Value, config: &mut Config) {
         return;
     };
     for (key, entry) in entries {
+        if key == "mode" {
+            match entry.as_str().and_then(|text| WindowMode::try_from(text).ok()) {
+                Some(mode) => {
+                    config.graphics.mode = mode;
+                    config.settings_overrides.window_mode = Some(mode);
+                }
+                None => config.settings_warnings.push(format!(
+                    "{}: [window] mode = {entry} is not accepted: use windowed, windowed_fullscreen or fullscreen; ignoring it",
+                    path.display(),
+                )),
+            }
+            continue;
+        }
         let minimum = match key.as_str() {
             "width" => 1280,
             "height" => 800,
             _ => {
                 config.settings_warnings.push(format!(
-                    "{}: [window] unknown key `{key}`; accepted keys are width and height",
+                    "{}: [window] unknown key `{key}`; accepted keys are width, height and mode",
                     path.display()
                 ));
                 continue;
@@ -2343,7 +2369,7 @@ mod tests {
         let settings_path = dir.0.join("settings.toml");
         fs::write(
             &settings_path,
-            "[ui]\nscale = 2\nlist_look = 'rows'\n\n[window]\nwidth = 20000\nheight = 1000\n",
+            "[ui]\nscale = 2\nlist_look = 'rows'\n\n[window]\nwidth = 20000\nheight = 1000\nmode = 'fullscreen'\n",
         )
         .expect("write settings");
         let config = load(&config_path).expect("load config");
@@ -2354,9 +2380,33 @@ mod tests {
             (config.graphics.width, config.graphics.height),
             (1600, 1000)
         );
+        assert_eq!(config.graphics.mode, WindowMode::Fullscreen);
+        assert_eq!(
+            config.settings_overrides.window_mode,
+            Some(WindowMode::Fullscreen)
+        );
         assert_eq!(config.settings_base_graphics.width, 1600);
         assert_eq!(config.settings_warnings.len(), 1);
         assert!(config.settings_warnings[0].contains("width"));
+    }
+
+    #[test]
+    fn an_invalid_settings_window_mode_is_ignored_with_a_named_warning() {
+        let dir = crate::testing::Dir::new();
+        let config_path = dir.0.join("config.toml");
+        fs::write(&config_path, "[window]\nmode = 'windowed_fullscreen'\n").expect("write config");
+        fs::write(
+            dir.0.join("settings.toml"),
+            "[window]\nmode = 'exclusive'\n",
+        )
+        .expect("write settings");
+
+        let config = load(&config_path).expect("invalid player setting is ignored");
+        assert_eq!(config.graphics.mode, WindowMode::WindowedFullscreen);
+        assert!(config.settings_overrides.window_mode.is_none());
+        assert_eq!(config.settings_warnings.len(), 1);
+        assert!(config.settings_warnings[0].contains("mode"));
+        assert!(config.settings_warnings[0].contains("exclusive"));
     }
 
     #[test]
@@ -3954,6 +4004,25 @@ mod tests {
             window_backend("[window]\nbackend = \"native-metal\"\n"),
             Ok(Some(Backend::NativeMetal))
         );
+    }
+
+    #[test]
+    fn a_window_mode_is_validated_and_defaults_to_windowed() {
+        assert_eq!(
+            parse_config("").expect("empty config").graphics.mode,
+            WindowMode::Windowed
+        );
+        for (text, mode) in [
+            ("windowed", WindowMode::Windowed),
+            ("windowed_fullscreen", WindowMode::WindowedFullscreen),
+            ("fullscreen", WindowMode::Fullscreen),
+        ] {
+            let config = parse_config(&format!("[window]\nmode = {text:?}\n")).expect("known mode");
+            assert_eq!(config.graphics.mode, mode);
+        }
+        let error = parse_config("[window]\nmode = 'exclusive'\n")
+            .expect_err("unknown modes are refused in config");
+        assert!(error.contains("exclusive"), "{error}");
     }
 
     fn input_bindings(text: &str) -> Result<Bindings, String> {

@@ -341,6 +341,9 @@ pub(crate) struct FakeBackend {
     pub(crate) deadline_hook: Option<Box<dyn FnMut(Instant)>>,
     pub(crate) create: Result<(), String>,
     pub(crate) hook: Option<PumpHook>,
+    /// Report the coherent mode geometry and emulate fullscreen drawable-only resizes.
+    pub(crate) report_mode_sizes: bool,
+    current_mode: Option<ck_window::ModeLayout>,
     pub(crate) notifier: Option<Arc<Notifier>>,
     pub(crate) pumps: Arc<Mutex<Vec<PumpCall>>>,
     /// How many events each pump delivered.
@@ -362,6 +365,8 @@ impl FakeBackend {
             deadline_hook: None,
             create: Ok(()),
             hook: None,
+            report_mode_sizes: false,
+            current_mode: None,
             notifier: None,
             pumps: Arc::new(Mutex::new(Vec::new())),
             delivered: Arc::new(Mutex::new(Vec::new())),
@@ -414,6 +419,57 @@ impl Backend for FakeBackend {
 
     fn resize_window(&mut self, points: (u32, u32)) {
         note(&self.log, format!("backend.resize_window {points:?}"));
+    }
+
+    fn resize_window_pixels(&mut self, points: (u32, u32), pixels: PixelSize) {
+        let Some(layout) = self.current_mode else {
+            note(
+                &self.log,
+                format!("backend.resize_window_pixels {points:?} {pixels:?}"),
+            );
+            return;
+        };
+        match layout.mode.resize_action() {
+            ck_window::ResizeAction::Window => self.resize_window(points),
+            ck_window::ResizeAction::Ignore => {
+                note(&self.log, "backend.resize_ignored_windowed_fullscreen");
+            }
+            ck_window::ResizeAction::Drawable => {
+                let resized = ck_window::WindowMode::Fullscreen.layout(
+                    layout.outer_points,
+                    layout.outer_points,
+                    (pixels.width, pixels.height),
+                );
+                note(
+                    &self.log,
+                    format!(
+                        "backend.resize_drawable {:?} -> {:?}",
+                        layout.pixels, resized.pixels
+                    ),
+                );
+                self.current_mode = Some(resized);
+                if self.report_mode_sizes {
+                    self.script.push_back(vec![NativeEvent::SizeChanged {
+                        points: resized.points,
+                        pixels,
+                    }]);
+                }
+            }
+        }
+    }
+
+    fn set_mode(&mut self, layout: ck_window::ModeLayout) {
+        self.current_mode = Some(layout);
+        note(&self.log, format!("backend.set_mode {layout:?}"));
+        if self.report_mode_sizes {
+            self.script.push_back(vec![NativeEvent::SizeChanged {
+                points: layout.points,
+                pixels: PixelSize {
+                    width: layout.pixels.0,
+                    height: layout.pixels.1,
+                },
+            }]);
+        }
     }
 
     fn wake_target(&self) -> Arc<dyn NativeWake> {

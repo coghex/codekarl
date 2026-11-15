@@ -357,11 +357,13 @@ local function show_graphics(state, page)
   local width = state.pending_pixels and state.pending_pixels.width or last_pixels.width
   local height = state.pending_pixels and state.pending_pixels.height or last_pixels.height
   local text_colour = theme.colour("text")
-  label_at(page.group, 0, 2 * P, "resolution", text_colour, LABEL_WIDTH)
+  local resolution_inactive = values.mode == "windowed_fullscreen"
+  local resolution_label = label_at(page.group, 0, 2 * P, "resolution",
+    resolution_inactive and theme.colour("dim") or text_colour, LABEL_WIDTH)
   local fields = {}
   fields.width = numberfield.new{
     x = LABEL_WIDTH, y = 0, value = width, least = 0, greatest = 99999, digits = 5,
-    group = page.group, owner = page.owner,
+    group = page.group, owner = page.owner, inactive = resolution_inactive,
     on_apply = function(value) apply_resolution(state, "width", value) end,
   }
   local width_size = select(1, fields.width:size())
@@ -371,17 +373,43 @@ local function show_graphics(state, page)
   fields.height = numberfield.new{
     x = separator_x + font.layout("x").width * P + 4 * P, y = 0,
     value = height, least = 0, greatest = 99999, digits = 5,
-    group = page.group, owner = page.owner,
+    group = page.group, owner = page.owner, inactive = resolution_inactive,
     on_apply = function(value) apply_resolution(state, "height", value) end,
   }
   state.shown_pixels = {width = width, height = height}
   page.fields = {fields.width, fields.height}
   state.controls.resolution_width, state.controls.resolution_height = fields.width, fields.height
+  state.controls.resolution_label = resolution_label
 
-  label_at(page.group, 0, 22 * P, "UI scale up to", text_colour, LABEL_WIDTH)
+  label_at(page.group, 0, 22 * P, "window mode", text_colour, LABEL_WIDTH)
+  local mode_names = {"windowed", "windowed fullscreen", "fullscreen"}
+  local modes
+  local mode_height
+  modes, mode_height = button.flow{
+    x = LABEL_WIDTH, y = 20 * P, room = page.room - LABEL_WIDTH,
+    items = mode_names,
+    selected = values.mode == "windowed_fullscreen" and "windowed fullscreen" or values.mode,
+    group = page.group, owner = page.owner, kind = "window",
+    on_choose = function(label)
+      local mode = label == "windowed fullscreen" and "windowed_fullscreen" or label
+      settings.set("window.mode", mode)
+      local selected = settings.graphics().mode
+      local inactive = selected == "windowed_fullscreen"
+      for index, candidate in ipairs(modes) do
+        candidate:set_selected(mode_names[index] == label)
+      end
+      fields.width:set_inactive(inactive)
+      fields.height:set_inactive(inactive)
+      resolution_label:set_colour(inactive and theme.colour("dim") or text_colour)
+    end,
+  }
+  state.controls.window_mode = modes
+
+  local scale_y = 20 * P + mode_height + 5 * P
+  label_at(page.group, 0, scale_y + 2 * P, "UI scale up to", text_colour, LABEL_WIDTH)
   local selected_scale = effective_scale(values.scale, width, height)
   local scales = button.flow{
-    x = LABEL_WIDTH, y = 20 * P, room = page.room - LABEL_WIDTH,
+    x = LABEL_WIDTH, y = scale_y, room = page.room - LABEL_WIDTH,
     items = {"1", "1.5", "2"}, selected = tostring(selected_scale),
     group = page.group, owner = page.owner, kind = "window",
     on_choose = function(label)
@@ -402,7 +430,8 @@ local function show_graphics(state, page)
   -- and a press on it turns the limit back on with that number.
   local fps_limit = values.fps_limit
   if fps_limit ~= nil then fps_kept = fps_limit end
-  label_at(page.group, 0, 42 * P, "frame rate", text_colour, LABEL_WIDTH)
+  local fps_y = scale_y + 20 * P
+  label_at(page.group, 0, fps_y + 2 * P, "frame rate", text_colour, LABEL_WIDTH)
   local none
   local function limit_on(value)
     fps_kept = value
@@ -410,14 +439,14 @@ local function show_graphics(state, page)
     if none ~= nil then none:set_selected(false) end
   end
   fields.fps = numberfield.new{
-    x = LABEL_WIDTH, y = 40 * P, value = fps_kept, least = FPS_LEAST, greatest = FPS_GREATEST, digits = 3,
+    x = LABEL_WIDTH, y = fps_y, value = fps_kept, least = FPS_LEAST, greatest = FPS_GREATEST, digits = 3,
     greyed = fps_limit == nil, group = page.group, owner = page.owner,
     on_apply = limit_on, on_enable = limit_on,
   }
   local fps_x = LABEL_WIDTH + select(1, fields.fps:size()) + 4 * P
-  label_at(page.group, fps_x, 42 * P, "fps", theme.colour("dim"), page.room - fps_x)
+  label_at(page.group, fps_x, fps_y + 2 * P, "fps", theme.colour("dim"), page.room - fps_x)
   none = button.new{
-    x = fps_x + text_width("fps") + 6 * P, y = 40 * P, text = "none", kind = "window",
+    x = fps_x + text_width("fps") + 6 * P, y = fps_y, text = "none", kind = "window",
     group = page.group, owner = page.owner,
     on_click = function()
       settings.set("frame.fps_limit", "none")
@@ -430,9 +459,10 @@ local function show_graphics(state, page)
   state.controls.fps, state.controls.fps_none = fields.fps, none
 
   local look = list_look.get()
-  label_at(page.group, 0, 62 * P, "list look", text_colour, LABEL_WIDTH)
+  local look_y = fps_y + 20 * P
+  label_at(page.group, 0, look_y + 2 * P, "list look", text_colour, LABEL_WIDTH)
   local looks = button.flow{
-    x = LABEL_WIDTH, y = 60 * P, room = page.room - LABEL_WIDTH,
+    x = LABEL_WIDTH, y = look_y, room = page.room - LABEL_WIDTH,
     items = {"cards", "rows"}, selected = look,
     group = page.group, owner = page.owner, kind = "window",
     on_choose = function(value) list_look.set(value) end,

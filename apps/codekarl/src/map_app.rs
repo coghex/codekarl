@@ -332,7 +332,11 @@ impl<R: RiverViewSelector> MapController<R> {
         };
         #[cfg(feature = "test-support")]
         let camera_before_input = camera;
-        let view = ViewSize::from_points(update.metrics.points.0, update.metrics.points.1);
+        let view = if update.metrics.points.0 == 0 || update.metrics.points.1 == 0 {
+            camera.view
+        } else {
+            ViewSize::from_points(update.metrics.points.0, update.metrics.points.1)
+        };
         let mut changed = false;
         if camera.view != view {
             camera.resize(view);
@@ -352,15 +356,20 @@ impl<R: RiverViewSelector> MapController<R> {
             Self::observe_test_pointer(*event)?;
             match *event {
                 PointerEvent::Down(position) => {
-                    self.drag = Some(Drag {
-                        anchor: position,
-                        applied: (0, 0),
-                        dragged: false,
-                        eligible: !raw_overflow,
-                    });
+                    self.drag = map_pointer_in_view(position, update.mode, update.metrics.points)
+                        .then_some(Drag {
+                            anchor: position,
+                            applied: (0, 0),
+                            dragged: false,
+                            eligible: !raw_overflow,
+                        });
                 }
                 PointerEvent::ButtonDown { .. } | PointerEvent::ButtonUp { .. } => {}
                 PointerEvent::Move(position) | PointerEvent::Up(position) => {
+                    let inside = map_pointer_in_view(position, update.mode, update.metrics.points);
+                    if !inside && self.drag.is_none() {
+                        continue;
+                    }
                     if let Some(drag) = &mut self.drag {
                         let total = drag_delta(drag.anchor, position);
                         drag.dragged |= total != (0, 0);
@@ -373,7 +382,15 @@ impl<R: RiverViewSelector> MapController<R> {
                         drag.applied = total;
                         if matches!(*event, PointerEvent::Up(_)) {
                             let click = drag.eligible && !drag.dragged;
-                            if click && let Some(selected) = self.selected_at(camera, position) {
+                            if click
+                                && inside
+                                && let Some(selected) = self.selected_at(
+                                    camera,
+                                    position,
+                                    update.mode,
+                                    update.metrics.points,
+                                )
+                            {
                                 self.selection = Some(selected);
                             }
                         }
@@ -387,6 +404,9 @@ impl<R: RiverViewSelector> MapController<R> {
                     amount,
                     unit,
                 } => {
+                    if !map_pointer_in_view(position, update.mode, update.metrics.points) {
+                        continue;
+                    }
                     let index = usize::from(unit == ScrollUnit::Points);
                     let direction = amount.signum() as i8;
                     if direction != 0
@@ -483,7 +503,9 @@ impl<R: RiverViewSelector> MapController<R> {
             None
         } else {
             hover_position
-                .filter(|position| pointer_in_view(*position, update.metrics.points))
+                .filter(|position| {
+                    map_pointer_in_view(*position, update.mode, update.metrics.points)
+                })
                 .and_then(|position| {
                     hover_at(&mut self.markers, &self.location_names, camera, position)
                 })
@@ -616,7 +638,16 @@ impl<R: RiverViewSelector> MapController<R> {
         self.selection.clone()
     }
 
-    fn selected_at(&mut self, camera: Camera, position: PointerPosition) -> Option<Selection> {
+    fn selected_at(
+        &mut self,
+        camera: Camera,
+        position: PointerPosition,
+        mode: ck_window::WindowMode,
+        points: (u32, u32),
+    ) -> Option<Selection> {
+        if !map_pointer_in_view(position, mode, points) {
+            return None;
+        }
         let hover = hover_at(&mut self.markers, &self.location_names, camera, position)?;
         if camera.step < 15 {
             return None;
@@ -638,6 +669,14 @@ impl<R: RiverViewSelector> MapController<R> {
     pub(crate) fn hit_regions(&self) -> Option<Arc<ck_render_2d::HitRegions>> {
         self.bridge.hit_regions()
     }
+}
+
+fn map_pointer_in_view(
+    position: PointerPosition,
+    mode: ck_window::WindowMode,
+    points: (u32, u32),
+) -> bool {
+    mode != ck_window::WindowMode::Fullscreen || pointer_in_view(position, points)
 }
 
 fn pointer_in_view(position: PointerPosition, points: (u32, u32)) -> bool {
@@ -1193,6 +1232,7 @@ pub(crate) mod tests {
     fn update(actions: &[(&str, bool, bool)], dt: Duration) -> InputTick {
         InputTick {
             dt,
+            mode: ck_window::WindowMode::Windowed,
             metrics: WindowMetrics {
                 points: (400, 320),
                 pixels: PixelSize {
@@ -1987,20 +2027,28 @@ assert(scroll_reset == 1, "reset scroll used " .. tostring(scroll_reset))
         clamped.camera = Some(edge_camera);
         let moved = hover_pointer(clamped);
         clamped.camera = Some(before);
-        // Start one point right of the endpoint: the input quantizes to a one-pixel
-        // eastward pan, while the endpoint is the marker's position at the clamped edge.
+        // The endpoint is a visible marker after the clamped pan. A gesture-as-click mutation
+        // would select it, so this guards the distinction between a clamped drag and a click.
+        assert_eq!(
+            clamped.selected_at(
+                edge_camera,
+                moved,
+                ck_window::WindowMode::Windowed,
+                (400, 320),
+            ),
+            Some(Selection {
+                seq: 1,
+                id: "fixture-town".to_owned(),
+                name: "Fixture Town".to_owned(),
+                kind: "test".to_owned(),
+                size: 1,
+            }),
+            "the drag endpoint is on the marker after the clamped pan"
+        );
         let anchor = PointerPosition {
             x: moved.x + 256,
             y: moved.y,
         };
-        let click_mutation_selection = clamped.selected_at(edge_camera, moved);
-        assert_eq!(
-            click_mutation_selection
-                .as_ref()
-                .map(|selection| selection.id.as_str()),
-            Some("fixture-town"),
-            "the endpoint remains on the marker, so a gesture-as-click mutation is observable"
-        );
         clamped
             .update(&pointer_update(
                 vec![
@@ -2096,6 +2144,238 @@ assert(scroll_reset == 1, "reset scroll used " .. tostring(scroll_reset))
             ))
             .expect("pre-marker click is valid");
         assert_eq!(controller.selection(), None);
+    }
+
+    #[test]
+    fn fullscreen_bars_do_not_select_or_start_a_map_drag() {
+        fn place_marker_just_left_of_view(controller: &mut MapController) -> PointerPosition {
+            let marker = hover_pointer(controller);
+            let mut camera = controller.camera.expect("camera is open");
+            let map_x = marker.x.div_euclid(4 * 256);
+            let shift = map_x.saturating_add(1);
+            camera.pan(shift, 0, controller.crop);
+            controller.camera = Some(camera);
+            PointerPosition { x: -1, y: marker.y }
+        }
+
+        let mut click = hover_controller();
+        let outside = place_marker_just_left_of_view(&mut click);
+        assert!(
+            hover_at(
+                &mut click.markers,
+                &click.location_names,
+                click.camera.expect("camera is open"),
+                outside,
+            )
+            .is_some(),
+            "the fixture marker sits under the bar position in map coordinates"
+        );
+        let mut click_update = pointer_update_in_view(
+            400,
+            320,
+            vec![PointerEvent::Down(outside), PointerEvent::Up(outside)],
+            Some(outside),
+            false,
+            false,
+        );
+        click_update.mode = ck_window::WindowMode::Fullscreen;
+        click.update(&click_update).expect("bar click is valid");
+        assert_eq!(
+            click.selection(),
+            None,
+            "a bar click cannot select a hidden marker"
+        );
+
+        let mut drag = hover_controller();
+        let outside = place_marker_just_left_of_view(&mut drag);
+        let before = drag.camera();
+        let moved = PointerPosition {
+            x: outside.x - 4 * 256,
+            y: outside.y,
+        };
+        let mut drag_update = pointer_update_in_view(
+            400,
+            320,
+            vec![
+                PointerEvent::Down(outside),
+                PointerEvent::Move(moved),
+                PointerEvent::Up(moved),
+            ],
+            Some(moved),
+            false,
+            false,
+        );
+        drag_update.mode = ck_window::WindowMode::Fullscreen;
+        drag.update(&drag_update).expect("bar drag is valid");
+        assert_eq!(
+            drag.camera(),
+            before,
+            "a drag from a bar cannot pan the map"
+        );
+    }
+
+    #[test]
+    fn fullscreen_in_rectangle_keeps_map_press_and_hover_at_one_x_and_two_x() {
+        for pixels_per_point in [1, 2] {
+            let mut click = hover_controller();
+            click.camera.as_mut().expect("camera is open").set_step(46);
+            let marker = hover_pointer(&mut click);
+            let mut click_tick = pointer_update_in_view(
+                400,
+                320,
+                vec![PointerEvent::Down(marker), PointerEvent::Up(marker)],
+                Some(marker),
+                false,
+                false,
+            );
+            click_tick.mode = ck_window::WindowMode::Fullscreen;
+            click_tick.metrics.pixels = PixelSize {
+                width: 400 * pixels_per_point,
+                height: 320 * pixels_per_point,
+            };
+            assert!(pointer_in_view(marker, click_tick.metrics.points));
+            click
+                .update(&click_tick)
+                .expect("fullscreen marker press is valid");
+            assert_eq!(
+                click
+                    .selection()
+                    .as_ref()
+                    .map(|selection| selection.id.as_str()),
+                Some("fixture-town"),
+                "the in-rectangle press selects at {pixels_per_point}x"
+            );
+
+            let mut hover = hover_controller();
+            hover.camera.as_mut().expect("camera is open").set_step(46);
+            let marker = hover_pointer(&mut hover);
+            let mut hover_tick =
+                pointer_update_in_view(400, 320, Vec::new(), Some(marker), false, false);
+            hover_tick.mode = ck_window::WindowMode::Fullscreen;
+            hover_tick.metrics.pixels = PixelSize {
+                width: 400 * pixels_per_point,
+                height: 320 * pixels_per_point,
+            };
+            assert!(pointer_in_view(marker, hover_tick.metrics.points));
+            hover
+                .update(&hover_tick)
+                .expect("fullscreen marker hover is valid");
+            assert_eq!(
+                hover.hover().as_ref().map(|hover| hover.id.as_str()),
+                Some("fixture-town"),
+                "the in-rectangle hover reaches the map at {pixels_per_point}x"
+            );
+        }
+    }
+
+    #[test]
+    fn windowed_view_keeps_center_map_hover_and_click_hits() {
+        let mut controller = window_case_hover_controller();
+        controller
+            .camera
+            .as_mut()
+            .expect("windowed camera is open")
+            .set_step(15);
+        let marker = PointerPosition {
+            x: 200 * 256,
+            y: 120 * 256,
+        };
+        assert_eq!(
+            hover_at(
+                &mut controller.markers,
+                &controller.location_names,
+                controller.camera.expect("windowed camera is open"),
+                marker,
+            )
+            .as_ref()
+            .map(|hover| hover.id.as_str()),
+            Some("fixture_town"),
+            "the windowed fixture marker is hittable at the center of its 400x240 view"
+        );
+
+        controller
+            .update(&pointer_update_in_view(
+                400,
+                240,
+                vec![PointerEvent::Move(marker)],
+                Some(marker),
+                false,
+                false,
+            ))
+            .expect("windowed map hover is valid");
+        assert_eq!(
+            controller.hover().as_ref().map(|hover| hover.id.as_str()),
+            Some("fixture_town")
+        );
+
+        controller
+            .update(&pointer_update_in_view(
+                400,
+                240,
+                vec![PointerEvent::Down(marker), PointerEvent::Up(marker)],
+                Some(marker),
+                false,
+                false,
+            ))
+            .expect("windowed map click is valid");
+        assert_eq!(
+            controller
+                .selection()
+                .as_ref()
+                .map(|selection| selection.id.as_str()),
+            Some("fixture_town")
+        );
+    }
+
+    #[test]
+    fn windowed_map_hits_survive_missing_points_with_a_two_x_drawable() {
+        let mut controller = window_case_hover_controller();
+        controller
+            .camera
+            .as_mut()
+            .expect("windowed camera is open")
+            .set_step(15);
+        let marker = PointerPosition {
+            x: 200 * 256,
+            y: 120 * 256,
+        };
+
+        let mut hover =
+            pointer_update(vec![PointerEvent::Move(marker)], Some(marker), false, false);
+        hover.metrics.points = (0, 0);
+        hover.metrics.pixels = PixelSize {
+            width: 800,
+            height: 480,
+        };
+        controller
+            .update(&hover)
+            .expect("a missing windowed points report is harmless");
+        assert_eq!(
+            controller.hover().as_ref().map(|hover| hover.id.as_str()),
+            Some("fixture_town")
+        );
+
+        let mut click = pointer_update(
+            vec![PointerEvent::Down(marker), PointerEvent::Up(marker)],
+            Some(marker),
+            false,
+            false,
+        );
+        click.metrics.points = (0, 0);
+        click.metrics.pixels = PixelSize {
+            width: 800,
+            height: 480,
+        };
+        controller
+            .update(&click)
+            .expect("a missing windowed points report is harmless");
+        assert_eq!(
+            controller
+                .selection()
+                .as_ref()
+                .map(|selection| selection.id.as_str()),
+            Some("fixture_town")
+        );
     }
 
     #[test]
@@ -2722,6 +3002,7 @@ assert(scroll_reset == 1, "reset scroll used " .. tostring(scroll_reset))
         }
         .resolve(&ck_window::ScreenSnapshot {
             backing: 2.0,
+            screen_points: (4000, 3000),
             visible_points: (4000, 3000),
         })
         .expect("resolves")

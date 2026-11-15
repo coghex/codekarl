@@ -9,7 +9,7 @@ use ck_input::Bindings;
 use ck_window::{
     Answer, Clock, CloseSource, LoopEnd, LoopMetrics, LoopSettings, MetricsWindow, NativeEvent,
     PixelSize, PointerEvent, PointerPosition, PresenterReport, UiAnswer, UiEvent, UpdateEvent,
-    UpdateSettings, Wait,
+    UpdateSettings, Wait, WindowDesc,
 };
 
 use crate::fakes::{DEADLINE, Rig, lock, owned, scenario};
@@ -1560,6 +1560,108 @@ fn a_size_change_reaches_the_presenter_whole_and_once_before_the_tick_that_carri
 }
 
 #[test]
+fn fullscreen_bars_and_exact_pixel_resize_reach_the_fake_presenter_and_update_without_window_resize()
+ {
+    owned(
+        module_path!(),
+        "fullscreen_bars_and_exact_pixel_resize_reach_the_fake_presenter_and_update_without_window_resize",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let clock = FakeClock::new();
+            let mut rig = Rig::empty();
+            rig.writer
+                .open(WindowDesc {
+                    title: "fullscreen report".to_owned(),
+                    width: 400,
+                    height: 300,
+                    clear: [0.0; 3],
+                    resizable: true,
+                    ..WindowDesc::default()
+                })
+                .expect("open resizable window");
+            let initial =
+                ck_window::WindowMode::Fullscreen.layout((1920, 1080), (1920, 1080), (1280, 800));
+            rig.writer
+                .set_mode(initial)
+                .expect("request fullscreen mode");
+            rig.backend.report_mode_sizes = true;
+            configure_updates(&mut rig, &clock, 60, Duration::from_millis(20));
+            lock(&rig.ui.update_answers).extend(std::iter::repeat_n(Answer::Returned, 4));
+
+            let writer = rig.writer.clone();
+            let ui = Arc::clone(&rig.ui);
+            let quit = Arc::clone(&rig.quit);
+            let notifier = Arc::clone(&rig.notifier);
+            rig.backend.hook = Some(Box::new(move |call| {
+                if call.index == 1 {
+                    writer
+                        .resize_pixels(
+                            (801, 450),
+                            PixelSize {
+                                width: 1601,
+                                height: 900,
+                            },
+                        )
+                        .expect("queue exact fullscreen resolution");
+                }
+                if extract_updates(&ui.posted()).len() >= 2 {
+                    quit.store(true, Ordering::SeqCst);
+                    notifier.wake();
+                }
+            }));
+
+            let ran = rig.run_collect_with_clock(&clock);
+            assert_eq!(ran.end, LoopEnd::Quit);
+            assert!(
+                ran.log
+                    .iter()
+                    .any(|line| line == "presenter.set_size 1728x1080 points 1280x800 pixels"),
+                "the letterboxed points and drawable pixels reach the presenter: {:#?}",
+                ran.log
+            );
+            assert!(
+                ran.log
+                    .iter()
+                    .any(|line| line == "backend.resize_drawable (1280, 800) -> (1601, 900)"),
+                "fullscreen resolution changes the drawable through the fake backend: {:#?}",
+                ran.log
+            );
+            assert!(
+                ran.log
+                    .iter()
+                    .all(|line| !line.starts_with("backend.resize_window ")),
+                "fullscreen never asks for a window resize: {:#?}",
+                ran.log
+            );
+            assert!(
+                ran.ticks.iter().any(|tick| {
+                    tick.metrics.points == (1728, 1080)
+                        && tick.metrics.pixels
+                            == PixelSize {
+                                width: 1280,
+                                height: 800,
+                            }
+                }),
+                "the initial report reaches the whole update"
+            );
+            assert!(
+                ran.ticks.iter().any(|tick| {
+                    tick.metrics.points == (1920, 1079)
+                        && tick.metrics.pixels
+                            == PixelSize {
+                                width: 1601,
+                                height: 900,
+                            }
+                }),
+                "the exact changed pixels reach the later update: {:#?}",
+                ran.ticks
+            );
+        },
+    );
+}
+
+#[test]
 fn a_resize_request_size_change_reaches_the_presenter_and_next_update() {
     owned(
         module_path!(),
@@ -1578,7 +1680,7 @@ fn a_resize_request_size_change_reaches_the_presenter_and_next_update() {
             rig.backend.deadline_hook = Some(Box::new(move |deadline| fake_time.set(deadline)));
             lock(&rig.presenter.reports).push_back(PresenterReport::FirstFrameQueued);
             rig.writer
-                .open(ck_window::WindowDesc {
+                .open(WindowDesc {
                     resizable: true,
                     ..crate::fakes::desc()
                 })

@@ -10,7 +10,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::backend::PixelSize;
 use crate::desc::{InvalidColour, OpenError, WindowDesc, clamp_colour};
+use crate::mode::ModeLayout;
 use crate::notifier::Notifier;
 use ck_input::Bindings;
 
@@ -80,6 +82,10 @@ struct State {
     close: OneShot<()>,
     /// Latest requested content size in points; later requests before a pass replace it.
     resize: Option<(u32, u32)>,
+    /// Exact pixel resolution kept by a settings request, when it came from a pixel-size control.
+    resize_pixels: Option<PixelSize>,
+    /// Latest requested presentation mode and its coherent geometry.
+    mode: Option<ModeLayout>,
     resizable: Option<bool>,
     /// The loop has finished: writes change nothing visible.
     ended: bool,
@@ -107,6 +113,10 @@ pub struct RequestChanges {
     pub close: bool,
     /// Latest content-size request in points.
     pub resize: Option<(u32, u32)>,
+    /// Exact kept pixel resolution associated with the latest resize request, when supplied.
+    pub resize_pixels: Option<PixelSize>,
+    /// Latest requested mode and the geometry chosen for it.
+    pub mode: Option<ModeLayout>,
     /// The latest text input request written since the last take (CK-314).
     pub text_input: Option<TextInputRequest>,
     /// Latest key-capture command since the prior read.
@@ -215,6 +225,52 @@ impl RequestWriter {
             self.shared.discarded.fetch_add(1, Ordering::SeqCst);
         } else {
             state.resize = Some(points);
+            state.resize_pixels = None;
+        }
+        drop(state);
+        self.notifier.wake();
+        Ok(())
+    }
+
+    /// Requests a content size together with its exact pixel resolution, preserving odd dimensions at fractional backing scales.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the window has not opened or is not resizable.
+    pub fn resize_pixels(&self, points: (u32, u32), pixels: PixelSize) -> Result<(), &'static str> {
+        let mut state = self.shared.lock();
+        match state.resizable {
+            None => return Err("window.resize: the window is not open"),
+            Some(false) => return Err("window.resize: the window is not resizable"),
+            Some(true) => {}
+        }
+        if state.ended {
+            self.shared.discarded.fetch_add(1, Ordering::SeqCst);
+        } else {
+            state.resize = Some(points);
+            state.resize_pixels = Some(pixels);
+        }
+        drop(state);
+        self.notifier.wake();
+        Ok(())
+    }
+
+    /// Requests a mode change with its precomputed screen geometry; never waits for the main thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when no window has been accepted or the accepted window is not resizable.
+    pub fn set_mode(&self, layout: ModeLayout) -> Result<(), &'static str> {
+        let mut state = self.shared.lock();
+        match state.resizable {
+            None => return Err("window.mode: the window is not open"),
+            Some(false) => return Err("window.mode: the window is not resizable"),
+            Some(true) => {}
+        }
+        if state.ended {
+            self.shared.discarded.fetch_add(1, Ordering::SeqCst);
+        } else {
+            state.mode = Some(layout);
         }
         drop(state);
         self.notifier.wake();
@@ -330,6 +386,8 @@ impl RequestReader {
             clear: state.clear.take(),
             close: state.close.take().is_some(),
             resize: state.resize.take(),
+            resize_pixels: state.resize_pixels.take(),
+            mode: state.mode.take(),
             text_input: state.text_input.take(),
             capture: state.capture.take(),
             bindings: state.bindings.take(),

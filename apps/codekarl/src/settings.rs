@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ck_log::Level;
 use ck_lua::{ConfigValue, Extension};
-use ck_window::Bindings;
 use ck_window::RequestWriter;
+use ck_window::{Bindings, WindowMode};
 
 use crate::config::{
     Config, GraphicsSettings, MAX_FPS_LIMIT, MIN_FPS_LIMIT, MapSettings, SettingsOverrides,
@@ -151,6 +151,10 @@ impl Runtime {
             )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "setting validation, request, state update and persistence are one transaction"
+    )]
     fn set(&self, args: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
         if args.len() != 2 {
             return Err("settings.set: expected a setting name and value".to_owned());
@@ -229,6 +233,19 @@ impl Runtime {
                     _ => return Err(format!("settings.set: `{name}` must be cards or rows")),
                 };
                 overrides.ui_list_look = Some(values.graphics.list_look);
+            }
+            "window.mode" => {
+                let ConfigValue::String(mode) = value else {
+                    return Err(format!("settings.set: `{name}` must be a string"));
+                };
+                let mode = WindowMode::try_from(mode.as_str())
+                    .map_err(|error| format!("settings.set: `{name}` {error}"))?;
+                self.resize
+                    .as_ref()
+                    .ok_or_else(|| "settings.set: window mode is unavailable".to_owned())?
+                    .set_mode(mode, (values.graphics.width, values.graphics.height))?;
+                values.graphics.mode = mode;
+                overrides.window_mode = Some(mode);
             }
             "frame.fps_limit" => {
                 let limit = fps_limit_value(name, value)?;
@@ -479,12 +496,17 @@ impl Runtime {
                 self.resize
                     .as_ref()
                     .ok_or_else(|| "settings.reset: graphics resize is unavailable".to_owned())?
-                    .resize((base.width, base.height))?;
+                    .resize((base.width, base.height), values.graphics.mode)?;
                 values.graphics = base;
                 overrides.ui_scale_limit_k = None;
                 overrides.ui_list_look = None;
                 overrides.window_width = None;
                 overrides.window_height = None;
+                overrides.window_mode = None;
+                self.resize
+                    .as_ref()
+                    .ok_or_else(|| "settings.reset: window mode is unavailable".to_owned())?
+                    .set_mode(base.mode, (base.width, base.height))?;
                 overrides.frame_fps_limit = None;
                 self.apply_scale(values.graphics.scale_limit_k);
                 self.apply_fps_limit(values.graphics.fps_limit);
@@ -549,6 +571,10 @@ impl Runtime {
                 "height".into(),
                 ConfigValue::Integer(i64::from(values.graphics.height)),
             ),
+            (
+                "mode".into(),
+                ConfigValue::String(values.graphics.mode.as_str().into()),
+            ),
         ]);
         if let Some(k) = values.graphics.scale_limit_k {
             entries.insert("scale".into(), ConfigValue::Float(f64::from(k) / 2.0));
@@ -573,11 +599,17 @@ impl Runtime {
         };
         let width = dimension(0, "width")?;
         let height = dimension(1, "height")?;
+        let mode = self
+            .values
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .graphics
+            .mode;
         let result = self
             .resize
             .as_ref()
             .ok_or_else(|| "settings.resize: window resize is unavailable".to_owned())?
-            .resize((width, height))?;
+            .resize((width, height), mode)?;
         let mut values = self.values.lock().unwrap_or_else(PoisonError::into_inner);
         let mut overrides = self
             .overrides
@@ -797,13 +829,19 @@ fn settings_text(overrides: &SettingsOverrides) -> Vec<u8> {
         }
         text.push('\n');
     }
-    if overrides.window_width.is_some() || overrides.window_height.is_some() {
+    if overrides.window_width.is_some()
+        || overrides.window_height.is_some()
+        || overrides.window_mode.is_some()
+    {
         text.push_str("[window]\n");
         if let Some(value) = overrides.window_width {
             let _ = writeln!(text, "width = {value}");
         }
         if let Some(value) = overrides.window_height {
             let _ = writeln!(text, "height = {value}");
+        }
+        if let Some(value) = overrides.window_mode {
+            let _ = writeln!(text, "mode = \"{}\"", value.as_str());
         }
         text.push('\n');
     }
@@ -1359,6 +1397,7 @@ assert(not ok)
             "[window]\nwidth = 1600\nheight = 900\n",
             Some(ck_window::ScreenSnapshot {
                 backing: 1.0,
+                screen_points: (1024, 768),
                 visible_points: (1024, 768),
             }),
             false,
@@ -1481,11 +1520,95 @@ assert(not ok)
     }
 
     #[test]
+    fn window_mode_is_checked_queued_persisted_and_reset_with_graphics_defaults() {
+        let rig = LiveRig::new(
+            "[window]\nwidth = 1600\nheight = 900\n",
+            Some(ck_window::ScreenSnapshot {
+                backing: 1.0,
+                screen_points: (1920, 1200),
+                visible_points: (1920, 1080),
+            }),
+            false,
+        );
+        {
+            let _start = rig.run(
+                "window.open{title='mode test', width=1280, height=800, clear={0,0,0}, resizable=true}\nlocal w, h = settings.resize(1600, 900)\nassert(w == 1600 and h == 900)\nsettings.set('window.mode', 'fullscreen')\nlocal g = settings.graphics()\nassert(g.mode == 'fullscreen' and g.width == 1600 and g.height == 900)",
+            );
+        }
+        let first = rig.requests.reader().take();
+        assert!(first.open.is_some());
+        assert_eq!(first.resize, Some((1600, 900)));
+        let layout = first.mode.expect("fullscreen request");
+        assert_eq!(layout.mode, WindowMode::Fullscreen);
+        assert_eq!(
+            layout.picture,
+            ck_window::ModeRect {
+                x: 0,
+                y: 60,
+                width: 1920,
+                height: 1080
+            }
+        );
+        assert_eq!(layout.pixels, (1600, 900));
+        assert_eq!(layout.resolution_kept, (1600, 900));
+        let written: toml::Value =
+            toml::from_str(&fs::read_to_string(&rig.settings_path).expect("mode persists"))
+                .expect("settings TOML parses");
+        assert_eq!(written["window"]["mode"].as_str(), Some("fullscreen"));
+
+        {
+            let _invalid = rig.run(
+                "local ok, message = pcall(function() settings.set('window.mode', 'exclusive') end)\nassert(not ok and string.find(tostring(message), 'exclusive', 1, true))\nassert(settings.graphics().mode == 'fullscreen')",
+            );
+        }
+        assert!(rig.requests.reader().take().mode.is_none());
+
+        {
+            let _borderless = rig.run("settings.set('window.mode', 'windowed_fullscreen')");
+        }
+        let borderless = rig.requests.reader().take();
+        let layout = borderless.mode.expect("windowed fullscreen request");
+        assert_eq!(layout.mode, WindowMode::WindowedFullscreen);
+        assert_eq!(layout.outer_points, (1920, 1200));
+        assert_eq!(layout.pixels, (1920, 1200));
+        assert_eq!(layout.resolution_kept, (1600, 900));
+        assert_eq!(borderless.resize, None, "a mode change does not resize");
+        let written: toml::Value =
+            toml::from_str(&fs::read_to_string(&rig.settings_path).expect("mode persists"))
+                .expect("settings TOML parses");
+        assert_eq!(written["window"]["width"].as_integer(), Some(1600));
+        assert_eq!(written["window"]["height"].as_integer(), Some(900));
+        assert_eq!(
+            written["window"]["mode"].as_str(),
+            Some("windowed_fullscreen")
+        );
+
+        {
+            let _reset = rig
+                .run("settings.reset('graphics')\nassert(settings.graphics().mode == 'windowed')");
+        }
+        let reset = rig.requests.reader().take();
+        assert_eq!(reset.resize, Some((1600, 900)));
+        assert_eq!(
+            reset.mode.expect("default mode request").mode,
+            WindowMode::Windowed
+        );
+        let reset_text = fs::read_to_string(&rig.settings_path).expect("reset persists");
+        let reset_settings: toml::Value =
+            toml::from_str(&reset_text).expect("settings TOML parses");
+        assert!(reset_settings.get("window").is_none(), "{reset_text}");
+        let second = crate::config::load(&rig.config_path).expect("restart uses config default");
+        assert_eq!(second.graphics.mode, WindowMode::Windowed);
+        assert!(second.settings_warnings.is_empty());
+    }
+
+    #[test]
     fn settings_resize_clamps_above_maximum_through_the_lua_call() {
         let rig = LiveRig::new(
             "",
             Some(ck_window::ScreenSnapshot {
                 backing: 1.0,
+                screen_points: (20_000, 12_000),
                 visible_points: (20_000, 12_000),
             }),
             false,
@@ -1508,6 +1631,159 @@ assert(not ok)
         .expect("settings TOML parses");
         assert_eq!(written["window"]["width"].as_integer(), Some(16_384));
         assert_eq!(written["window"]["height"].as_integer(), Some(12_000));
+    }
+
+    #[test]
+    fn mode_round_trips_preserve_resolution_on_small_and_over_limit_screens() {
+        for (screen_points, requested, expected_kept, expected_used) in [
+            ((1024, 768), (1920, 1200), (1280, 800), (1024, 768)),
+            (
+                (20_000, 12_000),
+                (20_000, 12_000),
+                (16_384, 12_000),
+                (16_384, 12_000),
+            ),
+        ] {
+            let rig = LiveRig::new(
+                "",
+                Some(ck_window::ScreenSnapshot {
+                    backing: 1.0,
+                    screen_points,
+                    visible_points: screen_points,
+                }),
+                false,
+            );
+            let start = format!(
+                "window.open{{title='mode clamp', width=1280, height=800, clear={{0,0,0}}, resizable=true}}\nlocal w, h = settings.resize({}, {})\nassert(w == {} and h == {}){}",
+                requested.0,
+                requested.1,
+                expected_used.0,
+                expected_used.1,
+                if screen_points == (1024, 768) {
+                    "\nlocal low_w, low_h = settings.resize(900, 600)\nassert(low_w == 1024 and low_h == 768)"
+                } else {
+                    ""
+                }
+            );
+            let _start = rig.run(&start);
+            let changes = rig.requests.reader().take();
+            assert_eq!(changes.resize, Some(expected_used));
+            assert_eq!(
+                changes.resize_pixels,
+                Some(ck_window::PixelSize {
+                    width: expected_kept.0,
+                    height: expected_kept.1,
+                })
+            );
+            let written: toml::Value = toml::from_str(
+                &fs::read_to_string(&rig.settings_path).expect("resize persists the kept size"),
+            )
+            .expect("settings TOML parses");
+            assert_eq!(
+                written["window"]["width"].as_integer(),
+                Some(i64::from(expected_kept.0))
+            );
+            assert_eq!(
+                written["window"]["height"].as_integer(),
+                Some(i64::from(expected_kept.1))
+            );
+
+            for (name, mode) in [
+                ("windowed_fullscreen", WindowMode::WindowedFullscreen),
+                ("windowed", WindowMode::Windowed),
+                ("fullscreen", WindowMode::Fullscreen),
+            ] {
+                let script = format!(
+                    "settings.set('window.mode', '{name}')\nlocal g = settings.graphics()\nassert(g.width == {} and g.height == {} and g.mode == '{name}')",
+                    expected_kept.0, expected_kept.1
+                );
+                let _mode = rig.run(&script);
+                let changes = rig.requests.reader().take();
+                let layout = changes.mode.expect("mode change is queued");
+                assert_eq!(layout.mode, mode);
+                assert_eq!(layout.resolution_kept, expected_kept);
+                assert_eq!(layout.pixels, expected_used);
+                if mode == WindowMode::WindowedFullscreen {
+                    assert_eq!(layout.outer_points, screen_points);
+                }
+                assert_eq!(changes.resize, None, "changing a mode never resizes");
+                let written: toml::Value =
+                    toml::from_str(&fs::read_to_string(&rig.settings_path).expect("mode persists"))
+                        .expect("settings TOML parses");
+                assert_eq!(
+                    written["window"]["width"].as_integer(),
+                    Some(i64::from(expected_kept.0))
+                );
+                assert_eq!(
+                    written["window"]["height"].as_integer(),
+                    Some(i64::from(expected_kept.1))
+                );
+            }
+            let second = crate::config::load(&rig.config_path).expect("second start");
+            assert!(second.settings_warnings.is_empty());
+            assert_eq!(second.graphics.mode, WindowMode::Fullscreen);
+            assert_eq!(
+                (second.graphics.width, second.graphics.height),
+                expected_kept
+            );
+            assert_eq!(
+                WindowMode::Fullscreen
+                    .layout(screen_points, screen_points, expected_kept)
+                    .pixels,
+                expected_used
+            );
+        }
+    }
+
+    #[test]
+    fn fullscreen_resize_uses_the_screen_pixels_while_windowed_uses_visible_pixels() {
+        for (mode_setting, mode, expected) in [
+            ("", WindowMode::Windowed, (1920, 1080)),
+            (
+                "settings.set('window.mode', 'fullscreen')\n",
+                WindowMode::Fullscreen,
+                (1920, 1200),
+            ),
+        ] {
+            let rig = LiveRig::new(
+                "",
+                Some(ck_window::ScreenSnapshot {
+                    backing: 1.0,
+                    screen_points: (1920, 1200),
+                    visible_points: (1920, 1080),
+                }),
+                false,
+            );
+            let _run = rig.run(&format!(
+                "window.open{{title='mode-aware resize', width=1280, height=800, clear={{0,0,0}}, resizable=true}}\n{mode_setting}local width, height = settings.resize(1920, 1200)\nassert(width == {} and height == {})\nlocal g = settings.graphics()\nassert(g.width == {} and g.height == {})",
+                expected.0, expected.1, expected.0, expected.1
+            ));
+
+            let changes = rig.requests.reader().take();
+            assert_eq!(changes.resize, Some(expected), "{mode:?}");
+            assert_eq!(
+                changes.resize_pixels,
+                Some(ck_window::PixelSize {
+                    width: expected.0,
+                    height: expected.1,
+                }),
+                "{mode:?}"
+            );
+            if mode == WindowMode::Fullscreen {
+                assert_eq!(changes.mode.expect("fullscreen mode request").mode, mode);
+            }
+            let written: toml::Value =
+                toml::from_str(&fs::read_to_string(&rig.settings_path).expect("resize persists"))
+                    .expect("settings TOML parses");
+            assert_eq!(
+                written["window"]["width"].as_integer(),
+                Some(i64::from(expected.0))
+            );
+            assert_eq!(
+                written["window"]["height"].as_integer(),
+                Some(i64::from(expected.1))
+            );
+        }
     }
 
     #[test]
@@ -1540,6 +1816,7 @@ assert(not ok)
                 config_text,
                 Some(ck_window::ScreenSnapshot {
                     backing: 2.0,
+                    screen_points: (1280, 800),
                     visible_points: (1280, 800),
                 }),
                 false,
@@ -1587,6 +1864,7 @@ assert(not ok)
             "",
             Some(ck_window::ScreenSnapshot {
                 backing: 1.0,
+                screen_points: (1280, 800),
                 visible_points: (1280, 800),
             }),
             false,
@@ -1621,6 +1899,7 @@ assert(not ok)
             "[frame]\nfps_limit = 120\n",
             Some(ck_window::ScreenSnapshot {
                 backing: 1.0,
+                screen_points: (2560, 1600),
                 visible_points: (2560, 1600),
             }),
             false,
@@ -1674,6 +1953,7 @@ assert(not ok)
             "[frame]\nfps_limit = 120\n",
             Some(ck_window::ScreenSnapshot {
                 backing: 1.0,
+                screen_points: (2560, 1600),
                 visible_points: (2560, 1600),
             }),
             false,

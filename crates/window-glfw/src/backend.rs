@@ -922,6 +922,10 @@ impl Backend for GlfwBackend {
         }
         ScreenSnapshot {
             backing: f64::from(scale_x.max(1.0)),
+            screen_points: (
+                u32::try_from(width).unwrap_or(0).max(1),
+                u32::try_from(height).unwrap_or(0).max(1),
+            ),
             visible_points: (
                 u32::try_from(width).unwrap_or(0).max(1),
                 u32::try_from(height).unwrap_or(0).max(1),

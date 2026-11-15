@@ -56,11 +56,12 @@ numberfield.field_edit = true -- a field of lib/fieldedit.lua
 
 local function draw(self)
   local width = self.width // P
-  local ink = self.greyed and theme.colour("dim") or self.colours.text
+  local inactive = self.inactive or self.greyed
+  local ink = inactive and theme.colour("dim") or self.colours.text
   local outline = self.colours.outline
   if self.is_editing then
     outline = self.colours.hot
-  elseif self.greyed then
+  elseif inactive then
     outline = theme.colour("track")
   end
   text.set(self.line, self.buffer)
@@ -133,7 +134,11 @@ function numberfield:hide_caret()
 end
 
 local function publish_region(self)
-  render.set_hit(self.key, {{x = self.x, y = self.y, width = self.width, height = self.height}}, self.group)
+  if self.inactive then
+    render.set_hit(self.key, nil, self.group)
+  else
+    render.set_hit(self.key, {{x = self.x, y = self.y, width = self.width, height = self.height}}, self.group)
+  end
 end
 
 function numberfield.new(spec)
@@ -168,6 +173,7 @@ function numberfield.new(spec)
   self.x = ui.snap(spec.x)
   self.y = ui.snap(spec.y)
   self.is_editing = false
+  self.inactive = spec.inactive == true
   self.width = (font.layout(string.rep("0", digits)).width + 2 * PAD) * P
   self.height = HEIGHT * P
   self.frame = frame.new{
@@ -215,7 +221,7 @@ end
 
 -- A press on the field starts its editing (an event of an overflow packet starts nothing).
 function numberfield:on_event(event, eligible)
-  if event.kind == "down" and eligible ~= false then
+  if event.kind == "down" and eligible ~= false and not self.inactive then
     fieldedit.begin(self)
     -- A greyed field that started editing was made live by `show_editing` (below), before the previous field's callback ran. The
     -- caller is told last, and only of a field that still exists: that callback may have closed the window or destroyed this field.
@@ -231,7 +237,16 @@ function numberfield:on_overflow() end
 
 -- A press on the field does something: it starts the editing.
 function numberfield:functional()
-  return true
+  return not self.inactive
+end
+
+-- Makes a resolution field visibly unavailable and removes its hit region until it is live again.
+function numberfield:set_inactive(inactive)
+  inactive = inactive == true
+  if self.inactive == inactive then return end
+  self.inactive = inactive
+  publish_region(self)
+  draw(self)
 end
 
 -- The number the field holds (what was last applied), in the range.

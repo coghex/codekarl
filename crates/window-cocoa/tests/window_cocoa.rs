@@ -250,6 +250,10 @@ fn create_and_destroy() {
         info.layer.is_metal && info.layer.is_backing_layer,
         "{info:?}"
     );
+    assert!(
+        info.layer.resizes_with_window,
+        "the windowed Metal sublayer follows the content bounds during an edge drag: {info:?}"
+    );
     assert!(close(info.layer.scale, info.window_scale), "{info:?}");
     assert!(info.window_scale >= 1.0);
     assert!(info.behaviour.has_delegate && info.focus.first_responder_is_view && info.visible);

@@ -113,7 +113,8 @@ CKWinHandle *ck_win_create(char *error, size_t error_capacity);
 /* The main screen as the main thread sees it: its scale factor (pixels per point) and its visible area in points.
  * Callable before a window exists. With no screen (a session with no display) it says 1 and 4294967295 for both
  * sizes. */
-void ck_win_main_screen(CKWinHandle *handle, double *backing, uint32_t *visible_width, uint32_t *visible_height);
+void ck_win_screen(CKWinHandle *handle, double *backing, uint32_t *screen_width, uint32_t *screen_height,
+                   uint32_t *visible_width, uint32_t *visible_height);
 
 /* Creates the window (title is UTF-8 and may contain NUL bytes): fixed-size unless `resizable`, in which case it can be
  * resized, zoomed and made full screen (the green button and Control-Command-F), and `content_min_*` (points; 0 for none)
@@ -131,6 +132,10 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
                          char *error, size_t error_capacity);
 /* Requests a settled content-size change in points; ignored when unavailable or full screen. */
 void ck_win_resize(CKWinHandle *handle, uint32_t point_width, uint32_t point_height);
+/* Applies windowed (0), windowed-fullscreen (1) or fullscreen (2) geometry without entering native Spaces full screen. */
+void ck_win_set_mode(CKWinHandle *handle, int mode, uint32_t outer_width, uint32_t outer_height,
+                     uint32_t picture_x, uint32_t picture_y, uint32_t picture_width, uint32_t picture_height,
+                     uint32_t pixel_width, uint32_t pixel_height);
 
 /* Takes events with the caller's cap, dispatches them with sendEvent:, consumes this backend's wake
  * events, runs updateWindows and hands over the pending state: at most `cap` of the key and focus entries
