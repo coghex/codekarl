@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -129,6 +130,11 @@ def launch(checkpoint: Path, root: Path, args: list[str]) -> None:
     os.execv(sys.executable, [sys.executable, "-B", "-c", code, str(tools), str(root), *args])
 
 
+def exit_status(returncode: int) -> int:
+    """The status a shell reports for a child: its exit code, or 128+N when signal N ended it."""
+    return returncode if returncode >= 0 else 128 - returncode
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent.parent
     marker = root / ".ck-hub"
@@ -168,11 +174,19 @@ def main() -> None:
                 env[name] = output.split(name + "=", 1)[1].split(";", 1)[0]
             subprocess.run(["ssh-add", str(key)], env=env, check=True, capture_output=True)
             env["CK_SIGNING_ACTIVE"] = str(hub)
+            # Ctrl+C sends SIGINT to the whole foreground group: the child handles it as it
+            # always did, and this wrapper keeps waiting for it instead of raising
+            # KeyboardInterrupt, which would make `subprocess.run` kill the child while it
+            # unwinds. A handler, unlike SIG_IGN, is reset by exec, so the child's own SIGINT
+            # behaviour is untouched.
+            signal.signal(signal.SIGINT, lambda _signal, _frame: None)
             try:
                 result = subprocess.run(executable, check=False, cwd=root, env=env)
             finally:
+                # A second Ctrl+C must not cut short the agent's stop (the one child that inherits this).
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
                 subprocess.run(["ssh-agent", "-k"], env=env, capture_output=True, check=False)
-        raise SystemExit(result.returncode)
+        raise SystemExit(exit_status(result.returncode))
     os.environ.update(env)
     state = pointer(hub)
     launch(verify(hub, state), root, args)

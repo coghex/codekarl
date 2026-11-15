@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1993,6 +1994,116 @@ class BootstrapGateSpecification(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "accepted pointer is not the saved hold"):
             bootstrap_core.Bootstrap(self.hub, self.capture, self.checker).restore(bid)
         self.assertEqual((self.hub / ".pipeline/accepted.json").read_bytes(), incident)
+
+
+# The stand-in for the `check` child of `tools/ck`: it chooses its own SIGINT behaviour before it
+# reports readiness, so the test never races the child's setup.
+INTERRUPT_CHILD = """import json, os, signal, sys
+mode = sys.argv[1]
+def interrupted(_signal, _frame):
+    print("interrupted", flush=True)
+    sys.stdin.readline()  # the test releases the child: it is still being waited for until then
+    print("finished", flush=True)
+    sys.exit(0)
+signal.signal(signal.SIGINT, interrupted if mode == "handle" else signal.SIG_DFL)
+ready = {"agent": int(os.environ["SSH_AGENT_PID"]), "socket": os.environ["SSH_AUTH_SOCK"]}
+print(json.dumps(ready), flush=True)
+signal.pause()
+"""
+
+
+class TrampolineInterruptSpecification(unittest.TestCase):
+    """Ctrl+C on a `tools/ck` run (CK-327): SIGINT goes to the wrapper and its child together."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="ck-interrupt-")
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        hub = base / "hub"
+        (hub / ".tools/signing").mkdir(parents=True)
+        subprocess.run(
+            [
+                "ssh-keygen",
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-f",
+                str(hub / ".tools/signing/ed25519"),
+            ],
+            check=True,
+        )
+        self.root = base / "root"
+        (self.root / "tools").mkdir(parents=True)
+        shutil.copy2(Path(__file__).resolve().parents[1] / "tools/ck", self.root / "tools/ck")
+        (self.root / "tools/check.py").write_text(INTERRUPT_CHILD)
+        (self.root / ".ck-hub").write_text(str(hub) + "\n")
+
+    def run_interrupted(self, mode: str) -> tuple[int, str, list[str], dict[str, object]]:
+        """Start `tools/ck check <mode>` in its own process group, wait for the child's readiness line,
+        send SIGINT to the group (as a terminal does) and return the wrapper's status and stderr, the
+        child's remaining stdout lines (after the release for `handle`) and the readiness report."""
+        wrapper = subprocess.Popen(
+            [sys.executable, "-B", str(self.root / "tools/ck"), "check", mode],
+            cwd=self.root,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+            # a test runner started in the background can have SIGINT ignored; the wrapper must not inherit that
+            preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL),  # noqa: PLW1509  # runs between fork and exec, touching no thread state
+        )
+        self.addCleanup(self.stop_group, wrapper)
+        assert wrapper.stdin is not None
+        assert wrapper.stdout is not None
+        assert wrapper.stderr is not None
+        ready = json.loads(wrapper.stdout.readline())
+        os.killpg(wrapper.pid, signal.SIGINT)
+        lines: list[str] = []
+        if mode == "handle":
+            lines.append(wrapper.stdout.readline().strip())  # the child saw SIGINT and is held open
+            wrapper.stdin.write("go\n")
+            wrapper.stdin.flush()
+        lines.extend(line.strip() for line in wrapper.stdout)
+        stderr = wrapper.stderr.read()
+        return wrapper.wait(), stderr, lines, ready
+
+    @staticmethod
+    def stop_group(wrapper: subprocess.Popen[str]) -> None:
+        if wrapper.poll() is None:
+            os.killpg(wrapper.pid, signal.SIGKILL)
+            wrapper.wait()
+        for stream in (wrapper.stdin, wrapper.stdout, wrapper.stderr):
+            if stream is not None:
+                stream.close()
+
+    def assert_agent_stopped(self, ready: dict[str, object]) -> None:
+        socket_path = Path(str(ready["socket"]))
+        self.assertFalse(socket_path.parent.exists(), "the temporary agent directory is removed")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.kill(int(str(ready["agent"])), 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.01)  # `ssh-agent -k` has signalled the agent; wait for it to exit
+        self.fail("the signing agent is still running")
+
+    def test_c32_sigint_is_waited_through_and_the_childs_exit_code_is_returned(self) -> None:
+        status, stderr, lines, ready = self.run_interrupted("handle")
+        self.assertEqual(stderr, "")
+        self.assertEqual(lines, ["interrupted", "finished"])
+        self.assertEqual(status, 0)
+        self.assert_agent_stopped(ready)
+
+    def test_c32_a_child_ended_by_sigint_gives_status_130_and_prints_nothing(self) -> None:
+        status, stderr, lines, ready = self.run_interrupted("default")
+        self.assertEqual(stderr, "")
+        self.assertEqual(lines, [])
+        self.assertEqual(status, 130)
+        self.assert_agent_stopped(ready)
 
 
 if __name__ == "__main__":
