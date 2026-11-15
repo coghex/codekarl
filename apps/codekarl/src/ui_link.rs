@@ -4194,6 +4194,7 @@ mod tests {
             date,
             speed: ck_sim::Speed::new(speed).expect("a speed"),
             paused,
+            unsaved: false,
             economy_revision: 0,
             economy: None,
         }

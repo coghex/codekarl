@@ -71,6 +71,11 @@ int32_t ck_win_test_app_exists(void);
 uint64_t ck_win_test_ns_window_count(void);
 void ck_win_test_info(CKWinTestInfo *out);
 int32_t ck_win_test_mouse_ignored(void);
+/* CK-331: whether the game window's class (`CKWindow`) and, as the control, a plain `NSWindow` answer yes to canBecomeKeyWindow
+ * (bit 0) and canBecomeMainWindow (bit 1) with a borderless style mask: the game window's answer in the low two bits, the plain
+ * window's in the next two. It builds a deferred window object of each and never orders one front, makes one key or main, shows
+ * it or activates anything. */
+int32_t ck_win_test_borderless_eligibility(void);
 int32_t ck_win_test_mouse_passthrough_probe(void);
 void ck_win_test_counters(CKWinTestCounters *out);
 

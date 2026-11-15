@@ -232,6 +232,7 @@ where
             date: self.simulation.date().unwrap_or(LAST_DATE),
             speed: self.clock.speed(),
             paused: self.paused,
+            unsaved: self.unsaved,
             economy_revision: self.revision,
             economy: self.view.clone(),
         }
@@ -285,10 +286,12 @@ where
             }
             Message::MarkUnsaved => {
                 self.unsaved = true;
+                self.publish_if_changed();
                 Flow::Continue
             }
             Message::Save(call, reply) => {
                 let result = self.save_call(call);
+                self.publish_if_changed();
                 let _ = reply.send(result);
                 if self.failed {
                     Flow::End

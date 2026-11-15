@@ -12,7 +12,8 @@ local tabs = {}
 tabs.__index = tabs
 
 -- Creates the tabs of `spec.window` (an open window):
---   items     a sequence of `{key = "location", label = "location", short = "loc", tiny = "l"}` or `{key, icon}`;
+--   items     a sequence of `{key, label, short, tiny}` or `{key, icon}`; text labels get full-label tooltips by default;
+--             `label_tooltip = false` leaves a tooltip attached by the caller in place across label tiers;
 --   selected  the key of the tab showing first (the first item's by default);
 --   on_select called as `on_select(key)` when a tab other than the selected one is clicked.
 function tabs.new(spec)
@@ -47,6 +48,7 @@ function tabs.new(spec)
       key = item.key,
       icon = item.icon,
       tooltip = item.tooltip,
+      label_tooltip = item.label_tooltip ~= false,
       labels = item.label ~= nil and {item.label, short, item.tiny or short} or nil,
     }
   end
@@ -101,7 +103,7 @@ function tabs:place_in_title(window)
     self.tier = tier
     for index, item in ipairs(self.items) do
       if item.labels ~= nil then self.buttons[index]:set_text(item.labels[tier]) end
-      if item.labels ~= nil then
+      if item.labels ~= nil and item.label_tooltip then
         self.buttons[index]:set_tooltip(item.labels[tier] == item.labels[1] and nil or item.labels[1])
       end
     end
@@ -118,6 +120,34 @@ function tabs:place_in_title(window)
     self.buttons[index]:move(x, 0)
     x = x + width + GAP
   end
+end
+
+-- Replaces a text tab's label tiers and immediately lays out the changed label.
+function tabs:set_labels(key, full, short, tiny)
+  if type(full) ~= "string" or full == "" then
+    error("tabs:set_labels: full label must be a non-empty string", 2)
+  end
+  local index
+  for candidate, item in ipairs(self.items) do
+    if item.key == key then
+      index = candidate
+      break
+    end
+  end
+  if index == nil then error("tabs:set_labels: `" .. tostring(key) .. "` is not a tab", 2) end
+  local item = self.items[index]
+  if item.labels == nil then error("tabs:set_labels: `" .. tostring(key) .. "` is not a text tab", 2) end
+  short = short or full
+  tiny = tiny or short
+  if type(short) ~= "string" or short == "" or type(tiny) ~= "string" or tiny == "" then
+    error("tabs:set_labels: short and tiny labels must be non-empty strings", 2)
+  end
+  item.labels = {full, short, tiny}
+  self.buttons[index]:set_text(item.labels[self.tier])
+  if item.label_tooltip then
+    self.buttons[index]:set_tooltip(self.tier == 1 and nil or full)
+  end
+  self:place_in_title(self.window)
 end
 
 -- The room, in points, a title bar must keep for tabs of `items` (as `tabs.new` takes them): the buttons with their tiny labels and

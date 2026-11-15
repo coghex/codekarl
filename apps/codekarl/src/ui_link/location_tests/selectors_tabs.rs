@@ -1,6 +1,85 @@
 use super::*;
 
 #[test]
+fn place_name_relabels_the_first_tab_and_keeps_its_place_tooltip() {
+    let mut rig = rig(&[r"time(1, 1); select_place('rowan', 'Rowan')
+note('title ' .. string.format('%q', panel_window.shown_title))
+note('location_label ' .. tabs_object.buttons[1].line.ck_test_text)
+note_tooltip('location_tab', tabs_object.buttons[1].key)
+select_place('fada', 'Cluain Mhic Nóis')
+note('fada_label ' .. tabs_object.buttons[1].line.ck_test_text)
+note_tooltip('location_tab_fada', tabs_object.buttons[1].key)
+select_place('long', string.rep('Ó', 40))
+note('long_tier ' .. tabs_object.tier)
+note('long_label ' .. tabs_object.buttons[1].line.ck_test_text)
+note('other_labels ' .. tabs_object.buttons[2].line.ck_test_text .. ' ' .. tabs_object.buttons[3].line.ck_test_text)
+note_tooltip('location_tab_long', tabs_object.buttons[1].key)
+note_tooltip_kind('location_tab_long', tabs_object.buttons[1].key)"]);
+    rig.opened();
+    let recorded = notes(&rig);
+    assert!(
+        recorded.iter().any(|line| line == "title \"\""),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line == "location_label Rowan"),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "fada_label Cluain Mhic Nóis"),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == &format!("long_label {}…", "Ó".repeat(12))),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line == "other_labels pop bld"),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.starts_with("tooltip location_tab title=Rowan|")),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.starts_with("tooltip location_tab_fada title=Cluain Mhic Nóis|")),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|line| line.starts_with(&format!(
+            "tooltip location_tab_long title={}|",
+            "Ó".repeat(40)
+        ))),
+        "{recorded:?}"
+    );
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line == "tooltip_kind location_tab_long lockable"),
+        "{recorded:?}"
+    );
+    let tier = recorded
+        .iter()
+        .find_map(|line| {
+            line.strip_prefix("long_tier ")
+                .and_then(|value| value.parse::<u8>().ok())
+        })
+        .unwrap();
+    assert!(
+        tier > 1,
+        "long place name should use a shortened tier: {recorded:?}"
+    );
+}
+
+#[test]
 fn a_pops_selector_is_detached_before_a_resize_refit_and_keeps_look_and_scroll() {
     let mut rig = rig(&[
         "time(1, 1) select_place('scrolling', 'Scrolling') announce_tabs()",

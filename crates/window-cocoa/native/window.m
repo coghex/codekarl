@@ -237,6 +237,18 @@ static void ck_set(uint64_t *words, uint8_t key, BOOL value) {
 /* The macOS virtual key code of F. */
 #define CK_KEY_CODE_F 3
 
+@implementation CKWindow
+
+- (BOOL)canBecomeKeyWindow {
+    return YES;
+}
+
+- (BOOL)canBecomeMainWindow {
+    return YES;
+}
+
+@end
+
 @implementation CKWinView
 
 - (BOOL)acceptsFirstResponder {
@@ -1186,7 +1198,7 @@ int ck_win_create_window(CKWinHandle *handle, const char *title, size_t title_le
         if (resizable) {
             mask |= NSWindowStyleMaskResizable;
         }
-        NSWindow *window = [[NSWindow alloc] initWithContentRect:content
+        NSWindow *window = [[CKWindow alloc] initWithContentRect:content
                                                        styleMask:mask
                                                          backing:NSBackingStoreBuffered
                                                            defer:NO];

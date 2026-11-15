@@ -491,6 +491,7 @@ fn the_late_drain_returns_a_failing_game_time_call_and_posts_nothing_new() {
             date,
             speed: ck_sim::Speed::new(1).unwrap(),
             paused: None,
+            unsaved: false,
             economy_revision: 0,
             economy: None,
         }

@@ -76,6 +76,7 @@ unsafe extern "C" {
     fn ck_win_test_ns_window_count() -> u64;
     fn ck_win_test_info(out: *mut RawInfo);
     fn ck_win_test_mouse_ignored() -> i32;
+    fn ck_win_test_borderless_eligibility() -> i32;
     fn ck_win_test_mouse_passthrough_probe() -> i32;
     fn ck_win_test_counters(out: *mut RawCounters);
     fn ck_win_test_set_first_responder(to_view: i32);
@@ -338,6 +339,35 @@ pub(crate) fn info() -> WindowInfo {
 pub(crate) fn mouse_ignored() -> bool {
     // SAFETY: reads one AppKit property on the main thread.
     unsafe { ck_win_test_mouse_ignored() != 0 }
+}
+
+/// What the game window's class and a plain `NSWindow` answer, with a borderless style mask, to
+/// `canBecomeKeyWindow` and `canBecomeMainWindow` (CK-331). It builds a deferred window object of each and
+/// never shows, orders, activates or makes one key.
+pub(crate) struct Eligibility {
+    pub(crate) game: Answers,
+    pub(crate) plain: Answers,
+}
+
+/// The two answers of one window class.
+pub(crate) struct Answers {
+    pub(crate) key: bool,
+    pub(crate) main: bool,
+}
+
+pub(crate) fn borderless_eligibility() -> Eligibility {
+    // SAFETY: two deferred window objects are created, asked and released on the main thread; none is shown.
+    let answers = unsafe { ck_win_test_borderless_eligibility() };
+    Eligibility {
+        game: Answers {
+            key: answers & 1 != 0,
+            main: answers & 2 != 0,
+        },
+        plain: Answers {
+            key: answers & 4 != 0,
+            main: answers & 8 != 0,
+        },
+    }
 }
 
 pub(crate) fn mouse_passthrough_probe() -> i32 {

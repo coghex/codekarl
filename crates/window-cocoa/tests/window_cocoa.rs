@@ -1120,6 +1120,26 @@ fn production_open_still_asks_for_activation() {
     backend.terminate();
 }
 
+/// CK-331: the game window's class accepts the key and main status with a borderless style, the style of the
+/// fullscreen modes, where a plain `NSWindow` does not. Only the two answers are asked of window objects that are never
+/// shown: no window is made fullscreen, key or main, and nothing is activated or ordered front (CK-187).
+fn the_game_window_class_can_become_key_when_borderless() {
+    support::install_application();
+    let answers = support::borderless_eligibility();
+    assert!(
+        !answers.plain.key && !answers.plain.main,
+        "control: a plain borderless NSWindow cannot become key or main, the premise of CK-331"
+    );
+    assert!(
+        answers.game.key,
+        "the game window can become key when borderless"
+    );
+    assert!(
+        answers.game.main,
+        "the game window can become main when borderless"
+    );
+}
+
 fn test_windows_let_clicks_through() {
     let _fixture = Fixture::open(260, 180);
     match support::mouse_passthrough_probe() {
@@ -1136,7 +1156,7 @@ fn test_windows_let_clicks_through() {
 
 type Case = fn();
 
-const CASES: [(&str, Case); 55] = [
+const CASES: [(&str, Case); 56] = [
     ("create_and_destroy", create_and_destroy),
     (
         "production_open_still_asks_for_activation",
@@ -1145,6 +1165,10 @@ const CASES: [(&str, Case); 55] = [
     (
         "test_windows_let_clicks_through",
         test_windows_let_clicks_through,
+    ),
+    (
+        "the_game_window_class_can_become_key_when_borderless",
+        the_game_window_class_can_become_key_when_borderless,
     ),
     ("off_the_main_thread", off_the_main_thread),
     ("close_button", close_button),

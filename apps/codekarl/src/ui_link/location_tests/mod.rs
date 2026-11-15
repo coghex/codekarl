@@ -488,7 +488,11 @@ local real_tabs_new = tabs_library.new
 tabs_by_title = {}
 tabs_library.new = function(spec)
   tabs_object = real_tabs_new(spec)
-  tabs_by_title[spec.window.title] = tabs_object
+  local name = spec.window.title
+  for candidate, window in pairs(window_objects or {}) do
+    if window == spec.window then name = candidate; break end
+  end
+  tabs_by_title[name] = tabs_object
   return tabs_object
 end
 local windows = require("lib.window")
@@ -548,7 +552,7 @@ function announce_place_tabs()
   note("place_cards_open " .. tostring(card_object ~= nil and not card_object.closed))
 end
 function announce_active_panel()
-  note(string.format("active_panel %s %s ledger_closed=%s", panel_window.title, tabs_object:current(),
+  note(string.format("active_panel %s %s ledger_closed=%s", tabs_object.items[1].labels[tabs_object.tier], tabs_object:current(),
     tostring(window_objects.ledger == nil or window_objects.ledger.closed)))
   note("place_calls " .. table.concat(place_calls, ","))
 end
@@ -568,6 +572,8 @@ function announce_location_tooltips()
   tip(6, food_row.cells[2].x * ui_pixel + 1, "food_number")
   note_tooltip("title", window_objects.Rowan.title_key)
   note_tooltip_kind("title", window_objects.Rowan.title_key)
+  note_tooltip("location_tab", tabs_by_title.Rowan.buttons[1].key)
+  note_tooltip_kind("location_tab", tabs_by_title.Rowan.buttons[1].key)
   for row_index, row in ipairs(line.items) do
     if type(row) == "table" and row.tooltip ~= nil then
       local y = line.origin_y + line.y - line.s + (row_index - 0.5) * 26
@@ -661,8 +667,9 @@ function announce_fit(expected_title)
   local first = tabs_object.buttons[1]
   local last = tabs_object.buttons[#tabs_object.buttons]
   local last_width = last:size()
-  note(string.format("fit title=%s tabs_right=%s title_clear=%s", tostring(panel_window.title == expected_title),
+  note(string.format("fit title=%s tabs_right=%s title_clear=%s", tostring(panel_window.title == ""),
     tostring(last.x + last_width <= width), tostring(8 * require("lib.ui").P + panel_window.title_text_width <= first.x)))
+  note("place_label " .. first.line.ck_test_text)
   note("tabs_left " .. tostring(first.x >= 0))
   local apart = true
   for index = 1, #tabs_object.buttons - 1 do
