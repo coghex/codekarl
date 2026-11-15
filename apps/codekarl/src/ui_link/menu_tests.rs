@@ -1340,6 +1340,47 @@ expect(s.controls.rows.close.read_only and s.controls.rows.close.slots[1].frame.
 }
 
 #[test]
+fn settings_input_lists_fullscreen_in_the_game_group_after_quickload_with_its_default() {
+    let mut rig = settings_rig(&[
+        r#"
+for index, action in ipairs(fixture.bindings) do
+  if action.name == "game_quickload" then
+    table.insert(fixture.bindings, index + 1, {name = "window_fullscreen", bindings = {"F11"}})
+    break
+  end
+end
+fixture.base_bindings.window_fullscreen = {"F11"}
+"#,
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+local rows = s.controls.key_slots
+expect(rows.window_fullscreen ~= nil, "the input tab has a row for the fullscreen action")
+eq(line_text(rows.window_fullscreen[1].line), "F11")
+local all = {}
+local fullscreen_y, game_y, map_y
+for _, line in ipairs(lines_in(s.page.rows_group)) do
+  local shown = line_text(line)
+  all[#all + 1] = shown
+  if shown == "fullscreen" then fullscreen_y = line.y end
+  if shown == "game" then game_y = line.y end
+  if shown == "map" then map_y = line.y end
+end
+expect(fullscreen_y ~= nil, "the row is labelled fullscreen: " .. table.concat(all, " "))
+expect(game_y < rows.game_quickload[1].y and rows.game_quickload[1].y < rows.window_fullscreen[1].y,
+  "fullscreen follows quickload in the game group")
+expect(rows.window_fullscreen[1].y < rows.close[1].y and rows.window_fullscreen[1].y < map_y,
+  "fullscreen comes before the fixed menu row and the map group")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+}
+
+#[test]
 fn settings_input_keeps_the_menu_under_game_when_no_game_actions_are_available() {
     let mut rig = settings_rig(&[
         r#"
@@ -2619,7 +2660,7 @@ fn capture_mapper_key(rig: &mut Rig, key: ck_input::Key) {
     rig.deliver_fixture_frame();
 }
 
-fn press_mapper_key(rig: &mut Rig, key: ck_input::Key) -> ck_input::InputSnapshot {
+pub(super) fn press_mapper_key(rig: &mut Rig, key: ck_input::Key) -> ck_input::InputSnapshot {
     rig.mapper.key(key, true, false);
     let snapshot = rig.mapper.snapshot();
     let sequence = snapshot.sequence;
@@ -2631,7 +2672,7 @@ fn press_mapper_key(rig: &mut Rig, key: ck_input::Key) -> ck_input::InputSnapsho
     snapshot
 }
 
-fn release_mapper_key(rig: &mut Rig, key: ck_input::Key) {
+pub(super) fn release_mapper_key(rig: &mut Rig, key: ck_input::Key) {
     rig.mapper.key(key, false, false);
     let snapshot = rig.mapper.snapshot();
     let sequence = snapshot.sequence;

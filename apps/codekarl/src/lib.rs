@@ -9,7 +9,7 @@
 //!
 //! **The simulation** (see `game`): with `[game] scenario` the run also has the game, on its own owner thread `sim`. A new game
 //! starts paused at the scenario's start date with a master seed from `--seed N` or the operating system; `--load PATH`
-//! starts from a save instead. Space pauses, `Digit1` to `Digit5` pick a speed, F5 quicksaves and F9 quickloads. Without
+//! starts from a save instead. Space pauses, `Digit1` to `Digit5` pick a speed, F5 quicksaves, F9 quickloads and F11 switches fullscreen. Without
 //! `[game] scenario` there is no simulation and every run is as it was.
 //!
 //! **Windowed or headless** (see `mode`): a run is headless when there is no `--config`, when the

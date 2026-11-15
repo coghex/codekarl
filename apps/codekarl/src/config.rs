@@ -1421,7 +1421,7 @@ pub(crate) struct GameConfig {
 const DEFAULT_SAVES: &str = "saves";
 
 /// The time and save actions with their default keys, added only when `[game] scenario` is set.
-const GAME_BINDINGS: [(&str, &str); 10] = [
+const GAME_BINDINGS: [(&str, &str); 11] = [
     ("time_pause", "Space"),
     ("time_speed_1", "Digit1"),
     ("time_speed_2", "Digit2"),
@@ -1432,6 +1432,7 @@ const GAME_BINDINGS: [(&str, &str); 10] = [
     ("time_slower", "BracketLeft"),
     ("game_quicksave", "F5"),
     ("game_quickload", "F9"),
+    ("window_fullscreen", "F11"),
 ];
 
 impl Default for Config {
@@ -1979,7 +1980,7 @@ fn load_settings(config_path: &Path, config: &mut Config) {
     }
 }
 
-pub(crate) const REBINDABLE_ACTIONS: [&str; 16] = [
+pub(crate) const REBINDABLE_ACTIONS: [&str; 17] = [
     "time_pause",
     "time_speed_1",
     "time_speed_2",
@@ -1990,6 +1991,7 @@ pub(crate) const REBINDABLE_ACTIONS: [&str; 16] = [
     "time_slower",
     "game_quicksave",
     "game_quickload",
+    "window_fullscreen",
     "map_pan_left",
     "map_pan_right",
     "map_pan_up",
@@ -4293,9 +4295,9 @@ mod tests {
     }
 
     #[test]
-    fn typed_text_adds_no_bound_action_a_games_bindings_are_the_22_of_today() {
+    fn typed_text_adds_no_bound_action_a_games_bindings_are_the_23_of_today() {
         // CK-314: a digit, a letter or an editing key reaches a widget as a typed entry, never as an action. The game's actions are the
-        // loop's 6 (the map's pan and zoom among them) and the 10 time and save actions.
+        // loop's 6 (the map's pan and zoom among them), the 10 time and save actions and the fullscreen key (CK-326).
         let config = parse_config("[game]\nscenario = \"s\"\n").unwrap();
         let names: Vec<_> = config
             .bindings
@@ -4303,7 +4305,7 @@ mod tests {
             .iter()
             .map(ck_window::ActionBindings::name)
             .collect();
-        assert_eq!(names.len(), 22, "{names:?}");
+        assert_eq!(names.len(), 23, "{names:?}");
         assert!(
             names.iter().all(|name| ![
                 "type",
@@ -4333,6 +4335,7 @@ mod tests {
             ("time_slower", "BracketLeft"),
             ("game_quicksave", "F5"),
             ("game_quickload", "F9"),
+            ("window_fullscreen", "F11"),
         ];
         for text in ["", "[map]\ndirectory = \"m\"\n"] {
             let config = parse_config(text).unwrap();
@@ -4365,6 +4368,38 @@ mod tests {
                 .unwrap()
                 .bindings()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_fullscreen_action_is_rebindable_and_clearable_in_the_config() {
+        let rebound = parse_config(
+            "[game]\nscenario = \"s\"\n[input.bindings]\nwindow_fullscreen = [\"F10\"]\n",
+        )
+        .unwrap();
+        let keys: Vec<_> = rebound
+            .bindings
+            .action("window_fullscreen")
+            .unwrap()
+            .bindings()
+            .iter()
+            .map(|binding| binding.key().name())
+            .collect();
+        assert_eq!(keys, ["F10"]);
+        let cleared =
+            parse_config("[game]\nscenario = \"s\"\n[input.bindings]\nwindow_fullscreen = []\n")
+                .unwrap();
+        assert!(
+            cleared
+                .bindings
+                .action("window_fullscreen")
+                .unwrap()
+                .bindings()
+                .is_empty()
+        );
+        assert!(
+            REBINDABLE_ACTIONS.contains(&"window_fullscreen"),
+            "the per-entry validation admits it"
         );
     }
 

@@ -79,6 +79,13 @@ local function backdrop_widget()
   }
 end
 
+-- How many times the menu has opened (a call that only raises an open menu does not count).
+local opens = 0
+
+function menu.opens()
+  return opens
+end
+
 function menu.is_open()
   return current ~= nil and not current.window.closed
 end
@@ -151,6 +158,7 @@ function menu.open(view)
     y = y + height + GAP
   end
   current = state
+  opens = opens + 1
   centre(state)
   if game ~= nil then
     game.pause()

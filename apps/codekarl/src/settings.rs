@@ -265,7 +265,7 @@ impl Runtime {
         reason = "validate, persist and publish a binding replacement as one operation"
     )]
     fn set_bindings(&self, args: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
-        const PLAYER_ACTIONS: [&str; 16] = [
+        const PLAYER_ACTIONS: [&str; 17] = [
             "time_pause",
             "time_speed_1",
             "time_speed_2",
@@ -276,6 +276,7 @@ impl Runtime {
             "time_slower",
             "game_quicksave",
             "game_quickload",
+            "window_fullscreen",
             "map_pan_left",
             "map_pan_right",
             "map_pan_up",
@@ -1061,7 +1062,7 @@ local ok, message = pcall(function() settings.set("ui.tooltips.delay", 0.25) end
 assert(not ok and string.find(tostring(message), "ui.tooltips.delay", 1, true))
 assert(settings.tooltips().delay == 0.8)
 local actions = settings.bindings()
-assert(#actions == 17)
+assert(#actions == 18)
 assert(actions[1].name == "close" and actions[1].bindings[1] == "Escape")
 local pause, quickload
 for _, action in ipairs(actions) do
@@ -1152,7 +1153,7 @@ assert(settings.map().pan_pixels_per_frame == 4)
         .expect("runtime settings");
         let rejected = r"
 local before = settings.bindings()
-assert(#before == 17)
+assert(#before == 18)
 local ok, message = pcall(function()
   settings.set_bindings({time_pause={'Control+KeyQ'}, close={'KeyQ'}})
 end)
@@ -1233,7 +1234,7 @@ local ok = pcall(function() settings.set_bindings({{move_left={{"KeyZ"}}}}) end)
 assert(not ok)
 settings.reset("bindings")
 for _, item in ipairs(settings.bindings()) do
-  assert(item.name == "close" or item.name:match("^time_") or item.name:match("^game_") or item.name:match("^map_"))
+  assert(item.name == "close" or item.name:match("^time_") or item.name:match("^game_") or item.name:match("^window_") or item.name:match("^map_"))
 end
 "#
             );
