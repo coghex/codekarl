@@ -9,7 +9,7 @@
 **Since CK-333 and CK-334 (2026-11-15).** The first two engine parts of the owner's debug layer are accepted: a second,
 small layer of quads drawn after the scene, which only the application can write (§8.5), and, in the Metal presenter, the
 times at which the display showed the latest frames and a switch that draws a frame at every display refresh (§9).
-Nothing in the game uses them yet.
+Since CK-335 (2026-11-16) the application's debug line uses all three (`docs/ui-design.md` §3.24).
 
 **Firm** marks owner decisions, with their source/date. **Proposal** marks designer recommendations. **Open** marks decisions that still need an answer. Unless explicitly marked otherwise, the mechanisms, API names and numerical defaults below are **Proposal**. A manager's requested design constraint is identified as such, not attributed to the owner.
 
@@ -423,8 +423,10 @@ change the engine so that it can" (`owner-direction-designer-r2.md`). This slice
 - **With no top layer nothing changes.** While the top writer has published nothing, a frame is built as before
   CK-333.
 - **After the end** a top-layer publication is counted and discarded, as a scene's is.
-- **No VM gets it.** The UI VM's `render` table is unchanged. The application does not take the writer yet: a later
-  slice of the debug layer does. Until then nothing is drawn through it.
+- **No VM gets it.** The UI VM's `render` table is unchanged.
+- **Since CK-335 the application takes the writer,** at the start of a windowed native Metal run that has loaded a
+  font, and draws the debug line through it (`docs/ui-design.md` §3.24). While that line is off nothing is drawn
+  through it. Before CK-335 nothing took the writer.
 - **On Metal.** The snapshot carries the top layer for both backends. The Vulkan sink does not draw it: that path is
   compile-only.
 - **Tests,** with no window and no GPU:
@@ -483,7 +485,8 @@ layer on than off, uses more power, and is not quite the same game that is being
     taken (`apply_timing`, `crates/gpu-metal/src/presenter.rs`). That is a little after the frame.
   - **They are apart from the metrics.** They are kept with no measured window, and keeping or reading them changes
     nothing in the end-of-run record.
-  - **They are for the debug layer,** not a counter for tests: no test but this slice's own reads them.
+  - **They are for the debug layer,** not a counter for tests: no test but this slice's own reads them. Since
+    CK-335 the debug line's frame rate is worked out from them (`docs/ui-design.md` §3.24).
 - **Drawing at every refresh.** The presenter has a switch, off at the start
   (`MetalPresenter::set_draw_every_refresh`). While it is on a frame is always wanted, so the render thread starts the
   next one as soon as it may and the display paces them: a frame for each refresh.
@@ -507,8 +510,9 @@ layer on than off, uses more power, and is not quite the same game that is being
     order to the presenter's setter, as it does the limit. A setter that outlives its presenter does nothing.
   - **Read in the code:** the limit's delivery ends cleanly when a setter panics, and this one has no such guard, so
     a setter that panicked would stop later deliveries (the submission review's N1, not blocking).
-- **Nothing asks for it yet.** The application makes no request, so the game draws on demand as before. A later slice
-  of the debug layer makes it.
+- **Since CK-335 the application asks for it,** exactly while the debug layer's level is 1 and its rate is
+  `"frames"` (`docs/ui-design.md` §3.24). Otherwise it makes no request, and the game draws on demand as before.
+  Before CK-335 nothing asked.
 - **On Metal only.** The Vulkan path keeps no times and draws on demand whatever is asked: it is compile-only.
 - **Disclosed, not designed for:** a window that is focused but covered by another is still active, so frames are
   still asked for. What the system does with them then is the system's.
@@ -522,7 +526,7 @@ layer on than off, uses more power, and is not quite the same game that is being
     `input.rs` beside it: `continuous_drawing_tracks_the_active_window_without_update_settings`.
 
   No test shows a real display drawing a frame for each refresh. That is for the owner to see by hand with the debug
-  layer's number, once a later slice draws it.
+  layer's number, which is drawn since CK-335 (`docs/ui-design.md` §3.24).
 
 ## 10. Input actions and test isolation
 
