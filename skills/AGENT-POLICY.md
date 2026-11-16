@@ -190,18 +190,20 @@ resumable.
 - **After:** the first message to a cleared session names what to read (this
   policy, its role skill, or its brief). The manager types a one-line pointer into
   its empty prompt, because a cleared session is not waiting on chat until it has
-  taken a turn; for Codex that first turn is the identity check below.
+  taken a turn. For a Codex session, that pointer is the real first assignment and
+  is sent after the sync wait below; it asks the session to run
+  `pchat agent who --json` once before starting the work.
 - **Record:** one private action record per clear in
   `.pipeline/coordination/session-clears/` (the old session id and how to resume
   it), and a line in the manager's handoff.
 - **Codex:** Codex sessions are cleared under the same table as Claude Code
-  sessions (owner, 2026-11-13). After a Codex clear the chat name returns only once
-  the registry has seen the new thread. So the manager posts nothing to the session
-  first: it types a one-line pointer asking for `pchat agent who --json`, lets that
-  turn end, runs `pchat agent sync`, and checks with `pchat agent list --json` that
-  the old name carries the new thread and is the only active name on that tab. Only
-  then does it send the first message. If the name has not returned after one more
-  sync, it stops and reports. A session launched without a model flag takes the
-  client's current default model after a clear; the manager checks the session's
-  model and effort against its class before giving it work, and reports a change to
-  the owner.
+  sessions (owner, 2026-11-13). A standalone identity check typed into a cleared
+  Codex session can be replayed as the task after a compaction. After a Codex clear,
+  the manager types nothing into the session and repeats `pchat agent sync`, checking
+  with `pchat agent list --json` until the old name carries the new thread and is
+  the only active name on that tab. If that has not happened after 60 syncs, it
+  stops and reports. Then it sends the first assignment, which asks the session to
+  run `pchat agent who --json` once before the work. A session launched without a
+  model flag takes the client's current default model after a clear; the manager
+  checks the session's model and effort against its class before giving it work,
+  and reports a change to the owner.
