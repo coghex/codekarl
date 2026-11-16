@@ -17,6 +17,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use crate::map::MetalMap;
 use crate::quad::{DestinationRect, MetalFilter, MetalQuad, SlotWake};
 
+/// Fixed instance allowance for the independent source drawn after the scene.
+pub(crate) const TOP_LAYER_MAX_QUADS: usize = 1_024;
+/// One instance for the scene's compatibility quad, outside its scene and top-layer limits.
+pub(crate) const COMPAT_INSTANCE_ALLOWANCE: usize = 1;
+
 /// What a quad is for. A scene's own quads are [`Scene`](Self::Scene); the legacy compatibility quad that the renderer's
 /// `render.quad` keeps is [`Compat`](Self::Compat): the presenter draws it only with a **resolved** texture (never the
 /// checker), holds the first frame that would show it until its image is there and keeps the last image it drew on screen
@@ -84,6 +89,8 @@ pub struct MetalFrame<K> {
     filter: MetalFilter,
     quad: Option<MetalQuad>,
     scene: Option<Arc<dyn MetalSceneSource<K>>>,
+    /// The independent source drawn after every scene quad.
+    top_layer: Option<Arc<dyn MetalSceneSource<K>>>,
     /// The key of the frame's compatibility quad, as plain data **outside** the placed instances: a compatibility quad
     /// that is clipped away and places to nothing still has its role known to the presenter (it classifies an upload failure
     /// of this key whatever was placed).
@@ -100,6 +107,7 @@ impl<K: Clone> Clone for MetalFrame<K> {
             filter: self.filter,
             quad: self.quad.clone(),
             scene: self.scene.clone(),
+            top_layer: self.top_layer.clone(),
             compat_key: self.compat_key.clone(),
             map: self.map.clone(),
         }
@@ -114,6 +122,7 @@ impl<K> fmt::Debug for MetalFrame<K> {
             .field("filter", &self.filter)
             .field("quad", &self.quad.is_some())
             .field("scene", &self.scene.is_some())
+            .field("top_layer", &self.top_layer.is_some())
             .field("compat", &self.compat_key.is_some())
             .field("map", &self.map.is_some())
             .finish()
@@ -135,6 +144,7 @@ impl<K> MetalFrame<K> {
             filter,
             quad,
             scene,
+            top_layer: None,
             compat_key: None,
             map: None,
         }
@@ -190,6 +200,19 @@ impl<K> MetalFrame<K> {
     pub fn scene(&self) -> Option<&Arc<dyn MetalSceneSource<K>>> {
         self.scene.as_ref()
     }
+
+    /// This frame with its independent source drawn after the scene.
+    #[must_use]
+    pub fn with_top_layer(mut self, top_layer: Option<Arc<dyn MetalSceneSource<K>>>) -> Self {
+        self.top_layer = top_layer;
+        self
+    }
+
+    /// The independent source drawn after the scene, if present.
+    #[must_use]
+    pub fn top_layer(&self) -> Option<&Arc<dyn MetalSceneSource<K>>> {
+        self.top_layer.as_ref()
+    }
 }
 
 /// The scene presenter's counters and charges, read with [`MetalPresenter::stats`](crate::MetalPresenter::stats).
@@ -209,7 +232,7 @@ pub struct SceneStats {
     pub instances_written: u64,
     /// Frame attempts that found the previous command buffer still outstanding and wrote nothing into the buffer.
     pub buffer_busy: u64,
-    /// The instance buffer's logical size (`max_quads` instances at the instance stride).
+    /// The instance buffer's logical size: scene slots, top-layer slots and one compatibility slot at the instance stride.
     pub instance_buffer_bytes: u64,
     /// The instance buffer's measured `allocatedSize`, which is what `binding_geometry_bytes` is charged.
     pub instance_buffer_allocated: u64,

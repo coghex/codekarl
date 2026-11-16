@@ -214,6 +214,56 @@ fn max_quads_counts_the_quads_of_every_group() {
     assert_eq!(rig.writer.quad_count(), 3);
 }
 
+#[test]
+fn top_layer_quad_over_scene_hit_region_leaves_hit_region_unchanged() {
+    let mut rig = Rig::new();
+    rig.writer
+        .set_hit(
+            "panel",
+            Some(vec![PointRect::new(1.0, 2.0, 3.0, 4.0)]),
+            None,
+        )
+        .unwrap();
+    rig.frame();
+    let before = rig.bridge.hit_regions().expect("scene hit region");
+    let mut top = rig.bridge.take_top_writer().expect("top writer");
+    top.create_quad_in(None, rig.texture.clone(), 1.0, 2.0, 3.0, 4.0)
+        .expect("a top quad over the region");
+    assert!(top.publish());
+    let after = rig.bridge.hit_regions().expect("scene hit region remains");
+    assert!(Arc::ptr_eq(&before, &after));
+    assert_eq!(
+        after.key_at(PointerPosition { x: 512, y: 768 }),
+        Some("panel")
+    );
+}
+
+#[test]
+fn top_layer_has_its_own_fixed_quad_and_group_limits() {
+    let bridge = SceneBridge::new(Filter::Nearest);
+    let mut top = bridge.take_top_writer().expect("top writer");
+    let service = service();
+    let image = texture(&service);
+    for _ in 0..1_024 {
+        top.create_quad(image.clone(), 0.0, 0.0, 1.0, 1.0)
+            .expect("within top quad limit");
+    }
+    assert_eq!(top.quad_count(), 1_024);
+    assert_eq!(
+        top.create_quad(image, 0.0, 0.0, 1.0, 1.0).unwrap_err(),
+        QuadError::Full { capacity: 1_024 }
+    );
+
+    for _ in 0..16 {
+        top.create_group().expect("within top group limit");
+    }
+    assert_eq!(top.group_count(), 16);
+    assert_eq!(
+        top.create_group().unwrap_err(),
+        GroupError::Full { capacity: 16 }
+    );
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Painter order
 // ---------------------------------------------------------------------------------------------------------------------

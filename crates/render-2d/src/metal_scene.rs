@@ -25,31 +25,43 @@ use crate::{Metrics, SceneFrame};
 pub(crate) struct SceneFrameSource {
     frame: Arc<SceneFrame>,
     metrics: Metrics,
+    include_compat: bool,
     /// Counts the calls to `place` (tests only: placement must never run under the bridge's lock).
     #[cfg(test)]
     placements: Option<Arc<AtomicUsize>>,
 }
 
 impl SceneFrameSource {
+    #[cfg(test)]
     pub(crate) fn new(frame: Arc<SceneFrame>, metrics: Metrics) -> Self {
+        Self::with_compat(frame, metrics, true)
+    }
+
+    pub(crate) fn with_compat(
+        frame: Arc<SceneFrame>,
+        metrics: Metrics,
+        include_compat: bool,
+    ) -> Self {
         Self {
             frame,
             metrics,
+            include_compat,
             #[cfg(test)]
             placements: None,
         }
     }
 
-    /// The same, counting its `place` calls in `counter` (tests only).
     #[cfg(test)]
-    pub(crate) fn counting(
+    pub(crate) fn counting_with_compat(
         frame: Arc<SceneFrame>,
         metrics: Metrics,
+        include_compat: bool,
         counter: Arc<AtomicUsize>,
     ) -> Self {
         Self {
             frame,
             metrics,
+            include_compat,
             placements: Some(counter),
         }
     }
@@ -65,8 +77,9 @@ impl MetalSceneSource<TextureKey> for SceneFrameSource {
         // presenter never draws it with the checker (milestone 5, issue 5d-2). A compatibility quad that places to nothing
         // is not emitted (its key still reaches the presenter, as plain data on the frame).
         let compat = self
-            .frame
-            .compat()
+            .include_compat
+            .then(|| self.frame.compat())
+            .flatten()
             .into_iter()
             .map(|quad| (quad, InstanceRole::Compat));
         let scene = self

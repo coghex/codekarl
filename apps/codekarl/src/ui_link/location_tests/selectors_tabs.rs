@@ -5,12 +5,17 @@ fn place_name_relabels_the_first_tab_and_keeps_its_place_tooltip() {
     let mut rig = rig(&[r"time(1, 1); select_place('rowan', 'Rowan')
 note('title ' .. string.format('%q', panel_window.shown_title))
 note('location_label ' .. tabs_object.buttons[1].line.ck_test_text)
+note('location_tier ' .. tabs_object.tier)
+for index, button in ipairs(tabs_object.buttons) do local width = button:size(); note(string.format('location_tab_geometry %d %g %g', index, button.x, width)) end
 note_tooltip('location_tab', tabs_object.buttons[1].key)
 select_place('fada', 'Cluain Mhic Nóis')
 note('fada_label ' .. tabs_object.buttons[1].line.ck_test_text)
+note('fada_tier ' .. tabs_object.tier)
+for index, button in ipairs(tabs_object.buttons) do local width = button:size(); note(string.format('fada_tab_geometry %d %g %g', index, button.x, width)) end
 note_tooltip('location_tab_fada', tabs_object.buttons[1].key)
 select_place('long', string.rep('Ó', 40))
 note('long_tier ' .. tabs_object.tier)
+for index, button in ipairs(tabs_object.buttons) do local width = button:size(); note(string.format('long_tab_geometry %d %g %g', index, button.x, width)) end
 note('long_label ' .. tabs_object.buttons[1].line.ck_test_text)
 note('other_labels ' .. tabs_object.buttons[2].line.ck_test_text .. ' ' .. tabs_object.buttons[3].line.ck_test_text)
 note_tooltip('location_tab_long', tabs_object.buttons[1].key)
@@ -26,11 +31,17 @@ note_tooltip_kind('location_tab_long', tabs_object.buttons[1].key)"]);
         "{recorded:?}"
     );
     assert!(
+        recorded.iter().any(|line| line == "location_tier 1"),
+        "{recorded:?}"
+    );
+    assert_left_tab_row(&recorded, "location_tab_geometry");
+    assert!(
         recorded
             .iter()
             .any(|line| line == "fada_label Cluain Mhic Nóis"),
         "{recorded:?}"
     );
+    assert_left_tab_row(&recorded, "fada_tab_geometry");
     assert!(
         recorded
             .iter()
@@ -77,6 +88,34 @@ note_tooltip_kind('location_tab_long', tabs_object.buttons[1].key)"]);
         tier > 1,
         "long place name should use a shortened tier: {recorded:?}"
     );
+    assert_left_tab_row(&recorded, "long_tab_geometry");
+}
+
+fn assert_left_tab_row(recorded: &[String], prefix: &str) {
+    let geometries: Vec<(usize, f64, f64)> = recorded
+        .iter()
+        .filter_map(|line| {
+            let mut fields = line.strip_prefix(prefix)?.split_whitespace();
+            Some((
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse().ok()?,
+            ))
+        })
+        .collect();
+    assert_eq!(geometries.len(), 3, "{prefix}: {recorded:?}");
+    assert_eq!(geometries[0].0, 1);
+    assert!(
+        (geometries[0].1 - 16.0).abs() < 0.01,
+        "left origin at TITLE_X: {recorded:?}"
+    );
+    for pair in geometries.windows(2) {
+        assert_eq!(pair[1].0, pair[0].0 + 1);
+        assert!(
+            (pair[1].1 - pair[0].1 - pair[0].2 - 2.0).abs() < 0.01,
+            "usual gap: {recorded:?}"
+        );
+    }
 }
 
 #[test]

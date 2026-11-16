@@ -39,7 +39,7 @@ fn the_ledger_opens_on_each_icon_docks_right_and_close_or_escape_restores_the_ba
     let mut rig = rig(&[
         "time(1, 1) announce_bars()",
         "announce_ledger()",
-        "announce_tabs(); announce_ledger()",
+        "announce_ledger_tabs(); announce_ledger()",
         "announce_ledger()",
         "announce_ledger()",
     ]);
@@ -53,6 +53,23 @@ fn the_ledger_opens_on_each_icon_docks_right_and_close_or_escape_restores_the_ba
                 && line.contains("draggable=false bar_visible=false tab=pops")),
         "{:?}",
         notes(&rig)
+    );
+    let edges = notes(&rig)
+        .into_iter()
+        .rev()
+        .find(|line| line.starts_with("ledger_tab_row_edges "))
+        .unwrap_or_else(|| {
+            panic!(
+                "the default-aligned ledger tab row geometry: {:?}",
+                notes(&rig)
+            )
+        });
+    let mut edges = edges["ledger_tab_row_edges ".len()..].split_whitespace();
+    let row_end: f64 = edges.next().unwrap().parse().unwrap();
+    let room_end: f64 = edges.next().unwrap().parse().unwrap();
+    assert!(
+        (row_end - room_end).abs() < 0.01,
+        "omitted alignment stays right aligned: {row_end} != {room_end}"
     );
     let pops = rows(&rig).last().unwrap().clone();
     assert!(pops.contains("Rowan@228:left:-"), "{pops}");

@@ -185,6 +185,11 @@ pub trait Presenter {
     /// Asks for a redraw. Never waits.
     fn request_redraw(&mut self);
 
+    /// Requests drawing every display refresh while the window is active. Defaults to on-demand drawing.
+    fn set_draw_every_refresh(&mut self, enabled: bool) {
+        let _ = enabled;
+    }
+
     /// The next report, if there is one; never waits.
     ///
     /// Reports are queued in the order the render thread publishes them, and a report is queued before

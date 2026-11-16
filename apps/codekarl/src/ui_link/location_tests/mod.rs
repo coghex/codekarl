@@ -514,12 +514,15 @@ end
 -- The centre of each tab button, in window points, for the driver to click.
 function announce_tabs()
   local x, y = panel_window:position()
+  local _, right = tabs_object.window:title_bounds()
   for index, item in ipairs(tabs_object.items) do
     local width, height = tabs_object.buttons[index]:size()
     note(string.format("tab %s %d %d %s", item.key, x + tabs_object.buttons[index].x + width / 2,
       y + tabs_object.buttons[index].y + height / 2,
       (tabs_object.buttons[index].text or "") .. " selected=" .. tostring(tabs_object.buttons[index].selected == true)))
   end
+  local last = tabs_object.buttons[#tabs_object.buttons]
+  note(string.format("tab_row_edges %g %g", last.x + last:size(), right))
 end
 function announce_ledger()
   local ledger = window_objects.ledger
@@ -529,6 +532,9 @@ function announce_ledger()
   end
   local x, y = ledger:position()
   local width, height = ledger:size()
+  local _, room_end = ledger:title_bounds()
+  local last_tab = tabs_by_title.ledger.buttons[#tabs_by_title.ledger.buttons]
+  note(string.format("ledger_tab_row_edges %g %g", last_tab.x + last_tab:size(), room_end))
   local content_x, content_y = ledger:content_origin()
   note(string.format("ledger %g %g %g %g content=%g %g draggable=%s bar_visible=%s tab=%s",
     x, y, width, height, ledger.content_width, ledger.content_height, tostring(ledger.draggable), tostring(bar_visible),
@@ -670,6 +676,8 @@ function announce_fit(expected_title)
   note(string.format("fit title=%s tabs_right=%s title_clear=%s", tostring(panel_window.title == ""),
     tostring(last.x + last_width <= width), tostring(8 * require("lib.ui").P + panel_window.title_text_width <= first.x)))
   note("place_label " .. first.line.ck_test_text)
+  note("place_tier " .. tabs_object.tier)
+  for index, button in ipairs(tabs_object.buttons) do local button_width = button:size(); note(string.format("place_tab_geometry %d %g %g", index, button.x, button_width)) end
   note("tabs_left " .. tostring(first.x >= 0))
   local apart = true
   for index = 1, #tabs_object.buttons - 1 do

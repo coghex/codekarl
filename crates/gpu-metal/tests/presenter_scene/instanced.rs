@@ -434,9 +434,10 @@ pub(crate) fn scene_checker_is_a_baseline_charge() {
     assert_eq!(ledger.upload.batches_submitted, 0);
     assert_eq!(ledger.baseline_charges, 0);
     assert_eq!(ledger.extra_revisions, 0);
-    // The instance buffer: its charge is the measured allocation, which holds at least the logical product.
+    // The instance buffer holds 1,024 scene instances, 1,024 top-layer instances and one compatibility instance.
+    // Its charge is the measured allocation, which holds at least that logical product.
     // The 48-byte record keeps its original stride; tint occupies one former padding word.
-    assert_eq!(stats.instance_buffer_bytes, 1024 * 48);
+    assert_eq!(stats.instance_buffer_bytes, (1024 + 1024 + 1) * 48);
     assert!(
         stats.instance_buffer_allocated >= stats.instance_buffer_bytes,
         "{stats:?}"
@@ -817,13 +818,13 @@ pub(crate) fn scene_instance_buffer_is_written_only_when_free() {
 /// counts the rest as dropped; an invalid instance is skipped and counted, never a panic. Negative control: an unchecked
 /// budget starts the presenter; an unbounded write overruns the buffer (the validation layer aborts).
 pub(crate) fn scene_budget_and_bounds() {
-    // Too small as asked for: 1000 instances of 48 bytes need 48000 bytes.
+    // Too small as asked for: 1,000 scene, 1,024 top-layer and one compatibility instance need 97,200 bytes.
     {
         let mut rig = Rig::open();
         let mut scene = Scene::new();
         scene.bounds = SceneLimits {
             max_quads: 1000,
-            binding_geometry_bytes: 47_999,
+            binding_geometry_bytes: 97_199,
         };
         let mut presenter = scene.start(&rig, limits(), None, |_| {});
         let mut reports = Vec::new();
@@ -832,20 +833,20 @@ pub(crate) fn scene_budget_and_bounds() {
             panic!("the setup must fail: {reports:?}");
         };
         assert!(
-            message.contains("48000") && message.contains("47999"),
+            message.contains("97200") && message.contains("97199"),
             "{message}"
         );
         assert_eq!(scene.probes.frames(), 0);
         await_presented(&mut rig, &scene.probes.observer);
         assert_eq!(end(&mut rig, &mut presenter), CleanupResult::Proven);
     }
-    // Fits as asked for but not once the allocation is measured and aligned (a page is larger than 48000 bytes).
+    // Fits as asked for but not once the allocation is measured and aligned (a page is larger than 97,200 bytes).
     {
         let mut rig = Rig::open();
         let mut scene = Scene::new();
         scene.bounds = SceneLimits {
             max_quads: 1000,
-            binding_geometry_bytes: 48_000,
+            binding_geometry_bytes: 97_200,
         };
         let mut presenter = scene.start(&rig, limits(), None, |_| {});
         let mut reports = Vec::new();
@@ -854,7 +855,7 @@ pub(crate) fn scene_budget_and_bounds() {
             panic!("the measured allocation must not fit: {reports:?}");
         };
         assert!(
-            message.contains("measured") && message.contains("48000"),
+            message.contains("measured") && message.contains("97200"),
             "{message}"
         );
         await_presented(&mut rig, &scene.probes.observer);

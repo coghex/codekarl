@@ -730,6 +730,13 @@ impl Presenter for FakePresenter {
         note(&self.log, "presenter.request_redraw");
     }
 
+    fn set_draw_every_refresh(&mut self, enabled: bool) {
+        note(
+            &self.log,
+            format!("presenter.set_draw_every_refresh {enabled}"),
+        );
+    }
+
     fn take_report(&mut self) -> Option<PresenterReport> {
         let call = self.taken.fetch_add(1, Ordering::SeqCst) + 1;
         assert!(self.panic_on_take != Some(call), "injected presenter panic");

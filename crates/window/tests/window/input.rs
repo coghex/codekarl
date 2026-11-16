@@ -144,6 +144,76 @@ fn a_close_action_press_requests_a_close_with_the_source_key() {
 }
 
 #[test]
+fn continuous_drawing_tracks_the_active_window_without_update_settings() {
+    owned(
+        module_path!(),
+        "continuous_drawing_tracks_the_active_window_without_update_settings",
+        DEADLINE,
+        || {
+            let _scenario = scenario();
+            let mut rig = Rig::empty();
+            rig.writer.set_draw_every_refresh(true);
+            rig.writer.open(crate::fakes::desc()).expect("valid window");
+            rig.presenter
+                .reports
+                .lock()
+                .expect("report queue")
+                .push_back(PresenterReport::FirstFrameQueued);
+            rig.backend.script.extend([
+                vec![NativeEvent::FocusLost],
+                vec![NativeEvent::FocusGained],
+                vec![NativeEvent::FocusLost],
+                vec![NativeEvent::FocusGained],
+                vec![NativeEvent::Minimized],
+                vec![NativeEvent::Restored],
+                vec![NativeEvent::SizeChanged {
+                    points: (0, 300),
+                    pixels: PixelSize {
+                        width: 0,
+                        height: 600,
+                    },
+                }],
+                vec![NativeEvent::SizeChanged {
+                    points: (400, 300),
+                    pixels: PixelSize {
+                        width: 800,
+                        height: 600,
+                    },
+                }],
+                vec![],
+                vec![NativeEvent::FocusLost],
+                vec![NativeEvent::FocusGained],
+            ]);
+            let writer = rig.writer.clone();
+            let quit = Arc::clone(&rig.quit);
+            let notifier = Arc::clone(&rig.notifier);
+            rig.backend.hook = Some(Box::new(move |call| {
+                if call.index == 9 {
+                    writer.set_draw_every_refresh(false);
+                }
+                if call.index == 12 {
+                    quit.store(true, Ordering::SeqCst);
+                    notifier.wake();
+                }
+            }));
+            let ran = rig.run_collect();
+            let transitions: Vec<_> = ran
+                .log
+                .iter()
+                .filter_map(|entry| entry.strip_prefix("presenter.set_draw_every_refresh "))
+                .collect();
+            assert_eq!(
+                transitions,
+                [
+                    "true", "false", "true", "false", "true", "false", "true", "false"
+                ]
+            );
+            assert_eq!(ran.end, LoopEnd::Quit);
+        },
+    );
+}
+
+#[test]
 fn an_armed_capture_consumes_escape_before_the_close_action_and_owns_repeats_until_release() {
     owned(
         module_path!(),

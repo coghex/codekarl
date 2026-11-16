@@ -32,6 +32,7 @@ fn snapshot(
             source,
         }),
         scene: None,
+        top_layer: None,
         metrics: Metrics {
             points_width: 8,
             points_height: 4,

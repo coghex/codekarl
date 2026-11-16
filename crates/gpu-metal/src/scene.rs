@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use crate::Error;
 use crate::batch::{
-    Batch, CompatDecision, FrameCounters, InstanceRecord, Layout, Resolved, build_scene_in,
+    Batch, CompatDecision, FrameCounters, InstanceRecord, Layout, Resolved, build_scene_layers_in,
 };
 use crate::bindless::BindlessLimits;
 use crate::frame::{MetalFrame, MetalFrameSlot, MetalSceneSource};
@@ -50,12 +50,12 @@ pub fn checker_pixels() -> Vec<u8> {
     pixels
 }
 
-/// The bounds of a scene presenter's instance buffer: the most quads a frame draws, and the budget its measured
-/// allocation is charged to (`[render] max_quads` and `binding_geometry_bytes` of the configuration).
+/// The bounds of a scene presenter's instance buffer: the scene's own quad limit, the separate top-layer limit and the
+/// budget its measured allocation is charged to (`[render] max_quads` and `binding_geometry_bytes` of the configuration).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SceneLimits {
-    /// Instances the buffer holds; a source emitting more draws the first `max_quads` in painter order and the rest are
-    /// counted as dropped.
+    /// Scene instances allowed per frame; the scene draws its first `max_quads` valid instances and counts the rest as dropped.
+    /// The independent top layer has its own fixed limit.
     pub max_quads: usize,
     /// The budget for the GPU tables and instance/upload control buffers: the instance buffer's measured allocation must
     /// fit it, or the presenter's setup is refused.
@@ -155,6 +155,8 @@ pub(crate) struct BuildRequest {
     pub(crate) buffer: *mut InstanceRecord,
     /// The instances the buffer holds.
     pub(crate) capacity: usize,
+    /// The scene source's independent instance limit.
+    pub(crate) scene_capacity: usize,
     /// The most instances one draw takes in the bindless path (`u32::MAX`: only the buffer's capacity limits a draw).
     pub(crate) chunk: u32,
     /// Tests only: the `n`-th drawn instance's slot is forced out of the table (bindless path).
@@ -391,6 +393,14 @@ where
             .take()
             .ok_or_else(|| Error("the scene was already started".to_owned()))?;
         let context = Arc::clone(&self.context);
+        let instance_capacity = self
+            .limits
+            .max_quads
+            .checked_add(crate::frame::TOP_LAYER_MAX_QUADS)
+            .and_then(|capacity| capacity.checked_add(crate::frame::COMPAT_INSTANCE_ALLOWANCE))
+            .ok_or_else(|| {
+                Error("scene, top-layer and compatibility instance capacity overflow".to_owned())
+            })?;
         let ledger = if let Some(bindless_limits) = self.bindless_limits {
             let mut hooks = self.texture_hooks.clone().unwrap_or_default();
             if let Some(checker_hooks) = &self.checker_hooks {
@@ -403,7 +413,7 @@ where
                 self.ledger_limits,
                 bindless_limits,
                 self.limits.binding_geometry_bytes,
-                u64::try_from(self.limits.max_quads)
+                u64::try_from(instance_capacity)
                     .ok()
                     .and_then(|quads| {
                         u64::try_from(size_of::<InstanceRecord>())
@@ -431,11 +441,16 @@ where
                 ),
             }?
         };
-        // The most distinct keys one frame resolves: an instance for each of the `max_quads` it has room for, plus the compatibility
+        // The most distinct keys one frame resolves: an instance for every scene and top-layer slot, plus the compatibility
         // key and its held revision. The ledger keeps a ticket's map for the next frame only within this bound (CK-148); the setting
         // is made once, before any frame, so a refusal is a programming error.
         ledger
-            .set_spare_limit(self.limits.max_quads.saturating_add(2))
+            .set_spare_limit(
+                self.limits
+                    .max_quads
+                    .saturating_add(crate::frame::TOP_LAYER_MAX_QUADS)
+                    .saturating_add(2),
+            )
             .map_err(|error| Error(format!("the ledger's spare limit was refused: {error:?}")))?;
         // The checker's upload, on the context's queue, with its own completion token. Its completion is the store's
         // `completed` wake: it alone runs the first frame. A failure to start it is not a setup error here (the store
@@ -607,7 +622,8 @@ impl<K: Copy + Eq + Hash + Send + 'static, D> SceneState<K, D> {
 /// The scene a frame draws: its source, its filter and the checker, with the textures this frame resolved (each keeps the
 /// frame's ticket borrowed, so it cannot outlive the ticket).
 struct SceneInput<'t, K> {
-    source: Arc<dyn MetalSceneSource<K>>,
+    source: Option<Arc<dyn MetalSceneSource<K>>>,
+    top_layer: Option<Arc<dyn MetalSceneSource<K>>>,
     filter: MetalFilter,
     checker: *mut c_void,
     /// The frame's compatibility key (plain data, whether or not its quad placed anything).
@@ -638,6 +654,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> FrameSeam for TicketSeam<'_, '_, K> {
         let scene = self.scene.as_mut()?;
         let SceneInput {
             source,
+            top_layer,
             filter,
             checker,
             compat_key,
@@ -659,10 +676,13 @@ impl<K: Copy + Eq + Hash + Send + 'static> FrameSeam for TicketSeam<'_, '_, K> {
         });
         // Both resolvers keep the textures they resolve (each borrows the ticket).
         let kept = RefCell::new(std::mem::take(textures));
-        let built = build_scene_in(
+        let built = build_scene_layers_in(
             layout,
-            &**source,
+            source.as_deref(),
+            top_layer.as_deref(),
             request.size,
+            request.scene_capacity,
+            crate::frame::TOP_LAYER_MAX_QUADS,
             capacity,
             &mut |slot, record| {
                 if slot < capacity {
@@ -998,8 +1018,9 @@ where
             .map_or(std::ptr::null_mut(), BaselineUpload::metal);
         let current = self.current.take();
         let input = current.and_then(|frame| {
-            frame.scene().map(|source| SceneInput {
-                source: Arc::clone(source),
+            (frame.scene().is_some() || frame.top_layer().is_some()).then(|| SceneInput {
+                source: frame.scene().cloned(),
+                top_layer: frame.top_layer().cloned(),
                 filter: frame.filter(),
                 checker,
                 compat_key: frame.compat_key().copied(),

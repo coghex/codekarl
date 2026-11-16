@@ -1,5 +1,6 @@
--- Tabs in a window's title bar (milestone 9, slice 3; docs/economy-design.md §3.11): one title-style button for each tab, right-aligned
--- in the room the title leaves before the close button, the selected one drawn pressed. A tab has a label, a short label and a tiny
+-- Tabs in a window's title bar (milestone 9, slice 3; docs/economy-design.md §3.11): one title-style button for each tab, aligned
+-- left on panels on the left of the screen and right on panels on the right, in the room before the close button. The selected tab
+-- is drawn pressed. A tab has a label, a short label and a tiny
 -- one; the tabs use the longest set that fits the room together, and the tiny set (drawn over the title's end) when none does.
 local ui = require("lib.ui")
 local button = require("lib.button")
@@ -15,6 +16,7 @@ tabs.__index = tabs
 --   items     a sequence of `{key, label, short, tiny}` or `{key, icon}`; text labels get full-label tooltips by default;
 --             `label_tooltip = false` leaves a tooltip attached by the caller in place across label tiers;
 --   selected  the key of the tab showing first (the first item's by default);
+--   align     "left" or "right"; defaults to "right";
 --   on_select called as `on_select(key)` when a tab other than the selected one is clicked.
 function tabs.new(spec)
   if type(spec) ~= "table" then
@@ -27,8 +29,12 @@ function tabs.new(spec)
   if type(spec.items) ~= "table" or #spec.items == 0 then
     error("tabs.new: items must be a non-empty array", 2)
   end
+  if spec.align ~= nil and spec.align ~= "left" and spec.align ~= "right" then
+    error("tabs.new: align must be `left` or `right`", 2)
+  end
   local self = setmetatable({}, tabs)
   self.window = window
+  self.align = spec.align or "right"
   self.on_select = spec.on_select
   self.items = {}
   self.buttons = {}
@@ -89,7 +95,7 @@ local function fits(self, room, tier)
   return total <= room
 end
 
--- Called by the window: lays the buttons out from the right edge of the room, with the longest labels that fit.
+-- Called by the window: lays the buttons out with the longest labels that fit, aligned to the selected side.
 function tabs:place_in_title(window)
   local left, right = window:title_bounds()
   local tier = 3
@@ -114,7 +120,7 @@ function tabs:place_in_title(window)
   for index = 1, #self.items do
     total = total + (self.buttons[index]:size()) + GAP
   end
-  local x = math.max(right - total, TITLE_X)
+  local x = self.align == "left" and TITLE_X or math.max(right - total, TITLE_X)
   for index = 1, #self.items do
     local width = self.buttons[index]:size()
     self.buttons[index]:move(x, 0)

@@ -16,7 +16,8 @@ use super::support::{
 };
 use crate::budget::MAX_RENDERER_IMAGES;
 use crate::{
-    Filter, Phase, PointRect, QuadSink, SceneBridge, SceneWriter, WriteCounts, WriterTaken,
+    Filter, GroupError, Phase, PointRect, QuadSink, SceneBridge, SceneWriter, TopLayerWriter,
+    WriteCounts, WriterTaken,
 };
 
 fn bridge() -> Arc<SceneBridge> {
@@ -133,6 +134,87 @@ fn there_is_exactly_one_writer_and_it_can_move_between_threads_but_not_be_shared
     moves::<SceneWriter>();
     <SceneWriter as AmbiguousIfSync<_>>::check();
     <SceneWriter as AmbiguousIfClone<_>>::check();
+}
+
+#[test]
+fn top_writer_is_independent_and_each_snapshot_carries_both_latest_frames() {
+    let bridge = bridge();
+    let mut scene = bridge.take_writer().expect("scene writer");
+    let mut top = bridge
+        .take_top_writer()
+        .expect("top writer beside scene writer");
+    assert_eq!(bridge.take_top_writer().unwrap_err(), WriterTaken);
+    let sink = RecordingSink::new();
+    attach(&bridge, &sink);
+
+    assert!(!top.publish(), "an unchanged top layer is not published");
+    let scene_group = scene.create_group().expect("scene group");
+    let top_group = top.create_group().expect("independent top group");
+    assert_eq!(
+        top.set_group_visible(scene_group, false),
+        Err(GroupError::Foreign(scene_group))
+    );
+    assert_eq!(
+        scene.set_group_visible(top_group, false),
+        Err(GroupError::Foreign(top_group))
+    );
+    assert!(top.publish());
+    let top_only = sink.last().expect("top-only snapshot");
+    assert!(top_only.scene.is_none());
+    assert_eq!(
+        top_only.top_layer.as_ref().map(|frame| frame.number()),
+        Some(1)
+    );
+
+    scene
+        .set_hit(
+            "scene",
+            Some(vec![PointRect::new(1.0, 2.0, 3.0, 4.0)]),
+            None,
+        )
+        .unwrap();
+    assert!(scene.publish());
+    let both = sink.last().expect("snapshot with both frames");
+    assert_eq!(both.scene.as_ref().map(|frame| frame.number()), Some(1));
+    assert_eq!(both.top_layer.as_ref().map(|frame| frame.number()), Some(1));
+    assert_eq!(
+        bridge
+            .hit_regions()
+            .expect("scene hit region")
+            .regions()
+            .len(),
+        1
+    );
+
+    top.create_group().expect("second top publication");
+    assert!(top.publish());
+    let updated_top = sink.last().expect("latest coherent snapshot");
+    assert_eq!(
+        updated_top.scene.as_ref().map(|frame| frame.number()),
+        Some(1)
+    );
+    assert_eq!(
+        updated_top.top_layer.as_ref().map(|frame| frame.number()),
+        Some(2)
+    );
+    assert_eq!(
+        both.top_layer.as_ref().map(|frame| frame.number()),
+        Some(1),
+        "older snapshots remain immutable"
+    );
+    assert_eq!(sink.generations(), [1, 2, 3, 4]);
+
+    top.create_group().expect("write queued before detach");
+    bridge.detach();
+    assert!(!top.publish(), "a queued write after detach is discarded");
+    assert_eq!(bridge.counts().publication_discarded, 1);
+}
+
+#[test]
+fn top_writer_is_send_but_not_sync_or_clone() {
+    moves::<TopLayerWriter>();
+    <TopLayerWriter as AmbiguousIfSync<_>>::check();
+    <TopLayerWriter as AmbiguousIfClone<_>>::check();
 }
 
 #[test]

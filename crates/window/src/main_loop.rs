@@ -148,6 +148,10 @@ struct Pass {
 }
 
 /// The loop's input state: the mapper that turns normalised key events into actions, and the window's focus.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "focus, minimised, text-input, and independent continuous-draw states are read together on each bounded pass"
+)]
 struct InputState {
     mapper: Mapper,
     mode: crate::mode::WindowMode,
@@ -166,6 +170,8 @@ struct InputState {
     withheld_text_input: Option<crate::requests::TextInputRequest>,
     pending_capture: Option<crate::requests::CaptureRequest>,
     pending_bindings: Option<ck_input::Bindings>,
+    draw_every_refresh: bool,
+    draw_every_refresh_applied: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -533,6 +539,8 @@ where
             withheld_text_input: None,
             pending_capture: None,
             pending_bindings: None,
+            draw_every_refresh: first.draw_every_refresh.unwrap_or(false),
+            draw_every_refresh_applied: false,
         },
         backend,
         presenter,
@@ -710,6 +718,9 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         }
         // 3. The request slot, once.
         let changes = self.requests.take();
+        if let Some(enabled) = changes.draw_every_refresh {
+            self.input.draw_every_refresh = enabled;
+        }
         // Text input (CK-314/321): remember the latest request while capture owns the keyboard. Requests and capture changes are
         // reconciled together below so an arm in this same slot cannot briefly enable text input, and a cancel can apply a withheld
         // request on the first pass where capture is no longer active.
@@ -786,6 +797,7 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
             Ok(exhausted) => exhausted,
             Err(end) => return Some(end),
         };
+        self.refresh_continuous_drawing(pass);
         if self.quit_requested() {
             return Some(LoopEnd::Quit);
         }
@@ -884,6 +896,21 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
         if let Some(metrics) = &scheduler.metrics {
             // The loop has examined its schedule through `now`: the measurement windows' progress fence.
             metrics.accounted(now);
+        }
+    }
+
+    /// Applies the independent continuous-draw request even when no update scheduler is configured.
+    fn refresh_continuous_drawing(&mut self, pass: &Pass) {
+        let focused = self.input.focused;
+        let active = self.input.draw_every_refresh
+            && pass.opened == OpenedEvent::Posted
+            && focused
+            && !self.input.minimized
+            && self.input.pixel_size.width != 0
+            && self.input.pixel_size.height != 0;
+        if active != self.input.draw_every_refresh_applied {
+            self.presenter.set_draw_every_refresh(active);
+            self.input.draw_every_refresh_applied = active;
         }
     }
 
@@ -1104,6 +1131,10 @@ impl<B: Backend, P: Presenter<Handles = B::Handles>, U: UiLink> Loop<'_, B, P, U
     /// reported a failure the loop had not yet taken (see the crate documentation).
     fn teardown(&mut self, end: LoopEnd) -> LoopEnd {
         self.requests.end();
+        if self.input.draw_every_refresh_applied {
+            self.presenter.set_draw_every_refresh(false);
+            self.input.draw_every_refresh_applied = false;
+        }
         let mut unproven = None;
         let mut late = Vec::new();
         if self.parts.presenter_started {

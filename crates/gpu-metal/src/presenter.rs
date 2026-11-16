@@ -483,6 +483,8 @@ struct Slot {
     size: (u32, u32),
     /// A frame is wanted: a changed colour or size, a redraw request, or the first frame.
     dirty: bool,
+    /// Independent continuous-draw want; it never consumes or clears the ordinary dirty want.
+    draw_every_refresh: bool,
     /// Texture work is pending: a store wake, `texture_wake()`, or a pass that reported runnable work left.
     /// Read and cleared under this slot's mutex like `dirty` and `stop`, and every wake sets it under the mutex
     /// before signalling, so a wake arriving while the thread decides to sleep is never lost.
@@ -495,6 +497,26 @@ struct Slot {
     /// The frame-rate limit in frames per second (`None`: none). Read under this mutex by the render thread each time it looks at
     /// a wanted frame, so a change applies from the next frame (CK-313).
     frame_limit: Option<u32>,
+}
+
+fn wants_frame(slot: &Slot) -> bool {
+    slot.dirty || slot.draw_every_refresh
+}
+
+fn may_start_frame(slot: &Slot, failed: bool, checker_resident: bool, gate_open: bool) -> bool {
+    wants_frame(slot) && !failed && checker_resident && gate_open
+}
+
+fn keep_shown_time(times: &Mutex<VecDeque<u64>>, shown_ns: u64) {
+    if shown_ns == 0 {
+        return;
+    }
+    let mut times = lock(times);
+    let index = times.partition_point(|time| *time <= shown_ns);
+    times.insert(index, shown_ns);
+    while times.len() > 512 {
+        times.pop_front();
+    }
 }
 
 struct Shared {
@@ -513,6 +535,8 @@ struct Shared {
     scene_stats: Mutex<SceneStats>,
     /// The frame-timing windows (CK-129): recorded by the render thread (one lock per frame, nothing allocated), read by anyone.
     metrics: Mutex<Recorder>,
+    /// Latest shown drawable times, independent of measured windows and bounded to 512 entries.
+    shown_times: Arc<Mutex<VecDeque<u64>>>,
     /// Signalled by the render thread when it records or consumes timing, for [`MetalPresenter::read_metrics`].
     metrics_changed: Condvar,
 }
@@ -536,11 +560,58 @@ fn texture_marker(shared: &Arc<Shared>) -> Wake {
 /// The handle [`MetalPresenter::frame_limit_setter`] returns.
 pub type FrameLimitSetter = Arc<dyn Fn(Option<u32>) + Send + Sync>;
 
+/// A cheap, nonblocking snapshot reader for the presenter's bounded shown-frame history.
+#[derive(Clone)]
+pub struct PresentedTimesReader {
+    times: Arc<Mutex<VecDeque<u64>>>,
+}
+
+impl std::fmt::Debug for PresentedTimesReader {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PresentedTimesReader")
+    }
+}
+
+impl PresentedTimesReader {
+    /// Creates an empty history handle that can be retained before the presenter starts.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            times: Arc::new(Mutex::new(VecDeque::with_capacity(512))),
+        }
+    }
+
+    /// Copies shown times strictly newer than `cursor`, in shown-time order.
+    #[must_use]
+    pub fn after(&self, cursor: u64) -> Vec<u64> {
+        lock(&self.times)
+            .iter()
+            .copied()
+            .filter(|time| *time > cursor)
+            .collect()
+    }
+}
+
+impl Default for PresentedTimesReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Writes the limit under the slot's mutex and signals the render thread, which may be waiting for the end of an interval.
 fn set_frame_limit(shared: &Shared, limit: Option<u32>) {
     let mut slot = lock(&shared.slot);
     if slot.frame_limit != limit {
         slot.frame_limit = limit;
+        drop(slot);
+        shared.signal.notify_all();
+    }
+}
+
+fn set_draw_every_refresh(shared: &Shared, enabled: bool) {
+    let mut slot = lock(&shared.slot);
+    if !slot.stop && slot.draw_every_refresh != enabled {
+        slot.draw_every_refresh = enabled;
         drop(slot);
         shared.signal.notify_all();
     }
@@ -1359,6 +1430,30 @@ impl MetalPresenter {
         unsafe { Self::start_with_test_hooks(layer, pixel_size, clear, wake, hooks) }
     }
 
+    /// [`start_2d`](Self::start_2d), sharing its shown-time history with a reader obtained before start.
+    ///
+    /// # Safety
+    ///
+    /// The same layer lifetime contract as [`start_2d`](Self::start_2d).
+    #[doc(hidden)]
+    pub unsafe fn start_2d_with_times(
+        layer: *mut c_void,
+        pixel_size: (u32, u32),
+        clear: [f32; 3],
+        wake: Wake,
+        quads: Arc<MetalQuadSlot>,
+        reader: &PresentedTimesReader,
+    ) -> Result<Self, Error> {
+        let hooks = TestHooks {
+            quads: Some(quads),
+            ..TestHooks::default()
+        };
+        // SAFETY: the contract is this function's own.
+        unsafe {
+            Self::start_with_test_hooks_and_times(layer, pixel_size, clear, wake, hooks, reader)
+        }
+    }
+
     /// **The ordinary baseline** (hidden): [`start_scene_bindless`](Self::start_scene_bindless) without the bindless table,
     /// drawing CK-116's per-texture batches (one draw per run of adjacent equal textures). It exists only so that the
     /// scale acceptance (M5-10b) can measure the same content before and after, and for the tests of the ordinary path; the
@@ -1376,8 +1471,8 @@ impl MetalPresenter {
     /// (a key with nothing shown draws the checker) and drawn as one instanced draw per run of adjacent equal textures.
     /// **No frame is committed until the checker is resident**: the window opens and the presenter starts at once, and the
     /// checker's upload completion alone makes the waiting first frame run. `limits` size the one instance buffer
-    /// (`max_quads` instances), whose measured allocation is charged to `binding_geometry_bytes`; a configuration that does
-    /// not fit is a setup failure.
+    /// (scene `max_quads`, the top-layer allowance and one compatibility slot), whose measured allocation is charged to
+    /// `binding_geometry_bytes`; a configuration that does not fit is a setup failure.
     ///
     /// # Errors
     ///
@@ -1476,6 +1571,54 @@ impl MetalPresenter {
         unsafe { Self::start_with_test_hooks(layer, pixel_size, clear, wake, hooks) }
     }
 
+    /// [`start_scene_bindless`](Self::start_scene_bindless) with a caller-owned reader created before the run.
+    ///
+    /// # Safety
+    ///
+    /// The same layer lifetime contract as [`start_scene_bindless`](Self::start_scene_bindless).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the scene, backend limits and pre-start timing handle are required by the existing entry"
+    )]
+    #[doc(hidden)]
+    pub unsafe fn start_scene_bindless_with_times<K, D>(
+        layer: *mut c_void,
+        pixel_size: (u32, u32),
+        clear: [f32; 3],
+        wake: Wake,
+        frames: Arc<MetalFrameSlot<K>>,
+        context: Arc<MetalContext>,
+        texture_limits: TextureLimits,
+        ledger_limits: LedgerLimits,
+        bindless: BindlessLimits,
+        limits: SceneLimits,
+        driver: D,
+        reader: &PresentedTimesReader,
+    ) -> Result<Self, Error>
+    where
+        K: Copy + Eq + Hash + Send + 'static,
+        D: TextureDriver<K> + 'static,
+    {
+        let hooks = TestHooks {
+            scene: Some(SceneSetup::new_with_bindless_limits(
+                context,
+                texture_limits,
+                ledger_limits,
+                Some(bindless),
+                limits,
+                driver,
+                frames,
+                None,
+                None,
+            )),
+            ..TestHooks::default()
+        };
+        // SAFETY: this function has the same layer contract as start_scene_bindless.
+        unsafe {
+            Self::start_with_test_hooks_and_times(layer, pixel_size, clear, wake, hooks, reader)
+        }
+    }
+
     /// A handle that marks "texture work pending" and wakes the render thread, for the driver's owner to give its
     /// own producers (the resource service's upload and retirement wakes). It never blocks and holds the presenter
     /// weakly: it does nothing after the presenter ended.
@@ -1501,6 +1644,33 @@ impl MetalPresenter {
         clear: [f32; 3],
         wake: Wake,
         hooks: TestHooks,
+    ) -> Result<Self, Error> {
+        // SAFETY: preserves the caller's layer contract and uses a fresh history.
+        unsafe {
+            Self::start_with_test_hooks_and_times(
+                layer,
+                pixel_size,
+                clear,
+                wake,
+                hooks,
+                &PresentedTimesReader::default(),
+            )
+        }
+    }
+
+    /// Starts with a reader handle shared with the caller.
+    ///
+    /// # Safety
+    ///
+    /// The same layer lifetime contract as [`start_with_test_hooks`](Self::start_with_test_hooks).
+    #[doc(hidden)]
+    pub unsafe fn start_with_test_hooks_and_times(
+        layer: *mut c_void,
+        pixel_size: (u32, u32),
+        clear: [f32; 3],
+        wake: Wake,
+        hooks: TestHooks,
+        reader: &PresentedTimesReader,
     ) -> Result<Self, Error> {
         if layer.is_null() {
             return Err(Error("the layer pointer is null".to_owned()));
@@ -1531,6 +1701,7 @@ impl MetalPresenter {
                 clear,
                 size: pixel_size,
                 dirty: true,
+                draw_every_refresh: false,
                 texture_work: false,
                 stop: false,
                 stop_deadline: None,
@@ -1546,6 +1717,7 @@ impl MetalPresenter {
             drawn_any: AtomicBool::new(false),
             scene_stats: Mutex::new(SceneStats::default()),
             metrics: Mutex::new(Recorder::default()),
+            shown_times: Arc::clone(&reader.times),
             metrics_changed: Condvar::new(),
         });
         if let Some(setup) = &hooks.scene {
@@ -1643,6 +1815,30 @@ impl MetalPresenter {
                 set_frame_limit(&shared, limit);
             }
         })
+    }
+
+    /// Sets continuous drawing until disabled or the presenter stops.
+    pub fn set_draw_every_refresh(&self, enabled: bool) {
+        set_draw_every_refresh(&self.shared, enabled);
+    }
+
+    /// A weak setting handle: after the presenter stops, writes do nothing.
+    #[must_use]
+    pub fn draw_every_refresh_setter(&self) -> Arc<dyn Fn(bool) + Send + Sync> {
+        let weak = Arc::downgrade(&self.shared);
+        Arc::new(move |enabled| {
+            if let Some(shared) = weak.upgrade() {
+                set_draw_every_refresh(&shared, enabled);
+            }
+        })
+    }
+
+    /// A reader of the latest 512 nonzero shown-frame times.
+    #[must_use]
+    pub fn presented_times_reader(&self) -> PresentedTimesReader {
+        PresentedTimesReader {
+            times: Arc::clone(&self.shared.shown_times),
+        }
     }
 
     /// The scene presenter's counters and charges (all zero for a presenter without a scene): per committed frame the latest
@@ -2048,8 +2244,8 @@ fn run(shared: &Arc<Shared>, core: Core, hooks: TestHooks) -> CleanupResult {
         };
         failure = (quad_setup != 0).then(|| text(&error));
     }
-    // The scene's one instance buffer, sized for `max_quads` instances and charged to `binding_geometry_bytes` at its
-    // measured allocation. A configuration that does not fit is refused here, before any frame.
+    // The scene's one instance buffer, sized for the scene, the top layer and one compatibility instance, charged to
+    // `binding_geometry_bytes` at its measured allocation. A configuration that does not fit is refused before any frame.
     let mut instances = None;
     if failure.is_none()
         && let Some(setup) = &hooks.scene
@@ -2134,6 +2330,7 @@ fn arm_check_pause(core: Core, hooks: &TestHooks) {
 struct InstanceBuffer {
     base: NonNull<InstanceRecord>,
     capacity: usize,
+    scene_capacity: usize,
 }
 
 /// Creates the instance buffer and charges it. The size is computed with checked arithmetic and must fit
@@ -2144,21 +2341,29 @@ fn instance_buffer(
     core: Core,
     limits: SceneLimits,
 ) -> Result<InstanceBuffer, String> {
-    let wanted = limits
+    let capacity = limits
         .max_quads
+        .checked_add(crate::frame::TOP_LAYER_MAX_QUADS)
+        .and_then(|capacity| capacity.checked_add(crate::frame::COMPAT_INSTANCE_ALLOWANCE))
+        .ok_or_else(|| {
+            "scene, top-layer and compatibility instance capacity overflow".to_owned()
+        })?;
+    let wanted = capacity
         .checked_mul(INSTANCE_STRIDE)
         .and_then(|bytes| u64::try_from(bytes).ok())
         .filter(|bytes| *bytes != 0)
         .ok_or_else(|| {
             format!(
-                "max_quads {} instances of {INSTANCE_STRIDE} bytes is not a valid instance buffer size",
-                limits.max_quads
+                "scene, top-layer and compatibility capacity {capacity} instances of {INSTANCE_STRIDE} bytes is not a valid instance buffer size"
             )
         })?;
     if wanted > limits.binding_geometry_bytes {
         return Err(format!(
-            "the instance buffer for max_quads {} needs {wanted} bytes, over the binding_geometry_bytes budget of {}",
-            limits.max_quads, limits.binding_geometry_bytes
+            "the instance buffer for max_quads {} plus {} top-layer slots and {} compatibility slot needs {wanted} bytes, over the binding_geometry_bytes budget of {}",
+            limits.max_quads,
+            crate::frame::TOP_LAYER_MAX_QUADS,
+            crate::frame::COMPAT_INSTANCE_ALLOWANCE,
+            limits.binding_geometry_bytes
         ));
     }
     let mut allocated = 0_u64;
@@ -2184,8 +2389,8 @@ fn instance_buffer(
     }
     if allocated > limits.binding_geometry_bytes {
         return Err(format!(
-            "the instance buffer for max_quads {} measured {allocated} bytes (allocatedSize), over the binding_geometry_bytes budget of {}",
-            limits.max_quads, limits.binding_geometry_bytes
+            "the instance buffer for scene, top-layer and compatibility capacity {capacity} measured {allocated} bytes (allocatedSize), over the binding_geometry_bytes budget of {}",
+            limits.binding_geometry_bytes
         ));
     }
     // SAFETY: `core` is live; the buffer was just created and is kept until the explicit release.
@@ -2193,7 +2398,8 @@ fn instance_buffer(
     NonNull::new(contents.cast::<InstanceRecord>())
         .map(|base| InstanceBuffer {
             base,
-            capacity: limits.max_quads,
+            capacity,
+            scene_capacity: limits.max_quads,
         })
         .ok_or_else(|| "the instance buffer has no CPU-visible contents".to_owned())
 }
@@ -2288,6 +2494,26 @@ fn observer_presented_short(state: &Loop<'_>) -> bool {
     })
 }
 
+/// Records one consumed timing result in the render thread's ingest path.
+fn apply_timing(
+    metrics: &mut Recorder,
+    sample: &NativeTiming,
+    timing_override: Option<&TimingProbe>,
+    shown_times: &Mutex<VecDeque<u64>>,
+) {
+    let (a, b) = timing_override.map_or((sample.a, sample.b), |probe| {
+        (probe.0)(sample.kind, sample.t5, sample.a, sample.b)
+    });
+    match sample.kind {
+        1 => metrics.gpu(sample.t5, a, b),
+        2 => {
+            metrics.presented(sample.t5, a);
+            keep_shown_time(shown_times, a);
+        }
+        _ => {}
+    }
+}
+
 impl Loop<'_> {
     /// Waits for work or the stop. `Some` is a frame to draw or an ordinary texture pass; `None` is the stop.
     ///
@@ -2314,7 +2540,7 @@ impl Loop<'_> {
                     return None;
                 }
                 (
-                    slot.dirty && !self.failed && self.checker_resident && gate_open,
+                    may_start_frame(&slot, self.failed, self.checker_resident, gate_open),
                     slot.texture_work && !self.failed && self.scene.is_some(),
                 )
             };
@@ -2336,7 +2562,10 @@ impl Loop<'_> {
                     let gate_open = self.gate_open();
                     let texture_waits = slot.texture_work && !self.failed && self.scene.is_some();
                     if !slot.stop
-                        && (!slot.dirty || self.failed || !self.checker_resident || !gate_open)
+                        && (!wants_frame(&slot)
+                            || self.failed
+                            || !self.checker_resident
+                            || !gate_open)
                         && !texture_waits
                         && !slot.metrics_check
                     {
@@ -2390,7 +2619,7 @@ impl Loop<'_> {
             if slot.stop {
                 return None;
             }
-            if slot.dirty {
+            if wants_frame(&slot) {
                 slot.dirty = false;
                 if self.boundary == FrameBoundary::Due {
                     slot.texture_work = false;
@@ -2888,6 +3117,7 @@ impl Loop<'_> {
                             size: (width, height),
                             buffer: buffer.base.as_ptr(),
                             capacity: buffer.capacity,
+                            scene_capacity: buffer.scene_capacity,
                             chunk: self.hooks.draw_chunk_limit.unwrap_or(u32::MAX),
                             force_out_of_range_at: self.hooks.force_out_of_range_slot_at,
                         });
@@ -3122,18 +3352,12 @@ impl Loop<'_> {
 
     /// Records one consumed timing result, after the test's replacement of it when one is installed.
     fn apply_timing(&self, metrics: &mut Recorder, sample: &NativeTiming) {
-        let (a, b) = self
-            .hooks
-            .timing_override
-            .as_ref()
-            .map_or((sample.a, sample.b), |probe| {
-                (probe.0)(sample.kind, sample.t5, sample.a, sample.b)
-            });
-        match sample.kind {
-            1 => metrics.gpu(sample.t5, a, b),
-            2 => metrics.presented(sample.t5, a),
-            _ => {}
-        }
+        apply_timing(
+            metrics,
+            sample,
+            self.hooks.timing_override.as_ref(),
+            &self.shared.shown_times,
+        );
     }
 
     /// A test's blocked acquisition: waits (at most 30 s) while the shared flag reads non-zero. The flag is
@@ -3751,6 +3975,7 @@ mod tests {
                 clear: [0.0; 3],
                 size: (1, 1),
                 dirty: false,
+                draw_every_refresh: false,
                 texture_work: false,
                 stop: false,
                 stop_deadline: None,
@@ -3766,6 +3991,7 @@ mod tests {
             drawn_any: AtomicBool::new(false),
             scene_stats: Mutex::new(SceneStats::default()),
             metrics: Mutex::new(Recorder::default()),
+            shown_times: Arc::new(Mutex::new(VecDeque::with_capacity(512))),
             metrics_changed: Condvar::new(),
         })
     }
@@ -3783,6 +4009,176 @@ mod tests {
             set_frame_limit(&shared, limit);
             assert_eq!(lock(&shared.slot).frame_limit, limit);
         }
+    }
+
+    #[test]
+    fn continuous_drawing_is_independent_of_dirty_and_respects_the_existing_gates() {
+        let shared = shared(counting(&counter()));
+        {
+            let mut slot = lock(&shared.slot);
+            slot.dirty = false;
+            slot.draw_every_refresh = true;
+            assert!(
+                wants_frame(&slot),
+                "the continuous want survives a started frame clearing dirty"
+            );
+            assert!(may_start_frame(&slot, false, true, true));
+            assert!(
+                !may_start_frame(&slot, true, true, true),
+                "failure blocks it"
+            );
+            assert!(
+                !may_start_frame(&slot, false, false, true),
+                "the checker blocks it"
+            );
+            assert!(
+                !may_start_frame(&slot, false, true, false),
+                "the compatibility gate blocks it"
+            );
+            slot.draw_every_refresh = false;
+            assert!(!wants_frame(&slot), "turning it off adds no frame");
+            slot.dirty = true;
+            slot.draw_every_refresh = true;
+            slot.draw_every_refresh = false;
+            assert!(
+                wants_frame(&slot),
+                "turning it off preserves an ordinary redraw"
+            );
+            slot.stop = true;
+        }
+        set_draw_every_refresh(&shared, true);
+        let slot = lock(&shared.slot);
+        assert!(slot.stop, "stop remains set");
+        assert!(
+            !slot.draw_every_refresh,
+            "a late setting cannot revive a stopped presenter"
+        );
+    }
+
+    #[test]
+    fn continuous_only_wants_reach_the_frame_limit_at_30_60_and_none() {
+        let shared = shared(counting(&counter()));
+        let started = Instant::now();
+        let mut slot = lock(&shared.slot);
+        slot.dirty = false;
+        slot.draw_every_refresh = true;
+        assert!(wants_frame(&slot), "the switch alone wants the next frame");
+        assert!(!slot.dirty, "the frame is wanted only by the switch");
+
+        for fps in [30, 60] {
+            slot.frame_limit = Some(fps);
+            let interval = Duration::from_nanos(1_000_000_000 / u64::from(fps));
+            let due = started + interval;
+            assert_eq!(
+                frame_limit::decide(
+                    Some(started),
+                    due.checked_sub(Duration::from_nanos(1))
+                        .expect("the interval is longer than one nanosecond"),
+                    slot.frame_limit
+                ),
+                FrameStart::At(due),
+                "a continuously wanted frame is held one nanosecond before {fps} fps is due"
+            );
+            assert_eq!(
+                frame_limit::decide(Some(started), due, slot.frame_limit),
+                FrameStart::Now,
+                "a continuously wanted frame may start exactly at {fps} fps"
+            );
+        }
+
+        slot.frame_limit = None;
+        assert_eq!(
+            frame_limit::decide(Some(started), started, slot.frame_limit),
+            FrameStart::Now,
+            "with no limit, the switch may start a frame immediately"
+        );
+    }
+
+    #[test]
+    fn shown_time_history_uses_timing_ingest_without_changing_metrics() {
+        fn measured(take_reader: bool) -> (String, String) {
+            let shared = shared(counting(&counter()));
+            let reader = PresentedTimesReader {
+                times: Arc::clone(&shared.shown_times),
+            };
+            let mut metrics = Recorder::default();
+            metrics
+                .windows
+                .request(MetricsWindow {
+                    id: 1,
+                    start: 1,
+                    end: Some(100),
+                })
+                .expect("test window is valid");
+            metrics.windows.boundary(1);
+            for (index, shown_ns) in [10, 0, 30, 50].into_iter().enumerate() {
+                let t5 = u64::try_from(index + 1).expect("small test index");
+                ingest(&shared, &mut metrics, t5, shown_ns);
+                if take_reader {
+                    let _ = reader.after(0);
+                }
+            }
+            let window = metrics.windows.current().expect("adopted window");
+            (
+                format!("{:?}", metrics.totals),
+                format!("{:?}", window.stats),
+            )
+        }
+
+        fn ingest(shared: &Shared, metrics: &mut Recorder, t5: u64, shown_ns: u64) {
+            apply_timing(
+                metrics,
+                &NativeTiming {
+                    kind: 2,
+                    t5,
+                    a: shown_ns,
+                    ..NativeTiming::default()
+                },
+                None,
+                &shared.shown_times,
+            );
+        }
+
+        let read_shared = shared(counting(&counter()));
+        let unread_shared = shared(counting(&counter()));
+        let reader = PresentedTimesReader {
+            times: Arc::clone(&read_shared.shown_times),
+        };
+        let mut read_metrics = Recorder::default();
+        let mut unread_metrics = Recorder::default();
+
+        for (index, shown_ns) in [30, 0, 10].into_iter().enumerate() {
+            let t5 = u64::try_from(index + 1).expect("small test index");
+            ingest(&read_shared, &mut read_metrics, t5, shown_ns);
+            ingest(&unread_shared, &mut unread_metrics, t5, shown_ns);
+        }
+        assert_eq!(reader.after(10), [30]);
+        assert_eq!(reader.after(0), [10, 30]);
+
+        lock(&read_shared.shown_times).clear();
+        lock(&unread_shared.shown_times).clear();
+        for shown_ns in 1..=513 {
+            let t5 = shown_ns + 3;
+            ingest(&read_shared, &mut read_metrics, t5, shown_ns);
+            ingest(&unread_shared, &mut unread_metrics, t5, shown_ns);
+        }
+        let times = reader.after(0);
+        assert_eq!(times.len(), 512);
+        assert_eq!(times.first(), Some(&2));
+        assert_eq!(times.last(), Some(&513));
+        assert_eq!(reader.after(510), [511, 512, 513]);
+        assert!(read_metrics.windows.current().is_none());
+        assert_eq!(
+            format!("{:?}", read_metrics.totals),
+            format!("{:?}", unread_metrics.totals),
+            "taking history does not change totals when no measurement window exists"
+        );
+
+        assert_eq!(
+            measured(true),
+            measured(false),
+            "taking history leaves totals and a measured window's figures unchanged"
+        );
     }
 
     /// A wake that counts its calls.

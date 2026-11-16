@@ -128,6 +128,140 @@ fn placement_gives_what_frame_quad_place_gives_in_painter_order_and_omits_the_un
 }
 
 #[test]
+fn top_layer_is_placed_after_the_scene_and_alone_with_snapshot_metrics() {
+    use ck_gpu_metal::InstanceRole;
+
+    let bridge = SceneBridge::new(Filter::Nearest);
+    let mut scene_writer = bridge.take_writer().expect("scene writer");
+    let mut top_writer = bridge.take_top_writer().expect("top writer");
+    let sink = RecordingSink::new();
+    bridge
+        .attach(
+            &desc(200, 160),
+            pixels(400, 320),
+            Arc::clone(&sink) as Arc<dyn QuadSink>,
+        )
+        .unwrap();
+    let service = service();
+    let (compat_key, compat_texture) = texture(&service);
+    let (scene_key, scene_texture) = texture(&service);
+    let (top_key, top_texture) = texture(&service);
+    scene_writer
+        .create_quad(scene_texture, 10.0, 10.0, 20.0, 20.0)
+        .unwrap();
+    scene_writer
+        .set_compat(compat_texture, 2.0, 10.0, 5.0, 5.0)
+        .unwrap();
+    assert!(scene_writer.publish());
+    top_writer
+        .create_quad(top_texture, 30.0, 10.0, 20.0, 20.0)
+        .unwrap();
+    assert!(top_writer.publish());
+
+    let snapshot = sink.last().expect("combined snapshot");
+    let scene_sink = plain_scene_sink();
+    let mut conversion = crate::metal::Conversion::default();
+    let step = conversion.next(&snapshot);
+    let frame = scene_sink.frame_for(&snapshot, &step.scene);
+    let mut instances = Vec::new();
+    frame
+        .scene()
+        .expect("scene source")
+        .place(400, 320, &mut |instance: MetalInstance<TextureKey>| {
+            instances.push(instance);
+        });
+    frame
+        .top_layer()
+        .expect("top source")
+        .place(400, 320, &mut |instance: MetalInstance<TextureKey>| {
+            instances.push(instance);
+        });
+    assert_eq!(
+        instances
+            .iter()
+            .map(|instance| instance.key)
+            .collect::<Vec<_>>(),
+        [compat_key, scene_key, top_key]
+    );
+    assert_eq!(
+        instances
+            .iter()
+            .map(|instance| instance.role)
+            .collect::<Vec<_>>(),
+        [
+            InstanceRole::Compat,
+            InstanceRole::Scene,
+            InstanceRole::Scene
+        ]
+    );
+    assert_eq!(frame.compat_key(), Some(&compat_key));
+    assert_eq!(instances[1].destination.left, 20);
+    assert_eq!(
+        instances[2].destination.left, 60,
+        "the pixel window's UI scale is carried by the snapshot"
+    );
+
+    let mut top_only = snapshot.clone();
+    top_only.scene = None;
+    let mut conversion = crate::metal::Conversion::default();
+    let step = conversion.next(&top_only);
+    let frame = scene_sink.frame_for(&top_only, &step.scene);
+    let mut alone = Vec::new();
+    frame
+        .top_layer()
+        .expect("top-only source")
+        .place(400, 320, &mut |instance: MetalInstance<TextureKey>| {
+            alone.push(instance.key);
+        });
+    assert_eq!(alone, [top_key]);
+}
+
+#[test]
+fn metrics_update_replaces_top_placement_without_rewriting_its_frame() {
+    let bridge = SceneBridge::new(Filter::Nearest);
+    let mut top_writer = bridge.take_top_writer().expect("top writer");
+    let sink = RecordingSink::new();
+    bridge
+        .attach(
+            &desc(200, 160),
+            pixels(400, 320),
+            Arc::clone(&sink) as Arc<dyn QuadSink>,
+        )
+        .unwrap();
+    let service = service();
+    let (top_key, top_texture) = texture(&service);
+    top_writer
+        .create_quad(top_texture, 30.0, 10.0, 20.0, 20.0)
+        .unwrap();
+    assert!(top_writer.publish());
+    let before = sink.last().expect("top-only snapshot");
+
+    bridge.set_metrics((200, 160), pixels(800, 640));
+    let resized = sink.last().expect("metrics-only snapshot");
+    assert!(Arc::ptr_eq(
+        before.top_layer.as_ref().unwrap(),
+        resized.top_layer.as_ref().unwrap()
+    ));
+    let mut conversion = crate::metal::Conversion::default();
+    let step = conversion.next(&resized);
+    let frame = plain_scene_sink().frame_for(&resized, &step.scene);
+    let mut resized_left = None;
+    frame.top_layer().expect("top source after resize").place(
+        800,
+        640,
+        &mut |instance: MetalInstance<TextureKey>| {
+            assert_eq!(instance.key, top_key);
+            resized_left = Some(instance.destination.left);
+        },
+    );
+    assert_eq!(
+        resized_left,
+        Some(120),
+        "the existing top frame is placed at the new UI scale"
+    );
+}
+
+#[test]
 fn placement_takes_no_texture_reference() {
     use ck_gpu_metal::MetalSceneSource;
     let (_bridge, mut writer, sink, service) = scene_bridge();

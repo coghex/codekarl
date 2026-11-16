@@ -70,6 +70,7 @@ pub enum CaptureRequest {
 struct State {
     /// The latest text input request, not yet taken.
     text_input: Option<TextInputRequest>,
+    draw_every_refresh: Option<bool>,
     capture: Option<CaptureRequest>,
     bindings: Option<Bindings>,
     /// How many text input writes there have been.
@@ -119,6 +120,8 @@ pub struct RequestChanges {
     pub mode: Option<ModeLayout>,
     /// The latest text input request written since the last take (CK-314).
     pub text_input: Option<TextInputRequest>,
+    /// Latest request to draw continuously while the window is active.
+    pub draw_every_refresh: Option<bool>,
     /// Latest key-capture command since the prior read.
     pub capture: Option<CaptureRequest>,
     /// Complete replacement binding set, if one was requested.
@@ -183,6 +186,18 @@ pub struct RequestWriter {
 }
 
 impl RequestWriter {
+    /// Requests continuous drawing while the window is active. Latest write wins.
+    pub fn set_draw_every_refresh(&self, enabled: bool) {
+        let mut state = self.shared.lock();
+        if state.ended {
+            self.shared.discarded.fetch_add(1, Ordering::SeqCst);
+        } else {
+            state.draw_every_refresh = Some(enabled);
+        }
+        drop(state);
+        self.notifier.wake();
+    }
+
     /// Requests the window. One-shot.
     ///
     /// # Errors
@@ -389,6 +404,7 @@ impl RequestReader {
             resize_pixels: state.resize_pixels.take(),
             mode: state.mode.take(),
             text_input: state.text_input.take(),
+            draw_every_refresh: state.draw_every_refresh.take(),
             capture: state.capture.take(),
             bindings: state.bindings.take(),
         }
