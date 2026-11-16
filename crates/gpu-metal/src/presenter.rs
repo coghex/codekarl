@@ -573,6 +573,12 @@ impl std::fmt::Debug for PresentedTimesReader {
 }
 
 impl PresentedTimesReader {
+    /// Whether two readers observe the same presenter's shown-frame history.
+    #[must_use]
+    pub fn shares_history_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.times, &other.times)
+    }
+
     /// Creates an empty history handle that can be retained before the presenter starts.
     #[must_use]
     pub fn new() -> Self {
