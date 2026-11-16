@@ -60,6 +60,46 @@ fn the_fixture_shows_every_colour_of_the_rule_table() {
 }
 
 #[test]
+fn the_shared_fixture_carries_a_two_tier_joined_river_network() {
+    let fixture = fixture();
+    let network = &fixture.river_network;
+    assert!(network.rivers.iter().any(|river| river.tier == 1));
+    assert!(network.rivers.iter().any(|river| river.tier == 2));
+    assert!(
+        network
+            .stretches
+            .iter()
+            .any(|stretch| stretch.kind == ck_map::RiverStretchKind::Tidal)
+    );
+    assert!(
+        network
+            .stretches
+            .iter()
+            .any(|stretch| stretch.kind == ck_map::RiverStretchKind::Lough)
+    );
+    assert!(
+        network
+            .stretches
+            .iter()
+            .any(|stretch| stretch.ends.is_some())
+    );
+    assert!(
+        network
+            .stretches
+            .iter()
+            .any(|stretch| stretch.width_first < stretch.width_last)
+    );
+    let join = network.stretches[3].points[0];
+    assert!(
+        network
+            .stretches
+            .iter()
+            .filter(|stretch| stretch.ends == Some(3))
+            .all(|stretch| stretch.points.last() == Some(&join))
+    );
+}
+
+#[test]
 fn every_scenario_has_more_than_one_colour_and_the_return_repeats_the_first_visit() {
     let fixture = fixture();
     let scenarios = Fixture::scenarios();

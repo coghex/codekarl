@@ -972,6 +972,7 @@ pub(crate) mod tests {
                 pixels: vec![[0x2a, 0xf8, 0, 255]; 4],
             },
             rivers: Vec::new(),
+            river_network: None,
         }
     }
 
