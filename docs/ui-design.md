@@ -431,6 +431,18 @@
 >   - **The settings window is 17 wider,** because "development" is its longest tab name.
 > - **The debug line in a window opened in points** (CK-341, 2026-11-16; §3.24) has the size the design gives, at 2
 >   points a UI pixel. Until then it was half that size there. The game's window is opened in pixels and is unchanged.
+> - **The debug line read 0 in the game** (CK-343, 2026-11-16; §3.24, `docs/scene-design.md` §9): a fix. In the game
+>   the line showed `0 fps`, and the request to draw at every refresh never reached the presenter. The owner's hand
+>   check found it. The application's wrapper round the Metal backend passed on neither the shown-frame times nor that
+>   request. It passes both on now, and the owner then saw the number: "the fps looks like its working now"
+>   (`owner-direction-vsync-manager-r1.md`).
+> - **A vsync setting** (CK-344, 2026-11-16; `owner-direction-vsync-manager-r1.md`; §3.17, §3.18): `[frame] vsync`, on
+>   by default, says whether a frame's showing waits for the display's refresh. The owner, with the line at 120 and no
+>   limit set: "im thinking that vsync is being forced on. this needs to be a setting in the graphics that we can turn
+>   off optionally".
+>   - **The "vsync" row** of the graphics tab, below "frame rate", has two buttons, "on" and "off".
+>   - **On native Metal only,** and a change acts at once. The frame-rate limit still applies with vsync off.
+>   - **Not seen yet:** that the rate goes above the display's with vsync off is the owner's check by hand.
 
 ## Owner answers (2026-11-07)
 
@@ -2218,7 +2230,8 @@ key sets the window mode as well (below).
   - `[ui.tooltips]`: `delay`, `lock` and `lock_timer` (§3.13);
   - `[map]`: `pan_pixels_per_frame` (1 to 32), `zoom_steps_per_second` (1 to 60) and `scroll_points_per_step` (1 to 256).
   - **Since CK-307,** the four graphics settings: `[ui] scale`, `[ui] list_look`, `[window] width` and `[window] height`.
-    Since CK-313 and CK-312 there are six, with `[frame] fps_limit` and `[window] mode`.
+    Since CK-313 and CK-312 there are six, with `[frame] fps_limit` and `[window] mode`, and since CK-344 seven, with
+    `[frame] vsync`.
   - **Since CK-309,** `[input.bindings]`: the player's key bindings. Both are below.
   - **Since CK-335,** `[debug]`: `level` and `rate`, the debug layer's two settings (the last part of this section).
 - **Read at start,** after the configuration file (`apps/codekarl/src/config.rs`, `load_settings`). A key in it overrides the
@@ -2247,8 +2260,8 @@ key sets the window mode as well (below).
 
 **Since CK-307: the graphics settings.** Four keys, a call that resizes the window, and a UI scale limit that acts at once. It
 is the engine's side of the settings window's graphics tab. **Since CK-308 that tab and `main.lua` use it** (§3.18): the tab
-reads, sets and resets these settings, and the game's script opens its window at the resolution kept. CK-313 and CK-312 each
-added a key (below).
+reads, sets and resets these settings, and the game's script opens its window at the resolution kept. CK-313, CK-312 and
+CK-344 each added a key (below).
 The owner asked for a resolution to type: "it should be 'resolution' with two values available to input, here the player
 can input whatever numbers they want, and it will clamp to minimums and maximums". For its range the owner chose
 "Min 1280x800, max screen" (`owner-direction-settings-designer-r3.md` and `-r4.md`). The spec is
@@ -2264,20 +2277,23 @@ can input whatever numbers they want, and it will clamp to minimums and maximums
   | `[window] height` | a whole number of screen pixels, 800 to 16,384 | 800 |
   | `[window] mode` (CK-312) | `"windowed"`, `"windowed_fullscreen"` or `"fullscreen"` | `"windowed"` |
   | `[frame] fps_limit` (CK-313) | a whole number, 30 to 240, or `"none"` | `"none"` |
+  | `[frame] vsync` (CK-344) | `true` or `false` | `true` |
 
-  - The configuration file takes all six (`[ui] scale` is older, §3.3) and refuses a bad value as it refuses any other. The
-    settings file takes all six too, and names and ignores a bad one. Of `[frame]` the settings file takes only `fps_limit`.
+  - The configuration file takes all seven (`[ui] scale` is older, §3.3) and refuses a bad value as it refuses any other. The
+    settings file takes all seven too, and names and ignores a bad one. Of `[frame]` the settings file takes only `fps_limit`
+    and `vsync`.
   - **`[window] width` and `height` are the resolution kept:** what the player asked for, brought into the range. **Since
     CK-308 `main.lua` opens the game's window at it:** `window.open` gets `settings.graphics()`'s `width` and `height`, in
     screen pixels, and a least size of 1280 by 800. Before CK-308 it opened at 1280 by 800, written in the script.
   - **Since CK-308 `[ui] list_look` is the look in force** of the location panel's pops and buildings tabs. A panel starts
     on it, and its two look buttons set it (`scripts/ui/lib/list_look.lua`, §3.18). Before CK-308 it was only kept and read.
-- **`settings.graphics()`** returns `{list_look, width, height, mode}` in force, `scale` (1, 1.5 or 2) when a limit is set, and
-  `fps_limit`, a number, when a frame-rate limit is on. `mode` came with CK-312 and `fps_limit` with CK-313.
+- **`settings.graphics()`** returns `{list_look, width, height, mode, vsync}` in force, `scale` (1, 1.5 or 2) when a limit is
+  set, and `fps_limit`, a number, when a frame-rate limit is on. `mode` came with CK-312, `fps_limit` with CK-313 and
+  `vsync`, which is always `true` or `false`, with CK-344.
   `width` and `height` are the resolution kept, never the window's size, which the updates report.
 - **`settings.set("ui.scale", value)`** takes 1, 1.5 or 2, and **`settings.set("ui.list_look", value)`** takes `"cards"` or
-  `"rows"`. Both are written like any set. `settings.set("frame.fps_limit", value)` and `settings.set("window.mode", value)`
-  are below.
+  `"rows"`. Both are written like any set. `settings.set("frame.fps_limit", value)`, `settings.set("frame.vsync", value)`
+  and `settings.set("window.mode", value)` are below.
 - **`settings.resize(width, height)`** resizes the window. It takes two whole numbers of screen pixels that are not negative;
   anything else is a Lua error that names the argument.
   - **The resolution kept** is each number lowered to the screen's size and then brought into its key's range. It becomes
@@ -2298,12 +2314,13 @@ can input whatever numbers they want, and it will clamp to minimums and maximums
   - **Since CK-312 what the request does depends on the window mode** (below): in windowed mode it resizes the window, in
     windowed fullscreen it changes nothing that is seen, and in fullscreen it changes the drawable and not the window.
   - **Headless,** the call is checked, clamped, kept and counted like the other window calls, and nothing is resized.
-- **`settings.reset("graphics")`** removes the graphics keys, six since CK-313 and CK-312, and puts back the configuration's
+- **`settings.reset("graphics")`** removes the graphics keys, seven since CK-344, and puts back the configuration's
   values, or the defaults.
   - It first asks the window for the size used for the resolution then in force (the configuration's, or 1280 by 800), by
     the same request. It writes no pair.
   - **Since CK-312** it then asks for the mode then in force (the configuration's, or windowed), and **since CK-313** it
-    gives the presenter the frame-rate limit then in force.
+    gives the presenter the frame-rate limit then in force. **Since CK-344** it gives it the vsync value then in force
+    too.
   - Without an open resizable window it is a Lua error, and nothing is reset.
 - **The UI scale limit acts at once** (`crates/render-2d/src/bridge.rs`, `set_ui_scale_limit`). A set or a reset of
   `[ui] scale` gives the scene bridge the new limit, and the scale in use is the lower of the limit and what the drawable
@@ -2358,6 +2375,47 @@ can input whatever numbers they want, and it will clamp to minimums and maximums
   `crates/render-2d/src/tests/resident.rs` (the relay's delivery and its order), `config.rs` (the key in both files; 29,
   241, a fraction and another text refused; the update rate and the largest delta unchanged) and `settings.rs` (the set,
   the file and the reset).
+
+**Since CK-344: vsync.** One key and its set, which say whether a frame's showing waits for the display's refresh. The owner
+asked for it once the debug line worked (CK-343, §3.24) and read 120 with no limit set: "one thing is that it start at 120
+even without a limit. so im thinking that vsync is being forced on. this needs to be a setting in the graphics that we can
+turn off optionally" (`owner-direction-vsync-manager-r1.md`, sha256 `f70c865b…`). The spec is `runtime-m55/ck344-spec.md`
+(sha256 `37e21e16…`). That it is on by default, the key's name, and the row's label, choices and place are ck-manager's:
+the spec marks them as defaults the owner may change.
+
+- **`[frame] vsync`** is `true` or `false`; without it, `true`. The configuration file refuses anything else, `1`, `0.0`
+  and `"off"` included, and names the key. The settings file names and ignores it.
+- **`settings.set("frame.vsync", value)`** takes `true` or `false`. Anything else is a Lua error that names the setting,
+  and nothing changes. An accepted set is written like any set, as `vsync = true` or `vsync = false`, in the one `[frame]`
+  table it shares with the limit's key.
+- **`settings.graphics().vsync`** is the value in force. It is always there.
+- **What it does.** Before CK-344 the Metal presenter never set its layer's `displaySyncEnabled`, which is on unless it
+  is set: every present waited for the display's refresh. So on the owner's 120 Hz display the debug line read 120 with
+  no limit. Since CK-344 the presenter sets that property to the value in force.
+  - **With vsync on** nothing changed.
+  - **With vsync off** a frame's showing does not wait for the refresh. No frame is added: one is still drawn only when
+    one is wanted.
+  - **While the debug layer asks for a frame at every refresh** (§3.24) and vsync is off, the display no longer paces
+    those frames. They come as fast as the work and the frame-rate limit allow.
+  - **The frame-rate limit still decides** when a frame may start, with vsync on or off.
+- **A set acts at once.** `settings.set` and `settings.reset("graphics")` give the value to `WakeRelay::set_vsync` in
+  `ck-render-2d`, which keeps it and gives it to the presenter's setter (`MetalPresenter::vsync_setter`), in order, as it
+  does the limit. The presenter's render thread sets the layer's property itself, before it takes its next frame
+  (`crates/gpu-metal/src/presenter.rs`, `apply_display_sync`; `docs/scene-design.md` §9).
+  - **At start** the settings give the relay the value in force, the configuration's or the settings file's, before
+    the script can open a window (`settings.rs`, `Runtime::new_live`). A presenter started later starts with the value
+    kept, and sets the layer before its first frame.
+- **On Metal only.** The Vulkan path connects no setter and ignores the key: it is compile-only. A headless run keeps
+  and writes the value, and no presenter takes it.
+- **Not seen yet.** No test measures a rate. That the debug line reads above the display's rate with vsync off, that
+  the limit still holds there, and that the choice is kept over a restart are the owner's checks by hand (the
+  checklist's items `vsync-off`, `vsync-limit` and `vsync-keep`), not yet marked on 2026-11-16.
+- **Tests:** `config.rs` (the key in both files; the default; `1`, `'off'` and `0.0` refused); `settings.rs` (a saved
+  `false` reaches the relay at start; the set, the errors, one `[frame]` table with both keys, the reset);
+  `crates/render-2d/src/tests/resident.rs` (the relay keeps the value and gives it to a setter connected then or later);
+  `ui_link/settings_graphics_tests.rs` (the row, §3.18); and one case with a real window in
+  `crates/gpu-metal/tests/presenter_scene/cases.rs`, which reads the layer's property back after the start and after
+  each set (`docs/scene-design.md` §9).
 
 **Since CK-312: window modes.** One key and its set. The owner asked for three modes ("then seperately will be the window
 mode buttons 'windowed', 'windowed fullscreen', and 'fullscreen'. we will have to implement these"). For a fullscreen
@@ -2678,9 +2736,9 @@ Lengths below are in UI pixels.
   tab, since CK-336, `settings.reset("debug")`.
   The tab is then made again, when the pointer's dispatch ends, with the values in force. Its row in the tab column
   stays the chosen one (CK-323: after "defaults" on the input tab no row was marked).
-- **The graphics tab** (CK-308, with a row each from CK-312 and CK-313) has five rows and "defaults". From the top:
-  resolution, window mode, UI scale up to, frame rate, list look. Each row is 20 below the one before, but for the scale
-  row, which is 5 below the last line of the mode's buttons.
+- **The graphics tab** (CK-308, with a row each from CK-312, CK-313 and CK-344) has six rows and "defaults". From the
+  top: resolution, window mode, UI scale up to, frame rate, vsync, list look. Each row is 20 below the one before, but for
+  the scale row, which is 5 below the last line of the mode's buttons.
   - **It reads `settings.graphics()`** (§3.17) each time it is made, and the drawable's size from the updates:
     `settings_window.update` keeps the last `pixel_width` and `pixel_height` it was given, also while the window is
     closed. Before the first update the size counts as 1280 by 800.
@@ -2726,6 +2784,13 @@ Lengths below are in UI pixels.
       editing.
     - **The number kept** is the last limit of the run. It is held in the module, not in the file, so a game that starts
       with `"none"` shows 60.
+  - **"vsync"** (CK-344) is two choice buttons laid out by `button.flow`, "on" and "off", 84 right of the label. The one
+    of the value in force, `settings.graphics().vsync`, is lit.
+    - **A press** calls `settings.set("frame.vsync", …)`, with `true` for "on" and `false` for "off" (§3.17), and lights
+      its button.
+    - **It moved "list look" 20 down.** Read in the code and not seen: the mode's three buttons take three lines, so
+      the list look's row is at 136 and its buttons end at 151, while "defaults" is at 150, at the left, close under
+      the row's label. The two do not overlap: the row's buttons start 84 from the left, and "defaults" is narrower.
   - **"list look"** is two choice buttons, "cards" and "rows". The one of the look in force is lit.
     - **One module holds the choice,** `scripts/ui/lib/list_look.lua`: `list_look.get()`, `list_look.set(value)`,
       `list_look.refresh()`, and `list_look.subscribe(fn)`, which returns a function that ends the subscription.
@@ -2956,6 +3021,9 @@ Lengths below are in UI pixels.
     below the least size; the scale buttons by the pair returned, and by new pixels; the list look, "defaults" and its
     one resize; a look chosen in a run with no game), five of CK-313 (the row's place; a press on the greyed field;
     a typed limit clamped; "none"; "defaults") and four of CK-329, which type Tab and Shift+Tab into the real tab.
+    Since CK-344 the first of the nine has the "vsync" row too: its label, "on" lit at first, and a press on "off" that
+    calls `settings.set("frame.vsync", false)` and lights "off". The test of the frame rate row's place has the list
+    look 40 below it.
     - **With a limit:** from the width to the height to the frame rate and round to the width, each field applied as
       it is left, and Shift+Tab from the height back to the width.
     - **With no limit:** the width, the height and the width again. The greyed field never edits, and nothing writes
@@ -3601,6 +3669,15 @@ tooltip and prompt of the UI, and it goes on working while the UI script is busy
     key still work, and the level is still kept.
   - **Such a run logs one `warn`** in the category `debug`: "debug layer needs a font, resource service and native top
     layer". It comes at start when the level is already above 0, or else the first time the level leaves 0.
+  - **Until CK-343 the line read `0 fps` in the game.** The native run wraps its Metal backend in `Reporting`
+    (`apps/codekarl/src/native.rs`), which passed on neither the reader of the shown-frame times nor the request to
+    draw at every refresh. Each fell to its default in the `Gpu2d` trait: no reader, and nothing done. So the layer got
+    no sample, and the game drew on demand whatever the line showed.
+    - **The owner's hand check found it** (the checklist's item `debug-f3`, as the spec records). The tests of CK-334
+      and CK-335 built the presenter without that wrapper, so none saw it.
+    - **CK-343 passes both on** (spec `runtime-m55/ck343-spec.md`, sha256 `88925063…`; `docs/scene-design.md` §9).
+      The owner then saw the number: "the fps looks like its working now" (`owner-direction-vsync-manager-r1.md`
+      in `.pipeline/coordination/ui-polish-design/`).
 - **The level and the rate** are the two `[debug]` settings (§3.17): `level` is 0 (off) or 1, and `rate` is `"frames"`
   or `"updates"`. Since CK-336 the settings window's development tab shows and sets both (§3.18).
 - **The key** is the action `debug_layer`, bound to `F3` by default in a run with a scenario (`GAME_BINDINGS`,
@@ -3658,6 +3735,8 @@ tooltip and prompt of the UI, and it goes on working while the UI script is busy
   and the rate is `"frames"` (`settings.rs`, `apply_debug`): at start, and at each set, step and reset. Otherwise the
   game draws on demand as before, and with `"updates"` the layer causes a frame only when its text changes.
   - **The frame-rate limit still decides** when a frame may start (§3.17).
+  - **Since CK-344, with vsync off** (§3.17) those frames do not wait for the display, so the number can read above
+    the display's rate, up to the limit. That is the owner's to see by hand, and is not seen yet.
   - **Read in the code:** the request follows the two settings alone. So a Metal run that has no font draws at every
     refresh at level 1 with `"frames"`, though it shows no line.
   - **At the run's end** the application does not withdraw the request itself. The presenter's stop ends the drawing
@@ -3699,10 +3778,17 @@ tooltip and prompt of the UI, and it goes on working while the UI script is busy
   - `settings.rs` has the calls, their errors, the file, the reset and the request for drawing at every refresh.
     `config.rs` has the keys in both files, the action bound without a game and rebound by the settings file, and the
     counts: 18 actions that can be rebound and a game's 24 bindings.
+  - `apps/codekarl/src/native.rs` has one, CK-343's
+    (`reporting_forwards_the_inner_shown_times_reader_and_both_draw_refresh_values`). Through `Reporting`, round a
+    double, the reader is the inner backend's own, and `set_draw_every_refresh(true)` and then `(false)` both reach it.
   - **No test opens a window or shows the line on a display.** Seeing it is the owner's, by hand: F3 for `-- fps` and
     then the number; 30, 60 and the display's rate with the limit at 30, at 60 and at "none"; the line above a tooltip
     and above the pause menu; F3 in the menu and while typing a save's name; and the line keeping its corner, and its
     size beside the UI's text, after a resize.
+    - **The owner saw them on 2026-11-16, after CK-343:** the checklist's nine debug-line items pass, the two rechecks
+      of the number among them (`debug-f3b`, `debug-limit2`; read in the checklist's `checks` collection, 15:51Z to
+      15:52Z).
+    - **Still to see:** a rate above the display's with vsync off (CK-344, §3.17).
 
 ## 4. Packages and ownership
 

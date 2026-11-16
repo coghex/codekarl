@@ -21,6 +21,9 @@ mode puts the first responder back, and the key when the window had it. §8 reco
 is active and the application has asked for it. Since CK-335 (2026-11-16) the debug layer asks, while its line shows
 the frame rate. §4 and §8 record it.
 
+**Since CK-343 and CK-344 (2026-11-16):** in the game the request to draw at every refresh reaches the Metal presenter,
+which it had not, and `[frame] vsync` says whether a present waits for the display's refresh. §8 records both.
+
 **Milestone split (owner, 2026-10-19):** "yes, you can hold off on glfw and vulkan, we can do a milestone 3.5 after 3, we need to run
 the guide when 3 is done too". **Milestone 3 is the native path** (a native window with Metal); **milestone 3.5 is the GLFW and Vulkan
 path**, designed here but not yet filed. ck-guide reviews milestone 3 when it is accepted. Where this document describes two paths or
@@ -595,6 +598,15 @@ All drawing runs on the render thread (§4).
   - **Since CK-335 the debug layer requests it,** while its line shows the frame rate (`docs/ui-design.md` §3.24).
     Otherwise redraw on demand, above, is still how the game draws. `docs/scene-design.md` §9 has the presenter's
     side and the tests.
+  - **Until CK-343 the game's presenter never got it.** The loop gave the setting to the application's presenter, whose
+    wrapper round the Metal backend did not pass it on (`docs/scene-design.md` §9).
+- **Vsync (since CK-344, Metal only).** `[frame] vsync`, `true` (the default) or `false`, sets the Metal layer's
+  `displaySyncEnabled`: whether a present waits for the display's refresh.
+  - **The presenter's render thread sets it,** before its first frame and before the next frame after a change.
+  - **It does not go through the loop** or the window's request slot. The settings give it to the presenter through
+    the wake relay, as they do the frame-rate limit.
+  - **The frame-rate limit still decides** when a frame may start, with vsync on or off (`docs/ui-design.md` §3.17;
+    `docs/scene-design.md` §9 has the presenter's side and the tests).
 - **High-resolution displays:** the drawable or swap chain uses the window's pixel size, not its point size.
 - **Window size (owner, §1):** in milestone 3 the window was created without the native resizable style (`NSWindowStyleMaskResizable`
   off, and `GLFW_RESIZABLE` false), so there was no user resize and no live-resize loop. That is still so for a window opened without

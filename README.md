@@ -83,7 +83,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   second as `60 updates`). F3 writes the level to the settings file. The settings window's "development" tab sets
   both (CK-336): "debug layer level" is `off` or `1`, and "rate shown" is `frames` or `updates`; a level changed with
   F3 shows there too. While the line shows frames the game draws at every
-  display refresh, which uses more power than drawing on demand. The line is drawn on native Metal only
+  display refresh, which uses more power than drawing on demand; with vsync off (below) it draws as fast as the frame
+  rate limit allows. The line is drawn on native Metal only
   ([docs/ui-design.md](docs/ui-design.md) §3.24).
 - **Saves:** the quicksave is `saves/quicksave.cksave`. A save loads only into the build that wrote it, and a save written before
   CK-302 (2026-11-14) has the older header and is refused. Named saves, one file each, are made, loaded and deleted on the
@@ -105,14 +106,15 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   "input" has the keys (below); "development" (CK-336) has the debug line's level and rate (above). Drag a slider or
   press a choice and it acts at once and is kept. "defaults" resets the tab that shows. Its "x", or Escape, closes it
   and leaves the menu open ([docs/ui-design.md](docs/ui-design.md) §3.18).
-- **Graphics** (CK-308, CK-312, CK-313): on the "graphics" tab, "resolution" is two numbers, the width and the height in
+- **Graphics** (CK-308, CK-312, CK-313, CK-344): on the "graphics" tab, "resolution" is two numbers, the width and the height in
   screen pixels. Click one, type, and press Enter or click elsewhere: the pair is brought into the range, from 1280×800 up
   to the screen, and the window takes that size. "window mode" is "windowed", "windowed fullscreen" (no title bar, the
   whole screen at its own pixels; the resolution is greyed) or "fullscreen" (the whole screen, drawn at your resolution
   and scaled; a resolution of another shape than the screen keeps its shape between black bars). F11 switches from
   windowed to fullscreen, and from either of the other two back to windowed (CK-326). "UI scale up to" caps
   the UI scale at 1, 1.5 or 2, and a scale the size cannot hold is greyed. "frame rate" limits the frames drawn a second,
-  from 30 to 240: type a number, or press "none" for no limit. While you type in one of these number fields, Tab goes
+  from 30 to 240: type a number, or press "none" for no limit. "vsync" is "on" or "off": off stops the drawing waiting
+  for the display's refresh, so the frame rate can go above the display's (CK-344). While you type in one of these number fields, Tab goes
   on to the next and Shift+Tab back, applying the one it leaves (CK-329). "list look" chooses cards or rows for the location
   panel's pops and buildings, as the panel's own two buttons do. Each is kept in the settings file, and the game starts
   with them the next time ([docs/ui-design.md](docs/ui-design.md) §3.18).
@@ -152,9 +154,10 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   hold `[ui.tooltips]` `delay`, `lock` and `lock_timer`, and `[map]` `pan_pixels_per_frame`, `zoom_steps_per_second` and
   `scroll_points_per_step`, each checked as the configuration checks it. A missing file is normal. An entry that is not accepted
   is named in a `warn` record and ignored, and the rest applies. The settings window writes it at each change. The file may
-  also hold `[ui] scale` and `list_look`, `[window] width`, `height` and `mode`, and `[frame] fps_limit` (CK-307, CK-312,
-  CK-313), and `[input.bindings]` for the player's own keys (CK-309: at most two keys for an action, and never Escape's
-  `close`). The input tab writes the keys (CK-310), and the graphics tab the other six (CK-308). Since CK-335 it may
+  also hold `[ui] scale` and `list_look`, `[window] width`, `height` and `mode`, and `[frame] fps_limit` and `vsync`
+  (CK-307, CK-312, CK-313, CK-344), and `[input.bindings]` for the player's own keys (CK-309: at most two keys for an
+  action, and never Escape's `close`). The input tab writes the keys (CK-310), and the graphics tab the other seven
+  (CK-308). Since CK-335 it may
   hold `[debug] level` and `rate` too, the debug line's settings: F3 writes the level, and the development tab
   writes both (CK-336) ([docs/ui-design.md](docs/ui-design.md) §3.17).
 - **Lists:** a list longer than its view has a thin scroll bar at its right edge: drag its thumb, or press the track to move one
@@ -168,9 +171,10 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   1280×800 screen pixels, 1.5 from 1920×1200 and 2 from 2560×1600, so a UI pixel is 2, 3 or 4 screen pixels. `[ui] scale = 1`,
   `1.5` or `2` caps it (the lower of the two is used), and the old `[ui] points_per_pixel` is refused, naming `scale`. The
   configuration also takes `[window] width` and `height` (screen pixels, from 1280 and 800 up to 16,384), `[window] mode`
-  (`"windowed"`, `"windowed_fullscreen"` or `"fullscreen"`), `[ui] list_look` (`"cards"` or `"rows"`) and `[frame] fps_limit`
-  (30 to 240, or `"none"`, the default): the graphics tab's settings (CK-307, CK-312, CK-313). The window modes and the
-  frame-rate limit work on the native Metal path only.
+  (`"windowed"`, `"windowed_fullscreen"` or `"fullscreen"`), `[ui] list_look` (`"cards"` or `"rows"`), `[frame] fps_limit`
+  (30 to 240, or `"none"`, the default) and `[frame] vsync` (`true`, the default, or `false`): the graphics tab's
+  settings (CK-307, CK-312, CK-313, CK-344). The window modes, the frame-rate limit and vsync work on the native Metal
+  path only.
 - **Run the game on native Metal.** Milestone 9's render features (the new map look and the elevation mode) exist on native Metal
   only. Since CK-238 the Vulkan backend is only kept compiling, and its port of them (CK-239) is parked until the owner says so.
 
