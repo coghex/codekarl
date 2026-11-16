@@ -398,12 +398,17 @@ pub(crate) fn run_closure_with(
             Arc::clone(&env.bridge),
         );
         let backend = early.take();
-        windowed::run_window(
+        let presented_times = presenter.presented_times_reader().map(|reader| {
+            Arc::new(move |cursor| reader.after(cursor))
+                as Arc<dyn Fn(u64) -> Vec<u64> + Send + Sync>
+        });
+        windowed::run_window_with_times(
             &env,
             move || backend,
             presenter,
             &RESOURCES,
             windowed::DRAIN,
+            presented_times,
         )
     });
     (closure, screen)

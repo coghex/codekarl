@@ -341,7 +341,7 @@ fn drain_late(quit: &AtomicBool, ui: &CodekarlUi, drain: Duration) -> Vec<String
 }
 
 /// The windowed run of a backend whose teardown always releases what it destroyed (the native path).
-#[cfg(any(test, all(feature = "metal", target_os = "macos")))]
+#[cfg(test)]
 pub(crate) fn run_window<B, P, F>(
     env: &RunEnv,
     make_backend: F,
@@ -354,7 +354,32 @@ where
     P: Presenter<Handles = B::Handles>,
     F: FnOnce() -> Result<B, String>,
 {
-    run_window_keeping(env, make_backend, presenter, latch, drain, &|| false)
+    run_window_with_times(env, make_backend, presenter, latch, drain, None)
+}
+
+#[cfg(any(test, all(feature = "metal", target_os = "macos")))]
+pub(crate) fn run_window_with_times<B, P, F>(
+    env: &RunEnv,
+    make_backend: F,
+    presenter: P,
+    latch: &ResourceLatch,
+    drain: Duration,
+    presented_times: Option<Arc<dyn Fn(u64) -> Vec<u64> + Send + Sync>>,
+) -> RunEnd
+where
+    B: Backend,
+    P: Presenter<Handles = B::Handles>,
+    F: FnOnce() -> Result<B, String>,
+{
+    run_window_keeping_with_times(
+        env,
+        make_backend,
+        presenter,
+        latch,
+        drain,
+        presented_times,
+        &|| false,
+    )
 }
 
 /// The windowed run: `ck_window::run` with a lazily created backend, then the end mapping and the drain
@@ -377,6 +402,24 @@ where
     P: Presenter<Handles = B::Handles>,
     F: FnOnce() -> Result<B, String>,
 {
+    run_window_keeping_with_times(env, make_backend, presenter, latch, drain, None, kept)
+}
+
+pub(crate) fn run_window_keeping_with_times<B, P, F>(
+    env: &RunEnv,
+    make_backend: F,
+    presenter: P,
+    latch: &ResourceLatch,
+    drain: Duration,
+    presented_times: Option<Arc<dyn Fn(u64) -> Vec<u64> + Send + Sync>>,
+    kept: &dyn Fn() -> bool,
+) -> RunEnd
+where
+    B: Backend,
+    P: Presenter<Handles = B::Handles>,
+    F: FnOnce() -> Result<B, String>,
+{
+    env.ui.set_presented_times(presented_times);
     let backend = Lazy {
         make: Some(make_backend),
         backend: None,
@@ -393,6 +436,7 @@ where
         &env.quit,
         &env.settings,
     );
+    env.ui.end_debug_layer();
     // The run phase is over: the bridge ends here, before anything else runs and before the late-callback
     // drain below, so that a write that comes later (a decode still running, `shutdown()`) is discarded and
     // counted. The renderer detaches it too when it is asked to stop, but not on the paths that never start

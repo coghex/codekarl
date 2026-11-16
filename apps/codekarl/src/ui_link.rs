@@ -363,6 +363,8 @@ struct State {
     last_scale_k: Cell<Option<u32>>,
     /// A scene scale changed but the UI has not yet published hit regions in the new units.
     awaiting_scene_layout: Cell<bool>,
+    debug_layer: RefCell<Option<crate::debug_layer::DebugLayer>>,
+    warned_debug_missing: Cell<bool>,
     /// The input the UI VM has not been given yet; cleared when a post carrying it was accepted.
     stash: RefCell<InputStash>,
     /// The `frame.on_update` registration generation the previous input tick saw.
@@ -696,6 +698,7 @@ pub(crate) struct CodekarlUi {
     sim: Option<SimLink>,
     /// Whether the UI VM has a `frame_update` callback, as the setter's observer published it; `None` counts as registered.
     registration: Option<FrameRegistration>,
+    debug_settings: Option<Arc<crate::settings::Runtime>>,
 }
 
 /// The simulation owner as the UI link sees it: where presses go, and what it published.
@@ -723,6 +726,7 @@ impl CodekarlUi {
             scene: None,
             sim: None,
             registration: None,
+            debug_settings: None,
         }
     }
 
@@ -734,6 +738,7 @@ impl CodekarlUi {
             scene: None,
             sim: None,
             registration: None,
+            debug_settings: None,
         }
     }
 
@@ -747,6 +752,51 @@ impl CodekarlUi {
     pub(crate) fn with_registration(mut self, registration: FrameRegistration) -> Self {
         self.registration = Some(registration);
         self
+    }
+
+    pub(crate) fn with_debug_settings(
+        mut self,
+        settings: Option<Arc<crate::settings::Runtime>>,
+    ) -> Self {
+        self.debug_settings = settings;
+        self
+    }
+
+    pub(crate) fn with_debug_layer(self, layer: Option<crate::debug_layer::DebugLayer>) -> Self {
+        *self.state.debug_layer.borrow_mut() = layer;
+        self
+    }
+
+    pub(crate) fn set_presented_times(
+        &self,
+        reader: Option<Arc<dyn Fn(u64) -> Vec<u64> + Send + Sync>>,
+    ) {
+        if let Some(layer) = self.state.debug_layer.borrow_mut().as_mut() {
+            layer.set_frame_times(reader);
+        }
+    }
+
+    pub(crate) fn end_debug_layer(&self) {
+        if let Some(mut layer) = self.state.debug_layer.borrow_mut().take() {
+            layer.end();
+        }
+    }
+
+    pub(crate) fn warn_missing_debug_layer_if_enabled(&self) {
+        let enabled = self
+            .debug_settings
+            .as_ref()
+            .is_some_and(|settings| settings.debug().level > 0);
+        if enabled
+            && self.state.debug_layer.borrow().is_none()
+            && !self.state.warned_debug_missing.replace(true)
+        {
+            crate::lifecycle::emit(
+                ck_log::Level::Warn,
+                "debug",
+                format_args!("debug layer needs a font, resource service and native top layer"),
+            );
+        }
     }
 
     /// This link with the simulation owner attached: it carries the update's time presses to the owner, and ends the run when
@@ -1275,6 +1325,9 @@ impl UiLink for CodekarlUi {
                 // controls took this input at its tick, so a retried post can never repeat them.
                 if matches!(event, UiEvent::Update(_)) {
                     self.state.stash.borrow_mut().clear();
+                    if let Some(layer) = self.state.debug_layer.borrow_mut().as_mut() {
+                        layer.accepted_update();
+                    }
                 }
                 self.state.pending.borrow_mut().push_back((id, event));
                 Ok(())
@@ -1295,6 +1348,16 @@ impl UiLink for CodekarlUi {
         reason = "the scale-boundary transition must route one coherent input tick"
     )]
     fn input(&mut self, tick: &InputTick) -> Result<(), String> {
+        if tick.input.capture.is_none()
+            && tick
+                .input
+                .actions
+                .iter()
+                .any(|action| action.name == "debug_layer" && action.pressed)
+            && let Some(settings) = &self.debug_settings
+        {
+            settings.step_debug_level();
+        }
         let regions = if let Some(scene) = &self.scene {
             scene.hit_regions()
         } else {
@@ -1309,6 +1372,18 @@ impl UiLink for CodekarlUi {
             .scene
             .as_ref()
             .and_then(|scene| scene.ui_scale(tick.metrics.pixels));
+        if let Some(settings) = &self.debug_settings {
+            let debug = settings.debug();
+            if let Some(layer) = self.state.debug_layer.borrow_mut().as_mut() {
+                layer.update(debug, tick.metrics, scale_k);
+            } else if debug.level > 0 && !self.state.warned_debug_missing.replace(true) {
+                crate::lifecycle::emit(
+                    ck_log::Level::Warn,
+                    "debug",
+                    format_args!("debug layer needs a font, resource service and native top layer"),
+                );
+            }
+        }
         let previous_scale_k = self.state.last_scale_k.replace(scale_k);
         let scale_changed = previous_scale_k.is_some_and(|old| Some(old) != scale_k);
         let awaiting_scene_layout = if scale_changed && self.scene.is_some() {

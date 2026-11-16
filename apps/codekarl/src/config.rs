@@ -164,7 +164,41 @@ struct File {
     #[serde(default)]
     frame: FrameTable,
     #[serde(default)]
+    debug: DebugTable,
+    #[serde(default)]
     lua: BTreeMap<VmName, Vm>,
+}
+
+/// The debug layer's persisted settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DebugSettings {
+    pub(crate) level: u32,
+    pub(crate) rate: &'static str,
+}
+
+impl Default for DebugSettings {
+    fn default() -> Self {
+        Self {
+            level: 0,
+            rate: "frames",
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct DebugFields {
+    level: Option<toml::Value>,
+    rate: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct DebugTable(DebugFields);
+
+impl<'de> Deserialize<'de> for DebugTable {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        table_only(deserializer, "a table for `debug`").map(DebugTable)
+    }
 }
 
 /// `[map]`: the map directory and the paced camera control rates.
@@ -1285,6 +1319,10 @@ pub(crate) struct Config {
     pub(crate) render: RenderConfig,
     /// The `[frame]` table, with its defaults.
     pub(crate) frame: FrameConfig,
+    /// The effective debug layer settings, including settings-file overrides.
+    pub(crate) debug: DebugSettings,
+    /// Configuration-file debug values restored by `settings.reset("debug")`.
+    pub(crate) settings_base_debug: DebugSettings,
     /// The `[input.bindings]` table, validated, with the defaults of design §7.1 filling every action the file does
     /// not name (an explicit empty list unbinds). Read-only after load, like the other settings.
     pub(crate) bindings: Bindings,
@@ -1338,6 +1376,8 @@ pub(crate) struct SettingsOverrides {
         reason = "absent, kept `none` and a kept number are three different overrides"
     )]
     pub(crate) frame_fps_limit: Option<Option<u32>>,
+    pub(crate) debug_level: Option<u32>,
+    pub(crate) debug_rate: Option<&'static str>,
     pub(crate) bindings: BTreeMap<String, Vec<String>>,
 }
 
@@ -1421,7 +1461,7 @@ pub(crate) struct GameConfig {
 const DEFAULT_SAVES: &str = "saves";
 
 /// The time and save actions with their default keys, added only when `[game] scenario` is set.
-const GAME_BINDINGS: [(&str, &str); 11] = [
+const GAME_BINDINGS: [(&str, &str); 12] = [
     ("time_pause", "Space"),
     ("time_speed_1", "Digit1"),
     ("time_speed_2", "Digit2"),
@@ -1433,6 +1473,7 @@ const GAME_BINDINGS: [(&str, &str); 11] = [
     ("game_quicksave", "F5"),
     ("game_quickload", "F9"),
     ("window_fullscreen", "F11"),
+    ("debug_layer", "F3"),
 ];
 
 impl Default for Config {
@@ -1459,6 +1500,8 @@ impl Default for Config {
             resources: ResourceConfig::default(),
             render: RenderConfig::default(),
             frame: FrameConfig::default(),
+            debug: DebugSettings::default(),
+            settings_base_debug: DebugSettings::default(),
             bindings: ck_window::LoopSettings::default().bindings().clone(),
             whole: ConfigValue::Table(BTreeMap::new()),
         }
@@ -1647,6 +1690,7 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         }
     };
     check_pixel_font(path, &file.ui.0, game.is_some(), file.render.0.filter)?;
+    let debug = parse_debug(path, &file.debug.0)?;
     let tooltips = parse_tooltips(path, file.ui.0.tooltips.as_ref())?;
     let map_settings = map
         .as_ref()
@@ -1746,9 +1790,37 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
                 .max_delta_seconds
                 .map_or_else(|| FrameConfig::default().max_delta, |delta| delta.0),
         },
+        debug,
+        settings_base_debug: debug,
         bindings,
         whole: to_config_value(&toml::Value::Table(whole)),
     })
+}
+
+fn parse_debug(path: &Path, fields: &DebugFields) -> Result<DebugSettings, String> {
+    let level = match fields.level.as_ref() {
+        None => 0,
+        Some(toml::Value::Integer(level)) if (0..=1).contains(level) => {
+            u32::try_from(*level).expect("validated debug level fits u32")
+        }
+        Some(value) => {
+            return Err(format!(
+                "{}: [debug]: level = {value} is not accepted: use integer 0 or 1",
+                path.display()
+            ));
+        }
+    };
+    let rate = match fields.rate.as_deref().unwrap_or("frames") {
+        "frames" => "frames",
+        "updates" => "updates",
+        value => {
+            return Err(format!(
+                "{}: [debug]: rate = {value:?} is not accepted: use \"frames\" or \"updates\"",
+                path.display()
+            ));
+        }
+    };
+    Ok(DebugSettings { level, rate })
 }
 
 fn checked_dimension(path: &Path, name: &str, value: u32, minimum: u32) -> Result<u32, String> {
@@ -1965,6 +2037,7 @@ fn load_settings(config_path: &Path, config: &mut Config) {
             "ui" => load_ui_settings(&path, contents, config),
             "window" => load_window_settings(&path, contents, config),
             "frame" => load_frame_settings(&path, contents, config),
+            "debug" => load_debug_settings(&path, contents, config),
             "map" => load_map_settings(&path, contents, config),
             "input" => load_input_settings(&path, contents, config),
             _ => config.settings_warnings.push(format!(
@@ -1980,7 +2053,53 @@ fn load_settings(config_path: &Path, config: &mut Config) {
     }
 }
 
-pub(crate) const REBINDABLE_ACTIONS: [&str; 17] = [
+fn load_debug_settings(path: &Path, value: &toml::Value, config: &mut Config) {
+    let Some(entries) = value.as_table() else {
+        config.settings_warnings.push(format!(
+            "{}: [debug] must be a table; ignoring it",
+            path.display()
+        ));
+        return;
+    };
+    for (key, entry) in entries {
+        match key.as_str() {
+            "level" => match entry
+                .as_integer()
+                .and_then(|number| u32::try_from(number).ok())
+                .filter(|level| *level <= 1)
+            {
+                Some(level) => {
+                    config.debug.level = level;
+                    config.settings_overrides.debug_level = Some(level);
+                }
+                None => config.settings_warnings.push(format!(
+                    "{}: [debug] level = {entry} is not accepted: use integer 0 or 1; ignoring it",
+                    path.display()
+                )),
+            },
+            "rate" => match entry.as_str() {
+                Some("frames") => {
+                    config.debug.rate = "frames";
+                    config.settings_overrides.debug_rate = Some("frames");
+                }
+                Some("updates") => {
+                    config.debug.rate = "updates";
+                    config.settings_overrides.debug_rate = Some("updates");
+                }
+                _ => config.settings_warnings.push(format!(
+                    "{}: [debug] rate = {entry} is not accepted: use \"frames\" or \"updates\"; ignoring it",
+                    path.display()
+                )),
+            },
+            _ => config.settings_warnings.push(format!(
+                "{}: [debug] unknown key `{key}`; accepted keys are level and rate",
+                path.display()
+            )),
+        }
+    }
+}
+
+pub(crate) const REBINDABLE_ACTIONS: [&str; 18] = [
     "time_pause",
     "time_speed_1",
     "time_speed_2",
@@ -1998,6 +2117,7 @@ pub(crate) const REBINDABLE_ACTIONS: [&str; 17] = [
     "map_pan_down",
     "map_zoom_in",
     "map_zoom_out",
+    "debug_layer",
 ];
 
 #[expect(
@@ -2337,6 +2457,124 @@ fn setting_integer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_configuration_has_strict_defaults_and_rejects_unknown_or_invalid_values() {
+        assert_eq!(parse_config("").unwrap().debug, DebugSettings::default());
+        assert_eq!(
+            parse_config("[debug]\nlevel = 0\nrate = 'frames'\n")
+                .unwrap()
+                .debug,
+            DebugSettings::default()
+        );
+        assert_eq!(
+            parse_config("[debug]\nlevel = 1\nrate = 'updates'\n")
+                .unwrap()
+                .debug,
+            DebugSettings {
+                level: 1,
+                rate: "updates"
+            }
+        );
+        for (invalid, key) in [
+            ("[debug]\nlevel = 2\n", "level"),
+            ("[debug]\nlevel = -1\n", "level"),
+            ("[debug]\nlevel = 0.5\n", "level"),
+            ("[debug]\nrate = 'seconds'\n", "rate"),
+            ("[debug]\nextra = true\n", "extra"),
+        ] {
+            let error = parse_config(invalid).expect_err("invalid debug settings are refused");
+            assert!(error.contains(key), "{error}");
+        }
+    }
+
+    #[test]
+    fn debug_settings_file_keeps_valid_siblings_and_names_ignored_entries() {
+        let dir = crate::testing::Dir::new();
+        let config_path = dir.0.join("config.toml");
+        fs::write(&config_path, "[debug]\nlevel = 1\nrate = 'frames'\n").unwrap();
+        fs::write(
+            dir.0.join("settings.toml"),
+            "[debug]\nlevel = 2\nrate = 'updates'\nextra = true\n",
+        )
+        .unwrap();
+        let config = load(&config_path).expect("config with tolerant debug settings");
+        assert_eq!(
+            config.settings_base_debug,
+            DebugSettings {
+                level: 1,
+                rate: "frames"
+            }
+        );
+        assert_eq!(
+            config.debug,
+            DebugSettings {
+                level: 1,
+                rate: "updates"
+            }
+        );
+        assert_eq!(config.settings_overrides.debug_level, None);
+        assert_eq!(config.settings_overrides.debug_rate, Some("updates"));
+        assert!(
+            config
+                .settings_warnings
+                .iter()
+                .any(|warning| warning.contains("[debug] level"))
+        );
+        assert!(
+            config
+                .settings_warnings
+                .iter()
+                .any(|warning| warning.contains("unknown key `extra`"))
+        );
+
+        for (entry, key) in [
+            ("level = -1", "level"),
+            ("level = 0.5", "level"),
+            ("rate = 1", "rate"),
+            ("rate = 'seconds'", "rate"),
+        ] {
+            let invalid = crate::testing::Dir::new();
+            let config_path = invalid.0.join("config.toml");
+            fs::write(&config_path, "").unwrap();
+            fs::write(
+                invalid.0.join("settings.toml"),
+                format!("[debug]\n{entry}\n"),
+            )
+            .unwrap();
+            let config = load(&config_path).expect("settings-file values are ignored");
+            assert_eq!(config.debug, DebugSettings::default(), "{entry}");
+            assert!(
+                config
+                    .settings_warnings
+                    .iter()
+                    .any(|warning| warning.contains(&format!("[debug] {key}"))),
+                "{entry}: {:?}",
+                config.settings_warnings
+            );
+        }
+    }
+
+    #[test]
+    fn debug_layer_can_be_bound_without_a_game_and_rebound_by_settings() {
+        let dir = crate::testing::Dir::new();
+        let path = dir.0.join("config.toml");
+        fs::write(&path, "[input.bindings]\ndebug_layer = ['F4']\n").unwrap();
+        fs::write(
+            dir.0.join("settings.toml"),
+            "[input.bindings]\ndebug_layer = ['F6']\n",
+        )
+        .unwrap();
+        let config = load(&path).expect("custom debug action in non-game run");
+        assert_eq!(
+            config.bindings.action("debug_layer").unwrap().bindings()[0].key(),
+            ck_input::Key::F6
+        );
+        assert_eq!(
+            config.settings_overrides.bindings.get("debug_layer"),
+            Some(&vec!["F6".to_owned()])
+        );
+    }
 
     #[test]
     fn graphics_configuration_accepts_the_scale_list_look_and_bounded_resolution() {
@@ -4295,9 +4533,9 @@ mod tests {
     }
 
     #[test]
-    fn typed_text_adds_no_bound_action_a_games_bindings_are_the_23_of_today() {
+    fn typed_text_adds_no_bound_action_a_games_bindings_are_the_24_of_today() {
         // CK-314: a digit, a letter or an editing key reaches a widget as a typed entry, never as an action. The game's actions are the
-        // loop's 6 (the map's pan and zoom among them), the 10 time and save actions and the fullscreen key (CK-326).
+        // loop's 6 (the map's pan and zoom among them), the 10 time and save actions, the fullscreen key and the debug layer key.
         let config = parse_config("[game]\nscenario = \"s\"\n").unwrap();
         let names: Vec<_> = config
             .bindings
@@ -4305,7 +4543,11 @@ mod tests {
             .iter()
             .map(ck_window::ActionBindings::name)
             .collect();
-        assert_eq!(names.len(), 23, "{names:?}");
+        assert_eq!(names.len(), 24, "{names:?}");
+        assert_eq!(
+            config.bindings.action("debug_layer").unwrap().bindings()[0].key(),
+            ck_input::Key::F3
+        );
         assert!(
             names.iter().all(|name| ![
                 "type",
@@ -4401,6 +4643,7 @@ mod tests {
             REBINDABLE_ACTIONS.contains(&"window_fullscreen"),
             "the per-entry validation admits it"
         );
+        assert!(REBINDABLE_ACTIONS.contains(&"debug_layer"));
     }
 
     #[test]

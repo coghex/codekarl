@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ck_input::{Bindings, Mapper, POINTER_CAPACITY};
+use ck_input::{Bindings, CaptureOutcome, CaptureResult, Mapper, POINTER_CAPACITY};
 use ck_lua::{ConfigValue, HostFunction};
 use ck_window::{
     ActionSnapshot, InputSnapshot, InputTick, PixelRequest, PixelSize, PointerEvent, PostError,
@@ -173,6 +173,104 @@ fn flags_of(table: &ConfigValue, name: &str) -> (bool, bool, bool) {
 
 fn flag(table: &ConfigValue, name: &str) -> bool {
     matches!(field(table, name), ConfigValue::Bool(true))
+}
+
+#[test]
+fn debug_action_steps_the_persisted_setting_from_the_unfiltered_input_tick() {
+    let dir = crate::testing::Dir::new();
+    let path = dir.0.join("config.toml");
+    std::fs::write(&path, "[debug]\nlevel = 0\n").unwrap();
+    let config = crate::config::load(&path).unwrap();
+    let settings = crate::settings::Runtime::new(&config, None).unwrap();
+    let mut link = CodekarlUi::new(Rc::default()).with_debug_settings(Some(Arc::clone(&settings)));
+    let settings_path = config.settings_file.clone().unwrap();
+    let input = InputSnapshot {
+        actions: vec![action("debug_layer", true, true, false)],
+        typed: vec![ck_window::TypedEntry::Backspace],
+        ..idle()
+    };
+    link.input(&tick(input)).expect("input tick is consumed");
+    assert_eq!(settings.debug().level, 1);
+    let saved = std::fs::read_to_string(&settings_path).unwrap();
+    assert!(saved.contains("[debug]\nlevel = 1"));
+
+    link.input(&tick(InputSnapshot {
+        actions: vec![action("debug_layer", true, true, false)],
+        typed: vec![ck_window::TypedEntry::Backspace],
+        ..idle()
+    }))
+    .expect("second press is consumed");
+    assert_eq!(settings.debug().level, 0);
+    assert!(
+        std::fs::read_to_string(&settings_path)
+            .unwrap()
+            .contains("[debug]\nlevel = 0")
+    );
+
+    link.input(&tick(InputSnapshot {
+        actions: vec![action("debug_layer", true, true, false)],
+        capture: Some(CaptureResult {
+            id: "debug-layer-binding".to_owned(),
+            outcome: CaptureOutcome::Binding("F3".to_owned()),
+        }),
+        ..idle()
+    }))
+    .expect("captured key is consumed");
+    assert_eq!(
+        settings.debug().level,
+        0,
+        "captured F3 is a binding, not an action"
+    );
+}
+
+#[test]
+fn debug_action_steps_with_the_pause_key_block_on_and_warns_once_without_a_layer() {
+    let dir = crate::testing::Dir::new();
+    let path = dir.0.join("config.toml");
+    std::fs::write(&path, "[debug]\nlevel = 0\n").unwrap();
+    let config = crate::config::load(&path).unwrap();
+    let settings = crate::settings::Runtime::new(&config, None).unwrap();
+    let settings_path = config.settings_file.clone().unwrap();
+    let (sender, _receiver) = mpsc::channel();
+    let controls = SimControls::new(sender);
+    controls.set_keys_blocked(true);
+    let mut link = CodekarlUi::new(Rc::default())
+        .with_debug_settings(Some(Arc::clone(&settings)))
+        .with_debug_layer(None)
+        .with_sim(SimLink {
+            controls,
+            slot: SimSlot::new(Arc::new(|| {})),
+            time_registered: Arc::new(AtomicBool::new(false)),
+            hover_registered: Arc::new(AtomicBool::new(false)),
+            select_registered: Arc::new(AtomicBool::new(false)),
+            views: Arc::default(),
+        });
+    let pressed = || InputSnapshot {
+        actions: vec![action("debug_layer", true, true, false)],
+        typed: vec![ck_window::TypedEntry::Backspace],
+        ..idle()
+    };
+    link.input(&tick(pressed()))
+        .expect("F3 reaches the debug setting");
+    assert_eq!(
+        settings.debug().level,
+        1,
+        "pause block leaves the debug action"
+    );
+    assert!(link.state.warned_debug_missing.get());
+    assert!(
+        std::fs::read_to_string(&settings_path)
+            .unwrap()
+            .contains("[debug]\nlevel = 1")
+    );
+    let no_press = tick(idle());
+    link.input(&no_press)
+        .expect("an input without F3 is consumed");
+    assert_eq!(settings.debug().level, 1);
+    assert!(
+        link.state.warned_debug_missing.get(),
+        "missing-layer warning is once-only"
+    );
 }
 
 /// A UI VM whose `frame_update` records its table and then holds on the gate; `entered` says a callback is running.

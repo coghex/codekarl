@@ -97,6 +97,9 @@ pub(crate) struct FontSet {
 }
 
 impl FontSet {
+    pub(crate) fn standard_glyph(&self, character: char) -> &Glyph {
+        self.standard.glyph(character)
+    }
     fn get(&self, name: &str) -> Option<&Font> {
         match name {
             "standard" => Some(&self.standard),
