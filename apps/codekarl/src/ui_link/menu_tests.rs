@@ -880,6 +880,157 @@ expect(s.page.scroll > 0, "a real wheel event scrolls the input rows")
         unit: ScrollUnit::Lines,
     }]);
     frame(&mut rig);
+    // The queued assertion runs in the next opened callback.
+    rig.opened();
+}
+
+/// The input tab scrolled to the Lua expression `start`, the list area marked as `wheel_target`, and `probe` queued for after the wheel steps.
+fn settings_input_scroll_rig(start: &str, probe: &str) -> (Rig, (f64, f64)) {
+    let setup = format!(
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.selected == "input")
+s.page:set_scroll({start})
+mark_settings()
+local x, y, w, h = hit_rect(s.page.area_key)
+mark("wheel_target", x + w / 2, y + h / 2)
+"#
+    );
+    let mut rig = settings_rig(&[r"mark_settings()", r"mark_settings()", &setup, probe]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    let at = point(&rig, "wheel_target");
+    (rig, at)
+}
+
+/// Feeds one pointer wheel event per amount (fixed point, 256 per point) and runs the queued probe.
+fn settings_input_wheel_points(rig: &mut Rig, at: (f64, f64), amounts: &[i32]) {
+    for &amount in amounts {
+        rig.feed(&[PointerEvent::Scroll {
+            position: points(at.0, at.1),
+            amount,
+            unit: ScrollUnit::Points,
+        }]);
+    }
+    frame(rig);
+    rig.opened();
+}
+
+#[test]
+fn settings_input_small_wheel_steps_up_add_up() {
+    let (mut rig, at) = settings_input_scroll_rig(
+        "20",
+        r#"eq(require("lib.settings_window").current().page.scroll, 18, "two one-point steps up move two points")"#,
+    );
+    settings_input_wheel_points(&mut rig, at, &[256, 256]);
+}
+
+#[test]
+fn settings_input_small_wheel_steps_down_add_up() {
+    let (mut rig, at) = settings_input_scroll_rig(
+        "20",
+        r#"eq(require("lib.settings_window").current().page.scroll, 22, "two one-point steps down move two points")"#,
+    );
+    settings_input_wheel_points(&mut rig, at, &[-256, -256]);
+}
+
+#[test]
+fn settings_input_wheel_fractions_accumulate_and_only_the_drawing_snaps() {
+    let (mut rig, at) = settings_input_scroll_rig(
+        "20",
+        r#"
+local s = require("lib.settings_window").current()
+local ui = require("lib.ui")
+eq(s.page.scroll, 18.5, "three half-point steps keep their sum")
+eq(s.page.bar.owner.scroll(), ui.snap(18.5), "the bar reads the snapped position")
+local _, y = hit_rect(s.controls.key_slots.time_pause[1].key)
+local top = s.page.bar.top
+s.page:set_scroll(ui.snap(18.5))
+local _, snapped_y = hit_rect(s.controls.key_slots.time_pause[1].key)
+eq(y, snapped_y, "the hit regions are where the snapped position puts them")
+eq(s.page.bar.top, top, "the thumb is where the snapped position puts it")
+"#,
+    );
+    settings_input_wheel_points(&mut rig, at, &[128, 128, 128]);
+}
+
+#[test]
+fn settings_input_wheel_opposite_fractions_cancel() {
+    let (mut rig, at) = settings_input_scroll_rig(
+        "20",
+        r#"eq(require("lib.settings_window").current().page.scroll, 20, "equal steps in both directions return to the start")"#,
+    );
+    settings_input_wheel_points(&mut rig, at, &[64, -64, 192, -192]);
+}
+
+#[test]
+fn settings_input_wheel_clamps_at_the_top_and_keeps_no_overshoot() {
+    let (mut rig, at) = settings_input_scroll_rig(
+        "0",
+        r#"eq(require("lib.settings_window").current().page.scroll, 1, "steps past the top are not remembered")"#,
+    );
+    settings_input_wheel_points(&mut rig, at, &[256 * 3, -256]);
+}
+
+#[test]
+fn settings_input_wheel_clamps_at_the_bottom_and_keeps_no_overshoot() {
+    let (mut rig, at) = settings_input_scroll_rig(
+        "require('lib.settings_window').current().page.row_height",
+        r#"
+local page = require("lib.settings_window").current().page
+eq(page.scroll, page.row_height - page.row_view_height - 1, "steps past the bottom are not remembered")
+"#,
+    );
+    settings_input_wheel_points(&mut rig, at, &[-256 * 3, 256]);
+}
+
+#[test]
+fn settings_input_content_shrink_clamps_the_kept_position() {
+    let (mut rig, at) = settings_input_scroll_rig(
+        "require('lib.settings_window').current().page.row_height",
+        r#"
+local page = require("lib.settings_window").current().page
+local greatest = page.row_height - page.row_view_height
+eq(page.scroll, greatest, "the list is at its end")
+page.row_height = page.row_height - 7.5
+page:set_scroll(page.scroll)
+eq(page.scroll, greatest - 7.5, "a shorter list clamps the kept position to its new end")
+"#,
+    );
+    settings_input_wheel_points(&mut rig, at, &[-256]);
+}
+
+#[test]
+fn settings_input_binding_change_keeps_a_fractional_scroll_position() {
+    let mut rig = settings_rig(&[
+        r"mark_settings()",
+        r"mark_settings()",
+        r#"
+local s = require("lib.settings_window").current()
+local slot = s.controls.key_slots.map_pan_down[2]
+local greatest = s.page.row_height - s.page.row_view_height
+s.page:set_scroll(math.min(math.max(0, slot.y - 80 * P) + 0.5, greatest - 0.5))
+mark_settings()
+"#,
+        r#"
+local s = require("lib.settings_window").current()
+expect(s.waiting ~= nil, "the lower slot is waiting for a key")
+s.kept_scroll = s.page.scroll
+expect(s.kept_scroll % 1 == 0.5, "the position is fractional")
+finish_capture("Control+KeyK")
+eq(s.page.scroll, s.kept_scroll, "applying a binding keeps the exact scroll position")
+"#,
+    ]);
+    rig.opened();
+    click_marked(&mut rig, "settings");
+    rig.opened();
+    click_marked(&mut rig, "settings_tab_input");
+    rig.opened();
+    click_marked(&mut rig, "settings_slot_map_pan_down_2");
+    rig.opened();
 }
 
 #[test]
