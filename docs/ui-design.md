@@ -443,6 +443,12 @@
 >   - **The "vsync" row** of the graphics tab, below "frame rate", has two buttons, "on" and "off".
 >   - **On native Metal only,** and a change acts at once. The frame-rate limit still applies with vsync off.
 >   - **Not seen yet:** that the rate goes above the display's with vsync off is the owner's check by hand.
+> - **Graphics "defaults" counts as an unsaved change** (CK-345, 2026-11-16; §3.6, §3.18) when it changes the list
+>   look. Until then a "defaults" that put rows back to cards left the game reading as saved, so a load after it could
+>   skip its question. The guide's review found it (GUIDE-1).
+> - **The input tab's rows keep fine wheel movement** (CK-346, 2026-11-16; §3.18): small wheel steps add up. Until then
+>   the rows' position was kept rounded to the pixel grid, so steps of a point each could move nothing one way and too
+>   far the other. The guide's review found it (GUIDE-2).
 
 ## Owner answers (2026-11-07)
 
@@ -935,7 +941,8 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
     buttons, when the mode shown changes (a mode the map refuses makes no call).
     - **Since CK-308 the look's call is in `lib/list_look.lua`,** which the location panel's look buttons and the graphics
       tab's "list look" row both set (§3.18). So a look chosen in the settings window counts as an unsaved change too.
-      "defaults" on the graphics tab makes no such call.
+    - **Since CK-345 "defaults" on the graphics tab makes the call too,** from `lib/settings_window.lua`, when it
+      changes the look (§3.18). Until then it made none.
   - Nothing else in the shipped UI calls it. The owner: "simply navigating the ui and windows will not trigger it".
 - **The named saves** (CK-302; `docs/places-time-design.md` §5.3): five calls, each run by the simulation owner between ticks.
   **Each waits for the finished operation** and returns a table: `{ok = true}`, or `{ok = false, reason = "..."}` for a
@@ -2151,7 +2158,7 @@ Lengths below are in UI pixels.
     VM over the real `render` API and the real input path. Ten of its tests cover the Escape order, the window and its
     buttons, one menu at most, the resize, the backdrop, the pause-only control, "return" and Escape, quitting, the greyed
     button (since CK-305: every button live with a game, and "save / load" greyed without one) and the two button
-    options. It has thirty-seven more for the settings window, twenty-five of them for the input tab (§3.18). The
+    options. It has forty-five more for the settings window, thirty-three of them for the input tab (§3.18). The
     save/load screen's own tests are in `ui_link/save_screen_tests.rs` (§3.23).
   - `ui_link/input_tick_tests.rs` has the key block at the tick: each of the sixteen actions stopped at the map and the
     simulation with the rest left alone, a held map key, a press in the tick before, and a captured drag ended at a first
@@ -2802,6 +2809,14 @@ Lengths below are in UI pixels.
   - **"defaults"** calls `settings.reset("graphics")` (§3.17) and then `list_look.refresh()`, which reads the look again
     and tells the subscribers when it changed. The tab is made again with the values in force. Its resolution fields
     show the resolution then in force until an update reports a new size.
+    - **Since CK-345 a look it changes counts as an unsaved change.** `refresh` returns whether the look changed. When
+      it did, "defaults" calls `game.mark_unsaved()` once, in a run that has a game (§3.6). A "defaults" that leaves
+      the look as it was makes no call, and the other graphics settings mark nothing, as before.
+    - **Until CK-345** it made no call. After a save, "defaults" could put rows back to cards while the game still
+      read as saved, and a guarded load then asked nothing. The guide's review found it (GUIDE-1 of
+      `docs/guide/20261116t171708z-d86dc82f.md`). ck-manager filed it under the owner's word: "if you think guide-1
+      and 2 are worth fixing, then do so" (`owner-direction-guide-full-coverage-manager-r1.md`, sha256 `63ea6307…`).
+      The spec is `runtime-m55/ck345-spec.md` (sha256 `e7c1e344…`).
   - **Tab between the fields** (CK-329; §3.22). The tab's fields are the width, the height and the frame rate, in that
     order, and the order goes round. Tab applies the field that edits, as a press elsewhere does, and starts the
     next. Shift+Tab goes the other way.
@@ -2841,6 +2856,14 @@ Lengths below are in UI pixels.
     - **The wheel scrolls them from anywhere over that view** (CK-323): over a name, a gap, a key slot and the menu's
       row alike, from the tab's first showing. Before CK-323 it did so only over the scroll bar until the window was
       placed again, and never over a slot.
+    - **The position is kept exact** (CK-346): `page.scroll`, clamped to the rows' range. Only its uses are rounded
+      to the pixel grid, with `ui.snap`: the rows' place, and so their hit regions, and what the scroll bar is given.
+      So small wheel steps add up in both directions, fractions included, and a change of a key keeps the exact
+      position.
+      - **Until CK-346** the rounded position was kept, and the next step started from it. With `ui.P` at 2, two
+        steps of one point up from 20 left 20, and two down gave 24. The guide's review found it (GUIDE-2 of
+        `docs/guide/20261116t171708z-d86dc82f.md`; spec `runtime-m55/ck346-spec.md`, sha256 `2a841ab2…`). CK-266
+        mended the same fault in the cards.
   - **Shown names.** `KeyA` reads `A` and `Digit1` reads `1`. The arrows read `Left`, `Right`, `Up` and `Down`. Punctuation
     reads as its character: `Equal` is `=`, `Minus` is `-`, `BracketLeft` is `[`, `BracketRight` is `]`, and likewise the
     semicolon, quote, backslash, comma, period, slash and backquote. Every other key reads as its `[input.bindings]` name,
@@ -2978,7 +3001,7 @@ Lengths below are in UI pixels.
   - Closing the menu closes the settings window with it.
 - **Not there:** a gameplay tab; tooltips on the window's own controls;
   a mouse button or the wheel as a key; more than two keys for an action; rebinding the demo's actions.
-- **Tests,** through the shipped scripts in the UI rig, with no window: thirty-seven tests in
+- **Tests,** through the shipped scripts in the UI rig, with no window: forty-five tests in
   `apps/codekarl/src/ui_link/menu_tests.rs`, and eighteen for the graphics tab in `ui_link/settings_graphics_tests.rs`.
   Since CK-336 there are ten more, in `ui_link/settings_development_tests.rs`.
   - **The ten of CK-336** are the development tab's and the "debug layer" row's:
@@ -2998,7 +3021,12 @@ Lengths below are in UI pixels.
     several updates, on the general and on the map tab; `button.flow`; the map tab; the "x"; closing the menu; and the
     stacking of a window made late and of an older window raised. The two of CK-318 among them cover the "show delay"
     label and the sliders' places on the general and on the map tab.
-  - **Twenty-five are the input tab's,** with the settings calls doubled.
+  - **Thirty-three are the input tab's,** with the settings calls doubled.
+    - **Eight are CK-346's:** two steps of a point up from 20, and two down; three half-point steps, with the bar, the
+      hit regions and the thumb where the rounded position puts them; equal steps both ways; each end, with nothing
+      kept past it; a shorter list; and a change of a key keeping a fractional position. The first seven feed wheel
+      events through the real pointer dispatch. CK-346 also made CK-323's wheel test run its last check, which had
+      been queued and never run.
     - **Six are CK-322's:** on the second slot of an action with no keys, a right-click, Backspace and "clear" each
       change nothing; a free key becomes the action's first key; and "replace" gives the action the key. A "swap" with a
       filled first slot is as before.
@@ -3021,6 +3049,9 @@ Lengths below are in UI pixels.
     below the least size; the scale buttons by the pair returned, and by new pixels; the list look, "defaults" and its
     one resize; a look chosen in a run with no game), five of CK-313 (the row's place; a press on the greyed field;
     a typed limit clamped; "none"; "defaults") and four of CK-329, which type Tab and Shift+Tab into the real tab.
+    Since CK-345 the list look's test has "defaults" mark a changed look once and a second "defaults" mark nothing,
+    and the no-game test presses "defaults" too. One test of the core ties a save, that mark and a guarded load's
+    refusal, in that order (`apps/codekarl/src/game/tests/storage.rs`).
     Since CK-344 the first of the nine has the "vsync" row too: its label, "on" lit at first, and a press on "off" that
     calls `settings.set("frame.vsync", false)` and lights "off". The test of the frame rate row's place has the list
     look 40 below it.
