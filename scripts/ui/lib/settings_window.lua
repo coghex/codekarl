@@ -272,7 +272,9 @@ local function add_defaults(state, page, tab, y)
         or tab == "graphics" and "graphics" or tab == "development" and "debug" or "map"
       settings.reset(setting)
       if tab == "graphics" then
-        list_look.refresh()
+        if list_look.refresh() and game ~= nil and game.mark_unsaved ~= nil then
+          game.mark_unsaved()
+        end
         local values = settings.graphics()
         state.pending_pixels = {
           width = values.width, height = values.height,

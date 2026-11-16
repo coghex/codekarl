@@ -284,7 +284,7 @@ fn a_running_tick_then_pause_and_an_erroring_tick_both_guard_the_load() {
 }
 
 #[test]
-fn a_successful_save_then_a_ui_choice_then_a_guarded_load_refuses_in_that_order() {
+fn a_successful_save_then_a_list_look_reset_then_a_guarded_load_refuses_in_that_order() {
     let mut harness = Harness::new(42);
     let (sender, receiver) = std::sync::mpsc::channel();
     let controls = crate::game::controls::SimControls::new(sender);
@@ -297,7 +297,16 @@ fn a_successful_save_then_a_ui_choice_then_a_guarded_load_refuses_in_that_order(
     let guarded = receiver.recv().unwrap();
     harness.core.dispatch(save, harness.now);
     assert_eq!(save_result.recv().unwrap(), SaveReply::Finished(Ok(())));
+    assert!(
+        !harness.core.has_unsaved_changes(),
+        "the successful save leaves the game marked saved before the UI choice"
+    );
+    // Graphics defaults emits this dirty mark after an effective list-look reset.
     harness.core.dispatch(mark, harness.now);
+    assert!(
+        harness.core.has_unsaved_changes(),
+        "the effective list-look reset marks the saved game unsaved"
+    );
     harness.core.dispatch(guarded, harness.now);
     assert_eq!(
         controls.take_guarded_result().unwrap().result,
