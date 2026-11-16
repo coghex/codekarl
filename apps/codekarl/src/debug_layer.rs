@@ -10,6 +10,7 @@ use ck_window::WindowMetrics;
 use crate::config::DebugSettings;
 
 const SECOND: u64 = 1_000_000_000;
+const UI_PIXEL_UNITS: f64 = 2.0;
 
 pub(crate) struct DebugLayer {
     writer: TopLayerWriter,
@@ -161,7 +162,7 @@ impl DebugLayer {
         metrics: WindowMetrics,
         k: Option<u32>,
     ) -> Result<(), String> {
-        let scale = if k.is_some() { 2.0 } else { 1.0 };
+        let scale = UI_PIXEL_UNITS;
         let content_width: u32 = text
             .chars()
             .map(|character| self.font.standard_glyph(character).advance)
@@ -242,7 +243,7 @@ impl DebugLayer {
         metrics: WindowMetrics,
         k: Option<u32>,
     ) -> Result<(), String> {
-        let scale = if k.is_some() { 2.0 } else { 1.0 };
+        let scale = UI_PIXEL_UNITS;
         let content_width: u32 = text
             .chars()
             .map(|character| self.font.standard_glyph(character).advance)
@@ -664,7 +665,114 @@ mod tests {
                 .sum::<u32>()
                 + 6,
         );
-        assert_eq!(points_rects[0], [8.0, 577.0, point_width, 15.0]);
+        assert_eq!(points_rects[0], [8.0, 562.0, point_width * 2.0, 30.0]);
+    }
+
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "debug line geometry uses exact integral test inputs"
+    )]
+    fn points_window_keeps_strip_padding_and_glyphs_at_ui_pixel_scale_after_resize() {
+        let pixels = PixelSize {
+            width: 1600,
+            height: 1200,
+        };
+        let settings = DebugSettings {
+            level: 1,
+            rate: "frames",
+        };
+        let (mut layer, seen, _, _, _) = test_layer(None, pixels, (800, 600), None);
+        layer.update(
+            settings,
+            WindowMetrics {
+                points: (800, 600),
+                pixels,
+            },
+            None,
+        );
+        let first = seen
+            .latest
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .top_layer
+            .as_ref()
+            .unwrap()
+            .quads()
+            .iter()
+            .map(|quad| [quad.x, quad.y, quad.width, quad.height])
+            .collect::<Vec<_>>();
+
+        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let fonts = crate::font::load_all(&assets).expect("shipped fonts");
+        let text = "-- fps";
+        let content_width = text
+            .chars()
+            .map(|character| fonts.standard_glyph(character).advance)
+            .sum::<u32>();
+        assert_eq!(
+            first[0],
+            [8.0, 562.0, f64::from(content_width + 6) * 2.0, 30.0]
+        );
+        let mut pen = 0.0;
+        let mut glyph_index = 1;
+        for character in text.chars() {
+            let glyph = fonts.standard_glyph(character);
+            if glyph.rows.iter().any(|row| row.contains('#')) {
+                assert_eq!(
+                    first[glyph_index],
+                    [
+                        8.0 + 6.0 + pen * 2.0,
+                        566.0,
+                        f64::from(u32::try_from(glyph.width()).unwrap_or(1)) * 2.0,
+                        f64::from(u32::try_from(glyph.rows.len()).unwrap_or(1)) * 2.0,
+                    ],
+                    "glyph {character:?} at first placement"
+                );
+                glyph_index += 1;
+            }
+            pen += f64::from(glyph.advance);
+        }
+        assert_eq!(glyph_index, first.len());
+
+        let resized_pixels = PixelSize {
+            width: 1600,
+            height: 1400,
+        };
+        layer.update(
+            settings,
+            WindowMetrics {
+                points: (800, 700),
+                pixels: resized_pixels,
+            },
+            None,
+        );
+        let resized = seen
+            .latest
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .top_layer
+            .as_ref()
+            .unwrap()
+            .quads()
+            .iter()
+            .map(|quad| [quad.x, quad.y, quad.width, quad.height])
+            .collect::<Vec<_>>();
+        assert_eq!(resized.len(), first.len());
+        for (before, after) in first.iter().zip(&resized) {
+            assert_eq!(after[0], before[0], "resize preserves left position");
+            assert_eq!(
+                after[1],
+                before[1] + 100.0,
+                "resize moves each quad with the strip"
+            );
+            assert_eq!(after[2], before[2], "resize preserves width");
+            assert_eq!(after[3], before[3], "resize preserves height");
+        }
     }
 
     #[test]
@@ -879,7 +987,7 @@ mod tests {
         let latest = seen.latest.lock().unwrap();
         assert_eq!(
             latest.as_ref().unwrap().top_layer.as_ref().unwrap().quads()[0].width,
-            expected_width
+            expected_width * 2.0
         );
     }
 
