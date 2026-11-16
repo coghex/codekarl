@@ -196,15 +196,16 @@ local function make_page(state)
     fields = {}, subscriptions = {},
   }
   page.bar = scrollbar.new{window = state.window, owner = {
-    scroll = function() return page.scroll end,
+    scroll = function() return ui.snap(page.scroll) end,
     set_scroll = function(pos) page:set_scroll(pos) end,
     wheel = function(event) page:wheel(event) end,
   }}
   page.groups = {page.group, page.rows_group, page.bar.group}
   function page:set_scroll(pos)
-    self.scroll = math.max(0, math.min(math.max(0, self.row_height - self.row_view_height), ui.snap(pos)))
-    render.set_group_offset(self.rows_group, (self.origin_x or 0) + self.x, (self.origin_y or 0) - self.scroll)
-    self.bar:update(self.row_view_height, self.row_height, self.scroll)
+    -- `scroll` keeps the exact clamped position so small wheel steps add up; only the drawing is snapped to the pixel grid.
+    self.scroll = math.max(0, math.min(math.max(0, self.row_height - self.row_view_height), pos))
+    render.set_group_offset(self.rows_group, (self.origin_x or 0) + self.x, (self.origin_y or 0) - ui.snap(self.scroll))
+    self.bar:update(self.row_view_height, self.row_height, ui.snap(self.scroll))
   end
   function page:wheel(event)
     if event.kind ~= "scroll" then return end
@@ -231,7 +232,7 @@ local function make_page(state)
       page.x = state.content_x
       page.origin_x, page.origin_y = ox, oy
       render.set_group_offset(page.group, ox + page.x, oy)
-      render.set_group_offset(page.rows_group, ox + page.x, oy - page.scroll)
+      render.set_group_offset(page.rows_group, ox + page.x, oy - ui.snap(page.scroll))
       render.set_group_clip(page.group, {
         x = clip.x + page.x, y = clip.y, width = math.max(P, clip.width - page.x), height = clip.height,
       })
@@ -935,7 +936,7 @@ local function show_input(state, page)
   end
   page.row_height = y
   page:set_scroll(0)
-  page.bar:update(page.row_view_height, page.row_height, page.scroll)
+  page.bar:update(page.row_view_height, page.row_height, ui.snap(page.scroll))
   local footer_y = state.content_height - 18 * P
   add_defaults(state, page, "bindings", footer_y)
   state.controls.escape_cancel = label.new{
