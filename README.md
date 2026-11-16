@@ -125,7 +125,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   Its "x", or Escape, goes back to the menu ([docs/ui-design.md](docs/ui-design.md) §3.23).
 - **The map:** drag to pan and scroll to zoom at the cursor, or use the arrow keys and `=` and `-`. Click a place to show it in the
   location panel. Its first tab carries the place's name, with the place's tooltip, and shows the location; the other two are
-  pops and buildings (CK-328). The two icons at the top right open the ledger, a list on the right of the
+  pops and buildings (CK-328), and the three start at the left of the panel's title bar (CK-339). The two icons at the
+  top right open the ledger, a list on the right of the
   screen with a locations tab and a pops tab; clicking a row shows that place in the panel. The three buttons centred at the bottom of
   the screen switch the map mode (stockpile, expected yield, elevation); pressing the one showing turns it off.
 - **Tooltips:** rest the pointer on a place for 0.3 seconds to see its tooltip: its name, population, majority culture and

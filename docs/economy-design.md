@@ -890,6 +890,8 @@ No random draw is used (map-design §5.1). Every number goes into the scenario's
   `docs/ui-design.md`.
 - **Since CK-328 (2026-11-15):** the panel's first tab is labelled with the selected place's name, and the window draws no
   title beside it (`docs/ui-design.md` §3.13).
+- **Since CK-339 (2026-11-15):** the panel's tabs start at the left of its title bar, and the ledger's stay at the right:
+  title-bar tabs follow the side of the screen their window is on (`docs/ui-design.md` §3.13).
 
 ### 3.12 The starting numbers (Firm: approved by the owner, 2026-11-08, as placeholders for tuning)
 

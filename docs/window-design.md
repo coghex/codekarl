@@ -17,6 +17,9 @@ backend, which it had not done, and F11 switches between windowed and fullscreen
 **Since CK-331 and CK-332 (2026-11-15):** the Cocoa window's class can be the key window in every mode, and a change of
 mode puts the first responder back, and the key when the window had it. §8 records both.
 
+**Since CK-334 (2026-11-15):** the loop can ask the presenter to draw a frame at every display refresh, while the window
+is active and the application has asked for it. Nothing asks yet. §4 and §8 record it.
+
 **Milestone split (owner, 2026-10-19):** "yes, you can hold off on glfw and vulkan, we can do a milestone 3.5 after 3, we need to run
 the guide when 3 is done too". **Milestone 3 is the native path** (a native window with Metal); **milestone 3.5 is the GLFW and Vulkan
 path**, designed here but not yet filed. ck-guide reviews milestone 3 when it is accepted. Where this document describes two paths or
@@ -281,6 +284,9 @@ waited on:
     `ModeLayout`), and a resize request also carries the exact resolution kept, in pixels. Like the resize, a mode is
     refused until a resizable `open` was accepted. A mode asked before the run phase is applied once the presenter has
     started (`settings.set("window.mode", …)`, `docs/ui-design.md` §3.17);
+  - **since CK-334,** whether to draw at every display refresh is one more field, and the last write wins
+    (`RequestWriter::set_draw_every_refresh`). It is the application's: no Lua call writes it, and nothing writes it
+    yet. §8 has what the loop does with it;
   - the slot's lock is held only to copy a small value in or out. It is never held while Lua runs or a native call is made.
 
   The slot is bounded by its size, so nothing can fill it, and it needs no admission rule.
@@ -579,6 +585,13 @@ All drawing runs on the render thread (§4).
   frame before. A frame wanted sooner waits and is drawn once, and nothing is drawn that nothing wanted. A stop and
   pending texture work do not wait for it. The script's updates and the game's clock are not limited (`docs/ui-design.md`
   §3.17).
+- **Drawing at every refresh (since CK-334, Metal only).** The loop can ask the presenter to want a frame at every
+  display refresh (`Presenter::set_draw_every_refresh`, whose default does nothing), for the debug layer's frame rate.
+  - **When:** only while the application's request stands (§4) and the window has opened, is focused, is not
+    minimised and is not of zero size. The loop withdraws it when any of those ends, and asks again when all hold.
+  - **The frame-rate limit still decides** when a frame may start.
+  - **Nothing requests it yet,** so redraw on demand, above, is still how the game draws. `docs/scene-design.md` §9
+    has the presenter's side and the tests.
 - **High-resolution displays:** the drawable or swap chain uses the window's pixel size, not its point size.
 - **Window size (owner, §1):** in milestone 3 the window was created without the native resizable style (`NSWindowStyleMaskResizable`
   off, and `GLFW_RESIZABLE` false), so there was no user resize and no live-resize loop. That is still so for a window opened without

@@ -23,7 +23,7 @@
 > - **the location panel:** a window filling the left third of the screen with the selected place's economy, in three tabs (location,
 >   pops and buildings) shown as title-bar buttons. Its tab widget, `scripts/ui/lib/tabs.lua`, is the one new widget. A map click or a
 >   ledger row shows that place in the panel. Since CK-328 the first tab is labelled with the place's name, and the window
->   draws no title beside it (below);
+>   draws no title beside it; since CK-339 the tabs start at the left of the title bar (both below);
 > - **the map-mode bar:** three icon buttons in one row, centred at the bottom of the screen and independent of the other panels (owner,
 >   2026-11-10, CK-255), for the stockpile, yield and elevation map modes. They call
 >   `game.set_map_mode`; the button of the mode showing is selected, and pressing it turns the mode off.
@@ -389,6 +389,25 @@
 >     key before the change is made key again.
 >   - **The owner saw both work, by hand, on 2026-11-15:** the hand-check items `f11-refocus` and `f11-toggle` are
 >     marked pass. No automated test switches a real window's mode or tests focus.
+> - **Title-bar tabs follow the panel's side** (CK-339, 2026-11-15; `owner-direction-title-tabs-manager-r1.md`; §3.13):
+>   the location panel's three tabs start at the left of its title bar, where a title starts, and the ledger's two stay
+>   at the right. The owner, of the place-name tab in the second hand check: "the problem i have is that it is right
+>   justified, i want it left justified", and then: "the ledger is on the right of the screen, so it makes sense to
+>   right justify, the panels for locations and etc are on the left, so these should be left justified."
+>   - **Nothing else of the tabs changed:** their labels, how they shorten, their tooltips and the close button.
+>   - **For scripts:** `tabs.new` takes `align`, `"left"` or `"right"`; without it, `"right"` (`lib/tabs.lua`).
+> - **A top layer, drawn after the scene** (CK-333, 2026-11-15; §2.3, `docs/scene-design.md` §8.5): the engine can
+>   draw a second, small set of quads after every quad of the UI's scene. It is the first part of the debug layer the
+>   owner asked for: "i want the debug layer to be text drawn over the entire rendered screen, at the highest level,
+>   so that it is always on top" (`owner-direction-designer-r1.md` in `.pipeline/coordination/debug-shell-design/`).
+>   - **Nothing uses it yet,** so the game looks as it did. No Lua call reaches it: it is the application's.
+>   - **It takes no pointer input,** and it has limits of its own: 1,024 quads and 16 groups.
+> - **Shown-frame times, and drawing at every refresh** (CK-334, 2026-11-15; §3.17, `docs/scene-design.md` §9): two
+>   more engine parts, for the debug layer's frame rate. The Metal presenter keeps the times at which the display
+>   showed its latest 512 frames, and has a switch that makes it draw a frame at every display refresh, not only when
+>   one is wanted.
+>   - **Nothing uses them yet:** the switch is off, and the game draws on demand as before.
+>   - **The frame-rate limit still decides** when a frame may start.
 
 ## Owner answers (2026-11-07)
 
@@ -465,6 +484,9 @@ From `.pipeline/coordination/m8-design/owner-answers-r1.md`. **No question is op
 - **The map is drawn in Rust.** A map pass writes the map target; the window pass then draws the enlarged map, then the legacy quad, then
   the scene. "The UI is drawn last, over the map, at full resolution" (`docs/map-design.md` §9.2).
 - **The scene is the UI layer.** Nothing in the UI is part of the map pass.
+- **Since CK-333 (2026-11-15) the scene is no longer the last thing drawn.** A top layer, which the application owns
+  and no script can reach, is drawn after it, for the owner's debug layer (`docs/scene-design.md` §8.5). Nothing fills
+  it yet, so the picture is as it was.
 
 ### 2.4 Text (CK-197)
 
@@ -647,6 +669,8 @@ The one engine change for windows: **ordered groups of quads**, added to `ck-ren
   - `[render] max_groups` (default 4,096, range 1 to 65,536) caps the groups.
   - `max_quads` still caps the quads.
   - A refusal is a catchable Lua error, as for quads.
+  - Since CK-333 the top layer has limits of its own, 1,024 quads and 16 groups, apart from the scene's
+    (`docs/scene-design.md` §8.5).
 - **Scene calls after the window loop has ended** (CK-285, 2026-11-13, from the owner's report: closing the window with a
   tooltip open logged `run failed: ui callback frame_update failed: … render.raise_groups: the resource service has ended`).
   - **A UI callback can still be running or queued when the loop ends.** The loop keeps posting updates while a close request is
@@ -1369,6 +1393,9 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
       length in force, and lays the tabs out again, which may change the length all of them show. `short` defaults to
       `full` and `tiny` to `short`. A label that is empty or not a string, a key that is no tab, and an icon tab are Lua
       errors.
+    - **`align`** (CK-339), a field of `tabs.new`'s table, is the side of the title bar the row of tabs sits at.
+      `"right"`, the default, ends the row at the right edge of the room before the close button. `"left"` starts it
+      where a window's title starts. Any other value is a Lua error. The location panel asks for `"left"` (below).
   - **Goods names:** `lib/location.lua` names a good by its id with `_` as a space, except `peas_beans`, which is `peas and beans`.
   - **Price rows:** in the location tab, each price row with an icon had a two-line tooltip: the good's name, then
     `price <price>, base <base>`. With CK-272 the price became a link (the price breakdown, below). CK-282 replaced that tooltip:
@@ -1655,6 +1682,30 @@ Lengths below are in UI pixels (`ui.P` units each, §3.3) unless they say units.
     - **Tests:** `place_name_relabels_the_first_tab_and_keeps_its_place_tooltip` in
       `apps/codekarl/src/ui_link/location_tests/selectors_tabs.rs`, and changed assertions in the location tests
       beside it: the empty title, the tab's label, and the class tooltip on the tab where a label was.
+  - **Since CK-339 the panel's tabs start at the left of its title bar** (`lib/tabs.lua`, `lib/location.lua`; spec
+    `runtime-m55/ck339-spec.md`, sha256 `a695aeaa…`). The owner's second hand check failed the place-name tab with:
+    "the problem i have is that it is right justified, i want it left justified". Asked which windows, the owner:
+    "the ledger is on the right of the screen, so it makes sense to right justify, the panels for locations and etc
+    are on the left, so these should be left justified." (`owner-direction-title-tabs-manager-r1.md` in
+    `.pipeline/coordination/ui-polish-design/`).
+    - **The rule:** title-bar tabs line up with the side of the screen their window sits on. The header comment of
+      `lib/tabs.lua` says so, for a panel added later.
+    - **The location panel** makes its tabs with `align = "left"`. The first tab starts 8 UI pixels from the window's
+      left edge, where a title starts (`TITLE_X`), and the others follow it in the same order, a UI pixel apart.
+    - **The ledger** passes no `align`, so its two icon tabs still end at the right edge of the room before its
+      close button.
+    - **The length of the labels is chosen as before,** by the room between the title and the close button. Only
+      where the row starts changed. A row too wide even at its shortest starts at the same place, as it did.
+    - **Unchanged:** the labels, the tooltips, the selection, the close button and the window's size.
+    - **Tests:**
+      - `place_name_relabels_the_first_tab_and_keeps_its_place_tooltip` now also checks where each tab starts, at
+        the full labels, after a new name and at a shortened length;
+      - `in_a_narrow_window_the_panel_is_its_floor_and_passes_the_window` (`panel_layout_refresh.rs`) checks it at
+        the shortest labels;
+      - `the_ledger_opens_on_each_icon_docks_right_and_close_or_escape_restores_the_bar` (`ledger.rs`) checks that
+        the ledger's row still ends at the room's right edge;
+      - the tests that drag the panel by its title bar (`a_fixture_marker_click_opens_a_place_window` in a real
+        window, and its twin in `group_tests.rs`) now press further right: their old point is on the first tab.
 - **The pop and building cards, rows and open rows** (CK-278; spec `specs/tooltips-t8c-cards-designer-r4.md`, sha256
   `18ea63ec…`). A card's or row's `tooltip` function (CK-271) answers by the field under the pointer, with the field's name as
   the part. Nothing about pressing, selecting, opening or the look changed.
@@ -2255,6 +2306,9 @@ can input whatever numbers they want, and it will clamp to minimums and maximums
   - **Only drawing is limited.** `[frame] updates_per_second` and `max_delta_seconds` are as they were: the script's
     updates, the input and the game's clock keep their rates.
   - **A stop and pending texture work do not wait** for the interval's end. The frame stays wanted meanwhile.
+  - **Since CK-334** the presenter can be asked to want a frame at every display refresh, for the debug layer's frame
+    rate (`docs/scene-design.md` §9). The limit decides for those frames as for any wanted frame. Nothing asks for
+    it yet, and while it is off no frame is added, as above.
 - **The limit is one decision** (`crates/gpu-metal/src/frame_limit.rs`, `decide`): given when the last frame started, the
   time now and the limit, a frame may start now, or at a stated time. The interval is a whole number of nanoseconds,
   rounded down. The render thread reads the clock, asks, and waits until the stated time on the signal it already waits
