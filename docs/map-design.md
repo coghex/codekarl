@@ -286,7 +286,8 @@ render-graph and no writable image for Lua.
    1. **The map pass** writes the map target from the grid images and the camera snapshot: a full-target triangle for the terrain colour
       (§9.4), then the river pixels as one-map-pixel instanced quads.
    2. **The window pass**, as today: the clear, then **the enlarged map** as one nearest-sampled quad, then the legacy quad, then the scene's
-      batches. The UI is drawn last, over the map, at full resolution.
+      batches. The UI is drawn last, over the map, at full resolution. (Since CK-333 a top layer of the application's
+      own is drawn after the scene's batches, in the same pass, for the debug layer: `docs/scene-design.md` §8.5.)
 4. **Ordering.**
    - **Metal:** the target is a hazard-tracked resource on the presenter's one queue. That orders the map pass's writes before the window
      pass's reads, and the next frame's writes after this frame's reads.

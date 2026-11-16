@@ -6,6 +6,11 @@
 
 **Since then.** Later milestones built on this scene without changing its model. The map is drawn by its own GPU-written pass beneath the scene, with the camera and map modes published through the scene bridge as immutable snapshots (`docs/map-design.md` §9, `docs/economy-design.md` §3.22). Milestone 8 added scene groups, clipping, hit regions and per-quad tint (`docs/ui-design.md` §3.4). Since CK-238 the Vulkan path is only kept compiling, and new render features land on native Metal first (`docs/tooling.md`).
 
+**Since CK-333 and CK-334 (2026-11-15).** The first two engine parts of the owner's debug layer are accepted: a second,
+small layer of quads drawn after the scene, which only the application can write (§8.5), and, in the Metal presenter, the
+times at which the display showed the latest frames and a switch that draws a frame at every display refresh (§9).
+Nothing in the game uses them yet.
+
 **Firm** marks owner decisions, with their source/date. **Proposal** marks designer recommendations. **Open** marks decisions that still need an answer. Unless explicitly marked otherwise, the mechanisms, API names and numerical defaults below are **Proposal**. A manager's requested design constraint is identified as such, not attributed to the owner.
 
 This extends `docs/runtime-design.md`, `docs/window-design.md` and `docs/render-design.md`. Existing lifecycle, failure reporting, color, window ownership and shutdown rules remain applicable except where a change is explicitly proposed here. The resource/scene substrate is the main result; a moving quad demonstrates it. Map representation is not defined by this milestone.
@@ -372,6 +377,70 @@ The compatibility decoder must acquire its pixel reservation before allocating i
 
 During the M5-to-M5.5 interval, the accepted Vulkan legacy demo continues to work through its existing path. New handle/scene/frame features on `glfw-vulkan` fail explicitly as unsupported until the matching adapter is delivered; do not silently render only one of several quads. The configuration can still parse new shared settings, but explicit requests for unsupported input/frame behavior must be refused during mode validation, even if no new Lua API is called. In particular, custom close bindings must not silently leave hardcoded Escape active. Backend capability gating and first-use errors must be tested so merely upgrading the binary does not break old configurations.
 
+### 8.5 The top layer (accepted, CK-333)
+
+**Since CK-333 (2026-11-15): a second scene, drawn after the first.** The spec is `runtime-m55/ck333-spec.md` (sha256
+`37b13093…`), slice 1 of the debug layer's design (`design-r2.md` in `.pipeline/coordination/debug-shell-design/`, where
+the owner's records also are). The owner: "i want the debug layer to be text drawn over the entire rendered screen, at
+the highest level, so that it is always on top" (`owner-direction-designer-r1.md`). And, of drawing it in a pass of the
+host's after the UI's scene, which was ck-designer-6's option A: "option A is fine, i was expecting it to be different
+than the ui, something completely seperate, it needs to draw ontop of tooltips and popups, if it cant then we need to
+change the engine so that it can" (`owner-direction-designer-r2.md`). This slice draws no text and knows nothing of
+"debug": `ck-render-2d` and `ck-gpu-metal` know only quads drawn after the scene.
+
+- **A second writer.** `SceneBridge::take_top_writer` gives out one `TopLayerWriter`, once. A second take is refused
+  with `WriterTaken`, as the scene's is, and taking one writer does not take the other.
+  - **It edits a scene of its own** with the scene writer's calls for quads (create, move, resize, tint, destroy) and
+    for groups (create, raise, lower, show and hide, offset, clip, destroy). It publishes as the scene's writer does:
+    the frame is built outside the bridge's lock and exchanged inside. An unchanged top layer publishes nothing.
+  - **It has no compatibility quad, no legacy quad and no hit regions.**
+  - **Its keys are its own:** a group key of one writer is refused by the other as foreign.
+  - Like the scene's writer it is `Send`, and neither `Sync` nor `Clone`.
+- **Every snapshot carries both.** `Snapshot` has a `top_layer` beside its `scene`. A scene publication carries the
+  latest top layer, and a top-layer publication the latest scene. A top layer can be published, and drawn, before any
+  scene has been.
+- **Drawn last.** The Metal frame holds the top layer as a second source (`MetalFrame::with_top_layer`). The frame
+  build (`build_scene_layers_in`, `crates/gpu-metal/src/batch.rs`) writes the scene's instances and then the top
+  layer's, each in its own painter order. So a top-layer quad covers every scene quad, whatever the scene's writer
+  raises or creates. The clear, the map, the legacy quad and the scene keep their order.
+- **Placed like the scene:** with the snapshot's metrics, so in UI units at the UI scale in a window opened in pixels
+  (`docs/ui-design.md` §3.3), clipped at the window's edge, and sampled with the scene's filter. A resize or a change
+  of the UI scale places it anew with no write from its owner. Its textures are resolved by the same build as the
+  scene's.
+- **Limits of its own:** at most 1,024 quads and 16 groups, fixed and not configurable. A refusal is the scene's error
+  for the same limit.
+  - **Neither layer crowds out the other.** The instance buffer holds `max_quads` scene instances, 1,024 top-layer
+    instances and one for the compatibility quad. The build draws the scene's first `max_quads` valid instances and
+    the top layer's first 1,024, and counts the rest as dropped.
+  - **The instance buffer is larger by that much.** It is still charged to `[render] binding_geometry_bytes` at its
+    measured size, and is now 48 bytes for each of `max_quads` + 1,025 instances: about 6 MiB of the default 128 MiB
+    at the default 131,072 quads. A budget set by hand to hold `max_quads` instances and no more now refuses the
+    start, naming the bytes needed and the budget.
+- **No pointer input.** `SceneBridge::hit_regions` returns the scene's regions only, so a press, a move or a scroll
+  over a top-layer quad goes where it would without the quad.
+- **The compatibility gate is the scene's.** A top-layer quad is never the compatibility entry, and a frame the gate
+  holds back is held back whole, top layer included.
+- **With no top layer nothing changes.** While the top writer has published nothing, a frame is built as before
+  CK-333.
+- **After the end** a top-layer publication is counted and discarded, as a scene's is.
+- **No VM gets it.** The UI VM's `render` table is unchanged. The application does not take the writer yet: a later
+  slice of the debug layer does. Until then nothing is drawn through it.
+- **On Metal.** The snapshot carries the top layer for both backends. The Vulkan sink does not draw it: that path is
+  compile-only.
+- **Tests,** with no window and no GPU:
+  - `crates/render-2d/src/tests/bridge.rs`: `top_writer_is_independent_and_each_snapshot_carries_both_latest_frames`
+    and `top_writer_is_send_but_not_sync_or_clone`;
+  - `groups.rs` beside it: `top_layer_quad_over_scene_hit_region_leaves_hit_region_unchanged` and
+    `top_layer_has_its_own_fixed_quad_and_group_limits`;
+  - `metal_scene.rs` beside it: `top_layer_is_placed_after_the_scene_and_alone_with_snapshot_metrics` and
+    `metrics_update_replaces_top_placement_without_rewriting_its_frame`;
+  - `crates/gpu-metal/src/batch.rs`: `an_independent_top_layer_fits_after_a_full_scene_and_can_draw_without_one`,
+    `full_scene_and_compat_leave_every_top_slot_available` and
+    `compatibility_decision_uses_only_the_scene_when_a_top_layer_is_present`.
+
+  No new window or GPU test was added. The presenter's window cases of the instance budget
+  (`crates/gpu-metal/tests/presenter_scene/instanced.rs`) expect the larger buffer.
+
 ## 9. Frame scheduling and timing
 
 **Proposal.** A registered UI update callback enables a paced update source while the window is active; absence of the callback preserves on-demand redraw. The application scheduler uses a monotonic clock and timed event-loop waits, with a configurable target update rate (proposed default 60 Hz, matching the owner-accepted stress target). This is a visual/UI update rate, not simulation time and not proof of monitor refresh. Do not add a timer that appends an unbounded callback each tick.
@@ -394,6 +463,66 @@ Keep close/lifecycle admission separate from frame work: check/post pending clos
 limits how often the Metal presenter's render thread starts a frame. It is apart from the update rate above:
 `updates_per_second` and `max_delta_seconds` pace the UI's updates and are unchanged by it, and it adds no frame.
 `docs/ui-design.md` §3.17 has the rule and the calls.
+
+**Since CK-334 (2026-11-15): the shown-frame times, and drawing at every refresh.** Two things the debug layer's frame
+rate needs of the Metal presenter. This slice computes no rate and draws nothing new. The spec is
+`runtime-m55/ck334-spec.md` (sha256 `f96947dc…`), slice 2 of the debug layer's design. Asked what the frame number
+should read when the screen is still, the owner chose option B (`owner-direction-designer-r3.md` in
+`.pipeline/coordination/debug-shell-design/`; the option's words are ck-designer-6's): "Draw every refresh while the
+layer shows the frame rate, so the number reads steadily". The option stated its cost: the game draws more with the
+layer on than off, uses more power, and is not quite the same game that is being measured.
+
+- **The shown-frame times.** The presenter keeps the times at which the display showed its latest 512 frames. A time is
+  a drawable's `presentedTime` in `CLOCK_UPTIME_RAW` nanoseconds, as the run's metrics take it. They are kept in the
+  order shown. A drawable that was never shown (a time of zero) gives none, and the 513th time drops the oldest.
+  - **`PresentedTimesReader::after(cursor)`** copies the times newer than `cursor`. It never waits for a frame and
+    never wants one, and holds the times' lock only for the copy. A reader is cheap to copy and can be had before the
+    presenter starts (`MetalBackend::presented_times_reader` and `Renderer::presented_times_reader` in
+    `ck-render-2d`).
+  - **A time becomes readable** when the render thread takes the drawable's result, where the metrics' own sample is
+    taken (`apply_timing`, `crates/gpu-metal/src/presenter.rs`). That is a little after the frame.
+  - **They are apart from the metrics.** They are kept with no measured window, and keeping or reading them changes
+    nothing in the end-of-run record.
+  - **They are for the debug layer,** not a counter for tests: no test but this slice's own reads them.
+- **Drawing at every refresh.** The presenter has a switch, off at the start
+  (`MetalPresenter::set_draw_every_refresh`). While it is on a frame is always wanted, so the render thread starts the
+  next one as soon as it may and the display paces them: a frame for each refresh.
+  - **It is a want of its own,** beside the ordinary one (a publication, a redraw request, a changed size or colour).
+    Starting a frame does not clear it, and turning it off leaves no frame wanted on its account.
+  - **The frame-rate limit still decides** (the note above). With a limit of N no frame starts sooner than one N-th
+    of a second after the one before, and with `"none"` it may start at once.
+  - **It never makes the thread spin.** Where a wanted frame cannot start (a failed presenter, the checker not yet
+    resident, the compatibility gate), it does not start, and the thread waits as before. A stop is seen first, and
+    a set made after the stop does nothing.
+  - **Off is the behaviour before CK-334:** nothing is drawn that nothing wanted.
+- **The application asks, and the window loop applies.** `RequestWriter::set_draw_every_refresh(enabled)` writes one
+  more field of the window's request slot, and the latest write wins (`docs/window-design.md` §4). The loop gives the
+  setting to the presenter through `Presenter::set_draw_every_refresh`, a new method whose default does nothing.
+  - **Only while the window is active.** The loop turns the presenter's switch on only while the request stands and
+    the window has opened, is focused, is not minimised and is not of zero size. It turns it off when any of
+    those ends, and on again when all hold. A request made before the window opened is applied once it has.
+  - **It needs no update callback.** The rule is the loop's own and holds with no update source configured.
+  - **The route in `ck-render-2d`:** `Renderer` passes the call to its backend. A Metal backend with resources gives
+    it to the wake relay (`WakeRelay::set_draw_every_refresh`), which keeps the latest setting and delivers it in
+    order to the presenter's setter, as it does the limit. A setter that outlives its presenter does nothing.
+  - **Read in the code:** the limit's delivery ends cleanly when a setter panics, and this one has no such guard, so
+    a setter that panicked would stop later deliveries (the submission review's N1, not blocking).
+- **Nothing asks for it yet.** The application makes no request, so the game draws on demand as before. A later slice
+  of the debug layer makes it.
+- **On Metal only.** The Vulkan path keeps no times and draws on demand whatever is asked: it is compile-only.
+- **Disclosed, not designed for:** a window that is focused but covered by another is still active, so frames are
+  still asked for. What the system does with them then is the system's.
+- **Tests,** with no window, no GPU and no sleep; a limit that is run is 30 or 60:
+  - `crates/gpu-metal/src/presenter.rs`: `shown_time_history_uses_timing_ingest_without_changing_metrics`,
+    `continuous_drawing_is_independent_of_dirty_and_respects_the_existing_gates` and
+    `continuous_only_wants_reach_the_frame_limit_at_30_60_and_none`;
+  - `crates/render-2d/src/tests/resident.rs`: `the_relay_delivers_the_latest_continuous_draw_setting_in_order`, and
+    `renderer.rs`: `renderer_forwards_continuous_drawing_to_its_backend`;
+  - `crates/window/tests/window/slot.rs`: `continuous_drawing_requests_are_coalesced_to_the_latest_setting`, and
+    `input.rs` beside it: `continuous_drawing_tracks_the_active_window_without_update_settings`.
+
+  No test shows a real display drawing a frame for each refresh. That is for the owner to see by hand with the debug
+  layer's number, once a later slice draws it.
 
 ## 10. Input actions and test isolation
 
