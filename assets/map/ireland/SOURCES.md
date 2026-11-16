@@ -95,20 +95,30 @@ The derivation order is elevation, terrain draft, rivers, then all terrain edits
 2026-11-09 from the accepted r8 `terrain.png` and `elevation.png`, applying only the two CK-234 owner-signed edits
 (`glendalough-laragh-avonmore-pasture` and `rahan-clodiagh-dry-ground-pasture`) plus the climate and fertility settings. This is the
 same final state as the full draft → r8 → CK-234 chain: r8 was already present in the accepted base and was not applied again. The
-corrected files are reproduced by that procedure byte for byte. The terrain and computed-layer SHA-256 hashes are:
+corrected files were reproduced by that procedure byte for byte. The terrain and computed-layer hashes below are current;
+CK-351 replaces only the fertility hash (the CK-234 fertility hash was
+`91c4c081ba0b581c854d03580c7145d0d0e48af57220e20fbff97e5d9c34e48c`):
 
 | File | SHA-256 |
 |---|---|
 | `elevation.png` (unchanged accepted base) | `6009b9991092749d59b82b887921cf3e421d8547063c46466308406b2d0e097f` |
 | `terrain.png` | `cd471c15440715aa4d296e65a60164fd361cc5eaeeceb9565c4607602f052cc2` |
-| `fertility.png` | `91c4c081ba0b581c854d03580c7145d0d0e48af57220e20fbff97e5d9c34e48c` |
+| `fertility.png` | `206a5a12747d4e95e9c35cb497423fb11fcbae16524460cd86fcba1a7c9529ea` |
 | `climate_temperature.png` | `8011f92404a55364b6bf266fb8f2ceac506fcd4dba380407cd1b9a5633d5ad48` |
 | `climate_gdd.png` | `ca7fe864ff9ceb1057e0b2bb625369e0bf8e573262608b0d725896544c030770` |
 | `climate_rainfall.png` | `fd80dda78f36b764592f3a90f5e067dfd677def7d0733432685c3b6deae3eee5` |
 | `climate_glacier.png` | `578726b5c37cdecbf847de48fb1d8d015ba631081ec9a8af9cf78a9d513ae512` |
 | `edits.applied` | `a63c176d222e97063cbcb60f0322828f3996a90e437e6e7ce2bec4f9e561ea6b` |
 
-`edits.applied` retains the SHA-256 of the full `edits.toml`. The reproduction check used the Python, NumPy and Pillow versions above.
+CK-351 changed the fertility valley drainage: elevation under 1 m ends the flow; all other cells, including loughs,
+contribute their ground area and pass accumulated area to the steepest-descent neighbour after depressions are filled from
+the sea and crop edge. The standard-library implementation is `drainage.py`, called by `apply_edits.py`. To regenerate
+derived layers from the accepted terrain and elevation without applying `edits.toml` again, run
+`python3 assets/map/ireland/apply_edits.py --layers-only`. The regenerated `fertility.png` SHA-256 is
+`206a5a12747d4e95e9c35cb497423fb11fcbae16524460cd86fcba1a7c9529ea`; a second run in a scratch copy reproduced it
+byte for byte. Terrain, elevation, climate, edit table and edit marker hashes above remain unchanged.
+
+`edits.applied` retains the SHA-256 of the full `edits.toml`. The CK-234 reproduction check used the Python, NumPy and Pillow versions above.
 `derive_elevation.py` and `derive_rivers.py` retain their source-cache requirements and reproduce their own outputs from the cached source
 set.
 

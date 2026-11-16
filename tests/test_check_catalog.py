@@ -2374,6 +2374,12 @@ GUARDS: tuple[Guard, ...] = (
             "crates/gpu-vulkan/tests/",
         ),
     ),
+    # CK-351: the retained stdlib drainage contract imports the production map helper and guards its caller.
+    Guard(
+        "tests/test_map_drainage.py",
+        "unittest-map",
+        ("assets/map/ireland/drainage.py", "assets/map/ireland/apply_edits.py"),
+    ),
     # CK-105: the renderer's re-export test checks its window fixture against the resource component's copy.
     Guard(
         "crates/render-2d/src/tests/resources.rs",
@@ -3938,6 +3944,23 @@ class BatchEnvironment(unittest.TestCase):
             self.assertEqual((refused, none), (2, []))
             self.assertIn("planned check under the CI lock", errors)
             self.assertEqual(os.environ["CK_CI_LOCK_FD"], "9", "the caller's value is restored")
+
+
+class UnittestGroupDescriptions(unittest.TestCase):
+    def test_map_group_keeps_its_description_without_replacing_existing_descriptions(self) -> None:
+        steps = {step.name: step for step in check.STEPS}
+        self.assertIn("standard-library production drainage", steps["unittest-map"].description)
+        expected = {
+            "unittest-batch": "batch gate, the gate criteria, hashing and the lock holders",
+            "unittest-catalog": "check catalog: group ownership",
+            "unittest-check": "check runner, its lint policy",
+            "unittest-lints": "workspace lint configuration",
+            "unittest-bootstrap": "bootstrap, the pipeline",
+            "unittest-lease": "checkout lease, gc",
+        }
+        for name, phrase in expected.items():
+            with self.subTest(group=name):
+                self.assertIn(phrase, steps[name].description)
 
 
 if __name__ == "__main__":
