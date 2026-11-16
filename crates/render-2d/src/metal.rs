@@ -1005,6 +1005,7 @@ impl MetalBackend {
             resources.relay.disconnect();
             resources.relay.disconnect_frame_limit();
             resources.relay.disconnect_draw_every_refresh();
+            resources.relay.disconnect_vsync();
         }
     }
 
@@ -1021,6 +1022,7 @@ impl MetalBackend {
             .resources
             .as_ref()
             .ok_or_else(|| "the backend has no resource service".to_owned())?;
+        let display_sync_enabled = resources.relay.vsync();
         let limits = resources.limits;
         let scene = GpuSceneLimits {
             max_quads: limits.max_quads,
@@ -1051,6 +1053,7 @@ impl MetalBackend {
                         scene,
                         driver,
                         &self.presented_times,
+                        display_sync_enabled,
                     )
                 }
             }
@@ -1076,6 +1079,7 @@ impl MetalBackend {
                         wake,
                         presenter_hooks,
                         &self.presented_times,
+                        display_sync_enabled,
                     )
                 }
             }
@@ -1091,6 +1095,7 @@ impl MetalBackend {
         resources
             .relay
             .connect_draw_every_refresh(presenter.draw_every_refresh_setter());
+        resources.relay.connect_vsync(presenter.vsync_setter());
         self.presenter = Some(presenter);
         Ok(())
     }

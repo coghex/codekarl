@@ -319,6 +319,7 @@ unsafe extern "C" {
     fn ck_pr_layer_retain(layer: *mut c_void, observer: *mut c_void) -> *mut c_void;
     fn ck_pr_layer_release(retained_layer: *mut c_void, observer: *mut c_void);
     fn ck_pr_core_new(retained_layer: *mut c_void, observer: *mut c_void) -> *mut c_void;
+    fn ck_pr_set_display_sync_enabled(core: *mut c_void, enabled: i32) -> i32;
     fn ck_pr_setup(
         core: *mut c_void,
         context: *mut c_void,
@@ -497,6 +498,9 @@ struct Slot {
     /// The frame-rate limit in frames per second (`None`: none). Read under this mutex by the render thread each time it looks at
     /// a wanted frame, so a change applies from the next frame (CK-313).
     frame_limit: Option<u32>,
+    /// Desired layer sync state, updated by settings and consumed only on the render thread.
+    display_sync_enabled: bool,
+    display_sync_pending: bool,
 }
 
 fn wants_frame(slot: &Slot) -> bool {
@@ -531,6 +535,9 @@ struct Shared {
     /// Written by the render thread only; read without waiting.
     drawn_generation: AtomicU64,
     drawn_any: AtomicBool,
+    display_sync_applied: AtomicI32,
+    display_sync_wait: Mutex<()>,
+    display_sync_changed: Condvar,
     /// The scene presenter's counters and charges; written by the render thread, read by [`MetalPresenter::stats`].
     scene_stats: Mutex<SceneStats>,
     /// The frame-timing windows (CK-129): recorded by the render thread (one lock per frame, nothing allocated), read by anyone.
@@ -618,6 +625,16 @@ fn set_draw_every_refresh(shared: &Shared, enabled: bool) {
     let mut slot = lock(&shared.slot);
     if !slot.stop && slot.draw_every_refresh != enabled {
         slot.draw_every_refresh = enabled;
+        drop(slot);
+        shared.signal.notify_all();
+    }
+}
+
+fn set_display_sync_enabled(shared: &Shared, enabled: bool) {
+    let mut slot = lock(&shared.slot);
+    if !slot.stop && slot.display_sync_enabled != enabled {
+        slot.display_sync_enabled = enabled;
+        slot.display_sync_pending = true;
         drop(slot);
         shared.signal.notify_all();
     }
@@ -1456,7 +1473,9 @@ impl MetalPresenter {
         };
         // SAFETY: the contract is this function's own.
         unsafe {
-            Self::start_with_test_hooks_and_times(layer, pixel_size, clear, wake, hooks, reader)
+            Self::start_with_test_hooks_and_times(
+                layer, pixel_size, clear, wake, hooks, reader, true,
+            )
         }
     }
 
@@ -1600,6 +1619,7 @@ impl MetalPresenter {
         limits: SceneLimits,
         driver: D,
         reader: &PresentedTimesReader,
+        display_sync_enabled: bool,
     ) -> Result<Self, Error>
     where
         K: Copy + Eq + Hash + Send + 'static,
@@ -1621,7 +1641,15 @@ impl MetalPresenter {
         };
         // SAFETY: this function has the same layer contract as start_scene_bindless.
         unsafe {
-            Self::start_with_test_hooks_and_times(layer, pixel_size, clear, wake, hooks, reader)
+            Self::start_with_test_hooks_and_times(
+                layer,
+                pixel_size,
+                clear,
+                wake,
+                hooks,
+                reader,
+                display_sync_enabled,
+            )
         }
     }
 
@@ -1660,6 +1688,7 @@ impl MetalPresenter {
                 wake,
                 hooks,
                 &PresentedTimesReader::default(),
+                true,
             )
         }
     }
@@ -1677,6 +1706,7 @@ impl MetalPresenter {
         wake: Wake,
         hooks: TestHooks,
         reader: &PresentedTimesReader,
+        display_sync_enabled: bool,
     ) -> Result<Self, Error> {
         if layer.is_null() {
             return Err(Error("the layer pointer is null".to_owned()));
@@ -1713,6 +1743,8 @@ impl MetalPresenter {
                 stop_deadline: None,
                 metrics_check: false,
                 frame_limit: None,
+                display_sync_enabled,
+                display_sync_pending: true,
             }),
             signal: Condvar::new(),
             reports: Mutex::new(VecDeque::new()),
@@ -1721,6 +1753,9 @@ impl MetalPresenter {
             stop_budget: hooks.stop_budget.unwrap_or(STOP_BUDGET),
             drawn_generation: AtomicU64::new(0),
             drawn_any: AtomicBool::new(false),
+            display_sync_applied: AtomicI32::new(-1),
+            display_sync_wait: Mutex::new(()),
+            display_sync_changed: Condvar::new(),
             scene_stats: Mutex::new(SceneStats::default()),
             metrics: Mutex::new(Recorder::default()),
             shown_times: Arc::clone(&reader.times),
@@ -1826,6 +1861,58 @@ impl MetalPresenter {
     /// Sets continuous drawing until disabled or the presenter stops.
     pub fn set_draw_every_refresh(&self, enabled: bool) {
         set_draw_every_refresh(&self.shared, enabled);
+    }
+
+    /// Requests a layer display-sync change; the render thread applies it at its next boundary.
+    pub fn set_vsync(&self, enabled: bool) {
+        set_display_sync_enabled(&self.shared, enabled);
+    }
+
+    /// A weak setting handle: after the presenter stops, writes do nothing.
+    #[must_use]
+    pub fn vsync_setter(&self) -> Arc<dyn Fn(bool) + Send + Sync> {
+        let weak = Arc::downgrade(&self.shared);
+        Arc::new(move |enabled| {
+            if let Some(shared) = weak.upgrade() {
+                set_display_sync_enabled(&shared, enabled);
+            }
+        })
+    }
+
+    /// Waits for the render thread to read back the layer's actual display-sync property.
+    #[doc(hidden)]
+    pub fn wait_display_sync_enabled(&self, expected: bool, within: Duration) -> Option<bool> {
+        let deadline = Instant::now() + within;
+        let mut wait = lock(&self.shared.display_sync_wait);
+        loop {
+            let applied = self.shared.display_sync_applied.load(Ordering::Acquire);
+            if applied >= 0 {
+                let actual = applied != 0;
+                if actual == expected {
+                    return Some(actual);
+                }
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            let (next, result) = self
+                .shared
+                .display_sync_changed
+                .wait_timeout(wait, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner);
+            wait = next;
+            if result.timed_out() {
+                let applied = self.shared.display_sync_applied.load(Ordering::Acquire);
+                if applied >= 0 {
+                    let actual = applied != 0;
+                    if actual == expected {
+                        return Some(actual);
+                    }
+                }
+                return None;
+            }
+        }
     }
 
     /// A weak setting handle: after the presenter stops, writes do nothing.
@@ -2521,12 +2608,37 @@ fn apply_timing(
 }
 
 impl Loop<'_> {
+    /// Applies a pending layer setting on this render thread before any frame acquires a drawable.
+    fn apply_display_sync(&self) {
+        let enabled = {
+            let mut slot = lock(&self.shared.slot);
+            if std::mem::replace(&mut slot.display_sync_pending, false) {
+                Some(slot.display_sync_enabled)
+            } else {
+                None
+            }
+        };
+        if let Some(enabled) = enabled {
+            // SAFETY: `Core` is confined to this render thread; this boundary precedes drawable acquisition.
+            let actual =
+                unsafe { ck_pr_set_display_sync_enabled(self.core.0.as_ptr(), i32::from(enabled)) };
+            {
+                let _wait = lock(&self.shared.display_sync_wait);
+                self.shared
+                    .display_sync_applied
+                    .store(actual, Ordering::Release);
+                self.shared.display_sync_changed.notify_all();
+            }
+        }
+    }
+
     /// Waits for work or the stop. `Some` is a frame to draw or an ordinary texture pass; `None` is the stop.
     ///
     /// A wanted frame goes first and its boundary pass serves any texture work pending, so texture work never
     /// delays a wanted frame beyond one pass; texture work alone runs an ordinary pass and goes back to waiting.
     fn next_work(&mut self) -> Option<Work> {
         loop {
+            self.apply_display_sync();
             // The checker's upload may have completed (its completion woke the thread): no frame is taken before it is
             // resident, and its completion alone makes the waiting first frame run.
             self.poll_checker();
@@ -3987,6 +4099,8 @@ mod tests {
                 stop_deadline: None,
                 metrics_check: false,
                 frame_limit: None,
+                display_sync_enabled: true,
+                display_sync_pending: false,
             }),
             signal: Condvar::new(),
             reports: Mutex::new(VecDeque::new()),
@@ -3995,6 +4109,9 @@ mod tests {
             stop_budget: STOP_BUDGET,
             drawn_generation: AtomicU64::new(0),
             drawn_any: AtomicBool::new(false),
+            display_sync_applied: AtomicI32::new(-1),
+            display_sync_wait: Mutex::new(()),
+            display_sync_changed: Condvar::new(),
             scene_stats: Mutex::new(SceneStats::default()),
             metrics: Mutex::new(Recorder::default()),
             shown_times: Arc::new(Mutex::new(VecDeque::with_capacity(512))),

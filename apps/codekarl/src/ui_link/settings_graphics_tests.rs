@@ -33,13 +33,20 @@ expect(s.selected == "graphics", "the graphics tab opens")
 local labels = {}
 for _, line in ipairs(lines_in(s.page.group)) do labels[line_text(line)] = line end
 expect(labels.resolution ~= nil and labels["window mode"] ~= nil and labels["UI scale up to"] ~= nil
-  and labels["frame rate"] ~= nil and labels["list look"] ~= nil,
-  "graphics has resolution, window mode, UI scale up to, frame rate, and list look")
+  and labels["frame rate"] ~= nil and labels.vsync ~= nil and labels["list look"] ~= nil,
+  "graphics has resolution, window mode, UI scale up to, frame rate, vsync, and list look")
 expect(labels["frame rate"] ~= nil, "graphics has the frame rate row (CK-313)")
 eq(#s.controls.window_mode, 3, "the mode row has three choices")
 eq(s.controls.window_mode[1].y, 20 * P, "the mode row is 20 below the resolution row")
 eq(s.controls.scale[1].y, s.controls.window_mode[#s.controls.window_mode].y + 20 * P,
   "the scale row begins five pixels after the mode buttons")
+eq(s.controls.vsync[1].selected, true, "vsync defaults on")
+expect(not s.controls.vsync[2].selected, "vsync off starts unselected")
+s.controls.vsync[2].on_click()
+eq(fixture.calls[#fixture.calls][2], "frame.vsync")
+eq(fixture.calls[#fixture.calls][3], false)
+eq(s.controls.vsync[1].selected, false)
+eq(s.controls.vsync[2].selected, true)
 for _, control in ipairs(s.controls.window_mode) do
   expect(control.x + control.width <= s.page.room, "each window mode button stays inside the content edge")
 end
@@ -470,7 +477,7 @@ local rate_x, rate_y = line_at(labels["frame rate"])
 local _, look_y = line_at(labels["list look"])
 expect(rate_y > scale_y, "the frame rate row follows the scale row")
 expect(look_y > rate_y, "list look follows the frame rate row")
-eq(s.controls.list_look[1].y, s.controls.fps.y + 20 * P)
+eq(s.controls.list_look[1].y, s.controls.fps.y + 40 * P)
 local fps, none = s.controls.fps, s.controls.fps_none
 eq(fps.x, 84 * P, "the field is 84 right of the label")
 eq(fps.y, s.controls.scale[1].y + 20 * P)

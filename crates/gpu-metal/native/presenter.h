@@ -188,6 +188,7 @@ void ck_pr_layer_release(void *retained_layer, CKPrObserver *observer);
 
 /* A core that owns `retained_layer` (the reference ck_pr_layer_retain returned). Never fails. */
 CKPrCore *ck_pr_core_new(void *retained_layer, CKPrObserver *observer);
+int32_t ck_pr_set_display_sync_enabled(CKPrCore *core, int32_t enabled);
 
 /* Test only; the presenter's normal start never calls it. Arms a one-shot pause of `ms` milliseconds, in the
  * entry point `entry` (1 ck_pr_outstanding, 2 ck_pr_frame, 3 ck_pr_poll, 4 ck_pr_tokens_state), right after

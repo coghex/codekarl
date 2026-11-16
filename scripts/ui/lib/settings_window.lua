@@ -459,8 +459,22 @@ local function show_graphics(state, page)
   page.fields[#page.fields + 1] = fields.fps
   state.controls.fps, state.controls.fps_none = fields.fps, none
 
+  local vsync_y = fps_y + 20 * P
+  label_at(page.group, 0, vsync_y + 2 * P, "vsync", text_colour, LABEL_WIDTH)
+  local sync
+  sync = button.flow{
+    x = LABEL_WIDTH, y = vsync_y, room = page.room - LABEL_WIDTH,
+    items = {"on", "off"}, selected = values.vsync and "on" or "off",
+    group = page.group, owner = page.owner, kind = "window",
+    on_choose = function(value)
+      settings.set("frame.vsync", value == "on")
+      for index, control in ipairs(sync) do control:set_selected(({"on", "off"})[index] == value) end
+    end,
+  }
+  state.controls.vsync = sync
+
   local look = list_look.get()
-  local look_y = fps_y + 20 * P
+  local look_y = vsync_y + 20 * P
   label_at(page.group, 0, look_y + 2 * P, "list look", text_colour, LABEL_WIDTH)
   local looks = button.flow{
     x = LABEL_WIDTH, y = look_y, room = page.room - LABEL_WIDTH,

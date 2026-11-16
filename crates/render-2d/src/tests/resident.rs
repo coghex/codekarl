@@ -588,6 +588,34 @@ fn the_relay_keeps_the_frame_rate_limit_and_gives_it_to_a_presenter_connected_la
 }
 
 #[test]
+fn the_relay_keeps_vsync_and_delivers_it_to_live_and_later_presenters() {
+    let relay = WakeRelay::default();
+    assert!(relay.vsync(), "display sync defaults on");
+    relay.set_vsync(false);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    relay.connect_vsync(Arc::new(move |enabled| {
+        sink.lock().expect("lock").push(enabled);
+    }));
+    assert_eq!(
+        *seen.lock().expect("lock"),
+        [false],
+        "late connect gets the kept value"
+    );
+    relay.set_vsync(true);
+    relay.set_vsync(false);
+    assert_eq!(*seen.lock().expect("lock"), [false, true, false]);
+    relay.disconnect_vsync();
+    relay.set_vsync(true);
+    assert_eq!(*seen.lock().expect("lock"), [false, true, false]);
+    let later = Arc::clone(&seen);
+    relay.connect_vsync(Arc::new(move |enabled| {
+        later.lock().expect("lock").push(enabled);
+    }));
+    assert_eq!(*seen.lock().expect("lock"), [false, true, false, true]);
+}
+
+#[test]
 fn the_relay_delivers_the_latest_continuous_draw_setting_in_order() {
     let relay = WakeRelay::default();
     relay.set_draw_every_refresh(true);
