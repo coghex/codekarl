@@ -400,14 +400,27 @@
 >   draw a second, small set of quads after every quad of the UI's scene. It is the first part of the debug layer the
 >   owner asked for: "i want the debug layer to be text drawn over the entire rendered screen, at the highest level,
 >   so that it is always on top" (`owner-direction-designer-r1.md` in `.pipeline/coordination/debug-shell-design/`).
->   - **Nothing uses it yet,** so the game looks as it did. No Lua call reaches it: it is the application's.
+>   - **Since CK-335 the debug line is drawn through it** (below). No Lua call reaches it: it is the application's.
 >   - **It takes no pointer input,** and it has limits of its own: 1,024 quads and 16 groups.
 > - **Shown-frame times, and drawing at every refresh** (CK-334, 2026-11-15; §3.17, `docs/scene-design.md` §9): two
 >   more engine parts, for the debug layer's frame rate. The Metal presenter keeps the times at which the display
 >   showed its latest 512 frames, and has a switch that makes it draw a frame at every display refresh, not only when
 >   one is wanted.
->   - **Nothing uses them yet:** the switch is off, and the game draws on demand as before.
+>   - **Since CK-335 the debug line uses both** (below). With the line off, or showing updates, the switch is off
+>     and the game draws on demand as before.
 >   - **The frame-rate limit still decides** when a frame may start.
+> - **The debug layer's first level** (CK-335, 2026-11-16; §3.24): F3 shows one line at the bottom left of the window,
+>   above the whole UI, that reads the frame rate, and F3 again hides it. It is the third part of the debug layer. The
+>   owner: "we can have different levels, at the lowest level, just the fps, as i develop more we can add other metrics
+>   as well for extra levels of debugging. this would be a tool for me developing, and something players/modders could
+>   use" (`owner-direction-designer-r1.md` in `.pipeline/coordination/debug-shell-design/`).
+>   - **The application draws it,** not a script: it shows over tooltips and the pause menu, and F3 acts with the
+>     menu open and while a field is edited.
+>   - **Two settings keep it,** `[debug] level` and `rate`, in the configuration and the settings file (§3.17).
+>   - **The key is an action,** `debug_layer`, and the settings file can rebind it. The input tab has no row for it
+>     yet, and the settings window no page for the two settings: both are a later slice.
+>   - **It follows the UI scale,** as the UI's own text does (§3.3).
+>   - **On native Metal only,** and only in a run that has loaded a font.
 
 ## Owner answers (2026-11-07)
 
@@ -485,8 +498,8 @@ From `.pipeline/coordination/m8-design/owner-answers-r1.md`. **No question is op
   the scene. "The UI is drawn last, over the map, at full resolution" (`docs/map-design.md` §9.2).
 - **The scene is the UI layer.** Nothing in the UI is part of the map pass.
 - **Since CK-333 (2026-11-15) the scene is no longer the last thing drawn.** A top layer, which the application owns
-  and no script can reach, is drawn after it, for the owner's debug layer (`docs/scene-design.md` §8.5). Nothing fills
-  it yet, so the picture is as it was.
+  and no script can reach, is drawn after it, for the owner's debug layer (`docs/scene-design.md` §8.5). Since CK-335
+  the debug line is drawn there (§3.24). While that line is off nothing fills it, and the picture is as it was.
 
 ### 2.4 Text (CK-197)
 
@@ -614,6 +627,9 @@ These are the gaps against "many windows, panels, menus":
     - The UI's view is `⌊drawable pixels ÷ s⌋` units; pointer positions, hits and point-scroll amounts are converted to units at the
       same scale; a scale change reaches the UI as a resize. In a pixels window `window.open` returns the first view in units.
     - `[ui] points_per_pixel` is retired and refused, naming `[ui] scale`; `[ui] font_points_per_pixel` keeps its own refusal.
+    - **Since CK-335 the debug line follows the scale too** (§3.24). The application draws it, in the same units, and
+      no script places it. The owner: "follow the ui scale" (`owner-direction-designer-r6.md` in
+      `.pipeline/coordination/debug-shell-design/`).
 - **Anchors:** a panel's rectangle is an anchor (one of 9: corners, edge midpoints, centre) plus an offset and a size.
   - When the window size changes, anchored panels are recomputed.
   - Windows keep their position, clamped so the title bar stays reachable.
@@ -835,6 +851,9 @@ The main thread must decide **synchronously** who gets each pointer event. It ca
     - **Since CK-326 one action is the UI script's own:** `window_fullscreen`, F11 by default. It is not one of the
       sixteen, so the pause menu's block lets it through. The script that acts on it holds it back itself while the menu
       is open, while a widget is edited and while a key capture waits (§3.17).
+    - **Since CK-335 one action is the application's own:** `debug_layer`, F3 by default. The application reads its
+      press at the input tick, before the pause menu's block, and asks no script. So it acts with the menu open and
+      while a widget is edited (§3.24).
   - The one change is **Escape**, the `close` action (Firm, owner Q2): with a window open it closes the top window; with none open it
     requests the app's close as today.
     - **This needs no engine change.** The `close` press already reaches Lua as `close_request` with source `"key"`, and a callback
@@ -2067,6 +2086,9 @@ Lengths below are in UI pixels.
   - **Only key actions are blocked.** `game.control(name)` from a script still sends its control.
   - **Since CK-326 the fullscreen key is held back as well, but not by this block.** `window_fullscreen` is not on the
     list and reaches the UI like any action. `lib/fullscreen_key.lua` ignores its press while the menu is open (§3.17).
+  - **Since CK-335 the debug layer's key acts all the same.** `debug_layer` is not on the list, and the application
+    reads its press from the tick's input before the block filters it (§3.24). So F3 shows and hides the debug line
+    with the menu open.
   - **When it starts.** The block acts from the first input tick after the UI's call. A game key pressed in a tick before that
     one still acts.
   - **A gesture already under way ends.** The first tick that sees the block on ends the gesture someone had captured, as a
@@ -2188,6 +2210,7 @@ key sets the window mode as well (below).
   - **Since CK-307,** the four graphics settings: `[ui] scale`, `[ui] list_look`, `[window] width` and `[window] height`.
     Since CK-313 and CK-312 there are six, with `[frame] fps_limit` and `[window] mode`.
   - **Since CK-309,** `[input.bindings]`: the player's key bindings. Both are below.
+  - **Since CK-335,** `[debug]`: `level` and `rate`, the debug layer's two settings (the last part of this section).
 - **Read at start,** after the configuration file (`apps/codekarl/src/config.rs`, `load_settings`). A key in it overrides the
   configuration's value; a key it does not have keeps the configuration's value, or the default. A missing file is not
   reported.
@@ -2307,8 +2330,8 @@ can input whatever numbers they want, and it will clamp to minimums and maximums
     updates, the input and the game's clock keep their rates.
   - **A stop and pending texture work do not wait** for the interval's end. The frame stays wanted meanwhile.
   - **Since CK-334** the presenter can be asked to want a frame at every display refresh, for the debug layer's frame
-    rate (`docs/scene-design.md` §9). The limit decides for those frames as for any wanted frame. Nothing asks for
-    it yet, and while it is off no frame is added, as above.
+    rate (`docs/scene-design.md` §9). The limit decides for those frames as for any wanted frame. Since CK-335 the
+    debug layer asks for it while its line shows the frame rate (§3.24). While it is off no frame is added, as above.
 - **The limit is one decision** (`crates/gpu-metal/src/frame_limit.rs`, `decide`): given when the last frame started, the
   time now and the limit, a frame may start now, or at a stated time. The interval is a whole number of nanoseconds,
   rounded down. The render thread reads the clock, asks, and waits until the stated time on the signal it already waits
@@ -2404,7 +2427,8 @@ and the spec is `runtime-m55/ck309-spec-r2.md` (sha256 `e85d479f…`).
   `time_pause`, `time_speed_1` to `time_speed_5`, `time_faster`, `time_slower`, `game_quicksave`, `game_quickload`,
   `map_pan_left`, `map_pan_right`, `map_pan_up`, `map_pan_down`, `map_zoom_in` and `map_zoom_out` (`REBINDABLE_ACTIONS`,
   `apps/codekarl/src/config.rs`). **Since CK-326 there are seventeen:** `window_fullscreen`, the fullscreen key (below),
-  is in that list after `game_quickload`. Any other action, the demo's included, is not listed, set or reset by these
+  is in that list after `game_quickload`. **Since CK-335 there are eighteen:** `debug_layer`, the debug layer's key
+  (§3.24), is the last of the list. Any other action, the demo's included, is not listed, set or reset by these
   calls and keeps the configuration's keys.
 - **`close` is fixed.** Its keys are the configuration file's, or Escape. No call and no entry of the settings file changes
   them.
@@ -2507,6 +2531,33 @@ that the owner may change. The spec is `runtime-m55/ck326-spec.md` (sha256 `2903
     block that the press's own update ends, a block that began between two updates, and a capture taking F11.
   - `ui_link/menu_tests.rs` has the input tab's row (§3.18). `config.rs` has the default, a rebinding and an emptying
     in the configuration, and `settings.rs` counts the action among those `settings.bindings()` lists.
+
+**Since CK-335: the debug layer's two settings.** The settings file keeps the debug layer's level and which rate its
+line shows, and the layer's key is one more of the player's actions. The layer itself is §3.24. The owner: "we can keep
+the setting in the same settings file" (`owner-direction-designer-r2.md` in
+`.pipeline/coordination/debug-shell-design/`). The spec is `runtime-m55/ck335-spec-r2.md` (sha256 `12505eb3…`).
+
+- **The keys** are in a table of their own, `[debug]`:
+
+  | Key | Values | Without it |
+  |---|---|---|
+  | `[debug] level` | the whole number 0 or 1 | 0, which is off |
+  | `[debug] rate` | `"frames"` or `"updates"` | `"frames"` |
+
+  - The configuration file takes both. It refuses any other value, a fraction included, and any other key of the
+    table, and names it. The settings file takes both too: it names and ignores a bad entry, and the other applies.
+- **`settings.debug()`** returns `{level, rate}` in force.
+- **`settings.set("debug.level", value)`** takes 0 or 1, and **`settings.set("debug.rate", value)`** takes `"frames"`
+  or `"updates"`. Anything else is a Lua error that names the setting and what it takes, and nothing changes. An
+  accepted set acts at once and is written like any set.
+- **`settings.reset("debug")`** removes the file's two entries and puts back the configuration's values. Those are 0
+  and `"frames"` only when the configuration has no `[debug]` of its own. The reset's name is ck-designer-6's.
+- **The key's press is a set too.** The application steps `debug.level` itself and writes it, with no script (§3.24).
+- **Each set, step and reset also says** whether a frame is to be drawn at every display refresh (§3.24).
+- **No shipped script calls these yet.** The settings window has no page for the two settings: that is a later slice
+  of the debug layer's design.
+- **The key,** `debug_layer`, is the eighteenth of the player's actions (above).
+- **Tests:** in §3.24.
 
 ### 3.18 The settings window (accepted, CK-301, CK-310 and CK-308)
 
@@ -2688,6 +2739,10 @@ Lengths below are in UI pixels.
     - **"fullscreen"** (CK-326) is the row of `window_fullscreen` (§3.17), with `F11` in its first slot by default. It is
       a row like the others: its slots are set, emptied and reset the same way, and the "Key in use" prompt names it
       "fullscreen".
+    - **The debug layer's key has no row yet** (CK-335, §3.24). `debug_layer` is one of the player's actions and
+      `settings.bindings()` lists it, but no group of the tab names it. Read in the code, with no test: the tab still
+      counts it as the owner of its key, so a slot given `F3` gets the "Key in use" prompt, which names it
+      `debug_layer`; "replace" takes the key from it; and "defaults" puts `F3` back.
   - **A row** has the action's name, 4 in, and **two key slots:** the first 70 right of the rows' left edge and the second
     3 right of the first. They show the action's first and second keys in force.
   - **A slot** is a cut-3 frame, 13 tall and as wide as `font.layout("press a key")` plus 8, filled `body` and outlined in
@@ -2973,7 +3028,8 @@ those fields got no typed entry (§3.17; read in the code, not seen).
   - **`on_apply()` is the editing widget's part of this.** The number field's applies what was typed and tells its caller, as
     Enter does (§3.21). Since CK-303 the text field's does the same (§3.22).
 - **Nothing of the typing is a bound action.** No action exists for a digit, a letter or an editing key: a game's bindings
-  stayed the 22 they were. Since CK-326's fullscreen key they are 23. Escape gives no entry and stays the `close` action
+  stayed the 22 they were. Since CK-326's fullscreen key they are 23, and since CK-335's debug layer key 24. Escape
+  gives no entry and stays the `close` action
   (§3.5).
 - **Not there:** showing text while it is composed; input methods for other scripts; selecting, copy and paste. A field
   that takes letters came with CK-303 (§3.22).
@@ -2984,7 +3040,7 @@ those fields got no typed entry (§3.17; read in the code, not seen).
     two, text input off, a key's action unchanged with it on, turning it off and on, a loss of focus, and the slot's
     generations.
   - `apps/codekarl/src/input_stash.rs`, `ui_link.rs` and `window_api.rs` have the stash's bound and epoch, the update's three
-    fields and the call. `config.rs` has the bindings' count, 23 since CK-326.
+    fields and the call. `config.rs` has the bindings' count, 23 since CK-326 and 24 since CK-335.
   - `apps/codekarl/src/ui_link/typing_tests.rs` runs the shipped `lib/typing.lua` in the UI rig with small widgets of its own:
     fourteen tests, for the order, text input on and off, stale entries, the rule with the pointer in one update and in
     two, the sessions and, since CK-309, key capture, with its cancel since CK-321.
@@ -3449,6 +3505,137 @@ Lengths below are in UI pixels.
     - The layout test has the word at the top and the places 12 lower. `game_api.rs` has the table's eight fields,
       and `apps/codekarl/src/game/tests/storage.rs` what the core publishes (`docs/places-time-design.md` §5.3).
   - **Three are the library pieces':** the gate, `raise_hits` and `keep_open`.
+
+### 3.24 The debug layer (accepted, CK-335)
+
+**The debug layer** is text that the application draws over the whole picture, for the owner while developing and for
+players and modders. Its first level is one line at the bottom left that reads the frame rate. It is not a widget, and
+no script draws it. The host draws it through the top layer (`docs/scene-design.md` §8.5), so it is above every window,
+tooltip and prompt of the UI, and it goes on working while the UI script is busy.
+
+- **The records** are `design-r2.md` (sha256 `51b3ff22…`) and `owner-direction-designer-r1.md` to `-r7.md` in
+  `.pipeline/coordination/debug-shell-design/`. The spec is `runtime-m55/ck335-spec-r2.md` (sha256 `12505eb3…`), slice
+  3 of that design. Slices 1 and 2 are the engine's parts (`docs/scene-design.md` §8.5 and §9).
+  - **What it is.** The owner: "i want the debug layer to be text drawn over the entire rendered screen, at the highest
+    level, so that it is always on top, we can have different levels, at the lowest level, just the fps, as i develop
+    more we can add other metrics as well for extra levels of debugging. this would be a tool for me developing, and
+    something players/modders could use" (`-r1`).
+  - **The key, and where the level is kept.** The owner: "i think the best would be to cycle with the key, as you say,
+    we can keep the setting in the same settings file", and "F3 is fine" (`-r2`).
+  - **Which rate.** The owner chose the frames shown, with a choice between frames and updates, and drawing at every
+    refresh while frames are shown (`-r3`: "1) A, 2) B"; the options' words are ck-designer-6's).
+  - **The place, and when the key acts.** The owner: "1) B, 2) A, and it should be rebindable." (`-r4`). The options'
+    words are ck-designer-6's. B is "Bottom left, lines growing upward", with the look "the UI's standard font in its
+    cream colour, on a dark strip behind each line". A is "F3 acts everywhere, including the pause menu and while
+    typing; the one exception is while the input tab waits for a key, where F3 becomes the key being bound."
+  - **The number.** The owner chose "Average over the last second, shown as a whole number, changing once a second",
+    and drawing on demand while updates are shown (`-r5`: "1) A, 2) A"; the options' words are ck-designer-6's).
+  - **The wording and the size.** Of `60 fps` and `60 updates`, and of the text's size, the owner: "1) that works, 2)
+    follow the ui scale." (`-r6`).
+  - **ck-designer-6's own, not put to the owner:** the reset's name, which runs have the key by default, the strip's
+    padding, how the glyph images are made, the average's exact sum, the `--` and the warning.
+- **Where it runs.** The layer exists in a windowed run on native Metal that has loaded a font: always with a game,
+  and without one when the UI VM's assets hold a font (`apps/codekarl/src/lib.rs`). At start it takes the top layer's
+  one writer (`apps/codekarl/src/debug_layer.rs`, `DebugLayer`).
+  - **Without those** (a headless run, `glfw-vulkan`, a run with no font) nothing is drawn. The two settings and the
+    key still work, and the level is still kept.
+  - **Such a run logs one `warn`** in the category `debug`: "debug layer needs a font, resource service and native top
+    layer". It comes at start when the level is already above 0, or else the first time the level leaves 0.
+- **The level and the rate** are the two `[debug]` settings (§3.17): `level` is 0 (off) or 1, and `rate` is `"frames"`
+  or `"updates"`.
+- **The key** is the action `debug_layer`, bound to `F3` by default in a run with a scenario (`GAME_BINDINGS`,
+  `apps/codekarl/src/config.rs`). A run without a scenario may bind the action in its own `[input.bindings]`.
+  - **A press steps the level:** from 0 to 1, and from 1 to 0. The step is a set of `debug.level`: it acts at once and
+    is written to the settings file (`settings.rs`, `step_debug_level`). So the line is on, or off, at the next start
+    as it was left.
+  - **It acts everywhere.** The application reads the press at the input tick (§3.12), from the input as it arrived
+    and before the pause menu's block filters it (`ui_link.rs`, `input`). No script is asked. So it acts with the
+    pause menu open, while a widget is edited and while the UI script is busy. It is not one of the sixteen blocked
+    actions (§3.15).
+  - **The one exception is a key capture.** A key that a capture takes never arrives as an action (§3.17), and a tick
+    that carries a capture's result steps nothing. So F3 pressed for a waiting key slot becomes that slot's key.
+  - **It can be rebound.** It is one of the player's actions (§3.17): an `[input.bindings]` entry of the settings
+    file changes it, and `settings.set_bindings` takes it. The input tab has no row for it yet (§3.18).
+  - **The step needs the settings.** A run with no `--config` has none (§3.17), so nothing steps there.
+- **The line.** With the level at 1 the top layer shows one line, and with it at 0 nothing.
+  - **The text** is the number, a space, and then `fps` when the rate is `"frames"` or `updates` when it is
+    `"updates"`: `60 fps`, `60 updates`.
+  - **The colours.** The text is in the standard font (§2.4), in the loaded theme's `text` colour. Behind it is an
+    opaque strip in the theme's `body` colour. Without a theme, or without that colour in it, the text is `#ece3cb`
+    and the strip `#15110a`, each on its own. Those are the shipped theme's two values.
+  - **The strip** is 15 high: the font's 11-row box with 2 above it and 2 below. It reaches 3 left and 3 right of the
+    text. Its left edge is 4 from the window's left edge and its bottom edge 4 from the bottom, which is the UI's
+    margin of 8 units (`scripts/ui/main.lua`). These lengths are UI pixels (§3.3).
+  - **It follows the UI scale.** In the game's window, which is opened in pixels, a UI pixel is 2 of the top layer's
+    units, and the frame build places those at the UI scale as it places the scene's (§3.3). After a resize or a
+    change of the scale the line is at the bottom left of the new view by the next input tick.
+  - **In a window opened in points** (tests and demos) the line's size is not settled: the submission review's note
+    N1, left for a follow-up (CK-341, open). The game's window is not such a window.
+  - **How it is drawn.** The strip is one quad on a 1 by 1 white image, tinted. Each character that has a set pixel
+    is one quad on an image made from that glyph's rows (`ResourceService::create_from_pixels`), tinted with the
+    text's colour. An image is made the first time its character is needed and is kept for the run. The layer loads
+    no file and uses no texture of the UI VM.
+  - **It takes no pointer input:** a press or a scroll over the line goes where it would without the line
+    (`docs/scene-design.md` §8.5).
+- **The number** is an average over the last second, shown as a whole number and worked out once a second.
+  - **The samples.** For `"frames"` they are the times at which the display showed a frame (`docs/scene-design.md`
+    §9). For `"updates"` they are the times, on the same clock, at which the UI VM accepted a `frame_update`
+    (`ui_link.rs`, `post`).
+  - **Once a second.** The text is worked out anew at the first input tick a full second after it was last worked
+    out. A text that has not changed publishes nothing and wants no frame.
+  - **The sum** (`debug_layer.rs`, `rate`). With `n` samples in the last second, none reads 0 and one reads 1.
+    Otherwise the number is `n − 1` intervals divided by the time from the first sample to the last, rounded to the
+    nearest whole number, and never more than `n + 1`. So a steady 30 a second reads 30 wherever the second's edge
+    falls between two samples, and two samples a millisecond apart read 3 and not 1000.
+  - **Before the first full second** the number's place shows `--`, as in `-- fps`. That is when the level leaves 0,
+    when the rate is changed, and when ticks come again after more than a second without one.
+- **Drawing at every refresh.** The application asks for it (`docs/scene-design.md` §9) exactly while the level is 1
+  and the rate is `"frames"` (`settings.rs`, `apply_debug`): at start, and at each set, step and reset. Otherwise the
+  game draws on demand as before, and with `"updates"` the layer causes a frame only when its text changes.
+  - **The frame-rate limit still decides** when a frame may start (§3.17).
+  - **Read in the code:** the request follows the two settings alone. So a Metal run that has no font draws at every
+    refresh at level 1 with `"frames"`, though it shows no line.
+  - **At the run's end** the application does not withdraw the request itself. The presenter's stop ends the drawing
+    (the submission review's note N2).
+- **While the window is not active** (unfocused, minimised or of zero size) the application gets no input tick, so
+  the line stays as it was, and the window loop has stopped the extra drawing (`docs/window-design.md` §8). On return
+  `--` shows for a second.
+- **With the level at 0 for the whole run nothing of this exists:** no image is made, no quad, no publication of the
+  top layer and no request.
+- **At the run's end** the layer destroys its quads and gives up its images when the window loop has ended, before
+  the scene bridge ends (`apps/codekarl/src/windowed.rs`). So the end-of-run resource record holds nothing on its
+  account.
+- **Disclosed, not designed for:**
+  - one second is slow: a single slow frame barely moves the number;
+  - with frames shown the game draws more, and uses more power, than with the line off;
+  - while the window is unfocused the line shows its last text, which may be out of date;
+  - a glyph's image may show the checker for a frame or two the first time it is used;
+  - read in the code: while the resource service refuses an image or the top layer a quad, the layer logs a `warn`
+    in `debug` at every input tick (the submission review's note N4).
+- **Not there:** a level above 1, or any other metric; a page of the settings window for the two settings, which the
+  owner named "development", and the input tab's row for the key (both the design's slice 4); a Lua call that writes
+  to the layer; the shell.
+- **Not for tests:** no test of another feature reads the line or its number.
+- **Tests,** with no window and no GPU. None sleeps: every time is given.
+  - `apps/codekarl/src/debug_layer.rs` has eight:
+    - the average (`shown_rate_uses_interval_average_and_bounds_tight_samples`), the colour parser and a glyph's
+      pixels;
+    - the line's rectangle with a UI pixel of 2, 3 and 4 screen pixels, on displays of one and of two pixels a point
+      (`line_rectangle_uses_the_top_layers_ui_units_across_scales_and_backing_ratios`);
+    - the strip and the glyphs of `-- fps`, in the theme's colours and in each fallback;
+    - a line that publishes only when it changes, reuses its images after a resize and a change of scale, and gives
+      them up at the end;
+    - `60 updates` from given update times, and nothing at level 0.
+  - `ui_link/input_tick_tests.rs` has two. In one a press steps 0 to 1 to 0, with each step written and typed entries
+    in the same tick, and a captured F3 steps nothing. In the other a press acts with the pause menu's block on, and a
+    run with no layer warns once.
+  - `settings.rs` has the calls, their errors, the file, the reset and the request for drawing at every refresh.
+    `config.rs` has the keys in both files, the action bound without a game and rebound by the settings file, and the
+    counts: 18 actions that can be rebound and a game's 24 bindings.
+  - **No test opens a window or shows the line on a display.** Seeing it is the owner's, by hand: F3 for `-- fps` and
+    then the number; 30, 60 and the display's rate with the limit at 30, at 60 and at "none"; the line above a tooltip
+    and above the pause menu; F3 in the menu and while typing a save's name; and the line keeping its corner, and its
+    size beside the UI's text, after a resize.
 
 ## 4. Packages and ownership
 
