@@ -22,9 +22,9 @@ fn graphics_is_the_second_settings_tab_and_has_window_mode_and_frame_rate_rows()
         r#"
 local s = require("lib.settings_window").current()
 expect(s.tabs.graphics ~= nil, "graphics is a settings tab")
-eq(#s.tab_order, 4)
+eq(#s.tab_order, 5)
 eq(s.tab_order[1], "general") eq(s.tab_order[2], "graphics")
-eq(s.tab_order[3], "map") eq(s.tab_order[4], "input")
+eq(s.tab_order[3], "map") eq(s.tab_order[4], "input") eq(s.tab_order[5], "development")
 mark_settings()
 "#,
         r#"

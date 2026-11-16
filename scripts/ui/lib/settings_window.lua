@@ -14,8 +14,8 @@ local list_look = require("lib.list_look")
 
 local P = ui.P
 local WHITE = "ui/theme/white.png"
-local SIDE_TABS = {"general", "graphics", "map", "input"}
-local WIDTH_TABS = {"general", "graphics", "map", "input"}
+local SIDE_TABS = {"general", "graphics", "map", "input", "development"}
+local WIDTH_TABS = {"general", "graphics", "map", "input", "development"}
 local LABEL_WIDTH = 84 * P
 local SLIDER_WIDTH = 80 * P
 local KEY_WIDTH = (font.layout("press a key").width + 8) * P
@@ -27,7 +27,7 @@ local INPUT_GROUPS = {
     {"time_speed_3", "speed 3"}, {"time_speed_4", "speed 4"}, {"time_speed_5", "speed 5"},
     {"time_faster", "faster"}, {"time_slower", "slower"}}},
   {"game", {{"game_quicksave", "quicksave"}, {"game_quickload", "quickload"}, {"window_fullscreen", "fullscreen"},
-    {"close", "menu"}}},
+    {"debug_layer", "debug layer"}, {"close", "menu"}}},
   {"map", {{"map_pan_left", "pan left"}, {"map_pan_right", "pan right"}, {"map_pan_up", "pan up"},
     {"map_pan_down", "pan down"}, {"map_zoom_in", "zoom in"}, {"map_zoom_out", "zoom out"}}},
 }
@@ -269,7 +269,7 @@ local function add_defaults(state, page, tab, y)
     x = 0, y = y, text = "defaults", kind = "window", group = page.group, owner = page.owner,
     on_click = function()
       local setting = tab == "general" and "tooltips" or tab == "bindings" and "bindings"
-        or tab == "graphics" and "graphics" or "map"
+        or tab == "graphics" and "graphics" or tab == "development" and "debug" or "map"
       settings.reset(setting)
       if tab == "graphics" then
         list_look.refresh()
@@ -523,11 +523,54 @@ local function show_map(state, page)
   add_defaults(state, page, "map", state.content_height - 18 * P)
 end
 
+local DEBUG_LEVEL_CHOICES = {"off", "1"}
+local DEBUG_RATE_CHOICES = {"frames", "updates"}
+
+-- Lights the choice the layer is in force with, on both rows: what the host reports, not what was last clicked.
+local function show_debug_values(state)
+  local values = settings.debug()
+  local rows = {
+    {state.controls.debug_level, DEBUG_LEVEL_CHOICES, values.level == 0 and "off" or "1"},
+    {state.controls.debug_rate, DEBUG_RATE_CHOICES, values.rate},
+  }
+  for _, row in ipairs(rows) do
+    for index, control in ipairs(row[1] or {}) do control:set_selected(row[2][index] == row[3]) end
+  end
+end
+
+local function show_development(state, page)
+  local values = settings.debug()
+  local widest = math.max(font.layout("debug layer level").width, font.layout("rate shown").width)
+  local column = (widest + 6) * P -- the labels are shown whole on this page
+  local text_colour = theme.colour("text")
+  label_at(page.group, 0, 2 * P, "debug layer level", text_colour, column)
+  state.controls.debug_level = button.flow{
+    x = column, y = 0, room = page.room - column,
+    items = DEBUG_LEVEL_CHOICES, selected = values.level == 0 and "off" or "1",
+    group = page.group, owner = page.owner, kind = "window",
+    on_choose = function(choice)
+      settings.set("debug.level", choice == "off" and 0 or 1)
+      show_debug_values(state)
+    end,
+  }
+  label_at(page.group, 0, 22 * P, "rate shown", text_colour, column)
+  state.controls.debug_rate = button.flow{
+    x = column, y = 20 * P, room = page.room - column,
+    items = DEBUG_RATE_CHOICES, selected = values.rate,
+    group = page.group, owner = page.owner, kind = "window",
+    on_choose = function(choice)
+      settings.set("debug.rate", choice)
+      show_debug_values(state)
+    end,
+  }
+  add_defaults(state, page, "development", state.content_height - 18 * P)
+end
+
 local ACTION_LABEL = {
   close = "the menu", time_pause = "pause", time_speed_1 = "speed 1", time_speed_2 = "speed 2",
   time_speed_3 = "speed 3", time_speed_4 = "speed 4", time_speed_5 = "speed 5", time_faster = "faster",
   time_slower = "slower", game_quicksave = "quicksave", game_quickload = "quickload", window_fullscreen = "fullscreen",
-  map_pan_left = "pan left", map_pan_right = "pan right", map_pan_up = "pan up", map_pan_down = "pan down",
+  debug_layer = "debug layer", map_pan_left = "pan left", map_pan_right = "pan right", map_pan_up = "pan up", map_pan_down = "pan down",
   map_zoom_in = "zoom in", map_zoom_out = "zoom out",
 }
 
@@ -951,6 +994,7 @@ function settings_window.open(view)
     if name == "general" then show_general(self, page)
     elseif name == "graphics" then show_graphics(self, page)
     elseif name == "map" then show_map(self, page)
+    elseif name == "development" then show_development(self, page)
     else show_input(self, page) end
   end
   function state:relayout(next_view)
@@ -994,6 +1038,8 @@ function settings_window.update(update)
     and type(update.pixel_height) == "number" then
     update_graphics_controls(state, update.pixel_width, update.pixel_height)
   end
+  -- The debug key steps the level outside this window: the page follows it by the next update.
+  if state.selected == "development" then show_debug_values(state) end
   if state.waiting ~= nil and update ~= nil and update.pointer ~= nil then
     for _, event in ipairs(update.pointer.events or {}) do
       if event.kind == "down" and event.key ~= state.waiting.slot.key then
