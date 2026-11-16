@@ -71,6 +71,7 @@ fn sample_snapshot(generation: u64, scene: Option<Arc<SceneFrame>>) -> Snapshot 
             },
         }),
         scene,
+        top_layer: None,
         metrics: Metrics {
             points_width: 20,
             points_height: 20,

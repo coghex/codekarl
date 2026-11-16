@@ -142,6 +142,29 @@ fn narrow_layout(width: u32, expect_floor: bool) {
             "the panel is its floor wide, and passes the window"
         );
     }
+    if expect_floor {
+        assert_eq!(line(&rig, "place_tier "), "place_tier 3");
+        let geometries: Vec<(usize, f64, f64)> = notes(&rig)
+            .iter()
+            .filter_map(|line| {
+                let mut fields = line.strip_prefix("place_tab_geometry ")?.split_whitespace();
+                Some((
+                    fields.next()?.parse().ok()?,
+                    fields.next()?.parse().ok()?,
+                    fields.next()?.parse().ok()?,
+                ))
+            })
+            .collect();
+        assert_eq!(geometries.len(), 3, "{:?}", notes(&rig));
+        assert!((geometries[0].1 - 16.0).abs() < 0.01, "{:?}", notes(&rig));
+        for pair in geometries.windows(2) {
+            assert!(
+                (pair[1].1 - pair[0].1 - pair[0].2 - 2.0).abs() < 0.01,
+                "{:?}",
+                notes(&rig)
+            );
+        }
+    }
     // The tab carries the place name; the tabs are inside the panel, apart from each other and the close button, and clear of the empty title.
     assert_eq!(
         line(&rig, "fit "),

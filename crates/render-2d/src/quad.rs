@@ -386,6 +386,8 @@ pub struct Snapshot {
     pub quad: Option<PlacedQuad>,
     /// The latest ordered scene frame, or `None` before its first publication.
     pub scene: Option<Arc<SceneFrame>>,
+    /// The latest independent frame drawn after `scene`, or `None` before the top writer publishes.
+    pub top_layer: Option<Arc<SceneFrame>>,
     /// The metrics in force when this snapshot was made. Frame consumers use these metrics for placement.
     pub metrics: Metrics,
     /// The map lane: the map input, the camera computed for **these** metrics and where the enlarged map lands, or `None` when

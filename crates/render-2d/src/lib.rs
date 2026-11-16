@@ -53,7 +53,8 @@ mod vulkan_resident;
 mod vulkan_scene;
 
 pub use bridge::{
-    AttachRefused, Phase, QuadSink, SceneBridge, SceneWriter, WriteCounts, WriterTaken,
+    AttachRefused, Phase, QuadSink, SceneBridge, SceneWriter, TopLayerWriter, WriteCounts,
+    WriterTaken,
 };
 pub use ck_resources::{Assets, AssetsError, DecodeError, DecodeLimits, Image, TooLarge};
 pub use clear_only::ClearOnly;
@@ -73,7 +74,8 @@ pub use map::{
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal::timing::{
     EndError, FrameIntervals, FrameStats, Histogram, MetricsEndGuard, MetricsReading,
-    MetricsWindow, Percentile, RequestError, SceneStats, Tracked, Windows, now_ns,
+    MetricsWindow, Percentile, PresentedTimesReader, RequestError, SceneStats, Tracked, Windows,
+    now_ns,
 };
 /// The Vulkan presenter's frame-timing types (milestone 5.5, issue 6, part B), under a Vulkan path so that an `--all-features` build
 /// has no name clash with the Metal re-exports above: the application reads them through the backend and never names the GPU crate

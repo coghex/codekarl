@@ -264,7 +264,10 @@ impl ResidentAdapter {
 
 /// The late-bound setter of the draw-rate limit: a backend presenter's.
 type LimitSetter = Arc<dyn Fn(Option<u32>) + Send + Sync>;
-
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the two independently ordered relay deliveries each have their own reentrancy and redelivery flags"
+)]
 #[derive(Default)]
 struct RelayState {
     connected: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -276,6 +279,10 @@ struct RelayState {
     delivering: bool,
     /// The limit or the setter changed while a delivery was under way: the delivering thread gives the latest again.
     redeliver: bool,
+    draw_every_refresh: bool,
+    refresh_setter: Option<Arc<dyn Fn(bool) + Send + Sync>>,
+    refresh_delivering: bool,
+    refresh_redeliver: bool,
 }
 
 /// Ends a frame-limit delivery that unwinds: a setter that panics must not leave the relay believing a delivery is under way for ever.
@@ -356,6 +363,52 @@ impl WakeRelay {
     /// Disconnects the limit setter; the limit stays. A delivery already under way can still finish its one call.
     pub fn disconnect_frame_limit(&self) {
         self.lock().limit_setter = None;
+    }
+
+    /// Keeps the latest continuous-draw setting and delivers it in order to a connected presenter.
+    pub fn set_draw_every_refresh(&self, enabled: bool) {
+        self.lock().draw_every_refresh = enabled;
+        self.deliver_draw_every_refresh();
+    }
+
+    /// Connects a presenter's continuous-draw setter and gives it the setting in force.
+    pub fn connect_draw_every_refresh(&self, setter: Arc<dyn Fn(bool) + Send + Sync>) {
+        self.lock().refresh_setter = Some(setter);
+        self.deliver_draw_every_refresh();
+    }
+
+    /// Disconnects the setter after the presenter ends.
+    pub fn disconnect_draw_every_refresh(&self) {
+        self.lock().refresh_setter = None;
+    }
+
+    fn deliver_draw_every_refresh(&self) {
+        {
+            let mut state = self.lock();
+            if state.refresh_delivering {
+                state.refresh_redeliver = true;
+                return;
+            }
+            state.refresh_delivering = true;
+        }
+        loop {
+            let (setter, enabled) = {
+                let mut state = self.lock();
+                state.refresh_redeliver = false;
+                (
+                    state.refresh_setter.as_ref().map(Arc::clone),
+                    state.draw_every_refresh,
+                )
+            };
+            if let Some(setter) = setter {
+                setter(enabled);
+            }
+            let mut state = self.lock();
+            if !state.refresh_redeliver {
+                state.refresh_delivering = false;
+                return;
+            }
+        }
     }
 
     /// Gives the presenter the latest kept limit, never an older one.

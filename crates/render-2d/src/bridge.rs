@@ -117,6 +117,7 @@ impl std::error::Error for AttachRefused {}
 struct State {
     scene: Option<Quad>,
     frame: Option<Arc<SceneFrame>>,
+    top_frame: Option<Arc<SceneFrame>>,
     hit_regions: Option<Arc<HitRegions>>,
     map: Option<Arc<MapInput>>,
     camera: Option<Arc<MapCamera>>,
@@ -137,6 +138,7 @@ struct State {
     phase: Phase,
     counts: WriteCounts,
     writer_taken: bool,
+    top_writer_taken: bool,
 }
 
 /// What a change displaced: dropped by the caller after the lock is released.
@@ -147,6 +149,7 @@ struct Displaced {
     snapshot: Option<Snapshot>,
     sink: Option<Arc<dyn QuadSink>>,
     frame: Option<Arc<SceneFrame>>,
+    top_frame: Option<Arc<SceneFrame>>,
     hit_regions: Option<Arc<HitRegions>>,
     map: Option<Arc<MapInput>>,
     camera: Option<Arc<MapCamera>>,
@@ -178,6 +181,7 @@ impl State {
             requested: self.scene.is_some(),
             quad,
             scene: self.frame.as_ref().map(Arc::clone),
+            top_layer: self.top_frame.as_ref().map(Arc::clone),
             metrics: *metrics,
         })
     }
@@ -216,6 +220,7 @@ impl State {
 pub struct SceneBridge {
     state: Mutex<State>,
     registry: RegistryId,
+    top_registry: RegistryId,
     limits: SceneLimits,
     #[cfg(test)]
     live_frames: Arc<AtomicUsize>,
@@ -257,16 +262,20 @@ impl SceneBridge {
         let limits = limits.validate()?;
         let registry =
             RegistryId::allocate().expect("the process-wide scene identity counter is available");
+        let top_registry =
+            RegistryId::allocate().expect("the process-wide scene identity counter is available");
         #[cfg(test)]
         let live_frames = Arc::new(AtomicUsize::new(0));
         Ok(Arc::new(Self {
             registry,
+            top_registry,
             limits,
             #[cfg(test)]
             live_frames,
             state: Mutex::new(State {
                 scene: None,
                 frame: None,
+                top_frame: None,
                 hit_regions: None,
                 map: None,
                 camera: None,
@@ -282,6 +291,7 @@ impl SceneBridge {
                 phase: Phase::Before,
                 counts: WriteCounts::default(),
                 writer_taken: false,
+                top_writer_taken: false,
             }),
         }))
     }
@@ -311,12 +321,45 @@ impl SceneBridge {
             return Err(WriterTaken);
         }
         state.writer_taken = true;
-        Ok(SceneWriter {
+        Ok(self.writer(
+            self.registry,
+            self.limits.max_quads,
+            self.limits.max_groups,
+            false,
+        ))
+    }
+
+    /// Takes the independent, small writer for quads drawn after the scene.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WriterTaken`] if the top writer was already taken.
+    ///
+    pub fn take_top_writer(self: &Arc<Self>) -> Result<TopLayerWriter, WriterTaken> {
+        let mut state = self.lock();
+        if state.top_writer_taken {
+            return Err(WriterTaken);
+        }
+        state.top_writer_taken = true;
+        Ok(TopLayerWriter {
+            inner: self.writer(self.top_registry, 1_024, 16, true),
+        })
+    }
+
+    fn writer(
+        self: &Arc<Self>,
+        registry: RegistryId,
+        quads: u32,
+        groups: u32,
+        top: bool,
+    ) -> SceneWriter {
+        SceneWriter {
             bridge: Arc::clone(self),
-            edits: EditScene::new(self.registry, self.limits.max_quads, self.limits.max_groups),
+            edits: EditScene::new(registry, quads, groups),
             compat: RefCell::new(None),
             dirty: Cell::new(false),
             frame_number: 0,
+            top,
             spare: Vec::new(),
             #[cfg(test)]
             frame_counter: Arc::clone(&self.live_frames),
@@ -325,7 +368,7 @@ impl SceneBridge {
             #[cfg(test)]
             frame_drop_hook: None,
             not_sync: PhantomData,
-        })
+        }
     }
 
     /// Clones the latest immutable hit regions, if the scene has been published.
@@ -435,13 +478,16 @@ impl SceneBridge {
                 state.generation += 1;
             }
             displaced.frame = state.frame.take();
+            displaced.top_frame = state.top_frame.take();
             displaced.hit_regions = state.hit_regions.take();
             displaced.map = state.map.take();
             displaced.camera = state.camera.take();
             displaced.mode = state.mode.take();
             // Replace the consumer's latest snapshot before detaching it, so an idle sink cannot pin the scene frame or the map.
             if state.phase == Phase::Attached
-                && (displaced.frame.is_some() || displaced.map.is_some())
+                && (displaced.frame.is_some()
+                    || displaced.top_frame.is_some()
+                    || displaced.map.is_some())
             {
                 displaced.snapshot = state.publish();
             }
@@ -700,6 +746,7 @@ pub struct SceneWriter {
     compat: RefCell<Option<FrameQuad>>,
     dirty: Cell<bool>,
     frame_number: u64,
+    top: bool,
     spare: Vec<FrameQuad>,
     #[cfg(test)]
     frame_counter: Arc<AtomicUsize>,
@@ -709,6 +756,170 @@ pub struct SceneWriter {
     frame_drop_hook: Option<crate::scene::FrameDropHook>,
     /// `Cell` is `Send` but not `Sync`, which makes the writer the same.
     not_sync: PhantomData<Cell<()>>,
+}
+
+/// The independent quads drawn above the scene. It has the scene's editing operations and no compatibility or hit APIs.
+#[derive(Debug)]
+pub struct TopLayerWriter {
+    inner: SceneWriter,
+}
+
+impl TopLayerWriter {
+    /// Creates a quad on top of the current top-layer quads.
+    ///
+    /// # Errors
+    ///
+    /// Returns `QuadError` if geometry is invalid, the top layer is full, or the texture reference is invalid.
+    pub fn create_quad(
+        &mut self,
+        texture: TextureRef<ResourceState>,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> Result<QuadKey, QuadError> {
+        self.inner.create_quad(texture, x, y, width, height)
+    }
+    /// Creates a quad in the requested top-layer group.
+    ///
+    /// # Errors
+    ///
+    /// Returns `QuadError` if geometry is invalid, the group is unusable, or the top layer is full.
+    pub fn create_quad_in(
+        &mut self,
+        group: Option<GroupKey>,
+        texture: TextureRef<ResourceState>,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> Result<QuadKey, QuadError> {
+        self.inner
+            .create_quad_in(group, texture, x, y, width, height)
+    }
+    /// Creates an empty visible group above the current groups.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GroupError::Full`] when all 16 top-layer groups are in use.
+    pub fn create_group(&mut self) -> Result<GroupKey, GroupError> {
+        self.inner.create_group()
+    }
+    /// Raises a group above the other groups.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GroupError` for a stale or foreign group key.
+    pub fn raise_group(&mut self, key: GroupKey) -> Result<(), GroupError> {
+        self.inner.raise_group(key)
+    }
+    /// Lowers a group directly above the base group.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GroupError` for a stale or foreign group key.
+    pub fn lower_group(&mut self, key: GroupKey) -> Result<(), GroupError> {
+        self.inner.lower_group(key)
+    }
+    /// Raises the listed groups in the given order.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GroupError` if the list is invalid or names a group that is not live.
+    pub fn raise_groups(&mut self, keys: &[GroupKey]) -> Result<(), GroupError> {
+        self.inner.raise_groups(keys)
+    }
+    /// Shows or hides a group.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GroupError` for a stale or foreign group key.
+    pub fn set_group_visible(&mut self, key: GroupKey, visible: bool) -> Result<(), GroupError> {
+        self.inner.set_group_visible(key, visible)
+    }
+    /// Sets a group offset in window points.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GroupError` for an invalid key or offset.
+    pub fn set_group_offset(&mut self, key: GroupKey, x: f64, y: f64) -> Result<(), GroupError> {
+        self.inner.set_group_offset(key, x, y)
+    }
+    /// Sets or clears a group clip in window points.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GroupError` for a stale key or invalid clip.
+    pub fn set_group_clip(
+        &mut self,
+        key: GroupKey,
+        clip: Option<PointRect>,
+    ) -> Result<(), GroupError> {
+        self.inner.set_group_clip(key, clip)
+    }
+    /// Destroys a group and its quads.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GroupError` for a stale or foreign group key.
+    pub fn destroy_group(&mut self, key: GroupKey) -> Result<(), GroupError> {
+        self.inner.destroy_group(key)
+    }
+    /// Returns the number of non-base groups.
+    pub fn group_count(&self) -> u32 {
+        self.inner.group_count()
+    }
+    /// Moves a quad without changing its order or texture.
+    ///
+    /// # Errors
+    ///
+    /// Returns `QuadError` for an invalid key or non-finite coordinates.
+    pub fn set_position(&mut self, key: QuadKey, x: f64, y: f64) -> Result<(), QuadError> {
+        self.inner.set_position(key, x, y)
+    }
+    /// Sets a quad tint.
+    ///
+    /// # Errors
+    ///
+    /// Returns `QuadError` for a foreign or stale quad key.
+    pub fn set_tint(&mut self, key: QuadKey, tint: crate::Tint) -> Result<(), QuadError> {
+        self.inner.set_tint(key, tint)
+    }
+    /// Changes a quad rectangle.
+    ///
+    /// # Errors
+    ///
+    /// Returns `QuadError` for an invalid key or invalid geometry.
+    pub fn set_rect(
+        &mut self,
+        key: QuadKey,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> Result<(), QuadError> {
+        self.inner.set_rect(key, x, y, width, height)
+    }
+    /// Destroys a quad.
+    ///
+    /// # Errors
+    ///
+    /// Returns `QuadError` if the key is foreign or stale.
+    pub fn destroy_quad(&mut self, key: QuadKey) -> Result<(), QuadError> {
+        self.inner.destroy_quad(key)
+    }
+    /// Returns the number of live quads.
+    pub fn quad_count(&self) -> u32 {
+        self.inner.quad_count()
+    }
+    /// Publishes one frame if the top layer changed.
+    pub fn publish(&mut self) -> bool {
+        self.inner.publish()
+    }
+    /// Returns whether writes are now discarded.
+    pub fn is_ended(&self) -> bool {
+        self.inner.is_ended()
+    }
 }
 
 impl SceneWriter {
@@ -1026,11 +1237,15 @@ impl SceneWriter {
         }
 
         self.edits.build(&mut self.spare);
-        let hit_regions = Arc::new(self.edits.publish_hits());
+        let hit_regions = (!self.top).then(|| Arc::new(self.edits.publish_hits()));
         let next_number = self.frame_number.saturating_add(1);
         let frame = Arc::new(SceneFrame::new(
             next_number,
-            self.compat.borrow().clone(),
+            if self.top {
+                None
+            } else {
+                self.compat.borrow().clone()
+            },
             std::mem::take(&mut self.spare),
             #[cfg(test)]
             Arc::clone(&self.frame_counter),
@@ -1049,8 +1264,14 @@ impl SceneWriter {
                 displaced.frame = Some(frame);
                 false
             } else {
-                displaced.frame = state.frame.replace(Arc::clone(&frame));
-                displaced.hit_regions = state.hit_regions.replace(hit_regions);
+                displaced.frame = if self.top {
+                    state.top_frame.replace(Arc::clone(&frame))
+                } else {
+                    state.frame.replace(Arc::clone(&frame))
+                };
+                if let Some(hit_regions) = hit_regions {
+                    displaced.hit_regions = state.hit_regions.replace(hit_regions);
+                }
                 state.generation += 1;
                 state.counts.published += 1;
                 displaced.snapshot = state.publish();

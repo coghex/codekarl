@@ -12,7 +12,7 @@
 
 static id ck_input_filter = nil;
 static _Atomic uint64_t ck_dropped;
-/* Non-owning test identity token: compared only with contentView.layer, never dereferenced. */
+/* Non-owning test identity token: compared by pointer with the live layers of a content view, never dereferenced. */
 static __unsafe_unretained CALayer *ck_rig_layer;
 static NSDictionary *ck_minimise_target;
 static NSDictionary *ck_last_poll_target;
@@ -31,11 +31,31 @@ static uint64_t ck_uptime_raw_ns(void) {
     return (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
 }
 
+/* The one rule for "this window is the rig's": its content view hosts the token layer, meaning the content view's layer is the token or
+ * has it as a direct sublayer (the window module puts the Metal layer under the view's own root layer). Both layers are compared by
+ * pointer identity against the live root and its children, so the token is never messaged and may be stale. A nil token or root
+ * matches nothing. */
+static BOOL ck_window_hosts_layer(NSWindow *window, CALayer *token) {
+    CALayer *root = window.contentView.layer;
+    if (token == nil || root == nil) {
+        return NO;
+    }
+    if (root == token) {
+        return YES;
+    }
+    for (CALayer *child in root.sublayers) {
+        if (child == token) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 static NSDictionary *ck_window_target(NSWindow *window) {
     if (window == nil) {
         return @{@"window_number": [NSNull null], @"matches_rig_layer": @NO};
     }
-    BOOL matches = ck_rig_layer != nil && window.contentView.layer == ck_rig_layer;
+    BOOL matches = ck_window_hosts_layer(window, ck_rig_layer);
     return @{@"window_number": @(window.windowNumber), @"matches_rig_layer": @(matches)};
 }
 
@@ -54,7 +74,7 @@ static NSWindow *ck_window_for_layer(NSArray<NSWindow *> *windows, CALayer *laye
     NSWindow *match = nil;
     NSUInteger count = 0;
     for (NSWindow *window in windows) {
-        if (layer != nil && window.contentView.layer == layer) {
+        if (ck_window_hosts_layer(window, layer)) {
             match = window;
             count++;
         }
@@ -251,7 +271,7 @@ int32_t ck_t_open_minimise_decoy(uint64_t *decoy_window_number,
             *first_object_window_number = first == nil ? UINT64_MAX : (uint64_t)first.windowNumber;
         }
         if (first_object_matches_rig != NULL) {
-            *first_object_matches_rig = (uint64_t)(ck_rig_layer != nil && first.contentView.layer == ck_rig_layer);
+            *first_object_matches_rig = (uint64_t)ck_window_hosts_layer(first, ck_rig_layer);
         }
         return ck_minimise_decoy != nil ? 1 : 0;
     }
@@ -290,7 +310,7 @@ void ck_t_close_minimise_decoy(void) {
 int32_t ck_t_rig_is_miniaturized(void) {
     @autoreleasepool {
         for (NSWindow *window in NSApp.windows) {
-            if (ck_rig_layer != nil && window.contentView.layer == ck_rig_layer) {
+            if (ck_window_hosts_layer(window, ck_rig_layer)) {
                 return window.miniaturized ? 1 : 0;
             }
         }
@@ -314,7 +334,7 @@ void ck_t_print_minimise_diagnostics(const char *phase, uint64_t observed_ms,
                 @"miniaturized": @(window.isMiniaturized),
                 @"style_mask": @(window.styleMask),
                 @"occlusion_state": @(window.occlusionState),
-                @"matches_rig_layer": @(ck_rig_layer != nil && window.contentView.layer == ck_rig_layer),
+                @"matches_rig_layer": @(ck_window_hosts_layer(window, ck_rig_layer)),
             }];
         }
         NSArray<NSDictionary *> *will_rows = ck_window_notifications(ck_will_minimise ?: [NSMutableArray array]);
@@ -382,7 +402,7 @@ static id ck_occlusion_observer;
 
 static NSWindow *ck_rig_window(void) {
     for (NSWindow *window in NSApp.windows) {
-        if (ck_rig_layer != nil && window.contentView.layer == ck_rig_layer) {
+        if (ck_window_hosts_layer(window, ck_rig_layer)) {
             return window;
         }
     }

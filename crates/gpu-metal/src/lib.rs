@@ -149,12 +149,14 @@
 //!   cells) over its destination. **Adjacent** instances with the same texture are one instanced draw; nothing is sorted
 //!   by texture, so painter order holds. The legacy quad is drawn first, below every scene quad, with its own texture and
 //!   sampler.
-//! - **The instance buffer** is one shared-storage buffer for `max_quads` instances ([`SceneLimits`]), charged to
+//! - **The instance buffer** is one shared-storage buffer for `max_quads` scene instances, the fixed top-layer allowance
+//!   and one compatibility instance ([`SceneLimits`]), charged to
 //!   `binding_geometry_bytes` at its measured `allocatedSize`; a configuration that does not fit is a setup failure naming
 //!   both numbers. One buffer is enough only because the presenter keeps one frame in flight: the previous frame's
 //!   **command completion token** is read before the first write of a frame (never a drawable's or an upload's), and a
 //!   frame step that finds the buffer in use writes nothing and tries again. Raising the cap needs a buffer per frame in
-//!   flight. A source emitting more than `max_quads` draws the first `max_quads` and the rest are counted as dropped.
+//!   flight. A scene emitting more than `max_quads` draws its first `max_quads` valid instances; the independent top layer
+//!   has its own limit and neither layer crowds out the other.
 //! - **The checker's startup contract.** The window opens and the presenter starts at once; the checker is uploaded on the
 //!   shared queue with its own completion token, **no frame is committed until it is resident**, and its completion alone
 //!   (the store's `completed` wake) makes the waiting first frame run, so the first committed frame already shows
@@ -242,9 +244,9 @@ pub use metrics::{
 };
 pub use presenter::{
     CapturedFrame, CleanupResult, ErrorPoll, FrameLimitSetter, Gate, MarksProbe, MetalPresenter,
-    MetricsEndGuard, MetricsReading, NeverComplete, Observer, PauseSite, PresenterReport,
-    ReadbackImage, ReadbackInstance, ReadbackPath, ReadbackTexture, TestHooks, TimingProbe,
-    TimingReplacement, WaitPause, readback_clear, readback_quad, readback_scene,
+    MetricsEndGuard, MetricsReading, NeverComplete, Observer, PauseSite, PresentedTimesReader,
+    PresenterReport, ReadbackImage, ReadbackInstance, ReadbackPath, ReadbackTexture, TestHooks,
+    TimingProbe, TimingReplacement, WaitPause, readback_clear, readback_quad, readback_scene,
     readback_scene_counted,
 };
 pub use quad::{

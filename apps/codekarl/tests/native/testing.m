@@ -658,7 +658,7 @@ void ck_app_t_schedule_map_select(void) {
                 stage = 5;
             } else if (stage == 5 && ck_app_marker(ck_app_map_select_dir, "place-raised")) {
                 ck_app_ui_pointer_line("before-title-drag");
-                result = ck_app_t_ui_drag(window, 20.0, 70.0, 50.0, 90.0);
+                result = ck_app_t_ui_drag(window, 90.0, 70.0, 120.0, 90.0);
                 ck_app_write_marker(ck_app_map_select_dir, "title-drag-injected");
                 ck_app_map_select_transition(stage, 6, "place-raised");
                 stage = 6;

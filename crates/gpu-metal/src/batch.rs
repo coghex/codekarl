@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::{BuildHasher, Hash};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::frame::{InstanceRole, MetalInstance, MetalSceneSource};
 use crate::quad::DestinationRect;
@@ -60,7 +61,7 @@ pub struct FrameCounters {
     pub checker: u64,
     /// Instances the presenter rejected as invalid (not finite, outside 0 to 1, or empty); they took no slot.
     pub skipped: u64,
-    /// Instances beyond `max_quads`, which are not drawn.
+    /// Valid scene or top-layer instances beyond their respective limits, plus any instances beyond buffer capacity.
     pub dropped: u64,
     /// Instances whose native slot was outside the pinned table (bindless path): never written, never drawn, counted here.
     pub slot_skipped: u64,
@@ -110,8 +111,8 @@ pub(crate) enum Layout {
         /// The entry count of the pinned table: a slot at or beyond it is never written (counted, skipped).
         texture_slots: u32,
         /// The most instances one draw takes. A run is split only where this requires it, in order, so painter order holds.
-        /// Named limits are the instance buffer's capacity (`max_quads`, which `capacity` already bounds) and, in tests, an
-        /// injected smaller value; Metal documents no smaller `instanceCount` limit than `u32` for this device family.
+        /// Named limits are the instance buffer's capacity (which `capacity` already bounds) and, in tests, an injected
+        /// smaller value; Metal documents no smaller `instanceCount` limit than `u32` for this device family.
         chunk: u32,
         /// Tests only: the `n`-th drawn instance's slot is replaced by one past the table (a forced out-of-range slot).
         force_out_of_range_at: Option<usize>,
@@ -426,6 +427,89 @@ pub(crate) fn build_scene_in<K: Copy + Eq + Hash, S: BuildHasher>(
     Built { counters, gated }
 }
 
+/// Builds a scene followed by its independent top layer. The top source cannot emit the compatibility role.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "same frame scratch and callbacks as build_scene_in, with two independent sources"
+)]
+pub(crate) fn build_scene_layers_in<K: Copy + Eq + Hash, S: BuildHasher>(
+    layout: Layout,
+    scene: Option<&dyn MetalSceneSource<K>>,
+    top_layer: Option<&dyn MetalSceneSource<K>>,
+    size: (u32, u32),
+    scene_capacity: usize,
+    top_capacity: usize,
+    capacity: usize,
+    write: &mut dyn FnMut(usize, InstanceRecord),
+    resolve: &mut dyn FnMut(K) -> Option<Resolved>,
+    compat_expected: bool,
+    compat: &mut dyn FnMut(Option<&MetalInstance<K>>) -> CompatDecision,
+    resolved: &mut HashMap<K, Option<Resolved>, S>,
+    batches: &mut Vec<Batch>,
+) -> Built {
+    struct Layers<'a, K> {
+        scene: Option<&'a dyn MetalSceneSource<K>>,
+        top: Option<&'a dyn MetalSceneSource<K>>,
+        scene_capacity: usize,
+        top_capacity: usize,
+        dropped: AtomicU64,
+    }
+    impl<K> MetalSceneSource<K> for Layers<'_, K> {
+        fn place(&self, width: u32, height: u32, out: &mut dyn FnMut(MetalInstance<K>)) {
+            let mut scene_drawn = 0;
+            if let Some(scene) = self.scene {
+                scene.place(width, height, &mut |instance| {
+                    if instance.role != InstanceRole::Compat && instance.is_valid() {
+                        if scene_drawn >= self.scene_capacity {
+                            self.dropped.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
+                        scene_drawn += 1;
+                    }
+                    out(instance);
+                });
+            }
+            let mut top_drawn = 0;
+            if let Some(top) = self.top {
+                top.place(width, height, &mut |mut instance| {
+                    instance.role = InstanceRole::Scene;
+                    if instance.is_valid() {
+                        if top_drawn >= self.top_capacity {
+                            self.dropped.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
+                        top_drawn += 1;
+                    }
+                    out(instance);
+                });
+            }
+        }
+    }
+    let layers = Layers {
+        scene,
+        top: top_layer,
+        scene_capacity,
+        top_capacity,
+        dropped: AtomicU64::new(0),
+    };
+    let mut built = build_scene_in(
+        layout,
+        &layers,
+        size,
+        capacity,
+        write,
+        resolve,
+        compat_expected,
+        compat,
+        resolved,
+        batches,
+    );
+    if !built.gated {
+        built.counters.dropped += layers.dropped.load(Ordering::Relaxed);
+    }
+    built
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,6 +637,200 @@ mod tests {
         assert_eq!(got.counters.instances, 4);
         assert_eq!((got.counters.batches, got.counters.texture_binds), (3, 3));
         assert_eq!((got.counters.resolved, got.counters.checker), (4, 0));
+    }
+
+    #[test]
+    fn an_independent_top_layer_fits_after_a_full_scene_and_can_draw_without_one() {
+        let scene = Fixed(vec![instance(1, 0), instance(2, 4)]);
+        let top = Fixed(vec![instance(1, 8)]);
+        let mut written = Vec::new();
+        let mut resolved = HashMap::new();
+        let mut batches = Vec::new();
+        let built = build_scene_layers_in(
+            Layout::Ordinary,
+            Some(&scene),
+            Some(&top),
+            (100, 100),
+            2,
+            1,
+            3, // two scene slots and one independently budgeted top-layer slot
+            &mut |slot, record| written.push((slot, record)),
+            &mut |key| {
+                Some(Resolved {
+                    handle: handle(key as usize),
+                    slot: 0,
+                })
+            },
+            false,
+            &mut |_| CompatDecision::Gate,
+            &mut resolved,
+            &mut batches,
+        );
+        assert_eq!(built.counters.instances, 3);
+        assert_eq!(
+            written
+                .iter()
+                .map(|(_, record)| record.destination[0])
+                .collect::<Vec<_>>(),
+            [0.0, 4.0, 8.0]
+        );
+
+        written.clear();
+        let top_only = Fixed(vec![instance(2, 20)]);
+        let built = build_scene_layers_in(
+            Layout::Ordinary,
+            None,
+            Some(&top_only),
+            (100, 100),
+            0,
+            1,
+            1,
+            &mut |slot, record| written.push((slot, record)),
+            &mut |key| {
+                Some(Resolved {
+                    handle: handle(key as usize),
+                    slot: 0,
+                })
+            },
+            false,
+            &mut |_| CompatDecision::Gate,
+            &mut resolved,
+            &mut batches,
+        );
+        assert_eq!(built.counters.instances, 1);
+        assert!((written[0].1.destination[0] - 20.0).abs() < f32::EPSILON);
+    }
+
+    /// Fails with one shared pool: the excess scene quad takes the first top slot and drops the last top quad.
+    #[test]
+    fn full_scene_and_compat_leave_every_top_slot_available() {
+        let scene_capacity = 2;
+        let capacity = scene_capacity
+            + crate::frame::TOP_LAYER_MAX_QUADS
+            + crate::frame::COMPAT_INSTANCE_ALLOWANCE;
+        let mut compat = instance(9, -4);
+        compat.role = InstanceRole::Compat;
+        let scene = Fixed(vec![compat, instance(1, 0), instance(2, 4), instance(3, 8)]);
+        let top = Fixed(
+            (0..crate::frame::TOP_LAYER_MAX_QUADS)
+                .map(|index| instance(4, 100 + i32::try_from(index).unwrap()))
+                .collect(),
+        );
+        let mut written = Vec::new();
+        let mut resolved = HashMap::new();
+        let mut batches = Vec::new();
+        let built = build_scene_layers_in(
+            Layout::Ordinary,
+            Some(&scene),
+            Some(&top),
+            (2000, 100),
+            scene_capacity,
+            crate::frame::TOP_LAYER_MAX_QUADS,
+            capacity,
+            &mut |slot, record| written.push((slot, record)),
+            &mut |key| {
+                Some(Resolved {
+                    handle: handle(key as usize),
+                    slot: 0,
+                })
+            },
+            true,
+            &mut |entry| match entry {
+                Some(instance) => CompatDecision::Draw {
+                    texture: handle(9),
+                    destination: instance.destination,
+                    source: instance.source,
+                },
+                None => CompatDecision::Skip,
+            },
+            &mut resolved,
+            &mut batches,
+        );
+
+        let lefts: Vec<f32> = written
+            .iter()
+            .map(|(_, record)| record.destination[0])
+            .collect();
+        assert_eq!(written.len(), capacity);
+        assert_eq!(&lefts[..4], &[-4.0, 0.0, 4.0, 100.0]);
+        let top_count = u16::try_from(crate::frame::TOP_LAYER_MAX_QUADS).expect("fixed limit fits");
+        assert_eq!(lefts.last().copied(), Some(f32::from(100 + top_count - 1)));
+        assert!(
+            !lefts.contains(&8.0),
+            "scene overflow is the one dropped quad"
+        );
+        assert_eq!(built.counters.dropped, 1);
+    }
+
+    #[test]
+    fn compatibility_decision_uses_only_the_scene_when_a_top_layer_is_present() {
+        let mut entry = instance(9, -4);
+        entry.role = InstanceRole::Compat;
+        let scene = Fixed(vec![entry, instance(1, 0)]);
+        let top = Fixed(vec![instance(2, 4)]);
+        let mut decisions = Vec::new();
+        let mut resolved = HashMap::new();
+        let mut batches = Vec::new();
+        let mut written = Vec::new();
+        let _built = build_scene_layers_in(
+            Layout::Ordinary,
+            Some(&scene),
+            Some(&top),
+            (100, 100),
+            1,
+            1,
+            4,
+            &mut |slot, record| written.push((slot, record)),
+            &mut |key| {
+                Some(Resolved {
+                    handle: handle(key as usize),
+                    slot: 0,
+                })
+            },
+            true,
+            &mut |compat| {
+                decisions.push(compat.map(|instance| instance.key));
+                compat.map_or(CompatDecision::Skip, |instance| CompatDecision::Draw {
+                    texture: handle(instance.key as usize),
+                    destination: instance.destination,
+                    source: instance.source,
+                })
+            },
+            &mut resolved,
+            &mut batches,
+        );
+        assert_eq!(decisions, [Some(9)]);
+        assert_eq!(written.len(), 3);
+
+        let no_compat_scene = Fixed(Vec::new());
+        decisions.clear();
+        written.clear();
+        let _built = build_scene_layers_in(
+            Layout::Ordinary,
+            Some(&no_compat_scene),
+            Some(&top),
+            (100, 100),
+            1,
+            1,
+            3,
+            &mut |slot, record| written.push((slot, record)),
+            &mut |key| {
+                Some(Resolved {
+                    handle: handle(key as usize),
+                    slot: 0,
+                })
+            },
+            true,
+            &mut |compat| {
+                decisions.push(compat.map(|instance| instance.key));
+                CompatDecision::Skip
+            },
+            &mut resolved,
+            &mut batches,
+        );
+        assert_eq!(decisions, [None]);
+        assert_eq!(written.len(), 1);
+        assert!((written[0].1.destination[0] - 4.0).abs() < f32::EPSILON);
     }
 
     #[test]

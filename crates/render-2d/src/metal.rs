@@ -36,6 +36,7 @@ use std::ffi::c_void;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
+use ck_gpu_metal::PresentedTimesReader;
 use ck_gpu_metal::{
     BindlessLimits, CleanupResult as GpuCleanup, DestinationRect, EndError, FrameStats,
     LedgerLimits, MapRefusalSink as MetalRefusalSink, MetalContext, MetalFilter, MetalFrame,
@@ -509,16 +510,27 @@ impl SceneSink {
         snapshot: &Snapshot,
         scene: &MetalScene,
     ) -> MetalFrame<TextureKey> {
+        let scene_source = Self::source_of(
+            snapshot,
+            snapshot.scene.as_ref(),
+            true,
+            #[cfg(test)]
+            self.placements.as_ref(),
+        );
+        let top_source = Self::source_of(
+            snapshot,
+            snapshot.top_layer.as_ref(),
+            false,
+            #[cfg(test)]
+            self.placements.as_ref(),
+        );
         MetalFrame::new(
             scene.generation(),
             metal_filter(snapshot.filter),
             scene.quad().cloned(),
-            Self::source_of(
-                snapshot,
-                #[cfg(test)]
-                self.placements.as_ref(),
-            ),
+            scene_source,
         )
+        .with_top_layer(top_source)
         .with_map(scene.map().cloned())
         // The compatibility quad's key as plain data, in O(1), whether or not it places anything.
         .with_compat_key(
@@ -533,18 +545,25 @@ impl SceneSink {
     /// The scene source of `snapshot`: its frame and the metrics it was made with, shared, not placed.
     fn source_of(
         snapshot: &Snapshot,
+        frame: Option<&Arc<crate::SceneFrame>>,
+        include_compat: bool,
         #[cfg(test)] placements: Option<&Arc<std::sync::atomic::AtomicUsize>>,
     ) -> Option<Arc<dyn MetalSceneSource<TextureKey>>> {
-        let frame = Arc::clone(snapshot.scene.as_ref()?);
+        let frame = Arc::clone(frame?);
         #[cfg(test)]
         if let Some(counter) = placements {
-            return Some(Arc::new(SceneFrameSource::counting(
+            return Some(Arc::new(SceneFrameSource::counting_with_compat(
                 frame,
                 snapshot.metrics,
+                include_compat,
                 Arc::clone(counter),
             )));
         }
-        Some(Arc::new(SceneFrameSource::new(frame, snapshot.metrics)))
+        Some(Arc::new(SceneFrameSource::with_compat(
+            frame,
+            snapshot.metrics,
+            include_compat,
+        )))
     }
 }
 
@@ -752,7 +771,7 @@ pub struct ResourceBackendLimits {
     pub texture: TextureLimits,
     /// The revision ledger's limits (`max_adoptions_per_frame` is also the resident driver's adoption limit).
     pub ledger: LedgerLimits,
-    /// The most quads one frame draws (`[render] max_quads`): the instance buffer's room.
+    /// The most scene quads per frame (`[render] max_quads`); the independent top layer has its own fixed allowance.
     pub max_quads: usize,
     /// The budget the instance buffer's measured allocation must fit (`[render] binding_geometry_bytes`).
     pub binding_geometry_bytes: u64,
@@ -795,7 +814,8 @@ pub struct BackendTestHooks {
 pub(crate) mod timing {
     pub use ck_gpu_metal::{
         EndError, FrameIntervals, FrameStats, Histogram, MetricsEndGuard, MetricsReading,
-        MetricsWindow, Percentile, RequestError, SceneStats, Tracked, Windows, now_ns,
+        MetricsWindow, Percentile, PresentedTimesReader, RequestError, SceneStats, Tracked,
+        Windows, now_ns,
     };
 }
 
@@ -803,6 +823,7 @@ pub(crate) mod timing {
 pub struct MetalBackend {
     side: SinkSide,
     presenter: Option<MetalPresenter>,
+    presented_times: PresentedTimesReader,
     /// Present for a [`with_resources`](Self::with_resources) backend.
     resources: Option<Resources>,
 }
@@ -827,6 +848,7 @@ impl MetalBackend {
         Self {
             side: SinkSide::new(wake),
             presenter: None,
+            presented_times: PresentedTimesReader::default(),
             resources: None,
         }
     }
@@ -855,6 +877,7 @@ impl MetalBackend {
         Self {
             side: SinkSide::for_scenes(wake),
             presenter: None,
+            presented_times: PresentedTimesReader::default(),
             resources: Some(Resources {
                 service,
                 relay,
@@ -964,6 +987,12 @@ impl MetalBackend {
             .and_then(|presenter| presenter.read_metrics(id, within))
     }
 
+    /// A reader for the presenter's latest shown-frame times.
+    #[must_use]
+    pub fn presented_times_reader(&self) -> Option<PresentedTimesReader> {
+        Some(self.presented_times.clone())
+    }
+
     /// The whole run's figures so far.
     #[must_use]
     pub fn metrics_totals(&self) -> Option<FrameStats> {
@@ -975,6 +1004,7 @@ impl MetalBackend {
         if let Some(resources) = &self.resources {
             resources.relay.disconnect();
             resources.relay.disconnect_frame_limit();
+            resources.relay.disconnect_draw_every_refresh();
         }
     }
 
@@ -1008,7 +1038,7 @@ impl MetalBackend {
                 // constructor contract outlives the presenter (it is destroyed only after a `Proven` end), as
                 // `MetalPresenter::start_scene` requires.
                 unsafe {
-                    MetalPresenter::start_scene_bindless(
+                    MetalPresenter::start_scene_bindless_with_times(
                         layer,
                         (pixel_size.width, pixel_size.height),
                         desc.clear,
@@ -1020,6 +1050,7 @@ impl MetalBackend {
                         limits.bindless,
                         scene,
                         driver,
+                        &self.presented_times,
                     )
                 }
             }
@@ -1038,12 +1069,13 @@ impl MetalBackend {
                 ));
                 // SAFETY: the same contract as `start_scene` above.
                 unsafe {
-                    MetalPresenter::start_with_test_hooks(
+                    MetalPresenter::start_with_test_hooks_and_times(
                         layer,
                         (pixel_size.width, pixel_size.height),
                         desc.clear,
                         wake,
                         presenter_hooks,
+                        &self.presented_times,
                     )
                 }
             }
@@ -1056,6 +1088,9 @@ impl MetalBackend {
         resources
             .relay
             .connect_frame_limit(presenter.frame_limit_setter());
+        resources
+            .relay
+            .connect_draw_every_refresh(presenter.draw_every_refresh_setter());
         self.presenter = Some(presenter);
         Ok(())
     }
@@ -1087,12 +1122,13 @@ impl MetalBackend {
         // constructor contract outlives the presenter (it is destroyed only after a `Proven` end), as
         // `MetalPresenter::start_2d` requires.
         let started = unsafe {
-            MetalPresenter::start_2d(
+            MetalPresenter::start_2d_with_times(
                 layer,
                 (pixel_size.width, pixel_size.height),
                 desc.clear,
                 Arc::clone(&self.side.wake),
                 slot,
+                &self.presented_times,
             )
         };
         self.presenter = Some(started.map_err(|error| error.to_string())?);
@@ -1158,6 +1194,14 @@ impl Gpu2d for MetalBackend {
         }
     }
 
+    fn set_draw_every_refresh(&mut self, enabled: bool) {
+        if let Some(resources) = &self.resources {
+            resources.relay.set_draw_every_refresh(enabled);
+        } else if let Some(presenter) = &self.presenter {
+            presenter.set_draw_every_refresh(enabled);
+        }
+    }
+
     fn take_report(&mut self) -> Option<PresenterReport> {
         if let Some(report) = self.side.report() {
             return Some(report);
@@ -1169,6 +1213,10 @@ impl Gpu2d for MetalBackend {
                 GpuReport::FirstFrameQueued => PresenterReport::FirstFrameQueued,
                 GpuReport::Failed { message } => PresenterReport::Failed { message },
             })
+    }
+
+    fn presented_times_reader(&self) -> Option<PresentedTimesReader> {
+        MetalBackend::presented_times_reader(self)
     }
 
     fn request_stop(&mut self) {

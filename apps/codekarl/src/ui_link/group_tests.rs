@@ -1351,9 +1351,10 @@ fn open_and_raise_fixture_windows(rig: &mut Rig, markers: &std::path::Path) {
 fn move_fixture_place_window(rig: &mut Rig, markers: &std::path::Path) {
     std::fs::write(markers.join("title-drag-injected"), "x")
         .expect("the title drag stage reached the UI frame callback");
-    rig.feed(&[down(20.0, 70.0)]);
-    rig.feed(&[PointerEvent::Move(points(50.0, 90.0))]);
-    rig.feed(&[up(50.0, 90.0)]);
+    // The place tab now starts at the left of the title bar, so drag from the free title area.
+    rig.feed(&[down(90.0, 70.0)]);
+    rig.feed(&[PointerEvent::Move(points(120.0, 90.0))]);
+    rig.feed(&[up(120.0, 90.0)]);
     rig.deliver_fixture_frame();
     assert!(
         markers.join("title-moved").is_file(),

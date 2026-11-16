@@ -51,8 +51,19 @@ pub trait Gpu2d {
     /// As [`Presenter::request_redraw`].
     fn request_redraw(&mut self);
 
+    /// Requests continuous drawing. Backends that do not support it keep their default no-op.
+    fn set_draw_every_refresh(&mut self, enabled: bool) {
+        let _ = enabled;
+    }
+
     /// As [`Presenter::take_report`].
     fn take_report(&mut self) -> Option<PresenterReport>;
+
+    /// Returns the backend's live shown-frame time reader when it has one.
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn presented_times_reader(&self) -> Option<crate::PresentedTimesReader> {
+        None
+    }
 
     /// As [`Presenter::request_stop`].
     fn request_stop(&mut self);
@@ -91,6 +102,13 @@ impl<G: Gpu2d> Renderer<G> {
     pub fn gpu(&self) -> &G {
         &self.gpu
     }
+
+    /// Reads shown-frame times without waiting for or requesting another frame.
+    #[must_use]
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub fn presented_times_reader(&self) -> Option<crate::PresentedTimesReader> {
+        self.gpu.presented_times_reader()
+    }
 }
 
 impl<G: Gpu2d> Presenter for Renderer<G> {
@@ -126,6 +144,10 @@ impl<G: Gpu2d> Presenter for Renderer<G> {
         self.gpu.request_redraw();
     }
 
+    fn set_draw_every_refresh(&mut self, enabled: bool) {
+        self.gpu.set_draw_every_refresh(enabled);
+    }
+
     fn take_report(&mut self) -> Option<PresenterReport> {
         self.gpu.take_report()
     }
@@ -137,5 +159,63 @@ impl<G: Gpu2d> Presenter for Renderer<G> {
 
     fn poll_end(&mut self, within: Duration) -> Option<CleanupResult> {
         self.gpu.poll_end(within)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct FakeGpu(Arc<Mutex<Vec<bool>>>);
+
+    impl Gpu2d for FakeGpu {
+        type Handles = ();
+
+        fn new_sink(&mut self) -> Arc<dyn QuadSink> {
+            unreachable!("the forwarding test does not start a renderer")
+        }
+
+        fn start(
+            &mut self,
+            _handles: (),
+            _: &WindowDesc,
+            _: PixelSize,
+            _: Arc<dyn QuadSink>,
+        ) -> Result<(), String> {
+            unreachable!("the forwarding test does not start a renderer")
+        }
+
+        fn set_clear(&mut self, _: [f32; 3]) {}
+
+        fn set_pixel_size(&mut self, _: u32, _: u32) {}
+
+        fn request_redraw(&mut self) {}
+
+        fn set_draw_every_refresh(&mut self, enabled: bool) {
+            self.0.lock().expect("draw settings").push(enabled);
+        }
+
+        fn take_report(&mut self) -> Option<PresenterReport> {
+            None
+        }
+
+        fn request_stop(&mut self) {}
+
+        fn poll_end(&mut self, _: Duration) -> Option<CleanupResult> {
+            Some(CleanupResult::Proven)
+        }
+    }
+
+    #[test]
+    fn renderer_forwards_continuous_drawing_to_its_backend() {
+        let settings = Arc::new(Mutex::new(Vec::new()));
+        let mut renderer = Renderer::new(
+            FakeGpu(Arc::clone(&settings)),
+            SceneBridge::new(crate::Filter::Nearest),
+        );
+        Presenter::set_draw_every_refresh(&mut renderer, true);
+        Presenter::set_draw_every_refresh(&mut renderer, false);
+        assert_eq!(*settings.lock().expect("draw settings"), [true, false]);
     }
 }

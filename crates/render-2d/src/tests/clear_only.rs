@@ -122,6 +122,7 @@ fn snapshot(generation: u64, with_quad: bool) -> Snapshot {
             },
         }),
         scene: None,
+        top_layer: None,
         metrics: Metrics {
             points_width: 8,
             points_height: 8,

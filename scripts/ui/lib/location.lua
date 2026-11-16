@@ -1496,6 +1496,7 @@ function location:show(selection, tab)
     self.tabs = tabs.new{
       window = created,
       items = TABS,
+      align = "left",
       selected = self.key,
       on_select = function(key)
         self.key = key

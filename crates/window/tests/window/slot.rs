@@ -52,6 +52,7 @@ fn a_thousand_set_clear_calls_between_two_takes_give_one_change_with_the_last_co
             resize_pixels: None,
             mode: None,
             text_input: None,
+            draw_every_refresh: None,
             capture: None,
             bindings: None,
         }
@@ -61,6 +62,15 @@ fn a_thousand_set_clear_calls_between_two_takes_give_one_change_with_the_last_co
         RequestChanges::default(),
         "nothing changed since"
     );
+}
+
+#[test]
+fn continuous_drawing_requests_are_coalesced_to_the_latest_setting() {
+    let (_, writer, reader, _) = fixture();
+    writer.set_draw_every_refresh(true);
+    writer.set_draw_every_refresh(false);
+    assert_eq!(reader.take().draw_every_refresh, Some(false));
+    assert_eq!(reader.take(), RequestChanges::default());
 }
 
 #[test]

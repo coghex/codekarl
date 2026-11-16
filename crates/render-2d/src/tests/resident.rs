@@ -587,6 +587,21 @@ fn the_relay_keeps_the_frame_rate_limit_and_gives_it_to_a_presenter_connected_la
     assert_eq!(relay.frame_limit(), Some(30), "the limit is kept");
 }
 
+#[test]
+fn the_relay_delivers_the_latest_continuous_draw_setting_in_order() {
+    let relay = WakeRelay::default();
+    relay.set_draw_every_refresh(true);
+    relay.set_draw_every_refresh(false);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    relay.connect_draw_every_refresh(Arc::new(move |enabled| {
+        sink.lock().expect("lock").push(enabled);
+    }));
+    relay.set_draw_every_refresh(true);
+    relay.set_draw_every_refresh(false);
+    assert_eq!(*seen.lock().expect("lock"), [false, true, false]);
+}
+
 /// A setter that records what it was given and, for its first call with `hold`, stops until released: the pause a thread
 /// preempted inside the presenter's slot write would have. Bounded channel waits only; nothing sleeps.
 struct Held {

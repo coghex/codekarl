@@ -1704,8 +1704,8 @@ fn a_worker_that_fails_before_opening_the_pipe_is_released_reaped_and_removed_at
 
 /// The time the UI VM hears of on a real window, with each key posted once the log shows the one before took effect: the first
 /// `game_time` is the start state, Digit3 while paused delivers the new speed with no tick advanced, Space runs and delivers each
-/// hour, Space again pauses, and a quicksave then a quickload at the same hour delivers exactly one more (the reason `load`). The
-/// script logs every `game_time`; once paused or idle nothing more arrives.
+/// hour, Space again pauses, a quicksave delivers the cleared unsaved flag, and a quickload at the same hour delivers one more
+/// time (the reason `load`). The script logs every `game_time`; after the load, once paused or idle nothing more arrives.
 #[expect(
     clippy::too_many_lines,
     reason = "the script, the keys in the order the log releases them and the checks read best in one run"
@@ -1736,7 +1736,7 @@ function startup()
   end)
   local past_three = false
   game.on_time(function(t)
-    log.info(string.format('time %d %02d speed %d paused %s', t.day, t.hour, t.speed, tostring(t.paused)))
+    log.info(string.format('time %d %02d speed %d paused %s unsaved %s', t.day, t.hour, t.speed, tostring(t.paused), tostring(t.unsaved)))
     -- Latest wins, so a slow pass may skip an hour: the test waits for this, not for one exact hour.
     if not t.paused and (t.day > 1 or t.hour >= 3) and not past_three then
       past_three = true
@@ -1767,22 +1767,32 @@ end
     fixture.release();
     let within = Duration::from_secs(60);
     // The start state, paused with the reason `load`.
-    wait_for(&mut worker, "lua.ui: time 1 00 speed 1 paused load", within);
+    wait_for(
+        &mut worker,
+        "lua.ui: time 1 00 speed 1 paused load unsaved false",
+        within,
+    );
     // Digit3 while paused: a new delivery, the same hour.
     press(&markers, 1, 0x14, "3");
-    wait_for(&mut worker, "lua.ui: time 1 00 speed 3 paused load", within);
+    wait_for(
+        &mut worker,
+        "lua.ui: time 1 00 speed 3 paused load unsaved false",
+        within,
+    );
     // Space runs the game. Latest wins, so no particular running hour is waited for: the script says when the game has run past
     // hour three.
     press(&markers, 2, 0x31, " ");
     wait_for(&mut worker, "lua.ui: running past hour three", within);
-    // Space pauses, a quicksave changes nothing displayed, and a quickload at the same hour is one delivery more.
+    // Space pauses and marks the game unsaved. The paused callback is observed before the quicksave.
     press(&markers, 3, 0x31, " ");
-    wait_for(&mut worker, "speed 3 paused player", within);
+    wait_for(&mut worker, "speed 3 paused player unsaved true", within);
     press(&markers, 4, 0x60, "");
     wait_for(&mut worker, "sim: saved", within);
+    // Wait for the actual saved-state callback before quickload; the save log precedes its publication.
+    wait_for(&mut worker, "speed 3 paused player unsaved false", within);
     press(&markers, 5, 0x65, "");
     wait_for(&mut worker, "sim: loaded", within);
-    wait_for(&mut worker, "speed 1 paused load\n", within);
+    wait_for(&mut worker, "speed 1 paused load unsaved false\n", within);
     fs::write(fixture.path("settled"), "x").expect("the settled marker");
     let seen = finish(worker);
     assert_eq!(seen.code, Some(0), "{}", seen.stdout);
@@ -1791,14 +1801,17 @@ end
         .lines()
         .filter_map(|line| line.split_once("lua.ui: time ").map(|(_, rest)| rest))
         .collect();
-    assert!(times.len() >= 5, "{times:?}");
+    assert!(times.len() >= 6, "{times:?}");
     assert_eq!(
         times[..2],
-        ["1 00 speed 1 paused load", "1 00 speed 3 paused load"]
+        [
+            "1 00 speed 1 paused load unsaved false",
+            "1 00 speed 3 paused load unsaved false"
+        ]
     );
     // Latest wins: a slow pass may skip hours, and at speed 3 a game day is one real second, so a delayed pass may even cross
     // midnight. The running lines are checked to be running at speed 3 and to go forward by the whole date, `day * 24 + hour`.
-    let running = &times[2..times.len() - 2];
+    let running = &times[2..times.len() - 3];
     assert!(!running.is_empty(), "{times:?}");
     let stamp = |line: &str| -> u32 {
         let mut fields = line.split(' ');
@@ -1810,7 +1823,11 @@ end
     let stamps: Vec<u32> = running
         .iter()
         .map(|line| {
-            assert!(line.ends_with("speed 3 paused false"), "{line}");
+            assert!(
+                line.ends_with("speed 3 paused false unsaved true")
+                    || line.ends_with("speed 3 paused false unsaved false"),
+                "{line}"
+            );
             stamp(line)
         })
         .collect();
@@ -1822,14 +1839,15 @@ end
         stamps.last().is_some_and(|last| *last >= 24 + 3),
         "{stamps:?}"
     );
-    // Then exactly two deliveries more and no continuous delivery after them: the pause, and the load at the same date and hour
-    // (the save was taken while paused, so no tick lies between them). The pause and the load are bound to the actual paused
-    // timestamp, not to a day or hour fixed in advance.
+    // Then exactly three deliveries more and no continuous delivery after them: pause, save and load. They share the actual
+    // paused timestamp, not a day or hour fixed in advance; only the save clears unsaved, and load resets speed and reason.
     let load = times[times.len() - 1];
-    let paused = times[times.len() - 2];
+    let saved = times[times.len() - 2];
+    let paused = times[times.len() - 3];
     let (date, _) = paused.split_once(" speed ").expect("a speed");
-    assert_eq!(paused, format!("{date} speed 3 paused player"));
-    assert_eq!(load, format!("{date} speed 1 paused load"));
+    assert_eq!(paused, format!("{date} speed 3 paused player unsaved true"));
+    assert_eq!(saved, format!("{date} speed 3 paused player unsaved false"));
+    assert_eq!(load, format!("{date} speed 1 paused load unsaved false"));
     assert!(
         stamps.last().is_some_and(|last| *last <= stamp(paused)),
         "{stamps:?} then {paused}"

@@ -101,7 +101,7 @@ frame.on_update(function(f)
   end
   if place ~= nil and exists(directory .. '/title-drag-injected') and not exists(directory .. '/title-moved') then
     local x, y = place:position()
-    assert(x == 30 and y == 80, 'title drag moves the place window by its pointer delta')
+    assert(x == 30 and y == 80, string.format('title drag moves the place window by its pointer delta: %g %g', x, y))
     log.info('place window moved')
     touch(directory .. '/title-moved')
   end
