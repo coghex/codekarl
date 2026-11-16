@@ -619,6 +619,8 @@ fixture = {
   tooltips = {delay = 0.3, lock = "middle_mouse", lock_timer = 1.5},
   map = {pan_pixels_per_frame = 4, zoom_steps_per_second = 20, scroll_points_per_step = 24},
   graphics = {width = 1280, height = 800, list_look = "cards", scale = nil, mode = "windowed"},
+  debug = {level = 0, rate = "frames"},
+  base_debug = {level = 0, rate = "frames"},
   calls = {},
   bindings = {
     {name="close", bindings={"Escape"}},
@@ -632,6 +634,7 @@ fixture = {
     {name="time_slower", bindings={"BracketLeft"}},
     {name="game_quicksave", bindings={"F5"}},
     {name="game_quickload", bindings={"F9"}},
+    {name="debug_layer", bindings={"F3"}},
     {name="map_pan_left", bindings={"ArrowLeft"}},
     {name="map_pan_right", bindings={"ArrowRight"}},
     {name="map_pan_up", bindings={"ArrowUp"}},
@@ -648,6 +651,7 @@ end
 settings = {
   tooltips = function() return fixture.tooltips end,
   map = function() return fixture.map end,
+  debug = function() return {level = fixture.debug.level, rate = fixture.debug.rate} end,
   graphics = function()
     return {width = fixture.graphics.width, height = fixture.graphics.height,
       list_look = fixture.graphics.list_look, scale = fixture.graphics.scale,
@@ -691,7 +695,20 @@ settings = {
     elseif name == "ui.scale" then fixture.graphics.scale = value
     elseif name == "ui.list_look" then fixture.graphics.list_look = value
     elseif name == "window.mode" then fixture.graphics.mode = value
-    elseif name == "frame.fps_limit" then fixture.graphics.fps_limit = value ~= "none" and value or nil end
+    elseif name == "frame.fps_limit" then fixture.graphics.fps_limit = value ~= "none" and value or nil
+    elseif name == "debug.level" then
+      -- The host takes the integer 0 or 1 and nothing else (`settings.rs`, "debug.level").
+      if math.type(value) ~= "integer" or (value ~= 0 and value ~= 1) then
+        error("settings.set: `debug.level` must be integer 0 or 1")
+      end
+      fixture.debug.level = value
+    elseif name == "debug.rate" then
+      -- The host takes the strings "frames" and "updates" and nothing else.
+      if value ~= "frames" and value ~= "updates" then
+        error("settings.set: `debug.rate` must be `frames` or `updates`")
+      end
+      fixture.debug.rate = value
+    end
   end,
   reset = function(tab)
     fixture.calls[#fixture.calls + 1] = {"reset", tab}
@@ -700,6 +717,7 @@ settings = {
       fixture.graphics = {width=1280, height=800, list_look="cards", scale=nil, mode="windowed"}
       fixture.calls[#fixture.calls + 1] = {"resize", 1280, 800}
     elseif tab == "map" then fixture.map = {pan_pixels_per_frame=4, zoom_steps_per_second=20, scroll_points_per_step=24}
+    elseif tab == "debug" then fixture.debug = {level = fixture.base_debug.level, rate = fixture.base_debug.rate}
     else
       for _, action in ipairs(fixture.bindings) do
         action.bindings = {}
@@ -877,13 +895,13 @@ eq(win.title, "Settings")
 eq(win.kind, "window")
 expect(not win.fixed and not win.draggable and win.close_button ~= nil, "a close x, not draggable")
 eq(s.selected, "general", "opens on general")
-eq(#s.tab_order, 4)
+eq(#s.tab_order, 5)
 eq(s.tab_order[1], "general") eq(s.tab_order[2], "graphics")
-eq(s.tab_order[3], "map") eq(s.tab_order[4], "input")
+eq(s.tab_order[3], "map") eq(s.tab_order[4], "input") eq(s.tab_order[5], "development")
 expect(s.tabs.graphics ~= nil and s.tabs.gameplay == nil, "graphics is present and gameplay is not")
 local widest = math.max(font.layout("general").width, font.layout("graphics").width,
-  font.layout("map").width, font.layout("input").width)
-eq(s.tab_width, (widest + 12) * P, "the reserved column includes graphics")
+  font.layout("map").width, font.layout("input").width, font.layout("development").width)
+eq(s.tab_width, (widest + 12) * P, "the reserved column includes development, the longest name")
 eq(s.tabs.general.width, s.tab_width - 3 * P, "the tab fill stops three UI pixels before the divider")
 eq(s.tabs.graphics.y - s.tabs.general.y, 13 * P, "tab rows are thirteen UI pixels tall")
 eq(s.tabs.map.y - s.tabs.graphics.y, 13 * P, "the graphics row keeps the same spacing")
