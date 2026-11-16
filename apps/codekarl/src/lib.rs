@@ -71,6 +71,7 @@ use ck_window::{Notifier, Requests};
 mod boundary;
 mod cli;
 mod config;
+mod debug_layer;
 #[cfg(test)]
 mod demo_tests;
 mod economy_soak;
@@ -822,6 +823,21 @@ fn supervise_with_owner_factory(
         Ok(service) => Some(service),
         Err(status) => return status,
     };
+    let debug_layer = match (mode, resource_service.as_ref(), font.as_ref()) {
+        (mode::Mode::Windowed(mode::Backend::NativeMetal), Some(resources), Some(font)) => {
+            bridge.take_top_writer().ok().map(|writer| {
+                debug_layer::DebugLayer::new(
+                    writer,
+                    resources.clone(),
+                    Arc::clone(font),
+                    theme.as_deref(),
+                    metrics::uptime_clock(),
+                )
+            })
+        }
+        _ => None,
+    };
+    let ui = ui.with_debug_layer(debug_layer);
     let metrics = measurement_hub(config, mode);
     let window_loop_settings = loop_settings_measured(config, mode, metrics.as_deref());
     let (mut ui_extensions, render_end) = scene_extensions(
@@ -850,7 +866,7 @@ fn supervise_with_owner_factory(
     let update_control = window_loop_settings
         .updates()
         .map(ck_window::UpdateSettings::control);
-    if let Some(settings) = settings::Runtime::new_live(
+    let debug_settings = if let Some(settings) = settings::Runtime::new_live(
         config,
         map_controller.clone(),
         settings_requests,
@@ -860,9 +876,13 @@ fn supervise_with_owner_factory(
         wake_relay.clone(),
     ) {
         ui_extensions.push(settings.extension());
+        Some(settings)
     } else {
         ui_extensions.push(config.tooltips.extension());
-    }
+        None
+    };
+    let ui = ui.with_debug_settings(debug_settings);
+    ui.warn_missing_debug_layer_if_enabled();
     // The main screen: filled below from the plan (made on this thread, before the UI VM is spawned), read by `window.open`.
     let setup = Setup {
         // Replaced by the mode's backend for a windowed run (a headless run has no backend).

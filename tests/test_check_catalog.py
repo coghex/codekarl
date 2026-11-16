@@ -2388,6 +2388,8 @@ GUARDS: tuple[Guard, ...] = (
     ),
     # The application tests that read shipped files or hash workspace inputs belong to rust.app.
     Guard("apps/codekarl/src/font.rs", "rust.app", ("assets/ui/font/",)),
+    # CK-335: the debug layer's headless rendering tests load the shipped font.
+    Guard("apps/codekarl/src/debug_layer.rs", "rust.app", ("assets/ui/font/",)),
     Guard(
         "apps/codekarl/src/game/tests/gameplay_runtime.rs",
         "rust.app",

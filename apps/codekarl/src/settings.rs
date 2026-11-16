@@ -9,8 +9,8 @@ use ck_window::RequestWriter;
 use ck_window::{Bindings, WindowMode};
 
 use crate::config::{
-    Config, GraphicsSettings, MAX_FPS_LIMIT, MIN_FPS_LIMIT, MapSettings, SettingsOverrides,
-    TooltipsConfig,
+    Config, DebugSettings, GraphicsSettings, MAX_FPS_LIMIT, MIN_FPS_LIMIT, MapSettings,
+    SettingsOverrides, TooltipsConfig,
 };
 use crate::lifecycle::emit;
 use crate::map_app::{self, SharedController};
@@ -20,12 +20,14 @@ struct Values {
     tooltips: TooltipsConfig,
     map: MapSettings,
     graphics: GraphicsSettings,
+    debug: DebugSettings,
 }
 
 /// Thread-safe live settings state shared by UI host calls and the map controller.
 pub(crate) struct Runtime {
     path: PathBuf,
     base: Values,
+    base_debug: DebugSettings,
     values: Mutex<Values>,
     overrides: Mutex<SettingsOverrides>,
     bindings: Mutex<Bindings>,
@@ -39,6 +41,25 @@ pub(crate) struct Runtime {
 }
 
 impl Runtime {
+    pub(crate) fn debug(&self) -> DebugSettings {
+        self.values
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .debug
+    }
+
+    pub(crate) fn step_debug_level(&self) {
+        let mut values = self.values.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut overrides = self
+            .overrides
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        values.debug.level = u32::from(values.debug.level == 0);
+        overrides.debug_level = Some(values.debug.level);
+        self.apply_debug(values.debug);
+        self.persist(&overrides);
+    }
+
     #[cfg(test)]
     pub(crate) fn new(config: &Config, map: Option<SharedController>) -> Option<Arc<Self>> {
         Self::new_with_requests(config, map, None)
@@ -55,12 +76,15 @@ impl Runtime {
                 tooltips: config.settings_base_tooltips,
                 map: config.settings_base_map,
                 graphics: config.settings_base_graphics,
+                debug: config.settings_base_debug,
             },
             values: Mutex::new(Values {
                 tooltips: config.tooltips,
                 map: config.map_settings,
                 graphics: config.graphics,
+                debug: config.debug,
             }),
+            base_debug: config.settings_base_debug,
             overrides: Mutex::new(config.settings_overrides.clone()),
             bindings: Mutex::new(config.bindings.clone()),
             base_bindings: config.settings_base_bindings.clone(),
@@ -88,12 +112,14 @@ impl Runtime {
         fields.updates = updates;
         fields.resize = Some(resize);
         fields.relay = Some(relay);
+        fields.apply_debug(config.debug);
         Some(runtime)
     }
 
     pub(crate) fn extension(self: &Arc<Self>) -> Extension {
         let tooltips = Arc::clone(self);
         let map = Arc::clone(self);
+        let debug = Arc::clone(self);
         let set = Arc::clone(self);
         let reset = Arc::clone(self);
         let bindings = Arc::clone(self);
@@ -120,6 +146,14 @@ impl Runtime {
                     expect_no_arguments("settings.map", args)?;
                     let values = *map.values.lock().unwrap_or_else(PoisonError::into_inner);
                     Ok(vec![map_value(values.map)])
+                }),
+            )
+            .function(
+                "debug",
+                Arc::new(move |args| {
+                    expect_no_arguments("settings.debug", args)?;
+                    let values = debug.values.lock().unwrap_or_else(PoisonError::into_inner);
+                    Ok(vec![debug_value(values.debug)])
                 }),
             )
             .function("set", Arc::new(move |args| set.set(args)))
@@ -253,6 +287,34 @@ impl Runtime {
                 overrides.frame_fps_limit = Some(limit);
                 self.apply_fps_limit(limit);
             }
+            "debug.level" => {
+                let level = match value {
+                    ConfigValue::Integer(0) => 0,
+                    ConfigValue::Integer(1) => 1,
+                    _ => return Err(format!("settings.set: `{name}` must be integer 0 or 1")),
+                };
+                values.debug.level = level;
+                overrides.debug_level = Some(level);
+                self.apply_debug(values.debug);
+            }
+            "debug.rate" => {
+                let ConfigValue::String(rate) = value else {
+                    return Err(format!(
+                        "settings.set: `{name}` must be a string: `frames` or `updates`"
+                    ));
+                };
+                values.debug.rate = match rate.as_str() {
+                    "frames" => "frames",
+                    "updates" => "updates",
+                    _ => {
+                        return Err(format!(
+                            "settings.set: `{name}` must be `frames` or `updates`"
+                        ));
+                    }
+                };
+                overrides.debug_rate = Some(values.debug.rate);
+                self.apply_debug(values.debug);
+            }
             _ => return Err(format!("settings.set: unknown setting `{name}`")),
         }
         self.apply_map(values.map);
@@ -265,7 +327,7 @@ impl Runtime {
         reason = "validate, persist and publish a binding replacement as one operation"
     )]
     fn set_bindings(&self, args: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
-        const PLAYER_ACTIONS: [&str; 17] = [
+        const PLAYER_ACTIONS: [&str; 18] = [
             "time_pause",
             "time_speed_1",
             "time_speed_2",
@@ -283,6 +345,7 @@ impl Runtime {
             "map_pan_down",
             "map_zoom_in",
             "map_zoom_out",
+            "debug_layer",
         ];
         if args.len() != 1 {
             return Err(
@@ -466,7 +529,8 @@ impl Runtime {
     fn reset(&self, args: &[Option<ConfigValue>]) -> Result<Vec<ConfigValue>, String> {
         if args.len() != 1 {
             return Err(
-                "settings.reset: expected `tooltips`, `map`, `graphics` or `bindings`".to_owned(),
+                "settings.reset: expected `tooltips`, `map`, `graphics`, `debug` or `bindings`"
+                    .to_owned(),
             );
         }
         let Some(ConfigValue::String(tab)) = args[0].as_ref() else {
@@ -512,6 +576,12 @@ impl Runtime {
                 self.apply_scale(values.graphics.scale_limit_k);
                 self.apply_fps_limit(values.graphics.fps_limit);
             }
+            "debug" => {
+                values.debug = self.base_debug;
+                overrides.debug_level = None;
+                overrides.debug_rate = None;
+                self.apply_debug(values.debug);
+            }
             "bindings" | "defaults" => {
                 *self.bindings.lock().unwrap_or_else(PoisonError::into_inner) =
                     self.base_bindings.clone();
@@ -522,7 +592,7 @@ impl Runtime {
             }
             _ => {
                 return Err(format!(
-                    "settings.reset: unknown tab `{tab}`; use tooltips, map, graphics or bindings"
+                    "settings.reset: unknown tab `{tab}`; use tooltips, map, graphics, debug or bindings"
                 ));
             }
         }
@@ -553,6 +623,12 @@ impl Runtime {
     fn apply_fps_limit(&self, limit: Option<u32>) {
         if let Some(relay) = &self.relay {
             relay.set_frame_limit(limit);
+        }
+    }
+
+    fn apply_debug(&self, settings: DebugSettings) {
+        if let Some(requests) = &self.requests {
+            requests.set_draw_every_refresh(settings.level > 0 && settings.rate == "frames");
         }
     }
 
@@ -698,6 +774,19 @@ fn map_value(settings: MapSettings) -> ConfigValue {
     ]))
 }
 
+fn debug_value(settings: DebugSettings) -> ConfigValue {
+    ConfigValue::Table(std::collections::BTreeMap::from([
+        (
+            "level".to_owned(),
+            ConfigValue::Integer(i64::from(settings.level)),
+        ),
+        (
+            "rate".to_owned(),
+            ConfigValue::String(settings.rate.to_owned()),
+        ),
+    ]))
+}
+
 fn bindings_value(bindings: &Bindings, defaults: &Bindings) -> ConfigValue {
     ConfigValue::Array(
         bindings
@@ -827,6 +916,16 @@ fn settings_text(overrides: &SettingsOverrides) -> Vec<u8> {
                 let _ = writeln!(text, "fps_limit = {limit}");
             }
             None => text.push_str("fps_limit = \"none\"\n"),
+        }
+        text.push('\n');
+    }
+    if overrides.debug_level.is_some() || overrides.debug_rate.is_some() {
+        text.push_str("[debug]\n");
+        if let Some(level) = overrides.debug_level {
+            let _ = writeln!(text, "level = {level}");
+        }
+        if let Some(rate) = overrides.debug_rate {
+            let _ = writeln!(text, "rate = \"{rate}\"");
         }
         text.push('\n');
     }
@@ -1038,6 +1137,84 @@ mod tests {
     }
 
     #[test]
+    fn debug_settings_are_live_validated_persisted_and_reset_to_config_values() {
+        let rig = LiveRig::new("[debug]\nlevel = 1\nrate = 'updates'\n", None, false);
+        let _harness = rig.run(
+            r"
+local d = settings.debug()
+assert(d.level == 1 and d.rate == 'updates')
+settings.set('debug.level', 0)
+settings.set('debug.rate', 'frames')
+d = settings.debug()
+assert(d.level == 0 and d.rate == 'frames')
+for _, pair in ipairs({{'debug.level', 2}, {'debug.level', -1}, {'debug.level', 0.5}, {'debug.rate', 'seconds'}, {'debug.rate', 'other'}}) do
+  local before = settings.debug()
+  local ok, message = pcall(function() settings.set(pair[1], pair[2]) end)
+  assert(not ok and string.find(tostring(message), pair[1], 1, true))
+  local after = settings.debug()
+  assert(before.level == after.level and before.rate == after.rate)
+end
+settings.reset('debug')
+d = settings.debug()
+assert(d.level == 1 and d.rate == 'updates')
+",
+        );
+        let written = fs::read_to_string(&rig.settings_path).expect("settings persisted");
+        assert!(
+            !written.contains("[debug]"),
+            "reset removes both debug overrides"
+        );
+        let serialized = settings_text(&SettingsOverrides {
+            debug_level: Some(1),
+            debug_rate: Some("updates"),
+            ..Default::default()
+        });
+        assert!(
+            String::from_utf8(serialized)
+                .unwrap()
+                .contains("[debug]\nlevel = 1\nrate = \"updates\"")
+        );
+    }
+
+    #[test]
+    fn debug_settings_defaults_reset_cleanly_and_control_continuous_draw_requests() {
+        let rig = LiveRig::new("", None, false);
+        let requests = rig.requests.reader();
+        assert_eq!(requests.take().draw_every_refresh, Some(false));
+        {
+            let _harness =
+                rig.run("settings.set('debug.level', 1); settings.set('debug.rate', 'frames')");
+        }
+        assert_eq!(requests.take().draw_every_refresh, Some(true));
+        let written = fs::read_to_string(&rig.settings_path).expect("debug settings are written");
+        assert!(written.contains("[debug]\nlevel = 1\nrate = \"frames\""));
+
+        {
+            let _harness = rig.run("settings.set('debug.rate', 'updates')");
+        }
+        assert_eq!(requests.take().draw_every_refresh, Some(false));
+        {
+            let _harness = rig.run("settings.set('debug.level', 0)");
+        }
+        assert_eq!(requests.take().draw_every_refresh, Some(false));
+        {
+            let _harness = rig.run("settings.set('debug.rate', 'frames')");
+        }
+        assert_eq!(requests.take().draw_every_refresh, Some(false));
+
+        {
+            let _harness = rig.run("settings.reset('debug')");
+        }
+        assert_eq!(requests.take().draw_every_refresh, Some(false));
+        let written = fs::read_to_string(&rig.settings_path).expect("settings file remains");
+        assert!(!written.contains("[debug]"));
+        {
+            let _harness =
+                rig.run("local d = settings.debug(); assert(d.level == 0 and d.rate == 'frames')");
+        }
+    }
+
+    #[test]
     fn ui_calls_set_read_reset_and_persist_without_changing_other_tab_values() {
         let dir = crate::testing::Dir::new();
         let config_path = dir.0.join("config.toml");
@@ -1062,7 +1239,7 @@ local ok, message = pcall(function() settings.set("ui.tooltips.delay", 0.25) end
 assert(not ok and string.find(tostring(message), "ui.tooltips.delay", 1, true))
 assert(settings.tooltips().delay == 0.8)
 local actions = settings.bindings()
-assert(#actions == 18)
+assert(#actions == 19)
 assert(actions[1].name == "close" and actions[1].bindings[1] == "Escape")
 local pause, quickload
 for _, action in ipairs(actions) do
@@ -1153,7 +1330,7 @@ assert(settings.map().pan_pixels_per_frame == 4)
         .expect("runtime settings");
         let rejected = r"
 local before = settings.bindings()
-assert(#before == 18)
+assert(#before == 19)
 local ok, message = pcall(function()
   settings.set_bindings({time_pause={'Control+KeyQ'}, close={'KeyQ'}})
 end)
@@ -1229,12 +1406,13 @@ local actions = settings.bindings()
 local names = {{}}
 for _, item in ipairs(actions) do names[item.name] = true end
 assert(names.close and names["{expected}"])
+if "{name}" == "game" then assert(names.debug_layer) end
 assert(not names.move_left and not names.custom_action)
 local ok = pcall(function() settings.set_bindings({{move_left={{"KeyZ"}}}}) end)
 assert(not ok)
 settings.reset("bindings")
 for _, item in ipairs(settings.bindings()) do
-  assert(item.name == "close" or item.name:match("^time_") or item.name:match("^game_") or item.name:match("^window_") or item.name:match("^map_"))
+  assert(item.name == "close" or item.name:match("^time_") or item.name:match("^game_") or item.name:match("^window_") or item.name:match("^map_") or item.name == "debug_layer")
 end
 "#
             );
