@@ -1,6 +1,8 @@
 """Apply the terrain edits and derive Ireland's climate, glacier and fertility layers.
 
-Run `python3 apply_edits.py [--out DIR] [--force]`; `--self-test` runs the
+Run `python3 apply_edits.py [--out DIR] [--force]`; `--layers-only` recomputes
+climate, glacier and fertility from accepted terrain and elevation without
+applying edits; `--self-test` runs the
 stdlib-only equilibrium-line vectors. Terrain edits run in TOML order. Climate
 and fertility are then computed from the edited terrain and elevation using the
 normative algorithm settings in `edits.toml`. The input digest is written to
@@ -37,6 +39,7 @@ if "--self-test" in sys.argv:
     _run_ela_self_test()
     raise SystemExit(0)
 
+import drainage  # noqa: E402
 import numpy as np  # noqa: E402 -- --self-test must run before optional image dependencies load
 from draft_terrain import ELEVATION_OFFSET, distance_to, terrain_keys  # noqa: E402
 from ireland_grid import CELL_GROUND_M, Array, Crop  # noqa: E402
@@ -92,8 +95,8 @@ POLYGON_COVER = 0.5
 KM_PER_DEGREE = 111.0
 LAND_ELEVATION = 2
 SEA_DEPTH = 2
-NEIGHBOURS8 = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
 NEIGHBOURS4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
+NEIGHBOURS8 = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
 
 Grid = NDArray[np.bool_]
 Cell = tuple[int, int]
@@ -461,67 +464,18 @@ def interpolate(latitude: Array, knots: list[float], values: list[float]) -> Arr
     )
 
 
-def priority_flood(elevation: Array, water: Grid, epsilon: float) -> Array:
-    """Fill inland depressions from every water cell and crop edge, preserving the normative D8 ordering."""
-    height, width = elevation.shape
-    surface = elevation.copy()
-    surface[water] = -1e9
-    filled = np.full((height, width), np.inf, dtype=np.float64)
-    seen = np.zeros((height, width), dtype=bool)
-    queue: list[tuple[float, int, int]] = []
-    for row in range(height):
-        for column in range(width):
-            if water[row, column] or row in (0, height - 1) or column in (0, width - 1):
-                filled[row, column] = surface[row, column]
-                seen[row, column] = True
-                heapq.heappush(queue, (filled[row, column], row, column))
-    while queue:
-        level, row, column = heapq.heappop(queue)
-        for d_row, d_column in NEIGHBOURS8:
-            next_row, next_column = row + d_row, column + d_column
-            if (
-                0 <= next_row < height
-                and 0 <= next_column < width
-                and not seen[next_row, next_column]
-            ):
-                seen[next_row, next_column] = True
-                filled[next_row, next_column] = max(surface[next_row, next_column], level + epsilon)
-                heapq.heappush(queue, (filled[next_row, next_column], next_row, next_column))
-    return filled
-
-
 def flow_accumulation(state: State, settings: dict[str, Any]) -> tuple[Array, Array]:
     """Return D8 upstream area in km² and the prototype's ground slope in percent."""
     elevation = state.elevation
-    land = state.land()
     ground_m = float(settings["cell_metres"]) * np.cos(np.radians(state.latitude))
     ground_m = np.maximum(ground_m, 1.0)
     slope_y, slope_x = np.gradient(elevation.astype(np.float64))
     slope = np.hypot(slope_x, slope_y) / ground_m * 100.0
-    filled = priority_flood(elevation, ~land, float(settings["flow_epsilon_m"]))
-    area = np.where(land, (ground_m / 1000.0) ** 2, 0.0)
-    order = np.argsort(-filled, axis=None)
-    accumulation = area.ravel().copy()
-    flat = filled.ravel()
-    height, width = elevation.shape
-    for raw_index in order:
-        index = int(raw_index)
-        row, column = divmod(index, width)
-        if not land[row, column]:
-            continue
-        best: int | None = None
-        drop = 0.0
-        for d_row, d_column in NEIGHBOURS8:
-            next_row, next_column = row + d_row, column + d_column
-            if 0 <= next_row < height and 0 <= next_column < width:
-                next_index = next_row * width + next_column
-                candidate = (flat[index] - flat[next_index]) / math.hypot(d_row, d_column)
-                if candidate > drop:
-                    drop = candidate
-                    best = next_index
-        if best is not None:
-            accumulation[best] += accumulation[index]
-    return accumulation.reshape(elevation.shape), slope
+    ground_area_km2_by_row = (ground_m[:, 0] / 1000.0) ** 2
+    accumulated = drainage.flow_accumulation(
+        elevation.tolist(), ground_area_km2_by_row.tolist(), float(settings["flow_epsilon_m"])
+    )
+    return np.asarray(accumulated, dtype=np.float64), slope
 
 
 def climate_fields(  # noqa: PLR0915 -- keep the prototype's climate, moisture, seasonal and snowline steps together
@@ -829,6 +783,13 @@ def apply(out: Path, *, force: bool) -> None:
     )
 
 
+def recompute_layers(out: Path) -> None:
+    """Recompute derived layers over accepted terrain without applying edits."""
+    document = tomllib.loads((out / "edits.toml").read_text(encoding="utf-8"))
+    state = State(out)
+    apply_settings(state, document.get("settings", {}))
+
+
 def main() -> None:
     """Parses the command line and applies."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n", maxsplit=1)[0])
@@ -838,10 +799,18 @@ def main() -> None:
     parser.add_argument(
         "--force", action="store_true", help="apply again over files that already have the edits"
     )
+    parser.add_argument(
+        "--layers-only",
+        action="store_true",
+        help="recompute derived layers without applying terrain edits or changing edits.applied",
+    )
     parser.add_argument("--self-test", action="store_true", help="run stdlib-only T_ela vectors")
     arguments = parser.parse_args()
     if arguments.self_test:
         _run_ela_self_test()
+        return
+    if arguments.layers_only:
+        recompute_layers(arguments.out)
         return
     apply(arguments.out, force=arguments.force)
 

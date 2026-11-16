@@ -768,6 +768,9 @@ def cargo_test(selection: Sequence[str], after: Sequence[str] = ()) -> list[str]
 # workspace's dependencies, and the groups are regrouped when one nears the target. The guard below
 # makes a module in no group, in two groups, or missing a failure before any step runs.
 UNITTEST_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # CK-351: the production drainage helper is deliberately stdlib-only so its valley-flow rule can
+    # be checked whenever either the map scripts or this retained contract changes.
+    ("map", ("test_map_drainage",)),
     (
         "batch",
         (
@@ -847,6 +850,7 @@ def unittest_step(group: str, modules: Sequence[str]) -> Step:
 # What each Python test group exercises. The groups run no Rust unit that opens a window or takes the GPU:
 # `test_check`'s real-toolchain lease test runs a planned recipe over `rust.core` (REAL_TOOLCHAIN_GROUPS).
 UNITTEST_DESCRIPTIONS = {
+    "map": "The standard-library production drainage rule for Ireland fertility, selected with map scripts and its retained grid contract.",
     "batch": "Python tests of the batch gate, the gate criteria, hashing and the lock holders.",
     "catalog": "Python tests of the check catalog: group ownership of every test unit, the planner, and the "
     "source scans of the crates (all Rust source directories, the native and Vulkan test files, the manifests).",
@@ -889,6 +893,8 @@ CATALOG_PATHS = (*PYTHON_PATHS, *RUST_SOURCE_DIRS)
 UNITTEST_PATHS = {
     "batch": PYTHON_PATHS,
     "catalog": CATALOG_PATHS,
+    # CK-351: edits to the production map scripts and the stdlib drainage contract select its retained tests.
+    "map": ("assets/map/", "tests/test_map_drainage.py"),
     # `.rgignore` and `.ignore` are read by `test_rgignore` and copied into the real-toolchain workload;
     # `test_rgignore` also runs ripgrep over the real `docs/` tree. Registering it selects the test when a
     # code change is checked; documentation publication stays ungated (the docs lane runs no check).
@@ -901,6 +907,7 @@ UNITTEST_PATHS = {
     "bootstrap": PYTHON_PATHS,
     "lease": PYTHON_PATHS,
 }
+
 # The groups the real-toolchain lease test runs (`check.py --group ...`): focus-free, real Cargo work.
 REAL_TOOLCHAIN_GROUPS = ("rust.core",)
 

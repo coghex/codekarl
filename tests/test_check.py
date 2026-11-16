@@ -36,6 +36,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 ALL = ("quick", "fast", "full")
 UNITTEST_STEPS = (
+    "unittest-map",
     "unittest-batch",
     "unittest-catalog",
     "unittest-check",
