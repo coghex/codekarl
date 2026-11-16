@@ -123,6 +123,499 @@ fn valid_fixture_loads_climate_fertility_and_preserves_packed_bytes() {
     assert_eq!(loaded.grid_b.pixels[10], [0x01, 0xf4, 0, 255]);
     assert_eq!(loaded.rivers.len(), 1);
     assert_eq!(loaded.rivers[0].points.len(), 2);
+    assert!(loaded.river_network.is_none());
+}
+
+#[test]
+fn format_two_loads_a_validated_network_and_preserves_legacy_separately() {
+    let fixture = Fixture::copy();
+    write_png(
+        &fixture.0.join("terrain.png"),
+        ColorType::Rgb,
+        BitDepth::Eight,
+        &[0, 0, 255].repeat(16),
+        None,
+    );
+    write_png(
+        &fixture.0.join("fertility.png"),
+        ColorType::Grayscale,
+        BitDepth::Eight,
+        &[0; 16],
+        None,
+    );
+    fs::write(
+        fixture.0.join("rivers.toml"),
+        r#"format = 2
+
+[tiers]
+show_from_step = [0, 15, 30]
+
+[[river]]
+id = "main"
+name = "Main River"
+tier = 1
+
+[[stretch]]
+id = "main-course"
+river = "main"
+kind = "river"
+width_m = [500.0, 900.0]
+ends = "sea"
+points = [[0.0, 0.0], [0.0, 0.001]]
+note = "accepted and dropped"
+"#,
+    )
+    .expect("write format-2 network");
+    let loaded = load_map(&fixture.0).expect("format-2 network loads");
+    assert!(loaded.rivers.is_empty());
+    let network = loaded.river_network.expect("network is present");
+    assert_eq!(network.show_from_step, [0, 15, 30]);
+    assert_eq!(network.rivers[0].name, "Main River");
+    assert_eq!(network.stretches[0].points.len(), 2);
+    assert!(network.stretches[0].width_first > 0);
+    assert!(network.stretches[0].width_last > network.stretches[0].width_first);
+}
+
+fn format_two_fixture(contents: &str) -> Fixture {
+    let fixture = Fixture::copy();
+    write_png(
+        &fixture.0.join("terrain.png"),
+        ColorType::Rgb,
+        BitDepth::Eight,
+        &[0, 0, 255].repeat(16),
+        None,
+    );
+    write_png(
+        &fixture.0.join("fertility.png"),
+        ColorType::Grayscale,
+        BitDepth::Eight,
+        &[0; 16],
+        None,
+    );
+    fs::write(fixture.0.join("rivers.toml"), contents).expect("write format-2 network");
+    fixture
+}
+
+fn format_two_fixture_with_terrain(contents: &str, first_pixel: [u8; 3]) -> Fixture {
+    let fixture = format_two_fixture(contents);
+    let mut terrain = [0, 0, 255].repeat(16);
+    terrain[6 * 3..6 * 3 + 3].copy_from_slice(&first_pixel);
+    write_png(
+        &fixture.0.join("terrain.png"),
+        ColorType::Rgb,
+        BitDepth::Eight,
+        &terrain,
+        None,
+    );
+    fixture
+}
+
+const VALID_NETWORK: &str = r#"format = 2
+[tiers]
+show_from_step = [0, 15, 30]
+[[river]]
+id = "main"
+name = "Main River"
+tier = 1
+[[stretch]]
+id = "course"
+river = "main"
+kind = "river"
+width_m = [500.0, 900.0]
+ends = "sea"
+points = [[0.0, 0.0], [0.0, 0.001]]
+note = "accepted and dropped"
+"#;
+
+fn replace_network_assignment(source: &str, replacement: &str) -> String {
+    let key = replacement.split_once(" = ").expect("assignment key").0;
+    let mut changed = false;
+    let lines = source
+        .lines()
+        .map(|line| {
+            if !changed && line.starts_with(&format!("{key} = ")) {
+                changed = true;
+                replacement.to_owned()
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if changed {
+        lines
+    } else {
+        format!("{lines}\n{replacement}\n")
+    }
+}
+
+#[test]
+fn format_two_rejections_name_the_stretch_id_key_and_problem() {
+    let cases = [
+        (
+            "kind = \"canal\"",
+            "stretch[0] (course).kind",
+            "must be river",
+        ),
+        (
+            "width_m = [500.0]",
+            "stretch[0] (course).width_m",
+            "requires two finite",
+        ),
+        (
+            "width_m = [0.0, 900.0]",
+            "stretch[0] (course).width_m",
+            "requires two finite",
+        ),
+        (
+            "width_m = [-1.0, 900.0]",
+            "stretch[0] (course).width_m",
+            "requires two finite",
+        ),
+        (
+            "width_m = [nan, 900.0]",
+            "stretch[0] (course).width_m",
+            "requires two finite",
+        ),
+        (
+            "width_m = [500.0, 10001.0]",
+            "stretch[0] (course).width_m",
+            "requires two finite",
+        ),
+        (
+            "points = [[0.0, 0.0]]",
+            "stretch[0] (course).points",
+            "at least two",
+        ),
+        (
+            "points = [[0.0, 0.0], [0.0, 40.0]]",
+            "stretch[0] (course).points[1]",
+            "outside crop",
+        ),
+        (
+            "points = [[0.0, 0.0], [0.0, 0.0]]",
+            "stretch[0] (course).points[1]",
+            "same fixed point",
+        ),
+        (
+            "ends = \"absent\"",
+            "stretch[0] (course).ends",
+            "names no stretch",
+        ),
+        ("ends = \"course\"", "stretch[0] (course).ends", "itself"),
+        ("mystery = 7", "rivers.toml", "unknown field"),
+    ];
+    for (replacement, location, problem) in cases {
+        let fixture = format_two_fixture(&replace_network_assignment(VALID_NETWORK, replacement));
+        assert_error(&fixture, location, problem);
+    }
+    let bad_river = format!(
+        "{VALID_NETWORK}\n[[stretch]]\nid = \"bad\"\nriver = \"unknown\"\nkind = \"river\"\nwidth_m = [1.0, 2.0]\nends = \"sea\"\npoints = [[0.0, 0.0], [0.0, 0.001]]\n"
+    );
+    let fixture = format_two_fixture(&bad_river);
+    assert_error(&fixture, "stretch[1] (bad).river", "unknown river");
+}
+
+#[test]
+fn format_two_river_and_tier_keys_are_checked() {
+    let cases = [
+        ("id = \"Main\"", "river[0].id", "lowercase"),
+        (
+            &format!("id = \"{}\"", "a".repeat(49)),
+            "river[0].id",
+            "1..=48",
+        ),
+        ("id = \"sea\"", "river[0].id", "not sea"),
+        ("tier = 0", "river[0].tier", "1, 2 or 3"),
+        ("tier = 4", "river[0].tier", "1, 2 or 3"),
+        (
+            "show_from_step = [0, 75]",
+            "tiers.show_from_step",
+            "three nondecreasing",
+        ),
+        (
+            "show_from_step = [0, 76, 76]",
+            "tiers.show_from_step",
+            "three nondecreasing",
+        ),
+        (
+            "show_from_step = [0, 30, 15]",
+            "tiers.show_from_step",
+            "three nondecreasing",
+        ),
+    ];
+    for (replacement, location, problem) in cases {
+        let fixture = format_two_fixture(&replace_network_assignment(VALID_NETWORK, replacement));
+        assert_error(&fixture, location, problem);
+    }
+    let fixture = format_two_fixture(&VALID_NETWORK.replace("tier = 1", "tier = 1\nextra = 1"));
+    assert_error(&fixture, "in `river`", "unknown field `extra`");
+    let fixture = format_two_fixture(
+        &VALID_NETWORK.replace("note = \"accepted and dropped\"", "mystery = 1"),
+    );
+    assert_error(&fixture, "in `stretch`", "unknown field `mystery`");
+    let fixture = format_two_fixture(&format!(
+        "{VALID_NETWORK}\n[[river]]\nid = \"main\"\nname = \"Other\"\ntier = 1\n"
+    ));
+    assert_error(&fixture, "river[1].id", "duplicate river id");
+    let fixture = format_two_fixture(&format!(
+        "{VALID_NETWORK}\n[[river]]\nid = \"other\"\nname = \"mAIN rIVER\"\ntier = 1\n\n[[stretch]]\nid = \"other-course\"\nriver = \"other\"\nkind = \"river\"\nwidth_m = [1.0, 2.0]\nends = \"sea\"\npoints = [[0.0, 0.0], [0.0, 0.001]]\n"
+    ));
+    assert_error(&fixture, "river[1].name", "unique ignoring case");
+    let fixture = format_two_fixture(&format!(
+        "{VALID_NETWORK}\n[[stretch]]\nid = \"course\"\nriver = \"main\"\nkind = \"river\"\nwidth_m = [1.0, 2.0]\nends = \"sea\"\npoints = [[0.0, 0.0], [0.0, 0.001]]\n"
+    ));
+    assert_error(&fixture, "stretch[1] (course).id", "duplicate stretch id");
+    for invalid in [
+        "id = \"Course\"".to_owned(),
+        format!("id = \"{}\"", "a".repeat(49)),
+        "id = \"sea\"".to_owned(),
+    ] {
+        let fixture = format_two_fixture(&VALID_NETWORK.replace("id = \"course\"", &invalid));
+        assert_error(&fixture, "stretch[0] (", "must be 1..=48");
+    }
+    let fixture = format_two_fixture(&format!(
+        "{VALID_NETWORK}\n[[river]]\nid = \"empty\"\nname = \"Empty\"\ntier = 1\n"
+    ));
+    assert_error(&fixture, "river[1].id", "river has no stretch");
+}
+
+#[test]
+fn format_two_network_joins_cycles_and_confluences_are_checked() {
+    let cases = [
+        (
+            VALID_NETWORK.replace("ends = \"sea\"", "ends = \"missing\""),
+            "stretch[0] (course).ends",
+            "names no stretch",
+        ),
+        (
+            VALID_NETWORK.replace("ends = \"sea\"", "ends = \"down\"")
+                + "\n[[stretch]]\nid = \"down\"\nriver = \"main\"\nkind = \"river\"\nwidth_m = [500.0, 900.0]\nends = \"sea\"\npoints = [[0.0, 0.0011], [0.0, 0.0015]]\n",
+            "stretch[0] (course).ends",
+            "join must equal",
+        ),
+        (
+            VALID_NETWORK
+                .replace("ends = \"sea\"", "ends = \"down\"")
+                .replace(
+                    "points = [[0.0, 0.0], [0.0, 0.001]]",
+                    "points = [[0.0, 0.0], [0.0, 0.002]]",
+                )
+                + "\n[[stretch]]\nid = \"down\"\nriver = \"main\"\nkind = \"river\"\nwidth_m = [500.0, 900.0]\nends = \"sea\"\npoints = [[0.0, 0.001], [0.0, 0.003]]\n",
+            "stretch[0] (course).ends",
+            "join must equal",
+        ),
+        (
+            VALID_NETWORK.replace("ends = \"sea\"", "ends = \"down\"")
+                + "\n[[stretch]]\nid = \"down\"\nriver = \"main\"\nkind = \"river\"\nwidth_m = [500.0, 900.0]\nends = \"course\"\npoints = [[0.0, 0.001], [0.0, 0.0]]\n",
+            "stretch[0] (course).ends",
+            "cycle",
+        ),
+        (
+            VALID_NETWORK.replace("ends = \"sea\"", "ends = \"down\"")
+                + "\n[[stretch]]\nid = \"down\"\nriver = \"main\"\nkind = \"river\"\nwidth_m = [500.0, 900.0]\nends = \"third\"\npoints = [[0.0, 0.001], [0.0, 0.002]]\n\n[[stretch]]\nid = \"third\"\nriver = \"main\"\nkind = \"river\"\nwidth_m = [500.0, 900.0]\nends = \"course\"\npoints = [[0.0, 0.002], [0.0, 0.0]]\n",
+            "stretch[0] (course).ends",
+            "cycle",
+        ),
+    ];
+    for (text, location, detail) in cases {
+        let fixture = format_two_fixture(&text);
+        assert_error(&fixture, location, detail);
+    }
+
+    let confluence = VALID_NETWORK.replace("ends = \"sea\"", "ends = \"down\"")
+        + "\n[[stretch]]\nid = \"down\"\nriver = \"main\"\nkind = \"river\"\nwidth_m = [500.0, 900.0]\nends = \"sea\"\npoints = [[0.0, 0.001], [0.0, 0.0]]\n\n[[stretch]]\nid = \"branch\"\nriver = \"main\"\nkind = \"river\"\nwidth_m = [500.0, 900.0]\nends = \"down\"\npoints = [[0.0, 0.0015], [0.0, 0.001]]\n";
+    let fixture = format_two_fixture(&confluence);
+    let network = load_map(&fixture.0)
+        .expect("two upstream stretches may join one downstream")
+        .river_network
+        .unwrap();
+    assert!(
+        network
+            .stretches
+            .iter()
+            .all(|stretch| stretch.drawn_last >= stretch.drawn_first)
+    );
+}
+
+#[test]
+fn format_two_sea_ends_and_lough_midpoints_are_validated_by_surface() {
+    for colour in [[0, 255, 0], [0, 255, 255]] {
+        let fixture = format_two_fixture_with_terrain(VALID_NETWORK, colour);
+        assert_error(&fixture, "stretch[0] (course).ends", "open sea");
+    }
+    let near_land = VALID_NETWORK.replace("[0.0, 0.001]", "[-0.01, 0.01]");
+    let fixture = format_two_fixture_with_terrain(&near_land, [0, 255, 0]);
+    assert_error(&fixture, "stretch[0] (course).ends", "open sea");
+
+    let lough = VALID_NETWORK.replace("kind = \"river\"", "kind = \"lough\"");
+    let fixture = format_two_fixture(&lough);
+    assert_error(
+        &fixture,
+        "stretch[0] (course).kind",
+        "midpoint in a lake cell",
+    );
+}
+
+#[test]
+fn format_two_widths_use_their_projected_ground_row_and_round_as_specified() {
+    let fixture = format_two_fixture(VALID_NETWORK);
+    let map = fs::read_to_string(fixture.0.join("map.toml")).expect("read map metadata");
+    fs::write(
+        fixture.0.join("map.toml"),
+        map.replace("origin = [23882, 23882]", "origin = [23882, 14700]"),
+    )
+    .expect("move test crop to the specified row");
+    let coordinates = |x: i64, y: i64| {
+        let half_world = std::f64::consts::PI * 6_378_137.0;
+        let x_metres =
+            f64::from(i32::try_from(x).expect("x fixed coordinate fits")) * 839.0 / 32_768.0;
+        let y_metres =
+            f64::from(i32::try_from(y).expect("y fixed coordinate fits")) * 839.0 / 32_768.0;
+        let longitude = (x_metres - half_world) / 6_378_137.0 * 180.0 / std::f64::consts::PI;
+        let latitude = (2.0 * ((half_world - y_metres) / 6_378_137.0).exp().atan()
+            - std::f64::consts::FRAC_PI_2)
+            * 180.0
+            / std::f64::consts::PI;
+        (latitude, longitude)
+    };
+    let a = coordinates(23_882 * 32_768 + 6_000, 14_700 * 32_768 + 6_000);
+    let b = coordinates(23_882 * 32_768 + 14_000, 14_700 * 32_768 + 6_000);
+    let text = VALID_NETWORK
+        .replace(
+            "width_m = [500.0, 900.0]",
+            "width_m = [460.3387756347656, 500.0]",
+        )
+        .replace(
+            "points = [[0.0, 0.0], [0.0, 0.001]]",
+            &format!(
+                "points = [[{:.15}, {:.15}], [{:.15}, {:.15}]]",
+                a.0, a.1, b.0, b.1
+            ),
+        );
+    fs::write(fixture.0.join("rivers.toml"), text).expect("write measured widths");
+    let loaded = load_map(&fixture.0).expect("width samples load in crop");
+    let stretch = &loaded.river_network.expect("network").stretches[0];
+    assert_eq!(stretch.width_first, 32_768);
+    assert_eq!(stretch.width_last, 35_591);
+}
+
+fn large_lough_fixture(include_lake: bool) -> (Fixture, String) {
+    let fixture = Fixture::copy();
+    let map = fs::read_to_string(fixture.0.join("map.toml")).expect("read map metadata");
+    fs::write(
+        fixture.0.join("map.toml"),
+        map.replace("width = 4\nheight = 4", "width = 12\nheight = 12"),
+    )
+    .expect("grow map crop");
+    let mut terrain = Vec::new();
+    let mut fertility = Vec::new();
+    for y in 0..12 {
+        for x in 0..12 {
+            let sea = x == 0 || y == 0 || x == 11 || y == 11 || (x <= 3 && y <= 3);
+            let lake = include_lake && (x, y) == (8, 8);
+            terrain.extend_from_slice(if sea {
+                &[0, 0, 255]
+            } else if lake {
+                &[0, 255, 255]
+            } else {
+                &[0, 255, 0]
+            });
+            fertility.push(if sea || lake { 0 } else { 125 });
+        }
+    }
+    write_png_sized(
+        &fixture.0.join("terrain.png"),
+        12,
+        12,
+        ColorType::Rgb,
+        BitDepth::Eight,
+        &terrain,
+        None,
+    );
+    write_png_sized(
+        &fixture.0.join("fertility.png"),
+        12,
+        12,
+        ColorType::Grayscale,
+        BitDepth::Eight,
+        &fertility,
+        None,
+    );
+    for (name, sample) in [
+        ("climate_temperature.png", 1_100_u16),
+        ("climate_gdd.png", 1_000),
+        ("climate_rainfall.png", 1_000),
+        ("elevation.png", 11_000),
+    ] {
+        let values = [sample; 144]
+            .iter()
+            .flat_map(|v| v.to_be_bytes())
+            .collect::<Vec<_>>();
+        write_png_sized(
+            &fixture.0.join(name),
+            12,
+            12,
+            ColorType::Grayscale,
+            BitDepth::Sixteen,
+            &values,
+            None,
+        );
+    }
+    write_png_sized(
+        &fixture.0.join("climate_glacier.png"),
+        12,
+        12,
+        ColorType::Grayscale,
+        BitDepth::Eight,
+        &[0; 144],
+        None,
+    );
+    let coordinate = |x: i32, y: i32| {
+        let half_world = std::f64::consts::PI * 6_378_137.0;
+        let fx = f64::from((23_882 + x) * 32_768 + 16_384);
+        let fy = f64::from((23_882 + y) * 32_768 + 16_384);
+        let longitude =
+            ((fx * 839.0 / 32_768.0) - half_world) / 6_378_137.0 * 180.0 / std::f64::consts::PI;
+        let y_metres = fy * 839.0 / 32_768.0;
+        let latitude = (2.0 * ((half_world - y_metres) / 6_378_137.0).exp().atan()
+            - std::f64::consts::FRAC_PI_2)
+            * 180.0
+            / std::f64::consts::PI;
+        (latitude, longitude)
+    };
+    let a = coordinate(7, 8);
+    let join = coordinate(9, 8);
+    let end = coordinate(1, 1);
+    let text = format!(
+        "format = 2\n[tiers]\nshow_from_step = [0, 15, 30]\n[[river]]\nid = \"main\"\nname = \"Main\"\ntier = 1\n\n[[stretch]]\nid = \"lough-course\"\nriver = \"main\"\nkind = \"lough\"\nwidth_m = [500.0, 500.0]\nends = \"down\"\npoints = [[{:.15}, {:.15}], [{:.15}, {:.15}]]\n\n[[stretch]]\nid = \"down\"\nriver = \"main\"\nkind = \"river\"\nwidth_m = [500.0, 500.0]\nends = \"sea\"\npoints = [[{:.15}, {:.15}], [{:.15}, {:.15}]]\n",
+        a.0, a.1, join.0, join.1, join.0, join.1, end.0, end.1
+    );
+    fs::write(fixture.0.join("rivers.toml"), &text).expect("write lough river file");
+    (fixture, text)
+}
+
+#[test]
+fn lough_stretch_requires_and_accepts_a_midpoint_lake_cell() {
+    let (fixture, _) = large_lough_fixture(false);
+    assert_error(
+        &fixture,
+        "stretch[0] (lough-course).kind",
+        "midpoint in a lake cell",
+    );
+    let (fixture, _) = large_lough_fixture(true);
+    let loaded = load_map(&fixture.0).expect("midpoint lake validates the lough stretch");
+    assert_eq!(
+        loaded.river_network.expect("network").stretches[0].kind,
+        crate::RiverStretchKind::Lough
+    );
+}
+
+#[test]
+fn unsupported_river_format_names_the_format_key() {
+    let fixture = Fixture::copy();
+    fs::write(fixture.0.join("rivers.toml"), "format = 3\n").expect("write unsupported river file");
+    assert_error(&fixture, "rivers.toml format", "unsupported version 3");
 }
 
 #[test]

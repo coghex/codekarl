@@ -9,7 +9,10 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::{Cell, Crop, MapData, Rgba8, RiverLine, Surface, TerrainStyle, project};
+use crate::{
+    Cell, Crop, FixedPoint, MapData, Rgba8, RiverLine, RiverNetwork, RiverRiver, RiverStretch,
+    RiverStretchKind, Surface, TerrainStyle, project,
+};
 
 /// Maximum supported crop width or height, in cells.
 pub const MAX_CROP_DIMENSION: u32 = 8192;
@@ -65,6 +68,8 @@ pub struct LoadedMap {
     pub grid_b: PackedGrid,
     /// River lines projected into fixed-point world coordinates.
     pub rivers: Vec<RiverLine>,
+    /// Optional format-2 river network. Legacy files leave this absent.
+    pub river_network: Option<RiverNetwork>,
 }
 
 /// A loading or validation error with the source file and, when applicable, entry or pixel.
@@ -460,7 +465,7 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
     };
     data.validate()
         .map_err(|error| LoadError::new("map.toml", error))?;
-    let rivers = load_rivers(directory, &map_file.layers.rivers, crop)?;
+    let (rivers, river_network) = load_rivers(directory, &map_file.layers.rivers, &data)?;
     // Validate the optional map-wide marker table whenever a map is loaded.
     let _location_kinds = crate::scenario::load_location_kinds(directory)?;
     Ok(LoadedMap {
@@ -477,6 +482,7 @@ pub fn load_map(directory: impl AsRef<Path>) -> Result<LoadedMap, LoadError> {
             pixels: packed_b,
         },
         rivers,
+        river_network,
     })
 }
 
@@ -1008,8 +1014,37 @@ fn decode_gray16_image(
         .collect())
 }
 
-fn load_rivers(directory: &Path, filename: &str, crop: Crop) -> Result<Vec<RiverLine>, LoadError> {
-    let file: RiversFile = read_toml(directory, filename)?;
+fn load_rivers(
+    directory: &Path,
+    filename: &str,
+    data: &MapData,
+) -> Result<(Vec<RiverLine>, Option<RiverNetwork>), LoadError> {
+    let text = fs::read_to_string(directory.join(filename))
+        .map_err(|error| LoadError::new(filename, error))?;
+    let value: toml::Value =
+        toml::from_str(&text).map_err(|error| LoadError::new(filename, error))?;
+    if value.get("format").is_some() {
+        let version = value.get("format").and_then(toml::Value::as_integer);
+        if version != Some(2) {
+            return Err(LoadError::at(
+                filename,
+                "format",
+                format!(
+                    "unsupported version {}; expected 2",
+                    version.map_or_else(|| "(invalid)".into(), |v| v.to_string())
+                ),
+            ));
+        }
+        let file: NetworkFile = value
+            .try_into()
+            .map_err(|error| LoadError::new(filename, error))?;
+        return load_river_network(filename, &file, data)
+            .map(|network| (Vec::new(), Some(network)));
+    }
+    let file: RiversFile = value
+        .try_into()
+        .map_err(|error| LoadError::new(filename, error))?;
+    let crop = data.crop;
     let mut lines = Vec::with_capacity(file.river.len());
     let mut names = std::collections::BTreeSet::new();
     for (line_index, river) in file.river.iter().enumerate() {
@@ -1055,7 +1090,286 @@ fn load_rivers(directory: &Path, filename: &str, crop: Crop) -> Result<Vec<River
         }
         lines.push(RiverLine { points });
     }
-    Ok(lines)
+    Ok((lines, None))
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::too_many_lines,
+    reason = "keep the format-2 schema checks adjacent to their source-qualified failures"
+)]
+fn load_river_network(
+    filename: &str,
+    file: &NetworkFile,
+    data: &MapData,
+) -> Result<RiverNetwork, LoadError> {
+    let stretch_location =
+        |index: usize, key: &str| format!("stretch[{index}] ({}).{key}", file.stretch[index].id);
+    let tiers = file.tiers.show_from_step.clone();
+    if tiers.len() != 3
+        || tiers.iter().any(|step| *step > 75)
+        || tiers.windows(2).any(|pair| pair[0] > pair[1])
+    {
+        return Err(LoadError::at(
+            filename,
+            "tiers.show_from_step",
+            "requires three nondecreasing steps in 0..=75",
+        ));
+    }
+    let id_ok = |id: &str| {
+        !id.is_empty()
+            && id.len() <= 48
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    };
+    let mut river_ids = BTreeMap::new();
+    let mut names = std::collections::BTreeSet::new();
+    for (i, river) in file.river.iter().enumerate() {
+        if !id_ok(&river.id) || river.id == "sea" {
+            return Err(LoadError::at(
+                filename,
+                format!("river[{i}].id"),
+                "must be 1..=48 lowercase letters, digits or hyphens, and not sea",
+            ));
+        }
+        if river_ids.insert(river.id.clone(), i).is_some() {
+            return Err(LoadError::at(
+                filename,
+                format!("river[{i}].id"),
+                "duplicate river id",
+            ));
+        }
+        if river.name.trim().is_empty() || !names.insert(river.name.to_lowercase()) {
+            return Err(LoadError::at(
+                filename,
+                format!("river[{i}].name"),
+                "must be nonempty and unique ignoring case",
+            ));
+        }
+        if !(1..=3).contains(&river.tier) {
+            return Err(LoadError::at(
+                filename,
+                format!("river[{i}].tier"),
+                "must be 1, 2 or 3",
+            ));
+        }
+    }
+    let mut stretch_ids = BTreeMap::new();
+    for (i, stretch) in file.stretch.iter().enumerate() {
+        if !id_ok(&stretch.id) || stretch.id == "sea" {
+            return Err(LoadError::at(
+                filename,
+                format!("stretch[{i}] ({}).id", stretch.id),
+                "must be 1..=48 lowercase letters, digits or hyphens, and not sea",
+            ));
+        }
+        if stretch_ids.insert(stretch.id.clone(), i).is_some() {
+            return Err(LoadError::at(
+                filename,
+                format!("stretch[{i}] ({}).id", stretch.id),
+                "duplicate stretch id",
+            ));
+        }
+    }
+    let mut rivers = Vec::new();
+    for (i, river) in file.river.iter().enumerate() {
+        if !file.stretch.iter().any(|stretch| stretch.river == river.id) {
+            return Err(LoadError::at(
+                filename,
+                format!("river[{i}].id"),
+                "river has no stretch",
+            ));
+        }
+        rivers.push(RiverRiver {
+            id: river.id.clone(),
+            name: river.name.clone(),
+            tier: river.tier,
+        });
+    }
+    let mut stretches = Vec::new();
+    for (i, stretch) in file.stretch.iter().enumerate() {
+        let Some(&river) = river_ids.get(&stretch.river) else {
+            return Err(LoadError::at(
+                filename,
+                stretch_location(i, "river"),
+                "unknown river id",
+            ));
+        };
+        if stretch.points.len() < 2 {
+            return Err(LoadError::at(
+                filename,
+                stretch_location(i, "points"),
+                "requires at least two points",
+            ));
+        }
+        let kind = match stretch.kind.as_str() {
+            "river" => RiverStretchKind::River,
+            "tidal" => RiverStretchKind::Tidal,
+            "lough" => RiverStretchKind::Lough,
+            _ => {
+                return Err(LoadError::at(
+                    filename,
+                    stretch_location(i, "kind"),
+                    "must be river, tidal or lough",
+                ));
+            }
+        };
+        if stretch.width_m.len() != 2
+            || stretch
+                .width_m
+                .iter()
+                .any(|w| !w.is_finite() || *w <= 0.0 || *w > 10_000.0)
+        {
+            return Err(LoadError::at(
+                filename,
+                stretch_location(i, "width_m"),
+                "requires two finite widths in (0, 10000] metres",
+            ));
+        }
+        let mut points = Vec::new();
+        for (p, pair) in stretch.points.iter().enumerate() {
+            let point = project(pair[0], pair[1]).ok_or_else(|| {
+                LoadError::at(
+                    filename,
+                    stretch_location(i, &format!("points[{p}]")),
+                    "latitude and longitude must be finite and projectable",
+                )
+            })?;
+            if !data.crop.contains(crate::cell_of(point)) {
+                return Err(LoadError::at(
+                    filename,
+                    stretch_location(i, &format!("points[{p}]")),
+                    "projects outside crop",
+                ));
+            }
+            if points.last() == Some(&point) {
+                return Err(LoadError::at(
+                    filename,
+                    stretch_location(i, &format!("points[{p}]")),
+                    "same fixed point as previous point",
+                ));
+            }
+            points.push(point);
+        }
+        let width = |metres: f64, point: FixedPoint| -> i64 {
+            let scale = f64::from(crate::ground_scale_for_row(i64::from(
+                crate::cell_of(point).y,
+            )));
+            (metres * 2_147_483_648.0 / (839.0 * scale)).round() as i64
+        };
+        let widths = [
+            width(stretch.width_m[0], points[0]),
+            width(stretch.width_m[1], *points.last().expect("two points")),
+        ];
+        let ends = if stretch.ends == "sea" {
+            None
+        } else {
+            Some(*stretch_ids.get(&stretch.ends).ok_or_else(|| {
+                LoadError::at(filename, stretch_location(i, "ends"), "names no stretch")
+            })?)
+        };
+        if ends == Some(i) {
+            return Err(LoadError::at(
+                filename,
+                stretch_location(i, "ends"),
+                "cannot end at itself",
+            ));
+        }
+        if let Some(other) = ends
+            && points.last()
+                != file.stretch[other]
+                    .points
+                    .first()
+                    .and_then(|p| project(p[0], p[1]))
+                    .as_ref()
+        {
+            return Err(LoadError::at(
+                filename,
+                stretch_location(i, "ends"),
+                "join must equal the other stretch's first projected point",
+            ));
+        }
+        stretches.push(RiverStretch {
+            id: stretch.id.clone(),
+            river,
+            kind,
+            points,
+            width_first: widths[0],
+            width_last: widths[1],
+            ends,
+            drawn_first: widths[0],
+            drawn_last: widths[1],
+        });
+    }
+    for i in 0..stretches.len() {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut at = Some(i);
+        while let Some(index) = at {
+            if !seen.insert(index) {
+                return Err(LoadError::at(
+                    filename,
+                    stretch_location(i, "ends"),
+                    "river network contains a cycle",
+                ));
+            }
+            at = stretches[index].ends;
+        }
+    }
+    crate::apply_confluence_widths(&mut stretches);
+    for (i, stretch) in stretches.iter().enumerate() {
+        if stretch.ends.is_none() {
+            let end = *stretch.points.last().expect("validated points");
+            let cell = crate::cell_of(end);
+            for y in cell.y - 2..=cell.y + 2 {
+                for x in cell.x - 2..=cell.x + 2 {
+                    let c = Cell { x, y };
+                    if data.crop.contains(c) {
+                        let idx = usize::try_from(
+                            i64::from(y - data.crop.origin.y) * i64::from(data.crop.width)
+                                + i64::from(x - data.crop.origin.x),
+                        )
+                        .unwrap_or(usize::MAX);
+                        if !matches!(data.cells.get(idx), Some(Surface::Sea { .. })) {
+                            return Err(LoadError::at(
+                                filename,
+                                stretch_location(i, "ends"),
+                                "sea end must be in open sea with a 5x5 sea-cell neighbourhood",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        if stretch.kind == RiverStretchKind::Lough
+            && !stretch.points.windows(2).any(|pair| {
+                let m = FixedPoint {
+                    x: i32::try_from((i64::from(pair[0].x) + i64::from(pair[1].x)).div_euclid(2))
+                        .unwrap_or_default(),
+                    y: i32::try_from((i64::from(pair[0].y) + i64::from(pair[1].y)).div_euclid(2))
+                        .unwrap_or_default(),
+                };
+                let c = crate::cell_of(m);
+                let idx = usize::try_from(
+                    i64::from(c.y - data.crop.origin.y) * i64::from(data.crop.width)
+                        + i64::from(c.x - data.crop.origin.x),
+                )
+                .unwrap_or(usize::MAX);
+                matches!(data.cells.get(idx), Some(Surface::Lake))
+            })
+        {
+            return Err(LoadError::at(
+                filename,
+                stretch_location(i, "kind"),
+                "lough stretch has no segment midpoint in a lake cell",
+            ));
+        }
+    }
+    Ok(RiverNetwork {
+        show_from_step: [tiers[0], tiers[1], tiers[2]],
+        rivers,
+        stretches,
+    })
 }
 
 #[derive(Deserialize)]
@@ -1127,6 +1441,39 @@ struct TerrainEntry {
     dark: Option<String>,
     dark_second: Option<String>,
     dark_lit: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NetworkFile {
+    #[serde(rename = "format")]
+    _format: u8,
+    tiers: TiersFile,
+    river: Vec<NetworkRiverFile>,
+    stretch: Vec<NetworkStretchFile>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TiersFile {
+    show_from_step: Vec<u8>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NetworkRiverFile {
+    id: String,
+    name: String,
+    tier: u8,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NetworkStretchFile {
+    id: String,
+    river: String,
+    kind: String,
+    width_m: Vec<f64>,
+    ends: String,
+    points: Vec<[f64; 2]>,
+    #[serde(rename = "note")]
+    _note: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

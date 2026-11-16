@@ -17,6 +17,71 @@ mod scenario;
 pub use loading::{
     LoadError, LoadedMap, LoadedTerrain, MAX_CROP_DIMENSION, PackedGrid, TerrainKind, load_map,
 };
+
+/// A format-2 river network, projected and validated at load time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RiverNetwork {
+    /// First zoom step at which each tier is visible (tiers are 1-based).
+    pub show_from_step: [u8; 3],
+    /// Named rivers in file order.
+    pub rivers: Vec<RiverRiver>,
+    /// Directed upstream stretches in file order.
+    pub stretches: Vec<RiverStretch>,
+}
+
+/// A named river and its display tier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RiverRiver {
+    /// Stable river id.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// Visibility tier, 1 through 3.
+    pub tier: u8,
+}
+
+/// The surveyed kind of a network stretch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RiverStretchKind {
+    /// Inland river course.
+    River,
+    /// Tidal course.
+    Tidal,
+    /// Course surveyed through a lough.
+    Lough,
+}
+
+/// A validated stretch with widths in fixed map units.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RiverStretch {
+    /// Stable stretch id.
+    pub id: String,
+    /// Index into [`RiverNetwork::rivers`].
+    pub river: usize,
+    /// Surveyed stretch kind.
+    pub kind: RiverStretchKind,
+    /// Ordered projected points, upstream to downstream.
+    pub points: Vec<FixedPoint>,
+    /// Authored width at the first point, in fixed map units.
+    pub width_first: i64,
+    /// Authored width at the last point, in fixed map units.
+    pub width_last: i64,
+    /// Index of the downstream stretch, or `None` for sea.
+    pub ends: Option<usize>,
+    /// Width after applying the nonshrinking confluence rule.
+    pub drawn_first: i64,
+    /// Width after applying the nonshrinking confluence rule.
+    pub drawn_last: i64,
+}
+
+/// Line and dark-water pixels prepared for one network tile.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RiverCoverageParts {
+    /// One-pixel blue river line.
+    pub line: BTreeSet<WorldPixel>,
+    /// Wide dark-water portion.
+    pub water: BTreeSet<WorldPixel>,
+}
 pub use mode::{
     ELEVATION_TOP_METRES, MODE_UNCOLOURED, MODE_UNOWNED, MODE_VALUE_MAX, ModeInputs,
     elevation_grey, mode_colour, mode_value_at_cell, stockpile_value, yield_values,
@@ -463,6 +528,125 @@ pub fn reference_colour_with_locations(
     reference_colour_with_mode(map, step, pixel, rivers, locations, None)
 }
 
+/// Reference colour with separate format-2 river line and dark-water pixels.
+#[must_use]
+pub fn reference_colour_with_river_network(
+    map: &MapData,
+    step: u8,
+    pixel: WorldPixel,
+    line: &BTreeSet<WorldPixel>,
+    water: &BTreeSet<WorldPixel>,
+    locations: &BTreeMap<WorldPixel, Rgba8>,
+    mode: Option<&ModeInputs<'_>>,
+) -> Option<Rgba8> {
+    reference_colour_with_river_network_look(
+        map,
+        step,
+        pixel,
+        line,
+        water,
+        locations,
+        mode.map_or(Look::Terrain, Look::Values),
+    )
+}
+
+/// Reference colour for a format-2 river network in elevation mode.
+#[must_use]
+pub fn reference_colour_with_river_network_elevation(
+    map: &MapData,
+    step: u8,
+    pixel: WorldPixel,
+    line: &BTreeSet<WorldPixel>,
+    water: &BTreeSet<WorldPixel>,
+    locations: &BTreeMap<WorldPixel, Rgba8>,
+) -> Option<Rgba8> {
+    reference_colour_with_river_network_look(
+        map,
+        step,
+        pixel,
+        line,
+        water,
+        locations,
+        Look::Elevation,
+    )
+}
+
+fn reference_colour_with_river_network_look(
+    map: &MapData,
+    step: u8,
+    pixel: WorldPixel,
+    line: &BTreeSet<WorldPixel>,
+    water: &BTreeSet<WorldPixel>,
+    locations: &BTreeMap<WorldPixel, Rgba8>,
+    look: Look<'_>,
+) -> Option<Rgba8> {
+    if usize::from(step) >= STEP_SIZE.len() || map.shallow_threshold == 0 {
+        return None;
+    }
+    if line.contains(&pixel) {
+        return Some(map.river);
+    }
+    if water.contains(&pixel) {
+        return Some(map.lake);
+    }
+    if let Some(colour) = locations.get(&pixel) {
+        return Some(*colour);
+    }
+    let surface = surface_for_pixel(map, step, pixel)?;
+    if let Surface::Land { terrain, .. } = surface
+        && [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            .into_iter()
+            .any(|(dx, dy)| {
+                i32::try_from(i64::from(pixel.x) + dx)
+                    .ok()
+                    .zip(i32::try_from(i64::from(pixel.y) + dy).ok())
+                    .is_some_and(|(x, y)| water.contains(&WorldPixel { x, y }))
+            })
+    {
+        return Some(map.terrains.get(usize::from(terrain))?.solid);
+    }
+    reference_colour_with_look(map, step, pixel, &BTreeSet::new(), locations, look)
+}
+
+fn river_width_at(first: i64, last: i64, position: i64, total: i64) -> Option<i64> {
+    i64::try_from(
+        i128::from(first) + (i128::from(last - first) * i128::from(position)) / i128::from(total),
+    )
+    .ok()
+}
+
+/// Apply the downstream nonshrinking rule to a validated acyclic network.
+pub(crate) fn apply_confluence_widths(stretches: &mut [RiverStretch]) {
+    let mut pending = vec![0_usize; stretches.len()];
+    let mut outgoing: Vec<Vec<usize>> = vec![Vec::new(); stretches.len()];
+    let mut incoming_width = vec![0_i64; stretches.len()];
+    for (upstream, stretch) in stretches.iter().enumerate() {
+        if let Some(downstream) = stretch.ends {
+            pending[downstream] += 1;
+            outgoing[upstream].push(downstream);
+        }
+    }
+    let mut ready: std::collections::VecDeque<usize> = pending
+        .iter()
+        .enumerate()
+        .filter_map(|(index, count)| (*count == 0).then_some(index))
+        .collect();
+    while let Some(index) = ready.pop_front() {
+        stretches[index].drawn_first = stretches[index].width_first.max(incoming_width[index]);
+        stretches[index].drawn_last = stretches[index]
+            .width_last
+            .max(stretches[index].drawn_first);
+        for &downstream in &outgoing[index] {
+            incoming_width[downstream] =
+                incoming_width[downstream].max(stretches[index].drawn_last);
+            pending[downstream] -= 1;
+            if pending[downstream] == 0 {
+                ready.push_back(downstream);
+            }
+        }
+    }
+}
+
 /// The reference colour with a map mode (`docs/economy-design.md` section 3.22): rivers and locations first, as without a mode; then,
 /// when `mode` is given and the cell under the pixel's (moved) sample point has a counted neighbour in its 5 x 5 box, the mode's colour
 /// ([`mode_value_at_cell`], [`mode_colour`]); otherwise the terrain colour. With `mode` of `None` this is
@@ -807,6 +991,334 @@ impl PreparedRivers {
         }
         Some(selected)
     }
+}
+
+/// Tile-backed view of a format-2 network. Only requested 128-pixel tiles are rasterized.
+pub struct PreparedRiverNetwork<'a> {
+    map: &'a MapData,
+    network: &'a RiverNetwork,
+    tiles: BTreeMap<(u8, i32, i32), RiverCoverageParts>,
+    current_step: Option<u8>,
+    step_index: Option<BTreeMap<(i32, i32), Vec<usize>>>,
+}
+
+impl<'a> PreparedRiverNetwork<'a> {
+    /// Prepare the lazy tile cache for one loaded map.
+    #[must_use]
+    pub fn new(map: &'a MapData, network: &'a RiverNetwork) -> Self {
+        Self {
+            map,
+            network,
+            tiles: BTreeMap::new(),
+            current_step: None,
+            step_index: None,
+        }
+    }
+
+    /// Select the network's line and water pixels in view-relative coordinates.
+    pub fn select_view(
+        &mut self,
+        step: u8,
+        top_left: WorldPixel,
+        view: ViewSize,
+    ) -> Option<RiverCoverageParts> {
+        if self.current_step != Some(step) {
+            self.tiles.clear();
+            self.step_index = None;
+            self.current_step = Some(step);
+        }
+        let pixel_size = i64::from(*STEP_SIZE.get(usize::from(step))?);
+        if self.step_index.is_none() {
+            self.step_index = Some(self.build_step_index(pixel_size)?);
+        }
+        let mut selected = RiverCoverageParts::default();
+        let right = i64::from(top_left.x).checked_add(i64::from(view.width))?;
+        let bottom = i64::from(top_left.y).checked_add(i64::from(view.height))?;
+        if view.width == 0 || view.height == 0 {
+            return Some(selected);
+        }
+        let tx0 = i64::from(top_left.x).div_euclid(128);
+        let ty0 = i64::from(top_left.y).div_euclid(128);
+        let tx1 = (right - 1).div_euclid(128);
+        let ty1 = (bottom - 1).div_euclid(128);
+        for ty in ty0..=ty1 {
+            for tx in tx0..=tx1 {
+                let tx = i32::try_from(tx).ok()?;
+                let ty = i32::try_from(ty).ok()?;
+                if !self.tiles.contains_key(&(step, tx, ty)) {
+                    let candidates = self
+                        .step_index
+                        .as_ref()?
+                        .get(&(tx, ty))
+                        .map_or(&[][..], Vec::as_slice);
+                    let tile = self.prepare_tile(step, pixel_size, tx, ty, candidates)?;
+                    self.tiles.insert((step, tx, ty), tile);
+                }
+                let tile = self.tiles.get(&(step, tx, ty))?;
+                for pixel in &tile.line {
+                    if i64::from(pixel.x) >= i64::from(top_left.x)
+                        && i64::from(pixel.x) < right
+                        && i64::from(pixel.y) >= i64::from(top_left.y)
+                        && i64::from(pixel.y) < bottom
+                    {
+                        selected.line.insert(*pixel);
+                    }
+                }
+                for pixel in &tile.water {
+                    if i64::from(pixel.x) >= i64::from(top_left.x)
+                        && i64::from(pixel.x) < right
+                        && i64::from(pixel.y) >= i64::from(top_left.y)
+                        && i64::from(pixel.y) < bottom
+                    {
+                        selected.water.insert(*pixel);
+                    }
+                }
+            }
+        }
+        Some(RiverCoverageParts {
+            line: selected
+                .line
+                .into_iter()
+                .map(|p| WorldPixel {
+                    x: i32::try_from(i64::from(p.x) - i64::from(top_left.x))
+                        .ok()
+                        .unwrap_or_default(),
+                    y: i32::try_from(i64::from(p.y) - i64::from(top_left.y))
+                        .ok()
+                        .unwrap_or_default(),
+                })
+                .collect(),
+            water: selected
+                .water
+                .into_iter()
+                .map(|p| WorldPixel {
+                    x: i32::try_from(i64::from(p.x) - i64::from(top_left.x))
+                        .ok()
+                        .unwrap_or_default(),
+                    y: i32::try_from(i64::from(p.y) - i64::from(top_left.y))
+                        .ok()
+                        .unwrap_or_default(),
+                })
+                .collect(),
+        })
+    }
+
+    fn build_step_index(&self, p: i64) -> Option<BTreeMap<(i32, i32), Vec<usize>>> {
+        let mut index: BTreeMap<(i32, i32), Vec<usize>> = BTreeMap::new();
+        for (stretch_index, stretch) in self.network.stretches.iter().enumerate() {
+            if stretch.points.is_empty() {
+                continue;
+            }
+            let radius = stretch.drawn_first.max(stretch.drawn_last).max(1) / 2 + 2;
+            let min_x = i64::from(stretch.points.iter().map(|pt| pt.x).min()?) - radius;
+            let max_x = i64::from(stretch.points.iter().map(|pt| pt.x).max()?) + radius;
+            let min_y = i64::from(stretch.points.iter().map(|pt| pt.y).min()?) - radius;
+            let max_y = i64::from(stretch.points.iter().map(|pt| pt.y).max()?) + radius;
+            let tx0 = (min_x.div_euclid(p)).div_euclid(128);
+            let tx1 = (max_x.div_euclid(p)).div_euclid(128);
+            let ty0 = (min_y.div_euclid(p)).div_euclid(128);
+            let ty1 = (max_y.div_euclid(p)).div_euclid(128);
+            for ty in ty0..=ty1 {
+                for tx in tx0..=tx1 {
+                    index
+                        .entry((i32::try_from(tx).ok()?, i32::try_from(ty).ok()?))
+                        .or_default()
+                        .push(stretch_index);
+                }
+            }
+        }
+        for entries in index.values_mut() {
+            entries.sort_unstable();
+            entries.dedup();
+        }
+        Some(index)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        clippy::many_single_char_names,
+        reason = "keep the normative integer distance cases beside tile clipping and land masking"
+    )]
+    fn prepare_tile(
+        &self,
+        step: u8,
+        p: i64,
+        tx: i32,
+        ty: i32,
+        candidates: &[usize],
+    ) -> Option<RiverCoverageParts> {
+        let mut result = RiverCoverageParts::default();
+        let tile_left = i64::from(tx).checked_mul(128)?;
+        let tile_top = i64::from(ty).checked_mul(128)?;
+        let tile_right = tile_left + 128;
+        let tile_bottom = tile_top + 128;
+        for &stretch_index in candidates {
+            let stretch = self.network.stretches.get(stretch_index)?;
+            let tier = self.network.rivers.get(stretch.river)?.tier;
+            if step < self.network.show_from_step[usize::from(tier - 1)] {
+                continue;
+            }
+            let mut positions = vec![0_i64];
+            for pair in stretch.points.windows(2) {
+                let length = (i64::from(pair[1].x) - i64::from(pair[0].x)).abs()
+                    + (i64::from(pair[1].y) - i64::from(pair[0].y)).abs();
+                positions.push(positions.last()?.checked_add(length)?);
+            }
+            let total = *positions.last()?;
+            if total <= 0 {
+                continue;
+            }
+            let first = stretch.drawn_first;
+            let last = stretch.drawn_last;
+            let width_at = |m: i64| river_width_at(first, last, m, total);
+            let threshold = (3 * p + 1) / 2;
+            let turn = if last < threshold {
+                None
+            } else if first >= threshold {
+                Some(0)
+            } else {
+                Some(((threshold - first) * total + (last - first) - 1) / (last - first))
+            };
+            let max_width = last.max(first).max(1);
+            let mut narrow = BTreeSet::new();
+            let mut wide = BTreeSet::new();
+            if let Some(turn) = turn {
+                for (i, pair) in stretch.points.windows(2).enumerate() {
+                    let a = pair[0];
+                    let b = pair[1];
+                    let ma = positions[i];
+                    let mb = positions[i + 1];
+                    if ma >= turn {
+                        continue;
+                    }
+                    let end = if mb > turn {
+                        let dx = i64::from(b.x) - i64::from(a.x);
+                        let dy = i64::from(b.y) - i64::from(a.y);
+                        let den = mb - ma;
+                        FixedPoint {
+                            x: i32::try_from(
+                                i128::from(a.x)
+                                    + (i128::from(dx) * i128::from(turn - ma))
+                                        .div_euclid(i128::from(den)),
+                            )
+                            .ok()?,
+                            y: i32::try_from(
+                                i128::from(a.y)
+                                    + (i128::from(dy) * i128::from(turn - ma))
+                                        .div_euclid(i128::from(den)),
+                            )
+                            .ok()?,
+                        }
+                    } else {
+                        b
+                    };
+                    bresenham(fixed_to_pixel(a, p), fixed_to_pixel(end, p), &mut narrow)?;
+                }
+            } else {
+                for pair in stretch.points.windows(2) {
+                    bresenham(
+                        fixed_to_pixel(pair[0], p),
+                        fixed_to_pixel(pair[1], p),
+                        &mut narrow,
+                    )?;
+                }
+            }
+            for (i, pair) in stretch.points.windows(2).enumerate() {
+                let a = pair[0];
+                let b = pair[1];
+                let ax = i64::from(a.x);
+                let ay = i64::from(a.y);
+                let bx = i64::from(b.x);
+                let by = i64::from(b.y);
+                let radius = max_width / 2 + 2;
+                let min_x = (ax.min(bx) - radius).div_euclid(p).max(tile_left);
+                let max_x = (ax.max(bx) + radius).div_euclid(p).min(tile_right - 1);
+                let min_y = (ay.min(by) - radius).div_euclid(p).max(tile_top);
+                let max_y = (ay.max(by) + radius).div_euclid(p).min(tile_bottom - 1);
+                if min_x > max_x || min_y > max_y {
+                    continue;
+                }
+                let dx = bx - ax;
+                let dy = by - ay;
+                let len = i128::from(dx) * i128::from(dx) + i128::from(dy) * i128::from(dy);
+                let ma = positions[i];
+                let mb = positions[i + 1];
+                for y in min_y..=max_y {
+                    for x in min_x..=max_x {
+                        let pixel = WorldPixel {
+                            x: i32::try_from(x).ok()?,
+                            y: i32::try_from(y).ok()?,
+                        };
+                        if !matches!(
+                            surface_for_pixel(self.map, step, pixel)?,
+                            Surface::Land { .. }
+                        ) {
+                            continue;
+                        }
+                        let c = sample_point(pixel, step)?;
+                        let acx = i64::from(c.x) - ax;
+                        let acy = i64::from(c.y) - ay;
+                        let d = i128::from(acx) * i128::from(dx) + i128::from(acy) * i128::from(dy);
+                        let Some(turn) = turn else {
+                            continue;
+                        };
+                        let (m, inside) = if d <= 0 {
+                            (
+                                ma,
+                                i == 0
+                                    && turn == 0
+                                    && 4 * (i128::from(acx) * i128::from(acx)
+                                        + i128::from(acy) * i128::from(acy))
+                                        <= i128::from(width_at(ma)?) * i128::from(width_at(ma)?),
+                            )
+                        } else if d >= len {
+                            (
+                                mb,
+                                mb >= turn
+                                    && 4 * (i128::from(i64::from(c.x) - bx).pow(2)
+                                        + i128::from(i64::from(c.y) - by).pow(2))
+                                        <= i128::from(width_at(mb)?).pow(2),
+                            )
+                        } else {
+                            let m = ma + i64::try_from(i128::from(mb - ma) * d / len).ok()?;
+                            let cross =
+                                i128::from(acx) * i128::from(dy) - i128::from(acy) * i128::from(dx);
+                            (
+                                m,
+                                m >= turn
+                                    && 4 * cross * cross <= i128::from(width_at(m)?).pow(2) * len,
+                            )
+                        };
+                        if inside && m >= turn {
+                            wide.insert(pixel);
+                        }
+                    }
+                }
+            }
+            for pixel in narrow {
+                if tile_has(pixel, tile_left, tile_top)
+                    && !wide.contains(&pixel)
+                    && matches!(
+                        surface_for_pixel(self.map, step, pixel)?,
+                        Surface::Land { .. }
+                    )
+                {
+                    result.line.insert(pixel);
+                }
+            }
+            result.water.extend(wide);
+        }
+        // Water from any stretch masks every narrow line offered in the tile.
+        result.line.retain(|pixel| !result.water.contains(pixel));
+        Some(result)
+    }
+}
+
+fn tile_has(pixel: WorldPixel, left: i64, top: i64) -> bool {
+    i64::from(pixel.x) >= left
+        && i64::from(pixel.x) < left + 128
+        && i64::from(pixel.y) >= top
+        && i64::from(pixel.y) < top + 128
 }
 
 fn fixed_to_pixel(point: FixedPoint, pixel_size: i64) -> WorldPixel {

@@ -13,9 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     BuildingKind, Cell, Confidence, Crop, FixedPoint, HouseStyle, LoadedMap, LoadedTerrain,
     Location, LocationKind, LocationKinds, MODE_UNCOLOURED, MODE_UNOWNED, MapData, ModeInputs,
-    PackedGrid, Rgba8, RiverLine, STEP_SIZE, Scenario as LoadedScenario, ScenarioStart, Surface,
-    TerrainKind, TerrainStyle, WorldPixel, reference_colour, reference_colour_with_elevation,
-    reference_colour_with_mode,
+    PackedGrid, Rgba8, RiverLine, RiverNetwork, RiverRiver, RiverStretch, RiverStretchKind,
+    STEP_SIZE, Scenario as LoadedScenario, ScenarioStart, Surface, TerrainKind, TerrainStyle,
+    WorldPixel, reference_colour, reference_colour_with_elevation, reference_colour_with_mode,
 };
 
 /// The crop's global origin cell.
@@ -58,6 +58,8 @@ pub struct Fixture {
     pub grid_b: Vec<u8>,
     /// One entry per terrain index (grid A's red byte): 0 sea, 1 lake, 2 pasture, 3 forest, 4 bog, 5 marsh, 6 mountain.
     pub terrains: Vec<Terrain>,
+    /// Format-2 network used by river rendering readback contracts.
+    pub river_network: RiverNetwork,
 }
 
 /// The layout, one string per crop row, one letter per cell: `~` sea, `L` lake, `p` pasture, `f` forest, `b` bog, `m` marsh,
@@ -321,7 +323,96 @@ pub fn fixture() -> Fixture {
         grid_a,
         grid_b,
         terrains,
+        river_network: fixture_river_network(),
     }
+}
+
+fn fixture_river_network() -> RiverNetwork {
+    let point = |x: i32, y: i32| FixedPoint {
+        x: (ORIGIN[0] + x) * 32_768 + 16_384,
+        y: (ORIGIN[1] + y) * 32_768 + 16_384,
+    };
+    let stretch =
+        |id: &str, river: usize, kind, points: Vec<FixedPoint>, ends, first, last| RiverStretch {
+            id: id.into(),
+            river,
+            kind,
+            points,
+            width_first: first,
+            width_last: last,
+            ends,
+            drawn_first: first,
+            drawn_last: last,
+        };
+    let mut network = RiverNetwork {
+        show_from_step: [0, 15, 30],
+        rivers: vec![
+            RiverRiver {
+                id: "main".into(),
+                name: "Main River".into(),
+                tier: 1,
+            },
+            RiverRiver {
+                id: "tributary".into(),
+                name: "Tributary".into(),
+                tier: 2,
+            },
+            RiverRiver {
+                id: "tidal".into(),
+                name: "Tidal River".into(),
+                tier: 3,
+            },
+        ],
+        stretches: vec![
+            stretch(
+                "main-upper",
+                0,
+                RiverStretchKind::River,
+                vec![point(13, 3), point(11, 4), point(9, 5)],
+                Some(3),
+                180,
+                460,
+            ),
+            stretch(
+                "tributary-upper",
+                1,
+                RiverStretchKind::River,
+                vec![point(15, 8), point(12, 7), point(9, 5)],
+                Some(3),
+                150,
+                520,
+            ),
+            stretch(
+                "lough",
+                0,
+                RiverStretchKind::Lough,
+                vec![point(6, 4), point(9, 5)],
+                Some(3),
+                220,
+                600,
+            ),
+            stretch(
+                "main-down",
+                0,
+                RiverStretchKind::River,
+                vec![point(9, 5), point(5, 3), point(1, 1)],
+                None,
+                500,
+                15_000,
+            ),
+            stretch(
+                "tidal-course",
+                2,
+                RiverStretchKind::Tidal,
+                vec![point(18, 11), point(14, 7), point(9, 4), point(1, 1)],
+                None,
+                250,
+                1_200,
+            ),
+        ],
+    };
+    crate::apply_confluence_widths(&mut network.stretches);
+    network
 }
 
 /// A small scenario over [`fixture`]'s map for production-path location readbacks.
@@ -368,6 +459,7 @@ pub fn location_scenario() -> LoadedScenario {
         grid_a: packed_grid(&map_fixture.grid_a, crop.width, crop.height),
         grid_b: packed_grid(&map_fixture.grid_b, crop.width, crop.height),
         rivers: Vec::new(),
+        river_network: Some(map_fixture.river_network.clone()),
     };
     let kinds = LocationKinds {
         kinds: vec![

@@ -226,6 +226,103 @@ fn rendered_png_matches_the_reference_for_every_pixel_and_html_lists_steps() {
 }
 
 #[test]
+fn format_two_network_is_rendered_by_map_preview() {
+    let input = large_fixture(16, 16);
+    let mut terrain = Vec::new();
+    let mut fertility = Vec::new();
+    for y in 0..16 {
+        for x in 0..16 {
+            let sea = x <= 7 || y <= 7 || x == 15 || y == 15;
+            terrain.extend_from_slice(if sea { &[0, 0, 255] } else { &[0, 255, 0] });
+            fertility.push(if sea { 0 } else { 125 });
+        }
+    }
+    write_png(
+        &input.path().join("terrain.png"),
+        16,
+        16,
+        ColorType::Rgb,
+        BitDepth::Eight,
+        &terrain,
+    );
+    write_png(
+        &input.path().join("fertility.png"),
+        16,
+        16,
+        ColorType::Grayscale,
+        BitDepth::Eight,
+        &fertility,
+    );
+    let degrees_per_cell = 839.0 / (6_378_137.0 * std::f64::consts::PI / 180.0);
+    let start = [-10.5 * degrees_per_cell, 14.5 * degrees_per_cell];
+    let end = [-4.5 * degrees_per_cell, 4.5 * degrees_per_cell];
+    fs::write(
+        input.path().join("rivers.toml"),
+        format!(
+            r#"format = 2
+[tiers]
+show_from_step = [0, 15, 30]
+[[river]]
+id = "main"
+name = "Main"
+tier = 1
+[[stretch]]
+id = "course"
+river = "main"
+kind = "river"
+width_m = [50.0, 500.0]
+ends = "sea"
+points = [[{:.15}, {:.15}], [{:.15}, {:.15}]]
+"#,
+            start[0], start[1], end[0], end[1]
+        ),
+    )
+    .expect("write network map");
+    let view_centre = format!(
+        "{:.15},{:.15}",
+        -8.5 * degrees_per_cell,
+        9.5 * degrees_per_cell
+    );
+    let output = TempDir::new("format-two-output");
+    let result = Command::new(env!("CARGO_BIN_EXE_map-preview"))
+        .args([
+            input.path().to_str().unwrap(),
+            output.path().to_str().unwrap(),
+            "--steps",
+            "53",
+            "--view",
+            &view_centre,
+            "64x64",
+        ])
+        .output()
+        .expect("run network preview");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let (width, height, bytes) = decode_png(&output.path().join("step-53.png"));
+    assert_eq!((width, height), (64, 64));
+    let rgba_count = |colour: [u8; 3]| bytes.chunks_exact(4).filter(|px| px[..3] == colour).count();
+    assert!(
+        rgba_count([69, 103, 137]) > 0,
+        "preview contains the blue river line; counts {}, {}, {}",
+        rgba_count([69, 103, 137]),
+        rgba_count([52, 86, 120]),
+        rgba_count([17, 34, 51])
+    );
+    assert!(
+        rgba_count([52, 86, 120]) > 0,
+        "preview contains dark river water; count {}",
+        rgba_count([52, 86, 120])
+    );
+    assert!(
+        rgba_count([17, 34, 51]) > 0,
+        "preview contains a terrain-coloured bank"
+    );
+}
+
+#[test]
 fn loader_error_is_forwarded_and_no_output_is_written() {
     let input = fixture();
     let source = fs::read_to_string(input.path().join("terrain.toml")).expect("read terrain");

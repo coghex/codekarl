@@ -6,9 +6,10 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use ck_map::{
-    CELL_METRES, FIXED_PER_CELL, FixedPoint, LoadedMap, PreparedLocations, Rgba8, RiverCoverage,
-    STEP_SIZE, Scenario, Surface, ViewSize, WorldPixel, load_map, load_scenario, project,
-    reference_colour, reference_colour_with_locations,
+    CELL_METRES, FIXED_PER_CELL, FixedPoint, LoadedMap, PreparedLocations, PreparedRiverNetwork,
+    Rgba8, RiverCoverage, STEP_SIZE, Scenario, Surface, ViewSize, WorldPixel, load_map,
+    load_scenario, project, reference_colour, reference_colour_with_locations,
+    reference_colour_with_river_network,
 };
 use png::{BitDepth, ColorType};
 
@@ -297,6 +298,34 @@ fn render_png(map: &LoadedMap, path: &Path, plan: &RenderPlan) -> Result<(), Box
     let byte_count = pixel_count
         .checked_mul(4)
         .ok_or("image byte count overflows address space")?;
+    if let Some(network) = &map.river_network {
+        let mut prepared = PreparedRiverNetwork::new(&map.data, network);
+        let parts = prepared
+            .select_view(plan.step, plan.top_left, plan.size)
+            .ok_or("could not prepare river network tiles")?;
+        let (line, water) = global_parts(parts, plan.top_left);
+        let mut pixels = Vec::with_capacity(byte_count);
+        for y in 0..plan.size.height {
+            for x in 0..plan.size.width {
+                let world = WorldPixel {
+                    x: plan.top_left.x + i32::try_from(x)?,
+                    y: plan.top_left.y + i32::try_from(y)?,
+                };
+                let colour = reference_colour_with_river_network(
+                    &map.data,
+                    plan.step,
+                    world,
+                    &line,
+                    &water,
+                    &BTreeMap::new(),
+                    None,
+                )
+                .ok_or("reference colour could not be computed")?;
+                pixels.extend_from_slice(&colour.0);
+            }
+        }
+        return write_rgba_png(path, plan.size.width, plan.size.height, &pixels);
+    }
     let rivers = RiverCoverage::prepare(&map.rivers, plan.step)
         .ok_or("could not prepare river pixels for step")?;
     let mut pixels = Vec::with_capacity(byte_count);
@@ -341,6 +370,38 @@ fn render_scenario_png(
                 .ok_or("location pixel refers to a missing palette colour")
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
+    if let Some(network) = &scenario.map.river_network {
+        let mut prepared = PreparedRiverNetwork::new(&scenario.map.data, network);
+        let parts = prepared
+            .select_view(plan.step, plan.top_left, plan.size)
+            .ok_or("could not prepare river network tiles")?;
+        let (line, water) = global_parts(parts, plan.top_left);
+        let mut pixels = Vec::with_capacity(
+            pixel_count
+                .checked_mul(4)
+                .ok_or("image byte count overflows address space")?,
+        );
+        for y in 0..plan.size.height {
+            for x in 0..plan.size.width {
+                let world = WorldPixel {
+                    x: plan.top_left.x + i32::try_from(x)?,
+                    y: plan.top_left.y + i32::try_from(y)?,
+                };
+                let colour = reference_colour_with_river_network(
+                    &scenario.map.data,
+                    plan.step,
+                    world,
+                    &line,
+                    &water,
+                    &location_colours,
+                    None,
+                )
+                .ok_or("reference colour could not be computed")?;
+                pixels.extend_from_slice(&colour.0);
+            }
+        }
+        return write_rgba_png(path, plan.size.width, plan.size.height, &pixels);
+    }
     let rivers = RiverCoverage::prepare(&scenario.map.rivers, plan.step)
         .ok_or("could not prepare river pixels for step")?;
     let river_pixels = rivers.pixels();
@@ -367,6 +428,25 @@ fn render_scenario_png(
         }
     }
     write_rgba_png(path, plan.size.width, plan.size.height, &pixels)
+}
+
+fn global_parts(
+    parts: ck_map::RiverCoverageParts,
+    top_left: WorldPixel,
+) -> (
+    std::collections::BTreeSet<WorldPixel>,
+    std::collections::BTreeSet<WorldPixel>,
+) {
+    let global = |pixels: std::collections::BTreeSet<WorldPixel>| {
+        pixels
+            .into_iter()
+            .map(|p| WorldPixel {
+                x: top_left.x.saturating_add(p.x),
+                y: top_left.y.saturating_add(p.y),
+            })
+            .collect()
+    };
+    (global(parts.line), global(parts.water))
 }
 
 fn render_catchments_png(scenario: &Scenario, path: &Path) -> Result<(), Box<dyn Error>> {
