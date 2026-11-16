@@ -80,7 +80,9 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   hides it. It reads the frames shown a second, as `60 fps`, and `-- fps` for its first second. F3 acts with the pause
   menu open and while you type in a field. `[debug]` in the configuration or the settings file keeps it: `level` (0 for
   off, the default, or 1) and `rate` (`"frames"`, the default, or `"updates"`, which reads the UI script's updates a
-  second as `60 updates`). F3 writes the level to the settings file. While the line shows frames the game draws at every
+  second as `60 updates`). F3 writes the level to the settings file. The settings window's "development" tab sets
+  both (CK-336): "debug layer level" is `off` or `1`, and "rate shown" is `frames` or `updates`; a level changed with
+  F3 shows there too. While the line shows frames the game draws at every
   display refresh, which uses more power than drawing on demand. The line is drawn on native Metal only
   ([docs/ui-design.md](docs/ui-design.md) §3.24).
 - **Saves:** the quicksave is `saves/quicksave.cksave`. A save loads only into the build that wrote it, and a save written before
@@ -98,10 +100,11 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   once without asking, and so does the window's own close button. Neither saves, and F5 does nothing while the menu is open, so
   quicksave before you open it. "settings" opens the settings window, "glossary" the glossary reader and "save / load"
   the save/load screen (below; [docs/ui-design.md](docs/ui-design.md) §3.15).
-- **Settings** (CK-301): the settings window opens above the menu, with four tabs down its left side. "general" has the
+- **Settings** (CK-301): the settings window opens above the menu, with five tabs down its left side. "general" has the
   tooltips' show delay, lock and lock timer; "graphics" is next; "map" has the pan speed, zoom speed and scroll step;
-  "input" has the keys (below). Drag a slider or press a choice and it acts at once and is kept. "defaults" resets the tab
-  that shows. Its "x", or Escape, closes it and leaves the menu open ([docs/ui-design.md](docs/ui-design.md) §3.18).
+  "input" has the keys (below); "development" (CK-336) has the debug line's level and rate (above). Drag a slider or
+  press a choice and it acts at once and is kept. "defaults" resets the tab that shows. Its "x", or Escape, closes it
+  and leaves the menu open ([docs/ui-design.md](docs/ui-design.md) §3.18).
 - **Graphics** (CK-308, CK-312, CK-313): on the "graphics" tab, "resolution" is two numbers, the width and the height in
   screen pixels. Click one, type, and press Enter or click elsewhere: the pair is brought into the range, from 1280×800 up
   to the screen, and the window takes that size. "window mode" is "windowed", "windowed fullscreen" (no title bar, the
@@ -117,9 +120,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   with Shift, Control, Option or Command held if you like. Escape cancels. Backspace while the slot waits, or a right-click
   on a slot, empties it. When another action has the key, a "Key in use" prompt offers "replace" (the other action loses
   it), "swap" (the other action gets your slot's old key), "clear" (your slot is emptied) and "cancel". The menu's Escape
-  cannot be changed, and "defaults" puts every key back. "fullscreen" (F11, CK-326) is one of the "game" keys.
-  The debug line's key (CK-335) has no row there yet: `debug_layer` under `[input.bindings]` in the settings file
-  changes it ([docs/ui-design.md](docs/ui-design.md) §3.18).
+  cannot be changed, and "defaults" puts every key back. "fullscreen" (F11, CK-326) and "debug layer" (F3, CK-336)
+  are two of the "game" keys ([docs/ui-design.md](docs/ui-design.md) §3.18).
 - **The glossary** (CK-300): the glossary reader opens above the menu too. Its left column lists every glossary entry by its
   title: click one to read it on the right. A light-blue word in the text has its tooltip as elsewhere, and a click on it
   opens that word's entry. Its "x", or Escape, goes back to the menu ([docs/ui-design.md](docs/ui-design.md) §3.20).
@@ -153,8 +155,8 @@ settings file, `settings.toml`, is kept beside that directory and is in `.ignore
   also hold `[ui] scale` and `list_look`, `[window] width`, `height` and `mode`, and `[frame] fps_limit` (CK-307, CK-312,
   CK-313), and `[input.bindings]` for the player's own keys (CK-309: at most two keys for an action, and never Escape's
   `close`). The input tab writes the keys (CK-310), and the graphics tab the other six (CK-308). Since CK-335 it may
-  hold `[debug] level` and `rate` too, the debug line's settings, and F3 writes the level
-  ([docs/ui-design.md](docs/ui-design.md) §3.17).
+  hold `[debug] level` and `rate` too, the debug line's settings: F3 writes the level, and the development tab
+  writes both (CK-336) ([docs/ui-design.md](docs/ui-design.md) §3.17).
 - **Lists:** a list longer than its view has a thin scroll bar at its right edge: drag its thumb, or press the track to move one
   view ([docs/ui-design.md](docs/ui-design.md) §3.16).
 - **The window** opens at the resolution in force, the settings file's or else the configuration's, or at 1280×800 screen

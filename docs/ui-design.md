@@ -417,10 +417,20 @@
 >   - **The application draws it,** not a script: it shows over tooltips and the pause menu, and F3 acts with the
 >     menu open and while a field is edited.
 >   - **Two settings keep it,** `[debug] level` and `rate`, in the configuration and the settings file (§3.17).
->   - **The key is an action,** `debug_layer`, and the settings file can rebind it. The input tab has no row for it
->     yet, and the settings window no page for the two settings: both are a later slice.
+>   - **The key is an action,** `debug_layer`, and it can be rebound.
 >   - **It follows the UI scale,** as the UI's own text does (§3.3).
 >   - **On native Metal only,** and only in a run that has loaded a font.
+> - **A development page, and the key's row** (CK-336, 2026-11-16; §3.18): the settings window has a fifth tab,
+>   "development", with the debug layer's level and the rate it shows, and the input tab has a "debug layer" row. It
+>   is the fourth part of the debug layer. The owner: "we can keep the setting in the same settings file and have a new
+>   entry to the settings page titles "development". we can keep this hidden if we want to later, it should have
+>   options for 'debug layer level', just off and level 1 for now."
+>   (`owner-direction-designer-r2.md` in `.pipeline/coordination/debug-shell-design/`).
+>   - **The page follows the key:** a level changed with F3 while the page shows lights the other choice by the next
+>     update.
+>   - **The settings window is 17 wider,** because "development" is its longest tab name.
+> - **The debug line in a window opened in points** (CK-341, 2026-11-16; §3.24) has the size the design gives, at 2
+>   points a UI pixel. Until then it was half that size there. The game's window is opened in pixels and is unchanged.
 
 ## Owner answers (2026-11-07)
 
@@ -2554,8 +2564,8 @@ the setting in the same settings file" (`owner-direction-designer-r2.md` in
   and `"frames"` only when the configuration has no `[debug]` of its own. The reset's name is ck-designer-6's.
 - **The key's press is a set too.** The application steps `debug.level` itself and writes it, with no script (§3.24).
 - **Each set, step and reset also says** whether a frame is to be drawn at every display refresh (§3.24).
-- **No shipped script calls these yet.** The settings window has no page for the two settings: that is a later slice
-  of the debug layer's design.
+- **Since CK-336 the settings window's development tab calls them** (§3.18): it reads `settings.debug()`, sets the
+  two settings and resets them. Before CK-336 no shipped script did.
 - **The key,** `debug_layer`, is the eighteenth of the player's actions (above).
 - **Tests:** in §3.24.
 
@@ -2564,7 +2574,8 @@ the setting in the same settings file" (`owner-direction-designer-r2.md` in
 The pause menu's "settings" button opens the **settings window**: a tabbed window above the menu, where a change acts at once
 and is written to the settings file (§3.17). It is the second slice of the settings (UI polish item 3). The owner: "i think i
 want a tabbed window". Since CK-310 its input tab changes the keys. Since CK-308 it has a graphics tab, to which CK-313 and
-CK-312 each added a row. Since CK-326 the input tab has a row for the fullscreen key.
+CK-312 each added a row. Since CK-326 the input tab has a row for the fullscreen key. Since CK-336 the window has a
+development tab, for the debug layer's two settings, and the input tab a row for the debug layer's key.
 
 - **The records** are `owner-direction-settings-designer-r1.md` to `-r4.md` and `owner-direction-settings-manager-r7.md` in
   `.pipeline/coordination/ui-polish-design/`.
@@ -2584,6 +2595,10 @@ CK-312 each added a row. Since CK-326 the input tab has a row for the fullscreen
     `-r3.md` to `-r5.md`, and `owner-direction-game-menu-manager-r8.md` and `-r9.md`. The look is the graphics picture and
     the windowed fullscreen picture of `mockups/settings-r4.html`. The specs are `runtime-m55/ck308-spec-r2.md` (sha256
     `8f3154d0…`), `ck313-spec.md` (`8d228f80…`) and `ck312-spec-r3.md` (`b37e2b62…`).
+  - **For the development tab and the debug layer's row (CK-336)** the records are the debug layer's:
+    `owner-direction-designer-r2.md` to `-r4.md` in `.pipeline/coordination/debug-shell-design/` (§3.24). There is no
+    mock-up and no new art: the page is built from the pieces of the general and graphics tabs. The spec is
+    `runtime-m55/ck336-spec-r2.md` (sha256 `d8fe6ddd…`), slice 4 of the debug layer's design.
 - **One module,** `scripts/ui/lib/settings_window.lua`, is the window, its tab column, its tabs and the slider. Since
   CK-310 it is the key slots and the "Key in use" prompt too.
   - `settings_window.open(view)` opens it, or raises it when it is open, and returns the window. There is one at most.
@@ -2594,6 +2609,8 @@ CK-312 each added a row. Since CK-326 the input tab has a row for the fullscreen
   - **Since CK-310 `main.lua` calls `settings_window.update(update)` in every update,** after the pointer's dispatch. It
     reads the update's key capture result and ends a slot's wait (below). Since CK-308 it also takes the update's
     `pixel_width` and `pixel_height`, for the graphics tab (below). With no settings window open it does nothing else.
+    Since CK-336, while the development tab shows, it also reads `settings.debug()` and lights the choices in force
+    (below).
 
 Lengths below are in UI pixels.
 
@@ -2602,20 +2619,23 @@ Lengths below are in UI pixels.
   - Its content is 168 tall, and 226 wide plus the tab column's width.
   - It is made with `modal = true` (below), so it is above the menu and the backdrop.
   - It is larger than the menu and both are centred, so it covers the menu's buttons while it is open.
-- **The tab column** is down the left side: four rows since CK-308, 13 tall, in the order general, graphics, map, input. The
-  window opens on general.
+- **The tab column** is down the left side: five rows since CK-336 (four since CK-308), 13 tall, in the order general,
+  graphics, map, input, development. The window opens on general.
   - A row is a text button of kind `window`, with its text 3 in and 1 down. Pressing it shows its tab. The chosen row keeps
     the selected look, filled with the kind's `hot`.
   - The column is as wide as the widest of the labels general, graphics, map and input, plus 12. CK-301 counted "graphics"
     before it was listed, so the window kept its size when CK-308 added the tab. A row's fill stops 3 short of the column's
     right edge.
+  - **Since CK-336 "development" is counted too, and it is the widest:** 63 against the 46 of "graphics". So the
+    column and the window are 17 wider than they were. The window still lies wholly inside the smallest view the game
+    has, 320 by 200 (a 1280 by 800 window at UI scale 1), and is centred in it.
   - A 1-pixel line in the kind's `outline` stands at the column's right edge. It stops 6 short of the content's bottom.
   - A tab's content starts 6 right of the column's right edge and is 220 wide. It is one group attached to the window and
     clipped to the window's content. It is destroyed and made again whenever a tab is shown. Since CK-310 a second group
     and a scroll bar go with it, for the input tab's rows.
-  - There is no gameplay tab. The graphics tab came with CK-308 (below).
+  - There is no gameplay tab. The graphics tab came with CK-308 and the development tab with CK-336 (both below).
 - **A tab's rows** have their label at the content's left and their control 84 right of it. Every label is cut to its room on
-  whole characters, with `..`.
+  whole characters, with `..`. The development tab has its own column, so that its labels are whole (below).
 - **The slider** is drawn from the theme's white texture: a track 80 wide and 2 tall in `track`, filled from its left to the
   knob in `text` (`#ece3cb`, the owner's "the cream"), and a knob 3 wide and 7 tall in `text`. Its value is written beside
   it, 86 right of the control's left.
@@ -2654,7 +2674,8 @@ Lengths below are in UI pixels.
   A value reads as its number, and the scroll step's as `24 points`.
 - **"defaults"** is a button at the bottom left of each tab's content. It calls `settings.reset("tooltips")`,
   `settings.reset("map")` or, on the input tab since CK-310, `settings.reset("bindings")`, which resets that tab's settings
-  only. On the graphics tab, since CK-308, it calls `settings.reset("graphics")` (below).
+  only. On the graphics tab, since CK-308, it calls `settings.reset("graphics")` (below), and on the development
+  tab, since CK-336, `settings.reset("debug")`.
   The tab is then made again, when the pointer's dispatch ends, with the values in force. Its row in the tab column
   stays the chosen one (CK-323: after "defaults" on the input tab no row was marked).
 - **The graphics tab** (CK-308, with a row each from CK-312 and CK-313) has five rows and "defaults". From the top:
@@ -2733,16 +2754,19 @@ Lengths below are in UI pixels.
 - **The input tab** (CK-310) shows the keys in force, from `settings.bindings()` (§3.17), and changes them. Before CK-310 it
   was a read-only list of eight rows, with "changing keys comes later" under them.
   - **Groups and rows.** There are three groups, each under its name in `dim`: **time** (pause, speed 1 to speed 5, faster,
-    slower), **game** (quicksave, quickload, fullscreen, menu) and **map** (pan left, pan right, pan up, pan down, zoom
-    in, zoom out). A heading and a row are each 15 tall. Only the actions the run has are listed, and a group with none
+    slower), **game** (quicksave, quickload, fullscreen, debug layer, menu) and **map** (pan left, pan right, pan up,
+    pan down, zoom in, zoom out). A heading and a row are each 15 tall. Only the actions the run has are listed, and a group with none
     of its actions is left out. The menu's row, for `close`, is always there.
     - **"fullscreen"** (CK-326) is the row of `window_fullscreen` (§3.17), with `F11` in its first slot by default. It is
       a row like the others: its slots are set, emptied and reset the same way, and the "Key in use" prompt names it
       "fullscreen".
-    - **The debug layer's key has no row yet** (CK-335, §3.24). `debug_layer` is one of the player's actions and
-      `settings.bindings()` lists it, but no group of the tab names it. Read in the code, with no test: the tab still
-      counts it as the owner of its key, so a slot given `F3` gets the "Key in use" prompt, which names it
-      `debug_layer`; "replace" takes the key from it; and "defaults" puts `F3` back.
+    - **"debug layer"** (CK-336) is the row of `debug_layer`, the debug layer's key (§3.24). It is after "fullscreen"
+      and before the menu's row, with `F3` in its first slot by default. The owner, of the key: "and it should be
+      rebindable." (`owner-direction-designer-r4.md` in `.pipeline/coordination/debug-shell-design/`); the row's
+      label and place are ck-designer-6's. It is a row like the others: its slots are set, emptied and reset the same
+      way, and the "Key in use" prompt names it "debug layer".
+      - **Between CK-335 and CK-336** the action had no row. Read in the code: the tab already counted it as the
+        owner of its key, and a prompt named it by its raw name, `debug_layer`.
   - **A row** has the action's name, 4 in, and **two key slots:** the first 70 right of the rows' left edge and the second
     3 right of the first. They show the action's first and second keys in force.
   - **A slot** is a cut-3 frame, 13 tall and as wide as `font.layout("press a key")` plus 8, filled `body` and outlined in
@@ -2766,6 +2790,27 @@ Lengths below are in UI pixels.
   - **An action with more than two keys in force** is shown the same way: greyed, its first two keys in its slots, and
     `+N` in `dim` after them for the N more. Only a hand-written configuration can give one (§3.17). Nothing changes it
     here, so no key that is not shown is dropped. This is the spec's own rule, marked a proposal there.
+- **The development tab** (CK-336) has the debug layer's two settings (§3.17) and "defaults". The owner asked for
+  the page by its name, with "options for 'debug layer level', just off and level 1 for now", and of the rate:
+  "perhaps we give the option of which one to choose in the new settings panel" (`owner-direction-designer-r2.md` in
+  `.pipeline/coordination/debug-shell-design/`). The label column, the rate row's label, that it is never greyed, and
+  the rows' places are ck-designer-6's.
+  - **"debug layer level"** is a row with two choices, `off` and `1`, built as the general tab's "lock" row is. The
+    lit one is the level in force, and level 0 is `off`. A press on `off` calls `settings.set("debug.level", 0)`,
+    and a press on `1` calls it with 1.
+  - **"rate shown"** is 20 below it, with the choices `frames` and `updates`. The lit one is the rate in force, and
+    a press calls `settings.set("debug.rate", …)` with the choice. The row is the same whatever the level is: it is
+    not greyed at `off`.
+  - **Both labels are shown whole.** On this tab the controls start right of the wider label plus 6, not at 84.
+  - **What is lit is read from the host.** After each press the tab reads `settings.debug()` again and lights what
+    is in force, not what was pressed.
+  - **The page follows the key.** While the tab shows, `settings_window.update` reads `settings.debug()` in every
+    update and lights the choices in force. So a level stepped with F3 (§3.24) shows on the page by the next update,
+    with no click. Only the look of the two rows changes: nothing is made again and nothing is set.
+  - **"defaults"** calls `settings.reset("debug")`, and the tab is made again with what the reset restored: `off`
+    and `frames`, unless the configuration has a `[debug]` of its own.
+  - **Not there:** hiding the page (the owner: "we can keep this hidden if we want to later"), per-item choices and
+    a level above 1.
 - **Setting a key** (CK-310). A click on a slot that is not greyed makes it **wait:** it is filled and outlined in the
   kind's `hot`, it reads `press a key` in the kind's `pressed_text`, and "Escape cancels" shows in `dim` right of
   "defaults".
@@ -2870,6 +2915,20 @@ Lengths below are in UI pixels.
   a mouse button or the wheel as a key; more than two keys for an action; rebinding the demo's actions.
 - **Tests,** through the shipped scripts in the UI rig, with no window: thirty-seven tests in
   `apps/codekarl/src/ui_link/menu_tests.rs`, and eighteen for the graphics tab in `ui_link/settings_graphics_tests.rs`.
+  Since CK-336 there are ten more, in `ui_link/settings_development_tests.rs`.
+  - **The ten of CK-336** are the development tab's and the "debug layer" row's:
+    - the fifth tab, and the window inside the smallest view and centred;
+    - `off` and `frames` lit, both labels whole, and every row inside the content;
+    - each press, its call and the choice lit;
+    - a level and a rate changed from outside, lit after one update with no set made;
+    - "defaults" with no `[debug]` in the configuration, and with one;
+    - the rig's settings double refusing what the host refuses;
+    - the row's place, a capture on its slot, and "debug layer" on both sides of a "Key in use" prompt;
+    - the input tab's "defaults" with the extra row;
+    - and every hit key that the page and the row make, inside the host's rule.
+
+    CK-336 also changed two older tests' count of tabs and one's widest tab. No test opens a window: seeing the page,
+    and the line come and go behind it, is the owner's by hand.
   - **Twelve** cover opening and the window; the general tab's sliders, choices and "defaults"; a slider's drag across
     several updates, on the general and on the map tab; `button.flow`; the map tab; the "x"; closing the menu; and the
     stacking of a window made late and of an older window raised. The two of CK-318 among them cover the "show delay"
@@ -3515,7 +3574,8 @@ tooltip and prompt of the UI, and it goes on working while the UI script is busy
 
 - **The records** are `design-r2.md` (sha256 `51b3ff22…`) and `owner-direction-designer-r1.md` to `-r7.md` in
   `.pipeline/coordination/debug-shell-design/`. The spec is `runtime-m55/ck335-spec-r2.md` (sha256 `12505eb3…`), slice
-  3 of that design. Slices 1 and 2 are the engine's parts (`docs/scene-design.md` §8.5 and §9).
+  3 of that design. Slices 1 and 2 are the engine's parts (`docs/scene-design.md` §8.5 and §9), and slice 4 is the
+  settings window's (CK-336, §3.18).
   - **What it is.** The owner: "i want the debug layer to be text drawn over the entire rendered screen, at the highest
     level, so that it is always on top, we can have different levels, at the lowest level, just the fps, as i develop
     more we can add other metrics as well for extra levels of debugging. this would be a tool for me developing, and
@@ -3542,7 +3602,7 @@ tooltip and prompt of the UI, and it goes on working while the UI script is busy
   - **Such a run logs one `warn`** in the category `debug`: "debug layer needs a font, resource service and native top
     layer". It comes at start when the level is already above 0, or else the first time the level leaves 0.
 - **The level and the rate** are the two `[debug]` settings (§3.17): `level` is 0 (off) or 1, and `rate` is `"frames"`
-  or `"updates"`.
+  or `"updates"`. Since CK-336 the settings window's development tab shows and sets both (§3.18).
 - **The key** is the action `debug_layer`, bound to `F3` by default in a run with a scenario (`GAME_BINDINGS`,
   `apps/codekarl/src/config.rs`). A run without a scenario may bind the action in its own `[input.bindings]`.
   - **A press steps the level:** from 0 to 1, and from 1 to 0. The step is a set of `debug.level`: it acts at once and
@@ -3555,7 +3615,8 @@ tooltip and prompt of the UI, and it goes on working while the UI script is busy
   - **The one exception is a key capture.** A key that a capture takes never arrives as an action (§3.17), and a tick
     that carries a capture's result steps nothing. So F3 pressed for a waiting key slot becomes that slot's key.
   - **It can be rebound.** It is one of the player's actions (§3.17): an `[input.bindings]` entry of the settings
-    file changes it, and `settings.set_bindings` takes it. The input tab has no row for it yet (§3.18).
+    file changes it, and `settings.set_bindings` takes it. Since CK-336 the input tab has its row, "debug layer"
+    (§3.18).
   - **The step needs the settings.** A run with no `--config` has none (§3.17), so nothing steps there.
 - **The line.** With the level at 1 the top layer shows one line, and with it at 0 nothing.
   - **The text** is the number, a space, and then `fps` when the rate is `"frames"` or `updates` when it is
@@ -3569,8 +3630,12 @@ tooltip and prompt of the UI, and it goes on working while the UI script is busy
   - **It follows the UI scale.** In the game's window, which is opened in pixels, a UI pixel is 2 of the top layer's
     units, and the frame build places those at the UI scale as it places the scene's (§3.3). After a resize or a
     change of the scale the line is at the bottom left of the new view by the next input tick.
-  - **In a window opened in points** (tests and demos) the line's size is not settled: the submission review's note
-    N1, left for a follow-up (CK-341, open). The game's window is not such a window.
+  - **In a window opened in points** (tests and demos) a unit is a point and a UI pixel is 2 points (§3.3). So the
+    strip is 30 points high, the padding and the glyphs are doubled likewise, and the margin is 8 points.
+    - **Since CK-341** (spec `runtime-m55/ck341-spec-r2.md`, sha256 `a56ce806…`). Until then the line was half that
+      size there, with the margin right: CK-335's review note N1. The game's window was never such a window.
+    - **Both placements take the scale from one constant** (`debug_layer.rs`, `UI_PIXEL_UNITS`): the first one, and
+      the one after a resize that keeps the text. Nothing changed in a window opened in pixels.
   - **How it is drawn.** The strip is one quad on a 1 by 1 white image, tinted. Each character that has a set pixel
     is one quad on an image made from that glyph's rows (`ResourceService::create_from_pixels`), tinted with the
     text's colour. An image is made the first time its character is needed and is kept for the run. The layer loads
@@ -3612,16 +3677,18 @@ tooltip and prompt of the UI, and it goes on working while the UI script is busy
   - a glyph's image may show the checker for a frame or two the first time it is used;
   - read in the code: while the resource service refuses an image or the top layer a quad, the layer logs a `warn`
     in `debug` at every input tick (the submission review's note N4).
-- **Not there:** a level above 1, or any other metric; a page of the settings window for the two settings, which the
-  owner named "development", and the input tab's row for the key (both the design's slice 4); a Lua call that writes
-  to the layer; the shell.
+- **Not there:** a level above 1, or any other metric; a Lua call that writes to the layer; the shell. The settings
+  window's development page and the input tab's row for the key came with CK-336 (§3.18).
 - **Not for tests:** no test of another feature reads the line or its number.
 - **Tests,** with no window and no GPU. None sleeps: every time is given.
-  - `apps/codekarl/src/debug_layer.rs` has eight:
+  - `apps/codekarl/src/debug_layer.rs` has nine, eight of CK-335 and one of CK-341:
     - the average (`shown_rate_uses_interval_average_and_bounds_tight_samples`), the colour parser and a glyph's
       pixels;
     - the line's rectangle with a UI pixel of 2, 3 and 4 screen pixels, on displays of one and of two pixels a point
       (`line_rectangle_uses_the_top_layers_ui_units_across_scales_and_backing_ratios`);
+    - since CK-341, a window opened in points: the strip, the padding and every glyph at 2 points a UI pixel when the
+      line is first placed, and again after a resize that keeps the text
+      (`points_window_keeps_strip_padding_and_glyphs_at_ui_pixel_scale_after_resize`);
     - the strip and the glyphs of `-- fps`, in the theme's colours and in each fallback;
     - a line that publishes only when it changes, reuses its images after a resize and a change of scale, and gives
       them up at the end;
