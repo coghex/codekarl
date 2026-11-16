@@ -47,8 +47,8 @@ use crate::windowed::{self, GpuFigures, RunClosure, RunEnv, RunNotes};
 /// The record waits at most a few milliseconds for the logger ([`crate::lifecycle::PROGRESS_WAIT`]), so that ordinary contention does
 /// not drop it; once `request_stop` was called it never waits (the teardown's late `take_report` calls), it goes through `try_log`,
 /// and a refused record is dropped and counted by the logger.
-struct Reporting {
-    inner: MetalBackend,
+struct Reporting<G: ReportingBackend = MetalBackend> {
+    inner: G,
     /// The first frame was reported, and its record has not been written yet.
     pending: bool,
     /// Where the presenter's last numbers go when its end is observed.
@@ -65,7 +65,59 @@ struct Reporting {
     /// `request_stop` was called: from then on the first-frame record never waits for the logger (the teardown's late reports).
     stopping: bool,
     /// The run's resource service, whose loader counters the record reads.
-    resources: ck_resources::ResourceService,
+    resources: Option<ck_resources::ResourceService>,
+}
+
+/// The native reporting wrapper needs a few Metal-specific observations in addition to the public `Gpu2d` contract.
+/// Keeping those behind this private seam lets its forwarding contract be tested with a recording backend.
+trait ReportingBackend: Gpu2d {
+    fn request_metrics(
+        &mut self,
+        window: ck_gpu_metal::MetricsWindow,
+    ) -> Option<Result<(), ck_gpu_metal::RequestError>>;
+    fn metrics_totals(&self) -> Option<ck_gpu_metal::FrameStats>;
+    fn read_metrics(&self, id: u32, within: Duration) -> Option<ck_gpu_metal::MetricsReading>;
+    fn scene_stats(&self) -> Option<ck_render_2d::SceneStats>;
+    fn drawn_generation(&self) -> Option<u64>;
+    fn finish_metrics(&mut self, hub: &MetricsHub);
+    fn settled_checker_frame(&self) -> Option<u64>;
+}
+
+impl ReportingBackend for MetalBackend {
+    fn request_metrics(
+        &mut self,
+        window: ck_gpu_metal::MetricsWindow,
+    ) -> Option<Result<(), ck_gpu_metal::RequestError>> {
+        MetalBackend::request_metrics(self, window)
+    }
+
+    fn metrics_totals(&self) -> Option<ck_gpu_metal::FrameStats> {
+        MetalBackend::metrics_totals(self)
+    }
+
+    fn read_metrics(&self, id: u32, within: Duration) -> Option<ck_gpu_metal::MetricsReading> {
+        MetalBackend::read_metrics(self, id, within)
+    }
+
+    fn scene_stats(&self) -> Option<ck_render_2d::SceneStats> {
+        MetalBackend::scene_stats(self)
+    }
+
+    fn drawn_generation(&self) -> Option<u64> {
+        MetalBackend::drawn_generation(self)
+    }
+
+    fn finish_metrics(&mut self, hub: &MetricsHub) {
+        let mut guard = self.lock_metrics_end();
+        hub.finish(&mut |id, end| match guard.as_mut() {
+            Some(guard) => guard.end(id, end).map_err(|error| format!("{error:?}")),
+            None => Err("the presenter was not started".to_owned()),
+        });
+    }
+
+    fn settled_checker_frame(&self) -> Option<u64> {
+        MetalBackend::settled_checker_frame(self)
+    }
 }
 
 /// The presenter's own spelling of a window the hub defined.
@@ -77,7 +129,7 @@ fn gpu_window(window: ck_window::MetricsWindow) -> ck_gpu_metal::MetricsWindow {
     }
 }
 
-impl Reporting {
+impl<G: ReportingBackend> Reporting<G> {
     /// Hands the marked window to the presenter, once it is started: this thread owns the presenter, so the UI VM's mark only files
     /// the window in the hub and this runs at the next pass.
     fn forward_metrics(&mut self) {
@@ -112,7 +164,10 @@ impl Reporting {
         let figures = Figures {
             totals,
             scene: self.inner.scene_stats().unwrap_or_default(),
-            loaders: self.resources.stats().loaders,
+            loaders: self
+                .resources
+                .as_ref()
+                .map_or_else(Default::default, |resources| resources.stats().loaders),
             timing_lost: presenter_window
                 .as_ref()
                 .map_or(0, |reading| reading.timing_lost),
@@ -165,7 +220,7 @@ impl Reporting {
     }
 }
 
-impl Gpu2d for Reporting {
+impl<G: ReportingBackend<Handles = CocoaHandles>> Gpu2d for Reporting<G> {
     type Handles = CocoaHandles;
 
     fn new_sink(&mut self) -> Arc<dyn QuadSink> {
@@ -188,6 +243,14 @@ impl Gpu2d for Reporting {
 
     fn set_pixel_size(&mut self, width: u32, height: u32) {
         self.inner.set_pixel_size(width, height);
+    }
+
+    fn set_draw_every_refresh(&mut self, enabled: bool) {
+        self.inner.set_draw_every_refresh(enabled);
+    }
+
+    fn presented_times_reader(&self) -> Option<ck_render_2d::PresentedTimesReader> {
+        self.inner.presented_times_reader()
     }
 
     fn request_redraw(&mut self) {
@@ -224,11 +287,7 @@ impl Gpu2d for Reporting {
             // A window marked and not yet handed over goes first, so the presenter holds it when the end arrives.
             self.forward_metrics();
             // The timestamp is read under the presenter's admission lock (and the loop's, inside `finish`).
-            let mut guard = self.inner.lock_metrics_end();
-            hub.finish(&mut |id, end| match guard.as_mut() {
-                Some(guard) => guard.end(id, end).map_err(|error| format!("{error:?}")),
-                None => Err("the presenter was not started".to_owned()),
-            });
+            self.inner.finish_metrics(&hub);
         }
         self.inner.request_stop();
     }
@@ -393,7 +452,7 @@ pub(crate) fn run_closure_with(
                 .map(PathBuf::from),
                 #[cfg(feature = "test-support")]
                 checker_presentation_baseline: None,
-                resources: service_for_metrics,
+                resources: Some(service_for_metrics),
             },
             Arc::clone(&env.bridge),
         );
@@ -432,15 +491,123 @@ pub(crate) fn smoke() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{CocoaHandles, MetricsHub, Reporting, ReportingBackend};
+    use std::rc::Rc;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex, PoisonError};
+    use std::time::Duration;
 
+    use ck_render_2d::{Gpu2d, QuadSink};
     use ck_runtime::RunEnd;
-    use ck_window::Notifier;
+    use ck_window::{CleanupResult, Notifier, PixelSize, PresenterReport, WindowDesc};
 
     use crate::mode::{Backend, Mode};
     use crate::windowed::{Plan, Setup};
     use crate::{Shared, config, native, supervise_with_owner_factory, testing, vm};
+
+    #[derive(Clone)]
+    struct ForwardingGpu {
+        reader: ck_gpu_metal::PresentedTimesReader,
+        draw_values: Arc<Mutex<Vec<bool>>>,
+    }
+
+    impl Gpu2d for ForwardingGpu {
+        type Handles = CocoaHandles;
+
+        fn new_sink(&mut self) -> Arc<dyn QuadSink> {
+            unreachable!("forwarding test does not start a presenter")
+        }
+        fn start(
+            &mut self,
+            _: CocoaHandles,
+            _: &WindowDesc,
+            _: PixelSize,
+            _: Arc<dyn QuadSink>,
+        ) -> Result<(), String> {
+            unreachable!("forwarding test does not start a presenter")
+        }
+        fn set_clear(&mut self, _: [f32; 3]) {
+            unreachable!("forwarding test does not draw")
+        }
+        fn set_pixel_size(&mut self, _: u32, _: u32) {
+            unreachable!("forwarding test does not resize")
+        }
+        fn request_redraw(&mut self) {
+            unreachable!("forwarding test does not draw")
+        }
+        fn set_draw_every_refresh(&mut self, enabled: bool) {
+            self.draw_values.lock().unwrap().push(enabled);
+        }
+        fn take_report(&mut self) -> Option<PresenterReport> {
+            None
+        }
+        fn presented_times_reader(&self) -> Option<ck_gpu_metal::PresentedTimesReader> {
+            Some(self.reader.clone())
+        }
+        fn request_stop(&mut self) {}
+        fn poll_end(&mut self, _: Duration) -> Option<CleanupResult> {
+            None
+        }
+    }
+
+    impl ReportingBackend for ForwardingGpu {
+        fn request_metrics(
+            &mut self,
+            _: ck_gpu_metal::MetricsWindow,
+        ) -> Option<Result<(), ck_gpu_metal::RequestError>> {
+            None
+        }
+        fn metrics_totals(&self) -> Option<ck_gpu_metal::FrameStats> {
+            None
+        }
+        fn read_metrics(&self, _: u32, _: Duration) -> Option<ck_gpu_metal::MetricsReading> {
+            None
+        }
+        fn scene_stats(&self) -> Option<ck_render_2d::SceneStats> {
+            None
+        }
+        fn drawn_generation(&self) -> Option<u64> {
+            None
+        }
+        fn finish_metrics(&mut self, _: &MetricsHub) {}
+        fn settled_checker_frame(&self) -> Option<u64> {
+            None
+        }
+    }
+
+    #[test]
+    fn reporting_forwards_the_inner_shown_times_reader_and_both_draw_refresh_values() {
+        let inner_reader = ck_gpu_metal::PresentedTimesReader::new();
+        let expected_reader = inner_reader.clone();
+        let draw_values = Arc::new(Mutex::new(Vec::new()));
+        let mut reporting = Reporting {
+            inner: ForwardingGpu {
+                reader: inner_reader,
+                draw_values: Arc::clone(&draw_values),
+            },
+            pending: false,
+            notes: Rc::new(crate::windowed::RunNotes::default()),
+            metrics: None,
+            reported: false,
+            #[cfg(feature = "test-support")]
+            checker_presentation_request: None,
+            #[cfg(feature = "test-support")]
+            checker_presentation_baseline: None,
+            stopping: false,
+            resources: None,
+        };
+
+        let actual_reader = reporting
+            .presented_times_reader()
+            .expect("inner reader is forwarded");
+        assert!(
+            actual_reader.shares_history_with(&expected_reader),
+            "Reporting returns the inner backend's reader"
+        );
+        reporting.set_draw_every_refresh(true);
+        reporting.set_draw_every_refresh(false);
+        assert_eq!(*draw_values.lock().unwrap(), [true, false]);
+    }
 
     /// The run through the real composition with the native run closure, built with `factory` for the device context. The
     /// script is the UI VM's; `ui_log` holds what it left (a file per callback that ran).
