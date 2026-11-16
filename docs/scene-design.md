@@ -11,6 +11,10 @@ small layer of quads drawn after the scene, which only the application can write
 times at which the display showed the latest frames and a switch that draws a frame at every display refresh (§9).
 Since CK-335 (2026-11-16) the application's debug line uses all three (`docs/ui-design.md` §3.24).
 
+**Since CK-343 and CK-344 (2026-11-16).** The application's wrapper round the Metal backend passes the shown-frame times
+and the every-refresh switch on. It had not, so in the game neither worked until then. And the presenter sets its
+layer's display sync from a new setting, `[frame] vsync` (§9).
+
 **Firm** marks owner decisions, with their source/date. **Proposal** marks designer recommendations. **Open** marks decisions that still need an answer. Unless explicitly marked otherwise, the mechanisms, API names and numerical defaults below are **Proposal**. A manager's requested design constraint is identified as such, not attributed to the owner.
 
 This extends `docs/runtime-design.md`, `docs/window-design.md` and `docs/render-design.md`. Existing lifecycle, failure reporting, color, window ownership and shutdown rules remain applicable except where a change is explicitly proposed here. The resource/scene substrate is the main result; a moving quad demonstrates it. Map representation is not defined by this milestone.
@@ -489,7 +493,8 @@ layer on than off, uses more power, and is not quite the same game that is being
     CK-335 the debug line's frame rate is worked out from them (`docs/ui-design.md` §3.24).
 - **Drawing at every refresh.** The presenter has a switch, off at the start
   (`MetalPresenter::set_draw_every_refresh`). While it is on a frame is always wanted, so the render thread starts the
-  next one as soon as it may and the display paces them: a frame for each refresh.
+  next one as soon as it may and the display paces them: a frame for each refresh. Since CK-344 the display paces them
+  only while vsync is on (below).
   - **It is a want of its own,** beside the ordinary one (a publication, a redraw request, a changed size or colour).
     Starting a frame does not clear it, and turning it off leaves no frame wanted on its account.
   - **The frame-rate limit still decides** (the note above). With a limit of N no frame starts sooner than one N-th
@@ -526,7 +531,60 @@ layer on than off, uses more power, and is not quite the same game that is being
     `input.rs` beside it: `continuous_drawing_tracks_the_active_window_without_update_settings`.
 
   No test shows a real display drawing a frame for each refresh. That is for the owner to see by hand with the debug
-  layer's number, which is drawn since CK-335 (`docs/ui-design.md` §3.24).
+  layer's number, which is drawn since CK-335 (`docs/ui-design.md` §3.24). The owner saw it on 2026-11-16, after
+  CK-343 (below): the number was the display's rate, and about 30 with a limit of 30 (the checklist's items `debug-f3b`
+  and `debug-limit2`, which pass; read in its `checks` collection).
+
+**Since CK-343 (2026-11-16): the game gets both.** A fix. The native run's presenter is a `Renderer` over `Reporting`,
+the application's wrapper round `MetalBackend` that reports the run's metrics (`apps/codekarl/src/native.rs`).
+`Reporting` implements `Gpu2d` by passing each call to the backend inside it. It had neither `presented_times_reader`
+nor `set_draw_every_refresh`, and the trait has a default for each: no reader, and nothing done
+(`crates/render-2d/src/renderer.rs`). So in the game `Renderer::presented_times_reader` gave no reader, and the switch
+never reached the Metal backend. The debug line read 0, which the owner's hand check found. The spec is
+`runtime-m55/ck343-spec.md` (sha256 `88925063…`).
+
+- **`Reporting` passes both on** to the backend inside it.
+- **The trait's other default was read.** It has three: `set_size` calls `set_pixel_size`, which every wrapper passes
+  on, and the other two are these. The Vulkan adapter keeps both defaults, which is right while it is compile-only
+  (the submission review, `runtime-m55/ck343-review-1.md`).
+- **`Reporting` is generic now** (`Reporting<G: ReportingBackend = MetalBackend>`), so that a test can put a double
+  inside it. The game's run builds it round `MetalBackend` as before.
+- **`PresentedTimesReader::shares_history_with`** is new in `ck-gpu-metal`: whether two readers read one history. The
+  test uses it, and nothing else does.
+- **The test** is in `native.rs`, with no window and no GPU
+  (`reporting_forwards_the_inner_shown_times_reader_and_both_draw_refresh_values`): through `Reporting`, the reader is
+  the inner backend's own, and `set_draw_every_refresh(true)` and then `(false)` both reach it.
+- **The rule it leaves** (CK-344's spec states it): a wrapper between the application and the Metal backend passes on
+  every new method, and a test goes through the wrapper. The tests of CK-334 and CK-335 built the presenter without
+  `Reporting`, so none saw the fault.
+
+**Since CK-344 (2026-11-16): vsync.** The presenter sets its layer's display sync from a setting, `[frame] vsync`:
+`true`, the default, or `false`. `docs/ui-design.md` §3.17 has the key, the call and the owner's words. The spec is
+`runtime-m55/ck344-spec.md` (sha256 `37e21e16…`).
+
+- **Before CK-344** the presenter never set `CAMetalLayer.displaySyncEnabled`, which is on unless it is set: every
+  present waited for the display's refresh.
+- **The presenter keeps the value wanted** in the slot its render thread reads, with a mark that it is still to be
+  applied (`MetalPresenter::set_vsync`, and `vsync_setter` for a weak handle). A change wakes the thread. A set of the
+  value already wanted does nothing, and so does a set made after the stop.
+- **Only the render thread sets the layer's property.** It does so at the top of each wait for work, before a frame
+  takes a drawable (`apply_display_sync`, `crates/gpu-metal/src/presenter.rs`). `ck_pr_set_display_sync_enabled`
+  (`native/presenter.m`) sets the property and returns it as read back from the layer.
+- **A presenter starts with a value.** `start_scene_bindless_with_times` and `start_with_test_hooks_and_times` take
+  it, and it is applied before the first frame. The other `start` functions start with sync on.
+- **The route in `ck-render-2d`:** `WakeRelay::set_vsync` keeps the value, which is on until one is set, and delivers
+  it in order to a connected setter. A Metal backend with resources starts its presenter with `WakeRelay::vsync()`,
+  then connects the presenter's setter, and disconnects it with the relay's others.
+- **With sync off, the display no longer paces drawing at every refresh.** The thread starts the next frame as soon as
+  it may, so the work and the frame-rate limit bound the rate. This is read in the code and not seen: it is the
+  owner's check by hand.
+- **On Metal only.** The Vulkan path connects no setter, and its present modes are untouched.
+- **Tests:** `the_relay_keeps_vsync_and_delivers_it_to_live_and_later_presenters` in
+  `crates/render-2d/src/tests/resident.rs`, and one presenter case with a real window,
+  `scene_vsync_changes_are_read_back_from_the_layer_on_the_render_thread` in
+  `crates/gpu-metal/tests/presenter_scene/cases.rs`. It waits for the value the render thread read back from the layer
+  (`wait_display_sync_enabled`, kept out of the crate's documentation): on at the start, off after a set, and on again.
+  Neither sleeps, and neither measures a rate.
 
 ## 10. Input actions and test isolation
 
