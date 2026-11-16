@@ -794,6 +794,30 @@ impl<'de> Deserialize<'de> for FpsLimit {
     }
 }
 
+/// The `frame.vsync` setting: only a boolean is accepted, with the key named on refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Vsync(bool);
+
+impl<'de> Deserialize<'de> for Vsync {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Value;
+
+        impl Visitor<'_> for Value {
+            type Value = Vsync;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("vsync must be a boolean")
+            }
+
+            fn visit_bool<E: de::Error>(self, enabled: bool) -> Result<Vsync, E> {
+                Ok(Vsync(enabled))
+            }
+        }
+
+        deserializer.deserialize_bool(Value)
+    }
+}
+
 /// The keys of the `frame` table (design §7.1).
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -801,6 +825,7 @@ struct FrameFields {
     updates_per_second: Option<Rate>,
     max_delta_seconds: Option<MaxDelta>,
     fps_limit: Option<FpsLimit>,
+    vsync: Option<Vsync>,
 }
 
 /// The `frame` table.
@@ -1376,6 +1401,7 @@ pub(crate) struct SettingsOverrides {
         reason = "absent, kept `none` and a kept number are three different overrides"
     )]
     pub(crate) frame_fps_limit: Option<Option<u32>>,
+    pub(crate) frame_vsync: Option<bool>,
     pub(crate) debug_level: Option<u32>,
     pub(crate) debug_rate: Option<&'static str>,
     pub(crate) bindings: BTreeMap<String, Vec<String>>,
@@ -1390,6 +1416,8 @@ pub(crate) struct GraphicsSettings {
     pub(crate) mode: WindowMode,
     /// The most frames drawn per second, 30 to 240 (`None`: no limit, a frame per display refresh; CK-313).
     pub(crate) fps_limit: Option<u32>,
+    /// Whether native presentation waits for the display refresh (default on; CK-344).
+    pub(crate) vsync: bool,
 }
 
 impl Default for GraphicsSettings {
@@ -1401,6 +1429,7 @@ impl Default for GraphicsSettings {
             height: 800,
             mode: WindowMode::Windowed,
             fps_limit: None,
+            vsync: true,
         }
     }
 }
@@ -1734,6 +1763,7 @@ fn parse(path: &Path, text: &str) -> Result<Config, String> {
         height: window_height,
         mode: window_mode,
         fps_limit: file.frame.0.fps_limit.and_then(|limit| limit.0),
+        vsync: file.frame.0.vsync.is_none_or(|value| value.0),
     };
     let resources = ResourceConfig::parse(file.resources.0)
         .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -2311,8 +2341,8 @@ fn load_ui_settings(path: &Path, value: &toml::Value, config: &mut Config) {
     }
 }
 
-/// The settings file's `[frame]` table: only `fps_limit`, which the player may change. A value the key does not accept is named and
-/// ignored (the configuration refuses it instead).
+/// The settings file's `[frame]` table: only player-changeable frame settings. A value a key does not accept is named and ignored
+/// (the configuration refuses it instead).
 fn load_frame_settings(path: &Path, value: &toml::Value, config: &mut Config) {
     let Some(entries) = value.as_table() else {
         config.settings_warnings.push(format!(
@@ -2322,9 +2352,21 @@ fn load_frame_settings(path: &Path, value: &toml::Value, config: &mut Config) {
         return;
     };
     for (key, entry) in entries {
+        if key == "vsync" {
+            if let Some(enabled) = entry.as_bool() {
+                config.graphics.vsync = enabled;
+                config.settings_overrides.frame_vsync = Some(enabled);
+            } else {
+                config.settings_warnings.push(format!(
+                    "{}: [frame] vsync must be a boolean; ignoring it",
+                    path.display()
+                ));
+            }
+            continue;
+        }
         if key != "fps_limit" {
             config.settings_warnings.push(format!(
-                "{}: [frame] unknown key `{key}`; the only accepted key is fps_limit",
+                "{}: [frame] unknown key `{key}`; accepted keys are fps_limit and vsync",
                 path.display()
             ));
             continue;
@@ -2680,6 +2722,25 @@ mod tests {
     }
 
     #[test]
+    fn vsync_is_a_boolean_and_defaults_on() {
+        assert!(parse_config("").expect("empty config").graphics.vsync);
+        for enabled in [true, false] {
+            let text = format!("[frame]\nvsync = {enabled}\n");
+            let config = parse_config(&text).unwrap_or_else(|error| panic!("{text}: {error}"));
+            assert_eq!(config.graphics.vsync, enabled);
+            assert_eq!(config.settings_base_graphics.vsync, enabled);
+        }
+        for text in [
+            "[frame]\nvsync = 1\n",
+            "[frame]\nvsync = 'off'\n",
+            "[frame]\nvsync = 0.0\n",
+        ] {
+            let error = parse_config(text).expect_err(text);
+            assert!(error.contains("vsync"), "{text}: {error}");
+        }
+    }
+
+    #[test]
     fn fps_limit_changes_neither_the_update_rate_nor_the_largest_delta() {
         let without = parse_config("").expect("defaults");
         let limited = parse_config("[frame]\nfps_limit = 30\n").expect("limited");
@@ -2692,6 +2753,27 @@ mod tests {
         assert_eq!(both.frame.updates_per_second, 30);
         assert_eq!(both.frame.max_delta, Duration::from_millis(250));
         assert_eq!(both.graphics.fps_limit, Some(60));
+    }
+
+    #[test]
+    fn vsync_settings_file_overrides_config_and_ignores_invalid_values() {
+        let dir = crate::testing::Dir::new();
+        let config_path = dir.0.join("config.toml");
+        let settings_path = dir.0.join("settings.toml");
+        let load_with = |config_text: &str, settings_text: &str| {
+            fs::write(&config_path, config_text).expect("write config");
+            fs::write(&settings_path, settings_text).expect("write settings");
+            load(&config_path).expect("load config")
+        };
+        let kept = load_with("[frame]\nvsync = false\n", "[frame]\nvsync = true\n");
+        assert!(kept.graphics.vsync);
+        assert!(!kept.settings_base_graphics.vsync);
+        assert_eq!(kept.settings_overrides.frame_vsync, Some(true));
+        let bad = load_with("[frame]\nvsync = false\n", "[frame]\nvsync = 'off'\n");
+        assert!(!bad.graphics.vsync);
+        assert_eq!(bad.settings_overrides.frame_vsync, None);
+        assert_eq!(bad.settings_warnings.len(), 1);
+        assert!(bad.settings_warnings[0].contains("vsync"));
     }
 
     #[test]

@@ -588,6 +588,13 @@ CKPrCore *ck_pr_core_new(void *retained_layer, CKPrObserver *observer) {
     return (__bridge_retained CKPrCore *)core;
 }
 
+/* Called only by the render thread at a frame boundary; returns the property read back from the live layer. */
+int32_t ck_pr_set_display_sync_enabled(CKPrCore *handle, int32_t enabled) {
+    CKPrCoreState *core = (__bridge CKPrCoreState *)handle;
+    core.layer.displaySyncEnabled = enabled != 0;
+    return core.layer.displaySyncEnabled ? 1 : 0;
+}
+
 void ck_pr_set_check_pause(CKPrCore *handle, int32_t entry, int32_t ms) {
     CKPrCoreState *core = (__bridge CKPrCoreState *)handle;
     core.pauseEntry = entry;

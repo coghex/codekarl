@@ -1944,7 +1944,31 @@ fn scene_stats_stay_available_after_an_upload_failure() {
     let _ = end(&mut rig, &mut presenter);
 }
 
-pub(crate) const CASES: [(&str, fn()); 21] = [
+fn scene_vsync_changes_are_read_back_from_the_layer_on_the_render_thread() {
+    let mut rig = Rig::open();
+    let probes = Probes::new();
+    let mut presenter = probes.start_ok(&rig, TestHooks::default());
+    assert_eq!(
+        presenter.wait_display_sync_enabled(true, BOUND),
+        Some(true),
+        "the initial layer property is read back on the render thread"
+    );
+    presenter.set_vsync(false);
+    assert_eq!(
+        presenter.wait_display_sync_enabled(false, BOUND),
+        Some(false),
+        "the disabled property reaches the layer"
+    );
+    presenter.set_vsync(true);
+    assert_eq!(
+        presenter.wait_display_sync_enabled(true, BOUND),
+        Some(true),
+        "the layer property can be enabled again"
+    );
+    let _ = end(&mut rig, &mut presenter);
+}
+
+pub(crate) const CASES: [(&str, fn()); 22] = [
     ("scene_shares_the_context", scene_shares_the_context),
     (
         "scene_driver_wakes_and_adoption",
@@ -1993,6 +2017,10 @@ pub(crate) const CASES: [(&str, fn()); 21] = [
     ("scene_teardown", scene_teardown),
     ("scene_teardown_unproven", scene_teardown_unproven),
     ("scene_driver_panic", scene_driver_panic),
+    (
+        "scene_vsync_changes_are_read_back_from_the_layer_on_the_render_thread",
+        scene_vsync_changes_are_read_back_from_the_layer_on_the_render_thread,
+    ),
 ];
 
 pub(crate) const MORE: [(&str, fn()); 1] = [("scene_start_scene", scene_start_scene)];

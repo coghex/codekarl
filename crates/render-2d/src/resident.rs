@@ -283,6 +283,10 @@ struct RelayState {
     refresh_setter: Option<Arc<dyn Fn(bool) + Send + Sync>>,
     refresh_delivering: bool,
     refresh_redeliver: bool,
+    vsync: Option<bool>,
+    vsync_setter: Option<Arc<dyn Fn(bool) + Send + Sync>>,
+    vsync_delivering: bool,
+    vsync_redeliver: bool,
 }
 
 /// Ends a frame-limit delivery that unwinds: a setter that panics must not leave the relay believing a delivery is under way for ever.
@@ -380,6 +384,58 @@ impl WakeRelay {
     /// Disconnects the setter after the presenter ends.
     pub fn disconnect_draw_every_refresh(&self) {
         self.lock().refresh_setter = None;
+    }
+
+    /// Keeps the display-sync setting and gives it to a connected presenter.
+    pub fn set_vsync(&self, enabled: bool) {
+        self.lock().vsync = Some(enabled);
+        self.deliver_vsync();
+    }
+
+    /// The display-sync value last set.
+    #[must_use]
+    pub fn vsync(&self) -> bool {
+        self.lock().vsync.unwrap_or(true)
+    }
+
+    /// Connects a presenter's display-sync setter and gives it the value in force.
+    pub fn connect_vsync(&self, setter: Arc<dyn Fn(bool) + Send + Sync>) {
+        self.lock().vsync_setter = Some(setter);
+        self.deliver_vsync();
+    }
+
+    /// Disconnects the setter; the value stays for a later presenter.
+    pub fn disconnect_vsync(&self) {
+        self.lock().vsync_setter = None;
+    }
+
+    fn deliver_vsync(&self) {
+        {
+            let mut state = self.lock();
+            if state.vsync_delivering {
+                state.vsync_redeliver = true;
+                return;
+            }
+            state.vsync_delivering = true;
+        }
+        loop {
+            let (setter, enabled) = {
+                let mut state = self.lock();
+                state.vsync_redeliver = false;
+                (
+                    state.vsync_setter.as_ref().map(Arc::clone),
+                    state.vsync.unwrap_or(true),
+                )
+            };
+            if let Some(setter) = setter {
+                setter(enabled);
+            }
+            let mut state = self.lock();
+            if !state.vsync_redeliver {
+                state.vsync_delivering = false;
+                return;
+            }
+        }
     }
 
     fn deliver_draw_every_refresh(&self) {

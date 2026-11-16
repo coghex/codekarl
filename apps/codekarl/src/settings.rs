@@ -112,6 +112,7 @@ impl Runtime {
         fields.updates = updates;
         fields.resize = Some(resize);
         fields.relay = Some(relay);
+        fields.apply_vsync(config.graphics.vsync);
         fields.apply_debug(config.debug);
         Some(runtime)
     }
@@ -286,6 +287,14 @@ impl Runtime {
                 values.graphics.fps_limit = limit;
                 overrides.frame_fps_limit = Some(limit);
                 self.apply_fps_limit(limit);
+            }
+            "frame.vsync" => {
+                let ConfigValue::Bool(enabled) = value else {
+                    return Err(format!("settings.set: `{name}` must be true or false"));
+                };
+                values.graphics.vsync = *enabled;
+                overrides.frame_vsync = Some(*enabled);
+                self.apply_vsync(*enabled);
             }
             "debug.level" => {
                 let level = match value {
@@ -573,8 +582,10 @@ impl Runtime {
                     .ok_or_else(|| "settings.reset: window mode is unavailable".to_owned())?
                     .set_mode(base.mode, (base.width, base.height))?;
                 overrides.frame_fps_limit = None;
+                overrides.frame_vsync = None;
                 self.apply_scale(values.graphics.scale_limit_k);
                 self.apply_fps_limit(values.graphics.fps_limit);
+                self.apply_vsync(values.graphics.vsync);
             }
             "debug" => {
                 values.debug = self.base_debug;
@@ -626,6 +637,13 @@ impl Runtime {
         }
     }
 
+    /// Gives the display-sync setting to the native presenter through the render-thread relay.
+    fn apply_vsync(&self, enabled: bool) {
+        if let Some(relay) = &self.relay {
+            relay.set_vsync(enabled);
+        }
+    }
+
     fn apply_debug(&self, settings: DebugSettings) {
         if let Some(requests) = &self.requests {
             requests.set_draw_every_refresh(settings.level > 0 && settings.rate == "frames");
@@ -652,6 +670,7 @@ impl Runtime {
                 "mode".into(),
                 ConfigValue::String(values.graphics.mode.as_str().into()),
             ),
+            ("vsync".into(), ConfigValue::Bool(values.graphics.vsync)),
         ]);
         if let Some(k) = values.graphics.scale_limit_k {
             entries.insert("scale".into(), ConfigValue::Float(f64::from(k) / 2.0));
@@ -909,13 +928,18 @@ fn settings_text(overrides: &SettingsOverrides) -> Vec<u8> {
         }
         text.push('\n');
     }
-    if let Some(limit) = overrides.frame_fps_limit {
+    if overrides.frame_fps_limit.is_some() || overrides.frame_vsync.is_some() {
         text.push_str("[frame]\n");
-        match limit {
-            Some(limit) => {
-                let _ = writeln!(text, "fps_limit = {limit}");
+        if let Some(limit) = overrides.frame_fps_limit {
+            match limit {
+                Some(limit) => {
+                    let _ = writeln!(text, "fps_limit = {limit}");
+                }
+                None => text.push_str("fps_limit = \"none\"\n"),
             }
-            None => text.push_str("fps_limit = \"none\"\n"),
+        }
+        if let Some(enabled) = overrides.frame_vsync {
+            let _ = writeln!(text, "vsync = {enabled}");
         }
         text.push('\n');
     }
@@ -1028,10 +1052,24 @@ mod tests {
             screen_snapshot: Option<ck_window::ScreenSnapshot>,
             headless: bool,
         ) -> Self {
+            Self::with_saved_settings(config_text, None, screen_snapshot, headless)
+        }
+
+        fn with_saved_settings(
+            config_text: &str,
+            saved_settings: Option<&str>,
+            screen_snapshot: Option<ck_window::ScreenSnapshot>,
+            headless: bool,
+        ) -> Self {
             let dir = crate::testing::Dir::new();
             let config_path = dir.0.join("config.toml");
             fs::write(&config_path, config_text).expect("write config");
-            let config = crate::config::load(&config_path).expect("load config");
+            let initial_config = crate::config::load(&config_path).expect("load config");
+            let settings_path = initial_config.settings_file.clone().expect("settings path");
+            if let Some(saved_settings) = saved_settings {
+                fs::write(&settings_path, saved_settings).expect("write saved settings");
+            }
+            let config = crate::config::load(&config_path).expect("load effective config");
             let settings_path = config.settings_file.clone().expect("settings path");
             let screen = Arc::new(OnceLock::new());
             if let Some(snapshot) = screen_snapshot {
@@ -2068,6 +2106,76 @@ assert(not ok)
                 height: 800
             }),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn vsync_is_set_persisted_validated_and_reset_with_the_graphics_tab() {
+        let rig = LiveRig::with_saved_settings(
+            "[frame]\nvsync = true\nfps_limit = 120\n",
+            Some("[frame]\nvsync = false\n"),
+            Some(ck_window::ScreenSnapshot {
+                backing: 1.0,
+                screen_points: (2560, 1600),
+                visible_points: (2560, 1600),
+            }),
+            false,
+        );
+        assert!(
+            !rig.relay.vsync(),
+            "the live runtime primes its relay from the effective configured setting"
+        );
+        {
+            let _harness = rig.run(
+                "window.open{title='vsync', width=1280, height=800, clear={0,0,0}, resizable=true}\nassert(settings.graphics().vsync == false)\nsettings.set('frame.vsync', true)\nsettings.set('frame.fps_limit', 60)\nassert(settings.graphics().vsync == true)",
+            );
+        }
+        assert!(rig.relay.vsync(), "a valid set reaches the presenter relay");
+        let read = || -> toml::Value {
+            toml::from_str(&fs::read_to_string(&rig.settings_path).expect("settings file"))
+                .expect("settings TOML parses")
+        };
+        assert_eq!(read()["frame"]["vsync"].as_bool(), Some(true));
+        assert_eq!(read()["frame"]["fps_limit"].as_integer(), Some(60));
+        let reloaded = crate::config::load(&rig.config_path).expect("reload persisted settings");
+        assert!(reloaded.graphics.vsync, "the saved value loads back");
+        assert_eq!(reloaded.graphics.fps_limit, Some(60));
+        let text = fs::read_to_string(&rig.settings_path).expect("settings file");
+        assert_eq!(text.matches("[frame]").count(), 1);
+        let before = fs::read_to_string(&rig.settings_path).expect("settings file");
+        {
+            let _harness = rig.run(
+                "for _, bad in ipairs({'off', 0, 1}) do local ok, message = pcall(function() settings.set('frame.vsync', bad) end); assert(not ok and string.find(tostring(message), 'frame.vsync', 1, true)) end",
+            );
+        }
+        assert!(
+            rig.relay.vsync(),
+            "refused values do not change relay state"
+        );
+        assert_eq!(fs::read_to_string(&rig.settings_path).unwrap(), before);
+        let reset = LiveRig::with_saved_settings(
+            "[frame]\nvsync = true\nfps_limit = 120\n",
+            Some("[frame]\nvsync = false\n"),
+            Some(ck_window::ScreenSnapshot {
+                backing: 1.0,
+                screen_points: (2560, 1600),
+                visible_points: (2560, 1600),
+            }),
+            false,
+        );
+        {
+            let _harness = reset.run(
+                "window.open{title='vsync reset', width=1280, height=800, clear={0,0,0}, resizable=true}\nsettings.set('frame.vsync', false)\nsettings.set('frame.fps_limit', 60)\nsettings.reset('graphics')\nassert(settings.graphics().vsync == true)",
+            );
+        }
+        assert!(
+            reset.relay.vsync(),
+            "graphics reset reapplies the configured value"
+        );
+        let written = fs::read_to_string(&reset.settings_path).expect("settings file");
+        assert!(
+            !written.contains("[frame]"),
+            "reset removes both frame overrides"
         );
     }
 

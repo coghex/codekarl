@@ -618,7 +618,7 @@ end
 fixture = {
   tooltips = {delay = 0.3, lock = "middle_mouse", lock_timer = 1.5},
   map = {pan_pixels_per_frame = 4, zoom_steps_per_second = 20, scroll_points_per_step = 24},
-  graphics = {width = 1280, height = 800, list_look = "cards", scale = nil, mode = "windowed"},
+  graphics = {width = 1280, height = 800, list_look = "cards", scale = nil, mode = "windowed", vsync = true},
   debug = {level = 0, rate = "frames"},
   base_debug = {level = 0, rate = "frames"},
   calls = {},
@@ -655,7 +655,7 @@ settings = {
   graphics = function()
     return {width = fixture.graphics.width, height = fixture.graphics.height,
       list_look = fixture.graphics.list_look, scale = fixture.graphics.scale,
-      mode = fixture.graphics.mode, fps_limit = fixture.graphics.fps_limit}
+      mode = fixture.graphics.mode, fps_limit = fixture.graphics.fps_limit, vsync = fixture.graphics.vsync}
   end,
   resize = function(width, height)
     local used_width = math.min(16384, math.max(1280, width))
@@ -696,6 +696,7 @@ settings = {
     elseif name == "ui.list_look" then fixture.graphics.list_look = value
     elseif name == "window.mode" then fixture.graphics.mode = value
     elseif name == "frame.fps_limit" then fixture.graphics.fps_limit = value ~= "none" and value or nil
+    elseif name == "frame.vsync" then fixture.graphics.vsync = value
     elseif name == "debug.level" then
       -- The host takes the integer 0 or 1 and nothing else (`settings.rs`, "debug.level").
       if math.type(value) ~= "integer" or (value ~= 0 and value ~= 1) then
@@ -714,7 +715,7 @@ settings = {
     fixture.calls[#fixture.calls + 1] = {"reset", tab}
     if tab == "tooltips" then fixture.tooltips = {delay=0.3, lock="middle_mouse", lock_timer=1.5}
     elseif tab == "graphics" then
-      fixture.graphics = {width=1280, height=800, list_look="cards", scale=nil, mode="windowed"}
+      fixture.graphics = {width=1280, height=800, list_look="cards", scale=nil, mode="windowed", vsync=true}
       fixture.calls[#fixture.calls + 1] = {"resize", 1280, 800}
     elseif tab == "map" then fixture.map = {pan_pixels_per_frame=4, zoom_steps_per_second=20, scroll_points_per_step=24}
     elseif tab == "debug" then fixture.debug = {level = fixture.base_debug.level, rate = fixture.base_debug.rate}
