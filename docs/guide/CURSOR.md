@@ -5,12 +5,11 @@ Covered beyond the boundary: 1794587707249578000 (20261116t171708z-d86dc82f), 17
 
 ## Next
 
-Process the open findings below, then continue from the boundary.
+Review the 98 publication(s) after the boundary.
 
 ## Open findings
 
-- 20261116t171708z-d86dc82f/GUIDE-1 — Graphics defaults changes the list look without marking unsaved — unprocessed
-- 20261116t171708z-d86dc82f/GUIDE-2 — The settings input list rounds each fine wheel delta — unprocessed
+- none
 
 ## Pending handoff
 
@@ -111,6 +110,7 @@ Process the open findings below, then continue from the boundary.
 - publication 1794842051558091000 is after the boundary
 - publication 1794847842349749000 is after the boundary
 - publication D1794849057824075000 is after the boundary
+- publication D1794850361607924000 is after the boundary
 
 ## Alignment
 
