@@ -352,6 +352,7 @@ local s = require("lib.settings_window").current()
 eq(fixture.calls[#fixture.calls][1], "resize", "defaults asks the resize service")
 eq(fixture.graphics.width, 1280) eq(fixture.graphics.height, 800)
 eq(fixture.graphics.list_look, "cards") eq(fixture.graphics.scale, nil)
+eq(unsaved_marks, 2, "graphics defaults marks its effective list-look reset unsaved exactly once")
 eq(fixture.graphics.mode, "windowed", "defaults restores the saved window mode")
 eq(fixture.calls[#fixture.calls][1], "resize")
 eq(fixture.calls[#fixture.calls][2], 1280) eq(fixture.calls[#fixture.calls][3], 800)
@@ -362,7 +363,9 @@ eq(s.controls.resolution_width:get(), 1280)
 eq(s.controls.resolution_height:get(), 800)
 eq(s.controls.list_look[1].selected, true)
 eq(s.controls.window_mode[1].selected, true, "defaults lights the windowed choice")
+mark_settings()
 "#,
+        r#"eq(unsaved_marks, 2, "repeating graphics defaults with cards already selected does not mark the list look again")"#,
     ]);
     rig.opened();
     click_at_metrics(&mut rig, "settings", 960, 600);
@@ -372,6 +375,8 @@ eq(s.controls.window_mode[1].selected, true, "defaults lights the windowed choic
     click_at_metrics(&mut rig, "settings_control_list_look_2", 960, 600);
     rig.opened();
     click_at_metrics(&mut rig, "settings_control_list_look_2", 960, 600);
+    rig.opened();
+    click_at_metrics(&mut rig, "settings_control_defaults", 960, 600);
     rig.opened();
     click_at_metrics(&mut rig, "settings_control_defaults", 960, 600);
     rig.opened();
@@ -397,6 +402,12 @@ mark_settings()
         r#"
 eq(fixture.graphics.list_look, "rows", "the click writes the shared setting without a game")
 eq(game, nil)
+mark_settings()
+"#,
+        r#"
+eq(fixture.graphics.list_look, "cards", "graphics defaults refreshes the list look without a game")
+eq(game, nil, "graphics defaults remains safe without a game")
+expect(require("lib.settings_window").current() ~= nil, "settings remains open after defaults without a game")
 "#,
     ]);
     rig.opened();
@@ -405,6 +416,8 @@ eq(game, nil)
     click_at_metrics(&mut rig, "settings_tab_graphics", 960, 600);
     rig.opened();
     click_at_metrics(&mut rig, "settings_control_list_look_2", 960, 600);
+    rig.opened();
+    click_at_metrics(&mut rig, "settings_control_defaults", 960, 600);
     rig.opened();
 }
 
