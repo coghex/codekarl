@@ -8,6 +8,10 @@
 title = "location"
 text = "A single place on the map, consisting of {pop|pops} and {building|buildings}. It draws on the land around it in its {resource_radius|resource radius}."
 
+[term.abandoned]
+title = "abandoned"
+text = "No one lives here now."
+
 [term.resource_radius]
 title = "resource radius"
 text = "The land around a {location} that it draws on. Its {usable_land|usable land} limits how large the location's farms can grow."

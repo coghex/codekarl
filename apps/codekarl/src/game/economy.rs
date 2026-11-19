@@ -113,11 +113,20 @@ pub(crate) fn starting_economy(
     let data = ScenarioEconomy::load(&scenario_path).map_err(|error| error.to_string())?;
     data.validate_cultures(&rules.peoples, &scenario_path.display().to_string())
         .map_err(|error| error.to_string())?;
+    for location in &scenario.locations {
+        if location.abandoned && data.places.contains_key(&location.id) {
+            return Err(format!(
+                "places.{}: abandoned location cannot have an economy entry",
+                location.id
+            ));
+        }
+    }
     let land = land_counts(scenario, &rules.terrain_order)?;
     let starts = scenario
         .locations
         .iter()
         .zip(land)
+        .filter(|(location, _)| !location.abandoned)
         .map(|(location, land)| StartLocation {
             id: location.id.clone(),
             kind: scenario.location_kinds.kinds[location.kind_index]
@@ -238,14 +247,15 @@ mod tests {
         assert!(counts.iter().any(|count| !count.land_cells.is_empty()));
 
         let (state, report) = starting_economy(&assets, &directory, &scenario).unwrap();
-        assert_eq!(state.places.len(), 94);
+        assert_eq!(state.places.len(), 123);
         assert_eq!(
             report,
             [
                 "glendalough farm: cut levels 30 -> 28 (no method has enough land or sea)",
                 "killeany starts over building cap: footprint 50400 m², prepared 70400 m², max_buildable 47600 m²",
                 "tory starts over building cap: footprint 24200 m², prepared 44200 m², max_buildable 23600 m²",
-                "rahan farm: cut levels 8 -> 4 (no method has enough land or sea)",
+                "rechru starts over building cap: footprint 50400 m², prepared 70400 m², max_buildable 24050 m²",
+                "inis_patraic starts over building cap: footprint 24200 m², prepared 44200 m², max_buildable 23600 m²",
             ]
         );
         assert!(
@@ -277,6 +287,85 @@ mod tests {
             mayo.pops
                 .iter()
                 .any(|pop| pop.kind == "monk" && pop.culture == "northumbrian")
+        );
+    }
+
+    #[test]
+    fn r21_new_places_keep_the_designer_cultures_and_religions() {
+        let path = ireland_assets().join("scenarios/ireland-768/economy.toml");
+        let data = ScenarioEconomy::load(path).unwrap();
+        let expected = [
+            ("croaghan_hill", "northern_ui_neill"),
+            ("gowran", "mumu"),
+            ("mullaghmast", "laigin"),
+            ("locha_lein", "mumu"),
+            ("ui_maine_seat", "connachta"),
+            ("tailtiu", "mide_brega"),
+            ("tir_amalgaid", "connachta"),
+            ("corco_modruad", "connachta"),
+            ("ui_echach_seat", "cruthin"),
+            ("aidne_seat", "connachta"),
+            ("inchbofin", "mide_brega"),
+            ("inchcleraun", "mide_brega"),
+            ("rechru", "mide_brega"),
+            ("inis_patraic", "mide_brega"),
+            ("inishmacsaint", "airgialla"),
+            ("inishkeel", "northern_ui_neill"),
+            ("white_island", "airgialla"),
+            ("hare_island", "mide_brega"),
+            ("tethbae_seat", "mide_brega"),
+            ("church_island_valentia", "mumu"),
+            ("illaunloughan", "mumu"),
+            ("inishkea_north", "connachta"),
+            ("inishglora", "connachta"),
+            ("church_island_currane", "mumu"),
+            ("spike_island", "mumu"),
+            ("cairpre_seat", "northern_ui_neill"),
+            ("granard", "mide_brega"),
+            ("loegaire_seat", "mide_brega"),
+            ("uliathain_seat", "mumu"),
+            ("ciarraige_seat", "mumu"),
+            ("monaincha", "mumu"),
+        ];
+        assert_eq!(expected.len(), 31);
+        for (id, culture) in expected {
+            let place = &data.places[id];
+            assert_eq!(place.culture.as_deref(), Some(culture), "{id}");
+            assert_eq!(place.religion.as_deref(), Some("christianity"), "{id}");
+            assert_eq!(place.monk_religion.as_deref(), Some("christianity"), "{id}");
+        }
+        assert!(!data.defaults.contains_key("royal_site"));
+        assert!(!data.places.contains_key("dunamase") && !data.places.contains_key("cahercommaun"));
+    }
+
+    #[test]
+    fn abandoned_sites_have_no_economy_and_explicit_entries_are_rejected() {
+        let assets = ireland_assets();
+        let directory = assets.join("scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).unwrap();
+        let rules = Rules::load(assets.join("game/economy.toml")).unwrap();
+        let counts = land_counts(&scenario, &rules.terrain_order).unwrap();
+        let (state, _) = starting_economy(&assets, &directory, &scenario).unwrap();
+        for (index, place) in scenario
+            .locations
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.abandoned)
+        {
+            assert!(!state.places.iter().any(|p| p.id == place.id));
+            assert_eq!(counts[index], LandCounts::default());
+        }
+        assert_eq!(state.places.len(), 123);
+        let temp = std::env::temp_dir().join(format!("ck358-abandoned-{}", std::process::id()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let mut data = std::fs::read_to_string(directory.join("economy.toml")).unwrap();
+        data.push_str("\n[places.emain_macha]\nculture = \"ulaid\"\nreligion = \"christianity\"\n");
+        std::fs::write(temp.join("economy.toml"), data).unwrap();
+        let error = starting_economy(&assets, &temp, &scenario).unwrap_err();
+        std::fs::remove_dir_all(temp).unwrap();
+        assert!(
+            error.contains("emain_macha") && error.contains("abandoned"),
+            "{error}"
         );
     }
 

@@ -1,3 +1,7 @@
+# Location changes r3 (designer, 2026-11-16): r2 plus round 8 (r157): Movilla monastery 2 with enclosure; Terryglass enclosure.
+# Location changes r2 (designer, 2026-11-16): locations-r1 plus the location cards the owner passed on the figures review page
+# (rounds 1-7, r145-r156). New kinds used here (cashel, hillfort, ceremonial_ground) need location_kinds.toml entries and a
+# loader change before this file can load (location-kinds-r1).
 [[location]]
 id = "armagh"
 name = "Ard Mhacha"
@@ -38,7 +42,7 @@ lat = 53.0106
 lon = -6.3275
 kind = "monastery"
 size = 3
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -49,7 +53,7 @@ lat = 54.6575
 lon = -5.674
 kind = "monastery"
 size = 3
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -60,7 +64,7 @@ lat = 53.3257
 lon = -7.5196
 kind = "monastery"
 size = 3
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -93,7 +97,7 @@ lat = 53.2394
 lon = -8.059
 kind = "monastery"
 size = 3
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -115,7 +119,7 @@ lat = 52.4637
 lon = -8.3504
 kind = "monastery"
 size = 3
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -136,8 +140,8 @@ name = "Maigh Bhile"
 lat = 54.6017
 lon = -5.666
 kind = "monastery"
-size = 3
-buildings = ["church"]
+size = 2
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
 
@@ -181,7 +185,7 @@ lat = 53.7774
 lon = -6.4176
 kind = "monastery"
 size = 2
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -192,7 +196,7 @@ lat = 53.3905
 lon = -6.2985
 kind = "monastery"
 size = 2
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
 
@@ -202,8 +206,8 @@ name = "Lusca"
 lat = 53.5266
 lon = -6.166
 kind = "monastery"
-size = 2
-buildings = ["church"]
+size = 3
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
 
@@ -214,7 +218,7 @@ lat = 53.4597
 lon = -6.218
 kind = "monastery"
 size = 2
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
 
@@ -225,7 +229,7 @@ lat = 53.0517
 lon = -8.2
 kind = "monastery"
 size = 2
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -247,7 +251,7 @@ lat = 53.048
 lon = -7.805
 kind = "monastery"
 size = 2
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
 
@@ -269,7 +273,7 @@ lat = 53.0925
 lon = -8.1218
 kind = "monastery"
 size = 2
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -313,7 +317,7 @@ lat = 51.8625
 lon = -8.1222
 kind = "monastery"
 size = 2
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -324,7 +328,7 @@ lat = 51.9483
 lon = -7.7262
 kind = "monastery"
 size = 2
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -335,7 +339,7 @@ lat = 52.59
 lon = -6.498
 kind = "monastery"
 size = 3
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -378,7 +382,7 @@ name = "Cluain Eidhneach"
 lat = 53.011
 lon = -7.421
 kind = "monastery"
-size = 1
+size = 2
 buildings = ["church"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
@@ -389,7 +393,7 @@ name = "Baile Shláine"
 lat = 53.709
 lon = -6.544
 kind = "monastery"
-size = 1
+size = 2
 buildings = ["church"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
@@ -401,7 +405,7 @@ lat = 53.6554
 lon = -6.4203
 kind = "monastery"
 size = 2
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -411,7 +415,7 @@ name = "Baile Átha Troim"
 lat = 53.5548
 lon = -6.792
 kind = "monastery"
-size = 1
+size = 2
 buildings = ["church"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
@@ -444,7 +448,7 @@ name = "Lann Léire"
 lat = 53.83
 lon = -6.395
 kind = "monastery"
-size = 1
+size = 2
 buildings = ["church"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
@@ -510,7 +514,7 @@ name = "Fathain"
 lat = 55.0831
 lon = -7.4608
 kind = "monastery"
-size = 1
+size = 2
 buildings = ["church", "high_cross"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "low"
@@ -522,7 +526,7 @@ lat = 55.2499
 lon = -7.272
 kind = "monastery"
 size = 1
-buildings = ["church", "high_cross"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "low"
 
@@ -533,7 +537,7 @@ lat = 54.3263
 lon = -8.4955
 kind = "monastery"
 size = 2
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
 
@@ -555,7 +559,7 @@ lat = 53.7738
 lon = -9.102
 kind = "monastery"
 size = 2
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -566,7 +570,7 @@ lat = 53.515
 lon = -8.854
 kind = "monastery"
 size = 1
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
 
@@ -588,7 +592,7 @@ lat = 53.0505
 lon = -8.8879
 kind = "monastery"
 size = 1
-buildings = ["church"]
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "high"
 
@@ -653,7 +657,7 @@ name = "Ardach"
 lat = 53.668
 lon = -7.694
 kind = "monastery"
-size = 1
+size = 2
 buildings = ["church"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
@@ -686,7 +690,7 @@ name = "Coinnire"
 lat = 54.8
 lon = -6.295
 kind = "monastery"
-size = 1
+size = 2
 buildings = ["church"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "low"
@@ -730,7 +734,7 @@ name = "Cluain Dolcáin"
 lat = 53.3213
 lon = -6.3955
 kind = "monastery"
-size = 1
+size = 2
 buildings = ["church"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
@@ -741,7 +745,7 @@ name = "Raithean"
 lat = 53.2793
 lon = -7.6115
 kind = "monastery"
-size = 1
+size = 2
 buildings = ["church"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
@@ -752,8 +756,8 @@ name = "Cill Aichidh"
 lat = 53.219
 lon = -7.444
 kind = "monastery"
-size = 1
-buildings = ["church"]
+size = 2
+buildings = ["church", "enclosure"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "medium"
 
@@ -797,7 +801,7 @@ lat = 52.4125
 lon = -7.3933
 kind = "monastery"
 size = 1
-buildings = ["church", "high_cross"]
+buildings = ["church"]
 source = "Gwynn & Hadcock, Medieval Religious Houses: Ireland (1970); annals (AU, AFM)"
 confidence = "low"
 
@@ -817,7 +821,7 @@ id = "tara"
 name = "Teamhair"
 lat = 53.5797
 lon = -6.6118
-kind = "royal_site"
+kind = "ceremonial_ground"
 size = 3
 buildings = ["enclosure"]
 source = "Byrne, Irish Kings and High-Kings (1973); annals"
@@ -828,7 +832,7 @@ id = "cashel"
 name = "Caiseal"
 lat = 52.52
 lon = -7.8906
-kind = "royal_site"
+kind = "cashel"
 size = 3
 buildings = ["enclosure"]
 source = "Byrne, Irish Kings and High-Kings (1973); annals"
@@ -839,7 +843,7 @@ id = "rathcroghan"
 name = "Ráth Cruachan"
 lat = 53.802
 lon = -8.304
-kind = "royal_site"
+kind = "ceremonial_ground"
 size = 3
 buildings = ["enclosure"]
 source = "Byrne, Irish Kings and High-Kings (1973); annals"
@@ -850,7 +854,7 @@ id = "ailech"
 name = "Grianán Ailigh"
 lat = 55.0243
 lon = -7.4277
-kind = "royal_site"
+kind = "cashel"
 size = 3
 buildings = ["enclosure"]
 source = "Byrne, Irish Kings and High-Kings (1973); annals"
@@ -861,7 +865,7 @@ id = "naas"
 name = "An Nás"
 lat = 53.2203
 lon = -6.663
-kind = "royal_site"
+kind = "ringfort"
 size = 2
 buildings = ["enclosure"]
 source = "Byrne, Irish Kings and High-Kings (1973); annals"
@@ -872,9 +876,9 @@ id = "downpatrick"
 name = "Dún Pádraig"
 lat = 54.33
 lon = -5.7135
-kind = "royal_site"
+kind = "monastery"
 size = 2
-buildings = ["enclosure", "church"]
+buildings = ["church", "enclosure"]
 source = "Byrne, Irish Kings and High-Kings (1973); annals"
 confidence = "medium"
 
@@ -883,7 +887,7 @@ id = "clogher"
 name = "Clochar"
 lat = 54.4112
 lon = -7.1714
-kind = "royal_site"
+kind = "hillfort"
 size = 2
 buildings = ["enclosure", "church"]
 source = "Byrne, Irish Kings and High-Kings (1973); annals"
@@ -894,7 +898,7 @@ id = "uisneach"
 name = "Uisneach"
 lat = 53.488
 lon = -7.558
-kind = "royal_site"
+kind = "ceremonial_ground"
 size = 2
 buildings = ["enclosure"]
 source = "Byrne, Irish Kings and High-Kings (1973); annals"
@@ -916,8 +920,8 @@ id = "lyons_hill"
 name = "Liamhain"
 lat = 53.3
 lon = -6.537
-kind = "ringfort"
-size = 1
+kind = "ceremonial_ground"
+size = 2
 buildings = ["enclosure"]
 source = "Byrne, Irish Kings and High-Kings (1973); annals"
 confidence = "medium"
@@ -928,18 +932,7 @@ name = "Ráth Iomgháin"
 lat = 53.2175
 lon = -6.9975
 kind = "ringfort"
-size = 1
-buildings = ["enclosure"]
-source = "Byrne, Irish Kings and High-Kings (1973); annals"
-confidence = "medium"
-
-[[location]]
-id = "dunamase"
-name = "Dún Másc"
-lat = 53.0318
-lon = -7.2096
-kind = "ringfort"
-size = 1
+size = 2
 buildings = ["enclosure"]
 source = "Byrne, Irish Kings and High-Kings (1973); annals"
 confidence = "medium"
@@ -949,8 +942,8 @@ id = "knockainey"
 name = "Cnoc Áine"
 lat = 52.4803
 lon = -8.4787
-kind = "ringfort"
-size = 1
+kind = "ceremonial_ground"
+size = 2
 buildings = ["enclosure"]
 source = "Byrne, Irish Kings and High-Kings (1973); annals"
 confidence = "medium"
@@ -961,7 +954,7 @@ name = "Brú Rí"
 lat = 52.425
 lon = -8.66
 kind = "ringfort"
-size = 1
+size = 2
 buildings = ["enclosure"]
 source = "Byrne, Irish Kings and High-Kings (1973); annals"
 confidence = "medium"
@@ -972,9 +965,9 @@ name = "An Ráth Mhór"
 lat = 54.709
 lon = -6.17
 kind = "ringfort"
-size = 1
+size = 2
 buildings = ["enclosure"]
-source = "Byrne (1973); Lynn's Rathmore excavations"
+source = "Byrne (1973); Ráth Mór Maige Line, the Dál nAraidi seat in tradition (AU 682 battle); no excavation report found"
 confidence = "low"
 
 [[location]]
@@ -982,30 +975,19 @@ id = "dunseverick"
 name = "Dún Sobhairce"
 lat = 55.2371
 lon = -6.4398
-kind = "ringfort"
+kind = "promontory_fort"
 size = 1
 buildings = ["enclosure"]
 source = "Byrne, Irish Kings and High-Kings (1973); annals"
 confidence = "medium"
 
 [[location]]
-id = "cahercommaun"
-name = "Cathair Chomáin"
-lat = 53.0147
-lon = -9.0706
-kind = "ringfort"
-size = 1
-buildings = ["enclosure"]
-source = "Hencken, Cahercommaun (1938)"
-confidence = "low"
-
-[[location]]
 id = "carraig_aille"
 name = "Carraig Aille"
 lat = 52.5167
 lon = -8.5116
-kind = "ringfort"
-size = 1
+kind = "cashel"
+size = 2
 buildings = ["enclosure"]
 source = "Ó Ríordáin's Lough Gur excavations (1949)"
 confidence = "low"
@@ -1029,5 +1011,397 @@ lon = -6.7588
 kind = "crannog"
 size = 1
 buildings = ["enclosure"]
-source = "Bradley's Moynagh Lough excavations (excavations.ie)"
+source = "Bradley's Moynagh Lough excavations (excavations.ie); the royal site of the Mugdorna (Gleeson, citing Bradley); palisade felled 748"
+confidence = "medium"
+
+# ---- Added in the designer's proposal r1 (owner r149). Coordinates from the sources named; confidence as marked.
+
+[[location]]
+id = "croaghan_hill"
+name = "Cruachán Maige Ítha"
+lat = 54.824
+lon = -7.535
+kind = "hillfort"
+size = 1
+buildings = ["enclosure"]
+source = "Hillfort on Croaghan Hill over Mag nÍtha (irishhistory.com, megalithic.co.uk); proposed Cenél Conaill seat (ireland-768-over-kingdoms-r3: a guess)"
 confidence = "low"
+
+[[location]]
+id = "gowran"
+name = "Belach Gabráin"
+lat = 52.628
+lon = -7.067
+kind = "ringfort"
+size = 2
+buildings = ["enclosure"]
+source = "Gowran, the pass of Gabrán, Osraige royal seat (ireland-768-over-kingdoms-r3: a guess; placed at the village, from memory)"
+confidence = "low"
+
+[[location]]
+id = "mullaghmast"
+name = "Maistiu"
+lat = 53.010
+lon = -6.852
+kind = "ringfort"
+size = 2
+buildings = ["enclosure"]
+source = "Mullaghmast, seat of the Uí Muiredaig of Laigin (Bran Ardchenn, king 785-795; Wikipedia); hill coordinates (Wikipedia via search)"
+confidence = "medium"
+
+[[location]]
+id = "locha_lein"
+name = "Loch Léin"
+lat = 52.040
+lon = -9.530
+kind = "ringfort"
+size = 2
+buildings = ["enclosure"]
+source = "Stand-in seat of the Eóganacht Locha Léin on the Lough Leane shore by Ross Island (no royal site found; owner r170)"
+confidence = "low"
+
+[[location]]
+id = "ui_maine_seat"
+name = "Dún Imghain"
+lat = 53.632
+lon = -8.319
+kind = "ringfort"
+size = 2
+buildings = ["enclosure"]
+source = "Stand-in seat of the Uí Maine at Dunamon on the Suck, the one fort the Hy-Many tract (about 1400) names (owner r170)"
+confidence = "low"
+
+[[location]]
+id = "tailtiu"
+name = "Tailtiu"
+lat = 53.698
+lon = -6.760
+kind = "ceremonial_ground"
+size = 2
+buildings = ["enclosure"]
+source = "Ráith Airthir, Teltown: the Óenach Tailten assembly enclosure opposite Donaghpatrick (AU 789; Charles-Edwards; megalithicireland)"
+confidence = "medium"
+
+[[location]]
+id = "tir_amalgaid"
+name = "Tír Amalgaid"
+lat = 54.200
+lon = -9.230
+kind = "ringfort"
+size = 2
+buildings = ["enclosure"]
+source = "Stand-in seat of the Uí Fiachrach Muaidhe near Killala; their inauguration place Carn Amalgaid lies just north (owner r171)"
+confidence = "low"
+
+[[location]]
+id = "corco_modruad"
+name = "Corco Modruad"
+lat = 53.100
+lon = -9.070
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Stand-in seat of the Corcu Modruad near Corcomroe (no seat known; king Torpaid, d. 769, AI) (owner r172)"
+confidence = "low"
+
+[[location]]
+id = "ui_echach_seat"
+name = "Cnoc Uí Echach"
+lat = 54.270
+lon = -6.190
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Stand-in seat of the Uí Echach Cobo below Knock Iveagh, their later inauguration hill (no 8th-century seat known; owner r176)"
+confidence = "low"
+
+[[location]]
+id = "aidne_seat"
+name = "Dúrlas Guaire"
+lat = 53.1435
+lon = -8.9247
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Stand-in seat of the Uí Fhiachrach Aidne at Ráth Dúrlais, Dungory (Westropp 1919: Durlas Guaire) (owner r177)"
+confidence = "low"
+
+[[location]]
+id = "inchbofin"
+name = "Inis Bó Finne (Loch Rí)"
+lat = 53.54
+lon = -7.917
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Inchbofin, Lough Ree: Rioc's island monastery; abbot Fiangalach d. 755 (AU) (owner r178)"
+confidence = "medium"
+
+[[location]]
+id = "inchcleraun"
+name = "Inis Clothrann"
+lat = 53.582
+lon = -8.007
+kind = "monastery"
+size = 2
+buildings = ["church", "enclosure"]
+source = "Inchcleraun, Lough Ree: Diarmait's island monastery, a cashel with six churches; abbots d. 720, 785 (AU) (owner r179)"
+confidence = "medium"
+
+[[location]]
+id = "rechru"
+name = "Reachrainn"
+lat = 53.4906
+lon = -6.0145
+kind = "monastery"
+size = 2
+buildings = ["church"]
+source = "Rechru, read as Lambay (Monasticon; Rathlin is the rival reading); abbots d. 769, 773, 799; burned 795 (AU) (owner r179)"
+confidence = "low"
+
+[[location]]
+id = "inis_patraic"
+name = "Inis Pádraig"
+lat = 53.5844
+lon = -6.0761
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Inis Pátraic off Skerries: circular enclosure, church; burned 798, Do-Chonna's shrine broken (AU) (owner r179)"
+confidence = "medium"
+
+[[location]]
+id = "inishmacsaint"
+name = "Inis Mac Saint"
+lat = 54.4355
+lon = -7.7455
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Inishmacsaint, Lower Lough Erne: Ninnid's foundation (tradition) (owner r179)"
+confidence = "low"
+
+[[location]]
+id = "inishkeel"
+name = "Inis Caoil"
+lat = 54.8475
+lon = -8.4512
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Inishkeel off Portnoo: Conall Cael's (tradition), early inscribed slabs; attacked 618 (FM) (owner r179)"
+confidence = "medium"
+
+[[location]]
+id = "white_island"
+name = "An tOileán Bán"
+lat = 54.4888
+lon = -7.7362
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "White Island, Lower Lough Erne: Constans 'the learned' of Loch Éirne d. 778 (AU; the Martyrology of Donegal places him here) (owner r179)"
+confidence = "low"
+
+[[location]]
+id = "hare_island"
+name = "Inis Ainghin"
+lat = 53.471
+lon = -7.93
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Hare Island, Lough Ree: bivallate enclosure; early by tradition (Ciarán); first annal mention 894 (owner r179)"
+confidence = "low"
+
+[[location]]
+id = "tethbae_seat"
+name = "Ráth Ardachaidh"
+lat = 53.670
+lon = -7.692
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Stand-in seat of the kings of Tethba: the trivallate ringfort with iron-working beside Mél's church (de Paor 1967) (owner r180)"
+confidence = "low"
+
+[[location]]
+id = "church_island_valentia"
+name = "Oileán an Teampaill (Dairbhre)"
+lat = 51.9376
+lon = -10.2833
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Church Island, Valentia Harbour: O'Kelly's excavation (1955-56), timber phase 6th-7th century, ogham stone 650-750 (owner r180)"
+confidence = "medium"
+
+[[location]]
+id = "illaunloughan"
+name = "Oileán Leacháin"
+lat = 51.8866
+lon = -10.3734
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Illaunloughan, Portmagee Channel: excavated 1992-, begun 7th century, oratory 8th century (owner r180)"
+confidence = "medium"
+
+[[location]]
+id = "inishkea_north"
+name = "Inis Gé Thuaidh"
+lat = 54.134
+lon = -10.197
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Inishkea North, off the Mullet: a 7th-century dye workshop (Henry 1946) (owner r180)"
+confidence = "low"
+
+[[location]]
+id = "inishglora"
+name = "Inis Gluaire"
+lat = 54.21
+lon = -10.128
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Inishglora, off Erris: Brendan's church and beehive cells (tradition) (owner r180)"
+confidence = "low"
+
+[[location]]
+id = "church_island_currane"
+name = "Oileán an Teampaill (Loch Luíoch)"
+lat = 51.8349
+lon = -10.1293
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Church Island, Lough Currane: Fínán's, 7th century by tradition (owner r180)"
+confidence = "low"
+
+[[location]]
+id = "spike_island"
+name = "Inis Píc"
+lat = 51.835
+lon = -8.285
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Spike Island, Cork Harbour: an abbot recorded in 821; foundation by tradition (owner r180)"
+confidence = "low"
+
+[[location]]
+id = "cairpre_seat"
+name = "Cairpre Droma Cliab"
+lat = 54.33
+lon = -8.47
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Stand-in seat of the kings of Cairpre Droma Cliab in the Drumcliff plain (no royal site known) (owner r183)"
+confidence = "low"
+
+[[location]]
+id = "granard"
+name = "Gránard"
+lat = 53.7751
+lon = -7.5006
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Royal ringfort of the Cenél Cairpri of Tethbae under the Moat of Granard (Norman motte of 1199 on an earlier fort, tradition) (owner r183)"
+confidence = "low"
+
+# Moved one cell south; Trim church occupies the original cell.
+[[location]]
+id = "loegaire_seat"
+name = "Cenél Lóegairi"
+lat = 53.5503
+lon = -6.7915
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Stand-in seat of the Cenél Lóegairi at the Trim Castle site (early medieval buildings under the 1172 ringwork; Feidlimid's fortress in the Tripartite Life) (owner r183)"
+confidence = "low"
+
+[[location]]
+id = "uliathain_seat"
+name = "Uí Liatháin"
+lat = 52.089
+lon = -8.234
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Stand-in seat of the Uí Liatháin at Castlelyons (Caisleán Uí Liatháin; no 8th-century site known) (owner r183)"
+confidence = "low"
+
+[[location]]
+id = "ciarraige_seat"
+name = "Ciarraige Luachra"
+lat = 52.335
+lon = -9.77
+kind = "ringfort"
+size = 1
+buildings = ["enclosure"]
+source = "Stand-in seat of the Ciarraige Luachra near Ardfert (no royal site known) (owner r183)"
+confidence = "low"
+
+[[location]]
+id = "monaincha"
+name = "Loch Cré"
+lat = 52.9463
+lon = -7.7482
+kind = "monastery"
+size = 1
+buildings = ["church"]
+source = "Inis na mBeo (Monaincha): Ros Cré's island hermitage in Loch Cré (drained about 1800); Elarius, anchorite and scribe, d. 807 (AU) (owner r183)"
+confidence = "medium"
+
+# Built later (owner r172): not standing in 768; kept for a later scenario.
+# [[location]]
+# id = "cahercommaun"
+# name = "Cathair Chomáin"
+# lat = 53.0147
+# lon = -9.0706
+# kind = "ringfort"
+# size = 1
+# buildings = ["enclosure"]
+# source = "Hencken, Cahercommaun (1938)"
+# confidence = "low"
+# built = "9th-10th century (Cotter 1999; Hencken 1938)"
+
+# [[location]]
+# id = "dunamase"
+# name = "Dún Másc"
+# lat = 53.0318
+# lon = -7.2096
+# kind = "ringfort"
+# size = 1
+# buildings = ["enclosure"]
+# source = "Byrne, Irish Kings and High-Kings (1973); annals"
+# confidence = "medium"
+# built = "9th century (Hodkinson's excavations, tentative; first named AU 845)" (owner r173)
+
+# Abandoned sites (owner r149 and r188): no pops or working buildings; events and claims may name them.
+[[location]]
+id = "emain_macha"
+name = "Emain Macha"
+lat = 54.348
+lon = -6.697
+kind = "ceremonial_ground"
+size = 1
+state = "abandoned"
+source = "Navan Fort; the ancient Ulster royal site, long abandoned by 768; the battle of Emain Macha, 759 (AU)"
+confidence = "high"
+
+[[location]]
+id = "dun_ailinne"
+name = "Dún Ailinne"
+lat = 53.115
+lon = -6.776
+kind = "ceremonial_ground"
+size = 1
+state = "abandoned"
+source = "Knockaulin; the ancient Leinster royal site, abandoned (excavations.ie, Wailes)"
+confidence = "high"

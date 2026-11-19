@@ -83,8 +83,20 @@ impl LocationKinds {
                     .flat_map(|building| [building.light, building.dark]),
             )
             .chain([self.house.roof, self.house.light, self.house.dark])
+            .chain(
+                self.kinds
+                    .iter()
+                    .flat_map(|kind| [grey(kind.light), grey(kind.dark)]),
+            )
             .collect()
     }
+}
+
+fn grey(colour: Rgba8) -> Rgba8 {
+    let [r, g, b, _] = colour.0;
+    let value = (u32::from(r) * 2126 + u32::from(g) * 7152 + u32::from(b) * 722 + 5000) / 10000;
+    let value = u8::try_from(value).expect("luminance fits a byte");
+    Rgba8::opaque(value, value, value)
 }
 
 /// One notable-building glyph and its colours.
@@ -128,6 +140,8 @@ pub struct Location {
     pub size: u8,
     /// Indices into [`LocationKinds::buildings`].
     pub building_indices: Vec<usize>,
+    /// Whether the site is abandoned and has no living economy.
+    pub abandoned: bool,
     /// Explicit catchment radius, if supplied.
     pub catchment_m: Option<u32>,
     /// Source note.
@@ -602,7 +616,8 @@ fn validate_location_kinds(file: &LocationKindsFile) -> Result<LocationKinds, Lo
         .len()
         .saturating_mul(2)
         .saturating_add(buildings.len().saturating_mul(2))
-        .saturating_add(3);
+        .saturating_add(3)
+        .saturating_add(kinds.len().saturating_mul(2));
     if palette_len > 256 {
         return Err(LoadError::at(
             "location_kinds.toml",
@@ -744,6 +759,17 @@ fn validate_locations(
         if !ids.insert(entry.id.as_str()) {
             return Err(LoadError::at(filename, &path, "duplicate location id"));
         }
+        if entry
+            .state
+            .as_deref()
+            .is_some_and(|state| state != "abandoned")
+        {
+            return Err(LoadError::at(
+                filename,
+                format!("{path}.state"),
+                "must be abandoned",
+            ));
+        }
         if entry.name.trim().is_empty() || entry.name.chars().count() > 64 {
             return Err(LoadError::at(
                 filename,
@@ -850,6 +876,7 @@ fn validate_locations(
             kind_index,
             size: u8::try_from(entry.size).unwrap_or_default(),
             building_indices,
+            abandoned: entry.state.is_some(),
             catchment_m,
             source: entry.source.clone(),
             confidence,
@@ -920,6 +947,9 @@ fn compute_catchments(
     let mut best_q: Vec<Option<i128>> = vec![None; count];
     let row_scales = ground_scales(map.crop);
     for (location_index, location) in locations.iter().enumerate() {
+        if location.abandoned {
+            continue;
+        }
         let kind = &kinds.kinds[location.kind_index];
         let radius = i128::from(
             location
@@ -1033,8 +1063,16 @@ fn prepare_markers(locations: &[Location], kinds: &LocationKinds, step: u8) -> V
                     y: top + i32::try_from(row).unwrap_or_default(),
                 };
                 let colour = match glyph {
-                    '#' => Some(kind.light),
-                    'd' => Some(kind.dark),
+                    '#' => Some(if location.abandoned {
+                        grey(kind.light)
+                    } else {
+                        kind.light
+                    }),
+                    'd' => Some(if location.abandoned {
+                        grey(kind.dark)
+                    } else {
+                        kind.dark
+                    }),
                     _ => None,
                 };
                 if let Some(colour) = colour {
@@ -1069,7 +1107,11 @@ fn prepare_markers(locations: &[Location], kinds: &LocationKinds, step: u8) -> V
                     y: pixel.y + 1,
                 },
             ] {
-                mask.entry(neighbour).or_insert(kind.dark);
+                mask.entry(neighbour).or_insert(if location.abandoned {
+                    grey(kind.dark)
+                } else {
+                    kind.dark
+                });
             }
         }
         pixels.extend(mask);
@@ -1180,6 +1222,9 @@ fn prepare_house_layer(
     let roof = u8::try_from(kinds.kinds.len() * 2 + kinds.buildings.len() * 2).unwrap_or(u8::MAX);
     let mut layer = BTreeMap::new();
     for location in locations {
+        if location.abandoned {
+            continue;
+        }
         let Some(kind) = kinds.kinds.get(location.kind_index) else {
             continue;
         };
@@ -1238,7 +1283,12 @@ fn prepare_marker_layer(
         let Some(kind) = kinds.kinds.get(location.kind_index) else {
             continue;
         };
-        let base = u8::try_from(location.kind_index * 2).unwrap_or(u8::MAX);
+        let offset = if location.abandoned {
+            kinds.kinds.len() * 2 + kinds.buildings.len() * 2 + 3
+        } else {
+            0
+        };
+        let base = u8::try_from(offset + location.kind_index * 2).unwrap_or(u8::MAX);
         layer.extend(glyph_indices(
             location.cell,
             &kind.glyph,
@@ -1258,6 +1308,9 @@ fn prepare_building_layer(
     let base = u8::try_from(kinds.kinds.len() * 2).unwrap_or(u8::MAX);
     let mut layer = BTreeMap::new();
     for location in locations {
+        if location.abandoned {
+            continue;
+        }
         for (entry_index, &building_index) in location.building_indices.iter().enumerate() {
             let Some(building) = kinds.buildings.get(building_index) else {
                 continue;
@@ -1617,6 +1670,7 @@ struct LocationFile {
     #[serde(default)]
     buildings: Vec<String>,
     catchment_m: Option<i64>,
+    state: Option<String>,
     source: String,
     confidence: String,
 }

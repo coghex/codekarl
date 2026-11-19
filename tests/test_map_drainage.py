@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import math
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -97,6 +99,52 @@ class DrainageTests(unittest.TestCase):
         self.assertIn("drainage.flow_accumulation(", source)
         self.assertNotIn("def priority_flood(", source)
         self.assertNotIn("np.argsort(-filled", source)
+
+
+class IslandEditTests(unittest.TestCase):
+    def test_ck358_island_edit_regions_cover_their_target_cells(self) -> None:
+        directory = ROOT / "assets" / "map" / "ireland"
+        edits = tomllib.loads((directory / "edits.toml").read_text(encoding="utf-8"))["edit"]
+        crop = tomllib.loads((directory / "map.toml").read_text(encoding="utf-8"))["crop"]
+        expected = [
+            ("island-inchbofin", (396, 460), "lake"),
+            ("island-inchcleraun", (384, 451), "lake"),
+            ("island-white-island", (420, 246), "lake"),
+            ("island-hare-island", (394, 476), "lake"),
+            ("island-inishmacsaint", (418, 258), "lake"),
+            ("island-inis-patraic", (640, 450), "sea"),
+            ("island-inishglora", (102, 310), "sea"),
+        ]
+        self.assertEqual([entry["id"] for entry in edits[-7:]], [item[0] for item in expected])
+        earth = 6_378_137.0
+        half = math.pi * earth
+        for edit, (name, target, water) in zip(edits[-7:], expected, strict=True):
+            with self.subTest(edit=name):
+                self.assertEqual(edit["paint"], "pasture")
+                self.assertEqual(edit["where"], {"terrain": [water]})
+                lat, lon, radius = edit["region"]["circle"]
+                self.assertLessEqual(radius, 0.3)
+                covered = []
+                for y in range(target[1] - 3, target[1] + 4):
+                    for x in range(target[0] - 3, target[0] + 4):
+                        longitude = math.degrees(
+                            ((crop["origin"][0] + x + 0.5) * 839 - half) / earth
+                        )
+                        latitude = math.degrees(
+                            2
+                            * math.atan(
+                                math.exp((half - (crop["origin"][1] + y + 0.5) * 839) / earth)
+                            )
+                            - math.pi / 2
+                        )
+                        dx = (longitude - lon) * math.cos(math.radians(lat)) * 111
+                        dy = (latitude - lat) * 111
+                        if math.hypot(dx, dy) <= radius:
+                            covered.append((x, y))
+                if name == "island-inishglora":
+                    self.assertEqual(covered, [(102, 309), target])
+                else:
+                    self.assertEqual(covered, [target])
 
 
 if __name__ == "__main__":

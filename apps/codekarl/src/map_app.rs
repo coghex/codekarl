@@ -50,6 +50,7 @@ pub(crate) struct Selection {
     pub(crate) name: String,
     pub(crate) kind: String,
     pub(crate) size: u8,
+    pub(crate) abandoned: bool,
 }
 
 pub(crate) trait RiverViewSelector {
@@ -105,7 +106,7 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     locations: PreparedLocations,
     markers: PreparedMarkers,
     location_names: Vec<(String, String)>,
-    location_details: Vec<(String, u8)>,
+    location_details: Vec<(String, u8, bool)>,
     selection: Option<Selection>,
     pointer_position: Option<PointerPosition>,
     hover: Option<Hover>,
@@ -249,7 +250,13 @@ impl<R: RiverViewSelector> MapController<R> {
             .collect();
         let location_details = locations
             .iter()
-            .map(|location| (kinds.kinds[location.kind_index].id.clone(), location.size))
+            .map(|location| {
+                (
+                    kinds.kinds[location.kind_index].id.clone(),
+                    location.size,
+                    location.abandoned,
+                )
+            })
             .collect();
         let location_cache = PreparedLocations::new(locations, kinds, crop);
         let rules = rules(loaded, &overlay_palette);
@@ -691,7 +698,7 @@ impl<R: RiverViewSelector> MapController<R> {
         if camera.step < 15 {
             return None;
         }
-        let (kind, size) = self.location_details.get(hover.location_index)?.clone();
+        let (kind, size, abandoned) = self.location_details.get(hover.location_index)?.clone();
         let seq = self
             .selection
             .as_ref()
@@ -702,6 +709,7 @@ impl<R: RiverViewSelector> MapController<R> {
             name: hover.name,
             kind,
             size,
+            abandoned,
         })
     }
 
@@ -1130,6 +1138,7 @@ pub(crate) mod tests {
             kind_index: 0,
             size: 1,
             building_indices: Vec::new(),
+            abandoned: false,
             catchment_m: None,
             source: "test".to_owned(),
             confidence: ck_map::Confidence::High,
@@ -1203,6 +1212,7 @@ pub(crate) mod tests {
             kind_index: 0,
             size: 1,
             building_indices: Vec::new(),
+            abandoned: false,
             catchment_m: None,
             source: "fixture".to_owned(),
             confidence: ck_map::Confidence::High,
@@ -2040,6 +2050,7 @@ assert(scroll_reset == 1, "reset scroll used " .. tostring(scroll_reset))
                     name: "Fixture Town".to_owned(),
                     kind: "test".to_owned(),
                     size: 1,
+                    abandoned: false,
                 })
             );
         }
@@ -2180,6 +2191,7 @@ assert(scroll_reset == 1, "reset scroll used " .. tostring(scroll_reset))
                 name: "Fixture Town".to_owned(),
                 kind: "test".to_owned(),
                 size: 1,
+                abandoned: false,
             }),
             "the drag endpoint is on the marker after the clamped pan"
         );

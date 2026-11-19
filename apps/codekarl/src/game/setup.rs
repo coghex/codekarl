@@ -571,7 +571,7 @@ mod nearby_place_tests {
                 .take(2)
                 .map(|place| place.id.as_str())
                 .collect::<Vec<_>>(),
-            ["inisfallen", "ardfert"]
+            ["illaunloughan", "church_island_valentia"]
         );
         for id in ["inisfallen", "ardfert"] {
             let place = skellig.iter().find(|place| place.id == id).unwrap();

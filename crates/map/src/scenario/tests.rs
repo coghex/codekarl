@@ -732,6 +732,7 @@ fn location(id: &str, cell: Cell, radius: Option<u32>) -> Location {
         kind_index: 0,
         size: 1,
         building_indices: vec![],
+        abandoned: false,
         catchment_m: radius,
         source: "test".to_owned(),
         confidence: Confidence::High,
@@ -1495,4 +1496,217 @@ fn building_fallback_and_house_skip_have_a_test_only_attempt_seam() {
         "the building uses the first offsets halved toward zero"
     );
     assert_eq!(super::building_offset(b"zero-radius", 0, 0), Some((0, 0)));
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the four approved kind tables and their map witness together"
+)]
+fn ireland_r21_kinds_and_anchors_load_on_the_shipped_map() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768");
+    let scenario = load_scenario(&path).expect("r21 locations load on land in unique cells");
+    assert_eq!(scenario.locations.len(), 125);
+    let expected = [
+        (
+            "cashel",
+            (1, 3),
+            &[4000, 6000, 8000][..],
+            &[2, 4, 8][..],
+            &[256, 384, 512][..],
+            vec![".###.", "#ddd#", "#d.d#", "#ddd#", ".###."],
+            [0xbd, 0xb8, 0xab, 255],
+            [0x5c, 0x58, 0x4f, 255],
+        ),
+        (
+            "hillfort",
+            (1, 3),
+            &[4000, 6000, 8000][..],
+            &[2, 4, 8][..],
+            &[256, 384, 512][..],
+            vec![
+                "..###..", ".#...#.", ".#...#.", "..###..", ".ddddd.", "ddddddd",
+            ],
+            [0xc9, 0xad, 0x7c, 255],
+            [0x5f, 0x4f, 0x33, 255],
+        ),
+        (
+            "ceremonial_ground",
+            (1, 3),
+            &[4000, 6000, 8000][..],
+            &[1, 2, 3][..],
+            &[256, 384, 512][..],
+            vec![
+                "...#...", ".#...#.", ".......", "#..d..#", ".......", ".#...#.", "...#...",
+            ],
+            [0xdd, 0xc6, 0x7e, 255],
+            [0x6b, 0x5a, 0x2e, 255],
+        ),
+        (
+            "promontory_fort",
+            (1, 2),
+            &[2500, 3500][..],
+            &[1, 2][..],
+            &[128, 192][..],
+            vec!["..d..", ".ddd.", ".ddd.", "#####", ".ddd."],
+            [0xb3, 0xa5, 0x96, 255],
+            [0x54, 0x4a, 0x40, 255],
+        ),
+    ];
+    for (id, sizes, radii, houses, house_radii, glyph, light, dark) in expected {
+        let kind = scenario
+            .location_kinds
+            .kinds
+            .iter()
+            .find(|k| k.id == id)
+            .unwrap();
+        assert_eq!((kind.min_size, kind.max_size), sizes);
+        assert_eq!(kind.catchment_m, radii);
+        assert_eq!(kind.house_count, houses);
+        assert_eq!(kind.house_radius_cells_x256, house_radii);
+        assert_eq!(
+            kind.glyph
+                .iter()
+                .map(|row| row.iter().collect::<String>())
+                .collect::<Vec<_>>(),
+            glyph
+        );
+        assert_eq!(kind.light.0, light);
+        assert_eq!(kind.dark.0, dark);
+        let place = scenario
+            .locations
+            .iter()
+            .find(|place| scenario.location_kinds.kinds[place.kind_index].id == id)
+            .unwrap();
+        assert!(
+            !prepare_locations(
+                std::slice::from_ref(place),
+                &scenario.location_kinds,
+                scenario.map.data.crop,
+                46
+            )
+            .is_empty(),
+            "{id} draws at the detailed zoom"
+        );
+    }
+    assert!(
+        !scenario
+            .location_kinds
+            .kinds
+            .iter()
+            .any(|k| k.id == "royal_site")
+    );
+    let location = |id: &str| scenario.locations.iter().find(|p| p.id == id).unwrap();
+    let crop = scenario.map.data.crop;
+    for (id, x, y) in [("locha_lein", 182, 789), ("loegaire_seat", 545, 458)] {
+        let cell = location(id).cell;
+        assert_eq!((cell.x - crop.origin.x, cell.y - crop.origin.y), (x, y));
+    }
+    assert_ne!(location("trim").cell, location("loegaire_seat").cell);
+    for id in [
+        "inchbofin",
+        "inchcleraun",
+        "white_island",
+        "hare_island",
+        "inishmacsaint",
+        "inis_patraic",
+        "inishglora",
+    ] {
+        let cell = location(id).cell;
+        let x = usize::try_from(cell.x - crop.origin.x).unwrap();
+        let y = usize::try_from(cell.y - crop.origin.y).unwrap();
+        assert!(
+            matches!(
+                scenario.map.data.cells[y * crop.width as usize + x],
+                Surface::Land { .. }
+            ),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn abandoned_state_excludes_catchments_and_houses_and_rejects_unknown_state() {
+    let fixture = Fixture::new();
+    let original = fixture.text("locations.toml");
+    fixture.write(
+        "locations.toml",
+        &original.replacen("id = \"town_a\"", "id = \"town_a\"\nstate = \"ruined\"", 1),
+    );
+    let error = load_scenario(fixture.path()).unwrap_err().to_string();
+    assert!(
+        error.contains("town_a") && error.contains("state"),
+        "{error}"
+    );
+    fixture.write(
+        "locations.toml",
+        &original.replacen(
+            "id = \"town_a\"",
+            "id = \"town_a\"\nstate = \"abandoned\"",
+            1,
+        ),
+    );
+    let scenario = load_scenario(fixture.path()).unwrap();
+    assert!(scenario.locations[0].abandoned);
+    assert!(!scenario.catchment_owners.contains(&Some(0)));
+    let one = &scenario.locations[..1];
+    assert!(
+        super::prepare_house_layer(one, &scenario.location_kinds, i64::from(STEP_SIZE[46]))
+            .is_empty()
+    );
+    assert!(
+        super::prepare_building_layer(one, &scenario.location_kinds, i64::from(STEP_SIZE[46]))
+            .is_empty()
+    );
+    let palette = scenario.location_kinds.overlay_palette();
+    let pixels = prepare_locations(one, &scenario.location_kinds, scenario.map.data.crop, 46);
+    assert!(!pixels.is_empty());
+    for pixel in pixels {
+        let [r, g, b, _] = palette[usize::from(pixel.palette_index)].0;
+        assert_eq!((r, g), (g, b));
+    }
+}
+
+#[test]
+fn ireland_abandoned_sites_give_overlapping_land_to_living_neighbours_and_use_pinned_greys() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768");
+    let scenario = load_scenario(path).unwrap();
+    let armagh = scenario
+        .locations
+        .iter()
+        .position(|p| p.id == "armagh")
+        .unwrap();
+    let emain = scenario
+        .locations
+        .iter()
+        .position(|p| p.id == "emain_macha")
+        .unwrap();
+    let dun = scenario
+        .locations
+        .iter()
+        .position(|p| p.id == "dun_ailinne")
+        .unwrap();
+    assert!(scenario.locations[emain].abandoned && scenario.locations[dun].abandoned);
+    assert!(
+        !scenario
+            .catchment_owners
+            .iter()
+            .any(|owner| *owner == Some(emain) || *owner == Some(dun))
+    );
+    let mut living = scenario.locations.clone();
+    living[emain].abandoned = false;
+    let hypothetical =
+        compute_catchments(&scenario.map.data, &living, &scenario.location_kinds).unwrap();
+    let returned = hypothetical
+        .iter()
+        .zip(&scenario.catchment_owners)
+        .filter(|(old, new)| **old == Some(emain) && **new == Some(armagh))
+        .count();
+    assert!(
+        returned > 0,
+        "Armagh receives land otherwise held by Emain Macha"
+    );
+    let kind = &scenario.location_kinds.kinds[scenario.locations[emain].kind_index];
+    assert_eq!(super::grey(kind.light), Rgba8::opaque(198, 198, 198));
+    assert_eq!(super::grey(kind.dark), Rgba8::opaque(90, 90, 90));
 }

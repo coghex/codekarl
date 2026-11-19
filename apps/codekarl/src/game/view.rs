@@ -2096,12 +2096,12 @@ mod tests {
             .map(|location| location.id.clone())
             .collect();
         let view = build(Some(&rules), &state, &ids, test_date());
-        assert_eq!(view.places.len(), 94);
+        assert_eq!(view.places.len(), 125);
         assert!(view.places.iter().any(|place| place.workers > 0));
         // The map modes: a value for every place, the stockpile ones on the ramp, and a spread of yields across the map.
         let stockpile = view.stockpile_values();
         let yields = view.yield_values();
-        assert_eq!((stockpile.len(), yields.len()), (94, 94));
+        assert_eq!((stockpile.len(), yields.len()), (125, 125));
         assert!(
             stockpile
                 .iter()

@@ -8,13 +8,40 @@ light = "#d7c89b"
 dark = "#66583c"
 
 [[kind]]
-id = "royal_site"
+id = "cashel"
 sizes = [1, 3]
 catchment_m = [4000, 6000, 8000]
 houses = { count = [2, 4, 8], radius_cells_x256 = [256, 384, 512] }
-glyph = [".#.", "#d#", ".#."]
-light = "#d6b66d"
-dark = "#665333"
+glyph = [".###.", "#ddd#", "#d.d#", "#ddd#", ".###."]
+light = "#bdb8ab"
+dark = "#5c584f"
+
+[[kind]]
+id = "hillfort"
+sizes = [1, 3]
+catchment_m = [4000, 6000, 8000]
+houses = { count = [2, 4, 8], radius_cells_x256 = [256, 384, 512] }
+glyph = ["..###..", ".#...#.", ".#...#.", "..###..", ".ddddd.", "ddddddd"]
+light = "#c9ad7c"
+dark = "#5f4f33"
+
+[[kind]]
+id = "ceremonial_ground"
+sizes = [1, 3]
+catchment_m = [4000, 6000, 8000]
+houses = { count = [1, 2, 3], radius_cells_x256 = [256, 384, 512] }
+glyph = ["...#...", ".#...#.", ".......", "#..d..#", ".......", ".#...#.", "...#..."]
+light = "#ddc67e"
+dark = "#6b5a2e"
+
+[[kind]]
+id = "promontory_fort"
+sizes = [1, 2]
+catchment_m = [2500, 3500]
+houses = { count = [1, 2], radius_cells_x256 = [128, 192] }
+glyph = ["..d..", ".ddd.", ".ddd.", "#####", ".ddd."]
+light = "#b3a596"
+dark = "#544a40"
 
 [[kind]]
 id = "ringfort"

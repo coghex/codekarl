@@ -805,8 +805,8 @@ fn supervise_with_owner_factory(
                         scenario_id.expect("a connected game has a scenario id"),
                     ),
                 )
-                .function("places", game_api::places_function(places))
-                .function("place", game_api::place_function(view_cache))
+                .function("places", game_api::places_function(places.clone()))
+                .function("place", game_api::place_function(view_cache, places))
                 .function("set_map_mode", game_api::set_map_mode_function(map_modes)),
             ),
         ),
