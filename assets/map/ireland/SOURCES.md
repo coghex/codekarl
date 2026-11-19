@@ -24,6 +24,8 @@ guesswork log).
 | `apply_edits.py` | applies `edits.toml` over the draft, in order, deterministically | |
 | `edits.applied` | records that the edits were applied to these images (the SHA-256 of `edits.toml`) | `apply_edits.py` |
 | `ireland_grid.py` | the world grid and tile arithmetic the scripts share | |
+| `import_waters.py` | `fetch`, `propose` and `build` for the rivers, loughs and tidal outlines (CK-348; see "Water import" below) | |
+| `waters.toml` | the hand-kept list of rivers and loughs the owner approves (slice 4; none is committed yet) | by hand |
 
 **The committed `elevation.png` is the elevation draft; `terrain.png` is that terrain draft plus edits r8 and the two CK-234 corrections.
 The five computed climate, glacier and fertility layers are generated after all edits, and `rivers.toml` is `derive_rivers.py`'s output
@@ -78,6 +80,104 @@ the authority for the grid.
 
 - **OpenStreetMap** geometry is not used: its licence (ODbL) is share-alike, and this directory reaches the public mirror. Rivers that
   Natural Earth lacks are placed by hand from a few anchors (below).
+
+## Water import (CK-348, slice 3 of the rivers design)
+
+`import_waters.py` turns the public river, lough and tidal surveys into drafts of Ireland's water data: a hand-kept list
+(`waters.toml`), a `rivers.toml` in the new network format built from it, a mask of the cells that become sea and lough
+(`water.png`), and a report (`waters-report.md`). **Nothing in the committed map data comes from it yet**: it changes none of
+`rivers.toml`, `terrain.png`, `edits.toml` or the computed layers. Slice 4 has the owner approve the river and lough lists, applies
+the mask with `apply_edits.py` and commits the result. The surveys are today's channels; only what `waters.toml` corrects is undone.
+
+### Commands
+
+From a checkout, with `numpy` and `Pillow` (`fetch` borrows `ireland_grid.download`, which needs numpy; the rules themselves need
+neither and are tested in the project's Python by `tests/test_map_waters.py`):
+
+```
+python3 assets/map/ireland/import_waters.py fetch   --source ../ireland-source [--force]
+python3 assets/map/ireland/import_waters.py propose --source ../ireland-source --out DIR [--map assets/map/ireland] [--force]
+python3 assets/map/ireland/import_waters.py build   --source ../ireland-source --waters DIR/waters.toml --out DIR \
+        [--locations assets/scenarios/ireland-768/locations.toml] [--map assets/map/ireland] [--force]
+```
+
+- `fetch` downloads the confirmed layers into the cache (not committed) and writes `waters-manifest.json`: each layer's address, the
+  day, the number of features and the SHA-256 of what was stored. Northern Ireland's two downloads are converted from Irish Grid
+  (EPSG:29902) to latitude and longitude as they are stored (the conversion agrees with the EPA's own reprojection to under a
+  centimetre on shared vertices, and to under a metre in median over the 812 lake outlines' centres). A layer whose licence is not
+  confirmed is not fetched, is named in the manifest and the report, and is a one-line switch in `LAYERS` (`confirmed=False`).
+- `propose` writes a first `waters.toml` by the rule the mock-ups used: Irish rivers with 15 km or more at stream order 5 and above,
+  each Northern Ireland water body with a segment of order 5 or above (named by hand: the survey has no names), tiers from the
+  drained area (1,200 km2 and 300 km2), the loughs a proposed river touches, every lough that overlaps a lake cell the map has today (as `redrawn`, however small the overlap), Lough Neagh
+  with `keep_existing` and the two island cells as `[[keep]]`, and the reservoirs "to be checked". It also lists the rivers a
+  proposed river ends at, so that the network reaches the sea, and marks each with why. A river it cannot build is marked "not built".
+- `build` reads `waters.toml`, the cache and the map directory's `map.toml`, `terrain.png` and `elevation.png`, and writes
+  `rivers.toml`, `water.png` and `waters-report.md` to `--out` (never to the map directory unless it is named). The same inputs
+  give the same bytes. `--locations` keeps each location's cell as it is and reports each location on or beside new water. The report
+  names the cells themselves (`column,row` from the crop's corner, the pixel of `water.png`): each estuary's new sea cells with the terrain they
+  were, the tidal cells left as river, the old sea cells cut off from the open sea, each lough's new cells, and the cells returned to land
+  with the terrain each takes.
+- `apply_edits.py` gains the region `{ mask = "water.png" }`: it covers the cells whose pixel is the key colour of the edit's
+  `paint`, for any terrain, so slice 4 applies the mask with one edit for the sea, one for the lake and one for each land terrain.
+  The image must be the crop's size and hold only black ("no change") and the terrain keys. Every other edit is unchanged.
+
+### `waters.toml`
+
+`[settings]` (`a`, `b`, `simplify_m`, `tier_steps`); `[[river]]` (`id`, `name`, `tier`, `source = { epa_names = [...], rwb_codes = [...] }`);
+`[[lough]]` (`name`, `source` = the survey's lake code, `mode` = `"added"` or `"redrawn"`, optional `keep_existing` with a `reason`);
+`[[keep]]` (`id`, `reason`, `point`); `[[reservoir]]` (`name`, `source`, `reason`); `[[correction]]` (`id`, `reason`, `confidence`,
+`river`, and one of `width_m` (one number or first and last) or `width_factor` (optionally for one `stretch`), `omit` (survey segment
+codes) or `course` with `replaces` (a hand-drawn course in their place)). Unknown keys are refused, naming the entry. A river with an
+empty name is refused: `rivers.toml` is built, not hand-edited, so D9's "corrected by hand" is done here, where a correction keeps its
+reason through a rebuild. A rebuild replaces `rivers.toml` whole.
+
+### Layers, licences and attribution (D8; each confirmed on the day read, 2026-11-16)
+
+Only a layer whose licence the publisher states is used. Both licences ask for attribution only (not share-alike).
+
+| Layer (cache file) | Address | Licence evidence | Attribution |
+|---|---|---|---|
+| Irish EPA river network routes (`epa-rivers`, stream order 4 and above and every line through a lough or tidal water) | WFS `EPA:WATER_RIVNETROUTES`, <https://gis.epa.ie/geoserver/EPA/ows> | the EPA's own catalogue record `c4043e19-38ec-4120-a588-8cd01ac94a9c` (linked from the WFS capabilities): "Data is for public use under Creative Commons CC-By 4.0", CC BY 4.0 | Contains Environmental Protection Agency (Ireland) data licensed under CC BY 4.0. |
+| Irish EPA lake water bodies (`epa-lakes`) | WFS `EPA:WFD_LAKEWATERBODIES_CYCLE3` | the EPA's record `00e92dc9-cb26-4858-889c-0b9b6ea9c9be`, same statement | as above |
+| Irish EPA transitional water bodies (`epa-tidal`) | WFS `EPA:WFD_TRANSITIONALWATERBODIES_CYCLE3` | the EPA's record `5b3cd1d5-b2d7-4210-a821-0f6231129d58`, same statement | as above |
+| DAERA Lakes of Northern Ireland (`ni-lakes`) | ArcGIS service `Lakes_of_Northern_Ireland`, <https://services-eu1.arcgis.com/kswen6BYexuc1SUk/arcgis/rest/services> | the publisher's ArcGIS item `5acc99bfd09e432a9db6d72272b96174` (owner DAERA_OpenContent) names this exact service and states the Open Government Licence v3.0 (found by ck-reviewer-1; a copy is kept with the CK-348 spec reviews, sha256 `26e341c2...`) | DAERA NIEA, contains OSNI information licensed under OGL v3.0. |
+| DAERA Northern Ireland River Segments (`ni-rivers`, stream order 4 and above) | download <https://www.daera-ni.gov.uk/sites/default/files/publications/doe/riversegmentgml.zip> (GML, Irish Grid), the 2010 edition | DAERA's own page <https://www.daera-ni.gov.uk/articles/wmu-spatial-datasets> links "Northern Ireland River Segments" to NIEA Water Management Unit's OpenDataNI record, whose licence is the UK Open Government Licence, and whose files are this download | Contains public sector information licensed under the Open Government Licence v3.0. Source: Northern Ireland Environment Agency Water Management Unit, DAERA. |
+| DAERA Northern Ireland Transitional Waters 2009-2015 (`ni-tidal`) | download <https://admin.opendatani.gov.uk/dataset/42e0d654-e973-4c45-83a4-c19c57b33a90/resource/3dbb9f72-79db-41ee-afd5-cb5b935914db/download/transitionalwaterbodiesgml.zip> (GML, Irish Grid), the 2017 file | DAERA's page above links "Northern Ireland Transitional Waters (2009 - 2015)" to the OpenDataNI record, licence UK Open Government Licence, whose files include this download | Contains public sector information licensed under the Open Government Licence v3.0. Source: Northern Ireland Environment Agency, DAERA. |
+
+The licence is OGL v3.0 (<https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/>) and CC BY 4.0
+(<https://creativecommons.org/licenses/by/4.0/>). **The ArcGIS services for DAERA's river segments (`RiverSegments`) and transitional
+waters (`TransitionalWaterBodiesNewURLs`, layer 1) are not used: their ArcGIS items carry no licence text.** The downloads are older
+editions than those services, so their features differ (decision of ck-manager, 2026-11-16): River Segments has 257
+water bodies at stream order 4 and above against 194 in the 2020 service (111 codes and 240 object ids in common), and Transitional
+Waters has 7 estuaries (Quoile, Conns Water, Foyle and Faughan, Bann, Lagan, Newry, Roe) against 6 in the service (the Foyle split
+into Upper Foyle and Foyle Harbour, the Roe absent). The owner approves the river and estuary lists in slice 4, where any difference
+that matters is corrected by hand. OpenStreetMap stays unused.
+
+### What it cannot do, and what to know
+
+- Northern Ireland's rivers have no names, so each is named by hand before `build` (a raw proposal is refused for its empty names).
+- Northern Ireland's river lines stop at the head of each estuary (a few to some twenty cells short of the sea); the tool joins the
+  last point to the nearest open sea with a straight run, and the report lists each such run. The same goes for a tidal line that ends
+  in water the map has as land (Cork harbour).
+- A cell becomes sea only if more than half of it is inside a tidal outline and it is joined to the open sea (the sea cells that touch
+  the crop's edge) through sea cells by their four neighbours. Narrow estuaries therefore stay river stretches.
+- The drained areas come from the 500 m elevation grid and are approximate, so a river can be proposed in the wrong tier; the owner's
+  list and the corrections settle it. `a = 2.3` and `b = 0.4` are starting values, to be fitted in slice 4.
+- `water.png` has one specified encoding, written by the tool itself (not Pillow): a 4-bit palette PNG (black, then the seven terrain
+  keys in the order sea, lake, pasture, forest, bog, marsh, mountain), filter 0 on every row and zlib *stored* blocks of up to 65,535
+  bytes. The bytes are therefore the same on every machine, whatever Pillow or zlib is installed (`tests/test_map_waters.py` checks
+  them against fixed bytes and decodes them with `zlib` only). It is about 0.36 MB.
+- `build` checks the whole river format (CK-347 format rules 2 and 3) on the final terrain, after thinning, rounding and
+  corrections, and refuses before it writes anything, naming each river and stretch at fault: a width not above 0 and at most
+  10,000 m, a join that is not exact, a sea end that is not in open sea, and the rest. A stretch is kind `"lough"` only where the
+  map has the lough under it (rule 7, r4): a stretch the survey marks as a lough line with no segment midpoint in a lake cell of the
+  terrain the mask will make is written as `"river"` (its ends and id unchanged, not merged with its neighbours), so the built file
+  holds no lough stretch that format rule 3 would refuse. The report lists each such line with its reason (four, spec r6): the survey gives it no
+  lake outline (no lake code, or a code matching no outline); its lake has an outline that is not in the list (with the outline's area, so the owner can add that lough in slice 4);
+  its lough is in the list and on the map, but no written segment midpoint of the stretch is in a lake cell (Upper Lough Erne's islands; the line may still touch a lake cell between midpoints, so the report does not say it crosses only land); or its lough is in the list,
+  but no cell of it is lake on the map, with the number of cells its outline covers (a listed outline smaller than half a cell makes no lake; a lough
+  is on the map when at least one cell its outline covers is a lake cell of the terrain the mask makes). A stretch whose segments carry several
+  lake codes lists each with its own reason. Lake codes and names are given wherever the survey has them (spec r6, rule 11).
 
 ## The derivation
 

@@ -795,6 +795,9 @@ UNITTEST_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     ("lints", ("test_rust_lints",)),
+    # CK-348: the Ireland water import tooling (`assets/map/ireland/import_waters.py`) in plain Python, selected by the map
+    # data and scripts it reads and by its own test module (UNITTEST_PATHS).
+    ("waters", ("test_map_waters",)),
     (
         "bootstrap",
         (
@@ -856,6 +859,7 @@ UNITTEST_DESCRIPTIONS = {
     "source scans of the crates (all Rust source directories, the native and Vulkan test files, the manifests).",
     "check": "Python tests of the check runner, its lint policy, the docs isolation and the process scan.",
     "lints": "The workspace lint configuration and the Rust suppression policy.",
+    "waters": "Python tests of the Ireland water import tooling: the list, the network, the widths, the cells and the mask.",
     "bootstrap": "Python tests of the bootstrap, the pipeline, the owner sign-off, the chat and the tools.",
     "lease": "Python tests of the checkout lease, gc, the records, the pipeline API, roll-outs and the guide.",
 }
@@ -906,6 +910,8 @@ UNITTEST_PATHS = {
     # its real bridge source: the crate's files and the toolchain files it builds with are its inputs.
     "bootstrap": PYTHON_PATHS,
     "lease": PYTHON_PATHS,
+    # CK-348: the tooling under `assets/map/` and its test module; the tests use no other tool or test file.
+    "waters": ("assets/map/", "tests/test_map_waters.py"),
 }
 
 # The groups the real-toolchain lease test runs (`check.py --group ...`): focus-free, real Cargo work.
