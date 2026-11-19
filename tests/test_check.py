@@ -405,11 +405,13 @@ class Levels(CheckFixture):
             by_name["economy.core"].commands(),
             [
                 ["cargo", "test", "-p", "ck-economy", *flags],
+                ["cargo", "test", "-p", "ck-characters", *flags],
                 ["cargo", "test", "-p", "ck-economy", "--doc", *flags],
             ],
         )
         self.assertEqual(
-            by_name["economy.core"].paths, ("crates/economy/", "assets/game/peoples.toml")
+            by_name["economy.core"].paths,
+            ("crates/economy/", "crates/characters/", "assets/game/peoples.toml"),
         )
         self.assertEqual(by_name["economy.core"].needs, "plain")
         self.assertEqual(

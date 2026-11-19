@@ -20,21 +20,23 @@ use std::{
 
 /// The simulation's fixed source files, by workspace-relative path: the dependency versions (the Lua `mlua` builds included),
 /// the toolchain, and the manifests of the two crates whose code can change a result.
-const SOURCE_FILES: [&str; 6] = [
+const SOURCE_FILES: [&str; 7] = [
     "Cargo.lock",
     "rust-toolchain.toml",
     "crates/sim/Cargo.toml",
     "crates/lua/Cargo.toml",
     "crates/economy/Cargo.toml",
+    "crates/characters/Cargo.toml",
     "crates/map/Cargo.toml",
 ];
 
 /// The source directories: every `.rs` file under each is part of the set. `apps/codekarl/src/game/` holds all of the
 /// application's simulation code, and test files in these directories count too, which errs on the safe side.
-const SOURCE_DIRECTORIES: [&str; 5] = [
+const SOURCE_DIRECTORIES: [&str; 6] = [
     "crates/sim/src",
     "crates/lua/src",
     "crates/economy/src",
+    "crates/characters/src",
     "crates/map/src",
     "apps/codekarl/src/game",
 ];

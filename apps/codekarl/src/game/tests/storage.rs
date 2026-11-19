@@ -551,7 +551,10 @@ fn same_build_saves_and_digests_ignore_derived_daily_market_orders() {
         Simulation::<crate::game::GameState, crate::game::GameCommand>::new(
             start(),
             42,
-            crate::game::GameState { economy },
+            crate::game::GameState {
+                economy,
+                characters: ck_characters::CharacterStore::default(),
+            },
             Scheduler::new(),
             crate::game::apply,
         )
@@ -869,7 +872,7 @@ fn unsupported_saves_are_delete_only_and_file_arguments_cannot_escape_the_saves_
         })
         .collect::<Vec<_>>()
         .join("\n")
-        .replace("format = 2", "format = 1")
+        .replace("format = 3", "format = 1")
         .replace("build = \"test-build\"", "build = \"previous-build\"");
     let mut old = bytes[..12].to_vec();
     old[8..12].copy_from_slice(&u32::try_from(old_header.len()).unwrap().to_le_bytes());
@@ -944,7 +947,7 @@ fn install_catalog_header_fixtures(harness: &mut Harness) {
         harness.saves.join("future.cksave"),
         with_header(&format!(
             "{}future_key = true\n",
-            header.replace("format = 2", "format = 8")
+            header.replace("format = 3", "format = 8")
         )),
     )
     .unwrap();
@@ -1089,4 +1092,187 @@ fn directories_and_symlinks_are_not_saves_and_calls_never_follow_them() {
         }
     }
     assert_eq!(fs::read(outside).unwrap(), b"outside remains unchanged");
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The full round trip checks live, archive, logs and digest together."
+)]
+fn character_archive_logs_and_live_state_survive_streamed_save() {
+    use crate::game::{GameCommand, GameState, apply, character_storage::Storage};
+    use ck_characters::{Archive, ArchiveSink, LifeLog, PopLocator, Sex};
+    let directory = crate::testing::Dir::new();
+    let storage = Storage::empty(&directory.0).unwrap();
+    let mut state = GameState::default();
+    state.economy.places.push(ck_economy::PlaceState {
+        id: "p".into(),
+        coastal: false,
+        pops: vec![ck_economy::PopState {
+            kind: "peasant".into(),
+            culture: "c".into(),
+            religion: "r".into(),
+            literacy_pm: 0,
+            workers: 4,
+            dependents: 0,
+            employment: Vec::new(),
+            stock: Vec::new(),
+            consumption: ck_economy::PopConsumption::default(),
+            counters: ck_economy::CounterBuckets::default(),
+        }],
+        buildings: Vec::new(),
+        prices_milli: Vec::new(),
+        prepared_m2: 0,
+        development_pm: 0,
+        price_drift_carries: Vec::new(),
+        last_market_orders: None,
+        counters: ck_economy::CounterBuckets::default(),
+    });
+    let pop = PopLocator {
+        place: "p".into(),
+        slot: 0,
+    };
+    let alive = state
+        .characters
+        .create(
+            "alive".into(),
+            Sex::Female,
+            start(),
+            pop.clone(),
+            &state.economy,
+        )
+        .unwrap();
+    let dead = state
+        .characters
+        .create(
+            "dead".into(),
+            Sex::Male,
+            start(),
+            pop.clone(),
+            &state.economy,
+        )
+        .unwrap();
+    let mut archive = Archive::open(storage.path.join("ARCH")).unwrap();
+    state.characters.die(dead, start(), &mut archive).unwrap();
+    let mut logs = LifeLog::open(storage.path.join("LOGS")).unwrap();
+    state
+        .characters
+        .log(&archive, &mut logs, dead, start(), "a life")
+        .unwrap();
+    let simulation = Simulation::<GameState, GameCommand>::new(
+        start(),
+        42,
+        state.clone(),
+        Scheduler::new(),
+        apply,
+    );
+    let save = simulation.save(identity("ab").meta(42));
+    let mut a = fs::File::open(storage.path.join("ARCH")).unwrap();
+    let mut l = fs::File::open(storage.path.join("LOGS")).unwrap();
+    let (archive_length, log_length) = (a.metadata().unwrap().len(), l.metadata().unwrap().len());
+    let mut bytes = Vec::new();
+    save.write_with_sections(
+        &mut bytes,
+        &mut [
+            (*b"ARCH", archive_length, &mut a),
+            (*b"LOGS", log_length, &mut l),
+        ],
+    )
+    .unwrap();
+    for (tag, source) in [
+        ("ARCH", storage.path.join("ARCH")),
+        ("LOGS", storage.path.join("LOGS")),
+    ] {
+        let payload = fs::read(source).unwrap();
+        let position = bytes
+            .windows(payload.len())
+            .position(|window| window == payload)
+            .unwrap();
+        for truncated in [false, true] {
+            let mut damaged = bytes.clone();
+            if truncated {
+                damaged.truncate(position + payload.len() / 2);
+            } else {
+                damaged[position] ^= 1;
+            }
+            let failed_stage = Storage::fresh_path(&directory.0).unwrap();
+            let error = ck_sim::Save::<GameState>::read_with_sections(
+                &mut std::io::Cursor::new(damaged),
+                &identity("ab").expected(),
+                &failed_stage,
+                &[*b"ARCH", *b"LOGS"],
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(tag), "{error}");
+            assert!(!failed_stage.exists());
+            assert_eq!(archive.get(dead).unwrap().unwrap().name, "dead");
+            assert_eq!(logs.read(dead).unwrap()[0].text, "a life");
+        }
+    }
+    let staging = Storage::fresh_path(&directory.0).unwrap();
+    let (loaded, _) = ck_sim::Save::<GameState>::read_with_sections(
+        &mut std::io::Cursor::new(&bytes),
+        &identity("ab").expected(),
+        &staging,
+        &[*b"ARCH", *b"LOGS"],
+    )
+    .unwrap();
+    let staged = Storage { path: staging };
+    Storage::validate(&staged.path, &loaded.state).unwrap();
+    assert_eq!(loaded.state, state);
+    let restored_archive = Archive::open(staged.path.join("ARCH")).unwrap();
+    assert_eq!(
+        loaded
+            .state
+            .characters
+            .lookup(dead, &restored_archive)
+            .unwrap()
+            .unwrap()
+            .name,
+        "dead"
+    );
+    assert_eq!(
+        LifeLog::open(staged.path.join("LOGS"))
+            .unwrap()
+            .read(dead)
+            .unwrap()[0]
+            .text,
+        "a life"
+    );
+    let mut loaded_state = loaded.state.clone();
+    assert_eq!(
+        loaded_state
+            .characters
+            .create(
+                "next".into(),
+                Sex::Male,
+                start(),
+                pop,
+                &loaded_state.economy
+            )
+            .unwrap(),
+        3
+    );
+    assert!(loaded_state.characters.get(alive).is_some());
+    let digest = |path: &Path| {
+        let mut f = fs::File::open(path).unwrap();
+        let len = f.metadata().unwrap().len();
+        save.digest_with_section(*b"ARCH", len, &mut f).unwrap()
+    };
+    assert_eq!(
+        digest(&storage.path.join("ARCH")),
+        digest(&staged.path.join("ARCH"))
+    );
+    let other_path = directory.0.join("other-archive");
+    let mut other = Archive::open(&other_path).unwrap();
+    let mut changed = archive.get(dead).unwrap().unwrap();
+    changed.name = "another dead name".into();
+    other.append(&changed).unwrap();
+    assert_ne!(digest(&storage.path.join("ARCH")), digest(&other_path));
+    let before = digest(&storage.path.join("ARCH"));
+    state
+        .characters
+        .log(&archive, &mut logs, dead, start(), "another line")
+        .unwrap();
+    assert_eq!(before, digest(&storage.path.join("ARCH")));
 }

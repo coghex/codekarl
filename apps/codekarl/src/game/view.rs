@@ -1150,6 +1150,7 @@ mod tests {
             build(Some(&rules), &game.economy, &view_ids, date)
         });
         let game_state = crate::game::GameState {
+            characters: ck_characters::CharacterStore::default(),
             economy: state.clone(),
         };
         let time = GameTime::from_date(start).expect("the save date is valid");

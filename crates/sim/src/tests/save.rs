@@ -126,7 +126,7 @@ fn the_file_starts_with_the_magic_and_ends_with_the_end_tag_and_a_checksum_of_ev
 fn the_header_is_toml_with_the_documented_keys() {
     let header = take_apart(&valid_bytes()).header;
     let table: toml::Table = header.parse().unwrap();
-    assert_eq!(table["format"].as_integer(), Some(2));
+    assert_eq!(table["format"].as_integer(), Some(3));
     assert_eq!(table["name"].as_str(), Some("test save"));
     assert_eq!(table["written"].as_str(), Some("2026-11-13T12:34:56Z"));
     assert_eq!(table["date"].as_str(), Some("7 Feb 768"));
@@ -150,7 +150,7 @@ fn the_header_is_toml_with_the_documented_keys() {
 #[test]
 fn the_format_two_header_carries_name_written_time_and_the_game_date() {
     let table: toml::Table = take_apart(&valid_bytes()).header.parse().unwrap();
-    assert_eq!(table["format"].as_integer(), Some(2));
+    assert_eq!(table["format"].as_integer(), Some(3));
     assert_eq!(table["name"].as_str(), Some("test save"));
     assert_eq!(table["written"].as_str(), Some("2026-11-13T12:34:56Z"));
     assert_eq!(table["date"].as_str(), Some("7 Feb 768"));
@@ -193,7 +193,7 @@ fn a_header_probe_reads_only_the_bounded_prefix_and_keeps_later_format_fields() 
     let bytes = with_header(|header| {
         format!(
             "{}future_flag = true\n",
-            header.replace("format = 2", "format = 9")
+            header.replace("format = 3", "format = 9")
         )
     });
     let mut reader = std::io::Cursor::new(bytes.clone());
@@ -346,7 +346,7 @@ fn bad_magic_is_refused() {
 
 #[test]
 fn an_unknown_format_is_refused() {
-    let bytes = with_header(|header| header.replace("format = 2", "format = 99"));
+    let bytes = with_header(|header| header.replace("format = 3", "format = 99"));
     assert_eq!(load(&bytes), Err(SaveError::UnknownFormat { found: 99 }));
 }
 
@@ -735,4 +735,90 @@ fn a_journal_record_keeps_the_issuer_and_the_exact_command_bytes() {
         record.bytes,
         crate::Canonical::to_bytes(&Order::Set("a".to_owned(), 1)).unwrap()
     );
+}
+
+#[test]
+fn external_sections_stream_and_refuse_corruption() {
+    use std::io::Cursor;
+    let save = valid_save();
+    let payload = b"archive data";
+    let mut bytes = Vec::new();
+    save.write_with_sections(
+        &mut bytes,
+        &mut [(
+            *b"ARCH",
+            payload.len() as u64,
+            &mut Cursor::new(payload) as &mut dyn std::io::Read,
+        )],
+    )
+    .expect("write");
+    let path = std::env::temp_dir().join(format!("ck-sim-sections-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    let (loaded, files) = Save::<World>::read_with_sections(
+        &mut Cursor::new(&bytes),
+        &expected(),
+        &path,
+        &[*b"ARCH"],
+    )
+    .expect("read");
+    assert_eq!(loaded, save);
+    assert_eq!(std::fs::read(&files[0]).expect("section"), payload);
+    std::fs::remove_dir_all(&path).expect("cleanup");
+    let position = bytes
+        .windows(payload.len())
+        .position(|w| w == payload)
+        .expect("payload");
+    bytes[position] ^= 1;
+    assert!(
+        Save::<World>::read_with_sections(
+            &mut Cursor::new(&bytes),
+            &expected(),
+            &path,
+            &[*b"ARCH"]
+        )
+        .is_err()
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn streamed_loader_refuses_an_old_format_before_external_sections() {
+    use std::io::Cursor;
+    let mut bytes = valid_save().to_bytes().unwrap();
+    let old = b"format = 3";
+    let position = bytes
+        .windows(old.len())
+        .position(|part| part == old)
+        .unwrap();
+    bytes[position + old.len() - 1] = b'2';
+    let path = std::env::temp_dir().join(format!("ck-old-format-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    let error =
+        Save::<World>::read_with_sections(&mut Cursor::new(bytes), &expected(), &path, &[*b"ARCH"])
+            .unwrap_err();
+    assert!(error.to_string().contains("format 2"), "{error}");
+    assert!(!path.exists());
+}
+
+#[test]
+fn huge_core_section_length_is_refused_and_staging_is_removed() {
+    use std::io::Cursor;
+    let mut bytes = Vec::new();
+    valid_save()
+        .write_with_sections(&mut bytes, &mut [(*b"ARCH", 0, &mut std::io::empty())])
+        .unwrap();
+    let header_len = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let clock = 12 + header_len;
+    assert_eq!(&bytes[clock..clock + 4], b"CLCK");
+    bytes[clock + 11] = 1;
+    let stage = std::env::temp_dir().join(format!("ck-corrupt-core-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stage);
+    let result = Save::<World>::read_with_sections(
+        &mut Cursor::new(bytes),
+        &expected(),
+        &stage,
+        &[*b"ARCH"],
+    );
+    assert!(result.is_err());
+    assert!(!stage.exists());
 }

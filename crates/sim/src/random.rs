@@ -34,6 +34,10 @@ impl Fnv1a {
         Self(FNV_OFFSET_BASIS)
     }
 
+    pub(crate) const fn from_value(value: u64) -> Self {
+        Self(value)
+    }
+
     pub(crate) fn update(&mut self, bytes: &[u8]) {
         for byte in bytes {
             self.0 ^= u64::from(*byte);

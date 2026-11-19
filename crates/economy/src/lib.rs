@@ -3688,7 +3688,7 @@ pub struct PlaceState {
     pub id: String,
     /// Whether the location's catchment includes sea, which enables its authored fish diet share.
     pub coastal: bool,
-    /// Pops in authored order.
+    /// Pop slots are append-only: existing indices never move or disappear.
     pub pops: Vec<PopState>,
     /// Buildings in authored order.
     pub buildings: Vec<BuildingState>,
@@ -6009,6 +6009,29 @@ pub fn run_daily_economy_with_context(
     shelter_by_place: &BTreeMap<String, u64>,
     nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
 ) -> Result<ProductionLedger, DataError> {
+    run_daily_economy_with_floors(
+        rules,
+        state,
+        date,
+        quality_by_place,
+        shelter_by_place,
+        nearby_by_place,
+        &BTreeMap::new(),
+    )
+}
+
+/// Daily economy with live-character floors by place and stable pop slot.
+/// # Errors
+/// Returns the first data error without changing the economy.
+pub fn run_daily_economy_with_floors(
+    rules: &Rules,
+    state: &mut EconomyState,
+    date: Date,
+    quality_by_place: &BTreeMap<String, u16>,
+    shelter_by_place: &BTreeMap<String, u64>,
+    nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
+    floors: &BTreeMap<(String, usize), u64>,
+) -> Result<ProductionLedger, DataError> {
     let mut next = state.clone();
     update_daily_prices(rules, &mut next)?;
     let mut ledger = run_monthly_production_with_quality(rules, &mut next, date, quality_by_place)?;
@@ -6016,12 +6039,13 @@ pub fn run_daily_economy_with_context(
     ledger.intake_pm = intake_pm;
     ledger.daily_consumption = Some(daily_consumption);
     if date.day == 1 {
-        ledger.movement_by_pop = run_monthly_demography(
+        ledger.movement_by_pop = run_monthly_demography_with_floors(
             rules,
             &mut next,
             shelter_by_place,
             nearby_by_place,
             Some((usize::from(date.month - 1), date.year, &mut ledger)),
+            floors,
         )?;
         // Intake is measured before the month's demographic pass. A recruited pop did not
         // exist during that day's consumption, so keep the ledger aligned with the new state
@@ -6901,15 +6925,25 @@ fn move_recruits(
     ))
 }
 
+#[cfg(test)]
+fn move_open_positions(
+    rules: &Rules,
+    places: &mut [PlaceState],
+    nearby: &BTreeMap<String, Vec<NearbyPlace>>,
+    allowance: &[Vec<[u64; 2]>],
+) -> Result<Vec<Vec<u64>>, DataError> {
+    move_open_positions_with_floors(rules, places, nearby, allowance, &BTreeMap::new())
+}
 #[expect(
     clippy::too_many_lines,
     reason = "Destination, monk-first, local-first, then nearest-neighbour ordering is the recruitment rule and stays explicit here."
 )]
-fn move_open_positions(
+fn move_open_positions_with_floors(
     rules: &Rules,
     places: &mut [PlaceState],
     nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
     movement_allowance: &[Vec<[u64; 2]>],
+    floors: &BTreeMap<(String, usize), u64>,
 ) -> Result<Vec<Vec<u64>>, DataError> {
     let mut movement_by_pop = places
         .iter()
@@ -7012,6 +7046,26 @@ fn move_open_positions(
                         if count == 0 {
                             continue;
                         }
+                        let source = &places[destination_place].pops[source_pop];
+                        let same_pop = source.kind == position_kind;
+                        let floor = floors
+                            .get(&(places[destination_place].id.clone(), source_pop))
+                            .copied()
+                            .unwrap_or(0);
+                        let removable = source
+                            .workers
+                            .saturating_add(source.dependents)
+                            .saturating_sub(floor);
+                        let count = if same_pop {
+                            count
+                        } else if position_kind == "monk" {
+                            count.min(removable)
+                        } else {
+                            recruitable(count, source.workers, source.dependents, removable)
+                        };
+                        if count == 0 {
+                            continue;
+                        }
                         let (moved_people, destination_pop) = move_recruits(
                             rules,
                             places,
@@ -7074,6 +7128,27 @@ fn move_open_positions(
                         if count == 0 {
                             continue;
                         }
+                        let source = &places[source_place].pops[source_pop];
+                        let same_pop =
+                            source_place == destination_place && source.kind == position_kind;
+                        let floor = floors
+                            .get(&(places[source_place].id.clone(), source_pop))
+                            .copied()
+                            .unwrap_or(0);
+                        let removable = source
+                            .workers
+                            .saturating_add(source.dependents)
+                            .saturating_sub(floor);
+                        let count = if same_pop {
+                            count
+                        } else if position_kind == "monk" {
+                            count.min(removable)
+                        } else {
+                            recruitable(count, source.workers, source.dependents, removable)
+                        };
+                        if count == 0 {
+                            continue;
+                        }
                         let (moved_people, destination_pop) = move_recruits(
                             rules,
                             places,
@@ -7109,16 +7184,27 @@ fn move_open_positions(
     Ok(movement_by_pop)
 }
 
+#[cfg(test)]
+fn run_monthly_demography(
+    rules: &Rules,
+    state: &mut EconomyState,
+    shelter: &BTreeMap<String, u64>,
+    nearby: &BTreeMap<String, Vec<NearbyPlace>>,
+    fee: Option<(usize, u16, &mut ProductionLedger)>,
+) -> Result<Vec<Vec<u64>>, DataError> {
+    run_monthly_demography_with_floors(rules, state, shelter, nearby, fee, &BTreeMap::new())
+}
 #[expect(
     clippy::too_many_lines,
     reason = "The phase order is housing snapshot, births/deaths, dependent drift, hiring, then movement; keeping it together protects the monthly contract."
 )]
-fn run_monthly_demography(
+fn run_monthly_demography_with_floors(
     rules: &Rules,
     state: &mut EconomyState,
     shelter_by_place: &BTreeMap<String, u64>,
     nearby_by_place: &BTreeMap<String, Vec<NearbyPlace>>,
     fee_context: Option<(usize, u16, &mut ProductionLedger)>,
+    floors: &BTreeMap<(String, usize), u64>,
 ) -> Result<Vec<Vec<u64>>, DataError> {
     let mut movement_allowance = Vec::with_capacity(state.places.len());
     for place in &mut state.places {
@@ -7231,6 +7317,16 @@ fn run_monthly_demography(
                 "demography.dependent_deaths",
             )?
             .min(pop.dependents);
+            let floor = floors
+                .get(&(place.id.clone(), pop_index))
+                .copied()
+                .unwrap_or(0);
+            let removable = pop
+                .workers
+                .saturating_add(pop.dependents)
+                .saturating_sub(floor);
+            let (worker_deaths, dependent_deaths) =
+                clip_deaths(worker_deaths, dependent_deaths, removable);
             pop.workers -= worker_deaths;
             pop.dependents -= dependent_deaths;
             let deaths = worker_deaths.checked_add(dependent_deaths).ok_or_else(|| {
@@ -7269,11 +7365,12 @@ fn run_monthly_demography(
         release_excess_employment(place)?;
         movement_allowance.push(fill_monthly_hiring(rules, place)?);
     }
-    let movement_by_pop = move_open_positions(
+    let movement_by_pop = move_open_positions_with_floors(
         rules,
         &mut state.places,
         nearby_by_place,
         &movement_allowance,
+        floors,
     )?;
     if let Some((month_index, year, ledger)) = fee_context {
         charge_storehouse_fees(rules, state, month_index, year, ledger)?;
@@ -9912,6 +10009,63 @@ mod tests {
                 assert_eq!(error.file, "fixture/scenario.toml");
             }
         }
+    }
+
+    #[test]
+    fn matching_start_cohorts_keep_distinct_slots_and_floors() {
+        let mut rules = tiny_rules();
+        if !rules.religions.iter().any(|r| r == "irish_paganism") {
+            rules.religions.push("irish_paganism".into());
+        }
+        rules.pop_types[0].births_pm_year = 0;
+        let mut data = tiny_start_data();
+        let place = data.places.get_mut("fort").unwrap();
+        place.religion = Some("irish_paganism".into());
+        place.pagan_share_pm = Some(250);
+        let location = StartLocation {
+            id: "fort".into(),
+            kind: "ringfort".into(),
+            size: 1,
+            land: LandCounts {
+                land_cells: BTreeMap::from([("pasture".into(), 8)]),
+                fertility_pm: BTreeMap::from([("pasture".into(), 8000)]),
+                fertile_cells: 8,
+                fertile_cells_by_terrain: BTreeMap::new(),
+                sea: 0,
+            },
+        };
+        let (mut state, _) = starting_state(&rules, &data, &[location], 10).unwrap();
+        rules.pop_types[0].worker_deaths_pm_year = 12_000;
+        rules.pop_types[0].dependent_deaths_pm_year = 12_000;
+        let p = &state.places[0].pops;
+        assert_eq!(p.len(), 2);
+        assert_eq!(
+            (
+                p[0].workers + p[0].dependents,
+                p[1].workers + p[1].dependents
+            ),
+            (15, 5)
+        );
+        assert_eq!(
+            (&p[0].kind, &p[0].culture, &p[0].religion),
+            (&p[1].kind, &p[1].culture, &p[1].religion)
+        );
+        let floors = BTreeMap::from([(("fort".to_owned(), 1), 5)]);
+        run_monthly_demography_with_floors(
+            &rules,
+            &mut state,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &floors,
+        )
+        .unwrap();
+        assert_eq!(
+            state.places[0].pops[1].workers + state.places[0].pops[1].dependents,
+            5
+        );
+        let decoded = EconomyState::from_bytes(&state.to_bytes().unwrap()).unwrap();
+        assert_eq!(decoded.places[0].pops[1], state.places[0].pops[1]);
     }
 
     #[test]
@@ -14215,6 +14369,55 @@ mod tests {
     }
 
     #[test]
+    fn character_floor_clips_mortality_and_books_only_actual_deaths() {
+        let mut rules = tiny_rules();
+        rules.pop_types[0].births_pm_year = 0;
+        rules.pop_types[0].worker_deaths_pm_year = 12_000;
+        rules.pop_types[0].dependent_deaths_pm_year = 12_000;
+        let pop = PopState {
+            kind: "peasant".into(),
+            culture: "connachta".into(),
+            religion: "christianity".into(),
+            literacy_pm: 0,
+            workers: 4,
+            dependents: 3,
+            employment: Vec::new(),
+            stock: vec![0],
+            consumption: PopConsumption::default(),
+            counters: CounterBuckets::default(),
+        };
+        let place = PlaceState {
+            id: "floor".into(),
+            coastal: false,
+            pops: vec![pop],
+            buildings: Vec::new(),
+            prices_milli: vec![1000],
+            prepared_m2: 0,
+            development_pm: 1000,
+            price_drift_carries: Vec::new(),
+            last_market_orders: None,
+            counters: CounterBuckets::default(),
+        };
+        let mut state = EconomyState {
+            places: vec![place],
+        };
+        let floors = BTreeMap::from([(("floor".to_owned(), 0), 3)]);
+        run_monthly_demography_with_floors(
+            &rules,
+            &mut state,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &floors,
+        )
+        .unwrap();
+        let place = &state.places[0];
+        assert_eq!(place.pops[0].workers + place.pops[0].dependents, 3);
+        assert_eq!(place.pops[0].counters.current.deaths, 4);
+        assert_eq!(place.counters.current.deaths, 4);
+    }
+
+    #[test]
     fn monthly_death_pins_a_1_62_rate_on_a_one_person_pool() {
         let mut rules = tiny_rules();
         rules.pop_types[0].births_pm_year = 0;
@@ -14929,6 +15132,119 @@ mod tests {
     }
 
     #[test]
+    fn character_floor_clips_recruitment_before_job_and_stock_accounting() {
+        let (rules, mut place) = holdings_movement_fixture();
+        place.pops.truncate(1);
+        place.buildings[0].employment.truncate(1);
+        place.pops[0].workers = 2;
+        place.pops[0].dependents = 2;
+        place.pops[0].stock[0] = 4;
+        let mut places = vec![place];
+        let floors = BTreeMap::from([(("holdings-fixture".to_owned(), 0), 2)]);
+        let moved = move_open_positions_with_floors(
+            &rules,
+            &mut places,
+            &BTreeMap::new(),
+            &[vec![[0, 2]]],
+            &floors,
+        )
+        .unwrap();
+        assert_eq!(
+            (places[0].pops[0].workers, places[0].pops[0].dependents),
+            (1, 1)
+        );
+        let recruit = places[0]
+            .pops
+            .iter()
+            .find(|p| p.kind == "labourer")
+            .unwrap();
+        assert_eq!(
+            (recruit.workers, recruit.dependents, recruit.stock[0]),
+            (1, 1, 2)
+        );
+        assert_eq!(recruit.employment[0].workers, 1);
+        assert_eq!(moved[0].iter().sum::<u64>(), 2);
+    }
+
+    #[test]
+    fn monk_recruitment_clips_head_count_before_employment() {
+        let (rules, mut place) = holdings_movement_fixture();
+        place.pops.truncate(1);
+        place.buildings[0].employment.truncate(1);
+        place.pops[0].workers = 2;
+        place.pops[0].dependents = 2;
+        place.pops[0].stock[0] = 4;
+        let floors = BTreeMap::from([((place.id.clone(), 0), 3)]);
+        let mut places = vec![place];
+        let moved = move_open_positions_with_floors(
+            &rules,
+            &mut places,
+            &BTreeMap::new(),
+            &[vec![[4, 0]]],
+            &floors,
+        )
+        .unwrap();
+        assert_eq!(places[0].pops[0].workers + places[0].pops[0].dependents, 3);
+        let monk = places[0].pops.iter().find(|p| p.kind == "monk").unwrap();
+        assert_eq!(
+            (
+                monk.workers,
+                monk.dependents,
+                monk.stock[0],
+                monk.employment[0].workers
+            ),
+            (1, 0, 1, 1)
+        );
+        assert_eq!(moved[0].iter().sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn neighbour_recruitment_respects_the_source_floor() {
+        let (rules, mut source) = holdings_movement_fixture();
+        source.id = "source".into();
+        source.pops.truncate(1);
+        source.buildings[0].employment.truncate(1);
+        source.pops[0].workers = 2;
+        source.pops[0].dependents = 2;
+        source.pops[0].stock[0] = 4;
+        let mut destination = source.clone();
+        destination.id = "destination".into();
+        destination.pops.clear();
+        destination.buildings[0].employment.clear();
+        let nearby = BTreeMap::from([(
+            "destination".into(),
+            vec![NearbyPlace {
+                id: "source".into(),
+                distance_m: 1,
+            }],
+        )]);
+        let floors = BTreeMap::from([(("source".to_owned(), 0), 2)]);
+        let mut places = vec![destination, source];
+        let movement = move_open_positions_with_floors(
+            &rules,
+            &mut places,
+            &nearby,
+            &[vec![[0, 2]], Vec::new()],
+            &floors,
+        )
+        .unwrap();
+        assert_eq!(places[1].pops[0].workers + places[1].pops[0].dependents, 2);
+        assert_eq!(places[0].pops[0].workers, 1);
+        assert_eq!(places[0].pops[0].dependents, 1);
+        assert_eq!(places[0].pops[0].stock[0], 2);
+        assert_eq!(movement[0][0], 2);
+    }
+
+    #[test]
+    fn new_pop_slots_do_not_change_existing_indices() {
+        let (_, mut place) = holdings_movement_fixture();
+        let before = place.pops.clone();
+        let index = ensure_pop(&mut place, "new-kind", "new-culture", "new-religion");
+        assert_eq!(index, before.len());
+        assert_eq!(&place.pops[..before.len()], &before);
+    }
+
+    #[test]
     fn refused_cross_place_recruitment_rolls_back_both_places() {
         let (rules, source) = holdings_movement_fixture();
         let mut destination = source.clone();
@@ -14944,4 +15260,42 @@ mod tests {
             "a refusal cannot partially commit either place"
         );
     }
+}
+
+#[cfg(test)]
+mod character_floor_tests {
+    #[test]
+    fn mixed_recruitment_clips_workers_before_accounting() {
+        assert_eq!(super::recruitable(2, 2, 2, 2), 1);
+        assert_eq!(super::recruitable(2, 2, 2, 0), 0);
+        assert_eq!(super::recruitable(2, 2, 2, 4), 2);
+    }
+    #[test]
+    fn mortality_prioritises_workers() {
+        assert_eq!(super::clip_deaths(4, 3, 5), (4, 1));
+        assert_eq!(super::clip_deaths(4, 3, 2), (2, 0));
+    }
+}
+
+fn recruitable(requested: u64, workers: u64, dependents: u64, removable: u64) -> u64 {
+    if workers == 0 {
+        return 0;
+    }
+    let mut low = 0_u64;
+    let mut high = requested.min(workers);
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        let heads =
+            u128::from(mid) + u128::from(mid) * u128::from(dependents) / u128::from(workers);
+        if heads <= u128::from(removable) {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    low
+}
+fn clip_deaths(workers: u64, dependents: u64, removable: u64) -> (u64, u64) {
+    let workers = workers.min(removable);
+    (workers, dependents.min(removable - workers))
 }

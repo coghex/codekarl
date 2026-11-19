@@ -24,7 +24,7 @@ use crate::{
 };
 
 const MAGIC: [u8; 8] = *b"CKSAVE\x00\x01";
-const FORMAT: i64 = 2;
+const FORMAT: i64 = 3;
 const CLOCK: [u8; 4] = *b"CLCK";
 const STATE: [u8; 4] = *b"STAT";
 const PENDING: [u8; 4] = *b"PEND";
@@ -762,4 +762,254 @@ fn order_sections<'a>(sections: &[([u8; 4], &'a [u8])]) -> Result<[&'a [u8]; 4],
         ordered[index] = payload;
     }
     Ok(ordered)
+}
+
+pub(crate) fn digest_section(
+    base: u64,
+    tag: [u8; 4],
+    length: u64,
+    reader: &mut impl std::io::Read,
+) -> std::io::Result<u64> {
+    let mut hash = Fnv1a::from_value(base);
+    hash.update(&tag);
+    hash.update(&length.to_le_bytes());
+    let mut section = Fnv1a::new();
+    let mut left = length;
+    let mut buffer = [0_u8; 16384];
+    while left > 0 {
+        let count =
+            usize::try_from(left.min(buffer.len() as u64)).map_err(std::io::Error::other)?;
+        reader.read_exact(&mut buffer[..count])?;
+        hash.update(&buffer[..count]);
+        section.update(&buffer[..count]);
+        left -= count as u64;
+    }
+    hash.update(&section.finish().to_le_bytes());
+    Ok(hash.finish())
+}
+
+impl<S: Canonical> Save<S> {
+    /// Digest the simulation and one length-known canonical external section.
+    /// # Errors
+    /// Returns an error on encoding failure or a short external reader.
+    pub fn digest_with_section(
+        &self,
+        tag: [u8; 4],
+        length: u64,
+        reader: &mut impl std::io::Read,
+    ) -> std::io::Result<u64> {
+        digest_section(
+            self.digest().map_err(std::io::Error::other)?,
+            tag,
+            length,
+            reader,
+        )
+    }
+
+    /// Stream length-known named sections after the normal state sections.
+    /// # Errors
+    /// Returns an I/O error, including a short section or failure to encode the save.
+    pub fn write_with_sections(
+        &self,
+        output: &mut impl std::io::Write,
+        sections: &mut [([u8; 4], u64, &mut dyn std::io::Read)],
+    ) -> std::io::Result<()> {
+        use std::io::{Error, ErrorKind};
+        let core = self.to_bytes().map_err(Error::other)?;
+        let core = &core[..core.len() - 12];
+        let mut total = Fnv1a::new();
+        total.update(core);
+        output.write_all(core)?;
+        let mut seen = std::collections::BTreeSet::new();
+        for (tag, length, reader) in sections {
+            if *tag == END || SECTION_ORDER.contains(tag) || !seen.insert(*tag) {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "duplicate or reserved section",
+                ));
+            }
+            let header = [tag.as_slice(), &length.to_le_bytes()].concat();
+            output.write_all(&header)?;
+            total.update(&header);
+            let mut hash = Fnv1a::new();
+            let mut left = *length;
+            let mut buffer = [0_u8; 16384];
+            while left > 0 {
+                let count = usize::try_from(left.min(buffer.len() as u64)).map_err(Error::other)?;
+                reader.read_exact(&mut buffer[..count])?;
+                output.write_all(&buffer[..count])?;
+                hash.update(&buffer[..count]);
+                total.update(&buffer[..count]);
+                left -= count as u64;
+            }
+            let checksum = hash.finish().to_le_bytes();
+            output.write_all(&checksum)?;
+            total.update(&checksum);
+        }
+        output.write_all(&END)?;
+        output.write_all(&total.finish().to_le_bytes())
+    }
+
+    /// Read external sections into a newly created staging directory, removing it on any failure.
+    /// # Errors
+    /// Returns an I/O error naming a corrupt or truncated section, or an invalid save.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The staged read must validate every frame before publishing any section."
+    )]
+    pub fn read_with_sections(
+        input: &mut impl std::io::Read,
+        expected: &Expected,
+        staging: &std::path::Path,
+        tags: &[[u8; 4]],
+    ) -> std::io::Result<(Self, Vec<std::path::PathBuf>)> {
+        use std::io::{Error, ErrorKind, Write};
+        std::fs::create_dir(staging)?;
+        let result = (|| {
+            let mut total = Fnv1a::new();
+            let mut core = Vec::new();
+            let mut prefix = [0_u8; 12];
+            let mut magic = [0_u8; 8];
+            let mut have = 0;
+            while have < magic.len() {
+                let n = input.read(&mut magic[have..])?;
+                if n == 0 {
+                    return Err(Error::other(if MAGIC.starts_with(&magic[..have]) {
+                        "the save ends early"
+                    } else {
+                        "this is not a save file"
+                    }));
+                }
+                have += n;
+                if !MAGIC.starts_with(&magic[..have]) {
+                    return Err(Error::other("this is not a save file"));
+                }
+            }
+            prefix[..8].copy_from_slice(&magic);
+            input.read_exact(&mut prefix[8..])?;
+            total.update(&prefix);
+            core.extend_from_slice(&prefix);
+            let header_len =
+                u32::from_le_bytes(prefix[8..12].try_into().map_err(Error::other)?) as usize;
+            if header_len > 65536 {
+                return Err(Error::new(ErrorKind::InvalidData, "header too large"));
+            }
+            let mut header = Vec::new();
+            let mut remaining = header_len;
+            let mut chunk = [0_u8; 4096];
+            while remaining > 0 {
+                let count = remaining.min(chunk.len());
+                let read = input.read(&mut chunk[..count])?;
+                if read == 0 {
+                    return Err(Error::new(ErrorKind::UnexpectedEof, "truncated header"));
+                }
+                header.extend_from_slice(&chunk[..read]);
+                remaining -= read;
+            }
+            read_header(&header).map_err(Error::other)?;
+            total.update(&header);
+            core.extend_from_slice(&header);
+            for tag in SECTION_ORDER {
+                let mut frame_header = [0_u8; 12];
+                input.read_exact(&mut frame_header)?;
+                if frame_header[..4] != tag {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        "core section out of order",
+                    ));
+                }
+                let mut left =
+                    u64::from_le_bytes(frame_header[4..].try_into().map_err(Error::other)?);
+                total.update(&frame_header);
+                core.extend_from_slice(&frame_header);
+                let mut buffer = [0_u8; 16384];
+                while left > 0 {
+                    let count =
+                        usize::try_from(left.min(buffer.len() as u64)).map_err(Error::other)?;
+                    let read = input.read(&mut buffer[..count])?;
+                    if read == 0 {
+                        return Err(Error::new(
+                            ErrorKind::UnexpectedEof,
+                            format!("{} section: truncated", tag_name(tag)),
+                        ));
+                    }
+                    total.update(&buffer[..read]);
+                    core.extend_from_slice(&buffer[..read]);
+                    left -= read as u64;
+                }
+                let mut checksum = [0_u8; 8];
+                input
+                    .read_exact(&mut checksum)
+                    .map_err(|e| Error::new(e.kind(), format!("{} section: {e}", tag_name(tag))))?;
+                total.update(&checksum);
+                core.extend_from_slice(&checksum);
+            }
+            let mut files = Vec::new();
+            for tag in tags {
+                let name = String::from_utf8_lossy(tag).into_owned();
+                let section_error = |error: &str| {
+                    Error::new(ErrorKind::InvalidData, format!("{name} section: {error}"))
+                };
+                if !tag.iter().all(u8::is_ascii_alphanumeric) {
+                    return Err(section_error("invalid tag"));
+                }
+                let mut header = [0_u8; 12];
+                input
+                    .read_exact(&mut header)
+                    .map_err(|e| section_error(&e.to_string()))?;
+                if header[..4] != *tag {
+                    return Err(section_error("missing or out of order"));
+                }
+                total.update(&header);
+                let mut left = u64::from_le_bytes(header[4..].try_into().map_err(Error::other)?);
+                let path = staging.join(&name);
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)?;
+                let mut hash = Fnv1a::new();
+                let mut buffer = [0_u8; 16384];
+                while left > 0 {
+                    let count =
+                        usize::try_from(left.min(buffer.len() as u64)).map_err(Error::other)?;
+                    input
+                        .read_exact(&mut buffer[..count])
+                        .map_err(|e| section_error(&e.to_string()))?;
+                    file.write_all(&buffer[..count])?;
+                    hash.update(&buffer[..count]);
+                    total.update(&buffer[..count]);
+                    left -= count as u64;
+                }
+                let mut checksum = [0; 8];
+                input
+                    .read_exact(&mut checksum)
+                    .map_err(|e| section_error(&e.to_string()))?;
+                total.update(&checksum);
+                if u64::from_le_bytes(checksum) != hash.finish() {
+                    return Err(section_error("checksum mismatch"));
+                }
+                files.push(path);
+            }
+            let mut end = [0; 12];
+            input.read_exact(&mut end)?;
+            if end[..4] != END
+                || u64::from_le_bytes(end[4..].try_into().map_err(Error::other)?) != total.finish()
+            {
+                return Err(Error::new(ErrorKind::InvalidData, "end checksum mismatch"));
+            }
+            let mut trailing = [0];
+            if input.read(&mut trailing)? != 0 {
+                return Err(Error::new(ErrorKind::InvalidData, "trailing bytes"));
+            }
+            let checksum = fnv1a(&core);
+            core.extend_from_slice(&END);
+            core.extend_from_slice(&checksum.to_le_bytes());
+            let save = Self::from_bytes(&core, expected).map_err(Error::other)?;
+            Ok((save, files))
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_dir_all(staging);
+        }
+        result
+    }
 }

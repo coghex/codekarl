@@ -17,6 +17,7 @@
 
 use ck_sim::{Canonical, CanonicalError, Reader};
 
+mod character_storage;
 pub(crate) mod controls;
 pub(crate) mod core;
 pub(crate) mod economy;
@@ -35,16 +36,20 @@ pub(crate) mod view;
 pub(crate) struct GameState {
     /// Authored population, buildings, stores, employment and prices.
     pub(crate) economy: ck_economy::EconomyState,
+    /// Live characters and their next identifier.
+    pub(crate) characters: ck_characters::CharacterStore,
 }
 
 impl Canonical for GameState {
     fn encode(&self, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
-        self.economy.encode(out)
+        self.economy.encode(out)?;
+        self.characters.encode(out)
     }
 
     fn decode(input: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
             economy: ck_economy::EconomyState::decode(input)?,
+            characters: ck_characters::CharacterStore::decode(input)?,
         })
     }
 }

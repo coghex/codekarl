@@ -158,9 +158,16 @@ pub(super) fn write_save(game: &GameConfig, ticks: u64, seed: u64) -> (PathBuf, 
     for _ in 0..ticks {
         assert!(simulation.step().unwrap().is_empty());
     }
-    let bytes = simulation
+    let mut bytes = Vec::new();
+    simulation
         .save(game_prepared.identity.meta(seed))
-        .to_bytes()
+        .write_with_sections(
+            &mut bytes,
+            &mut [
+                (*b"ARCH", 0, &mut std::io::empty()),
+                (*b"LOGS", 0, &mut std::io::empty()),
+            ],
+        )
         .unwrap();
     let path = quicksave_path(&game.saves);
     fs::create_dir_all(&game.saves).unwrap();
@@ -398,10 +405,17 @@ fn a_quickload_refuses_a_one_byte_changed_gameplay_script_by_scripts_hash() {
         &mut |level, message| records.push((level, message)),
     )
     .expect("the original script prepares");
-    let bytes = prepared
+    let mut bytes = Vec::new();
+    prepared
         .simulation
         .save(prepared.identity.meta(42))
-        .to_bytes()
+        .write_with_sections(
+            &mut bytes,
+            &mut [
+                (*b"ARCH", 0, &mut std::io::empty()),
+                (*b"LOGS", 0, &mut std::io::empty()),
+            ],
+        )
         .expect("the game save encodes");
     let path = quicksave_path(&game.saves);
     fs::create_dir_all(&game.saves).unwrap();
@@ -488,6 +502,7 @@ fn the_build_id_is_the_version_and_the_simulation_source_hash() {
         "crates/sim/Cargo.toml",
         "crates/lua/Cargo.toml",
         "crates/economy/Cargo.toml",
+        "crates/characters/Cargo.toml",
         "crates/map/Cargo.toml",
     ]
     .map(str::to_owned)
@@ -496,6 +511,7 @@ fn the_build_id_is_the_version_and_the_simulation_source_hash() {
         "crates/sim/src",
         "crates/lua/src",
         "crates/economy/src",
+        "crates/characters/src",
         "crates/map/src",
         "apps/codekarl/src/game",
     ] {
@@ -525,5 +541,18 @@ fn the_build_id_is_the_version_and_the_simulation_source_hash() {
     );
     assert!(files.iter().any(|file| file == "crates/sim/src/save.rs"));
     assert!(files.iter().any(|file| file == "crates/economy/src/lib.rs"));
+    assert!(
+        files
+            .iter()
+            .any(|file| file == "crates/characters/src/lib.rs")
+    );
+    let mut changed = framed.clone();
+    let character_contents = fs::read(root.join("crates/characters/src/lib.rs")).unwrap();
+    let offset = changed
+        .windows(character_contents.len())
+        .position(|window| window == character_contents)
+        .unwrap();
+    changed[offset] ^= 1;
+    assert_ne!(fnv1a(&changed), fnv1a(&framed));
     assert!(files.iter().any(|file| file == "crates/map/src/lib.rs"));
 }
