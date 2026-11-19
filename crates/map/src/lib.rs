@@ -81,6 +81,17 @@ pub struct RiverCoverageParts {
     pub line: BTreeSet<WorldPixel>,
     /// Wide dark-water portion.
     pub water: BTreeSet<WorldPixel>,
+    /// Land pixels beside river water, mapped to their terrain-style index.
+    pub banks: BTreeMap<WorldPixel, u16>,
+}
+
+/// The two bounded draw lists for a format-2 map view.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RiverNetworkView {
+    /// River-line pixels in view coordinates.
+    pub rivers: Vec<[u32; 2]>,
+    /// Indexed bank, location and river-water pixels in view coordinates.
+    pub indexed: Vec<[u32; 3]>,
 }
 pub use mode::{
     ELEVATION_TOP_METRES, MODE_UNCOLOURED, MODE_UNOWNED, MODE_VALUE_MAX, ModeInputs,
@@ -950,6 +961,7 @@ impl RiverCoverage {
 pub struct PreparedRivers {
     lines: Vec<RiverLine>,
     steps: Vec<Option<RiverCoverage>>,
+    network: Option<PreparedRiverNetwork>,
 }
 
 impl PreparedRivers {
@@ -959,7 +971,18 @@ impl PreparedRivers {
         Self {
             lines,
             steps: vec![None; STEP_SIZE.len()],
+            network: None,
         }
+    }
+
+    /// Create the format-appropriate river selector for a loaded map.
+    #[must_use]
+    pub fn for_map(loaded: &LoadedMap) -> Self {
+        let mut prepared = Self::new(loaded.rivers.clone());
+        if let Some(network) = &loaded.river_network {
+            prepared.network = Some(PreparedRiverNetwork::new(&loaded.data, network));
+        }
+        prepared
     }
 
     /// Return the retained coverage for `step`, preparing it once on first use.
@@ -991,31 +1014,58 @@ impl PreparedRivers {
         }
         Some(selected)
     }
+
+    /// Select the line and indexed overlays for a view, using the network path when available.
+    pub fn select_map_view(
+        &mut self,
+        step: u8,
+        top_left: WorldPixel,
+        view: ViewSize,
+        locations: &[[u32; 3]],
+        location_palette_len: usize,
+    ) -> Option<RiverNetworkView> {
+        if let Some(network) = &mut self.network {
+            network.select_map_view(step, top_left, view, locations, location_palette_len)
+        } else {
+            let rivers = self.select_view(step, top_left, view)?;
+            Some(RiverNetworkView {
+                rivers,
+                indexed: locations.to_vec(),
+            })
+        }
+    }
 }
 
 /// Tile-backed view of a format-2 network. Only requested 128-pixel tiles are rasterized.
-pub struct PreparedRiverNetwork<'a> {
-    map: &'a MapData,
-    network: &'a RiverNetwork,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedRiverNetwork {
+    map: MapData,
+    network: RiverNetwork,
     tiles: BTreeMap<(u8, i32, i32), RiverCoverageParts>,
     current_step: Option<u8>,
     step_index: Option<BTreeMap<(i32, i32), Vec<usize>>>,
+    bank_tiles: BTreeSet<(u8, i32, i32)>,
 }
 
-impl<'a> PreparedRiverNetwork<'a> {
+impl PreparedRiverNetwork {
     /// Prepare the lazy tile cache for one loaded map.
     #[must_use]
-    pub fn new(map: &'a MapData, network: &'a RiverNetwork) -> Self {
+    pub fn new(map: &MapData, network: &RiverNetwork) -> Self {
         Self {
-            map,
-            network,
+            map: map.clone(),
+            network: network.clone(),
             tiles: BTreeMap::new(),
             current_step: None,
             step_index: None,
+            bank_tiles: BTreeSet::new(),
         }
     }
 
     /// Select the network's line and water pixels in view-relative coordinates.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keep view tile acquisition, bank preparation and clipping in one cache operation"
+    )]
     pub fn select_view(
         &mut self,
         step: u8,
@@ -1024,6 +1074,7 @@ impl<'a> PreparedRiverNetwork<'a> {
     ) -> Option<RiverCoverageParts> {
         if self.current_step != Some(step) {
             self.tiles.clear();
+            self.bank_tiles.clear();
             self.step_index = None;
             self.current_step = Some(step);
         }
@@ -1041,8 +1092,10 @@ impl<'a> PreparedRiverNetwork<'a> {
         let ty0 = i64::from(top_left.y).div_euclid(128);
         let tx1 = (right - 1).div_euclid(128);
         let ty1 = (bottom - 1).div_euclid(128);
-        for ty in ty0..=ty1 {
-            for tx in tx0..=tx1 {
+        // Banks can depend on water anywhere in one of the eight neighbouring
+        // tiles. Prepare that neighbourhood before caching this tile's banks.
+        for ty in ty0 - 1..=ty1 + 1 {
+            for tx in tx0 - 1..=tx1 + 1 {
                 let tx = i32::try_from(tx).ok()?;
                 let ty = i32::try_from(ty).ok()?;
                 if !self.tiles.contains_key(&(step, tx, ty)) {
@@ -1054,6 +1107,13 @@ impl<'a> PreparedRiverNetwork<'a> {
                     let tile = self.prepare_tile(step, pixel_size, tx, ty, candidates)?;
                     self.tiles.insert((step, tx, ty), tile);
                 }
+            }
+        }
+        for ty in ty0..=ty1 {
+            for tx in tx0..=tx1 {
+                let tx = i32::try_from(tx).ok()?;
+                let ty = i32::try_from(ty).ok()?;
+                self.prepare_banks(step, tx, ty)?;
                 let tile = self.tiles.get(&(step, tx, ty))?;
                 for pixel in &tile.line {
                     if i64::from(pixel.x) >= i64::from(top_left.x)
@@ -1071,6 +1131,15 @@ impl<'a> PreparedRiverNetwork<'a> {
                         && i64::from(pixel.y) < bottom
                     {
                         selected.water.insert(*pixel);
+                    }
+                }
+                for (pixel, style) in &tile.banks {
+                    if i64::from(pixel.x) >= i64::from(top_left.x)
+                        && i64::from(pixel.x) < right
+                        && i64::from(pixel.y) >= i64::from(top_left.y)
+                        && i64::from(pixel.y) < bottom
+                    {
+                        selected.banks.insert(*pixel, *style);
                     }
                 }
             }
@@ -1100,7 +1169,120 @@ impl<'a> PreparedRiverNetwork<'a> {
                         .unwrap_or_default(),
                 })
                 .collect(),
+            banks: selected
+                .banks
+                .into_iter()
+                .map(|(p, style)| {
+                    (
+                        WorldPixel {
+                            x: i32::try_from(i64::from(p.x) - i64::from(top_left.x))
+                                .ok()
+                                .unwrap_or_default(),
+                            y: i32::try_from(i64::from(p.y) - i64::from(top_left.y))
+                                .ok()
+                                .unwrap_or_default(),
+                        },
+                        style,
+                    )
+                })
+                .collect(),
         })
+    }
+
+    /// Compose the network and already-selected location pixels through the existing map lists.
+    pub fn select_map_view(
+        &mut self,
+        step: u8,
+        top_left: WorldPixel,
+        view: ViewSize,
+        locations: &[[u32; 3]],
+        location_palette_len: usize,
+    ) -> Option<RiverNetworkView> {
+        let parts = self.select_view(step, top_left, view)?;
+        let lake_index = u32::try_from(location_palette_len).ok()?;
+        let terrain_offset = lake_index.checked_add(1)?;
+        let mut indexed = BTreeMap::new();
+        let mut location_by_pixel = BTreeMap::new();
+        for &[x, y, index] in locations {
+            if x < view.width && y < view.height {
+                location_by_pixel.insert((x, y), index);
+            }
+        }
+        for (pixel, style) in parts.banks {
+            let x = u32::try_from(pixel.x).ok()?;
+            let y = u32::try_from(pixel.y).ok()?;
+            if x >= view.width || y >= view.height || location_by_pixel.contains_key(&(x, y)) {
+                continue;
+            }
+            indexed.insert((x, y), terrain_offset.checked_add(u32::from(style))?);
+        }
+        let water: BTreeSet<_> = parts
+            .water
+            .iter()
+            .filter_map(|pixel| Some((u32::try_from(pixel.x).ok()?, u32::try_from(pixel.y).ok()?)))
+            .collect();
+        for &[x, y, index] in locations {
+            if x < view.width && y < view.height && !water.contains(&(x, y)) {
+                indexed.insert((x, y), index);
+            }
+        }
+        for pixel in parts.water {
+            let x = u32::try_from(pixel.x).ok()?;
+            let y = u32::try_from(pixel.y).ok()?;
+            indexed.insert((x, y), lake_index);
+        }
+        Some(RiverNetworkView {
+            rivers: parts
+                .line
+                .into_iter()
+                .map(|pixel| Some([u32::try_from(pixel.x).ok()?, u32::try_from(pixel.y).ok()?]))
+                .collect::<Option<Vec<_>>>()?,
+            indexed: indexed
+                .into_iter()
+                .map(|((x, y), index)| [x, y, index])
+                .collect(),
+        })
+    }
+
+    fn prepare_banks(&mut self, step: u8, tx: i32, ty: i32) -> Option<()> {
+        if self.bank_tiles.contains(&(step, tx, ty)) {
+            return Some(());
+        }
+        let left = i64::from(tx).checked_mul(128)?;
+        let top = i64::from(ty).checked_mul(128)?;
+        let mut candidates = BTreeSet::new();
+        for ny in ty.saturating_sub(1)..=ty.saturating_add(1) {
+            for nx in tx.saturating_sub(1)..=tx.saturating_add(1) {
+                if let Some(tile) = self.tiles.get(&(step, nx, ny)) {
+                    for water in &tile.water {
+                        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                            let x = i64::from(water.x) + dx;
+                            let y = i64::from(water.y) + dy;
+                            if x >= left && x < left + 128 && y >= top && y < top + 128 {
+                                candidates.insert(WorldPixel {
+                                    x: i32::try_from(x).ok()?,
+                                    y: i32::try_from(y).ok()?,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let tile = self.tiles.get(&(step, tx, ty))?;
+        let covered: BTreeSet<_> = tile.line.union(&tile.water).copied().collect();
+        let mut banks = BTreeMap::new();
+        for pixel in candidates {
+            if covered.contains(&pixel) {
+                continue;
+            }
+            if let Surface::Land { terrain, .. } = surface_for_pixel(&self.map, step, pixel)? {
+                banks.insert(pixel, terrain);
+            }
+        }
+        self.tiles.get_mut(&(step, tx, ty))?.banks = banks;
+        self.bank_tiles.insert((step, tx, ty));
+        Some(())
     }
 
     fn build_step_index(&self, p: i64) -> Option<BTreeMap<(i32, i32), Vec<usize>>> {
@@ -1250,7 +1432,7 @@ impl<'a> PreparedRiverNetwork<'a> {
                             y: i32::try_from(y).ok()?,
                         };
                         if !matches!(
-                            surface_for_pixel(self.map, step, pixel)?,
+                            surface_for_pixel(&self.map, step, pixel)?,
                             Surface::Land { .. }
                         ) {
                             continue;
@@ -1299,7 +1481,7 @@ impl<'a> PreparedRiverNetwork<'a> {
                 if tile_has(pixel, tile_left, tile_top)
                     && !wide.contains(&pixel)
                     && matches!(
-                        surface_for_pixel(self.map, step, pixel)?,
+                        surface_for_pixel(&self.map, step, pixel)?,
                         Surface::Land { .. }
                     )
                 {
