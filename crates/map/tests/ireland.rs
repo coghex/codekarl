@@ -110,8 +110,8 @@ fn ireland_768_scenario_resolves_its_map_and_loads_all_locations() {
             hour: 0,
         }
     );
-    assert_eq!(scenario.locations.len(), 94);
-    assert_eq!(scenario.location_kinds.kinds.len(), 5);
+    assert_eq!(scenario.locations.len(), 125);
+    assert_eq!(scenario.location_kinds.kinds.len(), 8);
     for id in ["iniscealtra", "inisfallen"] {
         assert!(
             scenario.locations.iter().any(|location| location.id == id),

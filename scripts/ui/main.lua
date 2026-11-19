@@ -499,8 +499,12 @@ if game ~= nil then
         local place_view = revision ~= nil and game.place(place.id, revision) or nil
         local row = {place = place, sort = {name = place.name}, filter = {kind = place.kind}}
         row.lay = function(width)
-          row.cells = {{text = clip_column(place.name, width - 72), x = 1, align = "left"}}
-          if place_view ~= nil and #place_view.pops > 0 then
+          local label = place.name
+          if place.state == "abandoned" then label = label .. " (" .. place.kind:gsub("_", " ") .. ")" end
+          row.cells = {{text = clip_column(label, width - 72), x = 1, align = "left"}}
+          if place.state == "abandoned" then
+            row.cells[2] = {text = "abandoned", x = width - 3, align = "right", colour = theme.colour("term")}
+          elseif place_view ~= nil and #place_view.pops > 0 then
             row.cells[2] = {text = tostring(place_view.workers + place_view.dependents), x = width - 37, align = "right"}
             row.cells[3] = {text = tostring(place_view.food_days) .. "d", x = width - 3, align = "right"}
           end
@@ -513,6 +517,7 @@ if game ~= nil then
         row.tooltip = function(_, _, cell)
           local class, args
           if cell == 1 then class, args = "location", {place = place_id}
+          elseif cell == 2 and place.state == "abandoned" then return tooltip.explanation("abandoned"), tostring(cell)
           elseif cell == 2 and place_view ~= nil then class, args = "population", {place = place_id}
           elseif cell == 3 and place_view ~= nil then class, args = "place_food", {place = place_id}
           else return nil end

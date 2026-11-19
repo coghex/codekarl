@@ -2378,7 +2378,12 @@ GUARDS: tuple[Guard, ...] = (
     Guard(
         "tests/test_map_drainage.py",
         "unittest-map",
-        ("assets/map/ireland/drainage.py", "assets/map/ireland/apply_edits.py"),
+        (
+            "assets/map/ireland/drainage.py",
+            "assets/map/ireland/apply_edits.py",
+            "assets/map/ireland/edits.toml",
+            "assets/map/ireland/map.toml",
+        ),
     ),
     # CK-105: the renderer's re-export test checks its window fixture against the resource component's copy.
     Guard(
@@ -2392,6 +2397,8 @@ GUARDS: tuple[Guard, ...] = (
         "map.core",
         ("assets/map/ireland/", "assets/scenarios/ireland-768/"),
     ),
+    # CK-358: the location-kind and catchment unit tests load the shipped scenario.
+    Guard("crates/map/src/scenario/tests.rs", "map.core", ("assets/scenarios/ireland-768/",)),
     # CK-348: the water import tool's tests load `import_waters.py` from the map directory by its path: plain Python, no other tool.
     Guard("tests/test_map_waters.py", "unittest-waters", ("assets/map/ireland/import_waters.py",)),
     # The application tests that read shipped files or hash workspace inputs belong to rust.app.

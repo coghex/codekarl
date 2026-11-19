@@ -1308,6 +1308,7 @@ impl Readout {
             name: name.to_owned(),
             kind: kind.to_owned(),
             size,
+            abandoned: false,
         });
         let id = self
             .owner

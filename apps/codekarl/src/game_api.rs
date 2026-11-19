@@ -292,7 +292,7 @@ pub(crate) fn hover_arguments(
 
 /// The argument for a selected place. Selection callbacks have no nil notification.
 pub(crate) fn select_arguments(selection: &crate::map_app::Selection) -> Vec<ConfigValue> {
-    vec![ConfigValue::Table(BTreeMap::from([
+    let mut fields = BTreeMap::from([
         (
             "seq".to_owned(),
             ConfigValue::Integer(
@@ -312,7 +312,14 @@ pub(crate) fn select_arguments(selection: &crate::map_app::Selection) -> Vec<Con
             "size".to_owned(),
             ConfigValue::Integer(i64::from(selection.size)),
         ),
-    ]))]
+    ]);
+    if selection.abandoned {
+        fields.insert(
+            "state".to_owned(),
+            ConfigValue::String("abandoned".to_owned()),
+        );
+    }
+    vec![ConfigValue::Table(fields)]
 }
 
 /// One scenario location, as `game.places()` returns it: the fields and meanings of `game_select`'s (without `seq`).
@@ -322,6 +329,7 @@ pub(crate) struct Place {
     pub(crate) name: String,
     pub(crate) kind: String,
     pub(crate) size: u8,
+    pub(crate) abandoned: bool,
 }
 
 /// The scenario's locations in file order, with the kind's id and the authored size, exactly as the map reports them to
@@ -337,6 +345,7 @@ pub(crate) fn places_of(scenario: &ck_map::Scenario) -> Vec<Place> {
                 .id
                 .clone(),
             size: location.size,
+            abandoned: location.abandoned,
         })
         .collect()
 }
@@ -348,7 +357,7 @@ pub(crate) fn places_function(places: Vec<Place>) -> HostFunction {
         places
             .into_iter()
             .map(|place| {
-                ConfigValue::Table(BTreeMap::from([
+                let mut fields = BTreeMap::from([
                     ("id".to_owned(), ConfigValue::String(place.id)),
                     ("name".to_owned(), ConfigValue::String(place.name)),
                     ("kind".to_owned(), ConfigValue::String(place.kind)),
@@ -356,7 +365,14 @@ pub(crate) fn places_function(places: Vec<Place>) -> HostFunction {
                         "size".to_owned(),
                         ConfigValue::Integer(i64::from(place.size)),
                     ),
-                ]))
+                ]);
+                if place.abandoned {
+                    fields.insert(
+                        "state".to_owned(),
+                        ConfigValue::String("abandoned".to_owned()),
+                    );
+                }
+                ConfigValue::Table(fields)
             })
             .collect(),
     );
@@ -777,7 +793,7 @@ pub(crate) fn place_table(place: &PlaceView) -> ConfigValue {
 
 /// `game.place(id, revision)`: the economy view of the place `id` at `revision`, from the cache and never from live state. It
 /// refuses, by name, a revision that is missing or retired, a place the view does not hold and arguments of the wrong kind.
-pub(crate) fn place_function(cache: Arc<ViewCache>) -> HostFunction {
+pub(crate) fn place_function(cache: Arc<ViewCache>, places: Vec<Place>) -> HostFunction {
     Arc::new(move |arguments| {
         let [
             Some(ConfigValue::String(id)),
@@ -792,7 +808,24 @@ pub(crate) fn place_function(cache: Arc<ViewCache>) -> HostFunction {
         let place = view
             .place(id)
             .ok_or_else(|| format!("game.place: no place `{id}` at revision {revision}"))?;
-        Ok(vec![place_table(place)])
+        let mut result = place_table(place);
+        if let Some(meta) = places
+            .iter()
+            .find(|candidate| candidate.id == *id && candidate.abandoned)
+            && let ConfigValue::Table(fields) = &mut result
+        {
+            fields.insert("name".to_owned(), ConfigValue::String(meta.name.clone()));
+            fields.insert("kind".to_owned(), ConfigValue::String(meta.kind.clone()));
+            fields.insert(
+                "size".to_owned(),
+                ConfigValue::Integer(i64::from(meta.size)),
+            );
+            fields.insert(
+                "state".to_owned(),
+                ConfigValue::String("abandoned".to_owned()),
+            );
+        }
+        Ok(vec![result])
     })
 }
 
@@ -847,6 +880,7 @@ mod tests {
             name: "Fixture Town".to_owned(),
             kind: "town".to_owned(),
             size: 3,
+            abandoned: false,
         });
         let [ConfigValue::Table(fields)] = arguments.as_slice() else {
             panic!("selection callback gets one table");
@@ -1100,7 +1134,7 @@ mod tests {
     fn game_place_returns_the_revisions_view_and_refuses_what_it_cannot_serve() {
         let cache = Arc::new(ViewCache::default());
         cache.post(7, view_with(120));
-        let function = place_function(Arc::clone(&cache));
+        let function = place_function(Arc::clone(&cache), vec![]);
         let Ok(returned) = call_place(&function, "fixture", 7) else {
             panic!("a held revision of a known place is served");
         };
@@ -1192,7 +1226,7 @@ mod tests {
                 }],
             }),
         );
-        let returned = call_place(&place_function(cache), "fixture", 1).unwrap();
+        let returned = call_place(&place_function(cache, vec![]), "fixture", 1).unwrap();
         let [ConfigValue::Table(place)] = returned.as_slice() else {
             panic!("one place table");
         };
@@ -1452,7 +1486,7 @@ mod tests {
         assert_eq!(cattle["maximum"], ConfigValue::Integer(36));
     }
 
-    /// `game.places()` over the shipped Ireland 768 scenario: its 94 locations in file order, the first and last literal, each with the
+    /// `game.places()` over the shipped Ireland 768 scenario: its 123 locations in file order, the first and last literal, each with the
     /// kind's id and the authored size that `game_select` reports for the same location.
     #[test]
     fn places_returns_ireland_768s_locations_in_file_order_with_the_select_fields() {
@@ -1460,7 +1494,7 @@ mod tests {
             .join("../../assets/scenarios/ireland-768");
         let scenario = ck_map::load_scenario(&directory).expect("the shipped scenario loads");
         let places = places_of(&scenario);
-        assert_eq!(places.len(), 94);
+        assert_eq!(places.len(), 125);
         assert_eq!(
             places[0],
             Place {
@@ -1468,15 +1502,17 @@ mod tests {
                 name: "Ard Mhacha".to_owned(),
                 kind: "monastery".to_owned(),
                 size: 4,
+                abandoned: false,
             }
         );
         assert_eq!(
-            places[93],
+            places[122],
             Place {
-                id: "moynagh".to_owned(),
-                name: "Maigh nEach".to_owned(),
-                kind: "crannog".to_owned(),
+                id: "monaincha".to_owned(),
+                name: "Loch Cré".to_owned(),
+                kind: "monastery".to_owned(),
                 size: 1,
+                abandoned: false,
             }
         );
         // File order, and the fields are the ones a selection of the same location carries.
@@ -1494,6 +1530,7 @@ mod tests {
                 name: place.name.clone(),
                 kind: place.kind.clone(),
                 size: place.size,
+                abandoned: place.abandoned,
             });
             let ConfigValue::Table(selected) = &selected[0] else {
                 panic!("a selection is a table");
@@ -1515,7 +1552,7 @@ mod tests {
         let [ConfigValue::Array(rows)] = returned.as_slice() else {
             panic!("one array");
         };
-        assert_eq!(rows.len(), 94);
+        assert_eq!(rows.len(), 125);
         let ConfigValue::Table(first) = &rows[0] else {
             panic!("a table per place");
         };

@@ -212,7 +212,7 @@ mod tests {
         }
     }
 
-    const PLACES: usize = 94;
+    const PLACES: usize = 125;
 
     /// The shipped Ireland scenario's map on a bridge with a sink attached, and its modes.
     fn rig() -> (Arc<MapModes>, Arc<Sink>, ck_map::Scenario) {
@@ -246,7 +246,7 @@ mod tests {
         (Arc::new(MapModes::new(bridge, PLACES)), sink, scenario)
     }
 
-    /// A view of 94 places: place `i` has `i * 10` of 1,000 stored and a yield of `i`, and every fifth has no economy.
+    /// A view of 125 places: place `i` has `i * 10` of 1,000 stored and a yield of `i`, and every fifth has no economy.
     fn view(shift: u64) -> Arc<EconomyView> {
         Arc::new(EconomyView {
             places: (0..PLACES as u64)
@@ -419,7 +419,7 @@ mod tests {
         let before = sink.published();
         let error = modes.set(Mode::Stockpile).expect_err("refused");
         assert!(
-            error.contains("93 values") && error.contains("94 places"),
+            error.contains("124 values") && error.contains("125 places"),
             "{error}"
         );
         assert_eq!(modes.mode(), Mode::Off, "the mode that showed stays");
@@ -431,7 +431,7 @@ mod tests {
         let refused = function(&[Some(ck_lua::ConfigValue::String("stockpile".to_owned()))])
             .expect_err("refused");
         assert!(
-            refused.starts_with("game.set_map_mode: ") && refused.contains("93 values"),
+            refused.starts_with("game.set_map_mode: ") && refused.contains("124 values"),
             "{refused}"
         );
         let unknown = function(&[Some(ck_lua::ConfigValue::String("rainfall".to_owned()))])

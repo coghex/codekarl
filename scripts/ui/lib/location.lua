@@ -753,6 +753,9 @@ local function clip_column(value, width)
 end
 
 local function location_lines(place, width)
+  if place.state == "abandoned" then
+    return {(tostring(place.kind):gsub("_", " ")), {tooltip_parts = {{text = "abandoned", term = "abandoned"}}, place = place.id}}
+  end
   local content_width = math.max(1, (width or 412) // P)
   local lines = {
     {tooltip_parts = {
@@ -1371,7 +1374,7 @@ render = function(self, keep_scroll)
     return
   end
   local place, reason = fetch(self)
-  if self.key == "pops" or self.key == "buildings" then
+  if (self.key == "pops" or self.key == "buildings") and not (place ~= nil and place.state == "abandoned") then
     if self.list ~= nil and not self.list.closed then self.list:destroy(); self.list = nil end
     ensure_selector(self)
     ensure_bar(self)
@@ -1396,7 +1399,7 @@ render = function(self, keep_scroll)
   -- The rows of the list laid out for a row `width` points wide. Only the goods rows go through the bar; the lines of figures and the
   -- market's header stay where they are, above them.
   local function laid_out(width)
-    local lines = place ~= nil and location.lines(self.key, place, width) or {reason}
+    local lines = place ~= nil and (place.state == "abandoned" and location_lines(place, width) or location.lines(self.key, place, width)) or {reason}
     local fixed, goods = {}, {}
     for _, row in ipairs(location.rows(lines, width)) do
       if type(row) == "table" and row.sort ~= nil then goods[#goods + 1] = row else fixed[#fixed + 1] = row end

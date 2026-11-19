@@ -86,6 +86,9 @@ tooltip.define("location", function(args)
   local id = args.place
   local place = place_view(id)
   if place == nil then return nil end
+  if place.state == "abandoned" then
+    return {title = place.name, {(tostring(place.kind):gsub("_", " "))}, {term("abandoned")}}
+  end
   local total = (place.workers or 0) + (place.dependents or 0)
   local lines = {
     {term("population"), " ", linked(total, "population", id)},

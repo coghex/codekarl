@@ -1,7 +1,7 @@
 use super::*;
 use ck_lua::HostFunction;
 use ck_window::ScrollUnit;
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 fn scroll_lines(x: f64, y: f64, amount: i32) -> PointerEvent {
     PointerEvent::Scroll {
@@ -224,25 +224,11 @@ pub(super) fn shipped_place_fixture() -> (HostFunction, String) {
             hour: 0,
         },
     ));
-    let place_tables: BTreeMap<String, ConfigValue> = view
-        .places
-        .iter()
-        .map(|place| (place.id.clone(), crate::game_api::place_table(place)))
-        .collect();
-    let actual_place: HostFunction = Arc::new(move |arguments| {
-        let [
-            Some(ConfigValue::String(id)),
-            Some(ConfigValue::Integer(_revision)),
-        ] = arguments
-        else {
-            return Err("game.place fixture expected id and revision".to_owned());
-        };
-        place_tables
-            .get(id)
-            .cloned()
-            .map(|place| vec![place])
-            .ok_or_else(|| format!("unexpected game.place id {id}"))
-    });
+    let cache = Arc::new(crate::game_api::ViewCache::default());
+    cache.post(1, Arc::clone(&view));
+    cache.post(2, view);
+    let actual_place =
+        crate::game_api::place_function(cache, crate::game_api::places_of(&scenario));
     let escape_lua = |value: &str| value.replace('\\', "\\\\").replace('\'', "\\'");
     let place_rows = scenario
         .locations
@@ -250,11 +236,16 @@ pub(super) fn shipped_place_fixture() -> (HostFunction, String) {
         .map(|location| {
             let kind = &scenario.location_kinds.kinds[location.kind_index].id;
             format!(
-                "{{id='{}', name='{}', kind='{}', size={}}}",
+                "{{id='{}', name='{}', kind='{}', size={}{} }}",
                 escape_lua(&location.id),
                 escape_lua(&location.name),
                 escape_lua(kind),
-                location.size
+                location.size,
+                if location.abandoned {
+                    ", state='abandoned'"
+                } else {
+                    ""
+                }
             )
         })
         .collect::<Vec<_>>()
@@ -774,7 +765,7 @@ function check_people_order(descending)
   local without, with, previous = 0, 0, nil
   for index = 2, #items do
     local cell = items[index].cells[2]
-    if cell == nil then
+    if cell == nil or cell.text == "abandoned" then
       without = without + 1
     else
       expect_that(without == 0, "a place without people is before one with")
@@ -915,7 +906,7 @@ fn the_places_list_is_shorter_by_the_bar_and_its_pickers_offer_the_kinds_and_the
     rig.opened();
     assert_eq!(
         note_with(&rig, "picker "),
-        "picker filter crannog,monastery,ringfort,royal site"
+        "picker filter cashel,ceremonial ground,crannog,hillfort,monastery,promontory fort,ringfort"
     );
     click(&mut rig, "bar_sort");
     rig.opened();
@@ -945,7 +936,7 @@ fn click(rig: &mut Rig, name: &str) {
 fn ticking_ringfort_shows_the_header_and_the_ten_ringforts_in_file_order_and_their_rows_still_click_and_hover_as_places()
  {
     let ringforts = shipped_places_of("ringfort");
-    assert_eq!(ringforts.len(), 10, "the shipped scenario's ringforts");
+    assert_eq!(ringforts.len(), 19, "the shipped scenario's ringforts");
     let mut rig = shipped_ledger_rig(
         "location",
         &[
@@ -958,7 +949,7 @@ fn ticking_ringfort_shows_the_header_and_the_ten_ringforts_in_file_order_and_the
     );
     rig.opened();
     assert!(
-        note_with(&rig, "shown ").starts_with("shown 94 of 94"),
+        note_with(&rig, "shown ").starts_with("shown 125 of 125"),
         "{:?}",
         notes(&rig)
     );
@@ -977,12 +968,12 @@ fn ticking_ringfort_shows_the_header_and_the_ten_ringforts_in_file_order_and_the
         format!("shown_ids {}", expected_ids.join(","))
     );
     assert!(
-        note_with(&rig, "shown ").starts_with("shown 10 of 94 scroll=0"),
+        note_with(&rig, "shown ").starts_with("shown 19 of 125 scroll=0"),
         "{:?}",
         notes(&rig)
     );
-    assert_eq!(note_with(&rig, "count "), "count 10 of 94");
-    assert_eq!(note_with(&rig, "header "), "header name items=11");
+    assert_eq!(note_with(&rig, "count "), "count 19 of 125");
+    assert_eq!(note_with(&rig, "header "), "header name items=20");
     assert_eq!(
         note_with(&rig, "hover_class "),
         format!("hover_class location {}", ringforts[2].0)
@@ -1031,14 +1022,14 @@ end
     rig.opened();
     let order = note_with(&rig, "people_order ");
     assert!(
-        order.starts_with("people_order with=92 without=2 "),
+        order.starts_with("people_order with=121 without=4 "),
         "the two places with no people are last: {order}"
     );
     click_pick(&mut rig, "people");
     rig.opened();
     let again = note_with(&rig, "people_order ");
     assert!(
-        again.starts_with("people_order with=92 without=2 "),
+        again.starts_with("people_order with=121 without=4 "),
         "still last, with the fewest first: {again}"
     );
     // "default" restores the file order.
@@ -1148,7 +1139,7 @@ fn a_ticked_box_stays_ticked_across_a_new_economy_revision_and_a_new_window_size
     rig.opened();
     click_pick(&mut rig, "ringfort");
     rig.opened();
-    assert!(note_with(&rig, "shown ").starts_with("shown 10 of 94"));
+    assert!(note_with(&rig, "shown ").starts_with("shown 19 of 125"));
     assert_eq!(
         note_with(&rig, "bar_state "),
         "bar_state ticks=1 sort=nil bars=1"
@@ -1164,11 +1155,11 @@ fn a_ticked_box_stays_ticked_across_a_new_economy_revision_and_a_new_window_size
         "bar_state ticks=1 sort=nil bars=1"
     );
     assert!(
-        note_with(&rig, "shown ").starts_with("shown 10 of 94"),
+        note_with(&rig, "shown ").starts_with("shown 19 of 125"),
         "{:?}",
         notes(&rig)
     );
-    assert_eq!(note_with(&rig, "count "), "count 10 of 94");
+    assert_eq!(note_with(&rig, "count "), "count 19 of 125");
     // A new window size closes the open picker, and the choices stay (the same bar, rebuilt around).
     rig.deliver_fixture_frame_at(1500, 900, 2);
     rig.opened();
@@ -1177,11 +1168,11 @@ fn a_ticked_box_stays_ticked_across_a_new_economy_revision_and_a_new_window_size
         "bar_state ticks=1 sort=nil bars=1"
     );
     assert!(
-        note_with(&rig, "shown ").starts_with("shown 10 of 94"),
+        note_with(&rig, "shown ").starts_with("shown 19 of 125"),
         "{:?}",
         notes(&rig)
     );
-    assert_eq!(note_with(&rig, "count "), "count 10 of 94");
+    assert_eq!(note_with(&rig, "count "), "count 19 of 125");
 }
 
 #[test]
@@ -1290,7 +1281,10 @@ function check_places_width(narrow, label)
   eq_that(items[1].cells[3].x, row_px - 3, label .. ': the food heading')
   for index = 2, #items do
     local cells = items[index].cells
-    if cells[2] ~= nil then
+    if cells[2] ~= nil and cells[2].text == 'abandoned' then
+      eq_that(cells[2].x, row_px - 3, label .. ': abandoned of row ' .. index)
+      expect_that(cells[3] == nil, label .. ': abandoned has no figures')
+    elseif cells[2] ~= nil then
       eq_that(cells[2].x, row_px - 37, label .. ': people of row ' .. index)
       eq_that(cells[3].x, row_px - 3, label .. ': food of row ' .. index)
     end
@@ -1395,7 +1389,7 @@ fn a_filter_that_leaves_few_rows_gives_the_full_width_again_unticking_the_narrow
     rig.opened();
     assert_eq!(
         note_with(&rig, "picker "),
-        "picker filter crannog,monastery,ringfort,royal site"
+        "picker filter cashel,ceremonial ground,crannog,hillfort,monastery,promontory fort,ringfort"
     );
     click_pick(&mut rig, "ringfort");
     rig.opened();
@@ -1440,4 +1434,59 @@ fn a_click_on_a_filtered_sorted_and_scrolled_overflowing_row_opens_that_rows_pla
         opened.starts_with(&format!("last_call {expected}@")),
         "the click opened {opened}, the row's place is {expected}"
     );
+}
+
+#[test]
+fn shipped_abandoned_sites_survive_ledger_tooltip_and_panel_paths() {
+    let mut rig = shipped_ledger_rig(
+        "location",
+        &[
+            r"local found = 0
+        for _, row in ipairs(last_given) do
+          if row.place.state == 'abandoned' then
+            found = found + 1; row.lay(1000)
+            eq_that(row.cells[2].text, 'abandoned', 'abandoned label')
+            expect_that(row.cells[1].text:find('ceremonial ground', 1, true) ~= nil, 'kind label')
+            expect_that(row.cells[3] == nil, 'no figures')
+          end
+        end
+        eq_that(found, 2, 'both sites in Places')
+        local emain
+        for _, row in ipairs(last_given) do if row.place.id == 'emain_macha' then emain = row end end
+        local tip = emain.tooltip(0, 0, 1)
+        eq_that(tip.title, 'Emain Macha', 'tooltip title')
+        eq_that(tip[1][1], 'ceremonial ground', 'tooltip kind')
+        eq_that(tip[2][1].term, 'abandoned', 'tooltip term')
+        callbacks.select({id='emain_macha', name='Emain Macha', kind='ceremonial_ground', size=1, state='abandoned'})
+        note('abandoned panel opened')",
+            "select_place('armagh', 'Ard Mhacha'); note('active panel opened')",
+        ],
+    );
+    rig.opened();
+    assert!(
+        notes(&rig)
+            .iter()
+            .any(|line| line == "abandoned panel opened")
+    );
+    assert!(
+        rows(&rig).iter().any(|line| line.contains("abandoned")),
+        "{:?}",
+        rows(&rig)
+    );
+    rig.opened();
+    assert!(notes(&rig).iter().any(|line| line == "active panel opened"));
+    assert!(
+        rows(&rig).iter().any(|line| line.starts_with("people:")),
+        "{:?}",
+        rows(&rig)
+    );
+
+    let mut pops = shipped_ledger_rig(
+        "pops",
+        &[
+            "for _, row in ipairs(last_given) do expect_that(row.place.state ~= 'abandoned', 'abandoned site in Pops') end; note('pops checked')",
+        ],
+    );
+    pops.opened();
+    assert!(notes(&pops).iter().any(|line| line == "pops checked"));
 }

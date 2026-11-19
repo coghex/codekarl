@@ -4320,7 +4320,10 @@ mod tests {
                 Arc::new(|| {}),
                 crate::game::controls::SimControls::new(std::sync::mpsc::channel().0),
             )
-            .function("place", game_api::place_function(Arc::clone(&views))),
+            .function(
+                "place",
+                game_api::place_function(Arc::clone(&views), vec![]),
+            ),
         );
         let harness = Harness::new(script, extras);
         let slot = SimSlot::new(Arc::new(|| {}));

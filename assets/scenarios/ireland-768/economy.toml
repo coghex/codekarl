@@ -38,7 +38,7 @@ storehouse_levels=8
 pop_stock={ oats=12, barley=4, dairy=2, beef=1, pork=1, mutton=1, peas_beans=1, vegetables=2, fish=0 }
 building_stock={ oats=40, barley=12, dairy=8, beef=4, pork=4, mutton=4 }
 
-[defaults.royal_site."1"]
+[defaults.cashel."1"]
 peasants=300
 monks=0
 labourers=0
@@ -47,7 +47,7 @@ holdings_levels=0
 storehouse_levels=1
 pop_stock={ oats=12, barley=4, dairy=2, beef=1, pork=1, mutton=1, peas_beans=1, vegetables=2, fish=0 }
 building_stock={ oats=40, barley=12, dairy=8, beef=4, pork=4, mutton=4 }
-[defaults.royal_site."2"]
+[defaults.cashel."2"]
 peasants=600
 monks=0
 labourers=0
@@ -56,7 +56,63 @@ holdings_levels=0
 storehouse_levels=2
 pop_stock={ oats=12, barley=4, dairy=2, beef=1, pork=1, mutton=1, peas_beans=1, vegetables=2, fish=0 }
 building_stock={ oats=40, barley=12, dairy=8, beef=4, pork=4, mutton=4 }
-[defaults.royal_site."3"]
+[defaults.cashel."3"]
+peasants=1000
+monks=0
+labourers=0
+farm_levels=50
+holdings_levels=0
+storehouse_levels=4
+pop_stock={ oats=12, barley=4, dairy=2, beef=1, pork=1, mutton=1, peas_beans=1, vegetables=2, fish=0 }
+building_stock={ oats=40, barley=12, dairy=8, beef=4, pork=4, mutton=4 }
+
+[defaults.hillfort."1"]
+peasants=300
+monks=0
+labourers=0
+farm_levels=15
+holdings_levels=0
+storehouse_levels=1
+pop_stock={ oats=12, barley=4, dairy=2, beef=1, pork=1, mutton=1, peas_beans=1, vegetables=2, fish=0 }
+building_stock={ oats=40, barley=12, dairy=8, beef=4, pork=4, mutton=4 }
+[defaults.hillfort."2"]
+peasants=600
+monks=0
+labourers=0
+farm_levels=30
+holdings_levels=0
+storehouse_levels=2
+pop_stock={ oats=12, barley=4, dairy=2, beef=1, pork=1, mutton=1, peas_beans=1, vegetables=2, fish=0 }
+building_stock={ oats=40, barley=12, dairy=8, beef=4, pork=4, mutton=4 }
+[defaults.hillfort."3"]
+peasants=1000
+monks=0
+labourers=0
+farm_levels=50
+holdings_levels=0
+storehouse_levels=4
+pop_stock={ oats=12, barley=4, dairy=2, beef=1, pork=1, mutton=1, peas_beans=1, vegetables=2, fish=0 }
+building_stock={ oats=40, barley=12, dairy=8, beef=4, pork=4, mutton=4 }
+
+[defaults.ceremonial_ground."1"]
+peasants=300
+monks=0
+labourers=0
+farm_levels=15
+holdings_levels=0
+storehouse_levels=1
+pop_stock={ oats=12, barley=4, dairy=2, beef=1, pork=1, mutton=1, peas_beans=1, vegetables=2, fish=0 }
+building_stock={ oats=40, barley=12, dairy=8, beef=4, pork=4, mutton=4 }
+[defaults.ceremonial_ground."2"]
+peasants=600
+monks=0
+labourers=0
+farm_levels=30
+holdings_levels=0
+storehouse_levels=2
+pop_stock={ oats=12, barley=4, dairy=2, beef=1, pork=1, mutton=1, peas_beans=1, vegetables=2, fish=0 }
+building_stock={ oats=40, barley=12, dairy=8, beef=4, pork=4, mutton=4 }
+[defaults.ceremonial_ground."3"]
 peasants=1000
 monks=0
 labourers=0
@@ -76,6 +132,25 @@ storehouse_levels=1
 pop_stock={ oats=12, barley=4, dairy=2, beef=1, pork=1, mutton=1, peas_beans=1, vegetables=2, fish=0 }
 building_stock={ oats=40, barley=12, dairy=8, beef=4, pork=4, mutton=4 }
 [defaults.ringfort."2"]
+peasants=150
+monks=0
+labourers=0
+farm_levels=8
+holdings_levels=0
+storehouse_levels=1
+pop_stock={ oats=12, barley=4, dairy=2, beef=1, pork=1, mutton=1, peas_beans=1, vegetables=2, fish=0 }
+building_stock={ oats=40, barley=12, dairy=8, beef=4, pork=4, mutton=4 }
+
+[defaults.promontory_fort."1"]
+peasants=80
+monks=0
+labourers=0
+farm_levels=4
+holdings_levels=0
+storehouse_levels=1
+pop_stock={ oats=12, barley=4, dairy=2, beef=1, pork=1, mutton=1, peas_beans=1, vegetables=2, fish=0 }
+building_stock={ oats=40, barley=12, dairy=8, beef=4, pork=4, mutton=4 }
+[defaults.promontory_fort."2"]
 peasants=150
 monks=0
 labourers=0
@@ -545,10 +620,6 @@ culture="laigin"
 religion="christianity"
 monk_religion="christianity"
 
-[places.dunamase]
-culture="laigin"
-religion="christianity"
-monk_religion="christianity"
 
 [places.knockainey]
 culture="mumu"
@@ -570,11 +641,6 @@ culture="ulaid"
 religion="christianity"
 monk_religion="christianity"
 
-[places.cahercommaun]
-culture="connachta"
-religion="christianity"
-monk_religion="christianity"
-pagan_share_pm=200
 
 [places.carraig_aille]
 culture="mumu"
@@ -590,3 +656,179 @@ monk_religion="christianity"
 culture="mide_brega"
 religion="christianity"
 monk_religion="christianity"
+
+[places.croaghan_hill]
+culture="northern_ui_neill"
+religion="christianity"
+monk_religion="christianity"
+
+[places.gowran]
+culture="mumu"
+religion="christianity"
+monk_religion="christianity"
+
+[places.mullaghmast]
+culture="laigin"
+religion="christianity"
+monk_religion="christianity"
+
+[places.locha_lein]
+culture="mumu"
+religion="christianity"
+monk_religion="christianity"
+
+[places.ui_maine_seat]
+culture="connachta"
+religion="christianity"
+monk_religion="christianity"
+
+[places.tailtiu]
+culture="mide_brega"
+religion="christianity"
+monk_religion="christianity"
+
+[places.tir_amalgaid]
+culture="connachta"
+religion="christianity"
+monk_religion="christianity"
+
+[places.corco_modruad]
+culture="connachta"
+religion="christianity"
+monk_religion="christianity"
+
+[places.ui_echach_seat]
+culture="cruthin"
+religion="christianity"
+monk_religion="christianity"
+
+[places.aidne_seat]
+culture="connachta"
+religion="christianity"
+monk_religion="christianity"
+
+[places.inchbofin]
+culture="mide_brega"
+religion="christianity"
+monk_religion="christianity"
+
+[places.inchcleraun]
+culture="mide_brega"
+religion="christianity"
+monk_religion="christianity"
+
+[places.rechru]
+culture="mide_brega"
+religion="christianity"
+monk_religion="christianity"
+
+[places.inis_patraic]
+culture="mide_brega"
+religion="christianity"
+monk_religion="christianity"
+
+[places.inishmacsaint]
+culture="airgialla"
+religion="christianity"
+monk_religion="christianity"
+
+[places.inishkeel]
+culture="northern_ui_neill"
+religion="christianity"
+monk_religion="christianity"
+
+[places.white_island]
+culture="airgialla"
+religion="christianity"
+monk_religion="christianity"
+
+[places.hare_island]
+culture="mide_brega"
+religion="christianity"
+monk_religion="christianity"
+
+[places.tethbae_seat]
+culture="mide_brega"
+religion="christianity"
+monk_religion="christianity"
+
+[places.church_island_valentia]
+culture="mumu"
+religion="christianity"
+monk_religion="christianity"
+peasants=0
+monks=5
+labourers=5
+levels=[0, 1, 1]
+
+[places.illaunloughan]
+culture="mumu"
+religion="christianity"
+monk_religion="christianity"
+peasants=0
+monks=5
+labourers=5
+levels=[0, 1, 1]
+
+[places.inishkea_north]
+culture="connachta"
+religion="christianity"
+monk_religion="christianity"
+
+[places.inishglora]
+culture="connachta"
+religion="christianity"
+monk_religion="christianity"
+peasants=0
+monks=5
+labourers=5
+levels=[0, 1, 1]
+
+[places.church_island_currane]
+culture="mumu"
+religion="christianity"
+monk_religion="christianity"
+peasants=0
+monks=5
+labourers=5
+levels=[0, 1, 1]
+
+[places.spike_island]
+culture="mumu"
+religion="christianity"
+monk_religion="christianity"
+
+[places.cairpre_seat]
+culture="northern_ui_neill"
+religion="christianity"
+monk_religion="christianity"
+
+[places.granard]
+culture="mide_brega"
+religion="christianity"
+monk_religion="christianity"
+
+[places.loegaire_seat]
+culture="mide_brega"
+religion="christianity"
+monk_religion="christianity"
+
+[places.uliathain_seat]
+culture="mumu"
+religion="christianity"
+monk_religion="christianity"
+
+[places.ciarraige_seat]
+culture="mumu"
+religion="christianity"
+monk_religion="christianity"
+
+[places.monaincha]
+culture="mumu"
+religion="christianity"
+monk_religion="christianity"
+peasants=0
+monks=5
+labourers=5
+levels=[0, 1, 1]
+

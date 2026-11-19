@@ -2040,3 +2040,66 @@ confidence = "medium"
 paint = "pasture"
 region = { box = [51.56544, 51.568, -9.70302, -9.6985] }
 where = { terrain = ["sea"] }
+
+[[edit]]
+id = "island-inchbofin"
+area = "Inis Bó Finne, Lough Ree: the one cell containing the monastery"
+reason = "the island is below the map's resolution and the derivation made its cell lake; the monastery of 768 stands on it (owner, 2026-11-06: \"Make the islands land\"; owner r178)"
+confidence = "high on the site, low on the extent (one cell of about 70 ha, larger than the island)"
+paint = "pasture"
+region = { circle = [53.54, -7.917, 0.3] }
+where = { terrain = ["lake"] }
+
+[[edit]]
+id = "island-inchcleraun"
+area = "Inis Clothrann (Quaker Island), Lough Ree: the one cell containing the monastery"
+reason = "the island is below the map's resolution and the derivation made its cell lake; the monastery of 768 stands on it (owner, 2026-11-06: \"Make the islands land\"; owner r178)"
+confidence = "high on the site, low on the extent (one cell of about 70 ha, larger than the island)"
+paint = "pasture"
+region = { circle = [53.582, -8.007, 0.3] }
+where = { terrain = ["lake"] }
+
+[[edit]]
+id = "island-white-island"
+area = "An tOileán Bán (White Island), Lower Lough Erne: the one cell containing the monastery"
+reason = "the island is below the map's resolution and the derivation made its cell lake; the monastery of 768 stands on it (owner, 2026-11-06: \"Make the islands land\"; owner r178)"
+confidence = "high on the site, low on the extent (one cell of about 70 ha, larger than the island)"
+paint = "pasture"
+region = { circle = [54.4888, -7.7362, 0.3] }
+where = { terrain = ["lake"] }
+
+[[edit]]
+id = "island-hare-island"
+area = "Inis Ainghin (Hare Island), Lough Ree: the one cell containing the monastery"
+reason = "the island is below the map's resolution and the derivation made its cell lake; the monastery of 768 stands on it (owner, 2026-11-06: \"Make the islands land\"; owner r178)"
+confidence = "high on the site, low on the extent (one cell of about 70 ha, larger than the island)"
+paint = "pasture"
+region = { circle = [53.471, -7.93, 0.3] }
+where = { terrain = ["lake"] }
+
+[[edit]]
+id = "island-inishmacsaint"
+area = "Inis Mac Saint (Inishmacsaint), Lower Lough Erne: the one cell containing the monastery"
+reason = "the island is below the map's resolution and the redrawn lake covers its cell; the monastery of 768 stands on it (owner, 2026-11-06: \"Make the islands land\"; owner r178)"
+confidence = "high on the site, low on the extent (one cell of about 70 ha, larger than the island)"
+paint = "pasture"
+region = { circle = [54.43642, -7.74871, 0.2] }   # the centre of cell (418, 258)
+where = { terrain = ["lake"] }
+
+[[edit]]
+id = "island-inis-patraic"
+area = "Inis Pádraig (St Patrick's Island), off Skerries: the one cell containing the monastery"
+reason = "the island is below the map's resolution and the derivation made its cell sea; the monastery of 768 stands on it (owner, 2026-11-06: \"Make the islands land\"; owner r178)"
+confidence = "high on the site, low on the extent (one cell of about 70 ha, larger than the island)"
+paint = "pasture"
+region = { circle = [53.5844, -6.0761, 0.3] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "island-inishglora"
+area = "Inis Gluaire (Inishglora), off the Mullet: the one cell containing the monastery"
+reason = "the island is below the map's resolution and the derivation made its cell sea; the monastery of 768 stands on it (owner, 2026-11-06: \"Make the islands land\"; owner r178)"
+confidence = "high on the site, low on the extent (one cell of about 70 ha, larger than the island)"
+paint = "pasture"
+region = { circle = [54.21, -10.128, 0.3] }
+where = { terrain = ["sea"] }

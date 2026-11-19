@@ -280,7 +280,9 @@ The check before anything else: the same stage 2 with the accepted `edits.toml` 
 and `edits.applied`) byte for byte, so the chain is whole.
 
 **Making it again**, from a checkout with Python 3.14.8, NumPy and Pillow as above, `S` the download cache and `BASE`, `STAGE1` and `OUT` empty scratch directories, in three steps. The frozen
-baseline is recovered first (it is the map before this slice, which the committed files no longer are), then stage 1 reads it, then stage 2 makes the terrain and layers with stage 1's `water.png` beside the complete `edits.toml`:
+baseline is recovered first (it is the map before this slice, which the committed files no longer are), then stage 1 reads it, then stage 2 makes the terrain and layers with stage 1's `water.png` beside the complete `edits.toml`.
+
+Stage 1 also needs the **CK-350 locations file**, SHA-256 `3533c71164378dc9f2fbed33d6af57a807107a1de05eea046a2a1d2c278f59e2`, not the current r21 file. Recover it from the accepted CK-350 Pijul state as shown below and verify the hash before building (the retained checkpoint `1795124969055934000-combined` also contains that file). Inis Mac Saint (418, 258) and Loch Léin (182, 789) are r21 anchors on cells the CK-350 mask changes; using r21 would keep those cells and change the mask. Whether a future water rebuild should protect those anchors is left open.
 
 ```
 # the frozen baseline: the chain with the accepted entries of edits.toml only (everything before the CK-350 section)
@@ -289,9 +291,13 @@ sed '/^# ---- Ireland.s water (CK-350/,$d' assets/map/ireland/edits.toml > BASE/
 python3 assets/map/ireland/derive_elevation.py --source S --out BASE --force
 python3 assets/map/ireland/draft_terrain.py    --source S --out BASE --force
 python3 assets/map/ireland/apply_edits.py      --out BASE        # BASE/terrain.png and BASE/elevation.png are the baseline named above
+# recover CK-350's 94-location input and check it before building the mask
+tools/ck pijul archive --state 35GNCYTJNTYYEGFMTVZHTLDBHHHKK3BTI52LKBE7YWNK3STBGNRQC -o BASE/ck350
+tar -xOzf BASE/ck350.tar.gz assets/scenarios/ireland-768/locations.toml > BASE/locations-ck350.toml
+printf '%s  %s\n' 3533c71164378dc9f2fbed33d6af57a807107a1de05eea046a2a1d2c278f59e2 BASE/locations-ck350.toml | shasum -a 256 -c
 # stage 1: the built files (reads the frozen baseline, waters.toml and the survey cache)
 python3 assets/map/ireland/import_waters.py build --source S --waters assets/map/ireland/waters.toml --map BASE \
-        --locations assets/scenarios/ireland-768/locations.toml --out STAGE1   # STAGE1/water.png, STAGE1/rivers.toml, STAGE1/waters-report.md
+        --locations BASE/locations-ck350.toml --out STAGE1   # STAGE1/water.png, STAGE1/rivers.toml, STAGE1/waters-report.md
 # stage 2: the terrain and the layers, from the drafts, with stage 1's water.png beside the complete edits.toml
 cp assets/map/ireland/terrain.toml assets/map/ireland/edits.toml STAGE1/water.png OUT/
 python3 assets/map/ireland/derive_elevation.py --source S --out OUT --force
@@ -915,3 +921,36 @@ should cite the pages in the table, not these.
 - The Shannon past Castleconnell: the Irish survey's river network itself (its line passes O'Briensbridge and
   Castleconnell; the head-race canal is not among its lines).
 
+### CK-358 location kinds and island cells
+
+The physical kinds follow `.pipeline/coordination/history-scratch/location-kinds-r1.md` (SHA-256 `a8895045b7562cd1b519751bd482356afb01ca8436cd73972f7f1d54515faa34`). The four glyphs and colours were approved by the owner in r189 from `mockups/kind-glyphs-r1.png`, drawn from plain shapes by `tools/kind_glyphs.py` in the history-scratch authoring area. Sizes, catchments and house numbers are designer values in `scenario/p2-economy-places-r1.toml` (SHA-256 `7fa590c19aaadbc0a16720b918e2aaeb6271d653f902f48d1fc00709a00ccfa3`). Seven one-cell island edits follow `scenario/ck358-dispositions-r1.toml` (SHA-256 `a3228302612021a485f2f57c08107692446d229fef862603198fcb4fea4adb52`) and `scenario/ck358-dispositions-r3.toml` (SHA-256 `72df6bb798a17ff822e1f66bf23fa1317f39fac9ed45f64bfb1d7056ca978c48`), under the owner's standing direction to make island monasteries land.
+
+
+Current CK-358 outputs (the CK-350 table above records the earlier base):
+
+| File | SHA-256 |
+|---|---|
+| `elevation.png` | `74a6d4b2361b26748ab97d1ea2e9e2056fa83a95a476ac95b5ef09e7df01ca0e` |
+| `terrain.png` | `0c23fefb59ba8d408d2824e351da017d9688630a22555df8a8a6a947b1cd7e38` |
+| `fertility.png` | `4dfc4669252926e80afb25e76560541fd1f806616d7d2eb852ed259ab76a4d75` |
+| `climate_temperature.png` | `368a68ea6b5429457e75165cf9335535ea9cae2eb171c25f1ffcf7330dd4275c` |
+| `climate_gdd.png` | `3fc60d590086ec8bbb8cff9682cccfc85ab370e97f6db4aaf77fedcdf034353d` |
+| `climate_rainfall.png` | `d81638a7e6c4ffee46f324b8a1e23a615915575699dba6e2b2d179334587109d` |
+| `climate_glacier.png` | `578726b5c37cdecbf847de48fb1d8d015ba631081ec9a8af9cf78a9d513ae512` |
+| `edits.applied` | `8ef8531ce9095c9df81942c596a17c74f493c0572edba37bc23732655c35c03f` |
+| `edits.toml` | `b7e78b9f4b52be5c756f92c9081446d5191e5b8d019ab415ce131180c8f82ee4` |
+| `waters.toml` | `18f2c99f24579ca50a69404f612436967f81f5f86b6b6f6af057bff6ed7142af` |
+| `water.png` | `80a0d67a93ef7a9fe4e6d1faf322eefd7fa8279ca380363cfc28f999f76ff64c` |
+| `rivers.toml` | `e8959053e38c9a814e8a5fb2f1320352494f8f49900af250ea81dc67d1aa0495` |
+
+Seven island edits each paint one cell:
+
+| Edit | Cell | Source terrain |
+|---|---|---|
+| `island-inchbofin` | (396, 460) | lake |
+| `island-inchcleraun` | (384, 451) | lake |
+| `island-white-island` | (420, 246) | lake |
+| `island-hare-island` | (394, 476) | lake |
+| `island-inishmacsaint` | (418, 258) | lake |
+| `island-inis-patraic` | (640, 450) | sea |
+| `island-inishglora` | (102, 310) | sea |

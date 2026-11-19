@@ -221,7 +221,7 @@ expect(math.abs(x + width / 2 - 500) <= P and math.abs(y + height / 2 - 350) <= 
 // ---- The list and the right column, with the shipped glossary ----
 
 #[test]
-fn the_list_holds_all_104_titles_in_order_with_no_tooltip_and_the_right_column_starts_empty() {
+fn the_list_holds_all_105_titles_in_order_with_no_tooltip_and_the_right_column_starts_empty() {
     let mut rig = reader_rig(
         "",
         &[
@@ -234,8 +234,8 @@ for _, key in ipairs(glossary.keys()) do
   expected[#expected + 1] = {key = key, sort = string.lower(entry.title), title = entry.title}
 end
 table.sort(expected, function(a, b) if a.sort ~= b.sort then return a.sort < b.sort end return a.key < b.key end)
-eq(#expected, 104, "the shipped glossary has 104 entries")
-eq(#r.list.items, 104, "the list holds all of them")
+eq(#expected, 105, "the shipped glossary has 105 entries")
+eq(#r.list.items, 105, "the list holds all of them")
 local widest = 0
 for index, item in ipairs(r.list.items) do
   eq(item.cells[1].text, expected[index].title, "row " .. index .. " is in order of the lower-case title")

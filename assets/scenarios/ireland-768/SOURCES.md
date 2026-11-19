@@ -12,7 +12,9 @@ Every place was placed by hand at its named site; none was placed by noise or pr
 
 The kinds, their sizes, catchment radii and glyphs are `assets/map/ireland/location_kinds.toml`, shared by every scenario on that map.
 
-**94 places:** 74 monasteries, 8 royal sites, 10 ringforts and 2 crannogs. Confidence: 37 high, 47 medium and 10 low.
+**Current CK-358 scenario:** 123 inhabited locations and two abandoned ceremonial sites. The entries and their source notes are in `locations.toml`; the older 94-place inventory below records the earlier draft.
+
+The authoring sources in `.pipeline/coordination/history-scratch/scenario/` are `locations-r21.toml` (SHA-256 `bdb45cd7d06ba6ac956225cd831eabac6acd0dac8229f8dbf4dae090668d973d`), `locations-changes-r3.md` (`d692806ec9faddd81a6d6b4e74aeb086e5cd8442eaf0d3111815f49426e4a281`), and `p2-economy-places-r1.toml` (`7fa590c19aaadbc0a16720b918e2aaeb6271d653f902f48d1fc00709a00ccfa3`). The Lóegairi stand-in seat moved to a free land cell; Loch Léin keeps its r21 anchor. Two abandoned sites were activated under the approved CK-358 dispositions. Cahercommaun and Dunamase are built later and excluded.
 
 ## The owner's decisions
 
@@ -27,25 +29,11 @@ Quoted verbatim, with their dates (relayed by ck-manager, whose message ids are 
   "Make the islands land". The map's edits r8 does this; see `assets/map/ireland/SOURCES.md`.
 - **2026-11-06** (`w9wu4q8trbn96eisf5vy5eh9je`), sign-off on the preview of draft 3: "the places look good, i approve".
 
-## The rule for each kind
+## Current location kinds
 
-- **`monastery`:** a great church settlement with good annalistic attestation before 768. Size ranks its prominence in the 8th-century
-  annals, not its population, which is unknown. Size 4 is kept for Armagh, Clonmacnoise and Kildare.
-- **`royal_site`:** the seat of a provincial or over-king, where the seat is known.
-- **`ringfort`:** a lesser king's or lord's seat, attested in the annals or by excavation with 8th-century occupation.
-- **`crannog`:** a lake-dwelling seat, attested as above.
-- **`longphort`:** defined but unused, because the Norse arrive in 795 and found Dublin about 841.
-- **Buildings:** `church` at every monastery and at royal seats with a church; `enclosure` (the rath, cashel or palisade) at royal seats,
-  ringforts, crannogs and walled church sites; `high_cross` only where an 8th-century date is argued. No round towers: they are later,
-  from about 900.
+Kinds describe the physical place. `monastery` is a church settlement, `ringfort` a defended earthen enclosure, `crannog` a lake dwelling, `cashel` a stone fort, `hillfort` a hill enclosure, `ceremonial_ground` an assembly site, and `promontory_fort` a defended headland. `longphort` is defined but unused in 768. `royal_site` has been retired; seats are not stored as a kind. Sizes, catchments, house numbers and glyphs are in `assets/map/ireland/location_kinds.toml`.
 
-| Kind | Sizes | Default `catchment_m` by size | Buildings in this draft |
-|---|---|---|---|
-| `monastery` | 1–4 | 3,000 / 5,000 / 7,000 / 9,000 | `church` at every one; `enclosure` at the four largest and the walled island sites; `high_cross` at three (G6) |
-| `royal_site` | 1–3 | 4,000 / 6,000 / 8,000 | `enclosure`; `church` also at Downpatrick and Clogher (G4) |
-| `ringfort` | 1–2 | 2,500 / 3,500 | `enclosure` |
-| `crannog` | 1–2 | 2,500 / 3,500 | `enclosure` (the palisade) |
-| `longphort` | 1–3 | 3,000 / 5,000 / 7,000 | defined but unused: the Norse arrive in 795 |
+Emain Macha and Dún Ailinne are abandoned: they have no people, working buildings or catchment. Cahercommaun and Dunamase were built later and are not loaded.
 
 ## Sources
 
@@ -60,7 +48,7 @@ Quoted verbatim, with their dates (relayed by ck-manager, whose message ids are 
   guesswork log.
 - No OpenStreetMap geometry is used, for licence reasons (as CK-181).
 
-## The places
+## The places in the earlier 94-place draft
 
 The `name` is modern Irish; the English form is given here.
 
