@@ -40,6 +40,14 @@ from gate.records import (
 SPEC_FIXTURE = Path(__file__).resolve().parent / "fixtures/bootstrap/spec.md"
 
 
+def setUpModule() -> None:
+    """Keep gate resolution independent of the caller's model-class configuration."""
+    path = Path(__file__).resolve().parent / "fixtures/records/model-classes.toml"
+    patcher = mock.patch.dict(os.environ, {"CK_MODEL_CLASSES": str(path)})
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 def complete(kind: str, partial: Mapping[str, object]) -> dict[str, object]:
     """A fixture bootstrap record with every field its writer writes.
 

@@ -41,6 +41,7 @@ UNITTEST_STEPS = (
     "unittest-catalog",
     "unittest-check",
     "unittest-lints",
+    "unittest-waters",
     "unittest-bootstrap",
     "unittest-lease",
 )

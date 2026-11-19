@@ -42,6 +42,7 @@ if "--self-test" in sys.argv:
 import drainage  # noqa: E402
 import numpy as np  # noqa: E402 -- --self-test must run before optional image dependencies load
 from draft_terrain import ELEVATION_OFFSET, distance_to, terrain_keys  # noqa: E402
+from import_waters import WatersError, mask_cells  # noqa: E402
 from ireland_grid import CELL_GROUND_M, Array, Crop  # noqa: E402
 from numpy.typing import NDArray  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
@@ -51,7 +52,7 @@ HERE = Path(__file__).resolve().parent
 NAMES = ("sea", "lake", "pasture", "forest", "bog", "marsh", "mountain")
 SEA, LAKE, PASTURE, FOREST, BOG, MARSH, MOUNTAIN = range(len(NAMES))
 LAND_TYPES = (PASTURE, FOREST, BOG, MARSH, MOUNTAIN)
-REGIONS = ("polygon", "box", "circle")
+REGIONS = ("polygon", "box", "circle", "mask")
 FILTERS = (
     "terrain",
     "elevation_min",
@@ -169,14 +170,19 @@ def river_cells(state: State) -> Grid:
     return np.asarray(image, dtype=np.uint8) > 0
 
 
-def region_mask(state: State, region: dict[str, Any], identifier: str) -> Grid:
-    """The cells a region covers: a polygon by majority cover, a box or a circle by the cell centre."""
+def region_mask(
+    state: State, region: dict[str, Any], identifier: str, paint: str | None = None
+) -> Grid:
+    """The cells a region covers: a polygon by majority cover, a box or a circle by the cell centre, a mask image by the key
+    colour of the paint (the `water.png` that `import_waters.py build` writes)."""
     kinds = [kind for kind in REGIONS if kind in region]
     if len(kinds) != 1 or len(region) != 1:
         message = f"edit {identifier}: region needs exactly one of {', '.join(REGIONS)}"
         raise SystemExit(message)
     kind = kinds[0]
     shape = state.elevation.shape
+    if kind == "mask":
+        return mask_region(state, region["mask"], identifier, paint)
     if kind == "box":
         south, north, west, east = region["box"]
         return (
@@ -200,6 +206,19 @@ def region_mask(state: State, region: dict[str, Any], identifier: str) -> Grid:
         .mean(axis=(1, 3))
     )
     return covered > POLYGON_COVER
+
+
+def mask_region(state: State, name: str, identifier: str, paint: str | None) -> Grid:
+    """The cells of a mask image whose pixel is the key colour of the edit's paint, for any terrain. The image is the crop's
+    size and holds only black ("no change") and the terrain keys; anything else is refused."""
+    with Image.open(state.directory / name) as image:
+        pixels = [[tuple(p) for p in row] for row in np.asarray(image.convert("RGB")).tolist()]
+    try:
+        covered = mask_cells(pixels, state.keys, paint or "", (state.crop.width, state.crop.height))
+    except WatersError as error:
+        message = f"edit {identifier}: {name}: {error}"
+        raise SystemExit(message) from None
+    return np.array(covered, dtype=bool)
 
 
 def where_mask(state: State, where: dict[str, Any], identifier: str) -> Grid:
@@ -430,7 +449,7 @@ def apply_edit(state: State, edit: dict[str, Any]) -> int:
     if "tidy" in edit:
         return tidy_terrain(state, edit)
     paint = edit["paint"]
-    inside = region_mask(state, edit["region"], identifier)
+    inside = region_mask(state, edit["region"], identifier, paint)
     where = where_mask(state, edit.get("where", {}), identifier)
     if "grow" in edit:
         before = state.terrain.copy()

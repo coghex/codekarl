@@ -2392,6 +2392,8 @@ GUARDS: tuple[Guard, ...] = (
         "map.core",
         ("assets/map/ireland/", "assets/scenarios/ireland-768/"),
     ),
+    # CK-348: the water import tool's tests load `import_waters.py` from the map directory by its path: plain Python, no other tool.
+    Guard("tests/test_map_waters.py", "unittest-waters", ("assets/map/ireland/import_waters.py",)),
     # The application tests that read shipped files or hash workspace inputs belong to rust.app.
     Guard("apps/codekarl/src/font.rs", "rust.app", ("assets/ui/font/",)),
     # CK-335: the debug layer's headless rendering tests load the shipped font.
