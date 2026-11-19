@@ -9,7 +9,8 @@ addendum, and `design-review-ck-reviewer-2.md`) and the owner's decisions on it.
 non-blocking notes; it changes no design. Milestone 6 (§10) was then implemented and accepted. §12 records the milestone 9 land,
 climate and look, which are accepted on native Metal (slices 9a, 10a and 10b: CK-234, CK-235 and CK-236); the Vulkan catch-up is
 parked. §13 records the river redesign (owner-signed, 2026-11-16): the river network's format, checks, look and drawing are
-accepted (CK-347, CK-349), and Ireland's own rivers stay the earlier lines until its water data is redone (CK-350, not accepted).
+accepted (CK-347, CK-349), and so is the tool that drafts Ireland's water from the public surveys (CK-348, §13.8). Ireland's own
+rivers stay the earlier lines until its water data is redone (CK-350, not accepted).
 
 **Firm** marks owner decisions, with their date. **Proposal** marks designer recommendations. **Open** marks decisions that still need an
 answer. A Firm item that the owner chose by reacting to a mock-up says so. Times are UTC on 2026-11-02 unless stated.
@@ -769,11 +770,14 @@ then says "the owner chose" and quotes the option's label.
   - **CK-347** (slice 1): the river network's file format, its load checks, the widths, the pixels at each step and the reference
     colours, in `ck-map` (§13.2 to §13.4), with the preview tool;
   - **CK-349** (slice 2): the game draws a river network through the map pass (§13.5).
+- **Built and accepted, as tooling:**
+  - **CK-348** (slice 3): the import tool that turns the public surveys into drafts of Ireland's water data (§13.8). It changes
+    none of Ireland's committed map data.
 - **Not built yet:**
-  - the import scripts that turn the surveys into draft data (slice 3, CK-348, not accepted);
-  - **Ireland's water** (slice 4, CK-350, not accepted): the surveyed river network, the redrawn and added loughs, the tidal sea
-    cells and the regenerated layers. **Until it is accepted, `assets/map/ireland/rivers.toml` is the earlier file of 15 river
-    lines, so the game's rivers look as before:** one-pixel lines that cross the loughs (§3.4, §9.4 rule 7);
+  - **Ireland's water** (slice 4, CK-350, not accepted; work on it began on 2026-11-19): the owner-approved river and lough
+    lists, the surveyed river network built from them, the redrawn and added loughs, the tidal sea cells and the regenerated
+    layers. **Until it is accepted, `assets/map/ireland/rivers.toml` is the earlier file of 15 river lines, so the game's rivers
+    look as before:** one-pixel lines that cross the loughs (§3.4, §9.4 rule 7);
   - the owner's hand check of the running map (slice 5).
 - **Vulkan** is compile-only (§12.6): it is handed the same two lists, and no Vulkan test was added.
 
@@ -935,6 +939,169 @@ outside their tests and no shader changed.
 - **Not part of the river redesign:** river names on the map; fords, bridges and crossings; any effect of rivers on movement or
   borders. Fertility's valley score still comes from the elevation alone (§12.1).
 
+### 13.8 The survey import tool (CK-348)
+
+`assets/map/ireland/import_waters.py` turns the public river, lough and tidal surveys into drafts of Ireland's water data (D4,
+D6, D8 to D11 and D13 of §13.1). **It changes none of Ireland's committed map data.** Slice 4 (CK-350) uses it: the owner
+approves the lists, the mask is applied and the result is recorded (D14). `assets/map/ireland/SOURCES.md` ("Water import") holds
+the commands, each layer's address and the evidence for its licence.
+
+**The commands.** There are three, run by hand from a checkout like the map's other scripts:
+
+```
+python3 assets/map/ireland/import_waters.py fetch   --source DIR [--force]
+python3 assets/map/ireland/import_waters.py propose --source DIR --out DIR [--map DIR] [--force]
+python3 assets/map/ireland/import_waters.py build   --source DIR --out DIR [--map DIR] [--waters FILE]
+                                                    [--locations FILE] [--force]
+```
+
+- `--source` is the download cache, which is not committed. `--out` is where a command writes. `--map` is the map directory it
+  reads, by default the script's own. An output that already exists is refused and named unless `--force` is given.
+- **`fetch`** downloads the survey layers into the cache and writes `waters-manifest.json`: each layer's addresses, the day, the
+  number of features and the SHA-256 of what was stored. No test and no check downloads anything.
+- **`propose`** writes a first `waters.toml`, the hand-kept list, for the owner to cut and add to.
+- **`build`** reads the list, the cache and the map's `map.toml`, `terrain.toml`, `terrain.png` and `elevation.png`, and writes
+  `rivers.toml` (a river network, §13.2), `water.png` and `waters-report.md`. **The same inputs give the same bytes.**
+  - `--waters` names the list. Its default is `waters.toml` in the map directory, and Ireland has none until slice 4 records it.
+  - `--locations` names a scenario's `locations.toml`: each location's cell keeps its terrain, and the report names each
+    location on or beside new water.
+- `fetch` needs `numpy` and reading the map's images needs `Pillow`, which the project's own Python does not have. The rules
+  themselves are plain Python.
+
+**The surveys** (the owner chose "Public surveys, kept as editable data", D8). A layer is used only when its publisher states an
+attribution-only licence. Six are:
+
+- **Irish EPA** (CC BY 4.0): the river network routes from stream order 4, with every line through a lough or tidal water; the
+  lake water bodies; the transitional (tidal) water bodies.
+- **DAERA, Northern Ireland** (Open Government Licence v3.0): the lakes, from DAERA's service; the river segments from stream
+  order 4 and the transitional waters, each as an OpenDataNI download.
+  - The two downloads are older editions than DAERA's services for the same data. Those services carry no licence text, so
+    they are not used (ck-manager's decision, 2026-11-16; `SOURCES.md` gives the differences).
+  - Northern Ireland's rivers have no names in the survey.
+- A layer whose licence is not confirmed is not fetched, and the manifest names it. OpenStreetMap stays unused.
+
+**`waters.toml`, the hand-kept list.** It is what the owner approves in slice 4.
+
+- `[settings]`: the width rule's `a` and `b`, `simplify_m` (8) and `tier_steps` (`[0, 14, 24]`, D12).
+- `[[river]]`: `id`, `name`, `tier` and `source`, a table of `epa_names` (the Irish survey's river names) or `rwb_codes`
+  (Northern Ireland's water-body codes), or both.
+- `[[lough]]`: `name`, `source` (the survey's lake code) and `mode`, `"added"` or `"redrawn"`. A redrawn lough may carry
+  `keep_existing = true` with a `reason`.
+- `[[keep]]`: `id`, `reason` and `point`. The cell that holds the point keeps its terrain.
+- `[[reservoir]]`: `name`, `source` and `reason`: a modern reservoir. Its outline is not water, and a line through it is a river.
+- `[[correction]]`: `id`, `reason`, `confidence`, `river`, and exactly one of:
+  - `width_m`, one number or the first and last widths, or `width_factor`; either may name one `stretch`;
+  - `omit`, the survey segment codes to leave out;
+  - `course` with `replaces`, a hand-drawn course that stands in for those segments, with an optional `kind`.
+- **Refused, naming the entry:** an unknown key; a river with an empty name; a repeated id or river name; a survey name or code
+  in two rivers; a correction for a river that is not in the list.
+- **`rivers.toml` is built, never hand-edited.** The owner chose "Computed first draft, hand-corrected" (D9). The spec reads
+  that as corrections kept in this list, where each keeps its reason through a rebuild; a rebuild replaces `rivers.toml`
+  whole. That reading is ck-designer-7's (CK-348 spec r6), not the owner's words. The built file's first lines say so and give
+  the SHA-256 of the list it was built from.
+
+**What `propose` lists:**
+
+- each river of the Irish survey with 15 km or more at stream order 5 and above;
+- each Northern Ireland water body with a segment of order 5 or above, as a river with an empty name;
+- each river that one of those ends at, so that the network reaches the sea, with a comment saying why;
+- a tier for each from the land it drains: tier 1 from 1,200 km², tier 2 from 300 km², otherwise tier 3;
+- as `"redrawn"`, each surveyed lough that overlaps a lake cell the map has today;
+- as `"added"`, each other lough of 1 km² or more that a listed river runs through or beside;
+- Lough Neagh with `keep_existing`, and `[[keep]]` entries for the island cells of Inis Cealtra and Inisfallen, each with the
+  owner's terrain edit named as its reason;
+- as `[[reservoir]]` with the reason "to be checked", each outline whose name says reservoir or dam, and the ones the design
+  names.
+
+A river it cannot build is marked "not built" in a comment. `build` refuses the raw proposal, because its Northern Ireland
+rivers have no names yet.
+
+**The network `build` writes:**
+
+- **Kinds** come from the survey's marks: a line through a lough is `"lough"`, a tidal or coastal line is `"tidal"`, any other
+  is `"river"`.
+- **A stretch is `"lough"` only where the map has the lough under it.** A stretch the survey marks as a lough line, with no
+  segment midpoint in a lake cell of the terrain the mask will make, is written as `"river"`. Its ends and its id do not change,
+  and the report lists it with the reason.
+- **Stretches.** A stretch ends, and the next begins, at each join with another stretch, at each change of kind and where a
+  hand-drawn course begins and ends. Each runs downstream. Its id is the river's id and a two-digit number counted from the
+  source, as in `suir-07`. Joins are exact.
+- **Two things the tool adds,** each listed in the report:
+  - where the survey has no line through a lough, a straight lough stretch between the two ends;
+  - where a river's line stops short of the open sea, a straight run to the centre of the nearest open-sea cell.
+- **Points** are thinned to `simplify_m` on the ground, keeping each stretch's two ends, and written to five decimal places.
+- **The format is checked before anything is written.** `build` checks the whole network against the rules of §13.2, on the
+  terrain as the mask will make it. If any fails, it writes nothing and names each river and stretch at fault.
+
+**Widths** (D9):
+
+- A stretch's width is `a × area^b` metres, with `a = 2.3` and `b = 0.4` to start: at its last point from the land it drains,
+  at its first from the largest area of the stretches above it.
+- **The drained area** is the tool's own reading of the elevation grid with the new water: flow passes through loughs and ends
+  at the sea. It is then made consistent along the network. A stretch drains no less than the largest stretch above it, and no
+  more than what the stretches above bring, plus 20 km² for each kilometre of its own length, plus 40 km².
+- A headwater's first width comes from the area the grid reads at its first point, at least 1 km² and at most the stretch's own.
+- A tidal stretch is at least as wide as its surveyed outline, twice the outline's area over its perimeter, up to 800 m.
+- Corrections then apply. Widths are written to a tenth of a metre and never below 0.5 m.
+
+**`water.png`, the mask,** is an image of the crop's size in the terrain key colours: black on every cell that does not change,
+otherwise the key of the terrain the cell takes.
+
+- **Sea** (the owner chose "Tidal reaches become sea", D4): a land cell that is more than half inside a tidal outline, and
+  joined through sea cells, by their four neighbours, to the sea at the crop's edge.
+- **Loughs are decided together,** from every listed lough at once, so the order of the list cannot change the result (D10,
+  D11):
+  - a land cell more than half inside a listed lough's outline becomes lough;
+  - a lake cell of today, in a patch of lake that a redrawn lough's outline touches and outside every listed outline, is
+    returned to land. It takes the terrain of the nearest cell that is land today;
+  - a patch that a `keep_existing` lough touches gives no cell back. This is how Lough Neagh's hand-set level is kept;
+  - a patch of today's lake that no redrawn lough touches is left alone.
+- **A kept cell never changes:** the cell of each `[[keep]]` point and, with `--locations`, of each location.
+- The tool writes the PNG's bytes itself in one fixed encoding, so they are the same on every machine.
+
+**The mask is applied by `apply_edits.py`,** which gains one kind of region: `region = { mask = "water.png" }`. It covers the
+cells whose pixel in that image is the key colour of the edit's `paint`. The image is read from the directory that holds the
+map's layers, must be the crop's size, and may hold only black and the terrain keys: any other colour is refused. Slice 4
+applies the mask with one edit for the sea, one for the lake and one for each land terrain it holds. Every other edit is
+unchanged.
+
+**`waters-report.md`** is what slice 4 puts before the owner:
+
+- the surveys used;
+- each river's tier, stretches, length, drained area, width at its mouth and corrections;
+- the cells that become sea, by estuary, with the terrain each was; the tidal cells left as river because they are not joined
+  to the sea; the sea cells the map already has that are cut off from the open sea;
+- each lough's new cells, the cells returned to land with the land each takes, and the cells kept;
+- the reservoirs left out, and the straight stretches the tool added;
+- with `--locations`, each location on a cell that would have become water, and each beside one;
+- what Northern Ireland lacks;
+- **each lough line written as river,** with one of four reasons for each lake code the line carries:
+  1. the survey gives the line no lake outline;
+  2. its lake has an outline that is not in the list, with the outline's area, so the owner can see a lough to add;
+  3. its lough is in the list and on the map, but no segment midpoint of the stretch is in a lake cell;
+  4. its lough is in the list, but no cell of it is lake on the map, with the number of cells its outline covers.
+
+**Tests.** `tests/test_map_waters.py` holds 80 tests on small hand-written inputs, in the group `unittest-waters`, which a
+change under `assets/map/` or to the module selects. They run in the project's own Python and download nothing.
+
+**A recorded run on the real surveys** (CK-348's evidence and reviews, 2026-11-16 to 2026-11-19) used a scratch list: the
+proposal with placeholder names for Northern Ireland's rivers. **It is not the owner's list.**
+
+- It built 161 rivers in 1,458 stretches: 991 river, 374 tidal and 93 lough. 57 lough lines were written as rivers.
+- Two builds gave the same bytes.
+- ck-reviewer-1 loaded the built network with the game's loader, on a map with the mask applied (review 3).
+
+**Disclosed, not designed for:**
+
+- **The surveys are today's channels.** Only what a correction in `waters.toml` changes is undone (D13).
+- **Drained areas are approximate.** The surveyed channel and the grid's drainage line can sit a cell or two apart, so a river
+  can be proposed in the wrong tier and a width can be off. The owner's list and the corrections settle both. `a` and `b` are
+  starting values, to be fitted against known widths in slice 4.
+- The tool's drained area is its own calculation, apart from `drainage.py`'s (§12.1).
+- Narrow estuaries stay river stretches, because a cell becomes sea only when more than half of it is tidal water.
+- Northern Ireland's river lines stop at the head of each estuary, so each such river's last run is a straight line.
+- Among the islands of a large lough some short stretches are `"river"`, because the map's cells there are land.
+
 ## Provenance
 
 Drafted 2026-11-02 by ck-designer-1. Revision 2 the same day, after design review 1; revision 3 (editorial) after both re-reviews approved
@@ -952,3 +1119,7 @@ Revision 6, 2026-11-09, by ck-designer-1: §12.3's four shades per terrain, from
 Revision 7, 2026-11-19, by ck-designer-4 (the docs lane): §13 and the pointers to it, from the owner-signed river design
 (`rivers-design/design-r3.md`, 729cc04e), the approved specs of CK-347 and CK-349 and their accepted code; and §12.1's CK-351
 part, from its approved spec, its accepted code and its evidence. Each sentence was checked against the accepted code.
+
+Revision 8, 2026-11-19, by ck-designer-4 (the docs lane): §13.8 and §13.1's lists, from CK-348's approved spec
+(`runtime-m55/ck348-spec-r6.md`), its accepted code, `assets/map/ireland/SOURCES.md` and the submission's evidence and reviews.
+The tool's rules were checked against the accepted code; the recorded run's figures are quoted from the evidence, not rerun.

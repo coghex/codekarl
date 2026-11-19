@@ -32,8 +32,9 @@ Accepted so far, each milestone with its design (the [documentation index](docs/
 - **Rivers, in progress** ([docs/map-design.md](docs/map-design.md) §13): `ck-map` and the game can load and draw a connected
   river network (`rivers.toml` with `format = 2`): each river at its real width, as dark water with a bank where it is wide and
   a blue line where it is narrow, ending at the lough shore, with the smaller rivers appearing as the view zooms in. Ireland's
-  own rivers are still the earlier one-pixel lines until its water data is redone. Fertility's drainage now passes through
-  loughs (§12.1).
+  own rivers are still the earlier one-pixel lines until its water data is redone. A tool that drafts that data from public
+  river, lough and tidal surveys is in (`assets/map/ireland/import_waters.py`, §13.8); it changes none of the committed map
+  yet. Fertility's drainage now passes through loughs (§12.1).
 
 ## Run it
 
