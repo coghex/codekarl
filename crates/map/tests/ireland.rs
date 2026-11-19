@@ -6,6 +6,28 @@ use std::path::Path;
 
 use ck_map::{ScenarioStart, Surface, TerrainKind, cell_of, load_map, load_scenario, project};
 
+/// CK-350: Ireland's rivers are the format-2 network built from the owner-approved `waters.toml`; today's line format is gone.
+fn assert_ireland_has_the_river_network(map: &ck_map::LoadedMap) {
+    assert!(map.rivers.is_empty(), "the old river lines are replaced");
+    let network = map
+        .river_network
+        .as_ref()
+        .expect("Ireland carries a river network");
+    assert_eq!(network.show_from_step, [0, 14, 24]);
+    assert_eq!(network.rivers.len(), 106);
+    for tier in 1..=3 {
+        assert!(
+            network.rivers.iter().any(|river| river.tier == tier),
+            "no river of tier {tier}"
+        );
+    }
+    assert!(
+        network.stretches.len() > 400,
+        "{} stretches",
+        network.stretches.len()
+    );
+}
+
 #[test]
 #[expect(
     clippy::cast_precision_loss,
@@ -51,7 +73,7 @@ fn the_shipped_map_of_ireland_loads_and_validates() {
         land > cells / 10 && land < cells / 2,
         "{land} land cells of {cells}"
     );
-    assert!(!map.rivers.is_empty());
+    assert_ireland_has_the_river_network(&map);
 
     // Independently pin the f64 cosine scale table for Ireland's crop.
     let crop = map.data.crop;
@@ -96,7 +118,7 @@ fn ireland_768_scenario_resolves_its_map_and_loads_all_locations() {
             "missing island monastery {id}"
         );
     }
-    assert!(!scenario.map.rivers.is_empty());
+    assert_ireland_has_the_river_network(&scenario.map);
 }
 
 #[test]

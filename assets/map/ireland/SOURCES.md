@@ -2,7 +2,7 @@
 
 This directory is Ireland and its associated offshore islands in the map format of `ck-map` (`docs/map-design.md` section 9.5), for
 milestone 6, slice 5 (CK-181), updated by CK-194 for the Ireland-768 scenario and CK-234 for computed climate, fertility and glacier
-layers. **It is a draft toward medieval Ireland, approved by the owner at three preview views on 2026-11-05 (below); no generated layer
+layers. **It is a draft toward medieval Ireland, approved by the owner at three preview views on 2026-11-05 (below), with Ireland's water (rivers, loughs, estuaries) the owner-approved list of CK-350 ("Ireland's water", below); no generated layer
 has a hand edit: terrain includes the r8 and CK-234 signed edits, and the climate, glacier and fertility layers are generated from that
 terrain and elevation. The full draft-to-output chain is reproducible byte for byte by the scripts and `edits.toml`.** The elevation, the
 coast and the larger loughs come from real data; terrain, climate, fertility and most river courses are modeled or estimated (see the
@@ -13,28 +13,30 @@ guesswork log).
 | `map.toml` | the crop and the layer names | `derive_elevation.py` |
 | `elevation.png` | 16-bit grey, `elevation + 11000` in metres | `derive_elevation.py` (fully reproducible) |
 | `terrain.toml` | the terrain types, their keys, palette and rules | by hand |
-| `terrain.png` | the terrain type of each cell, as its key colour | `draft_terrain.py`, then `apply_edits.py` (edits r8 and CK-234; no hand edit) |
+| `terrain.png` | the terrain type of each cell, as its key colour | `draft_terrain.py`, then `apply_edits.py` (edits r8, CK-234 and CK-350's mask and hand entries; no hand edit) |
 | `fertility.png` | 8-bit grayscale fertility, stored as `min(250, floor(fertility_pm / 4))`; decoded per mille is the sample times four | `apply_edits.py` |
 | `climate_temperature.png` | 16-bit grayscale, mean temperature in tenths of °C with a +1000 offset | `apply_edits.py` |
 | `climate_gdd.png` | 16-bit grayscale growing degree days above 5 °C | `apply_edits.py` |
 | `climate_rainfall.png` | 16-bit grayscale annual rainfall in mm | `apply_edits.py` |
 | `climate_glacier.png` | 8-bit grayscale; 255 means glacier, 0 means no glacier | `apply_edits.py` |
-| `rivers.toml` | the major rivers, as latitude and longitude points | `derive_rivers.py`, unchanged (no hand edit) |
-| `edits.toml` | the owner-delegated corrections toward medieval Ireland: one entry per change, with its reason (cited by `id` in the guesswork log below) | by hand (ck-designer-1, owner-delegated); r8 adds the monastery islands and CK-234 adds two terrain corrections |
+| `rivers.toml` | the river network (format 2: named rivers with tiers, and their stretches with points, widths and ends) | `import_waters.py build` from `waters.toml` (CK-350); no hand edit |
+| `edits.toml` | the owner-delegated corrections toward medieval Ireland: one entry per change, with its reason (cited by `id` in the guesswork log below) | by hand (ck-designer-1, owner-delegated); r8 adds the monastery islands, CK-234 two terrain corrections and CK-350 the mask's entries and the owner's hand entries for the stranded pools |
 | `apply_edits.py` | applies `edits.toml` over the draft, in order, deterministically | |
 | `edits.applied` | records that the edits were applied to these images (the SHA-256 of `edits.toml`) | `apply_edits.py` |
 | `ireland_grid.py` | the world grid and tile arithmetic the scripts share | |
 | `import_waters.py` | `fetch`, `propose` and `build` for the rivers, loughs and tidal outlines (CK-348; see "Water import" below) | |
-| `waters.toml` | the hand-kept list of rivers and loughs the owner approves (slice 4; none is committed yet) | by hand |
+| `waters.toml` | the owner-approved list of rivers, loughs, sea entries, reservoirs left out and corrections (CK-350) | by hand (ck-designer-7); each list approved by the owner |
+| `water.png` | the mask of the cells that become sea or lake, or that a redrawn lough gives back to land (4-bit palette PNG in the terrain keys) | `import_waters.py build` from `waters.toml` (CK-350) |
 
-**The committed `elevation.png` is the elevation draft; `terrain.png` is that terrain draft plus edits r8 and the two CK-234 corrections.
-The five computed climate, glacier and fertility layers are generated after all edits, and `rivers.toml` is `derive_rivers.py`'s output
-unchanged. Hand-kept inputs are listed in the guesswork log.** Running `draft_terrain.py` or
-`derive_rivers.py` again reproduces the first draft only and destroys those edits, so both refuse to overwrite their files unless
-`--force` is given; `apply_edits.py` refuses to run twice over the same files (`edits.applied`) unless `--force` is given.
-`derive_elevation.py` can be run again at any time, but its `--force` regenerates `elevation.png` and so removes the edits' sea paint:
-after it, run `draft_terrain.py --force`, derive rivers, and `apply_edits.py` again. The chain is: derive elevation, draft terrain, derive
-rivers from the draft elevation, then apply terrain edits followed by climate and fertility derivation.
+**The committed `elevation.png` is the elevation draft with every edit applied; `terrain.png` is the terrain draft plus all of `edits.toml`
+(r8, the two CK-234 corrections, and CK-350's mask and hand entries). The five computed climate, glacier and fertility layers are generated after
+all edits, and `rivers.toml` and `water.png` are built by `import_waters.py` from `waters.toml`. Hand-kept inputs are listed in the guesswork log.**
+Running `draft_terrain.py` again reproduces the first draft only and destroys those edits, so it refuses to overwrite its file unless `--force` is
+given; `apply_edits.py` refuses to run twice over the same files (`edits.applied`) unless `--force` is given. `derive_elevation.py` can be run again
+at any time, but its `--force` regenerates `elevation.png` and so removes the edits' sea paint: after it, run `draft_terrain.py --force` and
+`apply_edits.py` again. The chain is: derive elevation, draft terrain, then apply every terrain edit followed by climate and fertility derivation.
+`derive_rivers.py` is gone (CK-350): its output is no longer a file of the map, and running it would have replaced the network with the old format;
+what it did is kept in "The first draft" below.
 
 ## The crop
 
@@ -193,7 +195,8 @@ the owner chose need none: Cork Harbour and Lough Swilly are in the EPA's coasta
   the river that lists it in `segments`; failing that, its Irish name; failing that, its water body; failing that, a river that runs on into it.
   A line listed in the `segments` of two rivers (by either code) is refused, naming both codes and both rivers; so is a code the survey does not have.
   The report lists, for each river, the lines of its entries another river has, and "Courses built twice": every pair of stretches within 25 m of each
-  other for 300 m or more (points sampled every 10 m; the lesser of what each runs beside the other). The tool does not reconcile lines the two surveys draw
+  other for 300 m or more (local ground distance; for each segment of a stretch the part within 25 m of the other stretch's line segments is found exactly
+  and summed, so vertices do not change a result; the lesser of what each runs beside the other). The tool does not reconcile lines the two surveys draw
   differently (a few metres apart, or cut at different points): the list takes one of them with `segments` and `omit`.
 - **DAERA's marks (CK-354).** DAERA's `SEGMENT_TYPE` is read: `L` is a lough line and `T` a tidal one, as the Irish survey's marks are. `fetch` still
   leaves out DAERA's lines below stream order 4, marked or not.
@@ -232,6 +235,82 @@ the owner chose need none: Cork Harbour and Lough Swilly are in the EPA's coasta
   is on the map when at least one cell its outline covers is a lake cell of the terrain the mask makes). A stretch whose segments carry several
   lake codes lists each with its own reason. Lake codes and names are given wherever the survey has them (spec r6, rule 11).
 
+## Ireland's water (CK-350, slice 4 of the rivers design)
+
+Ireland's rivers, loughs and estuaries are now data the owner approved, list by list, in ck-designer-7's tab (D14). `waters.toml` holds 106 rivers, 43 loughs, 11 sea entries, 2 kept cells, 14 reservoirs left out and 45 corrections.
+`import_waters.py build` reads it with the frozen baseline and writes `water.png` and `rivers.toml`; `apply_edits.py` applies the mask and the hand entries
+with the rest of `edits.toml` and regenerates the climate, glacier and fertility layers once over the finished terrain (CK-351's drainage rule). Nothing else of the
+map changes by hand: no generated layer has a hand edit.
+
+**The owner's approvals** (each recorded verbatim in `.pipeline/coordination/rivers-design/`, the first eight hex digits of its SHA-256):
+  - `owner-direction-designer-r10.md` (`b4961e9b`): the four big inlets
+  - `owner-direction-designer-r11.md` (`1b9fdf30`): Carlingford Lough and the Kenmare River opened as sea, Foyle mouth only
+  - `owner-direction-designer-r12.md` (`fd75312f`): short Ulster rivers cut, rivers added
+  - `owner-direction-designer-r13.md` (`9fb79b90`): the Cong
+  - `owner-direction-designer-r14.md` (`808412e0`): the rivers, their names and tiers
+  - `owner-direction-designer-r15.md` (`2ef1c1b1`): the sea cells and the hand-drawn last reaches
+  - `owner-direction-designer-r16.md` (`941f67d5`): the loughs, with Lough Allua
+  - `owner-direction-designer-r17.md` (`f16cc2d1`): the stranded pools: join the near ones, the rest to land
+  - `owner-direction-designer-r18.md` (`4f03694b`): the stranded pools on the worker's build (the hand entries)
+  - `owner-direction-designer-r19.md` (`b79dd767`): the island sites
+  - `owner-direction-designer-r20.md` (`5217dc7a`): the reservoirs left out and the corrections (D13)
+  - `owner-direction-designer-r21.md` (`d8060641`): the widths: a = 2.3 and b = 0.4 stand, the Shannon 1.4 times the rule above the tide
+  - `owner-direction-designer-r22.md` (`b94789e0`): the Woodford's last reach: its last 1.5 km by three DAERA lines, running into the Erne through one lough line, so no reach is drawn twice
+  - `owner-direction-designer-r23.md` (`41cfb630`): the before-and-after close-ups of the 27 added loughs: they stand
+
+**Authored inputs** (kept and named; the scripts as accepted are the rest):
+  - `edits.toml`: `567bb70a60b95086ead59c89bfebb4e832dd2ff937746d0d0ebfc92053164ccb` (the accepted entries, then the mask's 6, then the owner's 156 hand entries)
+  - `waters.toml`: `18f2c99f24579ca50a69404f612436967f81f5f86b6b6f6af057bff6ed7142af`
+  - `terrain.toml`: `cf4f8fca71ea6bbbde359bc117a10465ed9ff8da21abafada8a3d8a92abacd8d`, `map.toml`: `f8f4badf2adbf3533994e4026ad45736aa104b3c9f2ddd178196bb1a47018d26`
+  - the accepted scenario's `assets/scenarios/ireland-768/locations.toml`, given to `--locations`: `3533c71164378dc9f2fbed33d6af57a807107a1de05eea046a2a1d2c278f59e2`
+
+**Fetched inputs** (download caches, not committed; the manifest each script writes): `waters-manifest.json` of `import_waters.py fetch`:
+  - `epa-rivers`: 25112 features, sha256 `4aa837df4032e1c194f6436bd09e0803302cc6e2ecb0222289c09d2d5c749940` (read 2026-11-19)
+  - `epa-lakes`: 812 features, sha256 `5bb7066b50c044b07e9a84daa91440cf5dfa0425b66cfdf4cfcbe0804594fb53` (read 2026-11-19)
+  - `epa-tidal`: 196 features, sha256 `c6b7e7eeeaa22eaf56b24cee7435aacdfb90ced7d0329dc65521d9360e05d6c9` (read 2026-11-19)
+  - `epa-coastal`: 112 features, sha256 `79cfd6bb3e011b4622394040b86d5ca9b07496addc60fc8f96995223bf2ce06e` (read 2026-11-19)
+  - `ni-rivers`: 2184 features, sha256 `fe788363279bd13b0bed77a7abe45b9d78caddc4595f65e15e357aaa5926043f` (read 2026-11-19)
+  - `ni-lakes`: 345 features, sha256 `60005a72039fe8293374456e7b245ae6a9aab38018f04e9216cbe3e633dcaa60` (read 2026-11-19)
+  - `ni-tidal`: 7 features, sha256 `afdfe98c63f8f7d177ad7c05750346ce749f9712cc83e9ec9f49b13359ba8067` (read 2026-11-19)
+  - the elevation and Natural Earth sources of `derive_elevation.py` and `draft_terrain.py` as in "Sources" above.
+
+**The frozen baseline** is `terrain.png` `cd471c15440715aa4d296e65a60164fd361cc5eaeeceb9565c4607602f052cc2` and `elevation.png` `6009b9991092749d59b82b887921cf3e421d8547063c46466308406b2d0e097f` as accepted when this slice started (after CK-351): the terrain with
+every present edit applied and none of CK-350's. `build` reads it, never a terrain that already holds this slice's water, so the mask is not made from its own result.
+The check before anything else: the same stage 2 with the accepted `edits.toml` alone reproduces the frozen baseline (`terrain.png`, `elevation.png`, the five computed layers
+and `edits.applied`) byte for byte, so the chain is whole.
+
+**Making it again**, from a checkout with Python 3.14.8, NumPy and Pillow as above, `S` the download cache and `BASE`, `STAGE1` and `OUT` empty scratch directories, in three steps. The frozen
+baseline is recovered first (it is the map before this slice, which the committed files no longer are), then stage 1 reads it, then stage 2 makes the terrain and layers with stage 1's `water.png` beside the complete `edits.toml`:
+
+```
+# the frozen baseline: the chain with the accepted entries of edits.toml only (everything before the CK-350 section)
+cp assets/map/ireland/terrain.toml BASE/
+sed '/^# ---- Ireland.s water (CK-350/,$d' assets/map/ireland/edits.toml > BASE/edits.toml
+python3 assets/map/ireland/derive_elevation.py --source S --out BASE --force
+python3 assets/map/ireland/draft_terrain.py    --source S --out BASE --force
+python3 assets/map/ireland/apply_edits.py      --out BASE        # BASE/terrain.png and BASE/elevation.png are the baseline named above
+# stage 1: the built files (reads the frozen baseline, waters.toml and the survey cache)
+python3 assets/map/ireland/import_waters.py build --source S --waters assets/map/ireland/waters.toml --map BASE \
+        --locations assets/scenarios/ireland-768/locations.toml --out STAGE1   # STAGE1/water.png, STAGE1/rivers.toml, STAGE1/waters-report.md
+# stage 2: the terrain and the layers, from the drafts, with stage 1's water.png beside the complete edits.toml
+cp assets/map/ireland/terrain.toml assets/map/ireland/edits.toml STAGE1/water.png OUT/
+python3 assets/map/ireland/derive_elevation.py --source S --out OUT --force
+python3 assets/map/ireland/draft_terrain.py    --source S --out OUT --force
+python3 assets/map/ireland/apply_edits.py      --out OUT         # OUT/terrain.png, elevation.png, the five layers, edits.applied
+```
+
+Each present edit and each new edit is applied exactly once, and the layers are computed once over the finished terrain. A second run of both stages from these inputs reproduced
+`water.png`, `rivers.toml`, `terrain.png`, `elevation.png`, the five computed layers and `edits.applied` byte for byte (the hashes above). `SOURCES.md`'s own prose and the owner's records are written
+by hand; no command makes them.
+
+**Widths.** `rivers.toml`'s widths come from the drained areas (CK-355) by `a x area^b` metres with the values in `waters.toml` `[settings]`
+(`a = 2.3`, `b = 0.4`), a tidal stretch at least as wide as its surveyed outline, and the `width_m` or `width_factor` corrections of `waters.toml`.
+
+**Known limitations** (D13, deferred by the owner): the channels are today's. Drained and straightened channels (the Barrow and the Shannon below Limerick,
+drained and canalised rivers elsewhere) stay as the surveys draw them and are logged here as a known limitation, with the confidence the terrain edits carry; modern reservoirs are left out
+(below) and the Shannon is left as the survey draws it, in its old bed past Castleconnell. The drained areas behind the widths are a reading of a 500 m grid and
+are wrong in limestone country where water runs underground (the Fergus, the Cong) and in the lough mazes (Lough Oughter, Upper Lough Erne).
+
 ## The derivation
 
 Needs Python 3.11 or newer with `numpy` and `Pillow`. The CK-234 generation and reproduction check used Python 3.14.8, NumPy 2.3.4,
@@ -240,11 +319,10 @@ and Pillow 12.2.0. From a checkout:
 ```
 python3 assets/map/ireland/derive_elevation.py --source ../ireland-source --force   # map.toml, elevation.png
 python3 assets/map/ireland/draft_terrain.py    --source ../ireland-source --force   # terrain.png (the first draft only)
-python3 assets/map/ireland/derive_rivers.py    --source ../ireland-source --force   # rivers.toml (from the draft elevation)
 python3 assets/map/ireland/apply_edits.py                                           # edits.toml over the draft layers
 ```
 
-The derivation order is elevation, terrain draft, rivers, then all terrain edits and the computed layers. The CK-234 correction was regenerated on
+The derivation order is elevation, terrain draft, then all terrain edits and the computed layers (the rivers are built before, from the frozen baseline: "Ireland's water"). The CK-234 correction was regenerated on
 2026-11-09 from the accepted r8 `terrain.png` and `elevation.png`, applying only the two CK-234 owner-signed edits
 (`glendalough-laragh-avonmore-pasture` and `rahan-clodiagh-dry-ground-pasture`) plus the climate and fertility settings. This is the
 same final state as the full draft → r8 → CK-234 chain: r8 was already present in the accepted base and was not applied again. The
@@ -252,16 +330,24 @@ corrected files were reproduced by that procedure byte for byte. The terrain and
 CK-351 replaces only the fertility hash (the CK-234 fertility hash was
 `91c4c081ba0b581c854d03580c7145d0d0e48af57220e20fbff97e5d9c34e48c`):
 
+**CK-350 replaces every hash below and adds the water files** (the accepted base, before CK-350, is the "frozen baseline" of "Ireland's water"):
+
 | File | SHA-256 |
 |---|---|
-| `elevation.png` (unchanged accepted base) | `6009b9991092749d59b82b887921cf3e421d8547063c46466308406b2d0e097f` |
-| `terrain.png` | `cd471c15440715aa4d296e65a60164fd361cc5eaeeceb9565c4607602f052cc2` |
-| `fertility.png` | `206a5a12747d4e95e9c35cb497423fb11fcbae16524460cd86fcba1a7c9529ea` |
-| `climate_temperature.png` | `8011f92404a55364b6bf266fb8f2ceac506fcd4dba380407cd1b9a5633d5ad48` |
-| `climate_gdd.png` | `ca7fe864ff9ceb1057e0b2bb625369e0bf8e573262608b0d725896544c030770` |
-| `climate_rainfall.png` | `fd80dda78f36b764592f3a90f5e067dfd677def7d0733432685c3b6deae3eee5` |
+| `elevation.png` | `532fe15e0108cccc27ce17be34dfc0c7d9c91fc783ba659075313c8f48584cc8` |
+| `terrain.png` | `e90fd4c6e3a87b74f73a85f99628c08dd4248a4729cfb691e539d972ef83d96e` |
+| `fertility.png` | `deaf400a94af514e08ac60da1638b71285897a9ac23f0f22ac6b852a8a148adc` |
+| `climate_temperature.png` | `368a68ea6b5429457e75165cf9335535ea9cae2eb171c25f1ffcf7330dd4275c` |
+| `climate_gdd.png` | `2997b35ebef850eb96aed92830fb8763d1082c30ab8ba148d26172340d5e243f` |
+| `climate_rainfall.png` | `af4f87ed4dca968a33719c58d292412d0763720f8059da944ad7d7f12c9ba3ac` |
 | `climate_glacier.png` | `578726b5c37cdecbf847de48fb1d8d015ba631081ec9a8af9cf78a9d513ae512` |
-| `edits.applied` | `a63c176d222e97063cbcb60f0322828f3996a90e437e6e7ce2bec4f9e561ea6b` |
+| `edits.applied` | `fdee5d855f2a24c8bc93b51e885e30a4d73aa811b9a80919b4036ac8adb26211` |
+| `edits.toml` | `567bb70a60b95086ead59c89bfebb4e832dd2ff937746d0d0ebfc92053164ccb` |
+| `waters.toml` | `18f2c99f24579ca50a69404f612436967f81f5f86b6b6f6af057bff6ed7142af` |
+| `water.png` | `80a0d67a93ef7a9fe4e6d1faf322eefd7fa8279ca380363cfc28f999f76ff64c` |
+| `rivers.toml` | `e8959053e38c9a814e8a5fb2f1320352494f8f49900af250ea81dc67d1aa0495` |
+
+(Before CK-350: `elevation.png` `6009b9991092749d59b82b887921cf3e421d8547063c46466308406b2d0e097f`, `terrain.png` `cd471c15440715aa4d296e65a60164fd361cc5eaeeceb9565c4607602f052cc2`, `fertility.png` `206a5a12747d4e95e9c35cb497423fb11fcbae16524460cd86fcba1a7c9529ea`.)
 
 CK-351 changed the fertility valley drainage: elevation under 1 m ends the flow; all other cells, including loughs,
 contribute their ground area and pass accumulated area to the steepest-descent neighbour after depressions are filled from
@@ -272,8 +358,7 @@ derived layers from the accepted terrain and elevation without applying `edits.t
 byte for byte. Terrain, elevation, climate, edit table and edit marker hashes above remain unchanged.
 
 `edits.applied` retains the SHA-256 of the full `edits.toml`. The CK-234 reproduction check used the Python, NumPy and Pillow versions above.
-`derive_elevation.py` and `derive_rivers.py` retain their source-cache requirements and reproduce their own outputs from the cached source
-set.
+`derive_elevation.py` retains its source-cache requirement and reproduces its own output from the cached source set.
 
 `--source` is the download cache (not committed). Each script's header documents its rules; the parameters:
 
@@ -294,7 +379,7 @@ set.
 - **Lakes:** Natural Earth lake polygons drawn at 4 times the resolution; a cell is a lake where more than half of it is covered, on land
   only. Dropped as modern: Poulaphouca (Blessington) Reservoir, 1940 (and, by name, Inniscarra and Carrigadrohid, 1950s dams on the Lee,
   which Natural Earth does not have).
-- **Rivers** (`derive_rivers.py`): see its header. 15 rivers in this draft: Shannon, Erne, Upper Bann, Lower Bann, Foyle, Moy, Corrib,
+- **Rivers (the first draft; `derive_rivers.py`, removed by CK-350):** 15 rivers in this draft: Shannon, Erne, Upper Bann, Lower Bann, Foyle, Moy, Corrib,
   Boyne, Liffey, Barrow, Nore, Suir, Slaney, Munster Blackwater, Lee. Natural Earth gives the Shannon, the Lower Bann, the Barrow and the
   Suir, but its lines are coarse (straight stretches of 10 km or more), so their simplified vertices are used as anchors too; for the rest a few anchors per river (towns and bridges, approximate to a kilometre or two) are moved to the cell of the greatest
   drainage area within 4 cells, and the line between them follows the downhill path of the elevation grid (depressions filled), or, where
@@ -356,7 +441,7 @@ larger loughs. **What is modeled or estimated:** terrain, climate, fertility, gl
 vertices and hand-placed anchors, snapped to the valley floor of a 500 m grid). Each departure from a source is listed below, by area,
 with its reason, so later research can correct it.
 
-### The first draft (`derive_*.py`, `draft_terrain.py`, `derive_rivers.py`)
+### The first draft (`derive_*.py`, `draft_terrain.py`, and `derive_rivers.py` until CK-350)
 
 | Area | Departure from the sources | Reason |
 |---|---|---|
@@ -516,3 +601,317 @@ CK-194 binary output is no longer used by the map loader.
 |---|---|---|---|---|---|
 | `island-iniscealtra` | Inis Cealtra (Holy Island), Lough Derg, crop cell (325, 599) | paint pasture | The monastery of 768 is on an island smaller than this map's cell; the derivation made that cell lake. Elevation remains 30 m. | high on site, low on extent | 1 |
 | `island-inisfallen` | Inis Faithlinn (Inisfallen), Lough Leane, crop cell (181, 788) | paint pasture | The monastery of 768 is on an island smaller than this map's cell; the derivation made that cell lake. Elevation remains 22 m. | high on site, low on extent | 1 |
+
+### Ireland's water (CK-350), owner direction 2026-11-19
+
+The mask's entries and the owner's hand entries of `edits.toml` (cells are the cells each changed, from `apply_edits.py`); then each entry of `waters.toml` that corrects a source.
+
+| Edit | Area | Change | Reason | Confidence | Cells |
+|---|---|---|---|---|---|
+| `ireland-water-sea` | water.png: cells that become sea (the estuaries and inlets the owner chose, and the tidal reaches joined to the open sea) | paint sea, depth 2 m; mask | Ireland's water of the owner-approved waters.toml, built by import_waters.py (CK-350; owner-direction-designer-r14 to r20) | medium | 2567 |
+| `ireland-water-lake` | water.png: cells that become lake (the loughs added and redrawn from the surveys) | paint lake; mask | Ireland's water of the owner-approved waters.toml, built by import_waters.py (CK-350; owner-direction-designer-r14 to r20) | medium | 1144 |
+| `ireland-water-pasture` | water.png: cells a redrawn lough gives back to land, as pasture | paint pasture; mask | Ireland's water of the owner-approved waters.toml, built by import_waters.py (CK-350; owner-direction-designer-r14 to r20) | medium | 660 |
+| `ireland-water-forest` | water.png: cells a redrawn lough gives back to land, as forest | paint forest; mask | Ireland's water of the owner-approved waters.toml, built by import_waters.py (CK-350; owner-direction-designer-r14 to r20) | medium | 55 |
+| `ireland-water-bog` | water.png: cells a redrawn lough gives back to land, as bog | paint bog; mask | Ireland's water of the owner-approved waters.toml, built by import_waters.py (CK-350; owner-direction-designer-r14 to r20) | medium | 49 |
+| `ireland-water-marsh` | water.png: cells a redrawn lough gives back to land, as marsh | paint marsh; mask | Ireland's water of the owner-approved waters.toml, built by import_waters.py (CK-350; owner-direction-designer-r14 to r20) | medium | 220 |
+| `stranded-pool-001-01` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 141, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-001-02` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 142, 6 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 6 |
+| `stranded-pool-001-03` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 143, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-001-04` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 143, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-001-05` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 144, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-001-06` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 145, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-001-07` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 146, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-001-08` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 147, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-001-09` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 148, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-001-10` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 149, 3 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 3 |
+| `stranded-pool-001-11` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 150, 3 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 3 |
+| `stranded-pool-001-12` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 151, 3 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 3 |
+| `stranded-pool-001-13` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 152, 3 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 3 |
+| `stranded-pool-001-14` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 153, 3 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 3 |
+| `stranded-pool-001-15` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 154, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-001-16` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 155, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-001-17` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 156, 3 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 3 |
+| `stranded-pool-001-18` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 157, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-001-19` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 158, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-001-20` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 159, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-001-21` | stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 160, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-002-01` | stranded sea near 53.337, -9.682: patch 2 of 85 (17 cells), row 503, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-002-02` | stranded sea near 53.337, -9.682: patch 2 of 85 (17 cells), row 504, 4 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 4 |
+| `stranded-pool-002-03` | stranded sea near 53.337, -9.682: patch 2 of 85 (17 cells), row 505, 4 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 4 |
+| `stranded-pool-002-04` | stranded sea near 53.337, -9.682: patch 2 of 85 (17 cells), row 506, 4 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 4 |
+| `stranded-pool-002-05` | stranded sea near 53.337, -9.682: patch 2 of 85 (17 cells), row 507, 3 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 3 |
+| `stranded-pool-002-06` | stranded sea near 53.337, -9.682: patch 2 of 85 (17 cells), row 508, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-003-01` | stranded sea near 53.289, -9.624: patch 3 of 85 (8 cells), row 514, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-003-02` | stranded sea near 53.289, -9.624: patch 3 of 85 (8 cells), row 515, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-003-03` | stranded sea near 53.289, -9.624: patch 3 of 85 (8 cells), row 516, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-003-04` | stranded sea near 53.289, -9.624: patch 3 of 85 (8 cells), row 517, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-003-05` | stranded sea near 53.289, -9.624: patch 3 of 85 (8 cells), row 518, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-003-06` | stranded sea near 53.289, -9.624: patch 3 of 85 (8 cells), row 519, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-004-01` | stranded sea near 52.265, -9.804: patch 4 of 85 (7 cells), row 740, 3 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 3 |
+| `stranded-pool-004-02` | stranded sea near 52.265, -9.804: patch 4 of 85 (7 cells), row 741, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-004-03` | stranded sea near 52.265, -9.804: patch 4 of 85 (7 cells), row 742, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-005-01` | stranded sea near 52.079, -7.593: patch 5 of 85 (7 cells), row 780, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-005-02` | stranded sea near 52.079, -7.593: patch 5 of 85 (7 cells), row 781, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-005-03` | stranded sea near 52.079, -7.593: patch 5 of 85 (7 cells), row 781, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-005-04` | stranded sea near 52.079, -7.593: patch 5 of 85 (7 cells), row 782, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-005-05` | stranded sea near 52.079, -7.593: patch 5 of 85 (7 cells), row 782, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-006-01` | stranded sea near 55.171, -7.833: patch 6 of 85 (5 cells), row 87, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-006-02` | stranded sea near 55.171, -7.833: patch 6 of 85 (5 cells), row 88, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-006-03` | stranded sea near 55.171, -7.833: patch 6 of 85 (5 cells), row 89, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-006-04` | stranded sea near 55.171, -7.833: patch 6 of 85 (5 cells), row 90, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-007-01` | stranded sea near 55.133, -8.153: patch 7 of 85 (5 cells), row 97, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-007-02` | stranded sea near 55.133, -8.153: patch 7 of 85 (5 cells), row 98, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-007-03` | stranded sea near 55.133, -8.153: patch 7 of 85 (5 cells), row 99, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-008-01` | stranded sea near 54.898, -8.347: patch 8 of 85 (5 cells), row 151, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-008-02` | stranded sea near 54.898, -8.347: patch 8 of 85 (5 cells), row 152, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-008-03` | stranded sea near 54.898, -8.347: patch 8 of 85 (5 cells), row 153, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-009-01` | stranded sea near 53.383, -9.827: patch 9 of 85 (4 cells), row 495, 3 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 3 |
+| `stranded-pool-009-02` | stranded sea near 53.383, -9.827: patch 9 of 85 (4 cells), row 496, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-010-01` | stranded sea near 51.918, -10.275: patch 10 of 85 (4 cells), row 815, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-010-02` | stranded sea near 51.918, -10.275: patch 10 of 85 (4 cells), row 816, 3 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 3 |
+| `stranded-pool-011-01` | stranded sea near 51.555, -9.705: patch 11 of 85 (4 cells), row 893, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-011-02` | stranded sea near 51.555, -9.705: patch 11 of 85 (4 cells), row 894, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-012-01` | stranded sea near 51.550, -9.667: patch 12 of 85 (4 cells), row 894, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-012-02` | stranded sea near 51.550, -9.667: patch 12 of 85 (4 cells), row 895, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-013-01` | stranded sea near 51.546, -9.720: patch 13 of 85 (4 cells), row 895, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-013-02` | stranded sea near 51.546, -9.720: patch 13 of 85 (4 cells), row 895, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-013-03` | stranded sea near 51.546, -9.720: patch 13 of 85 (4 cells), row 896, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-014-01` | stranded sea near 54.574, -8.188: patch 14 of 85 (3 cells), row 226, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-014-02` | stranded sea near 54.574, -8.188: patch 14 of 85 (3 cells), row 227, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-015-01` | stranded sea near 53.963, -9.864: patch 15 of 85 (3 cells), row 365, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-015-02` | stranded sea near 53.963, -9.864: patch 15 of 85 (3 cells), row 366, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-016-01` | stranded sea near 53.567, -10.000: patch 16 of 85 (3 cells), row 454, 1 cell | paint forest; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-016-02` | stranded sea near 53.567, -10.000: patch 16 of 85 (3 cells), row 454, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-016-03` | stranded sea near 53.567, -10.000: patch 16 of 85 (3 cells), row 455, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-017-01` | stranded sea near 53.359, -9.668: patch 17 of 85 (3 cells), row 500, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-017-02` | stranded sea near 53.359, -9.668: patch 17 of 85 (3 cells), row 501, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-018-01` | stranded sea near 53.357, -9.648: patch 18 of 85 (3 cells), row 500, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-018-02` | stranded sea near 53.357, -9.648: patch 18 of 85 (3 cells), row 501, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-018-03` | stranded sea near 53.357, -9.648: patch 18 of 85 (3 cells), row 502, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-019-01` | stranded sea near 52.316, -9.834: patch 19 of 85 (3 cells), row 729, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-019-02` | stranded sea near 52.316, -9.834: patch 19 of 85 (3 cells), row 730, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-020-01` | stranded sea near 51.534, -9.429: patch 20 of 85 (3 cells), row 897, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-020-02` | stranded sea near 51.534, -9.429: patch 20 of 85 (3 cells), row 898, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-020-03` | stranded sea near 51.534, -9.429: patch 20 of 85 (3 cells), row 899, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-021-01` | stranded sea near 55.181, -7.801: patch 21 of 85 (2 cells), row 86, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-021-02` | stranded sea near 55.181, -7.801: patch 21 of 85 (2 cells), row 87, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-022-01` | stranded sea near 55.168, -7.688: patch 22 of 85 (2 cells), row 89, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-022-02` | stranded sea near 55.168, -7.688: patch 22 of 85 (2 cells), row 90, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-023-01` | stranded sea near 55.041, -7.134: patch 23 of 85 (2 cells), row 119, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-024-01` | stranded sea near 54.970, -8.404: patch 24 of 85 (2 cells), row 135, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-024-02` | stranded sea near 54.970, -8.404: patch 24 of 85 (2 cells), row 136, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-025-01` | stranded sea near 54.946, -7.391: patch 25 of 85 (2 cells), row 141, 2 cells | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-026-01` | stranded sea near 54.883, -8.367: patch 26 of 85 (2 cells), row 155, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-026-02` | stranded sea near 54.883, -8.367: patch 26 of 85 (2 cells), row 156, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-027-01` | stranded sea near 54.465, -5.638: patch 27 of 85 (2 cells), row 251, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-027-02` | stranded sea near 54.465, -5.638: patch 27 of 85 (2 cells), row 252, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-028-01` | stranded sea near 53.918, -9.927: patch 28 of 85 (2 cells), row 375, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-028-02` | stranded sea near 53.918, -9.927: patch 28 of 85 (2 cells), row 376, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-029-01` | stranded sea near 52.702, -8.909: patch 29 of 85 (2 cells), row 645, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-029-02` | stranded sea near 52.702, -8.909: patch 29 of 85 (2 cells), row 646, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-030-01` | stranded sea near 52.645, -8.695: patch 30 of 85 (2 cells), row 658, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-031-01` | stranded sea near 52.370, -6.976: patch 31 of 85 (2 cells), row 718, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-032-01` | stranded sea near 52.250, -9.803: patch 32 of 85 (2 cells), row 744, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-033-01` | stranded sea near 52.234, -6.799: patch 33 of 85 (2 cells), row 747, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-033-02` | stranded sea near 52.234, -6.799: patch 33 of 85 (2 cells), row 748, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-034-01` | stranded sea near 52.216, -6.588: patch 34 of 85 (2 cells), row 751, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-034-02` | stranded sea near 52.216, -6.588: patch 34 of 85 (2 cells), row 752, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-035-01` | stranded sea near 52.132, -10.281: patch 35 of 85 (2 cells), row 769, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-035-02` | stranded sea near 52.132, -10.281: patch 35 of 85 (2 cells), row 770, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-036-01` | stranded sea near 52.010, -7.850: patch 36 of 85 (2 cells), row 796, 2 cells | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 2 |
+| `stranded-pool-037-01` | stranded sea near 51.649, -9.867: patch 37 of 85 (2 cells), row 873, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-037-02` | stranded sea near 51.649, -9.867: patch 37 of 85 (2 cells), row 874, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-038-01` | stranded sea near 51.597, -9.603: patch 38 of 85 (2 cells), row 884, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-038-02` | stranded sea near 51.597, -9.603: patch 38 of 85 (2 cells), row 885, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-039-01` | stranded sea near 55.287, -7.266: patch 39 of 85 (1 cells), row 62, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-040-01` | stranded sea near 55.183, -7.839: patch 40 of 85 (1 cells), row 86, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-041-01` | stranded sea near 55.115, -7.696: patch 41 of 85 (1 cells), row 102, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-042-01` | stranded sea near 55.089, -8.306: patch 42 of 85 (1 cells), row 108, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-043-01` | stranded sea near 55.067, -6.045: patch 43 of 85 (1 cells), row 113, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-044-01` | stranded sea near 54.968, -7.357: patch 44 of 85 (1 cells), row 136, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-045-01` | stranded sea near 54.963, -7.364: patch 45 of 85 (1 cells), row 137, 1 cell | paint forest; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-046-01` | stranded sea near 54.959, -7.643: patch 46 of 85 (1 cells), row 138, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-047-01` | stranded sea near 54.959, -7.372: patch 47 of 85 (1 cells), row 138, 1 cell | paint forest; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-048-01` | stranded sea near 54.955, -7.379: patch 48 of 85 (1 cells), row 139, 1 cell | paint forest; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-049-01` | stranded sea near 54.851, -7.462: patch 49 of 85 (1 cells), row 163, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-050-01` | stranded sea near 54.842, -7.470: patch 50 of 85 (1 cells), row 165, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-051-01` | stranded sea near 54.833, -5.782: patch 51 of 85 (1 cells), row 167, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-052-01` | stranded sea near 54.607, -5.917: patch 52 of 85 (1 cells), row 219, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-053-01` | stranded sea near 54.498, -5.669: patch 53 of 85 (1 cells), row 244, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-054-01` | stranded sea near 54.410, -5.638: patch 54 of 85 (1 cells), row 264, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-055-01` | stranded sea near 54.384, -5.616: patch 55 of 85 (1 cells), row 270, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-056-01` | stranded sea near 54.327, -5.736: patch 56 of 85 (1 cells), row 283, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-057-01` | stranded sea near 54.173, -10.070: patch 57 of 85 (1 cells), row 318, 1 cell | paint bog; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-058-01` | stranded sea near 54.018, -9.882: patch 58 of 85 (1 cells), row 353, 1 cell | paint bog; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-059-01` | stranded sea near 54.009, -9.882: patch 59 of 85 (1 cells), row 355, 1 cell | paint bog; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-060-01` | stranded sea near 53.501, -6.136: patch 60 of 85 (1 cells), row 469, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-061-01` | stranded sea near 53.384, -9.648: patch 61 of 85 (1 cells), row 495, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-062-01` | stranded sea near 53.353, -6.234: patch 62 of 85 (1 cells), row 502, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-063-01` | stranded sea near 53.330, -9.588: patch 63 of 85 (1 cells), row 507, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-064-01` | stranded sea near 53.317, -9.844: patch 64 of 85 (1 cells), row 510, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-065-01` | stranded sea near 53.312, -9.836: patch 65 of 85 (1 cells), row 511, 1 cell | paint bog; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-066-01` | stranded sea near 53.303, -9.633: patch 66 of 85 (1 cells), row 513, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-067-01` | stranded sea near 53.285, -9.648: patch 67 of 85 (1 cells), row 517, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-068-01` | stranded sea near 53.272, -9.693: patch 68 of 85 (1 cells), row 520, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-069-01` | stranded sea near 53.267, -8.947: patch 69 of 85 (1 cells), row 521, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-070-01` | stranded sea near 52.828, -8.955: patch 70 of 85 (1 cells), row 618, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-071-01` | stranded sea near 52.650, -9.550: patch 71 of 85 (1 cells), row 657, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-072-01` | stranded sea near 52.618, -8.789: patch 72 of 85 (1 cells), row 664, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-073-01` | stranded sea near 52.540, -6.219: patch 73 of 85 (1 cells), row 681, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-074-01` | stranded sea near 52.430, -6.565: patch 74 of 85 (1 cells), row 705, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-075-01` | stranded sea near 52.310, -7.003: patch 75 of 85 (1 cells), row 731, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-076-01` | stranded sea near 52.301, -7.010: patch 76 of 85 (1 cells), row 733, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-077-01` | stranded sea near 52.250, -9.829: patch 77 of 85 (1 cells), row 744, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-078-01` | stranded sea near 52.167, -7.116: patch 78 of 85 (1 cells), row 762, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-079-01` | stranded sea near 52.079, -7.613: patch 79 of 85 (1 cells), row 781, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-080-01` | stranded sea near 52.065, -7.621: patch 80 of 85 (1 cells), row 784, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-081-01` | stranded sea near 51.963, -7.854: patch 81 of 85 (1 cells), row 806, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-082-01` | stranded sea near 51.935, -7.877: patch 82 of 85 (1 cells), row 812, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-083-01` | stranded sea near 51.651, -9.814: patch 83 of 85 (1 cells), row 873, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-084-01` | stranded sea near 51.585, -9.618: patch 84 of 85 (1 cells), row 887, 1 cell | paint marsh; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+| `stranded-pool-085-01` | stranded sea near 51.567, -9.701: patch 85 of 85 (1 cells), row 891, 1 cell | paint pasture; box; terrain ['sea'] | today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md) | medium | 1 |
+
+**The sea the owner added** (`[[sea]]`):
+
+| Entry | Given by | Reason |
+|---|---|---|
+| Cork Harbour | survey outline IE_SW_060_0000 | Owner, 2026-11-19 (owner-direction-designer-r10.md): add Cork Harbour from the survey's coastal outline. Today's map draws it as land, so the Lee has no sea to end in. |
+| Outer Cork Harbour | survey outline IE_SW_050_0000 | Part of the owner's Cork Harbour (r10): the survey draws the harbour as two outlines, and the inner one reaches the open sea only through this one. |
+| Lough Swilly | survey outline IE_NW_220_0000 | Owner (r10): add Lough Swilly from the survey's coastal outline. Today's map has only its outer part. |
+| Mouth of Lough Foyle | 21 points | Owner (r10): open Lough Foyle at its mouth. These 21 cells are land in today's map between the lough and today's sea, and are sea in the Irish survey's coastal outlines (20 in Portstewart Bay, GBNIIE6NB010; the one at the mouth itself in Lough Foyle, GBNIIE6NW250). Each point is the centre of one cell. |
+| Strangford Narrows | 21 points | Owner (r10): open Strangford Lough at its mouth. A chain of 21 cells down the middle of the Narrows, from the lough past Portaferry to the notch of sea at its mouth; each point is the centre of one cell. No surveyed outline with a confirmed licence covers Strangford Lough, so the line is placed by hand from where Ballyhenry, the Portaferry ferry, Kilclief and Killard Point lie. |
+| Passage West | 2 points | Part of the owner's Cork Harbour (r10), for the owner to confirm: the two cells of the channel at Passage West, narrower than a cell, which join Lough Mahon and the Lee's estuary to Cork Harbour; each point is the centre of one cell. |
+| Carlingford Lough | survey outline GBNIIE6NB030 | Owner, 2026-11-19 (owner-direction-designer-r11.md): open Carlingford Lough from the survey's coastal outline. Today's map draws it as land. |
+| Outer Kenmare River | survey outline IE_SW_190_0000 | Owner (r11): open the Kenmare River from the survey's coastal outline. Today's map draws its inner 22 km as land; the outline is the whole inlet, and 425 of its cells are land today. |
+| Stranded sea joined through surveyed water | 63 points | Owner, 2026-11-19 (owner-direction-designer-r17.md): stranded sea that the survey draws as sea is joined to the open sea. These 63 cells are land in today's map, lie more than half in the Irish survey's tidal or coastal outlines, and are the one or two cells that join each of 46 patches of today's sea (inner Bantry Bay, Achill Sound, Westport Bay, Inver Bay and smaller ones). Each point is the centre of one cell (slice-4-checks/r2/poollinks.py). |
+| Belfast Lough head | 4 points | Owner (r17): the sea cells of the owner's edit belfast-harbour-sea at the head of Belfast Lough are joined to the lough through these four cells, placed by hand; no surveyed outline covers them. |
+| Ballyteige lagoon | 1 points | Owner (r17): the 21-cell lagoon behind Ballyteige Burrow near Kilmore Quay is joined to the sea through this one cell, placed by hand. That it was tidal before 19th-century reclamation is the designer's understanding, still to be cited. |
+
+**Corrections** (`[[correction]]`): hand-drawn last reaches, the survey copies left out where both surveys draw a river, and the Shannon's widths (owner-direction-designer-r21.md):
+
+| Correction | River | What | Reason | Confidence |
+|---|---|---|---|---|
+| `bann-tidal` | bann | hand-drawn course of 30 points (tidal) for UKGBNI8NB014.9835 | The Bann's survey line stops above Coleraine, 12 km of estuary short of the sea, and the estuary is narrower than a cell, so the tool cannot make it sea. Its last reach is drawn down the middle of DAERA's Bann Estuary outline (UKGBNI5NB010010) to the Barmouth, then in the Irish survey's Portstewart Bay outline (GBNIIE6NB010) to the first sea cell. The first 180 m are the survey segment it stands in for. | high |
+| `lagan-tidal` | lagan | hand-drawn course of 24 points (tidal) for UKGBNI8NE023.17884 | The Lagan's survey line stops at Stranmillis. Its last reach is drawn down the middle of DAERA's Lagan Estuary outline (UKGBNI5NE100010) to the Lagan Weir, then by three hand-placed points along the harbour channel to today's sea in Belfast Lough, whose head today's map draws as land for 8 cells. No surveyed outline with a confirmed licence covers Belfast Lough. The first 188 m are the survey segment it stands in for. | low |
+| `newry-tidal` | newry | hand-drawn course of 42 points (tidal) for UKGBNI1NB060604046.13608 | The Newry River's survey line stops in Newry, and its estuary down to Narrow Water is narrower than a cell, so the tool cannot make it sea. Its last reach is drawn down the middle of DAERA's Newry Estuary outline (UKGBNI5NB030010) to the first sea cell of Carlingford Lough, which the owner opened (r11). The first 1027 m are the survey segment it stands in for. | high |
+| `quoile-tidal` | quoile | hand-drawn course of 10 points (tidal) for .12463 | The Quoile's survey lines stop at the barrage (1957). Before the barrages the river was tidal up to Downpatrick. Its last reach is a hand-placed line of two legs down the old estuary to Strangford Lough; no surveyed outline covers it. The first 252 m are the survey segment it stands in for. | low |
+| `owenea-tidal` | owenea | hand-drawn course of 4 points (tidal) for 38_5368 | The Owenea's survey line stops at the head of its estuary, which today's map draws as land. Its last reach is drawn down the middle of the Irish survey's Owenea Estuary (IE_NW_110_0100) and Loughros Bay (IE_NW_110_0000) outlines to the first sea cell. It stands in for a 5 m connecting segment. | high |
+| `inagh-tidal` | inagh | hand-drawn course of 7 points (tidal) for 28_1183 | The Inagh's survey line stops at the head of its estuary, narrower than a cell. Its last reach is drawn down the middle of the Irish survey's outlines of its estuary and of Liscannor Bay (IE_SH_100_0000) to the first sea cell. It stands in for a 5 m connecting segment. | high |
+| `inny-kerry-tidal` | inny-kerry | hand-drawn course of 12 points (tidal) for 21_9166 | The Inny's survey line stops at the head of its estuary, narrower than a cell. Its last reach is drawn down the middle of the Irish survey's outlines of its estuary and of Ballinskelligs Bay (IE_SW_200_0000) to the first sea cell. It stands in for a 5 m connecting segment. | high |
+| `blackwater-munster-tidal` | blackwater-munster | hand-drawn course of 4 points (tidal) for 18_3272 | The Blackwater's survey line ends at Youghal, three cells from today's sea, and the nearest sea cell is a single stranded one, so the tool finds no way out. Its last reach is drawn in the Irish survey's Youghal Harbour (IE_SW_020_0100) and Youghal Bay (IE_SW_020_0000) outlines to the first sea cell. It stands in for a 6 m connecting segment. | high |
+| `mourne-daera-last-reach` | mourne | leaves out 2 survey segments | DAERA's last 2.5 km of the Mourne run on into a line of the Finn's water body, which is not in this list and ends 30 m from where the Irish survey's Foyle begins. The Irish survey's copy of the reach (in the river's segments) meets the Foyle, so DAERA's two lines are left out. | high |
+| `erne-daera-below-belleek` | erne | leaves out 2 survey segments | DAERA's copy of the Erne from Belleek to Ballyshannon (10 km, in the Republic) does not meet the Irish survey's tidal lines at its lower end, so the tool wrote it as a branch flowing backwards. The Irish survey's lines carry this reach. | high |
+| `arney-irish-copy` | arney | leaves out 6 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `ballinamallard-irish-copy` | ballinamallard | leaves out 7 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `colebrooke-irish-copy` | colebrooke | leaves out 3 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `derg-irish-copy` | derg | leaves out 8 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `erne-irish-copy` | erne | leaves out 21 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `faughan-irish-copy` | faughan | leaves out 2 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `finn-monaghan-irish-copy` | finn-monaghan | leaves out 38 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `mourne-irish-copy` | mourne | leaves out 2 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `roe-irish-copy` | roe | leaves out 14 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `strule-irish-copy` | strule | leaves out 6 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `swanlinbar-irish-copy` | swanlinbar | leaves out 3 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `drowes-irish-copy` | drowes | leaves out 8 survey segments | The Irish survey's lough lines through Lough Melvin, copies of DAERA's lines of the same lough, which the tool cannot pair. DAERA's are kept. | high |
+| `burn-dennet-irish-copy` | burn-dennet | leaves out 3 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `glenelly-irish-copy` | glenelly | leaves out 1 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `sillees-irish-copy` | sillees | leaves out 10 survey segments | Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py). | high |
+| `woodford-irish-copy` | woodford | leaves out 5 survey segments | Both surveys draw the Woodford's last reach into Upper Lough Erne, and the tool cannot pair these lines. DAERA's are kept (three are in the river's segments, and the Erne's lough line carries on from them); the Irish survey's five are left out, so the reach is built once (owner, r22). | high |
+| `shannon-width-01` | shannon | width times 1.4 on shannon-01 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-02` | shannon | width times 1.4 on shannon-02 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-03` | shannon | width times 1.4 on shannon-03 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-04` | shannon | width times 1.4 on shannon-04 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-05` | shannon | width times 1.4 on shannon-05 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-06` | shannon | width times 1.4 on shannon-06 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-07` | shannon | width times 1.4 on shannon-07 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-08` | shannon | width times 1.4 on shannon-08 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-09` | shannon | width times 1.4 on shannon-09 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-10` | shannon | width times 1.4 on shannon-10 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-11` | shannon | width times 1.4 on shannon-11 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-12` | shannon | width times 1.4 on shannon-12 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-13` | shannon | width times 1.4 on shannon-13 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-14` | shannon | width times 1.4 on shannon-14 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-15` | shannon | width times 1.4 on shannon-15 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-16` | shannon | width times 1.4 on shannon-16 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-17` | shannon | width times 1.4 on shannon-17 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-18` | shannon | width times 1.4 on shannon-18 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+| `shannon-width-19` | shannon | width times 1.4 on shannon-19 | The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place. | medium |
+
+**Reservoirs left out** (`[[reservoir]]`, D13: the modern reservoirs are not lakes):
+
+| Reservoir | Survey code | Reason, source and confidence |
+|---|---|---|
+| Assaroe Lake | IE_NW_36_717 | Made by the Erne hydro-electric scheme: the dam at Cathaleen's Fall, built from 1946 to 1955, its turbines commissioned in 1951 and 1952 (Wikipedia, Cathaleen's Fall Hydroelectric Power Station; ESB, Cathleen's Falls). Confidence high. |
+| Ballinrees Reservoir | Lake_0088 | An impounding reservoir of NI Water near Coleraine (NI Water's reservoir improvement programme; photographed in 1952, britainfromabove.org.uk XAW045258). The year it was built is not found. Confidence medium. |
+| Ben Crom Reservoir | Lake_0254 | Built 1953 to 1957 above the Silent Valley for Belfast's water supply (Wikipedia, Silent Valley Reservoir). Confidence high. |
+| Carrigadrohid Lake | IE_SW_19_139 | Made by the ESB's Lee scheme: the dam was built from 1952 to 1957 (Wikipedia, Carrigadrohid hydroelectric power station). Confidence high. |
+| Parteen Basin | IE_SH_25_191b | The basin above Parteen Weir, flooded by the Shannon Scheme, built from 1925 and opened on 22 July 1929 (Wikipedia, Shannon hydroelectric scheme). The survey marks it a heavily modified water body, apart from Lough Derg proper. Confidence high that it is modern; how the river ran here before is not checked. |
+| Inniscarra Lake | IE_SW_19_138 | Made by the ESB's Lee scheme: the dam was built from February 1953 and completed in 1957 (Wikipedia, Inniscarra Dam). Confidence high. |
+| Killylane Reservoir | Lake_0106 | An impounding reservoir of NI Water (NI Water's reservoir improvement programme; DAERA, Killylane Reservoir). A search summary of Lisburn Today, 'Killylane dam opens at Shane's Hill', gives its opening as June 1964 for the supply of Larne, Ballyclare, Antrim and Ballymena; the page itself could not be opened. Confidence high that it is modern. |
+| Lough Island Reavy | Lake_0031 | A man-made reservoir (DAERA, Lough Island Reavy), one of two impoundments of the Bann Reservoir Company, set up by an Act of 1836 (Hansard, Lords, 11 December 1975). Whether a smaller natural lough lay here before is not established. Confidence medium. |
+| Poulaphouca Reservoir | IE_EA_09_71 | Made by the ESB's Liffey scheme: created between 1937 and 1947, the flooding beginning on 3 March 1940 (Wikipedia, Poulaphouca Reservoir). Confidence high. |
+| Seagahan Reservoir | Lake_0304 | Built in the 1950s for Armagh's water supply (Farrans, 'On site in the 1950s at Seagahan Dam'). The year is not found. Confidence medium. |
+| Silent Valley Reservoir | Lake_0038 | Built 1923 to 1933 for Belfast's water supply (Wikipedia, Silent Valley Reservoir). Confidence high. |
+| Spelga Reservoir | Lake_0036 | Built 1953 to 1957 (Wikipedia, Spelga Reservoir). Confidence high. |
+| Stoneyford Reservoir | Lake_0035 | Built in the late 19th century for the Belfast Water Commissioners (geograph.org.uk photo 3465496; NI Water's reservoir improvement programme). The year is not found. Confidence medium. |
+| Middle South Woodburn Reservoir | Lake_0147 | One of the Woodburn reservoirs of Belfast's water supply near Carrickfergus (DAERA, Middle South Woodburn Reservoir; NI Water's reservoir improvement programme). The year is not found. Confidence medium. |
+
+### Sources read for Ireland's water (CK-350)
+
+Pages opened and read in full on 2026-11-19 by ck-designer-7, for the reasons and sources of `waters.toml` (a search summary is said so):
+
+One line each: what it supports; the page; the words relied on. Every page below was fetched and read on 2026-11-19
+(copies not kept). Wikipedia pages were read as their source text.
+
+#### Reservoirs left out (`[[reservoir]]`)
+
+| Reservoir | Page | Words relied on |
+|---|---|---|
+| Assaroe Lake | Wikipedia, "Cathaleen's Fall Hydroelectric Power Station"; ESB, esb.ie/what-we-do/generation-and-trading/cathleen's-falls | "Constructed between 1946 and 1955"; "The first turbine was commissioned in 1951 and the second in 1952"; the dam meant "the destruction of Assaroe Falls". ESB: "Starting work in 1946". |
+| Carrigadrohid Lake | Wikipedia, "Carrigadrohid hydroelectric power station" | "Construction of the reinforced concrete gravity dam started in 1952 and was complete in 1957." |
+| Inniscarra Lake | Wikipedia, "Inniscarra Dam" | "Construction of the dam started in February 1953 and resulted in the formation of the Inniscarra Reservoir"; category "Dams completed in 1957". |
+| Poulaphouca Reservoir | Wikipedia, "Poulaphouca Reservoir" | "It was created between 1937 and 1947, with flooding beginning at 10:00 on 3 March 1940 by damming the River Liffey at Poulaphouca". |
+| Parteen Basin | Wikipedia, "Shannon hydroelectric scheme" | "The Shannon Scheme was officially opened at Parteen Weir on 22 July 1929"; the Shannon Electricity Act, 1925. |
+| Silent Valley Reservoir | Wikipedia, "Silent Valley Reservoir" | "The reservoir was built between 1923 and 1933". |
+| Ben Crom Reservoir | the same page | "Between 1953 and 1957, a second dam was built further up the Kilkeel river valley to create Ben Crom Reservoir." |
+| Spelga Reservoir | Wikipedia, "Spelga Reservoir" | "The Spelga Reservoir itself was developed between 1953 and 1957." |
+| Lough Island Reavy | DAERA, daera-ni.gov.uk/articles/lough-island-reavy; Hansard, Lords, 11 December 1975, "Bann Reservoir Company (Northern Ireland)" | DAERA: "a man-made freshwater reservoir near Kilcoo ... Constructed for water supply purposes". Hansard: "The Company was established by Private Act in 1836 ... two impoundments were constructed at Lough Island Reavy and Corbet Lough". |
+| Seagahan Reservoir | Farrans, farrans.com/on-site-in-the-1950s-at-seagahan-dam/ | "On site in the 1950s at Seagahan Dam"; "The dam was constructed between Armagh and Markethill to supply water to the city." |
+| Stoneyford Reservoir | geograph.org.uk/photo/3465496 | "Stoneyford reservoir dates from the late 19th century when it was built for the Belfast Water Commissioners to supply water to Belfast." |
+| Ballinrees Reservoir | Britain from Above, image XAW045258; NI Water, news item 12039 (reservoir improvement programme) | "Ballinrees Reservoir, Macosquin, Coleraine, Northern Ireland, 1952" (an air photograph); listed among NI Water's impounding reservoirs. No year of building. |
+| Middle South Woodburn Reservoir | DAERA, daera-ni.gov.uk/articles/middle-south-woodburn-reservoir; NI Water, news item 12039 | DAERA: "the largest of the Woodburn Reservoirs"; Woodburn is in NI Water's list of impounding reservoirs. No year of building. |
+| Killylane Reservoir | DAERA, daera-ni.gov.uk/articles/killylane-reservoir; NI Water, news item 12039 | A reservoir; listed among NI Water's impounding reservoirs. **Its opening in June 1964 is NOT from a page could be opened:** it is a search summary of Lisburn Today, "Killylane dam opens at Shane's Hill", and that page refused me (403). |
+
+Named in the list's reasons but **not opened** (search summaries only): the NPWS site synopsis 004063 (Poulaphouca, 1944),
+buildingsofireland.ie 40852084 and S.I. 86 of 1945 (Assaroe), ESB's Lee pages, Lisburn Today (Killylane). `SOURCES.md`
+should cite the pages in the table, not these.
+
+#### The Cong (`[[river]] cong`, a known liberty)
+
+- Wikipedia, "River Cong (Ireland)": "The springs are fed by underground flow through caverns in the limestone bedrock
+  of the district from Lough Mask, a little over 4 mi to the north."
+- Wikipedia, "Cong Canal": "It was abandoned unfinished in 1854 and is popularly known as 'The Dry Canal'"; the Board
+  "failed to take account of the cavernous nature of the limestone in the district".
+- The same page on the dates: the works were "carried out by ... the Board of Works ... over the period 1844 to
+  1859", survey from June 1844. "Begun in 1848", which earlier drafts of the list gave, is not on this page (it came from a search summary) and is not in the list.
+- Not opened: irishwaterwayshistory.com (named in my notes from a search summary).
+
+#### Ballyteige lagoon (`[[sea]]` "Ballyteige lagoon")
+
+- irishlagoons.com (page of the tag "Lineus ruber", entry "Ballyteige channels, Wexford"): "The drainage channels are
+  artificial and were excavated to drain a lagoon and saltmarsh which were isolated behind an extensive dune system
+  to the south and a sea wall to the west, constructed across the Cull Inlet in the mid 19th Century."
+- irishhistory.com, "Castle, Ballyteige, Co. Wexford": "before Ballyteige Lough was reclaimed in the late 19th
+  century, it would have overlooked the water from its eastern shore."
+
+#### Tiers and widths
+
+- Basin areas of 37 rivers: Wikipedia, "List of rivers of Ireland", table "Longest Irish Rivers (with Basin areas)"
+  (it names the Ordnance Survey of Ireland's "Rivers and their Catchment Basins 1958" and R. A. Williams, "Notes on
+  River Basins"). Second-hand.
+- The Moyola's tier 2: Wikipedia, "River Moyola": "The catchment area to the gauging station is 304 km2".
+- Widths: no published figures. Twelve head-of-tide widths measured from the surveys' own tidal outlines
+  (`widths-fit-r5.md`, `slice-4-checks/widths/headtide.py`).
+- The Shannon past Castleconnell: the Irish survey's river network itself (its line passes O'Briensbridge and
+  Castleconnell; the head-race canal is not among its lines).
+
