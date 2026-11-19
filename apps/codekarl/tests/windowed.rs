@@ -1025,8 +1025,14 @@ frame.on_update(function(update)
     local marker = io.open(directory .. "/ui-click-received", "w")
     if marker then marker:write("x"); marker:close() end
   end
-  local marker = io.open(directory .. "/map-drag-dispatched", "r")
-  if marker then marker:close(); window.close() end
+  local sidecar = io.open(assert(os.getenv('CK_MAP_TEST_CAMERA_OBSERVATION')), "r")
+  if sidecar then
+    local records = sidecar:read("*a")
+    sidecar:close()
+    local before = records:match("(camera [^\n]+)\n")
+    local after = records:match("map%-drag%-dispatched\n.-(camera [^\n]+)\n")
+    if before and after and before ~= after then window.close() end
+  end
 end)
 window.on_opened(function() wait_for(HOLD) end)
 window.open{title='UI pointer routing', width=400, height=240, clear={0,0,0}}
