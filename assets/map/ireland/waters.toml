@@ -1,0 +1,1737 @@
+# waters.toml: the hand-kept list of Ireland's rivers, loughs, sea entries and corrections (CK-350, slice 4 of the rivers design).
+#
+# Approved by the owner, list by list, in the ck-designer-7 tab (D14): the rivers, their names and tiers (owner-direction-designer-r14.md);
+# the sea cells and the hand-drawn last reaches (r15); the loughs, with Lough Allua (r16); the stranded pools (r17, r18); the island sites
+# (r19); the reservoirs left out and the corrections (r20); the widths (r21); the Woodford's last reach (r22). Made by ck-designer-7 from the
+# import tool's proposal; `import_waters.py build` reads it and writes `rivers.toml` and `water.png` (SOURCES.md, "Water import" and "Ireland's water").
+# A comment above a river says what was done to it. No comment: the proposal's river, with a tidied name.
+
+[settings]
+a = 2.3
+b = 0.4
+simplify_m = 8.0
+tier_steps = [0, 14, 24]
+
+# completed above Bovagh (2 bodies)
+[[river]]
+id = "agivey"
+name = "Agivey"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NB030301075", "UKGBNI1NB030301066", "UKGBNI1NB030301064"] }
+
+[[river]]
+id = "aherlow"
+name = "Aherlow"
+tier = 3
+source = { epa_names = ["Aherlow"] }
+
+# tier 2: its basin is 522 km2 in the published table
+[[river]]
+id = "annalee"
+name = "Annalee"
+tier = 2
+source = { epa_names = ["Annalee"] }
+
+[[river]]
+id = "arney"
+name = "Arney"
+tier = 2
+source = { rwb_codes = ["UKGBNI1NW363601001", "UKGBNI1NW363601049", "UKGBNI1NW363601040"] }
+
+[[river]]
+id = "avoca"
+name = "Avoca"
+tier = 2
+source = { epa_names = ["Avoca"] }
+
+[[river]]
+id = "avonmore"
+name = "Avonmore"
+tier = 3
+source = { epa_names = ["Avonmore"] }
+
+# completed (2 bodies)
+[[river]]
+id = "ballinamallard"
+name = "Ballinamallard"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NW363601012", "UKGBNI1NW363601046", "UKGBNI1NW363601042"] }
+
+# completed above Cookstown (4 bodies); the 1NB030304059 body is 1.2 km of this river and the mouth of the Lissan Water
+[[river]]
+id = "ballinderry"
+name = "Ballinderry"
+tier = 2
+source = { rwb_codes = ["UKGBNI1NB030304240", "UKGBNI1NB030304053", "UKGBNI1NB030304058", "UKGBNI1NB030304060", "UKGBNI1NB030304063", "UKGBNI1NB030304059", "UKGBNI1NB030304136"] }
+
+# tier 2: its basin is 650 km2 in the published table
+[[river]]
+id = "ballysadare"
+name = "Ballysadare"
+tier = 2
+source = { epa_names = ["Ballysodare"] }
+
+# tier 2: its basin is 608 km2 in the published table
+[[river]]
+id = "bandon"
+name = "Bandon"
+tier = 2
+source = { epa_names = ["Bandon"] }
+
+# Upper Bann, its lines through Lough Neagh, Lower Bann and its tidal end; completed above Portadown (5 water bodies the proposal left out)
+# a hand-drawn last reach takes it down its estuary to the sea (correction bann-tidal)
+# tier 1: its basin is 5,808 km2 in the published table
+[[river]]
+id = "bann"
+name = "Bann"
+tier = 1
+source = { rwb_codes = ["UKGBNI1NB030308088", "UKGBNI1NB030308100", "UKGBNI1NB030308184", "UKGBNI1NB030308197", "UKGBNI1NB030308189", "UKGBNI1NB030308103", "UKGBNI1NB030308105", "UKGBNI1NB030306208", "UKGBNI1Nb030306208", "UKGBNI1NB030301169", "UKGBNI1NB030301149", "UKGBNI1NB030301214", "UKGBNI8NB014"] }
+
+# tier 1: its basin is 3,067 km2 in the published table
+[[river]]
+id = "barrow"
+name = "Barrow"
+tier = 1
+source = { epa_names = ["Barrow"] }
+
+# tier 2: its basin is 733 km2 in the published table
+[[river]]
+id = "blackwater-kells"
+name = "Blackwater (Kells)"
+tier = 2
+source = { epa_names = ["Blackwater [Kells]"] }
+
+# with the Cor River, its border reach
+[[river]]
+id = "blackwater-monaghan"
+name = "Blackwater (Monaghan)"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NB030307099"] }
+
+# a hand-drawn last reach takes it across Youghal Bay to today's sea (correction blackwater-munster-tidal)
+# tier 1: its basin is 3,324 km2 in the published table
+[[river]]
+id = "blackwater-munster"
+name = "Blackwater (Munster)"
+tier = 1
+source = { epa_names = ["Blackwater [Munster]"] }
+
+# completed above Augher (3 bodies); the 1NB030307040 body also holds 12 km of the Tynan River
+# tier 1: its basin is 1,507 km2 in the published table
+[[river]]
+id = "blackwater-ulster"
+name = "Blackwater (Ulster)"
+tier = 1
+source = { rwb_codes = ["UKGBNI1NB030307051", "UKGBNI1NB030307052", "UKGBNI1NB030307196", "UKGBNI1NB030308199", "UKGBNI1NB030308201", "UKGBNI1NB030307040", "UKGBNI1NB030307043", "UKGBNI1NB030307027", "UKGBNI1NB030307132"] }
+
+[[river]]
+id = "bonet"
+name = "Bonet"
+tier = 3
+source = { epa_names = ["Bonet"] }
+
+# joined: Boyle, Clogher [Roscommon]; its last 100 m carry another survey name
+# tier 2: its basin is 725 km2 in the published table (r2 had tier 3)
+[[river]]
+id = "boyle"
+name = "Boyle"
+tier = 2
+source = { epa_names = ["Boyle", "Clogher [Roscommon]"] }
+
+# tier 1: its basin is 2,695 km2 in the published table
+[[river]]
+id = "boyne"
+name = "Boyne"
+tier = 1
+source = { epa_names = ["Boyne"] }
+
+# added in r3 (owner, r12: one rule everywhere): 22 km, into the Main at Ballymena; six DAERA water bodies
+[[river]]
+id = "braid"
+name = "Braid"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NB030302010", "UKGBNI1NB030302015", "UKGBNI1NB030302018", "UKGBNI1NB030302020", "UKGBNI1NB030302022", "UKGBNI1NB030302023"] }
+
+# tier 2: its basin is 419 km2 in the published table
+[[river]]
+id = "bride"
+name = "Bride"
+tier = 2
+source = { epa_names = ["Bride [Waterford]"] }
+
+# tier 1: its basin is 1,248 km2 in the published table (r2 had tier 2)
+[[river]]
+id = "brosna"
+name = "Brosna"
+tier = 1
+source = { epa_names = ["BROSNA"] }
+
+[[river]]
+id = "brown-flesk"
+name = "Brown Flesk"
+tier = 3
+source = { epa_names = ["Brown Flesk"] }
+
+# added in r3 (owner, r12): 19 km, into the Foyle; its last 350 m are the Irish survey's tidal line, which meets the
+# Foyle's
+[[river]]
+id = "burn-dennet"
+name = "Burn Dennet"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NW010101045", "UKGBNI1NW010101070"], segments = ["UKGBNI8NW021.17862", "01_GBNI0102314_1"] }
+
+# completed above Bushmills (3 bodies)
+[[river]]
+id = "bush"
+name = "Bush"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NE040404049", "UKGBNI1NE040404001", "UKGBNI1NE040404051", "UKGBNI1NE040404042"] }
+
+# completed above Armagh (2 bodies)
+[[river]]
+id = "callan"
+name = "Callan"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NB030307112", "UKGBNI1NB030307044", "UKGBNI1NB030307028", "UKGBNI1NB030307026"] }
+
+[[river]]
+id = "camoge"
+name = "Camoge"
+tier = 3
+source = { epa_names = ["Camoge"] }
+
+# completed above Omagh (2 bodies)
+[[river]]
+id = "camowen"
+name = "Camowen"
+tier = 2
+source = { rwb_codes = ["UKGBNI1NW010102034", "UKGBNI1NW010102092", "UKGBNI1NW010102033"] }
+
+[[river]]
+id = "castlebar"
+name = "Castlebar River"
+tier = 2
+source = { epa_names = ["Castlebar"] }
+
+# tier 2: its basin is 1,108 km2 in the published table
+[[river]]
+id = "clare"
+name = "Clare"
+tier = 2
+source = { epa_names = ["Clare [Galway]"] }
+
+# joined: Clodiagh [Portlaw], Portlaw 16; the tidal piece carries another survey name
+[[river]]
+id = "clodiagh"
+name = "Clodiagh"
+tier = 3
+source = { epa_names = ["Clodiagh [Portlaw]", "Portlaw 16"] }
+
+# added in r3 (owner, r12): 16 km, into the Camowen
+[[river]]
+id = "cloghfin"
+name = "Cloghfin"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NW010102035", "UKGBNI1NW010102037", "UKGBNI1NW010102087"] }
+
+[[river]]
+id = "clydagh"
+name = "Clydagh"
+tier = 3
+source = { epa_names = ["CLYDAGH (CASTLEBAR)"] }
+
+# completed (1 body)
+[[river]]
+id = "colebrooke"
+name = "Colebrooke"
+tier = 2
+source = { rwb_codes = ["UKGBNI1NW363602019", "UKGBNI1NW363602023", "UKGBNI1NW363602014", "UKGBNI1NW363602018"] }
+
+# added in r3 (owner, r13): the survey's line 'Cong (Canal)' from Lough Mask to Lough Corrib, listed so that the
+# Robe and Lough Mask join the Corrib. A known liberty: the water mostly runs underground here (the canal was
+# abandoned unfinished in 1854; sources in sources-for-slice4-designer7-r1.md)
+[[river]]
+id = "cong"
+name = "Cong"
+tier = 3
+source = { epa_names = ["Cong (Canal)"] }
+
+# tier: the tool read 784 km2 and gave tier 2; tier 1 in mock-up r2's list; it drains Loughs Corrib and Mask, about 3,100 km2 (my figure, to be checked)
+[[river]]
+id = "corrib"
+name = "Corrib"
+tier = 1
+source = { epa_names = ["Corrib"] }
+
+[[river]]
+id = "crana"
+name = "Crana"
+tier = 3
+source = { epa_names = ["Crana"] }
+
+# added in r3 (owner, r12): 26 km, into the Bann at Gilford
+[[river]]
+id = "cusher"
+name = "Cusher"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NB030308092", "UKGBNI1NB030308093", "UKGBNI1NB030308094", "UKGBNI1NB030308107"] }
+
+# tier 2: its basin is 392 km2 in the published table
+[[river]]
+id = "dee"
+name = "Dee"
+tier = 2
+source = { epa_names = ["Dee"] }
+
+# tier 2: its basin is 481 km2 in the published table (r2 had tier 3)
+[[river]]
+id = "deel-limerick"
+name = "Deel (Limerick)"
+tier = 2
+source = { epa_names = ["Deel [Newcastlewest]"] }
+
+[[river]]
+id = "deel-mayo"
+name = "Deel (Mayo)"
+tier = 2
+source = { epa_names = ["Deel [Crossmolina]"] }
+
+# completed above Castlederg (4 bodies)
+[[river]]
+id = "derg"
+name = "Derg"
+tier = 2
+source = { rwb_codes = ["UKGBNI1NW010103064", "UKGBNI1NW010102059", "UKGBNI1NW010102056", "UKGBNI1NW010102094", "UKGBNI1NW010102095"] }
+
+[[river]]
+id = "derreen"
+name = "Derreen"
+tier = 3
+source = { epa_names = ["Derreen 12"] }
+
+[[river]]
+id = "derry"
+name = "Derry"
+tier = 3
+source = { epa_names = ["Derry [Slaney]"] }
+
+# with DAERA's lines through Lough Melvin, which it drains; the Irish survey's copies of those lines are left out by
+# a correction below
+[[river]]
+id = "drowes"
+name = "Drowes"
+tier = 3
+source = { epa_names = ["Drowes"], rwb_codes = ["UKGBNI1NW353502007"] }
+
+# with the Ballynahatty Water, its upper course
+[[river]]
+id = "drumragh"
+name = "Drumragh"
+tier = 2
+source = { rwb_codes = ["UKGBNI1NW010102018", "UKGBNI1NW010102006"] }
+
+[[river]]
+id = "duff"
+name = "Duff"
+tier = 3
+source = { epa_names = ["Duff"] }
+
+[[river]]
+id = "easky"
+name = "Easky"
+tier = 3
+source = { epa_names = ["Easky"] }
+
+# the survey names the tidal piece at Ballyshannon after a townland. A border river in both surveys: DAERA's lines
+# through Upper and Lower Lough Erne and to Belleek (5 water bodies), the Irish survey's above the border and from
+# Belleek to the sea; the copies are left out by two corrections below
+# tier 1: its basin is 4,372 km2 in the published table
+[[river]]
+id = "erne"
+name = "Erne"
+tier = 1
+source = { epa_names = ["Erne", "TOWNPARKS 36"], rwb_codes = ["UKGBNI1NW363602063", "UKGBNI1NW363602035", "UKGBNI1NW363602039", "UKGBNI1NW363601041", "UKGBNI1NW363601072"] }
+
+# joined: FANE, HAYNESTOWN 06; the tidal piece carries a townland name
+# tier 2: its basin is 350 km2 in the published table (r2 had tier 3)
+[[river]]
+id = "fane"
+name = "Fane"
+tier = 2
+source = { epa_names = ["FANE", "HAYNESTOWN 06"] }
+
+# completed above Claudy (2 bodies)
+[[river]]
+id = "faughan"
+name = "Faughan"
+tier = 2
+source = { rwb_codes = ["UKGBNI1NW020204033", "UKGBNI1NW020204002", "UKGBNI1NW020204031"] }
+
+# tier 2: its basin is 1,170 km2 in the published table
+[[river]]
+id = "feale"
+name = "Feale"
+tier = 2
+source = { epa_names = ["Feale"] }
+
+# tier 2: its basin is 1,043 km2 in the published table
+[[river]]
+id = "fergus"
+name = "Fergus"
+tier = 2
+source = { epa_names = ["Fergus"] }
+
+# ends at Lifford, where the Foyle begins (r1 ran it to the sea under the Finn's name); tier 2 until the owner says
+# (r1: 1, from an area that counted the Foyle)
+# tier 2: its basin is 505 km2 in the published table
+[[river]]
+id = "finn-donegal"
+name = "Finn (Donegal)"
+tier = 2
+source = { epa_names = ["Finn [Donegal]"] }
+
+# a border river in both surveys: DAERA's lines where it draws the river, the Irish survey's elsewhere; the Irish
+# copies (about 40 km) are left out by a correction below
+[[river]]
+id = "finn-monaghan"
+name = "Finn (Monaghan)"
+tier = 3
+source = { epa_names = ["Finn [Monaghan]"], rwb_codes = ["UKGBNI1NW363602105", "UKGBNI1NW363602097"] }
+
+[[river]]
+id = "flesk"
+name = "Flesk"
+tier = 2
+source = { epa_names = ["Flesk [Kerry]"] }
+
+# new in r2: the Foyle from the meeting of the Finn and the Mourne at Lifford to Lough Foyle, by the Irish survey's
+# tidal lines (they carry no name; two carry the Finn's). DAERA's own copy stops 8 km below Lifford and is not
+# listed.
+# tier 1: its basin is 2,925 km2 in the published table
+[[river]]
+id = "foyle"
+name = "Foyle"
+tier = 1
+source = { segments = ["01_7020", "01_7021", "01_1725a", "01_1725b", "01_7008", "01_7011", "01_7014", "01_7017", "01_7023", "01_7026", "01_7029", "01_7032", "01_7038", "01_7041", "01_7044", "01_7047", "01_7050", "01_7053", "01_7056", "01_7059", "01_7062", "01_7065", "01_7068", "01_7071", "01_7074", "01_7077", "01_7081", "01_7090"] }
+
+[[river]]
+id = "funshion"
+name = "Funshion"
+tier = 3
+source = { epa_names = ["Funshion"] }
+
+[[river]]
+id = "garavogue"
+name = "Garavogue"
+tier = 2
+source = { epa_names = ["Garavogue"] }
+
+# added in r3 (owner, r12): 26 km, into the Owenkillew
+[[river]]
+id = "glenelly"
+name = "Glenelly"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NW010102048", "UKGBNI1NW010102073"] }
+
+# tier 2: its basin is 348 km2 in the published table
+[[river]]
+id = "glyde"
+name = "Glyde"
+tier = 2
+source = { epa_names = ["Glyde"] }
+
+[[river]]
+id = "ilen"
+name = "Ilen"
+tier = 3
+source = { epa_names = ["Ilen"] }
+
+# a hand-drawn last reach takes it down its estuary (correction inagh-tidal)
+[[river]]
+id = "inagh"
+name = "Inagh"
+tier = 3
+source = { epa_names = ["Inagh [Ennistymon]"] }
+
+# tier 1: its basin is 1,254 km2 in the published table
+[[river]]
+id = "inny"
+name = "Inny"
+tier = 1
+source = { epa_names = ["Inny [Shannon]"] }
+
+# a hand-drawn last reach takes it down its estuary (correction inny-kerry-tidal)
+[[river]]
+id = "inny-kerry"
+name = "Inny (Kerry)"
+tier = 3
+source = { epa_names = ["Inny [Kerry]"] }
+
+# completed above Kells (1 body)
+[[river]]
+id = "kells-water"
+name = "Kells Water"
+tier = 2
+source = { rwb_codes = ["UKGBNI1NB030302161", "UKGBNI1NB030302014"] }
+
+[[river]]
+id = "kings-river"
+name = "King's River"
+tier = 3
+source = { epa_names = ["King's [Kilkenny]"] }
+
+# completed above Lisburn; its tidal end by segment code: the water body UKGBNI8NE023 also holds the last 13 m of
+# the Blackstaff. A hand-drawn last reach takes it to Belfast Lough (correction lagan-tidal)
+# tier 2: its basin is 565 km2 in the published table
+[[river]]
+id = "lagan"
+name = "Lagan"
+tier = 2
+source = { rwb_codes = ["UKGBNI1NE050503098", "UKGBNI1NE050503046", "UKGBNI1NE050503101", "UKGBNI1NE050503102", "UKGBNI1NE050503103", "UKGBNI1NE050503108"], segments = ["UKGBNI8NE023.17884"] }
+
+# tier 2: its basin is 829 km2 in the published table
+[[river]]
+id = "laune"
+name = "Laune"
+tier = 2
+source = { epa_names = ["Laune"] }
+
+[[river]]
+id = "leannan"
+name = "Leannan"
+tier = 3
+source = { epa_names = ["Leannan"] }
+
+# joined: Lee [Cork], 19B01; the tidal piece at Cork carries a survey code for a name
+# tier 1: its basin is 1,253 km2 in the published table
+[[river]]
+id = "lee"
+name = "Lee"
+tier = 1
+source = { epa_names = ["Lee [Cork]", "19B01"] }
+
+# joined: Liffey, MAGAZINE STREAM; the tidal Liffey carries the name of a stream that joins it
+# tier 1: its basin is 1,256 km2 in the published table
+[[river]]
+id = "liffey"
+name = "Liffey"
+tier = 1
+source = { epa_names = ["Liffey", "MAGAZINE STREAM"] }
+
+# tier 2: its basin is 662 km2 in the published table (r2 had tier 3)
+[[river]]
+id = "little-brosna"
+name = "Little Brosna"
+tier = 2
+source = { epa_names = ["Little Brosna"] }
+
+# tier 2: its basin is 1,000 km2 in the published table
+[[river]]
+id = "maigue"
+name = "Maigue"
+tier = 2
+source = { epa_names = ["Maigue"] }
+
+# completed above Cullybackey (2 bodies)
+[[river]]
+id = "main"
+name = "Main"
+tier = 2
+source = { rwb_codes = ["UKGBNI1NB030302024", "UKGBNI1NB030302013", "UKGBNI1NB030302158", "UKGBNI1NB030302160", "UKGBNI1NB030302150"] }
+
+[[river]]
+id = "maine"
+name = "Maine"
+tier = 2
+source = { epa_names = ["Maine"] }
+
+# its last 3 km to the Foyle are the Irish survey's copy (GBNI0101358, 01_GBNI0100058), which meets the Foyle's
+# lines; DAERA's own last reach is left out by a correction below
+[[river]]
+id = "mourne"
+name = "Mourne"
+tier = 1
+source = { rwb_codes = ["UKGBNI1NW010102074"], segments = ["GBNI0101358", "01_GBNI0100058"] }
+
+# joined: Moy 34, FARRANNOO, QUIGNALECKA; two tidal pieces below Ballina carry townland names
+# tier 1: its basin is 2,086 km2 in the published table
+[[river]]
+id = "moy"
+name = "Moy"
+tier = 1
+source = { epa_names = ["Moy 34", "FARRANNOO", "QUIGNALECKA"] }
+
+# completed above Tobermore (3 bodies). Tier 2 (r5 had 3): a gauge at Moyola New Bridge has 304 km2 above it (the UK
+# flow archive's station 203020, as given in Wikipedia's River Moyola) and the tool reads 374 km2 at its mouth;
+# changed under the rule the owner approved (owner-direction-designer-r14.md)
+[[river]]
+id = "moyola"
+name = "Moyola"
+tier = 2
+source = { rwb_codes = ["UKGBNI1NB030303241", "UKGBNI1NB030303003", "UKGBNI1NB030303006", "UKGBNI1NB030303228", "UKGBNI1NB030303154"] }
+
+# tier 2: its basin is 650 km2 in the published table
+[[river]]
+id = "mulkear"
+name = "Mulkear"
+tier = 2
+source = { epa_names = ["Mulkear"] }
+
+# also called the Clanrye; completed above Newry (4 bodies)
+# a hand-drawn last reach takes it down its estuary to Carlingford Lough (correction newry-tidal)
+[[river]]
+id = "newry"
+name = "Newry"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NB060601021", "UKGBNI1NB060601004", "UKGBNI1NB060601005", "UKGBNI1NB060601044", "UKGBNI1NB060604046"] }
+
+# tier 1: its basin is 2,530 km2 in the published table
+[[river]]
+id = "nore"
+name = "Nore"
+tier = 1
+source = { epa_names = ["Nore"] }
+
+# added in r3 (owner, r12): 18 km, into the Ulster Blackwater
+[[river]]
+id = "oona-water"
+name = "Oona Water"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NB030307035", "UKGBNI1NB030307038", "UKGBNI1NB030307039"] }
+
+[[river]]
+id = "owenbeg"
+name = "Owenbeg"
+tier = 3
+source = { epa_names = ["Owenbeg [Coolaney]"] }
+
+[[river]]
+id = "owenduff"
+name = "Owenduff"
+tier = 3
+source = { epa_names = ["Owenduff [Blacksod]"] }
+
+# a hand-drawn last reach takes it down its estuary (correction owenea-tidal)
+[[river]]
+id = "owenea"
+name = "Owenea"
+tier = 3
+source = { epa_names = ["Owenea"] }
+
+# completed above Gortin (3 bodies)
+[[river]]
+id = "owenkillew"
+name = "Owenkillew"
+tier = 2
+source = { rwb_codes = ["UKGBNI1NW010102026", "UKGBNI1NW010102011", "UKGBNI1NW010102086", "UKGBNI1NW010102027", "UKGBNI1NW010102028"] }
+
+[[river]]
+id = "owenmore-mayo"
+name = "Owenmore (Mayo)"
+tier = 3
+source = { epa_names = ["Owenmore [Mayo]"] }
+
+[[river]]
+id = "owenmore-sligo"
+name = "Owenmore (Sligo)"
+tier = 2
+source = { epa_names = ["Owenmore [Sligo]"] }
+
+# new in r2 (r1 left it out: the tool could not list its tidal lines). Two water bodies, DAERA's tidal lines of the
+# pondage by their segment codes, and a hand-drawn last reach to Strangford Lough (correction quoile-tidal)
+[[river]]
+id = "quoile"
+name = "Quoile"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NE050504050", "UKGBNI1NE050504051"], segments = [".12204", ".12146", ".12147", ".12148", ".12076", ".12463"] }
+
+# added in r3 (owner, r12): 52 km to Lough Mask, and through the lough to the Cong
+# tier 2: its basin is 320 km2 in the published table
+[[river]]
+id = "robe"
+name = "Robe"
+tier = 2
+source = { epa_names = ["Robe"] }
+
+# completed above Dungiven (1 body); its tidal end by segment code: the water body UKGBNI8NW016 also holds an
+# unrelated 540 m line on the north coast, which r1 took in
+[[river]]
+id = "roe"
+name = "Roe"
+tier = 2
+source = { rwb_codes = ["UKGBNI1NW020202043", "UKGBNI1NW020202015", "UKGBNI1NW020202018", "UKGBNI1NW020202024"], segments = ["UKGBNI8NW016.17665"] }
+
+[[river]]
+id = "roughty"
+name = "Roughty"
+tier = 3
+source = { epa_names = ["Roughty"] }
+
+# joined: Shannon [Upper], Shannon [Lower], TEMP_26S02; the survey names it in two parts and one short unnamed-looking piece at Athlone
+# tier 1: its basin is 16,800 km2 in the published table
+[[river]]
+id = "shannon"
+name = "Shannon"
+tier = 1
+source = { epa_names = ["Shannon [Upper]", "Shannon [Lower]", "TEMP_26S02"] }
+
+# added in r3 (owner, r12): 40 km, into the Erne above Enniskillen
+[[river]]
+id = "sillees"
+name = "Sillees"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NW363601003", "UKGBNI1NW363601004", "UKGBNI1NW363601044", "UKGBNI1NW363601056"] }
+
+# completed above Antrim (1 body)
+[[river]]
+id = "six-mile-water"
+name = "Six Mile Water"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NB030305204", "UKGBNI1NB030305122"] }
+
+# joined: Slaney, SALVILLE_or_MOTABEG, REDMONDSTOWN 12; two tidal pieces below Enniscorthy carry townland names
+# tier 1: its basin is 1,762 km2 in the published table
+[[river]]
+id = "slaney"
+name = "Slaney"
+tier = 1
+source = { epa_names = ["Slaney", "SALVILLE_or_MOTABEG", "REDMONDSTOWN 12"] }
+
+[[river]]
+id = "smearlagh"
+name = "Smearlagh"
+tier = 3
+source = { epa_names = ["Smearlagh"] }
+
+[[river]]
+id = "strule"
+name = "Strule"
+tier = 1
+source = { rwb_codes = ["UKGBNI1NW010102093", "UKGBNI1NW010102020"] }
+
+# tier 1: its basin is 1,600 km2 in the published table
+[[river]]
+id = "suck"
+name = "Suck"
+tier = 1
+source = { epa_names = ["Suck"] }
+
+# tier 1: its basin is 3,610 km2 in the published table
+[[river]]
+id = "suir"
+name = "Suir"
+tier = 1
+source = { epa_names = ["Suir"] }
+
+[[river]]
+id = "sullane"
+name = "Sullane"
+tier = 3
+source = { epa_names = ["Sullane"] }
+
+[[river]]
+id = "swanlinbar"
+name = "Swanlinbar"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NW363602094", "UKGBNI1NW363602050"] }
+
+# joined: Swilly 39, LISMONAGHAN, PORT BRIDGE STREAM, TEMP_39I27; three tidal pieces at Letterkenny carry other names
+[[river]]
+id = "swilly"
+name = "Swilly"
+tier = 3
+source = { epa_names = ["Swilly 39", "LISMONAGHAN", "PORT BRIDGE STREAM", "TEMP_39I27"] }
+
+[[river]]
+id = "tall"
+name = "Tall"
+tier = 3
+source = { rwb_codes = ["UKGBNI1NB030307129"] }
+
+# its last 1.5 km into Upper Lough Erne are DAERA's lines, by segment code, so that it meets the Erne's one line in
+# the lough (owner, r22; CK-350 review 1); the Irish survey's copy of the reach is left out by a correction below
+[[river]]
+id = "woodford"
+name = "Woodford"
+tier = 2
+source = { epa_names = ["Woodford [Cavan]"], segments = ["UKGBNI1NW363602067.16620", "UKGBNI1NW363602067.17607", "UKGBNI1NW363602063.17955"] }
+
+# ---- sea: the owner's six inlets (owner-direction-designer-r10.md, -r11.md, -r12.md; cells approved, -r15.md), then the
+# stranded sea joined (-r17.md; its cells still to be shown).
+
+[[sea]]
+name = "Cork Harbour"
+reason = "Owner, 2026-11-19 (owner-direction-designer-r10.md): add Cork Harbour from the survey's coastal outline. Today's map draws it as land, so the Lee has no sea to end in."
+source = "IE_SW_060_0000"
+
+[[sea]]
+name = "Outer Cork Harbour"
+reason = "Part of the owner's Cork Harbour (r10): the survey draws the harbour as two outlines, and the inner one reaches the open sea only through this one."
+source = "IE_SW_050_0000"
+
+[[sea]]
+name = "Lough Swilly"
+reason = "Owner (r10): add Lough Swilly from the survey's coastal outline. Today's map has only its outer part."
+source = "IE_NW_220_0000"
+
+[[sea]]
+name = "Mouth of Lough Foyle"
+reason = "Owner (r10): open Lough Foyle at its mouth. These 21 cells are land in today's map between the lough and today's sea, and are sea in the Irish survey's coastal outlines (20 in Portstewart Bay, GBNIIE6NB010; the one at the mouth itself in Lough Foyle, GBNIIE6NW250). Each point is the centre of one cell."
+points = [
+  [55.21357, -6.94227],
+  [55.20927, -6.94981],
+  [55.20927, -6.94227],
+  [55.20927, -6.93473],
+  [55.20497, -6.96488],
+  [55.20497, -6.95734],
+  [55.20497, -6.94981],
+  [55.20497, -6.94227],
+  [55.20497, -6.93473],
+  [55.20067, -6.97242],
+  [55.20067, -6.95734],
+  [55.20067, -6.94981],
+  [55.20067, -6.94227],
+  [55.19637, -6.97242],
+  [55.19637, -6.96488],
+  [55.19637, -6.95734],
+  [55.19637, -6.94981],
+  [55.19637, -6.94227],
+  [55.19207, -6.94981],
+  [55.19207, -6.94227],
+  [55.18776, -6.94227],
+]
+
+[[sea]]
+name = "Strangford Narrows"
+reason = "Owner (r10): open Strangford Lough at its mouth. A chain of 21 cells down the middle of the Narrows, from the lough past Portaferry to the notch of sea at its mouth; each point is the centre of one cell. No surveyed outline with a confirmed licence covers Strangford Lough, so the line is placed by hand from where Ballyhenry, the Portaferry ferry, Kilclief and Killard Point lie."
+points = [
+  [54.39695, -5.59317],
+  [54.39256, -5.57810],
+  [54.38817, -5.57810],
+  [54.38817, -5.57056],
+  [54.38378, -5.57056],
+  [54.38378, -5.56302],
+  [54.37939, -5.56302],
+  [54.37939, -5.55549],
+  [54.37500, -5.55549],
+  [54.37500, -5.54795],
+  [54.37061, -5.54795],
+  [54.36622, -5.54795],
+  [54.36183, -5.54795],
+  [54.36183, -5.54041],
+  [54.35744, -5.54041],
+  [54.35305, -5.54041],
+  [54.34865, -5.54041],
+  [54.34865, -5.53288],
+  [54.34426, -5.53288],
+  [54.33987, -5.53288],
+  [54.33547, -5.53288],
+]
+
+[[sea]]
+name = "Passage West"
+reason = "Part of the owner's Cork Harbour (r10), for the owner to confirm: the two cells of the channel at Passage West, narrower than a cell, which join Lough Mahon and the Lee's estuary to Cork Harbour; each point is the centre of one cell."
+points = [
+  [51.85626, -8.32905],
+  [51.85160, -8.32905],
+]
+
+[[sea]]
+name = "Carlingford Lough"
+reason = "Owner, 2026-11-19 (owner-direction-designer-r11.md): open Carlingford Lough from the survey's coastal outline. Today's map draws it as land."
+source = "GBNIIE6NB030"
+
+[[sea]]
+name = "Outer Kenmare River"
+reason = "Owner (r11): open the Kenmare River from the survey's coastal outline. Today's map draws its inner 22 km as land; the outline is the whole inlet, and 425 of its cells are land today."
+source = "IE_SW_190_0000"
+
+[[sea]]
+name = "Stranded sea joined through surveyed water"
+reason = "Owner, 2026-11-19 (owner-direction-designer-r17.md): stranded sea that the survey draws as sea is joined to the open sea. These 63 cells are land in today's map, lie more than half in the Irish survey's tidal or coastal outlines, and are the one or two cells that join each of 46 patches of today's sea (inner Bantry Bay, Achill Sound, Westport Bay, Inver Bay and smaller ones). Each point is the centre of one cell (slice-4-checks/r2/poollinks.py)."
+points = [
+  [55.29948, -7.15330],
+  [54.96772, -8.44211],
+  [54.85074, -8.44211],
+  [54.62448, -8.30644],
+  [54.43203, -8.49486],
+  [54.40134, -8.55516],
+  [54.33108, -8.60792],
+  [54.28271, -9.24855],
+  [54.28271, -9.24101],
+  [54.26511, -8.85663],
+  [54.25190, -8.63053],
+  [54.25190, -8.62299],
+  [54.22106, -10.08514],
+  [54.22106, -10.07760],
+  [54.11959, -9.94948],
+  [54.11959, -9.94194],
+  [54.00015, -9.92687],
+  [53.99572, -9.92687],
+  [53.88481, -9.69322],
+  [53.88037, -9.69322],
+  [53.88037, -6.29410],
+  [53.87148, -9.64047],
+  [53.87148, -9.63293],
+  [53.86704, -9.63293],
+  [53.86704, -9.62539],
+  [53.86259, -9.63293],
+  [53.85370, -9.64047],
+  [53.82257, -9.65554],
+  [53.82257, -9.64800],
+  [53.80477, -9.64047],
+  [53.80032, -9.64047],
+  [53.78697, -9.76859],
+  [53.78697, -9.71584],
+  [53.63530, -10.22081],
+  [53.63530, -10.21327],
+  [53.61742, -9.98716],
+  [53.61295, -9.98716],
+  [53.51895, -10.16051],
+  [53.43822, -10.16805],
+  [53.40678, -10.15297],
+  [53.39779, -6.05292],
+  [53.37082, -9.94194],
+  [53.36632, -9.94194],
+  [53.30331, -6.15090],
+  [53.24021, -9.76106],
+  [53.21314, -8.98476],
+  [53.20863, -8.98476],
+  [52.60407, -9.68569],
+  [52.25943, -9.84396],
+  [52.25481, -9.97963],
+  [52.25020, -10.13790],
+  [52.25020, -10.13036],
+  [52.24097, -9.94194],
+  [52.19017, -6.45991],
+  [51.93533, -7.80901],
+  [51.93068, -7.84669],
+  [51.92603, -7.86930],
+  [51.89813, -7.88438],
+  [51.89813, -7.87684],
+  [51.66032, -9.63293],
+  [51.66032, -9.62539],
+  [51.60418, -9.75352],
+  [51.51047, -9.52741],
+]
+
+[[sea]]
+name = "Belfast Lough head"
+reason = "Owner (r17): the sea cells of the owner's edit belfast-harbour-sea at the head of Belfast Lough are joined to the lough through these four cells, placed by hand; no surveyed outline covers them."
+points = [
+  [54.63320, -5.87957],
+  [54.62011, -5.87957],
+  [54.61575, -5.87957],
+  [54.60702, -5.87957],
+]
+
+[[sea]]
+name = "Ballyteige lagoon"
+reason = "Owner (r17): the 21-cell lagoon behind Ballyteige Burrow near Kilmore Quay is joined to the sea through this one cell, placed by hand. That it was tidal before 19th-century reclamation is the designer's understanding, still to be cited."
+points = [
+  [52.19941, -6.63326],
+]
+
+# ---- hand-drawn last reaches: rivers whose survey line stops short of the sea in today's map (CK-354 rules 5 and 6).
+# Each is the middle of the survey's own tidal or coastal outline unless its reason says otherwise
+# (slice-4-checks/r2/course.py finds the line; mkcourses.py and courses.json hold what was run).
+
+[[correction]]
+id = "bann-tidal"
+river = "bann"
+reason = "The Bann's survey line stops above Coleraine, 12 km of estuary short of the sea, and the estuary is narrower than a cell, so the tool cannot make it sea. Its last reach is drawn down the middle of DAERA's Bann Estuary outline (UKGBNI5NB010010) to the Barmouth, then in the Irish survey's Portstewart Bay outline (GBNIIE6NB010) to the first sea cell. The first 180 m are the survey segment it stands in for."
+confidence = "high"
+kind = "tidal"
+replaces = ["UKGBNI8NB014.9835"]
+course = [
+  [55.11176, -6.65740],
+  [55.11196, -6.65808],
+  [55.11215, -6.65878],
+  [55.11244, -6.65948],
+  [55.11255, -6.65972],
+  [55.11259, -6.65981],
+  [55.11711, -6.66788],
+  [55.12357, -6.66929],
+  [55.12950, -6.67447],
+  [55.13489, -6.67447],
+  [55.13758, -6.67212],
+  [55.14027, -6.67212],
+  [55.14296, -6.67447],
+  [55.15319, -6.69426],
+  [55.15427, -6.70085],
+  [55.15615, -6.70698],
+  [55.15723, -6.71640],
+  [55.15911, -6.72017],
+  [55.16019, -6.72535],
+  [55.16261, -6.73147],
+  [55.16396, -6.73901],
+  [55.16396, -6.74607],
+  [55.16234, -6.75079],
+  [55.16234, -6.75974],
+  [55.16342, -6.76397],
+  [55.16665, -6.76916],
+  [55.16826, -6.76916],
+  [55.16961, -6.76680],
+  [55.17176, -6.76680],
+  [55.17472, -6.76115],
+]
+
+[[correction]]
+id = "lagan-tidal"
+river = "lagan"
+reason = "The Lagan's survey line stops at Stranmillis. Its last reach is drawn down the middle of DAERA's Lagan Estuary outline (UKGBNI5NE100010) to the Lagan Weir, then by three hand-placed points along the harbour channel to today's sea in Belfast Lough, whose head today's map draws as land for 8 cells. No surveyed outline with a confirmed licence covers Belfast Lough. The first 188 m are the survey segment it stands in for."
+confidence = "low"
+kind = "tidal"
+replaces = ["UKGBNI8NE023.17884"]
+course = [
+  [54.56750, -5.92852],
+  [54.56771, -5.92856],
+  [54.56803, -5.92853],
+  [54.56828, -5.92833],
+  [54.56871, -5.92772],
+  [54.56878, -5.92752],
+  [54.56883, -5.92721],
+  [54.56867, -5.92597],
+  [54.57003, -5.92550],
+  [54.57276, -5.92927],
+  [54.57577, -5.93115],
+  [54.57768, -5.92785],
+  [54.58041, -5.92785],
+  [54.58368, -5.91985],
+  [54.58478, -5.91890],
+  [54.59078, -5.91938],
+  [54.59542, -5.91278],
+  [54.59706, -5.91419],
+  [54.59760, -5.91749],
+  [54.59897, -5.91985],
+  [54.59979, -5.91938],
+  [54.60700, -5.91200],
+  [54.62000, -5.90100],
+  [54.63200, -5.89300],
+]
+
+[[correction]]
+id = "newry-tidal"
+river = "newry"
+reason = "The Newry River's survey line stops in Newry, and its estuary down to Narrow Water is narrower than a cell, so the tool cannot make it sea. Its last reach is drawn down the middle of DAERA's Newry Estuary outline (UKGBNI5NB030010) to the first sea cell of Carlingford Lough, which the owner opened (r11). The first 1027 m are the survey segment it stands in for."
+confidence = "high"
+kind = "tidal"
+replaces = ["UKGBNI1NB060604046.13608"]
+course = [
+  [54.17881, -6.33478],
+  [54.17846, -6.33533],
+  [54.17812, -6.33590],
+  [54.17777, -6.33646],
+  [54.17764, -6.33705],
+  [54.17751, -6.33765],
+  [54.17739, -6.33826],
+  [54.17714, -6.33842],
+  [54.17688, -6.33860],
+  [54.17644, -6.33886],
+  [54.17600, -6.33914],
+  [54.17565, -6.33932],
+  [54.17530, -6.33952],
+  [54.17495, -6.33972],
+  [54.17456, -6.33992],
+  [54.17417, -6.34012],
+  [54.17377, -6.34032],
+  [54.17338, -6.34052],
+  [54.17294, -6.34023],
+  [54.17251, -6.33997],
+  [54.17209, -6.33971],
+  [54.17166, -6.33945],
+  [54.17123, -6.33919],
+  [54.17114, -6.33895],
+  [54.16912, -6.33532],
+  [54.16553, -6.33673],
+  [54.16250, -6.33673],
+  [54.16002, -6.33532],
+  [54.15036, -6.32542],
+  [54.14705, -6.31930],
+  [54.14291, -6.31553],
+  [54.13574, -6.31082],
+  [54.13436, -6.31082],
+  [54.12911, -6.30517],
+  [54.11945, -6.29857],
+  [54.11503, -6.29386],
+  [54.11227, -6.28915],
+  [54.11200, -6.28256],
+  [54.10924, -6.27691],
+  [54.10730, -6.27596],
+  [54.10040, -6.26466],
+  [54.09736, -6.26372],
+]
+
+[[correction]]
+id = "quoile-tidal"
+river = "quoile"
+reason = "The Quoile's survey lines stop at the barrage (1957). Before the barrages the river was tidal up to Downpatrick. Its last reach is a hand-placed line of two legs down the old estuary to Strangford Lough; no surveyed outline covers it. The first 252 m are the survey segment it stands in for."
+confidence = "low"
+kind = "tidal"
+replaces = [".12463"]
+course = [
+  [54.36943, -5.68544],
+  [54.36977, -5.68539],
+  [54.37009, -5.68532],
+  [54.37041, -5.68526],
+  [54.37068, -5.68524],
+  [54.37095, -5.68523],
+  [54.37137, -5.68480],
+  [54.37157, -5.68454],
+  [54.38400, -5.66000],
+  [54.39695, -5.63085],
+]
+
+[[correction]]
+id = "owenea-tidal"
+river = "owenea"
+reason = "The Owenea's survey line stops at the head of its estuary, which today's map draws as land. Its last reach is drawn down the middle of the Irish survey's Owenea Estuary (IE_NW_110_0100) and Loughros Bay (IE_NW_110_0000) outlines to the first sea cell. It stands in for a 5 m connecting segment."
+confidence = "high"
+kind = "tidal"
+replaces = ["38_5368"]
+course = [
+  [54.79448, -8.50165],
+  [54.79448, -8.50173],
+  [54.79714, -8.51488],
+  [54.80719, -8.53231],
+]
+
+[[correction]]
+id = "inagh-tidal"
+river = "inagh"
+reason = "The Inagh's survey line stops at the head of its estuary, narrower than a cell. Its last reach is drawn down the middle of the Irish survey's outlines of its estuary and of Liscannor Bay (IE_SH_100_0000) to the first sea cell. It stands in for a 5 m connecting segment."
+confidence = "high"
+kind = "tidal"
+replaces = ["28_1183"]
+course = [
+  [52.94305, -9.35956],
+  [52.94303, -9.35962],
+  [52.94106, -9.36372],
+  [52.93680, -9.36466],
+  [52.91635, -9.39858],
+  [52.91635, -9.40329],
+  [52.91408, -9.40659],
+]
+
+[[correction]]
+id = "inny-kerry-tidal"
+river = "inny-kerry"
+reason = "The Inny's survey line stops at the head of its estuary, narrower than a cell. Its last reach is drawn down the middle of the Irish survey's outlines of its estuary and of Ballinskelligs Bay (IE_SW_200_0000) to the first sea cell. It stands in for a 5 m connecting segment."
+confidence = "high"
+kind = "tidal"
+replaces = ["21_9166"]
+course = [
+  [51.85829, -10.17253],
+  [51.85825, -10.17257],
+  [51.85524, -10.18147],
+  [51.85640, -10.18618],
+  [51.85437, -10.18712],
+  [51.84913, -10.19325],
+  [51.84913, -10.20079],
+  [51.84826, -10.20314],
+  [51.84564, -10.20785],
+  [51.84331, -10.20974],
+  [51.83982, -10.20974],
+  [51.83749, -10.21303],
+]
+
+[[correction]]
+id = "blackwater-munster-tidal"
+river = "blackwater-munster"
+reason = "The Blackwater's survey line ends at Youghal, three cells from today's sea, and the nearest sea cell is a single stranded one, so the tool finds no way out. Its last reach is drawn in the Irish survey's Youghal Harbour (IE_SW_020_0100) and Youghal Bay (IE_SW_020_0000) outlines to the first sea cell. It stands in for a 6 m connecting segment."
+confidence = "high"
+kind = "tidal"
+replaces = ["18_3272"]
+course = [
+  [51.94115, -7.83685],
+  [51.94110, -7.83685],
+  [51.92821, -7.83657],
+  [51.92589, -7.83892],
+]
+
+# ---- lines left out: the two surveys draw the border rivers twice, and a river is built once
+
+[[correction]]
+id = "mourne-daera-last-reach"
+river = "mourne"
+reason = "DAERA's last 2.5 km of the Mourne run on into a line of the Finn's water body, which is not in this list and ends 30 m from where the Irish survey's Foyle begins. The Irish survey's copy of the reach (in the river's segments) meets the Foyle, so DAERA's two lines are left out."
+confidence = "high"
+omit = ["UKGBNI1NW010102074.557", "UKGBNI1NW010102074.559"]
+
+[[correction]]
+id = "erne-daera-below-belleek"
+river = "erne"
+reason = "DAERA's copy of the Erne from Belleek to Ballyshannon (10 km, in the Republic) does not meet the Irish survey's tidal lines at its lower end, so the tool wrote it as a branch flowing backwards. The Irish survey's lines carry this reach."
+confidence = "high"
+omit = ["UKGBNI1NW363601072.17374", "UKGBNI1NW363601072.16513"]
+
+[[correction]]
+id = "arney-irish-copy"
+river = "arney"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["36_GBNI3600274", "36_GBNI3600207", "36_GBNI3600463", "36_GBNI3NW0008_5", "36_GBNI3NW0008_1", "36_7671"]
+
+[[correction]]
+id = "ballinamallard-irish-copy"
+river = "ballinamallard"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["36_GBNI3600773", "36_GBNI3600788", "36_GBNI3600570", "36_GBNI3600584", "36_GBNI3600581", "36_GBNI3600577", "36_GBNI3601103"]
+
+[[correction]]
+id = "colebrooke-irish-copy"
+river = "colebrooke"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["36_GBNI3601704", "36_GBNI3601706", "36_7672"]
+
+[[correction]]
+id = "derg-irish-copy"
+river = "derg"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["GBNI0100140", "GB_7133", "GBNI0100471", "GBNI0100468", "GBNI0100451", "GBNI0100448", "GB_7156", "GBNI0100163"]
+
+[[correction]]
+id = "erne-irish-copy"
+river = "erne"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["36_GBNI3NW0008_80", "36_GBNI3602409", "36_GBNI3NW0008_93", "36_GBNI3NW0008_58", "36_GBNI3NW0008_62", "36_GBNI3NW0008_59", "36_GBNI3NW0008_60", "36_GBNI3NW0008_61", "36_7676", "36_GBNI3NW0008_2", "36_GBNI3NW0008_10", "36_GBNI3NW0008_28", "36_GBNI3NW0008_14", "36_GBNI3NW0007_1", "36_GBNI3NW0006_28", "36_GBNI3NW0006_45", "36_GBNI3601111", "36_7681", "36_GBNI3601109", "36_GBNI3602597", "36_GBNI3NW0008_78"]
+
+[[correction]]
+id = "faughan-irish-copy"
+river = "faughan"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["GBNI0200248", "GBNI0200249"]
+
+[[correction]]
+id = "finn-monaghan-irish-copy"
+river = "finn-monaghan"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["36_GBNI3602349", "36_7661", "36_2022b", "36_835", "36_2445", "36_7613", "36_2446", "36_1391", "36_485", "36_516", "36_7634", "36_638", "36_1219", "36_7559", "36_1785", "36_2013", "36_520", "36_7635", "36_1018", "36_1693", "36_820", "36_2603a", "36_2603b", "36_2610a", "36_2610b", "36_1786", "36_2604", "36_2470", "36_2597a", "36_2597b", "36_2605", "36_GBNI3600186", "36_2602", "36_2603", "36_GBNI9900413", "36_GBNI3NW0008_81", "36_GBNI3NW0008_8", "36_7678"]
+
+[[correction]]
+id = "mourne-irish-copy"
+river = "mourne"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["GBNI0101346", "GBNI0101345"]
+
+[[correction]]
+id = "roe-irish-copy"
+river = "roe"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["GBNI0201222", "GBNI0201220", "GBNI0201215", "GBNI0201216", "GBNI0201201", "GBNI0200635", "GBNI0200731", "GBNI0200717", "GBNI0200715", "GBNI0200736", "GBNI0200743", "GBNI0200656", "GBNI0200019a", "GBNI0201337"]
+
+[[correction]]
+id = "strule-irish-copy"
+river = "strule"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["GBNI0101046", "GBNI0101045", "GBNI0101032", "GBNI0101072", "GBNI0101061", "GBNI0101059"]
+
+[[correction]]
+id = "swanlinbar-irish-copy"
+river = "swanlinbar"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["36_GBNI3602370", "36_7663", "36_GBNI3NW0008_109"]
+
+[[correction]]
+id = "drowes-irish-copy"
+river = "drowes"
+reason = "The Irish survey's lough lines through Lough Melvin, copies of DAERA's lines of the same lough, which the tool cannot pair. DAERA's are kept."
+confidence = "high"
+omit = ["36_7349", "36_7347", "36_6438", "36_7685", "36_6451", "36_6483", "36_6452", "36_6453"]
+
+[[correction]]
+id = "burn-dennet-irish-copy"
+river = "burn-dennet"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["GBNI0102277", "GBNI0102100", "01_GBNI0102314"]
+
+[[correction]]
+id = "glenelly-irish-copy"
+river = "glenelly"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["GBNI0100172"]
+
+[[correction]]
+id = "sillees-irish-copy"
+river = "sillees"
+reason = "Both surveys draw this reach and the tool cannot pair these lines as one (their ends or lengths differ). DAERA's line is kept and the Irish survey's copy is left out, so the river is not built twice. Each line left out lies for half its length or more within 150 m of a DAERA line of this list (slice-4-checks/r2/dup.py)."
+confidence = "high"
+omit = ["36_31_5", "36_GBNI3601325", "36_46_3", "36_GBNI3601326", "36_GBNI3601157", "36_28_3", "36_28_1", "36_GBNI3601121", "36_GBNI3600670", "36_GBNI3600664"]
+
+[[correction]]
+id = "woodford-irish-copy"
+river = "woodford"
+reason = "Both surveys draw the Woodford's last reach into Upper Lough Erne, and the tool cannot pair these lines. DAERA's are kept (three are in the river's segments, and the Erne's lough line carries on from them); the Irish survey's five are left out, so the reach is built once (owner, r22)."
+confidence = "high"
+omit = ["36_GBNI3600169", "36_GBNI3600172", "36_GBNI3NW0008_89", "36_GBNI3NW0008_90", "36_GBNI3NW0008_34"]
+
+# ---- hand widths (owner-direction-designer-r21.md): the Shannon is drawn 1.4 times the rule's width on each of its
+# stretches above the tide. Its two tidal stretches keep the width of their surveyed outline.
+
+[[correction]]
+id = "shannon-width-01"
+river = "shannon"
+stretch = "shannon-01"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-02"
+river = "shannon"
+stretch = "shannon-02"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-03"
+river = "shannon"
+stretch = "shannon-03"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-04"
+river = "shannon"
+stretch = "shannon-04"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-05"
+river = "shannon"
+stretch = "shannon-05"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-06"
+river = "shannon"
+stretch = "shannon-06"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-07"
+river = "shannon"
+stretch = "shannon-07"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-08"
+river = "shannon"
+stretch = "shannon-08"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-09"
+river = "shannon"
+stretch = "shannon-09"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-10"
+river = "shannon"
+stretch = "shannon-10"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-11"
+river = "shannon"
+stretch = "shannon-11"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-12"
+river = "shannon"
+stretch = "shannon-12"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-13"
+river = "shannon"
+stretch = "shannon-13"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-14"
+river = "shannon"
+stretch = "shannon-14"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-15"
+river = "shannon"
+stretch = "shannon-15"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-16"
+river = "shannon"
+stretch = "shannon-16"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-17"
+river = "shannon"
+stretch = "shannon-17"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-18"
+river = "shannon"
+stretch = "shannon-18"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+[[correction]]
+id = "shannon-width-19"
+river = "shannon"
+stretch = "shannon-19"
+reason = "The Shannon is nearly level and lake-like and wider than the rule gives: the survey's outline at its head of tide at Limerick is 130 m across, the rule gives 93 m (widths-fit-r5.md). The owner widened it 1.4 times (r21). One measured place."
+confidence = "medium"
+width_factor = 1.4
+
+# ---- loughs: the tool's proposal with plain names, and each lough once (r1 listed Lower Lough Erne four times, Upper
+# Lough Erne, Lough Melvin and Lower Lough Macnean twice, once from each survey). Which loughs, and the cells each
+# gives back to land, are approved (owner-direction-designer-r16.md), with Lough Allua added by the rule.
+
+[[lough]]
+name = "Lough Allen"
+source = "IE_SH_26_716"
+mode = "redrawn"
+
+[[lough]]
+name = "Lough Boderg"
+source = "IE_SH_26_747b"
+mode = "redrawn"
+
+[[lough]]
+name = "Lough Bofin"
+source = "IE_SH_26_747a"
+mode = "redrawn"
+
+[[lough]]
+name = "Lough Conn"
+source = "IE_WE_34_406b"
+mode = "redrawn"
+
+[[lough]]
+name = "Lough Corrib (lower basin)"
+source = "IE_WE_30_666a"
+mode = "redrawn"
+
+[[lough]]
+name = "Lough Corrib (upper basin)"
+source = "IE_WE_30_666b"
+mode = "redrawn"
+
+[[lough]]
+name = "Lough Corry"
+source = "IE_SH_26_710"
+mode = "added"
+
+[[lough]]
+name = "Lough Cullin"
+source = "IE_WE_34_406a"
+mode = "added"
+
+[[lough]]
+name = "Lough Dan"
+source = "IE_EA_10_29"
+mode = "added"
+
+[[lough]]
+name = "Lough Derg"
+source = "IE_SH_25_191a"
+mode = "redrawn"
+
+[[lough]]
+name = "Lough Derravaragh"
+source = "IE_SH_26_708"
+mode = "added"
+
+[[lough]]
+name = "Lough Easky"
+source = "IE_WE_35_136"
+mode = "added"
+
+[[lough]]
+name = "Lough Eidin (Drumharlow)"
+source = "IE_SH_26_722"
+mode = "added"
+
+[[lough]]
+name = "Lough Ennell"
+source = "IE_SH_25_188"
+mode = "added"
+
+[[lough]]
+name = "Lough Fern"
+source = "IE_NW_39_13"
+mode = "added"
+
+[[lough]]
+name = "Lough Forbes"
+source = "IE_SH_26_723"
+mode = "added"
+
+[[lough]]
+name = "Lough Gara"
+source = "IE_SH_26_728"
+mode = "added"
+
+[[lough]]
+name = "Garadice Lough"
+source = "IE_NW_36_648"
+mode = "added"
+
+[[lough]]
+name = "Gartan Lough"
+source = "IE_NW_39_12"
+mode = "added"
+
+[[lough]]
+name = "Lough Gill"
+source = "IE_WE_35_158"
+mode = "added"
+
+[[lough]]
+name = "Lough Gowna"
+source = "IE_NW_36_724"
+mode = "added"
+
+[[lough]]
+name = "Inchiquin Lough"
+source = "IE_SH_27_130"
+mode = "added"
+
+[[lough]]
+name = "Islandeady Lough"
+source = "IE_WE_34_376"
+mode = "added"
+
+[[lough]]
+name = "Lough Key"
+source = "IE_SH_26_724"
+mode = "added"
+
+[[lough]]
+name = "Killinure Lough"
+source = "IE_SH_26_750b"
+mode = "redrawn"
+
+[[lough]]
+name = "Lough Kinale"
+source = "IE_SH_26_678"
+mode = "added"
+
+[[lough]]
+name = "Lough Leane"
+source = "IE_SW_22_210"
+mode = "redrawn"
+
+[[lough]]
+name = "Lough Beg"
+source = "Lake_0250"
+mode = "added"
+
+[[lough]]
+name = "Lough Neagh"
+source = "Lake_0024"
+mode = "redrawn"
+keep_existing = true
+reason = "the owner's edits lough-neagh-higher and lough-neagh-margin set the lough's higher level by hand"
+
+[[lough]]
+name = "Lower Lough Erne"
+source = "Lake_0027"
+mode = "redrawn"
+
+[[lough]]
+name = "Lower Lough Macnean"
+source = "IE_NW_36_445"
+mode = "added"
+
+[[lough]]
+name = "Lough Mask"
+source = "IE_WE_30_665a"
+mode = "redrawn"
+
+[[lough]]
+name = "Lough Melvin"
+source = "IE_NW_35_160"
+mode = "redrawn"
+
+[[lough]]
+name = "Lough Muckno"
+source = "IE_NB_06_56"
+mode = "added"
+
+[[lough]]
+name = "Lough Oughter (north)"
+source = "IE_NW_36_661"
+mode = "added"
+
+[[lough]]
+name = "Lough Oughter (south)"
+source = "IE_NW_36_657"
+mode = "added"
+
+[[lough]]
+name = "Lough Ramor"
+source = "IE_EA_07_275"
+mode = "added"
+
+[[lough]]
+name = "Lough Ree"
+source = "IE_SH_26_750a"
+mode = "redrawn"
+
+[[lough]]
+name = "Ross Bay (Lough Leane)"
+source = "IE_SW_22_209"
+mode = "redrawn"
+
+[[lough]]
+name = "Lough Sheelin"
+source = "IE_SH_26_709"
+mode = "added"
+
+[[lough]]
+name = "Templehouse Lough"
+source = "IE_WE_35_157"
+mode = "added"
+
+[[lough]]
+name = "Upper Lough Erne"
+source = "Lake_0168"
+mode = "redrawn"
+
+[[lough]]
+name = "Lough Allua"
+source = "IE_SW_19_4"
+mode = "added"
+
+# ---- kept cells (approved, owner-direction-designer-r19.md) and reservoirs left out (D13): each reservoir with its
+# reason, its sources and a confidence
+
+[[keep]]
+id = "island-iniscealtra"
+reason = "Inis Cealtra, Lough Derg: the owner's edit island-iniscealtra makes the monastery's cell land"
+point = [52.91422, -8.44964]
+
+[[keep]]
+id = "island-inisfallen"
+reason = "Inisfallen, Lough Leane: the owner's edit island-inisfallen makes the monastery's cell land"
+point = [52.04671, -9.53495]
+
+[[reservoir]]
+name = "Assaroe Lake"
+source = "IE_NW_36_717"
+reason = "Made by the Erne hydro-electric scheme: the dam at Cathaleen's Fall, built from 1946 to 1955, its turbines commissioned in 1951 and 1952 (Wikipedia, Cathaleen's Fall Hydroelectric Power Station; ESB, Cathleen's Falls). Confidence high."
+
+[[reservoir]]
+name = "Ballinrees Reservoir"
+source = "Lake_0088"
+reason = "An impounding reservoir of NI Water near Coleraine (NI Water's reservoir improvement programme; photographed in 1952, britainfromabove.org.uk XAW045258). The year it was built is not found. Confidence medium."
+
+[[reservoir]]
+name = "Ben Crom Reservoir"
+source = "Lake_0254"
+reason = "Built 1953 to 1957 above the Silent Valley for Belfast's water supply (Wikipedia, Silent Valley Reservoir). Confidence high."
+
+[[reservoir]]
+name = "Carrigadrohid Lake"
+source = "IE_SW_19_139"
+reason = "Made by the ESB's Lee scheme: the dam was built from 1952 to 1957 (Wikipedia, Carrigadrohid hydroelectric power station). Confidence high."
+
+[[reservoir]]
+name = "Parteen Basin"
+source = "IE_SH_25_191b"
+reason = "The basin above Parteen Weir, flooded by the Shannon Scheme, built from 1925 and opened on 22 July 1929 (Wikipedia, Shannon hydroelectric scheme). The survey marks it a heavily modified water body, apart from Lough Derg proper. Confidence high that it is modern; how the river ran here before is not checked."
+
+[[reservoir]]
+name = "Inniscarra Lake"
+source = "IE_SW_19_138"
+reason = "Made by the ESB's Lee scheme: the dam was built from February 1953 and completed in 1957 (Wikipedia, Inniscarra Dam). Confidence high."
+
+[[reservoir]]
+name = "Killylane Reservoir"
+source = "Lake_0106"
+reason = "An impounding reservoir of NI Water (NI Water's reservoir improvement programme; DAERA, Killylane Reservoir). A search summary of Lisburn Today, 'Killylane dam opens at Shane's Hill', gives its opening as June 1964 for the supply of Larne, Ballyclare, Antrim and Ballymena; the page itself could not be opened. Confidence high that it is modern."
+
+[[reservoir]]
+name = "Lough Island Reavy"
+source = "Lake_0031"
+reason = "A man-made reservoir (DAERA, Lough Island Reavy), one of two impoundments of the Bann Reservoir Company, set up by an Act of 1836 (Hansard, Lords, 11 December 1975). Whether a smaller natural lough lay here before is not established. Confidence medium."
+
+[[reservoir]]
+name = "Poulaphouca Reservoir"
+source = "IE_EA_09_71"
+reason = "Made by the ESB's Liffey scheme: created between 1937 and 1947, the flooding beginning on 3 March 1940 (Wikipedia, Poulaphouca Reservoir). Confidence high."
+
+[[reservoir]]
+name = "Seagahan Reservoir"
+source = "Lake_0304"
+reason = "Built in the 1950s for Armagh's water supply (Farrans, 'On site in the 1950s at Seagahan Dam'). The year is not found. Confidence medium."
+
+[[reservoir]]
+name = "Silent Valley Reservoir"
+source = "Lake_0038"
+reason = "Built 1923 to 1933 for Belfast's water supply (Wikipedia, Silent Valley Reservoir). Confidence high."
+
+[[reservoir]]
+name = "Spelga Reservoir"
+source = "Lake_0036"
+reason = "Built 1953 to 1957 (Wikipedia, Spelga Reservoir). Confidence high."
+
+[[reservoir]]
+name = "Stoneyford Reservoir"
+source = "Lake_0035"
+reason = "Built in the late 19th century for the Belfast Water Commissioners (geograph.org.uk photo 3465496; NI Water's reservoir improvement programme). The year is not found. Confidence medium."
+
+[[reservoir]]
+name = "Middle South Woodburn Reservoir"
+source = "Lake_0147"
+reason = "One of the Woodburn reservoirs of Belfast's water supply near Carrickfergus (DAERA, Middle South Woodburn Reservoir; NI Water's reservoir improvement programme). The year is not found. Confidence medium."

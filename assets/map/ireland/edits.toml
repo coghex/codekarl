@@ -579,3 +579,1464 @@ wetness_zero_mm = 2000.0
 wetness_falloff = 0.6
 wetness_floor = 0.4
 terrain_values = { pasture = [550, 450], forest = [400, 400], marsh = [350, 450], bog = [50, 150], mountain = [100, 100] }
+
+# ---- Ireland's water (CK-350, slice 4 of the rivers design) -------------------------------------------------------------------
+# The mask's entries first (rule 5): `water.png`, built by `import_waters.py build` from waters.toml, holds the cells that become sea or lake
+# and the land a redrawn lough gives back; each entry paints the cells of one terrain's key colour. The owner's hand entries follow
+# (the stranded pools), so they win over the mask. The owner's approvals are the records owner-direction-designer-r14.md to -r20.md.
+
+[[edit]]
+id = "ireland-water-sea"
+area = "water.png: cells that become sea (the estuaries and inlets the owner chose, and the tidal reaches joined to the open sea)"
+reason = "Ireland's water of the owner-approved waters.toml, built by import_waters.py (CK-350; owner-direction-designer-r14 to r20)"
+confidence = "medium"
+paint = "sea"
+region = { mask = "water.png" }
+depth = 2
+
+[[edit]]
+id = "ireland-water-lake"
+area = "water.png: cells that become lake (the loughs added and redrawn from the surveys)"
+reason = "Ireland's water of the owner-approved waters.toml, built by import_waters.py (CK-350; owner-direction-designer-r14 to r20)"
+confidence = "medium"
+paint = "lake"
+region = { mask = "water.png" }
+
+[[edit]]
+id = "ireland-water-pasture"
+area = "water.png: cells a redrawn lough gives back to land, as pasture"
+reason = "Ireland's water of the owner-approved waters.toml, built by import_waters.py (CK-350; owner-direction-designer-r14 to r20)"
+confidence = "medium"
+paint = "pasture"
+region = { mask = "water.png" }
+
+[[edit]]
+id = "ireland-water-forest"
+area = "water.png: cells a redrawn lough gives back to land, as forest"
+reason = "Ireland's water of the owner-approved waters.toml, built by import_waters.py (CK-350; owner-direction-designer-r14 to r20)"
+confidence = "medium"
+paint = "forest"
+region = { mask = "water.png" }
+
+[[edit]]
+id = "ireland-water-bog"
+area = "water.png: cells a redrawn lough gives back to land, as bog"
+reason = "Ireland's water of the owner-approved waters.toml, built by import_waters.py (CK-350; owner-direction-designer-r14 to r20)"
+confidence = "medium"
+paint = "bog"
+region = { mask = "water.png" }
+
+[[edit]]
+id = "ireland-water-marsh"
+area = "water.png: cells a redrawn lough gives back to land, as marsh"
+reason = "Ireland's water of the owner-approved waters.toml, built by import_waters.py (CK-350; owner-direction-designer-r14 to r20)"
+confidence = "medium"
+paint = "marsh"
+region = { mask = "water.png" }
+
+# The owner's hand entries (owner-direction-designer-r18.md): each cell of today's sea that the build still lists as cut off from the open sea
+# becomes land of the terrain nearest to it. Made by ck-designer-7 (edits-stranded-pools-designer7-r1.toml, 156 entries for 223 cells).
+
+[[edit]]
+id = "stranded-pool-001-01"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 141, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.9448, 54.94736, -7.42689, -7.42237] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-02"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 142, 6 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.94047, 54.94303, -7.44196, -7.39976] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-03"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 143, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.93614, 54.9387, -7.4495, -7.43744] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-04"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 143, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.93614, 54.9387, -7.43443, -7.4299] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-05"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 144, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.93181, 54.93437, -7.4495, -7.44498] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-06"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 145, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.92748, 54.93004, -7.45704, -7.44498] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-07"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 146, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.92315, 54.92571, -7.4495, -7.44498] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-08"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 147, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.91882, 54.92138, -7.4495, -7.44498] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-09"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 148, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.91449, 54.91705, -7.4495, -7.44498] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-10"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 149, 3 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.91016, 54.91272, -7.4495, -7.4299] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-11"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 150, 3 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.90583, 54.90838, -7.4495, -7.4299] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-12"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 151, 3 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.90149, 54.90405, -7.4495, -7.4299] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-13"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 152, 3 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.89716, 54.89972, -7.4495, -7.4299] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-14"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 153, 3 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.89282, 54.89538, -7.45704, -7.43744] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-15"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 154, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.88849, 54.89105, -7.4495, -7.43744] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-16"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 155, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.88415, 54.88671, -7.4495, -7.43744] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-17"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 156, 3 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.87982, 54.88238, -7.4495, -7.4299] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-18"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 157, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.87548, 54.87804, -7.44196, -7.43744] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-19"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 158, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.87115, 54.8737, -7.4495, -7.43744] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-20"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 159, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.86681, 54.86937, -7.45704, -7.44498] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-001-21"
+area = "stranded sea near 54.906, -7.440: patch 1 of 85 (45 cells), row 160, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.86247, 54.86503, -7.45704, -7.44498] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-002-01"
+area = "stranded sea near 53.337, -9.682: patch 2 of 85 (17 cells), row 503, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.34705, 53.34961, -9.68795, -9.68343] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-002-02"
+area = "stranded sea near 53.337, -9.682: patch 2 of 85 (17 cells), row 504, 4 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.34255, 53.34511, -9.68795, -9.66082] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-002-03"
+area = "stranded sea near 53.337, -9.682: patch 2 of 85 (17 cells), row 505, 4 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.33805, 53.34061, -9.69549, -9.66835] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-002-04"
+area = "stranded sea near 53.337, -9.682: patch 2 of 85 (17 cells), row 506, 4 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.33355, 53.33611, -9.69549, -9.66835] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-002-05"
+area = "stranded sea near 53.337, -9.682: patch 2 of 85 (17 cells), row 507, 3 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.32905, 53.33161, -9.69549, -9.67589] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-002-06"
+area = "stranded sea near 53.337, -9.682: patch 2 of 85 (17 cells), row 508, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.32455, 53.32711, -9.69549, -9.69096] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-003-01"
+area = "stranded sea near 53.289, -9.624: patch 3 of 85 (8 cells), row 514, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.29753, 53.30009, -9.62765, -9.62313] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-003-02"
+area = "stranded sea near 53.289, -9.624: patch 3 of 85 (8 cells), row 515, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.29303, 53.29558, -9.62765, -9.6156] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-003-03"
+area = "stranded sea near 53.289, -9.624: patch 3 of 85 (8 cells), row 516, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.28852, 53.29108, -9.62765, -9.6156] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-003-04"
+area = "stranded sea near 53.289, -9.624: patch 3 of 85 (8 cells), row 517, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.28401, 53.28657, -9.62765, -9.62313] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-003-05"
+area = "stranded sea near 53.289, -9.624: patch 3 of 85 (8 cells), row 518, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.27951, 53.28207, -9.62765, -9.62313] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-003-06"
+area = "stranded sea near 53.289, -9.624: patch 3 of 85 (8 cells), row 519, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.275, 53.27756, -9.62765, -9.62313] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-004-01"
+area = "stranded sea near 52.265, -9.804: patch 4 of 85 (7 cells), row 740, 3 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.26737, 52.26993, -9.81608, -9.79648] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-004-02"
+area = "stranded sea near 52.265, -9.804: patch 4 of 85 (7 cells), row 741, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.26276, 52.26532, -9.80854, -9.79648] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-004-03"
+area = "stranded sea near 52.265, -9.804: patch 4 of 85 (7 cells), row 742, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.25815, 52.26071, -9.80854, -9.79648] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-005-01"
+area = "stranded sea near 52.079, -7.593: patch 5 of 85 (7 cells), row 780, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.0825, 52.08506, -7.60024, -7.58818] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-005-02"
+area = "stranded sea near 52.079, -7.593: patch 5 of 85 (7 cells), row 781, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.07787, 52.08043, -7.60024, -7.59572] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-005-03"
+area = "stranded sea near 52.079, -7.593: patch 5 of 85 (7 cells), row 781, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [52.07787, 52.08043, -7.5927, -7.58064] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-005-04"
+area = "stranded sea near 52.079, -7.593: patch 5 of 85 (7 cells), row 782, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.07324, 52.07579, -7.60024, -7.59572] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-005-05"
+area = "stranded sea near 52.079, -7.593: patch 5 of 85 (7 cells), row 782, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [52.07324, 52.07579, -7.5927, -7.58818] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-006-01"
+area = "stranded sea near 55.171, -7.833: patch 6 of 85 (5 cells), row 87, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [55.17788, 55.18044, -7.83388, -7.82936] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-006-02"
+area = "stranded sea near 55.171, -7.833: patch 6 of 85 (5 cells), row 88, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [55.17357, 55.17613, -7.83388, -7.82936] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-006-03"
+area = "stranded sea near 55.171, -7.833: patch 6 of 85 (5 cells), row 89, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [55.16927, 55.17183, -7.83388, -7.82936] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-006-04"
+area = "stranded sea near 55.171, -7.833: patch 6 of 85 (5 cells), row 90, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [55.16497, 55.16752, -7.84142, -7.82936] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-007-01"
+area = "stranded sea near 55.133, -8.153: patch 7 of 85 (5 cells), row 97, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [55.13482, 55.13738, -8.15797, -8.14591] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-007-02"
+area = "stranded sea near 55.133, -8.153: patch 7 of 85 (5 cells), row 98, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [55.13051, 55.13307, -8.15797, -8.14591] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-007-03"
+area = "stranded sea near 55.133, -8.153: patch 7 of 85 (5 cells), row 99, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [55.1262, 55.12876, -8.15797, -8.15344] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-008-01"
+area = "stranded sea near 54.898, -8.347: patch 8 of 85 (5 cells), row 151, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.90149, 54.90405, -8.34639, -8.34186] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-008-02"
+area = "stranded sea near 54.898, -8.347: patch 8 of 85 (5 cells), row 152, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.89716, 54.89972, -8.35392, -8.34186] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-008-03"
+area = "stranded sea near 54.898, -8.347: patch 8 of 85 (5 cells), row 153, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.89282, 54.89538, -8.35392, -8.34186] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-009-01"
+area = "stranded sea near 53.383, -9.827: patch 9 of 85 (4 cells), row 495, 3 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.38303, 53.38558, -9.83869, -9.81909] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-009-02"
+area = "stranded sea near 53.383, -9.827: patch 9 of 85 (4 cells), row 496, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.37853, 53.38109, -9.82361, -9.81909] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-010-01"
+area = "stranded sea near 51.918, -10.275: patch 10 of 85 (4 cells), row 815, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [51.9201, 51.92266, -10.28336, -10.27884] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-010-02"
+area = "stranded sea near 51.918, -10.275: patch 10 of 85 (4 cells), row 816, 3 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [51.91545, 51.91801, -10.28336, -10.26377] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-011-01"
+area = "stranded sea near 51.555, -9.705: patch 11 of 85 (4 cells), row 893, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [51.55607, 51.55863, -9.71056, -9.6985] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-011-02"
+area = "stranded sea near 51.555, -9.705: patch 11 of 85 (4 cells), row 894, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [51.55138, 51.55394, -9.71056, -9.6985] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-012-01"
+area = "stranded sea near 51.550, -9.667: patch 12 of 85 (4 cells), row 894, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [51.55138, 51.55394, -9.67288, -9.66082] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-012-02"
+area = "stranded sea near 51.550, -9.667: patch 12 of 85 (4 cells), row 895, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [51.5467, 51.54926, -9.67288, -9.66082] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-013-01"
+area = "stranded sea near 51.546, -9.720: patch 13 of 85 (4 cells), row 895, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [51.5467, 51.54926, -9.72563, -9.72111] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-013-02"
+area = "stranded sea near 51.546, -9.720: patch 13 of 85 (4 cells), row 895, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [51.5467, 51.54926, -9.7181, -9.71357] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-013-03"
+area = "stranded sea near 51.546, -9.720: patch 13 of 85 (4 cells), row 896, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [51.54201, 51.54457, -9.72563, -9.71357] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-014-01"
+area = "stranded sea near 54.574, -8.188: patch 14 of 85 (3 cells), row 226, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.57517, 54.57773, -8.18811, -8.18359] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-014-02"
+area = "stranded sea near 54.574, -8.188: patch 14 of 85 (3 cells), row 227, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.5708, 54.57336, -8.19565, -8.18359] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-015-01"
+area = "stranded sea near 53.963, -9.864: patch 15 of 85 (3 cells), row 365, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.96342, 53.96597, -9.86883, -9.85677] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-015-02"
+area = "stranded sea near 53.963, -9.864: patch 15 of 85 (3 cells), row 366, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.95898, 53.96154, -9.86883, -9.86431] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-016-01"
+area = "stranded sea near 53.567, -10.000: patch 16 of 85 (3 cells), row 454, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "forest"
+region = { box = [53.56694, 53.56949, -10.0045, -9.99998] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-016-02"
+area = "stranded sea near 53.567, -10.000: patch 16 of 85 (3 cells), row 454, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [53.56694, 53.56949, -9.99696, -9.99244] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-016-03"
+area = "stranded sea near 53.567, -10.000: patch 16 of 85 (3 cells), row 455, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [53.56246, 53.56502, -10.0045, -9.99998] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-017-01"
+area = "stranded sea near 53.359, -9.668: patch 17 of 85 (3 cells), row 500, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.36054, 53.3631, -9.67288, -9.66835] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-017-02"
+area = "stranded sea near 53.359, -9.668: patch 17 of 85 (3 cells), row 501, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.35605, 53.3586, -9.67288, -9.66082] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-018-01"
+area = "stranded sea near 53.357, -9.648: patch 18 of 85 (3 cells), row 500, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.36054, 53.3631, -9.65026, -9.64574] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-018-02"
+area = "stranded sea near 53.357, -9.648: patch 18 of 85 (3 cells), row 501, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.35605, 53.3586, -9.65026, -9.64574] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-018-03"
+area = "stranded sea near 53.357, -9.648: patch 18 of 85 (3 cells), row 502, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.35155, 53.35411, -9.65026, -9.64574] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-019-01"
+area = "stranded sea near 52.316, -9.834: patch 19 of 85 (3 cells), row 729, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.31808, 52.32064, -9.83869, -9.83416] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-019-02"
+area = "stranded sea near 52.316, -9.834: patch 19 of 85 (3 cells), row 730, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.31347, 52.31603, -9.83869, -9.82663] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-020-01"
+area = "stranded sea near 51.534, -9.429: patch 20 of 85 (3 cells), row 897, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [51.53732, 51.53988, -9.4317, -9.42717] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-020-02"
+area = "stranded sea near 51.534, -9.429: patch 20 of 85 (3 cells), row 898, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [51.53263, 51.53519, -9.4317, -9.42717] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-020-03"
+area = "stranded sea near 51.534, -9.429: patch 20 of 85 (3 cells), row 899, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [51.52795, 51.5305, -9.4317, -9.42717] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-021-01"
+area = "stranded sea near 55.181, -7.801: patch 21 of 85 (2 cells), row 86, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [55.18218, 55.18474, -7.80373, -7.79921] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-021-02"
+area = "stranded sea near 55.181, -7.801: patch 21 of 85 (2 cells), row 87, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [55.17788, 55.18044, -7.80373, -7.79921] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-022-01"
+area = "stranded sea near 55.168, -7.688: patch 22 of 85 (2 cells), row 89, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [55.16927, 55.17183, -7.69068, -7.68616] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-022-02"
+area = "stranded sea near 55.168, -7.688: patch 22 of 85 (2 cells), row 90, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [55.16497, 55.16752, -7.69068, -7.68616] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-023-01"
+area = "stranded sea near 55.041, -7.134: patch 23 of 85 (2 cells), row 119, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [55.03992, 55.04248, -7.14049, -7.12843] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-024-01"
+area = "stranded sea near 54.970, -8.404: patch 24 of 85 (2 cells), row 135, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.97077, 54.97333, -8.40668, -8.40216] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-024-02"
+area = "stranded sea near 54.970, -8.404: patch 24 of 85 (2 cells), row 136, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.96644, 54.969, -8.40668, -8.40216] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-025-01"
+area = "stranded sea near 54.946, -7.391: patch 25 of 85 (2 cells), row 141, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.9448, 54.94736, -7.39674, -7.38468] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-026-01"
+area = "stranded sea near 54.883, -8.367: patch 26 of 85 (2 cells), row 155, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.88415, 54.88671, -8.369, -8.36448] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-026-02"
+area = "stranded sea near 54.883, -8.367: patch 26 of 85 (2 cells), row 156, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.87982, 54.88238, -8.369, -8.36448] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-027-01"
+area = "stranded sea near 54.465, -5.638: patch 27 of 85 (2 cells), row 251, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.46581, 54.46837, -5.64065, -5.63613] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-027-02"
+area = "stranded sea near 54.465, -5.638: patch 27 of 85 (2 cells), row 252, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.46143, 54.46399, -5.64065, -5.63613] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-028-01"
+area = "stranded sea near 53.918, -9.927: patch 28 of 85 (2 cells), row 375, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.91905, 53.92161, -9.92913, -9.92461] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-028-02"
+area = "stranded sea near 53.918, -9.927: patch 28 of 85 (2 cells), row 376, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.91462, 53.91717, -9.92913, -9.92461] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-029-01"
+area = "stranded sea near 52.702, -8.909: patch 29 of 85 (2 cells), row 645, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.70338, 52.70593, -8.91165, -8.90713] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-029-02"
+area = "stranded sea near 52.702, -8.909: patch 29 of 85 (2 cells), row 646, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.69881, 52.70137, -8.91165, -8.90713] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-030-01"
+area = "stranded sea near 52.645, -8.695: patch 30 of 85 (2 cells), row 658, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.64397, 52.64653, -8.70062, -8.68856] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-031-01"
+area = "stranded sea near 52.370, -6.976: patch 31 of 85 (2 cells), row 718, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.36873, 52.37129, -6.98221, -6.97016] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-032-01"
+area = "stranded sea near 52.250, -9.803: patch 32 of 85 (2 cells), row 744, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.24892, 52.25148, -9.80854, -9.79648] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-033-01"
+area = "stranded sea near 52.234, -6.799: patch 33 of 85 (2 cells), row 747, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [52.23508, 52.23763, -6.80133, -6.79681] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-033-02"
+area = "stranded sea near 52.234, -6.799: patch 33 of 85 (2 cells), row 748, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [52.23046, 52.23302, -6.80133, -6.79681] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-034-01"
+area = "stranded sea near 52.216, -6.588: patch 34 of 85 (2 cells), row 751, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.21661, 52.21917, -6.5903, -6.58578] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-034-02"
+area = "stranded sea near 52.216, -6.588: patch 34 of 85 (2 cells), row 752, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.21199, 52.21455, -6.5903, -6.58578] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-035-01"
+area = "stranded sea near 52.132, -10.281: patch 35 of 85 (2 cells), row 769, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.13342, 52.13597, -10.28336, -10.27884] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-035-02"
+area = "stranded sea near 52.132, -10.281: patch 35 of 85 (2 cells), row 770, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.12879, 52.13135, -10.28336, -10.27884] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-036-01"
+area = "stranded sea near 52.010, -7.850: patch 36 of 85 (2 cells), row 796, 2 cells"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.00833, 52.01089, -7.85649, -7.84443] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-037-01"
+area = "stranded sea near 51.649, -9.867: patch 37 of 85 (2 cells), row 873, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [51.64969, 51.65225, -9.86883, -9.86431] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-037-02"
+area = "stranded sea near 51.649, -9.867: patch 37 of 85 (2 cells), row 874, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [51.64502, 51.64757, -9.86883, -9.86431] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-038-01"
+area = "stranded sea near 51.597, -9.603: patch 38 of 85 (2 cells), row 884, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [51.59822, 51.60078, -9.60504, -9.60052] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-038-02"
+area = "stranded sea near 51.597, -9.603: patch 38 of 85 (2 cells), row 885, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [51.59354, 51.5961, -9.60504, -9.60052] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-039-01"
+area = "stranded sea near 55.287, -7.266: patch 39 of 85 (1 cells), row 62, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [55.28532, 55.28788, -7.26862, -7.26409] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-040-01"
+area = "stranded sea near 55.183, -7.839: patch 40 of 85 (1 cells), row 86, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [55.18218, 55.18474, -7.84142, -7.83689] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-041-01"
+area = "stranded sea near 55.115, -7.696: patch 41 of 85 (1 cells), row 102, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [55.11327, 55.11583, -7.69822, -7.69369] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-042-01"
+area = "stranded sea near 55.089, -8.306: patch 42 of 85 (1 cells), row 108, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [55.0874, 55.08996, -8.3087, -8.30418] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-043-01"
+area = "stranded sea near 55.067, -6.045: patch 43 of 85 (1 cells), row 113, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [55.06583, 55.06838, -6.04764, -6.04312] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-044-01"
+area = "stranded sea near 54.968, -7.357: patch 44 of 85 (1 cells), row 136, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.96644, 54.969, -7.35906, -7.35454] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-045-01"
+area = "stranded sea near 54.963, -7.364: patch 45 of 85 (1 cells), row 137, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "forest"
+region = { box = [54.96211, 54.96467, -7.36659, -7.36207] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-046-01"
+area = "stranded sea near 54.959, -7.643: patch 46 of 85 (1 cells), row 138, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.95779, 54.96035, -7.64546, -7.64094] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-047-01"
+area = "stranded sea near 54.959, -7.372: patch 47 of 85 (1 cells), row 138, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "forest"
+region = { box = [54.95779, 54.96035, -7.37413, -7.36961] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-048-01"
+area = "stranded sea near 54.955, -7.379: patch 48 of 85 (1 cells), row 139, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "forest"
+region = { box = [54.95346, 54.95602, -7.38167, -7.37715] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-049-01"
+area = "stranded sea near 54.851, -7.462: patch 49 of 85 (1 cells), row 163, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.84946, 54.85202, -7.46457, -7.46005] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-050-01"
+area = "stranded sea near 54.842, -7.470: patch 50 of 85 (1 cells), row 165, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.84078, 54.84334, -7.47211, -7.46759] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-051-01"
+area = "stranded sea near 54.833, -5.782: patch 51 of 85 (1 cells), row 167, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.8321, 54.83466, -5.78385, -5.77933] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-052-01"
+area = "stranded sea near 54.607, -5.917: patch 52 of 85 (1 cells), row 219, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.60574, 54.6083, -5.91952, -5.91499] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-053-01"
+area = "stranded sea near 54.498, -5.669: patch 53 of 85 (1 cells), row 244, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [54.49646, 54.49902, -5.6708, -5.66628] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-054-01"
+area = "stranded sea near 54.410, -5.638: patch 54 of 85 (1 cells), row 264, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.40883, 54.41139, -5.64065, -5.63613] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-055-01"
+area = "stranded sea near 54.384, -5.616: patch 55 of 85 (1 cells), row 270, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.3825, 54.38506, -5.61804, -5.61352] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-056-01"
+area = "stranded sea near 54.327, -5.736: patch 56 of 85 (1 cells), row 283, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [54.32541, 54.32796, -5.73863, -5.73411] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-057-01"
+area = "stranded sea near 54.173, -10.070: patch 57 of 85 (1 cells), row 318, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "bog"
+region = { box = [54.17129, 54.17384, -10.07233, -10.06781] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-058-01"
+area = "stranded sea near 54.018, -9.882: patch 58 of 85 (1 cells), row 353, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "bog"
+region = { box = [54.01659, 54.01915, -9.88391, -9.87939] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-059-01"
+area = "stranded sea near 54.009, -9.882: patch 59 of 85 (1 cells), row 355, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "bog"
+region = { box = [54.00773, 54.01029, -9.88391, -9.87939] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-060-01"
+area = "stranded sea near 53.501, -6.136: patch 60 of 85 (1 cells), row 469, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.49974, 53.5023, -6.13809, -6.13356] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-061-01"
+area = "stranded sea near 53.384, -9.648: patch 61 of 85 (1 cells), row 495, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.38303, 53.38558, -9.65026, -9.64574] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-062-01"
+area = "stranded sea near 53.353, -6.234: patch 62 of 85 (1 cells), row 502, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [53.35155, 53.35411, -6.23606, -6.23154] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-063-01"
+area = "stranded sea near 53.330, -9.588: patch 63 of 85 (1 cells), row 507, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.32905, 53.33161, -9.58997, -9.58545] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-064-01"
+area = "stranded sea near 53.317, -9.844: patch 64 of 85 (1 cells), row 510, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.31554, 53.3181, -9.84622, -9.8417] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-065-01"
+area = "stranded sea near 53.312, -9.836: patch 65 of 85 (1 cells), row 511, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "bog"
+region = { box = [53.31104, 53.3136, -9.83869, -9.83416] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-066-01"
+area = "stranded sea near 53.303, -9.633: patch 66 of 85 (1 cells), row 513, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.30203, 53.30459, -9.63519, -9.63067] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-067-01"
+area = "stranded sea near 53.285, -9.648: patch 67 of 85 (1 cells), row 517, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.28401, 53.28657, -9.65026, -9.64574] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-068-01"
+area = "stranded sea near 53.272, -9.693: patch 68 of 85 (1 cells), row 520, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [53.2705, 53.27305, -9.69549, -9.69096] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-069-01"
+area = "stranded sea near 53.267, -8.947: patch 69 of 85 (1 cells), row 521, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [53.26599, 53.26855, -8.94934, -8.94481] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-070-01"
+area = "stranded sea near 52.828, -8.955: patch 70 of 85 (1 cells), row 618, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [52.8265, 52.82906, -8.95687, -8.95235] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-071-01"
+area = "stranded sea near 52.650, -9.550: patch 71 of 85 (1 cells), row 657, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [52.64854, 52.6511, -9.55229, -9.54776] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-072-01"
+area = "stranded sea near 52.618, -8.789: patch 72 of 85 (1 cells), row 664, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.61652, 52.61908, -8.79106, -8.78654] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-073-01"
+area = "stranded sea near 52.540, -6.219: patch 73 of 85 (1 cells), row 681, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.53866, 52.54122, -6.22099, -6.21647] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-074-01"
+area = "stranded sea near 52.430, -6.565: patch 74 of 85 (1 cells), row 705, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.42851, 52.43107, -6.56769, -6.56316] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-075-01"
+area = "stranded sea near 52.310, -7.003: patch 75 of 85 (1 cells), row 731, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.30886, 52.31142, -7.00482, -7.0003] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-076-01"
+area = "stranded sea near 52.301, -7.010: patch 76 of 85 (1 cells), row 733, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.29965, 52.30221, -7.01236, -7.00784] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-077-01"
+area = "stranded sea near 52.250, -9.829: patch 77 of 85 (1 cells), row 744, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.24892, 52.25148, -9.83115, -9.82663] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-078-01"
+area = "stranded sea near 52.167, -7.116: patch 78 of 85 (1 cells), row 762, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.16579, 52.16835, -7.11788, -7.11336] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-079-01"
+area = "stranded sea near 52.079, -7.613: patch 79 of 85 (1 cells), row 781, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.07787, 52.08043, -7.61531, -7.61079] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-080-01"
+area = "stranded sea near 52.065, -7.621: patch 80 of 85 (1 cells), row 784, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [52.06397, 52.06653, -7.62285, -7.61833] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-081-01"
+area = "stranded sea near 51.963, -7.854: patch 81 of 85 (1 cells), row 806, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [51.96192, 51.96448, -7.85649, -7.85197] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-082-01"
+area = "stranded sea near 51.935, -7.877: patch 82 of 85 (1 cells), row 812, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [51.93405, 51.9366, -7.8791, -7.87458] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-083-01"
+area = "stranded sea near 51.651, -9.814: patch 83 of 85 (1 cells), row 873, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [51.64969, 51.65225, -9.81608, -9.81155] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-084-01"
+area = "stranded sea near 51.585, -9.618: patch 84 of 85 (1 cells), row 887, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "marsh"
+region = { box = [51.58418, 51.58673, -9.62012, -9.6156] }
+where = { terrain = ["sea"] }
+
+[[edit]]
+id = "stranded-pool-085-01"
+area = "stranded sea near 51.567, -9.701: patch 85 of 85 (1 cells), row 891, 1 cell"
+reason = "today's map draws this sea cut off from the open sea; the owner made each such patch land of the nearest terrain (owner-direction-designer-r18.md)"
+confidence = "medium"
+paint = "pasture"
+region = { box = [51.56544, 51.568, -9.70302, -9.6985] }
+where = { terrain = ["sea"] }
