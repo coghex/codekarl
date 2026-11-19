@@ -2,7 +2,6 @@
 # hunger/tier values are integer hundredths of a person-day.
 # are hundredths of a person-day, storage limits are thousandths of a unit/person.
 price_k_pm = 500
-cultures = ["ulaid", "cruthin", "northern_ui_neill", "airgialla", "mide_brega", "laigin", "mumu", "connachta", "english"]
 religions = ["christianity", "irish_paganism", "norse_paganism", "anglo_saxon_paganism"]
 terrain_order = ["pasture", "forest", "bog", "marsh", "mountain"]
 housing_classes = ["makeshift", "basic"]

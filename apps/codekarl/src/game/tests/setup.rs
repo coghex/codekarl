@@ -293,10 +293,45 @@ fn the_rules_hash_changes_when_a_building_footprint_changes() {
     fs::create_dir_all(terrain_rules.parent().unwrap()).unwrap();
     fs::write(&game_rules, "[footprint_m2]\nfarm = 2000\n").unwrap();
     fs::write(&terrain_rules, "[suitability]\n").unwrap();
+    fs::write(game_rules.with_file_name("peoples.toml"), "registry").unwrap();
 
     let before = hashes::rules_hash(&dir.0).unwrap();
     fs::write(&game_rules, "[footprint_m2]\nfarm = 2001\n").unwrap();
     assert_ne!(hashes::rules_hash(&dir.0).unwrap(), before);
+}
+
+#[test]
+fn registry_edit_changes_rules_hash_and_refuses_existing_save() {
+    let dir = Dir::new();
+    let game = dir.0.join("game");
+    let map = dir.0.join("map/ireland");
+    fs::create_dir_all(&game).unwrap();
+    fs::create_dir_all(&map).unwrap();
+    fs::write(game.join("economy.toml"), "rules").unwrap();
+    fs::write(game.join("peoples.toml"), "registry before").unwrap();
+    fs::write(map.join("terrain.toml"), "terrain").unwrap();
+    let mut identity = super::identity("aa");
+    identity.rules_hash = hashes::rules_hash(&dir.0).unwrap();
+    let sim = Simulation::<super::World, GameCommand>::new(
+        super::start(),
+        42,
+        super::World::default(),
+        super::scheduler(super::Faults::default()),
+        super::apply_nothing,
+    );
+    let bytes = sim.save(identity.meta(42)).to_bytes().unwrap();
+    assert!(ck_sim::Save::<super::World>::from_bytes(&bytes, &identity.expected()).is_ok());
+    fs::write(game.join("peoples.toml"), "registry after").unwrap();
+    let changed = hashes::rules_hash(&dir.0).unwrap();
+    assert_ne!(changed, identity.rules_hash);
+    identity.rules_hash = changed;
+    assert!(matches!(
+        ck_sim::Save::<super::World>::from_bytes(&bytes, &identity.expected()),
+        Err(ck_sim::SaveError::HashMismatch {
+            which: ck_sim::HashKind::Rules,
+            ..
+        })
+    ));
 }
 
 #[test]

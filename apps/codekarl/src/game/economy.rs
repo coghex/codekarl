@@ -111,6 +111,8 @@ pub(crate) fn starting_economy(
     let rules = Rules::load(&rules_path).map_err(|error| error.to_string())?;
     let scenario_path = scenario_directory.join("economy.toml");
     let data = ScenarioEconomy::load(&scenario_path).map_err(|error| error.to_string())?;
+    data.validate_cultures(&rules.peoples, &scenario_path.display().to_string())
+        .map_err(|error| error.to_string())?;
     let land = land_counts(scenario, &rules.terrain_order)?;
     let starts = scenario
         .locations
@@ -274,7 +276,7 @@ mod tests {
         assert!(
             mayo.pops
                 .iter()
-                .any(|pop| pop.kind == "monk" && pop.culture == "english")
+                .any(|pop| pop.kind == "monk" && pop.culture == "northumbrian")
         );
     }
 

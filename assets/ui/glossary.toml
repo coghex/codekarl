@@ -356,9 +356,57 @@ text = "A {culture} of the Irish culture group."
 title = "Connachta"
 text = "A {culture} of the Irish culture group."
 
-[term.english]
-title = "English"
-text = "An Anglo-Saxon {culture}."
+[term.dal_riatan]
+title = "Dál Riatan"
+text = "A {culture} of the Irish culture group."
+
+[term.northumbrian]
+title = "Northumbrian"
+text = "A {culture} of the English culture group."
+
+[term.mercian]
+title = "Mercian"
+text = "A {culture} of the English culture group."
+
+[term.east_anglian]
+title = "East Anglian"
+text = "A {culture} of the English culture group."
+
+[term.west_saxon]
+title = "West Saxon"
+text = "A {culture} of the English culture group."
+
+[term.east_saxon]
+title = "East Saxon"
+text = "A {culture} of the English culture group."
+
+[term.south_saxon]
+title = "South Saxon"
+text = "A {culture} of the English culture group."
+
+[term.kentish]
+title = "Kentish"
+text = "A {culture} of the English culture group."
+
+[term.north_welsh]
+title = "North Welsh"
+text = "A {culture} of the Brittonic culture group."
+
+[term.south_welsh]
+title = "South Welsh"
+text = "A {culture} of the Brittonic culture group."
+
+[term.cumbric]
+title = "Cumbric"
+text = "A {culture} of the Brittonic culture group."
+
+[term.cornish]
+title = "Cornish"
+text = "A {culture} of the Brittonic culture group."
+
+[term.pictish]
+title = "Pictish"
+text = "A {culture} of the Pictish culture group."
 
 [term.christianity]
 title = "Christianity"

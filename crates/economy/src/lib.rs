@@ -10,6 +10,9 @@ use std::{collections::BTreeMap, error::Error, fmt, fs, path::Path};
 use ck_sim::{Canonical, CanonicalError, Date, Reader, encode_length};
 use serde::Deserialize;
 
+pub mod peoples;
+pub use peoples::Peoples;
+
 const WAGE_HISTORY_MONTHS: usize = 12;
 
 const fn default_hire_pm() -> u16 {
@@ -141,8 +144,9 @@ pub struct Rules {
     /// Starting necessities, niceties and luxuries by population type, in per-mille.
     #[serde(default)]
     pub starting_needs_pm: BTreeMap<String, [u16; 3]>,
-    /// Cultures present in the simulation.
-    pub cultures: Vec<String>,
+    /// Validated culture and language data.
+    #[serde(skip)]
+    pub peoples: Peoples,
     /// Religions present in the simulation.
     pub religions: Vec<String>,
     /// Land terrain names in the same order as the map terrain palette.
@@ -206,11 +210,21 @@ impl Rules {
             entry: "<file>".to_owned(),
             problem: error.to_string(),
         })?;
-        let rules: Self = toml::from_str(&text).map_err(|error| DataError {
+        let mut rules: Self = toml::from_str(&text).map_err(|error| DataError {
             file: file.clone(),
             entry: "<document>".to_owned(),
             problem: error.message().to_owned(),
         })?;
+        rules.peoples = Peoples::load(&path.with_file_name("peoples.toml"))?;
+        for religion in &rules.religions {
+            if rules.peoples.liturgical_language(religion).is_none() {
+                return Err(DataError {
+                    file: path.with_file_name("peoples.toml").display().to_string(),
+                    entry: format!("religions.{religion}"),
+                    problem: "missing religion".to_owned(),
+                });
+            }
+        }
         rules.validate(&file)?;
         Ok(rules)
     }
@@ -264,7 +278,6 @@ impl Rules {
             "buildings",
             self.buildings.iter().map(|item| item.id.as_str()),
         )?;
-        unique_ids(file, "cultures", self.cultures.iter().map(String::as_str))?;
         unique_ids(file, "religions", self.religions.iter().map(String::as_str))?;
         unique_ids(
             file,
@@ -787,7 +800,7 @@ pub struct StartDefaults {
 pub struct StartOverride {
     /// Regional culture for its Irish pops.
     pub culture: Option<String>,
-    /// Culture for the monk population (Mayo is English).
+    /// Culture for the monk population.
     pub monk_culture: Option<String>,
     /// Religion for the ordinary population.
     pub religion: Option<String>,
@@ -880,6 +893,43 @@ impl ScenarioEconomy {
                         file: file.to_owned(),
                         entry: format!("places.{id}.peasant_cultures_pm"),
                         problem: "culture shares must be positive and sum to 1000".to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Check all authored place cultures against the shared registry.
+    ///
+    /// # Errors
+    /// Returns the source and entry of the first unknown culture.
+    pub fn validate_cultures(&self, peoples: &Peoples, file: &str) -> Result<(), DataError> {
+        for (id, place) in &self.places {
+            for (field, key) in [
+                ("culture", place.culture.as_deref()),
+                ("monk_culture", place.monk_culture.as_deref()),
+            ] {
+                if let Some(key) = key
+                    && peoples.culture(key).is_none()
+                {
+                    return Err(DataError {
+                        file: file.into(),
+                        entry: format!("places.{id}.{field}"),
+                        problem: format!("unknown culture `{key}`"),
+                    });
+                }
+            }
+            for key in place
+                .peasant_cultures_pm
+                .iter()
+                .flat_map(|shares| shares.keys())
+            {
+                if peoples.culture(key).is_none() {
+                    return Err(DataError {
+                        file: file.into(),
+                        entry: format!("places.{id}.peasant_cultures_pm.{key}"),
+                        problem: "unknown culture".into(),
                     });
                 }
             }
@@ -1129,13 +1179,25 @@ pub fn starting_state(
                 entry: format!("places.{}.monk_religion", location.id),
                 problem: "must be authored for each place".to_owned(),
             })?;
-        for (field, value, choices) in [
-            ("culture", culture, &rules.cultures),
-            ("religion", religion, &rules.religions),
-            ("monk_culture", monk_culture, &rules.cultures),
-            ("monk_religion", monk_religion, &rules.religions),
+        for (field, value, known) in [
+            ("culture", culture, rules.peoples.culture(culture).is_some()),
+            (
+                "religion",
+                religion,
+                rules.religions.iter().any(|key| key == religion),
+            ),
+            (
+                "monk_culture",
+                monk_culture,
+                rules.peoples.culture(monk_culture).is_some(),
+            ),
+            (
+                "monk_religion",
+                monk_religion,
+                rules.religions.iter().any(|key| key == monk_religion),
+            ),
         ] {
-            if !choices.iter().any(|choice| choice == value) {
+            if !known {
                 return Err(DataError {
                     file: "scenario economy data".to_owned(),
                     entry: format!("places.{}.{}", location.id, field),
@@ -1186,11 +1248,7 @@ pub fn starting_state(
                     })?,
                 )
         {
-            if !rules
-                .cultures
-                .iter()
-                .any(|choice| choice == peasant_culture)
-            {
+            if rules.peoples.culture(peasant_culture).is_none() {
                 return Err(DataError {
                     file: "scenario economy data".to_owned(),
                     entry: format!(
@@ -7694,6 +7752,16 @@ mod tests {
 
     type RuleMutation = Box<dyn Fn(&mut Rules)>;
 
+    fn fixture_culture(id: &str) -> peoples::Culture {
+        peoples::Culture {
+            id: id.to_owned(),
+            subgroup: "fixture".into(),
+            superculture: "fixture".into(),
+            language: "fixture".into(),
+            dialect: None,
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "The compact test rule fixture keeps the complete valid schema visible for every economy vector."
@@ -7724,7 +7792,10 @@ mod tests {
                 luxuries_expectation_pm: 0,
             }],
             starting_needs_pm: BTreeMap::from([("peasant".to_owned(), [1000, 0, 0])]),
-            cultures: vec!["connachta".to_owned()],
+            peoples: Peoples {
+                cultures: vec![fixture_culture("connachta")],
+                ..Peoples::default()
+            },
             religions: vec!["christianity".to_owned()],
             terrain_order: vec!["pasture".to_owned(), "bog".to_owned()],
             footprint_m2: BTreeMap::from([
@@ -9017,6 +9088,33 @@ mod tests {
     }
 
     #[test]
+    fn shipped_cultures_resolve_in_registry() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let rules = Rules::load(root.join("game/economy.toml")).unwrap();
+        let starts =
+            ScenarioEconomy::load(root.join("scenarios/ireland-768/economy.toml")).unwrap();
+        assert_eq!(
+            starts.places["mayo"].monk_culture.as_deref(),
+            Some("northumbrian")
+        );
+        for place in starts.places.values() {
+            for id in [place.culture.as_deref(), place.monk_culture.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                assert!(rules.peoples.culture(id).is_some(), "unknown culture {id}");
+            }
+            for id in place
+                .peasant_cultures_pm
+                .iter()
+                .flat_map(|shares| shares.keys())
+            {
+                assert!(rules.peoples.culture(id).is_some(), "unknown culture {id}");
+            }
+        }
+    }
+
+    #[test]
     fn shipped_economy_and_ireland_start_data_are_strictly_valid() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let rules = Rules::load(root.join("game/economy.toml")).unwrap();
@@ -9089,7 +9187,7 @@ mod tests {
         assert_eq!(starts.places["mayo"].culture.as_deref(), Some("connachta"));
         assert_eq!(
             starts.places["mayo"].monk_culture.as_deref(),
-            Some("english")
+            Some("northumbrian")
         );
         assert_eq!(starts.places["skellig_michael"].levels, Some([0, 2, 1]));
         assert_eq!(starts.places["skellig_michael"].peasants, Some(0));
@@ -9789,6 +9887,12 @@ mod tests {
             }
             let error = if matches!(
                 case,
+                Case::UnknownCulture | Case::UnknownMonkCulture | Case::UnknownPeasantCulture
+            ) {
+                data.validate_cultures(&rules.peoples, "fixture/scenario.toml")
+                    .unwrap_err()
+            } else if matches!(
+                case,
                 Case::ZeroTemplateSize
                     | Case::NonnumericTemplateSize
                     | Case::EmptyStockKey
@@ -9801,6 +9905,12 @@ mod tests {
                 starting_state(&rules, &data, &[location], 10).unwrap_err()
             };
             assert_eq!(error.entry, expected_entry, "case {expected_entry}");
+            if matches!(
+                case,
+                Case::UnknownCulture | Case::UnknownMonkCulture | Case::UnknownPeasantCulture
+            ) {
+                assert_eq!(error.file, "fixture/scenario.toml");
+            }
         }
     }
 
@@ -11262,7 +11372,7 @@ mod tests {
     #[test]
     fn mixed_peasant_cultures_are_split_by_authored_per_mille_shares() {
         let mut rules = tiny_rules();
-        rules.cultures.push("mide_brega".to_owned());
+        rules.peoples.cultures.push(fixture_culture("mide_brega"));
         let mut data = tiny_start_data();
         let defaults = data
             .defaults
@@ -11788,7 +11898,7 @@ mod tests {
             "labourer".to_owned(),
             BTreeMap::from([("food".to_owned(), 1000)]),
         );
-        rules.cultures.push("english".to_owned());
+        rules.peoples.cultures.push(fixture_culture("english"));
         let mut data = tiny_start_data();
         let defaults = data
             .defaults

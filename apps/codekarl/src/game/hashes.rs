@@ -73,6 +73,7 @@ pub(crate) fn rules_hash(asset_root: &Path) -> Result<String, String> {
     }
     Ok(content_hash(vec![
         read(asset_root, "game/economy.toml")?,
+        read(asset_root, "game/peoples.toml")?,
         read(asset_root, "map/ireland/terrain.toml")?,
     ]))
 }
