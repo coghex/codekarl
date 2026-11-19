@@ -1516,6 +1516,13 @@ fields cut. The engine's load report is the authority.
   - Tara, Cashel and Emly are among the richest, and the bog-ringed Clonmacnoise and Durrow yield less per farm;
   - only Glendalough and Rahan run short of fields, and the signed terrain edits fix both;
   - the islands fish.
+- **Since CK-351** (`docs/map-design.md` §12.1): the valley score's drainage passes through loughs, and Ireland's fertility was
+  regenerated once by that rule. Nothing in the economy's rules changed; the land under it did.
+  - Land below the large loughs gained. Seven places' catchments moved by 10 per mille or more in mean fertility: Inisfallen by
+    101, Clonfert by 14 and Lorrha by 16 among them.
+  - In the submission's two `economy-soak --years 10` runs, before and after with the same seed, 24 of the scenario's places
+    had a figure that moved by 1 % or more (`.pipeline/coordination/runtime-m55/ck351-evidence/`).
+  - The prototype figures above were made before it and were not measured again.
 - **Not yet:** weather (year-to-year harvest variation) and per-crop climate limits.
 
 ## 4. Still open (next sessions)

@@ -8,7 +8,8 @@ addendum, and `design-review-ck-reviewer-2.md`) and the owner's decisions on it.
 (`design-review-2-ck-reviewer-2.md`, `design-review-ck-reviewer-1-r2.md`). Revision 3 records two later owner answers as Firm and fixes two
 non-blocking notes; it changes no design. Milestone 6 (§10) was then implemented and accepted. §12 records the milestone 9 land,
 climate and look, which are accepted on native Metal (slices 9a, 10a and 10b: CK-234, CK-235 and CK-236); the Vulkan catch-up is
-parked.
+parked. §13 records the river redesign (owner-signed, 2026-11-16): the river network's format, checks, look and drawing are
+accepted (CK-347, CK-349), and Ireland's own rivers stay the earlier lines until its water data is redone (CK-350, not accepted).
 
 **Firm** marks owner decisions, with their date. **Proposal** marks designer recommendations. **Open** marks decisions that still need an
 answer. A Firm item that the owner chose by reacting to a mock-up says so. Times are UTC on 2026-11-02 unless stated.
@@ -78,6 +79,11 @@ verdict on the second: "that looks good".
   land dithers between two near-blacks of its type, so hills still read in the dark.
 
 ### 3.4 Rivers, places and buildings
+
+> Since the river redesign (owner, 2026-11-16) a river has its real width, stops at the lough shore, and only the largest rivers
+> show zoomed out (§13). The engine draws such a network (CK-347, CK-349); Ireland's own file is still the lines described here
+> until its water data is redone (CK-350). **The river sentence below is superseded for a river network (owner, 2026-11-16): see
+> §13.**
 
 - **Firm.** Rivers have their own blue, drawn over everything, at every zoom. Only major, practically useful waterways are mapped, not every stream.
 - **Firm (13:55Z).** Fully zoomed out the map is a geographic picture only. Closer in, places appear as markers; closer still they become
@@ -356,6 +362,10 @@ One convention, used by the files, the loader, the reference function, the previ
 ### 9.4 The colour function (the reference)
 
 > Since M9, rules 4–6 (usable land, unusable land, snow caps) are replaced by §12.3–§12.4's rules. **Superseded since M9 (owner, 2026-11-09): see §12.**
+>
+> Since CK-347, rule 7 is the rule for a `rivers.toml` in the earlier format only. A river network (`format = 2`) is covered and
+> coloured by §13.3 and §13.4, where river water and its bank come before a map mode's colour. **Superseded for a river network
+> (owner, 2026-11-16): see §13.**
 
 The reference is a Rust function in `ck-map`. It takes the map, the step and a world pixel, and returns an RGBA8 colour. The GPU map pass
 must give the same bytes for every pixel; that is what "the same picture on both backends" means. The readback fixtures in §9.2 check it on
@@ -399,7 +409,7 @@ each backend, and so Metal and Vulkan also match each other. The spec writes eac
 | `usable.png` | Usable or not per cell (two keyed colours) |
 | `elevation.png` | 16-bit greyscale: elevation + 11,000, in metres, so sea depth down to 11 km fits |
 | `terrain.toml` | Terrain types: key colour, palette (solid, second tone, dark, dark second tone; caps and high ground for mountains), relief range, integer mix percentage, cap heights; the shallow-sea threshold |
-| `rivers.toml` | Major rivers as lines of latitude/longitude points |
+| `rivers.toml` | Major rivers as lines of latitude/longitude points; since CK-347, with `format = 2`, a river network (§13.2) |
 
 Later milestones add `rulers.png`, `counties.png`, `rulers.toml`, `units.toml`, `locations.toml` and `modes.toml`, as in §5. Milestone 6
 neither needs nor reads them.
@@ -525,6 +535,29 @@ near 50%):
   - drain each cell to its steepest-descent neighbour (D8), and accumulate the upstream area;
   - score 0 at ≤ 2 km², rising on a log scale to 1000 at ≥ 500 km²;
   - spread to cells within 2 cells and ≤ 20 m above the channel, losing 25% per ring.
+- **Since CK-351, loughs pass the drainage on.** Asked whether to fix it before Ireland's water data is regenerated, the owner
+  chose "Fix it first, as its own change" (2026-11-16, `.pipeline/coordination/rivers-design/owner-direction-designer-r9.md`).
+  Before, the count of drained land started again from nothing below every lough.
+  - **Only the sea ends the flow.** The sea is every cell with an elevation under 1 m, read from the elevation alone. A cell on
+    the crop's edge also passes nothing on; no edge cell of Ireland's crop is 1 m or higher (CK-351 review 2, note N1), so this
+    changes nothing there.
+  - **Depressions are filled** from the sea and the crop's edge only. A lough's cells are filled like land, at their stored
+    water surface, so the fill's small rise per cell (`flow_epsilon_m`) leads the lough's water to its lowest way out.
+  - **Every cell that is not sea counts its own ground area and passes its total on,** lough cells included.
+  - **Unchanged:** the score is still zero on lough and sea cells; the spread, the slope and climate factors, the formula and
+    every setting are the same.
+  - **The code** is `assets/map/ireland/drainage.py`. It needs only the standard library and is given elevations, not terrain;
+    `apply_edits.py` calls it and keeps no fill or accumulation of its own. `tests/test_map_drainage.py` keeps the rule: five
+    tests on small grids, in the group `unittest-map`, which a change under `assets/map/` selects.
+  - **Ireland's `fertility.png` was regenerated once,** with `apply_edits.py --layers-only`: it recomputes the layers from the
+    accepted terrain and elevation without applying the edits again (`assets/map/ireland/SOURCES.md` has the command and the
+    hashes). The terrain, elevation, climate and glacier layers are byte for byte as before.
+  - **The measured shift** (the submission's evidence, `.pipeline/coordination/runtime-m55/ck351-evidence/`): mean fertility
+    over the 344,667 land cells went from 377.7 to 379.1 per mille; 2,660 cells rose by more than 100 per mille and 846 fell
+    by as much. The drained area where the Shannon leaves Lough Ree went from 0.25 km² to 2,933 km², and where it leaves Lough
+    Derg from 11 km² to 10,236 km². Seven places' catchments moved by 10 per mille or more in mean fertility (Inisfallen by
+    101).
+  - **To come:** the river redesign's data slice (CK-350, §13.1) changes the loughs and regenerates fertility again by this rule.
 - **The slope factor:** 1000 at ≤ 3% ground slope, falling to 0 at 20% (FAO agro-ecological zoning rates suitability by slope class).
 - **The climate factor** = warmth × dryness × wetness:
   - **warmth:** 0 at ≤ 600 growing degree-days (above 5 °C), rising to 1000 at ≥ 1,400;
@@ -649,7 +682,7 @@ just snow caps, but glaciation".
 
 - **Land:** `grey = ⌊255 × √(max(0, elevation) ÷ 8,848)⌋`, the same fixed scale on every map. Ireland's highest ground is about grey 79.
 - **Sea and lake** keep their colours. There is no dither.
-- **Rivers and places** draw over it.
+- **Rivers and places** draw over it. For a river network, river water and its bank keep their colours too (§13.4).
 - It joins the stockpile and yield modes (`docs/economy-design.md` §3.22).
 
 ### 12.6 Data and packing
@@ -702,6 +735,206 @@ just snow caps, but glaciation".
   - [Ohmura, Kasser and Funk 1992](https://www.cambridge.org/core/services/aop-cambridge-core/content/view/8DCF1C24E32A6781CC365853535CD16F/S0022143000002276a.pdf/climate-at-the-equilibrium-line-of-glaciers.pdf);
   - [Köppen climate classification](https://en.wikipedia.org/wiki/K%C3%B6ppen_climate_classification).
 
+## 13. Rivers since the river redesign (Firm: owner-signed, 2026-11-16)
+
+The owner failed the map's rivers on the hand check (2026-11-15, recorded in
+`.pipeline/coordination/rivers-design/owner-direction-manager-r1.md`):
+
+> often rivers overrun or underrun to their terminus lake/ocean. they are also simple line so they dont look natural, especially
+> since the rest of the world looks so good, they stick out, i will need a full redesign of rivers.
+
+The redesign is the first half of the rivers-and-merchants milestone. Its signed text is `design-r3.md` (729cc04e) in that
+directory, which the owner called "ready" (`owner-direction-designer-r8.md`); the owner's answers are in
+`owner-direction-designer-r1.md` to `-r9.md` beside it. Most answers are an option the owner chose from those offered: this section
+then says "the owner chose" and quotes the option's label.
+
+### 13.1 What is decided, and what is built
+
+- **Decided (Firm; design-r3 §3, D1 to D14):**
+  - **the network:** the owner chose "Majors plus main tributaries"; rivers join each other (D1);
+  - **the form:** from mock-up r1 the owner chose "E · real width, dark water": a wide river is dark water like the loughs with a
+    bank outline, and a narrower one is a one-pixel line in the river blue (D2);
+  - **far zoom:** the owner chose "Largest only, more as you zoom in"; every river shown is an authored one (D3). The tier steps are
+    "As proposed": tier 1 always, tier 2 from step 14 and tier 3 from step 24 (D12);
+  - **the water:** the owner chose "Tidal reaches become sea", "Rivers stop at the lough shore" and "Add loughs that rivers run
+    through" (D4 to D6), and every lough is redrawn from the survey (D10, D11);
+  - **travel:** the owner chose "Decide with merchants": the river data only guarantees named stretches with widths and joins to
+    loughs and sea (D7);
+  - **the data:** public surveys, simplified and committed as hand-editable files, with a width in metres per stretch (D8, D9). The
+    big, documented modern changes are undone for 768 (D13), and the owner approves each list before it is recorded (D14).
+- **Deferred by the owner:** whether river water lies under or over places: "when we get to the location drawing, we will account
+  for rivers and other water features" (`owner-direction-designer-r6.md`). Until then rivers stay drawn after places; that interim
+  is the designer's reading, not the owner's words.
+- **Built and accepted, on native Metal:**
+  - **CK-347** (slice 1): the river network's file format, its load checks, the widths, the pixels at each step and the reference
+    colours, in `ck-map` (§13.2 to §13.4), with the preview tool;
+  - **CK-349** (slice 2): the game draws a river network through the map pass (§13.5).
+- **Not built yet:**
+  - the import scripts that turn the surveys into draft data (slice 3, CK-348, not accepted);
+  - **Ireland's water** (slice 4, CK-350, not accepted): the surveyed river network, the redrawn and added loughs, the tidal sea
+    cells and the regenerated layers. **Until it is accepted, `assets/map/ireland/rivers.toml` is the earlier file of 15 river
+    lines, so the game's rivers look as before:** one-pixel lines that cross the loughs (§3.4, §9.4 rule 7);
+  - the owner's hand check of the running map (slice 5).
+- **Vulkan** is compile-only (§12.6): it is handed the same two lists, and no Vulkan test was added.
+
+### 13.2 The river network file (`format = 2`)
+
+`rivers.toml` has two formats. A file with no `format` key is the earlier one (§9.5): it loads, covers and colours as before. A file
+with `format = 2` holds a river network. Any other `format` is refused, naming the key. A loaded map has the earlier lines or a
+network, never both. An excerpt:
+
+```toml
+format = 2
+
+[tiers]
+show_from_step = [0, 14, 24]        # tier 1, 2, 3
+
+[[river]]
+id = "suir"
+name = "Suir"
+tier = 1
+
+[[stretch]]
+id = "suir-07"
+river = "suir"
+kind = "river"                      # "river", "tidal" or "lough"
+width_m = [38, 52]                  # at the first and the last point
+ends = "suir-08"                    # the stretch it runs into, or "sea"
+points = [[52.35512, -7.70118], [52.35498, -7.70034]]   # latitude, longitude, upstream end first
+```
+
+- **`[tiers] show_from_step`** is three steps from 0 to 75, none smaller than the one before. Tier `t` is drawn from step
+  `show_from_step[t − 1]`, and a river appears whole at its tier's step.
+- **A river** has an `id`, a `name`, a `tier` of 1, 2 or 3, and at least one stretch. An id is 1 to 48 of `a-z`, `0-9` and `-`, is
+  not `sea`, and is unique among rivers. A name is not empty and not repeated ignoring case.
+- **A stretch** is one unbranched line of points. It has an `id` (as a river's, unique among stretches), its `river`, a `kind`,
+  `width_m`, `ends`, `points`, and an optional `note`, which is read and dropped.
+  - `kind` is `"river"` (fresh water on land), `"tidal"` (below the tidal limit, where the river is too narrow to be sea cells) or
+    `"lough"` (the course through a lough). The kind is a fact for the checks and for the merchants design: all three are covered
+    and drawn alike.
+  - `width_m` is two finite numbers, each above 0 and at most 10,000: the width in metres at the first and at the last point.
+  - `points` is at least two `[latitude, longitude]` pairs, upstream end first, each inside the crop. Two consecutive points that
+    project to the same fixed point are refused.
+  - `ends` is the id of the stretch it runs into, or `"sea"`.
+- Unknown keys are refused.
+
+**The network checks.** Each failure names the file, the stretch by index and id, the key and the problem.
+
+- **A join is exact.** `ends` names another stretch, and this stretch's last point projects to the same fixed point as that
+  stretch's first point. Any number of stretches may end at one stretch (a confluence).
+- **Every stretch reaches the sea:** following `ends` arrives at `"sea"`, so a cycle is refused.
+- **A sea end is in open sea:** every cell of the 5 × 5 box around the last point's cell that lies in the crop is a sea cell. Two
+  cells is more than the 1.25 cells the shore detail can move a pixel (§9.4 rule 2), so the line runs under every pixel the shore
+  detail can draw as land.
+- **A lough stretch has its lough:** at least one of its segments has its midpoint in a lake cell. This catches a lough that is
+  missing from the terrain, not one that is smaller than surveyed.
+
+### 13.3 Widths, and the pixels at a step
+
+After one conversion at load, all of this is integer arithmetic on the shared pixel grid (§9.3).
+
+- **Widths in map units.** At load each end's width becomes fixed-point units on the ground of its own cell row:
+  `round(width_m × 2³¹ ÷ (839 × g))`, with `g` the ground scale of the row of that end's point.
+- **The drawn width never shrinks downstream.** Taking the stretches so that each comes after every stretch that ends at it:
+  `drawn_first = max(first, the largest drawn_last of the stretches that end at it)`, and `drawn_last = max(last, drawn_first)`. So
+  a wide tributary widens what it joins.
+- **Position along a stretch** is counted from its first point: each segment adds `|dx| + |dy|` of its two ends, and `M` is the
+  total. The width at position `m` is `drawn_first + (drawn_last − drawn_first) × m ÷ M`, rounded down. A point added on a
+  straight run changes no position and no width.
+- **Land only.** A world pixel can be a river pixel only where the terrain draws land at that step, shore detail included. A pixel
+  the terrain draws as sea or lough is never painted by a river, so a river ends exactly at the shore the player sees and cannot
+  overrun it. With the checks of §13.2 there is always line under the shore, so it cannot stop short either.
+- **Where a stretch turns to water.** With `P` the step's map-pixel size and `W = ⌈3 × P ÷ 2⌉`:
+  - a stretch with `drawn_last < W` is a line throughout;
+  - one with `drawn_first ≥ W` is water throughout;
+  - otherwise it turns at the position `m* = ⌈(W − drawn_first) × M ÷ (drawn_last − drawn_first)⌉`, the first whose width reaches
+    one and a half map pixels.
+- **The narrow part** is rule 7's Bresenham pixels (§9.4), segment by segment, up to the turning position. On the segment that
+  holds `m*` the line stops at the point of that position, each coordinate rounded down.
+- **The wide part** is taken on the stretch's own segments. A segment offers a pixel when the nearest point of the segment to the
+  pixel's sample point has a position of at least `m*`, and the sample point is within half the width at that point.
+  - Past a segment's last point the test is the distance to that point, which rounds every bend and the stretch's end.
+  - Before a segment's first point, only the stretch's first segment offers pixels, and only when the stretch is water throughout.
+  - So the water begins with a straight cut across the river at the turning position, with the line's last pixel beside it.
+- **River water** is every land pixel a wide part offers. **The river line** is every land pixel a narrow part offers that is not
+  river water.
+- **Prepared by tile.** `ck-map` prepares the pixels in tiles of 128 × 128 world pixels: the tiles a view touches and the ring of
+  tiles around them. It keeps them while the step stays the same, and another step drops them. A view's lists are those sets cut
+  to the view.
+
+### 13.4 The reference colours
+
+`ck-map` has reference functions that take a step's river line and river water where the earlier ones take the river pixels
+(`reference_colour_with_river_network` and its elevation-mode twin). The earlier functions are unchanged. For a pixel, in order:
+
+1. in the river line: the river colour (`[water] river` in `terrain.toml`);
+2. in the river water: the lake colour;
+3. in a location's pixels: the location's colour;
+4. **the bank:** a pixel the terrain draws as land, with a river-water pixel among its four neighbours, takes its terrain's solid
+   colour;
+5. otherwise as §9.4 and §12.3 to §12.5, with no rivers.
+
+- So the river line and river water draw over places, as rivers did, and a place draws over the bank.
+- **The bank comes before a map mode's colour,** so it shows in the stockpile, yield and elevation modes alike. The coast outline
+  beside sea and lake is unchanged: a value mode's colour still replaces it.
+- There is no bank beside the river line. A bank has its own terrain's colour, so a river through dark bog has a dark bank.
+
+### 13.5 Drawing a network in the game (CK-349)
+
+The game draws a river network through the two pixel lists the map pass already draws (§9.2), so no source of the render crates
+outside their tests and no shader changed.
+
+- **The two lists** come from `ck-map`, for the camera's step, top-left pixel and view, and the view's location pixels:
+  - **the river list:** the river-line pixels, drawn last in the river colour;
+  - **the indexed list,** three parts that share no pixel:
+    - the bank pixels that no location pixel covers, each with the palette index of its terrain's solid colour;
+    - the location pixels that no river-water pixel covers, with their own indices;
+    - the river-water pixels, with the palette index of the lake colour.
+- **They reproduce the reference.** Painting the terrain, then the indexed list, then the river list gives §13.4's colour for every
+  pixel of the view, in the plain look, the elevation mode and a value mode.
+- **The overlay palette** for a map with a river network is the location kinds' colours at the indices they had, then the lake
+  colour, then the solid colour of each terrain style in the map's order. A palette over 256 colours is refused at start-up by the
+  existing check ("the overlay palette has more than 256 colours").
+- **Banks** are prepared once and kept with a tile's river pixels. A bank whose water lies in the next tile is right, because the
+  ring of tiles around a tile is prepared before its banks.
+- **While moving,** a snapshot selects the line, water and bank pixels from the kept tiles, prepares only tiles that have newly
+  come into reach, and evaluates no reference colour. The location pixels keep their earlier path (`docs/places-time-design.md`
+  §3.3).
+- **A map in the earlier format** publishes the same palette and the same two lists as before.
+- **A name left as it was:** in the render crates the indexed list is still called `locations`, though it now also carries banks
+  and river water.
+
+### 13.6 The preview tool, the fixture and the tests
+
+- **The preview tool** draws a map with a river network by §13.4, with and without a scenario, and a map in the earlier format as
+  before.
+- **The fixture** (`ck_map::fixture`, behind `test-support`) carries a network on its own map: three rivers of tiers 1 to 3, a
+  tributary joining the main river, a lough stretch through the fixture's lake, a tidal stretch, and two sea ends. Its terrain and
+  images did not change.
+- **Tests:**
+  - windowless tests in `crates/map` (group `map.core`) cover the two formats, the checks, the widths, the pixels, the colours and
+    the view's lists;
+  - unit tests in `apps/codekarl` (`rust.app`, `rust.app-default`) cover the controller's lists and palette;
+  - one Metal readback case, `readback_map_river_network_overlays` (`metal.window-core`), compares the fixture's network and
+    locations, drawn from the two lists, with the reference byte for byte at steps 15 and 53.
+
+### 13.7 Disclosed, not designed for
+
+- **The cost on Ireland is not measured.** There is no Ireland-sized river network until CK-350, so load time, the cost of
+  preparing a tile and the 60 frames a second while moving (§4) are judged on that data, in the owner's hand check.
+- A tile that comes into reach is prepared on that frame.
+- **Position along a stretch is `|dx| + |dy|`,** not distance, so the width grows up to 41 % faster along a diagonal run than along
+  one that follows the grid.
+- A point added on a straight run can move a pixel of the one-pixel line, as it could before (Bresenham restarts at each point).
+  It cannot move the turning position or the water.
+- A river turns from line to water at one point along it, and that point moves with the zoom.
+- The overlay palette's 256 colours are now shared with the lake colour and the terrain styles' solid colours.
+- **The preview tool's image edge.** The tool colours an image from that image's own river water, so a bank pixel on the image's
+  outermost row or column whose water lies just outside the image is drawn as plain land. The game's lists do not have this edge
+  (read in the code, 2026-11-19; CK-347 review 2, note N4).
+- **Not part of the river redesign:** river names on the map; fords, bridges and crossings; any effect of rivers on movement or
+  borders. Fertility's valley score still comes from the elevation alone (§12.1).
+
 ## Provenance
 
 Drafted 2026-11-02 by ck-designer-1. Revision 2 the same day, after design review 1; revision 3 (editorial) after both re-reviews approved
@@ -715,3 +948,7 @@ Revision 5, 2026-11-09, by ck-designer-1: §12 (land, climate and the look since
 
 Revision 6, 2026-11-09, by ck-designer-1: §12.3's four shades per terrain, from the owner's choice at true scale
 (`owner-direction-map-look-r5.md`, `mockups/look-r5/`).
+
+Revision 7, 2026-11-19, by ck-designer-4 (the docs lane): §13 and the pointers to it, from the owner-signed river design
+(`rivers-design/design-r3.md`, 729cc04e), the approved specs of CK-347 and CK-349 and their accepted code; and §12.1's CK-351
+part, from its approved spec, its accepted code and its evidence. Each sentence was checked against the accepted code.

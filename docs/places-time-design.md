@@ -159,6 +159,12 @@ The Firm rule is: cells within the radius; the nearest location takes an overlap
   - the overlay pixels gain a palette index;
   - the draw order is terrain, houses, glyphs, then rivers last: map-design §3.4 (Firm) draws rivers "over everything, at every zoom",
     as mock-up 2 does (r2 had glyphs over rivers);
+  - **since CK-349,** for a map with a river network (`docs/map-design.md` §13): the terrain; then one indexed list holding the
+    river banks that no location pixel covers, the location pixels that no river water covers, and the river water; then the
+    one-pixel river line last. So river water and the river line still draw over houses and glyphs, and a house or glyph draws
+    over a bank. Whether river water should lie under places is deferred by the owner to the location drawing (2026-11-16,
+    `.pipeline/coordination/rivers-design/owner-direction-designer-r6.md`); keeping rivers after places until then is the
+    designer's reading. Ireland's own rivers are still the earlier lines, so the shipped map draws as the line above says;
   - the reference colour function gains the same rule, so readback fixtures still compare byte for byte.
 - Names are never drawn into the map; they are UI (§7). Roads stay out.
 

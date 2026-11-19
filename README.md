@@ -29,6 +29,11 @@ Accepted so far, each milestone with its design (the [documentation index](docs/
   between them yet. Land has footprints, fertility and a computed climate. A location panel shows a place's
   economy, the map has a new look, and three map modes colour it by stockpile, expected yield or elevation. New render features
   land on native Metal only; their Vulkan port is parked (CK-239).
+- **Rivers, in progress** ([docs/map-design.md](docs/map-design.md) §13): `ck-map` and the game can load and draw a connected
+  river network (`rivers.toml` with `format = 2`): each river at its real width, as dark water with a bank where it is wide and
+  a blue line where it is narrow, ending at the lough shore, with the smaller rivers appearing as the view zooms in. Ireland's
+  own rivers are still the earlier one-pixel lines until its water data is redone. Fertility's drainage now passes through
+  loughs (§12.1).
 
 ## Run it
 
