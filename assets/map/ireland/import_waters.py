@@ -34,7 +34,7 @@ import urllib.parse
 import zipfile
 import zlib
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from itertools import pairwise
 from pathlib import Path
@@ -57,8 +57,8 @@ SEA, LAKE, PASTURE, FOREST, BOG, MARSH, MOUNTAIN = range(len(NAMES))
 BLACK = (0, 0, 0)
 UNCHANGED = -1
 SUPERSAMPLE = 4
-NEAR_SEA_CELLS = 3
 MOUTH_REACH_CELLS = 30
+FIRST_STEP_CELLS = 3
 SNAP_UNITS = 1
 OPEN_SEA_REACH = 2
 MIN_ORDER = 4
@@ -76,7 +76,6 @@ FIXED_UNITS_PER_CELL = 32_768
 MAX_ID_LENGTH = 48
 PROPOSE_LENGTH_M = 15_000.0
 PROPOSE_ORDER = 5
-MAX_CLOSURE_PASSES = 12
 SAMPLE_LIMIT = 40
 SNAP_LIMIT_M = 400.0
 RIVER_ID = re.compile(r"[a-z0-9-]{1,40}")  # a river id leaves room for the stretch suffix
@@ -182,6 +181,15 @@ def clean_line(points: Iterable[LatLon]) -> list[LatLon]:
 # ---- the terrain as the water will make it -------------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class SeaRun:
+    """The run a stretch is given to open sea (CK-354 rule 4): the points added after its last survey point, and its length in cells."""
+
+    first_step: bool  # the stretch's last point is not in a sea cell: the first point added is reached by a step that may cross land
+    points: tuple[LatLon, ...]
+    cells: int
+
+
 class Terrain:
     """Terrain classes by row and column, with the questions the network asks of the sea and the loughs."""
 
@@ -189,6 +197,7 @@ class Terrain:
         self.crop = crop
         self.rows = rows
         self._patches: dict[Cell, int] | None = None
+        self._ways: dict[Cell, list[Cell] | None] = {}
 
     def is_sea(self, cell: Cell) -> bool:
         """Whether a cell is in the crop and sea."""
@@ -197,17 +206,6 @@ class Terrain:
     def is_lake(self, cell: Cell) -> bool:
         """Whether a cell is in the crop and lake."""
         return self.crop.holds(cell) and self.rows[cell[1]][cell[0]] == LAKE
-
-    def near_sea(self, point: LatLon, reach: int = NEAR_SEA_CELLS) -> bool:
-        """Whether a sea cell lies within `reach` cells of the point's cell."""
-        cell = self.crop.cell_containing(point)
-        if cell is None:
-            return False
-        return any(
-            self.is_sea((cell[0] + d_c, cell[1] + d_r))
-            for d_r in range(-reach, reach + 1)
-            for d_c in range(-reach, reach + 1)
-        )
 
     def sea_distance(self, point: LatLon, limit: int = MOUTH_REACH_CELLS) -> int | None:
         """How many cells from the point's cell to the nearest sea cell (larger of the row and column distances), within `limit`."""
@@ -222,37 +220,95 @@ class Terrain:
                         return radius
         return None
 
-    def open_sea(self, point: LatLon) -> bool:
-        """Format rule 3: the cell is sea and so is every cell of the 5 x 5 box round it that lies in the crop."""
-        cell = self.crop.cell_containing(point)
-        if cell is None:
+    def open_cell(self, cell: Cell) -> bool:
+        """Format rule 3 for a cell: it is sea and so is every cell of the 5 x 5 box round it that lies in the crop."""
+        if not self.crop.holds(cell):
             return False
         for d_r in range(-OPEN_SEA_REACH, OPEN_SEA_REACH + 1):
             for d_c in range(-OPEN_SEA_REACH, OPEN_SEA_REACH + 1):
                 other = (cell[0] + d_c, cell[1] + d_r)
                 if self.crop.holds(other) and not self.is_sea(other):
                     return False
-        return True
+        return self.is_sea(cell)
 
-    def nearest_open_sea(self, point: LatLon, limit: int = 80) -> LatLon | None:
-        """The centre of the nearest cell that is open sea (ties by row, then column), or None within `limit` cells."""
-        origin = self.crop.cell_containing(point)
-        if origin is None:
-            return None
-        for radius in range(limit + 1):
-            found: list[tuple[float, int, int]] = []
-            for d_r in range(-radius, radius + 1):
-                for d_c in range(-radius, radius + 1):
-                    if max(abs(d_r), abs(d_c)) != radius:
-                        continue
-                    cell = (origin[0] + d_c, origin[1] + d_r)
-                    centre = self.crop.latlon_at(cell[0] + 0.5, cell[1] + 0.5)
-                    if self.crop.holds(cell) and self.open_sea(centre):
-                        found.append((math.hypot(d_c, d_r), cell[1], cell[0]))
+    def open_sea(self, point: LatLon) -> bool:
+        """Format rule 3: the point's cell is sea and so is every cell of the 5 x 5 box round it that lies in the crop."""
+        cell = self.crop.cell_containing(point)
+        return cell is not None and self.open_cell(cell)
+
+    def nearest_sea_cell(self, cell: Cell, reach: int = FIRST_STEP_CELLS) -> Cell | None:
+        """The nearest sea cell within `reach` cells (the larger of the row and column distances; ties by row, then column)."""
+        for radius in range(reach + 1):
+            found = [
+                (cell[1] + d_r, cell[0] + d_c)
+                for d_r in range(-radius, radius + 1)
+                for d_c in range(-radius, radius + 1)
+                if max(abs(d_r), abs(d_c)) == radius and self.is_sea((cell[0] + d_c, cell[1] + d_r))
+            ]
             if found:
-                _, row, column = min(found)
-                return self.crop.latlon_at(column + 0.5, row + 0.5)
+                row, column = min(found)
+                return (column, row)
         return None
+
+    def _way_through_sea(self, start: Cell) -> list[Cell] | None:
+        """The shortest way from a sea cell to the nearest open-sea cell through four-connected sea cells, as the cells walked
+        from `start` to the open one; among equal ways, the first by the fixed order of `neighbours4` (cached by start)."""
+        if start in self._ways:
+            return self._ways[start]
+        parents: dict[Cell, Cell | None] = {start: None}
+        queue = collections.deque([start])
+        way: list[Cell] | None = None
+        while queue and way is None:
+            cell = queue.popleft()
+            if self.open_cell(cell):
+                way = []
+                walk: Cell | None = cell
+                while walk is not None:
+                    way.append(walk)
+                    walk = parents[walk]
+                way.reverse()
+                break
+            for other in neighbours4(cell):
+                if other not in parents and self.is_sea(other):
+                    parents[other] = cell
+                    queue.append(other)
+        self._ways[start] = way
+        return way
+
+    def sea_run(self, point: LatLon) -> SeaRun | None:
+        """CK-354 rule 4: what a stretch that ends at `point`, short of open sea and with nothing onward, is given. A first step to the
+        centre of the nearest sea cell, when the point's own cell is not sea (at most `FIRST_STEP_CELLS` cells away); then the
+        shortest way through four-connected sea cells to the nearest open-sea cell, written as the centres of the cells where it
+        turns and of its last cell. None where there is no such way."""
+        cell = self.crop.cell_containing(point)
+        if cell is None:
+            return None
+        first: Cell | None = None
+        start = cell
+        if not self.is_sea(cell):
+            first = self.nearest_sea_cell(cell)
+            if first is None:
+                return None
+            start = first
+        way = self._way_through_sea(start)
+        if way is None:
+            return None
+        turns = [
+            way[i]
+            for i in range(1, len(way) - 1)
+            if (way[i][0] - way[i - 1][0], way[i][1] - way[i - 1][1])
+            != (way[i + 1][0] - way[i][0], way[i + 1][1] - way[i][1])
+        ]
+        written = (
+            ([start, *turns, way[-1]] if len(way) > 1 else [start])
+            if first is not None
+            else [*turns, way[-1]]
+        )
+        centres = [round_point(self.crop.latlon_at(c + 0.5, r + 0.5)) for c, r in written]
+        steps = (
+            (max(abs(first[0] - cell[0]), abs(first[1] - cell[1])) if first else 0) + len(way) - 1
+        )
+        return SeaRun(first is not None, tuple(clean_line([point, *centres])[1:]), steps)
 
     def patch_near(self, point: LatLon) -> int | None:
         """The label of a lough (four-connected patch of lake cells) in or beside the point's cell, if any."""
@@ -363,6 +419,9 @@ class RiverDef:
     tier: int
     epa_names: tuple[str, ...] = ()
     rwb_codes: tuple[str, ...] = ()
+    segments: tuple[
+        str, ...
+    ] = ()  # survey segment codes, for a line that has no name and no water-body code (CK-354 rule 9)
 
 
 @dataclass(frozen=True)
@@ -383,6 +442,17 @@ class KeepDef:
     id: str
     reason: str
     point: LatLon
+
+
+@dataclass(frozen=True)
+class SeaDef:
+    """`[[sea]]`: cells the owner adds to the tidal cells (CK-354 rule 10): a coastal outline of the survey, or the cells that hold
+    points (how a mouth narrower than a cell is opened)."""
+
+    name: str
+    reason: str
+    source: str | None = None
+    points: tuple[LatLon, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -433,6 +503,7 @@ class Waters:
     keeps: tuple[KeepDef, ...] = ()
     reservoirs: tuple[ReservoirDef, ...] = ()
     corrections: tuple[Correction, ...] = ()
+    seas: tuple[SeaDef, ...] = ()
 
 
 def _entry(kind: str, table: dict[str, Any], position: int, name_key: str) -> str:
@@ -504,6 +575,15 @@ def _parse_settings(table: dict[str, Any]) -> Settings:
     )
 
 
+def _code_list(source: dict[str, Any], key: str, label: str) -> tuple[str, ...]:
+    """A river's `source` list: an array of non-empty strings (a string, a table or a number is refused, naming the river and the key)."""
+    value = source.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
+        message = f"waters.toml: {label}: source {key} must be a list of non-empty strings"
+        raise WatersError(message)
+    return tuple(value)
+
+
 def _parse_river(table: dict[str, Any], position: int) -> RiverDef:
     label = _entry("[[river]]", table, position, "id")
     _keys(table, label, {"id", "name", "tier", "source"}, ("id", "name", "tier", "source"))
@@ -522,15 +602,34 @@ def _parse_river(table: dict[str, Any], position: int) -> RiverDef:
         raise WatersError(message)
     source = table["source"]
     if not isinstance(source, dict):
-        message = f"waters.toml: {label}: source must be a table of epa_names and/or rwb_codes"
+        message = (
+            f"waters.toml: {label}: source must be a table of epa_names, rwb_codes and/or segments"
+        )
         raise WatersError(message)
-    _keys(source, f"{label} source", {"epa_names", "rwb_codes"})
-    names = tuple(source.get("epa_names", ()))
-    codes = tuple(source.get("rwb_codes", ()))
-    if not (names or codes) or not all(isinstance(v, str) and v for v in (*names, *codes)):
-        message = f"waters.toml: {label}: source needs a list of epa_names or rwb_codes of non-empty strings"
+    _keys(source, f"{label} source", {"epa_names", "rwb_codes", "segments"})
+    names, codes, segments = (
+        _code_list(source, key, label) for key in ("epa_names", "rwb_codes", "segments")
+    )
+    if not (names or codes or segments):
+        message = f"waters.toml: {label}: source needs a list of epa_names, rwb_codes or segments of non-empty strings"
         raise WatersError(message)
-    return RiverDef(identifier, name, table["tier"], names, codes)
+    return RiverDef(identifier, name, table["tier"], names, codes, segments)
+
+
+def _parse_sea(table: dict[str, Any], position: int) -> SeaDef:
+    label = _entry("[[sea]]", table, position, "name")
+    _keys(table, label, {"name", "reason", "source", "points"}, ("name", "reason"))
+    if ("source" in table) == ("points" in table):
+        message = f"waters.toml: {label}: needs exactly one of source or points"
+        raise WatersError(message)
+    name, reason = _text(table, "name", label), _text(table, "reason", label)
+    if "source" in table:
+        return SeaDef(name, reason, source=_text(table, "source", label))
+    points = table["points"]
+    if not isinstance(points, list) or not points:
+        message = f"waters.toml: {label}: points must be a list of [latitude, longitude] pairs"
+        raise WatersError(message)
+    return SeaDef(name, reason, points=tuple(_point(p, label, "points") for p in points))
 
 
 def _parse_correction(table: dict[str, Any], position: int) -> Correction:
@@ -612,7 +711,11 @@ def parse_waters(text: str) -> Waters:
     except tomllib.TOMLDecodeError as error:
         message = f"waters.toml: not valid TOML: {error}"
         raise WatersError(message) from error
-    _keys(document, "the file", {"settings", "river", "lough", "keep", "reservoir", "correction"})
+    _keys(
+        document,
+        "the file",
+        {"settings", "river", "lough", "keep", "reservoir", "correction", "sea"},
+    )
     rivers = tuple(_parse_river(t, i) for i, t in enumerate(document.get("river", []), 1))
     loughs = []
     for position, table in enumerate(document.get("lough", []), 1):
@@ -666,6 +769,7 @@ def parse_waters(text: str) -> Waters:
     corrections = tuple(
         _parse_correction(t, i) for i, t in enumerate(document.get("correction", []), 1)
     )
+    seas = tuple(_parse_sea(t, i) for i, t in enumerate(document.get("sea", []), 1))
     waters = Waters(
         _parse_settings(document.get("settings", {})),
         rivers,
@@ -673,6 +777,7 @@ def parse_waters(text: str) -> Waters:
         tuple(keeps),
         tuple(reservoirs),
         corrections,
+        seas,
     )
     _check_references(waters)
     return waters
@@ -686,6 +791,7 @@ def _check_references(waters: Waters) -> None:
         ("river name", [r.name.casefold() for r in waters.rivers]),
         ("correction id", [c.id for c in waters.corrections]),
         ("keep id", [k.id for k in waters.keeps]),
+        ("sea name", [x.name.casefold() for x in waters.seas]),
     ):
         repeated = sorted(v for v, n in collections.Counter(values).items() if n > 1)
         if repeated:
@@ -698,6 +804,12 @@ def _check_references(waters: Waters) -> None:
                 message = (
                     f"waters.toml: source {source!r} is in rivers {owners[source]} and {river.id}"
                 )
+                raise WatersError(message)
+    segment_owners: dict[str, str] = {}
+    for river in waters.rivers:
+        for code in river.segments:
+            if segment_owners.setdefault(code, river.id) != river.id:
+                message = f"waters.toml: segment {code!r} is in the segments of rivers {segment_owners[code]} and {river.id}"
                 raise WatersError(message)
     for correction in waters.corrections:
         if correction.river not in ids:
@@ -728,11 +840,41 @@ class Seg:
     river_hint: str | None = None
     course: str | None = None
     course_kind: str = "river"
+    twin: str | None = (
+        None  # a line in both surveys (rule 7): the Irish survey's segment code, `code` being DAERA's
+    )
+    twin_order: int = 0  # ... and the stream order DAERA gives it, `order` being the Irish survey's
 
     @property
     def length_m(self) -> float:
         """The ground length of the segment."""
         return path_length_m(self.points)
+
+    @property
+    def codes(self) -> tuple[str, ...]:
+        """Every segment code the line answers to: one, or two for a line that is in both surveys."""
+        return (self.code, self.twin) if self.twin else (self.code,)
+
+    @property
+    def irish(self) -> bool:
+        """Whether the Irish survey has the line (alone, or as one line with DAERA's)."""
+        return self.source in ("epa", "both")
+
+    @property
+    def epa_order(self) -> int:
+        """The stream order the Irish survey gives the line, 0 where it does not have it."""
+        return self.order if self.source in ("epa", "both") else 0
+
+    @property
+    def ni_order(self) -> int:
+        """The stream order DAERA gives the line, 0 where it does not have it."""
+        return (
+            self.order if self.source == "ni" else self.twin_order if self.source == "both" else 0
+        )
+
+    def label(self) -> str:
+        """The line's code, with its second code where it has one, for a message."""
+        return " / ".join(self.codes)
 
 
 @dataclass(frozen=True)
@@ -795,8 +937,15 @@ def epa_segments(collection: dict[str, Any]) -> list[Seg]:
     return segments
 
 
+NI_MARKS = {
+    "L": "L",
+    "T": "T",
+}  # DAERA's SEGMENT_TYPE `Y` is a plain river line; `L` is a lough line and `T` a tidal one
+
+
 def ni_segments(collection: dict[str, Any]) -> list[Seg]:
-    """DAERA's river segments (`RWB_CD`, `STRAHLER`); the survey gives no names."""
+    """DAERA's river segments (`RWB_CD`, `STRAHLER`, `SEGMENT_TYPE`); the survey gives no names. A line with an empty water-body code
+    has none (the tidal Foyle, the Quoile's last reach)."""
     segments = []
     for feature in collection["features"]:
         props = feature["properties"]
@@ -810,7 +959,8 @@ def ni_segments(collection: dict[str, Any]) -> list[Seg]:
                     int(props["STRAHLER"]),
                     tuple(line),
                     None,
-                    props["RWB_CD"],
+                    props["RWB_CD"] or None,
+                    NI_MARKS.get(str(props.get("SEGMENT_TYPE") or "")),
                 )
             )
     return segments
@@ -888,6 +1038,20 @@ class Stretch:
     note: str = ""
     course: str | None = None
     edges: list[Edge] = field(default_factory=list)
+    survey_end: LatLon | None = (
+        None  # the last survey point, where the run to open sea (rule 4) starts
+    )
+    run: tuple[LatLon, ...] = ()  # the points the tool added after it
+
+
+@dataclass(frozen=True)
+class Contest:
+    """A line that two rivers' entries both reach (CK-354 rules 7 and 9): `river` has it, `other` lists it another way."""
+
+    seg: Seg
+    river: str
+    other: str
+    how: str  # how `river` has it: "segments", "name" or "water body"
 
 
 @dataclass
@@ -897,10 +1061,13 @@ class Network:
     stretches: list[Stretch] = field(default_factory=list)
     rivers: list[str] = field(default_factory=list)
     straight_lough: list[str] = field(default_factory=list)
-    straight_sea: list[str] = field(default_factory=list)
+    sea_runs: dict[str, float] = field(
+        default_factory=dict
+    )  # stretch id -> length in metres of the run the tool added
+    contests: list[Contest] = field(default_factory=list)
     lough_as_river: dict[str, str] = field(default_factory=dict)
     failed: dict[str, str] = field(default_factory=dict)
-    blockers: dict[str, tuple[str, str]] = field(default_factory=dict)
+    blockers: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
 
 
 def seg_kind(seg: Seg, reservoir_lakes: frozenset[str]) -> str:
@@ -992,50 +1159,83 @@ def _snap_ends(segs: list[Seg]) -> list[Seg]:
         first, last = components.find(seg.points[0]), components.find(seg.points[-1])
         line = clean_line([first, *seg.points[1:-1], last])
         if len(line) >= 2:  # noqa: PLR2004
-            snapped.append(
-                Seg(
-                    seg.code,
-                    seg.source,
-                    seg.order,
-                    tuple(line),
-                    seg.name,
-                    seg.water_body,
-                    seg.continua,
-                    seg.lake_code,
-                    seg.river_hint,
-                    seg.course,
-                    seg.course_kind,
-                )
-            )
+            snapped.append(replace(seg, points=tuple(line)))
     return snapped
 
 
+PAIR_TOLERANCE_M = 2.0
+PAIR_TOLERANCE_SHARE = 0.01
+
+
+def pair_surveys(segs: Sequence[Seg]) -> list[Seg]:
+    """Rule 7 (CK-354): a segment of the Irish survey and one of DAERA's with the same two end points and the same length, to
+    within 2 m or 1 % of the Irish line's length (the larger), are one line. Pairing is one to one: where more than one line on
+    either side fits, the pair with the closest lengths is taken first, then by code, and a line is paired at most once. The one
+    line keeps DAERA's points, water-body code and segment code, and the Irish survey's segment code, name, mark and lake code
+    where it has them (the Irish mark, then DAERA's)."""
+    by_ends: dict[tuple[LatLon, LatLon], list[Seg]] = collections.defaultdict(list)
+    for seg in segs:
+        low, high = sorted((seg.points[0], seg.points[-1]))
+        by_ends[(low, high)].append(seg)
+    pairs: list[tuple[float, str, str]] = []
+    for group in by_ends.values():
+        irish = [s for s in group if s.source == "epa"]
+        daera = [s for s in group if s.source == "ni"]
+        for epa in irish:
+            epa_length = epa.length_m
+            for ni in daera:
+                gap = abs(epa_length - ni.length_m)
+                if gap <= max(PAIR_TOLERANCE_M, PAIR_TOLERANCE_SHARE * epa_length):
+                    pairs.append((gap, epa.code, ni.code))
+    by_code = {s.code: s for s in segs}
+    taken: set[str] = set()
+    merged: dict[str, Seg] = {}
+    for _gap, epa_code, ni_code in sorted(pairs):
+        if epa_code in taken or ni_code in taken:
+            continue
+        taken.update((epa_code, ni_code))
+        epa, ni = by_code[epa_code], by_code[ni_code]
+        merged[ni_code] = Seg(
+            ni.code,
+            "both",
+            epa.order,
+            ni.points,
+            epa.name,
+            ni.water_body,
+            epa.continua or ni.continua,
+            epa.lake_code,
+            twin=epa.code,
+            twin_order=ni.order,
+        )
+    return [
+        merged.get(seg.code, seg) for seg in segs if not (seg.source == "epa" and seg.code in taken)
+    ]
+
+
 def _prepare(segments: Sequence[Seg], corrections: Sequence[Correction]) -> list[Seg]:
-    """Segments at the written precision, without the ones a correction leaves out, plus the hand-drawn courses."""
+    """Segments at the written precision, the lines both surveys have made one, without the ones a correction leaves out, plus the
+    hand-drawn courses."""
+    return _corrected(_cleaned(segments), corrections)
+
+
+def _cleaned(segments: Sequence[Seg]) -> list[Seg]:
+    """Segments at the written precision, with their ends snapped and the lines that are in both surveys paired (rule 7)."""
     cleaned = []
     for seg in segments:
         line = clean_line(seg.points)
         if len(line) >= 2:  # noqa: PLR2004
-            cleaned.append(
-                Seg(
-                    seg.code,
-                    seg.source,
-                    seg.order,
-                    tuple(line),
-                    seg.name,
-                    seg.water_body,
-                    seg.continua,
-                    seg.lake_code,
-                    seg.river_hint,
-                    seg.course,
-                    seg.course_kind,
-                )
-            )
+            cleaned.append(replace(seg, points=tuple(line)))
+    return pair_surveys(_snap_ends(cleaned))
 
-    cleaned = _snap_ends(cleaned)
+
+def _corrected(cleaned: Sequence[Seg], corrections: Sequence[Correction]) -> list[Seg]:
+    """The segments without the ones a correction leaves out, plus the hand-drawn courses; a segment is named by either of its
+    codes or by its water body."""
 
     def matches(seg: Seg, codes: Iterable[str]) -> bool:
-        return seg.code in codes or (seg.water_body is not None and seg.water_body in codes)
+        return any(c in codes for c in seg.codes) or (
+            seg.water_body is not None and seg.water_body in codes
+        )
 
     for correction in corrections:
         codes = set(correction.omit) | set(correction.replaces)
@@ -1059,7 +1259,17 @@ def _course_seg(correction: Correction, replaced: Sequence[Seg], rest: Sequence[
     kept_nodes = {n for seg in rest for n in (seg.points[0], seg.points[-1])}
     boundary = sorted({n for seg in replaced for n in (seg.points[0], seg.points[-1])} & kept_nodes)
     points = clean_line(correction.course)
-    if boundary:
+    if len(boundary) == 1:
+        # rule 6: the segments it stands in for met the rest of the river at one point only, so the course starts there and its far
+        # end is free: it is the river's last reach
+        node = boundary[0]
+        if ground_m(node, points[-1]) < ground_m(node, points[0]):
+            points.reverse()
+        if ground_m(node, points[0]) > SNAP_LIMIT_M:
+            message = f"correction {correction.id}: the course does not meet the river where the survey segments it replaces did"
+            raise WatersError(message)
+        points = clean_line([node, *points[1:]])
+    elif boundary:
         first = min(boundary, key=lambda n: (ground_m(n, points[0]), n))
         others = [n for n in boundary if n != first] or boundary
         last = min(others, key=lambda n: (ground_m(n, points[-1]), n))
@@ -1082,9 +1292,21 @@ def _course_seg(correction: Correction, replaced: Sequence[Seg], rest: Sequence[
     )
 
 
+def _piece_mouth(ends: Sequence[LatLon], terrain: Terrain) -> LatLon | None:
+    """Rule 2: the one mouth of a piece that reaches no open sea: of its loose ends, the one with the shortest way to open sea by rule 4
+    (ties to the first by position); where none has one, the one nearest a sea cell within 30 cells (a river's survey line can stop
+    short of the sea, at the head of its estuary). None where the piece has no sea in reach."""
+    ways = [(run.cells, n) for n in ends if (run := terrain.sea_run(n)) is not None]
+    if ways:
+        return min(ways)[1]
+    reach = [(d, n) for n in ends if (d := terrain.sea_distance(n)) is not None]
+    return min(reach)[1] if reach else None
+
+
 def _join_loughs(raws: Sequence[Seg], terrain: Terrain) -> tuple[list[Seg], set[LatLon]]:
     """Joins each piece of network with no mouth to another one through the lough they both touch (the survey has no
-    line through some loughs), and returns the segments with the mouths: loose ends within three cells of the sea."""
+    line through some loughs), and returns the segments with the mouths: the line ends in open sea (rule 1) and one loose end of
+    each piece that reaches none (rule 2)."""
     segs = list(raws)
     degree: collections.Counter[LatLon] = collections.Counter(
         n for s in segs for n in (s.points[0], s.points[-1])
@@ -1092,8 +1314,9 @@ def _join_loughs(raws: Sequence[Seg], terrain: Terrain) -> tuple[list[Seg], set[
     components = _Components()
     for seg in segs:
         components.union(seg.points[0], seg.points[-1])
-    tidal_ends = {n for s in segs if s.continua in ("T", "C") for n in (s.points[0], s.points[-1])}
-    mouths = {n for n, d in degree.items() if d == 1 and (n in tidal_ends or terrain.near_sea(n))}
+    # rule 1 (CK-354): the end of a survey line that lies in an open-sea cell is at the sea; nothing else is a mouth for being tidal
+    # or near the coast
+    mouths = {n for n in degree if terrain.open_sea(n)}
     by_patch: dict[int, list[LatLon]] = collections.defaultdict(list)
     for node, count in sorted(degree.items()):
         if count == 1 and node not in mouths and (patch := terrain.patch_near(node)) is not None:
@@ -1133,9 +1356,8 @@ def _join_loughs(raws: Sequence[Seg], terrain: Terrain) -> tuple[list[Seg], set[
         if count == 1:
             ends_by_root[components.find(node)].append(node)
     for root in sorted(set(ends_by_root) - {components.find(n) for n in mouths}):
-        reach = [(d, n) for n in ends_by_root[root] if (d := terrain.sea_distance(n)) is not None]
-        if reach:  # a river's survey line can stop short of the sea, at the head of its estuary
-            mouths.add(min(reach)[1])
+        if (mouth := _piece_mouth(ends_by_root[root], terrain)) is not None:
+            mouths.add(mouth)
     return segs, mouths
 
 
@@ -1174,15 +1396,45 @@ def _orient(segs: Sequence[Seg], mouths: set[LatLon]) -> tuple[dict[LatLon, floa
     return distance, edges
 
 
-def _claim(edges: list[Edge], rivers: Sequence[RiverDef]) -> None:
-    """Gives each edge its river: by the survey names it lists, then the unnamed Irish lines (through loughs and tidal water, and
-    the few the EPA does not name) and the joins the tool added that run on from a river's end; the larger river takes a
-    line two rivers both reach."""
+def _claim(edges: list[Edge], rivers: Sequence[RiverDef], known: frozenset[str]) -> list[Contest]:
+    """Gives each edge its river, in this order (CK-354 rule 9): the river that lists it in `segments` (by either of its codes);
+    failing that, the river that lists its Irish name; failing that, the river that lists its water body; failing that, a river
+    that runs on into it: the unnamed Irish lines (through loughs and tidal water, and the few the EPA does not name) and the
+    joins the tool added that run on from a river's end, the larger river taking a line two rivers both reach. Returns the lines
+    that two rivers' entries both reach, with the river that has each. Raises `WatersError` for a code the survey does not have and
+    for a line listed in the `segments` of two rivers."""
+    by_segment: dict[str, str] = {}
+    for river in rivers:
+        for code in river.segments:
+            if code not in known:
+                message = f"river {river.id}: the survey has no segment {code!r}"
+                raise WatersError(message)
+            by_segment[code] = river.id
     by_name = {n: r.id for r in rivers for n in r.epa_names}
     by_code = {c: r.id for r in rivers for c in r.rwb_codes}
+    contests: list[Contest] = []
     for edge in edges:
-        if edge.river is None:
-            edge.river = by_name.get(edge.seg.name or "") or by_code.get(edge.seg.water_body or "")
+        if edge.river is not None:
+            continue
+        listed = [(c, by_segment[c]) for c in edge.seg.codes if c in by_segment]
+        if len({river for _, river in listed}) > 1:
+            (code_a, river_a), (code_b, river_b) = listed[0], listed[1]
+            message = f"line {edge.seg.label()} is in the segments of rivers {river_a} (as {code_a}) and {river_b} (as {code_b})"
+            raise WatersError(message)
+        named = by_name.get(edge.seg.name or "")
+        bodied = by_code.get(edge.seg.water_body or "")
+        owner, how = (
+            (listed[0][1], "segments")
+            if listed
+            else (named, "name")
+            if named
+            else (bodied, "water body")
+        )
+        edge.river = owner
+        contests += [
+            Contest(edge.seg, owner or "", other, how)
+            for other in sorted({r for r in (named, bodied) if r and r != owner})
+        ]
     starting: dict[LatLon, list[Edge]] = collections.defaultdict(list)
     for edge in edges:
         starting[edge.start].append(edge)
@@ -1196,12 +1448,11 @@ def _claim(edges: list[Edge], rivers: Sequence[RiverDef]) -> None:
                 continue
             seen.add(node)
             for edge in starting[node]:
-                runs_on = (
-                    edge.seg.name is None and edge.seg.source == "epa"
-                ) or edge.seg.source == "join"
+                runs_on = (edge.seg.name is None and edge.seg.irish) or edge.seg.source == "join"
                 if edge.river is None and runs_on:
                     edge.river = river
                     queue.append(edge.end)
+    return contests
 
 
 @dataclass
@@ -1210,21 +1461,29 @@ class Graph:
 
     distance: dict[LatLon, float]
     edges: list[Edge]
+    known: frozenset[str] = (
+        frozenset()
+    )  # every segment code the survey has, before a correction leaves any out
 
 
 def prepare_graph(
     segments: Sequence[Seg], terrain: Terrain, corrections: Sequence[Correction] = ()
 ) -> Graph:
-    """Segments at the written precision, corrections applied, loughs joined, every line turned to run downstream."""
-    joined, mouths = _join_loughs(_prepare(segments, corrections), terrain)
+    """Segments at the written precision, the lines both surveys have made one, corrections applied, loughs joined, every line
+    turned to run downstream."""
+    cleaned = _cleaned(segments)
+    known = frozenset(code for seg in cleaned for code in seg.codes)
+    joined, mouths = _join_loughs(_corrected(cleaned, corrections), terrain)
     distance, edges = _orient(joined, mouths)
-    return Graph(distance, edges)
+    return Graph(distance, edges, known)
 
 
 class _RiverErrors(Exception):
     """The rivers a build could not make, each with why."""
 
-    def __init__(self, problems: dict[str, str], blockers: dict[str, tuple[str, str]]) -> None:
+    def __init__(
+        self, problems: dict[str, str], blockers: dict[str, list[tuple[str, str]]]
+    ) -> None:
         super().__init__(problems)
         self.problems = problems
         self.blockers = blockers
@@ -1244,7 +1503,7 @@ def build_network(  # noqa: PLR0913 -- the list, the terrain and each optional r
     """The network of the listed rivers (design 4.1, format rules 2 and 3). Raises `WatersError` naming each river that cannot
     be built; with `tolerant` those rivers are left out and named in `Network.failed` instead."""
     failed: dict[str, str] = {}
-    blockers: dict[str, tuple[str, str]] = {}
+    blockers: dict[str, list[tuple[str, str]]] = {}
     graph = graph or prepare_graph(segments, terrain, corrections)
     while True:
         listed = [r for r in rivers if r.id not in failed]
@@ -1255,7 +1514,9 @@ def build_network(  # noqa: PLR0913 -- the list, the terrain and each optional r
                 message = "; ".join(f"river {r}: {m}" for r, m in sorted(errors.problems.items()))
                 raise WatersError(message) from None
             failed.update(errors.problems)
-            blockers.update(errors.blockers)
+            for river_id, found in errors.blockers.items():
+                known = blockers.setdefault(river_id, [])
+                known += [b for b in found if b not in known]
             continue
         network.failed = failed
         network.blockers = blockers
@@ -1296,13 +1557,13 @@ def _build_once(  # noqa: PLR0912, PLR0915 -- one pass over the graph reads best
     ]
     for edge in edges:
         edge.kind = "lough" if edge.synthetic else seg_kind(edge.seg, reservoir_lakes)
-    _claim(edges, rivers)
+    contests = _claim(edges, rivers, graph.known)
     problems = {
         r.id: "its source matches no segment of the survey"
         for r in rivers
         if not any(e.river == r.id for e in edges)
     }
-    blockers: dict[str, tuple[str, str]] = {}
+    blockers: dict[str, list[tuple[str, str]]] = {}
     selected = _close_at_sea([e for e in edges if e.river is not None], terrain)
     chosen = {id(e) for e in selected}
     starts: dict[LatLon, list[Edge]] = collections.defaultdict(list)
@@ -1374,38 +1635,41 @@ def _build_once(  # noqa: PLR0912, PLR0915 -- one pass over the graph reads best
             stretch.ends = stretch_of[id(onward)].id
         elif terrain.open_sea(stretch.finish):
             stretch.ends = "sea"
-        elif unlisted := [e for e in leaving[stretch.finish] if id(e) not in chosen]:
+        elif unlisted := [
+            e for e in leaving[stretch.finish] if e.river is None and id(e) not in chosen
+        ]:
             other = unlisted[0].seg
+            at = f"{other.label()} at {stretch.finish[0]:.5f}, {stretch.finish[1]:.5f}"
             problems.setdefault(
                 stretch.river,
-                f"it ends at {other.name or other.water_body or other.code}, which is not in the list",
+                f"it ends at {other.name or other.water_body or other.code}, which is not in the list (segment {at}; list its name, its water body or its segment code)",
             )
-            if other.name or other.water_body:
-                blockers.setdefault(
-                    stretch.river,
-                    ("epa_names", other.name)
-                    if other.name
-                    else ("rwb_codes", other.water_body or ""),
-                )
-        elif (
-            target := terrain.nearest_open_sea(stretch.finish)
-            if stretch.kind == "tidal" or terrain.sea_distance(stretch.finish) is not None
-            else None
-        ) is not None:
-            stretch.points.append(round_point(target))
-            stretch.note = "its last run to the open sea is a straight line the tool added"
+            blocker = (
+                ("epa_names", other.name)
+                if other.name
+                else ("rwb_codes", other.water_body)
+                if other.water_body
+                else ("segments", other.code)
+            )
+            if blocker not in blockers.setdefault(stretch.river, []):
+                blockers[stretch.river].append(blocker)
+        elif (run := terrain.sea_run(stretch.finish)) is not None:
+            stretch.survey_end = stretch.finish
+            stretch.run = run.points
+            stretch.points.extend(run.points)
+            stretch.note = "its last run to the open sea is a line through sea cells the tool added"
         else:
-            problems.setdefault(
-                stretch.river,
-                f"it ends inland at {stretch.finish[0]:.5f}, {stretch.finish[1]:.5f}, short of the sea or a listed river",
-            )
+            problems.setdefault(stretch.river, _no_way_to_sea(stretch.finish, terrain))
     if problems:
         raise _RiverErrors(problems, blockers)
     pins = {node for node, out in starts.items() if len(out) > 1}
     for stretch in stretches:
         if any(e.synthetic for e in stretch.edges):
             stretch.note = "the survey has no line through this lough: the ends are joined by a straight line the tool added"
-        thinned = thin(stretch.points, settings.simplify_m, pins)
+        # thinning keeps the stretch's last survey point and every point the run adds (rule 4): a line between two sea points can
+        # cross land
+        kept = pins | set(stretch.run) | ({stretch.survey_end} if stretch.survey_end else set())
+        thinned = thin(stretch.points, settings.simplify_m, kept)
         if (
             stretch.kind == "lough"
             and lough_has_lake(stretch.points, terrain)
@@ -1416,8 +1680,23 @@ def _build_once(  # noqa: PLR0912, PLR0915 -- one pass over the graph reads best
     network.stretches = sorted(stretches, key=lambda s: (s.river, s.id))
     network.rivers = sorted({s.river for s in stretches})
     network.straight_lough = [s.id for s in network.stretches if any(e.synthetic for e in s.edges)]
-    network.straight_sea = [s.id for s in network.stretches if s.note.startswith("its last run")]
+    network.sea_runs = {
+        s.id: path_length_m([s.survey_end, *s.run]) for s in network.stretches if s.survey_end
+    }
+    network.contests = contests
     return network
+
+
+def _no_way_to_sea(finish: LatLon, terrain: Terrain) -> str:
+    """Rule 5: why a stretch that ends short of open sea gets no run: its last point, and how many cells it is from the sea."""
+    where = f"{finish[0]:.5f}, {finish[1]:.5f}"
+    far = terrain.sea_distance(finish)
+    if far == 0:
+        return (
+            f"it ends at {where} in sea that has no way to open sea (a pool), 0 cells from the sea"
+        )
+    cells = f"{far} cells" if far is not None else f"more than {MOUTH_REACH_CELLS} cells"
+    return f"it ends inland at {where}, {cells} from the sea, short of open sea or a listed river: it needs a hand-drawn course or the sea it lacks"
 
 
 # ---- widths --------------------------------------------------------------------------------------------------------------
@@ -1726,6 +2005,9 @@ class WaterPlan:
     would_sea: set[Cell] = field(default_factory=set)
     would_lough: set[Cell] = field(default_factory=set)
     would_return: set[Cell] = field(default_factory=set)
+    sea_entries: dict[str, frozenset[Cell]] = field(
+        default_factory=dict
+    )  # each [[sea]] entry's cells (CK-354 rule 10)
 
 
 def _nearest_land(terrain: Sequence[Sequence[int]], cell: Cell) -> int:
@@ -1957,6 +2239,7 @@ class Surveys:
     rivers: list[Seg] = field(default_factory=list)
     tidal: list[Outline] = field(default_factory=list)
     lakes: list[Outline] = field(default_factory=list)
+    coastal: list[Outline] = field(default_factory=list)
     layers: list[dict[str, Any]] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
 
@@ -1981,12 +2264,32 @@ class BuildResult:
     plan: WaterPlan
 
 
-def _outline_by_code(lakes: Sequence[Outline], code: str, label: str) -> Outline:
-    for outline in lakes:
+def _outline_by_code(
+    outlines_: Sequence[Outline], code: str, label: str, survey: str = "lake"
+) -> Outline:
+    for outline in outlines_:
         if outline.code == code:
             return outline
-    message = f"{label}: the lake survey has no lake with the code {code!r}"
+    noun = "lake" if survey == "lake" else "outline"
+    message = f"{label}: the {survey} survey has no {noun} with the code {code!r}"
     raise WatersError(message)
+
+
+def sea_entry_cells(entry: SeaDef, coastal: Sequence[Outline], crop: Crop) -> frozenset[Cell]:
+    """Rule 10: the cells of a `[[sea]]` entry: those more than half inside a coastal outline of the survey, or the cells that hold
+    its points."""
+    label = f"[[sea]] {entry.name}"
+    if entry.source is not None:
+        outline = _outline_by_code(coastal, entry.source, label, "coastal")
+        return frozenset(cover_cells(outline.polygons, crop))
+    cells = set()
+    for point in entry.points:
+        cell = crop.cell_containing(point)
+        if cell is None:
+            message = f"{label}: the point {point[0]}, {point[1]} is outside the crop"
+            raise WatersError(message)
+        cells.add(cell)
+    return frozenset(cells)
 
 
 def _plan_for(
@@ -1997,6 +2300,15 @@ def _plan_for(
     for outline in sorted(surveys.tidal, key=lambda o: (o.name, o.code)):
         for cell in sorted(cover_cells(outline.polygons, crop)):
             tidal.setdefault(cell, outline.name)
+    sea_entries = {
+        entry.name: sea_entry_cells(entry, surveys.coastal, crop) for entry in waters.seas
+    }
+    for (
+        name,
+        cells,
+    ) in sea_entries.items():  # rule 11: the cells join the tidal cells and are decided with them
+        for cell in sorted(cells):
+            tidal.setdefault(cell, name)
     loughs = []
     for entry in waters.loughs:
         outline = _outline_by_code(surveys.lakes, entry.source, f"[[lough]] {entry.name}")
@@ -2024,7 +2336,9 @@ def _plan_for(
         cell = crop.cell_containing(point)
         if cell is not None:
             kept.setdefault(cell, f"location {name}")
-    return decide_water(grid.terrain, tidal, loughs, kept)
+    plan = decide_water(grid.terrain, tidal, loughs, kept)
+    plan.sea_entries = sea_entries
+    return plan
 
 
 def apply_plan(terrain: Sequence[Sequence[int]], plan: WaterPlan) -> list[list[int]]:
@@ -2094,6 +2408,194 @@ def _by_terrain(cells: Iterable[int]) -> str:
     return ", ".join(f"{counts[i]} {NAMES[i]}" for i in range(len(NAMES)) if counts[i]) or "none"
 
 
+def _sea_entries_report(waters: Waters, grid: MapGrid, plan: WaterPlan) -> list[str]:
+    """Rule 13: each `[[sea]]` entry's cells that become sea (by the terrain they were), its cells that are not joined, its kept cells,
+    and whether it changes nothing."""
+    out: list[str] = []
+    for entry in waters.seas:
+        cells = plan.sea_entries.get(entry.name, frozenset())
+        became = {c for c in cells if c in plan.sea_new}
+        unjoined = {c for c in cells if c in plan.tidal_unjoined}
+        kept = {c for c in cells if c in plan.kept and grid.terrain[c[1]][c[0]] not in (SEA, LAKE)}
+        how = f"outline {entry.source}" if entry.source else f"{len(entry.points)} points"
+        out.append(f"- {entry.name} ({how}): {len(cells)} cells: {entry.reason}")
+        out.append(
+            f"  - become sea: {len(became)} cells ({_by_terrain(plan.sea_new_from[c] for c in became)})"
+        )
+        if became:
+            out.append(f"  - cells and the terrain they were: {_cells(became, plan.sea_new_from)}")
+        out.append(f"  - not joined to the sea: {len(unjoined)} cells")
+        if unjoined:
+            out.append(f"  - not joined: {_cells(unjoined)}")
+        out.append(f"  - kept (a location or a [[keep]] holds them): {len(kept)} cells")
+        if kept:
+            out.append(f"  - kept cells: {_cells(kept)}")
+        if not became:
+            out.append("  - this entry changes nothing")
+    return out
+
+
+def _contests_report(network: Network) -> list[str]:
+    """Rule 7: for each river, the lines it lists (by its water body, or by its name) that another river has, with their length."""
+    out: list[str] = []
+    by_other: dict[str, list[Contest]] = collections.defaultdict(list)
+    for contest in network.contests:
+        by_other[contest.other].append(contest)
+    for other, contests in sorted(by_other.items()):
+        total = sum(c.seg.length_m for c in contests) / 1000.0
+        out.append(f"- river {other}: {len(contests)} lines, {total:.2f} km, are another river's")
+        out += [
+            f"  - {c.seg.label()}: {c.seg.length_m / 1000.0:.2f} km, river {c.river} has it by its {c.how}"
+            for c in sorted(contests, key=lambda c: (c.river, c.seg.code))
+        ]
+    return out
+
+
+TWICE_APART_M = 25.0
+TWICE_LENGTH_M = 300.0
+TWICE_BIN_DEGREES = 0.002  # the grid the candidate segments are found in; its padding exceeds 25 m at every latitude of the island
+TWICE_PAD_DEGREES = 0.0005
+Flat = tuple[float, float]
+
+
+def _within(start: float, slope: float, low: float, high: float) -> tuple[float, float] | None:
+    """The parameters t at which `low <= start + slope * t <= high`, as an interval, or None."""
+    if abs(slope) < 1e-12:  # noqa: PLR2004 -- a line parallel to the bound
+        return (-math.inf, math.inf) if low <= start <= high else None
+    first, second = (low - start) / slope, (high - start) / slope
+    return (min(first, second), max(first, second))
+
+
+def _meet(
+    a: tuple[float, float] | None, b: tuple[float, float] | None
+) -> tuple[float, float] | None:
+    if a is None or b is None:
+        return None
+    low, high = max(a[0], b[0]), min(a[1], b[1])
+    return (low, high) if low <= high else None
+
+
+def _near_interval(
+    start: Flat, finish: Flat, b_start: Flat, b_finish: Flat
+) -> tuple[float, float] | None:
+    """The part of a line segment (parameters 0 to 1) that lies within 25 m of another segment, exactly: the segment's intersection with
+    the capsule round the other (a strip along it and a disc at each end), which is one interval because the capsule is convex."""
+    d_x, d_y = finish[0] - start[0], finish[1] - start[1]
+    parts: list[tuple[float, float]] = []
+    for centre in (b_start, b_finish):
+        o_x, o_y = start[0] - centre[0], start[1] - centre[1]
+        a = d_x * d_x + d_y * d_y
+        b = 2 * (o_x * d_x + o_y * d_y)
+        c = o_x * o_x + o_y * o_y - TWICE_APART_M**2
+        if a > 0 and (disc := b * b - 4 * a * c) >= 0:
+            root = math.sqrt(disc)
+            parts.append(((-b - root) / (2 * a), (-b + root) / (2 * a)))
+    length = math.hypot(b_finish[0] - b_start[0], b_finish[1] - b_start[1])
+    if length > 0:
+        e_x, e_y = (b_finish[0] - b_start[0]) / length, (b_finish[1] - b_start[1]) / length
+        o_x, o_y = start[0] - b_start[0], start[1] - b_start[1]
+        along = _within(o_x * e_x + o_y * e_y, d_x * e_x + d_y * e_y, 0.0, length)
+        across = _within(
+            o_y * e_x - o_x * e_y, d_y * e_x - d_x * e_y, -TWICE_APART_M, TWICE_APART_M
+        )
+        if (strip := _meet(along, across)) is not None:
+            parts.append(strip)
+    if not parts:
+        return None
+    return _meet((min(p[0] for p in parts), max(p[1] for p in parts)), (0.0, 1.0))
+
+
+def _ground_from(origin: LatLon, scale: float, point: LatLon) -> Flat:
+    """A point in ground metres from `origin` on the local scale (the mean latitude of the segment, as `ground_m` measures)."""
+    return ((point[1] - origin[1]) * scale, (point[0] - origin[0]) * GROUND_M_PER_DEGREE)
+
+
+def _bin_cells(a: LatLon, b: LatLon, pad: float) -> Iterable[tuple[int, int]]:
+    """The grid cells a segment's box, padded by `pad` degrees, touches."""
+    low_row = math.floor((min(a[0], b[0]) - pad) / TWICE_BIN_DEGREES)
+    high_row = math.floor((max(a[0], b[0]) + pad) / TWICE_BIN_DEGREES)
+    low_column = math.floor((min(a[1], b[1]) - pad) / TWICE_BIN_DEGREES)
+    high_column = math.floor((max(a[1], b[1]) + pad) / TWICE_BIN_DEGREES)
+    return (
+        (column, row)
+        for row in range(low_row, high_row + 1)
+        for column in range(low_column, high_column + 1)
+    )
+
+
+def _union_length(intervals: Iterable[tuple[float, float]]) -> float:
+    """The total length of a union of intervals."""
+    covered, reach = 0.0, -math.inf
+    for low, high in sorted(intervals):
+        if high > max(low, reach):
+            covered += high - max(low, reach)
+        reach = max(reach, high)
+    return covered
+
+
+def _beside_totals(network: Network) -> dict[tuple[int, int], float]:
+    """For each (stretch, other stretch), the metres of the stretch's own line that lie within 25 m of the other's line."""
+    bins: dict[tuple[int, int], list[tuple[int, LatLon, LatLon]]] = collections.defaultdict(list)
+    for index, stretch in enumerate(network.stretches):
+        for first, last in pairwise(stretch.points):
+            for key in _bin_cells(first, last, 0.0):
+                bins[key].append((index, first, last))
+    totals: dict[tuple[int, int], float] = collections.defaultdict(float)
+    for index, stretch in enumerate(network.stretches):
+        for first, last in pairwise(stretch.points):
+            scale = math.cos(math.radians((first[0] + last[0]) / 2)) * GROUND_M_PER_DEGREE
+            start, finish = _ground_from(first, scale, first), _ground_from(first, scale, last)
+            found: dict[int, list[tuple[float, float]]] = collections.defaultdict(list)
+            seen: set[tuple[int, LatLon, LatLon]] = set()
+            for key in _bin_cells(first, last, TWICE_PAD_DEGREES):
+                for candidate in bins.get(key, ()):
+                    if candidate[0] == index or candidate in seen:
+                        continue
+                    seen.add(candidate)
+                    other, b_first, b_last = candidate
+                    if (
+                        near := _near_interval(
+                            start,
+                            finish,
+                            _ground_from(first, scale, b_first),
+                            _ground_from(first, scale, b_last),
+                        )
+                    ) is not None:
+                        found[other].append(near)
+            share = ground_m(first, last)
+            for other, intervals in found.items():
+                totals[(index, other)] += _union_length(intervals) * share
+    return totals
+
+
+def courses_built_twice(network: Network) -> list[tuple[str, str, float]]:
+    """Rule 9: every pair of stretches that run within 25 m of each other for 300 m or more, with that length, longest first. Distance is
+    local ground distance (each segment measured on the scale of its own latitude, as `ground_m` does). For each segment of a stretch
+    the part within 25 m of each other stretch is found exactly, where the segment enters and leaves the band round that stretch's line
+    segments, and the lengths are summed: so a course's vertices do not change what it is credited. The length for a pair is the
+    lesser of what each stretch runs beside the other."""
+    beside = _beside_totals(network)
+    pairs = []
+    for (first, second), length_first in beside.items():
+        if first < second:
+            length = min(length_first, beside.get((second, first), 0.0))
+            if length >= TWICE_LENGTH_M:
+                pairs.append((network.stretches[first].id, network.stretches[second].id, length))
+    return sorted(pairs, key=lambda item: (-item[2], item[0], item[1]))
+
+
+def _twice_report(network: Network) -> list[str]:
+    """Rule 9: the section "Courses built twice": information, not a refusal."""
+    found = courses_built_twice(network)
+    out = [f"- {a} and {b}: about {length:.0f} m side by side" for a, b, length in found] or [
+        "- none"
+    ]
+    out.append(
+        f"- total: {len(found)} pairs, about {sum(length for _, _, length in found) / 1000.0:.2f} km"
+    )
+    return out
+
+
 def waters_report(  # noqa: PLR0912, PLR0913, PLR0915 -- one section after another, from one build
     waters: Waters,
     surveys: Surveys,
@@ -2157,6 +2659,12 @@ def waters_report(  # noqa: PLR0912, PLR0913, PLR0915 -- one section after anoth
     )
     if plan.sea_cut_off:
         out.append(f"  - cells: {_cells(plan.sea_cut_off)}")
+    out += ["", "## Sea added by the owner", ""]
+    out += _sea_entries_report(waters, grid, plan) or ["- no [[sea]] entry"]
+    out += ["", "## Lines two rivers' entries both reach", ""]
+    out += _contests_report(network) or ["- none"]
+    out += ["", "## Courses built twice", ""]
+    out += _twice_report(network)
     out += ["", "## Loughs", ""]
     for lough in waters.loughs:
         out.append(
@@ -2203,9 +2711,14 @@ def waters_report(  # noqa: PLR0912, PLR0913, PLR0915 -- one section after anoth
     out += [f"- straight lough stretch: {i}" for i in network.straight_lough] or [
         "- no straight lough stretch"
     ]
-    out += [f"- straight run to the open sea: {i}" for i in network.straight_sea] or [
-        "- no straight run to the open sea"
-    ]
+    out += [
+        f"- run to the open sea through sea cells: {i}, {length / 1000.0:.2f} km"
+        for i, length in sorted(network.sea_runs.items())
+    ] or ["- no run to the open sea"]
+    if network.sea_runs:
+        out.append(
+            f"- {len(network.sea_runs)} runs added, the longest {max(network.sea_runs.values()) / 1000.0:.2f} km"
+        )
     if locations:
         out += ["", "## Locations", ""]
         for name, point in sorted(locations.items()):
@@ -2284,22 +2797,28 @@ def unique_id(base: str, used: set[str]) -> str:
 
 
 def candidate_rivers(segments: Sequence[Seg]) -> list[RiverDef]:
-    """Rivers of the Irish survey with 15 km or more at order 5 and above, and Northern Ireland's water bodies with a
-    segment of order 5 or above (each a river with an empty name)."""
+    """Rivers of the Irish survey with 15 km or more at order 5 and above, and Northern Ireland's water bodies with a line of
+    order 5 or above (each a river with an empty name). `segments` are the lines of rule 7 (`pair_surveys`): a line of both surveys
+    counts for the river of its Irish name where that river is proposed, and otherwise for its water body; a water body left with
+    no line of its own is not proposed."""
     length: collections.Counter[str] = collections.Counter()
     for seg in segments:
-        if seg.name and seg.source == "epa" and seg.order >= PROPOSE_ORDER:
+        if seg.name and seg.irish and seg.epa_order >= PROPOSE_ORDER:
             length[seg.name] += round(seg.length_m)
     rivers: list[RiverDef] = []
     for name in sorted(n for n, m in length.items() if m >= PROPOSE_LENGTH_M):
         rivers.append(
             RiverDef(unique_id(slug(name), {r.id for r in rivers}), name, 3, epa_names=(name,))
         )
+    proposed = {r.name for r in rivers}
     bodies = sorted(
         {
             s.water_body
             for s in segments
-            if s.source == "ni" and s.water_body and s.order >= PROPOSE_ORDER
+            if s.source in ("ni", "both")
+            and s.water_body
+            and s.ni_order >= PROPOSE_ORDER
+            and s.name not in proposed
         }
     )
     for code in bodies:
@@ -2322,25 +2841,41 @@ def propose_waters(  # noqa: PLR0912, PLR0915 -- one rule from the surveys to th
             tidal.setdefault(cell, outline.name)
     plan = decide_water(grid.terrain, tidal, [], {})
     final = Terrain(grid.crop, apply_plan(grid.terrain, plan))
-    candidates = candidate_rivers(surveys.rivers)
+    paired = _cleaned(surveys.rivers)
+    candidates = candidate_rivers(paired)
     graph = prepare_graph(surveys.rivers, final)
     reader = area_source or area_reader(
         drainage_km2(grid.elevation, final.rows, grid.crop), grid.crop
     )
     added: dict[str, str] = {}
-    for _ in range(MAX_CLOSURE_PASSES):
+    segments_added: dict[str, list[str]] = {}
+    tried: set[tuple[str, str]] = set()
+    while True:
         network = build_network(
             surveys.rivers, candidates, final, settings, (), frozenset(), tolerant=True, graph=graph
         )
         listed = {value for river in candidates for value in (*river.epa_names, *river.rwb_codes)}
-        wanted = {
-            blocker: river
-            for river, blocker in sorted(network.blockers.items())
-            if blocker[1] not in listed
-        }
+        wanted: dict[tuple[str, str], str] = {}
+        for river, found in sorted(network.blockers.items()):
+            for (
+                blocker
+            ) in found:  # every river that ends at a line is weighed, whatever else it ends at
+                if blocker not in tried and (blocker[0] == "segments" or blocker[1] not in listed):
+                    wanted.setdefault(
+                        blocker, river
+                    )  # two rivers at one line: the first by id has it
         if not wanted:
             break
+        tried.update(wanted)
         for (kind, value), river in sorted(wanted.items()):
+            if kind == "segments":
+                # rule 14: a line with neither a name nor a water body is listed in the segments of the river that ends at it
+                position = next(i for i, r in enumerate(candidates) if r.id == river)
+                candidates[position] = replace(
+                    candidates[position], segments=(*candidates[position].segments, value)
+                )
+                segments_added.setdefault(river, []).append(value)
+                continue
             used = {r.id for r in candidates}
             base = slug(value) if kind == "epa_names" else f"ni-{slug(value)[-30:]}"
             identifier = unique_id(base, used)
@@ -2354,10 +2889,6 @@ def propose_waters(  # noqa: PLR0912, PLR0915 -- one rule from the surveys to th
                 )
             )
             added[identifier] = f"added so that {river} reaches the sea"
-    else:
-        network = build_network(
-            surveys.rivers, candidates, final, settings, (), frozenset(), tolerant=True, graph=graph
-        )
     areas = stretch_areas(network, reader)
     tiers = {
         r.id: tier_of(
@@ -2365,10 +2896,18 @@ def propose_waters(  # noqa: PLR0912, PLR0915 -- one rule from the surveys to th
         )
         for r in candidates
     }
-    chosen = {value for river in candidates for value in (*river.epa_names, *river.rwb_codes)}
+    chosen = {
+        value
+        for river in candidates
+        for value in (*river.epa_names, *river.rwb_codes, *river.segments)
+    }
     near: set[Cell] = set()
-    for seg in surveys.rivers:
-        if (seg.name in chosen) or (seg.water_body in chosen):
+    for seg in paired:
+        if (
+            (seg.name in chosen)
+            or (seg.water_body in chosen)
+            or any(c in chosen for c in seg.codes)
+        ):
             for point in seg.points:
                 cell = grid.crop.cell_containing(point)
                 if cell is not None:
@@ -2391,6 +2930,12 @@ def propose_waters(  # noqa: PLR0912, PLR0915 -- one rule from the surveys to th
     for river in candidates:
         if river.id in added:
             lines += ["", f"# {added[river.id]}"]
+        if river.id in segments_added:
+            count = len(segments_added[river.id])
+            lines += [
+                "",
+                f"# {count} segment{'s' if count != 1 else ''} with no name and no water body added so that it reaches the sea",
+            ]
         lines += [
             "",
             f"# drains about {max((areas[s.id][1] for s in network.stretches if s.river == river.id), default=0.0):.0f} km2"
@@ -2403,10 +2948,16 @@ def propose_waters(  # noqa: PLR0912, PLR0915 -- one rule from the surveys to th
             f"name = {toml_text(river.name)}",
             f"tier = {tiers[river.id]}",
         ]
-        key, values = (
-            ("epa_names", river.epa_names) if river.epa_names else ("rwb_codes", river.rwb_codes)
-        )
-        lines.append(f"source = {{ {key} = [{', '.join(toml_text(v) for v in values)}] }}")
+        parts = [
+            f"{key} = [{', '.join(toml_text(v) for v in values)}]"
+            for key, values in (
+                ("epa_names", river.epa_names),
+                ("rwb_codes", river.rwb_codes),
+                ("segments", river.segments),
+            )
+            if values
+        ]
+        lines.append(f"source = {{ {', '.join(parts)} }}")
     loughs: list[tuple[Outline, str, bool]] = []
     reservoirs = []
     lake_cells = {o.code: cover_cells(o.polygons, grid.crop) for o in surveys.lakes}
@@ -2692,6 +3243,16 @@ LAYERS = (
         EPA_EVIDENCE.format(record="5b3cd1d5-b2d7-4210-a821-0f6231129d58"),
     ),
     Layer(
+        "epa-coastal",
+        "Irish EPA coastal water bodies (EPA:WFD_COASTALWATERBODIES_CYCLE3), the outlines a [[sea]] entry may take",
+        wfs_url("WFD_COASTALWATERBODIES_CYCLE3"),
+        EPA_LICENCE,
+        EPA_ATTRIBUTION,
+        EPA_EVIDENCE.format(record="0b6c2e90-e56f-4cce-927e-57e86e9a60a3").replace(
+            "read 2026-11-16", "read 2026-11-19"
+        ),
+    ),
+    Layer(
         "ni-rivers",
         "DAERA Northern Ireland River Segments (OpenDataNI download riversegmentgml.zip, stream order 4 and above)",
         "https://www.daera-ni.gov.uk/sites/default/files/publications/doe/riversegmentgml.zip",
@@ -2854,7 +3415,9 @@ def load_surveys(source: Path) -> Surveys:
     for key, parse in (("epa-rivers", epa_segments), ("ni-rivers", ni_segments)):
         if (data := read(key)) is not None:
             surveys.rivers += [
-                s for s in parse(data) if s.order >= MIN_ORDER or s.continua in ("L", "T", "C")
+                s
+                for s in parse(data)
+                if s.order >= MIN_ORDER or (s.source == "epa" and s.continua in ("L", "T", "C"))
             ]
     for key, source_name, code, name, area, target in (
         (
@@ -2882,6 +3445,14 @@ def load_surveys(source: Path) -> Surveys:
             surveys.tidal,
         ),
         (
+            "epa-coastal",
+            "epa",
+            "EU_CD",
+            "NAME",
+            lambda p: float(p.get("AreaKm2") or 0),
+            surveys.coastal,
+        ),
+        (
             "ni-tidal",
             "ni",
             "EU_CD",
@@ -2905,6 +3476,10 @@ def load_surveys(source: Path) -> Surveys:
     if "ni-tidal" not in present:
         surveys.missing.append(
             "Northern Ireland's tidal outlines: no layer with a confirmed licence, so its estuaries are unchanged and slice 4 authors them as polygon edits"
+        )
+    if "epa-coastal" not in present:
+        surveys.missing.append(
+            "The coastal outlines: not in the cache, so a [[sea]] entry can open a mouth only by its points"
         )
     surveys.missing.append(
         "Northern Ireland's river names: the survey has none, so every Northern Ireland river is named by hand in waters.toml"

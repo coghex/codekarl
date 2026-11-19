@@ -9,6 +9,7 @@ import importlib
 import importlib.util
 import json
 import math
+import re
 import struct
 import sys
 import tempfile
@@ -18,6 +19,7 @@ import unittest
 import zipfile
 import zlib
 from collections.abc import Callable, Iterable, Sequence
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest import mock
@@ -57,6 +59,9 @@ W = load_module()
 CROP = W.Crop((22436, 14979), 64, 32)
 SEA_FROM = (
     48  # columns from here are sea; a cell is open sea from column 50 (the 5 x 5 box must be sea)
+)
+TERRAIN = W.Terrain(
+    CROP, [[W.SEA if c >= SEA_FROM else W.PASTURE for c in range(64)] for r in range(32)]
 )
 CellList = Iterable[tuple[int, int]]
 # The tool is loaded from its path, so what it returns is dynamically typed in these tests.
@@ -229,6 +234,40 @@ width_factor = 2.2
         )
         self.refused(self.GOOD.replace('mode = "redrawn"', 'mode = "drained"'), "mode")
 
+    def test_a_malformed_source_list_is_refused_naming_the_river_and_the_key(self) -> None:
+        """Review 1, finding 4: a string, a table or a number is not a list of codes."""
+        for key, value in (
+            ("segments", '"AB"'),
+            ("segments", "{ EPA = true }"),
+            ("segments", "5"),
+            ("epa_names", '"Suir"'),
+        ):
+            self.refused(
+                self.GOOD.replace(
+                    'source = { epa_names = ["Suir"] }', f"source = {{ {key} = {value} }}"
+                ),
+                "[[river]] #1 (suir)",
+                key,
+                "list of non-empty strings",
+            )
+        self.refused(
+            self.GOOD.replace(
+                'source = { epa_names = ["Suir"] }', 'source = { segments = ["A", ""] }'
+            ),
+            "segments",
+        )
+        mixed = W.parse_waters(
+            self.GOOD.replace(
+                'source = { epa_names = ["Suir"] }',
+                'source = { epa_names = ["Suir"], rwb_codes = ["UKNI-B1"], segments = [".12204", "36_GBNI1"] }',
+            )
+        )
+        river_def = mixed.rivers[0]
+        self.assertEqual(
+            (river_def.epa_names, river_def.rwb_codes, river_def.segments),
+            (("Suir",), ("UKNI-B1",), (".12204", "36_GBNI1")),
+        )
+
     def test_a_source_matching_no_segment_is_refused_naming_the_river(self) -> None:
         with self.assertRaises(W.WatersError) as raised:
             build([MAIN_1, MAIN_2, TIDAL], [river("ghost", "Nowhere")])
@@ -388,9 +427,9 @@ class Network(unittest.TestCase):
         self.assertEqual(len(network.stretches), 1)
         self.assertEqual(network.stretches[0].id, "main-01")
         self.assertEqual(network.stretches[0].points[0], centre(2, 10))
-        self.assertEqual(
-            network.stretches[0].points[-1], centre(50, 10)
-        )  # by a straight run to the open sea
+        self.assertTrue(
+            TERRAIN.open_sea(network.stretches[0].points[-1])
+        )  # by a run through the sea to open sea
         self.assertEqual(network.stretches[0].ends, "sea")
 
     def test_a_confluence_makes_a_join_whose_printed_points_are_equal(self) -> None:
@@ -433,8 +472,8 @@ class Network(unittest.TestCase):
         self.assertEqual(network.stretches[1].points[-1], network.stretches[2].points[0])
         self.assertEqual(
             network.stretches[2].ends, "sea"
-        )  # by a straight run: the survey line stops short of open sea
-        self.assertEqual(network.straight_sea, ["main-03"])
+        )  # by a run through the sea: the survey line stops short of open sea
+        self.assertEqual(list(network.sea_runs), ["main-03"])
         check_network(self, network)
 
     def test_a_river_that_turns_tidal_is_two_stretches(self) -> None:
@@ -533,25 +572,31 @@ class Network(unittest.TestCase):
         self.assertEqual(len(network.stretches), 2)  # river, tidal: no gap and no confluence
         self.assertEqual([s.kind for s in network.stretches], ["river", "tidal"])
 
-    def test_a_river_line_that_stops_short_of_the_sea_runs_straight_to_it(self) -> None:
-        """A survey line can end at the head of its estuary, some cells from the sea: that end is the mouth."""
-        network = build([segment("r", [(2, 10), (36, 10)], "Main")], [river("main", "Main")])
-        self.assertEqual(network.stretches[0].points[-1], centre(50, 10))
-        self.assertEqual(network.straight_sea, ["main-01"])
-        self.assertEqual(network.stretches[0].points[0], centre(2, 10))  # still running downstream
+    def test_a_river_line_that_stops_short_of_the_sea_is_refused_where_no_run_can_reach_it(
+        self,
+    ) -> None:
+        """Rule 5: a line that ends 12 cells from the sea is never sent over land; the refusal names the river, the point and the
+        distance."""
+        with self.assertRaises(W.WatersError) as raised:
+            build([segment("r", [(2, 10), (36, 10)], "Main")], [river("main", "Main")])
+        message = str(raised.exception)
+        self.assertIn("river main", message)
+        self.assertIn(f"{centre(36, 10)[0]:.5f}, {centre(36, 10)[1]:.5f}", message)
+        self.assertIn("12 cells from the sea", message)
 
-    def test_the_end_of_a_tidal_line_is_a_mouth_and_an_unnamed_irish_line_runs_on(self) -> None:
-        """A tidal line that ends in a harbour the map has as land is a mouth; unnamed lines the EPA leaves unnamed are adopted."""
+    def test_a_tidal_line_that_ends_short_of_open_sea_takes_the_run_of_rule_4(self) -> None:
+        """A tidal line is not a mouth for being tidal: the run through the sea is what takes it to open sea."""
         pieces = [
             segment("a", [(2, 10), (20, 10)], "Main"),
             segment(
                 "b", [(20, 10), (30, 10)], None, order=5
             ),  # no name, not through a lough: the river runs on
-            segment("c", [(30, 10), (34, 10)], None, continua="T"),
+            segment("c", [(30, 10), (46, 10)], None, continua="T"),
         ]
         network = build(pieces, [river("main", "Main")])
         self.assertEqual([s.kind for s in network.stretches], ["river", "tidal"])
-        self.assertEqual(network.stretches[-1].points[-1], centre(50, 10))
+        self.assertTrue(TERRAIN.open_sea(network.stretches[-1].points[-1]))
+        self.assertEqual(list(network.sea_runs), ["main-02"])
         check_network(self, network)
 
     def test_ids_do_not_depend_on_the_input_order(self) -> None:
@@ -561,12 +606,13 @@ class Network(unittest.TestCase):
                 signature(build(pieces, [river("trib", "Trib"), river("main", "Main")])), first
             )
 
-    def test_the_sea_end_by_a_straight_run(self) -> None:
+    def test_the_sea_end_by_a_run_through_the_sea(self) -> None:
         network = build([segment("r", [(2, 10), (46, 10)], "Main")], [river("main", "Main")])
         stretch = network.stretches[0]
-        self.assertEqual(stretch.points[-1], centre(50, 10))
-        self.assertEqual(network.straight_sea, ["main-01"])
-        self.assertIn("straight", stretch.note)
+        self.assertTrue(TERRAIN.open_sea(stretch.points[-1]))
+        self.assertEqual(list(network.sea_runs), ["main-01"])
+        self.assertIn("through sea cells", stretch.note)
+        self.assertEqual(stretch.survey_end, centre(46, 10))
         check_network(self, network)
 
     def test_a_river_that_ends_inland_is_refused(self) -> None:
@@ -1697,7 +1743,15 @@ class Surveys(unittest.TestCase):
         used = [layer for layer in W.LAYERS if layer.confirmed]
         self.assertEqual(
             {layer.key for layer in used},
-            {"epa-rivers", "epa-lakes", "epa-tidal", "ni-rivers", "ni-lakes", "ni-tidal"},
+            {
+                "epa-rivers",
+                "epa-lakes",
+                "epa-tidal",
+                "epa-coastal",
+                "ni-rivers",
+                "ni-lakes",
+                "ni-tidal",
+            },
         )
         for layer in used:
             self.assertTrue(
@@ -1706,7 +1760,7 @@ class Surveys(unittest.TestCase):
                 and layer.licence.startswith(("Creative Commons", "UK Open Government")),
                 layer.key,
             )
-            self.assertIn("2026-11-16", layer.evidence, layer.key)
+            self.assertRegex(layer.evidence, "read 2026-11-1[69]", layer.key)
         by_key = {layer.key: layer for layer in W.LAYERS}
         for key in (
             "ni-rivers",
@@ -1756,7 +1810,15 @@ class Surveys(unittest.TestCase):
                 manifest = W.fetch(source, force=False, today="2026-11-16")
                 self.assertEqual(
                     sorted(entry["key"] for entry in manifest["layers"]),
-                    ["epa-lakes", "epa-rivers", "epa-tidal", "ni-lakes", "ni-rivers", "ni-tidal"],
+                    [
+                        "epa-coastal",
+                        "epa-lakes",
+                        "epa-rivers",
+                        "epa-tidal",
+                        "ni-lakes",
+                        "ni-rivers",
+                        "ni-tidal",
+                    ],
                 )
                 self.assertEqual([entry["key"] for entry in manifest["left_out"]], ["x-extra"])
                 self.assertIn("no licence text found", manifest["left_out"][0]["reason"])
@@ -1783,7 +1845,7 @@ class Surveys(unittest.TestCase):
             self.assertEqual([o.name for o in surveys.tidal if o.source == "ni"], ["Bann Estuary"])
             self.assertTrue(any("river names" in line for line in surveys.missing))
             self.assertFalse(any("tidal outlines" in line for line in surveys.missing))
-            self.assertEqual(len(surveys.layers), 6)
+            self.assertEqual(len(surveys.layers), 7)
 
     def test_irish_grid_agrees_with_the_epas_own_reprojection_to_a_centimetre(self) -> None:
         for (easting, northing), (latitude, longitude) in (
@@ -1848,6 +1910,888 @@ class Drainage(unittest.TestCase):
         self.assertAlmostEqual(flow[3][9], 10 * flow[3][0])  # ten cells of the row drain through it
         self.assertGreater(flow[3][7], flow[3][4])  # the lough's two cells pass their flow on
         self.assertAlmostEqual(flow[3][10], flow[3][9])  # the sea only receives
+
+
+# ---- CK-354: the sea end and the two surveys -------------------------------------------------------------------------------
+
+
+INLET_SEA_FROM = 52  # the inlet's open sea starts here: a cell is open from column 54
+FAR_SEA_FROM = 60
+
+
+def inlet_rows() -> list[list[int]]:
+    """Land with open sea from column 54 on and a one-cell-wide inlet with two bends: (52, 10) west to (49, 10), south to (49, 12),
+    west to (47, 12)."""
+    rows = [[W.SEA if c >= INLET_SEA_FROM else W.PASTURE for c in range(64)] for _ in range(32)]
+    for column, row in ((51, 10), (50, 10), (49, 10), (49, 11), (49, 12), (48, 12), (47, 12)):
+        rows[row][column] = W.SEA
+    return rows
+
+
+def cells_walked(a: tuple[float, float], b: tuple[float, float]) -> list[tuple[int, int]]:
+    """The cells a straight leg passes through, in order, sampled finely in cell units."""
+    (x_0, y_0), (x_1, y_1) = CROP.cell_of(*a), CROP.cell_of(*b)
+    cells: list[tuple[int, int]] = []
+    for step in range(401):
+        share = step / 400
+        cell = (math.floor(x_0 + (x_1 - x_0) * share), math.floor(y_0 + (y_1 - y_0) * share))
+        if not cells or cells[-1] != cell:
+            cells.append(cell)
+    return cells
+
+
+def written_stretches(network: Dyn, river_def: Dyn) -> list[dict[str, Any]]:
+    """The stretches of the built file, parsed back: what is written, after thinning and rounding."""
+    text = W.rivers_toml(
+        W.Waters(rivers=(river_def,)), network, {s.id: (3.0, 4.0) for s in network.stretches}, "x"
+    )
+    stretches: list[dict[str, Any]] = tomllib.loads(text)["stretch"]
+    return stretches
+
+
+def at(column: float, row: float) -> tuple[float, float]:
+    point: tuple[float, float] = W.round_point(CROP.latlon_at(column, row))
+    return point
+
+
+class SeaEnd(unittest.TestCase):
+    """CK-354 rules 1 to 6: where the sea is, the one mouth of a piece, the run through the sea, the refusal and the last reach."""
+
+    def test_the_dead_end_of_a_tidal_side_line_is_not_a_mouth(self) -> None:
+        channel_1 = segment("c1", [(30, 10), (35, 10)], None, continua="T")
+        channel_2 = segment("c2", [(35, 10), (55, 10)], None, continua="T")
+        side = segment("side", [(35, 4), (35, 10)], None, continua="T")
+        pieces = [segment("m", [(2, 10), (30, 10)], "Main"), channel_1, channel_2, side]
+        network = build(pieces, [river("main", "Main")])
+        check_network(self, network)
+        self.assertEqual([s.ends for s in network.stretches], ["main-02", "sea"])
+        self.assertEqual(
+            sum(1 for s in network.stretches if s.ends == "sea"), 1
+        )  # the built file has one sea end
+        self.assertEqual(
+            {c for s in network.stretches for c in s.codes} & {"side"}, set()
+        )  # unlisted, the side line is not built
+        graph = W.prepare_graph(pieces, W.Terrain(CROP, terrain_rows()))
+        side_edge = next(e for e in graph.edges if e.seg.code == "side")
+        self.assertEqual(
+            (side_edge.start, side_edge.end), (centre(35, 4), centre(35, 10))
+        )  # it runs into its channel
+
+    def test_a_listed_side_line_is_a_stretch_that_ends_at_the_channel(self) -> None:
+        pieces = [
+            segment("m", [(2, 10), (30, 10)], "Main"),
+            segment("c1", [(30, 10), (35, 10)], None, continua="T"),
+            segment("c2", [(35, 10), (55, 10)], None, continua="T"),
+            segment("side", [(35, 4), (35, 10)], "Side", continua="T"),
+        ]
+        network = build(pieces, [river("main", "Main"), river("side", "Side")])
+        check_network(self, network)
+        by_id = {s.id: s for s in network.stretches}
+        channel = next(s for s in network.stretches if s.points[0] == centre(35, 10))
+        self.assertEqual(by_id["side-01"].ends, channel.id)
+        self.assertEqual(channel.ends, "sea")
+
+    def test_a_piece_that_reaches_no_open_sea_takes_the_loose_end_with_the_shorter_way(
+        self,
+    ) -> None:
+        # (47, 12) is one cell from the sea and (46, 5) two: the way from (47, 12) is shorter
+        pieces = [
+            segment("s1", [(47, 12), (30, 8)], "Main"),
+            segment("s2", [(30, 8), (46, 5)], "Main"),
+        ]
+        graph = W.prepare_graph(pieces, W.Terrain(CROP, terrain_rows()))
+        self.assertEqual(graph.distance[centre(47, 12)], 0.0)
+        self.assertGreater(graph.distance[centre(46, 5)], 0.0)
+
+    def test_a_piece_with_no_sea_in_reach_takes_the_loose_end_nearer_the_sea(self) -> None:
+        rows = terrain_rows(lambda c, r: c >= FAR_SEA_FROM)
+        pieces = [
+            segment("s1", [(10, 5), (20, 8)], "Main"),
+            segment("s2", [(20, 8), (30, 20)], "Main"),
+        ]
+        graph = W.prepare_graph(pieces, W.Terrain(CROP, rows))
+        self.assertEqual(
+            graph.distance[centre(30, 20)], 0.0
+        )  # 30 cells from the sea; (10, 5) is 50
+        self.assertGreater(graph.distance[centre(10, 5)], 0.0)
+
+    def test_a_line_that_ends_in_an_inlet_runs_round_the_bends_to_open_sea(self) -> None:
+        terrain = W.Terrain(CROP, inlet_rows())
+        pieces = [segment("r", [(20, 12), (47, 12)], "Main")]
+        network = W.build_network(pieces, [river("main", "Main")], terrain)
+        stretch = network.stretches[0]
+        self.assertEqual(stretch.survey_end, centre(47, 12))
+        self.assertEqual(stretch.run, (centre(49, 12), centre(49, 10), centre(54, 10)))
+        self.assertEqual(stretch.ends, "sea")
+        self.assertTrue(terrain.open_sea(stretch.points[-1]))
+
+    def written_legs_of_the_run(self, network: Dyn, river_def: Dyn) -> list[tuple[Dyn, Dyn]]:
+        [stretch] = written_stretches(network, river_def)
+        points = [tuple(p) for p in stretch["points"]]
+        end = network.stretches[0].survey_end
+        index = next(i for i, p in enumerate(points) if p == end)
+        return list(zip(points[index:], points[index + 1 :], strict=False))
+
+    def test_every_leg_of_a_run_in_the_built_file_walks_through_sea_cells(self) -> None:
+        """Review 1, finding 4: the check is on what is written, with a simplification that would remove the bend."""
+        terrain = W.Terrain(CROP, inlet_rows())
+        pieces = [segment("r", [(20, 12), (47, 12)], "Main")]
+        for tolerance in (8.0, 100_000.0):
+            network = W.build_network(
+                pieces,
+                [river("main", "Main")],
+                terrain,
+                W.Settings(simplify_m=tolerance),
+            )
+            legs = self.written_legs_of_the_run(network, river("main", "Main"))
+            self.assertGreaterEqual(
+                len(legs), 3, tolerance
+            )  # both bends and the open-sea end are still there
+            for start, finish in legs:
+                for cell in cells_walked(start, finish):
+                    self.assertTrue(terrain.is_sea(cell), (tolerance, start, finish, cell))
+        written = [tuple(p) for p in written_stretches(network, river("main", "Main"))[0]["points"]]
+        self.assertIn(centre(47, 12), written)  # the last survey point is kept too
+
+    def test_a_line_that_ends_one_cell_from_the_sea_takes_one_step_then_the_run(self) -> None:
+        terrain = W.Terrain(CROP, terrain_rows())
+        network = W.build_network(
+            [segment("r", [(2, 10), (47, 10)], "Main")], [river("main", "Main")], terrain
+        )
+        stretch = network.stretches[0]
+        self.assertEqual(stretch.survey_end, centre(47, 10))
+        legs = self.written_legs_of_the_run(network, river("main", "Main"))
+        first_leg, *rest = legs
+        self.assertEqual(first_leg[1], stretch.run[0])
+        self.assertTrue(terrain.is_sea(CROP.cell_containing(first_leg[1])))  # the step lands in sea
+        self.assertTrue(rest)
+        for start, finish in rest:  # the step alone may cross land
+            for cell in cells_walked(start, finish):
+                self.assertTrue(terrain.is_sea(cell), (start, finish, cell))
+        self.assertTrue(terrain.open_sea(stretch.points[-1]))
+
+    def test_a_line_five_cells_from_the_sea_or_in_a_pool_is_refused_and_nothing_is_written(
+        self,
+    ) -> None:
+        with self.assertRaises(W.WatersError) as raised:
+            build([segment("r", [(2, 10), (43, 10)], "Main")], [river("main", "Main")])
+        message = str(raised.exception)
+        for words in (
+            "river main",
+            f"{centre(43, 10)[0]:.5f}, {centre(43, 10)[1]:.5f}",
+            "5 cells from the sea",
+        ):
+            self.assertIn(words, message)
+        rows = terrain_rows()
+        rows[10][20] = rows[10][21] = W.SEA  # a pool: sea that no way through sea takes to open sea
+        with self.assertRaises(W.WatersError) as raised:
+            build([segment("r", [(2, 10), (20, 10)], "Main")], [river("main", "Main")], rows)
+        for words in ("river main", f"{centre(20, 10)[0]:.5f}, {centre(20, 10)[1]:.5f}", "pool"):
+            self.assertIn(words, str(raised.exception))
+
+    def test_a_stretch_whose_onward_line_was_dropped_beyond_open_sea_takes_the_run(self) -> None:
+        """Rule 5: it is not reported as ending at a line that is not in the list. The graph is made by hand: a line that crosses
+        open sea and ends on an island, the line beyond it (dropped), and a side river that ends at the island."""
+        rows = terrain_rows()
+        for column in range(56, 61):
+            for row in range(8, 13):
+                rows[row][column] = W.PASTURE
+        terrain = W.Terrain(CROP, rows)
+        island, beyond = centre(58, 10), centre(60, 10)
+        through = segment("e1", [(40, 10), (52, 10), (58, 10)], "Main")
+        onward = segment("e2", [(58, 10), (60, 10)], "Main")
+        side = segment("s", [(58, 14), (58, 10)], "Side")
+        edges = [
+            W.Edge(through, None, "river", list(through.points)),
+            W.Edge(onward, None, "river", [island, beyond]),
+            W.Edge(side, None, "river", list(side.points)),
+        ]
+        graph = W.Graph({}, edges, frozenset({"e1", "e2", "s"}))
+        network = W.build_network(
+            [], [river("main", "Main"), river("side", "Side")], terrain, graph=graph
+        )
+        self.assertEqual(list(network.sea_runs), ["side-01"])
+        self.assertTrue(terrain.open_sea(network.stretches[-1].points[-1]))
+
+    def test_a_course_may_be_a_rivers_last_reach(self) -> None:
+        """Rule 6: the survey segments it replaces met the river at one point only: it starts there and its far end is free."""
+        pieces = [
+            segment("m1", [(2, 10), (20, 10)], "Main"),
+            segment("m2", [(20, 10), (30, 10)], "Main"),
+        ]
+        course = W.Correction(
+            "last-reach",
+            "drawn by hand",
+            "medium",
+            "main",
+            course=(centre(20, 10), at(30.5, 11.5), centre(46, 11)),
+            replaces=("m2",),
+        )
+        network = build(pieces, [river("main", "Main")], corrections=(course,))
+        check_network(self, network)
+        points = [p for stretch in network.stretches for p in stretch.points]
+        self.assertEqual(points[0], centre(2, 10))
+        self.assertIn(centre(46, 11), points)  # the far end of the course is free
+        self.assertEqual(network.stretches[-1].ends, "sea")  # rule 4's run follows from it
+
+    def test_a_course_that_meets_the_river_nowhere_is_still_refused(self) -> None:
+        pieces = [
+            segment("m1", [(2, 10), (20, 10)], "Main"),
+            segment("m2", [(20, 10), (30, 10)], "Main"),
+        ]
+        course = W.Correction(
+            "far", "x", "low", "main", course=(centre(2, 30), centre(46, 11)), replaces=("m2",)
+        )
+        with self.assertRaises(W.WatersError):
+            build(pieces, [river("main", "Main")], corrections=(course,))
+
+    def test_the_same_inputs_give_the_same_bytes(self) -> None:
+        terrain = W.Terrain(CROP, inlet_rows())
+        pieces = [
+            segment("r", [(20, 12), (47, 12)], "Main"),
+            segment("t", [(20, 20), (20, 12)], "Branch"),
+        ]
+        rivers = [river("main", "Main"), river("branch", "Branch")]
+        first = W.build_network(pieces, rivers, terrain)
+        second = W.build_network(list(reversed(pieces)), list(reversed(rivers)), terrain)
+        self.assertEqual(signature(first), signature(second))
+        self.assertEqual(first.sea_runs, second.sea_runs)
+        self.assertEqual([s.run for s in first.stretches], [s.run for s in second.stretches])
+        self.assertTrue(first.sea_runs)
+
+
+NI_LINE = [(2, 10), (46, 10)]
+
+
+class TwoSurveys(unittest.TestCase):
+    """CK-354 rules 7 to 9: one line that both surveys have; `segments`; the order of claims; DAERA's marks."""
+
+    def pair(self) -> list[Dyn]:
+        return [
+            segment("E1", NI_LINE, "Main", continua="L", lake="IE_X_1"),
+            segment("UKNI-B1.5", NI_LINE, None, source="ni", body="UKNI-B1"),
+        ]
+
+    def test_a_line_in_both_surveys_is_one_line_with_both_identities(self) -> None:
+        merged = W._cleaned(self.pair())
+        self.assertEqual(len(merged), 1)
+        [line] = merged
+        self.assertEqual(
+            (
+                line.code,
+                line.twin,
+                line.source,
+                line.name,
+                line.water_body,
+                line.continua,
+                line.lake_code,
+            ),
+            ("UKNI-B1.5", "E1", "both", "Main", "UKNI-B1", "L", "IE_X_1"),
+        )
+        self.assertEqual(line.codes, ("UKNI-B1.5", "E1"))
+
+    def test_a_river_listed_by_the_name_and_one_by_the_water_body_build_the_line_once(self) -> None:
+        for definition in (
+            river("main", "Main"),
+            W.RiverDef("ni", "Ni", 3, rwb_codes=("UKNI-B1",)),
+        ):
+            network = build(self.pair(), [definition])
+            self.assertEqual(len(network.stretches), 1, definition.id)
+            self.assertEqual(W.courses_built_twice(network), [])
+
+    def test_two_lines_between_the_same_points_with_different_lengths_are_both_kept(self) -> None:
+        detour = W.Seg(
+            "UKNI-B1.6", "ni", 5, (centre(2, 10), at(24.5, 14.5), centre(46, 10)), None, "UKNI-B1"
+        )
+        merged = W._cleaned([segment("E1", NI_LINE, "Main"), detour])
+        self.assertEqual(sorted(s.code for s in merged), ["E1", "UKNI-B1.6"])
+        self.assertTrue(all(s.twin is None for s in merged))
+
+    def test_of_two_irish_lines_that_fit_one_daera_line_the_closer_in_length_is_paired(
+        self,
+    ) -> None:
+        near = W.Seg("E2", "epa", 5, (centre(2, 10), at(24.5, 10.9), centre(46, 10)), "Main")
+        merged = W._cleaned(
+            [near, segment("E1", NI_LINE, "Main"), segment("N1", NI_LINE, source="ni", body="B")]
+        )
+        self.assertEqual(sorted((s.code, s.twin) for s in merged), [("E2", None), ("N1", "E1")])
+
+    def test_a_line_named_by_one_river_and_in_the_water_body_of_another_goes_to_the_name(
+        self,
+    ) -> None:
+        pieces = [
+            segment("E1", [(2, 10), (25, 10)], "Main"),
+            segment("N1", [(2, 10), (25, 10)], None, source="ni", body="UKNI-B1"),
+            segment("N2", [(25, 10), (46, 10)], None, source="ni", body="UKNI-B1"),
+        ]
+        rivers = [river("main", "Main"), W.RiverDef("ni", "Ni", 3, rwb_codes=("UKNI-B1",))]
+        network = build(pieces, rivers)  # nothing is refused
+        check_network(self, network)
+        self.assertEqual({s.river for s in network.stretches}, {"main", "ni"})
+        self.assertEqual(
+            [(c.seg.code, c.river, c.other, c.how) for c in network.contests],
+            [("N1", "main", "ni", "name")],
+        )
+        report = "\n".join(W._contests_report(network))
+        self.assertIn("river ni: 1 lines", report)
+        self.assertIn("N1 / E1", report)
+        self.assertIn("river main has it by its name", report)
+
+    def test_the_irish_code_of_a_merged_line_claims_omits_and_replaces_it(self) -> None:
+        lead = segment("L0", [(2, 10), (25, 10)], "Main")
+        both = [
+            segment("E1", [(25, 10), (46, 10)], "Main"),
+            segment("UKNI-B1.5", [(25, 10), (46, 10)], None, source="ni", body="UKNI-B1"),
+        ]
+        claimed = build([lead, *both], [W.RiverDef("r", "R", 3, segments=("E1", "L0"))])
+        self.assertEqual(len(claimed.stretches), 1)
+        for code in ("E1", "UKNI-B1.5"):
+            omit = W.Correction("o", "x", "high", "main", omit=(code,))
+            self.assertEqual([s.code for s in W._prepare([lead, *both], [omit])], ["L0"], code)
+            course = W.Correction(
+                "c", "x", "high", "main", course=(centre(25, 10), centre(46, 10)), replaces=(code,)
+            )
+            result = W._prepare([lead, *both], [course])
+            self.assertEqual([s.code for s in result], ["L0", "course:c"], code)
+
+    def test_a_line_in_the_segments_of_two_rivers_by_its_two_codes_is_refused(self) -> None:
+        pieces = [
+            segment("E1", NI_LINE, "Main"),
+            segment("UKNI-B1.5", NI_LINE, None, source="ni", body="UKNI-B1"),
+        ]
+        rivers = [
+            W.RiverDef("ra", "Ra", 3, segments=("E1",)),
+            W.RiverDef("rb", "Rb", 3, segments=("UKNI-B1.5",)),
+        ]
+        with self.assertRaises(W.WatersError) as raised:
+            build(pieces, rivers)
+        for words in ("E1", "UKNI-B1.5", "ra", "rb"):
+            self.assertIn(words, str(raised.exception))
+        with self.assertRaises(W.WatersError) as raised:
+            W.parse_waters(
+                '[[river]]\nid = "a"\nname = "A"\ntier = 3\nsource = { segments = ["u"] }\n'
+                '[[river]]\nid = "b"\nname = "B"\ntier = 3\nsource = { segments = ["u"] }\n'
+            )
+        self.assertIn("segment 'u' is in the segments of rivers a and b", str(raised.exception))
+
+    def test_segments_win_over_a_name_and_a_water_body(self) -> None:
+        other_1 = segment("E2", [(2, 12), (46, 12)], "Bn")
+        other_2 = segment("N9", [(2, 14), (46, 14)], None, source="ni", body="UKNI-C1")
+        rivers = [
+            W.RiverDef("a", "A", 3, segments=("E1",)),
+            W.RiverDef("b", "B", 3, epa_names=("Main", "Bn")),
+            W.RiverDef("c", "C", 3, rwb_codes=("UKNI-B1", "UKNI-C1")),
+        ]
+        network = build([*self.pair(), other_1, other_2], rivers)
+        self.assertEqual({s.river for s in network.stretches}, {"a", "b", "c"})
+        self.assertEqual(
+            sorted((c.other, c.river, c.how) for c in network.contests),
+            [("b", "a", "segments"), ("c", "a", "segments")],
+        )
+
+    def test_a_line_with_no_name_and_no_water_body_is_listed_by_its_segment_code(self) -> None:
+        pieces = [
+            segment("a", [(2, 10), (25, 10)], "Main"),
+            segment("u", [(25, 10), (46, 10)], None, source="ni"),
+        ]
+        network = build(pieces, [W.RiverDef("main", "Main", 3, ("Main",), (), ("u",))])
+        check_network(self, network)
+        self.assertEqual(network.stretches[0].codes, ("a", "u"))
+
+    def test_an_unknown_segment_code_is_refused_and_an_unlisted_line_is_named_by_its_code(
+        self,
+    ) -> None:
+        pieces = [
+            segment("a", [(2, 10), (25, 10)], "Main"),
+            segment("u", [(25, 10), (46, 10)], None, source="ni"),
+        ]
+        with self.assertRaises(W.WatersError) as raised:
+            build(pieces, [W.RiverDef("main", "Main", 3, ("Main",), (), ("nope",))])
+        self.assertIn("no segment 'nope'", str(raised.exception))
+        with self.assertRaises(W.WatersError) as raised:
+            build(pieces, [river("main", "Main")])
+        message = str(raised.exception)
+        self.assertIn("segment u at", message)
+        self.assertIn(f"{centre(25, 10)[0]:.5f}, {centre(25, 10)[1]:.5f}", message)
+
+    def test_daeras_lough_and_tidal_marks_are_read(self) -> None:
+        def feature(code: str, kind: str, cells: list[tuple[int, int]]) -> Dyn:
+            return {
+                "properties": {
+                    "OBJECTID": len(cells),
+                    "RWB_CD": code,
+                    "STRAHLER": 5,
+                    "SEGMENT_TYPE": kind,
+                },
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[centre(c, r)[1], centre(c, r)[0]] for c, r in cells],
+                },
+            }
+
+        read = W.ni_segments(
+            {
+                "features": [
+                    feature("UKNI-B1", "Y", [(2, 10), (8, 10)]),
+                    feature("UKNI-B1", "L", [(8, 10), (14, 10)]),
+                    feature("", "T", [(14, 10), (46, 10)]),
+                ]
+            }
+        )
+        self.assertEqual([s.continua for s in read], [None, "L", "T"])
+        self.assertEqual([s.water_body for s in read], ["UKNI-B1", "UKNI-B1", None])
+        rows = terrain_rows(lakes=[(10, 10), (11, 10)])
+        network = build(
+            read,
+            [W.RiverDef("ni", "Ni", 3, rwb_codes=("UKNI-B1",), segments=(read[2].code,))],
+            rows,
+        )
+        self.assertEqual([s.kind for s in network.stretches], ["river", "lough", "tidal"])
+
+
+class ProposalClosure(unittest.TestCase):
+    """CK-354 rule 14: `propose` on lines of rule 7, and closing over a line that has only a segment code."""
+
+    def grid(self) -> Dyn:
+        return W.MapGrid(CROP, terrain_rows(), [[10.0] * 64 for _ in range(32)])
+
+    @staticmethod
+    def named(text: str) -> str:
+        counter = iter(range(1, 100))
+        return re.sub(r'name = ""', lambda _: f'name = "River {next(counter)}"', text)
+
+    def propose(self, rivers: list[Dyn]) -> tuple[str, Dyn]:
+        surveys = W.Surveys(rivers=rivers)
+        text = W.propose_waters(surveys, self.grid(), area_source=lambda point, reach: 50.0)
+        return text, surveys
+
+    def built(self, text: str, surveys: Dyn) -> Dyn:
+        # the owner's [[keep]] points lie outside the small crop of these tests
+        text = re.sub(r"\n\[\[keep\]\]\n(?:[^\n\[][^\n]*\n)+", "\n", text)
+        return W.build_waters(
+            W.parse_waters(self.named(text)), surveys, self.grid(), area_source=lambda p, r: 50.0
+        )
+
+    def test_a_line_in_both_surveys_counts_for_its_irish_name_and_a_body_left_with_no_line_is_not_proposed(
+        self,
+    ) -> None:
+        rivers = [
+            segment("E1", NI_LINE, "Alpha", order=5),
+            segment("N1", NI_LINE, None, source="ni", order=5, body="UKNI-B9"),
+            segment("E2", [(2, 20), (8, 20)], "Tiny", order=5),
+            segment("N2", [(2, 20), (8, 20)], None, source="ni", order=5, body="UKNI-B8"),
+            segment("E3", [(8, 20), (46, 20)], "Tiny", order=5),
+        ]
+        rivers[2:] = [
+            segment("E2", [(2, 20), (8, 20)], "Tiny", order=5),
+            segment("N2", [(2, 20), (8, 20)], None, source="ni", order=5, body="UKNI-B8"),
+            segment("N3", [(8, 20), (46, 20)], None, source="ni", order=5, body="UKNI-B8"),
+        ]
+        text, surveys = self.propose(rivers)
+        document = tomllib.loads(text)
+        sources = [r["source"] for r in document["river"]]
+        self.assertEqual(
+            sources, [{"epa_names": ["Alpha"]}, {"rwb_codes": ["UKNI-B8"]}]
+        )  # no UKNI-B9
+        result = self.built(text, surveys)  # nothing is refused
+        self.assertEqual(
+            {s.river for s in result.network.stretches}, {r["id"] for r in document["river"]}
+        )
+        alpha = next(r["id"] for r in document["river"] if r["name"] == "Alpha")
+        codes = {c for s in result.network.stretches if s.river == alpha for c in s.codes}
+        self.assertTrue(codes & {"UKNI-B1.5", "N1"})
+
+    def tidal_tail(self, code: str, cells: list[tuple[int, int]]) -> Dyn:
+        return segment(code, cells, None, source="ni", continua="T")
+
+    def test_a_reach_that_ends_at_a_tidal_line_with_only_a_segment_code_is_closed_over(
+        self,
+    ) -> None:
+        rivers = [
+            segment("UKNI-B1.1", [(2, 10), (25, 10)], None, source="ni", order=5, body="UKNI-B1"),
+            self.tidal_tail(".7", [(25, 10), (55, 10)]),
+        ]
+        text, surveys = self.propose(rivers)
+        document = tomllib.loads(text)
+        [entry] = document["river"]
+        self.assertEqual(entry["source"], {"rwb_codes": ["UKNI-B1"], "segments": [".7"]})
+        self.assertIn(
+            "1 segment with no name and no water body added so that it reaches the sea", text
+        )
+        result = self.built(text, surveys)
+        self.assertEqual(result.network.stretches[-1].ends, "sea")
+        self.assertNotIn("not built", text)
+
+    def test_two_such_lines_one_after_the_other_are_both_added(self) -> None:
+        rivers = [
+            segment("UKNI-B1.1", [(2, 10), (25, 10)], None, source="ni", order=5, body="UKNI-B1"),
+            self.tidal_tail(".7", [(25, 10), (35, 10)]),
+            self.tidal_tail(".8", [(35, 10), (55, 10)]),
+        ]
+        text, surveys = self.propose(rivers)
+        [entry] = tomllib.loads(text)["river"]
+        self.assertEqual(entry["source"]["segments"], [".7", ".8"])
+        self.assertEqual(self.built(text, surveys).network.stretches[-1].ends, "sea")
+
+    def test_of_two_rivers_ending_at_the_same_such_line_the_first_by_id_has_it(self) -> None:
+        rivers = [
+            segment("UKNI-A.1", [(2, 10), (25, 10)], None, source="ni", order=5, body="UKNI-A"),
+            segment("UKNI-B.1", [(2, 14), (25, 10)], None, source="ni", order=5, body="UKNI-B"),
+            self.tidal_tail(".7", [(25, 10), (55, 10)]),
+        ]
+        text, surveys = self.propose(rivers)
+        document = tomllib.loads(text)
+        by_id = {r["id"]: r for r in document["river"]}
+        self.assertEqual(by_id["ni-ukni-a"]["source"]["segments"], [".7"])
+        self.assertNotIn("segments", by_id["ni-ukni-b"]["source"])
+        result = self.built(text, surveys)
+        ends = {s.river: s.ends for s in result.network.stretches if s.river == "ni-ukni-b"}
+        self.assertTrue(ends["ni-ukni-b"].startswith("ni-ukni-a"))  # the other ends at that river
+
+    def test_a_merged_line_keeps_each_surveys_own_stream_order_for_eligibility(self) -> None:
+        """Review 1, finding 1: a shared 25 km reach with order 5 in one survey and 4 in the other qualifies only the side at 5."""
+        for epa_order, ni_order, expected in (
+            (5, 4, [{"epa_names": ["Alpha"]}]),
+            (4, 5, [{"rwb_codes": ["UKNI-B9"]}]),
+        ):
+            rivers = [
+                segment("E1", NI_LINE, "Alpha", order=epa_order),
+                segment("N1", NI_LINE, None, source="ni", order=ni_order, body="UKNI-B9"),
+            ]
+            candidates = W.candidate_rivers(W._cleaned(rivers))
+            self.assertEqual(
+                [
+                    {
+                        k: list(v)
+                        for k, v in (("epa_names", r.epa_names), ("rwb_codes", r.rwb_codes))
+                        if v
+                    }
+                    for r in candidates
+                ],
+                expected,
+                (epa_order, ni_order),
+            )
+            text, _ = self.propose(rivers)
+            self.assertEqual([r["source"] for r in tomllib.loads(text)["river"]], expected)
+
+    def test_a_shared_line_goes_to_the_first_id_whatever_else_a_river_ends_at(self) -> None:
+        """Review 1, finding 2: ni-a also ends at `.only-a`, and `.shared` is still ni-a's, the first id."""
+        rivers = [
+            segment("UKNI-A.1", [(2, 10), (25, 10)], None, source="ni", order=5, body="UKNI-A"),
+            segment("UKNI-A.2", [(2, 16), (25, 16)], None, source="ni", order=5, body="UKNI-A"),
+            segment("UKNI-B.1", [(2, 6), (25, 10)], None, source="ni", order=5, body="UKNI-B"),
+            self.tidal_tail(".shared", [(25, 10), (55, 10)]),
+            self.tidal_tail(".only-a", [(25, 16), (55, 16)]),
+        ]
+        text, surveys = self.propose(rivers)
+        by_id = {r["id"]: r for r in tomllib.loads(text)["river"]}
+        self.assertEqual(sorted(by_id["ni-ukni-a"]["source"]["segments"]), [".only-a", ".shared"])
+        self.assertNotIn("segments", by_id["ni-ukni-b"]["source"])
+        result = self.built(text, surveys)
+        self.assertTrue(
+            next(s for s in result.network.stretches if s.river == "ni-ukni-b").ends.startswith(
+                "ni-ukni-a"
+            )
+        )
+
+
+class SeaEntries(unittest.TestCase):
+    """CK-354 rules 10, 11 and 13: `[[sea]]`."""
+
+    @staticmethod
+    def ring(c0: float, r0: float, c1: float, r1: float) -> list[list[tuple[float, float]]]:
+        return [[CROP.latlon_at(c, r) for c, r in ((c0, r0), (c1, r0), (c1, r1), (c0, r1))]]
+
+    def surveys(self) -> Dyn:
+        return W.Surveys(
+            tidal=[W.Outline("T", "Behind Bay", 1.0, (self.ring(40, 5, 44, 6),), "epa")],
+            coastal=[W.Outline("C1", "Coast", 1.0, (self.ring(44, 5, 48, 6),), "epa")],
+        )
+
+    def build(self, text: str, rows: list[list[int]] | None = None, locations: Dyn = None) -> Dyn:
+        grid = W.MapGrid(CROP, rows or terrain_rows(), [[10.0] * 64 for _ in range(32)])
+        return W.build_waters(W.parse_waters(text), self.surveys(), grid, locations)
+
+    def test_an_outline_opens_a_mouth_and_the_estuary_behind_it_joins(self) -> None:
+        closed = self.build("")
+        self.assertEqual(len(closed.plan.tidal_unjoined), 4)  # the bay is shut in by land
+        opened = self.build('[[sea]]\nname = "Mouth"\nreason = "owner"\nsource = "C1"\n')
+        self.assertEqual(opened.plan.tidal_unjoined, {})
+        self.assertEqual({c for c, _ in opened.plan.sea_new}, set(range(40, 48)))
+        self.assertIn("- Mouth (outline C1): 4 cells: owner", opened.report)
+        self.assertIn("become sea: 4 cells (4 pasture)", opened.report)
+
+    def test_points_open_a_mouth_narrower_than_a_cell(self) -> None:
+        points = ", ".join(f"[{centre(c, 5)[0]}, {centre(c, 5)[1]}]" for c in (44, 45, 46, 47))
+        opened = self.build(f'[[sea]]\nname = "Mouth"\nreason = "owner"\npoints = [{points}]\n')
+        self.assertEqual(opened.plan.tidal_unjoined, {})
+        self.assertIn("- Mouth (4 points): 4 cells: owner", opened.report)
+
+    def test_a_kept_cell_and_a_lake_cell_do_not_change_and_are_reported(self) -> None:
+        rows = terrain_rows(lakes=[(45, 5)])
+        opened = self.build(
+            '[[sea]]\nname = "Mouth"\nreason = "owner"\nsource = "C1"\n',
+            rows,
+            {"Here": centre(46, 5)},
+        )
+        self.assertNotIn((45, 5), opened.plan.change)  # a lake cell stays a lake
+        self.assertNotIn((46, 5), opened.plan.change)  # the location's cell is kept
+        self.assertEqual(opened.plan.change[(47, 5)], W.SEA)
+        self.assertIn("kept (a location or a [[keep]] holds them): 1 cells", opened.report)
+        self.assertIn("not joined to the sea: 1 cells", opened.report)  # (44, 5) is cut off by them
+
+    def test_an_entry_that_changes_nothing_is_said_to(self) -> None:
+        point = centre(60, 10)
+        opened = self.build(
+            f'[[sea]]\nname = "Idle"\nreason = "owner"\npoints = [[{point[0]}, {point[1]}]]\n'
+        )
+        self.assertIn("this entry changes nothing", opened.report)
+
+    def test_an_unknown_key_a_missing_choice_an_unknown_code_and_a_point_outside_are_refused(
+        self,
+    ) -> None:
+        for text, words in (
+            (
+                '[[sea]]\nname = "X"\nreason = "r"\nsource = "C1"\ncolour = 1\n',
+                ("[[sea]] #1 (X)", "colour"),
+            ),
+            ('[[sea]]\nname = "X"\nreason = "r"\n', ("[[sea]] #1 (X)", "exactly one")),
+            (
+                '[[sea]]\nname = "X"\nreason = "r"\nsource = "C1"\npoints = [[1, 2]]\n',
+                ("exactly one",),
+            ),
+        ):
+            with self.assertRaises(W.WatersError) as raised:
+                W.parse_waters(text)
+            for word in words:
+                self.assertIn(word, str(raised.exception))
+        with self.assertRaises(W.WatersError) as raised:
+            self.build('[[sea]]\nname = "X"\nreason = "r"\nsource = "Z9"\n')
+        self.assertIn("[[sea]] X", str(raised.exception))
+        self.assertIn("'Z9'", str(raised.exception))
+        with self.assertRaises(W.WatersError) as raised:
+            self.build('[[sea]]\nname = "X"\nreason = "r"\npoints = [[10.0, 10.0]]\n')
+        self.assertIn("outside the crop", str(raised.exception))
+
+    def test_the_same_inputs_give_the_same_bytes_and_the_location_is_named(self) -> None:
+        text = '[[sea]]\nname = "Mouth"\nreason = "owner"\nsource = "C1"\n'
+        first = self.build(text, locations={"Here": centre(45, 5)})
+        second = self.build(text, locations={"Here": centre(45, 5)})
+        self.assertEqual((first.report, first.rivers_toml), (second.report, second.rivers_toml))
+        self.assertIn("Here stands on a cell that would have become water", first.report)
+
+
+class CoursesTwice(unittest.TestCase):
+    """CK-354 rule 9: the report's section "Courses built twice"."""
+
+    @staticmethod
+    def stretch(identifier: str, points: list[tuple[float, float]]) -> Dyn:
+        return W.Stretch(id=identifier, points=points)
+
+    def test_two_courses_ten_metres_apart_for_four_hundred_metres_are_listed_and_a_crossing_is_not(
+        self,
+    ) -> None:
+        lat, lon = 53.0, -8.0
+        step = 0.0064  # about 430 m of longitude here
+        shift = 10 / 111_319.49  # 10 m of latitude
+        network = W.Network(
+            stretches=[
+                self.stretch("a-01", [(lat, lon), (lat, lon + step)]),
+                self.stretch("b-01", [(lat + shift, lon), (lat + shift, lon + step)]),
+                self.stretch("c-01", [(lat - 0.01, lon + step / 2), (lat + 0.01, lon + step / 2)]),
+            ]
+        )
+        [(first, second, length)] = W.courses_built_twice(network)
+        self.assertEqual((first, second), ("a-01", "b-01"))
+        self.assertGreaterEqual(length, 400.0)
+        self.assertIn("a-01 and b-01", "\n".join(W._twice_report(network)))
+        self.assertIn("1 pairs", "\n".join(W._twice_report(network)))
+
+    @staticmethod
+    def straight(
+        lat: float, length_m: float, points: int, along_m: float = 0.0
+    ) -> list[tuple[float, float]]:
+        """A line along a parallel of latitude: `points` collinear points over `length_m` metres (the report's own flat scale), starting
+        `along_m` metres east of longitude -8."""
+        scale = 111_319.49 * math.cos(math.radians(lat))
+        return [
+            (lat, -8.0 + (along_m + length_m * i / (points - 1)) / scale) for i in range(points)
+        ]
+
+    def test_two_sparse_courses_24_8_metres_apart_are_found_as_the_dense_ones_are(self) -> None:
+        """Review 2: nearness is to the other course's line segments, not between sampled points, so two straight courses given by their
+        endpoints are listed just as the same courses with 180 collinear vertices are."""
+        shift = 24.81 / 111_319.49
+        found = []
+        for points in (2, 181):
+            network = W.Network(
+                stretches=[
+                    self.stretch("a-01", self.straight(53.4, 420.5, points)),
+                    self.stretch("b-01", self.straight(53.4 + shift, 420.5, points, along_m=4.9)),
+                ]
+            )
+            [(first, second, length)] = W.courses_built_twice(network)
+            self.assertEqual((first, second), ("a-01", "b-01"), points)
+            found.append(length)
+        self.assertAlmostEqual(found[0], found[1], delta=15.0)
+        self.assertAlmostEqual(
+            found[0], 415.6, delta=15.0
+        )  # the courses share 415.6 m of their length
+        far = 26.0 / 111_319.49  # beyond 25 m: not listed, sparse or dense
+        for points in (2, 181):
+            network = W.Network(
+                stretches=[
+                    self.stretch("a-01", self.straight(53.4, 420.5, points)),
+                    self.stretch("b-01", self.straight(53.4 + far, 420.5, points, along_m=4.9)),
+                ]
+            )
+            self.assertEqual(W.courses_built_twice(network), [], points)
+
+    @staticmethod
+    def north_south(lat: float, lon: float, points: int) -> list[tuple[float, float]]:
+        """A line due north over 0.005 degrees of latitude (556.6 m), `points` collinear points."""
+        return [(lat + 0.005 * i / (points - 1), lon) for i in range(points)]
+
+    def test_distance_is_local_ground_distance_in_the_north_and_the_south(self) -> None:
+        """Review 3: at 55.5 N lines 23.96 m apart are within 25 m (a fixed 53.4 N scale said 25.22); at 51.5 N lines 25.64 m apart are not
+        (it said 24.56)."""
+        for lat, apart, listed in ((55.5, 23.96, True), (51.5, 25.64, False)):
+            shift = apart / (111_319.49 * math.cos(math.radians(lat + 0.0025)))
+            for points in (2, 40):
+                network = W.Network(
+                    stretches=[
+                        self.stretch("a-01", self.north_south(lat, -8.0, points)),
+                        self.stretch("b-01", self.north_south(lat, -8.0 + shift, points)),
+                    ]
+                )
+                found = W.courses_built_twice(network)
+                self.assertEqual(bool(found), listed, (lat, points))
+                if listed:
+                    self.assertAlmostEqual(found[0][2], 556.6, delta=2.0)
+
+    def test_a_pair_near_the_300_metre_threshold_has_the_same_outcome_sparse_or_dense(self) -> None:
+        """Review 3: parallel courses 24.49 m apart; the band round each reaches 5.03 m past the other's end, so a pair that overlaps by
+        300 m is credited 305.03 m and one that overlaps by 288 m is credited 293.03 m, whatever the vertices."""
+        shift = 24.49 / 111_319.49
+        for along, listed in ((100.0, True), (112.0, False)):
+            for points in (2, 181):
+                network = W.Network(
+                    stretches=[
+                        self.stretch("a-01", self.straight(53.4, 400.0, points)),
+                        self.stretch(
+                            "b-01", self.straight(53.4 + shift, 400.0, points, along_m=along)
+                        ),
+                    ]
+                )
+                found = W.courses_built_twice(network)
+                self.assertEqual(bool(found), listed, (along, points))
+                if listed:
+                    self.assertAlmostEqual(found[0][2], 305.03, delta=0.5)
+
+    @staticmethod
+    def plane(points: list[tuple[float, float]], lat: float = 53.4) -> list[tuple[float, float]]:
+        """Points given in metres east and north of (lat, -8.0), as latitude and longitude."""
+        scale = 111_319.49 * math.cos(math.radians(lat))
+        return [(lat + y / 111_319.49, -8.0 + x / scale) for x, y in points]
+
+    @staticmethod
+    def with_midpoints(points: list[tuple[float, float]], times: int) -> list[tuple[float, float]]:
+        """The same line with collinear vertices inserted into every segment, `times` rounds."""
+        for _ in range(times):
+            points = [
+                q for a, b in pairwise(points) for q in (a, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
+            ] + [points[-1]]
+        return points
+
+    def listed(self, first: list[tuple[float, float]], second: list[tuple[float, float]]) -> float:
+        """What the report credits a pair of courses, 0 where it lists none."""
+        network = W.Network(stretches=[self.stretch("a-01", first), self.stretch("b-01", second)])
+        found = W.courses_built_twice(network)
+        return found[0][2] if found else 0.0
+
+    def test_curved_courses_are_credited_alike_however_many_vertices_describe_them(self) -> None:
+        """Two concentric arcs 20 m apart over about 400 m: the length is the same with every segment split into collinear pieces."""
+
+        def arc(radius: float, steps: int) -> list[tuple[float, float]]:
+            span = 400.0 / 500.0  # radians, so the inner arc is 400 m
+            return self.plane(
+                [
+                    (radius * math.sin(span * i / steps), radius * math.cos(span * i / steps))
+                    for i in range(steps + 1)
+                ]
+            )
+
+        inner, outer = arc(500.0, 24), arc(520.0, 24)
+        base = self.listed(inner, outer)
+        self.assertGreater(base, 380.0)
+        for times in (1, 3):
+            self.assertAlmostEqual(
+                self.listed(self.with_midpoints(inner, times), self.with_midpoints(outer, times)),
+                base,
+                delta=0.05,
+            )
+
+    def test_courses_that_cross_are_credited_only_for_the_length_near_the_crossing(self) -> None:
+        """Crossing at 5 degrees the two lines stay within 25 m of each other for 2 x 25 / sin 5 = 573.7 m each; at 10 degrees for 288 m."""
+        for degrees, expected in ((5.0, 573.7), (10.0, 0.0), (90.0, 0.0)):
+            angle = math.radians(degrees)
+            first = self.plane([(-1500.0, 0.0), (1500.0, 0.0)])
+            second = self.plane(
+                [
+                    (-1500.0 * math.cos(angle), -1500.0 * math.sin(angle)),
+                    (1500.0 * math.cos(angle), 1500.0 * math.sin(angle)),
+                ]
+            )
+            self.assertAlmostEqual(self.listed(first, second), expected, delta=1.0, msg=degrees)
+            self.assertAlmostEqual(
+                self.listed(self.with_midpoints(first, 3), second), expected, delta=1.0, msg=degrees
+            )
+
+    def test_one_course_beside_another_for_the_whole_of_its_length_is_credited_what_the_shorter_runs(
+        self,
+    ) -> None:
+        """A 400 m course 15 m from the middle of a 1,000 m one: credited 400 m (what the long one runs beside it is 400 m and the two band ends,
+        which is more); a 200 m one is not listed; the same course twice is listed at its full length."""
+        long = self.plane([(0.0, 0.0), (1000.0, 0.0)])
+        inside = self.plane([(300.0, 15.0), (700.0, 15.0)])
+        self.assertAlmostEqual(self.listed(long, inside), 400.0, delta=0.5)
+        self.assertAlmostEqual(self.listed(inside, long), 400.0, delta=0.5)
+        small = self.plane([(400.0, 15.0), (600.0, 15.0)])
+        self.assertEqual(self.listed(long, small), 0.0)
+        self.assertAlmostEqual(self.listed(long, long), 1000.0, delta=0.5)
+
+    def test_a_course_that_bends_away_is_credited_only_while_it_is_within_25_metres(self) -> None:
+        """A course 10 m from another for 400 m that then turns away at 45 degrees: its own length within 25 m is the 400 m and the 15 m of rise
+        it takes to leave the band, 15 x sqrt 2 along the turn; the other course's is longer (to x = 390 + 25 sqrt 2), so the lesser is credited."""
+        straight = self.plane([(0.0, 0.0), (2000.0, 0.0)])
+        bent = self.plane([(0.0, 10.0), (400.0, 10.0), (1000.0, 610.0)])
+        self.assertAlmostEqual(
+            self.listed(straight, bent), 400.0 + 15.0 * math.sqrt(2.0), delta=0.5
+        )
+
+    def test_redundant_vertices_do_not_change_what_a_pair_is_credited(self) -> None:
+        """Review 1, finding 3: the total is ground distance, whether a course has two points or forty."""
+        shift = 8.9 / 111_319.49
+        for points in (2, 40):
+            short = W.Network(
+                stretches=[
+                    self.stretch("a-01", self.straight(53.4, 95.82, points)),
+                    self.stretch("b-01", self.straight(53.4 + shift, 95.82, points)),
+                ]
+            )
+            self.assertEqual(W.courses_built_twice(short), [], points)
+        lengths = []
+        for points in (2, 40):
+            long = W.Network(
+                stretches=[
+                    self.stretch("a-01", self.straight(53.4, 400.0, points)),
+                    self.stretch("b-01", self.straight(53.4 + shift, 400.0, points)),
+                ]
+            )
+            [(_, _, length)] = W.courses_built_twice(long)
+            lengths.append(length)
+        self.assertAlmostEqual(lengths[0], lengths[1], delta=15.0)
+        self.assertAlmostEqual(lengths[0], 400.0, delta=15.0)
 
 
 if __name__ == "__main__":

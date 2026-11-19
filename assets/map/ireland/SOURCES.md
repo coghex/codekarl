@@ -81,7 +81,7 @@ the authority for the grid.
 - **OpenStreetMap** geometry is not used: its licence (ODbL) is share-alike, and this directory reaches the public mirror. Rivers that
   Natural Earth lacks are placed by hand from a few anchors (below).
 
-## Water import (CK-348, slice 3 of the rivers design)
+## Water import (CK-348, slice 3 of the rivers design; CK-354, the sea end and the two surveys)
 
 `import_waters.py` turns the public river, lough and tidal surveys into drafts of Ireland's water data: a hand-kept list
 (`waters.toml`), a `rivers.toml` in the new network format built from it, a mask of the cells that become sea and lough
@@ -106,11 +106,17 @@ python3 assets/map/ireland/import_waters.py build   --source ../ireland-source -
   (EPSG:29902) to latitude and longitude as they are stored (the conversion agrees with the EPA's own reprojection to under a
   centimetre on shared vertices, and to under a metre in median over the 812 lake outlines' centres). A layer whose licence is not
   confirmed is not fetched, is named in the manifest and the report, and is a one-line switch in `LAYERS` (`confirmed=False`).
+  It also fetches the Irish EPA's coastal water bodies (`epa-coastal`, 112 outlines), which a `[[sea]]` entry can take by code.
 - `propose` writes a first `waters.toml` by the rule the mock-ups used: Irish rivers with 15 km or more at stream order 5 and above,
   each Northern Ireland water body with a segment of order 5 or above (named by hand: the survey has no names), tiers from the
   drained area (1,200 km2 and 300 km2), the loughs a proposed river touches, every lough that overlaps a lake cell the map has today (as `redrawn`, however small the overlap), Lough Neagh
-  with `keep_existing` and the two island cells as `[[keep]]`, and the reservoirs "to be checked". It also lists the rivers a
-  proposed river ends at, so that the network reaches the sea, and marks each with why. A river it cannot build is marked "not built".
+  with `keep_existing` and the two island cells as `[[keep]]`, and the reservoirs "to be checked". It works on the lines of
+  "One line in both surveys" below: a line of both surveys counts for the river of its Irish name where that river is proposed, and
+  otherwise for its water body, and a water body left with no line of its own is not proposed. It also lists the rivers a
+  proposed river ends at, so that the network reaches the sea, and marks each with why; and where a river ends at a line that has neither
+  a name nor a water body (the Quoile's last reach, the tidal Foyle) it lists that line's segment code in the same river's `segments`, and goes on
+  down the line it runs into, with a comment saying how many segments were added. It writes no `[[sea]]` entry. A river it cannot build
+  (it has no way to the sea, below) is marked "not built".
 - `build` reads `waters.toml`, the cache and the map directory's `map.toml`, `terrain.png` and `elevation.png`, and writes
   `rivers.toml`, `water.png` and `waters-report.md` to `--out` (never to the map directory unless it is named). The same inputs
   give the same bytes. `--locations` keeps each location's cell as it is and reports each location on or beside new water. The report
@@ -123,15 +129,18 @@ python3 assets/map/ireland/import_waters.py build   --source ../ireland-source -
 
 ### `waters.toml`
 
-`[settings]` (`a`, `b`, `simplify_m`, `tier_steps`); `[[river]]` (`id`, `name`, `tier`, `source = { epa_names = [...], rwb_codes = [...] }`);
+`[settings]` (`a`, `b`, `simplify_m`, `tier_steps`); `[[river]]` (`id`, `name`, `tier`, `source = { epa_names = [...], rwb_codes = [...], segments = [...] }`;
+`segments` lists survey segment codes, for a line that has no name and no water-body code: the tidal Foyle, the Quoile's last reach);
 `[[lough]]` (`name`, `source` = the survey's lake code, `mode` = `"added"` or `"redrawn"`, optional `keep_existing` with a `reason`);
 `[[keep]]` (`id`, `reason`, `point`); `[[reservoir]]` (`name`, `source`, `reason`); `[[correction]]` (`id`, `reason`, `confidence`,
 `river`, and one of `width_m` (one number or first and last) or `width_factor` (optionally for one `stretch`), `omit` (survey segment
-codes) or `course` with `replaces` (a hand-drawn course in their place)). Unknown keys are refused, naming the entry. A river with an
+codes) or `course` with `replaces` (a hand-drawn course in their place)); `[[sea]]` (`name`, `reason`, and exactly one of `source`, the code of
+a coastal outline in the cache, or `points`, a list of `[latitude, longitude]`: the cells that hold them; how a mouth narrower than a cell is opened).
+Unknown keys are refused, naming the entry. A river with an
 empty name is refused: `rivers.toml` is built, not hand-edited, so D9's "corrected by hand" is done here, where a correction keeps its
 reason through a rebuild. A rebuild replaces `rivers.toml` whole.
 
-### Layers, licences and attribution (D8; each confirmed on the day read, 2026-11-16)
+### Layers, licences and attribution (D8; each confirmed on the day read, 2026-11-16, and the coastal layer 2026-11-19)
 
 Only a layer whose licence the publisher states is used. Both licences ask for attribution only (not share-alike).
 
@@ -140,6 +149,7 @@ Only a layer whose licence the publisher states is used. Both licences ask for a
 | Irish EPA river network routes (`epa-rivers`, stream order 4 and above and every line through a lough or tidal water) | WFS `EPA:WATER_RIVNETROUTES`, <https://gis.epa.ie/geoserver/EPA/ows> | the EPA's own catalogue record `c4043e19-38ec-4120-a588-8cd01ac94a9c` (linked from the WFS capabilities): "Data is for public use under Creative Commons CC-By 4.0", CC BY 4.0 | Contains Environmental Protection Agency (Ireland) data licensed under CC BY 4.0. |
 | Irish EPA lake water bodies (`epa-lakes`) | WFS `EPA:WFD_LAKEWATERBODIES_CYCLE3` | the EPA's record `00e92dc9-cb26-4858-889c-0b9b6ea9c9be`, same statement | as above |
 | Irish EPA transitional water bodies (`epa-tidal`) | WFS `EPA:WFD_TRANSITIONALWATERBODIES_CYCLE3` | the EPA's record `5b3cd1d5-b2d7-4210-a821-0f6231129d58`, same statement | as above |
+| Irish EPA coastal water bodies (`epa-coastal`; the outlines a `[[sea]]` entry takes by code, among them Cork Harbour `IE_SW_060_0000`, Outer Cork Harbour `IE_SW_050_0000`, Lough Swilly `IE_NW_220_0000` and Lough Foyle `GBNIIE6NW250`; Strangford Lough is not in it) | WFS `EPA:WFD_COASTALWATERBODIES_CYCLE3` | the EPA's own record `0b6c2e90-e56f-4cce-927e-57e86e9a60a3` (linked from the WFS capabilities; read 2026-11-19, sha256 of the record `388f60e8...`): "Data is for public use under Creative Commons CC-By 4.0" and the licence's address as its other constraint | as above |
 | DAERA Lakes of Northern Ireland (`ni-lakes`) | ArcGIS service `Lakes_of_Northern_Ireland`, <https://services-eu1.arcgis.com/kswen6BYexuc1SUk/arcgis/rest/services> | the publisher's ArcGIS item `5acc99bfd09e432a9db6d72272b96174` (owner DAERA_OpenContent) names this exact service and states the Open Government Licence v3.0 (found by ck-reviewer-1; a copy is kept with the CK-348 spec reviews, sha256 `26e341c2...`) | DAERA NIEA, contains OSNI information licensed under OGL v3.0. |
 | DAERA Northern Ireland River Segments (`ni-rivers`, stream order 4 and above) | download <https://www.daera-ni.gov.uk/sites/default/files/publications/doe/riversegmentgml.zip> (GML, Irish Grid), the 2010 edition | DAERA's own page <https://www.daera-ni.gov.uk/articles/wmu-spatial-datasets> links "Northern Ireland River Segments" to NIEA Water Management Unit's OpenDataNI record, whose licence is the UK Open Government Licence, and whose files are this download | Contains public sector information licensed under the Open Government Licence v3.0. Source: Northern Ireland Environment Agency Water Management Unit, DAERA. |
 | DAERA Northern Ireland Transitional Waters 2009-2015 (`ni-tidal`) | download <https://admin.opendatani.gov.uk/dataset/42e0d654-e973-4c45-83a4-c19c57b33a90/resource/3dbb9f72-79db-41ee-afd5-cb5b935914db/download/transitionalwaterbodiesgml.zip> (GML, Irish Grid), the 2017 file | DAERA's page above links "Northern Ireland Transitional Waters (2009 - 2015)" to the OpenDataNI record, licence UK Open Government Licence, whose files include this download | Contains public sector information licensed under the Open Government Licence v3.0. Source: Northern Ireland Environment Agency, DAERA. |
@@ -153,13 +163,45 @@ Waters has 7 estuaries (Quoile, Conns Water, Foyle and Faughan, Bann, Lagan, New
 into Upper Foyle and Foyle Harbour, the Roe absent). The owner approves the river and estuary lists in slice 4, where any difference
 that matters is corrected by hand. OpenStreetMap stays unused.
 
+**A DAERA coastal layer** was looked for (2026-11-19), as the tidal outlines were. DAERA's own datasets page links "Marine Water Bodies"
+(<https://www.daera-ni.gov.uk/publications/marine-water-bodies>, coastal and transitional waters submitted for Water Framework Directive reporting 2016, an SHP
+and a GML download) and "Coastal Interbasins" (an OpenDataNI record, not outlines of coastal waters). The Marine Water Bodies page states no licence and
+OpenDataNI's catalogue could not be read from here (403), so no licence is confirmed and **the layer is not used** (import rule 3). The four inlets
+the owner chose need none: Cork Harbour and Lough Swilly are in the EPA's coastal layer, and Lough Foyle's and Strangford Lough's mouths are opened by
+`points`.
+
 ### What it cannot do, and what to know
 
 - Northern Ireland's rivers have no names, so each is named by hand before `build` (a raw proposal is refused for its empty names).
-- Northern Ireland's river lines stop at the head of each estuary (a few to some twenty cells short of the sea); the tool joins the
-  last point to the nearest open sea with a straight run, and the report lists each such run. The same goes for a tidal line that ends
-  in water the map has as land (Cork harbour).
-- A cell becomes sea only if more than half of it is inside a tidal outline and it is joined to the open sea (the sea cells that touch
+- **Where the sea is (CK-354).** The end of a survey line that lies in an open-sea cell (a sea cell whose 5 x 5 box is all sea) is at the sea,
+  whether or not the line stops there. Nothing else is a mouth for being tidal or near the coast, so the dead end of a small tidal side line is not
+  a mouth and the line runs into its channel (unlisted, it is not built; listed by name, it ends at the channel). A piece of network that reaches
+  no open sea takes one mouth: of its loose ends, the one with the shortest way to open sea (the run below), ties to the first by position;
+  where none has one, the one nearest a sea cell within 30 cells. Joining pieces through a lough comes first.
+- **The run to open sea (CK-354).** Where a stretch ends short of open sea with nothing onward, the tool adds: a first step to the centre of the
+  nearest sea cell, when the last point's own cell is not sea (at most 3 cells, the larger of the row and column distances; ties by row, then
+  column); then the shortest way through four-connected sea cells to the nearest open-sea cell, written as the centres of the cells where it turns and
+  of its last cell. Thinning keeps the stretch's last survey point and every point the run adds, so a written leg of the run lies in sea cells (the
+  first step alone may cross land). The report lists each run with its length. **A river with no such way is refused**, naming its last point and how
+  many cells it is from the sea (a pool of sea with no open sea is 0): give it a hand-drawn course or the sea it lacks (`[[sea]]`); it is never sent
+  over land. A course may be a river's last reach: where the segments it replaces met the rest of the river at one point only, the course starts
+  there and its far end is free.
+- **One line in both surveys (CK-354).** An Irish-survey segment and a DAERA segment with the same two end points (after the tool's rounding and
+  snapping) and the same length to within 2 m or 1 % of the Irish line's length, whichever is larger, are one line. Pairing is one to one (the
+  closest lengths first, then by code). The kept line has DAERA's points, water-body code and segment code, and the Irish survey's segment code, name,
+  mark and lake code; **both codes name it** wherever a list gives a segment code (`segments`, a correction's `omit` and `replaces`). The order of claims:
+  the river that lists it in `segments`; failing that, its Irish name; failing that, its water body; failing that, a river that runs on into it.
+  A line listed in the `segments` of two rivers (by either code) is refused, naming both codes and both rivers; so is a code the survey does not have.
+  The report lists, for each river, the lines of its entries another river has, and "Courses built twice": every pair of stretches within 25 m of each
+  other for 300 m or more (points sampled every 10 m; the lesser of what each runs beside the other). The tool does not reconcile lines the two surveys draw
+  differently (a few metres apart, or cut at different points): the list takes one of them with `segments` and `omit`.
+- **DAERA's marks (CK-354).** DAERA's `SEGMENT_TYPE` is read: `L` is a lough line and `T` a tidal one, as the Irish survey's marks are. `fetch` still
+  leaves out DAERA's lines below stream order 4, marked or not.
+- **`[[sea]]` (CK-354).** Its cells (those more than half inside the coastal outline, or those that hold its points) join the tidal cells and are decided
+  with them by the same rule below: a cell that is not already sea or lake and is not kept becomes sea when it is joined to the map's edge through sea cells
+  and other candidate cells. The report lists each entry: its cells that become sea (by the terrain they were), its cells that are not joined, its kept cells,
+  and says where an entry changes nothing.
+- A cell becomes sea only if more than half of it is inside a tidal outline (or a `[[sea]]` entry) and it is joined to the open sea (the sea cells that touch
   the crop's edge) through sea cells by their four neighbours. Narrow estuaries therefore stay river stretches.
 - The drained areas come from the 500 m elevation grid and are approximate, so a river can be proposed in the wrong tier; the owner's
   list and the corrections settle it. `a = 2.3` and `b = 0.4` are starting values, to be fitted in slice 4.
