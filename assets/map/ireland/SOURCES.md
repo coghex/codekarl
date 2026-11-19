@@ -81,7 +81,7 @@ the authority for the grid.
 - **OpenStreetMap** geometry is not used: its licence (ODbL) is share-alike, and this directory reaches the public mirror. Rivers that
   Natural Earth lacks are placed by hand from a few anchors (below).
 
-## Water import (CK-348, slice 3 of the rivers design; CK-354, the sea end and the two surveys)
+## Water import (CK-348, slice 3 of the rivers design; CK-354, the sea end and the two surveys; CK-355, the drained area)
 
 `import_waters.py` turns the public river, lough and tidal surveys into drafts of Ireland's water data: a hand-kept list
 (`waters.toml`), a `rivers.toml` in the new network format built from it, a mask of the cells that become sea and lough
@@ -203,8 +203,19 @@ the owner chose need none: Cork Harbour and Lough Swilly are in the EPA's coasta
   and says where an entry changes nothing.
 - A cell becomes sea only if more than half of it is inside a tidal outline (or a `[[sea]]` entry) and it is joined to the open sea (the sea cells that touch
   the crop's edge) through sea cells by their four neighbours. Narrow estuaries therefore stay river stretches.
-- The drained areas come from the 500 m elevation grid and are approximate, so a river can be proposed in the wrong tier; the owner's
-  list and the corrections settle it. `a = 2.3` and `b = 0.4` are starting values, to be fitted in slice 4.
+- **The drained area of a stretch (CK-355).** Every cell that is not sea counts with its own area (lough cells too). It goes down the elevation grid (depressions
+  filled from the sea and the crop's edge, then each cell's steepest neighbour, on the terrain with the new water) until it comes to a cell that holds a line of
+  the survey's graph, or to the sea; a cell that holds several lines gives its area to the one of the highest stream order, then the first by segment code.
+  Only lines of the graph collect: a hand-drawn course collects through its own cells, the lines it stands in for and the lines a correction leaves out collect
+  nothing, and a run through sea cells collects nothing. Ground that leaves the crop's edge over land belongs to nothing. Along the survey, a line has what its cells
+  collected plus what is sent into its upper end, and passes it on as the builder wrote the river: into the next line of its stretch, at the end of its stretch into
+  the first line of the stretch it ends at (or to the sea); a line in no written stretch passes it to one line leaving its lower end, a written line before an
+  unwritten one, then the one whose lower end is nearer a mouth, then the first by segment code. A stretch has, at its last point, the area at the lower end of its
+  last line and, at its first, what is sent into its first line (a headwater: at most its own area and at least 1 km2). No stretch, id or course changes, so an
+  area never falls along a stretch or to the stretch it ends at, and the report adds up the ground (not sea = to lines + straight to the sea + off the crop's edge).
+  Tiers are the list's; `propose` suggests them from these areas. The areas are a surveyed-network reading of a 500 m grid and stay approximate: limestone country
+  where water runs underground (the Fergus, the Cong) and the lough mazes (Lough Oughter, Upper Lough Erne) are wrong, and a hand width (`width_m`) is the
+  remedy where it shows. `a = 2.3` and `b = 0.4` are starting values, to be fitted in slice 4.
 - `water.png` has one specified encoding, written by the tool itself (not Pillow): a 4-bit palette PNG (black, then the seven terrain
   keys in the order sea, lake, pasture, forest, bog, marsh, mountain), filter 0 on every row and zlib *stored* blocks of up to 65,535
   bytes. The bytes are therefore the same on every machine, whatever Pillow or zlib is installed (`tests/test_map_waters.py` checks

@@ -26,7 +26,6 @@ import heapq
 import json
 import math
 import re
-import statistics
 import struct
 import sys
 import tomllib
@@ -67,8 +66,6 @@ MIN_WIDTH_M = 0.5
 MAX_TIDAL_WIDTH_M = 800.0
 MAX_WIDTH_M = 10_000.0
 HEADWATER_FLOOR_KM2 = 1.0
-GAIN_KM2_PER_KM = 20.0
-GAIN_BASE_KM2 = 40.0
 TIER1_KM2 = 1200.0
 TIER2_KM2 = 300.0
 LOUGH_MIN_KM2 = 1.0
@@ -76,7 +73,6 @@ FIXED_UNITS_PER_CELL = 32_768
 MAX_ID_LENGTH = 48
 PROPOSE_LENGTH_M = 15_000.0
 PROPOSE_ORDER = 5
-SAMPLE_LIMIT = 40
 SNAP_LIMIT_M = 400.0
 RIVER_ID = re.compile(r"[a-z0-9-]{1,40}")  # a river id leaves room for the stretch suffix
 STRETCH_ID = re.compile(r"[a-z0-9-]{1,48}")  # the format's own bound for a stretch id
@@ -1712,42 +1708,6 @@ def final_width(width: float) -> float:
     return max(MIN_WIDTH_M, round(width, 1))
 
 
-def stretch_areas(
-    network: Network, area_read: Callable[[LatLon, int], float]
-) -> dict[str, tuple[float, float]]:
-    """Rule 8: the drained area at the first and last point of each stretch, made consistent along the network."""
-    by_id = {s.id: s for s in network.stretches}
-    above: dict[str, list[str]] = collections.defaultdict(list)
-    for stretch in network.stretches:
-        if stretch.ends in by_id:
-            above[stretch.ends].append(stretch.id)
-    waiting = {s.id: len(above[s.id]) for s in network.stretches}
-    ready = sorted(i for i, count in waiting.items() if count == 0)
-    order: list[str] = []
-    while ready:  # sources first, then each stretch once everything above it is done
-        order.append(ready.pop(0))
-        below = by_id[order[-1]].ends
-        if below in by_id:
-            waiting[below] -= 1
-            if waiting[below] == 0:
-                ready.append(below)
-                ready.sort()
-    areas: dict[str, tuple[float, float]] = {}
-    for stretch in (by_id[i] for i in order):
-        reach = 2 if stretch.order >= 6 else 1  # noqa: PLR2004
-        step = max(1, len(stretch.points) // SAMPLE_LIMIT)
-        read = statistics.median(area_read(p, reach) for p in stretch.points[::step])
-        feeding = [areas[i][1] for i in above[stretch.id]]
-        bound = sum(feeding) + GAIN_KM2_PER_KM * stretch.length_m / 1000.0 + GAIN_BASE_KM2
-        last = max(max(feeding, default=0.0), min(read, bound))
-        if feeding:
-            first = max(feeding)
-        else:
-            first = min(last, max(HEADWATER_FLOOR_KM2, area_read(stretch.points[0], reach)))
-        areas[stretch.id] = (first, last)
-    return areas
-
-
 def polygon_mean_width_m(polygon: Polygon) -> float:
     """A tidal outline's mean width: twice its area over its perimeter, shell and holes, in metres."""
     mean = math.radians(
@@ -2164,11 +2124,11 @@ NEIGHBOURS8 = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1,
 FILL_STEP_M = 0.001
 
 
-def drainage_km2(
+def _filled_levels(
     elevation: Sequence[Sequence[float]], terrain: Sequence[Sequence[int]], crop: Crop
-) -> list[list[float]]:
-    """The land each cell drains, in km2, from the elevation grid with the new water: depressions are filled from the sea and
-    the crop's edge, so flow passes through loughs and ends only at the sea (design 4.5)."""
+) -> tuple[list[float], list[bool]]:
+    """Each cell's level once depressions are filled from the sea and the crop's edge (so water passes through loughs and ends only at the
+    sea or at the edge), and which cells are sea (design 4.5)."""
     height, width = crop.height, crop.width
     count = height * width
     sea = [terrain[i // width][i % width] == SEA for i in range(count)]
@@ -2191,12 +2151,125 @@ def drainage_km2(
                 seen[r * width + c] = 1
                 level[r * width + c] = max(elevation[r][c], here + FILL_STEP_M)
                 heapq.heappush(queue, (level[r * width + c], r * width + c))
+    return level, sea
+
+
+def line_cell_indices(points: Sequence[LatLon], crop: Crop) -> set[int]:
+    """The cells (as row * width + column) a line passes through, exactly: every cell the line has a piece of positive length in, and the
+    cell of each end point (a point on a cell's boundary belongs to the cell to its east or south, as the loader's projection has it).
+    Cells outside the crop are left out."""
+    cells: set[int] = set()
+    scaled = [crop.cell_of(*p) for p in points]
+
+    def add(column: float, row: float) -> None:
+        c, r = math.floor(column), math.floor(row)
+        if 0 <= c < crop.width and 0 <= r < crop.height:
+            cells.add(r * crop.width + c)
+
+    add(*scaled[0])
+    for (x_0, y_0), (x_1, y_1) in pairwise(scaled):
+        d_x, d_y = x_1 - x_0, y_1 - y_0
+        crossings = {0.0, 1.0}
+        for start, delta in ((x_0, d_x), (y_0, d_y)):
+            if delta:
+                low, high = sorted((start, start + delta))
+                crossings.update(
+                    t
+                    for k in range(math.ceil(low), math.floor(high) + 1)
+                    if 0.0 < (t := (k - start) / delta) < 1.0
+                )
+        ordered = sorted(crossings)
+        for first, second in pairwise(ordered):
+            middle = (first + second) / 2
+            add(x_0 + d_x * middle, y_0 + d_y * middle)
+        add(x_1, y_1)
+    return cells
+
+
+@dataclass
+class Drainage:
+    """The drained areas of a build (CK-355): what each stretch drains at its two points, what each surveyed line has at its lower end, and
+    how the ground that is not sea adds up (km2): to lines, straight to the sea, and off the crop's edge over land."""
+
+    areas: dict[str, tuple[float, float]] = field(default_factory=dict)
+    lines: dict[str, float] = field(default_factory=dict)
+    ground: float = 0.0
+    collected: float = 0.0
+    to_sea: float = 0.0
+    off_edge: float = 0.0
+
+
+def _successors(graph: Graph, network: Network) -> dict[str, str | None]:
+    """Where each surveyed line sends its area (rule 1): a written line into the next line of its stretch, at the end of its stretch into
+    the first line of the stretch it ends at (or to the sea); a line in no written stretch into one line leaving its lower end, a written
+    line before an unwritten one, then the nearer a mouth, then the first by segment code."""
+    written: dict[str, tuple[Stretch, int]] = {}
+    for stretch in network.stretches:
+        for index, edge in enumerate(stretch.edges):
+            written[edge.seg.code] = (stretch, index)
+    first_line = {s.id: s.edges[0].seg.code for s in network.stretches if s.edges}
+    leaving: dict[LatLon, list[Edge]] = collections.defaultdict(list)
+    for edge in graph.edges:
+        leaving[edge.start].append(edge)
+    result: dict[str, str | None] = {}
+    for edge in graph.edges:
+        code = edge.seg.code
+        if code in written:
+            stretch, index = written[code]
+            if index + 1 < len(stretch.edges):
+                result[code] = stretch.edges[index + 1].seg.code
+            else:
+                result[code] = first_line.get(stretch.ends)
+            continue
+        options = [e for e in leaving.get(edge.end, ()) if e.seg.code != code]
+        if not options:
+            result[code] = None
+            continue
+        best = min(
+            options,
+            key=lambda e: (
+                e.seg.code not in written,
+                graph.distance.get(e.end, math.inf),
+                e.seg.code,
+            ),
+        )
+        result[code] = best.seg.code
+    return result
+
+
+def _collect_into_lines(  # noqa: PLR0913 -- the graph, the three grids, the totals and the written geometry are separate inputs
+    graph: Graph,
+    elevation: Sequence[Sequence[float]],
+    terrain: Sequence[Sequence[int]],
+    crop: Crop,
+    result: Drainage,
+    written: dict[str, Sequence[LatLon]] | None = None,
+) -> dict[str, float]:
+    """Rule 1, the cells: each cell that is not sea sends its own area down the slopes until it comes to a cell that holds a line of the
+    graph (the line of the highest stream order, then the first by segment code, where several share a cell) or to the sea; what leaves the
+    crop's edge over land belongs to nothing. A written line is read as the builder wrote it (`written`: its points after the cut at the
+    first open sea), so ground beyond a sea end is not its own. Fills `result`'s ground, collected, to_sea and off_edge, and returns each
+    line's own cells."""
+    height, width = crop.height, crop.width
+    level, sea = _filled_levels(elevation, terrain, crop)
+    holder: dict[int, tuple[int, str]] = {}
+    for edge in graph.edges:
+        key = (-max(edge.seg.order, edge.seg.twin_order), edge.seg.code)
+        for cell in line_cell_indices((written or {}).get(edge.seg.code, edge.points), crop):
+            if cell not in holder or key < holder[cell]:
+                holder[cell] = key
     cell_km2 = [
         (CELL_M * math.cos(math.radians(crop.row_latitude(r))) / 1000.0) ** 2 for r in range(height)
     ]
-    flow = [0.0 if sea[i] else cell_km2[i // width] for i in range(count)]
-    for index in sorted(range(count), key=lambda i: (-level[i], i)):
+    flow = [0.0 if sea[i] else cell_km2[i // width] for i in range(height * width)]
+    result.ground = sum(flow)
+    collected: dict[str, float] = collections.defaultdict(float)
+    for index in sorted(range(height * width), key=lambda i: (-level[i], i)):
         if sea[index]:
+            continue
+        if index in holder:
+            collected[holder[index][1]] += flow[index]
+            result.collected += flow[index]
             continue
         row, column = divmod(index, width)
         best, steepest = -1, 0.0
@@ -2208,25 +2281,75 @@ def drainage_km2(
                     best, steepest = r * width + c, drop
         if best >= 0:
             flow[best] += flow[index]
-    return [flow[r * width : (r + 1) * width] for r in range(height)]
+        else:
+            result.off_edge += flow[index]
+    result.to_sea = sum(flow[i] for i in range(height * width) if sea[i])
+    return collected
 
 
-def area_reader(grid: Sequence[Sequence[float]], crop: Crop) -> Callable[[LatLon, int], float]:
-    """Reads the largest area within `reach` cells of a point."""
+def _along_the_survey(
+    successors: dict[str, str | None], own: dict[str, float]
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Rule 1, the lines: each line has its own cells plus what the lines whose successor it is send into its upper end. Returns the area at
+    each line's lower end and what was sent into each line's upper end. Lines are taken sources first; a loop of lines that pass on to one
+    another (the survey's mazes) is cut at the first line by segment code."""
+    successors = dict(successors)
+    waiting = collections.Counter(t for t in successors.values() if t is not None)
+    lower = dict(own)
+    sent_in: dict[str, float] = collections.defaultdict(float)
+    ready = sorted(code for code in successors if waiting[code] == 0)
+    done: set[str] = set()
+    while len(done) < len(successors):
+        while ready:
+            code = ready.pop(0)
+            done.add(code)
+            lower[code] += sent_in.get(code, 0.0)
+            target = successors[code]
+            if target is not None:
+                sent_in[target] += lower[code]
+                waiting[target] -= 1
+                if waiting[target] == 0:
+                    ready.append(target)
+                    ready.sort()
+        if len(done) < len(successors):
+            successors[min(c for c in successors if c not in done)] = None
+            waiting = collections.Counter(
+                t for c, t in successors.items() if t is not None and c not in done
+            )
+            ready = sorted(c for c in successors if c not in done and waiting[c] == 0)
+    return lower, dict(sent_in)
 
-    def read(point: LatLon, reach: int) -> float:
-        column, row = crop.cell_of(*point)
-        column, row = (
-            min(crop.width - 1, max(0, math.floor(column))),
-            min(crop.height - 1, max(0, math.floor(row))),
-        )
-        return max(
-            grid[r][c]
-            for r in range(max(0, row - reach), min(crop.height, row + reach + 1))
-            for c in range(max(0, column - reach), min(crop.width, column + reach + 1))
-        )
 
-    return read
+def drained_areas(
+    graph: Graph,
+    network: Network,
+    elevation: Sequence[Sequence[float]],
+    terrain: Sequence[Sequence[int]],
+    crop: Crop,
+) -> Drainage:
+    """CK-355 rules 1 and 2: the ground that reaches the lower end of each surveyed line, and so the area at each stretch's two points.
+
+    Every cell that is not sea counts with its own area; it goes down the slopes to the first line of the graph or the sea
+    (`_collect_into_lines`), and along the survey from line to line as the builder wrote the rivers (`_successors`,
+    `_along_the_survey`). A stretch has, at its last point, the area at the lower end of its last line and, at its first, what is sent
+    into the upper end of its first line; a headwater's first point is at most its own area and at least 1 km2. No stretch is changed.
+    """
+    result = Drainage()
+    written = {e.seg.code: e.points for stretch in network.stretches for e in stretch.edges}
+    own = _collect_into_lines(graph, elevation, terrain, crop, result, written)
+    successors = _successors(graph, network)
+    lower, sent_in = _along_the_survey(
+        successors, {code: own.get(code, 0.0) for code in successors}
+    )
+    result.lines = lower
+    arriving = {edge.end for edge in graph.edges}
+    for stretch in network.stretches:
+        first_code, last_code = stretch.edges[0].seg.code, stretch.edges[-1].seg.code
+        last = lower[last_code]
+        sent = sent_in.get(first_code, 0.0)
+        first = sent if stretch.start in arriving else min(last, max(HEADWATER_FLOOR_KM2, sent))
+        result.areas[stretch.id] = (first, last)
+    return result
 
 
 # ---- the whole build -----------------------------------------------------------------------------------------------------
@@ -2262,6 +2385,7 @@ class BuildResult:
     report: str
     network: Network
     plan: WaterPlan
+    drainage: Drainage = field(default_factory=lambda: Drainage())
 
 
 def _outline_by_code(
@@ -2363,20 +2487,29 @@ def build_waters(  # noqa: PLR0913 -- the list, the surveys, the map and the opt
     grid: MapGrid,
     locations: dict[str, LatLon] | None = None,
     waters_sha: str = "",
-    area_source: Callable[[LatLon, int], float] | None = None,
+    area_source: Callable[[Graph, Network], Drainage] | None = None,
 ) -> BuildResult:
     """`build`: the cells, the network, the widths and the report, from plain values. The same inputs give the same text."""
     plan = _plan_for(waters, surveys, grid, locations or {})
     final = Terrain(grid.crop, apply_plan(grid.terrain, plan))
     reservoir_lakes = frozenset(r.source for r in waters.reservoirs)
+    graph = prepare_graph(surveys.rivers, final, waters.corrections)
     network = build_network(
-        surveys.rivers, waters.rivers, final, waters.settings, waters.corrections, reservoir_lakes
+        surveys.rivers,
+        waters.rivers,
+        final,
+        waters.settings,
+        waters.corrections,
+        reservoir_lakes,
+        graph=graph,
     )
     write_loughs_without_lake_as_rivers(network, final, waters, surveys.lakes)
-    reader = area_source or area_reader(
-        drainage_km2(grid.elevation, final.rows, grid.crop), grid.crop
+    drainage = (
+        area_source(graph, network)
+        if area_source
+        else drained_areas(graph, network, grid.elevation, final.rows, grid.crop)
     )
-    areas = stretch_areas(network, reader)
+    areas = drainage.areas
     widths = stretch_widths(network, areas, waters.settings, surveys.tidal, waters.corrections)
     problems = format_problems(waters, network, widths, final)
     if problems:
@@ -2387,9 +2520,9 @@ def build_waters(  # noqa: PLR0913 -- the list, the surveys, the map and the opt
         raise WatersError(message)
     text = rivers_toml(waters, network, widths, waters_sha)
     report = waters_report(
-        waters, surveys, grid, plan, network, areas, widths, locations or {}, waters_sha
+        waters, surveys, grid, plan, network, areas, widths, locations or {}, waters_sha, drainage
     )
-    return BuildResult(text, water_rows(grid.terrain, plan), report, network, plan)
+    return BuildResult(text, water_rows(grid.terrain, plan), report, network, plan, drainage)
 
 
 # ---- the report ----------------------------------------------------------------------------------------------------------
@@ -2606,6 +2739,7 @@ def waters_report(  # noqa: PLR0912, PLR0913, PLR0915 -- one section after anoth
     widths: dict[str, tuple[float, float]],
     locations: dict[str, LatLon],
     waters_sha: str,
+    drainage: Drainage | None = None,
 ) -> str:
     """`waters-report.md`: what slice 4 puts before the owner."""
     out = [
@@ -2636,6 +2770,14 @@ def waters_report(  # noqa: PLR0912, PLR0913, PLR0915 -- one section after anoth
         for correction in waters.corrections:
             if correction.river == river.id:
                 out.append(f"  - correction {correction.describe()}")
+    if drainage is not None and drainage.ground:
+        out += [
+            "",
+            "## Drained area",
+            "",
+            f"- ground that is not sea: {drainage.ground:.0f} km2, of which {drainage.collected:.0f} km2 reaches a surveyed line, "
+            f"{drainage.to_sea:.0f} km2 goes straight to the sea and {drainage.off_edge:.0f} km2 leaves the crop's edge over land",
+        ]
     out += ["", "## Sea", ""]
     estuaries = collections.defaultdict(list)
     for cell, name in plan.sea_new.items():
@@ -2831,7 +2973,7 @@ def propose_waters(  # noqa: PLR0912, PLR0915 -- one rule from the surveys to th
     surveys: Surveys,
     grid: MapGrid,
     settings: Settings | None = None,
-    area_source: Callable[[LatLon, int], float] | None = None,
+    area_source: Callable[[Graph, Network], Drainage] | None = None,
 ) -> str:
     """`propose`: a first `waters.toml` by the rule the mock-ups used, for the owner to cut and add to."""
     settings = settings or Settings()
@@ -2844,9 +2986,6 @@ def propose_waters(  # noqa: PLR0912, PLR0915 -- one rule from the surveys to th
     paired = _cleaned(surveys.rivers)
     candidates = candidate_rivers(paired)
     graph = prepare_graph(surveys.rivers, final)
-    reader = area_source or area_reader(
-        drainage_km2(grid.elevation, final.rows, grid.crop), grid.crop
-    )
     added: dict[str, str] = {}
     segments_added: dict[str, list[str]] = {}
     tried: set[tuple[str, str]] = set()
@@ -2889,7 +3028,11 @@ def propose_waters(  # noqa: PLR0912, PLR0915 -- one rule from the surveys to th
                 )
             )
             added[identifier] = f"added so that {river} reaches the sea"
-    areas = stretch_areas(network, reader)
+    areas = (
+        area_source(graph, network)
+        if area_source
+        else drained_areas(graph, network, grid.elevation, final.rows, grid.crop)
+    ).areas
     tiers = {
         r.id: tier_of(
             max((areas[s.id][1] for s in network.stretches if s.river == r.id), default=0.0)

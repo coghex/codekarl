@@ -68,6 +68,15 @@ CellList = Iterable[tuple[int, int]]
 Dyn = Any
 
 
+def flat_areas(value: float) -> Callable[[Dyn, Dyn], Dyn]:
+    """An injected drained-area calculation: every stretch drains `value` km2 at both points."""
+
+    def source(graph: Dyn, network: Dyn) -> Dyn:
+        return W.Drainage(areas={s.id: (value, value) for s in network.stretches})
+
+    return source
+
+
 def centre(column: int, row: int) -> tuple[float, float]:
     point: tuple[float, float] = W.round_point(CROP.latlon_at(column + 0.5, row + 0.5))
     return point
@@ -115,15 +124,6 @@ def build(
 
 def signature(network: Dyn) -> list[tuple[Any, ...]]:
     return [(s.id, s.river, s.kind, s.ends, tuple(s.points)) for s in network.stretches]
-
-
-def reading(areas: dict[tuple[int, int], float]) -> Callable[[tuple[float, float], int], float]:
-    """An area reader that gives the area of each cell, and 5 km2 anywhere else."""
-
-    def read(point: tuple[float, float], reach: int) -> float:
-        return areas.get(CROP.cell_containing(point), 5.0)
-
-    return read
 
 
 def check_network(case: unittest.TestCase, network: Dyn, terrain: Dyn | None = None) -> None:
@@ -346,9 +346,12 @@ class Proposal(unittest.TestCase):
         text = W.propose_waters(
             surveys,
             grid,
-            area_source=lambda point, reach: 1500.0
-            if abs(CROP.cell_of(*point)[1] - 10.5) < 1
-            else 5.0,
+            area_source=lambda graph, network: W.Drainage(
+                areas={
+                    s.id: (500.0, 500.0) if s.river == "alpha" else (5.0, 5.0)
+                    for s in network.stretches
+                }
+            ),
         )
         document = __import__("tomllib").loads(text)
         names = {r["id"]: r for r in document["river"]}
@@ -384,12 +387,12 @@ class Proposal(unittest.TestCase):
         surveys.lakes.append(outline)
         rows = terrain_rows(lakes=[(27, 22)])
         grid = W.MapGrid(CROP, rows, [[10.0] * 64 for _ in range(32)])
-        document = tomllib.loads(W.propose_waters(surveys, grid, area_source=lambda p, r: 400.0))
+        document = tomllib.loads(W.propose_waters(surveys, grid, area_source=flat_areas(400.0)))
         found = {entry["name"]: entry for entry in document["lough"]}
         self.assertEqual(found["Thin overlap"]["mode"], "redrawn")
         none = W.Outline("L8", "No overlap", 3.0, (self.square((26, 26, 31, 31)),), "epa")
         surveys.lakes.append(none)
-        document = tomllib.loads(W.propose_waters(surveys, grid, area_source=lambda p, r: 400.0))
+        document = tomllib.loads(W.propose_waters(surveys, grid, area_source=flat_areas(400.0)))
         self.assertNotIn(
             "No overlap", {entry["name"] for entry in document["lough"]}
         )  # not near a river, not today's lake
@@ -399,7 +402,7 @@ class Proposal(unittest.TestCase):
 
     def test_build_refuses_the_raw_proposal_for_its_empty_names(self) -> None:
         grid = W.MapGrid(CROP, terrain_rows(), [[10.0] * 64 for _ in range(32)])
-        text = W.propose_waters(self.surveys(), grid, area_source=lambda point, reach: 400.0)
+        text = W.propose_waters(self.surveys(), grid, area_source=flat_areas(400.0))
         with self.assertRaises(W.WatersError) as raised:
             W.parse_waters(text)
         self.assertIn("name is empty", str(raised.exception))
@@ -652,74 +655,46 @@ class Network(unittest.TestCase):
 
 
 class Widths(unittest.TestCase):
-    # Vertices every three cells and no thinning, so that the median of the areas read along a stretch is the value we give.
     RIVER = segment("w", [(c, 10) for c in (*range(2, 46, 3), 46)], "Main")
     SETTINGS = W.Settings(simplify_m=0.0)
 
     def widths(
         self,
-        areas: dict[tuple[int, int], float],
+        areas: tuple[float, float] | float,
         pieces: Sequence[Dyn] | None = None,
         *,
         settings: Dyn | None = None,
         tidal: Sequence[Dyn] = (),
         corrections: Sequence[Dyn] = (),
     ) -> tuple[Any, dict[str, tuple[float, float]]]:
+        """The widths of a built river whose every stretch drains the given area at both points (or the given pair)."""
         network = build(
             pieces or [self.RIVER], [river("main", "Main")], settings=settings or self.SETTINGS
         )
-        read = reading(areas)
+        pair = areas if isinstance(areas, tuple) else (areas, areas)
+        given = {s.id: pair for s in network.stretches}
         return network, W.stretch_widths(
-            network, W.stretch_areas(network, read), settings or self.SETTINGS, tidal, corrections
+            network, given, settings or self.SETTINGS, tidal, corrections
         )
 
     def test_the_rule_for_given_areas(self) -> None:
         self.assertAlmostEqual(W.width_of(100.0, 2.3, 0.4), 2.3 * 100**0.4)
-        areas = {(c, 10): 400.0 for c in range(2, 51)}
-        _, widths = self.widths(areas)
+        _, widths = self.widths(400.0)
         self.assertEqual(widths["main-01"][1], round(2.3 * 400**0.4, 1))
 
-    def test_a_headwaters_first_width(self) -> None:
-        for read, expected_first in ((0.4, 1.0), (30.0, 30.0), (900.0, 120.0)):
-            areas = {(c, 10): 120.0 for c in range(3, 51)}
-            areas[(2, 10)] = read
-            network, widths = self.widths(areas)
-            first, last = W.stretch_areas(network, reading(areas))["main-01"]
-            self.assertAlmostEqual(last, 120.0)
-            self.assertAlmostEqual(
-                first, expected_first
-            )  # 1 km2 at least, and at most the stretch's own area
-            self.assertEqual(widths["main-01"][0], W.final_width(2.3 * expected_first**0.4))
+    def test_each_end_has_its_own_width(self) -> None:
+        _, widths = self.widths((1.0, 120.0))
+        self.assertEqual(widths["main-01"], (W.final_width(2.3), W.final_width(2.3 * 120**0.4)))
 
     def test_a_stretch_whose_own_area_is_under_a_square_kilometre_has_it_at_both_ends(self) -> None:
-        network, widths = self.widths({(c, 10): 0.3 for c in range(2, 51)})
-        self.assertEqual(W.stretch_areas(network, lambda point, reach: 0.3)["main-01"], (0.3, 0.3))
+        _, widths = self.widths(0.3)
         self.assertEqual(widths["main-01"], (W.final_width(2.3 * 0.3**0.4),) * 2)
 
     def test_a_width_under_half_a_metre_is_written_as_half_a_metre(self) -> None:
-        _, widths = self.widths(
-            {(c, 10): 1.0 for c in range(2, 51)}, settings=W.Settings(a=0.1, simplify_m=0.0)
-        )
+        _, widths = self.widths(1.0, settings=W.Settings(a=0.1, simplify_m=0.0))
         self.assertEqual(widths["main-01"], (0.5, 0.5))
         self.assertEqual(W.final_width(0.04), 0.5)
         self.assertEqual(W.final_width(3.14159), 3.1)
-
-    def test_a_tributarys_last_stretch_cannot_read_the_main_rivers_area(self) -> None:
-        areas = {(c, 10): 900.0 for c in range(2, 50)}
-        areas.update(
-            {(25, 3): 6.0, (25, 6): 9.0, (25, 10): 900.0}
-        )  # the tributary's own last cell reads the main river
-        network = build([*MAIN, TRIB], [river("main", "Main"), river("trib", "Trib")])
-        computed = W.stretch_areas(
-            network, lambda point, reach: areas.get(CROP.cell_containing(point), 5.0)
-        )
-        length_km = next(s.length_m for s in network.stretches if s.id == "trib-01") / 1000.0
-        self.assertLessEqual(computed["trib-01"][1], 20 * length_km + 40 + 1e-9)
-        self.assertLess(computed["trib-01"][1], 900.0)
-        self.assertGreaterEqual(
-            computed["main-02"][0], computed["trib-01"][1]
-        )  # nothing below drains less than what arrives
-        self.assertGreaterEqual(computed["main-02"][1], computed["main-01"][1])
 
     def test_a_tidal_stretch_takes_its_outlines_width_and_its_cap(self) -> None:
         def outline(half_height: float) -> Dyn:
@@ -734,29 +709,27 @@ class Widths(unittest.TestCase):
             ]
             return W.Outline("T1", "Estuary", 1.0, ([ring],), "epa")
 
-        areas = {(c, 10): 50.0 for c in range(2, 56)}
         narrow = outline(
             0.3
         )  # 18 x 0.6 cells: twice area over perimeter is 0.58 of a cell, about 280 m
         mean = W.polygon_mean_width_m(narrow.polygons[0])
         self.assertAlmostEqual(mean, 2 * 18 * 0.6 / (2 * 18.6) * 839 * 0.5663, delta=15)
-        _, widths = self.widths(areas, [self.RIVER, TIDAL], tidal=[narrow])
+        _, widths = self.widths(50.0, [self.RIVER, TIDAL], tidal=[narrow])
         self.assertEqual(widths["main-02"], (W.final_width(mean), W.final_width(mean)))
         self.assertLess(widths["main-01"][1], 20.0)  # the river above the estuary is not affected
-        _, capped = self.widths(areas, [self.RIVER, TIDAL], tidal=[outline(10.0)])
+        _, capped = self.widths(50.0, [self.RIVER, TIDAL], tidal=[outline(10.0)])
         self.assertEqual(capped["main-02"], (800.0, 800.0))
 
     def test_each_kind_of_correction(self) -> None:
-        areas = {(c, 10): 100.0 for c in range(2, 56)}
         corrections = [
             W.Correction("c1", "r", "high", "main", stretch="main-01", width_m=(10.0, 12.0)),
             W.Correction("c2", "r", "low", "main", width_factor=2.0),
         ]
-        _, plain = self.widths(areas, [self.RIVER, TIDAL])
-        _, corrected = self.widths(areas, [self.RIVER, TIDAL], corrections=corrections[:1])
+        _, plain = self.widths(100.0, [self.RIVER, TIDAL])
+        _, corrected = self.widths(100.0, [self.RIVER, TIDAL], corrections=corrections[:1])
         self.assertEqual(corrected["main-01"], (10.0, 12.0))
         self.assertEqual(corrected["main-02"], plain["main-02"])
-        _, doubled = self.widths(areas, [self.RIVER, TIDAL], corrections=corrections[1:])
+        _, doubled = self.widths(100.0, [self.RIVER, TIDAL], corrections=corrections[1:])
         self.assertEqual(doubled["main-02"], tuple(W.final_width(2 * w) for w in plain["main-02"]))
         self.assertIn("width 10.0 to 12.0 m", corrections[0].describe())
         omit = W.Correction("c3", "r", "low", "main", omit=("t1",))
@@ -1033,7 +1006,7 @@ class FormatContract(unittest.TestCase):
             waters,
             W.Surveys(rivers=list(self.RIVER_LOUGH_RIVER)),
             grid,
-            area_source=lambda p, r: areas,
+            area_source=flat_areas(areas),
         )
 
     def with_lakes(
@@ -1064,7 +1037,7 @@ class FormatContract(unittest.TestCase):
             text += f'\n[[lough]]\nname = "Lough Far"\nsource = "{outline_code}"\nmode = "added"\n'
         grid = W.MapGrid(CROP, terrain_rows(), [[10.0] * 64 for _ in range(32)])
         surveys = W.Surveys(rivers=pieces, lakes=outlines)
-        return W.build_waters(W.parse_waters(text), surveys, grid, area_source=lambda p, r: 50.0)
+        return W.build_waters(W.parse_waters(text), surveys, grid, area_source=flat_areas(50.0))
 
     def test_a_lough_line_with_no_lough_under_it_is_written_as_a_river_with_its_reason(
         self,
@@ -1132,7 +1105,7 @@ class FormatContract(unittest.TestCase):
             W.parse_waters(text),
             W.Surveys(rivers=pieces, lakes=[outline]),
             grid,
-            area_source=lambda p, r: 50.0,
+            area_source=flat_areas(50.0),
         )
         self.assertEqual(
             result.plan.lough_new["Lough Edge"], {(10, 10)}
@@ -1183,7 +1156,7 @@ class FormatContract(unittest.TestCase):
         )
         grid = W.MapGrid(CROP, terrain_rows(), [[10.0] * 64 for _ in range(32)])
         surveys = W.Surveys(rivers=pieces, lakes=[alpha, beta])
-        result = W.build_waters(W.parse_waters(text), surveys, grid, area_source=lambda p, r: 50.0)
+        result = W.build_waters(W.parse_waters(text), surveys, grid, area_source=flat_areas(50.0))
         self.assertEqual(
             [s.id for s in result.network.stretches], ["main-01", "main-02", "main-03", "main-04"]
         )
@@ -1899,19 +1872,6 @@ class Surveys(unittest.TestCase):
             )
 
 
-class Drainage(unittest.TestCase):
-    def test_flow_passes_through_a_lough_and_ends_at_the_sea(self) -> None:
-        width, height = 12, 7
-        crop = W.Crop((22436, 14979), width, height)
-        rows = terrain_rows(lambda c, r: c >= width - 2, [(5, 3), (6, 3)], width, height)
-        slope = [[20.0 - 2 * c for c in range(width)] for _ in range(height)]
-        flow = W.drainage_km2(slope, rows, crop)
-        self.assertGreater(flow[3][8], flow[3][2])  # grows downstream, lough included
-        self.assertAlmostEqual(flow[3][9], 10 * flow[3][0])  # ten cells of the row drain through it
-        self.assertGreater(flow[3][7], flow[3][4])  # the lough's two cells pass their flow on
-        self.assertAlmostEqual(flow[3][10], flow[3][9])  # the sea only receives
-
-
 # ---- CK-354: the sea end and the two surveys -------------------------------------------------------------------------------
 
 
@@ -2362,14 +2322,14 @@ class ProposalClosure(unittest.TestCase):
 
     def propose(self, rivers: list[Dyn]) -> tuple[str, Dyn]:
         surveys = W.Surveys(rivers=rivers)
-        text = W.propose_waters(surveys, self.grid(), area_source=lambda point, reach: 50.0)
+        text = W.propose_waters(surveys, self.grid(), area_source=flat_areas(50.0))
         return text, surveys
 
     def built(self, text: str, surveys: Dyn) -> Dyn:
         # the owner's [[keep]] points lie outside the small crop of these tests
         text = re.sub(r"\n\[\[keep\]\]\n(?:[^\n\[][^\n]*\n)+", "\n", text)
         return W.build_waters(
-            W.parse_waters(self.named(text)), surveys, self.grid(), area_source=lambda p, r: 50.0
+            W.parse_waters(self.named(text)), surveys, self.grid(), area_source=flat_areas(50.0)
         )
 
     def test_a_line_in_both_surveys_counts_for_its_irish_name_and_a_body_left_with_no_line_is_not_proposed(
@@ -2792,6 +2752,313 @@ class CoursesTwice(unittest.TestCase):
             lengths.append(length)
         self.assertAlmostEqual(lengths[0], lengths[1], delta=15.0)
         self.assertAlmostEqual(lengths[0], 400.0, delta=15.0)
+
+
+# ---- CK-355: the land a river drains --------------------------------------------------------------------------------------
+
+
+def cell_km2(crop: Dyn, row: int) -> float:
+    """The ground area of one cell of a row, as the tool counts it."""
+    return float((W.CELL_M * math.cos(math.radians(crop.row_latitude(row))) / 1000.0) ** 2)
+
+
+SEA_COLUMNS = {4, 5, 6, 7, 8, 11, 12, 13, 14}  # a lake of sea, then land, then sea again
+VALLEY_TURNS = 30  # the column where the grid's valley turns from row 13 to row 10
+LOUGH_ROW = 3
+
+
+class DrainedAreas(unittest.TestCase):
+    """CK-355: the area a stretch drains is the ground that reaches it down the slopes and along the survey."""
+
+    @staticmethod
+    def sloped(
+        width: int, height: int, height_at: Callable[[int, int], float], sea_from: int = 48
+    ) -> tuple[Dyn, list[list[int]], list[list[float]]]:
+        """A crop whose columns from `sea_from` are sea, its rows, and an elevation grid from `height_at(column, row)`."""
+        crop = W.Crop((22436, 14979), width, height)
+        rows = [
+            [W.SEA if c >= sea_from else W.PASTURE for c in range(width)] for _ in range(height)
+        ]
+        return crop, rows, [[height_at(c, r) for c in range(width)] for r in range(height)]
+
+    def drained(
+        self,
+        pieces: Sequence[Dyn],
+        rivers: Sequence[Dyn],
+        grid: tuple[Dyn, list[list[int]], list[list[float]]],
+        corrections: Sequence[Dyn] = (),
+    ) -> tuple[Dyn, Dyn, Dyn]:
+        crop, rows, elevation = grid
+        terrain = W.Terrain(crop, rows)
+        graph = W.prepare_graph(pieces, terrain, corrections)
+        network = W.build_network(
+            pieces, rivers, terrain, W.Settings(simplify_m=0.0), corrections, graph=graph
+        )
+        return graph, network, W.drained_areas(graph, network, elevation, rows, crop)
+
+    def test_a_river_in_flat_ground_with_its_grid_drainage_line_three_cells_off_has_the_land_of_both_banks(
+        self,
+    ) -> None:
+        """The valley the elevation grid draws lies along row 13 as far as column 30 and the survey runs along row 10: the old reading looked
+        a cell or two round the survey and missed it. Now the banks' water goes down the valley, meets the survey and is the river's: at its
+        mouth the river has nearly all the land of the grid, and the ground adds up."""
+        grid = self.sloped(
+            64,
+            24,
+            lambda c, r: 0.5 * (62 - c) + 2.0 * abs(r - (13 if c < VALLEY_TURNS else 10)),
+        )
+        crop = grid[0]
+        pieces = [segment("r", [(2, 10), (46, 10)], "Main")]
+        _, _, drainage = self.drained(pieces, [river("main", "Main")], grid)
+        total = sum(cell_km2(crop, r) * 48 for r in range(24))
+        self.assertAlmostEqual(drainage.ground, total, places=6)
+        self.assertAlmostEqual(
+            drainage.collected + drainage.to_sea + drainage.off_edge, drainage.ground, places=6
+        )
+        self.assertGreater(drainage.areas["main-01"][1], 0.9 * total)
+
+    def test_two_tributaries_meeting_give_the_stretch_below_the_sum_of_both(self) -> None:
+        grid = self.sloped(64, 24, lambda c, r: 100.0 - c)
+        _, _, drainage = self.drained(
+            [MAIN_1, MAIN_2, TRIB], [river("main", "Main"), river("trib", "Trib")], grid
+        )
+        areas = drainage.areas
+        self.assertAlmostEqual(
+            areas["main-02"][0], areas["main-01"][1] + areas["trib-01"][1], places=9
+        )
+        self.assertGreater(areas["main-02"][1], areas["main-02"][0])
+
+    def test_an_unlisted_tributary_brings_its_land_to_the_listed_river(self) -> None:
+        grid = self.sloped(64, 24, lambda c, r: 100.0 - c)
+        both = self.drained(
+            [MAIN_1, MAIN_2, TRIB], [river("main", "Main"), river("trib", "Trib")], grid
+        )[2]
+        alone = self.drained([MAIN_1, MAIN_2, TRIB], [river("main", "Main")], grid)[2]
+        # listed, the main river is cut where the tributary joins; unlisted, it is one stretch, and ends with the same ground
+        self.assertAlmostEqual(alone.areas["main-01"][1], both.areas["main-02"][1], places=9)
+        self.assertGreater(alone.areas["main-01"][1], both.areas["main-01"][1] + 1.0)
+
+    def test_through_a_lough_the_river_below_has_the_ground_above_the_shores_and_the_lough(
+        self,
+    ) -> None:
+        """A grid of 20 x 7 cells with sea from column 14, sloping east and strongly towards row 3: the ground of the 14 land columns drains
+        into the river, lough cells included, except the six cells of the last column that touch the sea at once (they go straight into it)."""
+        grid = self.sloped(20, 7, lambda c, r: 20.0 - 2 * c + 10 * abs(r - 3), sea_from=14)
+        crop, rows, _ = grid
+        rows[3][5] = rows[3][6] = W.LAKE
+        pieces = [
+            segment("a", [(0, 3), (4, 3)], "Main"),
+            segment("b", [(4, 3), (7, 3)], None, continua="L", lake="IE_X_1"),
+            segment("c", [(7, 3), (13, 3)], "Main"),
+        ]
+        _, network, drainage = self.drained(pieces, [river("main", "Main")], grid)
+        expected = sum(cell_km2(crop, r) * 14 for r in range(7)) - sum(
+            cell_km2(crop, r) for r in range(7) if r != LOUGH_ROW
+        )
+        self.assertIn("lough", {s.kind for s in network.stretches})
+        below = network.stretches[-1]
+        self.assertEqual(below.kind, "river")
+        self.assertAlmostEqual(drainage.areas[below.id][1], expected, places=6)
+
+    def test_a_cell_that_holds_two_lines_gives_its_area_to_the_higher_order_and_the_same_twice(
+        self,
+    ) -> None:
+        """Two lines share the cell (4, 3): whichever has the higher stream order takes its area; a second run gives the same."""
+        crop, rows, elevation = self.sloped(12, 7, lambda c, r: 20.0 - 2 * c, sea_from=10)
+        cell = cell_km2(crop, 3)
+        for orders in ((5, 6), (6, 5)):
+            low = segment("low", [(0, 3), (9, 3)], "Low", order=orders[0])
+            high = segment("high", [(4, 0), (4, 6)], "High", order=orders[1])
+            graph = W.prepare_graph([low, high], W.Terrain(crop, rows))
+            first = W._collect_into_lines(graph, elevation, rows, crop, W.Drainage())
+            self.assertEqual(
+                first, W._collect_into_lines(graph, elevation, rows, crop, W.Drainage())
+            )
+            winner = "low" if orders[0] > orders[1] else "high"
+            loser = "high" if winner == "low" else "low"
+            # the row 3 of the low line is cells 0 to 9 and the column of the high line holds (4, 3): the one with the higher order has it
+            other = W._collect_into_lines(
+                graph,
+                elevation,
+                rows,
+                crop,
+                W.Drainage(),
+            )
+            swapped = W.Graph(
+                graph.distance,
+                [
+                    W.Edge(
+                        W.Seg(
+                            e.seg.code, e.seg.source, 6 if e.seg.code == loser else 5, e.seg.points
+                        ),
+                        e.river,
+                        e.kind,
+                        e.points,
+                    )
+                    for e in graph.edges
+                ],
+            )
+            changed = W._collect_into_lines(swapped, elevation, rows, crop, W.Drainage())
+            self.assertAlmostEqual(changed[loser] - other[loser], cell, places=9, msg=orders)
+            self.assertAlmostEqual(other[winner] - changed[winner], cell, places=9, msg=orders)
+
+    def test_a_parting_among_lines_in_no_stretch_goes_to_the_line_nearer_the_mouth(self) -> None:
+        """Review 1: 100 km2 arrive at a node where two unwritten lines leave, each collecting 1 km2: the one nearer the mouth has 101."""
+        node, near, far, up = centre(10, 10), centre(20, 10), centre(20, 14), centre(2, 10)
+        edges = [
+            W.Edge(W.Seg("up", "epa", 5, (up, node)), None, "river", [up, node]),
+            W.Edge(W.Seg("near", "epa", 5, (node, near)), None, "river", [node, near]),
+            W.Edge(W.Seg("far", "epa", 5, (node, far)), None, "river", [node, far]),
+        ]
+        graph = W.Graph({near: 1.0, far: 2.0}, edges)
+        successors = W._successors(graph, W.Network())
+        self.assertEqual(successors["up"], "near")
+        for _ in range(2):
+            lower, _ = W._along_the_survey(successors, {"up": 100.0, "near": 1.0, "far": 1.0})
+            self.assertEqual((lower["near"], lower["far"]), (101.0, 1.0))
+
+    def test_a_parting_where_the_written_river_goes_one_way_and_an_unlisted_line_the_other(
+        self,
+    ) -> None:
+        """Review 2, through `build_waters`: 100 km2 are sent into M; M and Z are one written stretch, 1 km2 each; the unlisted A leaves
+        between them and is nearer the mouth. The stretch has 100 at its first point and 102 at its last; A has only what its own cells
+        collect; and the network is the accepted tool's (the stretch `main-01` of lines M and Z, ending at the sea)."""
+        pieces = [
+            segment("U", [(2, 10), (8, 10)], "Up", order=5),
+            segment("M", [(8, 10), (14, 10)], "Main", order=5),
+            segment("Z", [(14, 10), (30, 14), (50, 10)], "Main", order=5),
+            segment("A", [(14, 10), (50, 11)], "Other", order=5),
+        ]
+        own = {"U": 100.0, "M": 1.0, "Z": 1.0, "A": 1.0}
+        waters = W.parse_waters(
+            '[[river]]\nid = "main"\nname = "Main"\ntier = 1\nsource = { epa_names = ["Main"] }\n'
+        )
+        grid = W.MapGrid(CROP, terrain_rows(), [[10.0] * 64 for _ in range(32)])
+        with mock.patch.object(W, "_collect_into_lines", lambda *a: own):
+            result = W.build_waters(waters, W.Surveys(rivers=pieces), grid)
+        [stretch] = result.network.stretches
+        self.assertEqual((stretch.id, stretch.ends), ("main-01", "sea"))
+        self.assertEqual([e.seg.code for e in stretch.edges], ["M", "Z"])
+        self.assertEqual(result.drainage.areas["main-01"], (100.0, 102.0))
+        self.assertEqual(result.drainage.lines["A"], 1.0)
+        self.assertEqual(
+            signature(result.network), signature(build(pieces, [river("main", "Main")]))
+        )
+
+    def test_a_line_crossing_the_corner_of_a_cell_between_samples_collects_that_cell(self) -> None:
+        """Review 1 of CK-355: the line passes through cell (3, 2) between two quarter-cell samples. The area at its mouth is the same with
+        and without a vertex added in that crossing."""
+        crop, rows, elevation = self.sloped(10, 7, lambda c, r: 20.0 - c, sea_from=7)
+        grid = (crop, rows, elevation)
+        corner = [at(2.10, 2.05), at(3.80, 3.75), at(9.50, 3.75)]
+        halfway = ((corner[0][0] + corner[1][0]) / 2, (corner[0][1] + corner[1][1]) / 2)
+        results = []
+        for points in (corner, [corner[0], W.round_point(halfway), *corner[1:]]):
+            piece = W.Seg("r", "epa", 5, tuple(points), "Main")
+            _, _, drainage = self.drained([piece], [river("main", "Main")], grid)
+            results.append(drainage.areas["main-01"][1])
+        self.assertAlmostEqual(results[0], results[1], places=9)
+        self.assertEqual(
+            sorted(W.line_cell_indices(corner[:2], crop))[:2], [2 * 10 + 2, 2 * 10 + 3]
+        )
+
+    def test_ground_beyond_a_written_sea_end_is_not_the_lines(self) -> None:
+        """Review 1 of CK-355: the builder cuts a line at its first open-sea vertex. A survey line that runs on beyond it drains exactly what
+        one that ends there does at that stretch's mouth."""
+        crop = W.Crop((22436, 14979), 15, 7)
+        rows = [[W.SEA if c in SEA_COLUMNS else W.PASTURE for c in range(15)] for _ in range(7)]
+        elevation = [[30.0 - c + 3 * abs(3 - r) for c in range(15)] for r in range(7)]
+        grid = (crop, rows, elevation)
+        long = W.Seg(
+            "r", "epa", 5, (at(1.5, 3.5), at(6.5, 3.5), at(9.5, 3.5), at(13.5, 3.5)), "Main"
+        )
+        short = W.Seg("r", "epa", 5, (at(1.5, 3.5), at(6.5, 3.5)), "Main")
+        areas = []
+        for piece in (long, short):
+            _, network, drainage = self.drained([piece], [river("main", "Main")], grid)
+            self.assertEqual(network.stretches[0].ends, "sea")
+            areas.append(drainage.areas["main-01"][1])
+        self.assertAlmostEqual(areas[0], areas[1], places=9)
+
+    def test_ground_that_leaves_the_crop_over_land_is_counted_apart(self) -> None:
+        """A 5 x 5 grid with sea from column 4 and no line: the land that slopes to the edge leaves over it, the rest goes to the sea."""
+        crop, rows, elevation = self.sloped(5, 5, lambda c, r: 20.0 - abs(2 - c), sea_from=4)
+        drainage = W.drained_areas(W.Graph({}, []), W.Network(), elevation, rows, crop)
+        self.assertAlmostEqual(drainage.ground, 4.506655122, places=6)
+        self.assertAlmostEqual(drainage.to_sea, 1.126663780, places=6)
+        self.assertAlmostEqual(drainage.off_edge, 3.379991341, places=6)
+        self.assertEqual(drainage.collected, 0.0)
+
+    def test_unwritten_lines_arriving_where_a_written_and_an_unwritten_line_leave_go_down_the_written_line(
+        self,
+    ) -> None:
+        node, written, loose, up = centre(10, 10), centre(20, 10), centre(20, 14), centre(2, 10)
+        edges = [
+            W.Edge(W.Seg("up", "epa", 5, (up, node)), None, "river", [up, node]),
+            W.Edge(W.Seg("w", "epa", 5, (node, written)), "main", "river", [node, written]),
+            W.Edge(W.Seg("loose", "epa", 5, (node, loose)), None, "river", [node, loose]),
+        ]
+        graph = W.Graph(
+            {written: 5.0, loose: 1.0}, edges
+        )  # the unwritten line is nearer the mouth, and still not chosen
+        stretch = W.Stretch(id="main-01", river="main", edges=[edges[1]], start=node)
+        successors = W._successors(graph, W.Network(stretches=[stretch]))
+        self.assertEqual(successors["up"], "w")
+
+    def test_a_hand_drawn_course_collects_through_its_own_cells_and_everything_adds_up(
+        self,
+    ) -> None:
+        grid = self.sloped(64, 24, lambda c, r: 100.0 - c)
+        crop = grid[0]
+        old = segment("old", [(2, 10), (46, 10)], "Main")
+        course = W.Correction(
+            "c", "x", "high", "main", course=(centre(2, 16), centre(46, 16)), replaces=("old",)
+        )
+        _, _, drainage = self.drained([old], [river("main", "Main")], grid, (course,))
+        self.assertNotIn("old", drainage.lines)  # the line it stands in for collects nothing
+        self.assertAlmostEqual(
+            drainage.lines["course:c"], 45 * cell_km2(crop, 16), delta=2 * cell_km2(crop, 16)
+        )
+        self.assertAlmostEqual(
+            drainage.collected + drainage.to_sea + drainage.off_edge, drainage.ground, places=6
+        )
+
+    def test_a_headwater_has_at_least_a_square_kilometre_and_at_most_its_own_area(self) -> None:
+        grid = self.sloped(64, 24, lambda c, r: 100.0 - c)
+        _, _, drainage = self.drained(
+            [segment("r", [(2, 10), (46, 10)], "Main")], [river("main", "Main")], grid
+        )
+        first, last = drainage.areas["main-01"]
+        self.assertEqual(first, min(last, 1.0))
+        with mock.patch.object(W, "_collect_into_lines", lambda *a: {"r": 0.3}):
+            _, _, small = self.drained(
+                [segment("r", [(2, 10), (46, 10)], "Main")], [river("main", "Main")], grid
+            )
+        self.assertEqual(
+            small.areas["main-01"], (0.3, 0.3)
+        )  # a stretch of 0.3 km2 has 0.3 at both ends
+
+    def test_a_run_through_sea_cells_collects_nothing(self) -> None:
+        grid = self.sloped(64, 24, lambda c, r: 100.0 - c)
+        _, network, drainage = self.drained(
+            [segment("r", [(2, 10), (46, 10)], "Main")], [river("main", "Main")], grid
+        )
+        stretch = network.stretches[0]
+        self.assertTrue(stretch.run)
+        self.assertEqual(drainage.areas[stretch.id][1], drainage.lines["r"])
+
+    def test_a_tier_the_list_gives_is_the_tier_built(self) -> None:
+        waters = W.parse_waters(
+            '[[river]]\nid = "main"\nname = "Main"\ntier = 3\nsource = { epa_names = ["Main"] }\n'
+        )
+        grid = W.MapGrid(CROP, terrain_rows(), [[10.0] * 64 for _ in range(32)])
+        result = W.build_waters(
+            waters,
+            W.Surveys(rivers=[segment("r", [(2, 10), (46, 10)], "Main")]),
+            grid,
+            area_source=flat_areas(2000.0),
+        )
+        self.assertIn("tier = 3", result.rivers_toml)
 
 
 if __name__ == "__main__":
