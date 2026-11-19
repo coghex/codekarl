@@ -19,8 +19,9 @@ use ck_gpu_metal::{
     PixelSource, SourceRect, readback_clear, readback_map, readback_quad,
 };
 use ck_map::{
-    FIXED_PER_CELL, ModeInputs, PreparedLocations, PreparedRivers, RiverCoverage, RiverLine,
-    STEP_SIZE, ViewSize, WorldPixel, fixture, reference_colour_with_locations, stockpile_value,
+    FIXED_PER_CELL, ModeInputs, PreparedLocations, PreparedRiverNetwork, PreparedRivers,
+    RiverCoverage, RiverLine, STEP_SIZE, ViewSize, WorldPixel, fixture,
+    reference_colour_with_locations, reference_colour_with_river_network, stockpile_value,
     yield_values,
 };
 
@@ -393,6 +394,156 @@ pub(crate) fn readback_map_rivers_overlay() {
             expected[offset..offset + 4].copy_from_slice(&fixture.data.river.0);
         }
         assert_eq!(drawn.target.expect("a map target"), expected, "step {step}");
+    }
+}
+
+/// The format-2 line, banks, locations and dark water use the existing two lists and match the reference at two zoom steps.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the real presenter readback and both format-2 reference comparisons together"
+)]
+pub(crate) fn readback_map_river_network_overlays() {
+    let scenario = fixture::location_scenario();
+    let loaded = &scenario.map;
+    let network = loaded.river_network.as_ref().expect("fixture network");
+    let mut prepared = PreparedRiverNetwork::new(&loaded.data, network);
+    let mut location_cache = PreparedLocations::new(
+        scenario.locations.clone(),
+        scenario.location_kinds.clone(),
+        loaded.data.crop,
+    );
+    let location_palette = scenario.location_kinds.overlay_palette();
+    let mut rules = rules_of(the_fixture());
+    rules.overlay_palette = location_palette
+        .iter()
+        .map(|colour| colour.0)
+        .chain(std::iter::once(loaded.data.lake.0))
+        .chain(loaded.data.terrains.iter().map(|terrain| terrain.solid.0))
+        .collect();
+    let crop = loaded.data.crop;
+    let input = Arc::new(
+        MetalMapInput::new(
+            9,
+            [crop.origin.x, crop.origin.y],
+            [crop.width, crop.height],
+            loaded.grid_a.pixels.iter().flatten().copied().collect(),
+            loaded.grid_b.pixels.iter().flatten().copied().collect(),
+            &rules,
+        )
+        .expect("format-2 palette fits the existing map input"),
+    );
+
+    for step in [15_u8, 53] {
+        let origin = fixture::Fixture::crop_top_left(step);
+        let top_left = [origin.x - 2, origin.y - 2];
+        let view = [120, 72];
+        let view_size = ViewSize {
+            width: view[0],
+            height: view[1],
+        };
+        let world_top = WorldPixel {
+            x: top_left[0],
+            y: top_left[1],
+        };
+        let location_pixels = location_cache
+            .select_view(step, world_top, view_size)
+            .expect("locations select for both steps")
+            .into_iter()
+            .map(|([x, y], index)| [x, y, u32::from(index)])
+            .collect::<Vec<_>>();
+        let draw = prepared
+            .select_map_view(
+                step,
+                world_top,
+                view_size,
+                &location_pixels,
+                location_palette.len(),
+            )
+            .expect("network draw lists");
+        let parts = prepared
+            .select_view(step, world_top, view_size)
+            .expect("network tile cache remains selectable");
+        if step == 53 {
+            assert!(!parts.water.is_empty(), "step 53 readback includes water");
+            assert!(!parts.banks.is_empty(), "step 53 readback includes a bank");
+        }
+        let halo_top_left = WorldPixel {
+            x: world_top.x - 1,
+            y: world_top.y - 1,
+        };
+        let halo_view = ViewSize {
+            width: view_size.width + 2,
+            height: view_size.height + 2,
+        };
+        let halo_draw = prepared
+            .select_map_view(step, halo_top_left, halo_view, &[], location_palette.len())
+            .expect("network reference includes a one-pixel halo");
+        let halo_parts = prepared
+            .select_view(step, halo_top_left, halo_view)
+            .expect("water reference includes a one-pixel halo");
+        let lines: BTreeSet<_> = halo_draw
+            .rivers
+            .iter()
+            .map(|[x, y]| WorldPixel {
+                x: halo_top_left.x + signed(*x),
+                y: halo_top_left.y + signed(*y),
+            })
+            .collect();
+        let waters: BTreeSet<_> = halo_parts
+            .water
+            .iter()
+            .map(|pixel| WorldPixel {
+                x: halo_top_left.x + pixel.x,
+                y: halo_top_left.y + pixel.y,
+            })
+            .collect();
+        let location_colours: BTreeMap<_, _> = location_pixels
+            .iter()
+            .map(|[x, y, index]| {
+                (
+                    WorldPixel {
+                        x: top_left[0] + signed(*x),
+                        y: top_left[1] + signed(*y),
+                    },
+                    location_palette[*index as usize],
+                )
+            })
+            .collect();
+        let map = MetalMap::new_with_overlays(
+            Arc::clone(&input),
+            step,
+            top_left,
+            view,
+            rect(0, 0, signed(view[0] * 4), signed(view[1] * 4)),
+            source(0.0, 0.0, float(view[0]), float(view[1])),
+            draw.rivers,
+            draw.indexed,
+        )
+        .expect("valid format-2 overlay lists");
+        let drawn = readback_map(view[0] * 4, view[1] * 4, CLEAR, Some(&map), None)
+            .expect("network readback works");
+        let target = drawn.target.expect("map target");
+        let expected: Vec<u8> = (0..view[1])
+            .flat_map(|y| (0..view[0]).map(move |x| (x, y)))
+            .flat_map(|(x, y)| {
+                let world = WorldPixel {
+                    x: top_left[0] + signed(x),
+                    y: top_left[1] + signed(y),
+                };
+                reference_colour_with_river_network(
+                    &loaded.data,
+                    step,
+                    world,
+                    &lines,
+                    &waters,
+                    &location_colours,
+                    None,
+                )
+                .expect("reference network pixel")
+                .0
+            })
+            .collect();
+        assert_eq!(target, expected, "format-2 network at step {step}");
     }
 }
 
@@ -2231,9 +2382,13 @@ pub(crate) fn readback_map_elevation_mode() {
     }
 }
 
-pub(crate) const CASES: [(&str, fn()); 24] = [
+pub(crate) const CASES: [(&str, fn()); 25] = [
     ("readback_map_full_rules", readback_map_full_rules),
     ("readback_map_rivers_overlay", readback_map_rivers_overlay),
+    (
+        "readback_map_river_network_overlays",
+        readback_map_river_network_overlays,
+    ),
     (
         "readback_map_location_overlays",
         readback_map_location_overlays,

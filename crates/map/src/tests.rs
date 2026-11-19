@@ -31,6 +31,78 @@ fn fixture(cells: Vec<Surface>) -> MapData {
     }
 }
 
+fn wide_river_map() -> MapData {
+    let mut map = fixture(vec![
+        Surface::Land {
+            terrain: 0,
+            usable: true,
+        };
+        9
+    ]);
+    let crop = Crop {
+        origin: Cell { x: 0, y: 0 },
+        width: 300,
+        height: 300,
+    };
+    let cells = usize::try_from(crop.width * crop.height).unwrap();
+    map.crop = crop;
+    map.cells = vec![
+        Surface::Land {
+            terrain: 0,
+            usable: true,
+        };
+        cells
+    ];
+    map.elevations = vec![11_004; cells];
+    map.fertility = vec![500; cells];
+    map.climate_temperature_tenths = vec![100; cells];
+    map.climate_gdd = vec![1000; cells];
+    map.climate_rainfall_mm = vec![1000; cells];
+    map.glacier = vec![false; cells];
+    map.hillside = vec![0; cells];
+    map
+}
+
+fn cross_tile_river() -> RiverNetwork {
+    let pixel_size = STEP_SIZE[53];
+    let point = |x: i32, y: i32| FixedPoint {
+        x: i32::try_from(i64::from(x) * i64::from(pixel_size)).unwrap(),
+        y: i32::try_from(i64::from(y) * i64::from(pixel_size)).unwrap(),
+    };
+    RiverNetwork {
+        show_from_step: [0; 3],
+        rivers: vec![RiverRiver {
+            id: "cross-tile".into(),
+            name: "Cross tile".into(),
+            tier: 1,
+        }],
+        stretches: vec![
+            RiverStretch {
+                id: "wide-course".into(),
+                river: 0,
+                kind: RiverStretchKind::River,
+                points: vec![point(110, 129), point(146, 129)],
+                width_first: 12_000,
+                width_last: 12_000,
+                ends: None,
+                drawn_first: 12_000,
+                drawn_last: 12_000,
+            },
+            RiverStretch {
+                id: "narrow-course".into(),
+                river: 0,
+                kind: RiverStretchKind::River,
+                points: vec![point(110, 64), point(146, 64)],
+                width_first: 100,
+                width_last: 100,
+                ends: None,
+                drawn_first: 100,
+                drawn_last: 100,
+            },
+        ],
+    }
+}
+
 fn encoded_elevation_map() -> MapData {
     let mut map = fixture(vec![
         Surface::Land {
@@ -1365,6 +1437,407 @@ fn network_tiers_are_hidden_before_their_step_and_present_at_it() {
             .line
             .is_empty()
     );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "compare all three reference looks and pixel collisions for the same fixture view"
+)]
+fn network_draw_lists_reproduce_the_reference_and_cache_cross_tile_banks() {
+    let scenario = fixture::location_scenario();
+    let loaded = &scenario.map;
+    let network = loaded.river_network.as_ref().expect("format-2 network");
+    let mut locations = PreparedLocations::new(
+        scenario.locations.clone(),
+        scenario.location_kinds.clone(),
+        loaded.data.crop,
+    );
+    let location_palette = scenario.location_kinds.overlay_palette();
+    let mut palette = location_palette.clone();
+    palette.push(loaded.data.lake);
+    palette.extend(loaded.data.terrains.iter().map(|terrain| terrain.solid));
+    let mut prepared = PreparedRiverNetwork::new(&loaded.data, network);
+
+    for step in [15_u8, 53] {
+        let crop = loaded.data.crop;
+        let origin = WorldPixel {
+            x: fixed_to_pixel(
+                FixedPoint {
+                    x: crop.origin.x * 32_768,
+                    y: crop.origin.y * 32_768,
+                },
+                i64::from(STEP_SIZE[usize::from(step)]),
+            )
+            .x - 4,
+            y: fixed_to_pixel(
+                FixedPoint {
+                    x: crop.origin.x * 32_768,
+                    y: crop.origin.y * 32_768,
+                },
+                i64::from(STEP_SIZE[usize::from(step)]),
+            )
+            .y - 4,
+        };
+        let view = ViewSize {
+            width: 136,
+            height: 80,
+        };
+        let locations_view = locations
+            .select_view(step, origin, view)
+            .expect("location view")
+            .into_iter()
+            .map(|([x, y], index)| [x, y, u32::from(index)])
+            .collect::<Vec<_>>();
+        let draw = prepared
+            .select_map_view(step, origin, view, &locations_view, location_palette.len())
+            .expect("network draw lists");
+        let parts = prepared
+            .select_view(step, origin, view)
+            .expect("cached network tiles");
+        if step == 53 {
+            assert!(!parts.banks.is_empty(), "wide rivers have banks");
+            let line = draw.rivers[0];
+            let water = parts
+                .water
+                .iter()
+                .next()
+                .map(|pixel| {
+                    [
+                        u32::try_from(pixel.x).unwrap(),
+                        u32::try_from(pixel.y).unwrap(),
+                    ]
+                })
+                .expect("wide water pixel");
+            let bank = parts
+                .banks
+                .keys()
+                .next()
+                .map(|pixel| {
+                    [
+                        u32::try_from(pixel.x).unwrap(),
+                        u32::try_from(pixel.y).unwrap(),
+                    ]
+                })
+                .expect("bank pixel");
+            let collisions = [line, water, bank].map(|[x, y]| [x, y, 0]);
+            let composed = prepared
+                .select_map_view(step, origin, view, &collisions, location_palette.len())
+                .expect("collision overlays compose");
+            assert!(composed.indexed.contains(&[line[0], line[1], 0]));
+            assert!(composed.indexed.contains(&[
+                water[0],
+                water[1],
+                u32::try_from(location_palette.len()).unwrap()
+            ]));
+            assert!(composed.indexed.contains(&[bank[0], bank[1], 0]));
+        }
+        assert!(draw.indexed.len() <= (view.width * view.height) as usize);
+
+        let halo_top_left = WorldPixel {
+            x: origin.x - 1,
+            y: origin.y - 1,
+        };
+        let halo_view = ViewSize {
+            width: view.width + 2,
+            height: view.height + 2,
+        };
+        let halo_draw = prepared
+            .select_map_view(step, halo_top_left, halo_view, &[], location_palette.len())
+            .expect("halo reference lines");
+        let halo_parts = prepared
+            .select_view(step, halo_top_left, halo_view)
+            .expect("halo reference water");
+        let lines: BTreeSet<_> = halo_draw
+            .rivers
+            .iter()
+            .map(|[x, y]| WorldPixel {
+                x: halo_top_left.x + i32::try_from(*x).unwrap(),
+                y: halo_top_left.y + i32::try_from(*y).unwrap(),
+            })
+            .collect();
+        let water: BTreeSet<_> = halo_parts
+            .water
+            .iter()
+            .map(|pixel| WorldPixel {
+                x: halo_top_left.x + pixel.x,
+                y: halo_top_left.y + pixel.y,
+            })
+            .collect();
+        let location_colours: BTreeMap<_, _> = locations_view
+            .iter()
+            .map(|[x, y, index]| {
+                (
+                    WorldPixel {
+                        x: origin.x + i32::try_from(*x).unwrap(),
+                        y: origin.y + i32::try_from(*y).unwrap(),
+                    },
+                    location_palette[*index as usize],
+                )
+            })
+            .collect();
+        let indexed: BTreeMap<_, _> = draw
+            .indexed
+            .iter()
+            .map(|[x, y, index]| ((*x, *y), palette[*index as usize]))
+            .collect();
+        let owners = vec![0; (loaded.data.crop.width * loaded.data.crop.height) as usize];
+        let values = [650];
+        let mode = ModeInputs {
+            owners: &owners,
+            values: &values,
+        };
+        for look in [0, 1, 2] {
+            for y in 0..view.height {
+                for x in 0..view.width {
+                    let world = WorldPixel {
+                        x: origin.x + i32::try_from(x).unwrap(),
+                        y: origin.y + i32::try_from(y).unwrap(),
+                    };
+                    let expected = match look {
+                        0 => reference_colour_with_river_network(
+                            &loaded.data,
+                            step,
+                            world,
+                            &lines,
+                            &water,
+                            &location_colours,
+                            None,
+                        ),
+                        1 => reference_colour_with_river_network_elevation(
+                            &loaded.data,
+                            step,
+                            world,
+                            &lines,
+                            &water,
+                            &location_colours,
+                        ),
+                        _ => reference_colour_with_river_network(
+                            &loaded.data,
+                            step,
+                            world,
+                            &lines,
+                            &water,
+                            &location_colours,
+                            Some(&mode),
+                        ),
+                    }
+                    .expect("reference colour");
+                    let drawn = if lines.contains(&world) {
+                        loaded.data.river
+                    } else if let Some(colour) = indexed.get(&(x, y)) {
+                        *colour
+                    } else {
+                        match look {
+                            0 => reference_colour_with_locations(
+                                &loaded.data,
+                                step,
+                                world,
+                                &BTreeSet::new(),
+                                &BTreeMap::new(),
+                            ),
+                            1 => reference_colour_with_elevation(
+                                &loaded.data,
+                                step,
+                                world,
+                                &BTreeSet::new(),
+                                &BTreeMap::new(),
+                            ),
+                            _ => reference_colour_with_mode(
+                                &loaded.data,
+                                step,
+                                world,
+                                &BTreeSet::new(),
+                                &BTreeMap::new(),
+                                Some(&mode),
+                            ),
+                        }
+                        .expect("base reference colour")
+                    };
+                    assert_eq!(drawn, expected, "look {look}, step {step} at ({x},{y})");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn banks_across_tile_edges_are_cached_once_independent_of_neighbour_order() {
+    let map = wide_river_map();
+    let network = cross_tile_river();
+    let view = ViewSize {
+        width: 8,
+        height: 8,
+    };
+    let bank_view = WorldPixel { x: 124, y: 120 };
+    let water_view = WorldPixel { x: 124, y: 128 };
+
+    let mut target_first = PreparedRiverNetwork::new(&map, &network);
+    let first = target_first
+        .select_view(53, bank_view, view)
+        .expect("target tile prepares first");
+    assert!(target_first.bank_tiles.contains(&(53, 0, 0)));
+    let first_banks = first.banks.clone();
+    let neighbour_water = target_first
+        .select_view(53, water_view, view)
+        .expect("neighbour water is available");
+    assert!(first_banks.iter().any(|(bank, _)| {
+        neighbour_water.water.iter().any(|water| {
+            let bank_world = WorldPixel {
+                x: bank_view.x + bank.x,
+                y: bank_view.y + bank.y,
+            };
+            let water_world = WorldPixel {
+                x: water_view.x + water.x,
+                y: water_view.y + water.y,
+            };
+            bank_world.x == water_world.x
+                && (i64::from(water_world.y) - i64::from(bank_world.y)).abs() == 1
+                && bank_world.y.div_euclid(128) != water_world.y.div_euclid(128)
+        })
+    }));
+
+    let mut neighbour_first = PreparedRiverNetwork::new(&map, &network);
+    neighbour_first
+        .select_view(53, water_view, view)
+        .expect("neighbour tile prepares first");
+    let second = neighbour_first
+        .select_view(53, bank_view, view)
+        .expect("target tile prepares after its neighbour");
+    assert_eq!(second.banks, first_banks);
+    assert!(neighbour_first.bank_tiles.contains(&(53, 0, 0)));
+}
+
+#[test]
+fn negative_start_network_view_matches_reference() {
+    let map = wide_river_map();
+    let network = cross_tile_river();
+    let mut prepared = PreparedRiverNetwork::new(&map, &network);
+    let top_left = WorldPixel { x: -8, y: -8 };
+    let view = ViewSize {
+        width: 160,
+        height: 160,
+    };
+    let draw = prepared
+        .select_map_view(53, top_left, view, &[], 0)
+        .expect("negative-start view");
+    assert!(!draw.rivers.is_empty());
+    let lines: BTreeSet<_> = draw
+        .rivers
+        .iter()
+        .map(|[x, y]| WorldPixel {
+            x: top_left.x + i32::try_from(*x).unwrap(),
+            y: top_left.y + i32::try_from(*y).unwrap(),
+        })
+        .collect();
+    let halo_top_left = WorldPixel {
+        x: top_left.x - 1,
+        y: top_left.y - 1,
+    };
+    let halo_view = ViewSize {
+        width: view.width + 2,
+        height: view.height + 2,
+    };
+    let halo_draw = prepared
+        .select_map_view(53, halo_top_left, halo_view, &[], 0)
+        .expect("one-pixel halo reference selection");
+    let halo_parts = prepared
+        .select_view(53, halo_top_left, halo_view)
+        .expect("one-pixel halo water selection");
+    let reference_lines: BTreeSet<_> = halo_draw
+        .rivers
+        .iter()
+        .map(|[x, y]| WorldPixel {
+            x: halo_top_left.x + i32::try_from(*x).unwrap(),
+            y: halo_top_left.y + i32::try_from(*y).unwrap(),
+        })
+        .collect();
+    let reference_water: BTreeSet<_> = halo_parts
+        .water
+        .iter()
+        .map(|pixel| WorldPixel {
+            x: halo_top_left.x + pixel.x,
+            y: halo_top_left.y + pixel.y,
+        })
+        .collect();
+    let indexed: BTreeMap<_, _> = draw
+        .indexed
+        .iter()
+        .map(|[x, y, index]| ((*x, *y), *index))
+        .collect();
+    for y in 0..view.height {
+        for x in 0..view.width {
+            let world = WorldPixel {
+                x: top_left.x + i32::try_from(x).unwrap(),
+                y: top_left.y + i32::try_from(y).unwrap(),
+            };
+            let expected = reference_colour_with_river_network(
+                &map,
+                53,
+                world,
+                &reference_lines,
+                &reference_water,
+                &BTreeMap::new(),
+                None,
+            )
+            .unwrap();
+            let drawn = if lines.contains(&world) {
+                map.river
+            } else if let Some(index) = indexed.get(&(x, y)) {
+                [map.lake, map.terrains[0].solid][*index as usize]
+            } else {
+                reference_colour_with_locations(&map, 53, world, &BTreeSet::new(), &BTreeMap::new())
+                    .unwrap()
+            };
+            assert_eq!(drawn, expected, "negative-start pixel ({x},{y})");
+        }
+    }
+}
+
+#[test]
+fn all_water_view_fills_exact_indexed_bound() {
+    let map = wide_river_map();
+    let network = cross_tile_river();
+    let mut prepared = PreparedRiverNetwork::new(&map, &network);
+    let top_left = WorldPixel { x: 100, y: 120 };
+    let view = ViewSize {
+        width: 64,
+        height: 32,
+    };
+    let parts = prepared
+        .select_view(53, top_left, view)
+        .expect("coverage around the wide course");
+    let water_top_left = parts
+        .water
+        .iter()
+        .find(|pixel| {
+            [(1, 0), (0, 1), (1, 1)].into_iter().all(|(dx, dy)| {
+                parts.water.contains(&WorldPixel {
+                    x: pixel.x + dx,
+                    y: pixel.y + dy,
+                })
+            })
+        })
+        .map(|pixel| WorldPixel {
+            x: top_left.x + pixel.x,
+            y: top_left.y + pixel.y,
+        })
+        .expect("fixture has a 2x2 all-water patch");
+    let all_water = prepared
+        .select_map_view(
+            53,
+            water_top_left,
+            ViewSize {
+                width: 2,
+                height: 2,
+            },
+            &[],
+            0,
+        )
+        .expect("2x2 all-water view");
+    assert!(all_water.rivers.is_empty());
+    assert_eq!(all_water.indexed.len(), 4);
+    assert!(all_water.indexed.iter().all(|pixel| pixel[2] == 0));
 }
 
 #[test]

@@ -6,7 +6,8 @@ use std::time::Duration;
 use ck_map::look::TerrainShades;
 use ck_map::{
     Camera, Crop, FixedPoint, LoadedMap, Location, LocationKinds, PreparedLocations,
-    PreparedMarkers, PreparedRivers, STEP_SIZE, Scenario, TerrainKind, ViewSize, WorldPixel,
+    PreparedMarkers, PreparedRivers, RiverNetworkView, STEP_SIZE, Scenario, TerrainKind, ViewSize,
+    WorldPixel,
 };
 use ck_render_2d::{
     MapCamera, MapInput, MapPublication, MapRules, MapTerrainKind, MapTerrainRule, SceneBridge,
@@ -58,6 +59,20 @@ pub(crate) trait RiverViewSelector {
         top_left: WorldPixel,
         view: ViewSize,
     ) -> Option<Vec<[u32; 2]>>;
+
+    fn select_map_view(
+        &mut self,
+        step: u8,
+        top_left: WorldPixel,
+        view: ViewSize,
+        locations: &[[u32; 3]],
+        _location_palette_len: usize,
+    ) -> Option<RiverNetworkView> {
+        Some(RiverNetworkView {
+            rivers: self.select_view(step, top_left, view)?,
+            indexed: locations.to_vec(),
+        })
+    }
 }
 
 impl RiverViewSelector for PreparedRivers {
@@ -68,6 +83,17 @@ impl RiverViewSelector for PreparedRivers {
         view: ViewSize,
     ) -> Option<Vec<[u32; 2]>> {
         PreparedRivers::select_view(self, step, top_left, view)
+    }
+
+    fn select_map_view(
+        &mut self,
+        step: u8,
+        top_left: WorldPixel,
+        view: ViewSize,
+        locations: &[[u32; 3]],
+        location_palette_len: usize,
+    ) -> Option<RiverNetworkView> {
+        PreparedRivers::select_map_view(self, step, top_left, view, locations, location_palette_len)
     }
 }
 
@@ -84,6 +110,7 @@ pub(crate) struct MapController<R: RiverViewSelector = PreparedRivers> {
     pointer_position: Option<PointerPosition>,
     hover: Option<Hover>,
     overlay_palette: Vec<ck_map::Rgba8>,
+    location_palette_len: usize,
     pan_pixels_per_frame: i32,
     zoom_steps_per_second: u32,
     scroll_points_per_step: u32,
@@ -128,7 +155,7 @@ impl MapController<PreparedRivers> {
                 zoom_steps_per_second,
                 scroll_points_per_step,
             },
-            PreparedRivers::new(loaded.rivers.clone()),
+            PreparedRivers::for_map(loaded),
             Vec::new(),
             LocationKinds::default(),
             &[],
@@ -150,7 +177,7 @@ impl MapController<PreparedRivers> {
                 zoom_steps_per_second,
                 scroll_points_per_step,
             },
-            PreparedRivers::new(scenario.map.rivers.clone()),
+            PreparedRivers::for_map(&scenario.map),
             scenario.locations.clone(),
             scenario.location_kinds.clone(),
             &scenario.catchment_owners,
@@ -209,7 +236,12 @@ impl<R: RiverViewSelector> MapController<R> {
     ) -> Result<Self, String> {
         let crop = loaded.data.crop;
         let locations_count = locations.len();
-        let overlay_palette = kinds.overlay_palette();
+        let mut overlay_palette = kinds.overlay_palette();
+        let location_palette_len = overlay_palette.len();
+        if loaded.river_network.is_some() {
+            overlay_palette.push(loaded.data.lake);
+            overlay_palette.extend(loaded.data.terrains.iter().map(|terrain| terrain.solid));
+        }
         let markers = PreparedMarkers::new(locations.clone(), kinds.clone());
         let location_names = locations
             .iter()
@@ -264,6 +296,7 @@ impl<R: RiverViewSelector> MapController<R> {
             pointer_position: None,
             hover: None,
             overlay_palette,
+            location_palette_len,
             pan_pixels_per_frame: i32::try_from(controls.pan_pixels_per_frame)
                 .map_err(|_| "map pan_pixels_per_frame does not fit i32".to_owned())?,
             zoom_steps_per_second: controls.zoom_steps_per_second,
@@ -591,23 +624,29 @@ impl<R: RiverViewSelector> MapController<R> {
 
     fn snapshot(&mut self, camera: Camera, generation: u64) -> Result<MapCamera, String> {
         let top_left = camera.top_left();
-        let rivers = self
-            .rivers
-            .select_view(camera.step, top_left, camera.view)
-            .ok_or_else(|| format!("map river coverage is invalid for step {}", camera.step))?;
         let locations = self
             .locations
             .select_view(camera.step, top_left, camera.view)
             .ok_or_else(|| format!("map location pixels are invalid for step {}", camera.step))?
             .into_iter()
             .map(|(xy, index)| [xy[0], xy[1], u32::from(index)])
-            .collect();
+            .collect::<Vec<_>>();
+        let overlays = self
+            .rivers
+            .select_map_view(
+                camera.step,
+                top_left,
+                camera.view,
+                &locations,
+                self.location_palette_len,
+            )
+            .ok_or_else(|| format!("map river coverage is invalid for step {}", camera.step))?;
         MapCamera::new_with_locations(
             camera.step,
             [top_left.x, top_left.y],
             [camera.view.width, camera.view.height],
-            rivers,
-            locations,
+            overlays.rivers,
+            overlays.indexed,
             self.overlay_palette.len(),
             generation,
         )
@@ -1526,6 +1565,104 @@ pub(crate) mod tests {
         assert_eq!(camera.center.x, 23883 * 32_768);
         assert_eq!(camera.center.y, 23883 * 32_768);
         assert_eq!(camera.step, initial_step(controller.crop, camera.view));
+    }
+
+    #[test]
+    fn format_two_controller_publishes_network_overlays_and_extended_palette() {
+        let scenario = ck_map::fixture::location_scenario();
+        let bridge = SceneBridge::new(ck_render_2d::Filter::Nearest);
+        let mut controller = MapController::from_scenario(&scenario, bridge, 1, 20, 24)
+            .expect("format-2 scenario loads into the map lane");
+        controller
+            .open(&WindowDesc {
+                title: "format-2 map controller test".to_owned(),
+                width: 400,
+                height: 320,
+                clear: [0.0; 3],
+                ..WindowDesc::default()
+            })
+            .expect("initial format-2 camera is valid");
+        let check_camera = |controller: &mut MapController, camera: Camera| {
+            let snapshot = controller
+                .snapshot(camera, controller.bridge.metrics_generation())
+                .expect("format-2 snapshot composes overlays");
+            let mut expected_rivers = PreparedRivers::for_map(&scenario.map);
+            let expected_locations = PreparedLocations::new(
+                scenario.locations.clone(),
+                scenario.location_kinds.clone(),
+                scenario.map.data.crop,
+            )
+            .select_view(camera.step, camera.top_left(), camera.view)
+            .expect("expected location view")
+            .into_iter()
+            .map(|(xy, index)| [xy[0], xy[1], u32::from(index)])
+            .collect::<Vec<_>>();
+            let expected = expected_rivers
+                .select_map_view(
+                    camera.step,
+                    camera.top_left(),
+                    camera.view,
+                    &expected_locations,
+                    scenario.location_kinds.overlay_palette().len(),
+                )
+                .expect("expected format-2 view");
+            assert_eq!(snapshot.rivers().as_ref(), expected.rivers.as_slice());
+            assert_eq!(snapshot.locations().as_ref(), expected.indexed.as_slice());
+            expected
+        };
+
+        let mut panned = at_step(&mut controller, 14);
+        panned.pan(3, 2, controller.crop);
+        controller.camera = Some(panned);
+        check_camera(&mut controller, panned);
+
+        let mut zoomed = panned;
+        assert!(zoomed.set_step(15), "cross the tier-2 visibility step");
+        controller.camera = Some(zoomed);
+        let zoomed_draw = check_camera(&mut controller, zoomed);
+        let lake_index = u32::try_from(scenario.location_kinds.overlay_palette().len()).unwrap();
+        assert!(
+            !zoomed_draw.rivers.is_empty()
+                || zoomed_draw
+                    .indexed
+                    .iter()
+                    .any(|pixel| pixel[2] == lake_index),
+            "the zoomed view contains visible network content"
+        );
+
+        let mut palette = scenario.location_kinds.overlay_palette();
+        palette.push(scenario.map.data.lake);
+        palette.extend(
+            scenario
+                .map
+                .data
+                .terrains
+                .iter()
+                .map(|terrain| terrain.solid),
+        );
+        let expected_palette: Vec<_> = palette.iter().map(|colour| rgba(*colour)).collect();
+        assert_eq!(controller.overlay_palette, palette);
+        assert_eq!(
+            rules(&scenario.map, &controller.overlay_palette).overlay_palette,
+            expected_palette
+        );
+    }
+
+    #[test]
+    fn format_two_palette_overflow_is_refused_with_the_existing_message() {
+        let mut scenario = ck_map::fixture::location_scenario();
+        let location_colours = scenario.location_kinds.overlay_palette().len();
+        let terrain_count = 256 - location_colours;
+        let style = scenario.map.data.terrains[0];
+        scenario.map.data.terrains.resize(terrain_count, style);
+        let bridge = SceneBridge::new(ck_render_2d::Filter::Nearest);
+        let Err(error) = MapController::from_scenario(&scenario, bridge, 1, 20, 24) else {
+            panic!("257 overlay colours must be refused");
+        };
+        assert!(
+            error.contains("overlay palette has more than 256 colours"),
+            "{error}"
+        );
     }
 
     #[test]
