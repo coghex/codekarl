@@ -55,6 +55,7 @@ pub(crate) struct Prepared {
     /// Map-derived makeshift shelter by place, not saved in `EconomyState`.
     shelter_by_place: BTreeMap<String, u64>,
     saves: PathBuf,
+    storage: super::character_storage::Storage,
 }
 
 /// Eight bytes from the operating system, as a seed.
@@ -170,16 +171,27 @@ pub(crate) fn prepare(
             nearby_by_place.clone(),
         )
     };
-    let simulation = if let Some(path) = request.load {
-        let bytes = std::fs::read(path)
+    let storage_parent = request.game.saves.parent().unwrap_or(Path::new("."));
+    let (simulation, storage) = if let Some(path) = request.load {
+        let mut file = std::fs::File::open(path)
             .map_err(|error| format!("cannot read save {}: {error}", path.display()))?;
-        let save = Save::<GameState>::from_bytes(&bytes, &identity.expected())
-            .map_err(|error| format!("save {}: {error}", path.display()))?;
+        let staging = super::character_storage::Storage::fresh_path(storage_parent)
+            .map_err(|e| e.to_string())?;
+        let (save, _) = Save::<GameState>::read_with_sections(
+            &mut file,
+            &identity.expected(),
+            &staging,
+            &[*b"ARCH", *b"LOGS"],
+        )
+        .map_err(|e| format!("save {}: {e}", path.display()))?;
+        let storage = super::character_storage::Storage { path: staging };
+        super::character_storage::Storage::validate(&storage.path, &save.state)
+            .map_err(|e| e.to_string())?;
         let simulation = Simulation::from_save(save, scheduler(), apply)
             .map_err(|error| format!("save {}: {error}", path.display()))?;
         let date = simulation.date().unwrap_or(start);
         log(Level::Info, format!("loaded {} at {date}", path.display()));
-        simulation
+        (simulation, storage)
     } else {
         let seed = match request.seed {
             Some(seed) => seed,
@@ -191,14 +203,20 @@ pub(crate) fn prepare(
         for line in load_report {
             log(Level::Info, format!("economy start: {line}"));
         }
-        Simulation::new(
-            start_time,
-            seed,
-            GameState {
-                economy: economy_state,
-            },
-            scheduler(),
-            apply,
+        let storage =
+            super::character_storage::Storage::empty(storage_parent).map_err(|e| e.to_string())?;
+        (
+            Simulation::new(
+                start_time,
+                seed,
+                GameState {
+                    economy: economy_state,
+                    characters: ck_characters::CharacterStore::default(),
+                },
+                scheduler(),
+                apply,
+            ),
+            storage,
         )
     };
     if let Some(gameplay) = &gameplay_runtime {
@@ -216,6 +234,7 @@ pub(crate) fn prepare(
         economy_rules,
         shelter_by_place,
         saves: request.game.saves.clone(),
+        storage,
     })
 }
 
@@ -243,6 +262,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         economy_rules,
         shelter_by_place,
         saves,
+        storage,
         scenario,
     } = prepared;
     let place_ids: Vec<String> = scenario
@@ -327,6 +347,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                     )
                 })),
             )
+            .with_character_storage(storage, super::character_storage::Storage::validate)
             .with_terminal_probe(move || {
                 terminal_runtime
                     .as_ref()
@@ -398,13 +419,20 @@ fn register_economy_callback_with_context(
             "economy.daily",
             Cadence::Daily { hour: ECONOMY_HOUR },
             move |state, tick| {
-                ck_economy::run_daily_economy_with_context(
+                let mut floors = BTreeMap::new();
+                for character in state.characters.iter() {
+                    *floors
+                        .entry((character.pop.place.clone(), character.pop.slot as usize))
+                        .or_insert(0_u64) += 1;
+                }
+                ck_economy::run_daily_economy_with_floors(
                     &rules,
                     &mut state.economy,
                     tick.date(),
                     &quality_by_place,
                     &shelter_by_place,
                     &nearby_by_place,
+                    &floors,
                 )
                 .map(|_| ())
                 .map_err(io::Error::other)

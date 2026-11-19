@@ -173,7 +173,7 @@ pub(crate) fn list(saves: &Path, identity: &Identity) -> Result<Vec<Entry>, Stri
             let (Some(format), Some(build)) = (header.format, header.build.as_ref()) else {
                 return Fit::Unreadable;
             };
-            if format != 2 || build != &identity.build {
+            if format != 3 || build != &identity.build {
                 return Fit::Version;
             }
             let expected = [
@@ -340,6 +340,7 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Writes a complete new file, then links it into place without replacing any entry already there.
+#[cfg(test)]
 pub(crate) fn write_new_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let directory = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(directory)?;
@@ -379,6 +380,33 @@ fn create_temporary(directory: &Path, name: &std::ffi::OsStr) -> io::Result<(Pat
         io::ErrorKind::AlreadyExists,
         "could not reserve a temporary save file",
     ))
+}
+
+/// Stream a save to a temporary file and publish it atomically.
+pub(super) fn write_stream_atomically(
+    path: &Path,
+    replace: bool,
+    write: impl FnOnce(&mut fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(directory)?;
+    let (temporary, mut file) = create_temporary(directory, path.file_name().unwrap_or_default())?;
+    let result = (|| {
+        write(&mut file)?;
+        file.sync_all()?;
+        drop(file);
+        if replace {
+            fs::rename(&temporary, path)?;
+        } else {
+            fs::hard_link(&temporary, path)?;
+            fs::remove_file(&temporary)?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 #[cfg(test)]

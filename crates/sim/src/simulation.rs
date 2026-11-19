@@ -345,6 +345,23 @@ impl<S: Canonical, C> Simulation<S, C> {
             self.queue.iter().map(|queued| &queued.record),
         )
     }
+
+    /// Digest the state together with a length-known canonical external section.
+    /// # Errors
+    /// Returns an error on state encoding failure or a short reader.
+    pub fn digest_with_section(
+        &self,
+        tag: [u8; 4],
+        length: u64,
+        reader: &mut impl std::io::Read,
+    ) -> std::io::Result<u64> {
+        crate::save::digest_section(
+            self.digest().map_err(std::io::Error::other)?,
+            tag,
+            length,
+            reader,
+        )
+    }
 }
 
 impl<S: Clone, C> Simulation<S, C> {

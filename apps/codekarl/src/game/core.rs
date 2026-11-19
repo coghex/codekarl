@@ -15,7 +15,7 @@ use ck_sim::{Canonical, Clock, Date, Save, Scheduler, Simulation, Speed};
 
 use super::{
     controls::{Control, GuardedLoadResult, GuardedResultSink},
-    saves::{self, Entry, Fit, Identity, quicksave_path, write_atomically, write_new_atomically},
+    saves::{self, Entry, Fit, Identity, quicksave_path},
     slot::{PauseReason, SimSnapshot},
     view::EconomyView,
 };
@@ -123,9 +123,15 @@ type FailureProbe<S> = Box<dyn FnMut(&S) -> Option<String> + Send>;
 /// How the core builds the immutable economy view of a state (design §6).
 pub(crate) type ViewBuilder<S> = Box<dyn Fn(&S, Date) -> EconomyView + Send>;
 
+type ExternalStorage<S> = (
+    super::character_storage::Storage,
+    fn(&std::path::Path, &S) -> std::io::Result<()>,
+);
+
 /// The game: a [`Simulation`], its clock, why it is paused and the means to save and load it.
 pub(crate) struct Core<S, C> {
     simulation: Simulation<S, C>,
+    external: Option<ExternalStorage<S>>,
     clock: Clock,
     paused: Option<PauseReason>,
     /// Whether the player's game has changed since its last successful save or load.
@@ -149,6 +155,41 @@ where
     S: Canonical + Clone + Send + 'static,
     C: Canonical + Send + 'static,
 {
+    pub(super) fn with_character_storage(
+        mut self,
+        storage: super::character_storage::Storage,
+        validate: fn(&std::path::Path, &S) -> std::io::Result<()>,
+    ) -> Self {
+        self.external = Some((storage, validate));
+        self
+    }
+    fn write_save(
+        &self,
+        path: &std::path::Path,
+        name: Option<String>,
+        replace: bool,
+    ) -> std::io::Result<()> {
+        let mut save = self.save();
+        if let Some(name) = name {
+            save.meta.name = name;
+            save.meta.written = saves::utc_now_rfc3339();
+        }
+        saves::write_stream_atomically(path, replace, |file| {
+            if let Some((storage, _)) = &self.external {
+                let mut archive = std::fs::File::open(storage.path.join("ARCH"))?;
+                let mut logs = std::fs::File::open(storage.path.join("LOGS"))?;
+                let a = archive.metadata()?.len();
+                let l = logs.metadata()?.len();
+                save.write_with_sections(
+                    file,
+                    &mut [(*b"ARCH", a, &mut archive), (*b"LOGS", l, &mut logs)],
+                )
+            } else {
+                use std::io::Write;
+                file.write_all(&save.to_bytes().map_err(std::io::Error::other)?)
+            }
+        })
+    }
     /// A game over `simulation`, paused at speed 1 with the reason `load`. It publishes its first snapshot at once.
     #[cfg(test)]
     pub(crate) fn new(
@@ -173,6 +214,7 @@ where
     ) -> Self {
         let mut core = Self {
             simulation,
+            external: None,
             clock: Clock::new(),
             paused: Some(PauseReason::Load),
             unsaved: false,
@@ -465,13 +507,6 @@ where
             .save(self.identity.meta(self.simulation.seed()))
     }
 
-    fn save_with_name(&self, name: String) -> Result<Vec<u8>, String> {
-        let mut save = self.save();
-        save.meta.name = name;
-        save.meta.written = saves::utc_now_rfc3339();
-        save.to_bytes().map_err(|error| error.to_string())
-    }
-
     fn save_call(&mut self, call: SaveCall) -> SaveReply {
         let reply = match call {
             SaveCall::List => SaveReply::Listed(saves::list(&self.saves, &self.identity)),
@@ -510,10 +545,9 @@ where
 
     fn save_as_new(&mut self, untrimmed_name: &str) -> Result<(), String> {
         let name = saves::valid_name(untrimmed_name)?;
-        let bytes = self.save_with_name(name.clone())?;
         for _ in 0..128 {
             let (filename, path) = saves::new_save_path(&self.saves, &name)?;
-            match write_new_atomically(&path, &bytes) {
+            match self.write_save(&path, Some(name.clone()), false) {
                 Ok(()) => {
                     self.log(Level::Info, format!("saved {name} as {filename}"));
                     return Ok(());
@@ -537,8 +571,7 @@ where
                 entry.fit.as_str()
             ));
         }
-        let bytes = self.save_with_name(entry.name.clone())?;
-        write_atomically(&path, &bytes)
+        self.write_save(&path, Some(entry.name.clone()), true)
             .map_err(|error| format!("cannot replace {filename}: {error}"))?;
         self.log(
             Level::Info,
@@ -584,13 +617,8 @@ where
         let path = quicksave_path(&self.saves);
         let date = self.snapshot().date;
         let result = self
-            .save()
-            .to_bytes()
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| {
-                write_atomically(&path, &bytes)
-                    .map_err(|error| format!("cannot write {}: {error}", path.display()))
-            });
+            .write_save(&path, None, true)
+            .map_err(|error| format!("cannot write {}: {error}", path.display()));
         match result {
             Ok(()) => {
                 self.unsaved = false;
@@ -618,22 +646,49 @@ where
         }
     }
 
-    fn load_from(&self, path: &std::path::Path) -> Result<Simulation<S, C>, String> {
+    fn load_from(&mut self, path: &std::path::Path) -> Result<Simulation<S, C>, String> {
         let mut file = saves::open_regular(path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut file, &mut bytes)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        let save = Save::<S>::from_bytes(&bytes, &self.identity.expected())
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        Simulation::from_save(save, (self.rebuild.scheduler)(), self.rebuild.apply)
-            .map_err(|error| format!("{}: {error}", path.display()))
+        if let Some((storage, validate)) = &self.external {
+            let parent = storage.path.parent().ok_or("storage has no parent")?;
+            let staging =
+                super::character_storage::Storage::fresh_path(parent).map_err(|e| e.to_string())?;
+            let (save, _) = Save::<S>::read_with_sections(
+                &mut file,
+                &self.identity.expected(),
+                &staging,
+                &[*b"ARCH", *b"LOGS"],
+            )
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+            let staged = super::character_storage::Storage { path: staging };
+            validate(&staged.path, &save.state).map_err(|e| e.to_string())?;
+            let simulation =
+                Simulation::from_save(save, (self.rebuild.scheduler)(), self.rebuild.apply)
+                    .map_err(|e| e.to_string())?;
+            self.external = Some((staged, *validate));
+            Ok(simulation)
+        } else {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| e.to_string())?;
+            let save = Save::<S>::from_bytes(&bytes, &self.identity.expected())
+                .map_err(|e| e.to_string())?;
+            Simulation::from_save(save, (self.rebuild.scheduler)(), self.rebuild.apply)
+                .map_err(|e| e.to_string())
+        }
     }
 
     /// The state digest, for tests.
     #[cfg(test)]
     pub(crate) fn digest(&self) -> u64 {
-        self.simulation.digest().expect("the state encodes")
+        if let Some((storage, _)) = &self.external {
+            let mut file = std::fs::File::open(storage.path.join("ARCH")).expect("archive");
+            let len = file.metadata().expect("archive metadata").len();
+            self.simulation
+                .digest_with_section(*b"ARCH", len, &mut file)
+                .expect("archive digest")
+        } else {
+            self.simulation.digest().expect("the state encodes")
+        }
     }
 
     /// The tick that runs next, for tests.
