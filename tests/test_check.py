@@ -408,7 +408,9 @@ class Levels(CheckFixture):
                 ["cargo", "test", "-p", "ck-economy", "--doc", *flags],
             ],
         )
-        self.assertEqual(by_name["economy.core"].paths, ("crates/economy/",))
+        self.assertEqual(
+            by_name["economy.core"].paths, ("crates/economy/", "assets/game/peoples.toml")
+        )
         self.assertEqual(by_name["economy.core"].needs, "plain")
         self.assertEqual(
             by_name["rust.app"].commands(),

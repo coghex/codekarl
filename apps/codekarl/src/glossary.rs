@@ -199,11 +199,11 @@ mod tests {
     }
 
     #[test]
-    fn shipped_glossary_has_92_sorted_entries() {
+    fn shipped_glossary_has_104_sorted_entries() {
         let fonts = fonts();
         let shipped = load(&assets(), &fonts).expect("the shipped glossary");
         let keys = shipped.keys().collect::<Vec<_>>();
-        assert_eq!(keys.len(), 92);
+        assert_eq!(keys.len(), 104);
         assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(!assets().join("ui/glossary-r1.toml").exists());
     }
@@ -250,15 +250,23 @@ mod tests {
                 }
             }
         }
-        for category in ["cultures", "religions"] {
-            ids.extend(
-                economy[category]
-                    .as_array()
-                    .expect("culture or religion array")
-                    .iter()
-                    .map(|value| value.as_str().expect("culture or religion id")),
-            );
-        }
+        let peoples: toml::Value =
+            toml::from_str(&std::fs::read_to_string(assets().join("game/peoples.toml")).unwrap())
+                .unwrap();
+        ids.extend(
+            peoples["cultures"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value["id"].as_str().unwrap()),
+        );
+        ids.extend(
+            economy["religions"]
+                .as_array()
+                .expect("religion array")
+                .iter()
+                .map(|value| value.as_str().expect("religion id")),
+        );
         for id in ids {
             assert!(shipped.entry(id).is_some(), "missing glossary entry {id}");
         }

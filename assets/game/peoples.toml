@@ -1,0 +1,226 @@
+# Sources: cultures-britain-r3 (owner r159), conversion-r2 (r161), languages-r5 (r159, r160, r162). Pictish classification is low confidence.
+subgroups = ["gaelic", "english", "brittonic", "pictish"]
+supercultures = ["isles"]
+families = ["indo_european"]
+
+[[supergroups]]
+id = "celtic"
+parent = "indo_european"
+
+[[supergroups]]
+id = "west_germanic"
+parent = "indo_european"
+
+[[supergroups]]
+id = "italic"
+parent = "indo_european"
+
+[[groups]]
+id = "goidelic"
+parent = "celtic"
+
+[[groups]]
+id = "brittonic"
+parent = "celtic"
+
+[[groups]]
+id = "pictish"
+parent = "celtic"
+
+[[groups]]
+id = "english"
+parent = "west_germanic"
+
+[[groups]]
+id = "latin"
+parent = "italic"
+
+[[languages]]
+id = "old_irish"
+group = "goidelic"
+dialects = ["irish", "argyll"]
+
+[[languages]]
+id = "old_welsh"
+group = "brittonic"
+dialects = []
+
+[[languages]]
+id = "cumbric"
+group = "brittonic"
+dialects = []
+
+[[languages]]
+id = "old_cornish"
+group = "brittonic"
+dialects = []
+
+[[languages]]
+id = "pictish"
+group = "pictish"
+dialects = []
+
+[[languages]]
+id = "old_english"
+group = "english"
+dialects = ["northumbrian", "mercian", "west_saxon", "kentish"]
+
+[[languages]]
+id = "latin"
+group = "latin"
+dialects = []
+
+[[cultures]]
+id = "ulaid"
+subgroup = "gaelic"
+superculture = "isles"
+language = "old_irish"
+dialect = "irish"
+
+[[cultures]]
+id = "cruthin"
+subgroup = "gaelic"
+superculture = "isles"
+language = "old_irish"
+dialect = "irish"
+
+[[cultures]]
+id = "northern_ui_neill"
+subgroup = "gaelic"
+superculture = "isles"
+language = "old_irish"
+dialect = "irish"
+
+[[cultures]]
+id = "airgialla"
+subgroup = "gaelic"
+superculture = "isles"
+language = "old_irish"
+dialect = "irish"
+
+[[cultures]]
+id = "mide_brega"
+subgroup = "gaelic"
+superculture = "isles"
+language = "old_irish"
+dialect = "irish"
+
+[[cultures]]
+id = "laigin"
+subgroup = "gaelic"
+superculture = "isles"
+language = "old_irish"
+dialect = "irish"
+
+[[cultures]]
+id = "mumu"
+subgroup = "gaelic"
+superculture = "isles"
+language = "old_irish"
+dialect = "irish"
+
+[[cultures]]
+id = "connachta"
+subgroup = "gaelic"
+superculture = "isles"
+language = "old_irish"
+dialect = "irish"
+
+[[cultures]]
+id = "dal_riatan"
+subgroup = "gaelic"
+superculture = "isles"
+language = "old_irish"
+dialect = "argyll"
+
+[[cultures]]
+id = "northumbrian"
+subgroup = "english"
+superculture = "isles"
+language = "old_english"
+dialect = "northumbrian"
+
+[[cultures]]
+id = "mercian"
+subgroup = "english"
+superculture = "isles"
+language = "old_english"
+dialect = "mercian"
+
+[[cultures]]
+id = "east_anglian"
+subgroup = "english"
+superculture = "isles"
+language = "old_english"
+dialect = "mercian"
+
+[[cultures]]
+id = "west_saxon"
+subgroup = "english"
+superculture = "isles"
+language = "old_english"
+dialect = "west_saxon"
+
+[[cultures]]
+id = "east_saxon"
+subgroup = "english"
+superculture = "isles"
+language = "old_english"
+dialect = "west_saxon"
+
+[[cultures]]
+id = "south_saxon"
+subgroup = "english"
+superculture = "isles"
+language = "old_english"
+dialect = "west_saxon"
+
+[[cultures]]
+id = "kentish"
+subgroup = "english"
+superculture = "isles"
+language = "old_english"
+dialect = "kentish"
+
+[[cultures]]
+id = "north_welsh"
+subgroup = "brittonic"
+superculture = "isles"
+language = "old_welsh"
+
+[[cultures]]
+id = "south_welsh"
+subgroup = "brittonic"
+superculture = "isles"
+language = "old_welsh"
+
+[[cultures]]
+id = "cumbric"
+subgroup = "brittonic"
+superculture = "isles"
+language = "cumbric"
+
+[[cultures]]
+id = "cornish"
+subgroup = "brittonic"
+superculture = "isles"
+language = "old_cornish"
+
+[[cultures]]
+id = "pictish"
+subgroup = "pictish"
+superculture = "isles"
+language = "pictish"
+
+[[religions]]
+id = "christianity"
+liturgical_language = "latin"
+
+[[religions]]
+id = "irish_paganism"
+
+[[religions]]
+id = "norse_paganism"
+
+[[religions]]
+id = "anglo_saxon_paganism"

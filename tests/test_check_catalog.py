@@ -2470,6 +2470,8 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("assets/game/economy.toml", "assets/scenarios/ireland-768/"),
     ),
+    # The registry's shipped-data tests read the registry outside the economy crate.
+    Guard("crates/economy/src/peoples.rs", "economy.core", ("assets/game/peoples.toml",)),
     # CK-225: economy's shipped-data validation tests load both rules and Ireland's authored starts.
     Guard(
         "crates/economy/src/lib.rs",

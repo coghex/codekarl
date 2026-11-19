@@ -370,7 +370,7 @@ pagan_share_pm=150
 [places.mayo]
 culture="connachta"
 religion="christianity"
-monk_culture="english"
+monk_culture="northumbrian"
 monk_religion="christianity"
 
 [places.tuam]

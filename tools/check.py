@@ -1480,7 +1480,7 @@ STEPS = [
             cargo_test(["-p", "ck-economy", "--doc"]),
         ],
         description="The backend-neutral economy data, starting-state and projection primitives (no map, GPU or window).",
-        paths=("crates/economy/",),
+        paths=("crates/economy/", "assets/game/peoples.toml"),
     ),
     # CK-90: the 2D renderer's core (images, the scene bridge and the `Renderer` over a fake backend). It has no
     # GPU feature and opens no window, so every test target of the crate is one plain group, selected by the
