@@ -811,6 +811,8 @@ mod tests {
                 short_on_rent: false,
                 housed_last: false,
                 genetics: ck_economy::PopGenetics::default(),
+                pending_births: 0,
+                pending_deaths: 0,
             }],
             buildings: vec![
                 BuildingState {

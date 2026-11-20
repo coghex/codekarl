@@ -47,7 +47,7 @@ fn person(id: u64, born: GameTime, humours: [i64; 4], mind: PersonalityRecord) -
         full_until: None,
         genetics: Box::new(genetics),
         personality: mind,
-        life: ck_characters::LifeRecord::default(),
+        life: Box::default(),
     }
 }
 
@@ -297,6 +297,8 @@ fn economy_with_a_noble_pop() -> EconomyState {
         short_on_rent: false,
         housed_last: false,
         genetics: ck_economy::PopGenetics::default(),
+        pending_births: 0,
+        pending_deaths: 0,
     });
     state
 }

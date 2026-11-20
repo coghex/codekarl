@@ -1,4 +1,5 @@
-//! Non-negative integers of any size, as little-endian 32-bit limbs (CK-363): the exact fallback of the chance product and of the
+//! Non-negative integers of any size, as little-endian 32-bit limbs (CK-363, moved to the economy crate by CK-364, whose life-cycle
+//! tables need it at load): the exact fallback of the chance product and of the
 //! skill formulas when an intermediate does not fit 128 bits. Only the operations those need; correctness over speed, and the
 //! callers take the 128-bit path first.
 #![deny(clippy::float_arithmetic)]
@@ -6,11 +7,13 @@
 use std::cmp::Ordering;
 
 /// A non-negative integer, with no leading zero limb.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Big(Vec<u32>);
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Big(Vec<u32>);
 
 impl Big {
-    pub(crate) fn new(value: u128) -> Self {
+    /// The integer `value`.
+    #[must_use]
+    pub fn new(value: u128) -> Self {
         let mut limbs = Vec::new();
         let mut rest = value;
         while rest != 0 {
@@ -27,7 +30,9 @@ impl Big {
         Self(limbs)
     }
 
-    pub(crate) fn mul(&self, other: &Self) -> Self {
+    /// `self x other`.
+    #[must_use]
+    pub fn mul(&self, other: &Self) -> Self {
         let mut out = vec![0_u32; self.0.len() + other.0.len()];
         for (i, x) in self.0.iter().enumerate() {
             let mut carry = 0_u64;
@@ -41,7 +46,9 @@ impl Big {
         Self::trim(out)
     }
 
-    pub(crate) fn add(&self, other: &Self) -> Self {
+    /// `self + other`.
+    #[must_use]
+    pub fn add(&self, other: &Self) -> Self {
         let mut out = Vec::with_capacity(self.0.len().max(other.0.len()) + 1);
         let mut carry = 0_u64;
         for i in 0..self.0.len().max(other.0.len()) {
@@ -56,7 +63,8 @@ impl Big {
     }
 
     /// `self - other`, or `None` when `other` is larger.
-    pub(crate) fn sub(&self, other: &Self) -> Option<Self> {
+    #[must_use]
+    pub fn sub(&self, other: &Self) -> Option<Self> {
         if self.cmp(other) == Ordering::Less {
             return None;
         }
@@ -74,7 +82,13 @@ impl Big {
         Some(Self::trim(out))
     }
 
-    pub(crate) fn cmp(&self, other: &Self) -> Ordering {
+    /// How `self` compares with `other`.
+    #[must_use]
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "an inherent comparison: Big is not Ord, and its callers compare by name"
+    )]
+    pub fn cmp(&self, other: &Self) -> Ordering {
         self.0
             .len()
             .cmp(&other.0.len())
@@ -94,7 +108,8 @@ impl Big {
     }
 
     /// `(self / divisor, self % divisor)` by binary long division; `divisor` must not be zero.
-    pub(crate) fn divmod(&self, divisor: &Self) -> (Self, Self) {
+    #[must_use]
+    pub fn divmod(&self, divisor: &Self) -> (Self, Self) {
         let mut quotient = vec![0_u32; self.0.len()];
         let mut rest = Self(Vec::new());
         for index in (0..self.bits()).rev() {
@@ -111,7 +126,8 @@ impl Big {
     }
 
     /// The value, if it fits 128 bits.
-    pub(crate) fn to_u128(&self) -> Option<u128> {
+    #[must_use]
+    pub fn to_u128(&self) -> Option<u128> {
         if self.0.len() > 4 {
             return None;
         }
@@ -123,8 +139,15 @@ impl Big {
         )
     }
 
+    /// `self` to the power `exponent`.
+    #[must_use]
+    pub fn pow(&self, exponent: u32) -> Self {
+        (0..exponent).fold(Self::new(1), |total, _| total.mul(self))
+    }
+
     /// `round(self / divisor)` to the nearest integer, a tie up.
-    pub(crate) fn round_div(&self, divisor: &Self) -> Self {
+    #[must_use]
+    pub fn round_div(&self, divisor: &Self) -> Self {
         let (quotient, rest) = self.divmod(divisor);
         if rest.add(&rest).cmp(divisor) == Ordering::Less {
             quotient
@@ -135,7 +158,8 @@ impl Big {
 }
 
 /// The product of non-negative factors.
-pub(crate) fn product(factors: &[u128]) -> Big {
+#[must_use]
+pub fn product(factors: &[u128]) -> Big {
     factors
         .iter()
         .fold(Big::new(1), |total, factor| total.mul(&Big::new(*factor)))

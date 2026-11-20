@@ -11,7 +11,7 @@ use crate::{
     Character, Context, Error, Sex,
     genetics::{below, normal_draw_wide, site},
 };
-use ck_sim::{Canonical, CanonicalError, Reader};
+use ck_sim::{Canonical, CanonicalError, GameTime, Reader};
 use std::collections::BTreeMap;
 
 /// The state slice 4 adds to a character.
@@ -31,6 +31,15 @@ pub struct LifeRecord {
     pub holds_land: bool,
     /// The cause of death, in an archived record.
     pub death_cause: Option<String>,
+    /// The key of the name pool the base name was drawn from (CK-364): immutable, and what a shown name reads, never the pop's
+    /// current culture. Empty for a character created without life-cycle data.
+    pub pool: String,
+    /// The father of the child a woman carries, while she is pregnant (CK-364).
+    pub pregnant_by: Option<u64>,
+    /// The 1st on which a pregnant woman delivers (CK-364).
+    pub due: Option<GameTime>,
+    /// The 1st from which a woman who delivered may conceive again (CK-364).
+    pub nursing_until: Option<GameTime>,
 }
 
 impl Canonical for LifeRecord {
@@ -41,7 +50,11 @@ impl Canonical for LifeRecord {
         self.use_factor.encode(out)?;
         self.focus.encode(out)?;
         self.holds_land.encode(out)?;
-        self.death_cause.encode(out)
+        self.death_cause.encode(out)?;
+        self.pool.encode(out)?;
+        self.pregnant_by.encode(out)?;
+        self.due.encode(out)?;
+        self.nursing_until.encode(out)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
@@ -52,6 +65,10 @@ impl Canonical for LifeRecord {
             focus: String::decode(r)?,
             holds_land: bool::decode(r)?,
             death_cause: Option::decode(r)?,
+            pool: String::decode(r)?,
+            pregnant_by: Option::decode(r)?,
+            due: Option::decode(r)?,
+            nursing_until: Option::decode(r)?,
         })
     }
 }

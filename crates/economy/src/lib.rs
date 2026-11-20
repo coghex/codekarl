@@ -10,12 +10,15 @@ use std::{collections::BTreeMap, error::Error, fmt, fs, path::Path};
 use ck_sim::{Canonical, CanonicalError, Date, Reader, days_in_month, encode_length};
 use serde::Deserialize;
 
+pub mod bigint;
 pub mod events;
 pub mod genetics;
+pub mod lifecycle;
 pub mod peoples;
 pub mod personality;
 pub use events::EventRules;
 pub use genetics::{Genetics, PopGenetics};
+pub use lifecycle::LifeCycle;
 pub use peoples::Peoples;
 pub use personality::Personality;
 
@@ -167,6 +170,9 @@ pub struct Rules {
     /// Validated character event data: the catalog, events, deeds, precedence and skills (CK-363).
     #[serde(skip)]
     pub events: EventRules,
+    /// Validated life-cycle data: death, majority, relations, conception and the name pools (CK-364).
+    #[serde(skip)]
+    pub lifecycle: LifeCycle,
     /// Religions present in the simulation.
     pub religions: Vec<String>,
     /// Land terrain names in the same order as the map terrain palette.
@@ -260,6 +266,14 @@ impl Rules {
                 peoples: &rules.peoples,
                 genetics: &rules.genetics,
                 pop_types: &pop_types,
+            },
+        )?;
+        rules.lifecycle = LifeCycle::load(
+            &path.with_file_name("lifecycle"),
+            &lifecycle::Registry {
+                peoples: &rules.peoples,
+                pop_types: &pop_types,
+                religions: &rules.religions,
             },
         )?;
         rules.validate(&file)?;
@@ -1955,6 +1969,8 @@ fn make_pop(
         short_on_rent: false,
         housed_last: false,
         genetics: seed_genetics(rules, culture)?,
+        pending_births: 0,
+        pending_deaths: 0,
     })
 }
 
@@ -3421,6 +3437,10 @@ pub struct PopState {
     pub housed_last: bool,
     /// The pop's genetic state: baselines, haplogroup shares and trait rates (CK-361).
     pub genetics: PopGenetics,
+    /// Character births committed since the last monthly step, which that step counts against its own births (CK-364). Saved.
+    pub pending_births: u64,
+    /// Character deaths committed since the last monthly step, which that step counts against its own deaths (CK-364). Saved.
+    pub pending_deaths: u64,
 }
 
 /// Saved balances and carries used by the noon eating system.
@@ -6935,6 +6955,8 @@ fn ensure_pop(place: &mut PlaceState, kind: &str, culture: &str, religion: &str)
         short_on_rent: false,
         housed_last: false,
         genetics: PopGenetics::default(),
+        pending_births: 0,
+        pending_deaths: 0,
     });
     for building in &mut place.buildings {
         building.employment.push(Employment::default());
@@ -7714,9 +7736,6 @@ fn run_monthly_demography_with_floors(
                     missing_data(format!("pop_types.{}", pop.kind), "definition is missing")
                 })?;
             let crowding = fill.pops[pop_index].crowding_pm.unwrap_or(1000);
-            let comfort = (u64::from(pop.consumption.niceties_pm)
-                + u64::from(pop.consumption.luxuries_pm) / 2)
-                .min(1000);
             let birth_factors = [
                 curve_value(
                     rules.curves.get("births_food").ok_or_else(|| {
@@ -7743,53 +7762,40 @@ fn run_monthly_demography_with_floors(
                     u64::from(pop.literacy_pm),
                 )?,
             ];
-            let births = exact_monthly_rate(
+            let requested_births = exact_monthly_rate(
                 pop.workers,
                 pop_type.births_pm_year,
                 &birth_factors,
                 &mut pop.consumption.birth_carry,
                 "demography.births",
             )?;
+            // CK-364: the births the characters already committed this month are among the pop's births, so the step adds only
+            // the rest, and the dependent deaths that follow are computed on the reduced count. The counters record both.
+            let births = requested_births.saturating_sub(pop.pending_births);
             pop.dependents = pop.dependents.checked_add(births).ok_or_else(|| {
                 missing_data("demography.births".to_owned(), "dependent count overflow")
+            })?;
+            let counted_births = births.checked_add(pop.pending_births).ok_or_else(|| {
+                missing_data("counters.births".to_owned(), "birth counter overflow")
             })?;
             pop.counters.current.births = pop
                 .counters
                 .current
                 .births
-                .checked_add(births)
+                .checked_add(counted_births)
                 .ok_or_else(|| {
-                    missing_data("counters.births".to_owned(), "birth counter overflow")
-                })?;
+                missing_data("counters.births".to_owned(), "birth counter overflow")
+            })?;
             place.counters.current.births = place
                 .counters
                 .current
                 .births
-                .checked_add(births)
+                .checked_add(counted_births)
                 .ok_or_else(|| {
                     missing_data("counters.births".to_owned(), "place birth counter overflow")
                 })?;
 
-            let worker_death_factors = [
-                curve_value(
-                    rules.curves.get("deaths_hunger").ok_or_else(|| {
-                        missing_data("curves.deaths_hunger".to_owned(), "curve is missing")
-                    })?,
-                    u64::from(pop.consumption.necessities_pm),
-                )?,
-                curve_value(
-                    rules.curves.get("deaths_comfort").ok_or_else(|| {
-                        missing_data("curves.deaths_comfort".to_owned(), "curve is missing")
-                    })?,
-                    comfort,
-                )?,
-                curve_value(
-                    rules.curves.get("deaths_crowding").ok_or_else(|| {
-                        missing_data("curves.deaths_crowding".to_owned(), "curve is missing")
-                    })?,
-                    crowding,
-                )?,
-            ];
+            let worker_death_factors = death_multipliers_of(rules, pop, crowding)?;
             let worker_deaths = exact_monthly_rate(
                 pop.workers,
                 pop_type.worker_deaths_pm_year,
@@ -7812,6 +7818,9 @@ fn run_monthly_demography_with_floors(
                 "demography.dependent_deaths",
             )?
             .min(pop.dependents);
+            // CK-364: the deaths the characters already committed are among the pop's deaths: dependents first, then workers.
+            let (worker_deaths, dependent_deaths) =
+                net_of_pending(worker_deaths, dependent_deaths, pop.pending_deaths);
             let floor = floors
                 .get(&(place.id.clone(), pop_index))
                 .copied()
@@ -7824,9 +7833,15 @@ fn run_monthly_demography_with_floors(
                 clip_deaths(worker_deaths, dependent_deaths, removable);
             pop.workers -= worker_deaths;
             pop.dependents -= dependent_deaths;
-            let deaths = worker_deaths.checked_add(dependent_deaths).ok_or_else(|| {
-                missing_data("demography.deaths".to_owned(), "death count overflow")
-            })?;
+            let deaths = worker_deaths
+                .checked_add(dependent_deaths)
+                .and_then(|realised| realised.checked_add(pop.pending_deaths))
+                .ok_or_else(|| {
+                    missing_data("demography.deaths".to_owned(), "death count overflow")
+                })?;
+            // What the characters committed has now been counted: the next monthly step starts from nothing.
+            pop.pending_births = 0;
+            pop.pending_deaths = 0;
             pop.counters.current.deaths = pop
                 .counters
                 .current
@@ -7900,6 +7915,245 @@ fn run_monthly_demography_with_floors(
         }
     }
     Ok(movement_by_pop)
+}
+
+/// The three multipliers on a worker's death rate in ‰ (hunger, comfort, crowding), from the pop's state and its place's crowding.
+fn death_multipliers_of(
+    rules: &Rules,
+    pop: &PopState,
+    crowding_pm: u64,
+) -> Result<[u64; 3], DataError> {
+    let comfort = (u64::from(pop.consumption.niceties_pm)
+        + u64::from(pop.consumption.luxuries_pm) / 2)
+        .min(1000);
+    let curve = |name: &str, x: u64| {
+        curve_value(
+            rules
+                .curves
+                .get(name)
+                .ok_or_else(|| missing_data(format!("curves.{name}"), "curve is missing"))?,
+            x,
+        )
+    };
+    Ok([
+        curve("deaths_hunger", u64::from(pop.consumption.necessities_pm))?,
+        curve("deaths_comfort", comfort)?,
+        curve("deaths_crowding", crowding_pm)?,
+    ])
+}
+
+/// The three death multipliers (‰: hunger, comfort, crowding) the monthly step applies to the workers of each pop of `place`, in
+/// pop order, as its pops stand now (CK-364: a character's chance of dying is scaled by them).
+///
+/// # Errors
+/// Returns a named data error for a missing curve or malformed housing rules.
+pub fn death_multipliers(
+    rules: &Rules,
+    place: &PlaceState,
+    shelter: u64,
+) -> Result<Vec<[u64; 3]>, DataError> {
+    let fill = housing_fill(rules, place, shelter)?;
+    place
+        .pops
+        .iter()
+        .zip(&fill.pops)
+        .map(|(pop, housing)| death_multipliers_of(rules, pop, housing.crowding_pm.unwrap_or(1000)))
+        .collect()
+}
+
+/// What a removed character head took from a pop, so that it can be put back if the death it belongs to does not commit (CK-364).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeadUndo {
+    staged: Option<StagedHead>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StagedHead {
+    place: String,
+    slot: usize,
+    worker: bool,
+    /// The building, and whether a paid worker's position (else an owner's), that was released.
+    release: Option<(usize, bool)>,
+}
+
+impl EconomyState {
+    fn pop_mut(&mut self, place: &str, slot: usize) -> Result<&mut PopState, DataError> {
+        let place = self
+            .places
+            .iter_mut()
+            .find(|candidate| candidate.id == place)
+            .ok_or_else(|| missing_data(format!("places.{place}"), "no such place"))?;
+        place
+            .pops
+            .get_mut(slot)
+            .ok_or_else(|| missing_data(format!("places.{}.pops", place.id), "no such pop slot"))
+    }
+
+    /// Add `count` dependents to a pop for `count` character births, and count them as pending (CK-364). Nothing changes on an error.
+    ///
+    /// # Errors
+    /// A missing place or pop slot, or a count that overflows.
+    pub fn add_character_births(
+        &mut self,
+        place: &str,
+        slot: usize,
+        count: u64,
+    ) -> Result<(), DataError> {
+        let pop = self.pop_mut(place, slot)?;
+        let overflow = || missing_data("demography.births".to_owned(), "dependent count overflow");
+        let dependents = pop.dependents.checked_add(count).ok_or_else(overflow)?;
+        let pending = pop.pending_births.checked_add(count).ok_or_else(overflow)?;
+        pop.dependents = dependents;
+        pop.pending_births = pending;
+        Ok(())
+    }
+
+    /// Remove the head of a dying character from its pop and count the death as pending (CK-364). A character under majority is a
+    /// dependent if the pop has one, else a worker; an adult is a worker if the pop has one, else a dependent. A removed worker is
+    /// an unemployed one if the pop has any; otherwise an employed one is removed and one position is released at once, in the
+    /// building that employs the most of that pop's workers (ties by building order; owners only when no worker is paid), so no job
+    /// is left for a head that has died. Nothing changes on an error.
+    ///
+    /// # Errors
+    /// A missing place or pop slot, or a pop with no head to remove.
+    pub fn remove_character_head(
+        &mut self,
+        place: &str,
+        slot: usize,
+        minor: bool,
+    ) -> Result<HeadUndo, DataError> {
+        let place_state = self
+            .places
+            .iter_mut()
+            .find(|candidate| candidate.id == place)
+            .ok_or_else(|| missing_data(format!("places.{place}"), "no such place"))?;
+        let pop = place_state
+            .pops
+            .get(slot)
+            .ok_or_else(|| missing_data(format!("places.{place}.pops"), "no such pop slot"))?;
+        let worker = if minor {
+            pop.dependents == 0
+        } else {
+            pop.workers > 0
+        };
+        let removable = if worker { pop.workers } else { pop.dependents };
+        if removable == 0 {
+            return Err(missing_data(
+                format!("places.{place}.pops"),
+                "the pop has no head to remove",
+            ));
+        }
+        let pending = pop
+            .pending_deaths
+            .checked_add(1)
+            .ok_or_else(|| missing_data("demography.deaths".to_owned(), "death count overflow"))?;
+        // The job to release, decided before anything is changed.
+        let mut release = None;
+        if worker {
+            let employed = place_state
+                .buildings
+                .iter()
+                .map(|building| {
+                    building
+                        .employment
+                        .get(slot)
+                        .map_or(0, |job| job.owners + job.workers)
+                })
+                .sum::<u64>();
+            if employed >= pop.workers {
+                // The first building holding the most paid workers; owners only when no worker is paid.
+                let most = |paid: bool| {
+                    let held = |building: &BuildingState| {
+                        building
+                            .employment
+                            .get(slot)
+                            .map_or(0, |job| if paid { job.workers } else { job.owners })
+                    };
+                    place_state
+                        .buildings
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, building)| held(building) > 0)
+                        .fold(None, |best: Option<(usize, u64)>, (index, building)| {
+                            let count = held(building);
+                            best.filter(|(_, most)| *most >= count)
+                                .or(Some((index, count)))
+                        })
+                        .map(|(index, _)| (index, paid))
+                };
+                release = most(true).or_else(|| most(false));
+            }
+        }
+        if let Some((building, paid)) = release {
+            let job = place_state.buildings[building]
+                .employment
+                .get_mut(slot)
+                .ok_or_else(|| {
+                    missing_data(
+                        "employment".to_owned(),
+                        "employment dimensions do not match",
+                    )
+                })?;
+            let held = if paid {
+                &mut job.workers
+            } else {
+                &mut job.owners
+            };
+            *held -= 1;
+            let released = job.clone();
+            place_state.pops[slot].employment[building] = released;
+        }
+        let pop = &mut place_state.pops[slot];
+        if worker {
+            pop.workers -= 1;
+        } else {
+            pop.dependents -= 1;
+        }
+        pop.pending_deaths = pending;
+        Ok(HeadUndo {
+            staged: Some(StagedHead {
+                place: place.to_owned(),
+                slot,
+                worker,
+                release,
+            }),
+        })
+    }
+
+    /// Put back what [`remove_character_head`](Self::remove_character_head) took: the head, the released position and the pending
+    /// death. It undoes only the most recent removal that has not been undone, and does nothing for an empty [`HeadUndo`].
+    pub fn restore_character_head(&mut self, undo: &HeadUndo) {
+        let Some(staged) = &undo.staged else {
+            return;
+        };
+        let Some(place) = self
+            .places
+            .iter_mut()
+            .find(|place| place.id == staged.place)
+        else {
+            return;
+        };
+        if let Some((building, paid)) = staged.release
+            && let Some(job) = place.buildings[building].employment.get_mut(staged.slot)
+        {
+            if paid {
+                job.workers += 1;
+            } else {
+                job.owners += 1;
+            }
+            let restored = job.clone();
+            place.pops[staged.slot].employment[building] = restored;
+        }
+        let Some(pop) = place.pops.get_mut(staged.slot) else {
+            return;
+        };
+        if staged.worker {
+            pop.workers += 1;
+        } else {
+            pop.dependents += 1;
+        }
+        pop.pending_deaths = pop.pending_deaths.saturating_sub(1);
+    }
 }
 
 /// The population type whose buildings charge rent on their living space (rent-r1 rule 1).
@@ -8324,6 +8578,8 @@ impl Canonical for EconomyState {
                 pop.short_on_rent.encode(out)?;
                 pop.housed_last.encode(out)?;
                 pop.genetics.encode(out)?;
+                pop.pending_births.encode(out)?;
+                pop.pending_deaths.encode(out)?;
             }
             encode_length(place.buildings.len(), out)?;
             for building in &place.buildings {
@@ -8385,6 +8641,8 @@ impl Canonical for EconomyState {
                     short_on_rent: bool::decode(input)?,
                     housed_last: bool::decode(input)?,
                     genetics: PopGenetics::decode(input)?,
+                    pending_births: u64::decode(input)?,
+                    pending_deaths: u64::decode(input)?,
                 });
             }
             let count = input.length()?;
@@ -8505,6 +8763,8 @@ fn decode_employment(input: &mut Reader<'_>) -> Result<Vec<Employment>, Canonica
 mod events_tests;
 #[cfg(test)]
 mod genetics_tests;
+#[cfg(test)]
+mod lifecycle_tests;
 #[cfg(test)]
 mod noble_tests;
 #[cfg(test)]
@@ -8682,6 +8942,7 @@ mod tests {
             genetics: Genetics::default(),
             personality: Personality::default(),
             events: EventRules::default(),
+            lifecycle: LifeCycle::default(),
             religions: vec!["christianity".to_owned()],
             terrain_order: vec!["pasture".to_owned(), "bog".to_owned()],
             footprint_m2: BTreeMap::from([
@@ -8851,6 +9112,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let mut drawer = make_pop(1000);
         let mut starver = make_pop(200);
@@ -8960,6 +9223,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         EconomyState {
             places: vec![PlaceState {
@@ -9187,6 +9452,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         assert_eq!(receive_pop(&rules, &mut pop, 0, 4).unwrap(), 3);
         assert_eq!(pop.stock, [1]);
@@ -9318,6 +9585,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let mut pops = vec![pop("peasant"), pop("labourer")];
         let farm = BuildingState {
@@ -9418,6 +9687,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let pops = vec![pop("peasant", 0), pop("monk", 10), pop("labourer", 100)];
         assert_eq!(alms_order(&rules, &pops, None).unwrap(), [2, 0, 1]);
@@ -9599,6 +9870,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let place = PlaceState {
             id: "luxury_market".to_owned(),
@@ -9674,6 +9947,8 @@ mod tests {
                     short_on_rent: false,
                     housed_last: false,
                     genetics: PopGenetics::default(),
+                    pending_births: 0,
+                    pending_deaths: 0,
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![0; rules.goods.len()],
@@ -9713,6 +9988,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         }
     }
 
@@ -9875,6 +10152,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let storehouse = BuildingState {
             kind: "storehouse".to_owned(),
@@ -9968,6 +10247,8 @@ mod tests {
                 short_on_rent: false,
                 housed_last: false,
                 genetics: PopGenetics::default(),
+                pending_births: 0,
+                pending_deaths: 0,
             }],
             buildings: Vec::new(),
             prices_milli: vec![100_000],
@@ -10950,6 +11231,8 @@ mod tests {
                     short_on_rent: false,
                     housed_last: false,
                     genetics: PopGenetics::default(),
+                    pending_births: 0,
+                    pending_deaths: 0,
                 }],
                 buildings: vec![
                     BuildingState {
@@ -12317,6 +12600,8 @@ mod tests {
                 short_on_rent: false,
                 housed_last: false,
                 genetics: PopGenetics::default(),
+                pending_births: 0,
+                pending_deaths: 0,
             }],
             buildings: Vec::new(),
             prices_milli: vec![100_001],
@@ -12607,6 +12892,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         assert_eq!(
             projected_buy_units(&rules, std::slice::from_ref(&pop), "food", true),
@@ -13044,6 +13331,8 @@ mod tests {
                     short_on_rent: false,
                     housed_last: false,
                     genetics: PopGenetics::default(),
+                    pending_births: 0,
+                    pending_deaths: 0,
                 }],
                 buildings: vec![
                     BuildingState {
@@ -13435,6 +13724,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let building = |kind: &str, wage_carry| BuildingState {
             kind: kind.to_owned(),
@@ -13571,6 +13862,8 @@ mod tests {
                     short_on_rent: false,
                     housed_last: false,
                     genetics: PopGenetics::default(),
+                    pending_births: 0,
+                    pending_deaths: 0,
                 }],
                 buildings: vec![BuildingState {
                     kind: "farm".to_owned(),
@@ -13715,6 +14008,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let farm = BuildingState {
             kind: "farm".to_owned(),
@@ -13880,6 +14175,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let mut state = EconomyState {
             places: vec![PlaceState {
@@ -13947,6 +14244,8 @@ mod tests {
                     short_on_rent: false,
                     housed_last: false,
                     genetics: PopGenetics::default(),
+                    pending_births: 0,
+                    pending_deaths: 0,
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![100_000],
@@ -14018,6 +14317,8 @@ mod tests {
                     short_on_rent: false,
                     housed_last: false,
                     genetics: PopGenetics::default(),
+                    pending_births: 0,
+                    pending_deaths: 0,
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000; 2],
@@ -14085,6 +14386,8 @@ mod tests {
                     short_on_rent: false,
                     housed_last: false,
                     genetics: PopGenetics::default(),
+                    pending_births: 0,
+                    pending_deaths: 0,
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000; goods],
@@ -14145,6 +14448,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let mut state = EconomyState {
             places: vec![PlaceState {
@@ -14201,6 +14506,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         pop.employment.push(Employment {
             owners: 1,
@@ -14355,6 +14662,8 @@ mod tests {
                     short_on_rent: false,
                     housed_last: false,
                     genetics: PopGenetics::default(),
+                    pending_births: 0,
+                    pending_deaths: 0,
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000, 1000],
@@ -14438,6 +14747,8 @@ mod tests {
                     short_on_rent: false,
                     housed_last: false,
                     genetics: PopGenetics::default(),
+                    pending_births: 0,
+                    pending_deaths: 0,
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000; 3],
@@ -14510,6 +14821,8 @@ mod tests {
                 short_on_rent: false,
                 housed_last: false,
                 genetics: PopGenetics::default(),
+                pending_births: 0,
+                pending_deaths: 0,
             };
             let building = BuildingState {
                 kind: "farm".to_owned(),
@@ -14680,6 +14993,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let building = BuildingState {
             kind: "farm".to_owned(),
@@ -14747,6 +15062,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let farm = BuildingState {
             kind: "farm".to_owned(),
@@ -14846,6 +15163,8 @@ mod tests {
                 short_on_rent: false,
                 housed_last: false,
                 genetics: PopGenetics::default(),
+                pending_births: 0,
+                pending_deaths: 0,
             })
             .collect();
         PlaceState {
@@ -15211,6 +15530,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let farm = BuildingState {
             kind: "farm".to_owned(),
@@ -15278,6 +15599,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let place = PlaceState {
             id: "floor".into(),
@@ -15330,6 +15653,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let mut state = EconomyState {
             places: vec![PlaceState {
@@ -15358,6 +15683,328 @@ mod tests {
         assert_eq!(pop.consumption.worker_death_carry, 7_440_000_000_000);
     }
 
+    /// A one-place state for the character accounting tests: one peasant pop of `workers` and `dependents`.
+    fn accounting_state(workers: u64, dependents: u64) -> EconomyState {
+        let mut state = EconomyState {
+            places: vec![reserve_test_place(reserve_test_pop(workers), Vec::new())],
+        };
+        state.places[0].pops[0].dependents = dependents;
+        state.places[0].prices_milli = vec![1000];
+        state
+    }
+
+    fn accounting_rules(births_pm_year: u16, worker_deaths_pm_year: u16) -> Rules {
+        let mut rules = tiny_rules();
+        rules.pop_types[0].births_pm_year = births_pm_year;
+        rules.pop_types[0].worker_deaths_pm_year = worker_deaths_pm_year;
+        rules.pop_types[0].dependent_deaths_pm_year = 0;
+        rules
+    }
+
+    #[test]
+    fn character_births_are_among_the_monthly_births_not_added_to_them() {
+        // Four 1000‰ birth factors make 5000‰/year on 12 workers exactly 5 births this month.
+        for (pending, applied, counted) in [(0, 5, 5), (2, 3, 5), (5, 0, 5), (7, 0, 7)] {
+            let rules = accounting_rules(5000, 0);
+            let mut state = accounting_state(12, 0);
+            state.places[0].pops[0].pending_births = pending;
+            run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new(), None)
+                .unwrap();
+            let pop = &state.places[0].pops[0];
+            assert_eq!(pop.workers + pop.dependents, 12 + applied, "{pending}");
+            assert_eq!(pop.counters.current.births, counted, "{pending}");
+            assert_eq!(state.places[0].counters.current.births, counted);
+            assert_eq!((pop.pending_births, pop.pending_deaths), (0, 0));
+        }
+        // Nothing from the economy and one character birth: the month has that one.
+        let rules = accounting_rules(0, 0);
+        let mut state = accounting_state(12, 0);
+        state.places[0].pops[0].pending_births = 1;
+        run_monthly_demography(&rules, &mut state, &BTreeMap::new(), &BTreeMap::new(), None)
+            .unwrap();
+        let pop = &state.places[0].pops[0];
+        assert_eq!(pop.workers + pop.dependents, 12);
+        assert_eq!(pop.counters.current.births, 1);
+    }
+
+    #[test]
+    fn character_deaths_are_among_the_monthly_deaths_and_the_floor_clips_the_rest() {
+        // Three 1000‰ death factors make 12,000‰/year on 2 workers exactly 2 requested deaths this month.
+        let rules = accounting_rules(0, 12_000);
+        let floors = BTreeMap::from([(("owner_reserve".to_owned(), 0), 1)]);
+        let run = |pending: u64, floors: &BTreeMap<(String, usize), u64>| {
+            let mut state = accounting_state(2, 0);
+            state.places[0].pops[0].pending_deaths = pending;
+            run_monthly_demography_with_floors(
+                &rules,
+                &mut state,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                None,
+                floors,
+            )
+            .unwrap();
+            let pop = state.places[0].pops[0].clone();
+            (
+                pop.workers + pop.dependents,
+                pop.counters.current.deaths,
+                pop.pending_deaths,
+            )
+        };
+        // 2 requested, 1 pending, 1 removable head: 2 - 1 = 1, clipped to 1, so 1 is realised; the month counts 1 + 1.
+        assert_eq!(run(1, &floors), (1, 2, 0));
+        // Nothing pending and the same floor: the floor clips 2 to 1.
+        assert_eq!(run(0, &floors), (1, 1, 0));
+        // 3 pending exceed the 2 requested: none is realised and the month counts the 3.
+        assert_eq!(run(3, &BTreeMap::new()), (2, 3, 0));
+        assert_eq!(run(0, &BTreeMap::new()), (0, 2, 0));
+    }
+
+    #[test]
+    fn pending_deaths_come_off_dependents_first() {
+        assert_eq!(net_of_pending(3, 2, 0), (3, 2));
+        assert_eq!(net_of_pending(3, 2, 1), (3, 1));
+        assert_eq!(net_of_pending(3, 2, 2), (3, 0));
+        assert_eq!(net_of_pending(3, 2, 4), (1, 0));
+        assert_eq!(net_of_pending(3, 2, 9), (0, 0));
+    }
+
+    #[test]
+    fn the_pending_counts_are_saved_and_a_failing_step_leaves_them() {
+        let mut state = accounting_state(12, 3);
+        state.places[0].pops[0].pending_births = 4;
+        state.places[0].pops[0].pending_deaths = 2;
+        let bytes = state.to_bytes().unwrap();
+        let loaded = EconomyState::from_bytes(&bytes).unwrap();
+        assert_eq!(loaded.places[0].pops[0].pending_births, 4);
+        assert_eq!(loaded.places[0].pops[0].pending_deaths, 2);
+        // A step that fails (a curve is missing) returns before it commits, so the counts stay for the next step.
+        let mut rules = accounting_rules(0, 0);
+        rules.curves.remove("deaths_hunger");
+        let mut failing = state.clone();
+        assert!(
+            run_daily_economy(
+                &rules,
+                &mut failing,
+                Date {
+                    year: 800,
+                    month: 1,
+                    day: 1,
+                    hour: 12
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(failing, state);
+    }
+
+    /// A place with `workers` workers of one pop employed in the given `(owners, workers)` of each building.
+    fn employed_place(workers: u64, jobs: &[(u64, u64)]) -> EconomyState {
+        let buildings = jobs
+            .iter()
+            .map(|(owners, paid)| {
+                let mut building = reserve_test_building(*owners, 0);
+                building.employment[0].workers = *paid;
+                building
+            })
+            .collect::<Vec<_>>();
+        let mut pop = reserve_test_pop(workers);
+        pop.employment = buildings.iter().map(|b| b.employment[0].clone()).collect();
+        EconomyState {
+            places: vec![reserve_test_place(pop, buildings)],
+        }
+    }
+
+    fn jobs(state: &EconomyState) -> Vec<(u64, u64)> {
+        state.places[0]
+            .buildings
+            .iter()
+            .map(|b| (b.employment[0].owners, b.employment[0].workers))
+            .collect()
+    }
+
+    #[test]
+    fn a_dying_character_removes_the_head_its_age_names() {
+        let mut state = accounting_state(5, 2);
+        // A minor takes a dependent while there is one; an adult takes a worker.
+        state
+            .remove_character_head("owner_reserve", 0, true)
+            .unwrap();
+        assert_eq!(
+            (
+                state.places[0].pops[0].workers,
+                state.places[0].pops[0].dependents
+            ),
+            (5, 1)
+        );
+        state
+            .remove_character_head("owner_reserve", 0, false)
+            .unwrap();
+        assert_eq!(
+            (
+                state.places[0].pops[0].workers,
+                state.places[0].pops[0].dependents
+            ),
+            (4, 1)
+        );
+        assert_eq!(state.places[0].pops[0].pending_deaths, 2);
+        // A minor in a pop with one worker and no dependents takes the worker; an adult in a pop of dependents takes one.
+        let mut one = accounting_state(1, 0);
+        one.remove_character_head("owner_reserve", 0, true).unwrap();
+        assert_eq!(
+            (
+                one.places[0].pops[0].workers,
+                one.places[0].pops[0].dependents
+            ),
+            (0, 0)
+        );
+        let mut children = accounting_state(0, 3);
+        children
+            .remove_character_head("owner_reserve", 0, false)
+            .unwrap();
+        assert_eq!(
+            (
+                children.places[0].pops[0].workers,
+                children.places[0].pops[0].dependents
+            ),
+            (0, 2)
+        );
+        // No head: refused, nothing changed.
+        let mut empty = accounting_state(0, 0);
+        assert!(
+            empty
+                .remove_character_head("owner_reserve", 0, false)
+                .is_err()
+        );
+        assert_eq!(empty, accounting_state(0, 0));
+        assert!(empty.remove_character_head("nowhere", 0, false).is_err());
+        assert!(
+            empty
+                .remove_character_head("owner_reserve", 7, false)
+                .is_err()
+        );
+        assert_eq!(empty, accounting_state(0, 0));
+    }
+
+    #[test]
+    fn an_unemployed_worker_is_removed_before_a_job_is_released() {
+        // Five workers, three employed: two are unemployed and no position changes.
+        let mut state = employed_place(5, &[(0, 3)]);
+        state
+            .remove_character_head("owner_reserve", 0, false)
+            .unwrap();
+        assert_eq!(state.places[0].pops[0].workers, 4);
+        assert_eq!(jobs(&state), [(0, 3)]);
+        state
+            .remove_character_head("owner_reserve", 0, false)
+            .unwrap();
+        assert_eq!(jobs(&state), [(0, 3)]);
+        // All three are now employed: the next death releases a position at once.
+        state
+            .remove_character_head("owner_reserve", 0, false)
+            .unwrap();
+        assert_eq!(state.places[0].pops[0].workers, 2);
+        assert_eq!(jobs(&state), [(0, 2)]);
+        assert_eq!(state.places[0].pops[0].employment[0].workers, 2);
+        assert_eq!(state.places[0].pops[0].pending_deaths, 3);
+    }
+
+    #[test]
+    fn a_removed_head_is_put_back_exactly_and_an_empty_undo_changes_nothing() {
+        // Unemployed, employed (a paid position released) and owner removals, each undone to the exact state.
+        for (workers, jobs) in [(5, vec![(0, 3)]), (3, vec![(0, 3)]), (2, vec![(2, 0)])] {
+            let mut state = employed_place(workers, &jobs);
+            let before = state.clone();
+            let undo = state
+                .remove_character_head("owner_reserve", 0, false)
+                .unwrap();
+            assert_ne!(state, before);
+            state.restore_character_head(&undo);
+            assert_eq!(state, before);
+        }
+        let mut dependent = accounting_state(5, 2);
+        let before = dependent.clone();
+        let undo = dependent
+            .remove_character_head("owner_reserve", 0, true)
+            .unwrap();
+        dependent.restore_character_head(&undo);
+        assert_eq!(dependent, before);
+        dependent.restore_character_head(&HeadUndo::default());
+        assert_eq!(dependent, before);
+    }
+
+    #[test]
+    fn the_released_position_is_in_the_building_employing_the_most_ties_by_order() {
+        let mut state = employed_place(6, &[(0, 1), (0, 3), (0, 2)]);
+        state
+            .remove_character_head("owner_reserve", 0, false)
+            .unwrap();
+        assert_eq!(jobs(&state), [(0, 1), (0, 2), (0, 2)]);
+        // Two buildings now employ 2: the earlier one gives the position.
+        state
+            .remove_character_head("owner_reserve", 0, false)
+            .unwrap();
+        assert_eq!(jobs(&state), [(0, 1), (0, 1), (0, 2)]);
+        assert_eq!(
+            state.places[0].pops[0]
+                .employment
+                .iter()
+                .map(|e| e.workers)
+                .collect::<Vec<_>>(),
+            [1, 1, 2]
+        );
+        // Owners give a position only when no worker is paid.
+        let mut owners = employed_place(3, &[(2, 0), (1, 0)]);
+        owners
+            .remove_character_head("owner_reserve", 0, false)
+            .unwrap();
+        assert_eq!(jobs(&owners), [(1, 0), (1, 0)]);
+    }
+
+    #[test]
+    fn character_births_add_dependents_and_count_pending_or_change_nothing() {
+        let mut state = accounting_state(5, 2);
+        state.add_character_births("owner_reserve", 0, 3).unwrap();
+        let pop = &state.places[0].pops[0];
+        assert_eq!((pop.workers, pop.dependents, pop.pending_births), (5, 5, 3));
+        state.places[0].pops[0].pending_births = u64::MAX;
+        let before = state.clone();
+        assert!(state.add_character_births("owner_reserve", 0, 1).is_err());
+        assert_eq!(state, before);
+        assert!(state.add_character_births("nowhere", 0, 1).is_err());
+        assert!(state.add_character_births("owner_reserve", 3, 1).is_err());
+    }
+
+    #[test]
+    fn the_death_multipliers_are_the_monthly_steps_own() {
+        let mut rules = tiny_rules();
+        // Curves that are not flat, so each multiplier differs from the others and from 1000.
+        rules
+            .curves
+            .insert("deaths_hunger".to_owned(), vec![[0, 5000], [1000, 1000]]);
+        rules
+            .curves
+            .insert("deaths_comfort".to_owned(), vec![[0, 1000], [1000, 600]]);
+        let mut state = accounting_state(10, 0);
+        state.places[0].pops[0].consumption.necessities_pm = 400;
+        state.places[0].pops[0].consumption.niceties_pm = 300;
+        state.places[0].pops[0].consumption.luxuries_pm = 200;
+        let place = &state.places[0];
+        let multipliers = death_multipliers(&rules, place, 0).unwrap();
+        let crowding = housing_fill(&rules, place, 0).unwrap().pops[0]
+            .crowding_pm
+            .unwrap_or(1000);
+        let at = |name: &str, x: u64| curve_value(&rules.curves[name], x).unwrap();
+        assert_eq!(
+            multipliers,
+            [[
+                at("deaths_hunger", 400),
+                at("deaths_comfort", 300 + 200 / 2),
+                at("deaths_crowding", crowding)
+            ]]
+        );
+    }
+
     #[test]
     fn monthly_death_uses_before_phase_crowding_when_the_pop_dies_off() {
         let mut rules = tiny_rules();
@@ -15380,6 +16027,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let mut state = EconomyState {
             places: vec![PlaceState {
@@ -15646,6 +16295,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let building = BuildingState {
             kind: "holdings".to_owned(),
@@ -15899,6 +16550,8 @@ mod tests {
                 short_on_rent: false,
                 housed_last: false,
                 genetics: PopGenetics::default(),
+                pending_births: 0,
+                pending_deaths: 0,
             }],
             buildings: Vec::new(),
             prices_milli: vec![1000],
@@ -16033,6 +16686,8 @@ mod tests {
             short_on_rent: false,
             housed_last: false,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         };
         let building = BuildingState {
             kind: "farm".to_owned(),
@@ -16279,6 +16934,14 @@ fn recruitable(requested: u64, workers: u64, dependents: u64, removable: u64) ->
         }
     }
     low
+}
+/// The requested deaths less the deaths characters already committed: dependents first, then workers, each held at 0 (CK-364).
+fn net_of_pending(workers: u64, dependents: u64, pending: u64) -> (u64, u64) {
+    let from_dependents = pending.min(dependents);
+    (
+        workers.saturating_sub(pending - from_dependents),
+        dependents - from_dependents,
+    )
 }
 fn clip_deaths(workers: u64, dependents: u64, removable: u64) -> (u64, u64) {
     let workers = workers.min(removable);

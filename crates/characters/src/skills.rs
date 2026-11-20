@@ -4,7 +4,6 @@
 //! Every formula is evaluated exactly over integers (thousandths) and rounded once to the nearest thousandth, ties away from zero.
 #![deny(clippy::float_arithmetic)]
 
-use crate::bigint::{self, Big};
 use crate::{
     ArchiveSink, Character, CharacterStore, Error, PopLocator, Populations, Sex, character_stream,
     events::{
@@ -16,6 +15,7 @@ use crate::{
 };
 use ck_economy::{
     EventRules,
+    bigint::{self, Big},
     events::{GRADE_NAMES, MAX_GRADE, SkillRules, Trigger},
     genetics::{PPB, round_div},
 };
@@ -353,7 +353,19 @@ impl CharacterStore {
             c.life.skills.extend(levels);
         }
         // Stage 7: precedence.
-        self.precedence(world, id, today, first)
+        self.precedence(world, id, today, first)?;
+        // Stage 8 (CK-364 §1): the birthday at which the character reaches majority, by its culture's subgroup and its sex, is the
+        // `coming_of_age` happening, once (a character who is created of age, or past it, never has one).
+        let c = self.live.get(&id).ok_or(Error::MissingCharacter)?;
+        let ages = world.lifecycle.majority.of_group(&pop.group);
+        let majority = match c.sex {
+            Sex::Male => ages.m,
+            Sex::Female => ages.f,
+        };
+        if majority > 0 && age == majority {
+            self.dispatch(world, id, "coming_of_age", today, first)?;
+        }
+        Ok(())
     }
 
     /// One craft's yearly rise: `rise x skill / 15` of one grade up, at most SSS, with a line.

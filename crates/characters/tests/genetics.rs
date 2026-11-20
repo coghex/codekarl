@@ -75,6 +75,7 @@ fn context(genetics: &Genetics, seed: u64) -> Context<'_> {
         rules: genetics,
         personality: &rules().personality,
         events: &rules().events,
+        lifecycle: &rules().lifecycle,
         seed,
         tick: date(768, 1, 1),
     }

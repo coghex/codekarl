@@ -1,0 +1,54 @@
+# Name pools (draft r1). Drafted by Claude (ck-designer-1), 2026-11-19, for characters slice 5. The owner approves names without
+# review (lists/names/irish-768.md). Irish: from irish-768.md (evidence there). The others are drafted from memory as PLACEHOLDERS, to
+# check against the sources before they ship widely (in 768 only Mayo's three Northumbrian monks use them).
+# men = [[name, genitive]]; the genitive is used for patronymics where the culture uses them.
+# patronym: the form of "son of" / "daughter of" + the father's genitive (Irish "mac"/"ingen"); none = no patronymic shown.
+
+[pool.irish]
+patronym = { m = "mac", f = "ingen" }
+men = [["Áed", "Áeda"], ["Ailill", "Ailello"], ["Anmchad", "Anmchada"], ["Artgal", "Artgaile"], ["Báethgalach", "Báethgalaig"], ["Bran", "Brain"], ["Bressal", "Bressail"], ["Cathal", "Cathail"], ["Cathussach", "Cathussaig"], ["Cellach", "Cellaig"], ["Cerball", "Cerbaill"], ["Coirpre", "Coirpri"], ["Colgu", "Colggen"], ["Colmán", "Colmáin"], ["Conall", "Conaill"], ["Congal", "Congaile"], ["Crimthann", "Crimthainn"], ["Cú Chongalt", "Con Congalt"], ["Cummascach", "Cummascaig"], ["Diarmait", "Diarmata"], ["Domnall", "Domnaill"], ["Donnchad", "Donnchada"], ["Dúnchad", "Dúnchada"], ["Dúnlang", "Dúnlainge"], ["Eochaid", "Echach"], ["Eógan", "Eógain"], ["Eterscél", "Eterscélai"], ["Fáelán", "Fáeláin"], ["Feidlimid", "Feidlimid"], ["Ferchar", "Ferchair"], ["Fergal", "Fergaile"], ["Fiachnae", "Fiachnai"], ["Fingen", "Finguine"], ["Finn", "Finn"], ["Flaithbertach", "Flaithbertaig"], ["Flann", "Flainn"], ["Fogartach", "Fogartaig"], ["Indrechtach", "Indrechtaig"], ["Loingsech", "Loingsig"], ["Máel Dúin", "Máele Dúin"], ["Máel Ruanaid", "Máele Ruanaid"], ["Muiredach", "Muiredaig"], ["Murchad", "Murchada"], ["Niall", "Néill"], ["Óengus", "Óengusa"], ["Sechnasach", "Sechnusaig"], ["Tommaltach", "Tommaltaig"], ["Ultán", "Ultáin"]]
+women = ["Bé Fáil", "Brigit", "Cacht", "Derbáil", "Derbforgaill", "Dub Choblaig", "Eithne", "Gnáthnat", "Gormlaith", "Muirgel", "Sárnat", "Coblaith", "Mór", "Mugain", "Muirenn", "Órlaith", "Sadb", "Úallach"]
+
+[pool.english]
+patronym = {}   # no patronymic shown for the English (r: placeholder); the genitive (-es) is kept for later use
+men = [["Ælfwald", "Ælfwaldes"], ["Ælfwine", "Ælfwinees"], ["Æthelbald", "Æthelbaldes"], ["Æthelberht", "Æthelberhtes"], ["Æthelred", "Æthelredes"], ["Alhmund", "Alhmundes"], ["Beornred", "Beornredes"], ["Beorhtric", "Beorhtrices"], ["Cenred", "Cenredes"], ["Ceolwulf", "Ceolwulfes"], ["Cuthbert", "Cuthbertes"], ["Cyneheard", "Cyneheardes"], ["Cynewulf", "Cynewulfes"], ["Eadberht", "Eadberhtes"], ["Eadwulf", "Eadwulfes"], ["Ealdred", "Ealdredes"], ["Ecgfrith", "Ecgfrithes"], ["Hygeberht", "Hygeberhtes"], ["Offa", "Offaes"], ["Osred", "Osredes"], ["Oswulf", "Oswulfes"], ["Wigheard", "Wigheardes"], ["Wulfhere", "Wulfherees"]]
+women = ["Ælfflæd", "Æthelburh", "Æthelthryth", "Cuthburh", "Cyneburh", "Eadburh", "Eanflæd", "Hild", "Osthryth", "Wihtburh"]
+
+[pool.brittonic]
+patronym = { m = "map", f = "merch" }   # Old Welsh "map" (later "ap"); the genitive is the name unchanged
+men = [["Cadell", "Cadell"], ["Caradog", "Caradog"], ["Cyngen", "Cyngen"], ["Elisedd", "Elisedd"], ["Ffernfael", "Ffernfael"], ["Gwriad", "Gwriad"], ["Hywel", "Hywel"], ["Idwal", "Idwal"], ["Iudhail", "Iudhail"], ["Merfyn", "Merfyn"], ["Owain", "Owain"], ["Rhodri", "Rhodri"], ["Tewdwr", "Tewdwr"], ["Cadwgan", "Cadwgan"]]
+women = ["Angharad", "Elen", "Ethil", "Gwladus", "Nest", "Tangwystl", "Tudglid"]
+
+[pool.pictish]
+patronym = { m = "map", f = "merch" }   # the Pictish king list: "X son of Y"; women's names are barely attested
+men = [["Alpín", "Alpín"], ["Bridei", "Bridei"], ["Canaul", "Canaul"], ["Ciniod", "Ciniod"], ["Constantín", "Constantín"], ["Drest", "Drest"], ["Elphin", "Elphin"], ["Nechtan", "Nechtan"], ["Óengus", "Óengus"], ["Talorgan", "Talorgan"], ["Uuen", "Uuen"], ["Uurguist", "Uurguist"]]
+women = ["Der-Ilei", "Muirenn", "Eithne"]   # one Pictish (Der-Ilei, mother of Bridei and Nechtan); the rest borrowed from Gaelic, placeholders
+
+[culture_pool]
+ulaid = "irish"
+cruthin = "irish"
+northern_ui_neill = "irish"
+airgialla = "irish"
+mide_brega = "irish"
+laigin = "irish"
+mumu = "irish"
+connachta = "irish"
+dal_riatan = "irish"
+north_welsh = "brittonic"
+south_welsh = "brittonic"
+cumbric = "brittonic"
+cornish = "brittonic"
+pictish = "pictish"
+northumbrian = "english"
+mercian = "english"
+east_anglian = "english"
+west_saxon = "english"
+east_saxon = "english"
+south_saxon = "english"
+kentish = "english"
+
+[namesakes]
+# r111: a small chance of a relative's name, else the pool. Sons from the father's side; daughters from the mother's side (proposal,
+# open-gaps small item 7). Tried in order; each chance x (1 + relative's importance), importance = 1 for a ruler or title holder,
+# 0.5 for a noble house head, 0 otherwise (TUNE). Only a dead relative's name, or the grandfather's, is reused (TUNE).
+order = [["father", 0.10], ["grandfather", 0.10], ["uncle", 0.06], ["fathers_friend", 0.04], ["ancestor", 0.05]]

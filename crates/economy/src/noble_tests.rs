@@ -977,6 +977,8 @@ fn place_of(
             short_on_rent: tenant.flagged,
             housed_last: tenant.flagged,
             genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
         });
     }
     place

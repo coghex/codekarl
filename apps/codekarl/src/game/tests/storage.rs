@@ -1122,6 +1122,7 @@ fn found(
         rules: &rules,
         personality: &personality,
         events: &ck_economy::EventRules::default(),
+        lifecycle: &ck_economy::LifeCycle::default(),
         seed: 42,
         tick: start(),
     };
@@ -1165,6 +1166,8 @@ fn character_archive_logs_and_live_state_survive_streamed_save() {
             short_on_rent: false,
             housed_last: false,
             genetics: seeded_genetics(),
+            pending_births: 0,
+            pending_deaths: 0,
         }],
         buildings: Vec::new(),
         prices_milli: Vec::new(),

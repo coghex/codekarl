@@ -9,7 +9,6 @@
 //! The error is returned to the caller after the work that remains has been done; there is no retry and no rollback.
 #![deny(clippy::float_arithmetic)]
 
-use crate::bigint::Big;
 use crate::{
     ArchiveSink, Character, CharacterStore, Error, LifeLog, Lineage, NewCharacter, PopLocator,
     Populations, StressKind, character_stream,
@@ -17,7 +16,8 @@ use crate::{
     personality::{stress_after, threshold, wide},
 };
 use ck_economy::{
-    EventRules, Personality, PopGenetics,
+    EventRules, Genetics, LifeCycle, Personality, PopGenetics,
+    bigint::Big,
     events::{
         CRAFT_FACTOR_DIVISOR, Conditions, Effect, Event, Factor, GRADE_NAMES, HUMOUR_FLOOR,
         HUMOUR_WEIGHT, MAX_GRADE, PAIR_FACTOR_BOUNDS, STRESS_FACTOR_DIVISOR, SexRule, StandingKind,
@@ -84,6 +84,10 @@ pub struct World<'a, P: Populations, A: ArchiveSink, L: LogSink> {
     pub rules: &'a EventRules,
     /// The loaded personality data (stress intake).
     pub personality: &'a Personality,
+    /// The loaded genetic rules (a child's genetics, CK-364).
+    pub genetics: &'a Genetics,
+    /// The loaded life-cycle data: majority, death, relations, conception and names (CK-364).
+    pub lifecycle: &'a LifeCycle,
     /// The world seed.
     pub seed: u64,
     /// The pops, resolved for pop type, culture and luxuries.
@@ -237,7 +241,7 @@ fn factor_ratio(factor: &Factor, c: &Character, pop: &PopFacts) -> Result<(u128,
 }
 
 /// `floor(min(1, numerator / denominator) x 1e9)` for the factors' exact product, without any intermediate overflow.
-fn exact_ppb(base: u32, ratios: &[(u128, u128)]) -> u32 {
+pub(crate) fn exact_ppb(base: u32, ratios: &[(u128, u128)]) -> u32 {
     let mut numerator = Big::new(u128::from(base));
     let mut denominator = Big::new(u128::from(PPB));
     for (n, d) in ratios {
@@ -497,8 +501,7 @@ impl CharacterStore {
         if let Some(cause) = outcome.died {
             // The death commits first: the archive append, then the removal of the live record. A failure changes nothing.
             let dead = outcome.copy;
-            self.bury(dead.clone(), date, Some(&cause), world.archive)
-                .map_err(EventError::Archive)?;
+            self.commit_death(world, &dead, date, &cause)?;
             if let Some(text) = line {
                 Self::line(world, id, date, &text, first);
             }
@@ -510,6 +513,53 @@ impl CharacterStore {
             Self::line(world, id, date, &text, first);
         }
         Ok(Step::Applied)
+    }
+
+    /// Whether a character is under majority on `date`: by its pop's culture subgroup and its sex (CK-364 §1). A pop the rules cannot
+    /// resolve gives the data's default ages.
+    pub(crate) fn is_minor<P: Populations, A: ArchiveSink, L: LogSink>(
+        world: &World<'_, P, A, L>,
+        c: &Character,
+        date: GameTime,
+    ) -> Result<bool, Error> {
+        let group = world
+            .populations
+            .culture(&c.pop)
+            .and_then(|culture| world.rules.culture_group.get(&culture))
+            .map_or("", String::as_str);
+        let ages = world.lifecycle.majority.of_group(group);
+        let age = age_years(
+            c.birth.date().map_err(|_| Error::Event)?,
+            date.date().map_err(|_| Error::Event)?,
+        );
+        Ok(age
+            < match c.sex {
+                crate::Sex::Male => ages.m,
+                crate::Sex::Female => ages.f,
+            })
+    }
+
+    /// Commit the death of `dead` (CK-364 §4, §6) as one transition: its head leaves its pop (counted as a pending death, a job
+    /// released) **first**, then its record is archived and removed. A refusal of the head change leaves everything as it was and
+    /// writes nothing; a failing archive append puts the head back. Only a death that has done both returns `Ok`.
+    ///
+    /// # Errors
+    /// [`EventError::Rules`] when the pop refuses the head change, [`EventError::Archive`] when the archive refuses the record. In
+    /// both nothing has changed.
+    pub(crate) fn commit_death<P: Populations, A: ArchiveSink, L: LogSink>(
+        &mut self,
+        world: &mut World<'_, P, A, L>,
+        dead: &Character,
+        date: GameTime,
+        cause: &str,
+    ) -> Result<(), EventError> {
+        let minor = Self::is_minor(world, dead, date)?;
+        let undo = world.populations.remove_head(&dead.pop, minor)?;
+        if let Err(error) = self.bury(dead.clone(), date, Some(cause), world.archive) {
+            world.populations.restore_head(&undo);
+            return Err(EventError::Archive(error));
+        }
+        Ok(())
     }
 
     /// Emit `death_in_family` to each live parent, spouse and child of `dead`, which has just died.
@@ -689,8 +739,7 @@ impl CharacterStore {
         cause: &str,
     ) -> Result<(), EventError> {
         let dead = self.live.get(&id).cloned().ok_or(Error::MissingCharacter)?;
-        self.bury(dead.clone(), day, Some(cause), world.archive)
-            .map_err(EventError::Archive)?;
+        self.commit_death(world, &dead, day, cause)?;
         let mut first = None;
         self.bereave(world, &dead, day, &mut first);
         conclude(first)

@@ -411,6 +411,23 @@ fn gameplay_scheduler_with_rules(
     scheduler
 }
 
+/// The economy's daily system with the character storage published through `handle`, as the running game has it.
+#[cfg(test)]
+pub(crate) fn register_economy_callback_with_storage(
+    scheduler: &mut Scheduler<GameState>,
+    rules: Arc<Rules>,
+    handle: super::character_storage::Handle,
+) {
+    register_economy_callback_with_context(
+        scheduler,
+        rules,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        Some(handle),
+    );
+}
+
 #[cfg(test)]
 pub(crate) fn register_economy_callback(scheduler: &mut Scheduler<GameState>, rules: Arc<Rules>) {
     register_economy_callback_with_context(
@@ -437,6 +454,19 @@ fn register_economy_callback_with_context(
             Cadence::Daily { hour: ECONOMY_HOUR },
             &[CHARACTER_STREAM],
             move |state, tick| {
+                // The characters' draws are keyed by this tick's draw of the system's own stream: deterministic under the master
+                // seed, and drawn once for all three phases of the day.
+                let seed = tick.stream(CHARACTER_STREAM)?.draw();
+                // Phase A, before the economy's step: the certain deaths and, on the 1st, the monthly mortality and the
+                // deliveries. What it commits stays committed whatever the economy's step does next (CK-364 §4).
+                let before = run_pre_economy_passes(
+                    &rules,
+                    state,
+                    tick.time(),
+                    seed,
+                    &shelter_by_place,
+                    characters_io.as_ref(),
+                );
                 let mut floors = BTreeMap::new();
                 for character in state.characters.iter() {
                     *floors
@@ -454,9 +484,10 @@ fn register_economy_callback_with_context(
                 )
                 .map_err(io::Error::other)
                 .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
-                // The events' draws are keyed by this tick's draw of the system's own stream: deterministic under the master seed.
-                let seed = tick.stream(CHARACTER_STREAM)?.draw();
-                run_character_passes(&rules, state, tick.time(), seed, characters_io.as_ref())
+                // Phase C, after the economy's step. A failure of phase A is returned once both have run.
+                let after =
+                    run_character_passes(&rules, state, tick.time(), seed, characters_io.as_ref());
+                before.and(after)
             },
         )
         .expect("the economy system name is unique");
@@ -465,10 +496,86 @@ fn register_economy_callback_with_context(
 /// The name of the economy system's stream the character events' seed comes from.
 const CHARACTER_STREAM: &str = "characters.events";
 
-/// The character passes of CK-362 and CK-363, run inside the economy's daily system after that day's economy work: on the 1st the
-/// monthly stress recovery, then the birthday pass (humour drift, standing fade, the yearly events, craft rise, skills and
-/// precedence) and, on the 1st, the monthly precedence check. They are not separate systems, and an economy error never reaches
-/// them. A life-log or archive failure after a committed change is returned here, as the economy's errors are.
+/// The product of the three death multipliers (‰ each: hunger, comfort, crowding) of every pop that has a live character, as the economy
+/// computes them for the pop's workers from its state **now** (CK-364 §2): the pressure the day's mortality pass reads, taken once at
+/// its start, before the pass changes any head.
+///
+/// # Errors
+/// A missing curve or malformed housing rules.
+pub(crate) fn death_pressure(
+    rules: &Rules,
+    economy: &ck_economy::EconomyState,
+    characters: &ck_characters::CharacterStore,
+    shelter_by_place: &BTreeMap<String, u64>,
+) -> Result<ck_characters::cycle::Pressure, ck_economy::DataError> {
+    let mut pressure = ck_characters::cycle::Pressure::new();
+    for place in &economy.places {
+        if !characters.iter().any(|c| c.pop.place == place.id) {
+            continue;
+        }
+        let shelter = shelter_by_place.get(&place.id).copied().unwrap_or(0);
+        for (slot, multipliers) in ck_economy::death_multipliers(rules, place, shelter)?
+            .into_iter()
+            .enumerate()
+        {
+            pressure.insert(
+                ck_characters::PopLocator {
+                    place: place.id.clone(),
+                    slot: u32::try_from(slot).unwrap_or(u32::MAX),
+                },
+                multipliers
+                    .iter()
+                    .fold(1_u64, |all, m| all.saturating_mul(*m)),
+            );
+        }
+    }
+    Ok(pressure)
+}
+
+/// Phase A of a day (CK-364 §4), run inside the economy's daily system **before** its step: the certain deaths and, on the 1st, the
+/// monthly mortality and then the deliveries, with the death multipliers of each pop read once, at the start of the pass.
+///
+/// With no characters, or without a storage handle (the unit fixtures that exercise only the shell), nothing is opened and nothing
+/// happens: a death needs the archive.
+pub(crate) fn run_pre_economy_passes(
+    rules: &Rules,
+    state: &mut GameState,
+    tick: GameTime,
+    seed: u64,
+    shelter_by_place: &BTreeMap<String, u64>,
+    storage: Option<&super::character_storage::Handle>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Some(path) = storage.and_then(|cell| cell.lock().ok()?.clone()) else {
+        return Ok(());
+    };
+    if state.characters.iter().next().is_none() {
+        return Ok(());
+    }
+    let pressure = death_pressure(rules, &state.economy, &state.characters, shelter_by_place)?;
+    let mut archive = open_archive(&path);
+    let mut logs = open_logs(&path);
+    let ledger = ck_characters::Ledger::new(&mut state.economy);
+    let mut world = ck_characters::World {
+        rules: &rules.events,
+        personality: &rules.personality,
+        genetics: &rules.genetics,
+        lifecycle: &rules.lifecycle,
+        seed,
+        populations: &ledger,
+        archive: &mut archive,
+        logs: &mut logs,
+    };
+    state
+        .characters
+        .run_pre_economy(&mut world, tick, &pressure)?;
+    Ok(())
+}
+
+/// The character passes of CK-362 and CK-363 and the conceptions of CK-364 (phase C of a day), run inside the economy's daily system
+/// after that day's economy work: on the 1st the monthly stress recovery, then the birthday pass (humour drift, standing fade, the yearly
+/// events, craft rise, skills, precedence and coming of age) and, on the 1st, the monthly precedence check and the conceptions. They
+/// are not separate systems, and an economy error never reaches them. A life-log or archive failure after a committed change is
+/// returned here, as the economy's errors are.
 ///
 /// With no characters nothing is opened. Without a storage handle (the unit fixtures that exercise only the shell) the pass is
 /// slice 3's: drift and fade, which needs neither the archive nor the logs.
@@ -493,31 +600,45 @@ pub(crate) fn run_character_passes(
     }
     // A storage that cannot be opened must not stop the character state from updating: the archive append is the prerequisite of a
     // death (an unavailable archive refuses it), and a life-log line is output (an unavailable log reports each line it cannot write).
-    let mut archive = match ck_characters::Archive::open(path.join("ARCH")) {
-        Ok(archive) => Archived::Open(archive),
-        Err(error) => Archived::Down(error.to_string()),
-    };
-    let mut logs = match ck_characters::LifeLog::open(path.join("LOGS")) {
-        Ok(logs) => Logged::Open(logs),
-        Err(error) => Logged::Down(error.to_string()),
-    };
+    let mut archive = open_archive(&path);
+    let mut logs = open_logs(&path);
+    let ledger = ck_characters::Ledger::new(&mut state.economy);
     let mut world = ck_characters::World {
         rules: &rules.events,
         personality: &rules.personality,
+        genetics: &rules.genetics,
+        lifecycle: &rules.lifecycle,
         seed,
-        populations: &state.economy,
+        populations: &ledger,
         archive: &mut archive,
         logs: &mut logs,
     };
     let birthdays = state.characters.run_birthdays(&mut world, tick);
-    let monthly = if first {
-        state.characters.monthly_precedence(&mut world, tick)
+    let (monthly, conceptions) = if first {
+        (
+            state.characters.monthly_precedence(&mut world, tick),
+            state.characters.run_conceptions(&mut world, tick),
+        )
     } else {
-        Ok(())
+        (Ok(()), Ok(()))
     };
-    // Both ran whatever the first reported; the first failure is the one returned.
-    birthdays.and(monthly)?;
+    // All ran whatever the first reported; the first failure is the one returned.
+    birthdays.and(monthly).and(conceptions)?;
     Ok(())
+}
+
+fn open_archive(path: &Path) -> Archived {
+    match ck_characters::Archive::open(path.join("ARCH")) {
+        Ok(archive) => Archived::Open(archive),
+        Err(error) => Archived::Down(error.to_string()),
+    }
+}
+
+fn open_logs(path: &Path) -> Logged {
+    match ck_characters::LifeLog::open(path.join("LOGS")) {
+        Ok(logs) => Logged::Open(logs),
+        Err(error) => Logged::Down(error.to_string()),
+    }
 }
 
 /// The archive of the character storage, or the reason it cannot be opened (every append then fails).
@@ -529,6 +650,12 @@ impl ck_characters::ArchiveSink for Archived {
     fn append(&mut self, record: &ck_characters::Character) -> io::Result<()> {
         match self {
             Self::Open(archive) => archive.append(record),
+            Self::Down(reason) => Err(io::Error::other(reason.clone())),
+        }
+    }
+    fn get(&self, id: u64) -> io::Result<Option<ck_characters::Character>> {
+        match self {
+            Self::Open(archive) => archive.get(id),
             Self::Down(reason) => Err(io::Error::other(reason.clone())),
         }
     }
