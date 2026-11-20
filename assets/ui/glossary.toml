@@ -52,6 +52,10 @@ text = "A {pop} type: people hired from the {peasant|peasants} to work {holdings
 title = "monk"
 text = "A {pop} type: the members of a monastery. Monks have no children; as they die, the monastery hires new ones from other pops of its {religion}."
 
+[term.noble]
+title = "nobles"
+text = "A {pop} type: the lords' households, who own the {demesne} and live on its produce and on the rent of the {housing} they own."
+
 [term.worker]
 title = "worker"
 text = "The part of a {pop} who can hold a job. The rest are its {dependent|dependents}."
@@ -169,6 +173,10 @@ text = "A {building} where families work the land for themselves, growing crops 
 [term.holdings]
 title = "holdings"
 text = "A {building}: land worked for its owners by hired {worker|workers}."
+
+[term.demesne]
+title = "demesne"
+text = "A {building}: the lord's own land, worked for its owners by hired {worker|workers}. Its owners are {noble|nobles}; one noble covers ten workers."
 
 [term.storehouse]
 title = "storehouse"
@@ -319,6 +327,10 @@ text = "A farming {method}: crops and animals together on the same land."
 [term.monastic_farming]
 title = "monastic farming"
 text = "A farming {method} for a monastery's {holdings}, worked by hired {worker|workers}."
+
+[term.demesne_farming]
+title = "demesne farming"
+text = "A farming {method} for a lord's {demesne}: cattle and grain, with ale, mead and honey for his table."
 
 [term.monastic_fishing]
 title = "monastic fishing"

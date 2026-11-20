@@ -199,11 +199,11 @@ mod tests {
     }
 
     #[test]
-    fn shipped_glossary_has_105_sorted_entries() {
+    fn shipped_glossary_has_108_sorted_entries() {
         let fonts = fonts();
         let shipped = load(&assets(), &fonts).expect("the shipped glossary");
         let keys = shipped.keys().collect::<Vec<_>>();
-        assert_eq!(keys.len(), 105);
+        assert_eq!(keys.len(), 108);
         assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(!assets().join("ui/glossary-r1.toml").exists());
     }

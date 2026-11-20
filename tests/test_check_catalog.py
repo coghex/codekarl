@@ -2493,6 +2493,12 @@ GUARDS: tuple[Guard, ...] = (
         "economy.core",
         ("assets/game/economy.toml", "assets/scenarios/ireland-768/economy.toml"),
     ),
+    # CK-359: the noble, demesne and rent tests load the same shipped rules and Ireland's noble houses.
+    Guard(
+        "crates/economy/src/noble_tests.rs",
+        "economy.core",
+        ("assets/game/economy.toml", "assets/scenarios/ireland-768/economy.toml"),
+    ),
     Guard(
         "apps/codekarl/src/readout_tests.rs",
         "rust.app",

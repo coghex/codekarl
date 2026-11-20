@@ -832,3 +832,276 @@ monks=5
 labourers=5
 levels=[0, 1, 1]
 
+
+# --- CK-359: the noble houses at 768 (copy of scenario/p1-nobles-start-r1.toml, sha256 8c50f823..., see SOURCES.md) ---
+# P1 start data: noble pops at 768 (ck-designer-1, 2026-11-19; owner r188 for the sizes, the rest designer).
+# One noble pop per place where a royal house lives (every place with a living noble figure in figures/ireland-768.toml; the
+# seats of locations-changes-r3). One pop per place for now: houses split pops when characters arrive (households-r4).
+# people: by the seat's size, 20 / 40 / 80 (size 1-3); a seat in a church settlement takes the court's own size, not the church's.
+# demesne_levels: noble-owned demesne (p1-noble-economy-r1; 1 per 20 nobles), each worked by 10 labourers (a labourer pop of the place's culture),
+# one noble owner covering 10 labourers as at the monasteries. Living space owned: the demesne's housing (rent-r1).
+# dal_riatan: Dún Sobhairce is the Dál Riata stand-in seat but the place's culture is ulaid; the noble pop is dal_riatan.
+
+[nobles.aidne_seat]
+# Dúrlas Guaire (ringfort 1); 3 living noble figure(s)
+culture="connachta"
+religion="christianity"
+people=20
+demesne_levels=1
+labourers=10
+
+[nobles.ailech]
+# Grianán Ailigh (cashel 3); 8 living noble figure(s)
+culture="northern_ui_neill"
+religion="christianity"
+people=80
+demesne_levels=4
+labourers=40
+
+[nobles.armagh]
+# Ard Mhacha (monastery 4); 1 living noble figure(s)
+culture="airgialla"
+religion="christianity"
+people=20
+demesne_levels=1
+labourers=10
+
+[nobles.bruree]
+# Brú Rí (ringfort 2); 4 living noble figure(s)
+culture="mumu"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.cairpre_seat]
+# Cairpre Droma Cliab (ringfort 1); 2 living noble figure(s)
+culture="northern_ui_neill"
+religion="christianity"
+people=20
+demesne_levels=1
+labourers=10
+
+[nobles.cashel]
+# Caiseal (cashel 3); 3 living noble figure(s)
+culture="mumu"
+religion="christianity"
+people=80
+demesne_levels=4
+labourers=40
+
+[nobles.ciarraige_seat]
+# Ciarraige Luachra (ringfort 1); 2 living noble figure(s)
+culture="mumu"
+religion="christianity"
+people=20
+demesne_levels=1
+labourers=10
+
+[nobles.clogher]
+# Clochar (hillfort 2); 3 living noble figure(s)
+culture="airgialla"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.corco_modruad]
+# Corco Modruad (ringfort 1); 1 living noble figure(s)
+culture="connachta"
+religion="christianity"
+people=20
+demesne_levels=1
+labourers=10
+
+[nobles.downpatrick]
+# Dún Pádraig (monastery 2); 3 living noble figure(s)
+culture="ulaid"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.dunseverick]
+# Dún Sobhairce (promontory_fort 1); 3 living noble figure(s)
+culture="dal_riatan"
+religion="christianity"
+people=20
+demesne_levels=1
+labourers=10
+
+[nobles.ferns]
+# Fearna (monastery 3); 6 living noble figure(s)
+culture="laigin"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.gowran]
+# Belach Gabráin (ringfort 2); 4 living noble figure(s)
+culture="mumu"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.granard]
+# Gránard (ringfort 1); 3 living noble figure(s)
+culture="mide_brega"
+religion="christianity"
+people=20
+demesne_levels=1
+labourers=10
+
+[nobles.knockainey]
+# Cnoc Áine (ceremonial_ground 2); 2 living noble figure(s)
+culture="mumu"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.knowth]
+# Cnóbha (ringfort 2); 3 living noble figure(s)
+culture="mide_brega"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.lagore]
+# Loch Gabhair (crannog 2); 6 living noble figure(s)
+culture="mide_brega"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.locha_lein]
+# Loch Léin (ringfort 2); 4 living noble figure(s)
+culture="mumu"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.loegaire_seat]
+# Cenél Lóegairi (ringfort 1); 3 living noble figure(s)
+culture="mide_brega"
+religion="christianity"
+people=20
+demesne_levels=1
+labourers=10
+
+[nobles.lyons_hill]
+# Liamhain (ceremonial_ground 2); 3 living noble figure(s)
+culture="laigin"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.moynagh]
+# Maigh nEach (crannog 1); 4 living noble figure(s)
+culture="mide_brega"
+religion="christianity"
+people=20
+demesne_levels=1
+labourers=10
+
+[nobles.mullaghmast]
+# Maistiu (ringfort 2); 1 living noble figure(s)
+culture="laigin"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.naas]
+# An Nás (ringfort 2); 1 living noble figure(s)
+culture="laigin"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.raphoe]
+# Ráth Bhoth (monastery 1); 3 living noble figure(s)
+culture="northern_ui_neill"
+religion="christianity"
+people=20
+demesne_levels=1
+labourers=10
+
+[nobles.rathangan]
+# Ráth Iomgháin (ringfort 2); 6 living noble figure(s)
+culture="laigin"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.rathcroghan]
+# Ráth Cruachan (ceremonial_ground 3); 11 living noble figure(s)
+culture="connachta"
+religion="christianity"
+people=80
+demesne_levels=4
+labourers=40
+
+[nobles.rathmore]
+# An Ráth Mhór (ringfort 2); 4 living noble figure(s)
+culture="cruthin"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.tethbae_seat]
+# Ráth Ardachaidh (ringfort 1); 2 living noble figure(s)
+culture="mide_brega"
+religion="christianity"
+people=20
+demesne_levels=1
+labourers=10
+
+[nobles.tir_amalgaid]
+# Tír Amalgaid (ringfort 2); 2 living noble figure(s)
+culture="connachta"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.ui_echach_seat]
+# Cnoc Uí Echach (ringfort 1); 3 living noble figure(s)
+culture="cruthin"
+religion="christianity"
+people=20
+demesne_levels=1
+labourers=10
+
+[nobles.ui_maine_seat]
+# Dún Imghain (ringfort 2); 5 living noble figure(s)
+culture="connachta"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.uisneach]
+# Uisneach (ceremonial_ground 2); 9 living noble figure(s)
+culture="mide_brega"
+religion="christianity"
+people=40
+demesne_levels=2
+labourers=20
+
+[nobles.uliathain_seat]
+# Uí Liatháin (ringfort 1); 1 living noble figure(s)
+culture="mumu"
+religion="christianity"
+people=20
+demesne_levels=1
+labourers=10

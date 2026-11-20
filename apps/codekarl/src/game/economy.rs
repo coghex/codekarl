@@ -121,6 +121,21 @@ pub(crate) fn starting_economy(
             ));
         }
     }
+    for id in data.nobles.keys() {
+        match scenario
+            .locations
+            .iter()
+            .find(|location| location.id == *id)
+        {
+            None => return Err(format!("nobles.{id}: no such location")),
+            Some(location) if location.abandoned => {
+                return Err(format!(
+                    "nobles.{id}: abandoned location cannot have a noble house"
+                ));
+            }
+            Some(_) => {}
+        }
+    }
     let land = land_counts(scenario, &rules.terrain_order)?;
     let starts = scenario
         .locations
@@ -288,6 +303,198 @@ mod tests {
                 .iter()
                 .any(|pop| pop.kind == "monk" && pop.culture == "northumbrian")
         );
+    }
+
+    /// The smallest household whose workers, at 400‰ dependents, number at least `workers`.
+    fn household_heads(workers: u64) -> u64 {
+        (workers..=workers * 2)
+            .find(|heads| heads - heads * 400 / 1000 >= workers)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_768_start_gives_each_of_the_33_noble_houses_a_demesne_and_its_labourers() {
+        let assets = ireland_assets();
+        let directory = assets.join("scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).unwrap();
+        let data = ScenarioEconomy::load(directory.join("economy.toml")).unwrap();
+        let (state, report) = starting_economy(&assets, &directory, &scenario).unwrap();
+        assert!(
+            report.iter().all(|line| !line.contains(" demesne: ")),
+            "no demesne level is cut at the 768 start: {report:?}"
+        );
+        assert_eq!(data.nobles.len(), 33);
+
+        let (mut heads_added, mut jobs_filled, mut nobles_total) = (0, 0, 0);
+        for (id, noble) in &data.nobles {
+            let place = state.places.iter().find(|place| place.id == *id).unwrap();
+            // One noble pop of the given culture, religion and heads.
+            let nobles = place
+                .pops
+                .iter()
+                .filter(|pop| pop.kind == "noble")
+                .collect::<Vec<_>>();
+            assert_eq!(nobles.len(), 1, "{id}");
+            assert_eq!(
+                (nobles[0].culture.as_str(), nobles[0].religion.as_str()),
+                (noble.culture.as_str(), noble.religion.as_str()),
+                "{id}"
+            );
+            assert_eq!(
+                nobles[0].workers + nobles[0].dependents,
+                noble.people,
+                "{id}"
+            );
+            nobles_total += noble.people;
+
+            // The demesne at its authored levels, with the nobles as its owners.
+            let demesne_index = place
+                .buildings
+                .iter()
+                .position(|building| building.kind == "demesne")
+                .unwrap();
+            let demesne = &place.buildings[demesne_index];
+            assert_eq!(demesne.levels, noble.demesne_levels, "{id}");
+            let noble_index = place
+                .pops
+                .iter()
+                .position(|pop| pop.kind == "noble")
+                .unwrap();
+            assert_eq!(
+                demesne.employment[noble_index].owners,
+                u64::from(noble.demesne_levels),
+                "{id}: one owner covers ten labourers"
+            );
+
+            // The labourers: one pop of the place's culture and religion; the heads added and the jobs
+            // filled are separate numbers.
+            let place_culture = data.places[id].culture.as_deref().unwrap();
+            let labourers = place
+                .pops
+                .iter()
+                .enumerate()
+                .filter(|(_, pop)| pop.kind == "labourer")
+                .collect::<Vec<_>>();
+            assert_eq!(
+                labourers.len(),
+                1,
+                "{id}: the household joins the place's one labourer pop"
+            );
+            let (labourer_index, pop) = labourers[0];
+            assert_eq!(pop.culture, place_culture, "{id}");
+            let location = scenario
+                .locations
+                .iter()
+                .find(|location| location.id == *id)
+                .unwrap();
+            let kind = &scenario.location_kinds.kinds[location.kind_index].id;
+            let (defaults, override_) = data.resolve(kind, location.size, id).unwrap();
+            let existing = override_.labourers.unwrap_or(defaults.labourers);
+            let added = pop.workers + pop.dependents - existing;
+            assert_eq!(
+                added,
+                household_heads(noble.labourers),
+                "{id}: the smallest household with {} workers",
+                noble.labourers
+            );
+            heads_added += added;
+            assert_eq!(
+                demesne.employment[labourer_index].workers, noble.labourers,
+                "{id}: every demesne job is filled"
+            );
+            jobs_filled += demesne.employment[labourer_index].workers;
+        }
+        assert_eq!(nobles_total, 1180);
+        assert_eq!(jobs_filled, 590, "590 paid workers where no level is cut");
+        assert_eq!(
+            heads_added,
+            16 * 13 + 32 * 17 + 66 * 3,
+            "the households of 13, 17 and 3 houses of 1, 2 and 4 levels"
+        );
+    }
+
+    #[test]
+    fn dunseverick_has_a_dal_riatan_house_and_armagh_one_shared_labourer_pop() {
+        let assets = ireland_assets();
+        let directory = assets.join("scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).unwrap();
+        let (state, _) = starting_economy(&assets, &directory, &scenario).unwrap();
+        // Dún Sobhairce's house is dal_riatan in an ulaid place, over ulaid labourers.
+        let dunseverick = state
+            .places
+            .iter()
+            .find(|place| place.id == "dunseverick")
+            .unwrap();
+        let culture_of = |kind: &str| {
+            dunseverick
+                .pops
+                .iter()
+                .find(|pop| pop.kind == kind)
+                .unwrap()
+                .culture
+                .clone()
+        };
+        assert_eq!(
+            (
+                culture_of("noble").as_str(),
+                culture_of("labourer").as_str()
+            ),
+            ("dal_riatan", "ulaid")
+        );
+
+        // Armagh's demesne labourers are the monastery's labourer pop, employed in both buildings.
+        let armagh = state
+            .places
+            .iter()
+            .find(|place| place.id == "armagh")
+            .unwrap();
+        let labourers = armagh
+            .pops
+            .iter()
+            .enumerate()
+            .filter(|(_, pop)| pop.kind == "labourer")
+            .collect::<Vec<_>>();
+        assert_eq!(labourers.len(), 1);
+        let employment = &labourers[0].1.employment;
+        for kind in ["holdings", "demesne"] {
+            let index = armagh
+                .buildings
+                .iter()
+                .position(|building| building.kind == kind)
+                .unwrap();
+            assert!(
+                employment[index].workers > 0,
+                "armagh labourers work in the {kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_noble_house_at_an_unknown_or_abandoned_place_is_refused() {
+        let assets = ireland_assets();
+        let directory = assets.join("scenarios/ireland-768");
+        let scenario = ck_map::load_scenario(&directory).unwrap();
+        let original = std::fs::read_to_string(directory.join("economy.toml")).unwrap();
+        for (id, expected) in [
+            ("atlantis", "nobles.atlantis: no such location"),
+            (
+                "emain_macha",
+                "nobles.emain_macha: abandoned location cannot have a noble house",
+            ),
+        ] {
+            let temporary = std::env::temp_dir().join(format!("ck359-{id}-{}", std::process::id()));
+            std::fs::create_dir_all(&temporary).unwrap();
+            std::fs::write(
+                temporary.join("economy.toml"),
+                format!(
+                    "{original}\n[nobles.{id}]\nculture=\"ulaid\"\nreligion=\"christianity\"\npeople=20\ndemesne_levels=1\nlabourers=10\n"
+                ),
+            )
+            .unwrap();
+            let error = starting_economy(&assets, &temporary, &scenario).unwrap_err();
+            std::fs::remove_dir_all(&temporary).unwrap();
+            assert_eq!(error, expected);
+        }
     }
 
     #[test]

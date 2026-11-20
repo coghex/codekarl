@@ -14,16 +14,19 @@ leave_pm = 50
 [footprint_m2]
 farm = 2000
 holdings = 4000
+demesne = 4000
 storehouse = 200
 
 [housing_per_level]
 farm = 17
 holdings = 14
+demesne = 37          # the labourers' households (10 workers with average dependents, 17) and the lord's household (20)
 storehouse = 3
 
 [housing_class]
 farm = "basic"
 holdings = "basic"
+demesne = "basic"
 storehouse = "basic"
 
 [shelter_pm]
@@ -330,12 +333,24 @@ dependent_deaths_pm_year=75
 necessities_expectation_pm=1000
 niceties_expectation_pm=500
 luxuries_expectation_pm=100
+# The noble pop: the lords' households. Births and deaths at the peasant rates, expectations 1000 / 700 / 300 (owner, r188).
+# Source: p1-noble-economy-r1.toml (ck-designer-1, 2026-11-19), approved by the owner (r190).
+[[pop_types]]
+id="noble"
+dependent_pm=400
+births_pm_year=67
+worker_deaths_pm_year=20
+dependent_deaths_pm_year=60
+necessities_expectation_pm=1000
+niceties_expectation_pm=700
+luxuries_expectation_pm=300
 
 # Initial necessities, niceties and luxuries, in that order and in per-mille.
 [starting_needs_pm]
 peasant=[1000,0,0]
 labourer=[1000,0,0]
 monk=[1000,0,0]
+noble=[1000,700,300]   # start content, at their expectations
 
 [[buildings]]
 id="farm"
@@ -377,6 +392,26 @@ resource="sea"
 suitability="sea"
 annual_output={ fish=8000, seabirds=1500, vegetables=20, herbs=10 }
 score_share_pm={ fish=800, seabirds=150, vegetables=30, herbs=20 }
+# The lord's own land (the demesne), worked by paid labourers and owned by nobles; not `holdings`, which stays the monks'.
+# Source: p1-noble-economy-r1.toml, approved by the owner (r191). The designer's `owner_workers={ noble=1, labourer=10 }` is
+# translated: the keys of `owner_workers` are the worker kinds a building employs, so all ten positions per level are labourer
+# jobs (one owner covers 10 of them) and `owner_kind` names the pop type that owns: one noble covers 10 labourers.
+[[buildings]]
+id="demesne"
+workers_per_level=10
+land_per_level=2
+owner_workers={ labourer=10 }
+owner_kind="noble"
+penalty_pm=500
+overhead_pm=300
+recruit_range_m=30000
+[[buildings.methods]]
+id="demesne_farming"
+resource="usable_land"
+suitability="crops"
+# Cattle-rich (a lord's wealth was his herds), with ale, mead and honey for his table; no herbs or beeswax (the monks' specialties).
+annual_output={ oats=300, barley=80, peas_beans=6, vegetables=20, beef=1300, pork=970, mutton=165, dairy=1000, wool=10, hides=8, ale=300, honey=30, mead=60, apples=20 }
+score_share_pm={ oats=430, barley=110, peas_beans=20, vegetables=30, beef=40, pork=20, mutton=5, dairy=20, wool=5, hides=5, ale=150, honey=40, mead=100, apples=25 }
 [[buildings]]
 id="storehouse"
 workers_per_level=2
@@ -414,10 +449,12 @@ intake_food_days=[[30,500],[120,800],[240,1000]]
 [ticking_rates_million.herbs]
 monk=6000
 labourer=2000
+noble=2000
 peasant=1000
 [ticking_rates_million.beeswax]
 monk=4000
 labourer=500
+noble=2000     # candles for the hall: between labourers (500) and monks (4000)
 peasant=250
 [diet_profiles.peasant]
 oats=400
@@ -450,6 +487,17 @@ peas_beans=70
 vegetables=80
 fish=100
 
+[diet_profiles.noble]    # meat and dairy heavy, less grain
+oats=250
+barley=100
+dairy=250
+beef=120
+pork=100
+mutton=50
+peas_beans=40
+vegetables=40
+fish=50
+
 [comfort_profiles.labourer.niceties]
 ale=952
 honey=48
@@ -466,6 +514,15 @@ herbs=88
 mead=286
 apples=536
 herbs=178
+[comfort_profiles.noble.niceties]
+ale=600
+mead=200
+honey=100
+apples=100
+[comfort_profiles.noble.luxuries]    # wine waits for merchants (imported from Gaul); until then mead, honey and apples
+mead=600
+honey=200
+apples=200
 
 [suitability.pasture]
 crops=700

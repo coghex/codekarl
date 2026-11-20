@@ -808,6 +808,8 @@ mod tests {
                     ..PopConsumption::default()
                 },
                 counters: CounterBuckets::default(),
+                short_on_rent: false,
+                housed_last: false,
             }],
             buildings: vec![
                 BuildingState {
