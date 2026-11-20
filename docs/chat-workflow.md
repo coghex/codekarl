@@ -70,7 +70,7 @@ write ordinary messages without special syntax.
 | Worker/reviewer names a peer | The peer; the message grants no new assignment or approval authority |
 | Unaddressed worker question, blocker, completion or decline | `ck-manager` |
 | Routine unaddressed status, acknowledgement | Recorded, no wake-up |
-| Reply without an explicit mention | The original agent sender when actionable; routine status replies stay quiet |
+| Reply without an explicit mention | The original agent sender when actionable; an unaddressed done, declined, blocked or question from a worker or reviewer (no handle other than its own) also reaches `ck-manager` (CK-372); routine status replies stay quiet |
 | Unknown or out-of-project recipient | Diagnostic in `tools/ck-chat status`; never silently reassigned |
 | Recipient is offline | Its durable inbox retains the message; delivery retries can eventually require attention |
 
