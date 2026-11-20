@@ -2,13 +2,14 @@
 //!
 //! Nothing here uses floating point. A decimal is read from its digits and stored as an exact integer: a probability or a factor in
 //! parts per billion, a per-point value in millionths, every other quantity in thousandths. `life-cycle.toml` also holds the sections
-//! of the later issues (marriage, upbringing, nutrition) and `names.toml` the namesake rules; they load untouched (their text is
-//! part of the save's rules hash) and nothing here reads them.
+//! of the later issues (marriage, upbringing, nutrition); they load untouched (their text is part of the save's rules hash) and
+//! nothing here reads them. `names.toml` also holds the namesake rules (CK-365) and `epithets.toml` the epithets (CK-365).
 #![deny(clippy::float_arithmetic)]
 
 use crate::{
-    DataError, Peoples,
+    DataError, EventRules, Genetics, Peoples,
     bigint::Big,
+    events::{self, Epithet},
     genetics::{Node, PPB, Source, Table},
 };
 use std::{collections::BTreeMap, fs, path::Path};
@@ -168,6 +169,22 @@ pub struct NamePool {
     pub women: Vec<String>,
 }
 
+/// The kinds of relative a child may be named for, the keys of `[namesakes].order`.
+pub const NAMESAKE_KINDS: [&str; 5] = [
+    "father",
+    "grandfather",
+    "uncle",
+    "fathers_friend",
+    "ancestor",
+];
+
+/// `[namesakes]`: the kinds of relative tried in order, each with its base chance (CK-365).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Namesakes {
+    /// `(kind, base chance in ppb)` in the order they are tried.
+    pub order: Vec<(String, u32)>,
+}
+
 /// The loaded life-cycle data.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LifeCycle {
@@ -185,10 +202,28 @@ pub struct LifeCycle {
     pub pools: BTreeMap<String, NamePool>,
     /// The pool key of each culture.
     pub culture_pool: BTreeMap<String, String>,
+    /// `[namesakes]` of `names.toml` (CK-365).
+    pub namesakes: Namesakes,
+    /// The epithets of `epithets.toml`, in the order the file writes them (CK-365).
+    pub epithets: Vec<Epithet>,
+}
+
+/// The text of the three files, each with the name errors report it by.
+pub struct Files<'a> {
+    /// `life-cycle.toml`: `(file name, text)`.
+    pub life: (&'a str, &'a str),
+    /// `names.toml`.
+    pub names: (&'a str, &'a str),
+    /// `epithets.toml`.
+    pub epithets: (&'a str, &'a str),
 }
 
 /// What the life-cycle data is validated against.
 pub struct Registry<'a> {
+    /// The loaded character events, whose catalog, skills and deed counters an epithet's conditions are checked against (CK-365).
+    pub events: &'a EventRules,
+    /// The genetic rules the event data was checked against.
+    pub genetics: &'a Genetics,
     /// The culture registry.
     pub peoples: &'a Peoples,
     /// The population type keys.
@@ -540,8 +575,37 @@ fn parse_pool(source: &Source<'_>, node: &Node, key: &str) -> Result<NamePool, D
     })
 }
 
+/// `[namesakes]`: `order = [[kind, chance], ...]`, each kind one of [`NAMESAKE_KINDS`] at most once and each chance in 0..1.
+fn parse_namesakes(source: &Source<'_>, node: &Node) -> Result<Namesakes, DataError> {
+    let table = source.table(node, "namesakes")?;
+    for key in table.keys() {
+        if key != "order" {
+            return Err(source.error(format!("namesakes.{key}"), "unknown key"));
+        }
+    }
+    let entry = "namesakes.order";
+    let list = table
+        .get("order")
+        .ok_or_else(|| source.error(entry, "missing value"))?;
+    let mut order: Vec<(String, u32)> = Vec::new();
+    for item in array(source, list, entry)? {
+        let [kind, chance] = array(source, item, entry)? else {
+            return Err(source.error(entry, "an entry is `[kind, chance]`"));
+        };
+        let kind = source.text(kind, entry)?;
+        if !NAMESAKE_KINDS.contains(&kind) {
+            return Err(source.error(entry, format!("`{kind}` is not a kind of namesake")));
+        }
+        if order.iter().any(|(seen, _)| seen == kind) {
+            return Err(source.error(entry, format!("`{kind}` is listed twice")));
+        }
+        order.push((kind.to_owned(), source.ppb(chance, entry)?));
+    }
+    Ok(Namesakes { order })
+}
+
 impl LifeCycle {
-    /// Load `life-cycle.toml` and `names.toml` from `directory` and validate them against the registry.
+    /// Load `life-cycle.toml`, `names.toml` and `epithets.toml` from `directory` and validate them against the registry.
     ///
     /// # Errors
     /// Returns a source-qualified error for unreadable or invalid data.
@@ -559,20 +623,25 @@ impl LifeCycle {
         };
         let (life_file, life) = read("life-cycle.toml")?;
         let (names_file, names) = read("names.toml")?;
-        Self::parse(&life_file, &life, &names_file, &names, registry)
+        let (epithets_file, epithets) = read("epithets.toml")?;
+        Self::parse(
+            &Files {
+                life: (&life_file, &life),
+                names: (&names_file, &names),
+                epithets: (&epithets_file, &epithets),
+            },
+            registry,
+        )
     }
 
-    /// Parse and validate both files' text; the file names appear in errors.
+    /// Parse and validate the three files' text; the file names appear in errors.
     ///
     /// # Errors
     /// Returns a source-qualified error for the first invalid entry.
-    pub fn parse(
-        life_file: &str,
-        life: &str,
-        names_file: &str,
-        names: &str,
-        registry: &Registry<'_>,
-    ) -> Result<Self, DataError> {
+    pub fn parse(files: &Files<'_>, registry: &Registry<'_>) -> Result<Self, DataError> {
+        let (life_file, life) = files.life;
+        let (names_file, names) = files.names;
+        let (epithets_file, epithets) = files.epithets;
         let source = Source { file: life_file };
         let root = source.document(life)?;
         for key in root.keys() {
@@ -610,6 +679,16 @@ impl LifeCycle {
         rules.relations = parse_relations(&source, section("relations")?, registry)?;
         rules.conception = parse_conception(&source, section("conception")?)?;
         rules.parse_names(names_file, names, registry)?;
+        rules.epithets = registry.events.parse_epithets(
+            epithets_file,
+            epithets,
+            &events::Registry {
+                peoples: registry.peoples,
+                genetics: registry.genetics,
+                pop_types: registry.pop_types,
+            },
+            registry.religions,
+        )?;
         Ok(rules)
     }
 
@@ -694,6 +773,11 @@ impl LifeCycle {
                 ));
             }
         }
+        self.namesakes = parse_namesakes(
+            &source,
+            root.get("namesakes")
+                .ok_or_else(|| source.error("namesakes", "missing section"))?,
+        )?;
         Ok(())
     }
 

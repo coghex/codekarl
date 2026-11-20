@@ -16,7 +16,7 @@ pub mod genetics;
 pub mod lifecycle;
 pub mod peoples;
 pub mod personality;
-pub use events::EventRules;
+pub use events::{Epithet, EpithetScope, EpithetTrigger, EventRules};
 pub use genetics::{Genetics, PopGenetics};
 pub use lifecycle::LifeCycle;
 pub use peoples::Peoples;
@@ -271,6 +271,8 @@ impl Rules {
         rules.lifecycle = LifeCycle::load(
             &path.with_file_name("lifecycle"),
             &lifecycle::Registry {
+                events: &rules.events,
+                genetics: &rules.genetics,
                 peoples: &rules.peoples,
                 pop_types: &pop_types,
                 religions: &rules.religions,

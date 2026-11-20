@@ -365,6 +365,9 @@ impl CharacterStore {
         if majority > 0 && age == majority {
             self.dispatch(world, id, "coming_of_age", today, first)?;
         }
+        // Stage 9 (CK-365 §1): the yearly epithets, in file order, after precedence and coming of age and before 5c's marriage
+        // wish; a character that died on the way is not tested.
+        self.gain_epithets(world, id, today, &ck_economy::EpithetTrigger::Yearly)?;
         Ok(())
     }
 

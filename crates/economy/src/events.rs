@@ -145,6 +145,16 @@ pub struct Conditions {
     pub lacks_land: bool,
     /// The pop's luxuries fulfilment at least this, in permille (`keep_while` only).
     pub pop_luxuries_min: Option<i64>,
+    /// Graded traits at or above a level 1..=6 (epithets only, CK-365).
+    pub grade_min: Vec<(String, u8)>,
+    /// A shown stat (index into the genetic attributes) at most `(m, f)` in thousandths, for a man and a woman (epithets only).
+    pub stat_max_by_sex: Vec<(usize, i64, i64)>,
+    /// The shown weight over the rolled weight at least this, in thousandths (epithets only).
+    pub weight_ratio_min: Option<i64>,
+    /// Deed counters at least a value (epithets only).
+    pub count_min: Vec<(String, u64)>,
+    /// The character is past the age of majority (epithets only).
+    pub adult: bool,
 }
 
 /// Which way stress moves a chance.
@@ -339,6 +349,17 @@ pub struct Registry<'a> {
     pub pop_types: &'a [&'a str],
 }
 
+/// Which condition keys a table may use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Vocabulary {
+    /// An event's `when`.
+    Event,
+    /// A `keep_while` entry (adds `lacks_land` and `pop_luxuries_min`).
+    Keep,
+    /// An epithet's `when` (adds `grade_min`, `stat_max_by_sex`, `weight_ratio_min`, `count_min` and `adult`).
+    Epithet,
+}
+
 struct Parser<'a> {
     source: Source<'a>,
     registry: &'a Registry<'a>,
@@ -457,7 +478,12 @@ impl Parser<'_> {
         clippy::too_many_lines,
         reason = "one arm per condition of the vocabulary, in the file's own order"
     )]
-    fn conditions(&self, node: &Node, entry: &str, keep: bool) -> Result<Conditions, DataError> {
+    fn conditions(
+        &self,
+        node: &Node,
+        entry: &str,
+        vocabulary: Vocabulary,
+    ) -> Result<Conditions, DataError> {
         let table = self.source.table(node, entry)?;
         let mut allowed = vec![
             "age",
@@ -474,8 +500,16 @@ impl Parser<'_> {
             "over_threshold_min",
             "over_threshold",
         ];
-        if keep {
-            allowed.extend(["lacks_land", "pop_luxuries_min"]);
+        match vocabulary {
+            Vocabulary::Event => {}
+            Vocabulary::Keep => allowed.extend(["lacks_land", "pop_luxuries_min"]),
+            Vocabulary::Epithet => allowed.extend([
+                "grade_min",
+                "stat_max_by_sex",
+                "weight_ratio_min",
+                "count_min",
+                "adult",
+            ]),
         }
         only_keys(&self.source, table, entry, &allowed)?;
         let mut out = Conditions::default();
@@ -546,6 +580,62 @@ impl Parser<'_> {
                         return Err(self.error(&at, "`over_threshold` is only ever true"));
                     }
                     out.over_threshold = true;
+                }
+                "grade_min" => {
+                    for (name, value) in self.source.table(node, &at)? {
+                        let item = format!("{at}.{name}");
+                        self.key(name, &item)?;
+                        if !self.catalog[name].graded {
+                            return Err(self.error(item, format!("`{name}` is not a graded trait")));
+                        }
+                        let level = u8::try_from(self.source.integer(value, &item)?)
+                            .ok()
+                            .filter(|level| (1..=MAX_GRADE).contains(level))
+                            .ok_or_else(|| self.error(&item, "a grade is 1 (C) to 6 (SSS)"))?;
+                        out.grade_min.push((name.clone(), level));
+                    }
+                }
+                "stat_max_by_sex" => {
+                    for (name, value) in self.source.table(node, &at)? {
+                        let item = format!("{at}.{name}");
+                        let stat = attribute_index(name).ok_or_else(|| {
+                            self.error(&item, format!("`{name}` is not a genetic stat"))
+                        })?;
+                        let limits = self.source.table(value, &item)?;
+                        only_keys(&self.source, limits, &item, &["m", "f"])?;
+                        let limit = |sex: &str| -> Result<i64, DataError> {
+                            self.source.milli_non_negative(
+                                required(&self.source, limits, &item, sex)?,
+                                &format!("{item}.{sex}"),
+                            )
+                        };
+                        out.stat_max_by_sex.push((stat, limit("m")?, limit("f")?));
+                    }
+                }
+                "weight_ratio_min" => {
+                    let ratio = self.source.milli_non_negative(node, &at)?;
+                    if ratio == 0 {
+                        return Err(self.error(&at, "a weight ratio is above 0"));
+                    }
+                    out.weight_ratio_min = Some(ratio);
+                }
+                "count_min" => {
+                    for (name, value) in self.source.table(node, &at)? {
+                        let item = format!("{at}.{name}");
+                        if !self.counters.contains(name) {
+                            return Err(
+                                self.error(item, format!("`{name}` is not a counter of `[deeds]`"))
+                            );
+                        }
+                        out.count_min
+                            .push((name.clone(), positive_u64(&self.source, value, &item)?));
+                    }
+                }
+                "adult" => {
+                    if !self.source.boolean(node, &at)? {
+                        return Err(self.error(&at, "`adult` is only ever true"));
+                    }
+                    out.adult = true;
                 }
                 "lacks_land" => {
                     if !self.source.boolean(node, &at)? {
@@ -892,7 +982,7 @@ impl Parser<'_> {
             },
         };
         let when = match table.get("when") {
-            Some(node) => self.conditions(node, &format!("{entry}.when"), false)?,
+            Some(node) => self.conditions(node, &format!("{entry}.when"), Vocabulary::Event)?,
             None => Conditions::default(),
         };
         let chance_ppb = self.source.ppb(
@@ -1035,6 +1125,230 @@ fn parse_catalog(
     Ok(out)
 }
 
+/// Whom an epithet may be gained by (CK-365).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EpithetScope {
+    /// Everyone.
+    Universal,
+    /// A character whose culture's subgroup (CK-356) is this key.
+    Subgroup(String),
+    /// A character whose pop's religion is this key.
+    Religion(String),
+}
+
+/// What gains an epithet (CK-365).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EpithetTrigger {
+    /// The birthday pass.
+    Yearly,
+    /// A happening reported for the character.
+    Happening(String),
+    /// A system not built yet: the epithet loads and is never gained.
+    Later,
+}
+
+/// An epithet: a title a character gains by chance or by an event, kept for life, the most important of those held being shown
+/// after the name (CK-365, characters slice 5b).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Epithet {
+    /// The key, `[epithet.<key>]`.
+    pub key: String,
+    /// The text shown after the name.
+    pub shown: String,
+    /// How important it is: the more important of two held is the one shown.
+    pub importance: u32,
+    /// Who may gain it.
+    pub scope: EpithetScope,
+    /// What gains it.
+    pub trigger: EpithetTrigger,
+    /// The conditions that must hold (empty for a `later` epithet, which has none).
+    pub when: Conditions,
+    /// The chance in ppb each time the trigger tests it (0 for a `later` epithet).
+    pub chance_ppb: u32,
+}
+
+/// The scope of an epithet: `universal`, a culture subgroup or a religion (and not both).
+fn epithet_scope(
+    source: &Source<'_>,
+    registry: &Registry<'_>,
+    religions: &[String],
+    entry: &str,
+    value: &str,
+) -> Result<EpithetScope, DataError> {
+    if value == "universal" {
+        return Ok(EpithetScope::Universal);
+    }
+    let group = registry.peoples.subgroups.iter().any(|g| g == value);
+    let religion = religions.iter().any(|r| r == value);
+    match (group, religion) {
+        (true, false) => Ok(EpithetScope::Subgroup(value.to_owned())),
+        (false, true) => Ok(EpithetScope::Religion(value.to_owned())),
+        (true, true) => Err(source.error(
+            entry,
+            format!("`{value}` is both a culture subgroup and a religion"),
+        )),
+        (false, false) => Err(source.error(
+            entry,
+            format!("`{value}` is not `universal`, a culture subgroup or a religion"),
+        )),
+    }
+}
+
+/// The trigger of an epithet: `yearly`, `happening:<name>` or `later`.
+fn epithet_trigger(
+    source: &Source<'_>,
+    entry: &str,
+    value: &str,
+) -> Result<EpithetTrigger, DataError> {
+    match value {
+        "yearly" => Ok(EpithetTrigger::Yearly),
+        "later" => Ok(EpithetTrigger::Later),
+        other => match other.strip_prefix("happening:") {
+            Some(name) if !name.is_empty() => Ok(EpithetTrigger::Happening(name.to_owned())),
+            _ => Err(source.error(
+                entry,
+                "a trigger is `yearly`, `happening:<name>` or `later`",
+            )),
+        },
+    }
+}
+
+/// The epithet keys in the order the file writes them (the validated map keeps no file order).
+fn epithet_order(source: &Source<'_>, text: &str, table: &Table) -> Result<Vec<String>, DataError> {
+    let parsed = toml::de::DeTable::parse(text)
+        .map_err(|error| source.error("<document>", error.message().to_owned()))?;
+    let Some(epithets) = parsed.get_ref().get("epithet") else {
+        return Err(source.error("epithet", "missing value"));
+    };
+    let toml::de::DeValue::Table(entries) = epithets.get_ref() else {
+        return Err(source.error("epithet", "expected a table"));
+    };
+    let mut positions: Vec<(usize, String)> = entries
+        .iter()
+        .map(|(key, _)| (key.span().start, key.get_ref().as_ref().to_owned()))
+        .collect();
+    positions.sort();
+    let order: Vec<String> = positions.into_iter().map(|(_, key)| key).collect();
+    let mut sorted = order.clone();
+    sorted.sort();
+    if sorted.iter().ne(table.keys()) {
+        return Err(source.error("epithet", "the epithets cannot be read in file order"));
+    }
+    Ok(order)
+}
+
+impl EventRules {
+    /// Parse and validate `epithets.toml` (CK-365) against these rules' catalog, skills and counters, the registry's culture
+    /// subgroups and the rules' religions. The epithets are returned in the order the file writes them: that order is the last
+    /// tie-break of the shown epithet.
+    ///
+    /// # Errors
+    /// Returns a source-qualified error for the first invalid entry: an unknown key, a bad value, a scope that is neither
+    /// `universal`, a culture subgroup nor a religion (or is both), a trigger that is not `yearly`, `happening:<name>` or `later`,
+    /// a missing `when` or `chance` on an epithet that is not `later`, and a `when` or `chance` on a `later` one.
+    pub fn parse_epithets(
+        &self,
+        file: &str,
+        text: &str,
+        registry: &Registry<'_>,
+        religions: &[String],
+    ) -> Result<Vec<Epithet>, DataError> {
+        let source = Source { file };
+        let root = source.document(text)?;
+        only_keys(&source, &root, "", &["epithet"])?;
+        let table = source.table(required(&source, &root, "", "epithet")?, "epithet")?;
+        let order = epithet_order(&source, text, table)?;
+        let parser = Parser {
+            source: Source { file },
+            registry,
+            catalog: self.catalog.clone(),
+            skills: self.skills.list.clone(),
+            counters: self.deeds.iter().map(|d| d.counter.clone()).collect(),
+        };
+        let mut out = Vec::with_capacity(order.len());
+        for key in order {
+            let entry = format!("epithet.{key}");
+            let item = source.table(&table[&key], &entry)?;
+            only_keys(
+                &source,
+                item,
+                &entry,
+                &[
+                    "shown",
+                    "importance",
+                    "scope",
+                    "from",
+                    "trigger",
+                    "when",
+                    "chance",
+                ],
+            )?;
+            let text_of = |name: &str| -> Result<String, DataError> {
+                Ok(source
+                    .text(
+                        required(&source, item, &entry, name)?,
+                        &format!("{entry}.{name}"),
+                    )?
+                    .to_owned())
+            };
+            let shown = text_of("shown")?;
+            if shown.is_empty() {
+                return Err(source.error(format!("{entry}.shown"), "the shown text is empty"));
+            }
+            if let Some(from) = item.get("from") {
+                source.text(from, &format!("{entry}.from"))?;
+            }
+            let importance = small_u32(
+                &source,
+                required(&source, item, &entry, "importance")?,
+                &format!("{entry}.importance"),
+            )?;
+            let scope = epithet_scope(
+                &source,
+                registry,
+                religions,
+                &format!("{entry}.scope"),
+                &text_of("scope")?,
+            )?;
+            let trigger =
+                epithet_trigger(&source, &format!("{entry}.trigger"), &text_of("trigger")?)?;
+            let (when, chance_ppb) = if trigger == EpithetTrigger::Later {
+                for name in ["when", "chance"] {
+                    if item.contains_key(name) {
+                        return Err(source.error(
+                            format!("{entry}.{name}"),
+                            "a `later` epithet has no `when` and no `chance`",
+                        ));
+                    }
+                }
+                (Conditions::default(), 0)
+            } else {
+                (
+                    parser.conditions(
+                        required(&source, item, &entry, "when")?,
+                        &format!("{entry}.when"),
+                        Vocabulary::Epithet,
+                    )?,
+                    source.ppb(
+                        required(&source, item, &entry, "chance")?,
+                        &format!("{entry}.chance"),
+                    )?,
+                )
+            };
+            out.push(Epithet {
+                key,
+                shown,
+                importance,
+                scope,
+                trigger,
+                when,
+                chance_ppb,
+            });
+        }
+        Ok(out)
+    }
+}
+
 impl EventRules {
     /// Load `character-events.toml` and `attributes-skills.toml` from `directory` and validate them against the registry.
     ///
@@ -1158,7 +1472,10 @@ impl EventRules {
             if !parser.catalog[key].kind.removable() {
                 return Err(parser.error(&entry, format!("`{key}` is not a calling, station or background: only those can be removed by precedence")));
             }
-            kept.insert(key.clone(), parser.conditions(node, &entry, true)?);
+            kept.insert(
+                key.clone(),
+                parser.conditions(node, &entry, Vocabulary::Keep)?,
+            );
         }
         // Precedence scans in the authored catalog order.
         for key in &rules.catalog_order {

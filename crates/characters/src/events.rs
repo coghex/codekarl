@@ -604,7 +604,8 @@ impl CharacterStore {
         }
     }
 
-    /// A happening for one character: (1) its events in data order, (2) the flag the happening sets, (3) precedence.
+    /// A happening for one character: (1) its events in data order, (2) the flag the happening sets, (3) precedence, (4) the
+    /// epithets the happening gains (CK-365).
     pub(crate) fn dispatch<P: Populations, A: ArchiveSink, L: LogSink>(
         &mut self,
         world: &mut World<'_, P, A, L>,
@@ -626,7 +627,14 @@ impl CharacterStore {
         {
             c.life.holds_land = true;
         }
-        self.precedence(world, id, date, first)
+        self.precedence(world, id, date, first)?;
+        // The happening's epithets (CK-365), after its events and the precedence check.
+        self.gain_epithets(
+            world,
+            id,
+            date,
+            &ck_economy::EpithetTrigger::Happening(happening.to_owned()),
+        )
     }
 
     /// Report a happening for a character (§7): its events run in data order, then the flag the happening sets, then precedence.

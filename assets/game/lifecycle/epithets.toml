@@ -1,0 +1,239 @@
+# Epithets (data r2; r2 2026-11-19: the ten live epithets as structured conditions, for CK-364 5b).
+# Conditions use the slice 4 vocabulary (character-events.toml) plus four keys: grade_min = { trait = grade 1..6 };
+# stat_max_by_sex = { stat = { m = n, f = n } }; weight_ratio_min = shown weight / rolled weight; count_min = { counter = n }; adult = past
+# the age of majority. Tie-break: a new epithet replaces the shown one only if strictly more important (r11); of two gained the same
+# day, the one listed first here wins. An epithet once gained is kept (shown or not). From lists/epithets.md (all approved by the owner, 2026-11-14), for characters slice 5. Drafted by Claude
+# (ck-designer-1), 2026-11-19. Each: shown (Irish epithets in Irish, the English meaning in the tooltip), importance (a new epithet
+# replaces the shown one only if more important), scope, and how it is gained. trigger "later" = its system is not built yet (reigns,
+# war, hair colour, the church's acts); the data is kept so it lights up when that system arrives. chance: yearly while the condition
+# holds, or on the happening (TUNE; "gained liberally", r11).
+
+[epithet.frossach]
+shown = "Frossach ('the Showery')"
+importance = 40
+scope = "gaelic"
+from = "event: portents at birth, then a prosperous reign"
+trigger = "later"
+
+[epithet.caech]
+shown = "Cáech ('the One-Eyed')"
+importance = 35
+scope = "gaelic"
+from = "trait: lost an eye, or half blind"
+trigger = "later"
+
+[epithet.gluindub]
+shown = "Glúndub ('Black-Knee')"
+importance = 30
+scope = "gaelic"
+from = "event: a mark on the body, cause unknown (rare, random)"
+trigger = "yearly"
+when = {}
+chance = 0.0003
+
+[epithet.of_place]
+shown = "the genitive of the character's land or branch: Midi ('of Mide')"
+importance = 25
+scope = "gaelic"
+from = "place: a ruler strongly identified with one land (long reign there, or born of a branch named for it)"
+trigger = "later"
+
+[epithet.find]
+shown = "Find ('the Fair')"
+importance = 20
+scope = "gaelic"
+from = "trait: fair-haired, or beauty class-level B or above"
+trigger = "yearly"
+when = { grade_min = { beauty = 2 } }
+chance = 0.2
+
+[epithet.dub]
+shown = "Dub ('the Dark')"
+importance = 15
+scope = "gaelic"
+from = "trait: dark-haired"
+trigger = "later"
+
+[epithet.becc]
+shown = "Becc ('the Little')"
+importance = 10
+scope = "gaelic"
+from = "stat: short height, or a younger namesake"
+trigger = "yearly"
+when = { adult = true, stat_max_by_sex = { height = { m = 160, f = 150 } } }
+chance = 0.2
+
+[epithet.oirdnide]
+shown = "Oirdnide ('the Ordained')"
+importance = 45
+scope = "gaelic"
+from = "event: consecrated or anointed as king by the church"
+trigger = "later"
+
+[epithet.noigiallach]
+shown = "Noígíallach ('of the Nine Hostages')"
+importance = 60
+scope = "gaelic"
+from = "event: holds hostages from many kingdoms at once"
+trigger = "later"
+
+[epithet.the_great]
+shown = "the Great"
+importance = 80
+scope = "universal"
+from = "event: dominant power of its area for many years, or great conquests"
+trigger = "later"
+
+[epithet.the_usurper]
+shown = "the Usurper"
+importance = 50
+scope = "universal"
+from = "event: took the throne by a coup"
+trigger = "later"
+
+[epithet.the_kinslayer]
+shown = "the Kinslayer"
+importance = 60
+scope = "universal"
+from = "event: killed a kinsman"
+trigger = "later"
+
+[epithet.the_cruel]
+shown = "the Cruel"
+importance = 45
+scope = "universal"
+from = "event: killed hostages or prisoners"
+trigger = "later"
+
+[epithet.the_just]
+shown = "the Just"
+importance = 40
+scope = "universal"
+from = "skill and event: rules long without unrest, high administration"
+trigger = "later"
+
+[epithet.the_lawgiver]
+shown = "the Lawgiver"
+importance = 35
+scope = "universal"
+from = "event: enacted many laws, or proclaimed a cáin"
+trigger = "later"
+
+[epithet.the_wise]
+shown = "the Wise"
+importance = 35
+scope = "universal"
+from = "skill: scholarship very high"
+trigger = "yearly"
+when = { skill_min = { scholarship = 18 } }
+chance = 0.2
+
+[epithet.the_bold]
+shown = "the Bold"
+importance = 30
+scope = "universal"
+from = "personality brave, and battles won"
+trigger = "yearly"
+when = { manner_min = { wary_daring = 12 }, count_min = { battles_survived = 3 } }
+chance = 0.2
+
+[epithet.the_builder]
+shown = "the Builder"
+importance = 30
+scope = "universal"
+from = "event: many buildings raised in the reign"
+trigger = "later"
+
+[epithet.the_peacemaker]
+shown = "the Peacemaker"
+importance = 30
+scope = "universal"
+from = "event: a long peace kept by treaties"
+trigger = "later"
+
+[epithet.the_exile]
+shown = "the Exile"
+importance = 25
+scope = "universal"
+from = "event: lived years abroad as a pretender"
+trigger = "later"
+
+[epithet.the_blind]
+shown = "the Blind"
+importance = 35
+scope = "universal"
+from = "trait: blind"
+trigger = "yearly"
+when = { has = ["blind"] }
+chance = 0.5
+
+[epithet.the_lame]
+shown = "the Lame"
+importance = 25
+scope = "universal"
+from = "trait: missing leg, club foot"
+trigger = "yearly"
+when = { has = ["club_foot"] }
+chance = 0.5
+
+[epithet.the_unlucky]
+shown = "the Unlucky"
+importance = 20
+scope = "universal"
+from = "event: many battles lost"
+trigger = "later"
+
+[epithet.the_rich]
+shown = "the Rich"
+importance = 20
+scope = "universal"
+from = "event: great wealth held by the household"
+trigger = "later"
+
+[epithet.the_fat]
+shown = "the Fat"
+importance = 15
+scope = "universal"
+from = "stat: weight very high"
+trigger = "yearly"
+when = { weight_ratio_min = 1.3 }
+chance = 0.2
+
+[epithet.the_old]
+shown = "the Old"
+importance = 15
+scope = "universal"
+from = "age: 70 or more"
+trigger = "yearly"
+when = { age = [70, 200] }
+chance = 0.2
+
+[epithet.the_child]
+shown = "the Child"
+importance = 15
+scope = "universal"
+from = "event: reigned as a child"
+trigger = "later"
+
+[epithet.the_pious]
+shown = "the Pious"
+importance = 40
+scope = "christianity"
+from = "personality pious and gifts to the church"
+trigger = "later"
+
+[epithet.the_pilgrim]
+shown = "the Pilgrim"
+importance = 25
+scope = "christianity"
+from = "event: went on pilgrimage or religious exile"
+trigger = "happening:pilgrimage"
+when = {}
+chance = 0.5
+
+[epithet.the_monk]
+shown = "the Monk"
+importance = 20
+scope = "christianity"
+from = "event: abdicated into a monastery"
+trigger = "later"

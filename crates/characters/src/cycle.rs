@@ -21,7 +21,7 @@ use ck_economy::{
     lifecycle::DeathInputs,
 };
 use ck_sim::{Date, GameTime};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The line of a death under two years of age (the owner checks the wording).
 pub const DIED_IN_INFANCY: &str = "{name} died in infancy.";
@@ -127,7 +127,8 @@ fn curve_ratio(points: &[(u32, u64)], age: u32) -> (u128, u128) {
 }
 
 /// The shown name of `c`: its base name and, where its recorded pool has a patronym and its father's recorded pool has the father's
-/// base name, the patronym and the father's genitive (CK-364 §5). Derived, never stored, and never through a current pop or culture.
+/// base name, the patronym and the father's genitive (CK-364 §5), then the `shown` text of its shown epithet if it holds one
+/// (CK-365 §1). Derived, never stored, and never through a current pop or culture.
 #[must_use]
 pub fn shown_name(c: &Character, father: Option<&Character>, lifecycle: &LifeCycle) -> String {
     let word = lifecycle
@@ -147,9 +148,14 @@ pub fn shown_name(c: &Character, father: Option<&Character>, lifecycle: &LifeCyc
             .find(|(name, _)| *name == father.name)
             .map(|(_, genitive)| genitive.as_str())
     });
-    match (word, genitive) {
+    let name = match (word, genitive) {
         (Some(word), Some(genitive)) => format!("{} {word} {genitive}", c.name),
         _ => c.name.clone(),
+    };
+    // The shown epithet, when the character holds one, follows (CK-365): derived from the stored state, never stored.
+    match c.shown_epithet(&lifecycle.epithets) {
+        Some(epithet) => format!("{name} {}", epithet.shown),
+        None => name,
     }
 }
 
@@ -427,6 +433,9 @@ impl CharacterStore {
         };
         let mut records = Vec::new();
         let mut next = self.next_id;
+        // The base names chosen for the children so far: a later child of the delivery avoids them (CK-365 §2).
+        let mut chosen: BTreeSet<String> = BTreeSet::new();
+        let archive: &A = &*world.archive;
         for _ in 0..count {
             let id = next;
             next = id.checked_add(1).ok_or(Error::Overflow)?;
@@ -435,10 +444,20 @@ impl CharacterStore {
             } else {
                 Sex::Female
             };
-            records.push(crate::child_record(
+            let plan = crate::names::plan(
+                &ctx,
+                self,
+                archive,
+                id,
+                sex,
+                today,
+                [Some(&father), Some(&m)],
+                &chosen,
+            )?;
+            let record = crate::child_record(
                 &ctx,
                 NewCharacter {
-                    name: String::new(),
+                    name: plan.namesake.unwrap_or_default(),
                     sex,
                     birth: today,
                     pop: m.pop.clone(),
@@ -447,7 +466,10 @@ impl CharacterStore {
                 [Some(&father), Some(&m)],
                 &pop_genetics,
                 world.populations,
-            )?);
+                &plan.excluded,
+            )?;
+            chosen.insert(record.name.clone());
+            records.push(record);
         }
         let nursing = first_after(today, world.lifecycle.conception.nursing_months)?;
         // Everything is decided: the heads are the one step that can still refuse, and nothing has changed yet.

@@ -3,13 +3,18 @@
 
 use ck_economy::{HeadUndo, PopGenetics};
 use ck_sim::{Canonical, CanonicalError, Date, GameTime, Reader, Stream};
-use std::{cell::RefCell, collections::BTreeMap};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+};
 
 pub mod cycle;
+pub mod epithets;
 pub mod events;
 mod fixtures;
 pub mod genetics;
 pub mod life;
+pub(crate) mod names;
 pub mod personality;
 pub mod skills;
 pub use events::{EventError, LogSink, World};
@@ -479,12 +484,14 @@ fn grace_end(day: GameTime) -> Result<GameTime, Error> {
     .map_err(|_| Error::Overflow)
 }
 /// The pool key of the pop's culture and the base name of a character about to be created (CK-364): the name the caller gave, or
-/// a draw from the culture's pool on the character's own stream (purpose `name`).
+/// a draw from the culture's pool on the character's own stream (purpose `name`). The draw is among the pool's names that are not in
+/// `excluded` (each equally likely), or among all of them when every name is excluded (CK-365).
 fn base_name(
     ctx: &Context<'_>,
     populations: &impl Populations,
     new: &NewCharacter,
     id: u64,
+    excluded: &BTreeSet<String>,
 ) -> Result<(String, String), Error> {
     let culture = populations.culture(&new.pop).ok_or(Error::Culture)?;
     let pool = ctx
@@ -496,23 +503,21 @@ fn base_name(
         return Ok((pool, new.name.clone()));
     }
     let names = ctx.lifecycle.pools.get(&pool).ok_or(Error::Culture)?;
-    let mut stream = genetics::site(ctx, id, "", "name");
-    let drawn = match new.sex {
-        Sex::Male => {
-            let at = genetics::below(&mut stream, names.men.len() as u64)?;
-            names
-                .men
-                .get(usize::try_from(at).map_err(|_| Error::Overflow)?)
-                .map(|(name, _)| name.clone())
-        }
-        Sex::Female => {
-            let at = genetics::below(&mut stream, names.women.len() as u64)?;
-            names
-                .women
-                .get(usize::try_from(at).map_err(|_| Error::Overflow)?)
-                .cloned()
-        }
+    let all: Vec<&String> = match new.sex {
+        Sex::Male => names.men.iter().map(|(name, _)| name).collect(),
+        Sex::Female => names.women.iter().collect(),
     };
+    let open: Vec<&String> = all
+        .iter()
+        .copied()
+        .filter(|name| !excluded.contains(*name))
+        .collect();
+    let list = if open.is_empty() { all } else { open };
+    let mut stream = genetics::site(ctx, id, "", "name");
+    let at = genetics::below(&mut stream, list.len() as u64)?;
+    let drawn = list
+        .get(usize::try_from(at).map_err(|_| Error::Overflow)?)
+        .map(|name| (*name).clone());
     Ok((pool, drawn.ok_or(Error::Culture)?))
 }
 /// The record of a child of `parents` (father, mother; `None` is an unknown parent, replaced by a synthetic founder of the child's
@@ -524,9 +529,10 @@ fn child_record(
     parents: [Option<&Character>; 2],
     pop_genetics: &PopGenetics,
     populations: &impl Populations,
+    excluded: &BTreeSet<String>,
 ) -> Result<Character, Error> {
     let means = culture_means(ctx, populations, &new.pop)?;
-    let (pool, name) = base_name(ctx, populations, &new, id)?;
+    let (pool, name) = base_name(ctx, populations, &new, id, excluded)?;
     new.name = name;
     let kinds = [
         (Sex::Male, "synthetic_father."),
@@ -601,7 +607,7 @@ impl CharacterStore {
         let means = culture_means(ctx, populations, &new.pop)?;
         let id = self.next_id;
         let next = id.checked_add(1).ok_or(Error::Overflow)?;
-        let (pool, name) = base_name(ctx, populations, &new, id)?;
+        let (pool, name) = base_name(ctx, populations, &new, id, &BTreeSet::new())?;
         new.name = name;
         let genetics = genetics::make_founder(ctx, id, "", new.sex, pop_genetics)?;
         let personality = personality::make_founder(ctx, id, "", means)?;
@@ -645,6 +651,25 @@ impl CharacterStore {
         let (father, mother) = (fetch(lineage.father)?, fetch(lineage.mother)?);
         let id = self.next_id;
         let next = id.checked_add(1).ok_or(Error::Overflow)?;
+        let mut new = new;
+        let mut excluded = BTreeSet::new();
+        // A child created without a name is named by the namesake rules, else from the pool without its siblings' names (CK-365).
+        if new.name.is_empty() {
+            let plan = names::plan(
+                ctx,
+                self,
+                lineage.archive,
+                id,
+                new.sex,
+                new.birth,
+                [father.as_ref(), mother.as_ref()],
+                &BTreeSet::new(),
+            )?;
+            if let Some(name) = plan.namesake {
+                new.name = name;
+            }
+            excluded = plan.excluded;
+        }
         let record = child_record(
             ctx,
             new,
@@ -652,6 +677,7 @@ impl CharacterStore {
             [father.as_ref(), mother.as_ref()],
             pop_genetics,
             populations,
+            &excluded,
         )?;
         // Everything above is validated and computed, so the writes below cannot fail. A child can only add a
         // qualification (a live ruler's child is full at once, by `tier`'s derivation), never remove one, so no grace
@@ -797,6 +823,13 @@ pub trait ArchiveSink {
     fn get(&self, _id: u64) -> std::io::Result<Option<Character>> {
         Ok(None)
     }
+    /// The identifiers of the archived records whose recorded father or mother is `parent`, in identifier order (CK-365: a child born
+    /// after its parent was archived is linked from the child only, so no list of the parent's children names it). A sink that cannot
+    /// read holds none. There is no default: a sink that wraps an archive must forward the query, so that it cannot silently report
+    /// an empty archive.
+    /// # Errors
+    /// Returns an I/O error.
+    fn children_of(&self, parent: u64) -> std::io::Result<Vec<u64>>;
 }
 // Grow only with bytes actually read, never directly from an on-disk length.
 fn read_record(input: &mut impl std::io::Read, length: u32) -> std::io::Result<Vec<u8>> {
@@ -818,11 +851,21 @@ fn read_record(input: &mut impl std::io::Read, length: u32) -> std::io::Result<V
     }
     Ok(bytes)
 }
-/// Disk archive with only an identifier-to-offset index in memory.
+/// Disk archive with only an identifier-to-offset index and a parent-to-children index in memory.
 #[derive(Debug)]
 pub struct Archive {
     path: std::path::PathBuf,
     index: BTreeMap<u64, u64>,
+    /// The archived identifiers by recorded parent (a known father or mother), rebuilt when the archive opens.
+    by_parent: BTreeMap<u64, BTreeSet<u64>>,
+}
+/// Record `record` under each of its known parents.
+fn index_parents(by_parent: &mut BTreeMap<u64, BTreeSet<u64>>, record: &Character) {
+    for parent in [record.father, record.mother] {
+        if parent != UNKNOWN {
+            by_parent.entry(parent).or_default().insert(record.id);
+        }
+    }
 }
 impl Archive {
     /// Open or create an archive, decoding every record to rebuild its index.
@@ -838,6 +881,7 @@ impl Archive {
             .truncate(false)
             .open(&path)?;
         let mut index = BTreeMap::new();
+        let mut by_parent: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
         let size = file.metadata()?.len();
         while file.stream_position()? < size {
             let offset = file.stream_position()?;
@@ -854,8 +898,13 @@ impl Archive {
                     "invalid or duplicate archive id",
                 ));
             }
+            index_parents(&mut by_parent, &record);
         }
-        Ok(Self { path, index })
+        Ok(Self {
+            path,
+            index,
+            by_parent,
+        })
     }
     /// Retrieve one archived record, reading it from disk on demand.
     /// # Errors
@@ -905,10 +954,18 @@ impl ArchiveSink for Archive {
             return Err(error);
         }
         self.index.insert(record.id, offset);
+        index_parents(&mut self.by_parent, record);
         Ok(())
     }
     fn get(&self, id: u64) -> std::io::Result<Option<Character>> {
         Self::get(self, id)
+    }
+    fn children_of(&self, parent: u64) -> std::io::Result<Vec<u64>> {
+        Ok(self
+            .by_parent
+            .get(&parent)
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default())
     }
 }
 impl CharacterStore {

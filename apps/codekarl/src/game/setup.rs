@@ -659,6 +659,12 @@ impl ck_characters::ArchiveSink for Archived {
             Self::Down(reason) => Err(io::Error::other(reason.clone())),
         }
     }
+    fn children_of(&self, parent: u64) -> io::Result<Vec<u64>> {
+        match self {
+            Self::Open(archive) => ck_characters::ArchiveSink::children_of(archive, parent),
+            Self::Down(reason) => Err(io::Error::other(reason.clone())),
+        }
+    }
 }
 /// The life logs of the character storage, or the reason they cannot be opened (every line then fails).
 enum Logged {

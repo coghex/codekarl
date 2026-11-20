@@ -3,7 +3,7 @@
 
 use crate::{
     DataError, LifeCycle, Rules,
-    lifecycle::{Ages, Registry},
+    lifecycle::{Ages, Files, Registry},
 };
 use std::{path::Path, sync::OnceLock};
 
@@ -24,6 +24,10 @@ fn names_text() -> &'static str {
     static TEXT: OnceLock<String> = OnceLock::new();
     TEXT.get_or_init(|| asset("names.toml"))
 }
+fn epithets_text() -> &'static str {
+    static TEXT: OnceLock<String> = OnceLock::new();
+    TEXT.get_or_init(|| asset("epithets.toml"))
+}
 fn shipped_rules() -> &'static Rules {
     static RULES: OnceLock<Rules> = OnceLock::new();
     RULES.get_or_init(|| {
@@ -32,14 +36,20 @@ fn shipped_rules() -> &'static Rules {
     })
 }
 fn parse(life: &str, names: &str) -> Result<LifeCycle, DataError> {
+    parse_all(life, names, epithets_text())
+}
+fn parse_all(life: &str, names: &str, epithets: &str) -> Result<LifeCycle, DataError> {
     let rules = shipped_rules();
     let pop_types: Vec<&str> = rules.pop_types.iter().map(|p| p.id.as_str()).collect();
     LifeCycle::parse(
-        "life-cycle.toml",
-        life,
-        "names.toml",
-        names,
+        &Files {
+            life: ("life-cycle.toml", life),
+            names: ("names.toml", names),
+            epithets: ("epithets.toml", epithets),
+        },
         &Registry {
+            events: &rules.events,
+            genetics: &rules.genetics,
             peoples: &rules.peoples,
             pop_types: &pop_types,
             religions: &rules.religions,
@@ -569,4 +579,286 @@ fn a_doubling_of_one_year_loads_with_exact_powers_of_any_width() {
         .death;
     assert_eq!(death.old_age_factor(199), power(199));
     assert_eq!(death.annual_ppb(&neutral(199)), 1_000_000_000);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Epithets and namesakes (CK-365, characters slice 5b).
+
+use crate::{EpithetScope, EpithetTrigger};
+
+fn refused_epithets(from: &str, to: &str, entry: &str, problem: &str) {
+    let error = parse_all(life_text(), names_text(), &edit(epithets_text(), from, to)).unwrap_err();
+    assert!(
+        error.entry.contains(entry) && error.problem.contains(problem),
+        "expected `{entry}` / `{problem}`, got {error:?}"
+    );
+    assert_eq!(error.file, "epithets.toml");
+}
+
+#[test]
+fn the_shipped_epithets_load_in_file_order_ten_of_them_gainable() {
+    let epithets = &shipped_rules().lifecycle.epithets;
+    assert_eq!(epithets.len(), 30);
+    // The file's own order, not the key order: `frossach` is first, `gluindub` the third.
+    let keys: Vec<&str> = epithets.iter().map(|e| e.key.as_str()).collect();
+    assert_eq!(&keys[..4], ["frossach", "caech", "gluindub", "of_place"]);
+    assert_eq!(keys.last(), Some(&"the_monk"));
+    let gainable: Vec<&str> = epithets
+        .iter()
+        .filter(|e| e.trigger != EpithetTrigger::Later)
+        .map(|e| e.key.as_str())
+        .collect();
+    assert_eq!(
+        gainable,
+        [
+            "gluindub",
+            "find",
+            "becc",
+            "the_wise",
+            "the_bold",
+            "the_blind",
+            "the_lame",
+            "the_fat",
+            "the_old",
+            "the_pilgrim"
+        ]
+    );
+    let by = |key: &str| epithets.iter().find(|e| e.key == key).expect(key);
+    // The three kinds of scope.
+    assert_eq!(by("the_wise").scope, EpithetScope::Universal);
+    assert_eq!(
+        by("find").scope,
+        EpithetScope::Subgroup("gaelic".to_owned())
+    );
+    assert_eq!(
+        by("the_pilgrim").scope,
+        EpithetScope::Religion("christianity".to_owned())
+    );
+    assert_eq!(
+        by("the_pilgrim").trigger,
+        EpithetTrigger::Happening("pilgrimage".to_owned())
+    );
+    assert_eq!(
+        (by("find").importance, by("find").chance_ppb),
+        (20, 200_000_000)
+    );
+    assert_eq!(by("gluindub").chance_ppb, 300_000);
+    // The four keys beyond slice 4's vocabulary, and `adult`.
+    assert_eq!(by("find").when.grade_min, [("beauty".to_owned(), 2)]);
+    assert_eq!(by("the_fat").when.weight_ratio_min, Some(1300));
+    assert_eq!(
+        by("the_bold").when.count_min,
+        [("battles_survived".to_owned(), 3)]
+    );
+    assert!(by("becc").when.adult);
+    // Height is the first genetic stat; the limits are in thousandths, a man's then a woman's.
+    assert_eq!(by("becc").when.stat_max_by_sex, [(0, 160_000, 150_000)]);
+}
+
+#[test]
+fn the_shipped_namesake_order_loads() {
+    let namesakes = &shipped_rules().lifecycle.namesakes;
+    assert_eq!(
+        namesakes.order,
+        [
+            ("father".to_owned(), 100_000_000),
+            ("grandfather".to_owned(), 100_000_000),
+            ("uncle".to_owned(), 60_000_000),
+            ("fathers_friend".to_owned(), 40_000_000),
+            ("ancestor".to_owned(), 50_000_000),
+        ]
+    );
+}
+
+#[test]
+fn each_epithet_field_error_names_its_entry() {
+    for (from, to, entry, problem) in [
+        // An unknown key and a bad value.
+        (
+            "chance = 0.0003",
+            "chance = 0.0003\nbogus = 1",
+            "epithet.gluindub.bogus",
+            "unknown key",
+        ),
+        (
+            "chance = 0.0003",
+            "chance = 1.5",
+            "epithet.gluindub.chance",
+            "0..1",
+        ),
+        (
+            "importance = 30\nscope = \"gaelic\"\nfrom = \"event: a mark",
+            "importance = -30\nscope = \"gaelic\"\nfrom = \"event: a mark",
+            "epithet.gluindub.importance",
+            "whole number",
+        ),
+        // A `later` epithet has neither `when` nor `chance`.
+        (
+            "trigger = \"later\"",
+            "trigger = \"later\"\nwhen = {}",
+            "epithet.frossach.when",
+            "`later`",
+        ),
+        (
+            "trigger = \"later\"",
+            "trigger = \"later\"\nchance = 0.1",
+            "epithet.frossach.chance",
+            "`later`",
+        ),
+        // A gainable epithet needs both.
+        (
+            "when = {}\nchance = 0.0003",
+            "chance = 0.0003",
+            "epithet.gluindub.when",
+            "missing value",
+        ),
+        (
+            "when = {}\nchance = 0.0003",
+            "when = {}",
+            "epithet.gluindub.chance",
+            "missing value",
+        ),
+    ] {
+        refused_epithets(from, to, entry, problem);
+    }
+}
+
+#[test]
+fn each_epithet_scope_trigger_and_condition_error_names_its_entry() {
+    for (from, to, entry, problem) in [
+        // The scope and the trigger.
+        (
+            "scope = \"gaelic\"",
+            "scope = \"nowhere\"",
+            "epithet.frossach.scope",
+            "not `universal`",
+        ),
+        (
+            "trigger = \"later\"",
+            "trigger = \"monthly\"",
+            "epithet.frossach.trigger",
+            "`yearly`",
+        ),
+        (
+            "trigger = \"happening:pilgrimage\"",
+            "trigger = \"happening:\"",
+            "epithet.the_pilgrim.trigger",
+            "`happening:<name>`",
+        ),
+        // The vocabulary.
+        (
+            "when = {}\nchance = 0.0003",
+            "when = { mood = 1 }\nchance = 0.0003",
+            "epithet.gluindub.when.mood",
+            "unknown key",
+        ),
+        (
+            "grade_min = { beauty = 2 }",
+            "grade_min = { beauty = 7 }",
+            "grade_min.beauty",
+            "1 (C) to 6",
+        ),
+        (
+            "grade_min = { beauty = 2 }",
+            "grade_min = { blind = 2 }",
+            "grade_min.blind",
+            "not a graded trait",
+        ),
+        (
+            "grade_min = { beauty = 2 }",
+            "grade_min = { nonsense = 2 }",
+            "grade_min.nonsense",
+            "not a key of the catalog",
+        ),
+        (
+            "count_min = { battles_survived = 3 }",
+            "count_min = { duels = 3 }",
+            "count_min.duels",
+            "not a counter",
+        ),
+        (
+            "stat_max_by_sex = { height = { m = 160, f = 150 } }",
+            "stat_max_by_sex = { girth = { m = 160, f = 150 } }",
+            "stat_max_by_sex.girth",
+            "not a genetic stat",
+        ),
+        (
+            "stat_max_by_sex = { height = { m = 160, f = 150 } }",
+            "stat_max_by_sex = { height = { m = 160 } }",
+            "stat_max_by_sex.height.f",
+            "missing value",
+        ),
+        (
+            "weight_ratio_min = 1.3",
+            "weight_ratio_min = 0",
+            "weight_ratio_min",
+            "above 0",
+        ),
+        (
+            "adult = true",
+            "adult = false",
+            "when.adult",
+            "only ever true",
+        ),
+        (
+            "skill_min = { scholarship = 18 }",
+            "skill_min = { nonsense = 18 }",
+            "skill_min.nonsense",
+            "not in `[skills].list`",
+        ),
+    ] {
+        refused_epithets(from, to, entry, problem);
+    }
+}
+
+#[test]
+fn an_epithet_scope_that_is_both_a_subgroup_and_a_religion_is_refused() {
+    // `gaelic` is a subgroup; a religion of the same key makes the scope ambiguous.
+    let rules = shipped_rules();
+    let pop_types: Vec<&str> = rules.pop_types.iter().map(|p| p.id.as_str()).collect();
+    let mut religions = rules.religions.clone();
+    religions.push("gaelic".to_owned());
+    let error = LifeCycle::parse(
+        &Files {
+            life: ("life-cycle.toml", life_text()),
+            names: ("names.toml", names_text()),
+            epithets: ("epithets.toml", epithets_text()),
+        },
+        &Registry {
+            events: &rules.events,
+            genetics: &rules.genetics,
+            peoples: &rules.peoples,
+            pop_types: &pop_types,
+            religions: &religions,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .problem
+            .contains("both a culture subgroup and a religion"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn each_namesake_validation_error_names_its_entry() {
+    for (from, to, problem) in [
+        (
+            "[\"uncle\", 0.06]",
+            "[\"cousin\", 0.06]",
+            "not a kind of namesake",
+        ),
+        ("[\"uncle\", 0.06]", "[\"father\", 0.06]", "listed twice"),
+        ("[\"uncle\", 0.06]", "[\"uncle\", 1.5]", "0..1"),
+        ("[\"uncle\", 0.06]", "[\"uncle\"]", "`[kind, chance]`"),
+    ] {
+        refused_names(from, to, "namesakes.order", problem);
+    }
+    refused_names(
+        "order = ",
+        "weights = [] \norder = ",
+        "namesakes.weights",
+        "unknown key",
+    );
 }
