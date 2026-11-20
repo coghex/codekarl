@@ -714,13 +714,15 @@ deaths_d = dependents × dep_death_base[type] × g_hunger(N) × g_comfort(W, L) 
   |---|---|---|---|---|---|---|
   | `shelter_t` | 50 | 100 | 100 | 20 | 10 | 0 |
 
-- **Housing classes,** in quality order: makeshift, then basic. Neither charges rent. Rented classes above basic come later.
+- **Housing classes,** in quality order: makeshift, then basic. Makeshift charges no rent; basic charges rent only in a noble-owned
+  building (§3.25). Rented classes above basic come later.
 - **The monthly fill,** on the 1st, first in §3.9 step 5, before births and deaths, in whole people, per place:
   1. rented classes (later), to the pops that can afford them;
   2. **basic, workers first:** each building's housing goes to the pops employed there, each worker bringing their pop's average
      dependents;
   3. **spare basic, pooled:** what is left goes to every pop's still-unhoused people, so "a monastary will house the homeless until it is
-     full";
+     full". A pop flagged short on last month's rent (§3.25) is served last: the spare places go first to the pops not flagged, by the
+     usual largest-remainder award among them, and what is left goes to the flagged pops by the same award;
   4. **makeshift:** natural shelter takes the rest;
   5. **overflow:** once both are full, the remaining people are spread across both classes in proportion to their capacities.
 - **Class crowding:** `c_k = occupants_k × 1000 ÷ capacity_k`, overflow included.
@@ -728,7 +730,8 @@ deaths_d = dependents × dep_death_base[type] × g_hunger(N) × g_comfort(W, L) 
   place with no housing at all gives every pop 2000, and beyond 2000 the curves hold their last point.
 - **The place's crowding** (the panel, a future map mode) is all its people × 1000 ÷ all its housing, shelter included.
 - **No links and no save:** the fill is recomputed from the current pops and buildings, keeps no pointers either way, and is not saved.
-  A pop that dies off gets nothing, and its space goes to the others.
+  A pop that dies off gets nothing, and its space goes to the others. (It does read one saved fact, the short flag of §3.25.) The fill
+  also returns, for the rent pass, a pop × building table of who is housed where (`housed`).
 - **Development** raises capacity only indirectly: it raises the buildable maximum (§3.23), so more housing can be built. M9 builds
   nothing, so development changes no crowding in M9.
 - **Later (recorded, not M9):** rental buildings with no production methods, owned by a landowner class; masonry for upkeep; quality
@@ -1524,6 +1527,48 @@ fields cut. The engine's load report is the authority.
     had a figure that moved by 1 % or more (`.pipeline/coordination/runtime-m55/ck351-evidence/`).
   - The prototype figures above were made before it and were not measured again.
 - **Not yet:** weather (year-to-year harvest variation) and per-crop climate limits.
+
+### 3.25 Nobles, the demesne and rent (CK-359, characters P1; owner r188 to r191)
+
+Sources: `small-gaps-r3.md` §3, `rent-r1.md`, `p1-noble-economy-r1.toml`, `p1-nobles-start-r1.toml` (the designer's approved files, kept in
+`.pipeline/coordination/history-scratch/`; their hashes are in `assets/scenarios/ireland-768/SOURCES.md`). The contract is the CK-359 spec r3.
+
+- **The noble pop** (`noble`): a pop type like the others, at the peasant birth and death rates, expectations 1000 / 700 / 300, a
+  meat-and-dairy diet, and ale, mead, honey and apples for its comforts. Its display name is "nobles" (the glossary). It is the pop that
+  characters will belong to; one pop per seat for now.
+- **The demesne** (`demesne`): the lord's own land, worked by paid labourers and owned by nobles; `holdings` stays the monks'. Ten
+  labourer positions a level, two land cells a level, 300‰ overhead, the holdings' store capacities. The keys of `owner_workers` are the
+  *worker* kinds a building employs and the ratio is the workers one owner covers, so the demesne's is `{ labourer = 10 }`; the new
+  optional building field `owner_kind = "noble"` names the pop type that owns. A building without it draws its owners from its worker
+  kinds, as before. Owners are hired first, by coverage, from the place's nobles, are unpaid and do not produce; with too few, the
+  output takes the existing scaled penalty and the labourers still work and are paid.
+- **Rent** (`rent-r1`): living space belongs to its building's owners, so a building whose `owner_kind` is `noble` is **noble-owned**.
+  On the 1st, right after the monthly housing fill and before births and deaths, every person housed in a noble-owned building who is
+  not of its owner kind pays: the people placed there workers-first (the labourers and their dependents), by the spare step, or by
+  overflow. Peasants' own farms, church housing and makeshift shelter stay free.
+  - **How much:** for *n* paying people of a pop type *t*, `⌊ n × V_t / 20 ⌋` value units, where `V_t` is the value at the place's local
+    prices of one person's necessities for the month: the units the food target gives one person of the type for the month's days
+    (its diet profile, with the inland normalisation and the per-good round up to whole units), each at its local price.
+  - **In goods, whole units:** a store worth no more than the due is paid whole. Otherwise each good gives its proportional share
+    rounded down, then, while what is owed is at least the price of some good with stock left, units of the cheapest such good (ties in
+    rules order) are taken, as many as fit in one step. What is left, less than the cheapest unit, is forgiven residue.
+  - **Order in one building (building order):** snapshot every tenant's store, value and due; debit every payment in pop order; then
+    deliver the debited goods pop by pop through the overhead path into the building's store (what does not fit goes to alms, the
+    central store or is lost, as the overhead's does). Alms the pass itself produces therefore cannot fund a tenant's rent.
+  - **Cannot pay:** a pop pays what it can; nothing is carried as a debt. It is flagged short when its store was worth less than the
+    due; residue alone does not flag. The flag is saved on the pop, set or cleared at each month's rent, and read by the next month's
+    housing fill (§3.8), which houses a short pop last in the spare step. Workers keep their workers-first place.
+  - **Counters:** two monthly pop counters, rent paid (what left the tenants) and rent short (due minus paid, residue included), in
+    thousandths of a value unit, roll with the others on the 1st. No UI shows them yet.
+- **The 768 start:** 33 places with a noble house (`[nobles.<place>]` in the scenario's `economy.toml`): one noble pop of the given culture,
+  religion and heads (20, 40 or 80 by the seat's size), and a demesne of one level to 20 nobles. Demesne levels are allocated after holdings
+  and before the farm (the lord's land before the free farmers) and cut to the remaining usable land like any level guess, the cut
+  reported per place. The labourers are added on the levels *left*: the smallest household whose workers reach ten a level, merged into the
+  place's labourer pop (at Armagh, the monastery's), exactly ten a level employed in the demesne (the demesne is filled before the other
+  buildings so a shared pop's positions elsewhere cannot take them). At the 768 start nothing is cut: 1,180 nobles, 950 labourer heads
+  added, 590 of them in demesne jobs.
+- **Out of scope:** clientship and loans; demesne expansion and noble-owned farms; houses splitting noble pops (characters); seats and
+  tags; any rent UI beyond the counters.
 
 ## 4. Still open (next sessions)
 
