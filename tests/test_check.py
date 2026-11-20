@@ -411,7 +411,13 @@ class Levels(CheckFixture):
         )
         self.assertEqual(
             by_name["economy.core"].paths,
-            ("crates/economy/", "crates/characters/", "assets/game/peoples.toml"),
+            (
+                "crates/economy/",
+                "crates/characters/",
+                "assets/game/peoples.toml",
+                "assets/game/economy.toml",
+                "assets/scenarios/ireland-768/economy.toml",
+            ),
         )
         self.assertEqual(by_name["economy.core"].needs, "plain")
         self.assertEqual(

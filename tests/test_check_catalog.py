@@ -775,6 +775,14 @@ class CK263Links(unittest.TestCase):
             any(choice.selected and choice.step.needs != "plain" for choice in choices.values())
         )
 
+    def test_economy_data_changes_select_economy_core(self) -> None:
+        for path in ("assets/game/economy.toml", "assets/scenarios/ireland-768/economy.toml"):
+            with self.subTest(path=path):
+                choices = self.choices([path])
+                self.assertTrue(choices["economy.core"].selected)
+                if path.startswith("assets/scenarios/"):
+                    self.assertTrue(choices["map.core"].selected)
+
     def test_02_the_ui_paths_select_only_the_witness_and_app_code_also_selects_headless_tests(
         self,
     ) -> None:
