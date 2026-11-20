@@ -81,6 +81,7 @@ pub(crate) fn rules_hash(asset_root: &Path) -> Result<String, String> {
         read(asset_root, "game/events/attributes-skills.toml")?,
         read(asset_root, "game/lifecycle/life-cycle.toml")?,
         read(asset_root, "game/lifecycle/names.toml")?,
+        read(asset_root, "game/lifecycle/epithets.toml")?,
         read(asset_root, "map/ireland/terrain.toml")?,
     ]))
 }

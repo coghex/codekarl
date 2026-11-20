@@ -2504,6 +2504,7 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/economy.toml",
             "assets/game/lifecycle/life-cycle.toml",
             "assets/game/lifecycle/names.toml",
+            "assets/game/lifecycle/epithets.toml",
             "assets/scenarios/ireland-768/",
         ),
     ),
@@ -2585,7 +2586,7 @@ GUARDS: tuple[Guard, ...] = (
             "crates/characters/src/skills.rs",
         ),
     ),
-    # CK-364: the life-cycle data tests load the shipped rules and both life-cycle files.
+    # CK-364, CK-365: the life-cycle data tests load the shipped rules and the three life-cycle files.
     Guard(
         "crates/economy/src/lifecycle_tests.rs",
         "economy.core",
@@ -2593,10 +2594,11 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/economy.toml",
             "assets/game/lifecycle/life-cycle.toml",
             "assets/game/lifecycle/names.toml",
+            "assets/game/lifecycle/epithets.toml",
         ),
     ),
-    # CK-364: the characters crate's life-cycle tests load the shipped rules (and with them both life-cycle files) and read the
-    # attributes file for a world with no events.
+    # CK-364, CK-365: the characters crate's life-cycle tests load the shipped rules (and with them the three life-cycle files) and
+    # read the attributes file for a world with no events; the namesake and epithet tests do the same.
     Guard(
         "crates/characters/tests/lifecycle.rs",
         "economy.core",
@@ -2605,6 +2607,18 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/events/attributes-skills.toml",
             "assets/game/lifecycle/life-cycle.toml",
             "assets/game/lifecycle/names.toml",
+            "assets/game/lifecycle/epithets.toml",
+        ),
+    ),
+    Guard(
+        "crates/characters/tests/names_epithets.rs",
+        "economy.core",
+        (
+            "assets/game/economy.toml",
+            "assets/game/events/attributes-skills.toml",
+            "assets/game/lifecycle/life-cycle.toml",
+            "assets/game/lifecycle/names.toml",
+            "assets/game/lifecycle/epithets.toml",
         ),
     ),
     # CK-359: the noble, demesne and rent tests load the same shipped rules and Ireland's noble houses.

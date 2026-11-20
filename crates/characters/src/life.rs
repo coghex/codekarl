@@ -40,6 +40,9 @@ pub struct LifeRecord {
     pub due: Option<GameTime>,
     /// The 1st from which a woman who delivered may conceive again (CK-364).
     pub nursing_until: Option<GameTime>,
+    /// The epithets held, each with the start of the day it was gained (CK-365). Kept for life, shown or not: the shown one is derived
+    /// by [`Character::shown_epithet`] from this stored state alone.
+    pub epithets: BTreeMap<String, GameTime>,
 }
 
 impl Canonical for LifeRecord {
@@ -54,7 +57,8 @@ impl Canonical for LifeRecord {
         self.pool.encode(out)?;
         self.pregnant_by.encode(out)?;
         self.due.encode(out)?;
-        self.nursing_until.encode(out)
+        self.nursing_until.encode(out)?;
+        self.epithets.encode(out)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
@@ -69,6 +73,7 @@ impl Canonical for LifeRecord {
             pregnant_by: Option::decode(r)?,
             due: Option::decode(r)?,
             nursing_until: Option::decode(r)?,
+            epithets: BTreeMap::decode(r)?,
         })
     }
 }

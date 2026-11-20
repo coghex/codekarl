@@ -83,7 +83,7 @@ values in millionths, every other quantity in thousandths). **The names of the n
 | `lifecycle/life-cycle.toml` | r1 | `KXAUBYA6` | `a231dd162fd8f5fdaa7e012cd0748831444a7413b4a38ec022b5f95c57f4f44d` |
 | `lifecycle/names.toml` | r1 | `KXAUBYA6` | `54f0ffe059c02129f5762f38b220fdaac1cb37058412f201321881d308f236bf` |
 
-Source of the copies: `codekarl-content/lifecycle/` (2026-11-19). `epithets.toml` and `connections.toml` are not imported here (5b and slice 6).
+Source of the copies: `codekarl-content/lifecycle/` (2026-11-19). `epithets.toml` is imported by 5b (below) and `connections.toml` is not imported here (slice 6).
 
 The design they implement:
 
@@ -91,8 +91,33 @@ The design they implement:
 - The approved specification: CK-364 r5, SHA-256 `17502d9ed79ed8df9e04bd9a3ce369ff353a1d52c78772becca0b915c3e2dc22`.
 
 Slice 5a reads only `[death]`, `[majority]`, `[marriageable]`, `[relations]` and `[conception]` of `life-cycle.toml` and the pools and
-`[culture_pool]` of `names.toml`; the sections of the later issues (marriage, upbringing, nutrition, namesakes) load untouched. Both files
+`[culture_pool]` of `names.toml`; the sections of the later issues (marriage, upbringing, nutrition) load untouched (the `[namesakes]` table is read by 5b). Both files
 join the save's `rules_hash` (a changed table refuses an existing save) and the `economy.core` check paths. The loader refuses a
 probability outside 0..1, age curves whose ages do not strictly increase or whose factors are negative, `infant_years` or `old_doubling`
 that is not a positive whole number, a registry culture without a pool, a pool without men or women, and a man's name without a genitive
 where the pool has a patronym.
+
+## Namesakes and epithets (CK-365, characters slice 5b)
+
+`lifecycle/epithets.toml` is the designer's data (ck-designer-1), copied **byte for byte** from `codekarl-content/lifecycle/epithets.toml`
+(r2, 2026-11-19: the ten live epithets as structured conditions). It holds 30 epithets, ten of them gainable now; the other 20 are
+`later` (their systems are not built) and load without being gained. Every chance and importance is a placeholder to tune; the model is
+not. The loader reads each decimal from its text (a chance in parts per billion, a stat limit and the weight ratio in thousandths) and
+never through a binary float. **The `shown` texts are player-facing; the owner checks their wording.** 5b also reads the `[namesakes]`
+table of `lifecycle/names.toml` (imported by 5a, unchanged).
+
+| File | Revision | Pijul change | SHA-256 |
+|---|---|---|---|
+| `lifecycle/epithets.toml` | r2 | the CK-365 change that adds it | `5848c087c5360402669c4a8c8faf56c07d5d861bcd2912f859f5075f8bfa236f` |
+
+The design it implements:
+
+- `history-scratch/lifecycle-data-r1.md` (SHA-256 `98d938e7…`) and the designer's rulings in `history-scratch/ck364-dispositions-r1.md`
+  (SHA-256 `ebc7b694…`, 5b section).
+- The approved specification: CK-365 r2, SHA-256 `759a007f3d90494b62693022c7f9a96e457f7b7dae49c1da9da7fdc53d770cad`.
+
+`epithets.toml` joins the save's `rules_hash` (a changed epithet table refuses an existing save) and the `economy.core` check paths
+(`assets/game/lifecycle/`). A `scope` is `universal`, a culture subgroup of the registry or a religion of the economy rules; any other
+value, or a key that is both a subgroup and a religion, is a load error, as are an unknown key, a bad value, a `later` epithet with a
+`when` or a `chance`, and a gainable epithet without them. The condition vocabulary is slice 4's plus `grade_min`, `stat_max_by_sex`,
+`weight_ratio_min`, `count_min` and `adult`, which an event's `when` still refuses.

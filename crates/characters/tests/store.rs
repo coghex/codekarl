@@ -202,6 +202,10 @@ fn death_is_transactional_and_dead_parent_remains_readable() {
         fn append(&mut self, _: &ck_characters::Character) -> std::io::Result<()> {
             Err(std::io::Error::other("injected"))
         }
+        // A sink that holds no records: no parent has an archived child.
+        fn children_of(&self, _: u64) -> std::io::Result<Vec<u64>> {
+            Ok(Vec::new())
+        }
     }
     let path = std::env::temp_dir().join(format!("ck-characters-{}-archive", std::process::id()));
     let _ = std::fs::remove_file(&path);
@@ -420,6 +424,10 @@ fn ruler_death_and_divorce_end_only_the_last_qualification() {
     impl ck_characters::ArchiveSink for Sink {
         fn append(&mut self, _: &ck_characters::Character) -> std::io::Result<()> {
             Ok(())
+        }
+        // A sink that holds no records: no parent has an archived child.
+        fn children_of(&self, _: u64) -> std::io::Result<Vec<u64>> {
+            Ok(Vec::new())
         }
     }
     let heads = |_: &PopLocator| Some(4);

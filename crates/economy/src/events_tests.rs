@@ -527,3 +527,22 @@ fn a_quoted_catalog_key_reads_in_the_same_order() {
     );
     assert_eq!(rules.catalog.len(), 57);
 }
+
+#[test]
+fn an_events_conditions_refuse_the_epithet_only_keys() {
+    for key in [
+        "grade_min = { beauty = 2 }",
+        "stat_max_by_sex = { height = { m = 160, f = 150 } }",
+        "weight_ratio_min = 1.3",
+        "count_min = { battles_survived = 3 }",
+        "adult = true",
+    ] {
+        let name = key.split(' ').next().unwrap_or(key);
+        refused_events(
+            r#"when = { has = ["melancholy"] }"#,
+            &format!(r#"when = {{ has = ["melancholy"], {key} }}"#),
+            &format!("when.{name}"),
+            "unknown key",
+        );
+    }
+}

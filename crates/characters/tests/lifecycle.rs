@@ -487,6 +487,9 @@ impl ArchiveSink for FlakyArchive {
     fn get(&self, id: u64) -> io::Result<Option<Character>> {
         self.inner.get(id)
     }
+    fn children_of(&self, parent: u64) -> io::Result<Vec<u64>> {
+        self.inner.children_of(parent)
+    }
 }
 /// A log whose append fails while `armed`.
 struct FlakyLog {
@@ -1466,6 +1469,9 @@ impl ArchiveSink for FailOnce {
     }
     fn get(&self, id: u64) -> io::Result<Option<Character>> {
         self.inner.get(id)
+    }
+    fn children_of(&self, parent: u64) -> io::Result<Vec<u64>> {
+        self.inner.children_of(parent)
     }
 }
 
