@@ -48,6 +48,18 @@ pub struct LifeRecord {
     pub house: String,
     /// The house of the character's birth (CK-366): its father's house at the birth, else its mother's. Kept for life.
     pub house_of_birth: String,
+    /// How many samples of the pop's necessities the childhood food record holds (CK-367): one at birth or at creation and one on each
+    /// birthday from 1 through 18.
+    pub food_count: u32,
+    /// The sum of those samples, in permille.
+    pub food_sum: u64,
+    /// The age at which the latest sample was taken, 0 while there is none.
+    pub food_age: u32,
+    /// The nutrition offset of the height, in thousandths of a centimetre: the adult offset fixed from the 18th birthday's sample on.
+    pub height_offset: i64,
+    /// The shown weight, in thousandths of a kilogram: it starts at the base weight and moves a twelfth of the way to its target each
+    /// month.
+    pub weight: i64,
 }
 
 impl Canonical for LifeRecord {
@@ -65,7 +77,12 @@ impl Canonical for LifeRecord {
         self.nursing_until.encode(out)?;
         self.epithets.encode(out)?;
         self.house.encode(out)?;
-        self.house_of_birth.encode(out)
+        self.house_of_birth.encode(out)?;
+        self.food_count.encode(out)?;
+        self.food_sum.encode(out)?;
+        self.food_age.encode(out)?;
+        self.height_offset.encode(out)?;
+        self.weight.encode(out)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
@@ -83,6 +100,11 @@ impl Canonical for LifeRecord {
             epithets: BTreeMap::decode(r)?,
             house: String::decode(r)?,
             house_of_birth: String::decode(r)?,
+            food_count: u32::decode(r)?,
+            food_sum: u64::decode(r)?,
+            food_age: u32::decode(r)?,
+            height_offset: i64::decode(r)?,
+            weight: i64::decode(r)?,
         })
     }
 }

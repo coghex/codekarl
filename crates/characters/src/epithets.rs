@@ -12,11 +12,7 @@ use crate::{
     events::{EventError, LogSink, PopFacts, World, age_years, holds, pop_facts},
     genetics::roll,
 };
-use ck_economy::{
-    Epithet, EpithetScope, EpithetTrigger,
-    events::Conditions,
-    genetics::{Genetics, attribute_index},
-};
+use ck_economy::{Epithet, EpithetScope, EpithetTrigger, events::Conditions, genetics::Genetics};
 use ck_sim::{Date, GameTime};
 use std::cmp::Reverse;
 
@@ -59,7 +55,6 @@ impl Character {
 /// Whether the extra conditions an epithet adds to slice 4's vocabulary hold: `grade_min`, `stat_max_by_sex`, `weight_ratio_min`,
 /// `count_min` and `adult` (`minor` is whether the character is under majority).
 fn extras(conditions: &Conditions, c: &Character, genetics: &Genetics, minor: bool) -> bool {
-    let weight = attribute_index("weight").unwrap_or(0);
     conditions
         .grade_min
         .iter()
@@ -69,14 +64,12 @@ fn extras(conditions: &Conditions, c: &Character, genetics: &Genetics, minor: bo
                 crate::Sex::Male => *m,
                 crate::Sex::Female => *f,
             };
-            c.genetics.shown(genetics, c.sex, *stat) <= limit
+            c.shown_stat(genetics, *stat) <= limit
         })
         && conditions.weight_ratio_min.is_none_or(|ratio| {
-            // The shown weight over the rolled weight is at least `ratio / 1000`, in integers: shown x 1000 >= ratio x rolled.
-            let rolled = c.genetics.value[weight];
-            rolled > 0
-                && i128::from(c.genetics.shown(genetics, c.sex, weight)) * 1000
-                    >= i128::from(ratio) * i128::from(rolled)
+            // The shown weight over the base weight is at least `ratio / 1000`, in integers: shown x 1000 >= ratio x base (CK-367 §3a).
+            let base = c.base_weight(genetics);
+            base > 0 && i128::from(c.shown_weight()) * 1000 >= i128::from(ratio) * i128::from(base)
         })
         && conditions
             .count_min

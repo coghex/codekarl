@@ -172,7 +172,7 @@ fn person(id: u64, birth: GameTime, place: &str, sex: Sex) -> Character {
     genetics.value[1] = 70_000;
     let mut life = ck_characters::LifeRecord::default();
     "irish".clone_into(&mut life.pool);
-    Character {
+    let mut character = Character {
         id,
         name: format!("c{id}"),
         sex,
@@ -188,7 +188,10 @@ fn person(id: u64, birth: GameTime, place: &str, sex: Sex) -> Character {
         genetics: Box::new(genetics),
         personality: PersonalityRecord::default(),
         life: Box::new(life),
-    }
+    };
+    // Its weight is the base weight, as a character's is when it is created (CK-367).
+    character.life.weight = character.base_weight(&rules().genetics);
+    character
 }
 fn store_with_next(characters: Vec<Character>, next: u64) -> CharacterStore {
     let live: BTreeMap<u64, Character> = characters.into_iter().map(|c| (c.id, c)).collect();
@@ -266,6 +269,30 @@ fn blind() -> Mendel {
 }
 
 #[test]
+fn a_height_epithet_reads_the_shown_height_through_the_one_route() {
+    // becc: an adult whose shown height is at most 160 cm for a man and 150 for a woman (CK-367 §3a). The shown height is the base (the
+    // genetic height and a woman's -12 cm) plus the nutrition offset, so neither the genetic height alone nor the base alone decides.
+    let becc = |sex: Sex, genetic: i64, offset: i64| {
+        gained(&only("becc"), 30, "a", sex, |c| {
+            c.genetics.value[0] = genetic;
+            c.life.height_offset = offset;
+        })
+    };
+    // A woman: 162 - 12 = 150 is short enough, 163 - 12 = 151 is not; her genetic 160 would not be, but her shown 148 is.
+    assert_eq!(becc(Sex::Female, 162_000, 0), set(&["becc"]));
+    assert_eq!(becc(Sex::Female, 163_000, 0), set(&[]));
+    assert_eq!(becc(Sex::Female, 160_000, 0), set(&["becc"]));
+    // The nutrition offset counts: a poor childhood (-8 cm) brings a woman of 168 - 12 = 156 down to 148; a rich one (+2) takes one of
+    // 162 - 12 = 150 up to 152.
+    assert_eq!(becc(Sex::Female, 168_000, -8000), set(&["becc"]));
+    assert_eq!(becc(Sex::Female, 162_000, 2000), set(&[]));
+    // A man has no offset but the nutrition one: 160 is short enough, 161 is not, 165 - 5 = 160 is.
+    assert_eq!(becc(Sex::Male, 160_000, 0), set(&["becc"]));
+    assert_eq!(becc(Sex::Male, 161_000, 0), set(&[]));
+    assert_eq!(becc(Sex::Male, 165_000, -5000), set(&["becc"]));
+}
+
+#[test]
 fn each_gainable_epithet_is_gained_by_its_own_rule_and_only_then() {
     let g = |key: &str, years, place, tweak: &dyn Fn(&mut Character)| {
         gained(&only(key), years, place, Sex::Male, |c| tweak(c))
@@ -326,22 +353,26 @@ fn each_gainable_epithet_is_gained_by_its_own_rule_and_only_then() {
         set(&["the_lame"])
     );
     assert_eq!(g("the_lame", 30, "a", &has("blind")), set(&[]));
-    // the_fat: the shown weight at least 1.3 times the rolled one. A shown weight is held to a floor of 30 kg, so a rolled
-    // weight of 20 kg shows 30 (1.5), 25 kg shows 30 (1.2), and a rolled weight of nothing divides by nothing: not gained.
-    let weight = |rolled: i64| move |c: &mut Character| c.genetics.value[1] = rolled;
-    assert_eq!(g("the_fat", 30, "a", &weight(20_000)), set(&["the_fat"]));
+    // the_fat: the shown weight at least 1.3 times the base weight (CK-367 §3a): the stored weight against the roll. A base of nothing
+    // divides by nothing: not gained.
+    let weight = |base: i64, shown: i64| {
+        move |c: &mut Character| {
+            c.genetics.value[1] = base;
+            c.life.weight = shown;
+        }
+    };
     assert_eq!(
-        g("the_fat", 30, "a", &weight(23_000)),
+        g("the_fat", 30, "a", &weight(70_000, 91_000)),
         set(&["the_fat"]),
-        "30 / 23 is 1.304"
+        "exactly 1.3"
     );
     assert_eq!(
-        g("the_fat", 30, "a", &weight(23_100)),
+        g("the_fat", 30, "a", &weight(70_000, 90_999)),
         set(&[]),
-        "30 / 23.1 is 1.298"
+        "a thousandth short"
     );
-    assert_eq!(g("the_fat", 30, "a", &weight(25_000)), set(&[]));
-    assert_eq!(g("the_fat", 30, "a", &weight(0)), set(&[]));
+    assert_eq!(g("the_fat", 30, "a", &weight(70_000, 70_000)), set(&[]));
+    assert_eq!(g("the_fat", 30, "a", &weight(0, 50_000)), set(&[]));
     // the_old: `age = [70, 200]`.
     assert_eq!(g("the_old", 70, "a", &|_| {}), set(&["the_old"]));
     assert_eq!(g("the_old", 71, "a", &|_| {}), set(&["the_old"]));

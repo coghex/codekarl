@@ -2634,6 +2634,19 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/lifecycle/epithets.toml",
         ),
     ),
+    # CK-367: the upbringing, height and weight tests load the shipped rules (and with them the life-cycle files, whose `[upbringing]` and
+    # `[nutrition]` tables they read) and the attributes file for a world with no events.
+    Guard(
+        "crates/characters/tests/body.rs",
+        "economy.core",
+        (
+            "assets/game/economy.toml",
+            "assets/game/events/attributes-skills.toml",
+            "assets/game/lifecycle/life-cycle.toml",
+            "assets/game/lifecycle/names.toml",
+            "assets/game/lifecycle/epithets.toml",
+        ),
+    ),
     # CK-359: the noble, demesne and rent tests load the same shipped rules and Ireland's noble houses.
     Guard(
         "crates/economy/src/noble_tests.rs",

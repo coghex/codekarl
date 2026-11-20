@@ -1012,3 +1012,193 @@ fn the_marriage_tables_refuse_what_they_name() {
         "whole number",
     );
 }
+
+// --- Upbringing and nutrition (CK-367) -------------------------------------------------------------------------------------------
+
+#[test]
+fn the_shipped_upbringing_and_nutrition_load_with_what_they_state() {
+    let data = &shipped_rules().lifecycle;
+    let up = &data.upbringing;
+    assert_eq!(
+        (
+            up.to_age,
+            up.pull_ppb,
+            up.noise_vice_virtue,
+            up.noise_manner
+        ),
+        (14, 40_000_000, 480, 1280)
+    );
+    let n = &data.nutrition;
+    // Thousandths of a centimetre per permille, of a centimetre, thousandths of a permille; shares in millionths.
+    assert_eq!(n.height_per_food_milli, 30);
+    assert_eq!((n.height_low, n.height_high), (-8000, 2000));
+    assert_eq!(n.height_reference_milli, 900_000);
+    assert_eq!(
+        (
+            n.weight_base,
+            n.weight_food,
+            n.weight_rich,
+            n.weight_gluttony
+        ),
+        (800_000, 200_000, 100_000, 10_000)
+    );
+}
+
+#[test]
+fn each_upbringing_domain_is_refused() {
+    for (from, to, entry, problem) in [
+        // `to_age` outside 1..18.
+        ("to_age = 14", "to_age = 0", "upbringing.to_age", "1..18"),
+        ("to_age = 14", "to_age = 19", "upbringing.to_age", "1..18"),
+        (
+            "to_age = 14",
+            "to_age = -1",
+            "upbringing.to_age",
+            "whole number",
+        ),
+        // `pull` outside 0..1.
+        ("pull = 0.04 ", "pull = 1.5 ", "upbringing.pull", "0..1"),
+        ("pull = 0.04 ", "pull = -0.04 ", "upbringing.pull", "0..1"),
+        // A negative noise spread.
+        (
+            "vice_virtue = 0.48",
+            "vice_virtue = -0.48",
+            "upbringing.noise.vice_virtue",
+            "must not be negative",
+        ),
+        (
+            "manner = 1.28",
+            "manner = -1.28",
+            "upbringing.noise.manner",
+            "must not be negative",
+        ),
+    ] {
+        refused_life(from, to, entry, problem);
+    }
+}
+
+#[test]
+fn each_nutrition_domain_is_refused_and_weight_monthly_is_admitted() {
+    for (from, to, entry, problem) in [
+        // `height_range` is `[low, high]` with `low <= 0 <= high` and `low < high`.
+        (
+            "height_range = [-8, 2]",
+            "height_range = [1, 2]",
+            "nutrition.height_range",
+            "low <= 0 <= high",
+        ),
+        (
+            "height_range = [-8, 2]",
+            "height_range = [-8, -1]",
+            "nutrition.height_range",
+            "low <= 0 <= high",
+        ),
+        (
+            "height_range = [-8, 2]",
+            "height_range = [0, 0]",
+            "nutrition.height_range",
+            "low < high",
+        ),
+        (
+            "height_range = [-8, 2]",
+            "height_range = [2, -8]",
+            "nutrition.height_range",
+            "low <= 0 <= high",
+        ),
+        (
+            "height_range = [-8, 2]",
+            "height_range = [-8]",
+            "nutrition.height_range",
+            "[low, high]",
+        ),
+        // A negative figure.
+        (
+            "height_per_food_point = 0.03",
+            "height_per_food_point = -0.03",
+            "nutrition.height_per_food_point",
+            "must not be negative",
+        ),
+        (
+            "height_reference = 900",
+            "height_reference = -900",
+            "nutrition.height_reference",
+            "must not be negative",
+        ),
+        (
+            "weight_base = 0.80",
+            "weight_base = -0.80",
+            "nutrition.weight_base",
+            "must not be negative",
+        ),
+        (
+            "weight_food = 0.20",
+            "weight_food = -0.20",
+            "nutrition.weight_food",
+            "must not be negative",
+        ),
+        (
+            "weight_rich = 0.10",
+            "weight_rich = -0.10",
+            "nutrition.weight_rich",
+            "must not be negative",
+        ),
+        (
+            "weight_gluttony = 0.01",
+            "weight_gluttony = -0.01",
+            "nutrition.weight_gluttony",
+            "must not be negative",
+        ),
+        // A key the contract does not have.
+        (
+            "weight_monthly = 0.0833",
+            "weight_monthly = 0.0833\nweight_daily = 1",
+            "nutrition.weight_daily",
+            "unknown key",
+        ),
+    ] {
+        refused_life(from, to, entry, problem);
+    }
+    // `weight_monthly` is admitted whatever it says, and not required: the twelfth is exact.
+    let ignored = |to: &str| {
+        parse(
+            &edit(life_text(), "weight_monthly = 0.0833", to),
+            names_text(),
+        )
+        .expect("admitted")
+    };
+    let shipped = &shipped_rules().lifecycle;
+    assert_eq!(ignored("weight_monthly = 7").nutrition, shipped.nutrition);
+    assert_eq!(ignored("").nutrition, shipped.nutrition);
+}
+
+#[test]
+fn a_weight_coefficient_is_any_non_negative_value_the_representation_holds() {
+    // No cap at 1000 (CK-367 §0 names only the sign): a coefficient above it loads, and one beyond the representation is refused.
+    for key in [
+        "weight_base = 0.80",
+        "weight_food = 0.20",
+        "weight_rich = 0.10",
+        "weight_gluttony = 0.01",
+    ] {
+        let name = key.split(' ').next().unwrap();
+        let big = parse(
+            &edit(life_text(), key, &format!("{name} = 1000.000001")),
+            names_text(),
+        )
+        .expect("a coefficient above 1000 loads")
+        .nutrition;
+        let got = match name {
+            "weight_base" => big.weight_base,
+            "weight_food" => big.weight_food,
+            "weight_rich" => big.weight_rich,
+            _ => big.weight_gluttony,
+        };
+        assert_eq!(got, 1_000_000_001, "{name}");
+        refused_life(
+            key,
+            &format!("{name} = 99999999999999999"),
+            name,
+            "too large",
+        );
+    }
+}

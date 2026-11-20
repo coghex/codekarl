@@ -1,9 +1,8 @@
 //! Life-cycle data: death, majority, marriageable age, relations, conception and name pools (CK-364, characters slice 5a).
 //!
 //! Nothing here uses floating point. A decimal is read from its digits and stored as an exact integer: a probability or a factor in
-//! parts per billion, a per-point value in millionths, every other quantity in thousandths. `life-cycle.toml` also holds the sections
-//! of the later issues (upbringing, nutrition); they load untouched (their text is part of the save's rules hash) and nothing here
-//! reads them. The `[marriage.*]` tables are read and validated here (CK-366). `names.toml` also holds the namesake rules (CK-365) and `epithets.toml` the epithets (CK-365).
+//! parts per billion, a per-point value in millionths, every other quantity in thousandths. The `[marriage.*]` tables are read and
+//! validated here (CK-366), and so are `[upbringing]` and `[nutrition]` (CK-367). `names.toml` also holds the namesake rules (CK-365) and `epithets.toml` the epithets (CK-365).
 #![deny(clippy::float_arithmetic)]
 
 use crate::{
@@ -258,6 +257,40 @@ pub struct MarriageRules {
     pub accept: MarriageAccept,
 }
 
+/// `[upbringing]`: the yearly pull of a child's personality toward its household and the noise of its childhood (CK-367).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UpbringingRules {
+    /// A character younger than this (1..=18) is brought up on its birthday.
+    pub to_age: u32,
+    /// The share of the way to the household's average that a value moves each year, in ppb (0..=1).
+    pub pull_ppb: u32,
+    /// The spread of a vice/virtue value's yearly noise, in thousandths.
+    pub noise_vice_virtue: i64,
+    /// The spread of a manner value's yearly noise, in thousandths.
+    pub noise_manner: i64,
+}
+
+/// `[nutrition]`: height from the food of childhood and weight that follows the food of the month (CK-367).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NutritionRules {
+    /// Thousandths of a centimetre of adult height per permille of mean childhood necessities above the reference (not negative).
+    pub height_per_food_milli: i64,
+    /// The lowest adult height adjustment, in thousandths of a centimetre (not above 0).
+    pub height_low: i64,
+    /// The highest adult height adjustment, in thousandths of a centimetre (not below 0).
+    pub height_high: i64,
+    /// The necessities level the adjustment is measured from, in thousandths of a permille (not negative).
+    pub height_reference_milli: i64,
+    /// The target weight's share of the base weight with no food at all, in millionths (not negative).
+    pub weight_base: i64,
+    /// The share added by full necessities, in millionths.
+    pub weight_food: i64,
+    /// The share added by full luxuries, in millionths.
+    pub weight_rich: i64,
+    /// The share added per point of `gluttony_temperance` below 0, in millionths.
+    pub weight_gluttony: i64,
+}
+
 /// The loaded life-cycle data.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LifeCycle {
@@ -273,6 +306,10 @@ pub struct LifeCycle {
     pub conception: ConceptionRules,
     /// `[marriage.*]` (CK-366).
     pub marriage: MarriageRules,
+    /// `[upbringing]` (CK-367).
+    pub upbringing: UpbringingRules,
+    /// `[nutrition]` (CK-367).
+    pub nutrition: NutritionRules,
     /// The name pools by pool key.
     pub pools: BTreeMap<String, NamePool>,
     /// The pool key of each culture.
@@ -775,6 +812,102 @@ fn parse_accept(source: &Source<'_>, table: &Table) -> Result<MarriageAccept, Da
     })
 }
 
+/// The oldest age `[upbringing].to_age` may name: the age at which a character's height is final.
+pub const ADULT_AGE: u32 = 18;
+
+/// `[upbringing]` (CK-367): `to_age` in 1..=18, `pull` in 0..1, and a spread of each noise that is not negative.
+fn parse_upbringing(source: &Source<'_>, table: &Table) -> Result<UpbringingRules, DataError> {
+    table_keys(source, table, "upbringing", &["to_age", "pull", "noise"])?;
+    let to_age = whole(source, &table["to_age"], "upbringing.to_age")?;
+    if !(1..=ADULT_AGE).contains(&to_age) {
+        return Err(source.error("upbringing.to_age", "must lie in 1..18"));
+    }
+    let pull = source.scaled(&table["pull"], "upbringing.pull", 9)?;
+    let pull_ppb = u32::try_from(pull)
+        .ok()
+        .filter(|value| *value <= PPB)
+        .ok_or_else(|| source.error("upbringing.pull", "the pull must lie in 0..1"))?;
+    let noise = source.table(&table["noise"], "upbringing.noise")?;
+    table_keys(
+        source,
+        noise,
+        "upbringing.noise",
+        &["vice_virtue", "manner"],
+    )?;
+    Ok(UpbringingRules {
+        to_age,
+        pull_ppb,
+        noise_vice_virtue: source
+            .milli_non_negative(&noise["vice_virtue"], "upbringing.noise.vice_virtue")?,
+        noise_manner: source.milli_non_negative(&noise["manner"], "upbringing.noise.manner")?,
+    })
+}
+
+/// A non-negative weight share in millionths: any value the representation holds (the target's arithmetic is checked where it is used).
+fn share(source: &Source<'_>, node: &Node, entry: &str) -> Result<i64, DataError> {
+    let value = source.scaled(node, entry, 6)?;
+    if value < 0 {
+        return Err(source.error(entry, "the value must not be negative"));
+    }
+    i64::try_from(value).map_err(|_| source.error(entry, "the value is too large"))
+}
+
+/// `[nutrition]` (CK-367). `weight_monthly` is admitted and ignored: the monthly step is an exact twelfth.
+fn parse_nutrition(source: &Source<'_>, table: &Table) -> Result<NutritionRules, DataError> {
+    const KEYS: [&str; 8] = [
+        "height_per_food_point",
+        "height_range",
+        "height_reference",
+        "weight_base",
+        "weight_food",
+        "weight_rich",
+        "weight_gluttony",
+        "weight_monthly",
+    ];
+    for key in table.keys() {
+        if !KEYS.contains(&key.as_str()) {
+            return Err(source.error(format!("nutrition.{key}"), "unknown key"));
+        }
+    }
+    for key in &KEYS[..7] {
+        if !table.contains_key(*key) {
+            return Err(source.error(format!("nutrition.{key}"), "missing value"));
+        }
+    }
+    let range = array(source, &table["height_range"], "nutrition.height_range")?;
+    let [low, high] = range else {
+        return Err(source.error("nutrition.height_range", "the range is `[low, high]`"));
+    };
+    let (low, high) = (
+        source.milli(low, "nutrition.height_range")?,
+        source.milli(high, "nutrition.height_range")?,
+    );
+    if low > 0 || high < 0 || low >= high {
+        return Err(source.error(
+            "nutrition.height_range",
+            "the range must satisfy low <= 0 <= high and low < high",
+        ));
+    }
+    Ok(NutritionRules {
+        height_per_food_milli: source.milli_non_negative(
+            &table["height_per_food_point"],
+            "nutrition.height_per_food_point",
+        )?,
+        height_low: low,
+        height_high: high,
+        height_reference_milli: source
+            .milli_non_negative(&table["height_reference"], "nutrition.height_reference")?,
+        weight_base: share(source, &table["weight_base"], "nutrition.weight_base")?,
+        weight_food: share(source, &table["weight_food"], "nutrition.weight_food")?,
+        weight_rich: share(source, &table["weight_rich"], "nutrition.weight_rich")?,
+        weight_gluttony: share(
+            source,
+            &table["weight_gluttony"],
+            "nutrition.weight_gluttony",
+        )?,
+    })
+}
+
 fn text_list(source: &Source<'_>, node: &Node, entry: &str) -> Result<Vec<String>, DataError> {
     array(source, node, entry)?
         .iter()
@@ -949,6 +1082,8 @@ impl LifeCycle {
         rules.relations = parse_relations(&source, section("relations")?, registry)?;
         rules.conception = parse_conception(&source, section("conception")?)?;
         rules.marriage = parse_marriage(&source, section("marriage")?, registry)?;
+        rules.upbringing = parse_upbringing(&source, section("upbringing")?)?;
+        rules.nutrition = parse_nutrition(&source, section("nutrition")?)?;
         rules.parse_names(names_file, names, registry)?;
         rules.epithets = registry.events.parse_epithets(
             epithets_file,
