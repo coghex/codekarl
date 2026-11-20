@@ -1,8 +1,12 @@
 //! Backend-neutral live characters and their derived tiers.
 #![deny(unsafe_code)]
 
+use ck_economy::PopGenetics;
 use ck_sim::{Canonical, CanonicalError, Date, GameTime, Reader, Stream};
 use std::collections::BTreeMap;
+
+pub mod genetics;
+pub use genetics::{Context, GeneticRecord, Mendel};
 
 /// The placeholder for an ungenerated ancestor. It is never a live character.
 pub const UNKNOWN: u64 = 0;
@@ -102,6 +106,8 @@ pub struct Character {
     pub office: Option<Office>,
     /// Exclusive end of the grace period.
     pub full_until: Option<GameTime>,
+    /// Genetics, final when the character is created. Boxed to keep the record small.
+    pub genetics: Box<GeneticRecord>,
 }
 impl Canonical for Character {
     fn encode(&self, o: &mut Vec<u8>) -> Result<(), CanonicalError> {
@@ -116,7 +122,8 @@ impl Canonical for Character {
         self.spouses.encode(o)?;
         self.children.encode(o)?;
         self.office.encode(o)?;
-        self.full_until.encode(o)
+        self.full_until.encode(o)?;
+        (*self.genetics).encode(o)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
@@ -132,8 +139,62 @@ impl Canonical for Character {
             children: Vec::decode(r)?,
             office: Option::decode(r)?,
             full_until: Option::decode(r)?,
+            genetics: Box::new(GeneticRecord::decode(r)?),
         })
     }
+}
+/// The data of a character about to be created.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewCharacter {
+    /// Display name.
+    pub name: String,
+    /// Sex.
+    pub sex: Sex,
+    /// Birth date.
+    pub birth: GameTime,
+    /// Pop the character belongs to.
+    pub pop: PopLocator,
+}
+impl NewCharacter {
+    fn into_record(self, id: u64, father: u64, mother: u64, genetics: GeneticRecord) -> Character {
+        Character {
+            id,
+            name: self.name,
+            sex: self.sex,
+            birth: self.birth,
+            death: None,
+            pop: self.pop,
+            father,
+            mother,
+            spouses: Vec::new(),
+            children: Vec::new(),
+            office: None,
+            full_until: None,
+            genetics: Box::new(genetics),
+        }
+    }
+}
+/// The parents of a child about to be created, and the archive that resolves an archived one.
+#[derive(Clone, Copy, Debug)]
+pub struct Lineage<'a> {
+    /// Father: a live or archived man, or [`UNKNOWN`].
+    pub father: u64,
+    /// Mother: a live or archived woman, or [`UNKNOWN`].
+    pub mother: u64,
+    /// The archive that holds the dead.
+    pub archive: &'a Archive,
+}
+/// The genetic state of the pop at `locator` in an economy.
+#[must_use]
+pub fn pop_genetics<'a>(
+    economy: &'a ck_economy::EconomyState,
+    locator: &PopLocator,
+) -> Option<&'a PopGenetics> {
+    let place = economy
+        .places
+        .iter()
+        .find(|place| place.id == locator.place)?;
+    Some(&place.pops.get(locator.slot as usize)?.genetics)
 }
 /// The derived simulation tier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +217,12 @@ pub enum Error {
     Overflow,
     /// A relationship is invalid.
     InvalidRelationship,
+    /// A father who is not a man or a mother who is not a woman.
+    WrongSex,
+    /// The genetic data does not allow the character to be made (an unseeded pop, or arithmetic that does not fit).
+    Genetics,
+    /// A parent's archived record could not be read.
+    Archive,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -229,41 +296,87 @@ impl CharacterStore {
     pub fn pop_count(&self, pop: &PopLocator) -> usize {
         self.live.values().filter(|c| &c.pop == pop).count()
     }
-    /// Create a character in a caller-validated pop with `heads` people.
-    /// # Errors
-    /// Refuses a full pop or exhausted identifiers.
-    pub fn create(
-        &mut self,
-        name: String,
-        sex: Sex,
-        birth: GameTime,
-        pop: PopLocator,
-        populations: &impl Populations,
-    ) -> Result<u64, Error> {
-        let heads = populations.heads(&pop).ok_or(Error::MissingPop)?;
-        if u64::try_from(self.pop_count(&pop)).map_err(|_| Error::Overflow)? >= heads {
+    fn check_room(&self, pop: &PopLocator, populations: &impl Populations) -> Result<(), Error> {
+        let heads = populations.heads(pop).ok_or(Error::MissingPop)?;
+        if u64::try_from(self.pop_count(pop)).map_err(|_| Error::Overflow)? >= heads {
             return Err(Error::PopFull);
         }
+        Ok(())
+    }
+    /// Create a founder: a character with no live or archived parents, whose genetics come from the pop's genetic state
+    /// (haplogroups from its share sets, values from its baseline, copies from its carrier rates, graded levels from its
+    /// founder rates). The record is stored with its genetics in one step: on any error nothing is created.
+    /// # Errors
+    /// Refuses a missing or full pop, an unseeded pop and exhausted identifiers.
+    pub fn create_founder(
+        &mut self,
+        ctx: &Context<'_>,
+        new: NewCharacter,
+        pop_genetics: &PopGenetics,
+        populations: &impl Populations,
+    ) -> Result<u64, Error> {
+        self.check_room(&new.pop, populations)?;
         let id = self.next_id;
         let next = id.checked_add(1).ok_or(Error::Overflow)?;
-        self.live.insert(
-            id,
-            Character {
-                id,
-                name,
-                sex,
-                birth,
-                death: None,
-                pop,
-                father: UNKNOWN,
-                mother: UNKNOWN,
-                spouses: Vec::new(),
-                children: Vec::new(),
-                office: None,
-                full_until: None,
-            },
-        );
+        let genetics = genetics::make_founder(ctx, id, "", new.sex, pop_genetics)?;
+        self.live
+            .insert(id, new.into_record(id, UNKNOWN, UNKNOWN, genetics));
         self.next_id = next;
+        Ok(id)
+    }
+    /// Create a child of `lineage.father` and `lineage.mother`, live, archived or [`UNKNOWN`]. An unknown parent is
+    /// replaced by a synthetic parent of the right sex, made as a founder of the child's pop on the child's own stream
+    /// (purposes `synthetic_father.*`, `synthetic_mother.*`); it is not stored. One transaction: the record, the child's
+    /// parent ids and the child in each **live** parent's children list are written together and tiers re-evaluated. An
+    /// archived parent is linked from the child only.
+    /// # Errors
+    /// Refuses, with nothing changed (no id allocated, no link, no record), a father who is not a man or a mother who is
+    /// not a woman, a parent that is neither live, archived nor [`UNKNOWN`], a pop that does not resolve or is full, an
+    /// archive read failure and an unseeded pop.
+    pub fn create_child(
+        &mut self,
+        ctx: &Context<'_>,
+        new: NewCharacter,
+        pop_genetics: &PopGenetics,
+        lineage: &Lineage<'_>,
+        populations: &impl Populations,
+    ) -> Result<u64, Error> {
+        self.check_room(&new.pop, populations)?;
+        let parents = [
+            (lineage.father, Sex::Male, "synthetic_father."),
+            (lineage.mother, Sex::Female, "synthetic_mother."),
+        ];
+        let id = self.next_id;
+        let next = id.checked_add(1).ok_or(Error::Overflow)?;
+        let mut records = Vec::with_capacity(2);
+        for (parent, sex, prefix) in parents {
+            records.push(if parent == UNKNOWN {
+                genetics::make_founder(ctx, id, prefix, sex, pop_genetics)?
+            } else {
+                let found = self
+                    .lookup(parent, lineage.archive)
+                    .map_err(|_| Error::Archive)?
+                    .ok_or(Error::MissingCharacter)?;
+                if found.sex != sex {
+                    return Err(Error::WrongSex);
+                }
+                *found.genetics
+            });
+        }
+        let genetics = genetics::make_child(ctx, id, new.sex, &records[0], &records[1])?;
+        let record = new.into_record(id, lineage.father, lineage.mother, genetics);
+        // Everything above is validated and computed, so the writes below cannot fail. A child can only add a
+        // qualification (a live ruler's child is full at once, by `tier`'s derivation), never remove one, so no grace
+        // period is started.
+        self.live.insert(id, record);
+        self.next_id = next;
+        for parent in [lineage.father, lineage.mother] {
+            if let Some(c) = self.live.get_mut(&parent)
+                && !c.children.contains(&id)
+            {
+                c.children.push(id);
+            }
+        }
         Ok(id)
     }
     fn qualifies(&self, id: u64) -> bool {
@@ -343,7 +456,8 @@ impl CharacterStore {
             }
         })
     }
-    /// Set both parents, updating live parents' child links.
+    /// Set both parents, updating live parents' child links. It does **not** change genetics: a character's genetic record
+    /// is final when it is created, so this only edits the recorded relationship.
     /// # Errors
     /// Refuses missing live parents, self-parentage or an unrepresentable date.
     pub fn set_parents(

@@ -1094,6 +1094,41 @@ fn directories_and_symlinks_are_not_saves_and_calls_never_follow_them() {
     assert_eq!(fs::read(outside).unwrap(), b"outside remains unchanged");
 }
 
+/// A seeded pop state without trait data: enough for a founder's haplogroups and values.
+fn seeded_genetics() -> ck_economy::PopGenetics {
+    ck_economy::PopGenetics {
+        paternal: std::collections::BTreeMap::from([("R1b".to_owned(), 1000)]),
+        maternal: std::collections::BTreeMap::from([("H".to_owned(), 1000)]),
+        ..ck_economy::PopGenetics::default()
+    }
+}
+
+/// Create a founder in the state's first pop, under empty trait rules.
+fn found(
+    state: &mut crate::game::GameState,
+    name: &str,
+    sex: ck_characters::Sex,
+    pop: &ck_characters::PopLocator,
+) -> u64 {
+    let rules = ck_economy::Genetics::default();
+    let pop_state = state.economy.places[0].pops[0].genetics.clone();
+    let context = ck_characters::Context {
+        rules: &rules,
+        seed: 42,
+        tick: start(),
+    };
+    let new = ck_characters::NewCharacter {
+        name: name.into(),
+        sex,
+        birth: start(),
+        pop: pop.clone(),
+    };
+    state
+        .characters
+        .create_founder(&context, new, &pop_state, &state.economy)
+        .unwrap()
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -1121,6 +1156,7 @@ fn character_archive_logs_and_live_state_survive_streamed_save() {
             counters: ck_economy::CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: seeded_genetics(),
         }],
         buildings: Vec::new(),
         prices_milli: Vec::new(),
@@ -1134,26 +1170,8 @@ fn character_archive_logs_and_live_state_survive_streamed_save() {
         place: "p".into(),
         slot: 0,
     };
-    let alive = state
-        .characters
-        .create(
-            "alive".into(),
-            Sex::Female,
-            start(),
-            pop.clone(),
-            &state.economy,
-        )
-        .unwrap();
-    let dead = state
-        .characters
-        .create(
-            "dead".into(),
-            Sex::Male,
-            start(),
-            pop.clone(),
-            &state.economy,
-        )
-        .unwrap();
+    let alive = found(&mut state, "alive", Sex::Female, &pop);
+    let dead = found(&mut state, "dead", Sex::Male, &pop);
     let mut archive = Archive::open(storage.path.join("ARCH")).unwrap();
     state.characters.die(dead, start(), &mut archive).unwrap();
     let mut logs = LifeLog::open(storage.path.join("LOGS")).unwrap();
@@ -1242,19 +1260,7 @@ fn character_archive_logs_and_live_state_survive_streamed_save() {
         "a life"
     );
     let mut loaded_state = loaded.state.clone();
-    assert_eq!(
-        loaded_state
-            .characters
-            .create(
-                "next".into(),
-                Sex::Male,
-                start(),
-                pop,
-                &loaded_state.economy
-            )
-            .unwrap(),
-        3
-    );
+    assert_eq!(found(&mut loaded_state, "next", Sex::Male, &pop), 3);
     assert!(loaded_state.characters.get(alive).is_some());
     let digest = |path: &Path| {
         let mut f = fs::File::open(path).unwrap();

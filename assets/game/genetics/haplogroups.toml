@@ -1,0 +1,117 @@
+# Haplogroup tables (draft r2; r2 2026-11-19 adds the English start set, the culture map and the meaning of "other" for slice 2). Drafted by Claude (ck-designer-1), 2026-11-15, from owner-direction-designer-r104 to -r109.
+# The model is APPROVED (r109, genetics-r8); the values are placeholders to tune.
+# A proposal for the owner: not in the game.
+#
+# Owner r106: one table per haplogroup with the whole set of generated stats. Every table starts at the character generator's base
+# defaults ([default]); a haplogroup lists only what it raises or lowers. Values are guesswork and flavour, tuned by feel (r106).
+# Numbers are placeholders: the only generator so far is the throwaway family_sim.py (intellect 10 +- 2).
+#
+# How the tables are used (genetics-r7, owner r108): a pop's starting genetic baseline = 50/50 of its share-weighted paternal and
+# maternal tables; after the start baselines pass from parents, half each, for sons and daughters alike. Tables are not read for
+# a character after birth.
+# A man's paternal group is his Y; a woman's is her father's Y group, kept as her father's line though she does not pass it on.
+# Each stat: mean and sd (spread). Stats 1..20 scale, height in cm, weight in kg (weight then follows nutrition, r77).
+# r107: stats and humours only; vice/virtue and personality come from culture, not these tables.
+# heritability h (genetics-r7, rough, to tune): child = h * parents' average + (1 - h) * draw from these tables.
+
+[default]
+height = { mean = 170, sd = 6 }
+weight = { mean = 68, sd = 8 }
+strength = { mean = 10, sd = 2 }
+wit = { mean = 10, sd = 2 }
+intellect = { mean = 10, sd = 2 }
+cunning = { mean = 10, sd = 2 }
+longevity = { mean = 10, sd = 2 }
+constitution = { mean = 10, sd = 2 }
+fecundity = { mean = 10, sd = 2 }
+# humours 0..10, set at birth (r97)
+blood = { mean = 5, sd = 2 }
+yellow_bile = { mean = 5, sd = 2 }
+black_bile = { mean = 5, sd = 2 }
+phlegm = { mean = 5, sd = 2 }
+
+[female]
+# offsets applied to a woman's rolled value, never to the baseline (genetics-r7); placeholders
+height = -12
+weight = -10
+strength = -2
+
+[heritability]
+height = 0.8
+weight = 0.6
+strength = 0.5
+wit = 0.5
+intellect = 0.5
+cunning = 0.5
+longevity = 0.25
+constitution = 0.4
+fecundity = 0.2
+blood = 0.5
+yellow_bile = 0.5
+black_bile = 0.5
+phlegm = 0.5
+
+# ---- paternal (Y) ----
+
+[paternal.R1b]
+# r106: farming with their animals; resistance to disease. r107: warmer humours (jolly): blood up
+constitution = { mean = 11 }
+blood = { mean = 6 }
+
+[paternal.R1b.trait_rates]
+# r134: prodigious memory's higher birth chance is genetic; a multiplier on the founder rate (placeholder)
+prodigious_memory = 1.5
+
+[paternal.I1]
+# r106: more strength and height. r107: colder humours (stern, strict): black bile and phlegm up, blood down
+height = { mean = 174 }
+strength = { mean = 11 }
+black_bile = { mean = 6 }
+phlegm = { mean = 6 }
+blood = { mean = 4 }
+
+# ---- maternal (mitochondrial) ----
+
+[maternal.H]
+# r106: shared by Irish and Norse; no changes
+
+# ---- start shares per pop (r104: two sets, each summing to 100) ----
+
+[start.irish]
+paternal = { R1b = 95, other = 5 }
+maternal = { H = 95, other = 5 }
+
+[start.norse]
+paternal = { I1 = 95, other = 5 }   # owner r106: "more from I1"; the share is a placeholder
+maternal = { H = 95, other = 5 }
+
+[start.english]
+# Anglo-Saxon England: Y mostly R1b (Britons and Saxons alike) with a strong I1 share from the North Sea settlers; placeholders.
+paternal = { R1b = 75, I1 = 20, other = 5 }
+maternal = { H = 95, other = 5 }
+
+# ---- which start set each culture uses (r2; the culture keys of CK-356) ----
+# "other" in a share set: a founder from an unlisted lineage. It takes the [default] table unchanged (no haplogroup offsets, no trait
+# multipliers) and its haplogroup is recorded as "other".
+[culture_start]
+ulaid = "irish"
+cruthin = "irish"
+northern_ui_neill = "irish"
+airgialla = "irish"
+mide_brega = "irish"
+laigin = "irish"
+mumu = "irish"
+connachta = "irish"
+dal_riatan = "irish"
+north_welsh = "irish"      # Insular Celtic lineages: the same placeholder set until the Britons get their own
+south_welsh = "irish"
+cumbric = "irish"
+cornish = "irish"
+pictish = "irish"
+northumbrian = "english"
+mercian = "english"
+east_anglian = "english"
+west_saxon = "english"
+east_saxon = "english"
+south_saxon = "english"
+kentish = "english"

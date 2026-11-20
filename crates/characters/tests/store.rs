@@ -1,7 +1,12 @@
 //! Character store contracts.
 
-use ck_characters::{CharacterStore, Office, PopLocator, Sex, Tier, UNKNOWN, character_stream};
+use ck_characters::{
+    CharacterStore, Context, Error, NewCharacter, Office, PopLocator, Populations, Sex, Tier,
+    UNKNOWN, character_stream,
+};
+use ck_economy::Rules;
 use ck_sim::{Canonical, Date, GameTime};
+use std::sync::OnceLock;
 
 fn date(year: u16, month: u8, day: u8) -> GameTime {
     GameTime::from_date(Date {
@@ -16,6 +21,55 @@ fn pop() -> PopLocator {
     PopLocator {
         place: "a".into(),
         slot: 0,
+    }
+}
+fn rules() -> &'static Rules {
+    static RULES: OnceLock<Rules> = OnceLock::new();
+    RULES.get_or_init(|| {
+        Rules::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/game/economy.toml"),
+        )
+        .expect("shipped rules")
+    })
+}
+/// The slice 1 tests make plain characters; they are founders of an Irish pop under the shipped genetic rules.
+trait CreateFounder {
+    fn create(
+        &mut self,
+        name: String,
+        sex: Sex,
+        birth: GameTime,
+        pop: PopLocator,
+        populations: &impl Populations,
+    ) -> Result<u64, Error>;
+}
+impl CreateFounder for CharacterStore {
+    fn create(
+        &mut self,
+        name: String,
+        sex: Sex,
+        birth: GameTime,
+        pop: PopLocator,
+        populations: &impl Populations,
+    ) -> Result<u64, Error> {
+        let rules = &rules().genetics;
+        let context = Context {
+            rules,
+            seed: 7,
+            tick: birth,
+        };
+        let state = rules.seed_pop("ulaid").expect("Irish start set");
+        self.create_founder(
+            &context,
+            NewCharacter {
+                name,
+                sex,
+                birth,
+                pop,
+            },
+            &state,
+            populations,
+        )
     }
 }
 

@@ -415,6 +415,7 @@ class Levels(CheckFixture):
                 "crates/economy/",
                 "crates/characters/",
                 "assets/game/peoples.toml",
+                "assets/game/genetics/",
                 "assets/game/economy.toml",
                 "assets/scenarios/ireland-768/economy.toml",
             ),

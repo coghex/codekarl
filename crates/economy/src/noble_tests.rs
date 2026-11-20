@@ -976,6 +976,7 @@ fn place_of(
             counters: CounterBuckets::default(),
             short_on_rent: tenant.flagged,
             housed_last: tenant.flagged,
+            genetics: PopGenetics::default(),
         });
     }
     place
