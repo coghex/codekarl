@@ -430,13 +430,14 @@ mod tests {
         row_fields[13].parse::<u64>().expect("deaths are numeric");
         let posted_wages = row_fields[21];
         let wage_entries = posted_wages.split(';').collect::<Vec<_>>();
-        assert_eq!(wage_entries.len(), 3, "one posted wage per building");
+        assert_eq!(wage_entries.len(), 4, "one posted wage per building");
         assert_eq!(
             wage_entries,
             [
                 "building0.holdings=24549",
-                "building1.farm=11267",
-                "building2.storehouse=0",
+                "building1.demesne=65262",
+                "building2.farm=11267",
+                "building3.storehouse=0",
             ],
             "Armagh day-1 posted-wage golden values"
         );
@@ -447,9 +448,9 @@ mod tests {
                     .is_some_and(|(_, wage)| wage.parse::<u64>().is_ok())
         }));
         assert!(row_fields[17].contains("oats=95000"));
-        assert_eq!(row_fields[18], "apples=78;dairy=2285;ale=346;mead=34");
+        assert_eq!(row_fields[18], "apples=80;dairy=2317;ale=359;mead=36");
         assert!(row_fields[19].contains("pop0:"));
-        assert_eq!(row_fields[20], "cattle=635;pigs=424;sheep=357");
+        assert_eq!(row_fields[20], "cattle=644;pigs=430;sheep=362");
         assert_eq!(row_fields[22], "", "losses column");
     }
 

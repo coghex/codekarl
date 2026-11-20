@@ -111,7 +111,7 @@ tooltip.define("location", function(args)
   return {title = place_name(id), table.unpack(lines)}
 end)
 
-local plurals = {peasant = "peasants", labourer = "labourers", monk = "monks"}
+local plurals = {peasant = "peasants", labourer = "labourers", monk = "monks", noble = "nobles"}
 
 tooltip.define("population", function(args)
   local place = place_view(args.place)

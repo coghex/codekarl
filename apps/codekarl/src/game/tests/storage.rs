@@ -1119,6 +1119,8 @@ fn character_archive_logs_and_live_state_survive_streamed_save() {
             stock: Vec::new(),
             consumption: ck_economy::PopConsumption::default(),
             counters: ck_economy::CounterBuckets::default(),
+            short_on_rent: false,
+            housed_last: false,
         }],
         buildings: Vec::new(),
         prices_milli: Vec::new(),

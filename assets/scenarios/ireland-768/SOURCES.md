@@ -295,3 +295,26 @@ msgid `cqarvdb99b8twq87h8h243ybri`; signed copy SHA-256
 
 Skellig Michael's peasant-less opening is supported by the sourced community of about twelve monks and an abbot. Inishmurray keeps
 peasants. The signed table resolves the Osraige and Dál Riata culture mappings to Mumu and Ulaid respectively.
+
+## Noble houses and the demesne (CK-359, characters P1)
+
+The noble pop type and the demesne building enter the shared rules (`assets/game/economy.toml`); the 33 noble houses of the 768 start
+enter this scenario's `economy.toml` as `[nobles.<place>]` tables. Both are copies of the designer's approved files, kept in
+`.pipeline/coordination/history-scratch/`; the owner's words in `owner-direction-designer-rN.md` govern them.
+
+| Copy | Source | SHA-256 of the source | Approval |
+|---|---|---|---|
+| `noble` pop type, `demesne` building, their diet, comfort and ticking profiles (`assets/game/economy.toml`) | `scenario/p1-noble-economy-r1.toml` | `027ba6911380d433996d2d3a3b61a3600099265f241e011d412a4b96c45f6ebc` | owner, r190 (the pop) and r191 (the demesne); sizes and rates from r188 |
+| `[nobles.*]` (`economy.toml` of this scenario): 33 places, 1,180 nobles, 590 labourer positions | `scenario/p1-nobles-start-r1.toml` | `8c50f823b52946105a3e3c97ff1c21b8c011535c5505acb63e8a470b93611835` | presented with r189 and standing; `holdings_levels` renamed `demesne_levels` by the designer |
+| The rent rule (code, not data: `crates/economy`) | `rent-r1.md` | `17167aa86a6649f670ae544299cff86261372fbbe7b84f02c7edfef1e4871d64` | owner, r189 |
+
+- **One noble pop per seat**: 20, 40 or 80 people by the seat's size (size 1 to 3); a seat in a church settlement takes the court's own
+  size, not the church's. `dunseverick` is the one house whose culture (`dal_riatan`) is not its place's (`ulaid`): the Dál Riata
+  stand-in seat.
+- **The demesne**: one level per 20 nobles, worked by ten paid labourers a level. The shared rules name its owner pop type
+  (`owner_kind = "noble"`) and keep the designer's "one noble covers 10 labourers" as `owner_workers = { labourer = 10 }`, because
+  the keys of `owner_workers` are the worker kinds a building employs.
+- **Labourers** are added on the levels left after any cut to the place's usable land, as the smallest household whose workers reach
+  ten a level, and merged into the place's labourer pop (at Armagh, the monastery's). The data's `labourers` is checked against the
+  authored levels, not used as the head count.
+- **Land order**: holdings, then the demesne, then the farm: the lord's land before the free farmers.
