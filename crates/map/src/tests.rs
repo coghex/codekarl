@@ -2459,3 +2459,22 @@ fn prepared_rivers_reuse_step_coverage_across_pans_and_rebuild_on_step_change() 
     assert_ne!(first, other_step, "each zoom step has its own coverage");
     assert!(prepared.coverage(76).is_none());
 }
+
+#[test]
+fn great_circle_distance_is_the_haversine_on_the_projections_sphere_in_whole_metres() {
+    let at = |latitude: f64, longitude: f64| project(latitude, longitude).expect("projectable");
+    // One degree of longitude on the equator is R x pi / 180 = 111,319.49 m; the positions are fixed-point (2.5 cm), so the whole
+    // metres may differ by one from the exact value.
+    for (to_latitude, to_longitude) in [(0.0, 1.0), (1.0, 0.0)] {
+        let metres =
+            great_circle_metres(at(0.0, 0.0), at(to_latitude, to_longitude)).expect("a distance");
+        assert!((111_319..=111_320).contains(&metres), "{metres}");
+    }
+    // The same point, and symmetry.
+    assert_eq!(great_circle_metres(at(53.3, -6.3), at(53.3, -6.3)), Some(0));
+    let (dublin, london) = (at(53.3498, -6.2603), at(51.5074, -0.1278));
+    let there = great_circle_metres(dublin, london).expect("a distance");
+    assert_eq!(great_circle_metres(london, dublin), Some(there));
+    // About 463 km on this sphere (the radius of the projection, not the Earth's mean).
+    assert!((462_000..=465_000).contains(&there), "{there}");
+}

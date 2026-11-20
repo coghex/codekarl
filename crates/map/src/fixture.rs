@@ -502,11 +502,16 @@ pub fn location_scenario() -> LoadedScenario {
         x: ORIGIN[0] + x,
         y: ORIGIN[1] + y,
     };
+    let position = |cell: Cell| FixedPoint {
+        x: cell.x * 32_768,
+        y: cell.y * 32_768,
+    };
     let locations = vec![
         Location {
             id: "river-town".into(),
             name: "River Town".into(),
             cell: cell(11, 7),
+            position: position(cell(11, 7)),
             kind_index: 0,
             size: 1,
             building_indices: Vec::new(),
@@ -519,6 +524,7 @@ pub fn location_scenario() -> LoadedScenario {
             id: "hill-village".into(),
             name: "Hill Village".into(),
             cell: cell(8, 10),
+            position: position(cell(8, 10)),
             kind_index: 1,
             size: 1,
             building_indices: vec![0],

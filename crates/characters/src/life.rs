@@ -43,6 +43,11 @@ pub struct LifeRecord {
     /// The epithets held, each with the start of the day it was gained (CK-365). Kept for life, shown or not: the shown one is derived
     /// by [`Character::shown_epithet`] from this stored state alone.
     pub epithets: BTreeMap<String, GameTime>,
+    /// The house the character belongs to (CK-366): a key, empty for a commoner. A wife takes her husband's house on marriage, a
+    /// houseless husband his wife's.
+    pub house: String,
+    /// The house of the character's birth (CK-366): its father's house at the birth, else its mother's. Kept for life.
+    pub house_of_birth: String,
 }
 
 impl Canonical for LifeRecord {
@@ -58,7 +63,9 @@ impl Canonical for LifeRecord {
         self.pregnant_by.encode(out)?;
         self.due.encode(out)?;
         self.nursing_until.encode(out)?;
-        self.epithets.encode(out)
+        self.epithets.encode(out)?;
+        self.house.encode(out)?;
+        self.house_of_birth.encode(out)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
@@ -74,6 +81,8 @@ impl Canonical for LifeRecord {
             due: Option::decode(r)?,
             nursing_until: Option::decode(r)?,
             epithets: BTreeMap::decode(r)?,
+            house: String::decode(r)?,
+            house_of_birth: String::decode(r)?,
         })
     }
 }

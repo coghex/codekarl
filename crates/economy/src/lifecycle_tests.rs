@@ -862,3 +862,153 @@ fn each_namesake_validation_error_names_its_entry() {
         "unknown key",
     );
 }
+
+#[test]
+fn the_marriage_tables_load_with_what_they_state() {
+    let marriage = &shipped_rules().lifecycle.marriage;
+    let wish = &marriage.wish;
+    assert_eq!(wish.women.len(), 7);
+    assert_eq!(wish.women[0], (12, 50_000_000));
+    assert_eq!(wish.women[2], (20, 400_000_000));
+    assert_eq!(wish.women.last(), Some(&(60, 0)));
+    assert_eq!(wish.men.len(), 7);
+    assert_eq!(wish.men[0], (14, 20_000_000));
+    assert_eq!(wish.men.last(), Some(&(70, 0)));
+    assert_eq!(
+        (wish.lust_per_point, wish.gregarious_per_point),
+        (-50_000, 20_000)
+    );
+    assert_eq!(
+        wish.pop_type.iter().collect::<Vec<_>>(),
+        [(&"monk".to_owned(), &300_000_000)]
+    );
+    let pool = &marriage.pool;
+    assert_eq!(
+        (pool.near_m, pool.far_m, pool.min_candidates),
+        (50_000, 150_000, 3)
+    );
+    let score = &marriage.score;
+    assert_eq!(
+        score
+            .rank
+            .iter()
+            .map(|(k, v)| (k.as_str(), *v))
+            .collect::<Vec<_>>(),
+        [("labourer", 1), ("monk", 2), ("noble", 3), ("peasant", 1)]
+    );
+    assert_eq!(
+        (score.rank_gap, score.age_gap_free, score.age_gap),
+        (-15_000, 10, -2_000)
+    );
+    assert_eq!((score.opinion, score.fame), (500_000, 200_000));
+    assert_eq!(
+        score
+            .kin
+            .iter()
+            .map(|(k, v)| (k.as_str(), *v))
+            .collect::<Vec<_>>(),
+        [
+            ("first_cousin", -40_000),
+            ("in_law", -10_000),
+            ("second_cousin", -15_000)
+        ]
+    );
+    assert_eq!(score.child_age_penalty, -100_000);
+    assert_eq!(marriage.accept.base_ppb, 500_000_000);
+    assert_eq!(marriage.accept.per_score_ppb, 10_000_000);
+}
+
+#[test]
+fn the_marriage_tables_refuse_what_they_name() {
+    // A bad curve: ages that do not increase, a negative chance, a chance outside 0..1, a point without a chance.
+    refused_life(
+        "women = [[12, 0.05], [15, 0.3]",
+        "women = [[12, 0.05], [12, 0.3]",
+        "marriage.wish.women",
+        "strictly increasing",
+    );
+    refused_life(
+        "men = [[14, 0.02], [17, 0.15]",
+        "men = [[14, 0.02], [17, -0.15]",
+        "marriage.wish.men",
+        "must not be negative",
+    );
+    refused_life(
+        "women = [[12, 0.05], [15, 0.3]",
+        "women = [[12, 0.05], [15, 1.5]",
+        "marriage.wish.women",
+        "must lie in 0..1",
+    );
+    refused_life(
+        "men = [[14, 0.02], [17, 0.15]",
+        "men = [[14, 0.02], [17]",
+        "marriage.wish.men",
+        "a point is",
+    );
+    // A probability outside 0..1.
+    refused_life("base = 0.5", "base = 1.5", "marriage.accept.base", "0..1");
+    // An unknown pop type, in the wish and in the ranks; a rank left out.
+    refused_life(
+        "pop_type = { monk = 0.3 }",
+        "pop_type = { cleric = 0.3 }",
+        "marriage.wish.pop_type.cleric",
+        "not a population type",
+    );
+    refused_life(
+        "rank = { noble = 3, monk = 2, labourer = 1, peasant = 1 }",
+        "rank = { noble = 3, monk = 2, labourer = 1 }",
+        "marriage.score.rank.peasant",
+        "missing value",
+    );
+    refused_life(
+        "rank = { noble = 3, monk = 2, labourer = 1, peasant = 1 }",
+        "rank = { noble = 3, monk = 2, labourer = 1, peasant = 1, cleric = 2 }",
+        "marriage.score.rank.cleric",
+        "unknown key",
+    );
+    // An unknown kinship key, and one left out.
+    refused_life(
+        "kin = { first_cousin = -40,",
+        "kin = { cousin = -40,",
+        "marriage.score.kin.cousin",
+        "unknown key",
+    );
+    refused_life(
+        "kin = { first_cousin = -40, second_cousin = -15, in_law = -10 }",
+        "kin = { first_cousin = -40, second_cousin = -15 }",
+        "marriage.score.kin.in_law",
+        "missing value",
+    );
+    // The pool: its near reach may not exceed its far one; a distance is a positive whole number of kilometres.
+    refused_life(
+        "near_km = 50",
+        "near_km = 200",
+        "marriage.pool.near_km",
+        "must not exceed far_km",
+    );
+    refused_life(
+        "far_km = 150",
+        "far_km = 0",
+        "marriage.pool.far_km",
+        "positive",
+    );
+    // A section or a key the contract does not have.
+    refused_life(
+        "[marriage.accept]",
+        "[marriage.betrothal]",
+        "marriage.betrothal",
+        "unknown section",
+    );
+    refused_life(
+        "per_score = 0.01",
+        "per_score = 0.01\nflat = 1",
+        "marriage.accept.flat",
+        "unknown key",
+    );
+    refused_life(
+        "age_gap_free = 10 ",
+        "age_gap_free = -1 ",
+        "marriage.score.age_gap_free",
+        "whole number",
+    );
+}

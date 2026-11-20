@@ -92,6 +92,18 @@ impl<F: Fn(&PopLocator) -> Option<u64>> Populations for Pops<F> {
     fn culture(&self, _: &PopLocator) -> Option<String> {
         Some("ulaid".to_owned())
     }
+    fn distance_m(&self, a: &PopLocator, b: &PopLocator) -> Option<u64> {
+        (a.place == b.place).then_some(0)
+    }
+    fn move_head(
+        &self,
+        _: &PopLocator,
+        _: &PopLocator,
+        _: bool,
+    ) -> Result<ck_economy::MoveUndo, Error> {
+        Ok(ck_economy::MoveUndo::default())
+    }
+    fn restore_move(&self, _: &ck_economy::MoveUndo) {}
 }
 #[expect(
     clippy::unnecessary_wraps,
@@ -106,6 +118,7 @@ fn new(sex: Sex) -> NewCharacter {
         sex,
         birth: date(768, 1, 1),
         pop: pop(),
+        house: String::new(),
     }
 }
 fn founder(store: &mut CharacterStore, ctx: &Context<'_>, sex: Sex, state: &PopGenetics) -> u64 {

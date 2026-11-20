@@ -729,6 +729,10 @@ fn location(id: &str, cell: Cell, radius: Option<u32>) -> Location {
         id: id.to_owned(),
         name: id.to_owned(),
         cell,
+        position: crate::FixedPoint {
+            x: cell.x * 32_768,
+            y: cell.y * 32_768,
+        },
         kind_index: 0,
         size: 1,
         building_indices: vec![],

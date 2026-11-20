@@ -105,6 +105,18 @@ impl Populations for Pops {
     fn genetics(&self, _: &PopLocator) -> Option<PopGenetics> {
         Some(irish())
     }
+    fn distance_m(&self, a: &PopLocator, b: &PopLocator) -> Option<u64> {
+        (a.place == b.place).then_some(0)
+    }
+    fn move_head(
+        &self,
+        _: &PopLocator,
+        _: &PopLocator,
+        _: bool,
+    ) -> Result<ck_economy::MoveUndo, ck_characters::Error> {
+        Ok(ck_economy::MoveUndo::default())
+    }
+    fn restore_move(&self, _: &ck_economy::MoveUndo) {}
 }
 const PAGAN: Pops = Pops { religion: "" };
 const CHRISTIAN: Pops = Pops {
@@ -1024,6 +1036,46 @@ fn a_rulers_importance_doubles_the_chance_after_the_carried_chance_is_added() {
 }
 
 #[test]
+fn a_member_of_a_ruling_house_adds_half_to_the_importance_through_a_living_ruler_of_its_house() {
+    let mut family = family();
+    // A chance of 2/3 is lifted to certain by the extra half (2/3 x 1.5) and not by nothing.
+    let order =
+        lifecycle_with(|l| l.namesakes.order = vec![("grandfather".to_owned(), 666_666_667)]);
+    let (plain, _) = trials(&order, &family, &[]);
+    assert!(
+        !all_are(&plain, GRAN) && plain.iter().any(|n| n == GRAN),
+        "{plain:?}"
+    );
+    // The grandfather (20) is of the house `ui_neill` whose living ruler is 60, another man: the grandfather himself is no ruler.
+    "ui_neill".clone_into(&mut family.get_mut(&20).unwrap().life.house);
+    let mut ruler = named(60, Sex::Male, "Zruler");
+    ruler.office = Some(Office::Ruler);
+    "ui_neill".clone_into(&mut ruler.life.house);
+    family.insert(60, ruler);
+    let (sons, _) = trials(&order, &family, &[]);
+    assert!(all_are(&sons, GRAN), "{sons:?}");
+    // The same with the grandfather dead and archived: the house of his record counts, the ruling being now.
+    let (sons, _) = trials(&order, &family, &[20]);
+    assert!(all_are(&sons, GRAN), "{sons:?}");
+    // A house with no living ruler, and a member of another house, are plain.
+    let mut lapsed = family.clone();
+    lapsed.get_mut(&60).unwrap().office = None;
+    let (sons, _) = trials(&order, &lapsed, &[]);
+    assert!(!all_are(&sons, GRAN), "{sons:?}");
+    let mut elsewhere = family.clone();
+    "dal_riata".clone_into(&mut elsewhere.get_mut(&20).unwrap().life.house);
+    let (sons, _) = trials(&order, &elsewhere, &[]);
+    assert!(!all_are(&sons, GRAN), "{sons:?}");
+    // A ruler of a ruling house counts both: 1 + 0.5. At 0.4 the chance is 0.4 x 2.5 = 1.
+    let mut both = family.clone();
+    both.get_mut(&20).unwrap().office = Some(Office::Ruler);
+    let both_order =
+        lifecycle_with(|l| l.namesakes.order = vec![("grandfather".to_owned(), 400_000_000)]);
+    let (sons, _) = trials(&both_order, &both, &[]);
+    assert!(all_are(&sons, GRAN), "{sons:?}");
+}
+
+#[test]
 fn the_pick_is_weighted_by_one_plus_importance_over_a_large_sample() {
     // 400 couples with the same dead great-grandfathers 40 (the parents of the husband's father 20, a ruler or not) and 42 (a plain
     // man, the father of 21): a ruler weighs 2000 against 1000.
@@ -1287,6 +1339,7 @@ fn a_child_made_directly_is_named_by_the_same_rules_and_an_unknown_parent_has_no
         sex,
         birth,
         pop: locator("a"),
+        house: String::new(),
     };
     // Siblings of the same father with an unknown mother are not full siblings: nothing is excluded, so both names are drawn.
     let env = Env::new("direct");
@@ -1389,6 +1442,7 @@ fn a_founder_takes_no_namesake_and_excludes_nothing() {
                 sex: Sex::Male,
                 birth: date(740, 1, 1),
                 pop: locator("a"),
+                house: String::new(),
             },
             &irish(),
             &PAGAN,
@@ -1438,6 +1492,7 @@ fn with_a_posthumous_half_brother(next: u64) -> Character {
                 sex: Sex::Male,
                 birth: date(761, 3, 3),
                 pop: locator("a"),
+                house: String::new(),
             },
             &irish(),
             &Lineage {
@@ -1512,6 +1567,7 @@ fn a_father_who_dies_later_on_the_day_of_the_birth_is_not_a_namesake() {
                     sex: Sex::Male,
                     birth: at(768, 1, 1, 6),
                     pop: locator("a"),
+                    house: String::new(),
                 },
                 &irish(),
                 &Lineage {
@@ -1604,6 +1660,7 @@ fn an_uncle_or_an_ancestor_who_dies_later_on_the_day_of_the_birth_is_not_a_names
                     sex: Sex::Male,
                     birth: at(768, 1, 1, 6),
                     pop: locator("a"),
+                    house: String::new(),
                 },
                 &irish(),
                 &Lineage {

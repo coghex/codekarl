@@ -1131,6 +1131,7 @@ fn found(
         sex,
         birth: start(),
         pop: pop.clone(),
+        house: String::new(),
     };
     state
         .characters

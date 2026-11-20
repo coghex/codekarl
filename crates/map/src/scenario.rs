@@ -7,8 +7,8 @@ use std::path::{Component, Path, PathBuf};
 use serde::Deserialize;
 
 use crate::{
-    Cell, Crop, LoadError, LoadedMap, Rgba8, STEP_SIZE, Surface, ViewSize, WorldPixel, cell_of,
-    project,
+    Cell, Crop, FixedPoint, LoadError, LoadedMap, Rgba8, STEP_SIZE, Surface, ViewSize, WorldPixel,
+    cell_of, project,
 };
 
 const MAX_CATCHMENT_METRES: i64 = 50_000;
@@ -134,6 +134,8 @@ pub struct Location {
     pub name: String,
     /// Projected map cell containing the authored point.
     pub cell: Cell,
+    /// The authored point itself, projected: the anchor distances between places are measured from (CK-366).
+    pub position: FixedPoint,
     /// Index into [`LocationKinds::kinds`].
     pub kind_index: usize,
     /// Authored size.
@@ -873,6 +875,7 @@ fn validate_locations(
             id: entry.id.clone(),
             name: entry.name.clone(),
             cell,
+            position,
             kind_index,
             size: u8::try_from(entry.size).unwrap_or_default(),
             building_indices,

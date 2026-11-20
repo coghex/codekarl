@@ -142,6 +142,18 @@ impl Populations for Pops {
     fn luxuries_pm(&self, _: &PopLocator) -> Option<u16> {
         Some(self.luxuries)
     }
+    fn distance_m(&self, a: &PopLocator, b: &PopLocator) -> Option<u64> {
+        (a.place == b.place).then_some(0)
+    }
+    fn move_head(
+        &self,
+        _: &PopLocator,
+        _: &PopLocator,
+        _: bool,
+    ) -> Result<ck_economy::MoveUndo, ck_characters::Error> {
+        Ok(ck_economy::MoveUndo::default())
+    }
+    fn restore_move(&self, _: &ck_economy::MoveUndo) {}
 }
 const POPS: Pops = Pops { luxuries: 600 };
 
@@ -557,6 +569,18 @@ impl Populations for NoKinds {
     fn culture(&self, _: &PopLocator) -> Option<String> {
         Some("ulaid".to_owned())
     }
+    fn distance_m(&self, a: &PopLocator, b: &PopLocator) -> Option<u64> {
+        (a.place == b.place).then_some(0)
+    }
+    fn move_head(
+        &self,
+        _: &PopLocator,
+        _: &PopLocator,
+        _: bool,
+    ) -> Result<ck_economy::MoveUndo, ck_characters::Error> {
+        Ok(ck_economy::MoveUndo::default())
+    }
+    fn restore_move(&self, _: &ck_economy::MoveUndo) {}
 }
 
 #[test]
@@ -593,6 +617,7 @@ fn new_child(place: &str) -> NewCharacter {
         sex: Sex::Female,
         birth: date(768, 2, 2),
         pop: locator(place),
+        house: String::new(),
     }
 }
 fn irish() -> PopGenetics {
@@ -1206,6 +1231,7 @@ fn focus_and_use_are_drawn_once_at_birth_by_the_stated_odds() {
                     sex: Sex::Male,
                     birth: date(740, 1, 1),
                     pop: locator("a"),
+                    house: String::new(),
                 },
                 &irish(),
                 &POPS,
@@ -1234,6 +1260,7 @@ fn focus_and_use_are_drawn_once_at_birth_by_the_stated_odds() {
                         sex: Sex::Male,
                         birth: date(740, 1, 1),
                         pop: locator("a"),
+                        house: String::new(),
                     },
                     &irish(),
                     &POPS,
@@ -1492,6 +1519,7 @@ fn a_use_spread_near_the_64_bit_limit_clamps_the_draw_instead_of_failing() {
                     sex: Sex::Male,
                     birth: date(740, 1, 1),
                     pop: locator("a"),
+                    house: String::new(),
                 },
                 &irish(),
                 &POPS,

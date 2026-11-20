@@ -62,6 +62,18 @@ impl Populations for Pops {
             _ => None,
         }
     }
+    fn distance_m(&self, a: &PopLocator, b: &PopLocator) -> Option<u64> {
+        (a.place == b.place).then_some(0)
+    }
+    fn move_head(
+        &self,
+        _: &PopLocator,
+        _: &PopLocator,
+        _: bool,
+    ) -> Result<ck_economy::MoveUndo, Error> {
+        Ok(ck_economy::MoveUndo::default())
+    }
+    fn restore_move(&self, _: &ck_economy::MoveUndo) {}
 }
 
 /// The shipped personality data with `edit` applied: a fixture for the draws.
@@ -86,6 +98,7 @@ fn new(sex: Sex, place: &str) -> NewCharacter {
         sex,
         birth: date(768, 1, 1),
         pop: locator(place),
+        house: String::new(),
     }
 }
 fn archive(tag: &str) -> Archive {
