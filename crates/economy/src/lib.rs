@@ -10,7 +10,9 @@ use std::{collections::BTreeMap, error::Error, fmt, fs, path::Path};
 use ck_sim::{Canonical, CanonicalError, Date, Reader, days_in_month, encode_length};
 use serde::Deserialize;
 
+pub mod genetics;
 pub mod peoples;
+pub use genetics::{Genetics, PopGenetics};
 pub use peoples::Peoples;
 
 const WAGE_HISTORY_MONTHS: usize = 12;
@@ -152,6 +154,9 @@ pub struct Rules {
     /// Validated culture and language data.
     #[serde(skip)]
     pub peoples: Peoples,
+    /// Validated genetic data: haplogroup tables, start sets and trait rules (CK-361).
+    #[serde(skip)]
+    pub genetics: Genetics,
     /// Religions present in the simulation.
     pub religions: Vec<String>,
     /// Land terrain names in the same order as the map terrain palette.
@@ -230,6 +235,7 @@ impl Rules {
                 });
             }
         }
+        rules.genetics = Genetics::load(&path.with_file_name("genetics"), &rules.peoples)?;
         rules.validate(&file)?;
         Ok(rules)
     }
@@ -1688,6 +1694,7 @@ fn merge_into_cohort(pops: &mut Vec<PopState>, household: PopState) -> Result<()
         pops.push(household);
         return Ok(());
     };
+    let before = (cohort.workers, cohort.dependents);
     cohort.workers = cohort
         .workers
         .checked_add(household.workers)
@@ -1701,6 +1708,22 @@ fn merge_into_cohort(pops: &mut Vec<PopState>, household: PopState) -> Result<()
             .checked_add(*added)
             .ok_or_else(|| missing_data("start.household".to_owned(), "stock overflow"))?;
     }
+    // The merged heads join the cohort, so its genetic state is the people-weighted average (a household of the same
+    // culture carries the same seeded state, which this leaves unchanged). It runs after the count checks above, so
+    // their named refusals come first.
+    let heads = |workers: u64, dependents: u64| {
+        workers
+            .checked_add(dependents)
+            .ok_or_else(|| missing_data("start.household".to_owned(), "head count overflow"))
+    };
+    let (own, added) = (
+        heads(before.0, before.1)?,
+        heads(household.workers, household.dependents)?,
+    );
+    cohort
+        .genetics
+        .blend(own, &household.genetics, added)
+        .map_err(|error| missing_data("start.household".to_owned(), &error.to_string()))?;
     Ok(())
 }
 
@@ -1834,6 +1857,19 @@ pub fn can_build(
     Ok(proposed <= cap)
 }
 
+fn seed_genetics(rules: &Rules, culture: &str) -> Result<PopGenetics, DataError> {
+    if rules.genetics.is_empty() {
+        // Rules built without genetic data (unit fixtures) leave the state unseeded.
+        return Ok(PopGenetics::default());
+    }
+    rules.genetics.seed_pop(culture).ok_or_else(|| {
+        missing_data(
+            format!("culture_start.{culture}"),
+            "culture has no genetic start set",
+        )
+    })
+}
+
 fn make_pop(
     rules: &Rules,
     kind: &str,
@@ -1892,6 +1928,7 @@ fn make_pop(
         counters: CounterBuckets::default(),
         short_on_rent: false,
         housed_last: false,
+        genetics: seed_genetics(rules, culture)?,
     })
 }
 
@@ -3356,6 +3393,8 @@ pub struct PopState {
     /// rent result, fixed on the 1st before the monthly fill, so the monthly fill and every live
     /// housing query until the next 1st apply the same priority.
     pub housed_last: bool,
+    /// The pop's genetic state: baselines, haplogroup shares and trait rates (CK-361).
+    pub genetics: PopGenetics,
 }
 
 /// Saved balances and carries used by the noon eating system.
@@ -6869,6 +6908,7 @@ fn ensure_pop(place: &mut PlaceState, kind: &str, culture: &str, religion: &str)
         counters: CounterBuckets::default(),
         short_on_rent: false,
         housed_last: false,
+        genetics: PopGenetics::default(),
     });
     for building in &mut place.buildings {
         building.employment.push(Employment::default());
@@ -7038,6 +7078,14 @@ fn transfer_pop(
         let all_people = old_destination_size
             .checked_add(moved_people)
             .ok_or_else(|| missing_data("movement.average".to_owned(), "population overflow"))?;
+        destination
+            .genetics
+            .blend(
+                old_destination_size,
+                &source_snapshot.genetics,
+                moved_people,
+            )
+            .map_err(|error| missing_data("movement.genetics".to_owned(), &error.to_string()))?;
         let satisfaction_total = i128::from(destination.consumption.satisfaction)
             .checked_mul(i128::from(old_destination_size))
             .and_then(|value| {
@@ -8249,6 +8297,7 @@ impl Canonical for EconomyState {
                 encode_counters(&pop.counters, out)?;
                 pop.short_on_rent.encode(out)?;
                 pop.housed_last.encode(out)?;
+                pop.genetics.encode(out)?;
             }
             encode_length(place.buildings.len(), out)?;
             for building in &place.buildings {
@@ -8309,6 +8358,7 @@ impl Canonical for EconomyState {
                     counters: decode_counters(input)?,
                     short_on_rent: bool::decode(input)?,
                     housed_last: bool::decode(input)?,
+                    genetics: PopGenetics::decode(input)?,
                 });
             }
             let count = input.length()?;
@@ -8425,6 +8475,8 @@ fn decode_employment(input: &mut Reader<'_>) -> Result<Vec<Employment>, Canonica
     Ok(result)
 }
 
+#[cfg(test)]
+mod genetics_tests;
 #[cfg(test)]
 mod noble_tests;
 
@@ -8597,6 +8649,7 @@ mod tests {
                 cultures: vec![fixture_culture("connachta")],
                 ..Peoples::default()
             },
+            genetics: Genetics::default(),
             religions: vec!["christianity".to_owned()],
             terrain_order: vec!["pasture".to_owned(), "bog".to_owned()],
             footprint_m2: BTreeMap::from([
@@ -8765,6 +8818,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let mut drawer = make_pop(1000);
         let mut starver = make_pop(200);
@@ -8873,6 +8927,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         EconomyState {
             places: vec![PlaceState {
@@ -9099,6 +9154,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         assert_eq!(receive_pop(&rules, &mut pop, 0, 4).unwrap(), 3);
         assert_eq!(pop.stock, [1]);
@@ -9229,6 +9285,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let mut pops = vec![pop("peasant"), pop("labourer")];
         let farm = BuildingState {
@@ -9328,6 +9385,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let pops = vec![pop("peasant", 0), pop("monk", 10), pop("labourer", 100)];
         assert_eq!(alms_order(&rules, &pops, None).unwrap(), [2, 0, 1]);
@@ -9508,6 +9566,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let place = PlaceState {
             id: "luxury_market".to_owned(),
@@ -9582,6 +9641,7 @@ mod tests {
                     counters: CounterBuckets::default(),
                     short_on_rent: false,
                     housed_last: false,
+                    genetics: PopGenetics::default(),
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![0; rules.goods.len()],
@@ -9620,6 +9680,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         }
     }
 
@@ -9781,6 +9842,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let storehouse = BuildingState {
             kind: "storehouse".to_owned(),
@@ -9873,6 +9935,7 @@ mod tests {
                 counters: CounterBuckets::default(),
                 short_on_rent: false,
                 housed_last: false,
+                genetics: PopGenetics::default(),
             }],
             buildings: Vec::new(),
             prices_milli: vec![100_000],
@@ -10854,6 +10917,7 @@ mod tests {
                     counters: CounterBuckets::default(),
                     short_on_rent: false,
                     housed_last: false,
+                    genetics: PopGenetics::default(),
                 }],
                 buildings: vec![
                     BuildingState {
@@ -12220,6 +12284,7 @@ mod tests {
                 counters: CounterBuckets::default(),
                 short_on_rent: false,
                 housed_last: false,
+                genetics: PopGenetics::default(),
             }],
             buildings: Vec::new(),
             prices_milli: vec![100_001],
@@ -12509,6 +12574,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         assert_eq!(
             projected_buy_units(&rules, std::slice::from_ref(&pop), "food", true),
@@ -12945,6 +13011,7 @@ mod tests {
                     },
                     short_on_rent: false,
                     housed_last: false,
+                    genetics: PopGenetics::default(),
                 }],
                 buildings: vec![
                     BuildingState {
@@ -13335,6 +13402,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let building = |kind: &str, wage_carry| BuildingState {
             kind: kind.to_owned(),
@@ -13470,6 +13538,7 @@ mod tests {
                     counters: CounterBuckets::default(),
                     short_on_rent: false,
                     housed_last: false,
+                    genetics: PopGenetics::default(),
                 }],
                 buildings: vec![BuildingState {
                     kind: "farm".to_owned(),
@@ -13613,6 +13682,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let farm = BuildingState {
             kind: "farm".to_owned(),
@@ -13777,6 +13847,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let mut state = EconomyState {
             places: vec![PlaceState {
@@ -13843,6 +13914,7 @@ mod tests {
                     counters: CounterBuckets::default(),
                     short_on_rent: false,
                     housed_last: false,
+                    genetics: PopGenetics::default(),
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![100_000],
@@ -13913,6 +13985,7 @@ mod tests {
                     counters: CounterBuckets::default(),
                     short_on_rent: false,
                     housed_last: false,
+                    genetics: PopGenetics::default(),
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000; 2],
@@ -13979,6 +14052,7 @@ mod tests {
                     counters: CounterBuckets::default(),
                     short_on_rent: false,
                     housed_last: false,
+                    genetics: PopGenetics::default(),
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000; goods],
@@ -14038,6 +14112,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let mut state = EconomyState {
             places: vec![PlaceState {
@@ -14093,6 +14168,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         pop.employment.push(Employment {
             owners: 1,
@@ -14246,6 +14322,7 @@ mod tests {
                     counters: CounterBuckets::default(),
                     short_on_rent: false,
                     housed_last: false,
+                    genetics: PopGenetics::default(),
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000, 1000],
@@ -14328,6 +14405,7 @@ mod tests {
                     counters: CounterBuckets::default(),
                     short_on_rent: false,
                     housed_last: false,
+                    genetics: PopGenetics::default(),
                 }],
                 buildings: Vec::new(),
                 prices_milli: vec![1000; 3],
@@ -14399,6 +14477,7 @@ mod tests {
                 counters: CounterBuckets::default(),
                 short_on_rent: false,
                 housed_last: false,
+                genetics: PopGenetics::default(),
             };
             let building = BuildingState {
                 kind: "farm".to_owned(),
@@ -14568,6 +14647,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let building = BuildingState {
             kind: "farm".to_owned(),
@@ -14634,6 +14714,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let farm = BuildingState {
             kind: "farm".to_owned(),
@@ -14732,6 +14813,7 @@ mod tests {
                 counters: CounterBuckets::default(),
                 short_on_rent: false,
                 housed_last: false,
+                genetics: PopGenetics::default(),
             })
             .collect();
         PlaceState {
@@ -15096,6 +15178,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let farm = BuildingState {
             kind: "farm".to_owned(),
@@ -15162,6 +15245,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let place = PlaceState {
             id: "floor".into(),
@@ -15213,6 +15297,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let mut state = EconomyState {
             places: vec![PlaceState {
@@ -15262,6 +15347,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let mut state = EconomyState {
             places: vec![PlaceState {
@@ -15366,6 +15452,82 @@ mod tests {
     }
 
     #[test]
+    fn movement_gives_a_new_pop_the_movers_genetics_and_blends_into_an_existing_one() {
+        let (rules, mut state) = daily_accounting_fixture();
+        let mut source = state.places.remove(0);
+        source.id = "source".to_owned();
+        source.pops[0].workers = 100;
+        source.pops[0].dependents = 40;
+        let genes = |height: i64, shares: &[(&str, u32)], carrier: u32| {
+            let paternal: BTreeMap<String, u32> = shares
+                .iter()
+                .map(|(name, share)| ((*name).to_owned(), *share))
+                .collect();
+            PopGenetics {
+                mean: [height; genetics::ATTRIBUTE_COUNT],
+                sd: [6000; genetics::ATTRIBUTE_COUNT],
+                maternal: BTreeMap::from([("H".to_owned(), 1000)]),
+                paternal,
+                carrier: BTreeMap::from([("albino".to_owned(), carrier)]),
+                founder: BTreeMap::new(),
+            }
+        };
+        let first = genes(170_000, &[("R1b", 950), ("other", 50)], 10_000_000);
+        source.pops[0].genetics = first.clone();
+        source.pops[0].employment.fill(Employment::default());
+        let mut destination = source.clone();
+        destination.id = "destination".to_owned();
+        destination.pops.clear();
+        for building in &mut destination.buildings {
+            building.employment.clear();
+            if let Some(accounts) = &mut building.storehouse_accounts {
+                accounts.pops.clear();
+            }
+        }
+        let mut places = vec![source, destination];
+        let (_, index) = move_recruits(&rules, &mut places, 0, 0, 1, 1, "labourer", 10).unwrap();
+        assert_eq!(
+            places[1].pops[index].genetics, first,
+            "a new pop takes the movers' state exactly"
+        );
+        assert_eq!(places[0].pops[0].genetics, first, "the source is unchanged");
+
+        // A different state moves into the now existing pop: both sides are 14 people, so the blend is an equal mix.
+        let second = genes(
+            180_000,
+            &[("R1b", 750), ("I1", 200), ("other", 50)],
+            30_000_000,
+        );
+        places[0].pops[0].genetics = second.clone();
+        let heads = |pop: &PopState| pop.workers + pop.dependents;
+        let before = heads(&places[1].pops[index]);
+        let (moved, again) =
+            move_recruits(&rules, &mut places, 0, 0, 1, 1, "labourer", 10).unwrap();
+        assert_eq!((again, moved, before), (index, 14, 14));
+        let blended = places[1].pops[index].genetics.clone();
+        assert_eq!(blended.mean[0], 175_000);
+        assert_eq!(blended.carrier["albino"], 20_000_000);
+        assert_eq!(
+            blended.paternal,
+            BTreeMap::from([
+                ("I1".to_owned(), 100),
+                ("R1b".to_owned(), 850),
+                ("other".to_owned(), 50)
+            ])
+        );
+        assert_eq!(blended.maternal, BTreeMap::from([("H".to_owned(), 1000)]));
+        assert_eq!(
+            places[0].pops[0].genetics, second,
+            "the source is unchanged"
+        );
+
+        // The state is saved with the pop.
+        let saved = EconomyState { places }.to_bytes().unwrap();
+        let loaded = EconomyState::from_bytes(&saved).unwrap();
+        assert_eq!(loaded.places[1].pops[index].genetics, blended);
+    }
+
+    #[test]
     fn monk_recruitment_preserves_source_dependent_share_and_joins_as_workers() {
         let (rules, mut state) = daily_accounting_fixture();
         let mut source = state.places.remove(0);
@@ -15451,6 +15613,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let building = BuildingState {
             kind: "holdings".to_owned(),
@@ -15703,6 +15866,7 @@ mod tests {
                 counters: CounterBuckets::default(),
                 short_on_rent: false,
                 housed_last: false,
+                genetics: PopGenetics::default(),
             }],
             buildings: Vec::new(),
             prices_milli: vec![1000],
@@ -15836,6 +16000,7 @@ mod tests {
             counters: CounterBuckets::default(),
             short_on_rent: false,
             housed_last: false,
+            genetics: PopGenetics::default(),
         };
         let building = BuildingState {
             kind: "farm".to_owned(),

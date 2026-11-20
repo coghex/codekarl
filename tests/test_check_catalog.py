@@ -2493,6 +2493,28 @@ GUARDS: tuple[Guard, ...] = (
         "economy.core",
         ("assets/game/economy.toml", "assets/scenarios/ireland-768/economy.toml"),
     ),
+    # CK-361: the genetic data tests load the shipped rules and both genetic files, and the characters crate's tests read
+    # the economy crate's genetic source for the no-floating-point check.
+    Guard(
+        "crates/economy/src/genetics_tests.rs",
+        "economy.core",
+        (
+            "assets/game/economy.toml",
+            "assets/game/genetics/haplogroups.toml",
+            "assets/game/genetics/traits.toml",
+        ),
+    ),
+    Guard(
+        "crates/characters/tests/genetics.rs",
+        "economy.core",
+        (
+            "assets/game/economy.toml",
+            "assets/game/genetics/haplogroups.toml",
+            "assets/game/genetics/traits.toml",
+            "crates/economy/src/genetics.rs",
+        ),
+    ),
+    Guard("crates/characters/tests/store.rs", "economy.core", ("assets/game/economy.toml",)),
     # CK-359: the noble, demesne and rent tests load the same shipped rules and Ireland's noble houses.
     Guard(
         "crates/economy/src/noble_tests.rs",

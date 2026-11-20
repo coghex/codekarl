@@ -1,0 +1,122 @@
+# Inherited trait data (draft r2; r2 2026-11-19: deaf and blind follow lists/traits.md's "weak", for CK-361 review). Drafted by Claude (ck-designer-1), 2026-11-19, for characters slice 2, from lists/traits.md (r7,
+# approved), inheritance-math-r1 (model approved) and genetics-r8 (approved r109). All numbers are placeholders to tune; the model is
+# not. Traits that are not inherited (hunchback, barren, melancholy, drunkard, rage_fits, recluse, pregnant) are not listed here;
+# the mind traits come from events (mind-traits-r2).
+#
+# Mendelian conditions ([mendelian.*]), inheritance-math-r1 §1:
+#   mode: "ordinary" (autosomal: two copies, one from each parent), "x" (X-linked: women two, men one; a son gets one of his mother's),
+#         "y" (father to every son), "maternal" (the mother's line: from a mother to every child, passed on only by daughters).
+#   dominance: "dominant" (one copy shows) or "recessive" (two copies, or a man's one X copy); ignored for "y" and "maternal".
+#   penetrance: the chance that a character whose copies give the condition shows it (rolled once, at birth).
+#   allele: a founder's chance per copy of carrying it (drawn per copy from the character's identity); "maternal" and "y" draw one.
+#   shows_in: "both" (default), "women" or "men" (a sex-limited condition: carried by both, shown by one).
+#   "weak" in lists/traits.md (a small chance from a parent) is modelled as a dominant with low penetrance.
+#
+# Graded traits ([graded.*]), inheritance-math-r1 §2: levels none 0, C 1 .. SSS 6.
+#   w: the mother's weight; d: the pull towards none; s0, k: spread; m: chance of a new trait; q: each new level q times the one below;
+#   max: the highest level; founder: a founder's chance of the trait; founder_q: each founder level founder_q times the one below
+#   (as tools/char_gen.py, tested r137-r138).
+# Haplogroup multipliers on founder rates stay in haplogroups.toml ([paternal.R1b.trait_rates]: prodigious_memory 1.5).
+# Expected showing rates are given for checking (founders, before inheritance moves them).
+
+[defaults.graded]
+w = 0.5
+d = 0.4
+s0 = 0.3
+k = 0.3
+m = 0.01
+q = 0.3
+max = 6
+founder_q = 0.45
+
+[graded.beauty]
+founder = 0.06
+
+[graded.ill_favoured]
+founder = 0.06
+
+[graded.keen_eyed]
+founder = 0.05
+
+[graded.fool]
+founder = 0.03
+
+[graded.prodigious_memory]
+founder = 0.04
+
+[graded.madness]            # "weak" inheritance: a strong pull to none and few new cases; events cause most madness (mind-traits-r2)
+founder = 0.005
+d = 0.8
+m = 0.002
+
+[mendelian.left_handed]     # shows ~9% (allele 0.2: 36% carry one or two copies, x 0.25)
+mode = "ordinary"
+dominance = "dominant"
+penetrance = 0.25
+allele = 0.2
+
+[mendelian.twin_bearer]     # raises a mother's chance of twins; shown by women only
+mode = "maternal"
+penetrance = 1.0
+allele = 0.05
+shows_in = "women"
+
+[mendelian.club_foot]       # ~0.1%
+mode = "ordinary"
+dominance = "dominant"
+penetrance = 0.1
+allele = 0.005
+
+[mendelian.harelip]         # ~0.1%
+mode = "ordinary"
+dominance = "dominant"
+penetrance = 0.1
+allele = 0.005
+
+[mendelian.dwarfism]        # ~1 in 5,000 (rarer in life; kept visible for the game)
+mode = "ordinary"
+dominance = "dominant"
+penetrance = 1.0
+allele = 0.0001
+
+[mendelian.albino]          # ~1 in 10,000; 2% carriers
+mode = "ordinary"
+dominance = "recessive"
+penetrance = 1.0
+allele = 0.01
+
+[mendelian.bleeder]         # ~1 in 2,000 men; women carry
+mode = "x"
+dominance = "recessive"
+penetrance = 1.0
+allele = 0.0005
+
+[mendelian.stammer]         # ~1%
+mode = "ordinary"
+dominance = "dominant"
+penetrance = 0.2
+allele = 0.025
+
+[mendelian.deaf]            # from birth, ~0.1%; "weak" as lists/traits.md (r2: was recessive)
+mode = "ordinary"
+dominance = "dominant"
+penetrance = 0.1
+allele = 0.005
+
+[mendelian.blind]           # from birth, ~0.04%; "weak" as lists/traits.md (r2: was recessive); blinding by injury is the health system
+mode = "ordinary"
+dominance = "dominant"
+penetrance = 0.1
+allele = 0.002
+
+[mendelian.falling_sickness] # ~0.6%
+mode = "ordinary"
+dominance = "dominant"
+penetrance = 0.15
+allele = 0.02
+
+[mendelian.visions]         # very small (r100): ~0.2%
+mode = "ordinary"
+dominance = "dominant"
+penetrance = 0.05
+allele = 0.02

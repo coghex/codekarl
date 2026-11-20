@@ -301,10 +301,37 @@ fn the_rules_hash_changes_when_a_building_footprint_changes() {
     fs::write(&game_rules, "[footprint_m2]\nfarm = 2000\n").unwrap();
     fs::write(&terrain_rules, "[suitability]\n").unwrap();
     fs::write(game_rules.with_file_name("peoples.toml"), "registry").unwrap();
+    write_genetics(&dir.0, "haplogroups", "traits");
 
     let before = hashes::rules_hash(&dir.0).unwrap();
     fs::write(&game_rules, "[footprint_m2]\nfarm = 2001\n").unwrap();
     assert_ne!(hashes::rules_hash(&dir.0).unwrap(), before);
+}
+
+fn write_genetics(root: &Path, haplogroups: &str, traits: &str) {
+    let genetics = root.join("game/genetics");
+    fs::create_dir_all(&genetics).unwrap();
+    fs::write(genetics.join("haplogroups.toml"), haplogroups).unwrap();
+    fs::write(genetics.join("traits.toml"), traits).unwrap();
+}
+
+#[test]
+fn editing_either_genetic_data_file_changes_the_rules_hash() {
+    let dir = Dir::new();
+    fs::create_dir_all(dir.0.join("game")).unwrap();
+    fs::create_dir_all(dir.0.join("map/ireland")).unwrap();
+    fs::write(dir.0.join("game/economy.toml"), "rules").unwrap();
+    fs::write(dir.0.join("game/peoples.toml"), "registry").unwrap();
+    fs::write(dir.0.join("map/ireland/terrain.toml"), "terrain").unwrap();
+    write_genetics(&dir.0, "haplogroups", "traits");
+    let before = hashes::rules_hash(&dir.0).unwrap();
+    write_genetics(&dir.0, "haplogroups edited", "traits");
+    let haplogroups = hashes::rules_hash(&dir.0).unwrap();
+    assert_ne!(haplogroups, before);
+    write_genetics(&dir.0, "haplogroups", "traits edited");
+    let traits = hashes::rules_hash(&dir.0).unwrap();
+    assert_ne!(traits, before);
+    assert_ne!(traits, haplogroups);
 }
 
 #[test]
@@ -317,6 +344,7 @@ fn registry_edit_changes_rules_hash_and_refuses_existing_save() {
     fs::write(game.join("economy.toml"), "rules").unwrap();
     fs::write(game.join("peoples.toml"), "registry before").unwrap();
     fs::write(map.join("terrain.toml"), "terrain").unwrap();
+    write_genetics(&dir.0, "haplogroups", "traits");
     let mut identity = super::identity("aa");
     identity.rules_hash = hashes::rules_hash(&dir.0).unwrap();
     let sim = Simulation::<super::World, GameCommand>::new(

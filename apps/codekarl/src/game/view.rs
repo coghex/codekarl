@@ -810,6 +810,7 @@ mod tests {
                 counters: CounterBuckets::default(),
                 short_on_rent: false,
                 housed_last: false,
+                genetics: ck_economy::PopGenetics::default(),
             }],
             buildings: vec![
                 BuildingState {

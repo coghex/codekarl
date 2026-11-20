@@ -1486,6 +1486,8 @@ STEPS = [
             "crates/economy/",
             "crates/characters/",
             "assets/game/peoples.toml",
+            # CK-361: the genetic data (haplogroup tables and trait rules) loads with the rules and seeds every pop.
+            "assets/game/genetics/",
             # shipped_economy_and_ireland_start_data_are_strictly_valid loads these rules and start.
             "assets/game/economy.toml",
             "assets/scenarios/ireland-768/economy.toml",
