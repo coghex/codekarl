@@ -5,9 +5,16 @@ use ck_economy::PopGenetics;
 use ck_sim::{Canonical, CanonicalError, Date, GameTime, Reader, Stream};
 use std::collections::BTreeMap;
 
+mod bigint;
+pub mod events;
+mod fixtures;
 pub mod genetics;
+pub mod life;
 pub mod personality;
+pub mod skills;
+pub use events::{EventError, LogSink, World};
 pub use genetics::{Context, GeneticRecord, Mendel};
+pub use life::LifeRecord;
 pub use personality::{
     EventKind, LevelTrait, PersonalityRecord, Standing, StressKind, opinion, threshold,
 };
@@ -33,6 +40,16 @@ pub trait Populations {
     /// Return the culture key of the pop, or `None` when the place or slot does not exist. A character is created with the
     /// culture of the pop it is created into (CK-362).
     fn culture(&self, locator: &PopLocator) -> Option<String>;
+    /// Return the pop type key of the pop (`noble`, `peasant`, ...), or `None` when it is unknown. A character's focus of
+    /// education is drawn from the odds of its pop type; a pop whose type is unknown gives a balanced one, and the event engine
+    /// refuses a character whose pop type it cannot resolve (CK-363).
+    fn kind(&self, _locator: &PopLocator) -> Option<String> {
+        None
+    }
+    /// Return the pop's luxuries fulfilment in permille, or `None` when it is unknown (CK-363, `pop_luxuries_min`).
+    fn luxuries_pm(&self, _locator: &PopLocator) -> Option<u16> {
+        None
+    }
 }
 impl Populations for ck_economy::EconomyState {
     fn heads(&self, locator: &PopLocator) -> Option<u64> {
@@ -43,6 +60,20 @@ impl Populations for ck_economy::EconomyState {
     fn culture(&self, locator: &PopLocator) -> Option<String> {
         let place = self.places.iter().find(|place| place.id == locator.place)?;
         Some(place.pops.get(locator.slot as usize)?.culture.clone())
+    }
+    fn kind(&self, locator: &PopLocator) -> Option<String> {
+        let place = self.places.iter().find(|place| place.id == locator.place)?;
+        Some(place.pops.get(locator.slot as usize)?.kind.clone())
+    }
+    fn luxuries_pm(&self, locator: &PopLocator) -> Option<u16> {
+        let place = self.places.iter().find(|place| place.id == locator.place)?;
+        Some(
+            place
+                .pops
+                .get(locator.slot as usize)?
+                .consumption
+                .luxuries_pm,
+        )
     }
 }
 /// A bare head-count function knows no cultures, so a character cannot be created into its pops.
@@ -125,6 +156,8 @@ pub struct Character {
     pub genetics: Box<GeneticRecord>,
     /// Personality, stress and standing (CK-362).
     pub personality: PersonalityRecord,
+    /// Attributes, deed counters, skills, use factors, focus and the holds-land flag (CK-363).
+    pub life: LifeRecord,
 }
 impl Canonical for Character {
     fn encode(&self, o: &mut Vec<u8>) -> Result<(), CanonicalError> {
@@ -141,7 +174,8 @@ impl Canonical for Character {
         self.office.encode(o)?;
         self.full_until.encode(o)?;
         (*self.genetics).encode(o)?;
-        self.personality.encode(o)
+        self.personality.encode(o)?;
+        self.life.encode(o)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
@@ -159,6 +193,7 @@ impl Canonical for Character {
             full_until: Option::decode(r)?,
             genetics: Box::new(GeneticRecord::decode(r)?),
             personality: PersonalityRecord::decode(r)?,
+            life: LifeRecord::decode(r)?,
         })
     }
 }
@@ -182,6 +217,7 @@ impl NewCharacter {
         mother: u64,
         genetics: GeneticRecord,
         personality: PersonalityRecord,
+        life: LifeRecord,
     ) -> Character {
         Character {
             id,
@@ -198,6 +234,7 @@ impl NewCharacter {
             full_until: None,
             genetics: Box::new(genetics),
             personality,
+            life,
         }
     }
 }
@@ -262,6 +299,10 @@ pub enum Error {
     Amount,
     /// A trait level above 6.
     Level,
+    /// A pop whose type, culture subgroup or luxuries the event engine cannot resolve (CK-363).
+    Pop,
+    /// An event whose arithmetic does not fit, or a counter that would overflow (CK-363).
+    Event,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -373,14 +414,16 @@ impl CharacterStore {
         let next = id.checked_add(1).ok_or(Error::Overflow)?;
         let genetics = genetics::make_founder(ctx, id, "", new.sex, pop_genetics)?;
         let personality = personality::make_founder(ctx, id, "", means)?;
+        let life = life::make(ctx, id, new.sex, populations.kind(&new.pop).as_deref())?;
         self.live.insert(
             id,
-            new.into_record(id, UNKNOWN, UNKNOWN, genetics, personality),
+            new.into_record(id, UNKNOWN, UNKNOWN, genetics, personality, life),
         );
         self.next_id = next;
         Ok(id)
     }
-    /// Create a child of `lineage.father` and `lineage.mother`, live, archived or [`UNKNOWN`]. An unknown parent is
+    /// Create a child of `lineage.father` and `lineage.mother`, live, archived or [`UNKNOWN`]. State only: the game calls
+    /// [`create_child_with_events`](Self::create_child_with_events), which also emits `child_born`. An unknown parent is
     /// replaced by a synthetic parent of the right sex, made as a founder of the child's pop on the child's own stream
     /// (purposes `synthetic_father.*`, `synthetic_mother.*`); it is not stored. One transaction: the record, the child's
     /// parent ids and the child in each **live** parent's children list are written together and tiers re-evaluated. An
@@ -389,7 +432,7 @@ impl CharacterStore {
     /// Refuses, with nothing changed (no id allocated, no link, no record), a father who is not a man or a mother who is
     /// not a woman, a parent that is neither live, archived nor [`UNKNOWN`], a pop that does not resolve or is full, an
     /// archive read failure and an unseeded pop.
-    pub fn create_child(
+    pub(crate) fn create_child(
         &mut self,
         ctx: &Context<'_>,
         new: NewCharacter,
@@ -425,7 +468,15 @@ impl CharacterStore {
         }
         let genetics = genetics::make_child(ctx, id, new.sex, &records[0].0, &records[1].0)?;
         let personality = personality::make_child(ctx, id, means, &records[0].1, &records[1].1)?;
-        let record = new.into_record(id, lineage.father, lineage.mother, genetics, personality);
+        let life = life::make(ctx, id, new.sex, populations.kind(&new.pop).as_deref())?;
+        let record = new.into_record(
+            id,
+            lineage.father,
+            lineage.mother,
+            genetics,
+            personality,
+            life,
+        );
         // Everything above is validated and computed, so the writes below cannot fail. A child can only add a
         // qualification (a live ruler's child is full at once, by `tier`'s derivation), never remove one, so no grace
         // period is started.
@@ -497,10 +548,11 @@ impl CharacterStore {
             }
         })
     }
-    /// Add a reciprocal marriage.
+    /// Add a reciprocal marriage. State only: the game calls [`marry_with_events`](Self::marry_with_events), which also emits
+    /// the `marriage` happening.
     /// # Errors
     /// Refuses missing or identical partners and unrepresentable dates.
-    pub fn marry(&mut self, a: u64, b: u64, day: GameTime) -> Result<(), Error> {
+    pub(crate) fn marry(&mut self, a: u64, b: u64, day: GameTime) -> Result<(), Error> {
         if a == b {
             return Err(Error::InvalidRelationship);
         }
@@ -675,21 +727,48 @@ impl ArchiveSink for Archive {
     }
 }
 impl CharacterStore {
-    /// Archive a character before removing it, leaving all live state intact on append failure.
+    #[cfg(feature = "test-fixtures")]
+    /// Archive a character before removing it, leaving all live state intact on append failure. State only: the game calls
+    /// [`die_with_events`](Self::die_with_events), which also emits `death_in_family`.
     /// # Errors
     /// Refuses missing characters, an unrepresentable grace date or an archive failure.
-    pub fn die(
+    pub(crate) fn die(
         &mut self,
         id: u64,
         day: GameTime,
         archive: &mut impl ArchiveSink,
     ) -> std::io::Result<()> {
-        let mut dead = self
+        self.die_of(id, day, None, archive)
+    }
+    #[cfg(feature = "test-fixtures")]
+    /// `die` with a cause, recorded in the archived record (CK-363).
+    /// # Errors
+    /// As `die`.
+    pub(crate) fn die_of(
+        &mut self,
+        id: u64,
+        day: GameTime,
+        cause: Option<&str>,
+        archive: &mut impl ArchiveSink,
+    ) -> std::io::Result<()> {
+        let dead = self
             .get(id)
             .cloned()
             .ok_or_else(|| std::io::Error::other(Error::MissingCharacter))?;
+        self.bury(dead, day, cause, archive)
+    }
+    /// Archive `dead` (the live record of its id, possibly with an event's effects applied) and remove the live record.
+    pub(crate) fn bury(
+        &mut self,
+        mut dead: Character,
+        day: GameTime,
+        cause: Option<&str>,
+        archive: &mut impl ArchiveSink,
+    ) -> std::io::Result<()> {
+        let id = dead.id;
         grace_end(day).map_err(std::io::Error::other)?;
         dead.death = Some(day);
+        dead.life.death_cause = cause.map(str::to_owned);
         archive.append(&dead)?;
         self.change(day, |s| {
             s.live.remove(&id);
@@ -711,10 +790,11 @@ impl CharacterStore {
             }
         })
     }
-    /// Move a character to a caller-validated pop with the given number of heads.
+    /// Move a character to a caller-validated pop with the given number of heads. State only: the game calls
+    /// [`move_to_with_events`](Self::move_to_with_events), which also runs precedence.
     /// # Errors
     /// Refuses missing characters and full destination pops.
-    pub fn move_to(
+    pub(crate) fn move_to(
         &mut self,
         id: u64,
         pop: PopLocator,

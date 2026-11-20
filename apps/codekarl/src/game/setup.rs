@@ -56,6 +56,8 @@ pub(crate) struct Prepared {
     shelter_by_place: BTreeMap<String, u64>,
     saves: PathBuf,
     storage: super::character_storage::Storage,
+    /// Where the scheduler's daily system finds the character storage (CK-363).
+    characters_io: super::character_storage::Handle,
 }
 
 /// Eight bytes from the operating system, as a seed.
@@ -162,6 +164,7 @@ pub(crate) fn prepare(
         .iter()
         .any(|vm| vm.name == GAMEPLAY_VM)
         .then(|| Gameplay::new(0));
+    let characters_io = super::character_storage::Handle::default();
     let scheduler = || {
         gameplay_scheduler_with_rules(
             gameplay_runtime.as_ref(),
@@ -169,6 +172,7 @@ pub(crate) fn prepare(
             quality_by_place.clone(),
             shelter_by_place.clone(),
             nearby_by_place.clone(),
+            Some(Arc::clone(&characters_io)),
         )
     };
     let storage_parent = request.game.saves.parent().unwrap_or(Path::new("."));
@@ -184,7 +188,10 @@ pub(crate) fn prepare(
             &[*b"ARCH", *b"LOGS"],
         )
         .map_err(|e| format!("save {}: {e}", path.display()))?;
-        let storage = super::character_storage::Storage { path: staging };
+        let storage = super::character_storage::Storage {
+            path: staging,
+            handle: None,
+        };
         super::character_storage::Storage::validate(&storage.path, &save.state)
             .map_err(|e| e.to_string())?;
         let simulation = Simulation::from_save(save, scheduler(), apply)
@@ -219,6 +226,8 @@ pub(crate) fn prepare(
             storage,
         )
     };
+    let mut storage = storage;
+    storage.attach(&characters_io);
     if let Some(gameplay) = &gameplay_runtime {
         gameplay.set_seed(simulation.seed());
     }
@@ -235,6 +244,7 @@ pub(crate) fn prepare(
         shelter_by_place,
         saves: request.game.saves.clone(),
         storage,
+        characters_io,
     })
 }
 
@@ -263,6 +273,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         shelter_by_place,
         saves,
         storage,
+        characters_io,
         scenario,
     } = prepared;
     let place_ids: Vec<String> = scenario
@@ -309,6 +320,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         let scheduler_quality = quality_by_place.clone();
         let scheduler_shelter = shelter_by_place.clone();
         let scheduler_nearby = nearby_by_place.clone();
+        let scheduler_io = Arc::clone(&characters_io);
         let reset_runtime = runtime.clone();
         let build = move || {
             Core::new_with_views(
@@ -323,6 +335,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                             scheduler_quality.clone(),
                             scheduler_shelter.clone(),
                             scheduler_nearby.clone(),
+                            Some(Arc::clone(&scheduler_io)),
                         )
                     }),
                     reset: Box::new(move |seed| {
@@ -371,6 +384,7 @@ fn gameplay_scheduler_with_rules(
     quality_by_place: BTreeMap<String, u16>,
     shelter_by_place: BTreeMap<String, u64>,
     nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    characters_io: Option<super::character_storage::Handle>,
 ) -> Scheduler<GameState> {
     let mut scheduler = Scheduler::<GameState>::new();
     if let Some(rules) = rules {
@@ -380,6 +394,7 @@ fn gameplay_scheduler_with_rules(
             quality_by_place,
             shelter_by_place,
             nearby_by_place,
+            characters_io,
         );
     } else {
         scheduler
@@ -404,6 +419,7 @@ pub(crate) fn register_economy_callback(scheduler: &mut Scheduler<GameState>, ru
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
+        None,
     );
 }
 
@@ -413,11 +429,13 @@ fn register_economy_callback_with_context(
     quality_by_place: BTreeMap<String, u16>,
     shelter_by_place: BTreeMap<String, u64>,
     nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    characters_io: Option<super::character_storage::Handle>,
 ) {
     scheduler
-        .register(
+        .register_with_streams(
             "economy.daily",
             Cadence::Daily { hour: ECONOMY_HOUR },
+            &[CHARACTER_STREAM],
             move |state, tick| {
                 let mut floors = BTreeMap::new();
                 for character in state.characters.iter() {
@@ -436,24 +454,97 @@ fn register_economy_callback_with_context(
                 )
                 .map_err(io::Error::other)
                 .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
-                run_character_passes(&rules.personality, &mut state.characters, tick.time())
+                // The events' draws are keyed by this tick's draw of the system's own stream: deterministic under the master seed.
+                let seed = tick.stream(CHARACTER_STREAM)?.draw();
+                run_character_passes(&rules, state, tick.time(), seed, characters_io.as_ref())
             },
         )
         .expect("the economy system name is unique");
 }
 
-/// The character passes of CK-362, run inside the economy's daily system after that day's economy work: on the 1st the
-/// monthly stress recovery, then the birthday pass. They are not separate systems, and an economy error never reaches them.
-fn run_character_passes(
-    personality: &ck_economy::Personality,
-    characters: &mut ck_characters::CharacterStore,
+/// The name of the economy system's stream the character events' seed comes from.
+const CHARACTER_STREAM: &str = "characters.events";
+
+/// The character passes of CK-362 and CK-363, run inside the economy's daily system after that day's economy work: on the 1st the
+/// monthly stress recovery, then the birthday pass (humour drift, standing fade, the yearly events, craft rise, skills and
+/// precedence) and, on the 1st, the monthly precedence check. They are not separate systems, and an economy error never reaches
+/// them. A life-log or archive failure after a committed change is returned here, as the economy's errors are.
+///
+/// With no characters nothing is opened. Without a storage handle (the unit fixtures that exercise only the shell) the pass is
+/// slice 3's: drift and fade, which needs neither the archive nor the logs.
+pub(crate) fn run_character_passes(
+    rules: &Rules,
+    state: &mut GameState,
     tick: GameTime,
+    seed: u64,
+    storage: Option<&super::character_storage::Handle>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if tick.date()?.day == 1 {
-        characters.monthly_recovery(personality)?;
+    let first = tick.date()?.day == 1;
+    if first {
+        state.characters.monthly_recovery(&rules.personality)?;
     }
-    characters.birthday_pass(personality, tick)?;
+    let path = storage.and_then(|cell| cell.lock().ok()?.clone());
+    let Some(path) = path else {
+        state.characters.birthday_pass(&rules.personality, tick)?;
+        return Ok(());
+    };
+    if state.characters.iter().next().is_none() {
+        return Ok(());
+    }
+    // A storage that cannot be opened must not stop the character state from updating: the archive append is the prerequisite of a
+    // death (an unavailable archive refuses it), and a life-log line is output (an unavailable log reports each line it cannot write).
+    let mut archive = match ck_characters::Archive::open(path.join("ARCH")) {
+        Ok(archive) => Archived::Open(archive),
+        Err(error) => Archived::Down(error.to_string()),
+    };
+    let mut logs = match ck_characters::LifeLog::open(path.join("LOGS")) {
+        Ok(logs) => Logged::Open(logs),
+        Err(error) => Logged::Down(error.to_string()),
+    };
+    let mut world = ck_characters::World {
+        rules: &rules.events,
+        personality: &rules.personality,
+        seed,
+        populations: &state.economy,
+        archive: &mut archive,
+        logs: &mut logs,
+    };
+    let birthdays = state.characters.run_birthdays(&mut world, tick);
+    let monthly = if first {
+        state.characters.monthly_precedence(&mut world, tick)
+    } else {
+        Ok(())
+    };
+    // Both ran whatever the first reported; the first failure is the one returned.
+    birthdays.and(monthly)?;
     Ok(())
+}
+
+/// The archive of the character storage, or the reason it cannot be opened (every append then fails).
+enum Archived {
+    Open(ck_characters::Archive),
+    Down(String),
+}
+impl ck_characters::ArchiveSink for Archived {
+    fn append(&mut self, record: &ck_characters::Character) -> io::Result<()> {
+        match self {
+            Self::Open(archive) => archive.append(record),
+            Self::Down(reason) => Err(io::Error::other(reason.clone())),
+        }
+    }
+}
+/// The life logs of the character storage, or the reason they cannot be opened (every line then fails).
+enum Logged {
+    Open(ck_characters::LifeLog),
+    Down(String),
+}
+impl ck_characters::LogSink for Logged {
+    fn append(&mut self, id: u64, date: GameTime, text: &str) -> io::Result<()> {
+        match self {
+            Self::Open(logs) => logs.append(id, date, text),
+            Self::Down(reason) => Err(io::Error::other(reason.clone())),
+        }
+    }
 }
 
 pub(crate) fn nearby_places(

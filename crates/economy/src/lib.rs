@@ -10,9 +10,11 @@ use std::{collections::BTreeMap, error::Error, fmt, fs, path::Path};
 use ck_sim::{Canonical, CanonicalError, Date, Reader, days_in_month, encode_length};
 use serde::Deserialize;
 
+pub mod events;
 pub mod genetics;
 pub mod peoples;
 pub mod personality;
+pub use events::EventRules;
 pub use genetics::{Genetics, PopGenetics};
 pub use peoples::Peoples;
 pub use personality::Personality;
@@ -162,6 +164,9 @@ pub struct Rules {
     /// Validated personality data: pairs, birth, humour drift, stress, standing and opinion (CK-362).
     #[serde(skip)]
     pub personality: Personality,
+    /// Validated character event data: the catalog, events, deeds, precedence and skills (CK-363).
+    #[serde(skip)]
+    pub events: EventRules,
     /// Religions present in the simulation.
     pub religions: Vec<String>,
     /// Land terrain names in the same order as the map terrain palette.
@@ -248,6 +253,15 @@ impl Rules {
             .map(|c| c.id.as_str())
             .collect();
         rules.personality = Personality::load(&path.with_file_name("personality.toml"), &cultures)?;
+        let pop_types: Vec<&str> = rules.pop_types.iter().map(|p| p.id.as_str()).collect();
+        rules.events = EventRules::load(
+            &path.with_file_name("events"),
+            &events::Registry {
+                peoples: &rules.peoples,
+                genetics: &rules.genetics,
+                pop_types: &pop_types,
+            },
+        )?;
         rules.validate(&file)?;
         Ok(rules)
     }
@@ -8488,6 +8502,8 @@ fn decode_employment(input: &mut Reader<'_>) -> Result<Vec<Employment>, Canonica
 }
 
 #[cfg(test)]
+mod events_tests;
+#[cfg(test)]
 mod genetics_tests;
 #[cfg(test)]
 mod noble_tests;
@@ -8665,6 +8681,7 @@ mod tests {
             },
             genetics: Genetics::default(),
             personality: Personality::default(),
+            events: EventRules::default(),
             religions: vec!["christianity".to_owned()],
             terrain_order: vec!["pasture".to_owned(), "bog".to_owned()],
             footprint_m2: BTreeMap::from([

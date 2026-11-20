@@ -660,11 +660,15 @@ where
                 &[*b"ARCH", *b"LOGS"],
             )
             .map_err(|e| format!("{}: {e}", path.display()))?;
-            let staged = super::character_storage::Storage { path: staging };
+            let staged = super::character_storage::Storage {
+                path: staging,
+                handle: storage.handle.clone(),
+            };
             validate(&staged.path, &save.state).map_err(|e| e.to_string())?;
             let simulation =
                 Simulation::from_save(save, (self.rebuild.scheduler)(), self.rebuild.apply)
                     .map_err(|e| e.to_string())?;
+            staged.publish();
             self.external = Some((staged, *validate));
             Ok(simulation)
         } else {

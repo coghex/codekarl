@@ -72,6 +72,8 @@ required-features = ["vulkan"]
 workspace = true
 
 [dev-dependencies]
+# `test-fixtures` gives the storage tests the state-only mutators; only [dev-dependencies] may enable it.
+ck-characters = { path = "../../crates/characters", features = ["test-fixtures"] }
 # `test-support` gives the headless driver's cases the resource service's `JobGate`; only [dev-dependencies] may enable it.
 ck-resources = { path = "../../crates/resources", features = ["test-support"] }
 # The widget library's real two-tick witness feeds the real `Mapper` (`ui_link/widget_witness_tests.rs`).

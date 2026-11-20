@@ -1,0 +1,504 @@
+# Character events (draft r1). Drafted by Claude (ck-designer-1), 2026-11-19, for characters slice 4. Notes and approvals:
+# .pipeline/coordination/history-scratch/events-data-r1.md. The format is events-r3 (owner r118-r121); the numbers are
+# tools/char_gen.py's, tested with the owner r137-r138, and are placeholders to tune.
+#
+# ---- Format ----
+# [[event]]
+#   id          unique key
+#   trigger     "happening:<name>" (fires when the simulation reports that happening for the character) or "yearly" (the birthday check)
+#   when        conditions, all must hold (a table; see the vocabulary)
+#   chance      base chance, 0..1, before factors (1 = always)
+#   factors     list of multipliers (vocabulary below); the product is applied to the base, the result capped at 1
+#   effects     list of effects, applied in order
+#   text        the life-log line (player-facing; {name} the character; {trait}, {grade}, {count} where an effect sets them)
+#
+# Conditions (`when`): age = [min, max]; sex = "m" | "f"; pop_type = [..]; culture_group = [..]; has = [trait or attribute keys];
+#   lacks = [..]; skill_min = { skill = n }; virtue_min = { pair = n }; virtue_max = { pair = n }; manner_min / manner_max likewise;
+#   over_threshold_min = n (stress - threshold at least n); over_threshold = true (stress above the threshold).
+# Factors: { humour = "black_bile" }        1 + 0.15 x (humour - 5), floored at 0.2 (char_gen's hf)
+#          { stress = "cause" | "lift" }     cause: x over; lift: / over; over = 1 + max(0, stress - threshold) / 20 (r123)
+#          { virtue = "pair", per = k }      1 + k x value (clamped to 0.1 .. 3)
+#          { manner = "pair", per = k }      likewise
+#          { skill = "s", craft = true }     0.1 + skill / 20 (r184)
+#          { pop_type = { noble = 1, ... } } a table by pop type (missing = 0)
+#          { culture_group = { gaelic = 1.5 } } a table by culture subgroup (missing = 1)
+#          { grade = "trait", by = [.., ..] } by the character's grade of a trait, none..SSS (7 values)
+# Effects: { raise_grade = "trait" }  (none -> C, else one up, at most SSS)    { lower_grade = "trait" } (C -> removed)
+#          { grant = "attribute" }   (C for a graded one)                         { remove = "attribute" }
+#          { count = "counter", add = 1 }                                        { stress = +n | -n }
+#          { standing = "fame" | "popularity" | "honour", add = n }              { die = "cause" }
+# Deed grades are not events: a deed attribute's grade follows its counter (attributes.toml) the moment the counter changes.
+# Removals are not events either: precedence (attributes.toml) removes an attribute the day its conditions fail, with a log line.
+
+# ======== Happenings ========
+# The simulation (or, until the war, church and family systems exist, the API) reports these for a character.
+
+[[event]]
+id = "birth_of_child_joy"
+trigger = "happening:child_born"
+when = { has = ["melancholy"] }
+chance = 0.25
+factors = [{ humour = "blood" }, { stress = "lift" }]
+effects = [{ lower_grade = "melancholy" }]
+text = "The birth of a child lifted {name}'s spirits."
+
+[[event]]
+id = "birth_of_child_log"
+trigger = "happening:child_born"
+chance = 1
+effects = [{ stress = -5 }]
+text = "A child was born to {name}."
+
+[[event]]
+id = "death_in_family_grief"
+trigger = "happening:death_in_family"
+chance = 1
+effects = [{ stress = 25 }]
+text = "{name} mourned a death in the family."
+
+[[event]]
+id = "death_in_family_melancholy"
+trigger = "happening:death_in_family"
+chance = 0.03
+factors = [{ humour = "black_bile" }, { stress = "cause" }]
+effects = [{ raise_grade = "melancholy" }]
+text = "Grief settled on {name}: melancholy ({grade})."
+
+[[event]]
+id = "death_in_family_recluse"
+trigger = "happening:death_in_family"
+chance = 0.03
+factors = [{ humour = "phlegm" }, { manner = "solitary_gregarious", per = -0.03 }, { stress = "cause" }]
+effects = [{ raise_grade = "recluse" }]
+text = "{name} withdrew from company after the loss ({grade})."
+
+[[event]]
+id = "marriage"
+trigger = "happening:marriage"
+chance = 1
+effects = [{ stress = -10 }]
+text = "{name} married."
+
+[[event]]
+id = "marriage_recluse_lift"
+trigger = "happening:marriage"
+when = { has = ["recluse"] }
+chance = 0.25
+factors = [{ manner = "solitary_gregarious", per = 0.03 }]
+effects = [{ lower_grade = "recluse" }]
+text = "Marriage drew {name} back into the world."
+
+[[event]]
+id = "coming_of_age"
+trigger = "happening:coming_of_age"
+chance = 1
+effects = []
+text = "{name} came of age."
+
+[[event]]
+id = "fennid_joins_fian"
+trigger = "happening:coming_of_age"
+when = { sex = "m", pop_type = ["noble"], culture_group = ["gaelic"] }
+chance = 0.6
+effects = [{ grant = "fennid" }]
+text = "{name} went out with a fían, as young men of his kind did."
+
+[[event]]
+id = "battle_survived"
+trigger = "happening:battle_survived"
+chance = 1
+effects = [{ stress = 15 }, { count = "battles_survived", add = 1 }, { standing = "fame", add = 1 }]
+text = "{name} fought in a battle and lived."
+
+[[event]]
+id = "battle_won_in_command"
+trigger = "happening:battle_won_in_command"
+chance = 1
+effects = [{ count = "campaigns_won", add = 1 }, { standing = "fame", add = 2 }]
+text = "{name} led the victors on the field."
+
+[[event]]
+id = "defeat_melancholy"
+trigger = "happening:defeat"
+chance = 0.03
+factors = [{ humour = "black_bile" }, { stress = "cause" }]
+effects = [{ raise_grade = "melancholy" }]
+text = "Defeat left {name} downcast: melancholy ({grade})."
+
+[[event]]
+id = "capture"
+trigger = "happening:captured"
+chance = 1
+effects = [{ stress = 30 }]
+text = "{name} was taken captive."
+
+[[event]]
+id = "capture_melancholy"
+trigger = "happening:captured"
+chance = 0.03
+factors = [{ humour = "black_bile" }, { stress = "cause" }]
+effects = [{ raise_grade = "melancholy" }]
+text = "Captivity weighed on {name}: melancholy ({grade})."
+
+[[event]]
+id = "capture_recluse"
+trigger = "happening:captured"
+chance = 0.03
+factors = [{ humour = "phlegm" }, { manner = "solitary_gregarious", per = -0.03 }, { stress = "cause" }]
+effects = [{ raise_grade = "recluse" }]
+text = "In captivity {name} turned inward ({grade})."
+
+[[event]]
+id = "release"
+trigger = "happening:released"
+chance = 1
+effects = [{ stress = -10 }]
+text = "{name} was set free."
+
+[[event]]
+id = "raised_a_hostage"
+trigger = "happening:released"
+when = { age = [0, 17] }   # a child released from captivity (hostages are the treaty case)
+chance = 1
+effects = [{ grant = "hostage_raised" }]
+text = "{name} came home from a childhood spent as a hostage."
+
+[[event]]
+id = "famine"
+trigger = "happening:famine"
+chance = 1
+effects = [{ stress = 10 }]
+text = "Hunger came to {name}'s people."
+
+[[event]]
+id = "feast"
+trigger = "happening:feast"
+chance = 1
+effects = [{ stress = -10 }]
+text = "{name} feasted."
+
+[[event]]
+id = "feast_melancholy_lift"
+trigger = "happening:feast"
+when = { has = ["melancholy"] }
+chance = 0.25
+factors = [{ humour = "blood" }, { stress = "lift" }, { grade = "melancholy", by = [1, 1, 1, 1, 1, 0.7, 0.5] }]
+effects = [{ lower_grade = "melancholy" }]
+text = "Good company eased {name}'s melancholy."
+
+[[event]]
+id = "feast_recluse_lift"
+trigger = "happening:feast"
+when = { has = ["recluse"] }
+chance = 0.10
+factors = [{ manner = "solitary_gregarious", per = 0.03 }]
+effects = [{ lower_grade = "recluse" }]
+text = "{name} was drawn back to company."
+
+[[event]]
+id = "insult"
+trigger = "happening:insulted"
+chance = 1
+effects = [{ stress = 10 }]
+text = "{name} was insulted."
+
+[[event]]
+id = "insult_rage"
+trigger = "happening:insulted"
+chance = 0.03
+factors = [{ humour = "yellow_bile" }, { virtue = "wrath_patience", per = -0.08 }, { stress = "cause" }, { culture_group = { gaelic = 1.2 } }]
+effects = [{ raise_grade = "rage_fits" }]
+text = "The insult left {name} given to fits of rage ({grade})."
+
+[[event]]
+id = "exile"
+trigger = "happening:exiled"
+chance = 1
+effects = [{ stress = 25 }, { grant = "exile" }]
+text = "{name} went into exile."
+
+[[event]]
+id = "exile_melancholy"
+trigger = "happening:exiled"
+chance = 0.03
+factors = [{ humour = "black_bile" }, { stress = "cause" }]
+effects = [{ raise_grade = "melancholy" }]
+text = "Exile weighed on {name}: melancholy ({grade})."
+
+[[event]]
+id = "pilgrimage"
+trigger = "happening:pilgrimage"
+chance = 1
+effects = [{ stress = -10 }, { grant = "pilgrim" }]
+text = "{name} went on pilgrimage."
+
+[[event]]
+id = "pilgrimage_melancholy_lift"
+trigger = "happening:pilgrimage"
+when = { has = ["melancholy"] }
+chance = 0.25
+factors = [{ stress = "lift" }]
+effects = [{ lower_grade = "melancholy" }]
+text = "The road to the shrine lifted {name}'s despair."
+
+[[event]]
+id = "inherited_land"
+trigger = "happening:inherited_land"
+when = { has = ["fennid"] }
+chance = 1
+effects = [{ remove = "fennid" }]
+text = "{name} came into his land and left the fían."
+
+# ======== The yearly check (on the birthday, from age 15) ========
+
+[[event]]
+id = "long_strain_melancholy"
+trigger = "yearly"
+when = { age = [15, 200], over_threshold = true }
+chance = 0.005
+factors = [{ humour = "black_bile" }, { stress = "cause" }]
+effects = [{ raise_grade = "melancholy" }]
+text = "Long strain wore {name} down: melancholy ({grade})."
+
+[[event]]
+id = "rage_eases"
+trigger = "yearly"
+when = { has = ["rage_fits"] }
+chance = 0.03
+factors = [{ humour = "phlegm" }, { virtue = "wrath_patience", per = 0.08 }, { stress = "lift" }]
+effects = [{ lower_grade = "rage_fits" }]
+text = "Penance and patience cooled {name}'s temper."
+
+[[event]]
+id = "madness_from_strain"
+trigger = "yearly"
+when = { over_threshold_min = 30 }
+chance = 0.002
+factors = [{ humour = "black_bile" }]
+effects = [{ raise_grade = "madness" }]
+text = "{name}'s mind broke under the strain ({grade})."
+
+[[event]]
+id = "took_to_drink"
+trigger = "yearly"
+when = { age = [15, 200], lacks = ["drunkard"] }
+chance = 0.002
+factors = [{ stress = "cause" }, { culture_group = { gaelic = 1.5 } }]
+effects = [{ raise_grade = "drunkard" }]
+text = "{name} took to drink."
+
+[[event]]
+id = "drank_deeper"
+trigger = "yearly"
+when = { has = ["drunkard"], over_threshold = true }
+chance = 0.10
+factors = [{ culture_group = { gaelic = 1.25 } }]
+effects = [{ raise_grade = "drunkard" }]
+text = "{name} drank deeper ({grade})."
+
+[[event]]
+id = "drank_less"
+trigger = "yearly"
+when = { has = ["drunkard"] }
+chance = 0.05
+factors = [{ stress = "lift" }]
+effects = [{ lower_grade = "drunkard" }]
+text = "{name} drank less ({grade})."
+
+[[event]]
+id = "despair_death"
+trigger = "yearly"
+when = { has = ["melancholy"] }
+chance = 1
+factors = [{ grade = "melancholy", by = [0, 0, 0, 0, 0.005, 0.01, 0.02] }, { stress = "cause" }]
+effects = [{ die = "despair" }]
+text = "{name} died in despair."
+
+# Craft moments (r117, r184): base x (0.1 + skill/20) x pop type. One event per craft; bases are char_gen's at skill 10 / 0.6.
+[[event]]
+id = "craft_poet"
+trigger = "yearly"
+when = { age = [12, 200], lacks = ["poet"] }
+chance = 0.00067
+factors = [{ skill = "oratory", craft = true }, { pop_type = { monk = 3, noble = 1, peasant = 0.1, labourer = 0.1 } }]
+effects = [{ grant = "poet" }]
+text = "A character moment: {name} became a poet."
+
+[[event]]
+id = "craft_scribe"
+trigger = "yearly"
+when = { age = [12, 200], lacks = ["scribe"] }
+chance = 0.0033
+factors = [{ skill = "scholarship", craft = true }, { pop_type = { monk = 5, noble = 0.3 } }]
+effects = [{ grant = "scribe" }]
+text = "A character moment: {name} became a scribe."
+
+[[event]]
+id = "craft_judge"
+trigger = "yearly"
+when = { age = [15, 200], lacks = ["judge"] }
+chance = 0.0017
+factors = [{ skill = "scholarship", craft = true }, { pop_type = { noble = 1.5, monk = 1, peasant = 0.05, labourer = 0.05 } }]
+effects = [{ grant = "judge" }]
+text = "A character moment: {name} became a judge."
+
+[[event]]
+id = "craft_genealogist"
+trigger = "yearly"
+when = { age = [15, 200], lacks = ["genealogist"] }
+chance = 0.001
+factors = [{ skill = "scholarship", craft = true }, { pop_type = { monk = 2, noble = 1 } }]
+effects = [{ grant = "genealogist" }]
+text = "A character moment: {name} became a genealogist."
+
+[[event]]
+id = "craft_latinist"
+trigger = "yearly"
+when = { age = [12, 200], lacks = ["latinist"] }
+chance = 0.002
+factors = [{ skill = "scholarship", craft = true }, { pop_type = { monk = 4, noble = 0.3 } }]
+effects = [{ grant = "latinist" }]
+text = "A character moment: {name} became learned in Latin."
+
+[[event]]
+id = "craft_physician"
+trigger = "yearly"
+when = { age = [15, 200], lacks = ["physician"] }
+chance = 0.0017
+factors = [{ skill = "medicine", craft = true }, { pop_type = { monk = 3, noble = 0.5, peasant = 0.2, labourer = 0.2 } }]
+effects = [{ grant = "physician" }]
+text = "A character moment: {name} became a physician."
+
+[[event]]
+id = "craft_master_smith"
+trigger = "yearly"
+when = { age = [15, 200], lacks = ["master_smith"] }
+chance = 0.0008
+factors = [{ skill = "craftsmanship", craft = true }, { pop_type = { labourer = 2, peasant = 1, monk = 0.5, noble = 0.2 } }]
+effects = [{ grant = "master_smith" }]
+text = "A character moment: {name} became a master smith."
+
+[[event]]
+id = "craft_builder"
+trigger = "yearly"
+when = { age = [15, 200], lacks = ["builder"] }
+chance = 0.0008
+factors = [{ skill = "craftsmanship", craft = true }, { pop_type = { labourer = 2, monk = 1, peasant = 1, noble = 0.2 } }]
+effects = [{ grant = "builder" }]
+text = "A character moment: {name} became a builder."
+
+[[event]]
+id = "craft_harper"
+trigger = "yearly"
+when = { age = [12, 200], lacks = ["harper"] }
+chance = 0.0006
+factors = [{ skill = "oratory", craft = true }, { pop_type = { noble = 1, monk = 0.5, peasant = 0.3, labourer = 0.3 } }]
+effects = [{ grant = "harper" }]
+text = "A character moment: {name} became a harper."
+
+[[event]]
+id = "craft_wit"
+trigger = "yearly"
+when = { age = [15, 200], lacks = ["wit"] }
+chance = 0.0004
+factors = [{ skill = "oratory", craft = true }, { pop_type = { noble = 1, peasant = 0.5, labourer = 0.5, monk = 0.3 } }]
+effects = [{ grant = "wit" }]
+text = "A character moment: {name} became known as a wit."
+
+[[event]]
+id = "craft_navigator"
+trigger = "yearly"
+when = { age = [15, 200], lacks = ["navigator"] }
+chance = 0.0006
+factors = [{ skill = "seamanship", craft = true }, { pop_type = { peasant = 1, labourer = 1, monk = 1, noble = 0.5 } }]
+effects = [{ grant = "navigator" }]
+text = "A character moment: {name} became a navigator."
+
+[[event]]
+id = "craft_horse_breeder"
+trigger = "yearly"
+when = { age = [15, 200], lacks = ["horse_breeder"] }
+chance = 0.001
+factors = [{ skill = "horsemanship", craft = true }, { pop_type = { noble = 2, peasant = 0.5, labourer = 0.5 } }]
+effects = [{ grant = "horse_breeder" }]
+text = "A character moment: {name} became a horse breeder."
+
+[[event]]
+id = "craft_huntsman"
+trigger = "yearly"
+when = { age = [15, 200], lacks = ["huntsman"] }
+chance = 0.001
+factors = [{ skill = "horsemanship", craft = true }, { pop_type = { noble = 2, peasant = 0.5, labourer = 0.5 } }]
+effects = [{ grant = "huntsman" }]
+text = "A character moment: {name} became a huntsman."
+
+[[event]]
+id = "craft_herdsman"
+trigger = "yearly"
+when = { age = [15, 200], lacks = ["herdsman"] }
+chance = 0.0013
+factors = [{ skill = "husbandry", craft = true }, { pop_type = { peasant = 2, labourer = 1, noble = 0.5, monk = 0.5 } }]
+effects = [{ grant = "herdsman" }]
+text = "A character moment: {name} became a master of herds."
+
+[[event]]
+id = "craft_merchant"
+trigger = "yearly"
+when = { age = [15, 200], lacks = ["merchant"] }
+chance = 0.0008
+factors = [{ skill = "administration", craft = true }, { pop_type = { labourer = 1, peasant = 0.5, noble = 0.5, monk = 0.3 } }]
+effects = [{ grant = "merchant" }]
+text = "A character moment: {name} became a merchant."
+
+# A craft's grade rises on occasion while working at it (r116): one rule for all crafts, in attributes.toml ([craft_rise]).
+
+# Callings (church; ungraded; lost when conditions fail, precedence in attributes.toml)
+[[event]]
+id = "calling_ascetic"
+trigger = "yearly"
+when = { pop_type = ["monk"], lacks = ["ascetic"], virtue_min = { gluttony_temperance = 3, lust_chastity = 3 } }
+chance = 0.05
+effects = [{ grant = "ascetic" }]
+text = "{name} took up the ascetic life."
+
+[[event]]
+id = "calling_preacher"
+trigger = "yearly"
+when = { pop_type = ["monk"], lacks = ["preacher"], skill_min = { oratory = 10 } }
+chance = 0.03
+effects = [{ grant = "preacher" }]
+text = "{name} became known as a preacher."
+
+[[event]]
+id = "calling_soul_friend"
+trigger = "yearly"
+when = { lacks = ["soul_friend"], skill_min = { theology = 12 }, virtue_min = { envy_kindness = 2 } }
+chance = 0.03
+factors = [{ pop_type = { monk = 1, noble = 0.2, peasant = 0.1, labourer = 0.1 } }]
+effects = [{ grant = "soul_friend" }]
+text = "{name} became a soul-friend to others."
+
+[[event]]
+id = "calling_cele_de"
+trigger = "yearly"
+when = { pop_type = ["monk"], culture_group = ["gaelic"], has = ["ascetic"], lacks = ["cele_de"] }
+chance = 0.02
+effects = [{ grant = "cele_de" }]
+text = "{name} joined the Céli Dé, the clients of God."
+
+[[event]]
+id = "calling_saintly"
+trigger = "yearly"
+when = { pop_type = ["monk"], has = ["ascetic"], lacks = ["saintly"], skill_min = { theology = 15 }, virtue_min = { pride_humility = 3, greed_charity = 3, envy_kindness = 3, wrath_patience = 3 } }
+chance = 0.005
+effects = [{ grant = "saintly" }, { standing = "fame", add = 5 }]
+text = "Word spread of {name}'s holiness."
+
+# Background
+[[event]]
+id = "rigfennid"
+trigger = "yearly"
+when = { has = ["fennid"], lacks = ["rigfennid"], skill_min = { leadership = 10 } }
+chance = 0.05
+effects = [{ grant = "rigfennid" }]
+text = "{name} came to lead a fían."

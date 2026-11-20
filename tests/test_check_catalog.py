@@ -2489,7 +2489,12 @@ GUARDS: tuple[Guard, ...] = (
     Guard(
         "apps/codekarl/src/game/tests/character_passes.rs",
         "rust.app",
-        ("assets/game/economy.toml", "assets/game/personality.toml"),
+        (
+            "assets/game/economy.toml",
+            "assets/game/personality.toml",
+            "assets/game/events/character-events.toml",
+            "assets/game/events/attributes-skills.toml",
+        ),
     ),
     # The registry's shipped-data tests read the registry outside the economy crate.
     Guard("crates/economy/src/peoples.rs", "economy.core", ("assets/game/peoples.toml",)),
@@ -2542,6 +2547,31 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/personality.toml",
             "crates/economy/src/personality.rs",
             "crates/characters/src/personality.rs",
+        ),
+    ),
+    # CK-363: the event data tests load the shipped rules and both event files.
+    Guard(
+        "crates/economy/src/events_tests.rs",
+        "economy.core",
+        (
+            "assets/game/economy.toml",
+            "assets/game/events/character-events.toml",
+            "assets/game/events/attributes-skills.toml",
+        ),
+    ),
+    # CK-363: the characters crate's event tests load the shipped rules and both event files, and read the new sources for the
+    # no-floating-point check.
+    Guard(
+        "crates/characters/tests/events.rs",
+        "economy.core",
+        (
+            "assets/game/economy.toml",
+            "assets/game/events/character-events.toml",
+            "assets/game/events/attributes-skills.toml",
+            "crates/economy/src/events.rs",
+            "crates/characters/src/events.rs",
+            "crates/characters/src/life.rs",
+            "crates/characters/src/skills.rs",
         ),
     ),
     # CK-359: the noble, demesne and rent tests load the same shipped rules and Ireland's noble houses.

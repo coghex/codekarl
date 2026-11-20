@@ -126,11 +126,11 @@ pub enum LevelTrait {
     Melancholy,
 }
 
-fn wide(value: i64) -> i128 {
+pub(crate) fn wide(value: i64) -> i128 {
     i128::from(value)
 }
 
-fn product(factors: &[i128]) -> Result<i128, Error> {
+pub(crate) fn product(factors: &[i128]) -> Result<i128, Error> {
     factors
         .iter()
         .try_fold(1_i128, |total, factor| total.checked_mul(*factor))
@@ -146,7 +146,7 @@ fn saturating_product(factors: &[i128]) -> i128 {
         .fold(1_i128, |total, factor| total.saturating_mul(*factor))
 }
 
-fn sum(terms: &[i128]) -> Result<i128, Error> {
+pub(crate) fn sum(terms: &[i128]) -> Result<i128, Error> {
     terms
         .iter()
         .try_fold(0_i128, |total, term| total.checked_add(*term))
@@ -287,6 +287,69 @@ pub(crate) fn make_child(
     Ok(record)
 }
 
+/// The stress `character` has after a cause adds `amount` (thousandths): the amount scaled by its phlegm and temperance, and for
+/// an insult or a defeat by its yellow bile, rounded down, with stress kept within 0..=100. The character is not changed.
+///
+/// # Errors
+/// Refuses a negative amount and arithmetic that does not fit.
+pub(crate) fn stress_after(
+    rules: &Personality,
+    character: &Character,
+    amount: i64,
+    kind: StressKind,
+) -> Result<i64, Error> {
+    if amount < 0 {
+        return Err(Error::Amount);
+    }
+    let s = &rules.stress;
+    let phlegm = humour_factor(s.intake_per_phlegm, humour(character, PHLEGM))?;
+    let temperance = sum(&[
+        MILLION,
+        product(&[
+            wide(s.intake_per_temperance),
+            wide(character.personality.vice[GLUTTONY_TEMPERANCE]),
+        ])?,
+    ])?
+    .max(0);
+    // Every factor is non-negative, so the product may saturate: the result is held to 0..=100 below.
+    let mut numerator = saturating_product(&[wide(amount), phlegm, temperance]);
+    let mut denominator = MILLION * MILLION;
+    if matches!(kind, StressKind::Insult | StressKind::Defeat) {
+        let yellow = humour_factor(s.insult_per_yellow, humour(character, YELLOW_BILE))?;
+        numerator = saturating_product(&[numerator, yellow]);
+        denominator *= MILLION;
+    }
+    let gained = numerator.div_euclid(denominator);
+    narrow(
+        wide(character.personality.stress)
+            .saturating_add(gained)
+            .min(wide(STRESS_MAX)),
+    )
+}
+
+/// The personality of `c` after its humour drift and then its standing fade (the first two stages of a birthday).
+pub(crate) fn drift_and_fade(
+    rules: &Personality,
+    c: &Character,
+) -> Result<PersonalityRecord, Error> {
+    let mut record = c.personality;
+    for (pair, humour_index) in rules.drift_humour.iter().enumerate() {
+        let Some(humour_index) = humour_index else {
+            continue;
+        };
+        let pull = product(&[
+            wide(rules.drift_per_point),
+            wide(humour(c, BLOOD + *humour_index)) - 5000,
+        ])?;
+        let moved = sum(&[wide(record.vice[pair]), -round_div(pull, 1000)])?;
+        record.vice[pair] = narrow(moved.clamp(wide(-VICE_BOUND), wide(VICE_BOUND)))?;
+    }
+    for value in [&mut record.popularity, &mut record.fame, &mut record.honour] {
+        *value = narrow(product(&[wide(*value), wide(rules.yearly_keep)])? / 1000)?;
+    }
+    Ok(record)
+}
+
 fn level_of(character: &Character, name: &str) -> usize {
     usize::from(character.genetics.level.get(name).copied().unwrap_or(0))
 }
@@ -369,7 +432,7 @@ pub fn opinion(rules: &Personality, a: &Character, b: &Character) -> Result<i64,
 
 /// Whether `birth` has its birthday on `today`: the same month and day, strictly after the birth date; a 29 February birth
 /// has it on 1 March in a common year.
-fn has_birthday(birth: ck_sim::Date, today: ck_sim::Date) -> bool {
+pub(crate) fn has_birthday(birth: ck_sim::Date, today: ck_sim::Date) -> bool {
     if (birth.year, birth.month, birth.day) >= (today.year, today.month, today.day) {
         return false;
     }
@@ -404,33 +467,7 @@ impl CharacterStore {
         amount: i64,
         kind: StressKind,
     ) -> Result<i64, Error> {
-        if amount < 0 {
-            return Err(Error::Amount);
-        }
-        let character = self.mind(id)?;
-        let s = &rules.stress;
-        let phlegm = humour_factor(s.intake_per_phlegm, humour(character, PHLEGM))?;
-        let temperance = sum(&[
-            MILLION,
-            product(&[
-                wide(s.intake_per_temperance),
-                wide(character.personality.vice[GLUTTONY_TEMPERANCE]),
-            ])?,
-        ])?
-        .max(0);
-        // Every factor is non-negative, so the product may saturate: the result is held to 0..=100 below.
-        let mut numerator = saturating_product(&[wide(amount), phlegm, temperance]);
-        let mut denominator = MILLION * MILLION;
-        if matches!(kind, StressKind::Insult | StressKind::Defeat) {
-            let yellow = humour_factor(s.insult_per_yellow, humour(character, YELLOW_BILE))?;
-            numerator = saturating_product(&[numerator, yellow]);
-            denominator *= MILLION;
-        }
-        let gained = numerator.div_euclid(denominator);
-        let stress = wide(character.personality.stress)
-            .saturating_add(gained)
-            .min(wide(STRESS_MAX));
-        let stress = narrow(stress)?;
+        let stress = stress_after(rules, self.mind(id)?, amount, kind)?;
         if let Some(c) = self.live.get_mut(&id) {
             c.personality.stress = stress;
         }
@@ -483,12 +520,17 @@ impl CharacterStore {
         })
     }
 
-    /// Indulge a vice (§5): stress falls by `indulge_relief`, floored at 0, and the pair moves `indulge_step` toward its
+    /// Indulge a vice (§5; state only: the game calls [`indulge_with_events`](Self::indulge_with_events), which also runs precedence): stress falls by `indulge_relief`, floored at 0, and the pair moves `indulge_step` toward its
     /// sin, clamped at -7.
     ///
     /// # Errors
     /// Refuses a missing character and any name that is not one of the seven vice/virtue pairs; nothing changes.
-    pub fn indulge(&mut self, rules: &Personality, id: u64, pair: &str) -> Result<(), Error> {
+    pub(crate) fn indulge(
+        &mut self,
+        rules: &Personality,
+        id: u64,
+        pair: &str,
+    ) -> Result<(), Error> {
         let index = VICE_PAIRS
             .iter()
             .position(|name| *name == pair)
@@ -504,12 +546,12 @@ impl CharacterStore {
         Ok(())
     }
 
-    /// Confess (§5): stress falls by `confess_relief`, floored at 0, and the most sinful pair (the lowest value, ties in
+    /// Confess (§5; state only: the game calls [`confess_with_events`](Self::confess_with_events)): stress falls by `confess_relief`, floored at 0, and the most sinful pair (the lowest value, ties in
     /// data order) moves `confess_step` toward its virtue, clamped at +7.
     ///
     /// # Errors
     /// Refuses a missing character.
-    pub fn confess(&mut self, rules: &Personality, id: u64) -> Result<(), Error> {
+    pub(crate) fn confess(&mut self, rules: &Personality, id: u64) -> Result<(), Error> {
         self.mind(id)?;
         let s = &rules.stress;
         if let Some(c) = self.live.get_mut(&id) {
@@ -548,7 +590,12 @@ impl CharacterStore {
     ///
     /// # Errors
     /// Refuses a missing character and a level above 6.
-    pub fn set_trait_level(&mut self, id: u64, which: LevelTrait, level: u8) -> Result<(), Error> {
+    pub(crate) fn set_trait_level(
+        &mut self,
+        id: u64,
+        which: LevelTrait,
+        level: u8,
+    ) -> Result<(), Error> {
         if level > MAX_LEVEL {
             return Err(Error::Level);
         }
@@ -615,22 +662,7 @@ impl CharacterStore {
             if !has_birthday(birth, today) {
                 continue;
             }
-            let mut record = c.personality;
-            for (pair, humour_index) in rules.drift_humour.iter().enumerate() {
-                let Some(humour_index) = humour_index else {
-                    continue;
-                };
-                let pull = product(&[
-                    wide(rules.drift_per_point),
-                    wide(humour(c, BLOOD + *humour_index)) - 5000,
-                ])?;
-                let moved = sum(&[wide(record.vice[pair]), -round_div(pull, 1000)])?;
-                record.vice[pair] = narrow(moved.clamp(wide(-VICE_BOUND), wide(VICE_BOUND)))?;
-            }
-            for value in [&mut record.popularity, &mut record.fame, &mut record.honour] {
-                *value = narrow(product(&[wide(*value), wide(rules.yearly_keep)])? / 1000)?;
-            }
-            next.push((*id, record));
+            next.push((*id, drift_and_fade(rules, c)?));
         }
         for (id, record) in next {
             if let Some(c) = self.live.get_mut(&id) {

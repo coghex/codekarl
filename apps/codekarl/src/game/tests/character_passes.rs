@@ -9,7 +9,9 @@ use ck_sim::{Canonical, Date, GameTime, Scheduler, Simulation};
 
 use super::date;
 use crate::game::{
-    GameCommand, GameState, apply, core::ECONOMY_HOUR, setup::register_economy_callback,
+    GameCommand, GameState, apply,
+    core::ECONOMY_HOUR,
+    setup::{register_economy_callback, run_character_passes},
 };
 
 fn shipped_rules() -> Rules {
@@ -45,6 +47,7 @@ fn person(id: u64, born: GameTime, humours: [i64; 4], mind: PersonalityRecord) -
         full_until: None,
         genetics: Box::new(genetics),
         personality: mind,
+        life: ck_characters::LifeRecord::default(),
     }
 }
 
@@ -275,4 +278,97 @@ fn the_monthly_recovery_has_already_run_when_the_birthday_pass_fails() {
         recovered,
         [(1, 46_360, 1999), (2, 47_200, 1999), (3, 47_200, 1000)]
     );
+}
+
+/// An economy of one place with one noble Irish pop (not run through the economy: only read by the character passes).
+fn economy_with_a_noble_pop() -> EconomyState {
+    let mut state = economy(true);
+    state.places[0].pops.push(ck_economy::PopState {
+        kind: "noble".to_owned(),
+        culture: "ulaid".to_owned(),
+        religion: String::new(),
+        literacy_pm: 0,
+        workers: 100,
+        dependents: 0,
+        employment: Vec::new(),
+        stock: Vec::new(),
+        consumption: ck_economy::PopConsumption::default(),
+        counters: CounterBuckets::default(),
+        short_on_rent: false,
+        housed_last: false,
+        genetics: ck_economy::PopGenetics::default(),
+    });
+    state
+}
+
+#[test]
+fn the_daily_passes_run_the_event_engine_with_the_character_storage_on_the_first() {
+    // CK-363: with a storage handle the pass is the engine's. A hospitaller in a pop with no luxuries loses it on the 1st, and the
+    // line goes to the life log in the storage directory; on another day nothing is checked.
+    let directory = std::env::temp_dir().join(format!("ck-passes-storage-{}", std::process::id()));
+    std::fs::remove_dir_all(&directory).ok();
+    std::fs::create_dir_all(&directory).unwrap();
+    let handle: crate::game::character_storage::Handle =
+        Arc::new(std::sync::Mutex::new(Some(directory.clone())));
+    let rules = shipped_rules();
+    let mut monk = person(1, at(740, 6, 15, 0), [5000; 4], mind(0, 0));
+    monk.life.grades.insert("hospitaller".to_owned(), 1);
+    let mut state = GameState {
+        economy: economy_with_a_noble_pop(),
+        characters: store_of(vec![monk]),
+    };
+    run_character_passes(&rules, &mut state, at(768, 5, 2, 12), 9, Some(&handle)).unwrap();
+    assert_eq!(
+        state.characters.get(1).unwrap().grade("hospitaller"),
+        1,
+        "not checked off the 1st"
+    );
+    run_character_passes(&rules, &mut state, at(768, 5, 1, 12), 9, Some(&handle)).unwrap();
+    assert_eq!(state.characters.get(1).unwrap().grade("hospitaller"), 0);
+    let lines = ck_characters::LifeLog::open(directory.join("LOGS"))
+        .unwrap()
+        .read(1)
+        .unwrap();
+    assert_eq!(
+        lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>(),
+        ["c1 lost hospitaller."]
+    );
+    // A pop the engine cannot resolve is an error of the daily system, as an economy error is.
+    state.economy.places[0].pops.clear();
+    state.characters = store_of(vec![{
+        let mut monk = person(1, at(740, 6, 15, 0), [5000; 4], mind(0, 0));
+        monk.life.grades.insert("hospitaller".to_owned(), 1);
+        monk
+    }]);
+    let error = run_character_passes(&rules, &mut state, at(768, 6, 1, 12), 9, Some(&handle));
+    assert!(error.is_err());
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
+fn an_unavailable_log_does_not_stop_the_state_updates_and_is_reported() {
+    // CK-363 review: with the LOGS path unusable (a directory where the file should be), the birthday and the monthly precedence
+    // still happen; the failure to write the line is the error the daily system returns.
+    let directory = std::env::temp_dir().join(format!("ck-passes-nologs-{}", std::process::id()));
+    std::fs::remove_dir_all(&directory).ok();
+    std::fs::create_dir_all(directory.join("LOGS")).unwrap();
+    let handle: crate::game::character_storage::Handle =
+        Arc::new(std::sync::Mutex::new(Some(directory.clone())));
+    let rules = shipped_rules();
+    // Born on 1 May: today is the birthday and the 1st, with honour 1000 to fade and a hospitaller to lose.
+    let mut monk = person(1, at(740, 5, 1, 0), [5000; 4], mind(0, 1000));
+    monk.life.grades.insert("hospitaller".to_owned(), 1);
+    let mut state = GameState {
+        economy: economy_with_a_noble_pop(),
+        characters: store_of(vec![monk]),
+    };
+    let result = run_character_passes(&rules, &mut state, at(768, 5, 1, 12), 9, Some(&handle));
+    assert!(result.is_err(), "the unwritable line is reported");
+    let monk = state.characters.get(1).unwrap();
+    assert_eq!(monk.personality.honour, 950, "the birthday's fade ran");
+    assert_eq!(monk.grade("hospitaller"), 0, "the monthly precedence ran");
+    std::fs::remove_dir_all(&directory).ok();
 }

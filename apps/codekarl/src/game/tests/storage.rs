@@ -1121,6 +1121,7 @@ fn found(
     let context = ck_characters::Context {
         rules: &rules,
         personality: &personality,
+        events: &ck_economy::EventRules::default(),
         seed: 42,
         tick: start(),
     };
@@ -1180,7 +1181,10 @@ fn character_archive_logs_and_live_state_survive_streamed_save() {
     let alive = found(&mut state, "alive", Sex::Female, &pop);
     let dead = found(&mut state, "dead", Sex::Male, &pop);
     let mut archive = Archive::open(storage.path.join("ARCH")).unwrap();
-    state.characters.die(dead, start(), &mut archive).unwrap();
+    state
+        .characters
+        .state_die(dead, start(), &mut archive)
+        .unwrap();
     let mut logs = LifeLog::open(storage.path.join("LOGS")).unwrap();
     state
         .characters
@@ -1244,7 +1248,10 @@ fn character_archive_logs_and_live_state_survive_streamed_save() {
         &[*b"ARCH", *b"LOGS"],
     )
     .unwrap();
-    let staged = Storage { path: staging };
+    let staged = Storage {
+        path: staging,
+        handle: None,
+    };
     Storage::validate(&staged.path, &loaded.state).unwrap();
     assert_eq!(loaded.state, state);
     let restored_archive = Archive::open(staged.path.join("ARCH")).unwrap();
