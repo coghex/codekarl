@@ -2485,6 +2485,12 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("assets/game/economy.toml", "assets/scenarios/ireland-768/"),
     ),
+    # CK-362: the character passes' scheduler tests load the shipped rules, which include the personality data.
+    Guard(
+        "apps/codekarl/src/game/tests/character_passes.rs",
+        "rust.app",
+        ("assets/game/economy.toml", "assets/game/personality.toml"),
+    ),
     # The registry's shipped-data tests read the registry outside the economy crate.
     Guard("crates/economy/src/peoples.rs", "economy.core", ("assets/game/peoples.toml",)),
     # CK-225: economy's shipped-data validation tests load both rules and Ireland's authored starts.
@@ -2502,6 +2508,7 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/economy.toml",
             "assets/game/genetics/haplogroups.toml",
             "assets/game/genetics/traits.toml",
+            "assets/game/personality.toml",
         ),
     ),
     Guard(
@@ -2511,10 +2518,32 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/economy.toml",
             "assets/game/genetics/haplogroups.toml",
             "assets/game/genetics/traits.toml",
+            "assets/game/personality.toml",
             "crates/economy/src/genetics.rs",
         ),
     ),
-    Guard("crates/characters/tests/store.rs", "economy.core", ("assets/game/economy.toml",)),
+    Guard(
+        "crates/characters/tests/store.rs",
+        "economy.core",
+        ("assets/game/economy.toml", "assets/game/personality.toml"),
+    ),
+    # CK-362: the personality data tests load the shipped rules and the personality file; the characters crate's
+    # personality tests also read the economy crate's personality source for the no-floating-point check.
+    Guard(
+        "crates/economy/src/personality_tests.rs",
+        "economy.core",
+        ("assets/game/economy.toml", "assets/game/personality.toml"),
+    ),
+    Guard(
+        "crates/characters/tests/personality.rs",
+        "economy.core",
+        (
+            "assets/game/economy.toml",
+            "assets/game/personality.toml",
+            "crates/economy/src/personality.rs",
+            "crates/characters/src/personality.rs",
+        ),
+    ),
     # CK-359: the noble, demesne and rent tests load the same shipped rules and Ireland's noble houses.
     Guard(
         "crates/economy/src/noble_tests.rs",

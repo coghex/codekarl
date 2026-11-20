@@ -21,6 +21,7 @@ use super::{
 };
 use crate::testing::Dir;
 
+mod character_passes;
 mod core_behaviour;
 mod gameplay_runtime;
 mod owner;

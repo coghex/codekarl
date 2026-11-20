@@ -6,7 +6,11 @@ use ck_sim::{Canonical, CanonicalError, Date, GameTime, Reader, Stream};
 use std::collections::BTreeMap;
 
 pub mod genetics;
+pub mod personality;
 pub use genetics::{Context, GeneticRecord, Mendel};
+pub use personality::{
+    EventKind, LevelTrait, PersonalityRecord, Standing, StressKind, opinion, threshold,
+};
 
 /// The placeholder for an ungenerated ancestor. It is never a live character.
 pub const UNKNOWN: u64 = 0;
@@ -26,6 +30,9 @@ pub struct PopLocator {
 pub trait Populations {
     /// Return the current head count, or `None` when the place or slot does not exist.
     fn heads(&self, locator: &PopLocator) -> Option<u64>;
+    /// Return the culture key of the pop, or `None` when the place or slot does not exist. A character is created with the
+    /// culture of the pop it is created into (CK-362).
+    fn culture(&self, locator: &PopLocator) -> Option<String>;
 }
 impl Populations for ck_economy::EconomyState {
     fn heads(&self, locator: &PopLocator) -> Option<u64> {
@@ -33,10 +40,18 @@ impl Populations for ck_economy::EconomyState {
         let pop = place.pops.get(locator.slot as usize)?;
         pop.workers.checked_add(pop.dependents)
     }
+    fn culture(&self, locator: &PopLocator) -> Option<String> {
+        let place = self.places.iter().find(|place| place.id == locator.place)?;
+        Some(place.pops.get(locator.slot as usize)?.culture.clone())
+    }
 }
+/// A bare head-count function knows no cultures, so a character cannot be created into its pops.
 impl<F: Fn(&PopLocator) -> Option<u64>> Populations for F {
     fn heads(&self, locator: &PopLocator) -> Option<u64> {
         self(locator)
+    }
+    fn culture(&self, _locator: &PopLocator) -> Option<String> {
+        None
     }
 }
 impl Canonical for PopLocator {
@@ -108,6 +123,8 @@ pub struct Character {
     pub full_until: Option<GameTime>,
     /// Genetics, final when the character is created. Boxed to keep the record small.
     pub genetics: Box<GeneticRecord>,
+    /// Personality, stress and standing (CK-362).
+    pub personality: PersonalityRecord,
 }
 impl Canonical for Character {
     fn encode(&self, o: &mut Vec<u8>) -> Result<(), CanonicalError> {
@@ -123,7 +140,8 @@ impl Canonical for Character {
         self.children.encode(o)?;
         self.office.encode(o)?;
         self.full_until.encode(o)?;
-        (*self.genetics).encode(o)
+        (*self.genetics).encode(o)?;
+        self.personality.encode(o)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
@@ -140,6 +158,7 @@ impl Canonical for Character {
             office: Option::decode(r)?,
             full_until: Option::decode(r)?,
             genetics: Box::new(GeneticRecord::decode(r)?),
+            personality: PersonalityRecord::decode(r)?,
         })
     }
 }
@@ -156,7 +175,14 @@ pub struct NewCharacter {
     pub pop: PopLocator,
 }
 impl NewCharacter {
-    fn into_record(self, id: u64, father: u64, mother: u64, genetics: GeneticRecord) -> Character {
+    fn into_record(
+        self,
+        id: u64,
+        father: u64,
+        mother: u64,
+        genetics: GeneticRecord,
+        personality: PersonalityRecord,
+    ) -> Character {
         Character {
             id,
             name: self.name,
@@ -171,6 +197,7 @@ impl NewCharacter {
             office: None,
             full_until: None,
             genetics: Box::new(genetics),
+            personality,
         }
     }
 }
@@ -223,6 +250,18 @@ pub enum Error {
     Genetics,
     /// A parent's archived record could not be read.
     Archive,
+    /// The pop's culture cannot be resolved, or the personality data has no mean for it (CK-362).
+    Culture,
+    /// Personality arithmetic whose result does not fit.
+    Arithmetic,
+    /// A standing change whose result does not fit signed 64 bits.
+    StandingRange,
+    /// `indulge` was given a name that is not one of the seven vice/virtue pairs.
+    NotAVicePair,
+    /// A negative stress amount.
+    Amount,
+    /// A trait level above 6.
+    Level,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -261,6 +300,19 @@ impl Canonical for CharacterStore {
 #[must_use]
 pub fn character_stream(seed: u64, id: u64, purpose: &str, tick: GameTime) -> Stream {
     Stream::new(seed, format!("character:{id}:{purpose}"), tick)
+}
+/// The culture means of the pop a character is created into: its pop's culture key resolves through `populations`, and the
+/// personality data must hold the culture. Either failing refuses the creation.
+fn culture_means<'a>(
+    ctx: &Context<'a>,
+    populations: &impl Populations,
+    pop: &PopLocator,
+) -> Result<&'a [i64; ck_economy::personality::PAIR_COUNT], Error> {
+    let culture = populations.culture(pop).ok_or(Error::Culture)?;
+    ctx.personality
+        .culture_means
+        .get(&culture)
+        .ok_or(Error::Culture)
 }
 fn grace_end(day: GameTime) -> Result<GameTime, Error> {
     let d = day.date().map_err(|_| Error::Overflow)?;
@@ -316,11 +368,15 @@ impl CharacterStore {
         populations: &impl Populations,
     ) -> Result<u64, Error> {
         self.check_room(&new.pop, populations)?;
+        let means = culture_means(ctx, populations, &new.pop)?;
         let id = self.next_id;
         let next = id.checked_add(1).ok_or(Error::Overflow)?;
         let genetics = genetics::make_founder(ctx, id, "", new.sex, pop_genetics)?;
-        self.live
-            .insert(id, new.into_record(id, UNKNOWN, UNKNOWN, genetics));
+        let personality = personality::make_founder(ctx, id, "", means)?;
+        self.live.insert(
+            id,
+            new.into_record(id, UNKNOWN, UNKNOWN, genetics, personality),
+        );
         self.next_id = next;
         Ok(id)
     }
@@ -342,6 +398,7 @@ impl CharacterStore {
         populations: &impl Populations,
     ) -> Result<u64, Error> {
         self.check_room(&new.pop, populations)?;
+        let means = culture_means(ctx, populations, &new.pop)?;
         let parents = [
             (lineage.father, Sex::Male, "synthetic_father."),
             (lineage.mother, Sex::Female, "synthetic_mother."),
@@ -351,7 +408,10 @@ impl CharacterStore {
         let mut records = Vec::with_capacity(2);
         for (parent, sex, prefix) in parents {
             records.push(if parent == UNKNOWN {
-                genetics::make_founder(ctx, id, prefix, sex, pop_genetics)?
+                (
+                    genetics::make_founder(ctx, id, prefix, sex, pop_genetics)?,
+                    personality::make_founder(ctx, id, prefix, means)?,
+                )
             } else {
                 let found = self
                     .lookup(parent, lineage.archive)
@@ -360,11 +420,12 @@ impl CharacterStore {
                 if found.sex != sex {
                     return Err(Error::WrongSex);
                 }
-                *found.genetics
+                (*found.genetics, found.personality)
             });
         }
-        let genetics = genetics::make_child(ctx, id, new.sex, &records[0], &records[1])?;
-        let record = new.into_record(id, lineage.father, lineage.mother, genetics);
+        let genetics = genetics::make_child(ctx, id, new.sex, &records[0].0, &records[1].0)?;
+        let personality = personality::make_child(ctx, id, means, &records[0].1, &records[1].1)?;
+        let record = new.into_record(id, lineage.father, lineage.mother, genetics, personality);
         // Everything above is validated and computed, so the writes below cannot fail. A child can only add a
         // qualification (a live ruler's child is full at once, by `tier`'s derivation), never remove one, so no grace
         // period is started.

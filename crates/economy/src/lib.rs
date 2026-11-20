@@ -12,8 +12,10 @@ use serde::Deserialize;
 
 pub mod genetics;
 pub mod peoples;
+pub mod personality;
 pub use genetics::{Genetics, PopGenetics};
 pub use peoples::Peoples;
+pub use personality::Personality;
 
 const WAGE_HISTORY_MONTHS: usize = 12;
 
@@ -157,6 +159,9 @@ pub struct Rules {
     /// Validated genetic data: haplogroup tables, start sets and trait rules (CK-361).
     #[serde(skip)]
     pub genetics: Genetics,
+    /// Validated personality data: pairs, birth, humour drift, stress, standing and opinion (CK-362).
+    #[serde(skip)]
+    pub personality: Personality,
     /// Religions present in the simulation.
     pub religions: Vec<String>,
     /// Land terrain names in the same order as the map terrain palette.
@@ -236,6 +241,13 @@ impl Rules {
             }
         }
         rules.genetics = Genetics::load(&path.with_file_name("genetics"), &rules.peoples)?;
+        let cultures: Vec<&str> = rules
+            .peoples
+            .cultures
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect();
+        rules.personality = Personality::load(&path.with_file_name("personality.toml"), &cultures)?;
         rules.validate(&file)?;
         Ok(rules)
     }
@@ -8479,6 +8491,8 @@ fn decode_employment(input: &mut Reader<'_>) -> Result<Vec<Employment>, Canonica
 mod genetics_tests;
 #[cfg(test)]
 mod noble_tests;
+#[cfg(test)]
+mod personality_tests;
 
 #[cfg(test)]
 mod tests {
@@ -8650,6 +8664,7 @@ mod tests {
                 ..Peoples::default()
             },
             genetics: Genetics::default(),
+            personality: Personality::default(),
             religions: vec!["christianity".to_owned()],
             terrain_order: vec!["pasture".to_owned(), "bog".to_owned()],
             footprint_m2: BTreeMap::from([

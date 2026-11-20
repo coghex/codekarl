@@ -1,0 +1,96 @@
+# Personality data (draft r2; r2 2026-11-19 for CK-362 review: manner unbounded in storage, drunkard kinship added). Drafted by Claude (ck-designer-1), 2026-11-19, for characters slice 3. Notes and approvals:
+# .pipeline/coordination/history-scratch/personality-data-r1.md. Keys, display names and ranges follow the approved glossary
+# (glossary/characters.toml, owner r81). Numbers marked TUNE are placeholders. Values are stored continuous (the engine's thousandths);
+# the screen shows vice/virtue and manner rounded.
+# The negative end of each pair is its first word (the sin; the guarded, deceitful ... end), the positive end its second.
+
+[vice_virtue]
+range = [-7, 7]
+spread = 2.4          # the random spread at birth (owner r113: x1.6 of 1.5)
+pairs = ["pride_humility", "greed_charity", "lust_chastity", "envy_kindness", "gluttony_temperance", "wrath_patience", "sloth_diligence"]
+
+[manner]
+range = [-20, 20]     # DISPLAY range only (owner r38): the slider is drawn clamped, the true value is stored, drawn and shown unbounded
+spread = 6.4          # owner r113: x1.6 of 4.0
+pairs = ["guarded_open", "deceitful_honest", "suspicious_trusting", "wary_daring", "traditional_curious", "yielding_stubborn", "solitary_gregarious", "content_ambitious", "harsh_merciful"]
+
+[birth]
+# r187: half from the parents' average, half from the culture; written so the population keeps its spread (as genetics-r8's correction):
+# value = culture_mean + parents_weight x (parents' average - culture_mean) + e, e normal with sd = spread x sqrt(1 - parents_weight^2 / 2)
+parents_weight = 0.5   # TUNE (r187: "half")
+# A founder (no known parents) draws from culture_mean with sd = spread. Upbringing (r111: a yearly pull toward the household to 14)
+# belongs to the life cycle (slice 5).
+
+[humour_drift]
+# r97: humours pull on vice/virtue for life; nothing pulls on humours. Yearly, at the birthday check:
+# pair -= per_point x (humour - 5) for each pair the humour leans to (a humour above 5 pulls toward the sin, below 5 toward the virtue).
+per_point = 0.01       # TUNE (tools/char_gen.py)
+blood = ["lust_chastity", "gluttony_temperance"]
+yellow_bile = ["wrath_patience", "pride_humility"]
+black_bile = ["envy_kindness"]
+phlegm = ["sloth_diligence"]
+
+[stress]
+range = [0, 100]
+# threshold = 50 + 8 phlegm + 3 blood - 3 yellow_bile - 8 black_bile, floored at 0, no cap (personality-r12, the spec)
+monthly_recovery = 0.056   # TUNE: share of stress shed a month (0.5 a year kept, tools/char_gen.py)
+recovery_per_blood = 0.10  # x(1 + 0.10 x (blood - 5))
+recovery_per_black = -0.10 # x(1 - 0.10 x (black_bile - 5))
+recovery_per_melancholy_grade = -0.10  # x(1 - 0.10 x grade) (grades-r18: melancholy slows recovery)
+# friends, lovers, a loved spouse and religious passion raise recovery in slice 6 (connections), not here
+intake_per_phlegm = -0.05  # stress gained x(1 - 0.05 x (phlegm - 5))
+intake_per_temperance = -0.03  # x(1 - 0.03 x gluttony_temperance): temperance lessens stress
+insult_per_yellow = 0.10   # insult and defeat only: x(1 + 0.10 x (yellow_bile - 5)) (r78)
+penalty_per_point = 0.01   # performance: skills used at x(1 - 0.01 x (stress - threshold)) above the threshold
+penalty_floor = 0.5        # never below half
+events_per_point = 0.05    # mind-trait causing events x(1 + 0.05 x excess), lifting ones / the same (r123; tools/char_gen.py's /20)
+indulge_relief = 15        # indulging a vice: stress -15, and that pair moves 1 toward the sin (r38)
+indulge_step = 1.0
+confess_relief = 10        # confession or penance: stress -10, the most sinful pair moves 0.5 toward the virtue (church cost later)
+confess_step = 0.5
+
+[standing]
+# popularity, fame, honour: signed, unbounded (personality-r12); changed by deeds when logged (events, slice 4)
+yearly_keep = 0.95         # at the birthday check each moves 5% toward 0 (r121)
+
+[opinion]
+# opinion(a, b), a pure function, never stored. Slice 3 terms (strands and passions join in slice 6):
+compat_manner_max = 10     # + 10 - mean over the 9 manner pairs of |a - b| (so -30..+10), clamped to -10..+10
+compat_humour_max = 5      # + 5 - mean over the 4 humours of |a - b| (-5..+5)
+honour_weight = 0.10       # + 0.10 x b's honour (trust)
+fame_weight = 0.05         # + 0.05 x b's fame
+popularity_weight = 0.05   # + 0.05 x b's popularity
+standing_cap = 20          # the three standing terms together clamped to -20..+20
+# grade terms (grades-r18), by b's grade C..SSS:
+beauty = [0, 5, 10, 15, 20, 25]
+ill_favoured = [0, -5, -10, -15, -20, -25]
+fool = [5, 5, 10, 10, 15, 20]
+fool_in_power = [-3, -5, -8, -10, -12, -15]   # x b's power level 0-5 (until titles, L1: the office marker ruler counts 2, others 0)
+drunkard = [10, 5, 0, -5, -10, -20]
+drunkard_kinship = [5, 10, 15, 20, 30, 40]    # when a and b are both drunkards, by the lower grade, ADDED to the drunkard term (grades-r18: two SSS -20 + 40 = +20)
+rage_fits = [-2, -5, -8, -10, -15, -20]
+madness = [-2, -4, -6, -8, -10, -12]
+
+[culture_means]
+# TUNE: all neutral (0) until the owner sets each culture's typical personality (r107, r111). Any value not listed is 0.
+ulaid = {}
+cruthin = {}
+northern_ui_neill = {}
+airgialla = {}
+mide_brega = {}
+laigin = {}
+mumu = {}
+connachta = {}
+dal_riatan = {}
+north_welsh = {}
+south_welsh = {}
+cumbric = {}
+cornish = {}
+pictish = {}
+northumbrian = {}
+mercian = {}
+east_anglian = {}
+west_saxon = {}
+east_saxon = {}
+south_saxon = {}
+kentish = {}

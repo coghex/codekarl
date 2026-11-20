@@ -434,12 +434,26 @@ fn register_economy_callback_with_context(
                     &nearby_by_place,
                     &floors,
                 )
-                .map(|_| ())
                 .map_err(io::Error::other)
-                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
+                run_character_passes(&rules.personality, &mut state.characters, tick.time())
             },
         )
         .expect("the economy system name is unique");
+}
+
+/// The character passes of CK-362, run inside the economy's daily system after that day's economy work: on the 1st the
+/// monthly stress recovery, then the birthday pass. They are not separate systems, and an economy error never reaches them.
+fn run_character_passes(
+    personality: &ck_economy::Personality,
+    characters: &mut ck_characters::CharacterStore,
+    tick: GameTime,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if tick.date()?.day == 1 {
+        characters.monthly_recovery(personality)?;
+    }
+    characters.birthday_pass(personality, tick)?;
+    Ok(())
 }
 
 pub(crate) fn nearby_places(

@@ -1112,8 +1112,15 @@ fn found(
 ) -> u64 {
     let rules = ck_economy::Genetics::default();
     let pop_state = state.economy.places[0].pops[0].genetics.clone();
+    // A zero-spread personality with a zero mean for the pop's culture: these tests are about storage, not personality.
+    let mut personality = ck_economy::Personality::default();
+    personality.culture_means.insert(
+        state.economy.places[0].pops[0].culture.clone(),
+        [0; ck_economy::personality::PAIR_COUNT],
+    );
     let context = ck_characters::Context {
         rules: &rules,
+        personality: &personality,
         seed: 42,
         tick: start(),
     };

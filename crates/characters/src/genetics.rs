@@ -6,7 +6,7 @@
 
 use crate::{Error, Sex, character_stream};
 use ck_economy::{
-    Genetics, PopGenetics,
+    Genetics, Personality, PopGenetics,
     genetics::{
         ATTRIBUTE_COUNT, ATTRIBUTES, Dominance, Mendelian, Mode, PPB, ShowsIn, clamp_attribute,
         round_div,
@@ -21,6 +21,8 @@ use std::collections::BTreeMap;
 pub struct Context<'a> {
     /// The loaded genetic rules.
     pub rules: &'a Genetics,
+    /// The loaded personality data (CK-362).
+    pub personality: &'a Personality,
     /// The world seed.
     pub seed: u64,
     /// The tick the creation's streams are drawn at.
@@ -128,23 +130,52 @@ fn roll(stream: &mut Stream, p: u32) -> Result<bool, Error> {
     Ok(succeeds(below(stream, u64::from(PPB))?, p))
 }
 
+/// The unrounded standard-normal variate of slice 2's Irwin-Hall draw, in millionths: the sum of twelve uniform draws
+/// below 1,000,000 minus 6,000,000. A draw that needs the exact variate (a child's personality noise) takes it here, and
+/// [`normal_draw`] is this variate scaled and rounded once.
+///
+/// # Errors
+/// Refuses a stream that cannot draw.
+pub fn normal_z(stream: &mut Stream) -> Result<i128, Error> {
+    let mut z = -6_000_000_i128;
+    for _ in 0..12 {
+        z += i128::from(below(stream, 1_000_000)?);
+    }
+    Ok(z)
+}
+
 /// A normal draw with spread `numerator / denominator` (thousandths): `z` is the sum of twelve uniform draws below
 /// 1,000,000 minus 6,000,000 (so in millionths), and the value is `mean + spread * z / 1,000,000` rounded to the nearest
 /// thousandth, ties away from zero (the whole value, not the offset alone). The spread stays an exact fraction.
+fn normal_exact_wide(
+    stream: &mut Stream,
+    mean: i64,
+    numerator: i128,
+    denominator: i128,
+) -> Result<i128, Error> {
+    let z = normal_z(stream)?;
+    // One rounding of the whole value (`mean + spread * z / 1,000,000`), so a tie goes away from zero as a whole.
+    let scale = denominator * 1_000_000;
+    Ok(round_div(i128::from(mean) * scale + numerator * z, scale))
+}
+
 fn normal_exact(
     stream: &mut Stream,
     mean: i64,
     numerator: i128,
     denominator: i128,
 ) -> Result<i64, Error> {
-    let mut z = -6_000_000_i128;
-    for _ in 0..12 {
-        z += i128::from(below(stream, 1_000_000)?);
-    }
-    // One rounding of the whole value (`mean + spread * z / 1,000,000`), so a tie goes away from zero as a whole.
-    let scale = denominator * 1_000_000;
-    let value = round_div(i128::from(mean) * scale + numerator * z, scale);
-    i64::try_from(value).map_err(|_| Error::Genetics)
+    i64::try_from(normal_exact_wide(stream, mean, numerator, denominator)?)
+        .map_err(|_| Error::Genetics)
+}
+
+/// [`normal_draw`] before it is narrowed: a draw a bound will hold (a vice/virtue value) is bounded in this wider
+/// representation, so a mean or spread near the 64-bit limit never fails where the bound would have decided the value.
+///
+/// # Errors
+/// Refuses a stream that cannot draw.
+pub fn normal_draw_wide(stream: &mut Stream, mean: i64, spread: i64) -> Result<i128, Error> {
+    normal_exact_wide(stream, mean, i128::from(spread), 1)
 }
 
 /// A normal draw with mean `mean` and spread `spread` (both in thousandths).
@@ -229,7 +260,7 @@ fn express(rule: &Mendelian, sex: Sex, copies: u8, stream: &mut Stream) -> Resul
 // Making a record
 
 /// The stream of one draw site for character `id`; `prefix` names a synthetic parent's sites.
-fn site(ctx: &Context<'_>, id: u64, prefix: &str, name: &str) -> Stream {
+pub(crate) fn site(ctx: &Context<'_>, id: u64, prefix: &str, name: &str) -> Stream {
     character_stream(ctx.seed, id, &format!("{prefix}{name}"), ctx.tick)
 }
 

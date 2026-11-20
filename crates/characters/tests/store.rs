@@ -23,7 +23,7 @@ fn pop() -> PopLocator {
         slot: 0,
     }
 }
-fn rules() -> &'static Rules {
+fn rules_all() -> &'static Rules {
     static RULES: OnceLock<Rules> = OnceLock::new();
     RULES.get_or_init(|| {
         Rules::load(
@@ -31,6 +31,16 @@ fn rules() -> &'static Rules {
         )
         .expect("shipped rules")
     })
+}
+/// Every pop is Irish (`ulaid`); the head count comes from the wrapped `Populations`.
+struct Irish<'a, P>(&'a P);
+impl<P: Populations> Populations for Irish<'_, P> {
+    fn heads(&self, locator: &PopLocator) -> Option<u64> {
+        self.0.heads(locator)
+    }
+    fn culture(&self, _: &PopLocator) -> Option<String> {
+        Some("ulaid".to_owned())
+    }
 }
 /// The slice 1 tests make plain characters; they are founders of an Irish pop under the shipped genetic rules.
 trait CreateFounder {
@@ -52,9 +62,10 @@ impl CreateFounder for CharacterStore {
         pop: PopLocator,
         populations: &impl Populations,
     ) -> Result<u64, Error> {
-        let rules = &rules().genetics;
+        let rules = &rules_all().genetics;
         let context = Context {
             rules,
+            personality: &rules_all().personality,
             seed: 7,
             tick: birth,
         };
@@ -68,7 +79,7 @@ impl CreateFounder for CharacterStore {
                 pop,
             },
             &state,
-            populations,
+            &Irish(populations),
         )
     }
 }
