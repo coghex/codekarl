@@ -64,7 +64,7 @@ pub(crate) fn scenario_hash(directory: &Path) -> Result<String, String> {
     Ok(content_hash(files))
 }
 
-/// Hash shared economy rules (including the genetic data) and the map's terrain suitability inputs.
+/// Hash shared economy rules (including the genetic and personality data) and the map's terrain suitability inputs.
 pub(crate) fn rules_hash(asset_root: &Path) -> Result<String, String> {
     let game_rules = asset_root.join("game/economy.toml");
     if !game_rules.exists() {
@@ -76,6 +76,7 @@ pub(crate) fn rules_hash(asset_root: &Path) -> Result<String, String> {
         read(asset_root, "game/peoples.toml")?,
         read(asset_root, "game/genetics/haplogroups.toml")?,
         read(asset_root, "game/genetics/traits.toml")?,
+        read(asset_root, "game/personality.toml")?,
         read(asset_root, "map/ireland/terrain.toml")?,
     ]))
 }

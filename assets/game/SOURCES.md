@@ -23,3 +23,24 @@ The design they implement:
 
 Both files join the save's `rules_hash` (a changed genetic table refuses an existing save) and the `economy.core` check paths. The
 `[culture_start]` table maps every culture of `peoples.toml` to a start set; the loader refuses a culture without one.
+
+## Personality (CK-362, characters slice 3)
+
+`personality.toml` is the designer's data (ck-designer-1), copied **byte for byte** from `codekarl-content/personality/personality.toml`.
+Every number marked TUNE in it is a placeholder; the model is not. The file writes ordinary decimals; the loader reads each from its
+text and never through a binary float, as an integer in thousandths (values, spreads, weights, factors, stress and the opinion maxima;
+the grade-term lists are whole opinion points, stored times 1000).
+
+| File | Revision | Pijul change | SHA-256 |
+|---|---|---|---|
+| `personality.toml` | r2 | `YTBTCJBN` (manner unbounded in storage; drunkard kinship added) | `a2d9f9e54b832c85c3fd694de73dcb5a66d2a1273a726bb150f2e36f601c57f1` |
+
+Source of the copy: `codekarl-content/personality/personality.toml` (r2, 2026-11-19).
+
+The design it implements:
+
+- `history-scratch/personality-r12.md` and `history-scratch/personality-data-r1.md` (SHA-256 `bd769493…`): what the owner approved and what is a placeholder.
+- The approved specification: CK-362 r3, SHA-256 `214c14e68c2c637cf986d1e95395dd8adb169c10f9c1ca8b6caefa5786d8baf5`.
+
+The file joins the save's `rules_hash` (a changed personality table refuses an existing save) and the `economy.core` check paths. The
+loader refuses a `[culture_means]` table that is not exactly the cultures of `peoples.toml`.

@@ -4,7 +4,7 @@
 
 use ck_characters::{
     Archive, Character, CharacterStore, Context, Error, GeneticRecord, Lineage, NewCharacter,
-    Office, PopLocator, Sex, Tier, UNKNOWN, character_stream,
+    Office, PopLocator, Populations, Sex, Tier, UNKNOWN, character_stream,
     genetics::{normal_draw, succeeds},
 };
 use ck_economy::{
@@ -73,6 +73,7 @@ fn fixture(extra: &str) -> Genetics {
 fn context(genetics: &Genetics, seed: u64) -> Context<'_> {
     Context {
         rules: genetics,
+        personality: &rules().personality,
         seed,
         tick: date(768, 1, 1),
     }
@@ -80,9 +81,19 @@ fn context(genetics: &Genetics, seed: u64) -> Context<'_> {
 fn irish(genetics: &Genetics) -> PopGenetics {
     genetics.seed_pop("ulaid").expect("Irish start set")
 }
+/// Every pop is Irish (`ulaid`); the head count comes from the wrapped function.
+struct Pops<F>(F);
+impl<F: Fn(&PopLocator) -> Option<u64>> Populations for Pops<F> {
+    fn heads(&self, locator: &PopLocator) -> Option<u64> {
+        (self.0)(locator)
+    }
+    fn culture(&self, _: &PopLocator) -> Option<String> {
+        Some("ulaid".to_owned())
+    }
+}
 #[expect(
     clippy::unnecessary_wraps,
-    reason = "the closure type `Populations` is implemented for is `Fn(&PopLocator) -> Option<u64>`"
+    reason = "the closure type `Pops` wraps is `Fn(&PopLocator) -> Option<u64>`"
 )]
 fn roomy(_: &PopLocator) -> Option<u64> {
     Some(1_000_000)
@@ -97,7 +108,7 @@ fn new(sex: Sex) -> NewCharacter {
 }
 fn founder(store: &mut CharacterStore, ctx: &Context<'_>, sex: Sex, state: &PopGenetics) -> u64 {
     store
-        .create_founder(ctx, new(sex), state, &roomy)
+        .create_founder(ctx, new(sex), state, &Pops(roomy))
         .expect("founder")
 }
 fn child(
@@ -117,7 +128,7 @@ fn child(
             mother: parents.1,
             archive,
         },
-        &roomy,
+        &Pops(roomy),
     )
 }
 fn archive(tag: &str) -> Archive {
@@ -924,10 +935,13 @@ fn a_refused_creation_changes_nothing() {
         archive: &none,
     };
     for heads in [None, Some(2)] {
-        let result =
-            store.create_child(&ctx, new(Sex::Male), &state, &lineage, &|_: &PopLocator| {
-                heads
-            });
+        let result = store.create_child(
+            &ctx,
+            new(Sex::Male),
+            &state,
+            &lineage,
+            &Pops(|_: &PopLocator| heads),
+        );
         assert_eq!(
             result,
             Err(if heads.is_none() {
@@ -938,10 +952,15 @@ fn a_refused_creation_changes_nothing() {
         );
         assert_eq!(store, before);
     }
-    let result = store.create_founder(&ctx, new(Sex::Male), &state, &|_: &PopLocator| Some(2));
+    let result = store.create_founder(
+        &ctx,
+        new(Sex::Male),
+        &state,
+        &Pops(|_: &PopLocator| Some(2)),
+    );
     assert_eq!(result, Err(Error::PopFull));
     assert_eq!(
-        store.create_founder(&ctx, new(Sex::Male), &PopGenetics::default(), &roomy),
+        store.create_founder(&ctx, new(Sex::Male), &PopGenetics::default(), &Pops(roomy)),
         Err(Error::Genetics),
         "an unseeded pop cannot make genetics"
     );

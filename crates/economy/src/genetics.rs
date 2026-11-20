@@ -236,14 +236,15 @@ pub struct PopGenetics {
 // Parsing
 
 #[derive(Debug)]
-enum Node {
+pub(crate) enum Node {
     Int(String),
     Float(String),
     Text(String),
+    Array(Vec<Node>),
     Table(BTreeMap<String, Node>),
     Other(&'static str),
 }
-type Table = BTreeMap<String, Node>;
+pub(crate) type Table = BTreeMap<String, Node>;
 
 fn convert(value: &DeValue<'_>) -> Node {
     match value {
@@ -253,7 +254,9 @@ fn convert(value: &DeValue<'_>) -> Node {
         DeValue::Float(number) => Node::Float(number.as_str().to_owned()),
         DeValue::Boolean(_) => Node::Other("a boolean"),
         DeValue::Datetime(_) => Node::Other("a datetime"),
-        DeValue::Array(_) => Node::Other("an array"),
+        DeValue::Array(items) => {
+            Node::Array(items.iter().map(|item| convert(item.get_ref())).collect())
+        }
         DeValue::Table(table) => Node::Table(convert_table(table)),
     }
 }
@@ -265,12 +268,12 @@ fn convert_table(table: &DeTable<'_>) -> Table {
         .collect()
 }
 
-struct Source<'a> {
-    file: &'a str,
+pub(crate) struct Source<'a> {
+    pub(crate) file: &'a str,
 }
 
 impl Source<'_> {
-    fn error(&self, entry: impl Into<String>, problem: impl Into<String>) -> DataError {
+    pub(crate) fn error(&self, entry: impl Into<String>, problem: impl Into<String>) -> DataError {
         DataError {
             file: self.file.to_owned(),
             entry: entry.into(),
@@ -278,13 +281,13 @@ impl Source<'_> {
         }
     }
 
-    fn document(&self, text: &str) -> Result<Table, DataError> {
+    pub(crate) fn document(&self, text: &str) -> Result<Table, DataError> {
         let table = DeTable::parse(text)
             .map_err(|error| self.error("<document>", error.message().to_owned()))?;
         Ok(convert_table(table.get_ref()))
     }
 
-    fn table<'t>(&self, node: &'t Node, entry: &str) -> Result<&'t Table, DataError> {
+    pub(crate) fn table<'t>(&self, node: &'t Node, entry: &str) -> Result<&'t Table, DataError> {
         match node {
             Node::Table(table) => Ok(table),
             other => Err(self.error(
@@ -294,7 +297,7 @@ impl Source<'_> {
         }
     }
 
-    fn text<'t>(&self, node: &'t Node, entry: &str) -> Result<&'t str, DataError> {
+    pub(crate) fn text<'t>(&self, node: &'t Node, entry: &str) -> Result<&'t str, DataError> {
         match node {
             Node::Text(text) => Ok(text),
             other => Err(self.error(
@@ -305,7 +308,7 @@ impl Source<'_> {
     }
 
     /// A number as an exact scaled integer (`scale` decimal places).
-    fn scaled(&self, node: &Node, entry: &str, scale: usize) -> Result<i128, DataError> {
+    pub(crate) fn scaled(&self, node: &Node, entry: &str, scale: usize) -> Result<i128, DataError> {
         match node {
             Node::Int(text) | Node::Float(text) => {
                 decimal(text, scale).map_err(|problem| self.error(entry, problem))
@@ -327,7 +330,7 @@ impl Source<'_> {
     }
 
     /// A fraction in thousandths: 0..=1.
-    fn unit_milli(&self, node: &Node, entry: &str) -> Result<u32, DataError> {
+    pub(crate) fn unit_milli(&self, node: &Node, entry: &str) -> Result<u32, DataError> {
         let value = self.scaled(node, entry, 3)?;
         u32::try_from(value)
             .ok()
@@ -336,7 +339,7 @@ impl Source<'_> {
     }
 
     /// A non-negative quantity in thousandths (a spread or a parameter).
-    fn milli_non_negative(&self, node: &Node, entry: &str) -> Result<i64, DataError> {
+    pub(crate) fn milli_non_negative(&self, node: &Node, entry: &str) -> Result<i64, DataError> {
         let value = self.scaled(node, entry, 3)?;
         if value < 0 {
             return Err(self.error(entry, "the value must not be negative"));
@@ -344,7 +347,7 @@ impl Source<'_> {
         i64::try_from(value).map_err(|_| self.error(entry, "the value is too large"))
     }
 
-    fn milli(&self, node: &Node, entry: &str) -> Result<i64, DataError> {
+    pub(crate) fn milli(&self, node: &Node, entry: &str) -> Result<i64, DataError> {
         let value = self.scaled(node, entry, 3)?;
         i64::try_from(value).map_err(|_| self.error(entry, "the value is too large"))
     }
@@ -358,7 +361,7 @@ impl Source<'_> {
         u32::try_from(value).map_err(|_| self.error(entry, "the multiplier is too large"))
     }
 
-    fn integer(&self, node: &Node, entry: &str) -> Result<i128, DataError> {
+    pub(crate) fn integer(&self, node: &Node, entry: &str) -> Result<i128, DataError> {
         match node {
             Node::Int(text) => decimal(text, 0).map_err(|problem| self.error(entry, problem)),
             other => Err(self.error(
@@ -375,6 +378,7 @@ fn describe(node: &Node) -> &'static str {
         Node::Float(_) => "a float",
         Node::Text(_) => "a string",
         Node::Table(_) => "a table",
+        Node::Array(_) => "an array",
         Node::Other(what) => what,
     }
 }

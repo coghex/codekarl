@@ -313,6 +313,22 @@ fn write_genetics(root: &Path, haplogroups: &str, traits: &str) {
     fs::create_dir_all(&genetics).unwrap();
     fs::write(genetics.join("haplogroups.toml"), haplogroups).unwrap();
     fs::write(genetics.join("traits.toml"), traits).unwrap();
+    // The rules hash also covers the personality data (CK-362); fixtures that do not edit it share one text.
+    fs::write(root.join("game/personality.toml"), "personality").unwrap();
+}
+
+#[test]
+fn editing_the_personality_data_changes_the_rules_hash() {
+    let dir = Dir::new();
+    fs::create_dir_all(dir.0.join("game")).unwrap();
+    fs::create_dir_all(dir.0.join("map/ireland")).unwrap();
+    fs::write(dir.0.join("game/economy.toml"), "rules").unwrap();
+    fs::write(dir.0.join("game/peoples.toml"), "registry").unwrap();
+    fs::write(dir.0.join("map/ireland/terrain.toml"), "terrain").unwrap();
+    write_genetics(&dir.0, "haplogroups", "traits");
+    let before = hashes::rules_hash(&dir.0).unwrap();
+    fs::write(dir.0.join("game/personality.toml"), "personality edited").unwrap();
+    assert_ne!(hashes::rules_hash(&dir.0).unwrap(), before);
 }
 
 #[test]
