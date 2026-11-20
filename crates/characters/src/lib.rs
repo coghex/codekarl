@@ -1,7 +1,7 @@
 //! Backend-neutral live characters and their derived tiers.
 #![deny(unsafe_code)]
 
-use ck_economy::{HeadUndo, PopGenetics};
+use ck_economy::{HeadUndo, MoveUndo, NearbyPlace, PopGenetics};
 use ck_sim::{Canonical, CanonicalError, Date, GameTime, Reader, Stream};
 use std::{
     cell::RefCell,
@@ -14,6 +14,7 @@ pub mod events;
 mod fixtures;
 pub mod genetics;
 pub mod life;
+pub mod marriage;
 pub(crate) mod names;
 pub mod personality;
 pub mod skills;
@@ -89,6 +90,23 @@ pub trait Populations {
     /// Put back a head removed by [`remove_head`](Self::remove_head) whose death did not commit (CK-364). A source with no ledger has
     /// nothing to put back.
     fn restore_head(&self, _undo: &HeadUndo) {}
+    /// Return the distance in whole metres between the places of two pops (CK-366: the marriage pool), 0 for pops of one place, or
+    /// `None` when either is unknown or the places are beyond what the source measures. There is no default: a source that wraps
+    /// another must forward the query, so that it cannot silently report every place as out of reach.
+    fn distance_m(&self, a: &PopLocator, b: &PopLocator) -> Option<u64>;
+    /// Move the head of a married character from the pop `from` to the pop `to`, in the same cohort, blending the destination's
+    /// genetics with one head of the source's: see [`ck_economy::EconomyState::move_character_head`]. A source that cannot write
+    /// the pops (a shared reference to the economy, a bare function) **refuses**: a marriage between two pops moves a head, and one
+    /// that did not would leave the pops' counts and genetics wrong. Nothing changes on an error. There is no default: a source that
+    /// wraps another must forward the move.
+    ///
+    /// # Errors
+    /// Refuses a missing pop, one with no head to take, a source that cannot write the pops, or a move the economy cannot make.
+    fn move_head(&self, from: &PopLocator, to: &PopLocator, minor: bool)
+    -> Result<MoveUndo, Error>;
+    /// Put back a move made by [`move_head`](Self::move_head) whose marriage did not commit (CK-366). A source with no ledger has
+    /// nothing to put back. There is no default.
+    fn restore_move(&self, undo: &MoveUndo);
 }
 /// The economy's pops as the passes use them: reads and, through a [`Ledger`], head changes.
 impl Populations for ck_economy::EconomyState {
@@ -132,53 +150,118 @@ impl Populations for ck_economy::EconomyState {
     fn genetics(&self, locator: &PopLocator) -> Option<PopGenetics> {
         pop_genetics(self, locator).cloned()
     }
+    /// The economy holds no map positions: only pops of one place have a known distance (0).
+    fn distance_m(&self, a: &PopLocator, b: &PopLocator) -> Option<u64> {
+        (a.place == b.place
+            && Populations::heads(self, a).is_some()
+            && Populations::heads(self, b).is_some())
+        .then_some(0)
+    }
+    /// A shared reference cannot change a pop: a head cannot be moved through it, so the move is refused.
+    fn move_head(
+        &self,
+        _from: &PopLocator,
+        _to: &PopLocator,
+        _minor: bool,
+    ) -> Result<MoveUndo, Error> {
+        Err(Error::Lifecycle)
+    }
+    fn restore_move(&self, _undo: &MoveUndo) {}
 }
 /// The economy with its head changes enabled: the passes read the pops through [`Populations`] and change their heads through the
 /// same shared reference, so the economy sits behind a cell for the length of a pass.
 #[derive(Debug)]
-pub struct Ledger<'a>(RefCell<&'a mut ck_economy::EconomyState>);
+pub struct Ledger<'a> {
+    economy: RefCell<&'a mut ck_economy::EconomyState>,
+    /// The places within reach of each place, nearest first, for the marriage pool (CK-366); none known without a map.
+    nearby: Option<&'a BTreeMap<String, Vec<NearbyPlace>>>,
+}
 impl<'a> Ledger<'a> {
-    /// Lend the economy to a pass.
+    /// Lend the economy to a pass. Without a map, only pops of one place are a known distance apart.
     pub fn new(economy: &'a mut ck_economy::EconomyState) -> Self {
-        Self(RefCell::new(economy))
+        Self {
+            economy: RefCell::new(economy),
+            nearby: None,
+        }
+    }
+    /// Lend the economy to a pass together with the places within reach of each place and their distances in ground metres.
+    pub fn with_nearby(
+        economy: &'a mut ck_economy::EconomyState,
+        nearby: &'a BTreeMap<String, Vec<NearbyPlace>>,
+    ) -> Self {
+        Self {
+            economy: RefCell::new(economy),
+            nearby: Some(nearby),
+        }
     }
 }
 impl Populations for Ledger<'_> {
     fn heads(&self, locator: &PopLocator) -> Option<u64> {
-        Populations::heads(&**self.0.borrow(), locator)
+        Populations::heads(&**self.economy.borrow(), locator)
     }
     fn culture(&self, locator: &PopLocator) -> Option<String> {
-        Populations::culture(&**self.0.borrow(), locator)
+        Populations::culture(&**self.economy.borrow(), locator)
     }
     fn kind(&self, locator: &PopLocator) -> Option<String> {
-        Populations::kind(&**self.0.borrow(), locator)
+        Populations::kind(&**self.economy.borrow(), locator)
     }
     fn luxuries_pm(&self, locator: &PopLocator) -> Option<u16> {
-        Populations::luxuries_pm(&**self.0.borrow(), locator)
+        Populations::luxuries_pm(&**self.economy.borrow(), locator)
     }
     fn religion(&self, locator: &PopLocator) -> Option<String> {
-        Populations::religion(&**self.0.borrow(), locator)
+        Populations::religion(&**self.economy.borrow(), locator)
     }
     fn necessities_pm(&self, locator: &PopLocator) -> Option<u16> {
-        Populations::necessities_pm(&**self.0.borrow(), locator)
+        Populations::necessities_pm(&**self.economy.borrow(), locator)
     }
     fn genetics(&self, locator: &PopLocator) -> Option<PopGenetics> {
-        Populations::genetics(&**self.0.borrow(), locator)
+        Populations::genetics(&**self.economy.borrow(), locator)
     }
     fn add_births(&self, locator: &PopLocator, count: u64) -> Result<(), Error> {
-        self.0
+        self.economy
             .borrow_mut()
             .add_character_births(&locator.place, locator.slot as usize, count)
             .map_err(|_| Error::MissingPop)
     }
     fn remove_head(&self, locator: &PopLocator, minor: bool) -> Result<HeadUndo, Error> {
-        self.0
+        self.economy
             .borrow_mut()
             .remove_character_head(&locator.place, locator.slot as usize, minor)
             .map_err(|_| Error::MissingPop)
     }
     fn restore_head(&self, undo: &HeadUndo) {
-        self.0.borrow_mut().restore_character_head(undo);
+        self.economy.borrow_mut().restore_character_head(undo);
+    }
+    fn distance_m(&self, a: &PopLocator, b: &PopLocator) -> Option<u64> {
+        if a.place == b.place {
+            return Populations::distance_m(&**self.economy.borrow(), a, b);
+        }
+        let heads = |locator: &PopLocator| Populations::heads(&**self.economy.borrow(), locator);
+        heads(a)?;
+        heads(b)?;
+        self.nearby?
+            .get(&a.place)?
+            .iter()
+            .find(|place| place.id == b.place)
+            .map(|place| u64::from(place.distance_m))
+    }
+    fn move_head(
+        &self,
+        from: &PopLocator,
+        to: &PopLocator,
+        minor: bool,
+    ) -> Result<MoveUndo, Error> {
+        self.economy
+            .borrow_mut()
+            .move_character_head(
+                (&from.place, from.slot as usize),
+                (&to.place, to.slot as usize),
+                minor,
+            )
+            .map_err(|_| Error::MissingPop)
+    }
+    fn restore_move(&self, undo: &MoveUndo) {
+        self.economy.borrow_mut().restore_character_move(undo);
     }
 }
 /// A bare head-count function knows no cultures, so a character cannot be created into its pops.
@@ -189,6 +272,20 @@ impl<F: Fn(&PopLocator) -> Option<u64>> Populations for F {
     fn culture(&self, _locator: &PopLocator) -> Option<String> {
         None
     }
+    /// A bare head-count function knows no places: only pops of one place are a known distance apart.
+    fn distance_m(&self, a: &PopLocator, b: &PopLocator) -> Option<u64> {
+        (a.place == b.place && self(a).is_some() && self(b).is_some()).then_some(0)
+    }
+    /// A bare head-count function cannot change a pop: a head cannot be moved through it, so the move is refused.
+    fn move_head(
+        &self,
+        _from: &PopLocator,
+        _to: &PopLocator,
+        _minor: bool,
+    ) -> Result<MoveUndo, Error> {
+        Err(Error::Lifecycle)
+    }
+    fn restore_move(&self, _undo: &MoveUndo) {}
 }
 impl Canonical for PopLocator {
     fn encode(&self, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
@@ -314,6 +411,9 @@ pub struct NewCharacter {
     pub birth: GameTime,
     /// Pop the character belongs to.
     pub pop: PopLocator,
+    /// The house of a founder (CK-366): the key a caller gives (slice 8 gives real figures theirs), empty for a commoner. A child
+    /// ignores it and takes the house of its birth from its parents.
+    pub house: String,
 }
 impl NewCharacter {
     fn into_record(
@@ -557,6 +657,13 @@ fn child_record(
     let personality = personality::make_child(ctx, id, means, &records[0].1, &records[1].1)?;
     let mut life = life::make(ctx, id, new.sex, populations.kind(&new.pop).as_deref())?;
     life.pool = pool;
+    // The house of birth (CK-366): the father's house, else the mother's; the child's house is its house of birth.
+    life.house_of_birth = parents[0]
+        .map(|father| father.life.house.clone())
+        .filter(|house| !house.is_empty())
+        .or_else(|| parents[1].map(|mother| mother.life.house.clone()))
+        .unwrap_or_default();
+    life.house.clone_from(&life.house_of_birth);
     Ok(new.into_record(
         id,
         parents[0].map_or(UNKNOWN, |parent| parent.id),
@@ -613,6 +720,8 @@ impl CharacterStore {
         let personality = personality::make_founder(ctx, id, "", means)?;
         let mut life = life::make(ctx, id, new.sex, populations.kind(&new.pop).as_deref())?;
         life.pool = pool;
+        life.house.clone_from(&new.house);
+        life.house_of_birth.clone_from(&new.house);
         self.live.insert(
             id,
             new.into_record(id, UNKNOWN, UNKNOWN, genetics, personality, life),

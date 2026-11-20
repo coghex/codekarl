@@ -145,6 +145,18 @@ impl Populations for Pops {
     fn restore_head(&self, _: &ck_economy::HeadUndo) {
         self.calls.borrow_mut().push("restored".to_owned());
     }
+    fn distance_m(&self, a: &PopLocator, b: &PopLocator) -> Option<u64> {
+        (a.place == b.place).then_some(0)
+    }
+    fn move_head(
+        &self,
+        _: &PopLocator,
+        _: &PopLocator,
+        _: bool,
+    ) -> Result<ck_economy::MoveUndo, ck_characters::Error> {
+        Ok(ck_economy::MoveUndo::default())
+    }
+    fn restore_move(&self, _: &ck_economy::MoveUndo) {}
 }
 
 /// The file of a test's storage, as it is now.
@@ -1105,6 +1117,7 @@ fn founder(store: &mut CharacterStore, sex: Sex, place: &str, birth: GameTime) -
                 sex,
                 birth,
                 pop: locator(place),
+                house: String::new(),
             },
             &irish(),
             &Pops::new(),
@@ -1164,6 +1177,7 @@ fn a_name_the_caller_gives_is_kept_and_a_culture_without_a_pool_cannot_be_drawn(
         sex: Sex::Male,
         birth: date(740, 1, 1),
         pop: locator("a"),
+        house: String::new(),
     };
     let id = store
         .create_founder(

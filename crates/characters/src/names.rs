@@ -32,14 +32,21 @@ pub(crate) struct Plan {
 /// A way to read a record that is not live: the archive.
 pub(crate) type Archived<'a> = &'a dyn ArchiveSink;
 
-/// The importance of a candidate in thousandths: 1 for a ruler (the marker of its record, live or archived), else 0. `heir` and
-/// `high_cleric` count 0 here (5c adds a ruling house).
-fn importance_milli(c: &Character) -> u128 {
-    if c.office == Some(Office::Ruler) {
+/// The importance of a candidate in thousandths: 1 for a ruler (the marker of its record, live or archived), plus 0.5 for a member of a
+/// ruling house (CK-366): the house of its record, whatever the state of the candidate, being one with a living ruler now. `heir` and
+/// `high_cleric` count 0.
+fn importance_milli(store: &CharacterStore, c: &Character) -> u128 {
+    let ruler = if c.office == Some(Office::Ruler) {
         ONE
     } else {
         0
-    }
+    };
+    let house = if store.ruling_house(&c.life.house) {
+        ONE / 2
+    } else {
+        0
+    };
+    ruler + house
 }
 
 /// Whether `c` was dead at `birth`: its stored time of death is not after the stored time of the birth. A death of the same tick
@@ -198,7 +205,7 @@ pub(crate) fn plan(
     for (kind, base) in &ctx.lifecycle.namesakes.order {
         let mut found = candidates(&records, kind, sex, birth, side)?;
         found.retain(|c| !excluded.contains(&c.name));
-        let Some(highest) = found.iter().map(importance_milli).max() else {
+        let Some(highest) = found.iter().map(|c| importance_milli(store, c)).max() else {
             // No candidate: the chance passes on, added to the next kind's base.
             carried += u128::from(*base);
             continue;
@@ -212,7 +219,10 @@ pub(crate) fn plan(
         if !hit {
             continue;
         }
-        let weights: Vec<u128> = found.iter().map(|c| ONE + importance_milli(c)).collect();
+        let weights: Vec<u128> = found
+            .iter()
+            .map(|c| ONE + importance_milli(store, c))
+            .collect();
         let total: u128 = weights.iter().sum();
         let mut pick = u128::from(below(
             &mut site(ctx, id, "", "namesake.pick"),

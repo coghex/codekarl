@@ -171,6 +171,32 @@ pub fn project(latitude_degrees: f64, longitude_degrees: f64) -> Option<FixedPoi
     Some(FixedPoint { x, y })
 }
 
+/// The great-circle distance in whole metres between two fixed-point world positions, on the sphere of
+/// [`MERCATOR_RADIUS_METRES`] (the projection's own): each position is un-projected to its latitude and longitude and the haversine
+/// distance rounded to the nearest metre. A fixed-point position is quantised to 2.5 cm, so the whole metres can differ by one from the
+/// exact value of the authored latitude and longitude. A position the sphere cannot hold gives `None`.
+#[must_use]
+pub fn great_circle_metres(first: FixedPoint, second: FixedPoint) -> Option<u64> {
+    let half_world = std::f64::consts::PI * MERCATOR_RADIUS_METRES;
+    let scale = CELL_METRES / 32_768.0;
+    let geographic = |point: FixedPoint| {
+        let east = f64::from(point.x) * scale - half_world;
+        let south = half_world - f64::from(point.y) * scale;
+        let longitude = east / MERCATOR_RADIUS_METRES;
+        let latitude =
+            2.0 * (south / MERCATOR_RADIUS_METRES).exp().atan() - std::f64::consts::FRAC_PI_2;
+        (latitude, longitude)
+    };
+    let ((phi_a, lambda_a), (phi_b, lambda_b)) = (geographic(first), geographic(second));
+    let across = ((phi_b - phi_a) / 2.0).sin().powi(2)
+        + phi_a.cos() * phi_b.cos() * ((lambda_b - lambda_a) / 2.0).sin().powi(2);
+    let metres = 2.0 * MERCATOR_RADIUS_METRES * across.sqrt().min(1.0).asin();
+    if !metres.is_finite() {
+        return None;
+    }
+    format!("{:.0}", metres.round()).parse::<u64>().ok()
+}
+
 /// Convert a fixed-point world position to the cell containing it.
 #[must_use]
 pub fn cell_of(position: FixedPoint) -> Cell {

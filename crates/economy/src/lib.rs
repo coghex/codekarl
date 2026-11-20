@@ -7976,6 +7976,23 @@ struct StagedHead {
     worker: bool,
     /// The building, and whether a paid worker's position (else an owner's), that was released.
     release: Option<(usize, bool)>,
+    /// Whether the removal was counted as a pending death (a death), not a move between pops (CK-366).
+    counted: bool,
+}
+
+/// What a head moved between two pops took from them, so that the move can be put back (CK-366): the source's head and released
+/// position, and the destination's head and genetic state as they were.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MoveUndo {
+    staged: Option<StagedMove>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StagedMove {
+    head: HeadUndo,
+    destination: (String, usize),
+    worker: bool,
+    genetics: PopGenetics,
 }
 
 impl EconomyState {
@@ -8024,6 +8041,18 @@ impl EconomyState {
         slot: usize,
         minor: bool,
     ) -> Result<HeadUndo, DataError> {
+        self.take_character_head(place, slot, minor, true)
+    }
+
+    /// Take the head of a character from a pop by the cohort rule of [`remove_character_head`](Self::remove_character_head),
+    /// counting it as a pending death only when `death` is set (a move between pops is not a death).
+    fn take_character_head(
+        &mut self,
+        place: &str,
+        slot: usize,
+        minor: bool,
+        death: bool,
+    ) -> Result<HeadUndo, DataError> {
         let place_state = self
             .places
             .iter_mut()
@@ -8045,10 +8074,13 @@ impl EconomyState {
                 "the pop has no head to remove",
             ));
         }
-        let pending = pop
-            .pending_deaths
-            .checked_add(1)
-            .ok_or_else(|| missing_data("demography.deaths".to_owned(), "death count overflow"))?;
+        let pending = if death {
+            pop.pending_deaths.checked_add(1).ok_or_else(|| {
+                missing_data("demography.deaths".to_owned(), "death count overflow")
+            })?
+        } else {
+            pop.pending_deaths
+        };
         // The job to release, decided before anything is changed.
         let mut release = None;
         if worker {
@@ -8118,6 +8150,7 @@ impl EconomyState {
                 slot,
                 worker,
                 release,
+                counted: death,
             }),
         })
     }
@@ -8154,7 +8187,95 @@ impl EconomyState {
         } else {
             pop.dependents += 1;
         }
-        pop.pending_deaths = pop.pending_deaths.saturating_sub(1);
+        if staged.counted {
+            pop.pending_deaths = pop.pending_deaths.saturating_sub(1);
+        }
+    }
+
+    /// Move the head of a married character from one pop to another (CK-366, marriage): the head leaves the source by the cohort rule
+    /// of [`remove_character_head`](Self::remove_character_head) (a minor is a dependent if the pop has one, else a worker; an adult
+    /// a worker if the pop has one, else a dependent; an employed worker's position is released at once) but is **not** counted as a
+    /// death, and arrives in the destination in the same cohort (a worker arrives unemployed). The destination's genetic state
+    /// blends with one head of the source's (the people-weighted rule of [`PopGenetics::blend`]); no stock, balance or other state
+    /// moves. Nothing changes on an error.
+    ///
+    /// # Errors
+    /// A missing place or pop slot, the same pop on both sides, a source with no head to take, a head count that overflows or a
+    /// genetic blend that does not fit.
+    pub fn move_character_head(
+        &mut self,
+        from: (&str, usize),
+        to: (&str, usize),
+        minor: bool,
+    ) -> Result<MoveUndo, DataError> {
+        let find = |places: &[PlaceState], (place, slot): (&str, usize)| {
+            places
+                .iter()
+                .find(|candidate| candidate.id == place)
+                .and_then(|candidate| candidate.pops.get(slot))
+                .cloned()
+                .ok_or_else(|| missing_data(format!("places.{place}.pops"), "no such pop slot"))
+        };
+        if from == to {
+            return Err(missing_data(
+                "marriage.move".to_owned(),
+                "the head would move within one pop",
+            ));
+        }
+        let source = find(&self.places, from)?;
+        let destination = find(&self.places, to)?;
+        let overflow = || missing_data("marriage.move".to_owned(), "head count overflow");
+        let size = destination
+            .workers
+            .checked_add(destination.dependents)
+            .ok_or_else(overflow)?;
+        // The arrival must leave the destination's *total* representable, whichever cohort it joins.
+        size.checked_add(1).ok_or_else(overflow)?;
+        let mut genetics = destination.genetics.clone();
+        genetics
+            .blend(size, &source.genetics, 1)
+            .map_err(|error| missing_data("marriage.genetics".to_owned(), &error.to_string()))?;
+        let head = self.take_character_head(from.0, from.1, minor, false)?;
+        let worker = head.staged.as_ref().is_some_and(|staged| staged.worker);
+        let arrived = self.pop_mut(to.0, to.1)?;
+        let undo = MoveUndo {
+            staged: Some(StagedMove {
+                head,
+                destination: (to.0.to_owned(), to.1),
+                worker,
+                genetics: std::mem::replace(&mut arrived.genetics, genetics),
+            }),
+        };
+        if worker {
+            arrived.workers += 1;
+        } else {
+            arrived.dependents += 1;
+        }
+        Ok(undo)
+    }
+
+    /// Put back what [`move_character_head`](Self::move_character_head) did: the destination's head and genetic state and the
+    /// source's head and released position. It undoes only the most recent move that has not been undone, and does nothing for an
+    /// empty [`MoveUndo`].
+    pub fn restore_character_move(&mut self, undo: &MoveUndo) {
+        let Some(staged) = &undo.staged else {
+            return;
+        };
+        let (place, slot) = (&staged.destination.0, staged.destination.1);
+        if let Some(pop) = self
+            .places
+            .iter_mut()
+            .find(|candidate| candidate.id == *place)
+            .and_then(|candidate| candidate.pops.get_mut(slot))
+        {
+            pop.genetics = staged.genetics.clone();
+            if staged.worker {
+                pop.workers = pop.workers.saturating_sub(1);
+            } else {
+                pop.dependents = pop.dependents.saturating_sub(1);
+            }
+        }
+        self.restore_character_head(&staged.head);
     }
 }
 
@@ -15961,6 +16082,182 @@ mod tests {
             .remove_character_head("owner_reserve", 0, false)
             .unwrap();
         assert_eq!(jobs(&owners), [(1, 0), (1, 0)]);
+    }
+
+    /// Two places of one pop each: `from` (`workers` workers, `dependents` dependents, `jobs` as in [`employed_place`]) and `to`
+    /// (`to_workers` workers and one dependent), with the genetics of each seeded with a different mean.
+    fn marriage_state(
+        workers: u64,
+        dependents: u64,
+        jobs: &[(u64, u64)],
+        to_workers: u64,
+    ) -> EconomyState {
+        let mut state = employed_place(workers, jobs);
+        state.places[0].pops[0].dependents = dependents;
+        state.places[0].id = "from".to_owned();
+        let mut destination = reserve_test_pop(to_workers);
+        destination.dependents = 1;
+        let mut place = reserve_test_place(destination, Vec::new());
+        place.id = "to".to_owned();
+        state.places.push(place);
+        for (index, mean) in [(0, 8000), (1, 2000)] {
+            let genetics = &mut state.places[index].pops[0].genetics;
+            genetics.mean[0] = mean;
+            genetics.paternal.insert("p".to_owned(), 1000);
+            genetics.maternal.insert("m".to_owned(), 1000);
+        }
+        state
+    }
+
+    fn heads_of(state: &EconomyState, place: usize) -> (u64, u64) {
+        (
+            state.places[place].pops[0].workers,
+            state.places[place].pops[0].dependents,
+        )
+    }
+
+    #[test]
+    fn a_married_head_moves_by_the_cohort_rule_without_counting_a_death() {
+        // An adult takes a worker, a minor a dependent: each arrives in the same cohort.
+        let mut state = marriage_state(5, 2, &[], 3);
+        state
+            .move_character_head(("from", 0), ("to", 0), false)
+            .unwrap();
+        assert_eq!((heads_of(&state, 0), heads_of(&state, 1)), ((4, 2), (4, 1)));
+        state
+            .move_character_head(("from", 0), ("to", 0), true)
+            .unwrap();
+        assert_eq!((heads_of(&state, 0), heads_of(&state, 1)), ((4, 1), (4, 2)));
+        for place in 0..2 {
+            let pop = &state.places[place].pops[0];
+            assert_eq!((pop.pending_deaths, pop.pending_births), (0, 0));
+        }
+        // A minor in a pop with one worker and no dependents takes the worker; an adult in a pop of dependents takes one.
+        let mut lone = marriage_state(1, 0, &[], 3);
+        lone.move_character_head(("from", 0), ("to", 0), true)
+            .unwrap();
+        assert_eq!((heads_of(&lone, 0), heads_of(&lone, 1)), ((0, 0), (4, 1)));
+        let mut children = marriage_state(0, 3, &[], 3);
+        children
+            .move_character_head(("from", 0), ("to", 0), false)
+            .unwrap();
+        assert_eq!(
+            (heads_of(&children, 0), heads_of(&children, 1)),
+            ((0, 2), (3, 2))
+        );
+    }
+
+    #[test]
+    fn a_moved_worker_arrives_unemployed_and_an_employed_only_source_releases_one_position() {
+        // Five workers, three employed: an unemployed one goes, no position changes, and the destination's employment is untouched.
+        let mut state = marriage_state(5, 0, &[(0, 3)], 3);
+        let before = state.places[1].pops[0].employment.clone();
+        state
+            .move_character_head(("from", 0), ("to", 0), false)
+            .unwrap();
+        assert_eq!(jobs(&state), [(0, 3)]);
+        assert_eq!(state.places[1].pops[0].employment, before);
+        assert_eq!(heads_of(&state, 1).0, 4);
+        // Three workers, all employed: the next move releases one position in the source and the arrival is unemployed.
+        let mut employed = marriage_state(3, 0, &[(0, 3)], 3);
+        employed
+            .move_character_head(("from", 0), ("to", 0), false)
+            .unwrap();
+        assert_eq!(jobs(&employed), [(0, 2)]);
+        assert_eq!(employed.places[0].pops[0].employment[0].workers, 2);
+        assert_eq!(heads_of(&employed, 0).0, 2);
+        assert_eq!(heads_of(&employed, 1).0, 4);
+        assert!(employed.places[1].pops[0].employment.is_empty());
+    }
+
+    #[test]
+    fn the_destination_genetics_blend_with_one_head_of_the_sources() {
+        let mut state = marriage_state(5, 2, &[], 3);
+        let source = state.places[0].pops[0].genetics.clone();
+        let mut expected = state.places[1].pops[0].genetics.clone();
+        // The destination had 3 workers and 1 dependent.
+        expected.blend(4, &source, 1).unwrap();
+        assert_ne!(expected, state.places[1].pops[0].genetics);
+        state
+            .move_character_head(("from", 0), ("to", 0), false)
+            .unwrap();
+        assert_eq!(state.places[1].pops[0].genetics, expected);
+        // The source's own state does not change, and no stock moves.
+        assert_eq!(state.places[0].pops[0].genetics, source);
+        assert_eq!(state.places[0].pops[0].stock, vec![0]);
+        assert_eq!(state.places[1].pops[0].stock, vec![0]);
+    }
+
+    #[test]
+    fn a_moved_head_is_put_back_exactly_and_a_refused_move_changes_nothing() {
+        for (workers, dependents, jobs, minor) in [
+            (5, 2, vec![(0, 3)], false),
+            (3, 0, vec![(0, 3)], false),
+            (2, 0, vec![(2, 0)], false),
+            (5, 2, vec![], true),
+            (1, 0, vec![], true),
+        ] {
+            let mut state = marriage_state(workers, dependents, &jobs, 3);
+            let before = state.clone();
+            let undo = state
+                .move_character_head(("from", 0), ("to", 0), minor)
+                .unwrap();
+            assert_ne!(state, before);
+            state.restore_character_move(&undo);
+            assert_eq!(state, before, "{workers} {dependents} {jobs:?} {minor}");
+        }
+        let mut state = marriage_state(5, 2, &[], 3);
+        let before = state.clone();
+        state.restore_character_move(&MoveUndo::default());
+        assert_eq!(state, before);
+        // Refused: one pop on both sides, a missing place or slot, a source with no head. Nothing changes.
+        for (from, to) in [
+            (("from", 0), ("from", 0)),
+            (("nowhere", 0), ("to", 0)),
+            (("from", 0), ("nowhere", 0)),
+            (("from", 7), ("to", 0)),
+            (("from", 0), ("to", 7)),
+        ] {
+            assert!(state.move_character_head(from, to, false).is_err());
+            assert_eq!(state, before);
+        }
+        let mut empty = marriage_state(0, 0, &[], 3);
+        let before = empty.clone();
+        assert!(
+            empty
+                .move_character_head(("from", 0), ("to", 0), false)
+                .is_err()
+        );
+        assert_eq!(empty, before);
+        // A destination whose head count would overflow refuses the move.
+        let mut full = marriage_state(5, 2, &[], 3);
+        full.places[1].pops[0].workers = u64::MAX;
+        let before = full.clone();
+        assert!(
+            full.move_character_head(("from", 0), ("to", 0), false)
+                .is_err()
+        );
+        assert_eq!(full, before);
+        // The total is the limit, not each cohort: a destination whose workers and dependents together already fill a u64 refuses
+        // an arrival in either cohort, and a destination one short of that takes it.
+        for minor in [false, true] {
+            let mut split = marriage_state(5, 2, &[], 3);
+            split.places[1].pops[0].workers = u64::MAX - 1;
+            split.places[1].pops[0].dependents = 1;
+            let before = split.clone();
+            assert!(
+                split
+                    .move_character_head(("from", 0), ("to", 0), minor)
+                    .is_err()
+            );
+            assert_eq!(split, before);
+            split.places[1].pops[0].workers = u64::MAX - 2;
+            split
+                .move_character_head(("from", 0), ("to", 0), minor)
+                .unwrap();
+            let arrived = &split.places[1].pops[0];
+            assert_eq!(arrived.workers + arrived.dependents, u64::MAX);
+        }
     }
 
     #[test]

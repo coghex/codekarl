@@ -41,6 +41,20 @@ impl<P: Populations> Populations for Irish<'_, P> {
     fn culture(&self, _: &PopLocator) -> Option<String> {
         Some("ulaid".to_owned())
     }
+    fn distance_m(&self, a: &PopLocator, b: &PopLocator) -> Option<u64> {
+        self.0.distance_m(a, b)
+    }
+    fn move_head(
+        &self,
+        from: &PopLocator,
+        to: &PopLocator,
+        minor: bool,
+    ) -> Result<ck_economy::MoveUndo, Error> {
+        self.0.move_head(from, to, minor)
+    }
+    fn restore_move(&self, undo: &ck_economy::MoveUndo) {
+        self.0.restore_move(undo);
+    }
 }
 /// The slice 1 tests make plain characters; they are founders of an Irish pop under the shipped genetic rules.
 trait CreateFounder {
@@ -79,6 +93,7 @@ impl CreateFounder for CharacterStore {
                 sex,
                 birth,
                 pop,
+                house: String::new(),
             },
             &state,
             &Irish(populations),

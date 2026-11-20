@@ -101,7 +101,7 @@ fn on_or_before(a: GameTime, b: GameTime) -> Result<bool, Error> {
 
 /// A fecundity curve at an age as the exact ratio `(numerator, denominator)` of a factor: linear between the points, the first
 /// point's factor below the first age and the last point's above the last.
-fn curve_ratio(points: &[(u32, u64)], age: u32) -> (u128, u128) {
+pub(crate) fn curve_ratio(points: &[(u32, u64)], age: u32) -> (u128, u128) {
     let ppb = u128::from(PPB);
     let (Some(first), Some(last)) = (points.first(), points.last()) else {
         return (0, 1);
@@ -461,6 +461,7 @@ impl CharacterStore {
                     sex,
                     birth: today,
                     pop: m.pop.clone(),
+                    house: String::new(),
                 },
                 id,
                 [Some(&father), Some(&m)],

@@ -2,8 +2,8 @@
 //!
 //! Nothing here uses floating point. A decimal is read from its digits and stored as an exact integer: a probability or a factor in
 //! parts per billion, a per-point value in millionths, every other quantity in thousandths. `life-cycle.toml` also holds the sections
-//! of the later issues (marriage, upbringing, nutrition); they load untouched (their text is part of the save's rules hash) and
-//! nothing here reads them. `names.toml` also holds the namesake rules (CK-365) and `epithets.toml` the epithets (CK-365).
+//! of the later issues (upbringing, nutrition); they load untouched (their text is part of the save's rules hash) and nothing here
+//! reads them. The `[marriage.*]` tables are read and validated here (CK-366). `names.toml` also holds the namesake rules (CK-365) and `epithets.toml` the epithets (CK-365).
 #![deny(clippy::float_arithmetic)]
 
 use crate::{
@@ -185,6 +185,79 @@ pub struct Namesakes {
     pub order: Vec<(String, u32)>,
 }
 
+/// The kinds of kinship the marriage score penalises, the keys of `[marriage.score].kin`: first and second cousins and relations by
+/// marriage (CK-366).
+pub const KIN_KINDS: [&str; 3] = ["first_cousin", "second_cousin", "in_law"];
+
+/// `[marriage.wish]`: the yearly chance that an unmarried character of marriageable age seeks a marriage (CK-366).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MarriageWish {
+    /// A woman's chance by age: `(age, chance in ppb)` points, linear between, the end values beyond.
+    pub women: Vec<(u32, u64)>,
+    /// A man's chance by age.
+    pub men: Vec<(u32, u64)>,
+    /// The factor `1 + per point x lust_chastity` takes per point of lust/chastity, in millionths (negative: lust raises the wish).
+    pub lust_per_point: i64,
+    /// The factor `1 + per point x solitary_gregarious` takes per point of solitary/gregarious, in millionths.
+    pub gregarious_per_point: i64,
+    /// A factor on the chance by pop type, in ppb (a pop type left out is 1).
+    pub pop_type: BTreeMap<String, u64>,
+}
+
+/// `[marriage.pool]`: who a seeker may be matched with (CK-366).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MarriagePool {
+    /// Places within this many metres of the seeker's are near.
+    pub near_m: u64,
+    /// Places within this many metres of the seeker's are in reach.
+    pub far_m: u64,
+    /// Fewer candidates than this would be topped up with generated ones (slice 7).
+    pub min_candidates: u32,
+}
+
+/// `[marriage.score]`: how the seeker's side scores a candidate (CK-366). A "point" is the unit of the score.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MarriageScore {
+    /// The rank of each pop type.
+    pub rank: BTreeMap<String, i64>,
+    /// Points per rank of difference, in thousandths.
+    pub rank_gap: i64,
+    /// Years of age difference without a penalty.
+    pub age_gap_free: u32,
+    /// Points per further year of difference, in thousandths.
+    pub age_gap: i64,
+    /// The weight of the seeker's opinion of the candidate (thousandths of a point), in millionths.
+    pub opinion: i64,
+    /// The weight of the candidate's fame (thousandths of a point), in millionths.
+    pub fame: i64,
+    /// The points of each kind of kinship ([`KIN_KINDS`]), in thousandths.
+    pub kin: BTreeMap<String, i64>,
+    /// The points for a candidate under marriageable age, in thousandths (read for the betrothals of L3; unused here).
+    pub child_age_penalty: i64,
+}
+
+/// `[marriage.accept]`: the chance the candidate's side accepts, `clamp(base + per_score x score, 0.05, 0.95)` (CK-366).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MarriageAccept {
+    /// The chance at a score of 0, in ppb.
+    pub base_ppb: u32,
+    /// The change of the chance per point of score, in ppb.
+    pub per_score_ppb: i64,
+}
+
+/// The `[marriage.*]` tables (CK-366).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MarriageRules {
+    /// `[marriage.wish]`.
+    pub wish: MarriageWish,
+    /// `[marriage.pool]`.
+    pub pool: MarriagePool,
+    /// `[marriage.score]`.
+    pub score: MarriageScore,
+    /// `[marriage.accept]`.
+    pub accept: MarriageAccept,
+}
+
 /// The loaded life-cycle data.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LifeCycle {
@@ -198,6 +271,8 @@ pub struct LifeCycle {
     pub relations: RelationRules,
     /// `[conception]`.
     pub conception: ConceptionRules,
+    /// `[marriage.*]` (CK-366).
+    pub marriage: MarriageRules,
     /// The name pools by pool key.
     pub pools: BTreeMap<String, NamePool>,
     /// The pool key of each culture.
@@ -505,6 +580,201 @@ fn parse_conception(source: &Source<'_>, table: &Table) -> Result<ConceptionRule
     })
 }
 
+/// A signed weight in millionths, at most 1000 in size.
+fn weight(source: &Source<'_>, node: &Node, entry: &str) -> Result<i64, DataError> {
+    let value = source.scaled(node, entry, 6)?;
+    i64::try_from(value)
+        .ok()
+        .filter(|value| value.unsigned_abs() <= 1_000_000_000)
+        .ok_or_else(|| source.error(entry, "a weight lies in -1000..1000"))
+}
+
+/// An age curve whose every value is a probability.
+fn probability_curve(
+    source: &Source<'_>,
+    node: &Node,
+    entry: &str,
+) -> Result<Vec<(u32, u64)>, DataError> {
+    let points = curve(source, node, entry)?;
+    if points.iter().any(|(_, chance)| *chance > u64::from(PPB)) {
+        return Err(source.error(entry, "a probability must lie in 0..1"));
+    }
+    Ok(points)
+}
+
+/// A whole number of kilometres as metres.
+fn kilometres(source: &Source<'_>, node: &Node, entry: &str) -> Result<u64, DataError> {
+    u64::from(positive(source, node, entry)?)
+        .checked_mul(1000)
+        .ok_or_else(|| source.error(entry, "the distance is too large"))
+}
+
+fn parse_marriage(
+    source: &Source<'_>,
+    table: &Table,
+    registry: &Registry<'_>,
+) -> Result<MarriageRules, DataError> {
+    for key in table.keys() {
+        if !["wish", "pool", "score", "accept"].contains(&key.as_str()) {
+            return Err(source.error(format!("marriage.{key}"), "unknown section"));
+        }
+    }
+    let section = |name: &str| {
+        let entry = format!("marriage.{name}");
+        table
+            .get(name)
+            .ok_or_else(|| source.error(entry.clone(), "missing section"))
+            .and_then(|node| source.table(node, &entry))
+    };
+    Ok(MarriageRules {
+        wish: parse_wish(source, section("wish")?, registry)?,
+        pool: parse_pool_rules(source, section("pool")?)?,
+        score: parse_score(source, section("score")?, registry)?,
+        accept: parse_accept(source, section("accept")?)?,
+    })
+}
+
+/// `[marriage.wish]`.
+fn parse_wish(
+    source: &Source<'_>,
+    table: &Table,
+    registry: &Registry<'_>,
+) -> Result<MarriageWish, DataError> {
+    table_keys(
+        source,
+        table,
+        "marriage.wish",
+        &[
+            "women",
+            "men",
+            "lust_per_point",
+            "gregarious_per_point",
+            "pop_type",
+        ],
+    )?;
+    let mut pop_type = BTreeMap::new();
+    for (kind, node) in source.table(&table["pop_type"], "marriage.wish.pop_type")? {
+        let entry = format!("marriage.wish.pop_type.{kind}");
+        if !registry.pop_types.contains(&kind.as_str()) {
+            return Err(source.error(entry, "not a population type"));
+        }
+        pop_type.insert(kind.clone(), factor(source, node, &entry)?);
+    }
+    Ok(MarriageWish {
+        women: probability_curve(source, &table["women"], "marriage.wish.women")?,
+        men: probability_curve(source, &table["men"], "marriage.wish.men")?,
+        lust_per_point: per_point(
+            source,
+            &table["lust_per_point"],
+            "marriage.wish.lust_per_point",
+        )?,
+        gregarious_per_point: per_point(
+            source,
+            &table["gregarious_per_point"],
+            "marriage.wish.gregarious_per_point",
+        )?,
+        pop_type,
+    })
+}
+
+/// `[marriage.pool]`.
+fn parse_pool_rules(source: &Source<'_>, table: &Table) -> Result<MarriagePool, DataError> {
+    table_keys(
+        source,
+        table,
+        "marriage.pool",
+        &["near_km", "far_km", "min_candidates"],
+    )?;
+    let pool = MarriagePool {
+        near_m: kilometres(source, &table["near_km"], "marriage.pool.near_km")?,
+        far_m: kilometres(source, &table["far_km"], "marriage.pool.far_km")?,
+        min_candidates: whole(
+            source,
+            &table["min_candidates"],
+            "marriage.pool.min_candidates",
+        )?,
+    };
+    if pool.near_m > pool.far_m {
+        return Err(source.error("marriage.pool.near_km", "must not exceed far_km"));
+    }
+    Ok(pool)
+}
+
+/// `[marriage.score]`.
+fn parse_score(
+    source: &Source<'_>,
+    table: &Table,
+    registry: &Registry<'_>,
+) -> Result<MarriageScore, DataError> {
+    table_keys(
+        source,
+        table,
+        "marriage.score",
+        &[
+            "rank",
+            "rank_gap",
+            "age_gap_free",
+            "age_gap",
+            "opinion",
+            "fame",
+            "kin",
+            "child_age_penalty",
+        ],
+    )?;
+    let rank = complete(
+        source,
+        &table["rank"],
+        "marriage.score.rank",
+        registry.pop_types,
+        |node, entry| {
+            i64::try_from(source.integer(node, entry)?)
+                .map_err(|_| source.error(entry, "the rank is too large"))
+        },
+    )?;
+    let kin = complete(
+        source,
+        &table["kin"],
+        "marriage.score.kin",
+        &KIN_KINDS,
+        |node, entry| source.milli(node, entry),
+    )?;
+    Ok(MarriageScore {
+        rank,
+        rank_gap: source.milli(&table["rank_gap"], "marriage.score.rank_gap")?,
+        age_gap_free: whole(
+            source,
+            &table["age_gap_free"],
+            "marriage.score.age_gap_free",
+        )?,
+        age_gap: source.milli(&table["age_gap"], "marriage.score.age_gap")?,
+        opinion: weight(source, &table["opinion"], "marriage.score.opinion")?,
+        fame: weight(source, &table["fame"], "marriage.score.fame")?,
+        kin,
+        child_age_penalty: source.milli(
+            &table["child_age_penalty"],
+            "marriage.score.child_age_penalty",
+        )?,
+    })
+}
+
+/// `[marriage.accept]`.
+fn parse_accept(source: &Source<'_>, table: &Table) -> Result<MarriageAccept, DataError> {
+    table_keys(source, table, "marriage.accept", &["base", "per_score"])?;
+    let per_score = source.scaled(&table["per_score"], "marriage.accept.per_score", 9)?;
+    Ok(MarriageAccept {
+        base_ppb: source.ppb(&table["base"], "marriage.accept.base")?,
+        per_score_ppb: i64::try_from(per_score)
+            .ok()
+            .filter(|value| value.unsigned_abs() <= u64::from(PPB))
+            .ok_or_else(|| {
+                source.error(
+                    "marriage.accept.per_score",
+                    "a change per point lies in -1..1",
+                )
+            })?,
+    })
+}
+
 fn text_list(source: &Source<'_>, node: &Node, entry: &str) -> Result<Vec<String>, DataError> {
     array(source, node, entry)?
         .iter()
@@ -678,6 +948,7 @@ impl LifeCycle {
         )?;
         rules.relations = parse_relations(&source, section("relations")?, registry)?;
         rules.conception = parse_conception(&source, section("conception")?)?;
+        rules.marriage = parse_marriage(&source, section("marriage")?, registry)?;
         rules.parse_names(names_file, names, registry)?;
         rules.epithets = registry.events.parse_epithets(
             epithets_file,

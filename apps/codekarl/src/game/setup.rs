@@ -147,6 +147,12 @@ pub(crate) fn prepare(
         &scenario,
         economy_rules.as_deref().map_or(0, max_recruit_range_m),
     );
+    let reach_by_place = marriage_reach(
+        &scenario,
+        economy_rules
+            .as_deref()
+            .map_or(0, |rules| rules.lifecycle.marriage.pool.far_m),
+    );
     let identity = Identity {
         build: build_id(),
         scenario: scenario.id.clone(),
@@ -172,6 +178,7 @@ pub(crate) fn prepare(
             quality_by_place.clone(),
             shelter_by_place.clone(),
             nearby_by_place.clone(),
+            reach_by_place.clone(),
             Some(Arc::clone(&characters_io)),
         )
     };
@@ -304,6 +311,12 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         &scenario,
         economy_rules.as_deref().map_or(0, max_recruit_range_m),
     );
+    let reach_by_place = marriage_reach(
+        &scenario,
+        economy_rules
+            .as_deref()
+            .map_or(0, |rules| rules.lifecycle.marriage.pool.far_m),
+    );
     let wiring_gameplay = gameplay.clone();
     let wiring_rules = economy_rules.clone();
     let (sender, receiver) = channel();
@@ -320,6 +333,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         let scheduler_quality = quality_by_place.clone();
         let scheduler_shelter = shelter_by_place.clone();
         let scheduler_nearby = nearby_by_place.clone();
+        let scheduler_reach = reach_by_place.clone();
         let scheduler_io = Arc::clone(&characters_io);
         let reset_runtime = runtime.clone();
         let build = move || {
@@ -335,6 +349,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                             scheduler_quality.clone(),
                             scheduler_shelter.clone(),
                             scheduler_nearby.clone(),
+                            scheduler_reach.clone(),
                             Some(Arc::clone(&scheduler_io)),
                         )
                     }),
@@ -384,6 +399,7 @@ fn gameplay_scheduler_with_rules(
     quality_by_place: BTreeMap<String, u16>,
     shelter_by_place: BTreeMap<String, u64>,
     nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    reach_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     characters_io: Option<super::character_storage::Handle>,
 ) -> Scheduler<GameState> {
     let mut scheduler = Scheduler::<GameState>::new();
@@ -394,6 +410,7 @@ fn gameplay_scheduler_with_rules(
             quality_by_place,
             shelter_by_place,
             nearby_by_place,
+            reach_by_place,
             characters_io,
         );
     } else {
@@ -424,6 +441,7 @@ pub(crate) fn register_economy_callback_with_storage(
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
+        BTreeMap::new(),
         Some(handle),
     );
 }
@@ -433,6 +451,7 @@ pub(crate) fn register_economy_callback(scheduler: &mut Scheduler<GameState>, ru
     register_economy_callback_with_context(
         scheduler,
         rules,
+        BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
@@ -446,6 +465,7 @@ fn register_economy_callback_with_context(
     quality_by_place: BTreeMap<String, u16>,
     shelter_by_place: BTreeMap<String, u64>,
     nearby_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
+    reach_by_place: BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     characters_io: Option<super::character_storage::Handle>,
 ) {
     scheduler
@@ -485,8 +505,14 @@ fn register_economy_callback_with_context(
                 .map_err(io::Error::other)
                 .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
                 // Phase C, after the economy's step. A failure of phase A is returned once both have run.
-                let after =
-                    run_character_passes(&rules, state, tick.time(), seed, characters_io.as_ref());
+                let after = run_character_passes(
+                    &rules,
+                    state,
+                    tick.time(),
+                    seed,
+                    &reach_by_place,
+                    characters_io.as_ref(),
+                );
                 before.and(after)
             },
         )
@@ -584,6 +610,7 @@ pub(crate) fn run_character_passes(
     state: &mut GameState,
     tick: GameTime,
     seed: u64,
+    reach_by_place: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>,
     storage: Option<&super::character_storage::Handle>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let first = tick.date()?.day == 1;
@@ -602,7 +629,7 @@ pub(crate) fn run_character_passes(
     // death (an unavailable archive refuses it), and a life-log line is output (an unavailable log reports each line it cannot write).
     let mut archive = open_archive(&path);
     let mut logs = open_logs(&path);
-    let ledger = ck_characters::Ledger::new(&mut state.economy);
+    let ledger = ck_characters::Ledger::with_nearby(&mut state.economy, reach_by_place);
     let mut world = ck_characters::World {
         rules: &rules.events,
         personality: &rules.personality,
@@ -701,6 +728,42 @@ pub(crate) fn max_recruit_range_m(rules: &Rules) -> u32 {
         .unwrap_or(0)
 }
 
+/// The places within `reach_m` of each place, nearest first, by the great-circle distance in whole metres between their authored
+/// anchors (CK-366: the marriage pool's reach). The economy's recruitment table is a separate, approximate contract
+/// ([`nearby_places`]) and is not used for this.
+pub(crate) fn marriage_reach(
+    scenario: &ck_map::Scenario,
+    reach_m: u64,
+) -> BTreeMap<String, Vec<ck_economy::NearbyPlace>> {
+    let mut result = BTreeMap::new();
+    for (source_index, source) in scenario.locations.iter().enumerate() {
+        let mut places = scenario
+            .locations
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != source_index)
+            .filter_map(|(index, place)| {
+                let metres = ck_map::great_circle_metres(source.position, place.position)?;
+                (metres <= reach_m).then_some((metres, index, place.id.clone()))
+            })
+            .collect::<Vec<_>>();
+        places.sort_by_key(|(metres, index, _)| (*metres, *index));
+        result.insert(
+            source.id.clone(),
+            places
+                .into_iter()
+                .filter_map(|(metres, _, id)| {
+                    Some(ck_economy::NearbyPlace {
+                        id,
+                        distance_m: u32::try_from(metres).ok()?,
+                    })
+                })
+                .collect(),
+        );
+    }
+    result
+}
+
 fn nearby_places_for_locations(
     locations: &[(String, ck_map::Cell)],
     max_range_m: u32,
@@ -791,9 +854,9 @@ pub(crate) fn register_gameplay_lua_callbacks(
 
 #[cfg(test)]
 mod nearby_place_tests {
-    use super::{ground_distance_m, nearby_places, nearby_places_for_locations};
+    use super::{ground_distance_m, marriage_reach, nearby_places, nearby_places_for_locations};
     use ck_map::Cell;
-    use std::path::Path;
+    use std::{collections::BTreeMap, path::Path};
 
     #[test]
     fn ireland_island_monasteries_reach_their_ground_distance_neighbours() {
@@ -892,5 +955,41 @@ mod nearby_place_tests {
             tie_first_index < tie_second_index,
             "equal distances keep file order"
         );
+    }
+
+    #[test]
+    fn the_marriage_reach_is_the_great_circle_distance_between_the_authored_anchors() {
+        let scenario = ck_map::load_scenario(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/scenarios/ireland-768"),
+        )
+        .expect("shipped scenario");
+        let between = |reach: &BTreeMap<String, Vec<ck_economy::NearbyPlace>>, a: &str, b: &str| {
+            reach[a]
+                .iter()
+                .find(|place| place.id == b)
+                .map(|place| place.distance_m)
+        };
+        // Lorrha and Inisfallen are 150,704 m apart on the sphere between their authored points: out of a 150 km reach, though the
+        // economy's approximate ground distance (a separate contract) puts them inside it.
+        let near = marriage_reach(&scenario, 150_000);
+        assert_eq!(between(&near, "lorrha", "inisfallen"), None);
+        assert_eq!(between(&near, "inisfallen", "lorrha"), None);
+        let wide = marriage_reach(&scenario, 200_000);
+        let metres = between(&wide, "lorrha", "inisfallen").expect("within 200 km");
+        assert!((150_600..=150_800).contains(&metres), "{metres}");
+        assert_eq!(between(&wide, "inisfallen", "lorrha"), Some(metres));
+        // Nearest first, every distance within the reach, and no place is near itself.
+        for (place, others) in &wide {
+            assert!(
+                others
+                    .windows(2)
+                    .all(|pair| pair[0].distance_m <= pair[1].distance_m)
+            );
+            assert!(
+                others
+                    .iter()
+                    .all(|other| other.distance_m <= 200_000 && other.id != *place)
+            );
+        }
     }
 }

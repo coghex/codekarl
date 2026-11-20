@@ -319,13 +319,29 @@ fn the_daily_passes_run_the_event_engine_with_the_character_storage_on_the_first
         economy: economy_with_a_noble_pop(),
         characters: store_of(vec![monk]),
     };
-    run_character_passes(&rules, &mut state, at(768, 5, 2, 12), 9, Some(&handle)).unwrap();
+    run_character_passes(
+        &rules,
+        &mut state,
+        at(768, 5, 2, 12),
+        9,
+        &BTreeMap::new(),
+        Some(&handle),
+    )
+    .unwrap();
     assert_eq!(
         state.characters.get(1).unwrap().grade("hospitaller"),
         1,
         "not checked off the 1st"
     );
-    run_character_passes(&rules, &mut state, at(768, 5, 1, 12), 9, Some(&handle)).unwrap();
+    run_character_passes(
+        &rules,
+        &mut state,
+        at(768, 5, 1, 12),
+        9,
+        &BTreeMap::new(),
+        Some(&handle),
+    )
+    .unwrap();
     assert_eq!(state.characters.get(1).unwrap().grade("hospitaller"), 0);
     let lines = ck_characters::LifeLog::open(directory.join("LOGS"))
         .unwrap()
@@ -345,7 +361,14 @@ fn the_daily_passes_run_the_event_engine_with_the_character_storage_on_the_first
         monk.life.grades.insert("hospitaller".to_owned(), 1);
         monk
     }]);
-    let error = run_character_passes(&rules, &mut state, at(768, 6, 1, 12), 9, Some(&handle));
+    let error = run_character_passes(
+        &rules,
+        &mut state,
+        at(768, 6, 1, 12),
+        9,
+        &BTreeMap::new(),
+        Some(&handle),
+    );
     assert!(error.is_err());
     std::fs::remove_dir_all(&directory).ok();
 }
@@ -367,7 +390,14 @@ fn an_unavailable_log_does_not_stop_the_state_updates_and_is_reported() {
         economy: economy_with_a_noble_pop(),
         characters: store_of(vec![monk]),
     };
-    let result = run_character_passes(&rules, &mut state, at(768, 5, 1, 12), 9, Some(&handle));
+    let result = run_character_passes(
+        &rules,
+        &mut state,
+        at(768, 5, 1, 12),
+        9,
+        &BTreeMap::new(),
+        Some(&handle),
+    );
     assert!(result.is_err(), "the unwritable line is reported");
     let monk = state.characters.get(1).unwrap();
     assert_eq!(monk.personality.honour, 950, "the birthday's fade ran");
