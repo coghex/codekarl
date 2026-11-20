@@ -501,7 +501,15 @@ def plan(  # noqa: PLR0912  # linear workflow kept whole so failure ordering sta
     if not named and kind not in QUIET:
         parent_sender = _parent_sender(parent) if parent else None
         if parent_sender is not None and parent_sender in members and parent_sender != sender:
-            targets.add(parent_sender)
+            targets.update(
+                {parent_sender}
+                | (
+                    {manager}
+                    if sender not in people | {manager}
+                    and kind in {"question", "blocked", "done", "declined"}
+                    else set()
+                )
+            )
         elif sender in people or kind in {"question", "blocked", "done", "declined"}:
             targets.add(manager)
     if named & people and sender not in people and kind in {"question", "blocked"}:

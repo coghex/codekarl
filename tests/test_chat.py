@@ -105,6 +105,27 @@ class Routing(unittest.TestCase):
                 self.route("ck-worker-7", f"[{kind} T1] details")["recipients"], ["ck-manager"]
             )
 
+    def test_unaddressed_actionable_replies_also_reach_manager(self) -> None:
+        reviewer = message("ck-reviewer-4", "[request] review", "parent")
+        for kind in ("done", "blocked", "question", "declined"):
+            with self.subTest(kind=kind):
+                result = plan(
+                    message("ck-worker-7", f"[{kind}] details"), self.cfg, self.agents, reviewer
+                )
+                self.assertEqual(result["recipients"], ["ck-manager", "ck-reviewer-4"])
+        for text, expected in (
+            ("[answer] details", ["ck-reviewer-4"]),
+            ("[status] details", []),
+            ("[done] @ck-worker-7 details", ["ck-manager", "ck-reviewer-4"]),
+            ("[done] @ck-reviewer-4 details", ["ck-reviewer-4"]),
+        ):
+            with self.subTest(text=text):
+                result = plan(message("ck-worker-7", text), self.cfg, self.agents, reviewer)
+                self.assertEqual(result["recipients"], expected)
+        manager = message("ck-manager", "[request] task", "parent")
+        result = plan(message("ck-worker-7", "[done] details"), self.cfg, self.agents, manager)
+        self.assertEqual(result["recipients"], ["ck-manager"])
+
     def test_unknown_target_does_not_turn_into_manager_assignment(self) -> None:
         result = self.route(text="@syn-solver-1 change something")
         self.assertFalse(result["recipients"])

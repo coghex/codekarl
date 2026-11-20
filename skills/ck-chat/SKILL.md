@@ -104,7 +104,8 @@ no `done` reply. Message bodies need no client labels such as "from weechat".
 
 Acknowledgements and routine status replies do not wake the manager. Explicit
 mentions deliver to their recipients. Unaddressed owner requests and worker
-questions, blockers and completions reach the manager. An absent recipient
+questions, blockers and completions reach the manager. An unaddressed done, declined, blocked or question from a worker or reviewer (no handle other than its own) reaches ck-manager even as a reply to another agent; one addressed to a named agent keeps its route.
+An absent recipient
 keeps its own queue; do not reinterpret its task as an assignment to someone else.
 
 ## Owner intervention and interruptions
