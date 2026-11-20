@@ -20,7 +20,7 @@ use ck_economy::{
     genetics::{PPB, round_div},
 };
 use ck_sim::GameTime;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The age from which a character's yearly events run.
 pub const YEARLY_FROM: u32 = 15;
@@ -34,10 +34,34 @@ const SLOTH_DILIGENCE: usize = 6;
 const CURVE_LEVEL: i128 = 12;
 const MILLION: i128 = 1_000_000;
 
-/// The pops and skills of every live character when the day's birthday pass starts.
-struct Snapshot {
+/// The pops, skills and vice/virtue and manner values of every live character when the day's birthday pass starts, and who its
+/// parents' children are (CK-367).
+pub(crate) struct Snapshot {
     roster: BTreeMap<PopLocator, Vec<u64>>,
     skills: BTreeMap<u64, BTreeMap<String, i64>>,
+    /// The vice/virtue and manner values of each live character.
+    minds: BTreeMap<u64, ([i64; 7], [i64; 9])>,
+    /// The live children of each recorded parent, by recorded parentage.
+    children: BTreeMap<u64, BTreeSet<u64>>,
+}
+
+impl Snapshot {
+    /// The values of `c`'s household: its parents and its siblings (the other children of either parent) that are in the snapshot.
+    pub(crate) fn household(&self, c: &Character) -> Vec<([i64; 7], [i64; 9])> {
+        let mut members: BTreeSet<u64> = BTreeSet::new();
+        for parent in [c.father, c.mother] {
+            if parent == crate::UNKNOWN {
+                continue;
+            }
+            members.insert(parent);
+            members.extend(self.children.get(&parent).into_iter().flatten());
+        }
+        members.remove(&c.id);
+        members
+            .iter()
+            .filter_map(|member| self.minds.get(member).copied())
+            .collect()
+    }
 }
 
 fn aptitude(rules: &SkillRules, c: &Character, skill: &str) -> i128 {
@@ -227,16 +251,29 @@ impl CharacterStore {
     fn snapshot(&self) -> Snapshot {
         let mut roster: BTreeMap<PopLocator, Vec<u64>> = BTreeMap::new();
         let mut skills = BTreeMap::new();
+        let mut minds = BTreeMap::new();
+        let mut children: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
         for c in self.live.values() {
             roster.entry(c.pop.clone()).or_default().push(c.id);
             skills.insert(c.id, c.life.skills.clone());
+            minds.insert(c.id, (c.personality.vice, c.personality.manner));
+            for parent in [c.father, c.mother] {
+                if parent != crate::UNKNOWN {
+                    children.entry(parent).or_default().insert(c.id);
+                }
+            }
         }
-        Snapshot { roster, skills }
+        Snapshot {
+            roster,
+            skills,
+            minds,
+            children,
+        }
     }
 
     /// The birthday pass (§5), for every live character whose birthday is `today` (slice 3's rules), in identifier order: humour
     /// drift, standing fade, the yearly events (age 15 or more), the craft rise (for crafts held before the day's events), growth by
-    /// use (from the training age), home education and precedence. A death ends that character's later stages. A snapshot of every
+    /// use (from the training age), home education, upbringing (CK-367), the height sample (CK-367) and precedence. A death ends that character's later stages. A snapshot of every
     /// character's pop and skills is taken before the pass starts, and home education reads its teachers and the pupil's
     /// scholarship from it. A failing character does not stop the others: the first failure is returned when the pass is done.
     ///
@@ -352,7 +389,11 @@ impl CharacterStore {
         if let Some(c) = self.live.get_mut(&id) {
             c.life.skills.extend(levels);
         }
-        // Stage 7: precedence.
+        // Stage 6a (CK-367 §1): upbringing, from the snapshot's household.
+        self.upbringing(world, id, today, age, snapshot)?;
+        // Stage 6b (CK-367 §2): the height sample and offset.
+        self.height_sample(world, id, age)?;
+        // Stage 7: precedence (so a vice that upbringing changed and that invalidates a calling removes it the same day).
         self.precedence(world, id, today, first)?;
         // Stage 8 (CK-364 §1): the birthday at which the character reaches majority, by its culture's subgroup and its sex, is the
         // `coming_of_age` happening, once (a character who is created of age, or past it, never has one).

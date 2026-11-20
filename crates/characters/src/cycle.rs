@@ -276,11 +276,8 @@ impl CharacterStore {
         today: GameTime,
     ) -> Result<u32, Error> {
         let death = &lifecycle.death;
-        // The shown weight (the genetic value and a woman's offset, held to the bounds) against the rolled one.
-        let weight = death.weight_multiplier(
-            c.genetics.shown(genetics, c.sex, stat("weight")),
-            c.genetics.value[stat("weight")],
-        );
+        // The shown weight against the base weight (the genetic value and a woman's offset), through the one route (CK-367 §3a).
+        let weight = death.weight_multiplier(c.shown_weight(), c.base_weight(genetics));
         Ok(death.annual_ppb(&DeathInputs {
             age: Self::age_on(c, today)?,
             constitution: c.genetics.value[stat("constitution")],
@@ -648,7 +645,7 @@ impl CharacterStore {
         let rules = &world.lifecycle.conception;
         let (age_f, age_m) = (Self::age_on(woman, today)?, Self::age_on(husband, today)?);
         let fecundity = |c: &Character| {
-            let shown = c.genetics.shown(world.genetics, c.sex, stat("fecundity"));
+            let shown = c.shown_stat(world.genetics, stat("fecundity"));
             (u128::try_from(shown.max(0)).unwrap_or(0), 10_000)
         };
         let mode = Self::mode(world, woman, husband, age_f)?;

@@ -342,6 +342,83 @@ fn a_delivery_before_the_step_adds_its_dependent_counts_pending_and_is_counted_b
 }
 
 #[test]
+fn a_newborns_birth_sample_is_the_pops_necessities_after_the_days_step_and_the_creation_sample_stands_if_it_fails()
+ {
+    // CK-367 §2: a delivery commits before the economy's step, which changes the pop's necessities that same day; the child's age-0
+    // sample is the value of the birth day, after the step, recorded once. The shipped 768 start moves some pops' food on 1 February.
+    let (rules, economy) = start();
+    let pop = the_pop(economy);
+    // The pop has no necessities in stock and shows 800: its food falls with every step, so the step of the birth day moves it.
+    let mut hungry = economy.clone();
+    {
+        let place = hungry
+            .places
+            .iter_mut()
+            .find(|p| p.id == pop.place)
+            .unwrap();
+        let state = &mut place.pops[pop.slot as usize];
+        state.consumption.necessities_pm = 800;
+        state.consumption.necessities_centi = 0;
+    }
+    let necessities = |game: &Game| {
+        pop_of(&game.state().economy, &pop)
+            .consumption
+            .necessities_pm
+    };
+    let pregnant = || {
+        let mut mother = character(1, at(743, 6, 1, 0), &pop, Sex::Female);
+        mother.spouses = vec![2];
+        mother.life.pregnant_by = Some(2);
+        mother.life.due = Some(at(768, 2, 1, 0));
+        "irish".clone_into(&mut mother.life.pool);
+        let mut father = character(2, at(738, 6, 1, 0), &pop, Sex::Male);
+        father.spouses = vec![1];
+        "irish".clone_into(&mut father.life.pool);
+        vec![mother, father]
+    };
+    let mut game = Game::with_economy(
+        rules.clone(),
+        hungry.clone(),
+        pregnant(),
+        at(768, 1, 31, 0),
+        "birth-sample",
+    );
+    assert!(game.through(noon(768, 1, 31)).is_empty());
+    let day_before = necessities(&game);
+    assert!(game.through(noon(768, 2, 1)).is_empty());
+    let birth_day = necessities(&game);
+    assert_ne!(day_before, birth_day, "the step changes the pop's food");
+    let child = game.state().characters.get(3).expect("the child");
+    assert_eq!(
+        (
+            child.life.food_count,
+            child.life.food_sum,
+            child.life.food_age
+        ),
+        (1, u64::from(birth_day), 0),
+        "one sample, the birth day's value and not the day before's"
+    );
+    // The step fails on the 1st: the delivery stands with the sample taken at creation, one sample of the value it saw.
+    let mut broken = rules.clone();
+    broken.curves.remove("births_food");
+    let mut failing = Game::with_economy(
+        broken,
+        hungry,
+        pregnant(),
+        at(768, 1, 31, 0),
+        "birth-sample-failing",
+    );
+    assert!(failing.through(noon(768, 1, 31)).is_empty());
+    let seen = necessities(&failing);
+    assert_eq!(failing.through(noon(768, 2, 1)).len(), 1);
+    let child = failing.state().characters.get(3).expect("the child");
+    assert_eq!(
+        (child.life.food_count, child.life.food_sum),
+        (1, u64::from(seen))
+    );
+}
+
+#[test]
 fn the_death_pressure_is_the_economys_own_multipliers_of_the_pop_as_it_stands() {
     let (rules, economy) = start();
     let pop = the_pop(economy);

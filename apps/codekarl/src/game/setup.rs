@@ -640,17 +640,25 @@ pub(crate) fn run_character_passes(
         archive: &mut archive,
         logs: &mut logs,
     };
+    // The birth-day samples of the day's newborns, after the economy's step (CK-367 §2), then the birthdays.
+    let samples = state.characters.run_birth_samples(&mut world, tick);
     let birthdays = state.characters.run_birthdays(&mut world, tick);
-    let (monthly, conceptions) = if first {
+    // On the 1st: the monthly precedence check, the conceptions and, after them, the monthly weights (CK-367).
+    let (monthly, conceptions, weights) = if first {
         (
             state.characters.monthly_precedence(&mut world, tick),
             state.characters.run_conceptions(&mut world, tick),
+            state.characters.run_monthly_weights(&mut world),
         )
     } else {
-        (Ok(()), Ok(()))
+        (Ok(()), Ok(()), Ok(()))
     };
     // All ran whatever the first reported; the first failure is the one returned.
-    birthdays.and(monthly).and(conceptions)?;
+    samples
+        .and(birthdays)
+        .and(monthly)
+        .and(conceptions)
+        .and(weights)?;
     Ok(())
 }
 

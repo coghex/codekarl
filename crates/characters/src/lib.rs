@@ -8,6 +8,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
+pub mod body;
 pub mod cycle;
 pub mod epithets;
 pub mod events;
@@ -664,14 +665,17 @@ fn child_record(
         .or_else(|| parents[1].map(|mother| mother.life.house.clone()))
         .unwrap_or_default();
     life.house.clone_from(&life.house_of_birth);
-    Ok(new.into_record(
+    let mut record = new.into_record(
         id,
         parents[0].map_or(UNKNOWN, |parent| parent.id),
         parents[1].map_or(UNKNOWN, |parent| parent.id),
         genetics,
         personality,
         life,
-    ))
+    );
+    // The body (CK-367): its weight and the first sample of its food record.
+    CharacterStore::start_body(ctx, &mut record, populations)?;
+    Ok(record)
 }
 
 impl CharacterStore {
@@ -722,10 +726,9 @@ impl CharacterStore {
         life.pool = pool;
         life.house.clone_from(&new.house);
         life.house_of_birth.clone_from(&new.house);
-        self.live.insert(
-            id,
-            new.into_record(id, UNKNOWN, UNKNOWN, genetics, personality, life),
-        );
+        let mut record = new.into_record(id, UNKNOWN, UNKNOWN, genetics, personality, life);
+        Self::start_body(ctx, &mut record, populations)?;
+        self.live.insert(id, record);
         self.next_id = next;
         Ok(id)
     }

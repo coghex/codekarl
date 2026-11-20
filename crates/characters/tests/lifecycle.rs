@@ -219,7 +219,7 @@ fn person(id: u64, birth: GameTime, place: &str, sex: Sex) -> Character {
     genetics.value[1] = 70_000;
     let mut life = ck_characters::LifeRecord::default();
     "irish".clone_into(&mut life.pool);
-    Character {
+    let mut character = Character {
         id,
         name: format!("c{id}"),
         sex,
@@ -235,7 +235,10 @@ fn person(id: u64, birth: GameTime, place: &str, sex: Sex) -> Character {
         genetics: Box::new(genetics),
         personality: PersonalityRecord::default(),
         life: Box::new(life),
-    }
+    };
+    // Its weight is the base weight, as a character's is when it is created (CK-367).
+    character.life.weight = character.base_weight(&rules().genetics);
+    character
 }
 fn store_of(characters: Vec<Character>) -> CharacterStore {
     let next = characters.iter().map(|c| c.id).max().unwrap_or(0) + 1;
@@ -1376,8 +1379,9 @@ fn a_pop_without_a_ledger_changes_no_heads() {
 // --- The review's findings ---------------------------------------------------------------------------------------------------
 
 #[test]
-fn the_live_chance_reads_the_shown_weight_against_the_rolled_one() {
-    // A woman of 40 who rolled 45 kg shows less: the shipped female offset and the floor put her below 80% of the roll.
+fn the_live_chance_reads_the_shown_weight_against_the_base_weight() {
+    // CK-367 §3a: the shown weight (the stored one) against the base weight, the genetic roll and a woman's offset together. A woman
+    // at her base weight is not an extreme, whatever the offset; one who has fallen below 80% of it, or a man risen above 125%, is.
     let lifecycle = &rules().lifecycle;
     let today = date(800, 1, 1);
     let chance = |c: &Character| {
@@ -1385,14 +1389,17 @@ fn the_live_chance_reads_the_shown_weight_against_the_rolled_one() {
             .expect("chance")
     };
     let mut woman = person(1, date(759, 6, 1), "a", Sex::Female);
-    woman.genetics.value[1] = 45_000;
-    let shown = woman.genetics.shown(&rules().genetics, Sex::Female, 1);
-    assert!(shown * 1000 < 800 * 45_000, "shown {shown}");
-    assert_eq!(chance(&woman), 11_794_112, "x1.2 of 9,828,427");
-    // A man of the same roll shows it, and is not an extreme.
+    let base = woman.base_weight(&rules().genetics);
+    assert!(base < 70_000, "the woman's offset lowers her base: {base}");
+    assert_eq!(chance(&woman), 9_828_427, "at her base weight");
+    woman.life.weight = base * 79 / 100;
+    assert_eq!(chance(&woman), 11_794_112, "x1.2 of 9,828,427 below 80%");
+    woman.life.weight = base * 80 / 100;
+    assert_eq!(chance(&woman), 9_828_427, "exactly 80% is not an extreme");
     let mut man = person(2, date(759, 6, 1), "a", Sex::Male);
-    man.genetics.value[1] = 45_000;
     assert_eq!(chance(&man), 9_828_427);
+    man.life.weight = 70_000 * 126 / 100;
+    assert_eq!(chance(&man), 11_794_112, "above 125%");
 }
 
 #[test]
