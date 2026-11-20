@@ -80,6 +80,7 @@ trait ReportingBackend: Gpu2d {
     fn scene_stats(&self) -> Option<ck_render_2d::SceneStats>;
     fn drawn_generation(&self) -> Option<u64>;
     fn finish_metrics(&mut self, hub: &MetricsHub);
+    #[cfg(feature = "test-support")]
     fn settled_checker_frame(&self) -> Option<u64>;
 }
 
@@ -115,6 +116,7 @@ impl ReportingBackend for MetalBackend {
         });
     }
 
+    #[cfg(feature = "test-support")]
     fn settled_checker_frame(&self) -> Option<u64> {
         MetalBackend::settled_checker_frame(self)
     }
@@ -570,6 +572,7 @@ mod tests {
             None
         }
         fn finish_metrics(&mut self, _: &MetricsHub) {}
+        #[cfg(feature = "test-support")]
         fn settled_checker_frame(&self) -> Option<u64> {
             None
         }
