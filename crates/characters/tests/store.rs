@@ -66,6 +66,7 @@ impl CreateFounder for CharacterStore {
         let context = Context {
             rules,
             personality: &rules_all().personality,
+            events: &rules_all().events,
             seed: 7,
             tick: birth,
         };
@@ -138,7 +139,7 @@ fn ruler_relations_lose_last_qualification_on_replacement_and_death() {
             &|_: &PopLocator| Some(3),
         )
         .expect("create");
-    s.marry(r, wife, date(800, 1, 1)).expect("marry");
+    s.state_marry(r, wife, date(800, 1, 1)).expect("marry");
     s.set_parents(child, r, UNKNOWN, date(800, 1, 1))
         .expect("parents");
     s.set_office(r, Some(Office::Ruler), date(800, 1, 1))
@@ -228,9 +229,10 @@ fn death_is_transactional_and_dead_parent_remains_readable() {
     s.set_office(dad, Some(Office::Ruler), date(800, 1, 1))
         .expect("office");
     let before = s.clone();
-    assert!(s.die(dad, date(800, 2, 29), &mut Fail).is_err());
+    assert!(s.state_die(dad, date(800, 2, 29), &mut Fail).is_err());
     assert_eq!(s, before);
-    s.die(dad, date(800, 2, 29), &mut archive).expect("death");
+    s.state_die(dad, date(800, 2, 29), &mut archive)
+        .expect("death");
     assert!(s.get(dad).is_none());
     assert_eq!(
         archive
@@ -344,7 +346,7 @@ fn unknown_missing_pops_and_record_size() {
         .expect("create");
     let before = s.clone();
     assert!(
-        s.move_to(
+        s.state_move_to(
             id,
             PopLocator {
                 place: "bad".into(),
@@ -430,7 +432,8 @@ fn ruler_death_and_divorce_end_only_the_last_qualification() {
     let child = s
         .create("c".into(), Sex::Male, date(790, 1, 1), pop(), &heads)
         .expect("child");
-    s.marry(ruler, spouse, date(800, 1, 1)).expect("marry");
+    s.state_marry(ruler, spouse, date(800, 1, 1))
+        .expect("marry");
     s.set_parents(child, ruler, UNKNOWN, date(800, 1, 1))
         .expect("parent");
     s.set_office(ruler, Some(Office::Ruler), date(800, 1, 1))
@@ -440,7 +443,8 @@ fn ruler_death_and_divorce_end_only_the_last_qualification() {
     s.divorce(ruler, spouse, date(800, 1, 2)).expect("divorce");
     assert_eq!(s.tier(spouse, date(805, 1, 1)), Some(Tier::Full));
     assert_eq!(s.tier(spouse, date(805, 1, 2)), Some(Tier::Coarse));
-    s.die(ruler, date(800, 1, 3), &mut Sink).expect("death");
+    s.state_die(ruler, date(800, 1, 3), &mut Sink)
+        .expect("death");
     assert_eq!(s.tier(child, date(810, 1, 1)), Some(Tier::Full));
 }
 
@@ -489,7 +493,9 @@ fn changed_archive_length_is_refused_without_allocating_its_claimed_size() {
             &|_: &PopLocator| Some(1),
         )
         .expect("create");
-    store.die(id, date(800, 1, 1), &mut archive).expect("death");
+    store
+        .state_die(id, date(800, 1, 1), &mut archive)
+        .expect("death");
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .open(&path)
@@ -512,7 +518,9 @@ fn ruler_replaced_by_high_cleric_starts_spouse_grace() {
     let spouse = store
         .create("s".into(), Sex::Female, date(770, 1, 1), pop(), &heads)
         .expect("spouse");
-    store.marry(ruler, spouse, date(800, 1, 1)).expect("marry");
+    store
+        .state_marry(ruler, spouse, date(800, 1, 1))
+        .expect("marry");
     store
         .set_office(ruler, Some(Office::Ruler), date(800, 1, 1))
         .expect("ruler");

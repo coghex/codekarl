@@ -1490,6 +1490,8 @@ STEPS = [
             "assets/game/genetics/",
             # CK-362: the personality data loads with the rules; the characters tests build characters from it.
             "assets/game/personality.toml",
+            # CK-363: the character event data loads with the rules; the characters tests run the events.
+            "assets/game/events/",
             # shipped_economy_and_ireland_start_data_are_strictly_valid loads these rules and start.
             "assets/game/economy.toml",
             "assets/scenarios/ireland-768/economy.toml",

@@ -9,5 +9,13 @@ publish.workspace = true
 ck-economy = { path = "../economy" }
 ck-sim = { path = "../sim" }
 
+[features]
+# The state-only mutators (no happenings, no precedence), for fixtures that build characters without a world. Off by default: the game
+# and every other crate can only reach the hooked `*_with_events` methods. Only [dev-dependencies] may enable it.
+test-fixtures = []
+
+[dev-dependencies]
+ck-characters = { path = ".", features = ["test-fixtures"] }
+
 [lints]
 workspace = true

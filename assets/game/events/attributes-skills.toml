@@ -1,0 +1,231 @@
+# Attributes, deeds, precedence and skills (draft r2; r2 adds [catalog]). Drafted by Claude (ck-designer-1), 2026-11-19, for characters slice 4.
+# Notes and approvals: .pipeline/coordination/history-scratch/events-data-r1.md. Keys follow lists/attributes.md (approved).
+# Numbers are tools/char_gen.py's (tested with the owner r137-r138) or marked TUNE; placeholders to tune.
+
+# ======== Deeds: a counter per deed; the grade follows the counter (never falls, r116) ========
+# thresholds = the count needed for C, B, A, S, SS, SSS.
+[deeds.veteran]
+counter = "battles_survived"
+thresholds = [3, 6, 10, 15, 21, 28]   # owner r138 ("veteran rarer"), superseding attributes-r3's example 2, 4, 7, 11, 16, 22
+
+[deeds.champion]
+counter = "duels_won"
+thresholds = [2, 4, 7, 11, 16, 22]
+
+[deeds.strategist]
+counter = "campaigns_won"
+thresholds = [2, 4, 7, 11, 16, 22]
+
+[deeds.cattle_raider]
+counter = "raids_led"
+thresholds = [4, 8, 14, 22, 32, 44]
+
+[deeds.viking]
+counter = "sea_raids"
+thresholds = [3, 6, 10, 15, 21, 28]   # TUNE
+
+[deeds.varangian]
+counter = "years_in_imperial_guard"
+thresholds = [1, 3, 5, 8, 12, 16]     # TUNE
+
+[deeds.siege_expert]
+counter = "sieges"
+thresholds = [2, 4, 7, 11, 16, 22]    # TUNE
+
+[deeds.woodland_fighter]
+counter = "ambushes_in_rough_ground"
+thresholds = [2, 4, 7, 11, 16, 22]    # TUNE
+
+[deeds.fleet_captain]
+counter = "naval_battles"
+thresholds = [2, 4, 7, 11, 16, 22]    # TUNE
+
+# ======== Crafts: granted by character moments (character-events.toml); the grade rises on occasion, never falls (r116) ========
+[craft_rise]
+# yearly, while the character holds the craft: chance = rise x skill / 15 of one grade up (at most SSS)
+rise = 0.05
+skills = { poet = "oratory", harper = "oratory", wit = "oratory", judge = "scholarship", genealogist = "scholarship", scribe = "scholarship", latinist = "scholarship", physician = "medicine", master_smith = "craftsmanship", builder = "craftsmanship", navigator = "seamanship", horse_breeder = "horsemanship", huntsman = "horsemanship", herdsman = "husbandry", merchant = "administration" }
+
+# ======== Precedence (r117): skills, stats, humours and virtues outrank attributes and traits ========
+# An attribute whose conditions fail is removed that day, with a log line ("{name} fell from the ascetic life"). Checked whenever a
+# value it reads changes and at the yearly check. Deeds and crafts never fall (r116) and have no removal conditions. The mind traits
+# are the exception (mind-traits-r2, r123): they have no value conditions and are lifted only by events.
+[keep_while.ascetic]
+virtue_min = { gluttony_temperance = 0, lust_chastity = 0 }   # an ascetic whose gluttony or lust passes 0 falls (char_gen)
+pop_type = ["monk"]
+
+[keep_while.cele_de]
+has = ["ascetic"]
+
+[keep_while.preacher]
+skill_min = { oratory = 8 }           # TUNE: a margin below the gaining 10, so it does not flicker
+
+[keep_while.soul_friend]
+skill_min = { theology = 10 }         # TUNE: a margin below the gaining 12
+virtue_min = { envy_kindness = 0 }
+
+[keep_while.saintly]
+has = ["ascetic"]
+
+[keep_while.hospitaller]
+pop_luxuries_min = 500                # TUNE: the open house closes when the pop's luxuries fall below 500 permille (r117: poverty)
+
+[keep_while.fennid]
+lacks_land = true                     # ends on inheriting land (the inherited_land happening also removes it)
+
+[keep_while.rigfennid]
+has = ["fennid"]
+
+# Station: the hospitaller (briugu) is taken on through the actions tab (L2) or an event; not granted in slice 4.
+# Backgrounds (hostage_raised, exile, pilgrim) never fall.
+
+# ======== Skills ========
+[skills]
+list = ["leadership", "craftsmanship", "seamanship", "scholarship", "horsemanship", "martial_prowess", "oratory", "administration", "theology", "medicine", "husbandry"]
+# aptitude stat per skill (r82); none for the rest
+aptitude = { oratory = "wit", scholarship = "intellect", administration = "intellect", theology = "intellect", medicine = "intellect" }
+train_from = 7          # fosterage age: skills grow by use from here
+# yearly growth by use: gain = gain_rate x use x aptitude x diligence / (1 + (level / 12)^2)
+#   aptitude = 1 + 0.05 x (stat - 10) (1 if none); diligence = 1 + 0.05 x sloth_diligence (clamped to -7..7)
+# yearly loss: level x (decay_used x use + decay_unused x (1 - use)); a fully used skill settles near 20
+gain_rate = 3.0
+decay_used = 0.04
+decay_unused = 0.20
+use_spread = 0.4        # a character's own use of each skill strays from its pop type's profile: x normal(1, 0.4), floored 0, capped 1
+
+# use profiles by pop type and sex: how much of each year goes to each skill (0..1). Game pop types: char_gen's farmer is peasant and
+# labourer, its clergy is monk.
+[skills.use.noble.m]
+leadership = 0.6
+martial_prowess = 0.8
+horsemanship = 0.6
+oratory = 0.4
+administration = 0.3
+husbandry = 0.2
+scholarship = 0.15
+theology = 0.1
+[skills.use.noble.f]
+administration = 0.5
+oratory = 0.4
+husbandry = 0.4
+craftsmanship = 0.3
+medicine = 0.1
+scholarship = 0.15
+theology = 0.1
+[skills.use.peasant.m]
+husbandry = 0.9
+craftsmanship = 0.3
+martial_prowess = 0.2
+[skills.use.peasant.f]
+husbandry = 0.7
+craftsmanship = 0.5
+medicine = 0.1
+[skills.use.labourer.m]
+husbandry = 0.6
+craftsmanship = 0.6
+martial_prowess = 0.2
+[skills.use.labourer.f]
+husbandry = 0.5
+craftsmanship = 0.6
+medicine = 0.1
+[skills.use.monk.m]
+theology = 0.9
+scholarship = 0.8
+administration = 0.3
+oratory = 0.3
+medicine = 0.2
+[skills.use.monk.f]
+theology = 0.9
+scholarship = 0.5
+medicine = 0.3
+craftsmanship = 0.2
+
+[skills.focus]
+# education focus (households-r4, r15, r112): x1.5 on its skills, x0.7 on the rest; balanced = no change. The player may set it for
+# their ruler's household (L6); generated characters get one by these odds.
+on = 1.5
+off = 0.7
+martial = ["martial_prowess", "leadership", "horsemanship"]
+statecraft = ["administration", "oratory", "leadership"]
+learning = ["scholarship", "oratory", "medicine"]
+church = ["theology", "scholarship"]
+[skills.focus.odds]
+noble_m = { balanced = 40, martial = 30, statecraft = 15, learning = 10, church = 5 }
+noble_f = { balanced = 50, statecraft = 25, learning = 15, church = 10 }
+peasant_m = { balanced = 85, martial = 10, church = 5 }
+peasant_f = { balanced = 90, church = 10 }
+labourer_m = { balanced = 85, martial = 10, church = 5 }
+labourer_f = { balanced = 90, church = 10 }
+monk_m = { church = 60, learning = 30, balanced = 10 }
+monk_f = { church = 70, learning = 20, balanced = 10 }
+
+[skills.home_education]
+# characters-r8 (r8, r9): skills drift toward the best of the same pop's characters, mostly in childhood; skills only, never
+# attributes (r184). Yearly: level += rate x age_factor x aptitude x (best - level) when best > level, x the focus multiplier.
+rate = 0.05                         # TUNE
+age_factor = [[0, 1.0], [14, 0.3], [25, 0.1]]   # from age: 1.0 to 13, 0.3 from 14, 0.1 from 25 (TUNE)
+# scholarship speeds it: x(1 + 0.02 x scholarship) (characters-r8: "the rate depends on ... scholarship"; TUNE)
+scholarship_per_point = 0.02
+
+# ======== Catalog: every trait and attribute key the data uses, once (r2, for the loader's checks) ========
+# kind: inherited_trait, mind_trait, deed, craft, calling, station, background. graded: has grades C..SSS (raise_grade/lower_grade
+# allowed); ungraded keys take grant/remove only. stress_moves: the yearly stress events move its grade (drunkard). inherited: also
+# passed by genetics (genetics/traits.toml).
+[catalog]
+beauty = { kind = "inherited_trait", graded = true }
+ill_favoured = { kind = "inherited_trait", graded = true }
+keen_eyed = { kind = "inherited_trait", graded = true }
+fool = { kind = "inherited_trait", graded = true }
+prodigious_memory = { kind = "inherited_trait", graded = true }
+left_handed = { kind = "inherited_trait", graded = false }
+twin_bearer = { kind = "inherited_trait", graded = false }
+club_foot = { kind = "inherited_trait", graded = false }
+harelip = { kind = "inherited_trait", graded = false }
+dwarfism = { kind = "inherited_trait", graded = false }
+albino = { kind = "inherited_trait", graded = false }
+bleeder = { kind = "inherited_trait", graded = false }
+stammer = { kind = "inherited_trait", graded = false }
+deaf = { kind = "inherited_trait", graded = false }
+blind = { kind = "inherited_trait", graded = false }
+falling_sickness = { kind = "inherited_trait", graded = false }
+visions = { kind = "inherited_trait", graded = false }
+melancholy = { kind = "mind_trait", graded = true, stress_moves = false }
+rage_fits = { kind = "mind_trait", graded = true, stress_moves = false }
+recluse = { kind = "mind_trait", graded = true, stress_moves = false }
+madness = { kind = "mind_trait", graded = true, stress_moves = false, inherited = true }
+drunkard = { kind = "mind_trait", graded = true, stress_moves = true }
+veteran = { kind = "deed", graded = true }
+champion = { kind = "deed", graded = true }
+strategist = { kind = "deed", graded = true }
+cattle_raider = { kind = "deed", graded = true }
+viking = { kind = "deed", graded = true }
+varangian = { kind = "deed", graded = true }
+siege_expert = { kind = "deed", graded = true }
+woodland_fighter = { kind = "deed", graded = true }
+fleet_captain = { kind = "deed", graded = true }
+poet = { kind = "craft", graded = true }
+harper = { kind = "craft", graded = true }
+wit = { kind = "craft", graded = true }
+judge = { kind = "craft", graded = true }
+genealogist = { kind = "craft", graded = true }
+scribe = { kind = "craft", graded = true }
+latinist = { kind = "craft", graded = true }
+physician = { kind = "craft", graded = true }
+navigator = { kind = "craft", graded = true }
+master_smith = { kind = "craft", graded = true }
+builder = { kind = "craft", graded = true }
+huntsman = { kind = "craft", graded = true }
+horse_breeder = { kind = "craft", graded = true }
+herdsman = { kind = "craft", graded = true }
+merchant = { kind = "craft", graded = true }
+ascetic = { kind = "calling", graded = false }
+cele_de = { kind = "calling", graded = false }
+preacher = { kind = "calling", graded = false }
+soul_friend = { kind = "calling", graded = false }
+saintly = { kind = "calling", graded = false }
+hospitaller = { kind = "station", graded = false }
+fennid = { kind = "background", graded = false }    # attributes-r4 Background family (the manager's list had it under callings)
+rigfennid = { kind = "background", graded = false }
+pilgrim = { kind = "background", graded = false }
+hostage_raised = { kind = "background", graded = false }
+exile = { kind = "background", graded = false }

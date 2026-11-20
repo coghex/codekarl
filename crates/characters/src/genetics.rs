@@ -6,7 +6,7 @@
 
 use crate::{Error, Sex, character_stream};
 use ck_economy::{
-    Genetics, Personality, PopGenetics,
+    EventRules, Genetics, Personality, PopGenetics,
     genetics::{
         ATTRIBUTE_COUNT, ATTRIBUTES, Dominance, Mendelian, Mode, PPB, ShowsIn, clamp_attribute,
         round_div,
@@ -23,6 +23,8 @@ pub struct Context<'a> {
     pub rules: &'a Genetics,
     /// The loaded personality data (CK-362).
     pub personality: &'a Personality,
+    /// The loaded character event data: the catalog, events and skills (CK-363).
+    pub events: &'a EventRules,
     /// The world seed.
     pub seed: u64,
     /// The tick the creation's streams are drawn at.
@@ -122,11 +124,11 @@ pub fn succeeds(draw: u64, p: u32) -> bool {
     draw < u64::from(p)
 }
 
-fn below(stream: &mut Stream, n: u64) -> Result<u64, Error> {
+pub(crate) fn below(stream: &mut Stream, n: u64) -> Result<u64, Error> {
     stream.below(n).map_err(|_| Error::Genetics)
 }
 
-fn roll(stream: &mut Stream, p: u32) -> Result<bool, Error> {
+pub(crate) fn roll(stream: &mut Stream, p: u32) -> Result<bool, Error> {
     Ok(succeeds(below(stream, u64::from(PPB))?, p))
 }
 

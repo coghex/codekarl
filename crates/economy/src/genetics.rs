@@ -242,6 +242,7 @@ pub(crate) enum Node {
     Text(String),
     Array(Vec<Node>),
     Table(BTreeMap<String, Node>),
+    Bool(bool),
     Other(&'static str),
 }
 pub(crate) type Table = BTreeMap<String, Node>;
@@ -252,7 +253,7 @@ fn convert(value: &DeValue<'_>) -> Node {
         DeValue::Integer(number) if number.radix() == 10 => Node::Int(number.as_str().to_owned()),
         DeValue::Integer(_) => Node::Other("a non-decimal integer"),
         DeValue::Float(number) => Node::Float(number.as_str().to_owned()),
-        DeValue::Boolean(_) => Node::Other("a boolean"),
+        DeValue::Boolean(value) => Node::Bool(*value),
         DeValue::Datetime(_) => Node::Other("a datetime"),
         DeValue::Array(items) => {
             Node::Array(items.iter().map(|item| convert(item.get_ref())).collect())
@@ -321,7 +322,7 @@ impl Source<'_> {
     }
 
     /// A probability or rate in ppb: 0..=1, at most nine decimal places.
-    fn ppb(&self, node: &Node, entry: &str) -> Result<u32, DataError> {
+    pub(crate) fn ppb(&self, node: &Node, entry: &str) -> Result<u32, DataError> {
         let value = self.scaled(node, entry, 9)?;
         u32::try_from(value)
             .ok()
@@ -353,12 +354,22 @@ impl Source<'_> {
     }
 
     /// A non-negative multiplier in thousandths, not limited to 1.
-    fn multiplier(&self, node: &Node, entry: &str) -> Result<u32, DataError> {
+    pub(crate) fn multiplier(&self, node: &Node, entry: &str) -> Result<u32, DataError> {
         let value = self.scaled(node, entry, 3)?;
         if value < 0 {
             return Err(self.error(entry, "a multiplier must not be negative"));
         }
         u32::try_from(value).map_err(|_| self.error(entry, "the multiplier is too large"))
+    }
+
+    pub(crate) fn boolean(&self, node: &Node, entry: &str) -> Result<bool, DataError> {
+        match node {
+            Node::Bool(value) => Ok(*value),
+            other => Err(self.error(
+                entry,
+                format!("expected true or false, found {}", describe(other)),
+            )),
+        }
     }
 
     pub(crate) fn integer(&self, node: &Node, entry: &str) -> Result<i128, DataError> {
@@ -379,6 +390,7 @@ fn describe(node: &Node) -> &'static str {
         Node::Text(_) => "a string",
         Node::Table(_) => "a table",
         Node::Array(_) => "an array",
+        Node::Bool(_) => "a boolean",
         Node::Other(what) => what,
     }
 }

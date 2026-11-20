@@ -74,6 +74,7 @@ fn context(genetics: &Genetics, seed: u64) -> Context<'_> {
     Context {
         rules: genetics,
         personality: &rules().personality,
+        events: &rules().events,
         seed,
         tick: date(768, 1, 1),
     }
@@ -119,7 +120,7 @@ fn child(
     state: &PopGenetics,
     archive: &Archive,
 ) -> Result<u64, Error> {
-    store.create_child(
+    store.state_create_child(
         ctx,
         new(sex),
         state,
@@ -884,7 +885,9 @@ fn a_child_of_an_archived_parent_links_to_it_and_the_archive_is_unchanged() {
     let father = founder(&mut store, &ctx, Sex::Male, &state);
     let mother = founder(&mut store, &ctx, Sex::Female, &state);
     let before = store.get(father).expect("live").clone();
-    store.die(father, date(768, 6, 1), &mut dead).expect("dies");
+    store
+        .state_die(father, date(768, 6, 1), &mut dead)
+        .expect("dies");
     let id = child(&mut store, &ctx, Sex::Male, (father, mother), &state, &dead).expect("child");
     assert_eq!(store.get(id).expect("live").father, father);
     assert_eq!(store.get(mother).expect("live").children, [id]);
@@ -935,7 +938,7 @@ fn a_refused_creation_changes_nothing() {
         archive: &none,
     };
     for heads in [None, Some(2)] {
-        let result = store.create_child(
+        let result = store.state_create_child(
             &ctx,
             new(Sex::Male),
             &state,
@@ -1050,7 +1053,9 @@ fn the_genetic_record_survives_save_load_death_and_set_parents() {
         .expect("parents");
     assert_eq!(record(&store, id), &genes);
     // Death archives the record with its genetics.
-    store.die(id, date(769, 1, 1), &mut dead).expect("dies");
+    store
+        .state_die(id, date(769, 1, 1), &mut dead)
+        .expect("dies");
     let archived: Character = dead.get(id).expect("read").expect("archived");
     assert_eq!(*archived.genetics, genes);
     let reopened = Archive::open(

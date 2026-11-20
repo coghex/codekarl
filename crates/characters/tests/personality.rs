@@ -74,6 +74,7 @@ fn context(personality: &Personality, seed: u64) -> Context<'_> {
     Context {
         rules: &rules().genetics,
         personality,
+        events: &rules().events,
         seed,
         tick: date(768, 1, 1),
     }
@@ -112,6 +113,7 @@ fn person(id: u64, birth: GameTime, humours: [i64; 4], mind: PersonalityRecord) 
         full_until: None,
         genetics: Box::new(genetics),
         personality: mind,
+        life: ck_characters::LifeRecord::default(),
     }
 }
 const BALANCED: [i64; 4] = [5000; 4];
@@ -418,28 +420,32 @@ fn indulging_and_confessing_relieve_stress_and_move_the_pairs() {
         ),
     ]);
     // stress 5 floors at 0; the pair moves one toward its sin.
-    store.indulge(rules, 1, "greed_charity").expect("indulge");
+    store
+        .state_indulge(rules, 1, "greed_charity")
+        .expect("indulge");
     assert_eq!(mind_of(&store, 1).stress, 0);
     assert_eq!(mind_of(&store, 1).vice[1], -1000);
     // a pair at its bound stays there; stress still falls by 15.
-    store.indulge(rules, 2, "pride_humility").expect("indulge");
+    store
+        .state_indulge(rules, 2, "pride_humility")
+        .expect("indulge");
     assert_eq!(mind_of(&store, 2).stress, 25_000);
     assert_eq!(mind_of(&store, 2).vice[0], -7000);
     // confess: the most sinful pair (lowest; the tie of greed and lust goes to data order) moves half toward its virtue.
-    store.confess(rules, 3).expect("confess");
+    store.state_confess(rules, 3).expect("confess");
     assert_eq!(mind_of(&store, 3).stress, 0);
     assert_eq!(
         mind_of(&store, 3).vice,
         [3000, -1500, -2000, 0, 500, 1000, 7000]
     );
-    store.confess(rules, 3).expect("confess");
+    store.state_confess(rules, 3).expect("confess");
     assert_eq!(
         mind_of(&store, 3).vice[1..3],
         [-1500, -1500],
         "lust, now the lowest, moves next"
     );
     // a pair at its upper bound stays there.
-    store.confess(rules, 4).expect("confess");
+    store.state_confess(rules, 4).expect("confess");
     assert_eq!(mind_of(&store, 4).stress, 20_000);
     assert_eq!(mind_of(&store, 4).vice, [7000; 7]);
 }
@@ -459,17 +465,17 @@ fn indulging_a_manner_pair_or_an_unknown_name_is_refused_and_changes_nothing() {
     let before = bytes(&store);
     for name in MANNER_PAIRS.iter().copied().chain(["piety", ""]) {
         assert_eq!(
-            store.indulge(rules, 1, name),
+            store.state_indulge(rules, 1, name),
             Err(Error::NotAVicePair),
             "{name}"
         );
         assert_eq!(bytes(&store), before);
     }
     for name in VICE_PAIRS {
-        store.indulge(rules, 1, name).expect("a vice pair");
+        store.state_indulge(rules, 1, name).expect("a vice pair");
     }
     assert_eq!(
-        store.indulge(rules, 7, "pride_humility"),
+        store.state_indulge(rules, 7, "pride_humility"),
         Err(Error::MissingCharacter)
     );
 }
@@ -482,7 +488,7 @@ fn trait_levels_are_set_through_the_api_up_to_sss() {
         (LevelTrait::RageFits, 3),
         (LevelTrait::Melancholy, 1),
     ] {
-        store.set_trait_level(1, which, level).expect("level");
+        store.state_set_trait_level(1, which, level).expect("level");
     }
     let record = mind_of(&store, 1);
     assert_eq!(
@@ -491,11 +497,11 @@ fn trait_levels_are_set_through_the_api_up_to_sss() {
     );
     let before = bytes(&store);
     assert_eq!(
-        store.set_trait_level(1, LevelTrait::Drunkard, 7),
+        store.state_set_trait_level(1, LevelTrait::Drunkard, 7),
         Err(Error::Level)
     );
     assert_eq!(
-        store.set_trait_level(2, LevelTrait::Drunkard, 1),
+        store.state_set_trait_level(2, LevelTrait::Drunkard, 1),
         Err(Error::MissingCharacter)
     );
     assert_eq!(bytes(&store), before);
@@ -841,7 +847,7 @@ fn birth_defaults_are_zero_for_stress_standing_and_the_trait_levels() {
         .unwrap();
     let none = archive("defaults");
     let child = store
-        .create_child(
+        .state_create_child(
             &ctx,
             new(Sex::Male, "a"),
             &irish(),
@@ -895,7 +901,7 @@ fn a_child_of_extreme_parents_regresses_halfway_toward_its_pops_culture_mean() {
     let mut open = Vec::new();
     for _ in 0..1500 {
         let id = store
-            .create_child(&ctx, new(Sex::Male, "b"), &irish(), &lineage, &Pops)
+            .state_create_child(&ctx, new(Sex::Male, "b"), &irish(), &lineage, &Pops)
             .expect("child");
         open.push(mind_of(&store, id).manner[0]);
     }
@@ -907,7 +913,7 @@ fn a_child_of_extreme_parents_regresses_halfway_toward_its_pops_culture_mean() {
     let mut at_home = Vec::new();
     for _ in 0..1500 {
         let id = store
-            .create_child(&ctx, new(Sex::Male, "a"), &irish(), &lineage, &Pops)
+            .state_create_child(&ctx, new(Sex::Male, "a"), &irish(), &lineage, &Pops)
             .expect("child");
         at_home.push(mind_of(&store, id).manner[0]);
     }
@@ -941,7 +947,7 @@ fn an_unknown_parent_is_a_founder_of_the_childs_pop_culture() {
     let mut open = Vec::new();
     for _ in 0..1500 {
         let id = store
-            .create_child(&ctx, new(Sex::Male, "b"), &irish(), &lineage, &Pops)
+            .state_create_child(&ctx, new(Sex::Male, "b"), &irish(), &lineage, &Pops)
             .expect("child");
         open.push(mind_of(&store, id).manner[0]);
     }
@@ -1004,7 +1010,7 @@ fn a_closed_population_keeps_each_pairs_spread_for_ten_generations() {
             };
             next.push(
                 store
-                    .create_child(&ctx, new(sex, "a"), &irish(), &lineage, &Pops)
+                    .state_create_child(&ctx, new(sex, "a"), &irish(), &lineage, &Pops)
                     .expect("child"),
             );
         }
@@ -1062,7 +1068,7 @@ fn a_creation_into_an_unresolvable_culture_is_refused_with_nothing_changed() {
             archive: &none,
         };
         assert_eq!(
-            store.create_child(&ctx, new(Sex::Male, place), &irish(), &lineage, &Pops),
+            store.state_create_child(&ctx, new(Sex::Male, place), &irish(), &lineage, &Pops),
             Err(Error::Culture),
             "child into `{place}`"
         );
@@ -1348,7 +1354,9 @@ fn save_load_and_the_archive_keep_every_new_field() {
     assert_eq!(bytes(&restored), bytes(&store));
     let mut store = store;
     let mut grave = archive("save");
-    store.die(1, date(760, 1, 1), &mut grave).expect("die");
+    store
+        .state_die(1, date(760, 1, 1), &mut grave)
+        .expect("die");
     let reopened = Archive::open(
         std::env::temp_dir().join(format!("ck-personality-{}-save", std::process::id())),
     )
@@ -1462,7 +1470,7 @@ fn a_vice_draw_near_the_64_bit_limit_is_held_to_seven_before_it_narrows() {
                 mother: 2,
                 archive: &none,
             };
-            match parents.create_child(&ctx, new(Sex::Male, "a"), &irish(), &lineage, &Pops) {
+            match parents.state_create_child(&ctx, new(Sex::Male, "a"), &irish(), &lineage, &Pops) {
                 Ok(id) => {
                     children += 1;
                     assert_eq!(mind_of(&parents, id).vice[0], bound);
