@@ -69,3 +69,30 @@ refuses a key that is not in the `[catalog]`, an effect its kind does not allow,
 or background, and a text placeholder no effect of the event can set. The TOML reader keeps no file order, so the order of the `[catalog]` (the order precedence scans in) is read from the text, one key per
 line; the order of a focus's odds is alphabetical, and the events run in file order. The skill parameters have a validated range
 (`gain_rate` at most 100000, focus multipliers at most 10, the home-education fractions at most 1).
+
+## Life cycle and names (CK-364, characters slice 5a)
+
+`lifecycle/life-cycle.toml` and `lifecycle/names.toml` are the designer's data (ck-designer-1), copied **byte for byte** from
+`codekarl-content/lifecycle/` (change `KXAUBYA6`). Every number marked TUNE is a placeholder; the model is not. The files write ordinary
+decimals; the loader reads each from its text and never through a binary float (chances and factors in parts per billion, per-point
+values in millionths, every other quantity in thousandths). **The names of the non-Irish pools are placeholders drafted from memory (in
+768 only Mayo's three Northumbrian monks use them); the death lines the code writes are player-facing, and the owner checks their wording.**
+
+| File | Revision | Pijul change | SHA-256 |
+|---|---|---|---|
+| `lifecycle/life-cycle.toml` | r1 | `KXAUBYA6` | `a231dd162fd8f5fdaa7e012cd0748831444a7413b4a38ec022b5f95c57f4f44d` |
+| `lifecycle/names.toml` | r1 | `KXAUBYA6` | `54f0ffe059c02129f5762f38b220fdaac1cb37058412f201321881d308f236bf` |
+
+Source of the copies: `codekarl-content/lifecycle/` (2026-11-19). `epithets.toml` and `connections.toml` are not imported here (5b and slice 6).
+
+The design they implement:
+
+- `history-scratch/lifecycle-data-r1.md` (SHA-256 `98d938e7…`): what the owner approved and what is a placeholder.
+- The approved specification: CK-364 r5, SHA-256 `17502d9ed79ed8df9e04bd9a3ce369ff353a1d52c78772becca0b915c3e2dc22`.
+
+Slice 5a reads only `[death]`, `[majority]`, `[marriageable]`, `[relations]` and `[conception]` of `life-cycle.toml` and the pools and
+`[culture_pool]` of `names.toml`; the sections of the later issues (marriage, upbringing, nutrition, namesakes) load untouched. Both files
+join the save's `rules_hash` (a changed table refuses an existing save) and the `economy.core` check paths. The loader refuses a
+probability outside 0..1, age curves whose ages do not strictly increase or whose factors are negative, `infant_years` or `old_doubling`
+that is not a positive whole number, a registry culture without a pool, a pool without men or women, and a man's name without a genitive
+where the pool has a patronym.

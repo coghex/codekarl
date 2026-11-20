@@ -1,0 +1,120 @@
+# The life cycle (draft r1). Drafted by Claude (ck-designer-1), 2026-11-19, for characters slice 5. Notes and approvals:
+# .pipeline/coordination/history-scratch/lifecycle-data-r1.md. Numbers are tools/family_sim.py's and char_gen.py's (run with the owner,
+# r10-r12, r137) or marked TUNE: placeholders to tune.
+
+# ======== Death (characters-r8: moderate at birth, falling, rising with age, certain just over 100) ========
+[death]
+# yearly chance at age a: infant + base + old * 2^((a - old_from) / old_doubling), capped at 1; certain from `certain_at`
+infant = 0.2            # x e^(-a / infant_years)
+infant_years = 2
+base = 0.007
+old = 0.0005
+old_from = 20
+old_doubling = 8        # years for the old-age term to double
+certain_at = 105
+# the character's own values (TUNE): longevity scales the old-age term x(1 - 0.05 x (longevity - 10)), floored 0.3;
+# constitution scales the base term x(1 - 0.04 x (constitution - 10)), floored 0.3
+longevity_per_point = -0.05
+constitution_per_point = -0.04
+# the pop's conditions: the economy's own death multipliers for the character's pop (deaths_hunger, deaths_comfort, deaths_crowding
+# curves, in permille) multiply the base and old-age terms, as they do for the pop
+use_pop_curves = true
+# weight extremes (nutrition-r1): below 80% or above 125% of rolled weight, x1.2, +0.1 per further 5% (TUNE)
+weight_low = 0.80
+weight_high = 1.25
+weight_factor = 1.2
+weight_step = 0.1
+childbirth = 0.015      # a mother's chance of dying at each birth (x1.5 under 16 or over 40, TUNE)
+
+# ======== Coming of age and marriage age ========
+[majority]
+# Age of majority, men and women separately (r60): adulthood (ruling without a regent, succession as an adult, armies, offices,
+# leaving fosterage). A tag law (laws-catalogue); until tag laws exist, by culture group (TUNE: Irish 17 and 14, Kelly, to confirm).
+default = { m = 17, f = 14 }
+by_culture_group = { gaelic = { m = 17, f = 14 }, english = { m = 15, f = 12 }, brittonic = { m = 14, f = 12 }, pictish = { m = 14, f = 12 } }
+
+[marriageable]
+# A religion law (r60): 14 for men and 12 for women in the Latin church of the time.
+christianity = { m = 14, f = 12 }
+
+# ======== Relations between partners: avoidance, neutral, trying (small-gaps-r3 §1, r10) ========
+[relations]
+mode_factor = { trying = 1.0, neutral = 0.5, avoidance = 0.1 }   # x on the monthly conception chance (TUNE)
+# spouses: trying until the couple has the children its standing wants, then neutral
+wanted_children = { noble = 4, monk = 2, labourer = 3, peasant = 3 }   # TUNE: by the husband's pop type
+# avoidance when: the wife's health is poor (a severe injury or condition), her age >= avoid_age, or the household's necessities < 600
+avoid_age = 42
+avoid_necessities = 600
+# personality shifts it: lust_chastity >= +5 moves trying to neutral and neutral to avoidance; <= -5 moves the other way
+personality_shift_at = 5
+# outside marriage (a lover strand, slice 6): neutral by default; trying with chance 0.1 a year; a concubine (where the law allows) trying
+lover_trying = 0.1
+
+# ======== Conception and births ========
+[conception]
+monthly = 0.2           # x the woman's and the man's age fecundity x their fecundity stats / 10 x the relations mode factor
+# fecundity by age, (age, factor) points, linear between (family_sim)
+women = [[15, 0.0], [20, 1.0], [30, 1.0], [35, 0.85], [40, 0.6], [45, 0.25], [50, 0.05], [51, 0.0]]
+men = [[15, 0.0], [18, 1.0], [40, 1.0], [60, 0.5], [70, 0.2], [80, 0.05]]
+nursing_months = 12     # no conception for a year after a birth
+church_abstinence = 0.85  # Latin Christianity's days of abstinence (penitentials; to check): x on the chance
+twins = 0.0125          # 1 in 80 births
+triplets = 0.00016      # 1 in 6,400
+twin_bearer = 3.0       # x on twins and triplets when the mother has twin_bearer
+# barren: fecundity 0 (lists/traits.md). A character's child is one of its pop's births (characters-r8, r11-r12).
+
+# ======== Marriage, the automatic part (marriage-r5 steps 1-3 and 5) ========
+[marriage.wish]
+# yearly chance that an unmarried character of marriageable age seeks a marriage, by age (age, chance), linear between (TUNE)
+women = [[12, 0.05], [15, 0.3], [20, 0.4], [30, 0.3], [40, 0.1], [50, 0.02], [60, 0.0]]
+men = [[14, 0.02], [17, 0.15], [20, 0.35], [30, 0.35], [45, 0.1], [60, 0.02], [70, 0.0]]
+# personality: x(1 - 0.05 x lust_chastity) x(1 + 0.02 x solitary_gregarious), floored at 0.1 of the base (TUNE)
+lust_per_point = -0.05
+gregarious_per_point = 0.02
+# monk pops: Irish clergy often married in this period (marriage-r5, "custom against doctrine"); x0.3 (TUNE)
+pop_type = { monk = 0.3 }
+
+[marriage.pool]
+# unmarried, of marriageable age, of a religion the law allows (same religion today), nearest first: the same place, then within
+# near_km, then within far_km; if fewer than min_candidates, generate candidates of the seeker's culture (minor nobles for nobles,
+# commoners otherwise) into real families (char-gen, r146)
+near_km = 50
+far_km = 150
+min_candidates = 3
+
+[marriage.score]
+# the seeker's side scores each candidate; the best is proposed (TUNE)
+rank = { noble = 3, monk = 2, labourer = 1, peasant = 1 }
+rank_gap = -15          # per rank of difference
+age_gap_free = 10       # years of age difference without penalty
+age_gap = -2            # per further year
+opinion = 0.5           # x the seeker's opinion of the candidate (slice 3)
+fame = 0.2              # x the candidate's fame
+# kinship (the religion sets the strength; Latin Christianity): siblings, parents and children never; first cousins and uncle/aunt
+kin = { first_cousin = -40, second_cousin = -15, in_law = -10 }
+child_age_penalty = -100   # the candidate under marriageable age (betrothal is step 4, later)
+
+[marriage.accept]
+# between minor houses and commoners (not ruling houses; step 4 is later): the candidate's side accepts with chance
+# 0.5 + score / 100, clamped to 0.05..0.95 (TUNE)
+base = 0.5
+per_score = 0.01
+# on marriage: the wife joins her husband's house and pop and keeps her house of birth (r15); a commoner husband joins a noble
+# wife's house (r16)
+
+# ======== Upbringing of personality (r111) ========
+[upbringing]
+to_age = 14
+pull = 0.04             # yearly pull toward the household's average (vice/virtue and manner)
+noise = { vice_virtue = 0.48, manner = 1.28 }   # yearly happenings in childhood (owner r113: x1.6)
+
+# Nutrition (height and weight): history-scratch/nutrition-r1.md, as data:
+[nutrition]
+height_per_food_point = 0.03   # cm per permille of childhood necessities above or below 900
+height_range = [-8, 2]
+height_reference = 900
+weight_base = 0.80
+weight_food = 0.20             # x necessities / 1000
+weight_rich = 0.10             # x luxuries / 1000
+weight_gluttony = 0.01         # +1% per point of gluttony_temperance below 0
+weight_monthly = 0.0833        # a twelfth of the way to the target each month

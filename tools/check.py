@@ -1492,6 +1492,8 @@ STEPS = [
             "assets/game/personality.toml",
             # CK-363: the character event data loads with the rules; the characters tests run the events.
             "assets/game/events/",
+            # CK-364: the life-cycle and name data load with the rules; the characters tests run death, births and names.
+            "assets/game/lifecycle/",
             # shipped_economy_and_ireland_start_data_are_strictly_valid loads these rules and start.
             "assets/game/economy.toml",
             "assets/scenarios/ireland-768/economy.toml",

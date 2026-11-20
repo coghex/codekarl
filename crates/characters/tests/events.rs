@@ -5,8 +5,8 @@
 
 use ck_characters::{
     Archive, ArchiveSink, Character, CharacterStore, Context, EventError, GeneticRecord, LifeLog,
-    LifeRecord, Lineage, LogSink, NewCharacter, PersonalityRecord, PopLocator, Populations, Sex,
-    UNKNOWN, World,
+    Lineage, LogSink, NewCharacter, PersonalityRecord, PopLocator, Populations, Sex, UNKNOWN,
+    World,
     events::{PopFacts, chance_ppb},
     personality::threshold,
 };
@@ -179,6 +179,8 @@ fn world<'a>(
     World {
         rules,
         personality: &ck_rules().personality,
+        genetics: &ck_rules().genetics,
+        lifecycle: &ck_rules().lifecycle,
         seed: 7,
         populations: pops,
         archive: &mut env.archive,
@@ -211,7 +213,7 @@ fn person(id: u64, birth: GameTime, place: &str, sex: Sex) -> Character {
         full_until: None,
         genetics: Box::new(genetics),
         personality: PersonalityRecord::default(),
-        life: LifeRecord::default(),
+        life: Box::default(),
     }
 }
 fn man(id: u64, place: &str) -> Character {
@@ -570,6 +572,8 @@ fn a_missing_character_and_an_unresolvable_pop_are_refused() {
     let mut blind = World {
         rules: shipped(),
         personality: &rules().personality,
+        genetics: &ck_rules().genetics,
+        lifecycle: &ck_rules().lifecycle,
         seed: 7,
         populations: &NoKinds,
         archive: &mut env.archive,
@@ -599,6 +603,7 @@ fn context(tick: GameTime) -> Context<'static> {
         rules: &rules().genetics,
         personality: &rules().personality,
         events: shipped(),
+        lifecycle: &rules().lifecycle,
         seed: 7,
         tick,
     }
@@ -789,6 +794,8 @@ fn a_failing_archive_append_leaves_the_character_live_with_no_line_and_no_bereav
     let mut world = World {
         rules: &rules,
         personality: &ck_rules().personality,
+        genetics: &ck_rules().genetics,
+        lifecycle: &ck_rules().lifecycle,
         seed: 7,
         populations: &POPS,
         archive: &mut archive,
@@ -820,6 +827,8 @@ fn a_failing_log_append_after_a_committed_death_returns_the_error_and_the_death_
     let mut world = World {
         rules: &rules,
         personality: &ck_rules().personality,
+        genetics: &ck_rules().genetics,
+        lifecycle: &ck_rules().lifecycle,
         seed: 7,
         populations: &POPS,
         archive: &mut archive,
@@ -1464,6 +1473,7 @@ fn a_use_spread_near_the_64_bit_limit_clamps_the_draw_instead_of_failing() {
         rules: &self::rules().genetics,
         personality: &self::rules().personality,
         events: &rules,
+        lifecycle: &self::rules().lifecycle,
         seed: 7,
         tick: date(768, 1, 1),
     };

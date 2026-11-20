@@ -2496,6 +2496,17 @@ GUARDS: tuple[Guard, ...] = (
             "assets/game/events/attributes-skills.toml",
         ),
     ),
+    # CK-364: the life cycle's scheduler tests load the shipped rules (and with them the life-cycle files) and Ireland's start.
+    Guard(
+        "apps/codekarl/src/game/tests/life_cycle.rs",
+        "rust.app",
+        (
+            "assets/game/economy.toml",
+            "assets/game/lifecycle/life-cycle.toml",
+            "assets/game/lifecycle/names.toml",
+            "assets/scenarios/ireland-768/",
+        ),
+    ),
     # The registry's shipped-data tests read the registry outside the economy crate.
     Guard("crates/economy/src/peoples.rs", "economy.core", ("assets/game/peoples.toml",)),
     # CK-225: economy's shipped-data validation tests load both rules and Ireland's authored starts.
@@ -2572,6 +2583,28 @@ GUARDS: tuple[Guard, ...] = (
             "crates/characters/src/events.rs",
             "crates/characters/src/life.rs",
             "crates/characters/src/skills.rs",
+        ),
+    ),
+    # CK-364: the life-cycle data tests load the shipped rules and both life-cycle files.
+    Guard(
+        "crates/economy/src/lifecycle_tests.rs",
+        "economy.core",
+        (
+            "assets/game/economy.toml",
+            "assets/game/lifecycle/life-cycle.toml",
+            "assets/game/lifecycle/names.toml",
+        ),
+    ),
+    # CK-364: the characters crate's life-cycle tests load the shipped rules (and with them both life-cycle files) and read the
+    # attributes file for a world with no events.
+    Guard(
+        "crates/characters/tests/lifecycle.rs",
+        "economy.core",
+        (
+            "assets/game/economy.toml",
+            "assets/game/events/attributes-skills.toml",
+            "assets/game/lifecycle/life-cycle.toml",
+            "assets/game/lifecycle/names.toml",
         ),
     ),
     # CK-359: the noble, demesne and rent tests load the same shipped rules and Ireland's noble houses.

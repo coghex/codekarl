@@ -75,6 +75,7 @@ fn context(personality: &Personality, seed: u64) -> Context<'_> {
         rules: &rules().genetics,
         personality,
         events: &rules().events,
+        lifecycle: &rules().lifecycle,
         seed,
         tick: date(768, 1, 1),
     }
@@ -113,7 +114,7 @@ fn person(id: u64, birth: GameTime, humours: [i64; 4], mind: PersonalityRecord) 
         full_until: None,
         genetics: Box::new(genetics),
         personality: mind,
-        life: ck_characters::LifeRecord::default(),
+        life: Box::default(),
     }
 }
 const BALANCED: [i64; 4] = [5000; 4];

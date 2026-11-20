@@ -418,6 +418,7 @@ class Levels(CheckFixture):
                 "assets/game/genetics/",
                 "assets/game/personality.toml",
                 "assets/game/events/",
+                "assets/game/lifecycle/",
                 "assets/game/economy.toml",
                 "assets/scenarios/ireland-768/economy.toml",
             ),

@@ -6,7 +6,7 @@
 
 use crate::{Error, Sex, character_stream};
 use ck_economy::{
-    EventRules, Genetics, Personality, PopGenetics,
+    EventRules, Genetics, LifeCycle, Personality, PopGenetics,
     genetics::{
         ATTRIBUTE_COUNT, ATTRIBUTES, Dominance, Mendelian, Mode, PPB, ShowsIn, clamp_attribute,
         round_div,
@@ -25,6 +25,8 @@ pub struct Context<'a> {
     pub personality: &'a Personality,
     /// The loaded character event data: the catalog, events and skills (CK-363).
     pub events: &'a EventRules,
+    /// The loaded life-cycle data: the name pools among others (CK-364).
+    pub lifecycle: &'a LifeCycle,
     /// The world seed.
     pub seed: u64,
     /// The tick the creation's streams are drawn at.

@@ -67,6 +67,7 @@ impl CreateFounder for CharacterStore {
             rules,
             personality: &rules_all().personality,
             events: &rules_all().events,
+            lifecycle: &rules_all().lifecycle,
             seed: 7,
             tick: birth,
         };

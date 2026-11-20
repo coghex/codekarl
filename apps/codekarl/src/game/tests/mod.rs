@@ -24,6 +24,7 @@ use crate::testing::Dir;
 mod character_passes;
 mod core_behaviour;
 mod gameplay_runtime;
+mod life_cycle;
 mod owner;
 mod presses;
 mod run;

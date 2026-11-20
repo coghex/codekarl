@@ -323,6 +323,27 @@ fn write_genetics(root: &Path, haplogroups: &str, traits: &str) {
         "attributes",
     )
     .unwrap();
+    // And the life-cycle data (CK-364).
+    fs::create_dir_all(root.join("game/lifecycle")).unwrap();
+    fs::write(root.join("game/lifecycle/life-cycle.toml"), "life").unwrap();
+    fs::write(root.join("game/lifecycle/names.toml"), "names").unwrap();
+}
+
+#[test]
+fn editing_either_life_cycle_file_changes_the_rules_hash() {
+    let dir = Dir::new();
+    fs::create_dir_all(dir.0.join("game")).unwrap();
+    fs::create_dir_all(dir.0.join("map/ireland")).unwrap();
+    fs::write(dir.0.join("game/economy.toml"), "rules").unwrap();
+    fs::write(dir.0.join("game/peoples.toml"), "registry").unwrap();
+    fs::write(dir.0.join("map/ireland/terrain.toml"), "terrain").unwrap();
+    write_genetics(&dir.0, "haplogroups", "traits");
+    let before = hashes::rules_hash(&dir.0).unwrap();
+    fs::write(dir.0.join("game/lifecycle/life-cycle.toml"), "life edited").unwrap();
+    let life = hashes::rules_hash(&dir.0).unwrap();
+    assert_ne!(life, before);
+    fs::write(dir.0.join("game/lifecycle/names.toml"), "names edited").unwrap();
+    assert_ne!(hashes::rules_hash(&dir.0).unwrap(), life);
 }
 
 #[test]

@@ -1,11 +1,11 @@
 //! Backend-neutral live characters and their derived tiers.
 #![deny(unsafe_code)]
 
-use ck_economy::PopGenetics;
+use ck_economy::{HeadUndo, PopGenetics};
 use ck_sim::{Canonical, CanonicalError, Date, GameTime, Reader, Stream};
-use std::collections::BTreeMap;
+use std::{cell::RefCell, collections::BTreeMap};
 
-mod bigint;
+pub mod cycle;
 pub mod events;
 mod fixtures;
 pub mod genetics;
@@ -50,7 +50,42 @@ pub trait Populations {
     fn luxuries_pm(&self, _locator: &PopLocator) -> Option<u16> {
         None
     }
+    /// Return the religion key of the pop, or `None` when it is unknown (CK-364: the Latin church's days of abstinence).
+    fn religion(&self, _locator: &PopLocator) -> Option<String> {
+        None
+    }
+    /// Return the pop's necessities fulfilment in permille, or `None` when it is unknown (CK-364: a couple avoids conception
+    /// when its household's necessities are low).
+    fn necessities_pm(&self, _locator: &PopLocator) -> Option<u16> {
+        None
+    }
+    /// Return the pop's genetic state, or `None` when it is unknown (CK-364: a child's genetics need its parents' pop only for a
+    /// synthetic parent, but a delivery is refused without it).
+    fn genetics(&self, _locator: &PopLocator) -> Option<PopGenetics> {
+        None
+    }
+    /// Add `count` dependents to the pop for character births, counted as pending births (CK-364). A source with no ledger has
+    /// nothing to change. Nothing changes on an error.
+    ///
+    /// # Errors
+    /// Refuses a missing pop or a count that overflows.
+    fn add_births(&self, _locator: &PopLocator, _count: u64) -> Result<(), Error> {
+        Ok(())
+    }
+    /// Remove the head of a dying character from the pop, counted as a pending death (CK-364): see
+    /// [`ck_economy::EconomyState::remove_character_head`]. A source with no ledger has nothing to change. Nothing changes on an
+    /// error.
+    ///
+    /// # Errors
+    /// Refuses a missing pop or one with no head to remove.
+    fn remove_head(&self, _locator: &PopLocator, _minor: bool) -> Result<HeadUndo, Error> {
+        Ok(HeadUndo::default())
+    }
+    /// Put back a head removed by [`remove_head`](Self::remove_head) whose death did not commit (CK-364). A source with no ledger has
+    /// nothing to put back.
+    fn restore_head(&self, _undo: &HeadUndo) {}
 }
+/// The economy's pops as the passes use them: reads and, through a [`Ledger`], head changes.
 impl Populations for ck_economy::EconomyState {
     fn heads(&self, locator: &PopLocator) -> Option<u64> {
         let place = self.places.iter().find(|place| place.id == locator.place)?;
@@ -74,6 +109,71 @@ impl Populations for ck_economy::EconomyState {
                 .consumption
                 .luxuries_pm,
         )
+    }
+    fn religion(&self, locator: &PopLocator) -> Option<String> {
+        let place = self.places.iter().find(|place| place.id == locator.place)?;
+        Some(place.pops.get(locator.slot as usize)?.religion.clone())
+    }
+    fn necessities_pm(&self, locator: &PopLocator) -> Option<u16> {
+        let place = self.places.iter().find(|place| place.id == locator.place)?;
+        Some(
+            place
+                .pops
+                .get(locator.slot as usize)?
+                .consumption
+                .necessities_pm,
+        )
+    }
+    fn genetics(&self, locator: &PopLocator) -> Option<PopGenetics> {
+        pop_genetics(self, locator).cloned()
+    }
+}
+/// The economy with its head changes enabled: the passes read the pops through [`Populations`] and change their heads through the
+/// same shared reference, so the economy sits behind a cell for the length of a pass.
+#[derive(Debug)]
+pub struct Ledger<'a>(RefCell<&'a mut ck_economy::EconomyState>);
+impl<'a> Ledger<'a> {
+    /// Lend the economy to a pass.
+    pub fn new(economy: &'a mut ck_economy::EconomyState) -> Self {
+        Self(RefCell::new(economy))
+    }
+}
+impl Populations for Ledger<'_> {
+    fn heads(&self, locator: &PopLocator) -> Option<u64> {
+        Populations::heads(&**self.0.borrow(), locator)
+    }
+    fn culture(&self, locator: &PopLocator) -> Option<String> {
+        Populations::culture(&**self.0.borrow(), locator)
+    }
+    fn kind(&self, locator: &PopLocator) -> Option<String> {
+        Populations::kind(&**self.0.borrow(), locator)
+    }
+    fn luxuries_pm(&self, locator: &PopLocator) -> Option<u16> {
+        Populations::luxuries_pm(&**self.0.borrow(), locator)
+    }
+    fn religion(&self, locator: &PopLocator) -> Option<String> {
+        Populations::religion(&**self.0.borrow(), locator)
+    }
+    fn necessities_pm(&self, locator: &PopLocator) -> Option<u16> {
+        Populations::necessities_pm(&**self.0.borrow(), locator)
+    }
+    fn genetics(&self, locator: &PopLocator) -> Option<PopGenetics> {
+        Populations::genetics(&**self.0.borrow(), locator)
+    }
+    fn add_births(&self, locator: &PopLocator, count: u64) -> Result<(), Error> {
+        self.0
+            .borrow_mut()
+            .add_character_births(&locator.place, locator.slot as usize, count)
+            .map_err(|_| Error::MissingPop)
+    }
+    fn remove_head(&self, locator: &PopLocator, minor: bool) -> Result<HeadUndo, Error> {
+        self.0
+            .borrow_mut()
+            .remove_character_head(&locator.place, locator.slot as usize, minor)
+            .map_err(|_| Error::MissingPop)
+    }
+    fn restore_head(&self, undo: &HeadUndo) {
+        self.0.borrow_mut().restore_character_head(undo);
     }
 }
 /// A bare head-count function knows no cultures, so a character cannot be created into its pops.
@@ -156,8 +256,9 @@ pub struct Character {
     pub genetics: Box<GeneticRecord>,
     /// Personality, stress and standing (CK-362).
     pub personality: PersonalityRecord,
-    /// Attributes, deed counters, skills, use factors, focus and the holds-land flag (CK-363).
-    pub life: LifeRecord,
+    /// Attributes, deed counters, skills, use factors, focus and the holds-land flag (CK-363), the name pool and the pregnancy
+    /// (CK-364). Boxed, as the genetics are, to keep the record small.
+    pub life: Box<LifeRecord>,
 }
 impl Canonical for Character {
     fn encode(&self, o: &mut Vec<u8>) -> Result<(), CanonicalError> {
@@ -175,7 +276,7 @@ impl Canonical for Character {
         self.full_until.encode(o)?;
         (*self.genetics).encode(o)?;
         self.personality.encode(o)?;
-        self.life.encode(o)
+        (*self.life).encode(o)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
@@ -193,7 +294,7 @@ impl Canonical for Character {
             full_until: Option::decode(r)?,
             genetics: Box::new(GeneticRecord::decode(r)?),
             personality: PersonalityRecord::decode(r)?,
-            life: LifeRecord::decode(r)?,
+            life: Box::new(LifeRecord::decode(r)?),
         })
     }
 }
@@ -234,7 +335,7 @@ impl NewCharacter {
             full_until: None,
             genetics: Box::new(genetics),
             personality,
-            life,
+            life: Box::new(life),
         }
     }
 }
@@ -303,6 +404,9 @@ pub enum Error {
     Pop,
     /// An event whose arithmetic does not fit, or a counter that would overflow (CK-363).
     Event,
+    /// Life-cycle arithmetic that does not fit, a pregnancy that cannot be delivered, or a pop whose religion or necessities the
+    /// passes cannot resolve (CK-364).
+    Lifecycle,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -374,6 +478,89 @@ fn grace_end(day: GameTime) -> Result<GameTime, Error> {
     })
     .map_err(|_| Error::Overflow)
 }
+/// The pool key of the pop's culture and the base name of a character about to be created (CK-364): the name the caller gave, or
+/// a draw from the culture's pool on the character's own stream (purpose `name`).
+fn base_name(
+    ctx: &Context<'_>,
+    populations: &impl Populations,
+    new: &NewCharacter,
+    id: u64,
+) -> Result<(String, String), Error> {
+    let culture = populations.culture(&new.pop).ok_or(Error::Culture)?;
+    let pool = ctx
+        .lifecycle
+        .pool_key(&culture)
+        .unwrap_or_default()
+        .to_owned();
+    if !new.name.is_empty() {
+        return Ok((pool, new.name.clone()));
+    }
+    let names = ctx.lifecycle.pools.get(&pool).ok_or(Error::Culture)?;
+    let mut stream = genetics::site(ctx, id, "", "name");
+    let drawn = match new.sex {
+        Sex::Male => {
+            let at = genetics::below(&mut stream, names.men.len() as u64)?;
+            names
+                .men
+                .get(usize::try_from(at).map_err(|_| Error::Overflow)?)
+                .map(|(name, _)| name.clone())
+        }
+        Sex::Female => {
+            let at = genetics::below(&mut stream, names.women.len() as u64)?;
+            names
+                .women
+                .get(usize::try_from(at).map_err(|_| Error::Overflow)?)
+                .cloned()
+        }
+    };
+    Ok((pool, drawn.ok_or(Error::Culture)?))
+}
+/// The record of a child of `parents` (father, mother; `None` is an unknown parent, replaced by a synthetic founder of the child's
+/// pop), with the identifier `id`. Pure: it changes no store.
+fn child_record(
+    ctx: &Context<'_>,
+    mut new: NewCharacter,
+    id: u64,
+    parents: [Option<&Character>; 2],
+    pop_genetics: &PopGenetics,
+    populations: &impl Populations,
+) -> Result<Character, Error> {
+    let means = culture_means(ctx, populations, &new.pop)?;
+    let (pool, name) = base_name(ctx, populations, &new, id)?;
+    new.name = name;
+    let kinds = [
+        (Sex::Male, "synthetic_father."),
+        (Sex::Female, "synthetic_mother."),
+    ];
+    let mut records = Vec::with_capacity(2);
+    for (parent, (sex, prefix)) in parents.into_iter().zip(kinds) {
+        records.push(match parent {
+            None => (
+                genetics::make_founder(ctx, id, prefix, sex, pop_genetics)?,
+                personality::make_founder(ctx, id, prefix, means)?,
+            ),
+            Some(found) => {
+                if found.sex != sex {
+                    return Err(Error::WrongSex);
+                }
+                ((*found.genetics).clone(), found.personality)
+            }
+        });
+    }
+    let genetics = genetics::make_child(ctx, id, new.sex, &records[0].0, &records[1].0)?;
+    let personality = personality::make_child(ctx, id, means, &records[0].1, &records[1].1)?;
+    let mut life = life::make(ctx, id, new.sex, populations.kind(&new.pop).as_deref())?;
+    life.pool = pool;
+    Ok(new.into_record(
+        id,
+        parents[0].map_or(UNKNOWN, |parent| parent.id),
+        parents[1].map_or(UNKNOWN, |parent| parent.id),
+        genetics,
+        personality,
+        life,
+    ))
+}
+
 impl CharacterStore {
     /// Look up a live record.
     #[must_use]
@@ -398,13 +585,15 @@ impl CharacterStore {
     }
     /// Create a founder: a character with no live or archived parents, whose genetics come from the pop's genetic state
     /// (haplogroups from its share sets, values from its baseline, copies from its carrier rates, graded levels from its
-    /// founder rates). The record is stored with its genetics in one step: on any error nothing is created.
+    /// founder rates). The record is stored with its genetics in one step: on any error nothing is created. A founder with no
+    /// name given is named from the pool of its pop's culture (CK-364).
     /// # Errors
-    /// Refuses a missing or full pop, an unseeded pop and exhausted identifiers.
+    /// Refuses a missing or full pop, an unseeded pop, a culture without a name pool when a name is drawn, and exhausted
+    /// identifiers.
     pub fn create_founder(
         &mut self,
         ctx: &Context<'_>,
-        new: NewCharacter,
+        mut new: NewCharacter,
         pop_genetics: &PopGenetics,
         populations: &impl Populations,
     ) -> Result<u64, Error> {
@@ -412,9 +601,12 @@ impl CharacterStore {
         let means = culture_means(ctx, populations, &new.pop)?;
         let id = self.next_id;
         let next = id.checked_add(1).ok_or(Error::Overflow)?;
+        let (pool, name) = base_name(ctx, populations, &new, id)?;
+        new.name = name;
         let genetics = genetics::make_founder(ctx, id, "", new.sex, pop_genetics)?;
         let personality = personality::make_founder(ctx, id, "", means)?;
-        let life = life::make(ctx, id, new.sex, populations.kind(&new.pop).as_deref())?;
+        let mut life = life::make(ctx, id, new.sex, populations.kind(&new.pop).as_deref())?;
+        life.pool = pool;
         self.live.insert(
             id,
             new.into_record(id, UNKNOWN, UNKNOWN, genetics, personality, life),
@@ -441,42 +633,26 @@ impl CharacterStore {
         populations: &impl Populations,
     ) -> Result<u64, Error> {
         self.check_room(&new.pop, populations)?;
-        let means = culture_means(ctx, populations, &new.pop)?;
-        let parents = [
-            (lineage.father, Sex::Male, "synthetic_father."),
-            (lineage.mother, Sex::Female, "synthetic_mother."),
-        ];
+        let fetch = |parent: u64| -> Result<Option<Character>, Error> {
+            if parent == UNKNOWN {
+                return Ok(None);
+            }
+            self.lookup(parent, lineage.archive)
+                .map_err(|_| Error::Archive)?
+                .ok_or(Error::MissingCharacter)
+                .map(Some)
+        };
+        let (father, mother) = (fetch(lineage.father)?, fetch(lineage.mother)?);
         let id = self.next_id;
         let next = id.checked_add(1).ok_or(Error::Overflow)?;
-        let mut records = Vec::with_capacity(2);
-        for (parent, sex, prefix) in parents {
-            records.push(if parent == UNKNOWN {
-                (
-                    genetics::make_founder(ctx, id, prefix, sex, pop_genetics)?,
-                    personality::make_founder(ctx, id, prefix, means)?,
-                )
-            } else {
-                let found = self
-                    .lookup(parent, lineage.archive)
-                    .map_err(|_| Error::Archive)?
-                    .ok_or(Error::MissingCharacter)?;
-                if found.sex != sex {
-                    return Err(Error::WrongSex);
-                }
-                (*found.genetics, found.personality)
-            });
-        }
-        let genetics = genetics::make_child(ctx, id, new.sex, &records[0].0, &records[1].0)?;
-        let personality = personality::make_child(ctx, id, means, &records[0].1, &records[1].1)?;
-        let life = life::make(ctx, id, new.sex, populations.kind(&new.pop).as_deref())?;
-        let record = new.into_record(
+        let record = child_record(
+            ctx,
+            new,
             id,
-            lineage.father,
-            lineage.mother,
-            genetics,
-            personality,
-            life,
-        );
+            [father.as_ref(), mother.as_ref()],
+            pop_genetics,
+            populations,
+        )?;
         // Everything above is validated and computed, so the writes below cannot fail. A child can only add a
         // qualification (a live ruler's child is full at once, by `tier`'s derivation), never remove one, so no grace
         // period is started.
@@ -615,6 +791,12 @@ pub trait ArchiveSink {
     /// # Errors
     /// Returns an I/O error if the record could not be persisted.
     fn append(&mut self, record: &Character) -> std::io::Result<()>;
+    /// Read an archived record, which a delivery needs for a father who has died (CK-364). A sink that cannot read holds none.
+    /// # Errors
+    /// Returns an I/O or decoding error.
+    fn get(&self, _id: u64) -> std::io::Result<Option<Character>> {
+        Ok(None)
+    }
 }
 // Grow only with bytes actually read, never directly from an on-disk length.
 fn read_record(input: &mut impl std::io::Read, length: u32) -> std::io::Result<Vec<u8>> {
@@ -724,6 +906,9 @@ impl ArchiveSink for Archive {
         }
         self.index.insert(record.id, offset);
         Ok(())
+    }
+    fn get(&self, id: u64) -> std::io::Result<Option<Character>> {
+        Self::get(self, id)
     }
 }
 impl CharacterStore {
