@@ -494,6 +494,7 @@ fn the_late_drain_returns_a_failing_game_time_call_and_posts_nothing_new() {
             unsaved: false,
             economy_revision: 0,
             economy: None,
+            world: 0,
         }
     };
     let registered = Arc::new(AtomicBool::new(false));

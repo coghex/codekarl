@@ -200,6 +200,9 @@ fn store_with_next(characters: Vec<Character>, next: u64) -> CharacterStore {
     next.encode(&mut bytes).expect("encode");
     live.encode(&mut bytes).expect("encode");
     0_u64.encode(&mut bytes).expect("encode");
+    BTreeMap::<String, String>::new()
+        .encode(&mut bytes)
+        .expect("encode");
     CharacterStore::from_bytes(&bytes).expect("a store of these records")
 }
 fn store_of(characters: Vec<Character>) -> CharacterStore {

@@ -1550,7 +1550,7 @@ mod list_tests;
 #[cfg(test)]
 mod listbar_tests;
 #[cfg(test)]
-mod location_tests;
+pub(crate) mod location_tests;
 #[cfg(test)]
 mod menu_tests;
 #[cfg(test)]
@@ -4276,6 +4276,7 @@ mod tests {
             unsaved: false,
             economy_revision: 0,
             economy: None,
+            world: 0,
         }
     }
 
@@ -4470,6 +4471,7 @@ mod tests {
                 workers,
                 ..crate::game::view::PlaceView::default()
             }],
+            ..crate::game::view::EconomyView::default()
         })
     }
 

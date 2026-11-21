@@ -12,7 +12,7 @@ use super::{Harness, after, identity, start};
 use crate::game::core::{SaveCall, SaveReply};
 use crate::game::{controls::Control, saves::QUICKSAVE, slot::PauseReason};
 
-fn guarded_load(harness: &mut Harness, filename: &str) -> Result<(), String> {
+pub(super) fn guarded_load(harness: &mut Harness, filename: &str) -> Result<(), String> {
     let (sender, receiver) = std::sync::mpsc::channel();
     let controls = crate::game::controls::SimControls::new(sender);
     controls.guarded_load(filename.to_owned());

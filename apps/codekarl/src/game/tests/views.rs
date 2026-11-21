@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use super::{Harness, World};
 use crate::game::controls::Control;
+use crate::game::core::{SaveCall, SaveReply};
 use crate::game::view::{EconomyView, PlaceView};
 use ck_sim::{Date, GameTime};
 
@@ -29,6 +30,7 @@ fn recording_views() -> Recording {
                 workers: world.hourly,
                 ..PlaceView::default()
             }],
+            ..EconomyView::default()
         }
     });
     (views, built)
@@ -213,4 +215,74 @@ fn a_quickload_before_noon_rebuilds_the_view_with_the_unrun_payday_date() {
     harness.control(Control::Quicksave);
     harness.control(Control::Quickload);
     assert_eq!(dates(&built).last(), Some(&date));
+}
+
+#[test]
+fn the_world_number_starts_at_zero_and_rises_with_every_load_and_never_falls() {
+    let (views, _) = recording_views();
+    let mut harness = Harness::with_views(42, views);
+    assert_eq!(
+        harness.core.snapshot().world,
+        0,
+        "the session's first world"
+    );
+    assert_eq!(harness.published()[0].world, 0);
+    // A quickload with no quicksave is refused: nothing is replaced, so the world stands.
+    harness.control(Control::Quickload);
+    assert_eq!(harness.core.snapshot().world, 0);
+    harness.control(Control::Quicksave);
+    harness.control(Control::Quickload);
+    assert_eq!(harness.core.snapshot().world, 1, "a quickload");
+    assert!(matches!(
+        harness.save_call(SaveCall::New("Named".to_owned())),
+        SaveReply::Finished(Ok(()))
+    ));
+    assert!(matches!(
+        harness.save_call(SaveCall::Load("named.cksave".to_owned())),
+        SaveReply::Finished(Ok(()))
+    ));
+    assert_eq!(harness.core.snapshot().world, 2, "a named load");
+    assert_eq!(
+        super::storage::guarded_load(&mut harness, "named.cksave"),
+        Ok(())
+    );
+    assert_eq!(harness.core.snapshot().world, 3, "a guarded load");
+    // A refused guarded load replaces nothing.
+    assert!(super::storage::guarded_load(&mut harness, "missing.cksave").is_err());
+    assert_eq!(harness.core.snapshot().world, 3);
+    // Days that run change no world; every published snapshot carries a world no lower than the one before.
+    harness.run_at(1);
+    for _ in 0..30 {
+        harness.wake(Duration::from_secs(1));
+    }
+    assert_eq!(harness.core.snapshot().world, 3);
+    let worlds: Vec<u64> = harness.published().iter().map(|s| s.world).collect();
+    assert!(
+        worlds.windows(2).all(|pair| pair[0] <= pair[1]),
+        "{worlds:?}"
+    );
+    assert_eq!(worlds.last(), Some(&3));
+}
+
+#[test]
+fn a_quickload_then_a_resume_before_the_ui_reads_still_shows_the_risen_world_number() {
+    let (views, _) = recording_views();
+    let mut harness = Harness::with_views(42, views);
+    harness.control(Control::Quicksave);
+    harness.control(Control::Quickload);
+    let after_load = harness.core.snapshot();
+    assert_eq!(
+        after_load.paused,
+        Some(crate::game::slot::PauseReason::Load)
+    );
+    // The player resumes at once: latest wins, so the snapshot of the load is replaced by one that is unpaused.
+    harness.run_at(1);
+    let latest = harness.published().last().cloned().expect("a snapshot");
+    assert_eq!(latest.paused, None, "the pause reason has changed again");
+    assert_eq!(latest.world, 1, "the risen number is still carried");
+    assert!(latest.differs_from(&{
+        let mut before = latest.clone();
+        before.world = 0;
+        before
+    }));
 }

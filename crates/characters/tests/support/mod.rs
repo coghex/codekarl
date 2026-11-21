@@ -436,6 +436,9 @@ pub(crate) fn store_of(records: Vec<Character>) -> CharacterStore {
     let live: BTreeMap<u64, Character> = records.into_iter().map(|c| (c.id, c)).collect();
     live.encode(&mut bytes).expect("encode");
     0_u64.encode(&mut bytes).expect("encode");
+    BTreeMap::<String, String>::new()
+        .encode(&mut bytes)
+        .expect("encode");
     CharacterStore::from_bytes(&bytes).expect("a store")
 }
 

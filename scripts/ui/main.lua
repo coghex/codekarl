@@ -25,6 +25,9 @@ local classes = require("lib.classes")
 local menu = require("lib.menu")
 local typing = require("lib.typing")
 local fullscreen_key = require("lib.fullscreen_key")
+local cards = require("lib.cards")
+local character_cards = require("lib.character_cards")
+local character_screen = require("lib.character_screen")
 
 local P = ui.P
 local MARGIN = 8 -- UI units from the window's edges
@@ -77,6 +80,9 @@ if game ~= nil then
   local shown_paused = nil
   local fill_ledger
   local ledger_revision = nil
+  -- The world the newest snapshot carried (CK-375): it rises when a load replaces the simulation, and the character screen closes on it.
+  local current_world = 0
+  local character_panel = nil -- the character screen, made with the ledger below
 
   -- The panel follows only the date width. The control positions and readout origin stay fixed.
   local function fit_bar()
@@ -147,6 +153,7 @@ if game ~= nil then
     render.set_hit("places_bar", {{x = x, y = y, width = places_panel.width, height = places_panel.height}}, places_group)
     places_buttons.locations:move(x + 5 * P, y + 2 * P)
     places_buttons.pops:move(x + 5 * P + 16 * P, y + 2 * P)
+    places_buttons.characters:move(x + 5 * P + 32 * P, y + 2 * P)
   end
 
   local function set_places_bar_visible(visible)
@@ -157,7 +164,7 @@ if game ~= nil then
   end
 
   local function create_places_bar()
-    local width, height = 39 * P, 19 * P
+    local width, height = 55 * P, 19 * P
     local x, y = ui.anchor("top_right", width, height, -MARGIN, MARGIN, view.width, view.height)
     places_group = ui.create_group()
     places_panel = panel.new{
@@ -178,6 +185,13 @@ if game ~= nil then
       kind = "places_bar",
       group = places_group,
       on_click = function() open_ledger("pops") end,
+    }
+    places_buttons.characters = button.new{
+      x = x + 37 * P, y = y + 2 * P, icons = {"characters"}, icon = "characters",
+      tooltip = "characters",
+      kind = "places_bar",
+      group = places_group,
+      on_click = function() open_ledger("characters") end,
     }
   end
 
@@ -372,8 +386,11 @@ if game ~= nil then
 
   game.on_time(function(time)
     require("lib.save_screen").set_time(time)
+    current_world = time.world or 0
     location_panel:set_revision(time.economy_revision)
     classes.set_revision(time.economy_revision)
+    -- The character screen reads the character again under this snapshot's revision, or closes (a new world, a character no longer live).
+    if character_panel ~= nil then character_panel:refresh(time.economy_revision, current_world) end
     if fill_ledger ~= nil and places_window ~= nil and not places_window.closed
       and ledger_revision ~= location_panel:current_revision() then
       fill_ledger()
@@ -411,6 +428,8 @@ if game ~= nil then
   -- place in it. The places list only selects.
   local function show_place(selection)
     location_panel:show(selection)
+    -- An open character screen stays over the left slot until it is closed.
+    if character_panel ~= nil then character_panel:raise() end
   end
 
   relayouts[#relayouts + 1] = function()
@@ -420,6 +439,7 @@ if game ~= nil then
   game.on_select(show_place)
 
   local ledger_list = nil
+  local ledger_cards = nil -- the Characters tab's card stack (it has cards where the other tabs have a list)
   local ledger_bar = nil
   local ledger_tabs = nil
   local ledger_selections = {}
@@ -427,6 +447,7 @@ if game ~= nil then
   local LEDGER_TABS = {
     {key = "locations", icon = "location", tooltip = "places"},
     {key = "pops", icon = "pops", tooltip = "pops"},
+    {key = "characters", icon = "characters", tooltip = "characters"},
   }
 
   -- Long labels end before a following numeric column; use whole UTF-8 code points and the title's two-dot ellipsis rule.
@@ -470,7 +491,26 @@ if game ~= nil then
       },
       groups = {{key = "type", label = "type"}, {key = "religion", label = "religion"}, {key = "culture", label = "culture"}},
     },
+    characters = {sorts = character_cards.SORTS, groups = character_cards.GROUPS},
   }
+
+  -- The character screen over the left slot (CK-375 §6), made when a card is clicked.
+  character_panel = character_screen.new{
+    view = view,
+    top = function()
+      if time_panel ~= nil then
+        return time_panel.y + time_panel.height + MARGIN
+      end
+      return 0
+    end,
+  }
+
+  -- A click on a character's card: the screen shows that character, read at the revision the newest snapshot carried and in its world.
+  local function open_character(id, world)
+    local revision = location_panel:current_revision()
+    if revision == nil or revision == 0 or world ~= current_world then return end
+    character_panel:open(id, revision, current_world)
+  end
 
   -- The places tab's header row and its data rows, or the pops tab's rows (no header). Each data row carries what the list bar reads
   -- (`sort`, `filter`) and the place a click on it opens (`place`); the list is given only the cells and the rest. The cells are not
@@ -579,8 +619,32 @@ if game ~= nil then
 
   -- Shows the ledger's rows through its list bar. A change of the bar's choices starts the list from its first row (`reset_scroll`); a
   -- refresh for a new revision keeps the scroll.
+  -- The Characters tab: the cards of `game.characters(revision)` in the card stack, through the same list bar.
+  local function fill_characters(reset_scroll)
+    ensure_ledger_bar()
+    local revision = location_panel:current_revision()
+    local list = {}
+    if revision ~= nil and revision ~= 0 then
+      local ok, answer = pcall(game.characters, revision)
+      if ok then list = answer end
+    end
+    local items = character_cards.items(ledger_bar:view(character_cards.rows(list)), open_character, current_world)
+    local height = math.max(P, places_window.content_height - listbar.HEIGHT)
+    if ledger_cards ~= nil and not ledger_cards.closed then
+      ledger_cards:set_items(items)
+      if reset_scroll == true then ledger_cards:set_pos(0) end
+    else
+      ledger_cards = cards.new{
+        window = places_window, x = 0, y = 0, width = places_window.content_width, height = height,
+        gap = character_cards.GAP, items = items,
+      }
+    end
+    ledger_revision = revision
+  end
+
   fill_ledger = function(reset_scroll)
     if places_window == nil or places_window.closed then return end
+    if ledger_key == "characters" then return fill_characters(reset_scroll) end
     ensure_ledger_bar()
     local header, data, revision = ledger_items(ledger_key)
     local rows, selections = {}, {}
@@ -614,6 +678,7 @@ if game ~= nil then
           local selection = ledger_selections[index]
           if selection ~= nil then
             location_panel:show(selection, ledger_key == "pops" and "pops" or nil)
+            if character_panel ~= nil then character_panel:raise() end
           end
         end,
       }
@@ -631,6 +696,10 @@ if game ~= nil then
       ledger_list:destroy()
       ledger_list = nil
     end
+    if ledger_cards ~= nil and not ledger_cards.closed then
+      ledger_cards:destroy()
+      ledger_cards = nil
+    end
     fill_ledger()
   end
 
@@ -639,6 +708,10 @@ if game ~= nil then
     if ledger_list ~= nil and not ledger_list.closed then
       ledger_list:destroy()
       ledger_list = nil
+    end
+    if ledger_cards ~= nil and not ledger_cards.closed then
+      ledger_cards:destroy()
+      ledger_cards = nil
     end
     -- The other tab has other choices, and they start again.
     if ledger_bar ~= nil then
@@ -669,6 +742,7 @@ if game ~= nil then
         if places_window == created then
           places_window = nil
           ledger_list = nil
+          ledger_cards = nil
           ledger_bar = nil
           ledger_tabs = nil
           ledger_revision = nil
@@ -690,6 +764,9 @@ if game ~= nil then
   end
 
   relayouts[#relayouts + 1] = fit_ledger
+  relayouts[#relayouts + 1] = function()
+    character_panel:relayout()
+  end
 
   -- The map's place name uses the shared delayed tooltip system. T6 supplies richer location content.
   game.on_hover(function(hover)

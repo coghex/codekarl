@@ -125,6 +125,9 @@ pub struct LifeRecord {
     pub genitive: String,
     /// The authored patronymic of a real figure (`mac Fergaile`): it takes precedence over the form the pool derives. Empty for none.
     pub patronymic: String,
+    /// The authored key of a real figure or a dead parent (CK-375: `niall_frossach`); empty for anyone else. Fixed for life: a live character
+    /// with a figure key is a **real figure**, whatever name it shares with a generated namesake.
+    pub figure: String,
 }
 
 impl Canonical for LifeRecord {
@@ -159,7 +162,8 @@ impl Canonical for LifeRecord {
         self.byname.encode(out)?;
         self.byname_importance.encode(out)?;
         self.genitive.encode(out)?;
-        self.patronymic.encode(out)
+        self.patronymic.encode(out)?;
+        self.figure.encode(out)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         Ok(Self {
@@ -194,6 +198,7 @@ impl Canonical for LifeRecord {
             byname_importance: u32::decode(r)?,
             genitive: String::decode(r)?,
             patronymic: String::decode(r)?,
+            figure: String::decode(r)?,
         })
     }
 }

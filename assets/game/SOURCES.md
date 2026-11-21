@@ -55,9 +55,9 @@ reads each from its text and never through a binary float (chances in parts per 
 | File | Revision | Pijul change | SHA-256 |
 |---|---|---|---|
 | `events/character-events.toml` | r2 (56 events) | `UBXVOCVQ` | `9497fbbf0547a916fdd8162f6a701879860e3a2ea854c020e7a395ce5beb7fa4` |
-| `events/attributes-skills.toml` | r3 (with the `[catalog]` of 57 keys) | `UBXVOCVQ` | `062a57c331ad021f795a1d161bf2aea6d41ef007cf9e238ea964c53efadd31b0` |
+| `events/attributes-skills.toml` | r4 (with the `[catalog]` of 57 keys and the 9 forms of `[catalog_names]`, CK-375: the words a chip on the character screen shows) | `HCG63M3G` | `65bb381f0a170dea7636c82d65fba2e4e05aa9eea85465b14f4fc17701bf0fc4` |
 
-Source of the copies: `codekarl-content/events/` (2026-11-19/20).
+Source of the copies: `codekarl-content/events/` (2026-11-19/20; `attributes-skills.toml` r4 2026-11-21, designer ruling `6ke9nnvi2qnbqjbz9ta86m3p56`'s follow-up `xun56apxdhhbgyg3bkhm76rsp6`: chips show words, not icons).
 
 The design they implement:
 

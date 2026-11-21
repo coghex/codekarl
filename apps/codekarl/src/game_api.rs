@@ -7,6 +7,11 @@
 //! `game.place(id, revision)` returns the economy view of a place at a revision a `game_time` carried (milestone 9, design §6). It
 //! reads only the [`ViewCache`] the UI link fills when it posts a snapshot, never the live simulation.
 //!
+//! `game.characters(revision)` returns the cards of the live characters at that revision, in id order, and `game.character(id, revision)` the
+//! first-tab record of one (characters slice 9a): both read the same [`ViewCache`] and refuse a missing or retired revision, and an id that is
+//! not live there, by name. The `game_time` table also carries `world`: `0` for the session's first world, one more each time a load replaces the
+//! simulation, never falling, so the UI sees a load even when the snapshot it published was replaced before it was read.
+//!
 //! `game.mark_unsaved()` and `game.load_save_guarded(filename)` share the simulation's ordered message route with saves and loads. The
 //! guarded load returns immediately; its eventual outcome reaches `game_save_result(filename, result)` after
 //! `game.on_save_result(fn | nil)` registers a callback.
@@ -17,12 +22,15 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ck_lua::{ConfigValue, Extension, HostFunction};
 
+use crate::game::character_view::{CharacterCard, FirstTab};
 use crate::game::controls::{self, GuardedLoadResult, SimControls};
 use crate::game::core::{SaveCall, SaveReply};
 use crate::game::saves::Entry;
 use crate::game::slot::{PauseReason, SimSnapshot};
 use crate::game::view::{BuildingView, EconomyView, PlaceView, PopView};
 use crate::vm::UI_CALL_LIMIT;
+use ck_economy::genetics::{ATTRIBUTES, HUMOURS};
+use ck_economy::personality::{MANNER_PAIRS, VICE_PAIRS};
 
 /// The callback `game.on_time` registers.
 pub(crate) const GAME_TIME: &str = "game_time";
@@ -525,15 +533,20 @@ impl ViewCache {
     /// The view of `revision`, or the refusal that names it: retired (it was held and has left) or missing (it was never given to
     /// the UI).
     pub(crate) fn get(&self, revision: u64) -> Result<Arc<EconomyView>, String> {
+        self.get_for("game.place", revision)
+    }
+
+    /// [`get`](Self::get) for the function `caller`, whose name the refusal carries.
+    pub(crate) fn get_for(&self, caller: &str, revision: u64) -> Result<Arc<EconomyView>, String> {
         let inner = self.locked();
         if let Some(view) = inner.views.get(&revision) {
             return Ok(Arc::clone(view));
         }
         // Revision 0 is "no view" and was never held, whatever has left since.
         if revision != 0 && revision <= inner.retired_through {
-            Err(format!("game.place: revision {revision} is retired"))
+            Err(format!("{caller}: revision {revision} is retired"))
         } else {
-            Err(format!("game.place: revision {revision} is missing"))
+            Err(format!("{caller}: revision {revision} is missing"))
         }
     }
 
@@ -829,6 +842,121 @@ pub(crate) fn place_function(cache: Arc<ViewCache>, places: Vec<Place>) -> HostF
     })
 }
 
+/// The card table of the ledger's Characters tab (CK-375).
+fn card_table(card: &CharacterCard) -> ConfigValue {
+    table([
+        ("id", integer(card.id)),
+        ("name", text(&card.name)),
+        ("epithet", text(&card.epithet)),
+        ("sex", text(if card.female { "f" } else { "m" })),
+        ("age", integer(u64::from(card.age))),
+        ("house", text(&card.house)),
+        ("role", text(&card.role)),
+        ("place", text(&card.place)),
+        ("kind", text(&card.kind)),
+        ("ruler", ConfigValue::Bool(card.ruler)),
+        ("clergy", ConfigValue::Bool(card.clergy)),
+        ("child", ConfigValue::Bool(card.child)),
+        ("importance", integer(u64::from(card.importance))),
+    ])
+}
+
+fn signed(value: i64) -> ConfigValue {
+    ConfigValue::Integer(value)
+}
+
+/// `{key = ..., value = ...}` for each of `keys` with its value, in order.
+fn keyed<'a>(keys: impl Iterator<Item = &'a str>, values: &[i64]) -> ConfigValue {
+    ConfigValue::Array(
+        keys.zip(values)
+            .map(|(key, value)| table([("key", text(key)), ("value", signed(*value))]))
+            .collect(),
+    )
+}
+
+/// The first tab's table of a character (CK-375 §6): its header (as its card) and the values of each section.
+fn character_table(card: &CharacterCard, tab: &FirstTab) -> ConfigValue {
+    let ConfigValue::Table(mut fields) = card_table(card) else {
+        unreachable!("a card is a table")
+    };
+    let skills: Vec<i64> = tab.skills.iter().map(|(_, value)| *value).collect();
+    let mut put = |key: &str, value: ConfigValue| {
+        fields.insert(key.to_owned(), value);
+    };
+    put("body", keyed(ATTRIBUTES.iter().copied(), &tab.body));
+    put("humours", keyed(HUMOURS.iter().copied(), &tab.humours));
+    put(
+        "skills",
+        keyed(tab.skills.iter().map(|(key, _)| key.as_str()), &skills),
+    );
+    put("virtue", keyed(VICE_PAIRS.iter().copied(), &tab.virtue));
+    put("stress", signed(tab.stress));
+    put("threshold", signed(tab.threshold));
+    put("manner", keyed(MANNER_PAIRS.iter().copied(), &tab.manner));
+    put(
+        "standing",
+        keyed(["popularity", "fame", "honour"].into_iter(), &tab.standing),
+    );
+    put(
+        "traits",
+        ConfigValue::Array(
+            tab.traits
+                .iter()
+                .map(|chip| {
+                    table([
+                        ("key", text(&chip.key)),
+                        ("words", text(&chip.words)),
+                        ("attribute", ConfigValue::Bool(chip.attribute)),
+                        ("letter", text(chip.letter)),
+                    ])
+                })
+                .collect(),
+        ),
+    );
+    // Injuries are not simulated yet: the screen shows "none".
+    put("health", ConfigValue::Array(Vec::new()));
+    ConfigValue::Table(fields)
+}
+
+/// `game.characters(revision)`: the cards of the live characters at `revision`, in id order, from the cache and never from live state.
+pub(crate) fn characters_function(cache: Arc<ViewCache>) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [Some(ConfigValue::Integer(revision))] = arguments else {
+            return Err("game.characters: expected a revision".to_owned());
+        };
+        let revision = u64::try_from(*revision)
+            .map_err(|_| format!("game.characters: revision {revision} is missing"))?;
+        let view = cache.get_for("game.characters", revision)?;
+        Ok(vec![ConfigValue::Array(
+            view.characters.cards.iter().map(card_table).collect(),
+        )])
+    })
+}
+
+/// `game.character(id, revision)`: the first-tab record of the character `id` at `revision`. An unknown id (not live at that revision) and a
+/// revision that is missing or retired are refusals the UI shows nowhere.
+pub(crate) fn character_function(cache: Arc<ViewCache>) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [
+            Some(ConfigValue::Integer(id)),
+            Some(ConfigValue::Integer(revision)),
+        ] = arguments
+        else {
+            return Err("game.character: expected a character id and a revision".to_owned());
+        };
+        let revision = u64::try_from(*revision)
+            .map_err(|_| format!("game.character: revision {revision} is missing"))?;
+        let view = cache.get_for("game.character", revision)?;
+        let found = u64::try_from(*id).ok().and_then(|id| {
+            let card = view.characters.card(id)?;
+            Some((card, view.characters.first_tab(id)?))
+        });
+        let (card, tab) = found
+            .ok_or_else(|| format!("game.character: no character {id} at revision {revision}"))?;
+        Ok(vec![character_table(card, tab)])
+    })
+}
+
 /// The table a `game_time` callback gets for `snapshot`.
 pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
     let paused = match snapshot.paused {
@@ -864,6 +992,7 @@ pub(crate) fn time_table(snapshot: &SimSnapshot) -> ConfigValue {
             "economy_revision".to_owned(),
             integer(snapshot.economy_revision),
         ),
+        ("world".to_owned(), integer(snapshot.world)),
     ]))
 }
 
@@ -918,6 +1047,7 @@ mod tests {
                 "paused",
                 "speed",
                 "unsaved",
+                "world",
                 "year",
             ]
         );
@@ -1025,6 +1155,7 @@ mod tests {
                 workers,
                 ..PlaceView::default()
             }],
+            ..EconomyView::default()
         })
     }
 
@@ -1224,6 +1355,7 @@ mod tests {
                     ],
                     ..PlaceView::default()
                 }],
+                ..EconomyView::default()
             }),
         );
         let returned = call_place(&place_function(cache, vec![]), "fixture", 1).unwrap();

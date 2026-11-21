@@ -11,6 +11,7 @@ Every place was placed by hand at its named site; none was placed by noise or pr
 | `economy.toml` | The deterministic opening estimate of each place's people, buildings and stores, and the noble houses |
 | `ireland-768.toml` | The research record of the real figures (CK-370): names, bynames, languages, places, notes. Read with the file below |
 | `ireland-768-load.toml` | The structure of the real figures (CK-370): houses, offices, parents and spouses, dates, the dead parents, the known strands and the slots |
+| `houses.toml` | The display names of the houses and subhouses the load file uses, and the dynasty shown before a name (CK-375) |
 | `SOURCES.md` | This file |
 
 The kinds, their sizes, catchment radii and glyphs are `assets/map/ireland/location_kinds.toml`, shared by every scenario on that map.
@@ -324,14 +325,15 @@ enter this scenario's `economy.toml` as `[nobles.<place>]` tables. Both are copi
 
 ## Real figures and the 768 start (CK-370, characters slice 8)
 
-The game starts with characters (some 2,900 live on the tested seeds): 282 real figures and what the generator makes around them. The two data files are
+The game starts with characters (some 2,900 live on the tested seeds): 282 real figures and what the generator makes around them. The three data files are
 copies, byte for byte, of the designer's files in `codekarl-content` (`figures/`), and they join the scenario hash (`scenario_hash` reads
-both, found by the scenario's own id, `ireland_768` being `ireland-768.toml` and `ireland-768-load.toml` wherever the folder is; both are required of this scenario, and no other scenario has this start), so a save made with other figures is refused.
+all three, the first two found by the scenario's own id, `ireland_768` being `ireland-768.toml` and `ireland-768-load.toml` wherever the folder is, `houses.toml` beside them; all three are required of this scenario, and no other scenario has this start), so a save made with other figures is refused.
 
 | Copy | Source | SHA-256 of the source | Origin |
 |---|---|---|---|
 | `ireland-768.toml`: 282 figures with their research notes | `codekarl-content/figures/ireland-768.toml` | `744c4fec99dcb21dcb3e49eebaff35d7d65ae9dbce653b674d657cb809ce48ac` | ck-designer-1, 2026-11-16, from `owner-direction-designer-r139` to `-r144`; reviewed on the figures review page |
 | `ireland-768-load.toml`: houses, offices, parent and spouse keys, structured dates, `pop_kind`, ten dead parents, 16 strands, 118 slots (r3, change `XAAGSNIT`) | `codekarl-content/figures/ireland-768-load.toml` | `cb8a816459b2997f724d28013ccc8419e26aff8e8dbb5990afa4185af8d87970` | ck-designer-1, 2026-11-20, with the designer's rulings in `history-scratch/ck370-dispositions-r1.md` (SHA-256 `bf5f9e18c8c8e3f11d617be1cd44e8906967a77eed99e8fc2b107bfc2680a13f`) |
+| `houses.toml`: the display name of each of the 35 houses and 5 subhouses the load file uses, with the dynasty shown before a name (r1, change `DNSQLPMY`; CK-375) | `codekarl-content/figures/houses.toml` | `c1718937c4ebf04ba4ad805c48252f21078301530d6d56df1d361652fa468c8a` | ck-designer-1, 2026-11-21, from the standard Old Irish spellings of Byrne (*Irish Kings and High-Kings*) and Charles-Edwards (*Early Christian Ireland*); generated minor houses are not listed, their names are made from the founder |
 
 - **Each field has one source.** The research file owns the name, genitive, byname, patronymic, sex, `location`, mother tongue, second
   languages and forced traits (`beats`, `role` and `note` are kept and inert); the load file owns the house, house of birth, subhouse (kept

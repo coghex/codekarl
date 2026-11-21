@@ -188,6 +188,8 @@ pub(crate) struct LastMonthView {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct EconomyView {
     pub(crate) places: Vec<PlaceView>,
+    /// The live characters at this revision (CK-375): they are built with the places, so they share its revision.
+    pub(crate) characters: super::character_view::CharacterView,
 }
 
 impl EconomyView {
@@ -250,7 +252,10 @@ pub(crate) fn build_with_land(
             }
         })
         .collect();
-    EconomyView { places }
+    EconomyView {
+        places,
+        characters: super::character_view::CharacterView::default(),
+    }
 }
 
 fn size_of(pop: &PopState) -> u64 {
@@ -1790,6 +1795,7 @@ mod tests {
                     ..PlaceView::default()
                 })
                 .collect(),
+            ..EconomyView::default()
         }
     }
 

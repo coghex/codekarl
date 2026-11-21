@@ -704,6 +704,10 @@ pub struct CharacterStore {
     /// strand rolls of a year and their replay): fixed once by [`fix_seed`](Self::fix_seed) from the first pass's draw and saved, 0 until
     /// then.
     root: u64,
+    /// The display names of the **generated minor houses**, by house key (CK-375): made when the generator creates the house, from its
+    /// founder, and never changed after (an archived founder, members who marry in or move, a suffixed key all keep it). Saved, so that the UI
+    /// reads a house's name without touching the archive.
+    house_names: BTreeMap<String, String>,
     /// The live characters by place (location id): derived from `live`, never saved, rebuilt on load (CK-368: a character's candidates
     /// for strands are the characters at its location, so the work does not grow with the characters elsewhere).
     by_place: BTreeMap<String, BTreeSet<u64>>,
@@ -736,6 +740,7 @@ impl Default for CharacterStore {
             next_id: 1,
             live: BTreeMap::new(),
             root: 0,
+            house_names: BTreeMap::new(),
             by_place: BTreeMap::new(),
             by_pop: BTreeMap::new(),
             by_house: BTreeMap::new(),
@@ -749,15 +754,18 @@ impl Canonical for CharacterStore {
     fn encode(&self, o: &mut Vec<u8>) -> Result<(), CanonicalError> {
         self.next_id.encode(o)?;
         self.live.encode(o)?;
-        self.root.encode(o)
+        self.root.encode(o)?;
+        self.house_names.encode(o)
     }
     fn decode(r: &mut Reader<'_>) -> Result<Self, CanonicalError> {
         let next_id = u64::decode(r)?;
         let live: BTreeMap<u64, Character> = BTreeMap::decode(r)?;
         let root = u64::decode(r)?;
+        let house_names: BTreeMap<String, String> = BTreeMap::decode(r)?;
         let mut store = Self {
             next_id,
             root,
+            house_names,
             ..Self::default()
         };
         for (_, record) in live {
@@ -998,6 +1006,11 @@ impl CharacterStore {
     #[must_use]
     pub fn get(&self, id: u64) -> Option<&Character> {
         self.live.get(&id)
+    }
+    /// The saved display name of a generated minor house (CK-375), or `None` for a key that is not one.
+    #[must_use]
+    pub fn house_name(&self, key: &str) -> Option<&str> {
+        self.house_names.get(key).map(String::as_str)
     }
     /// Iterate live records in identifier order.
     pub fn iter(&self) -> impl Iterator<Item = &Character> {

@@ -19,6 +19,17 @@ band = "#221c13"
 pop_peasant = "#c9932e"
 pop_monk = "#4fb3c8"
 pop_labourer = "#a8261c"
+# The character screen (CK-375). Identity colours, not good and bad (docs/ui-design.md §3.7): virtue pink and sin purple (owner r67), and each
+# humour in its own (blood red, yellow bile yellow, black bile black, phlegm white; r67, r68). The dark of a portrait cell and an icon tile.
+virtue = "#e58bb5"
+sin = "#8d55c8"
+humour_blood = "#b8322a"
+humour_yellow_bile = "#d9b43c"
+humour_black_bile = "#000000"
+humour_phlegm = "#ece8de"
+tile = "#221e1a"
+chip_light = "#d8dce0"        # the light chips of the attributes, and the dark ink on them
+chip_light_text = "#2a221a"
 
 [kind.window]      # a window with no kind of its own (Help, Places)
 outline = "#6e130f"

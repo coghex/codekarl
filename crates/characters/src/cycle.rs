@@ -132,22 +132,30 @@ pub(crate) fn curve_ratio(points: &[(u32, u64)], age: u32) -> (u128, u128) {
 #[must_use]
 pub fn shown_name(c: &Character, father: Option<&Character>, lifecycle: &LifeCycle) -> String {
     let name = derived_name(c, father, lifecycle);
-    // The shown epithet, when the character holds one, follows (CK-365): derived from the stored state, never stored. A real figure's byname
-    // (CK-370) is an epithet held since birth: it is shown unless a held epithet is strictly more important.
+    match epithet_text(c, lifecycle) {
+        Some(epithet) => format!("{name} {epithet}"),
+        None => name,
+    }
+}
+
+/// The text shown after the name of `c` (CK-365 §1, CK-370): the `shown` text of its shown epithet, or its byname (a real figure's byname is
+/// an epithet held since birth) unless a held epithet is strictly more important; `None` when it has neither. Derived, never stored.
+#[must_use]
+pub fn epithet_text(c: &Character, lifecycle: &LifeCycle) -> Option<String> {
     let epithet = c.shown_epithet(&lifecycle.epithets);
     let byname = (!c.life.byname.is_empty()).then_some(c.life.byname.as_str());
     match (epithet, byname) {
-        (Some(epithet), Some(byname)) => {
-            let shown = if c.life.byname_importance >= epithet.importance {
+        (Some(epithet), Some(byname)) => Some(
+            if c.life.byname_importance >= epithet.importance {
                 byname
             } else {
                 epithet.shown.as_str()
-            };
-            format!("{name} {shown}")
-        }
-        (Some(epithet), None) => format!("{name} {}", epithet.shown),
-        (None, Some(byname)) => format!("{name} {byname}"),
-        (None, None) => name,
+            }
+            .to_owned(),
+        ),
+        (Some(epithet), None) => Some(epithet.shown.clone()),
+        (None, Some(byname)) => Some(byname.to_owned()),
+        (None, None) => None,
     }
 }
 

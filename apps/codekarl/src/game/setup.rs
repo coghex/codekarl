@@ -52,6 +52,10 @@ pub(crate) struct Prepared {
     pub(super) gameplay: Option<GameplayWiring>,
     /// The shared economy rules the view is derived with; `None` for assets that predate M9.
     economy_rules: Option<Arc<Rules>>,
+    /// The house names the character view shows (`houses.toml`, CK-375): empty for a scenario that ships no figures.
+    houses: Arc<ck_characters::figures::Houses>,
+    /// The place of each authored slot by its key (the load file's `[[slot]]`): the character view reads a spouse place there.
+    slots: Arc<BTreeMap<String, String>>,
     /// Map-derived makeshift shelter by place, not saved in `EconomyState`.
     shelter_by_place: BTreeMap<String, u64>,
     saves: PathBuf,
@@ -115,6 +119,8 @@ pub(crate) fn prepare(
         )
     })?;
     let economy_rules = economy::load_rules(asset_root)?.map(Arc::new);
+    let houses = Arc::new(load_houses(directory)?);
+    let slots = Arc::new(load_slot_locations(directory)?);
     let quality_by_place = if let Some(rules) = economy_rules.as_deref() {
         economy::land_counts(&scenario, &rules.terrain_order)?
             .into_iter()
@@ -261,6 +267,8 @@ pub(crate) fn prepare(
         simulation,
         gameplay,
         economy_rules,
+        houses,
+        slots,
         shelter_by_place,
         saves: request.game.saves.clone(),
         storage,
@@ -290,6 +298,8 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
         simulation,
         gameplay,
         economy_rules,
+        houses,
+        slots,
         shelter_by_place,
         saves,
         storage,
@@ -331,6 +341,9 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
             .map_or(0, |rules| rules.lifecycle.marriage.pool.far_m),
     );
     let place_names = place_names(&scenario);
+    let view_place_names = place_names.clone();
+    let view_houses = Arc::clone(&houses);
+    let view_slots = Arc::clone(&slots);
     let wiring_gameplay = gameplay.clone();
     let wiring_rules = economy_rules.clone();
     let (sender, receiver) = channel();
@@ -382,13 +395,28 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                     fail: Box::new(move |message| failing.fail(message)),
                 },
                 Some(Box::new(move |state: &GameState, date| {
-                    view::build_with_land(
+                    let mut view = view::build_with_land(
                         economy_rules.as_deref(),
                         &state.economy,
                         &place_ids,
                         &land_by_place,
                         date,
-                    )
+                    );
+                    // The characters are built with the places, so they carry the same revision (CK-375 §1).
+                    if let Some(rules) = economy_rules.as_deref() {
+                        view.characters = super::character_view::build(
+                            &state.characters,
+                            &state.economy,
+                            &super::character_view::Inputs {
+                                rules,
+                                places: &view_place_names,
+                                houses: &view_houses,
+                                slots: &view_slots,
+                            },
+                            date,
+                        );
+                    }
+                    view
                 })),
             )
             .with_character_storage(storage, super::character_storage::Storage::validate)
@@ -794,7 +822,7 @@ fn new_game_characters(
     log: &mut dyn FnMut(Level, String),
 ) -> Result<ck_characters::CharacterStore, String> {
     let figures = hashes::figure_files(directory).map_err(|error| format!("[game] {error}"))?;
-    let Some([research, load]) = figures else {
+    let Some([research, load, houses]) = figures else {
         return Ok(ck_characters::CharacterStore::default());
     };
     let rules = rules.ok_or_else(|| {
@@ -807,7 +835,9 @@ fn new_game_characters(
         std::fs::read_to_string(path)
             .map_err(|error| format!("[game] cannot read {}: {error}", path.display()))
     };
+    let houses = read(&houses)?;
     let data = ck_characters::figures::FigureData::parse(&read(&research)?, &read(&load)?)
+        .and_then(|data| data.with_houses(&houses))
         .map_err(|error| format!("[game] scenario `{}`: {error}", scenario.id))?;
     let names = place_names(scenario);
     // Every place is within reach of every other at the start: the relatives of clergy are placed at the nearest place that has a pop for
@@ -836,6 +866,36 @@ fn new_game_characters(
         log(Level::Info, line);
     }
     Ok(characters)
+}
+
+/// The house names of the scenario (`houses.toml`, CK-375), for a new game and a loaded one alike: a scenario that ships no figures has none.
+///
+/// # Errors
+/// A figure file that is missing, or a houses file that cannot be read or does not load.
+fn load_houses(directory: &Path) -> Result<ck_characters::figures::Houses, String> {
+    let Some([_, _, path]) =
+        hashes::figure_files(directory).map_err(|error| format!("[game] {error}"))?
+    else {
+        return Ok(ck_characters::figures::Houses::default());
+    };
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("[game] cannot read {}: {error}", path.display()))?;
+    ck_characters::figures::Houses::parse(&text).map_err(|error| format!("[game] {error}"))
+}
+
+/// The place of each slot of the scenario's load file by the slot's key (CK-375): empty for a scenario that ships no figures.
+///
+/// # Errors
+/// A figure file that is missing or does not load.
+fn load_slot_locations(directory: &Path) -> Result<BTreeMap<String, String>, String> {
+    let Some([_, load, _]) =
+        hashes::figure_files(directory).map_err(|error| format!("[game] {error}"))?
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let text = std::fs::read_to_string(&load)
+        .map_err(|error| format!("[game] cannot read {}: {error}", load.display()))?;
+    ck_characters::figures::slot_locations(&text).map_err(|error| format!("[game] {error}"))
 }
 
 /// The display names of the scenario's places by id, which the character log lines show for a place.

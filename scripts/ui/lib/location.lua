@@ -1173,6 +1173,12 @@ local function geometry(self)
   return top, width, height
 end
 
+-- The left slot below `top` points for a window `view` points wide and tall: its top edge, width and height. The character screen
+-- (CK-375) draws over it, where the location panel is.
+function location.slot(view, top)
+  return geometry({view = view, top = function() return top end})
+end
+
 -- The place's view at the revision this panel knows, or nil with the reason when it has none.
 local function fetch(self)
   if self.revision == nil or self.revision == 0 then

@@ -806,6 +806,14 @@ fn supervise_with_owner_factory(
                     ),
                 )
                 .function("places", game_api::places_function(places.clone()))
+                .function(
+                    "characters",
+                    game_api::characters_function(Arc::clone(&view_cache)),
+                )
+                .function(
+                    "character",
+                    game_api::character_function(Arc::clone(&view_cache)),
+                )
                 .function("place", game_api::place_function(view_cache, places))
                 .function("set_map_mode", game_api::set_map_mode_function(map_modes)),
             ),

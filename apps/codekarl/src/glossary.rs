@@ -30,8 +30,48 @@ impl Glossary {
     }
 }
 
-/// Parses and validates the glossary against the shipped small font.
+/// The files the glossary is made of, in the order they load (CK-375): the game's terms, then the character terms. Each is its own byte copy of
+/// the designer's file; a key in both is a load error, and a link in either may name a term of the other.
+const FILES: [&str; 2] = ["ui/glossary.toml", "ui/glossary_characters.toml"];
+
+/// Parses and validates one glossary file against the shipped small font: the tests' fixtures are single files; the game loads [`parse_files`].
+#[cfg(test)]
 pub(crate) fn parse(text: &str, fonts: &FontSet) -> Result<Glossary, String> {
+    let entries = parse_terms(text, fonts)?;
+    for (key, entry) in &entries {
+        validate_markup(&entry.text, &format!("[term.{key}]"), &entries)?;
+    }
+    Ok(Glossary { entries })
+}
+
+/// Parses and validates several glossary files as one glossary: each file's terms, a key that two of them define refused, and every link
+/// checked against all the terms. `files` are `(name, text)`; an error names its file.
+pub(crate) fn parse_files(files: &[(&str, &str)], fonts: &FontSet) -> Result<Glossary, String> {
+    let mut entries: BTreeMap<String, Entry> = BTreeMap::new();
+    let mut origin: BTreeMap<String, &str> = BTreeMap::new();
+    for (name, text) in files {
+        for (key, entry) in parse_terms(text, fonts).map_err(|error| format!("{name}: {error}"))? {
+            if let Some(first) = origin.get(&key) {
+                return Err(format!("{name}: [term.{key}]: defined in {first} as well"));
+            }
+            origin.insert(key.clone(), name);
+            entries.insert(key, entry);
+        }
+    }
+    for (name, text) in files {
+        for key in parse_terms(text, fonts)?.keys() {
+            validate_markup(
+                &entries[key].text,
+                &format!("{name}: [term.{key}]"),
+                &entries,
+            )?;
+        }
+    }
+    Ok(Glossary { entries })
+}
+
+/// The terms of one file, each checked on its own (the keys, the fields, the glyphs); the links are checked by the caller against every term.
+fn parse_terms(text: &str, fonts: &FontSet) -> Result<BTreeMap<String, Entry>, String> {
     let root: toml::Value = toml::from_str(text).map_err(|error| error.message().to_owned())?;
     let root = root
         .as_table()
@@ -81,10 +121,7 @@ pub(crate) fn parse(text: &str, fonts: &FontSet) -> Result<Glossary, String> {
             );
         }
     }
-    for (key, entry) in &entries {
-        validate_markup(&entry.text, &format!("[term.{key}]"), &entries)?;
-    }
-    Ok(Glossary { entries })
+    Ok(entries)
 }
 
 fn valid_key(key: &str) -> bool {
@@ -145,10 +182,18 @@ fn validate_markup(
 }
 
 pub(crate) fn load(assets: &Path, fonts: &FontSet) -> Result<Glossary, String> {
-    let path = assets.join("ui/glossary.toml");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-    parse(&text, fonts).map_err(|error| format!("{}: {error}", path.display()))
+    let mut texts = Vec::new();
+    for file in FILES {
+        let path = assets.join(file);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        texts.push((path.display().to_string(), text));
+    }
+    let files: Vec<(&str, &str)> = texts
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    parse_files(&files, fonts)
 }
 
 fn entry_function(glossary: Arc<Glossary>) -> HostFunction {
@@ -199,11 +244,12 @@ mod tests {
     }
 
     #[test]
-    fn shipped_glossary_has_108_sorted_entries() {
+    fn shipped_glossary_has_171_sorted_entries() {
         let fonts = fonts();
         let shipped = load(&assets(), &fonts).expect("the shipped glossary");
         let keys = shipped.keys().collect::<Vec<_>>();
-        assert_eq!(keys.len(), 108);
+        // The game's 108 terms and the 63 of the character glossary (CK-375).
+        assert_eq!(keys.len(), 108 + 63);
         assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(!assets().join("ui/glossary-r1.toml").exists());
     }
@@ -313,6 +359,135 @@ mod tests {
                 error.contains("[term.pop]") && error.contains(expected),
                 "{text:?}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn two_files_load_as_one_glossary_with_links_across_and_a_shared_key_is_refused() {
+        let fonts = fonts();
+        let game = "[term.pop]\ntitle = \"pop\"\ntext = \"A group of {strength}.\"\n";
+        let characters =
+            "[term.strength]\ntitle = \"strength\"\ntext = \"How strong a {pop} is.\"\n";
+        let both = parse_files(
+            &[("game.toml", game), ("characters.toml", characters)],
+            &fonts,
+        )
+        .expect("links cross between the files");
+        assert_eq!(both.keys().collect::<Vec<_>>(), ["pop", "strength"]);
+        // Each alone has a link to a term it does not have.
+        assert!(
+            parse(game, &fonts)
+                .unwrap_err()
+                .contains("no glossary entry")
+        );
+        assert!(
+            parse(characters, &fonts)
+                .unwrap_err()
+                .contains("no glossary entry")
+        );
+        // A key in both is a load error naming the second file and the term.
+        let twice = "[term.pop]\ntitle = \"pop\"\ntext = \"Again.\"\n";
+        let error = parse_files(&[("game.toml", game), ("characters.toml", twice)], &fonts)
+            .expect_err("a duplicated key");
+        assert!(
+            error.contains("characters.toml")
+                && error.contains("[term.pop]")
+                && error.contains("game.toml"),
+            "{error}"
+        );
+        // A link to nothing in either file names the file and the term.
+        let error = parse_files(
+            &[
+                ("game.toml", game),
+                (
+                    "characters.toml",
+                    "[term.strength]\ntitle = \"s\"\ntext = \"{nowhere}\"\n",
+                ),
+            ],
+            &fonts,
+        )
+        .expect_err("a dead link");
+        assert!(
+            error.contains("characters.toml") && error.contains("[term.strength]"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_character_term_links_to_a_game_term_and_every_term_of_the_first_tab_is_there() {
+        let shipped = load(&assets(), &fonts()).expect("the shipped glossary");
+        // A link from a character term to a game term resolves (the load checked it); this one is known to cross.
+        let crossing = shipped
+            .keys()
+            .filter(|key| {
+                let text = &shipped.entry(key).expect("an entry").text;
+                std::fs::read_to_string(assets().join("ui/glossary_characters.toml"))
+                    .expect("the character glossary")
+                    .contains(&format!("[term.{key}]"))
+                    && [
+                        "{pop",
+                        "{culture",
+                        "{religion",
+                        "{satisfaction",
+                        "{food_days",
+                    ]
+                    .iter()
+                    .any(|link| text.contains(link))
+            })
+            .count();
+        assert!(crossing >= 1, "some character term links to a game term");
+        // Every live quantity the first tab names in a tooltip has a term: the nine body stats, the eleven skills, the seven virtue pairs, the
+        // four humours, the stress and its threshold, the nine manner pairs, the three standings and the two chip words.
+        for key in [
+            "height",
+            "weight",
+            "strength",
+            "wit",
+            "intellect",
+            "cunning",
+            "longevity",
+            "constitution",
+            "fecundity",
+            "leadership",
+            "craftsmanship",
+            "seamanship",
+            "scholarship",
+            "horsemanship",
+            "martial_prowess",
+            "oratory",
+            "administration",
+            "theology",
+            "medicine",
+            "husbandry",
+            "pride_humility",
+            "greed_charity",
+            "lust_chastity",
+            "envy_kindness",
+            "gluttony_temperance",
+            "wrath_patience",
+            "sloth_diligence",
+            "blood",
+            "yellow_bile",
+            "black_bile",
+            "phlegm",
+            "stress",
+            "stress_threshold",
+            "guarded_open",
+            "deceitful_honest",
+            "suspicious_trusting",
+            "wary_daring",
+            "traditional_curious",
+            "yielding_stubborn",
+            "solitary_gregarious",
+            "content_ambitious",
+            "harsh_merciful",
+            "popularity",
+            "fame",
+            "honour",
+            "trait",
+            "attribute",
+        ] {
+            assert!(shipped.entry(key).is_some(), "no term for {key}");
         }
     }
 }

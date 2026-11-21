@@ -2451,6 +2451,12 @@ GUARDS: tuple[Guard, ...] = (
         "rust.app",
         ("scripts/ui/main.lua", "assets/ui/"),
     ),
+    # CK-375: the character screen's tests check the icons and portraits it draws against the generators that write them.
+    Guard(
+        "apps/codekarl/src/ui_link/location_tests/characters.rs",
+        "rust.app",
+        ("assets/ui/",),
+    ),
     Guard(
         "apps/codekarl/src/ui_link/location_tests/ledger.rs",
         "rust.app",
@@ -2514,6 +2520,16 @@ GUARDS: tuple[Guard, ...] = (
     # the scenario with its real figures.
     Guard(
         "apps/codekarl/src/game/tests/start_768.rs",
+        "rust.app",
+        (
+            "assets/game/",
+            "assets/map/ireland/",
+            "assets/scenarios/ireland-768/",
+        ),
+    ),
+    # CK-375: the character view's tests load the shipped rules and house names and read a new game of the shipped 768 scenario.
+    Guard(
+        "apps/codekarl/src/game/tests/character_view.rs",
         "rust.app",
         (
             "assets/game/",

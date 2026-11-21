@@ -549,6 +549,7 @@ impl CharacterStore {
             ));
         }
         Ok(Fixed {
+            key: figure.key.clone(),
             name: figure.name.clone(),
             genitive: figure.genitive.clone(),
             patronymic: figure.patronymic.clone(),
@@ -704,6 +705,7 @@ impl CharacterStore {
             None => End::DeathUnknown,
         });
         request.fixed = Some(Fixed {
+            key: parent.key.clone(),
             name: parent.name.clone(),
             genitive: parent.genitive.clone(),
             house: Some(parent.house.clone()),

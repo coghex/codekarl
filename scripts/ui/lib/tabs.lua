@@ -2,6 +2,10 @@
 -- left on panels on the left of the screen and right on panels on the right, in the room before the close button. The selected tab
 -- is drawn pressed. A tab has a label, a short label and a tiny
 -- one; the tabs use the longest set that fits the room together, and the tiny set (drawn over the title's end) when none does.
+--
+-- **In the body (CK-375).** With `body = {x, y, width}` (points, in the window's content) the buttons are not in the title bar but in a row
+-- in the window's body, left-aligned at (x, y), panel-style, using the longest labels that fit `width`. Selection, tooltips and what a click
+-- does are the same. The tabs are then the caller's to place (`tabs:place_in_body`) and to destroy (`tabs:destroy`).
 local ui = require("lib.ui")
 local button = require("lib.button")
 
@@ -16,7 +20,8 @@ tabs.__index = tabs
 --   items     a sequence of `{key, label, short, tiny}` or `{key, icon}`; text labels get full-label tooltips by default;
 --             `label_tooltip = false` leaves a tooltip attached by the caller in place across label tiers;
 --   selected  the key of the tab showing first (the first item's by default);
---   align     "left" or "right"; defaults to "right";
+--   align     "left" or "right"; defaults to "right" (a title-bar row only);
+--   body      `{x, y, width}`: a row in the window's body instead of the title bar (see above);
 --   on_select called as `on_select(key)` when a tab other than the selected one is clicked.
 function tabs.new(spec)
   if type(spec) ~= "table" then
@@ -32,10 +37,18 @@ function tabs.new(spec)
   if spec.align ~= nil and spec.align ~= "left" and spec.align ~= "right" then
     error("tabs.new: align must be `left` or `right`", 2)
   end
+  local body = spec.body
+  if body ~= nil then
+    if type(body) ~= "table" or type(body.x) ~= "number" or type(body.y) ~= "number" or type(body.width) ~= "number"
+      or body.width <= 0 or body.x ~= body.x or body.y ~= body.y then
+      error("tabs.new: body must be `{x, y, width}` in points, with a positive width", 2)
+    end
+  end
   local self = setmetatable({}, tabs)
   self.window = window
   self.align = spec.align or "right"
   self.on_select = spec.on_select
+  self.body = body
   self.items = {}
   self.buttons = {}
   self.tier = 1
@@ -67,8 +80,8 @@ function tabs.new(spec)
       x = 0, -- placed by `place_in_title` as soon as the tabs are added
       y = 0,
       kind = window.kind,
-      style = "title",
-      group = window.chrome,
+      style = body ~= nil and "panel" or "title",
+      group = body ~= nil and window.content or window.chrome,
       owner = window,
       on_click = function() self:select(item.key, true) end,
       tooltip = item.tooltip,
@@ -81,7 +94,11 @@ function tabs.new(spec)
     self.buttons[index] = button.new(button_spec)
     self.buttons[index]:set_selected(item.key == self.selected)
   end
-  window:add_title_item(self)
+  if body ~= nil then
+    self:place_in_body(body.x, body.y, body.width)
+  else
+    window:add_title_item(self)
+  end
   return self
 end
 
@@ -128,6 +145,41 @@ function tabs:place_in_title(window)
   end
 end
 
+-- A tab row in the body: the labels of the longest tier that fits `width` points, the buttons left-aligned at (x, y).
+function tabs:place_in_body(x, y, width)
+  if self.body == nil then error("tabs:place_in_body: these tabs are in the title bar", 2) end
+  self.body = {x = x, y = y, width = width}
+  local tier = 3
+  for candidate = 1, 2 do
+    if fits(self, width, candidate) then
+      tier = candidate
+      break
+    end
+  end
+  if tier ~= self.tier then
+    self.tier = tier
+    for index, item in ipairs(self.items) do
+      if item.labels ~= nil then self.buttons[index]:set_text(item.labels[tier]) end
+      if item.labels ~= nil and item.label_tooltip then
+        self.buttons[index]:set_tooltip(item.labels[tier] == item.labels[1] and nil or item.labels[1])
+      end
+    end
+  end
+  local at = x
+  for index = 1, #self.items do
+    local button_width = self.buttons[index]:size()
+    self.buttons[index]:move(at, y)
+    at = at + button_width + GAP
+  end
+end
+
+-- Takes a row in the body away, buttons and all.
+function tabs:destroy()
+  if self.closed then return end
+  self.closed = true
+  for _, tab_button in ipairs(self.buttons) do tab_button:destroy() end
+end
+
 -- Replaces a text tab's label tiers and immediately lays out the changed label.
 function tabs:set_labels(key, full, short, tiny)
   if type(full) ~= "string" or full == "" then
@@ -153,7 +205,11 @@ function tabs:set_labels(key, full, short, tiny)
   if item.label_tooltip then
     self.buttons[index]:set_tooltip(self.tier == 1 and nil or full)
   end
-  self:place_in_title(self.window)
+  if self.body ~= nil then
+    self:place_in_body(self.body.x, self.body.y, self.body.width)
+  else
+    self:place_in_title(self.window)
+  end
 end
 
 -- The room, in points, a title bar must keep for tabs of `items` (as `tabs.new` takes them): the buttons with their tiny labels and

@@ -135,6 +135,12 @@ pub(crate) fn age_years(birth: Date, today: Date) -> u32 {
     u32::from(today.year.saturating_sub(birth.year)).saturating_sub(u32::from(!turned))
 }
 
+/// The age in whole years of someone born on `birth`, on `today` (a 29 February birthday falls on 1 March in a common year).
+#[must_use]
+pub fn age_on(birth: Date, today: Date) -> u32 {
+    age_years(birth, today)
+}
+
 fn at_least(have: i64, want: i64) -> bool {
     have >= want
 }

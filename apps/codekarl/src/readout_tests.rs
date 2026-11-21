@@ -1433,6 +1433,7 @@ pub(crate) fn snapshot(hour: u8, speed: u8, paused: Option<PauseReason>) -> SimS
         unsaved: false,
         economy_revision: 0,
         economy: None,
+        world: 0,
     }
 }
 
@@ -1762,13 +1763,13 @@ fn the_time_bar_creates_its_panel_first_then_touches_only_what_changed() {
         first[1].starts_with("create q1 ui/theme/cut6_tl_fill.png 8 8 "),
         "{first:?}"
     );
-    // Three panels (the time bar, the ledger bar and the map modes' bar) and nine buttons use cut-6 frames; icons are precreated
-    // (including both pause/play states, the two ledger tabs, and the three map modes'), and the five boxes have separate outline and fill quads.
+    // Three panels (the time bar, the ledger bar and the map modes' bar) and ten buttons use cut-6 frames; icons are precreated
+    // (including both pause/play states, the three ledger tabs, and the three map modes'), and the five boxes have separate outline and fill quads.
     let text = "9 Oct 768 · 14:00";
     let glyphs = text.chars().filter(|c| *c != ' ').count();
     assert_eq!(
         first.iter().filter(|e| e.starts_with("create ")).count(),
-        glyphs + 3 * 11 + 8 * 11 + 7 + 1 + 6 + 10 + 7,
+        glyphs + 3 * 11 + 9 * 11 + 7 + 1 + 6 + 10 + 7 + 1,
         "{first:?}"
     );
     assert!(

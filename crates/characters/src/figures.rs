@@ -178,6 +178,135 @@ pub struct SlotData {
     pub members: Vec<SlotMember>,
 }
 
+/// A house as the UI shows it (CK-375): its name, and the dynasty shown before the name where it has one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HouseName {
+    /// The name (`Cenél nEógain`).
+    pub name: String,
+    /// The dynasty (`Uí Néill`); empty for a house with none.
+    pub dynasty: String,
+}
+
+impl HouseName {
+    /// The house line: `<dynasty> · <name>` where there is a dynasty, else the name alone.
+    #[must_use]
+    pub fn line(&self) -> String {
+        if self.dynasty.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} · {}", self.dynasty, self.name)
+        }
+    }
+}
+
+/// A subhouse's name and the house it belongs to (L7 data: stored now, not shown yet).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubhouseName {
+    /// The name.
+    pub name: String,
+    /// The house key.
+    pub house: String,
+}
+
+/// The display names of the houses and subhouses (`figures/houses.toml`, CK-375), by key.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Houses {
+    /// The houses.
+    pub houses: BTreeMap<String, HouseName>,
+    /// The subhouses.
+    pub subhouses: BTreeMap<String, SubhouseName>,
+}
+
+impl Houses {
+    /// Reads `houses.toml`: the `[house]` table (`key = { name, dynasty }`) and the `[subhouse]` table (`key = { name, house }`). An entry
+    /// with a field this reader does not know, a table it does not know, or a subhouse of a house it does not name is a refusal.
+    ///
+    /// # Errors
+    /// The first refusal, named.
+    pub fn parse(text: &str) -> Result<Self, FigureError> {
+        let file = File {
+            name: "houses.toml",
+        };
+        let document = file.document(text)?;
+        if let Some(extra) = document
+            .keys()
+            .find(|key| !matches!(key.as_str(), "house" | "subhouse"))
+        {
+            return Err(file.error(extra, "an unknown table"));
+        }
+        let entries = |name: &str| -> Result<Vec<(&String, &Table)>, FigureError> {
+            match document.get(name) {
+                None => Ok(Vec::new()),
+                Some(Node::Table(table)) => table
+                    .iter()
+                    .map(|(key, node)| match node {
+                        Node::Table(inner) => Ok((key, inner)),
+                        _ => Err(file.error(&format!("{name}.{key}"), "expected a table")),
+                    })
+                    .collect(),
+                Some(_) => Err(file.error(name, "expected a table")),
+            }
+        };
+        let mut houses = Self::default();
+        for (key, table) in entries("house")? {
+            let entry = format!("house.{key}");
+            if let Some(extra) = table
+                .keys()
+                .find(|field| !matches!(field.as_str(), "name" | "dynasty"))
+            {
+                return Err(file.error(&entry, format!("`{extra}` is not a field of a house")));
+            }
+            let name = file.text(&entry, table, "name")?.to_owned();
+            if name.is_empty() {
+                return Err(file.error(&entry, "`name` is empty"));
+            }
+            let dynasty = file.optional_text(&entry, table, "dynasty")?.to_owned();
+            houses
+                .houses
+                .insert(key.clone(), HouseName { name, dynasty });
+        }
+        for (key, table) in entries("subhouse")? {
+            let entry = format!("subhouse.{key}");
+            if let Some(extra) = table
+                .keys()
+                .find(|field| !matches!(field.as_str(), "name" | "house"))
+            {
+                return Err(file.error(&entry, format!("`{extra}` is not a field of a subhouse")));
+            }
+            let name = file.text(&entry, table, "name")?.to_owned();
+            let house = file.text(&entry, table, "house")?.to_owned();
+            if !houses.houses.contains_key(&house) {
+                return Err(FigureError::UnknownKey { entry, key: house });
+            }
+            houses
+                .subhouses
+                .insert(key.clone(), SubhouseName { name, house });
+        }
+        Ok(houses)
+    }
+}
+
+/// The place of each slot of the load file by the slot's key (`[[slot]]` `key` and `location`): where a slot is authored. A character holding a
+/// slot records its key, not its place, and the character screen's spouse-place role names the slot's place (CK-375 §4).
+///
+/// # Errors
+/// A file that is not TOML, or a slot without its key or its location.
+pub fn slot_locations(load: &str) -> Result<BTreeMap<String, String>, FigureError> {
+    let file = File {
+        name: "ireland-768-load.toml",
+    };
+    let document = file.document(load)?;
+    let mut out = BTreeMap::new();
+    for table in file.tables(&document, "slot")? {
+        let key = file.text("slot", table, "key")?.to_owned();
+        let location = file
+            .text(&format!("slot.{key}"), table, "location")?
+            .to_owned();
+        out.insert(key, location);
+    }
+    Ok(out)
+}
+
 /// The two files, read and joined.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FigureData {
@@ -191,6 +320,8 @@ pub struct FigureData {
     pub slots: Vec<SlotData>,
     /// The traits no real figure is given (the research file's `[defaults].excluded`): key and the lowest level excluded.
     pub excluded: Vec<(String, u8)>,
+    /// The display names of the houses, joined by [`with_houses`](Self::with_houses); empty until then.
+    pub houses: Houses,
 }
 
 /// A refusal of the loader, named (CK-370 §1).
@@ -219,7 +350,7 @@ pub enum FigureError {
         /// The key.
         key: String,
     },
-    /// A load-file key that is not a figure or a dead parent.
+    /// A load-file key that is not a figure or a dead parent, or (in a house) not a house or a subhouse named by `houses.toml`.
     UnknownKey {
         /// The entry that names it.
         entry: String,
@@ -311,7 +442,10 @@ impl std::fmt::Display for FigureError {
                 write!(f, "{entry}: the key `{key}` is used twice")
             }
             Self::UnknownKey { entry, key } => {
-                write!(f, "{entry}: `{key}` is not a figure or a dead parent")
+                write!(
+                    f,
+                    "{entry}: `{key}` is not a figure, a dead parent, a house or a subhouse the files name"
+                )
             }
             Self::Office { entry, office } => write!(
                 f,
@@ -924,9 +1058,45 @@ impl FigureData {
             strands,
             slots,
             excluded: defaults,
+            houses: Houses::default(),
         };
         data.check_structure()?;
         Ok(data)
+    }
+
+    /// Joins the house names (`houses.toml`, CK-375, read by [`Houses::parse`]). Every house key the load file uses (a figure's house, house of
+    /// birth and subhouse, a dead parent's house) must be named, except the empty house.
+    ///
+    /// # Errors
+    /// The first refusal, named.
+    pub fn with_houses(mut self, text: &str) -> Result<Self, FigureError> {
+        let houses = Houses::parse(text)?;
+        let named = |entry: String, key: &str, subhouse: bool| -> Result<(), FigureError> {
+            let known = if subhouse {
+                houses.subhouses.contains_key(key)
+            } else {
+                houses.houses.contains_key(key)
+            };
+            if key.is_empty() || known {
+                Ok(())
+            } else {
+                Err(FigureError::UnknownKey {
+                    entry,
+                    key: key.to_owned(),
+                })
+            }
+        };
+        for figure in &self.figures {
+            let entry = format!("figure.{}", figure.key);
+            named(entry.clone(), &figure.house, false)?;
+            named(entry.clone(), &figure.house_of_birth, false)?;
+            named(entry, &figure.subhouse, true)?;
+        }
+        for parent in &self.dead_parents {
+            named(format!("dead_parent.{}", parent.key), &parent.house, false)?;
+        }
+        self.houses = houses;
+        Ok(self)
     }
 
     /// The figure of `key`.
