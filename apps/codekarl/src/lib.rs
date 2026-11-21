@@ -818,6 +818,14 @@ fn supervise_with_owner_factory(
                     "character_relations",
                     game_api::character_relations_function(Arc::clone(&view_cache)),
                 )
+                .function(
+                    "character_pop",
+                    game_api::character_pop_function(Arc::clone(&view_cache)),
+                )
+                .function(
+                    "character_log",
+                    game_api::character_log_function(Arc::clone(&view_cache)),
+                )
                 .function("place", game_api::place_function(view_cache, places))
                 .function("set_map_mode", game_api::set_map_mode_function(map_modes)),
             ),

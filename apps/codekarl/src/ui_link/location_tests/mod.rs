@@ -1144,6 +1144,7 @@ fn click_ledger_row(rig: &mut Rig, row: usize, width: u32, height: u32) {
 }
 
 mod cards;
+pub(crate) mod character_pop;
 pub(crate) mod character_relations;
 pub(crate) mod characters;
 mod ledger;

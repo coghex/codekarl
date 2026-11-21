@@ -1,7 +1,9 @@
 -- The character screen (CK-375 §6): a window over the left slot (where the location panel is) that shows one character: a header (the
 -- portrait, the name and epithet, the house line, "age N" and the role line), a strip of four tabs below it and the tab's content in a
--- scrolling stack. In 9a only the first tab, "character", has content: eight sections, each headed by its word in the term colour with a
--- rule to the right, every icon naming its number in a tooltip (the glossary entry of its quantity).
+-- scrolling stack. The first tab, "character", has eight sections, each headed by its word in the term colour with a rule to the right, every icon
+-- naming its number in a tooltip (the glossary entry of its quantity). The "relations" tab (9b, `lib/character_relations.lua`) and the "pop" tab (9c,
+-- `lib/character_pop.lua`) fill the stack with their own sections; "actions" says "nothing yet". A small button at the right of the name line, on every
+-- tab, opens the life log window (9c, `lib/character_log.lua`).
 --
 -- **The data path.** The screen reads `game.character(id, revision)`, the immutable record of that character at a revision `game_time`
 -- carried, and never anything live. It keeps its character's id and the **world** number it was opened in, and holds no revision of its own:
@@ -21,6 +23,9 @@ local tooltip = require("lib.tooltip")
 local draw = require("lib.draw")
 local pointer = require("lib.pointer")
 local relations = require("lib.character_relations")
+local pop_tab = require("lib.character_pop")
+local character_log = require("lib.character_log")
+local button = require("lib.button")
 
 local P = ui.P
 
@@ -62,6 +67,7 @@ local function icon_names()
     for _, name in pairs(set) do add(name) end
   end
   add(STRESS_ICON)
+  add("scroll")
   for _, name in ipairs(relations.icon_names()) do add(name) end
   table.sort(names)
   return names
@@ -76,7 +82,7 @@ local TABS = {
   {key = "relations", label = "relations", short = "rel", tiny = "r"},
   {key = "actions", label = "actions", short = "act", tiny = "a"},
 }
-local LATER = {pop = "in a later slice", actions = "nothing yet"}
+local LATER = {actions = "nothing yet"}
 
 -- Where the parts of the screen lie, in UI pixels from the window's content origin.
 local PORTRAIT = 48
@@ -84,6 +90,8 @@ local TABS_Y = 52
 local RULE_Y = 67
 local STACK_Y = 70
 local GAP = 3
+-- The life-log button's width in UI pixels (an icon button: the icon and its padding).
+local LOG_BUTTON = 13
 
 local function signed(value)
   if value > 0 then return "+" .. value end
@@ -100,6 +108,7 @@ end
 local function tip_of(hotspots, x, y)
   for _, spot in ipairs(hotspots) do
     if x >= spot.x and x < spot.x + spot.width and y >= spot.y and y < spot.y + spot.height then
+      if spot.tip ~= nil then return spot.tip() end
       if spot.content ~= nil then return spot.content end
       return tooltip.explanation(spot.key)
     end
@@ -382,10 +391,12 @@ local function draw_header(self, record)
   draw.image(result, group, "unknown_header", 0, 0, PORTRAIT, PORTRAIT, theme.colour("dim"))
   local x = PORTRAIT + 6
   local room = self.window.content_width // P - x - 2
+  -- The life-log button stands at the right of the name line and the house line under it.
+  local near = room - LOG_BUTTON - 3
   local text_colour = theme.colour("text")
-  draw.text(result, group, x, 1, draw.clip(title_of(record), room), text_colour)
+  draw.text(result, group, x, 1, draw.clip(title_of(record), near), text_colour)
   if record.house ~= "" then
-    draw.text(result, group, x, 14, draw.clip(record.house, room, "small"), theme.colour("term"), "small")
+    draw.text(result, group, x, 14, draw.clip(record.house, near, "small"), theme.colour("term"), "small")
   else
     draw.text(result, group, x, 14, "no house", theme.colour("dim"), "small")
   end
@@ -411,6 +422,34 @@ local function read_relations(self)
   return false, found
 end
 
+-- The name of a place for the open-location button: the places list's.
+local function name_of_place(id)
+  for _, place in ipairs(game.places()) do
+    if place.id == id then return place.name end
+  end
+  return id
+end
+
+-- Reads the pop the character belongs to at the revision the screen holds: its exact place and slot with its live characters
+-- (`game.character_pop`), and that slot of that revision's economy view (`game.place`). Returns whether it was read, and if not why. A tab that cannot
+-- read says "not available" and changes nothing else.
+local function read_pop(self)
+  local ok, found = pcall(game.character_pop, self.character, self.revision)
+  if not ok then return false, found end
+  local placed, place = pcall(game.place, found.place, self.revision)
+  if not placed then return false, place end
+  local pop = place.pops[found.slot + 1]
+  if pop == nil then
+    self.pop_data = nil
+    return false, "no pop"
+  end
+  self.pop_data = {
+    pop = pop, place = found.place, place_name = name_of_place(found.place), slot = found.slot, revision = self.revision,
+    characters = found.characters,
+  }
+  return true
+end
+
 -- What the relations tab's sections need of the screen: its helpers, the character shown, and how a click on a live portrait opens that
 -- character's screen. The click is acted on once the press that made it has been dispatched, because opening replaces the very stack it came from.
 local function relations_kit(self)
@@ -419,6 +458,15 @@ local function relations_kit(self)
     open = function(id)
       pointer.defer(function()
         if self:is_open() then self:open(id, self.revision, self.world) end
+      end)
+    end,
+    -- The open-location button closes the screen and shows the place under it, once the press that made the click has been dispatched.
+    open_place = function(id)
+      pointer.defer(function()
+        if not self:is_open() then return end
+        local name = name_of_place(id)
+        self:close()
+        if self.open_place ~= nil then self.open_place(id, name) end
       end)
     end,
   }
@@ -431,6 +479,12 @@ local function items_of(self)
   elseif self.tab == "relations" then
     if self.relations ~= nil then
       sections = relations.sections(self.relations, inner_width(self), relations_kit(self))
+    else
+      sections = later("not available")
+    end
+  elseif self.tab == "pop" then
+    if self.pop_data ~= nil then
+      sections = pop_tab.sections(self.pop_data, inner_width(self), relations_kit(self))
     else
       sections = later("not available")
     end
@@ -466,7 +520,16 @@ local function build(self)
     on_select = function(key)
       self.tab = key
       if key == "relations" then read_relations(self) end
+      if key == "pop" then read_pop(self) end
       fill(self, false)
+    end,
+  }
+  if self.log_button ~= nil then self.log_button:destroy() end
+  self.log_button = button.new{
+    x = self.window.content_width - LOG_BUTTON * P, y = 0, icons = {"scroll"}, icon = "scroll", tooltip = "life log", kind = "window",
+    group = self.window.content, owner = self.window,
+    on_click = function()
+      if self:is_open() then self.log:open(self.character, self.record.name, self.revision, self.world) end
     end,
   }
   if self.stack ~= nil and not self.stack.closed then self.stack:destroy() end
@@ -474,12 +537,15 @@ local function build(self)
   fill(self, false)
 end
 
--- `character_screen.new{view = {width, height}, top = function() return points end}`: the screen, closed.
+-- `character_screen.new{view = {width, height}, top = function() return points end, open_place = function(id, name) end}`: the screen, closed.
+-- `open_place` shows a place in the location panel once the screen has closed (the pop tab's open-location button).
 function character_screen.new(spec)
   if type(spec) ~= "table" or type(spec.view) ~= "table" or type(spec.top) ~= "function" then
     error("character_screen.new: expected `view` and `top`", 2)
   end
-  return setmetatable({view = spec.view, top = spec.top, tab = "character"}, character_screen)
+  local self = setmetatable({view = spec.view, top = spec.top, open_place = spec.open_place, tab = "character"}, character_screen)
+  self.log = character_log.new{geometry = function() return location.slot(self.view, ui.snap(self.top())) end}
+  return self
 end
 
 function character_screen:is_open()
@@ -497,12 +563,21 @@ function character_screen:current_tab()
 end
 
 function character_screen:raise()
-  if self:is_open() then self.window:raise() end
+  if self:is_open() then
+    self.window:raise()
+    -- The life log window stands over the screen and stays there.
+    if self.log:is_open() then self.log.window:raise() end
+  end
 end
 
 -- Closes the screen: the location panel under it shows as it was.
 function character_screen:close()
   if self:is_open() then self.window:close() end
+end
+
+-- Whether the life log window is open, and the id of the character whose log it shows.
+function character_screen:log_id()
+  return self.log:id()
 end
 
 local function geometry(self)
@@ -515,7 +590,9 @@ function character_screen:open(id, revision, world)
   local ok, record = pcall(game.character, id, revision)
   if not ok then return false end
   self.character, self.world, self.record, self.tab = id, world, record, "character"
-  self.revision, self.relations = revision, nil
+  self.revision, self.relations, self.pop_data = revision, nil, nil
+  -- The log window belongs to the character it was opened for: another character's screen closes it.
+  self.log:close()
   if self:is_open() then
     self.window:raise()
     build(self)
@@ -527,8 +604,9 @@ function character_screen:open(id, revision, world)
     title = "character", kind = "window", outer_width = width, outer_height = height, x = 0, y = top, draggable = false,
     on_close = function()
       if self.window == created then
-        self.window, self.header, self.tabs, self.stack = nil, nil, nil, nil
-        self.character, self.record, self.relations = nil, nil, nil
+        self.log:close()
+        self.window, self.header, self.tabs, self.stack, self.log_button = nil, nil, nil, nil, nil
+        self.character, self.record, self.relations, self.pop_data = nil, nil, nil, nil
       end
     end,
   }
@@ -553,13 +631,16 @@ function character_screen:refresh(revision, world)
   if record == nil then return end
   self.record, self.revision = record, revision
   -- The tab showing is read again at the same revision: a read the cache refuses leaves what it shows as it was.
-  if self.tab == "relations" then
-    local read, why = read_relations(self)
+  if self.tab == "relations" or self.tab == "pop" then
+    local read, why
+    if self.tab == "relations" then read, why = read_relations(self) else read, why = read_pop(self) end
     if not read and tostring(why):find("no character", 1, true) ~= nil then
       self:close()
       return
     end
   end
+  -- The life log window, when open, reads its lines again for the new revision.
+  self.log:refresh(revision, world)
   draw_header(self, record)
   fill(self, true)
 end
@@ -573,6 +654,7 @@ function character_screen:relayout()
   self.window:move_to(0, top)
   build(self)
   if self.stack ~= nil and not self.stack.closed then self.stack:set_pos(scroll) end
+  self.log:relayout()
 end
 
 return character_screen

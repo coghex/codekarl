@@ -670,6 +670,7 @@ where
                 staging,
                 storage.handle.clone(),
                 storage.cell.clone(),
+                storage.log_cell.clone(),
             );
             validate(&staged.path, &save.state).map_err(|e| e.to_string())?;
             let simulation =

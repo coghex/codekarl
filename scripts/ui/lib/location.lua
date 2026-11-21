@@ -200,7 +200,7 @@ end)
 local function draw_bar(result, group, x, y, width, numerator, denominator)
   put_quad(result, group, x, y, width, 3, theme.colour("track"))
   if denominator <= 0 then return end
-  local fill = math.min(width, math.max(0, math.floor(width * numerator / denominator)))
+  local fill = require("lib.draw").bar_fill(numerator, denominator, width)
   if fill > 0 then put_quad(result, group, x, y, fill, 3, theme.colour("text")) end
 end
 

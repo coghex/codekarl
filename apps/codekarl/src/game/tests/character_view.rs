@@ -152,7 +152,7 @@ pub(super) fn store_of(characters: Vec<Character>) -> CharacterStore {
     store_with(characters, &[])
 }
 
-fn viewed(store: &CharacterStore) -> CharacterView {
+pub(super) fn viewed(store: &CharacterStore) -> CharacterView {
     build(
         store,
         &world().0,
@@ -168,6 +168,69 @@ fn viewed(store: &CharacterStore) -> CharacterView {
 
 fn card(view: &CharacterView, id: u64) -> &CharacterCard {
     view.card(id).unwrap_or_else(|| panic!("no card for {id}"))
+}
+
+/// Two slots of one place holding pops of the same kind (the shipped Clonmacnoise has two peasant pops).
+fn twin_pops() -> (PopLocator, PopLocator) {
+    world()
+        .0
+        .places
+        .iter()
+        .find_map(|place| {
+            place.pops.iter().enumerate().find_map(|(first, pop)| {
+                let second = place
+                    .pops
+                    .iter()
+                    .skip(first + 1)
+                    .position(|other| other.kind == pop.kind)?
+                    + first
+                    + 1;
+                Some((
+                    PopLocator {
+                        place: place.id.clone(),
+                        slot: u32::try_from(first).expect("a slot"),
+                    },
+                    PopLocator {
+                        place: place.id.clone(),
+                        slot: u32::try_from(second).expect("a slot"),
+                    },
+                ))
+            })
+        })
+        .expect("a place with two pops of one kind")
+}
+
+#[test]
+fn two_pops_of_one_kind_at_a_place_keep_their_own_characters_most_important_first_and_a_move_shows_the_new_pop()
+ {
+    let (first, second) = twin_pops();
+    assert_eq!(
+        (first.place.as_str(), first.slot < second.slot),
+        (second.place.as_str(), true)
+    );
+    let mut ruler = man(3, &first);
+    ruler.office = Some(Office::Ruler);
+    let view = viewed(&store_of(vec![
+        man(1, &first),
+        man(2, &second),
+        ruler.clone(),
+    ]));
+    // Each card carries its pop's exact slot, and the pop's members stand most important first (the ruler before the commoner).
+    assert_eq!(
+        (
+            card(&view, 1).slot,
+            card(&view, 2).slot,
+            card(&view, 3).slot
+        ),
+        (first.slot, second.slot, first.slot)
+    );
+    assert_eq!(view.pop_members(&first.place, first.slot), [3, 1]);
+    assert_eq!(view.pop_members(&first.place, second.slot), [2]);
+    assert!(view.pop_members(&first.place, 99).is_empty());
+    // The same character in the other pop in the next revision: the members follow.
+    let moved = viewed(&store_of(vec![man(1, &second), man(2, &second), ruler]));
+    assert_eq!(moved.pop_members(&first.place, first.slot), [3]);
+    assert_eq!(moved.pop_members(&first.place, second.slot), [1, 2]);
 }
 
 #[test]

@@ -8,9 +8,18 @@ function classes.set_revision(value)
   revision = value
 end
 
-local function place_view(id)
-  if revision == nil or game.place == nil then return nil end
-  return game.place(id, revision)
+-- The place's view at the pinned revision, or at `at` when it is given: a tooltip called from the character screen's pop tab names the revision the
+-- tab shows (CK-378), which may not be the newest the pin holds.
+local function place_view(id, at)
+  if at == nil then
+    if revision == nil or game.place == nil then return nil end
+    return game.place(id, revision)
+  end
+  -- A revision the tab named may have retired since: the tooltip then has nothing to say.
+  if game.place == nil then return nil end
+  local ok, view = pcall(game.place, id, at)
+  if not ok then return nil end
+  return view
 end
 
 local function place_name(id)
@@ -207,7 +216,7 @@ tooltip.define("consumed", function(args)
 end)
 
 tooltip.define("pop_size", function(args)
-  local place = place_view(args.place)
+  local place = place_view(args.place, args.revision)
   local pop = place ~= nil and place.pops[args.pop] or nil
   if pop == nil then return nil end
   return {
@@ -218,7 +227,7 @@ tooltip.define("pop_size", function(args)
 end)
 
 local function pop_view(args)
-  local place = place_view(args.place)
+  local place = place_view(args.place, args.revision)
   return place ~= nil and place.pops[args.pop] or nil
 end
 

@@ -21,6 +21,7 @@ use super::{
 };
 use crate::testing::Dir;
 
+mod character_log;
 mod character_passes;
 mod character_relations;
 mod character_view;

@@ -16,6 +16,10 @@
 //! parents, spouses, children and others, the strands and opinion of each, and its passions. It reads the revision's own world (the live
 //! characters and the archive as of that publication) and nothing else, and refuses as `game.character` does.
 //!
+//! `game.character_pop(id, revision)` returns the exact pop of a live character at that revision (place and slot) with the live characters of that pop,
+//! most important first (the pop tab, slice 9c), and `game.character_log(id, revision)` the character's life log as of that revision's publication
+//! (the life log window): both refuse as `game.character` does.
+//!
 //! `game.mark_unsaved()` and `game.load_save_guarded(filename)` share the simulation's ordered message route with saves and loads. The
 //! guarded load returns immediately; its eventual outcome reaches `game_save_result(filename, result)` after
 //! `game.on_save_result(fn | nil)` registers a callback.
@@ -639,6 +643,7 @@ fn pop_table(pop: &PopView) -> ConfigValue {
         ("niceties", integer(pop.niceties)),
         ("luxuries", integer(pop.luxuries)),
         ("satisfaction", ConfigValue::Integer(pop.satisfaction)),
+        ("equilibrium", ConfigValue::Integer(pop.equilibrium)),
         ("births", integer(pop.births)),
         ("deaths", integer(pop.deaths)),
         ("basic_housing", integer(pop.basic_housing)),
@@ -858,6 +863,7 @@ fn card_table(card: &CharacterCard) -> ConfigValue {
         ("house", text(&card.house)),
         ("role", text(&card.role)),
         ("place", text(&card.place)),
+        ("slot", integer(u64::from(card.slot))),
         ("kind", text(&card.kind)),
         ("ruler", ConfigValue::Bool(card.ruler)),
         ("clergy", ConfigValue::Bool(card.clergy)),
@@ -1079,6 +1085,77 @@ pub(crate) fn character_relations_function(cache: Arc<ViewCache>) -> HostFunctio
             format!("game.character_relations: no character {id} at revision {revision}")
         })?;
         Ok(vec![relations_table(id, &record)])
+    })
+}
+
+/// `game.character_pop(id, revision)`: the pop the live character `id` belongs to at `revision` (its exact place and slot) and the live characters
+/// of that pop at that revision, most important first, each as its card (CK-378 §1). An id not live at that revision, and a revision that is
+/// missing or retired, are refusals.
+pub(crate) fn character_pop_function(cache: Arc<ViewCache>) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [
+            Some(ConfigValue::Integer(id)),
+            Some(ConfigValue::Integer(revision)),
+        ] = arguments
+        else {
+            return Err("game.character_pop: expected a character id and a revision".to_owned());
+        };
+        let revision = u64::try_from(*revision)
+            .map_err(|_| format!("game.character_pop: revision {revision} is missing"))?;
+        let view = cache.get_for("game.character_pop", revision)?;
+        let card = u64::try_from(*id)
+            .ok()
+            .and_then(|id| view.characters.card(id))
+            .ok_or_else(|| {
+                format!("game.character_pop: no character {id} at revision {revision}")
+            })?;
+        let members = view
+            .characters
+            .pop_members(&card.place, card.slot)
+            .iter()
+            .filter_map(|member| view.characters.card(*member))
+            .map(card_table)
+            .collect();
+        Ok(vec![table([
+            ("place", text(&card.place)),
+            ("slot", integer(u64::from(card.slot))),
+            ("characters", ConfigValue::Array(members)),
+        ])])
+    })
+}
+
+/// `game.character_log(id, revision)`: the life log of the live character `id` as of `revision`, a list of `{year, month, day, text}` in date order
+/// with append order for equal dates (CK-378 §2). It reads the revision's own world and its published boundary, and nothing live; an id not live
+/// at that revision, and a revision that is missing or retired, are refusals.
+pub(crate) fn character_log_function(cache: Arc<ViewCache>) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [
+            Some(ConfigValue::Integer(id)),
+            Some(ConfigValue::Integer(revision)),
+        ] = arguments
+        else {
+            return Err("game.character_log: expected a character id and a revision".to_owned());
+        };
+        let revision = u64::try_from(*revision)
+            .map_err(|_| format!("game.character_log: revision {revision} is missing"))?;
+        let view = cache.get_for("game.character_log", revision)?;
+        let lines = u64::try_from(*id)
+            .map_err(|_| "no character".to_owned())
+            .and_then(|id| view.characters.log_of(id))
+            .map_err(|why| format!("game.character_log: {why} for {id} at revision {revision}"))?;
+        Ok(vec![ConfigValue::Array(
+            lines
+                .iter()
+                .map(|(date, line)| {
+                    table([
+                        ("year", integer(u64::from(date.year))),
+                        ("month", integer(u64::from(date.month))),
+                        ("day", integer(u64::from(date.day))),
+                        ("text", text(line)),
+                    ])
+                })
+                .collect(),
+        )])
     })
 }
 
@@ -1609,6 +1686,7 @@ mod tests {
                 niceties: 0,
                 luxuries: 0,
                 satisfaction: -5,
+                equilibrium: -3,
                 births: 2,
                 deaths: 1,
                 basic_housing: 38,
@@ -1709,6 +1787,7 @@ mod tests {
             panic!("a table");
         };
         assert_eq!(pop["satisfaction"], ConfigValue::Integer(-5));
+        assert_eq!(pop["equilibrium"], ConfigValue::Integer(-3));
         assert_eq!(pop["employed"], ConfigValue::Integer(70));
         let ConfigValue::Array(food) = &pop["food"] else {
             panic!("a food array");

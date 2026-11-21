@@ -18,6 +18,9 @@ pub(crate) type Handle = Arc<Mutex<Option<PathBuf>>>;
 /// builder reads the current reader each time it builds a view.
 pub(crate) type SourceCell = Arc<Mutex<Option<Arc<ck_characters::ArchiveSource>>>>;
 
+/// Where the running game's life-log reader is, for the view builder (CK-378 §2): published and replaced like [`SourceCell`].
+pub(crate) type LogCell = Arc<Mutex<Option<Arc<ck_characters::LogSource>>>>;
+
 /// A storage directory, removed when its last owner lets go: the storage itself, and every archive reader (so every published view) that
 /// still reads its files after a load has replaced the storage (CK-377 §1).
 #[derive(Debug)]
@@ -34,20 +37,31 @@ pub(super) struct Storage {
     pub(super) handle: Option<Handle>,
     /// The cell this storage's archive reader is published to, if the game builds views.
     pub(super) cell: Option<SourceCell>,
-    /// The directory's owner, shared with the archive reader.
+    /// The cell this storage's life-log reader is published to, if the game builds views.
+    pub(super) log_cell: Option<LogCell>,
+    /// The directory's owner, shared with the archive and log readers.
     directory: Arc<Directory>,
     /// The archive reader of this storage's `ARCH`, made on first use.
     source: std::sync::OnceLock<Arc<ck_characters::ArchiveSource>>,
+    /// The life-log reader of this storage's `LOGS`, made on first use.
+    log_source: std::sync::OnceLock<Arc<ck_characters::LogSource>>,
 }
 impl Storage {
     /// A storage at `path`, which it owns: the directory goes when the storage and every reader of its archive have.
-    pub(super) fn at(path: PathBuf, handle: Option<Handle>, cell: Option<SourceCell>) -> Self {
+    pub(super) fn at(
+        path: PathBuf,
+        handle: Option<Handle>,
+        cell: Option<SourceCell>,
+        log_cell: Option<LogCell>,
+    ) -> Self {
         Self {
             directory: Arc::new(Directory(path.clone())),
             path,
             handle,
             cell,
+            log_cell,
             source: std::sync::OnceLock::new(),
+            log_source: std::sync::OnceLock::new(),
         }
     }
     /// The reader of this storage's archive.
@@ -56,7 +70,13 @@ impl Storage {
             ck_characters::ArchiveSource::new(self.path.join("ARCH"), self.directory.clone())
         })
     }
-    /// Publish this storage's path and archive reader to their cells.
+    /// The reader of this storage's life log.
+    pub(super) fn log_source(&self) -> &Arc<ck_characters::LogSource> {
+        self.log_source.get_or_init(|| {
+            ck_characters::LogSource::new(self.path.join("LOGS"), self.directory.clone())
+        })
+    }
+    /// Publish this storage's path and archive and log readers to their cells.
     pub(super) fn publish(&self) {
         if let Some(handle) = &self.handle
             && let Ok(mut cell) = handle.lock()
@@ -68,11 +88,17 @@ impl Storage {
         {
             *held = Some(Arc::clone(self.source()));
         }
+        if let Some(cell) = &self.log_cell
+            && let Ok(mut held) = cell.lock()
+        {
+            *held = Some(Arc::clone(self.log_source()));
+        }
     }
-    /// Share `handle` with the scheduler and `cell` with the view builder, and publish both.
-    pub(super) fn attach(&mut self, handle: &Handle, cell: &SourceCell) {
+    /// Share `handle` with the scheduler and the two cells with the view builder, and publish all three.
+    pub(super) fn attach(&mut self, handle: &Handle, cell: &SourceCell, log_cell: &LogCell) {
         self.handle = Some(Arc::clone(handle));
         self.cell = Some(Arc::clone(cell));
+        self.log_cell = Some(Arc::clone(log_cell));
         self.publish();
     }
     pub(super) fn fresh_path(parent: &Path) -> io::Result<PathBuf> {
@@ -98,7 +124,7 @@ impl Storage {
         let result = (|| {
             ck_characters::Archive::open(path.join("ARCH"))?;
             ck_characters::LifeLog::open(path.join("LOGS"))?;
-            Ok(Self::at(path.clone(), None, None))
+            Ok(Self::at(path.clone(), None, None, None))
         })();
         if result.is_err() {
             let _ = std::fs::remove_dir_all(path);

@@ -503,6 +503,10 @@ if game ~= nil then
       end
       return 0
     end,
+    -- The pop tab's open-location button: the screen has closed, and the place shows in the location panel.
+    open_place = function(id, name)
+      location_panel:show({id = id, name = name})
+    end,
   }
 
   -- A click on a character's card: the screen shows that character, read at the revision the newest snapshot carried and in its world.

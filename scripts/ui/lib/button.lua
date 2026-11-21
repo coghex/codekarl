@@ -12,7 +12,26 @@ local CUT = 3
 local LEAST = 2 * CUT + 3 -- the least size of a cut-3 frame, in UI pixels
 local ICON_HEIGHT = 11
 local ICON_WIDTHS = {rewind = 9, fast_forward = 9, pause = 7, play = 7, stockpile = 9, yield = 9, elevation = 9,
-  location = 9, pops = 9, characters = 9, cards = 9, rows = 9, filter = 9, sort = 9}
+  location = 9, pops = 9, characters = 9, cards = 9, rows = 9, filter = 9, sort = 9, scroll = 9}
+-- An icon drawn from other art than `ui/theme/icon_<name>.png`, and its height if it is not `ICON_HEIGHT` (centred in the button): the character
+-- screen's life-log button wears the `scroll` of the approved character set (CK-378).
+local ICON_ART = {scroll = {texture = "ui/characters/scroll.png", height = 9}}
+
+local function icon_texture(name)
+  local art = ICON_ART[name]
+  return art ~= nil and art.texture or ("ui/theme/icon_" .. name .. ".png")
+end
+
+-- The top of an icon, in UI pixels from the button's top.
+local function icon_top(name)
+  local art = ICON_ART[name]
+  return 2 + (ICON_HEIGHT - (art ~= nil and art.height or ICON_HEIGHT)) // 2
+end
+
+local function icon_height(name)
+  local art = ICON_ART[name]
+  return art ~= nil and art.height or ICON_HEIGHT
+end
 local TRANSPARENT = "#00000000"
 
 local button = {}
@@ -251,11 +270,11 @@ function button.new(spec)
       local colour = name == self.icon and ink or TRANSPARENT
       self.icon_quads[name] = {
         quad = render.create_quad{
-          texture = ui.texture("ui/theme/icon_" .. name .. ".png"),
+          texture = ui.texture(icon_texture(name)),
           x = self.x + ((icon_width + 2 * PADDING - width) // 2) * P,
-          y = self.y + 2 * P,
+          y = self.y + icon_top(name) * P,
           width = width * P,
-          height = ICON_HEIGHT * P,
+          height = icon_height(name) * P,
           group = self.group,
           tint = colour,
         },
@@ -333,7 +352,7 @@ function button:move(x, y)
   self.frame:set_rect(self.x, self.y, self.width, self.height)
   if self.icons ~= nil then
     for name, icon in pairs(self.icon_quads) do
-      render.set_position(icon.quad, self.x + ((self.width // P - icon.width) // 2) * P, self.y + 2 * P)
+      render.set_position(icon.quad, self.x + ((self.width // P - icon.width) // 2) * P, self.y + icon_top(name) * P)
     end
   else
     text.move(self.line, self.x + self.text_x, self.y + PADDING * P)

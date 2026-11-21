@@ -4738,6 +4738,24 @@ fn curve_value_signed(points: &[[i32; 2]], x: i64) -> Result<u64, DataError> {
     })
 }
 
+/// The satisfaction `pop` drifts toward on its present needs met: the baseline its monthly drift aims at, which the character screen's pop tab
+/// shows as the equilibrium (CK-378). `None` when `rules` has no definition of the pop's kind.
+#[must_use]
+pub fn satisfaction_equilibrium(rules: &Rules, pop: &PopState) -> Option<i64> {
+    let kind = rules
+        .pop_types
+        .iter()
+        .find(|candidate| candidate.id == pop.kind)?;
+    Some(satisfaction_baseline(
+        kind,
+        [
+            pop.consumption.necessities_pm,
+            pop.consumption.niceties_pm,
+            pop.consumption.luxuries_pm,
+        ],
+    ))
+}
+
 fn satisfaction_baseline(pop: &PopType, needs: [u16; 3]) -> i64 {
     let n_gap = i64::from(pop.necessities_expectation_pm) - i64::from(needs[0]);
     let w_gap = i64::from(pop.niceties_expectation_pm) - i64::from(needs[1]);
@@ -14293,6 +14311,39 @@ mod tests {
         assert_eq!(satisfaction_baseline(&labourer, [1000, 400, 200]), 18);
         labourer.niceties_expectation_pm = 10_000;
         assert_eq!(satisfaction_baseline(&labourer, [0, 0, 0]), -100);
+    }
+
+    #[test]
+    fn the_equilibrium_is_the_baseline_of_the_pops_present_needs_and_none_for_an_unknown_kind() {
+        let rules = tiny_rules();
+        let mut pop = PopState {
+            kind: rules.pop_types[0].id.clone(),
+            culture: "connachta".to_owned(),
+            religion: "christianity".to_owned(),
+            literacy_pm: 0,
+            workers: 0,
+            dependents: 0,
+            employment: Vec::new(),
+            stock: vec![0],
+            consumption: PopConsumption::default(),
+            counters: CounterBuckets::default(),
+            short_on_rent: false,
+            housed_last: false,
+            genetics: PopGenetics::default(),
+            pending_births: 0,
+            pending_deaths: 0,
+        };
+        pop.consumption.necessities_pm = 1000;
+        pop.consumption.niceties_pm = 200;
+        pop.consumption.luxuries_pm = 0;
+        assert_eq!(
+            satisfaction_equilibrium(&rules, &pop),
+            Some(satisfaction_baseline(&rules.pop_types[0], [1000, 200, 0]))
+        );
+        pop.consumption.necessities_pm = 0;
+        assert_eq!(satisfaction_equilibrium(&rules, &pop), Some(-100));
+        pop.kind = "no such kind".to_owned();
+        assert_eq!(satisfaction_equilibrium(&rules, &pop), None);
     }
 
     #[test]

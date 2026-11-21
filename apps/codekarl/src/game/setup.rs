@@ -62,6 +62,8 @@ pub(crate) struct Prepared {
     pub(super) storage: super::character_storage::Storage,
     /// Where the view builder finds the current archive reader (CK-377).
     archive_cell: super::character_storage::SourceCell,
+    /// Where the view builder finds the current life-log reader (CK-378).
+    log_cell: super::character_storage::LogCell,
     /// Where the scheduler's daily system finds the character storage (CK-363).
     characters_io: super::character_storage::Handle,
 }
@@ -181,6 +183,7 @@ pub(crate) fn prepare(
     let place_names = place_names(&scenario);
     let characters_io = super::character_storage::Handle::default();
     let archive_cell = super::character_storage::SourceCell::default();
+    let log_cell = super::character_storage::LogCell::default();
     let scheduler = || {
         gameplay_scheduler_with_rules(
             gameplay_runtime.as_ref(),
@@ -206,7 +209,7 @@ pub(crate) fn prepare(
             &[*b"ARCH", *b"LOGS"],
         )
         .map_err(|e| format!("save {}: {e}", path.display()))?;
-        let storage = super::character_storage::Storage::at(staging, None, None);
+        let storage = super::character_storage::Storage::at(staging, None, None, None);
         super::character_storage::Storage::validate(&storage.path, &save.state)
             .map_err(|e| e.to_string())?;
         let simulation = Simulation::from_save(save, scheduler(), apply)
@@ -253,7 +256,7 @@ pub(crate) fn prepare(
         )
     };
     let mut storage = storage;
-    storage.attach(&characters_io, &archive_cell);
+    storage.attach(&characters_io, &archive_cell, &log_cell);
     if let Some(gameplay) = &gameplay_runtime {
         gameplay.set_seed(simulation.seed());
     }
@@ -274,6 +277,7 @@ pub(crate) fn prepare(
         storage,
         characters_io,
         archive_cell,
+        log_cell,
     })
 }
 
@@ -287,6 +291,8 @@ pub(super) struct ViewWiring {
     slots: Arc<BTreeMap<String, String>>,
     /// Where the current archive reader is: a load replaces what it holds before the next view is built.
     archive_cell: super::character_storage::SourceCell,
+    /// Where the current life-log reader is, replaced by a load like the archive reader.
+    log_cell: super::character_storage::LogCell,
     start_year: u16,
 }
 
@@ -317,6 +323,7 @@ impl Prepared {
             houses: Arc::clone(&self.houses),
             slots: Arc::clone(&self.slots),
             archive_cell: Arc::clone(&self.archive_cell),
+            log_cell: Arc::clone(&self.log_cell),
             start_year: self.scenario.start.year,
         }
     }
@@ -350,6 +357,14 @@ pub(super) fn view_builder(wiring: ViewWiring) -> super::core::ViewBuilder<GameS
             // one, and the tab refuses.
             let archive = wiring
                 .archive_cell
+                .lock()
+                .ok()
+                .and_then(|held| held.clone())
+                .and_then(|source| source.view().ok());
+            // The life log as published now: the records completely written so far, and no later one (CK-378 §2). A failed read leaves the
+            // view without one, and `game.character_log` refuses.
+            view.characters.log = wiring
+                .log_cell
                 .lock()
                 .ok()
                 .and_then(|held| held.clone())

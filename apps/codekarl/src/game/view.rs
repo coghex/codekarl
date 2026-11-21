@@ -67,6 +67,8 @@ pub(crate) struct PopView {
     pub(crate) luxuries: u64,
     /// Satisfaction, −100 to +100.
     pub(crate) satisfaction: i64,
+    /// The satisfaction the pop drifts toward on its present needs met (the economy's baseline for it; CK-378), −100 to +100.
+    pub(crate) equilibrium: i64,
     /// Births and deaths in the month completed by the last counter rollover.
     pub(crate) births: u64,
     pub(crate) deaths: u64,
@@ -333,6 +335,8 @@ fn pop_view(
         niceties: u64::from(pop.consumption.niceties_pm),
         luxuries: u64::from(pop.consumption.luxuries_pm),
         satisfaction: i64::from(pop.consumption.satisfaction),
+        equilibrium: ck_economy::satisfaction_equilibrium(rules, pop)
+            .unwrap_or_else(|| i64::from(pop.consumption.satisfaction)),
         births: pop.counters.last.births,
         deaths: pop.counters.last.deaths,
         basic_housing: housing.map_or(0, |housing| housing.basic),
@@ -1503,6 +1507,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fixture place and every number the panel derives from it, read in order"
+    )]
     fn a_fixture_place_derives_every_number_the_panel_shows() {
         let rules = shipped_rules();
         let state = EconomyState {
@@ -1574,6 +1582,12 @@ mod tests {
             ),
             (700, 350, 100, 5)
         );
+        // The equilibrium is the baseline the economy's monthly drift aims at for those needs (CK-378): the one function, not a second formula.
+        assert_eq!(
+            Some(pop.equilibrium),
+            ck_economy::satisfaction_equilibrium(&rules, &state.places[0].pops[0])
+        );
+        assert!((-100..=100).contains(&pop.equilibrium));
         assert_eq!((pop.births, pop.deaths), (0, 0));
 
         let farm = &place.buildings[0];
