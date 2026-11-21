@@ -60,6 +60,8 @@ pub(crate) struct Prepared {
     shelter_by_place: BTreeMap<String, u64>,
     saves: PathBuf,
     pub(super) storage: super::character_storage::Storage,
+    /// Where the view builder finds the current archive reader (CK-377).
+    archive_cell: super::character_storage::SourceCell,
     /// Where the scheduler's daily system finds the character storage (CK-363).
     characters_io: super::character_storage::Handle,
 }
@@ -178,6 +180,7 @@ pub(crate) fn prepare(
         .then(|| Gameplay::new(0));
     let place_names = place_names(&scenario);
     let characters_io = super::character_storage::Handle::default();
+    let archive_cell = super::character_storage::SourceCell::default();
     let scheduler = || {
         gameplay_scheduler_with_rules(
             gameplay_runtime.as_ref(),
@@ -203,10 +206,7 @@ pub(crate) fn prepare(
             &[*b"ARCH", *b"LOGS"],
         )
         .map_err(|e| format!("save {}: {e}", path.display()))?;
-        let storage = super::character_storage::Storage {
-            path: staging,
-            handle: None,
-        };
+        let storage = super::character_storage::Storage::at(staging, None, None);
         super::character_storage::Storage::validate(&storage.path, &save.state)
             .map_err(|e| e.to_string())?;
         let simulation = Simulation::from_save(save, scheduler(), apply)
@@ -253,7 +253,7 @@ pub(crate) fn prepare(
         )
     };
     let mut storage = storage;
-    storage.attach(&characters_io);
+    storage.attach(&characters_io, &archive_cell);
     if let Some(gameplay) = &gameplay_runtime {
         gameplay.set_seed(simulation.seed());
     }
@@ -273,7 +273,132 @@ pub(crate) fn prepare(
         saves: request.game.saves.clone(),
         storage,
         characters_io,
+        archive_cell,
     })
+}
+
+/// What the view builder needs: the economy and character views of a state are built from these (CK-375, CK-377).
+pub(super) struct ViewWiring {
+    rules: Option<Arc<Rules>>,
+    place_ids: Vec<String>,
+    land_by_place: BTreeMap<String, ck_economy::LandCounts>,
+    place_names: Arc<BTreeMap<String, String>>,
+    houses: Arc<ck_characters::figures::Houses>,
+    slots: Arc<BTreeMap<String, String>>,
+    /// Where the current archive reader is: a load replaces what it holds before the next view is built.
+    archive_cell: super::character_storage::SourceCell,
+    start_year: u16,
+}
+
+impl Prepared {
+    /// The view builder's inputs.
+    pub(super) fn view_wiring(&self) -> ViewWiring {
+        let place_ids: Vec<String> = self
+            .scenario
+            .locations
+            .iter()
+            .map(|location| location.id.clone())
+            .collect();
+        let land_by_place = if let Some(rules) = self.economy_rules.as_deref() {
+            economy::land_counts(&self.scenario, &rules.terrain_order)
+                .expect("the already-loaded scenario has valid catchments")
+                .into_iter()
+                .enumerate()
+                .map(|(index, land)| (self.scenario.locations[index].id.clone(), land))
+                .collect::<BTreeMap<_, _>>()
+        } else {
+            BTreeMap::new()
+        };
+        ViewWiring {
+            rules: self.economy_rules.clone(),
+            place_ids,
+            land_by_place,
+            place_names: Arc::new(place_names(&self.scenario)),
+            houses: Arc::clone(&self.houses),
+            slots: Arc::clone(&self.slots),
+            archive_cell: Arc::clone(&self.archive_cell),
+            start_year: self.scenario.start.year,
+        }
+    }
+}
+
+/// The economy view of a state, with the characters built with it so that they carry the same revision (CK-375 §1) and, for the relations tab,
+/// the live records and the archive as published now (CK-377 §1).
+pub(super) fn view_builder(wiring: ViewWiring) -> super::core::ViewBuilder<GameState> {
+    Box::new(move |state: &GameState, date| {
+        let mut view = view::build_with_land(
+            wiring.rules.as_deref(),
+            &state.economy,
+            &wiring.place_ids,
+            &wiring.land_by_place,
+            date,
+        );
+        if let Some(rules_arc) = wiring.rules.as_ref() {
+            let rules: &Rules = rules_arc;
+            view.characters = super::character_view::build(
+                &state.characters,
+                &state.economy,
+                &super::character_view::Inputs {
+                    rules,
+                    places: &wiring.place_names,
+                    houses: &wiring.houses,
+                    slots: &wiring.slots,
+                },
+                date,
+            );
+            // The relations tab reads this publication's world and keeps its archive readable. A failed archive read leaves the view without
+            // one, and the tab refuses.
+            let archive = wiring
+                .archive_cell
+                .lock()
+                .ok()
+                .and_then(|held| held.clone())
+                .and_then(|source| source.view().ok());
+            view.characters.relations = super::character_relations::RelationsFacts::build(
+                &state.characters,
+                &state.economy,
+                &super::character_relations::FactsInputs {
+                    rules: rules_arc,
+                    places: &wiring.place_names,
+                    houses: &wiring.houses,
+                    slots: &wiring.slots,
+                    archive,
+                    start_year: wiring.start_year,
+                },
+                date,
+            );
+        }
+        view
+    })
+}
+
+/// A core over a prepared game with the real view builder and storage, for tests of a load: the scheduler has no systems.
+#[cfg(test)]
+pub(super) fn test_core(
+    prepared: Prepared,
+    identity_saves: PathBuf,
+    outputs: Outputs,
+) -> Core<GameState, GameCommand> {
+    let wiring = prepared.view_wiring();
+    let Prepared {
+        identity,
+        simulation,
+        storage,
+        ..
+    } = prepared;
+    Core::new_with_views(
+        simulation,
+        identity,
+        identity_saves,
+        Rebuild {
+            scheduler: Box::new(Scheduler::new),
+            reset: Box::new(|_| {}),
+            apply,
+        },
+        outputs,
+        Some(view_builder(wiring)),
+    )
+    .with_character_storage(storage, super::character_storage::Storage::validate)
 }
 
 /// A game wired to the run: the controls the UI link sends presses through, the slot it reads, and the owner to spawn.
@@ -293,34 +418,20 @@ pub(crate) struct Connected {
     reason = "Connection wiring installs each prepared subsystem once in its dependency order."
 )]
 pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> Connected {
+    let wiring = prepared.view_wiring();
     let Prepared {
         identity,
         simulation,
         gameplay,
         economy_rules,
-        houses,
-        slots,
         shelter_by_place,
         saves,
         storage,
         characters_io,
         scenario,
+        ..
     } = prepared;
-    let place_ids: Vec<String> = scenario
-        .locations
-        .iter()
-        .map(|location| location.id.clone())
-        .collect();
-    let land_by_place = if let Some(rules) = economy_rules.as_deref() {
-        economy::land_counts(&scenario, &rules.terrain_order)
-            .expect("the already-loaded scenario has valid catchments")
-            .into_iter()
-            .enumerate()
-            .map(|(index, land)| (scenario.locations[index].id.clone(), land))
-            .collect::<BTreeMap<_, _>>()
-    } else {
-        BTreeMap::new()
-    };
+    let land_by_place = wiring.land_by_place.clone();
     let quality_by_place = land_by_place
         .iter()
         .map(|(id, land)| {
@@ -341,9 +452,6 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
             .map_or(0, |rules| rules.lifecycle.marriage.pool.far_m),
     );
     let place_names = place_names(&scenario);
-    let view_place_names = place_names.clone();
-    let view_houses = Arc::clone(&houses);
-    let view_slots = Arc::clone(&slots);
     let wiring_gameplay = gameplay.clone();
     let wiring_rules = economy_rules.clone();
     let (sender, receiver) = channel();
@@ -394,30 +502,7 @@ pub(crate) fn connect(prepared: Prepared, wake: Arc<dyn Fn() + Send + Sync>) -> 
                     publish: Box::new(move |snapshot| publishing.publish(snapshot)),
                     fail: Box::new(move |message| failing.fail(message)),
                 },
-                Some(Box::new(move |state: &GameState, date| {
-                    let mut view = view::build_with_land(
-                        economy_rules.as_deref(),
-                        &state.economy,
-                        &place_ids,
-                        &land_by_place,
-                        date,
-                    );
-                    // The characters are built with the places, so they carry the same revision (CK-375 §1).
-                    if let Some(rules) = economy_rules.as_deref() {
-                        view.characters = super::character_view::build(
-                            &state.characters,
-                            &state.economy,
-                            &super::character_view::Inputs {
-                                rules,
-                                places: &view_place_names,
-                                houses: &view_houses,
-                                slots: &view_slots,
-                            },
-                            date,
-                        );
-                    }
-                    view
-                })),
+                Some(view_builder(wiring)),
             )
             .with_character_storage(storage, super::character_storage::Storage::validate)
             .with_terminal_probe(move || {

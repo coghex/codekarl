@@ -12,6 +12,10 @@
 //! not live there, by name. The `game_time` table also carries `world`: `0` for the session's first world, one more each time a load replaces the
 //! simulation, never falling, so the UI sees a load even when the snapshot it published was replaced before it was read.
 //!
+//! `game.character_relations(id, revision)` returns the relations record of one live character at that revision (characters slice 9b): its
+//! parents, spouses, children and others, the strands and opinion of each, and its passions. It reads the revision's own world (the live
+//! characters and the archive as of that publication) and nothing else, and refuses as `game.character` does.
+//!
 //! `game.mark_unsaved()` and `game.load_save_guarded(filename)` share the simulation's ordered message route with saves and loads. The
 //! guarded load returns immediately; its eventual outcome reaches `game_save_result(filename, result)` after
 //! `game.on_save_result(fn | nil)` registers a callback.
@@ -22,6 +26,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ck_lua::{ConfigValue, Extension, HostFunction};
 
+use crate::game::character_relations::{End, PassionLine, Person, Relations};
 use crate::game::character_view::{CharacterCard, FirstTab};
 use crate::game::controls::{self, GuardedLoadResult, SimControls};
 use crate::game::core::{SaveCall, SaveReply};
@@ -954,6 +959,126 @@ pub(crate) fn character_function(cache: Arc<ViewCache>) -> HostFunction {
         let (card, tab) = found
             .ok_or_else(|| format!("game.character: no character {id} at revision {revision}"))?;
         Ok(vec![character_table(card, tab)])
+    })
+}
+
+/// One strand line of a shown person.
+fn line_table(line: &crate::game::character_relations::Line) -> ConfigValue {
+    table([
+        ("kind", text(line.kind)),
+        ("strength", integer(u64::from(line.strength))),
+        ("side", text(line.side.word())),
+        ("history", ConfigValue::Bool(line.history)),
+    ])
+}
+
+/// One person shown on the relations tab (CK-377 §2-§3).
+fn person_table(person: &Person) -> ConfigValue {
+    let ConfigValue::Table(mut fields) = table([
+        ("id", integer(person.id)),
+        ("name", text(&person.name)),
+        ("epithet", text(&person.epithet)),
+        ("sex", text(if person.female { "f" } else { "m" })),
+        ("live", ConfigValue::Bool(person.live())),
+        ("age", integer(u64::from(person.age))),
+        ("relation", text(&person.relation)),
+        ("tie", text(person.tie.word())),
+        (
+            "lines",
+            ConfigValue::Array(person.lines.iter().map(line_table).collect()),
+        ),
+    ]) else {
+        unreachable!("a table is a table")
+    };
+    let mut put = |key: &str, value: ConfigValue| {
+        fields.insert(key.to_owned(), value);
+    };
+    match person.end {
+        End::Alive => {}
+        End::Died(date) => {
+            put("ended", text("died"));
+            put("year", integer(u64::from(date.year)));
+            put("month", integer(u64::from(date.month)));
+            put("day", integer(u64::from(date.day)));
+        }
+        End::DiedBefore(year) => {
+            put("ended", text("before"));
+            put("year", integer(u64::from(year)));
+        }
+        End::Abroad => put("ended", text("abroad")),
+    }
+    if let Some((mine, back)) = person.opinion {
+        put("opinion", signed(mine));
+        put("opinion_back", signed(back));
+    }
+    ConfigValue::Table(fields)
+}
+
+fn passion_table(passion: &PassionLine) -> ConfigValue {
+    table([
+        ("kind", text(passion.kind)),
+        ("strength", integer(u64::from(passion.strength))),
+        ("target_kind", text(passion.target_kind)),
+        ("key", text(&passion.key)),
+        ("name", text(&passion.name)),
+    ])
+}
+
+/// The relations record of a character as the table `game.character_relations` returns.
+fn relations_table(id: u64, record: &Relations) -> ConfigValue {
+    let people = |people: &[Person]| ConfigValue::Array(people.iter().map(person_table).collect());
+    let ConfigValue::Table(mut fields) = table([
+        ("id", integer(id)),
+        (
+            "spouse_word",
+            text(if record.spouses_are_wives {
+                "wives"
+            } else {
+                "husbands"
+            }),
+        ),
+        ("spouses", people(&record.spouses)),
+        ("children", people(&record.children)),
+        ("others", people(&record.others)),
+        (
+            "passions",
+            ConfigValue::Array(record.passions.iter().map(passion_table).collect()),
+        ),
+    ]) else {
+        unreachable!("a table is a table")
+    };
+    if let Some(father) = &record.parents[0] {
+        fields.insert("father".to_owned(), person_table(father));
+    }
+    if let Some(mother) = &record.parents[1] {
+        fields.insert("mother".to_owned(), person_table(mother));
+    }
+    ConfigValue::Table(fields)
+}
+
+/// `game.character_relations(id, revision)`: the relations record of the live character `id` at `revision`, built on request from what that
+/// revision's view carries. An id not live at that revision, and a revision that is missing or retired, are refusals.
+pub(crate) fn character_relations_function(cache: Arc<ViewCache>) -> HostFunction {
+    Arc::new(move |arguments| {
+        let [
+            Some(ConfigValue::Integer(id)),
+            Some(ConfigValue::Integer(revision)),
+        ] = arguments
+        else {
+            return Err(
+                "game.character_relations: expected a character id and a revision".to_owned(),
+            );
+        };
+        let revision = u64::try_from(*revision)
+            .map_err(|_| format!("game.character_relations: revision {revision} is missing"))?;
+        let view = cache.get_for("game.character_relations", revision)?;
+        let id = u64::try_from(*id).map_err(|_| {
+            format!("game.character_relations: no character {id} at revision {revision}")
+        })?;
+        let record = view.characters.relations_of(id).map_err(|_| {
+            format!("game.character_relations: no character {id} at revision {revision}")
+        })?;
+        Ok(vec![relations_table(id, &record)])
     })
 }
 

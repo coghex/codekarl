@@ -15,9 +15,11 @@
 //! - [`setup`]: starting a new game or loading one, before anything runs.
 //! - [`view`]: the immutable economy view the snapshot carries to the UI (milestone 9).
 //! - [`character_view`]: the characters of the same view (slice 9, CK-375).
+//! - [`character_relations`]: what the relations tab reads of that view (slice 9b, CK-377).
 
 use ck_sim::{Canonical, CanonicalError, Reader};
 
+pub(crate) mod character_relations;
 mod character_storage;
 pub(crate) mod character_view;
 pub(crate) mod controls;

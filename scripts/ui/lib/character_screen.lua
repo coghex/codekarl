@@ -19,6 +19,8 @@ local location = require("lib.location")
 local theme = require("lib.theme")
 local tooltip = require("lib.tooltip")
 local draw = require("lib.draw")
+local pointer = require("lib.pointer")
+local relations = require("lib.character_relations")
 
 local P = ui.P
 
@@ -60,6 +62,7 @@ local function icon_names()
     for _, name in pairs(set) do add(name) end
   end
   add(STRESS_ICON)
+  for _, name in ipairs(relations.icon_names()) do add(name) end
   table.sort(names)
   return names
 end
@@ -73,7 +76,7 @@ local TABS = {
   {key = "relations", label = "relations", short = "rel", tiny = "r"},
   {key = "actions", label = "actions", short = "act", tiny = "a"},
 }
-local LATER = {pop = "in a later slice", relations = "in a later slice", actions = "nothing yet"}
+local LATER = {pop = "in a later slice", actions = "nothing yet"}
 
 -- Where the parts of the screen lie, in UI pixels from the window's content origin.
 local PORTRAIT = 48
@@ -398,10 +401,39 @@ local function stack_height(self)
   return math.max(P, self.window.content_height - STACK_Y * P)
 end
 
+-- Reads the relations record of the character shown at the revision the screen holds. Returns whether it was read, and if not why.
+local function read_relations(self)
+  local ok, found = pcall(game.character_relations, self.character, self.revision)
+  if ok and found ~= nil then
+    self.relations = found
+    return true
+  end
+  return false, found
+end
+
+-- What the relations tab's sections need of the screen: its helpers, the character shown, and how a click on a live portrait opens that
+-- character's screen. The click is acted on once the press that made it has been dispatched, because opening replaces the very stack it came from.
+local function relations_kit(self)
+  return {
+    section = section, heading = heading, subject = self.record,
+    open = function(id)
+      pointer.defer(function()
+        if self:is_open() then self:open(id, self.revision, self.world) end
+      end)
+    end,
+  }
+end
+
 local function items_of(self)
   local sections
   if self.tab == "character" then
     sections = first_tab(self.record, inner_width(self))
+  elseif self.tab == "relations" then
+    if self.relations ~= nil then
+      sections = relations.sections(self.relations, inner_width(self), relations_kit(self))
+    else
+      sections = later("not available")
+    end
   else
     sections = later(LATER[self.tab])
   end
@@ -433,6 +465,7 @@ local function build(self)
     body = {x = 0, y = TABS_Y * P, width = self.window.content_width},
     on_select = function(key)
       self.tab = key
+      if key == "relations" then read_relations(self) end
       fill(self, false)
     end,
   }
@@ -482,6 +515,7 @@ function character_screen:open(id, revision, world)
   local ok, record = pcall(game.character, id, revision)
   if not ok then return false end
   self.character, self.world, self.record, self.tab = id, world, record, "character"
+  self.revision, self.relations = revision, nil
   if self:is_open() then
     self.window:raise()
     build(self)
@@ -494,7 +528,7 @@ function character_screen:open(id, revision, world)
     on_close = function()
       if self.window == created then
         self.window, self.header, self.tabs, self.stack = nil, nil, nil, nil
-        self.character, self.record = nil, nil
+        self.character, self.record, self.relations = nil, nil, nil
       end
     end,
   }
@@ -517,7 +551,15 @@ function character_screen:refresh(revision, world)
     return
   end
   if record == nil then return end
-  self.record = record
+  self.record, self.revision = record, revision
+  -- The tab showing is read again at the same revision: a read the cache refuses leaves what it shows as it was.
+  if self.tab == "relations" then
+    local read, why = read_relations(self)
+    if not read and tostring(why):find("no character", 1, true) ~= nil then
+      self:close()
+      return
+    end
+  end
   draw_header(self, record)
   fill(self, true)
 end

@@ -517,10 +517,7 @@ fn two_new_games_on_one_seed_are_the_same_and_another_seed_differs_and_the_start
         &[*b"ARCH", *b"LOGS"],
     )
     .unwrap();
-    let staged = Storage {
-        path: staging,
-        handle: None,
-    };
+    let staged = Storage::at(staging, None, None);
     Storage::validate(&staged.path, &loaded.state).unwrap();
     assert_eq!(&loaded.state, a.simulation.state());
     let original = Archive::open(a.storage.path.join("ARCH")).unwrap();

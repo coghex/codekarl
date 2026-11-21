@@ -14,23 +14,65 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 /// the system reads the current path from this shared cell each time it needs the archive and the life logs.
 pub(crate) type Handle = Arc<Mutex<Option<PathBuf>>>;
 
+/// Where the running game's archive reader is, for the view builder (CK-377 §1): like [`Handle`], a load replaces what it holds, and the
+/// builder reads the current reader each time it builds a view.
+pub(crate) type SourceCell = Arc<Mutex<Option<Arc<ck_characters::ArchiveSource>>>>;
+
+/// A storage directory, removed when its last owner lets go: the storage itself, and every archive reader (so every published view) that
+/// still reads its files after a load has replaced the storage (CK-377 §1).
+#[derive(Debug)]
+pub(super) struct Directory(pub(super) PathBuf);
+impl Drop for Directory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 pub(super) struct Storage {
     pub(super) path: PathBuf,
     /// The cell this storage's path is published to, if the game's scheduler reads it.
     pub(super) handle: Option<Handle>,
+    /// The cell this storage's archive reader is published to, if the game builds views.
+    pub(super) cell: Option<SourceCell>,
+    /// The directory's owner, shared with the archive reader.
+    directory: Arc<Directory>,
+    /// The archive reader of this storage's `ARCH`, made on first use.
+    source: std::sync::OnceLock<Arc<ck_characters::ArchiveSource>>,
 }
 impl Storage {
-    /// Publish this storage's path to its handle.
+    /// A storage at `path`, which it owns: the directory goes when the storage and every reader of its archive have.
+    pub(super) fn at(path: PathBuf, handle: Option<Handle>, cell: Option<SourceCell>) -> Self {
+        Self {
+            directory: Arc::new(Directory(path.clone())),
+            path,
+            handle,
+            cell,
+            source: std::sync::OnceLock::new(),
+        }
+    }
+    /// The reader of this storage's archive.
+    pub(super) fn source(&self) -> &Arc<ck_characters::ArchiveSource> {
+        self.source.get_or_init(|| {
+            ck_characters::ArchiveSource::new(self.path.join("ARCH"), self.directory.clone())
+        })
+    }
+    /// Publish this storage's path and archive reader to their cells.
     pub(super) fn publish(&self) {
         if let Some(handle) = &self.handle
             && let Ok(mut cell) = handle.lock()
         {
             *cell = Some(self.path.clone());
         }
+        if let Some(cell) = &self.cell
+            && let Ok(mut held) = cell.lock()
+        {
+            *held = Some(Arc::clone(self.source()));
+        }
     }
-    /// Share `handle` with the scheduler and publish the path.
-    pub(super) fn attach(&mut self, handle: &Handle) {
+    /// Share `handle` with the scheduler and `cell` with the view builder, and publish both.
+    pub(super) fn attach(&mut self, handle: &Handle, cell: &SourceCell) {
         self.handle = Some(Arc::clone(handle));
+        self.cell = Some(Arc::clone(cell));
         self.publish();
     }
     pub(super) fn fresh_path(parent: &Path) -> io::Result<PathBuf> {
@@ -56,10 +98,7 @@ impl Storage {
         let result = (|| {
             ck_characters::Archive::open(path.join("ARCH"))?;
             ck_characters::LifeLog::open(path.join("LOGS"))?;
-            Ok(Self {
-                path: path.clone(),
-                handle: None,
-            })
+            Ok(Self::at(path.clone(), None, None))
         })();
         if result.is_err() {
             let _ = std::fs::remove_dir_all(path);
@@ -91,10 +130,5 @@ impl Storage {
             }
         })
         .map_err(|e| io::Error::other(format!("LOGS section: {e}")))
-    }
-}
-impl Drop for Storage {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
     }
 }

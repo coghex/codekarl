@@ -7,7 +7,7 @@ use super::*;
 
 /// The Lua the tests of this file share, after the location tests' own prelude and before `main.lua`: the fixture characters of three
 /// revisions, `game.characters` and `game.character` over them, and observers of what is drawn.
-const CHARACTERS: &str = r##"
+pub(super) const CHARACTERS: &str = r##"
 local BODY = {"height", "weight", "strength", "wit", "intellect", "cunning", "longevity", "constitution", "fecundity"}
 local HUMOURS = {"blood", "yellow_bile", "black_bile", "phlegm"}
 local SKILLS = {"leadership", "craftsmanship", "seamanship", "scholarship", "horsemanship", "martial_prowess", "oratory",
@@ -257,7 +257,7 @@ fn mine(rig: &Rig) -> Vec<String> {
         .collect()
 }
 
-fn note_line(rig: &Rig, prefix: &str) -> String {
+pub(super) fn note_line(rig: &Rig, prefix: &str) -> String {
     notes(rig)
         .into_iter()
         .rev()
@@ -265,7 +265,7 @@ fn note_line(rig: &Rig, prefix: &str) -> String {
         .unwrap_or_else(|| panic!("no note `{prefix}`: {:?}", mine(rig)))
 }
 
-fn click(rig: &mut Rig, x: f64, y: f64) {
+pub(super) fn click(rig: &mut Rig, x: f64, y: f64) {
     rig.feed(&[
         PointerEvent::Down(points(x, y)),
         PointerEvent::Up(points(x, y)),
@@ -274,7 +274,7 @@ fn click(rig: &mut Rig, x: f64, y: f64) {
 }
 
 /// The point at the middle of the `n`th (1-based) card of the ledger, which is 40 pixels tall with 3 between.
-fn card_point(rig: &Rig, n: usize) -> (f64, f64) {
+pub(super) fn card_point(rig: &Rig, n: usize) -> (f64, f64) {
     let line = note_line(rig, "ledger_origin ");
     let mut values = line["ledger_origin ".len()..].split_whitespace();
     let (x, y): (f64, f64) = (
@@ -285,7 +285,7 @@ fn card_point(rig: &Rig, n: usize) -> (f64, f64) {
     (x + 100.0, y + ((n - 1.0) * 43.0 + 20.0) * 2.0)
 }
 
-fn open_characters(rig: &mut Rig) {
+pub(super) fn open_characters(rig: &mut Rig) {
     rig.opened();
     press_bar(rig, "characters");
     rig.opened();
@@ -548,7 +548,7 @@ fn the_health_section_draws_a_row_for_each_injury_against_a_fixture() {
     );
 }
 
-fn screen_tab_point(rig: &Rig, key: &str) -> (f64, f64) {
+pub(super) fn screen_tab_point(rig: &Rig, key: &str) -> (f64, f64) {
     let prefix = format!("screen_tab {key} ");
     let line = note_line(rig, &prefix);
     let mut values = line[prefix.len()..].split_whitespace();

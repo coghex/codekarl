@@ -100,10 +100,21 @@ local function visible(self)
   return first, last
 end
 
+-- The point (x, y), in window points, as UI pixels from the top-left of the item at `index`: what an item's `tooltip` and `on_click` are given.
+local function item_point(self, index, x, y)
+  if top_of(self, index) == nil then return nil, nil end
+  local left = self.origin_x + self.x
+  local top = self.origin_y + self.y - ui.snap(self.scroll_offset) + top_of(self, index)
+  return (x - left) / P, (y - top) / P
+end
+
 -- The widget of the item at `index`. It keeps the item it was made for: a refresh (`set_items`) can replace the array between the press and a
 -- release that was routed against the old frame, and the release must act for the item that was pressed, never for whatever moved into its row.
 local function item_widget(self, index, key)
   local represented = self.items[index]
+  -- Where the item lay when this hit region was published: a release routed against that frame is read in it, never in the stack's later
+  -- geometry (a refresh may have removed the item or moved it, and the release's point means the old place).
+  local published_top, published_scroll = top_of(self, index), self.scroll_offset
   local widget = {pressed = false}
   function widget:on_event(event, eligible)
     if self.cards.closed then return end
@@ -118,7 +129,15 @@ local function item_widget(self, index, key)
       pointer.pressed(key, false)
       local item = represented
       if was_pressed and eligible ~= false and event.inside == true and item ~= nil and item.on_click ~= nil then
-        item.on_click()
+        -- The item is told where in itself the release was (UI pixels), for an item with several places to press; most ignore it.
+        local at_x, at_y = nil, nil
+        local cards_now = self.cards
+        local unmoved = cards_now.items[index] == represented and top_of(cards_now, index) == published_top
+          and cards_now.scroll_offset == published_scroll
+        if unmoved and type(event.x) == "number" and type(event.y) == "number" then
+          at_x, at_y = item_point(cards_now, index, event.x, event.y)
+        end
+        item.on_click(at_x, at_y)
       end
     elseif event.kind == "cancel" then
       self.pressed = false
@@ -140,9 +159,9 @@ local function item_widget(self, index, key)
     if self.closed then return nil end
     local item = self.items[index]
     if item == nil or type(item.tooltip) ~= "function" then return nil end
-    local left = self.origin_x + self.x
-    local top = self.origin_y + self.y - ui.snap(self.scroll_offset) + top_of(self, index)
-    return item.tooltip((x - left) / P, (y - top) / P)
+    local at_x, at_y = item_point(self, index, x, y)
+    if at_x == nil then return nil end
+    return item.tooltip(at_x, at_y)
   end)
   widget.cards = self
   return widget
