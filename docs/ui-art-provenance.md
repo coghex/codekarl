@@ -140,7 +140,8 @@ author's record, moved here from the design round's notes; the files, hashes and
 
 ## The character screen's art (CK-375)
 
-- **The colour icons** (`assets/ui/characters/*.png`, 46 of them): the owner-approved 9x9 set for the character window (owner r85-r87), frozen
+- **The colour icons** (`assets/ui/characters/*.png`, 55 of them: the 46 of the first tab and, from CK-377, the nine of the relations tab: tree, bowl,
+  lock, handshake, fist, lovers, ghost, angry, star_pale): the owner-approved 9x9 set for the character window (owner r85-r87), frozen
   from the designer's `char_icons.py` (SHA-256 `86dc5a31bce827c29f656889a42de47fea41dbad39974040ff614cc0eeec485c`) into
   `assets/ui/characters/make_characters.py`, which writes the images. Each drawing is composed pixel by pixel from a plain object shape; none is
   copied or traced from another game or icon set. `make_characters.py --check` fails when a committed image differs from what the script writes,

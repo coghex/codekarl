@@ -3864,6 +3864,46 @@ opens the **character screen** over the left slot.
   titles and kingdoms (L1), captives (L4), the actions tab (L2) and archived characters in the list. A generated character whose father is
   archived shows its base name without the patronymic, because the view does not read the archive.
 
+### 3.26 The relations tab (CK-377)
+
+Characters slice 9b (`history-scratch/characters-ui-r12.md` "The relations tab", spec r4). The character screen's "relations" tab shows portraits
+only: the unknown portrait at 24 UI pixels, seven to a row, the dead dimmed.
+
+- **The data path.** `game.character_relations(id, revision)` returns the relations record of a **live** character, built on request from what that
+  revision's view carries (`game/character_relations.rs`): a copy of the live records, the archive **as published** (`ck_characters::ArchiveView`,
+  an offset limit over one shared reader, extended from where it stopped, so a record archived later is invisible to an older view), the rules,
+  and two reverse indexes built once per publication in one pass (the live children of every parent, archived or live; each court's anchor ruler and
+  guests). A request is lookups by id and by those indexes: no archive reopen, no scan. A load replaces the storage, but a view of the old world
+  keeps the old directory alive through its reader, so a pinned read completes from its own world and the files go with the last view.
+- **The top line** has the parents (father, mother; the unknown is an empty dim cell) at the left and the spouses at the right in the stored order,
+  "wives" or "husbands", live and dead alike. **Children** are one row, oldest first. **Others**, in the designer's order: lovers, rivals, friends,
+  foster kin, hostages held, then other living kin (siblings, grandchildren, nephews and nieces, in-laws), each group oldest first; a person already
+  shown is not repeated, and a brother who is also a rival is a brother. It wraps once, and past that the last place is a "+N" chip whose tooltip lists
+  the rest with their kind. A section with nothing to show is left out. A click on a live portrait replaces the screen with that character's; a dead
+  portrait does nothing. The tab scrolls with the stack's bar.
+- **Foster kin and hostages** come from the slot assignments and the roster of the revision. A court's **anchor** is the live ruler whose pop is at
+  the slot's location, the lowest figure key (a real figure before one without a key), then the lowest id; a court with no ruler has none, so its
+  guests have no foster-father, foster-mother, foster-siblings or holder. The same anchor is used both ways: a fosterling's foster-father is the
+  anchor, its foster-mother the anchor's first living spouse, its foster-brothers and sisters his children at the court; the anchor, his wife and
+  his children see the fosterlings as foster-sons and daughters or foster-brothers and sisters; a hostage's holder is the anchor, and the anchor's
+  row lists his hostages.
+- **Under each portrait** up to two small icons: the formal tie's first and dim (kin a tree, foster kin a bowl, a hostage or its holder a lock), then
+  the strands, strongest first (the bonds both share and this character's own feelings: friend a handshake, rival a fist, lover two hearts, love a
+  heart, respect a pale star, envy a green eye, fear a ghost, hatred an angry face), and a "+" when more stand. A spouse with no strand has no icon.
+- **The tooltip** of a portrait: the name and epithet, the relation ("son", "foster-brother", "rival"), then for a **live** person the age, every strand
+  between the two (bonds, then this character's feelings, then the other's, each "kind strength", the feelings worded "respect 4 Niall toward him"),
+  and the opinion each way in whole points for every live person on the tab, kin included. For a **dead** person: how it ended ("died 4 Mar 722",
+  "died before 768", "abroad"), then only the ties its own archived record holds, each marked as history in a dim line; no living partner's feelings
+  and no opinion. A strand's kind links the shared `relationship` glossary term.
+- **Passions** at the bottom, one row each: the kind's icon (loyalty a laurel, love a heart, hatred an angry face, fear a ghost), the kind, the
+  target (a place by its name; a house by its `houses.toml` name, else its saved minor-house name, else its key; a culture or a religion by the title of
+  its glossary term, else its key), a strength bar out of 10 and the number; strongest first. Its tooltip links the shared `passion` term.
+- **Across revisions** as the first tab (§3.25): the tab reads its record again on each delivered revision, keeping the scroll; a new world or a
+  character no longer live closes the screen. `lib/cards.lua` now tells an item's `on_click` where in the item the release was, and a tooltip span may
+  carry a `colour`.
+- **Not in 9b:** the family tree (no design yet), heirs and claims (L1), lords and concubines, the actions tab, opening a dead character's screen, the
+  pop tab and the life-log button (9c), layered portraits, orientation.
+
 ## 4. Packages and ownership
 
 | Package | Change |
